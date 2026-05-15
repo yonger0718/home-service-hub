@@ -1,5 +1,16 @@
-from sqlalchemy import CheckConstraint, Column, Integer, String, Numeric, DateTime, Enum, Index
-from sqlalchemy.sql import func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    Column,
+    DateTime,
+    Enum,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
+from sqlalchemy.sql import expression, func
 import enum
 from ..database import Base, TimestampMixin
 
@@ -15,6 +26,7 @@ class Transaction(Base, TimestampMixin):
         CheckConstraint("price > 0", name="ck_transactions_price_positive"),
         CheckConstraint("coalesce(fee, 0) >= 0", name="ck_transactions_fee_nonnegative"),
         CheckConstraint("coalesce(tax, 0) >= 0", name="ck_transactions_tax_nonnegative"),
+        UniqueConstraint("import_fingerprint", name="uq_transactions_import_fingerprint"),
         Index("ix_transactions_symbol_trade_date", "symbol", "trade_date"),
     )
 
@@ -27,12 +39,20 @@ class Transaction(Base, TimestampMixin):
     trade_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     fee = Column(Numeric(12, 2), default=0.0)                   # 手續費 (選填)
     tax = Column(Numeric(12, 2), default=0.0)                   # 交易稅 (選填)
+    is_day_trade = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=expression.false(),
+    )
+    import_fingerprint = Column(String(64), nullable=True)
 
 class Dividend(Base, TimestampMixin):
     __tablename__ = "dividends"
     __table_args__ = (
         CheckConstraint("length(trim(symbol)) > 0", name="ck_dividends_symbol_not_blank"),
         CheckConstraint("amount > 0", name="ck_dividends_amount_positive"),
+        UniqueConstraint("import_fingerprint", name="uq_dividends_import_fingerprint"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -40,3 +60,4 @@ class Dividend(Base, TimestampMixin):
     amount = Column(Numeric(12, 2), nullable=False)             # 總金額
     ex_dividend_date = Column(DateTime(timezone=True), nullable=False, index=True) # 除息日
     received_date = Column(DateTime(timezone=True), server_default=func.now()) # 入帳日
+    import_fingerprint = Column(String(64), nullable=True)

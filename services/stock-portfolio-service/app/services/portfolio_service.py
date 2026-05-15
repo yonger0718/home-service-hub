@@ -67,6 +67,44 @@ def _resolve_sort_trade_date(
     return trade_date.astimezone(timezone.utc).replace(tzinfo=None)
 
 
+def _trade_calendar_date(trade_date: datetime) -> date_type:
+    """Calendar date used for day-trade bucketing.
+
+    Normalises to UTC date (matches ``_resolve_sort_trade_date``). TW trading
+    hours run 01:00-05:30 UTC, so the UTC date matches the TW market date.
+    """
+
+    return _resolve_sort_trade_date(trade_date).date()
+
+
+def _recompute_day_trade_flags(
+    db: Session, symbol: str, calendar_date: date_type
+) -> None:
+    """Flip ``is_day_trade`` for every transaction in the (symbol, date) bucket.
+
+    A transaction is a day-trade when the same symbol has BOTH a BUY and a
+    SELL on the same calendar trade date. All rows in the bucket share the
+    same flag; recompute and persist in-place. Caller commits.
+    """
+
+    normalized = sanitize_symbol(symbol)
+    rows = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.symbol == normalized)
+        .all()
+    )
+    bucket = [
+        row for row in rows
+        if _trade_calendar_date(row.trade_date) == calendar_date
+    ]
+    has_buy = any(row.type == models.TransactionType.BUY for row in bucket)
+    has_sell = any(row.type == models.TransactionType.SELL for row in bucket)
+    new_flag = has_buy and has_sell
+    for row in bucket:
+        if row.is_day_trade != new_flag:
+            row.is_day_trade = new_flag
+
+
 def _validate_symbol_ledger(symbol: str, ledger_entries: List[Dict[str, object]]) -> None:
     available_quantity = 0
 
@@ -402,9 +440,15 @@ def create_transaction(db: Session, transaction: schemas.TransactionCreate):
     transaction_data["trade_date"] = transaction_data.get("trade_date") or datetime.now(timezone.utc)
 
     _validate_transaction_ledger(db, transaction_data)
-    
+
     db_transaction = models.Transaction(**transaction_data)
     db.add(db_transaction)
+    db.flush()
+    _recompute_day_trade_flags(
+        db,
+        db_transaction.symbol,
+        _trade_calendar_date(db_transaction.trade_date),
+    )
     db.commit()
     db.refresh(db_transaction)
     return db_transaction
@@ -443,7 +487,10 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
     db_transaction = db.query(models.Transaction).filter(models.Transaction.id == transaction_id).first()
     if not db_transaction:
         return None
-    
+
+    old_symbol = sanitize_symbol(db_transaction.symbol)
+    old_calendar = _trade_calendar_date(db_transaction.trade_date)
+
     update_data = transaction_update.model_dump(exclude_unset=True)
     update_data["symbol"] = sanitize_symbol(update_data["symbol"])
     if "trade_date" in update_data:
@@ -452,10 +499,18 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
         update_data["trade_date"] = db_transaction.trade_date
 
     _validate_transaction_ledger(db, update_data, existing_transaction=db_transaction)
-    
+
     for key, value in update_data.items():
         setattr(db_transaction, key, value)
-    
+
+    db.flush()
+
+    new_symbol = sanitize_symbol(db_transaction.symbol)
+    new_calendar = _trade_calendar_date(db_transaction.trade_date)
+    _recompute_day_trade_flags(db, old_symbol, old_calendar)
+    if (new_symbol, new_calendar) != (old_symbol, old_calendar):
+        _recompute_day_trade_flags(db, new_symbol, new_calendar)
+
     db.commit()
     db.refresh(db_transaction)
     return db_transaction
@@ -464,7 +519,13 @@ def delete_transaction(db: Session, transaction_id: int):
     db_transaction = db.query(models.Transaction).filter(models.Transaction.id == transaction_id).first()
     if not db_transaction:
         return False
+
+    symbol = sanitize_symbol(db_transaction.symbol)
+    calendar = _trade_calendar_date(db_transaction.trade_date)
+
     db.delete(db_transaction)
+    db.flush()
+    _recompute_day_trade_flags(db, symbol, calendar)
     db.commit()
     return True
 

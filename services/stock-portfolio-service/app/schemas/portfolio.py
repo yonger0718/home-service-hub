@@ -52,6 +52,7 @@ class TransactionCreate(TransactionBase):
 
 class Transaction(TransactionBase):
     id: int
+    is_day_trade: bool = False
     created_at: datetime
     updated_at: datetime
 

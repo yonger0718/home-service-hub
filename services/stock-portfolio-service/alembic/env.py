@@ -8,6 +8,7 @@ from app.database import Base
 
 # Import all models so Base.metadata knows about them
 import app.models.portfolio  # noqa: F401
+import app.models.price_history  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", SQLALCHEMY_DATABASE_URL)
