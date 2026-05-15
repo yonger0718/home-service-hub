@@ -113,8 +113,30 @@ def test_run_quote_refresh_fetches_when_in_session():
     assert result == {"requested": 2, "received": 2}
 
 
-def test_run_portfolio_snapshot_stub_returns_stub():
-    assert sched.run_portfolio_snapshot_stub(MagicMock()) == {"status": "stub"}
+def test_run_portfolio_snapshot_persists_and_returns_ok():
+    db = MagicMock()
+    factory = MagicMock()
+    factory.return_value.__enter__.return_value = db
+    factory.return_value.__exit__.return_value = False
+    snapshot = MagicMock(date=type("D", (), {"isoformat": lambda self: "2026-05-15"})(),
+                         total_market_value="100", total_cost="80")
+    with patch.object(sched.portfolio_snapshot_service, "write_today_snapshot",
+                      return_value=snapshot) as writer:
+        result = sched.run_portfolio_snapshot(factory)
+    writer.assert_called_once_with(db)
+    assert result == {"status": "ok", "date": "2026-05-15"}
+
+
+def test_run_portfolio_snapshot_swallows_exceptions():
+    db = MagicMock()
+    factory = MagicMock()
+    factory.return_value.__enter__.return_value = db
+    factory.return_value.__exit__.return_value = False
+    with patch.object(sched.portfolio_snapshot_service, "write_today_snapshot",
+                      side_effect=RuntimeError("twse down")):
+        result = sched.run_portfolio_snapshot(factory)
+    assert result["status"] == "failed"
+    assert "twse down" in result["error"]
 
 
 # ---------------- env gate ----------------

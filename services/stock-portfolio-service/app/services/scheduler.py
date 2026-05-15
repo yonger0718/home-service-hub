@@ -28,7 +28,12 @@ from typing import Callable, ContextManager
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from . import market_data_service, portfolio_service, twse_service
+from . import (
+    market_data_service,
+    portfolio_service,
+    portfolio_snapshot_service,
+    twse_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,10 +97,28 @@ def run_quote_refresh(session_factory: Callable[[], ContextManager]) -> dict:
     return {"requested": len(symbols), "received": len(quotes)}
 
 
-def run_portfolio_snapshot_stub(session_factory: Callable[[], ContextManager]) -> dict:
-    """Stub callable — real snapshot lands in the next change."""
-    logger.info("scheduler.portfolio_snapshot.stub")
-    return {"status": "stub"}
+def run_portfolio_snapshot(session_factory: Callable[[], ContextManager]) -> dict:
+    """Persist today's PortfolioSummary into ``portfolio_snapshot``.
+
+    Swallows any exception raised by the underlying service so the
+    scheduler thread keeps running; a missed day is preferable to a
+    dead cron.
+    """
+    try:
+        with session_factory() as db:
+            snapshot = portfolio_snapshot_service.write_today_snapshot(db)
+    except Exception as exc:  # noqa: BLE001 — scheduler must not die
+        logger.exception("scheduler.portfolio_snapshot.failed", extra={"error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    logger.info(
+        "scheduler.portfolio_snapshot.done",
+        extra={
+            "date": snapshot.date.isoformat(),
+            "total_market_value": str(snapshot.total_market_value),
+            "total_cost": str(snapshot.total_cost),
+        },
+    )
+    return {"status": "ok", "date": snapshot.date.isoformat()}
 
 
 def build_scheduler(session_factory: Callable[[], ContextManager]) -> BackgroundScheduler:
@@ -116,7 +139,7 @@ def build_scheduler(session_factory: Callable[[], ContextManager]) -> Background
         replace_existing=True,
     )
     scheduler.add_job(
-        run_portfolio_snapshot_stub,
+        run_portfolio_snapshot,
         CronTrigger(hour=15, minute=30, timezone=TW_TIMEZONE),
         id="portfolio_snapshot",
         kwargs={"session_factory": session_factory},
