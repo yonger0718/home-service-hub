@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("SCHEDULER_ENABLED", "false")
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
