@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 import {
@@ -8,6 +9,7 @@ import {
   ExDividendRecord,
   ImportKind,
   ImportResult,
+  NetworthPoint,
 } from '../models/portfolio.model';
 
 @Injectable({
@@ -62,5 +64,19 @@ export class PortfolioService extends BaseApiService<Transaction> {
     form.append('file', file, file.name);
     const url = `/api/portfolio/imports/${kind}?dry_run=${dryRun ? 'true' : 'false'}`;
     return this.http.post<ImportResult>(url, form);
+  }
+
+  getNetworthHistory(from?: string, to?: string): Observable<NetworthPoint[]> {
+    let params: HttpParams | undefined;
+
+    if (from) {
+      params = (params ?? new HttpParams()).set('from', from);
+    }
+
+    if (to) {
+      params = (params ?? new HttpParams()).set('to', to);
+    }
+
+    return this.http.get<NetworthPoint[]>('/api/portfolio/history', params ? { params } : {});
   }
 }

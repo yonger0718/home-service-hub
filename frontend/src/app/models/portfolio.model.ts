@@ -79,6 +79,15 @@ export interface PortfolioSummary {
   portfolio_xirr?: number;    // 整體投資組合年化報酬率
 }
 
+export interface NetworthPoint {
+  date: string;
+  total_market_value: string;
+  total_cost: string;
+  total_unrealized_pnl: string;
+  total_dividends: string;
+  portfolio_xirr: string | null;
+}
+
 export interface ExDividendRecord {
   symbol: string;
   name: string;

@@ -1,0 +1,45 @@
+:host {
+  display: block;
+}
+
+.networth-card {
+  height: 100%;
+}
+
+.networth-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.card-title {
+  margin: 0;
+}
+
+.networth-loading,
+.networth-chart {
+  height: 18rem;
+}
+
+.networth-chart p-chart {
+  display: block;
+  height: 100%;
+}
+
+.networth-empty {
+  display: flex;
+  min-height: 18rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-text-muted);
+  font-size: 0.9rem;
+}
+
+@media (max-width: 640px) {
+  .networth-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
