@@ -32,6 +32,7 @@ from . import (
     market_data_service,
     portfolio_service,
     portfolio_snapshot_service,
+    symbol_map_service,
     twse_service,
 )
 
@@ -121,6 +122,18 @@ def run_portfolio_snapshot(session_factory: Callable[[], ContextManager]) -> dic
     return {"status": "ok", "date": snapshot.date.isoformat()}
 
 
+def run_symbol_map_refresh(session_factory: Callable[[], ContextManager]) -> dict:
+    """Refresh symbol_map from twstock; swallow upstream errors so the cron keeps running."""
+    try:
+        with session_factory() as db:
+            result = symbol_map_service.refresh_all_from_twstock(db)
+    except Exception as exc:  # noqa: BLE001 — scheduler must not die
+        logger.exception("scheduler.symbol_map_refresh.failed", extra={"error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    logger.info("scheduler.symbol_map_refresh.done", extra={"count": result["refreshed_count"]})
+    return {"status": "ok", **result}
+
+
 def build_scheduler(session_factory: Callable[[], ContextManager]) -> BackgroundScheduler:
     """Construct a configured ``BackgroundScheduler``; caller starts it."""
     scheduler = BackgroundScheduler(timezone=TW_TIMEZONE)
@@ -142,6 +155,13 @@ def build_scheduler(session_factory: Callable[[], ContextManager]) -> Background
         run_portfolio_snapshot,
         CronTrigger(hour=15, minute=30, timezone=TW_TIMEZONE),
         id="portfolio_snapshot",
+        kwargs={"session_factory": session_factory},
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_symbol_map_refresh,
+        CronTrigger(day_of_week="mon", hour=6, minute=0, timezone=TW_TIMEZONE),
+        id="symbol_map_refresh",
         kwargs={"session_factory": session_factory},
         replace_existing=True,
     )

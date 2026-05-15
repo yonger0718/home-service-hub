@@ -11,6 +11,7 @@ import app.models.corporate_action  # noqa: F401
 import app.models.portfolio  # noqa: F401
 import app.models.portfolio_snapshot  # noqa: F401
 import app.models.price_history  # noqa: F401
+import app.models.symbol_map  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", SQLALCHEMY_DATABASE_URL)
