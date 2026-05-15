@@ -30,6 +30,27 @@
   color: var(--app-success);
 }
 
+.hub-result-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--app-text-muted);
+
+  .meta-loading {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+}
+
+.hub-modern-list.is-loading {
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
 :host ::ng-deep {
   .portfolio-form-content .p-inputtext,
   .portfolio-form-content .p-inputnumber,

@@ -12,7 +12,19 @@ import {
   NetworthPoint,
   CorporateAction,
   UpcomingEvent,
+  Paged,
+  TransactionQuery,
+  DividendQuery,
 } from '../models/portfolio.model';
+
+function buildParams(query: Record<string, unknown>): HttpParams {
+  let params = new HttpParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value === null || value === undefined || value === '') continue;
+    params = params.set(key, String(value));
+  }
+  return params;
+}
 
 @Injectable({
   providedIn: 'root'
@@ -24,8 +36,10 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.get<PortfolioSummary>('/api/portfolio/summary');
   }
 
-  getTransactions(): Observable<Transaction[]> {
-    return this.getAll();
+  getTransactions(query: TransactionQuery = {}): Observable<Paged<Transaction>> {
+    return this.http.get<Paged<Transaction>>('/api/portfolio/transactions', {
+      params: buildParams(query as Record<string, unknown>),
+    });
   }
 
   createTransaction(transaction: Partial<Transaction>): Observable<Transaction> {
@@ -40,9 +54,10 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.remove(id);
   }
 
-  // Dividends — different resource, so use http directly
-  getDividends(): Observable<Dividend[]> {
-    return this.http.get<Dividend[]>('/api/portfolio/dividends');
+  getDividends(query: DividendQuery = {}): Observable<Paged<Dividend>> {
+    return this.http.get<Paged<Dividend>>('/api/portfolio/dividends', {
+      params: buildParams(query as Record<string, unknown>),
+    });
   }
 
   createDividend(dividend: Partial<Dividend>): Observable<Dividend> {

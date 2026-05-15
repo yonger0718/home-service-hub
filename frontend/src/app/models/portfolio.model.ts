@@ -124,3 +124,28 @@ export interface ExDividendRecord {
   cash_dividend?: string;
   stock_dividend?: string;
 }
+
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+export interface TransactionQuery {
+  offset?: number;
+  limit?: number;
+  symbol?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  side?: 'BUY' | 'SELL' | null;
+  sort?: string;
+}
+
+export interface DividendQuery {
+  offset?: number;
+  limit?: number;
+  symbol?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  source?: string | null;
+  sort?: string;
+}

@@ -1,7 +1,7 @@
-import { Component, OnInit, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
+import { Component, OnDestroy, OnInit, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { Transaction, TransactionType } from '../../../models/portfolio.model';
+import { Transaction, TransactionType, TransactionQuery } from '../../../models/portfolio.model';
 import { TableModule } from 'primeng/table';
 import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
@@ -9,7 +9,10 @@ import { FormsModule } from '@angular/forms';
 import { InputTextModule } from 'primeng/inputtext';
 import { InputNumberModule } from 'primeng/inputnumber';
 import { SelectButtonModule } from 'primeng/selectbutton';
+import { SelectModule } from 'primeng/select';
 import { DatePickerModule } from 'primeng/datepicker';
+import { PaginatorModule, PaginatorState } from 'primeng/paginator';
+import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { ConfirmationService, MessageService, MenuItem } from 'primeng/api';
 import { ConfirmDialogModule } from 'primeng/confirmdialog';
 import { ToastModule } from 'primeng/toast';
@@ -17,15 +20,32 @@ import { MenuModule } from 'primeng/menu';
 import { Menu } from 'primeng/menu';
 import { ListItemComponent } from '../../shared/list-item/list-item';
 
+const SORT_OPTIONS = [
+  { value: 'trade_date:desc', label: '日期 新→舊' },
+  { value: 'trade_date:asc', label: '日期 舊→新' },
+  { value: 'symbol:asc', label: '代碼 A→Z' },
+  { value: 'symbol:desc', label: '代碼 Z→A' },
+];
+
+const SIDE_OPTIONS = [
+  { value: 'BUY', label: '買進' },
+  { value: 'SELL', label: '賣出' },
+];
+
 @Component({
   selector: 'app-portfolio-transactions',
-  imports: [CommonModule, TableModule, ButtonModule, DialogModule, FormsModule, InputTextModule, InputNumberModule, SelectButtonModule, DatePickerModule, ConfirmDialogModule, ToastModule, MenuModule, ListItemComponent],
+  imports: [
+    CommonModule, TableModule, ButtonModule, DialogModule, FormsModule,
+    InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
+    DatePickerModule, PaginatorModule, ProgressSpinnerModule,
+    ConfirmDialogModule, ToastModule, MenuModule, ListItemComponent,
+  ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './transaction-list.html',
   styleUrl: './transaction-list.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class PortfolioTransactionListComponent implements OnInit {
+export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private confirmationService = inject(ConfirmationService);
   private messageService = inject(MessageService);
@@ -34,37 +54,140 @@ export class PortfolioTransactionListComponent implements OnInit {
   menuItems: MenuItem[] = [];
 
   transactions = signal<Transaction[]>([]);
+  total = signal<number>(0);
+  loading = signal<boolean>(false);
   showDialog = signal<boolean>(false);
   isEdit = signal<boolean>(false);
-  
+
+  symbolNames = signal<Record<string, string>>({});
+  searchInput = signal<string>('');
+  dateRange: Date[] | null = null;
+
+  query = signal<TransactionQuery>({ offset: 0, limit: 25, sort: 'trade_date:desc' });
+  readonly sortOptions = SORT_OPTIONS;
+  readonly sideOptions = SIDE_OPTIONS;
+  readonly rowsPerPageOptions = [25, 50, 100];
+
+  private filterDebounce: ReturnType<typeof setTimeout> | null = null;
+
   newTransaction: Partial<Transaction> = {
     type: TransactionType.BUY,
     quantity: 0,
     price: 0,
     fee: 0,
-    tax: 0
+    tax: 0,
   };
 
   transactionTypes = [
     { label: '買進', value: TransactionType.BUY },
-    { label: '賣出', value: TransactionType.SELL }
+    { label: '賣出', value: TransactionType.SELL },
   ];
 
   ngOnInit() {
-    this.loadTransactions();
+    this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
+    this.fetch();
   }
 
-  loadTransactions() {
-    this.portfolioService.getTransactions().subscribe(data => {
-      this.transactions.set(data);
+  ngOnDestroy() {
+    if (this.filterDebounce) clearTimeout(this.filterDebounce);
+  }
+
+  fetch() {
+    this.loading.set(true);
+    this.portfolioService.getTransactions(this.query()).subscribe({
+      next: paged => {
+        this.transactions.set(paged.items);
+        this.total.set(paged.total);
+        this.loading.set(false);
+      },
+      error: () => {
+        this.loading.set(false);
+        this.messageService.add({ severity: 'error', summary: '錯誤', detail: '查詢失敗，請檢查篩選條件' });
+      },
     });
+  }
+
+  private updateFilters(patch: Partial<TransactionQuery>, debounce = false) {
+    this.query.set({ ...this.query(), ...patch, offset: 0 });
+    if (this.filterDebounce) clearTimeout(this.filterDebounce);
+    if (debounce) {
+      this.filterDebounce = setTimeout(() => this.fetch(), 300);
+    } else {
+      this.fetch();
+    }
+  }
+
+  onSearchInput(value: string) {
+    this.searchInput.set(value ?? '');
+    const trimmed = (value ?? '').trim();
+    const symbol = this.resolveSymbol(trimmed);
+    this.updateFilters({ symbol: symbol || null }, true);
+  }
+
+  private resolveSymbol(input: string): string | null {
+    if (!input) return null;
+    if (/^[0-9A-Za-z.]+$/.test(input)) return input.toUpperCase();
+    const map = this.symbolNames();
+    for (const [ticker, name] of Object.entries(map)) {
+      if (name === input) return ticker;
+    }
+    for (const [ticker, name] of Object.entries(map)) {
+      if (name && name.includes(input)) return ticker;
+    }
+    return input;
+  }
+
+  onDateRangeChange(range: Date[] | null) {
+    const [from, to] = range ?? [];
+    this.updateFilters({
+      date_from: from ? this.toIsoDate(from) : null,
+      date_to: to ? this.toIsoDate(to) : null,
+    });
+  }
+
+  onSideChange(side: 'BUY' | 'SELL' | null) {
+    this.updateFilters({ side: side ?? null });
+  }
+
+  onSortChange(sort: string) {
+    this.updateFilters({ sort });
+  }
+
+  onPageChange(event: PaginatorState) {
+    const offset = event.first ?? 0;
+    const limit = event.rows ?? 25;
+    this.query.set({ ...this.query(), offset, limit });
+    this.fetch();
+  }
+
+  clearFilters() {
+    this.searchInput.set('');
+    this.dateRange = null;
+    this.query.set({ offset: 0, limit: this.query().limit ?? 25, sort: 'trade_date:desc' });
+    this.fetch();
+  }
+
+  hasActiveFilters(): boolean {
+    const q = this.query();
+    return !!(q.symbol || q.date_from || q.date_to || q.side);
+  }
+
+  private toIsoDate(d: Date): string {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  symbolDisplay(t: Transaction): string {
+    return t.name || this.symbolNames()[t.symbol] || t.symbol;
   }
 
   showMenu(event: MouseEvent, transaction: Transaction) {
     this.menuItems = [
       { label: '編輯', icon: 'pi pi-pencil', command: () => this.editTransaction(transaction) },
       { separator: true },
-      { label: '刪除', icon: 'pi pi-trash', styleClass: 'text-danger', command: () => this.deleteTransaction(transaction) }
+      { label: '刪除', icon: 'pi pi-trash', styleClass: 'text-danger', command: () => this.deleteTransaction(transaction) },
     ];
     this.menu.toggle(event);
   }
@@ -89,9 +212,9 @@ export class PortfolioTransactionListComponent implements OnInit {
       accept: () => {
         this.portfolioService.deleteTransaction(transaction.id).subscribe(() => {
           this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
-          this.loadTransactions();
+          this.fetch();
         });
-      }
+      },
     });
   }
 
@@ -111,13 +234,13 @@ export class PortfolioTransactionListComponent implements OnInit {
     if (this.isEdit() && this.newTransaction.id) {
       this.portfolioService.updateTransaction(this.newTransaction.id, this.newTransaction).subscribe(() => {
         this.showDialog.set(false);
-        this.loadTransactions();
+        this.fetch();
         this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
       });
     } else {
       this.portfolioService.createTransaction(this.newTransaction).subscribe(() => {
         this.showDialog.set(false);
-        this.loadTransactions();
+        this.fetch();
         this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
       });
     }

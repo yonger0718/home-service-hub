@@ -1,7 +1,9 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Dict, List, Optional, Tuple
-from datetime import date as date_type, datetime, timezone
+from datetime import date as date_type, datetime, timedelta, timezone
+
+_ONE_DAY = timedelta(days=1)
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 import math
 import os
@@ -573,23 +575,83 @@ def create_dividend(db: Session, dividend: schemas.DividendCreate):
     return db_dividend
 
 
+_TRANSACTION_SORT_FIELDS: Dict[str, "Column"] = {
+    "trade_date": models.Transaction.trade_date,
+    "symbol": models.Transaction.symbol,
+    "type": models.Transaction.type,
+    "price": models.Transaction.price,
+    "quantity": models.Transaction.quantity,
+}
+
+_DIVIDEND_SORT_FIELDS: Dict[str, "Column"] = {
+    "ex_dividend_date": models.Dividend.ex_dividend_date,
+    "symbol": models.Dividend.symbol,
+    "amount": models.Dividend.amount,
+    "source": models.Dividend.source,
+}
+
+
+def _parse_sort(value: str, allowlist: Dict[str, "Column"]) -> Tuple[str, str]:
+    """Split ``"field:direction"`` and validate against ``allowlist``.
+
+    Raises ``ValueError`` on bad syntax or unknown field. Caller maps that
+    to HTTP 422.
+    """
+    if not value or ":" not in value:
+        raise ValueError(f"sort must be '<field>:<asc|desc>', got '{value}'")
+    field, _, direction = value.partition(":")
+    field = field.strip()
+    direction = direction.strip().lower()
+    if direction not in ("asc", "desc"):
+        raise ValueError(f"sort direction must be 'asc' or 'desc', got '{direction}'")
+    if field not in allowlist:
+        raise ValueError(f"sort field '{field}' not allowed; choose one of {sorted(allowlist)}")
+    return field, direction
+
+
 def list_transactions(
     db: Session,
-    limit: int = 200,
-    offset: int = 0,
+    *,
     symbol: Optional[str] = None,
-):
-    query = db.query(models.Transaction)
-    if symbol:
-        normalized_symbol = sanitize_symbol(symbol)
-        query = query.filter(models.Transaction.symbol == normalized_symbol)
+    date_from: Optional[date_type] = None,
+    date_to: Optional[date_type] = None,
+    side: Optional[str] = None,
+    sort_field: str = "trade_date",
+    sort_dir: str = "desc",
+    offset: int = 0,
+    limit: int = 25,
+) -> Tuple[List[models.Transaction], int]:
+    """Return ``(items, total)`` paged + filtered transactions.
 
-    return (
-        query.order_by(models.Transaction.trade_date.desc(), models.Transaction.id.desc())
+    ``date_from`` / ``date_to`` are inclusive bounds on ``trade_date``.
+    ``id desc`` is always appended as tie-breaker so pages stay stable.
+    """
+    if sort_field not in _TRANSACTION_SORT_FIELDS:
+        raise ValueError(f"sort field '{sort_field}' not allowed")
+
+    base = db.query(models.Transaction)
+    if symbol:
+        base = base.filter(models.Transaction.symbol == sanitize_symbol(symbol))
+    if date_from is not None:
+        base = base.filter(models.Transaction.trade_date >= datetime.combine(date_from, datetime.min.time()))
+    if date_to is not None:
+        # date_to inclusive — use < (next day midnight)
+        end_exclusive = datetime.combine(date_to, datetime.min.time()) + _ONE_DAY
+        base = base.filter(models.Transaction.trade_date < end_exclusive)
+    if side:
+        base = base.filter(models.Transaction.type == side)
+
+    total = base.with_entities(func.count(models.Transaction.id)).scalar() or 0
+
+    sort_col = _TRANSACTION_SORT_FIELDS[sort_field]
+    order = sort_col.desc() if sort_dir == "desc" else sort_col.asc()
+    rows = (
+        base.order_by(order, models.Transaction.id.desc())
         .offset(offset)
         .limit(limit)
         .all()
     )
+    return rows, int(total)
 
 def update_transaction(db: Session, transaction_id: int, transaction_update: schemas.TransactionCreate):
     db_transaction = db.query(models.Transaction).filter(models.Transaction.id == transaction_id).first()
@@ -640,21 +702,42 @@ def delete_transaction(db: Session, transaction_id: int):
 
 def list_dividends(
     db: Session,
-    limit: int = 200,
-    offset: int = 0,
+    *,
     symbol: Optional[str] = None,
-):
-    query = db.query(models.Dividend)
-    if symbol:
-        normalized_symbol = sanitize_symbol(symbol)
-        query = query.filter(models.Dividend.symbol == normalized_symbol)
+    date_from: Optional[date_type] = None,
+    date_to: Optional[date_type] = None,
+    source: Optional[str] = None,
+    sort_field: str = "ex_dividend_date",
+    sort_dir: str = "desc",
+    offset: int = 0,
+    limit: int = 25,
+) -> Tuple[List[models.Dividend], int]:
+    """Return ``(items, total)`` paged + filtered dividends."""
+    if sort_field not in _DIVIDEND_SORT_FIELDS:
+        raise ValueError(f"sort field '{sort_field}' not allowed")
 
-    return (
-        query.order_by(models.Dividend.ex_dividend_date.desc(), models.Dividend.id.desc())
+    base = db.query(models.Dividend)
+    if symbol:
+        base = base.filter(models.Dividend.symbol == sanitize_symbol(symbol))
+    if date_from is not None:
+        base = base.filter(models.Dividend.ex_dividend_date >= datetime.combine(date_from, datetime.min.time()))
+    if date_to is not None:
+        end_exclusive = datetime.combine(date_to, datetime.min.time()) + _ONE_DAY
+        base = base.filter(models.Dividend.ex_dividend_date < end_exclusive)
+    if source is not None:
+        base = base.filter(models.Dividend.source == source)
+
+    total = base.with_entities(func.count(models.Dividend.id)).scalar() or 0
+
+    sort_col = _DIVIDEND_SORT_FIELDS[sort_field]
+    order = sort_col.desc() if sort_dir == "desc" else sort_col.asc()
+    rows = (
+        base.order_by(order, models.Dividend.id.desc())
         .offset(offset)
         .limit(limit)
         .all()
     )
+    return rows, int(total)
 
 def update_dividend(db: Session, dividend_id: int, dividend_update: schemas.DividendCreate):
     db_dividend = db.query(models.Dividend).filter(models.Dividend.id == dividend_id).first()
