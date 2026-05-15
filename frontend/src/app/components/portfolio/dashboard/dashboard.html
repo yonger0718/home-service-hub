@@ -105,8 +105,8 @@
               <div class="hub-stock-row" (click)="toggleHoldingExpand(stock.symbol)">
                 <div class="stock-main-info">
                   <div class="stock-symbol-group">
-                    <span class="symbol">{{ stock.symbol }}</span>
-                    <span class="name text-truncate">{{ stock.name }}</span>
+                    <span class="symbol">{{ stock.name || stock.symbol }}</span>
+                    <span class="name text-truncate">{{ stock.symbol }}</span>
                   </div>
                   <div class="stock-price-group">
                     <span class="current-price">{{ stock.current_price | number:'1.2-2' }}</span>
