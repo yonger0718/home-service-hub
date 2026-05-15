@@ -111,7 +111,8 @@
                   <div class="stock-price-group">
                     <span class="current-price">{{ stock.current_price | number:'1.2-2' }}</span>
                     <span class="day-change" [class]="{'up': stock.day_change_amount > 0, 'down': stock.day_change_amount < 0}">
-                      {{ stock.day_change_amount > 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.1-2' }}%
+                      {{ stock.day_change_amount > 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
+                      ({{ stock.day_change_percent > 0 ? '+' : '' }}{{ stock.day_change_percent | number:'1.2-2' }}%)
                     </span>
                   </div>
                 </div>
