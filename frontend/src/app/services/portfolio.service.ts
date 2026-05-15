@@ -1,7 +1,14 @@
 import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { BaseApiService } from './base-api.service';
-import { PortfolioSummary, Transaction, Dividend, ExDividendRecord } from '../models/portfolio.model';
+import {
+  PortfolioSummary,
+  Transaction,
+  Dividend,
+  ExDividendRecord,
+  ImportKind,
+  ImportResult,
+} from '../models/portfolio.model';
 
 @Injectable({
   providedIn: 'root'
@@ -48,5 +55,12 @@ export class PortfolioService extends BaseApiService<Transaction> {
 
   getUpcomingExDividends(): Observable<ExDividendRecord[]> {
     return this.http.get<ExDividendRecord[]>('/api/portfolio/ex-dividends/upcoming');
+  }
+
+  uploadCsv(kind: ImportKind, file: File, dryRun: boolean): Observable<ImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const url = `/api/portfolio/imports/${kind}?dry_run=${dryRun ? 'true' : 'false'}`;
+    return this.http.post<ImportResult>(url, form);
   }
 }
