@@ -10,6 +10,7 @@ import {
   ImportKind,
   ImportResult,
   NetworthPoint,
+  CorporateAction,
 } from '../models/portfolio.model';
 
 @Injectable({
@@ -78,5 +79,24 @@ export class PortfolioService extends BaseApiService<Transaction> {
     }
 
     return this.http.get<NetworthPoint[]>('/api/portfolio/history', params ? { params } : {});
+  }
+
+  getCorporateActions(symbol?: string, from?: string, to?: string): Observable<CorporateAction[]> {
+    let params: HttpParams | undefined;
+
+    if (symbol) {
+      params = (params ?? new HttpParams()).set('symbol', symbol);
+    }
+    if (from) {
+      params = (params ?? new HttpParams()).set('from', from);
+    }
+    if (to) {
+      params = (params ?? new HttpParams()).set('to', to);
+    }
+
+    return this.http.get<CorporateAction[]>(
+      '/api/portfolio/corporate-actions',
+      params ? { params } : {},
+    );
   }
 }

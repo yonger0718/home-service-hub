@@ -88,6 +88,16 @@ export interface NetworthPoint {
   portfolio_xirr: string | null;
 }
 
+export interface CorporateAction {
+  id: number;
+  symbol: string;
+  effective_date: string;
+  action_type: string;
+  ratio: string;
+  source: string;
+  source_event_key: string;
+}
+
 export interface ExDividendRecord {
   symbol: string;
   name: string;
