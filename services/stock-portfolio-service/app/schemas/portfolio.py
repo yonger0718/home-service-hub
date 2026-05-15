@@ -68,6 +68,12 @@ class DividendBase(BaseModel):
     amount: Decimal
     ex_dividend_date: datetime
     received_date: Optional[datetime] = None
+    fee: Decimal = Decimal("0")
+    tax: Decimal = Decimal("0")
+    cash_dividend_per_share: Optional[Decimal] = None
+    stock_dividend_shares: int = 0
+    source: Optional[str] = None
+    quantity_at_record_date: Optional[Decimal] = None
 
     @field_validator("symbol")
     @classmethod
@@ -76,6 +82,9 @@ class DividendBase(BaseModel):
 
 class DividendCreate(DividendBase):
     amount: Decimal = Field(..., gt=Decimal("0"), decimal_places=2)
+    fee: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), decimal_places=2)
+    tax: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), decimal_places=2)
+    stock_dividend_shares: int = Field(default=0, ge=0)
 
 class Dividend(DividendBase):
     id: int

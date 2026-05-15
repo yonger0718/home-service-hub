@@ -47,8 +47,26 @@ export interface Dividend {
   amount: number;
   ex_dividend_date: string | Date;
   received_date?: string | Date;
+  fee?: number;
+  tax?: number;
+  cash_dividend_per_share?: number;
+  stock_dividend_shares?: number;
+  source?: string;
+  quantity_at_record_date?: number;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface UpcomingEvent {
+  date: string;
+  symbol: string;
+  name?: string;
+  type: 'CASH_DIV' | 'STOCK_DIV' | 'BOTH' | 'FACE_VALUE';
+  cash_dividend?: string;
+  stock_dividend_shares?: string;
+  ratio?: string;
+  reference_price_change?: string;
+  source?: string;
 }
 
 export interface StockHolding {

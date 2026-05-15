@@ -288,6 +288,33 @@ def _http_get(url: str, params: dict[str, str]) -> bytes | None:
         return None
 
 
+def _http_post_form(url: str, data: dict[str, str]) -> bytes | None:
+    """POST form-encoded body to ``url`` with the same TLS-fallback policy as ``_http_get``."""
+    bootstrap_truststore()
+    mode = get_tls_mode()
+    verify_first = mode != TLSMode.INSECURE
+    try:
+        response = requests.post(url, data=data, timeout=DEFAULT_TIMEOUT_SEC, verify=verify_first)
+        response.raise_for_status()
+        return response.content
+    except requests.exceptions.SSLError as exc:
+        if mode != TLSMode.FALLBACK:
+            logger.error("Market-data verified POST failed: %s", exc)
+            return None
+        logger.warning("Market-data TLS verification failed; retrying insecurely: %s", exc)
+    except requests.exceptions.RequestException as exc:
+        logger.error("Market-data POST failed: %s", exc)
+        return None
+
+    try:
+        response = requests.post(url, data=data, timeout=DEFAULT_TIMEOUT_SEC, verify=False)
+        response.raise_for_status()
+        return response.content
+    except requests.exceptions.RequestException as exc:
+        logger.error("Market-data insecure POST fallback failed: %s", exc)
+        return None
+
+
 def fetch_twse_date(date: dt_date) -> list[DailyPriceRow]:
     payload = _http_get(
         TWSE_MI_INDEX_URL,

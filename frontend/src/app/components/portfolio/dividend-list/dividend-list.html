@@ -11,8 +11,10 @@
   @for (d of dividends(); track d.id) {
     <app-list-item [clickable]="true" (itemClick)="showMenu($event, d)">
       <ng-container left>
-        <div class="main-text">{{ d.symbol }}</div>
-        <div class="sub-text">{{ d.ex_dividend_date | date:'yyyy-MM-dd' }} 除息</div>
+        <div class="main-text">{{ nameFor(d.symbol) ?? d.symbol }}</div>
+        <div class="sub-text">
+          {{ d.symbol }} · {{ d.ex_dividend_date | date:'yyyy-MM-dd' }} 除息
+        </div>
       </ng-container>
       <ng-container right>
         <div class="text-end">
@@ -45,12 +47,23 @@
       <input pInputText [(ngModel)]="newDividend.symbol" placeholder="例如: 2330" class="w-100" />
     </div>
     <div class="col-6">
-      <label class="d-block mb-1 small fw-bold">股利金額 (TWD)</label>
+      <label class="d-block mb-1 small fw-bold">股利金額 (TWD，扣除手續費 / 補充保費後)</label>
       <p-inputNumber [(ngModel)]="newDividend.amount" [min]="0" mode="decimal" [fluid]="true"></p-inputNumber>
+      @if (grossHint()) {
+        <div class="small text-muted mt-1">{{ grossHint() }}</div>
+      }
     </div>
     <div class="col-6">
       <label class="d-block mb-1 small fw-bold">除息日期</label>
       <p-datepicker [(ngModel)]="newDividend.ex_dividend_date" [fluid]="true" appendTo="body" dateFormat="yy-mm-dd"></p-datepicker>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">手續費</label>
+      <p-inputNumber [(ngModel)]="newDividend.fee" [min]="0" mode="decimal" [fluid]="true"></p-inputNumber>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">補充保費 (二代健保)</label>
+      <p-inputNumber [(ngModel)]="newDividend.tax" [min]="0" mode="decimal" [fluid]="true"></p-inputNumber>
     </div>
   </div>
   <ng-template pTemplate="footer">

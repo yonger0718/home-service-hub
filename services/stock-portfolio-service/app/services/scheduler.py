@@ -28,13 +28,18 @@ from typing import Callable, ContextManager
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from datetime import timedelta as _timedelta
+
 from . import (
+    dividend_auto_record_service,
+    dividend_event_service,
     market_data_service,
     portfolio_service,
     portfolio_snapshot_service,
     symbol_map_service,
     twse_service,
 )
+from .dividend_history_service import HistoricalDividendEvent
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +127,79 @@ def run_portfolio_snapshot(session_factory: Callable[[], ContextManager]) -> dic
     return {"status": "ok", "date": snapshot.date.isoformat()}
 
 
+def _event_row_to_historical(row, source: str) -> HistoricalDividendEvent:
+    """Bridge DividendEventRow → HistoricalDividendEvent for the recorder."""
+    return HistoricalDividendEvent(
+        symbol=row.symbol,
+        ex_date=row.ex_dividend_date,
+        cash_dividend_per_share=row.cash_dividend,
+        stock_dividend_per_thousand=(
+            (row.stock_dividend * 1000) if row.stock_dividend is not None else None
+        ),
+        previous_close=None,
+        reference_price=None,
+        source=source,
+    )
+
+
+def run_dividend_auto_record(session_factory: Callable[[], ContextManager]) -> dict:
+    """Record dividend events whose ex-date falls in the last 7 days.
+
+    Pulls the merged upcoming-events feed for currently-held symbols,
+    filters to events with `ex_date in [today-7, today]`, and feeds
+    each to ``auto_record_for_event``. Exceptions are swallowed so the
+    cron thread keeps running.
+    """
+    try:
+        today = _today_tw()
+        window_start = today - _timedelta(days=7)
+        with session_factory() as db:
+            holdings = portfolio_service.get_active_holdings(db)
+            held_symbols = set(holdings.keys())
+            name_for = {
+                sym: (info.get("name") if isinstance(info, dict) else None)
+                for sym, info in holdings.items()
+            }
+            events = dividend_event_service.fetch_upcoming_for_holdings(
+                held_symbols, from_date=window_start
+            )
+            cash_inserted = 0
+            stock_inserted = 0
+            events_processed = 0
+            for row in events:
+                if row.ex_dividend_date > today:
+                    continue
+                historical = _event_row_to_historical(row, row.source)
+                events_processed += 1
+                result = dividend_auto_record_service.auto_record_for_event(
+                    db, historical, name=name_for.get(row.symbol)
+                )
+                if result.cash_inserted:
+                    cash_inserted += 1
+                if result.stock_inserted:
+                    stock_inserted += 1
+            db.commit()
+    except Exception as exc:  # noqa: BLE001 — scheduler must not die
+        logger.exception(
+            "scheduler.dividend_auto_record.failed", extra={"error": str(exc)}
+        )
+        return {"status": "failed", "error": str(exc)}
+    logger.info(
+        "scheduler.dividend_auto_record.done",
+        extra={
+            "events_processed": events_processed,
+            "cash_inserted": cash_inserted,
+            "stock_inserted": stock_inserted,
+        },
+    )
+    return {
+        "status": "ok",
+        "events_processed": events_processed,
+        "cash_inserted": cash_inserted,
+        "stock_inserted": stock_inserted,
+    }
+
+
 def run_symbol_map_refresh(session_factory: Callable[[], ContextManager]) -> dict:
     """Refresh symbol_map from twstock; swallow upstream errors so the cron keeps running."""
     try:
@@ -162,6 +240,13 @@ def build_scheduler(session_factory: Callable[[], ContextManager]) -> Background
         run_symbol_map_refresh,
         CronTrigger(day_of_week="mon", hour=6, minute=0, timezone=TW_TIMEZONE),
         id="symbol_map_refresh",
+        kwargs={"session_factory": session_factory},
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_dividend_auto_record,
+        CronTrigger(hour=18, minute=0, day_of_week="mon-fri", timezone=TW_TIMEZONE),
+        id="dividend_auto_record",
         kwargs={"session_factory": session_factory},
         replace_existing=True,
     )
