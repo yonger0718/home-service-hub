@@ -8,6 +8,7 @@ export const routes: Routes = [
   { path: 'portfolio', loadComponent: () => import('./components/portfolio/dashboard/dashboard').then(m => m.PortfolioDashboardComponent) },
   { path: 'portfolio/transactions', loadComponent: () => import('./components/portfolio/transaction-list/transaction-list').then(m => m.PortfolioTransactionListComponent) },
   { path: 'portfolio/dividends', loadComponent: () => import('./components/portfolio/dividend-list/dividend-list').then(m => m.PortfolioDividendListComponent) },
+  { path: 'portfolio/import', loadComponent: () => import('./components/portfolio/import/import').then(m => m.PortfolioImportComponent) },
 
   // Accounting routes
   { path: 'accounting/dashboard', loadComponent: () => import('./components/accounting/dashboard/dashboard').then(m => m.AccountingDashboardComponent) },

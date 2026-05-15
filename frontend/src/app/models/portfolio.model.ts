@@ -13,8 +13,32 @@ export interface Transaction {
   trade_date?: string | Date;
   fee: number;
   tax: number;
+  is_day_trade?: boolean;
   created_at?: string;
   updated_at?: string;
+}
+
+export type ImportKind = 'transactions' | 'dividends';
+
+export interface ImportRow {
+  row_index: number;
+  fingerprint: string;
+  payload: Record<string, string | null>;
+}
+
+export interface ImportError {
+  row_index: number;
+  message: string;
+}
+
+export interface ImportResult {
+  parsed: number;
+  created: number;
+  skipped_duplicates: number;
+  dry_run: boolean;
+  errors: ImportError[];
+  created_ids: number[];
+  rows: ImportRow[];
 }
 
 export interface Dividend {
