@@ -35,7 +35,12 @@ def test_build_scheduler_registers_three_jobs():
     factory = MagicMock()
     scheduler = sched.build_scheduler(factory)
     job_ids = {job.id for job in scheduler.get_jobs()}
-    assert job_ids == {"tw_daily_prices", "quote_refresh", "portfolio_snapshot"}
+    assert job_ids == {
+        "tw_daily_prices",
+        "quote_refresh",
+        "portfolio_snapshot",
+        "symbol_map_refresh",
+    }
 
 
 def test_scheduler_jobs_use_tw_timezone():
