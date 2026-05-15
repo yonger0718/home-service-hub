@@ -130,3 +130,19 @@ class ExDividendRecord(BaseModel):
     ex_rights_date: Optional[date] = None       # 除權日
     cash_dividend: Optional[str] = None         # 現金股利（字串保留原始精度）
     stock_dividend: Optional[str] = None        # 股票股利
+
+
+# Sort field allowlists for paginated list endpoints. Server validates the
+# `sort` query param against these; UI option keys must be a subset.
+TransactionSortField = Literal["trade_date", "symbol", "type", "price", "quantity"]
+DividendSortField = Literal["ex_dividend_date", "symbol", "amount", "source"]
+
+
+class PagedTransactions(BaseModel):
+    items: List[Transaction]
+    total: int
+
+
+class PagedDividends(BaseModel):
+    items: List[Dividend]
+    total: int

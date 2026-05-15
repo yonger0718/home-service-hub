@@ -195,5 +195,6 @@ def test_day_trade_exposed_in_get_transactions_response(client):
     response = client.get("/api/portfolio/transactions")
     assert response.status_code == 200
     body = response.json()
-    assert len(body) == 2
-    assert all(row["is_day_trade"] is True for row in body)
+    assert body["total"] == 2
+    assert len(body["items"]) == 2
+    assert all(row["is_day_trade"] is True for row in body["items"])

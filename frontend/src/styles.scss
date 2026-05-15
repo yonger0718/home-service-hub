@@ -632,6 +632,18 @@ body {
   background: var(--app-surface) !important;
 }
 
+.hub-mini-datepicker .p-datepicker,
+.hub-mini-datepicker .p-inputtext {
+  border-radius: 12px !important;
+  background: var(--app-surface) !important;
+}
+
+.hub-paginator {
+  margin-top: 0.75rem;
+  background: transparent;
+  border: none;
+}
+
 /* iOS Style Segmented Control / Type Pills */
 .type-pills {
   display: flex;
