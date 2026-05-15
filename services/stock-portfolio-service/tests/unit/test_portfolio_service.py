@@ -637,3 +637,102 @@ def test_portfolio_summary_keeps_lifetime_dividends_for_closed_positions(mock_ge
 
     assert summary.holdings == []
     assert summary.total_dividends == Decimal("100.00")
+
+
+@patch.object(portfolio_service, "get_stock_quotes")
+def test_portfolio_summary_applies_corporate_action_factor(mock_get_quotes, db_session):
+    """A 1→10 face-value change adjusts pre-event qty x10 and price /10."""
+    from app.models.corporate_action import CorporateAction
+
+    mock_get_quotes.return_value = {
+        "2330": {
+            "current_price": Decimal("60"),
+            "yesterday_close": Decimal("60"),
+            "day_change_amount": Decimal("0"),
+            "day_change_percent": Decimal("0"),
+        }
+    }
+
+    db_session.add_all([
+        models.Transaction(
+            symbol="2330", name="台積電",
+            type=models.TransactionType.BUY,
+            quantity=1, price=Decimal("600.00"),
+            fee=Decimal("0.00"), tax=Decimal("0.00"),
+            trade_date=datetime(2026, 1, 1, 9, 0),
+        ),
+        CorporateAction(
+            symbol="2330", effective_date=datetime(2026, 2, 1).date(),
+            ratio=Decimal("10"), source="TWSE",
+            source_event_key="2330_2026-02-01",
+        ),
+    ])
+    db_session.commit()
+
+    summary = portfolio_service.get_portfolio_summary(db_session)
+
+    assert len(summary.holdings) == 1
+    holding = summary.holdings[0]
+    assert holding.symbol == "2330"
+    assert holding.total_quantity == 10
+    # cost basis preserved: 1 * 600 = 600 = 10 * 60
+    assert holding.avg_cost == Decimal("60.00")
+
+
+@patch.object(portfolio_service, "get_stock_quotes")
+def test_portfolio_summary_unchanged_without_corp_actions(mock_get_quotes, db_session):
+    """Sanity: with no corporate actions, output identical to pre-feature."""
+    mock_get_quotes.return_value = {
+        "2330": {
+            "current_price": Decimal("650"),
+            "yesterday_close": Decimal("650"),
+            "day_change_amount": Decimal("0"),
+            "day_change_percent": Decimal("0"),
+        }
+    }
+    db_session.add(models.Transaction(
+        symbol="2330", name="台積電",
+        type=models.TransactionType.BUY,
+        quantity=2, price=Decimal("600.00"),
+        fee=Decimal("0.00"), tax=Decimal("0.00"),
+        trade_date=datetime(2026, 1, 1, 9, 0),
+    ))
+    db_session.commit()
+    summary = portfolio_service.get_portfolio_summary(db_session)
+    holding = summary.holdings[0]
+    assert holding.total_quantity == 2
+    assert holding.avg_cost == Decimal("600.00")
+
+
+@patch.object(portfolio_service, "get_stock_quotes")
+def test_portfolio_summary_post_event_transaction_not_adjusted(mock_get_quotes, db_session):
+    """A transaction after the corp action stays at its nominal qty/price."""
+    from app.models.corporate_action import CorporateAction
+
+    mock_get_quotes.return_value = {
+        "2330": {
+            "current_price": Decimal("12"),
+            "yesterday_close": Decimal("12"),
+            "day_change_amount": Decimal("0"),
+            "day_change_percent": Decimal("0"),
+        }
+    }
+    db_session.add_all([
+        CorporateAction(
+            symbol="2330", effective_date=datetime(2026, 2, 1).date(),
+            ratio=Decimal("10"), source="TWSE",
+            source_event_key="2330_2026-02-01",
+        ),
+        models.Transaction(
+            symbol="2330", name="台積電",
+            type=models.TransactionType.BUY,
+            quantity=5, price=Decimal("12.00"),
+            fee=Decimal("0.00"), tax=Decimal("0.00"),
+            trade_date=datetime(2026, 3, 1, 9, 0),
+        ),
+    ])
+    db_session.commit()
+    summary = portfolio_service.get_portfolio_summary(db_session)
+    holding = summary.holdings[0]
+    assert holding.total_quantity == 5
+    assert holding.avg_cost == Decimal("12.00")

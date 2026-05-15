@@ -2,14 +2,116 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Dict, List, Optional, Tuple
 from datetime import date as date_type, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 import math
 import os
 from ..models import portfolio as models
+from ..models.corporate_action import CorporateAction
 from ..schemas import portfolio as schemas
 from .twse_service import get_stock_quotes
 from shared_lib import get_tracer
 tracer = get_tracer("stock-portfolio-service")
+
+
+class _AdjustedTransaction:
+    """Read-only view of a Transaction with a corporate-action factor applied.
+
+    The view duck-types ``models.Transaction`` over the fields the
+    aggregation logic touches. ``quantity`` is multiplied by ``factor`` and
+    ``price`` is divided by it; cost basis (qty * price) is preserved.
+    Fees and taxes stay nominal.
+    """
+
+    __slots__ = ("_base", "_factor")
+
+    def __init__(self, base: models.Transaction, factor: Decimal):
+        self._base = base
+        self._factor = factor
+
+    @property
+    def id(self):
+        return self._base.id
+
+    @property
+    def symbol(self):
+        return self._base.symbol
+
+    @property
+    def name(self):
+        return self._base.name
+
+    @property
+    def type(self):
+        return self._base.type
+
+    @property
+    def trade_date(self):
+        return self._base.trade_date
+
+    @property
+    def quantity(self):
+        if self._factor == 1:
+            return self._base.quantity
+        return int(
+            (Decimal(self._base.quantity) * self._factor).to_integral_value(rounding=ROUND_DOWN)
+        )
+
+    @property
+    def price(self):
+        if self._factor == 1:
+            return self._base.price
+        return self._base.price / self._factor
+
+    @property
+    def fee(self):
+        return self._base.fee
+
+    @property
+    def tax(self):
+        return self._base.tax
+
+
+def _factor_for_trade(actions: List[CorporateAction], trade_date) -> Decimal:
+    """Cumulative product of every action strictly AFTER trade_date."""
+    target = trade_date.date() if hasattr(trade_date, "date") else trade_date
+    factor = Decimal(1)
+    for action in actions:
+        if action.effective_date > target:
+            factor *= action.ratio
+    return factor
+
+
+def _apply_corp_action_factors(
+    transactions: List[models.Transaction],
+    actions_by_symbol: Optional[Dict[str, List[CorporateAction]]],
+) -> List:
+    """Return transactions (or adjusted views) with factor applied."""
+    if not actions_by_symbol:
+        return list(transactions)
+    adjusted: list = []
+    for txn in transactions:
+        sym_actions = actions_by_symbol.get(txn.symbol.strip().upper(), None)
+        if not sym_actions:
+            adjusted.append(txn)
+            continue
+        factor = _factor_for_trade(sym_actions, txn.trade_date)
+        if factor == 1:
+            adjusted.append(txn)
+        else:
+            adjusted.append(_AdjustedTransaction(txn, factor))
+    return adjusted
+
+
+def _load_corp_actions_by_symbol(db: Session) -> Dict[str, List[CorporateAction]]:
+    rows = (
+        db.query(CorporateAction)
+        .order_by(CorporateAction.effective_date.asc(), CorporateAction.id.asc())
+        .all()
+    )
+    grouped: Dict[str, List[CorporateAction]] = {}
+    for row in rows:
+        grouped.setdefault(row.symbol, []).append(row)
+    return grouped
 
 
 def _calculate_xirr(cash_flows: List[Tuple[date_type, Decimal]]) -> Optional[Decimal]:
@@ -182,11 +284,14 @@ def _validate_transaction_ledger(
 
 def _aggregate_active_holdings(
     transactions: List[models.Transaction],
+    actions_by_symbol: Optional[Dict[str, List[CorporateAction]]] = None,
 ) -> Dict[str, Dict[str, object]]:
     holdings: Dict[str, Dict[str, object]] = {}
 
+    adjusted = _apply_corp_action_factors(transactions, actions_by_symbol)
+
     for transaction in sorted(
-        transactions,
+        adjusted,
         key=lambda item: (_resolve_sort_trade_date(item.trade_date), item.id or float("inf")),
     ):
         symbol = sanitize_symbol(transaction.symbol)
@@ -218,7 +323,7 @@ def get_active_holdings(db: Session) -> Dict[str, Dict[str, object]]:
         .order_by(models.Transaction.trade_date, models.Transaction.id)
         .all()
     )
-    return _aggregate_active_holdings(transactions)
+    return _aggregate_active_holdings(transactions, _load_corp_actions_by_symbol(db))
 
 
 def _get_quote_status(active_symbols: List[str], quotes: Dict[str, Dict]) -> str:
@@ -272,12 +377,15 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         transactions = db.query(models.Transaction).order_by(models.Transaction.trade_date, models.Transaction.id).all()
         # 2. 取得所有股利紀錄
         dividends = db.query(models.Dividend).all()
-        active_holdings = _aggregate_active_holdings(transactions)
+        actions_by_symbol = _load_corp_actions_by_symbol(db)
+        adjusted_transactions = _apply_corp_action_factors(transactions, actions_by_symbol)
+        active_holdings = _aggregate_active_holdings(transactions, actions_by_symbol)
         active_symbols = list(active_holdings.keys())
 
         span.set_attribute("portfolio.transaction_count", len(transactions))
         span.set_attribute("portfolio.dividend_count", len(dividends))
         span.set_attribute("portfolio.active_symbol_count", len(active_symbols))
+        span.set_attribute("portfolio.corporate_action_symbol_count", len(actions_by_symbol))
 
         # 整理每檔股票的狀態
         holdings_map = {}
@@ -292,8 +400,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             cf_date = d.ex_dividend_date.date() if hasattr(d.ex_dividend_date, 'date') else d.ex_dividend_date
             cashflows_map.setdefault(symbol, []).append((cf_date, d.amount))
 
-        # 交易統計 (計算平均成本與持股數)
-        for t in transactions:
+        # 交易統計 (計算平均成本與持股數，採用 corporate-action 調整後的視圖)
+        for t in adjusted_transactions:
             symbol = sanitize_symbol(t.symbol)
             if symbol not in holdings_map:
                 holdings_map[symbol] = {

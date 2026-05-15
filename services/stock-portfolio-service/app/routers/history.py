@@ -15,10 +15,15 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..services import market_data_service, portfolio_snapshot_service
+from ..services import (
+    corporate_action_service,
+    market_data_service,
+    portfolio_snapshot_service,
+)
 
 router = APIRouter(prefix="/api/portfolio/price-history", tags=["Portfolio History"])
 snapshot_router = APIRouter(prefix="/api/portfolio/history", tags=["Portfolio Snapshot"])
+corp_router = APIRouter(prefix="/api/portfolio/corporate-actions", tags=["Portfolio Corporate Actions"])
 
 _TW_OFFSET = timezone(timedelta(hours=8))
 DEFAULT_HISTORY_WINDOW_DAYS = 90
@@ -87,3 +92,36 @@ def get_networth_history(
 def trigger_snapshot(db: Session = Depends(get_db)) -> dict:
     row = portfolio_snapshot_service.write_today_snapshot(db)
     return _serialize_snapshot(row)
+
+
+def _serialize_corp_action(row) -> dict:
+    return {
+        "id": row.id,
+        "symbol": row.symbol,
+        "effective_date": row.effective_date.isoformat(),
+        "action_type": row.action_type,
+        "ratio": str(row.ratio),
+        "source": row.source,
+        "source_event_key": row.source_event_key,
+    }
+
+
+@corp_router.get("")
+def list_corporate_actions(
+    symbol: Optional[str] = Query(default=None),
+    from_date: Optional[dt_date] = Query(default=None, alias="from"),
+    to_date: Optional[dt_date] = Query(default=None, alias="to"),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    rows = corporate_action_service.list_actions(
+        db, symbol=symbol, from_date=from_date, to_date=to_date
+    )
+    return [_serialize_corp_action(row) for row in rows]
+
+
+@corp_router.post("/backfill")
+def backfill_corporate_actions(
+    year: int = Query(..., ge=1900, le=2999),
+    db: Session = Depends(get_db),
+) -> dict:
+    return corporate_action_service.backfill_year(db, year)

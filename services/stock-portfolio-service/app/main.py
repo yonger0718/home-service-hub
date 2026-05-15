@@ -4,7 +4,7 @@ from shared_lib import create_app
 
 from .database import SessionLocal, engine, get_db
 from .logging_config import configure_logging
-from .models import portfolio_snapshot, price_history  # noqa: F401  (register tables with Base.metadata)
+from .models import corporate_action, portfolio_snapshot, price_history  # noqa: F401  (register tables with Base.metadata)
 from .routers import exdividend, history, imports, portfolio
 from .services import scheduler as scheduler_module
 from .services.twse_client import bootstrap_truststore
@@ -25,6 +25,7 @@ app = create_app(
         imports.router,
         history.router,
         history.snapshot_router,
+        history.corp_router,
     ],
     get_db=get_db,
     engine=engine,
