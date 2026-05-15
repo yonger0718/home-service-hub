@@ -40,7 +40,19 @@ def test_build_scheduler_registers_three_jobs():
         "quote_refresh",
         "portfolio_snapshot",
         "symbol_map_refresh",
+        "dividend_auto_record",
     }
+
+
+def test_dividend_auto_record_uses_18_00_weekdays():
+    factory = MagicMock()
+    scheduler = sched.build_scheduler(factory)
+    job = scheduler.get_job("dividend_auto_record")
+    assert job is not None
+    fields = {f.name: str(f) for f in job.trigger.fields}
+    assert fields["hour"] == "18"
+    assert fields["minute"] == "0"
+    assert fields["day_of_week"] == "mon-fri"
 
 
 def test_scheduler_jobs_use_tw_timezone():

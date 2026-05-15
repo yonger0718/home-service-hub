@@ -1,10 +1,43 @@
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..models.portfolio import Transaction
+from ..models.symbol_map import SymbolMap
 from ..services import symbol_map_service
 
 router = APIRouter(prefix="/api/portfolio/symbol-map", tags=["Portfolio"])
+
+
+@router.get("/names", response_model=dict[str, str])
+def symbol_names(db: Session = Depends(get_db)) -> dict[str, str]:
+    """Return {symbol: display_name} for every symbol the user has ever traded.
+
+    Lookup order per symbol: latest non-null ``Transaction.name``, then
+    ``SymbolMap.name`` (Chinese-name dictionary).
+    """
+    tx_rows = db.execute(
+        select(Transaction.symbol, func.max(Transaction.name))
+        .where(Transaction.name.is_not(None))
+        .group_by(Transaction.symbol)
+    ).all()
+    out: dict[str, str] = {symbol: name for symbol, name in tx_rows if name}
+
+    missing = [
+        symbol
+        for symbol, in db.execute(
+            select(Transaction.symbol).distinct()
+        ).all()
+        if symbol not in out
+    ]
+    if missing:
+        sm_rows = db.execute(
+            select(SymbolMap.symbol, SymbolMap.name).where(SymbolMap.symbol.in_(missing))
+        ).all()
+        for symbol, name in sm_rows:
+            out.setdefault(symbol, name)
+    return out
 
 
 @router.post("/refresh")

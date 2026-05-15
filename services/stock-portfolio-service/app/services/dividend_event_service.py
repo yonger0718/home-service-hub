@@ -59,3 +59,32 @@ def fetch_for_holdings(
                 merged[key] = row
 
     return sorted(merged.values(), key=lambda r: (r.ex_dividend_date, r.symbol))
+
+
+def fetch_upcoming_for_holdings(
+    held_symbols: Set[str], *, from_date: Optional[dt_date] = None
+) -> list[DividendEventRow]:
+    """Return merged events with ``ex_dividend_date >= from_date``.
+
+    Pulls the current TW year by default. If ``from_date`` straddles a
+    year boundary (e.g. early January), also pulls the next year so
+    January events are not silently dropped.
+    """
+    if not held_symbols:
+        return []
+    pivot = from_date or datetime.now(_TW_OFFSET).date()
+    years = {pivot.year}
+    if pivot.month >= 11:
+        years.add(pivot.year + 1)
+    out: list[DividendEventRow] = []
+    seen: set[tuple[str, dt_date]] = set()
+    for y in sorted(years):
+        for row in fetch_for_holdings(held_symbols, year=y):
+            if row.ex_dividend_date < pivot:
+                continue
+            key = (row.symbol, row.ex_dividend_date)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+    return sorted(out, key=lambda r: (r.ex_dividend_date, r.symbol))

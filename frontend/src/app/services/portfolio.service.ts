@@ -11,6 +11,7 @@ import {
   ImportResult,
   NetworthPoint,
   CorporateAction,
+  UpcomingEvent,
 } from '../models/portfolio.model';
 
 @Injectable({
@@ -98,5 +99,33 @@ export class PortfolioService extends BaseApiService<Transaction> {
       '/api/portfolio/corporate-actions',
       params ? { params } : {},
     );
+  }
+
+  getUpcomingEvents(from?: string): Observable<UpcomingEvent[]> {
+    const params = from ? new HttpParams().set('from', from) : undefined;
+    return this.http.get<UpcomingEvent[]>(
+      '/api/portfolio/upcoming-events',
+      params ? { params } : {},
+    );
+  }
+
+  getSymbolNames(): Observable<Record<string, string>> {
+    return this.http.get<Record<string, string>>('/api/portfolio/symbol-map/names');
+  }
+
+  triggerDividendBackfill(): Observable<{
+    symbols_scanned: number;
+    events_seen: number;
+    cash_inserted: number;
+    stock_inserted: number;
+    skipped_no_holding: number;
+  }> {
+    return this.http.post<{
+      symbols_scanned: number;
+      events_seen: number;
+      cash_inserted: number;
+      stock_inserted: number;
+      skipped_no_holding: number;
+    }>('/api/portfolio/dividends/backfill', {});
   }
 }

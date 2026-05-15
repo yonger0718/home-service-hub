@@ -5,7 +5,7 @@ from shared_lib import create_app
 from .database import SessionLocal, engine, get_db
 from .logging_config import configure_logging
 from .models import corporate_action, portfolio_snapshot, price_history, symbol_map  # noqa: F401  (register tables with Base.metadata)
-from .routers import exdividend, history, imports, portfolio, symbol_map as symbol_map_router
+from .routers import dividends_backfill, exdividend, history, imports, portfolio, symbol_map as symbol_map_router, upcoming_events
 from .services import scheduler as scheduler_module
 from .services.twse_client import bootstrap_truststore
 
@@ -27,6 +27,8 @@ app = create_app(
         history.snapshot_router,
         history.corp_router,
         symbol_map_router.router,
+        dividends_backfill.router,
+        upcoming_events.router,
     ],
     get_db=get_db,
     engine=engine,

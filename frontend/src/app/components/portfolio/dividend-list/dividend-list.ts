@@ -33,15 +33,42 @@ export class PortfolioDividendListComponent implements OnInit {
   menuItems: MenuItem[] = [];
 
   dividends = signal<Dividend[]>([]);
+  symbolNames = signal<Record<string, string>>({});
   showDialog = signal<boolean>(false);
   isEdit = signal<boolean>(false);
+
+  nameFor(symbol: string): string | null {
+    return this.symbolNames()[symbol] ?? null;
+  }
   
   newDividend: Partial<Dividend> = {
-    amount: 0
+    amount: 0,
+    fee: 0,
+    tax: 0,
   };
+
+  grossHint(): string | null {
+    const qty = Number(this.newDividend.quantity_at_record_date ?? 0);
+    const perShare = Number(this.newDividend.cash_dividend_per_share ?? 0);
+    if (qty <= 0 || perShare <= 0) {
+      return null;
+    }
+    const gross = qty * perShare;
+    const fee = Number(this.newDividend.fee ?? 0);
+    const tax = Number(this.newDividend.tax ?? 0);
+    const fmt = (v: number) => `NT$${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
+    if (tax > 0 || fee > 0) {
+      const parts: string[] = [];
+      if (fee > 0) parts.push(`手續費 −${fmt(fee)}`);
+      if (tax > 0) parts.push(`補充保費 −${fmt(tax)}`);
+      return `配息 ${fmt(gross)} (${parts.join(', ')})`;
+    }
+    return `配息 ${fmt(gross)}`;
+  }
 
   ngOnInit() {
     this.loadDividends();
+    this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
   }
 
   showMenu(event: MouseEvent, dividend: Dividend) {
@@ -61,7 +88,7 @@ export class PortfolioDividendListComponent implements OnInit {
 
   openNew() {
     this.isEdit.set(false);
-    this.newDividend = { amount: 0 };
+    this.newDividend = { amount: 0, fee: 0, tax: 0 };
     this.showDialog.set(true);
   }
 
