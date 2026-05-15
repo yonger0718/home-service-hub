@@ -460,8 +460,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             
             total_qty_dec = Decimal(h["total_quantity"])
             
-            # 平均成本計算（成交均價口徑，不含手續費）
-            avg_cost = (h["total_cost_ex_fee"] / total_qty_dec).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            # 平均成本計算（含手續費 / 交易稅口徑，與損益計算一致）
+            avg_cost = (h["total_cost"] / total_qty_dec).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             
             # 市值與未實現損益（以券商口徑估算賣出後淨額）
             gross_market_value = (total_qty_dec * current_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

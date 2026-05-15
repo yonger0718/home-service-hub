@@ -95,6 +95,18 @@ export class PortfolioTransactionListComponent implements OnInit {
     });
   }
 
+  allInTotal(t: Transaction): number {
+    const gross = Number(t.price) * Number(t.quantity);
+    const fee = Number(t.fee || 0);
+    const tax = Number(t.tax || 0);
+    return t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
+  }
+
+  allInUnitPrice(t: Transaction): number {
+    const qty = Number(t.quantity);
+    return qty > 0 ? this.allInTotal(t) / qty : Number(t.price);
+  }
+
   saveTransaction() {
     if (this.isEdit() && this.newTransaction.id) {
       this.portfolioService.updateTransaction(this.newTransaction.id, this.newTransaction).subscribe(() => {
