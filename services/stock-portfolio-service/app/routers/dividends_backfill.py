@@ -31,19 +31,33 @@ def _symbols_with_first_trade(db: Session) -> list[tuple[str, dt_date, Optional[
     """Every symbol that has at least one transaction, plus its first trade_date + latest name.
 
     Backfill must cover symbols the user has since fully sold — they
-    received dividends while they held the shares.
+    received dividends while they held the shares. ``name`` is the value
+    on the most recent transaction (by ``trade_date``), not the lexical max.
     """
-    rows = db.execute(
+    aggregates = (
         select(
-            Transaction.symbol,
-            func.min(Transaction.trade_date),
-            func.max(Transaction.name),
-        ).group_by(Transaction.symbol)
+            Transaction.symbol.label("symbol"),
+            func.min(Transaction.trade_date).label("first_dt"),
+            func.max(Transaction.trade_date).label("last_dt"),
+        )
+        .group_by(Transaction.symbol)
+        .subquery()
+    )
+    rows = db.execute(
+        select(aggregates.c.symbol, aggregates.c.first_dt, Transaction.name)
+        .select_from(aggregates)
+        .outerjoin(
+            Transaction,
+            (Transaction.symbol == aggregates.c.symbol)
+            & (Transaction.trade_date == aggregates.c.last_dt),
+        )
     ).all()
     out: list[tuple[str, dt_date, Optional[str]]] = []
+    seen: set[str] = set()
     for symbol, first_ts, name in rows:
-        if first_ts is None:
+        if first_ts is None or symbol in seen:
             continue
+        seen.add(symbol)
         first = first_ts.date() if hasattr(first_ts, "date") else first_ts
         out.append((symbol, first, name))
     return out

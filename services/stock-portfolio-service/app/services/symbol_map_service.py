@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
 from ..models.symbol_map import SymbolMap
-from .import_service import _transaction_fingerprint
 
 logger = logging.getLogger(__name__)
 

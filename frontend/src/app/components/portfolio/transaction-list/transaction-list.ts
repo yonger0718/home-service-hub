@@ -142,11 +142,16 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   }
 
   onDateRangeChange(range: Date[] | null) {
-    const [from, to] = range ?? [];
-    this.updateFilters({
-      date_from: from ? this.toIsoDate(from) : null,
-      date_to: to ? this.toIsoDate(to) : null,
-    });
+    if (!range || range.length === 0) {
+      this.updateFilters({ date_from: null, date_to: null });
+      return;
+    }
+    if (range.length === 2 && range[0] && range[1]) {
+      this.updateFilters({
+        date_from: this.toIsoDate(range[0]),
+        date_to: this.toIsoDate(range[1]),
+      });
+    }
   }
 
   onSideChange(side: 'BUY' | 'SELL' | null) {

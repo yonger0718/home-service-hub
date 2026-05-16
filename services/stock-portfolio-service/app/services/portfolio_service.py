@@ -633,10 +633,15 @@ def list_transactions(
     if symbol:
         base = base.filter(models.Transaction.symbol == sanitize_symbol(symbol))
     if date_from is not None:
-        base = base.filter(models.Transaction.trade_date >= datetime.combine(date_from, datetime.min.time()))
+        base = base.filter(
+            models.Transaction.trade_date
+            >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc)
+        )
     if date_to is not None:
         # date_to inclusive — use < (next day midnight)
-        end_exclusive = datetime.combine(date_to, datetime.min.time()) + _ONE_DAY
+        end_exclusive = (
+            datetime.combine(date_to, datetime.min.time(), tzinfo=timezone.utc) + _ONE_DAY
+        )
         base = base.filter(models.Transaction.trade_date < end_exclusive)
     if side:
         base = base.filter(models.Transaction.type == side)
@@ -720,9 +725,14 @@ def list_dividends(
     if symbol:
         base = base.filter(models.Dividend.symbol == sanitize_symbol(symbol))
     if date_from is not None:
-        base = base.filter(models.Dividend.ex_dividend_date >= datetime.combine(date_from, datetime.min.time()))
+        base = base.filter(
+            models.Dividend.ex_dividend_date
+            >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc)
+        )
     if date_to is not None:
-        end_exclusive = datetime.combine(date_to, datetime.min.time()) + _ONE_DAY
+        end_exclusive = (
+            datetime.combine(date_to, datetime.min.time(), tzinfo=timezone.utc) + _ONE_DAY
+        )
         base = base.filter(models.Dividend.ex_dividend_date < end_exclusive)
     if source is not None:
         base = base.filter(models.Dividend.source == source)
