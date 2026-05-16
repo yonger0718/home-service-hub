@@ -69,6 +69,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   readonly rowsPerPageOptions = [25, 50, 100];
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
+  private fetchSeq = 0;
 
   newTransaction: Partial<Transaction> = {
     type: TransactionType.BUY,
@@ -93,14 +94,17 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   }
 
   fetch() {
+    const seq = ++this.fetchSeq;
     this.loading.set(true);
     this.portfolioService.getTransactions(this.query()).subscribe({
       next: paged => {
+        if (seq !== this.fetchSeq) return;
         this.transactions.set(paged.items);
         this.total.set(paged.total);
         this.loading.set(false);
       },
       error: () => {
+        if (seq !== this.fetchSeq) return;
         this.loading.set(false);
         this.messageService.add({ severity: 'error', summary: '錯誤', detail: '查詢失敗，請檢查篩選條件' });
       },
@@ -210,9 +214,14 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       header: '確認刪除',
       icon: 'pi pi-exclamation-triangle',
       accept: () => {
-        this.portfolioService.deleteTransaction(transaction.id).subscribe(() => {
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
-          this.fetch();
+        this.portfolioService.deleteTransaction(transaction.id).subscribe({
+          next: () => {
+            this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
+            this.fetch();
+          },
+          error: () => {
+            this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗，請稍後再試' });
+          },
         });
       },
     });
@@ -232,16 +241,26 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   saveTransaction() {
     if (this.isEdit() && this.newTransaction.id) {
-      this.portfolioService.updateTransaction(this.newTransaction.id, this.newTransaction).subscribe(() => {
-        this.showDialog.set(false);
-        this.fetch();
-        this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
+      this.portfolioService.updateTransaction(this.newTransaction.id, this.newTransaction).subscribe({
+        next: () => {
+          this.showDialog.set(false);
+          this.fetch();
+          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
+        },
+        error: () => {
+          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '更新失敗，請檢查欄位' });
+        },
       });
     } else {
-      this.portfolioService.createTransaction(this.newTransaction).subscribe(() => {
-        this.showDialog.set(false);
-        this.fetch();
-        this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
+      this.portfolioService.createTransaction(this.newTransaction).subscribe({
+        next: () => {
+          this.showDialog.set(false);
+          this.fetch();
+          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
+        },
+        error: () => {
+          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '新增失敗，請檢查欄位' });
+        },
       });
     }
   }

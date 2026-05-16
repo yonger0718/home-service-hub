@@ -69,6 +69,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly rowsPerPageOptions = [25, 50, 100];
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
+  private fetchSeq = 0;
 
   nameFor(symbol: string): string | null {
     return this.symbolNames()[symbol] ?? null;
@@ -109,14 +110,17 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   }
 
   fetch() {
+    const seq = ++this.fetchSeq;
     this.loading.set(true);
     this.portfolioService.getDividends(this.query()).subscribe({
       next: paged => {
+        if (seq !== this.fetchSeq) return;
         this.dividends.set(paged.items);
         this.total.set(paged.total);
         this.loading.set(false);
       },
       error: () => {
+        if (seq !== this.fetchSeq) return;
         this.loading.set(false);
         this.messageService.add({ severity: 'error', summary: '錯誤', detail: '查詢失敗，請檢查篩選條件' });
       },
@@ -222,9 +226,14 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       header: '確認刪除',
       icon: 'pi pi-exclamation-triangle',
       accept: () => {
-        this.portfolioService.deleteDividend(dividend.id).subscribe(() => {
-          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
-          this.fetch();
+        this.portfolioService.deleteDividend(dividend.id).subscribe({
+          next: () => {
+            this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
+            this.fetch();
+          },
+          error: () => {
+            this.messageService.add({ severity: 'error', summary: '錯誤', detail: '刪除失敗，請稍後再試' });
+          },
         });
       },
     });
@@ -232,16 +241,26 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
 
   saveDividend() {
     if (this.isEdit() && this.newDividend.id) {
-      this.portfolioService.updateDividend(this.newDividend.id, this.newDividend).subscribe(() => {
-        this.showDialog.set(false);
-        this.fetch();
-        this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
+      this.portfolioService.updateDividend(this.newDividend.id, this.newDividend).subscribe({
+        next: () => {
+          this.showDialog.set(false);
+          this.fetch();
+          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已更新' });
+        },
+        error: () => {
+          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '更新失敗，請檢查欄位' });
+        },
       });
     } else {
-      this.portfolioService.createDividend(this.newDividend).subscribe(() => {
-        this.showDialog.set(false);
-        this.fetch();
-        this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
+      this.portfolioService.createDividend(this.newDividend).subscribe({
+        next: () => {
+          this.showDialog.set(false);
+          this.fetch();
+          this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已新增' });
+        },
+        error: () => {
+          this.messageService.add({ severity: 'error', summary: '錯誤', detail: '新增失敗，請檢查欄位' });
+        },
       });
     }
   }

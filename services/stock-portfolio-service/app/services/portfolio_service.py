@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import Column, func
 from typing import Dict, List, Optional, Tuple
 from datetime import date as date_type, datetime, timedelta, timezone
 
@@ -575,7 +575,7 @@ def create_dividend(db: Session, dividend: schemas.DividendCreate):
     return db_dividend
 
 
-_TRANSACTION_SORT_FIELDS: Dict[str, "Column"] = {
+_TRANSACTION_SORT_FIELDS: Dict[str, Column] = {
     "trade_date": models.Transaction.trade_date,
     "symbol": models.Transaction.symbol,
     "type": models.Transaction.type,
@@ -583,7 +583,7 @@ _TRANSACTION_SORT_FIELDS: Dict[str, "Column"] = {
     "quantity": models.Transaction.quantity,
 }
 
-_DIVIDEND_SORT_FIELDS: Dict[str, "Column"] = {
+_DIVIDEND_SORT_FIELDS: Dict[str, Column] = {
     "ex_dividend_date": models.Dividend.ex_dividend_date,
     "symbol": models.Dividend.symbol,
     "amount": models.Dividend.amount,
@@ -591,7 +591,7 @@ _DIVIDEND_SORT_FIELDS: Dict[str, "Column"] = {
 }
 
 
-def _parse_sort(value: str, allowlist: Dict[str, "Column"]) -> Tuple[str, str]:
+def _parse_sort(value: str, allowlist: Dict[str, Column]) -> Tuple[str, str]:
     """Split ``"field:direction"`` and validate against ``allowlist``.
 
     Raises ``ValueError`` on bad syntax or unknown field. Caller maps that
