@@ -248,6 +248,29 @@ def test_transactions_symbol_filter_normalises_input(client, db_session):
     assert all(r["symbol"] == "0050" for r in body["items"])
 
 
+def test_transactions_symbol_filter_is_prefix_match(client, db_session):
+    """Typing a stem matches every symbol that starts with it.
+
+    Seed has 0050 (x3), 0056 (x1), 2330 (x1). "0" → all 0xxx, "00" → same,
+    "005" → same, "0050" → only 0050, "2" → only 2330.
+    """
+    _seed_transactions(db_session)
+    cases = [
+        ("0", 4, {"0050", "0056"}),
+        ("00", 4, {"0050", "0056"}),
+        ("005", 4, {"0050", "0056"}),
+        ("0050", 3, {"0050"}),
+        ("2", 1, {"2330"}),
+    ]
+    for stem, expected_total, expected_symbols in cases:
+        body = client.get(
+            "/api/portfolio/transactions",
+            params={"symbol": stem, "limit": 100},
+        ).json()
+        assert body["total"] == expected_total, f"stem={stem!r}"
+        assert {r["symbol"] for r in body["items"]} == expected_symbols, f"stem={stem!r}"
+
+
 # ---------- dividends ----------
 
 
@@ -298,3 +321,13 @@ def test_dividends_symbol_filter(client, db_session):
     body = client.get("/api/portfolio/dividends", params={"symbol": "0050"}).json()
     assert body["total"] == 2
     assert all(r["symbol"] == "0050" for r in body["items"])
+
+
+def test_dividends_symbol_filter_is_prefix_match(client, db_session):
+    """Seed has 0050 (x2), 0056 (x1), 2330 (x1)."""
+    _seed_dividends(db_session)
+    body = client.get(
+        "/api/portfolio/dividends", params={"symbol": "0", "limit": 100}
+    ).json()
+    assert body["total"] == 3
+    assert {r["symbol"] for r in body["items"]} == {"0050", "0056"}

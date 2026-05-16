@@ -659,7 +659,11 @@ def list_transactions(
 
     base = db.query(models.Transaction)
     if symbol:
-        base = base.filter(models.Transaction.symbol == sanitize_symbol(symbol))
+        # Prefix match so typing "0" shows every 0xxx ETF, "00" narrows to
+        # 00xxx, etc. Sanitize first to keep casing/whitespace consistent.
+        base = base.filter(
+            models.Transaction.symbol.ilike(f"{sanitize_symbol(symbol)}%")
+        )
     if date_from is not None:
         base = base.filter(
             models.Transaction.trade_date
@@ -751,7 +755,10 @@ def list_dividends(
 
     base = db.query(models.Dividend)
     if symbol:
-        base = base.filter(models.Dividend.symbol == sanitize_symbol(symbol))
+        # Prefix match — same UX as transactions list.
+        base = base.filter(
+            models.Dividend.symbol.ilike(f"{sanitize_symbol(symbol)}%")
+        )
     if date_from is not None:
         base = base.filter(
             models.Dividend.ex_dividend_date
