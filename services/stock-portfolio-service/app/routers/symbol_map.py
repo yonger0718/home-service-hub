@@ -17,10 +17,13 @@ def symbol_names(db: Session = Depends(get_db)) -> dict[str, str]:
     Lookup order per symbol: latest non-null ``Transaction.name``, then
     ``SymbolMap.name`` (Chinese-name dictionary).
     """
-    # Latest non-null name per symbol: pick the row with the max trade_date.
+    # Latest *meaningful* name per symbol: pick the row with the max trade_date
+    # whose name is set and is not just the ticker code repeated (legacy import
+    # rows often have name == symbol, which is not a real display name).
+    meaningful_name = Transaction.name.is_not(None) & (Transaction.name != Transaction.symbol)
     latest_per_symbol = (
         select(Transaction.symbol, func.max(Transaction.trade_date).label("max_dt"))
-        .where(Transaction.name.is_not(None))
+        .where(meaningful_name)
         .group_by(Transaction.symbol)
         .subquery()
     )
@@ -31,7 +34,7 @@ def symbol_names(db: Session = Depends(get_db)) -> dict[str, str]:
             (Transaction.symbol == latest_per_symbol.c.symbol)
             & (Transaction.trade_date == latest_per_symbol.c.max_dt),
         )
-        .where(Transaction.name.is_not(None))
+        .where(meaningful_name)
     ).all()
     out: dict[str, str] = {}
     for symbol, name in tx_rows:
