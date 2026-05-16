@@ -84,13 +84,13 @@ def _seed_dividend(db, *, symbol: str, amount: str, ex_date: date):
     return div
 
 
-def _seed_price(db, *, symbol: str, d: date, close: str):
+def _seed_price(db, *, symbol: str, d: date, close: str, source: str = "TWSE"):
     db.add(
         PriceHistory(
             symbol=symbol,
             date=d,
             close=Decimal(close),
-            source="TWSE",
+            source=source,
         )
     )
     db.flush()
@@ -154,8 +154,11 @@ def test_fetch_with_retry_holiday_returns_empty():
 
 def test_backfill_prices_range_throttles_between_dates(db_session):
     sleeps: List[float] = []
-    twse = lambda d: [_row("2330", d, "600")]
-    tpex = lambda d: []
+    def twse(d):
+        return [_row("2330", d, "600")]
+
+    def tpex(d):
+        return []
     result = nbs.backfill_prices_range(
         db_session,
         date(2026, 5, 14),
@@ -186,15 +189,41 @@ def test_backfill_prices_range_holiday_skip_no_rows(db_session):
     assert db_session.query(PriceHistory).count() == 0
 
 
-def test_backfill_prices_range_skips_already_fetched_dates(db_session):
-    """If price_history already has a row for date D, no HTTP call fires."""
-    _seed_price(db_session, symbol="2330", d=date(2026, 5, 14), close="600")
+def test_backfill_prices_range_single_source_empty_is_failure_not_holiday(db_session):
+    """When one source is cached and the other returns empty, treat the empty
+    fetch as a failure (cached side proves the market was open), not a holiday."""
+    _seed_price(db_session, symbol="2330", d=date(2026, 5, 14), close="600", source="TWSE")
     db_session.commit()
-    calls: List[date] = []
+    result = nbs.backfill_prices_range(
+        db_session,
+        date(2026, 5, 14),
+        date(2026, 5, 14),
+        throttle_sec=0,
+        sleep=lambda _s: None,
+        twse_fetcher=lambda d: [_row("2330", d, "601")],
+        tpex_fetcher=lambda d: [],
+    )
+    assert result.dates_skipped == 0
+    assert len(result.errors) == 1
+    assert result.errors[0].date == date(2026, 5, 14)
+    assert "TPEx" in result.errors[0].reason
+
+
+def test_backfill_prices_range_skips_already_fetched_dates(db_session):
+    """If price_history has rows from BOTH sources for date D, no HTTP call fires."""
+    _seed_price(db_session, symbol="2330", d=date(2026, 5, 14), close="600", source="TWSE")
+    _seed_price(db_session, symbol="6488", d=date(2026, 5, 14), close="100", source="TPEx")
+    db_session.commit()
+    twse_calls: List[date] = []
+    tpex_calls: List[date] = []
 
     def twse(d):
-        calls.append(d)
+        twse_calls.append(d)
         return [_row("2330", d, "601")]
+
+    def tpex(d):
+        tpex_calls.append(d)
+        return [_row("6488", d, "101")]
 
     result = nbs.backfill_prices_range(
         db_session,
@@ -203,9 +232,10 @@ def test_backfill_prices_range_skips_already_fetched_dates(db_session):
         throttle_sec=0,
         sleep=lambda _s: None,
         twse_fetcher=twse,
-        tpex_fetcher=lambda d: [],
+        tpex_fetcher=tpex,
     )
-    assert calls == []
+    assert twse_calls == []
+    assert tpex_calls == []
     assert result.dates_skipped == 1
     assert result.dates_processed == 0
 
@@ -520,6 +550,44 @@ def test_replay_xirr_null_on_backfilled_rows(db_session):
     nbs.replay_snapshots_range(db_session, date(2026, 5, 14), date(2026, 5, 14))
     snap = db_session.query(PortfolioSnapshot).one()
     assert snap.portfolio_xirr is None
+
+
+def test_replay_per_date_failure_preserves_earlier_snapshots(db_session, monkeypatch):
+    """A failure on one date must rollback only that date's SAVEPOINT,
+    not wipe previously persisted snapshots in the same run."""
+    sym = "2330"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=date(2026, 5, 14),
+    )
+    _seed_price(db_session, symbol=sym, d=date(2026, 5, 14), close="500")
+    _seed_price(db_session, symbol=sym, d=date(2026, 5, 15), close="510")
+    db_session.commit()
+
+    real_merge = db_session.merge
+
+    def flaky_merge(obj, *args, **kwargs):
+        if getattr(obj, "date", None) == date(2026, 5, 15):
+            raise RuntimeError("boom on 5/15")
+        return real_merge(obj, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "merge", flaky_merge)
+
+    result = nbs.replay_snapshots_range(
+        db_session, date(2026, 5, 14), date(2026, 5, 15)
+    )
+
+    assert result.snapshots_written == 1
+    assert len(result.errors) == 1
+    assert result.errors[0].date == date(2026, 5, 15)
+
+    snaps = {s.date for s in db_session.query(PortfolioSnapshot).all()}
+    assert date(2026, 5, 14) in snaps  # earlier date survived the later failure
+    assert date(2026, 5, 15) not in snaps
 
 
 # ---------- run_backfill dispatcher ----------

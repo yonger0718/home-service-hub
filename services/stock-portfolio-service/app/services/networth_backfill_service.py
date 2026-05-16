@@ -180,11 +180,24 @@ def backfill_prices_range(
                 continue
 
             if not twse_rows and not tpex_rows:
-                logger.info(
-                    "networth_backfill.prices.holiday_skip",
-                    extra={"date": date.isoformat()},
+                if need_twse and need_tpex:
+                    # Both sides actually fetched and both empty → genuine full-market holiday.
+                    logger.info(
+                        "networth_backfill.prices.holiday_skip",
+                        extra={"date": date.isoformat()},
+                    )
+                    result.dates_skipped += 1
+                    continue
+                # Cached side proves the market was open; the fetched side
+                # returning empty is a fetch failure, not a holiday.
+                missing = "TWSE" if need_twse else "TPEx"
+                logger.warning(
+                    "networth_backfill.prices.empty_fetch",
+                    extra={"date": date.isoformat(), "source": missing},
                 )
-                result.dates_skipped += 1
+                result.errors.append(
+                    BackfillError(date=date, reason=f"{missing} returned no rows")
+                )
                 continue
 
             try:
@@ -346,6 +359,9 @@ def replay_snapshots_range(
             cumulative_dividends += Decimal(dividends[div_i].amount)
             div_i += 1
 
+        # Wrap each date in a SAVEPOINT so a per-date failure only rolls back
+        # this date's work, not every snapshot previously merged in this run.
+        sp = db.begin_nested()
         try:
             mv = Decimal("0")
             for sym, q in qty.items():
@@ -381,10 +397,11 @@ def replay_snapshots_range(
                 portfolio_xirr=None,
             )
             db.merge(row)
+            sp.commit()
             result.snapshots_written += 1
             result.dates_processed += 1
         except Exception as exc:  # noqa: BLE001 — per-date isolation
-            db.rollback()
+            sp.rollback()
             logger.exception(
                 "networth_backfill.replay.date_failed",
                 extra={"date": cur.isoformat(), "error": str(exc)},
