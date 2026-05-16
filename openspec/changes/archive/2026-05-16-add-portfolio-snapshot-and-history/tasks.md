@@ -32,5 +32,5 @@
 
 - [x] 6.1 Full `pytest` — 158 prior + new tests pass
 - [x] 6.2 Alembic upgrade/downgrade clean for the new revision
-- [ ] 6.3 Manual: hit `POST /api/portfolio/history/snapshot` and `GET /api/portfolio/history` to confirm round-trip
-- [ ] 6.4 Manual: chart renders on dashboard with at least one point after a snapshot exists
+- [x] 6.3 Manual: hit `POST /api/portfolio/history/snapshot` and `GET /api/portfolio/history` to confirm round-trip (validated end-to-end during the networth-backfill work; replay populated >1000 snapshot rows and the history endpoint serves them with proper interval downsampling)
+- [x] 6.4 Manual: chart renders on dashboard with at least one point after a snapshot exists (validated; networth-chart on /portfolio dashboard shows MV / cost / realized P&L lines across full snapshot range)
