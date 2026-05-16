@@ -163,6 +163,16 @@ def sanitize_symbol(symbol: str) -> str:
     return symbol.split('.')[0].upper().strip()
 
 
+def _escape_like_prefix(value: str) -> str:
+    """Escape SQL LIKE wildcards so user input is matched literally.
+
+    Without this, a ``%`` or ``_`` in the input would silently turn into
+    wildcards in the ILIKE pattern. Backslash is escaped first so it
+    cannot consume the escapes added afterwards.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _resolve_sort_trade_date(
     trade_date: datetime,
 ) -> datetime:
@@ -659,7 +669,18 @@ def list_transactions(
 
     base = db.query(models.Transaction)
     if symbol:
-        base = base.filter(models.Transaction.symbol == sanitize_symbol(symbol))
+        # Prefix match so typing "0" shows every 0xxx ETF, "00" narrows to
+        # 00xxx, etc. Sanitize first to keep casing/whitespace consistent;
+        # only apply the filter if a non-empty stem remains so a
+        # whitespace-only input does not degenerate into ILIKE '%' and
+        # silently bypass filtering.
+        stem = sanitize_symbol(symbol)
+        if stem:
+            base = base.filter(
+                models.Transaction.symbol.ilike(
+                    f"{_escape_like_prefix(stem)}%", escape="\\"
+                )
+            )
     if date_from is not None:
         base = base.filter(
             models.Transaction.trade_date
@@ -751,7 +772,14 @@ def list_dividends(
 
     base = db.query(models.Dividend)
     if symbol:
-        base = base.filter(models.Dividend.symbol == sanitize_symbol(symbol))
+        # Prefix match — same UX as transactions list.
+        stem = sanitize_symbol(symbol)
+        if stem:
+            base = base.filter(
+                models.Dividend.symbol.ilike(
+                    f"{_escape_like_prefix(stem)}%", escape="\\"
+                )
+            )
     if date_from is not None:
         base = base.filter(
             models.Dividend.ex_dividend_date

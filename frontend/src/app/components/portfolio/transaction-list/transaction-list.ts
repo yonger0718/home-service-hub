@@ -189,7 +189,11 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   }
 
   symbolDisplay(t: Transaction): string {
-    return t.name || this.symbolNames()[t.symbol] || t.symbol;
+    // Skip placeholder names where the transaction's stored name is just
+    // the ticker repeated (legacy import artefact) — fall through to the
+    // symbol_map dictionary instead.
+    const stored = t.name && t.name !== t.symbol ? t.name : null;
+    return stored || this.symbolNames()[t.symbol] || t.symbol;
   }
 
   showMenu(event: MouseEvent, transaction: Transaction) {

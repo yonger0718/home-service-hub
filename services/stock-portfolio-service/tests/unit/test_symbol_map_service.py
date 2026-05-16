@@ -162,3 +162,66 @@ def test_backfill_endpoint_dry_run(client, db_session):
     body = response.json()
     assert body["updated"] == 1
     assert body["dry_run"] is True
+
+
+def test_names_endpoint_prefers_meaningful_transaction_name_over_placeholder(
+    client, db_session
+):
+    """If the latest tx for a symbol has name==symbol (legacy placeholder),
+    fall back to an older tx with a real name OR the symbol_map dictionary
+    rather than returning the ticker as its own display name.
+    """
+    db_session.add(SymbolMap(name="富邦臺灣加權正2", symbol="00675L", market="TWSE"))
+    # Newer tx has placeholder name == symbol; older tx has the real name.
+    placeholder = models.Transaction(
+        symbol="00675L",
+        name="00675L",
+        type=models.TransactionType.BUY,
+        quantity=1000,
+        price=Decimal("50"),
+        fee=Decimal("0"),
+        tax=Decimal("0"),
+        trade_date=datetime(2026, 5, 10, 13, 30, tzinfo=timezone.utc),
+    )
+    real = models.Transaction(
+        symbol="00675L",
+        name="富邦臺灣加權正2",
+        type=models.TransactionType.BUY,
+        quantity=1000,
+        price=Decimal("50"),
+        fee=Decimal("0"),
+        tax=Decimal("0"),
+        trade_date=datetime(2026, 5, 1, 13, 30, tzinfo=timezone.utc),
+    )
+    db_session.add_all([placeholder, real])
+    db_session.commit()
+
+    response = client.get("/api/portfolio/symbol-map/names")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["00675L"] == "富邦臺灣加權正2"
+
+
+def test_names_endpoint_falls_back_to_symbol_map_when_only_placeholder_tx(
+    client, db_session
+):
+    """If every tx for a symbol uses the placeholder name, look it up in
+    symbol_map instead of returning the ticker as its own display name."""
+    db_session.add(SymbolMap(name="富邦臺灣加權正2", symbol="00675L", market="TWSE"))
+    placeholder = models.Transaction(
+        symbol="00675L",
+        name="00675L",
+        type=models.TransactionType.BUY,
+        quantity=1000,
+        price=Decimal("50"),
+        fee=Decimal("0"),
+        tax=Decimal("0"),
+        trade_date=datetime(2026, 5, 10, 13, 30, tzinfo=timezone.utc),
+    )
+    db_session.add(placeholder)
+    db_session.commit()
+
+    response = client.get("/api/portfolio/symbol-map/names")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["00675L"] == "富邦臺灣加權正2"
