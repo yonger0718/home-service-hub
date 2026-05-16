@@ -1,0 +1,40 @@
+<p-card header="除權息 / 股價變動">
+  <ng-container *ngIf="loading(); else loaded">
+    <p-skeleton width="100%" height="6rem"></p-skeleton>
+  </ng-container>
+
+  <ng-template #loaded>
+    <ng-container *ngIf="events().length > 0; else empty">
+      <p-table [value]="events()" styleClass="p-datatable-sm" responsiveLayout="scroll">
+        <ng-template pTemplate="header">
+          <tr>
+            <th>生效日</th>
+            <th>代號</th>
+            <th>名稱</th>
+            <th>類型</th>
+            <th>數值</th>
+            <th>參考價變動</th>
+            <th>來源</th>
+          </tr>
+        </ng-template>
+        <ng-template pTemplate="body" let-row>
+          <tr>
+            <td>{{ row.date }}</td>
+            <td>{{ row.symbol }}</td>
+            <td>{{ row.name || '-' }}</td>
+            <td>
+              <p-tag [value]="typeLabel(row.type)" [severity]="typeSeverity(row.type)"></p-tag>
+            </td>
+            <td>{{ formatValue(row) }}</td>
+            <td>{{ row.reference_price_change ?? '-' }}</td>
+            <td>{{ row.source ?? '-' }}</td>
+          </tr>
+        </ng-template>
+      </p-table>
+    </ng-container>
+
+    <ng-template #empty>
+      <div class="empty-state">尚無除權息 / 股價變動事件</div>
+    </ng-template>
+  </ng-template>
+</p-card>

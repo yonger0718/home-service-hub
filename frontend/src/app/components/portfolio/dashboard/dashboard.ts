@@ -9,10 +9,12 @@ import { ButtonModule } from 'primeng/button';
 import { TooltipModule } from 'primeng/tooltip';
 import { AccordionModule } from 'primeng/accordion';
 import { SkeletonModule } from 'primeng/skeleton';
+import { NetworthChartComponent } from '../networth-chart/networth-chart';
+import { CorporateActionsPanelComponent } from '../corporate-actions-panel/corporate-actions-panel';
 
 @Component({
   selector: 'app-portfolio-dashboard',
-  imports: [CommonModule, CardModule, TableModule, TagModule, ButtonModule, TooltipModule, AccordionModule, SkeletonModule],
+  imports: [CommonModule, CardModule, TableModule, TagModule, ButtonModule, TooltipModule, AccordionModule, SkeletonModule, NetworthChartComponent, CorporateActionsPanelComponent],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
   changeDetection: ChangeDetectionStrategy.OnPush

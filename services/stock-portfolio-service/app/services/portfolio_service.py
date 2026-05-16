@@ -1,15 +1,119 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import Column, func
 from typing import Dict, List, Optional, Tuple
-from datetime import date as date_type, datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN
+from datetime import date as date_type, datetime, timedelta, timezone
+
+_ONE_DAY = timedelta(days=1)
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 import math
 import os
 from ..models import portfolio as models
+from ..models.corporate_action import CorporateAction
 from ..schemas import portfolio as schemas
 from .twse_service import get_stock_quotes
 from shared_lib import get_tracer
 tracer = get_tracer("stock-portfolio-service")
+
+
+class _AdjustedTransaction:
+    """Read-only view of a Transaction with a corporate-action factor applied.
+
+    The view duck-types ``models.Transaction`` over the fields the
+    aggregation logic touches. ``quantity`` is multiplied by ``factor`` and
+    ``price`` is divided by it; cost basis (qty * price) is preserved.
+    Fees and taxes stay nominal.
+    """
+
+    __slots__ = ("_base", "_factor")
+
+    def __init__(self, base: models.Transaction, factor: Decimal):
+        self._base = base
+        self._factor = factor
+
+    @property
+    def id(self):
+        return self._base.id
+
+    @property
+    def symbol(self):
+        return self._base.symbol
+
+    @property
+    def name(self):
+        return self._base.name
+
+    @property
+    def type(self):
+        return self._base.type
+
+    @property
+    def trade_date(self):
+        return self._base.trade_date
+
+    @property
+    def quantity(self):
+        if self._factor == 1:
+            return self._base.quantity
+        return int(
+            (Decimal(self._base.quantity) * self._factor).to_integral_value(rounding=ROUND_DOWN)
+        )
+
+    @property
+    def price(self):
+        if self._factor == 1:
+            return self._base.price
+        return self._base.price / self._factor
+
+    @property
+    def fee(self):
+        return self._base.fee
+
+    @property
+    def tax(self):
+        return self._base.tax
+
+
+def _factor_for_trade(actions: List[CorporateAction], trade_date) -> Decimal:
+    """Cumulative product of every action strictly AFTER trade_date."""
+    target = trade_date.date() if hasattr(trade_date, "date") else trade_date
+    factor = Decimal(1)
+    for action in actions:
+        if action.effective_date > target:
+            factor *= action.ratio
+    return factor
+
+
+def _apply_corp_action_factors(
+    transactions: List[models.Transaction],
+    actions_by_symbol: Optional[Dict[str, List[CorporateAction]]],
+) -> List:
+    """Return transactions (or adjusted views) with factor applied."""
+    if not actions_by_symbol:
+        return list(transactions)
+    adjusted: list = []
+    for txn in transactions:
+        sym_actions = actions_by_symbol.get(txn.symbol.strip().upper(), None)
+        if not sym_actions:
+            adjusted.append(txn)
+            continue
+        factor = _factor_for_trade(sym_actions, txn.trade_date)
+        if factor == 1:
+            adjusted.append(txn)
+        else:
+            adjusted.append(_AdjustedTransaction(txn, factor))
+    return adjusted
+
+
+def _load_corp_actions_by_symbol(db: Session) -> Dict[str, List[CorporateAction]]:
+    rows = (
+        db.query(CorporateAction)
+        .order_by(CorporateAction.effective_date.asc(), CorporateAction.id.asc())
+        .all()
+    )
+    grouped: Dict[str, List[CorporateAction]] = {}
+    for row in rows:
+        grouped.setdefault(row.symbol, []).append(row)
+    return grouped
 
 
 def _calculate_xirr(cash_flows: List[Tuple[date_type, Decimal]]) -> Optional[Decimal]:
@@ -65,6 +169,44 @@ def _resolve_sort_trade_date(
     if trade_date.tzinfo is None:
         return trade_date
     return trade_date.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _trade_calendar_date(trade_date: datetime) -> date_type:
+    """Calendar date used for day-trade bucketing.
+
+    Normalises to UTC date (matches ``_resolve_sort_trade_date``). TW trading
+    hours run 01:00-05:30 UTC, so the UTC date matches the TW market date.
+    """
+
+    return _resolve_sort_trade_date(trade_date).date()
+
+
+def _recompute_day_trade_flags(
+    db: Session, symbol: str, calendar_date: date_type
+) -> None:
+    """Flip ``is_day_trade`` for every transaction in the (symbol, date) bucket.
+
+    A transaction is a day-trade when the same symbol has BOTH a BUY and a
+    SELL on the same calendar trade date. All rows in the bucket share the
+    same flag; recompute and persist in-place. Caller commits.
+    """
+
+    normalized = sanitize_symbol(symbol)
+    rows = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.symbol == normalized)
+        .all()
+    )
+    bucket = [
+        row for row in rows
+        if _trade_calendar_date(row.trade_date) == calendar_date
+    ]
+    has_buy = any(row.type == models.TransactionType.BUY for row in bucket)
+    has_sell = any(row.type == models.TransactionType.SELL for row in bucket)
+    new_flag = has_buy and has_sell
+    for row in bucket:
+        if row.is_day_trade != new_flag:
+            row.is_day_trade = new_flag
 
 
 def _validate_symbol_ledger(symbol: str, ledger_entries: List[Dict[str, object]]) -> None:
@@ -144,11 +286,14 @@ def _validate_transaction_ledger(
 
 def _aggregate_active_holdings(
     transactions: List[models.Transaction],
+    actions_by_symbol: Optional[Dict[str, List[CorporateAction]]] = None,
 ) -> Dict[str, Dict[str, object]]:
     holdings: Dict[str, Dict[str, object]] = {}
 
+    adjusted = _apply_corp_action_factors(transactions, actions_by_symbol)
+
     for transaction in sorted(
-        transactions,
+        adjusted,
         key=lambda item: (_resolve_sort_trade_date(item.trade_date), item.id or float("inf")),
     ):
         symbol = sanitize_symbol(transaction.symbol)
@@ -180,7 +325,7 @@ def get_active_holdings(db: Session) -> Dict[str, Dict[str, object]]:
         .order_by(models.Transaction.trade_date, models.Transaction.id)
         .all()
     )
-    return _aggregate_active_holdings(transactions)
+    return _aggregate_active_holdings(transactions, _load_corp_actions_by_symbol(db))
 
 
 def _get_quote_status(active_symbols: List[str], quotes: Dict[str, Dict]) -> str:
@@ -234,12 +379,15 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         transactions = db.query(models.Transaction).order_by(models.Transaction.trade_date, models.Transaction.id).all()
         # 2. 取得所有股利紀錄
         dividends = db.query(models.Dividend).all()
-        active_holdings = _aggregate_active_holdings(transactions)
+        actions_by_symbol = _load_corp_actions_by_symbol(db)
+        adjusted_transactions = _apply_corp_action_factors(transactions, actions_by_symbol)
+        active_holdings = _aggregate_active_holdings(transactions, actions_by_symbol)
         active_symbols = list(active_holdings.keys())
 
         span.set_attribute("portfolio.transaction_count", len(transactions))
         span.set_attribute("portfolio.dividend_count", len(dividends))
         span.set_attribute("portfolio.active_symbol_count", len(active_symbols))
+        span.set_attribute("portfolio.corporate_action_symbol_count", len(actions_by_symbol))
 
         # 整理每檔股票的狀態
         holdings_map = {}
@@ -254,8 +402,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             cf_date = d.ex_dividend_date.date() if hasattr(d.ex_dividend_date, 'date') else d.ex_dividend_date
             cashflows_map.setdefault(symbol, []).append((cf_date, d.amount))
 
-        # 交易統計 (計算平均成本與持股數)
-        for t in transactions:
+        # 交易統計 (計算平均成本與持股數，採用 corporate-action 調整後的視圖)
+        for t in adjusted_transactions:
             symbol = sanitize_symbol(t.symbol)
             if symbol not in holdings_map:
                 holdings_map[symbol] = {
@@ -314,8 +462,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             
             total_qty_dec = Decimal(h["total_quantity"])
             
-            # 平均成本計算（成交均價口徑，不含手續費）
-            avg_cost = (h["total_cost_ex_fee"] / total_qty_dec).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            # 平均成本計算（含手續費 / 交易稅口徑，與損益計算一致）
+            avg_cost = (h["total_cost"] / total_qty_dec).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             
             # 市值與未實現損益（以券商口徑估算賣出後淨額）
             gross_market_value = (total_qty_dec * current_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -402,9 +550,15 @@ def create_transaction(db: Session, transaction: schemas.TransactionCreate):
     transaction_data["trade_date"] = transaction_data.get("trade_date") or datetime.now(timezone.utc)
 
     _validate_transaction_ledger(db, transaction_data)
-    
+
     db_transaction = models.Transaction(**transaction_data)
     db.add(db_transaction)
+    db.flush()
+    _recompute_day_trade_flags(
+        db,
+        db_transaction.symbol,
+        _trade_calendar_date(db_transaction.trade_date),
+    )
     db.commit()
     db.refresh(db_transaction)
     return db_transaction
@@ -421,29 +575,97 @@ def create_dividend(db: Session, dividend: schemas.DividendCreate):
     return db_dividend
 
 
+_TRANSACTION_SORT_FIELDS: Dict[str, Column] = {
+    "trade_date": models.Transaction.trade_date,
+    "symbol": models.Transaction.symbol,
+    "type": models.Transaction.type,
+    "price": models.Transaction.price,
+    "quantity": models.Transaction.quantity,
+}
+
+_DIVIDEND_SORT_FIELDS: Dict[str, Column] = {
+    "ex_dividend_date": models.Dividend.ex_dividend_date,
+    "symbol": models.Dividend.symbol,
+    "amount": models.Dividend.amount,
+    "source": models.Dividend.source,
+}
+
+
+def _parse_sort(value: str, allowlist: Dict[str, Column]) -> Tuple[str, str]:
+    """Split ``"field:direction"`` and validate against ``allowlist``.
+
+    Raises ``ValueError`` on bad syntax or unknown field. Caller maps that
+    to HTTP 422.
+    """
+    if not value or ":" not in value:
+        raise ValueError(f"sort must be '<field>:<asc|desc>', got '{value}'")
+    field, _, direction = value.partition(":")
+    field = field.strip()
+    direction = direction.strip().lower()
+    if direction not in ("asc", "desc"):
+        raise ValueError(f"sort direction must be 'asc' or 'desc', got '{direction}'")
+    if field not in allowlist:
+        raise ValueError(f"sort field '{field}' not allowed; choose one of {sorted(allowlist)}")
+    return field, direction
+
+
 def list_transactions(
     db: Session,
-    limit: int = 200,
-    offset: int = 0,
+    *,
     symbol: Optional[str] = None,
-):
-    query = db.query(models.Transaction)
-    if symbol:
-        normalized_symbol = sanitize_symbol(symbol)
-        query = query.filter(models.Transaction.symbol == normalized_symbol)
+    date_from: Optional[date_type] = None,
+    date_to: Optional[date_type] = None,
+    side: Optional[str] = None,
+    sort_field: str = "trade_date",
+    sort_dir: str = "desc",
+    offset: int = 0,
+    limit: int = 25,
+) -> Tuple[List[models.Transaction], int]:
+    """Return ``(items, total)`` paged + filtered transactions.
 
-    return (
-        query.order_by(models.Transaction.trade_date.desc(), models.Transaction.id.desc())
+    ``date_from`` / ``date_to`` are inclusive bounds on ``trade_date``.
+    ``id desc`` is always appended as tie-breaker so pages stay stable.
+    """
+    if sort_field not in _TRANSACTION_SORT_FIELDS:
+        raise ValueError(f"sort field '{sort_field}' not allowed")
+
+    base = db.query(models.Transaction)
+    if symbol:
+        base = base.filter(models.Transaction.symbol == sanitize_symbol(symbol))
+    if date_from is not None:
+        base = base.filter(
+            models.Transaction.trade_date
+            >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc)
+        )
+    if date_to is not None:
+        # date_to inclusive — use < (next day midnight)
+        end_exclusive = (
+            datetime.combine(date_to, datetime.min.time(), tzinfo=timezone.utc) + _ONE_DAY
+        )
+        base = base.filter(models.Transaction.trade_date < end_exclusive)
+    if side:
+        base = base.filter(models.Transaction.type == side)
+
+    total = base.with_entities(func.count(models.Transaction.id)).scalar() or 0
+
+    sort_col = _TRANSACTION_SORT_FIELDS[sort_field]
+    order = sort_col.desc() if sort_dir == "desc" else sort_col.asc()
+    rows = (
+        base.order_by(order, models.Transaction.id.desc())
         .offset(offset)
         .limit(limit)
         .all()
     )
+    return rows, int(total)
 
 def update_transaction(db: Session, transaction_id: int, transaction_update: schemas.TransactionCreate):
     db_transaction = db.query(models.Transaction).filter(models.Transaction.id == transaction_id).first()
     if not db_transaction:
         return None
-    
+
+    old_symbol = sanitize_symbol(db_transaction.symbol)
+    old_calendar = _trade_calendar_date(db_transaction.trade_date)
+
     update_data = transaction_update.model_dump(exclude_unset=True)
     update_data["symbol"] = sanitize_symbol(update_data["symbol"])
     if "trade_date" in update_data:
@@ -452,10 +674,18 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
         update_data["trade_date"] = db_transaction.trade_date
 
     _validate_transaction_ledger(db, update_data, existing_transaction=db_transaction)
-    
+
     for key, value in update_data.items():
         setattr(db_transaction, key, value)
-    
+
+    db.flush()
+
+    new_symbol = sanitize_symbol(db_transaction.symbol)
+    new_calendar = _trade_calendar_date(db_transaction.trade_date)
+    _recompute_day_trade_flags(db, old_symbol, old_calendar)
+    if (new_symbol, new_calendar) != (old_symbol, old_calendar):
+        _recompute_day_trade_flags(db, new_symbol, new_calendar)
+
     db.commit()
     db.refresh(db_transaction)
     return db_transaction
@@ -464,28 +694,60 @@ def delete_transaction(db: Session, transaction_id: int):
     db_transaction = db.query(models.Transaction).filter(models.Transaction.id == transaction_id).first()
     if not db_transaction:
         return False
+
+    symbol = sanitize_symbol(db_transaction.symbol)
+    calendar = _trade_calendar_date(db_transaction.trade_date)
+
     db.delete(db_transaction)
+    db.flush()
+    _recompute_day_trade_flags(db, symbol, calendar)
     db.commit()
     return True
 
 
 def list_dividends(
     db: Session,
-    limit: int = 200,
-    offset: int = 0,
+    *,
     symbol: Optional[str] = None,
-):
-    query = db.query(models.Dividend)
-    if symbol:
-        normalized_symbol = sanitize_symbol(symbol)
-        query = query.filter(models.Dividend.symbol == normalized_symbol)
+    date_from: Optional[date_type] = None,
+    date_to: Optional[date_type] = None,
+    source: Optional[str] = None,
+    sort_field: str = "ex_dividend_date",
+    sort_dir: str = "desc",
+    offset: int = 0,
+    limit: int = 25,
+) -> Tuple[List[models.Dividend], int]:
+    """Return ``(items, total)`` paged + filtered dividends."""
+    if sort_field not in _DIVIDEND_SORT_FIELDS:
+        raise ValueError(f"sort field '{sort_field}' not allowed")
 
-    return (
-        query.order_by(models.Dividend.ex_dividend_date.desc(), models.Dividend.id.desc())
+    base = db.query(models.Dividend)
+    if symbol:
+        base = base.filter(models.Dividend.symbol == sanitize_symbol(symbol))
+    if date_from is not None:
+        base = base.filter(
+            models.Dividend.ex_dividend_date
+            >= datetime.combine(date_from, datetime.min.time(), tzinfo=timezone.utc)
+        )
+    if date_to is not None:
+        end_exclusive = (
+            datetime.combine(date_to, datetime.min.time(), tzinfo=timezone.utc) + _ONE_DAY
+        )
+        base = base.filter(models.Dividend.ex_dividend_date < end_exclusive)
+    if source is not None:
+        base = base.filter(models.Dividend.source == source)
+
+    total = base.with_entities(func.count(models.Dividend.id)).scalar() or 0
+
+    sort_col = _DIVIDEND_SORT_FIELDS[sort_field]
+    order = sort_col.desc() if sort_dir == "desc" else sort_col.asc()
+    rows = (
+        base.order_by(order, models.Dividend.id.desc())
         .offset(offset)
         .limit(limit)
         .all()
     )
+    return rows, int(total)
 
 def update_dividend(db: Session, dividend_id: int, dividend_update: schemas.DividendCreate):
     db_dividend = db.query(models.Dividend).filter(models.Dividend.id == dividend_id).first()

@@ -7,12 +7,67 @@
   </div>
 </div>
 
-<div class="hub-modern-list">
+<div class="hub-filter-bar">
+  <div class="search-wrap">
+    <i class="pi pi-search"></i>
+    <input
+      type="text"
+      [ngModel]="searchInput()"
+      (ngModelChange)="onSearchInput($event)"
+      placeholder="搜尋代碼或名稱（例如 0050 或 元大台灣50）" />
+  </div>
+  <div class="filter-controls">
+    <p-datepicker
+      [(ngModel)]="dateRange"
+      selectionMode="range"
+      [readonlyInput]="true"
+      dateFormat="yy-mm-dd"
+      placeholder="除息日範圍"
+      appendTo="body"
+      [showClear]="true"
+      styleClass="hub-mini-datepicker"
+      (onSelect)="onDateRangeChange(dateRange)"
+      (onClear)="onDateRangeChange(null)">
+    </p-datepicker>
+    <p-select
+      [options]="sourceOptions"
+      optionLabel="label"
+      optionValue="value"
+      [ngModel]="query().source ?? null"
+      (onChange)="onSourceChange($event.value)"
+      placeholder="來源"
+      [showClear]="true"
+      styleClass="hub-mini-select">
+    </p-select>
+    <p-select
+      [options]="sortOptions"
+      optionLabel="label"
+      optionValue="value"
+      [ngModel]="query().sort ?? 'ex_dividend_date:desc'"
+      (onChange)="onSortChange($event.value)"
+      styleClass="hub-mini-select">
+    </p-select>
+    @if (hasActiveFilters()) {
+      <p-button icon="pi pi-filter-slash" severity="secondary" [text]="true" (onClick)="clearFilters()" pTooltip="清除篩選"></p-button>
+    }
+  </div>
+</div>
+
+<div class="hub-result-meta">
+  <span class="meta-count">{{ total() }} 筆</span>
+  @if (loading()) {
+    <span class="meta-loading"><p-progressSpinner styleClass="w-1rem h-1rem" strokeWidth="4"></p-progressSpinner> 查詢中…</span>
+  }
+</div>
+
+<div class="hub-modern-list" [class.is-loading]="loading()">
   @for (d of dividends(); track d.id) {
     <app-list-item [clickable]="true" (itemClick)="showMenu($event, d)">
       <ng-container left>
-        <div class="main-text">{{ d.symbol }}</div>
-        <div class="sub-text">{{ d.ex_dividend_date | date:'yyyy-MM-dd' }} 除息</div>
+        <div class="main-text">{{ nameFor(d.symbol) ?? d.symbol }}</div>
+        <div class="sub-text">
+          {{ d.symbol }} · {{ d.ex_dividend_date | date:'yyyy-MM-dd' }} 除息
+        </div>
       </ng-container>
       <ng-container right>
         <div class="text-end">
@@ -24,10 +79,21 @@
     <div class="empty-state">
       <i class="pi pi-percentage"></i>
       <h4>無股利紀錄</h4>
-      <p>尚未記錄任何股利收入。</p>
+      <p>調整篩選條件或新增一筆股利。</p>
     </div>
   }
 </div>
+
+@if (total() > (query().limit ?? 25)) {
+  <p-paginator
+    [first]="query().offset ?? 0"
+    [rows]="query().limit ?? 25"
+    [totalRecords]="total()"
+    [rowsPerPageOptions]="rowsPerPageOptions"
+    (onPageChange)="onPageChange($event)"
+    styleClass="hub-paginator">
+  </p-paginator>
+}
 
 <p-menu #menu [model]="menuItems" [popup]="true" appendTo="body"></p-menu>
 
@@ -45,12 +111,23 @@
       <input pInputText [(ngModel)]="newDividend.symbol" placeholder="例如: 2330" class="w-100" />
     </div>
     <div class="col-6">
-      <label class="d-block mb-1 small fw-bold">股利金額 (TWD)</label>
+      <label class="d-block mb-1 small fw-bold">股利金額 (TWD，扣除手續費 / 補充保費後)</label>
       <p-inputNumber [(ngModel)]="newDividend.amount" [min]="0" mode="decimal" [fluid]="true"></p-inputNumber>
+      @if (grossHint()) {
+        <div class="small text-muted mt-1">{{ grossHint() }}</div>
+      }
     </div>
     <div class="col-6">
       <label class="d-block mb-1 small fw-bold">除息日期</label>
       <p-datepicker [(ngModel)]="newDividend.ex_dividend_date" [fluid]="true" appendTo="body" dateFormat="yy-mm-dd"></p-datepicker>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">手續費</label>
+      <p-inputNumber [(ngModel)]="newDividend.fee" [min]="0" mode="decimal" [fluid]="true"></p-inputNumber>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">補充保費 (二代健保)</label>
+      <p-inputNumber [(ngModel)]="newDividend.tax" [min]="0" mode="decimal" [fluid]="true"></p-inputNumber>
     </div>
   </div>
   <ng-template pTemplate="footer">

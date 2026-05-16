@@ -169,7 +169,7 @@ def test_response_schema_tolerates_high_precision_decimal(db_session, client):
 
     assert response.status_code == 200
     body = response.json()
-    assert body and body[0]["symbol"] == "0050"
+    assert body["items"] and body["items"][0]["symbol"] == "0050"
 
 
 def test_dividend_db_constraints_reject_invalid_rows(db_session):

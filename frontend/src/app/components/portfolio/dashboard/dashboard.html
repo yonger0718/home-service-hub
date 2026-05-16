@@ -88,6 +88,14 @@
           </div>
         </div>
 
+        <div class="bento-item bento-full networth-chart-card">
+          <app-networth-chart></app-networth-chart>
+        </div>
+
+        <div class="bento-item bento-full corporate-actions-card">
+          <app-corporate-actions-panel></app-corporate-actions-panel>
+        </div>
+
         <!-- 持股分佈/清單 (全寬) -->
         <div class="bento-item bento-full holdings-card">
           <h3 class="card-title">持股明細</h3>
@@ -97,13 +105,14 @@
               <div class="hub-stock-row" (click)="toggleHoldingExpand(stock.symbol)">
                 <div class="stock-main-info">
                   <div class="stock-symbol-group">
-                    <span class="symbol">{{ stock.symbol }}</span>
-                    <span class="name text-truncate">{{ stock.name }}</span>
+                    <span class="symbol">{{ stock.name || stock.symbol }}</span>
+                    <span class="name text-truncate">{{ stock.symbol }}</span>
                   </div>
                   <div class="stock-price-group">
                     <span class="current-price">{{ stock.current_price | number:'1.2-2' }}</span>
                     <span class="day-change" [class]="{'up': stock.day_change_amount > 0, 'down': stock.day_change_amount < 0}">
-                      {{ stock.day_change_amount > 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.1-2' }}%
+                      {{ stock.day_change_amount > 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
+                      ({{ stock.day_change_percent > 0 ? '+' : '' }}{{ stock.day_change_percent | number:'1.2-2' }}%)
                     </span>
                   </div>
                 </div>

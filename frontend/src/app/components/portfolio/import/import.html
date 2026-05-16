@@ -1,0 +1,85 @@
+<p-toast></p-toast>
+
+<div class="import-page">
+  <p-card>
+    <ng-template pTemplate="header">
+      <div class="header">
+        <h2>匯入 CSV</h2>
+        <p-selectButton
+          [options]="kindOptions"
+          [ngModel]="kind()"
+          (ngModelChange)="kind.set($event); onClear()"
+          optionLabel="label"
+          optionValue="value">
+        </p-selectButton>
+      </div>
+    </ng-template>
+
+    <p class="hint">
+      CSV 標題列必須為：<code>{{ headerHint }}</code>
+    </p>
+
+    <div class="actions">
+      <p-fileUpload
+        mode="basic"
+        chooseLabel="選擇檔案"
+        name="file"
+        accept=".csv,text/csv"
+        [auto]="true"
+        [customUpload]="true"
+        (uploadHandler)="onSelect($event)">
+      </p-fileUpload>
+
+      <span *ngIf="file() as f" class="filename">{{ f.name }}</span>
+
+      <p-button label="預覽 (Dry-Run)" icon="pi pi-search" severity="secondary"
+                [disabled]="!file() || busy()" (onClick)="preview()"></p-button>
+      <p-button label="正式匯入" icon="pi pi-upload"
+                [disabled]="!file() || busy()" (onClick)="commit()"></p-button>
+      <p-button label="清除" icon="pi pi-times" severity="secondary" [outlined]="true"
+                [disabled]="!file() && !result()" (onClick)="onClear()"></p-button>
+    </div>
+
+    <ng-container *ngIf="result() as r">
+      <div class="summary">
+        <span class="badge">解析 {{ r.parsed }}</span>
+        <span class="badge ok">{{ r.dry_run ? '可新增' : '已新增' }} {{ r.created }}</span>
+        <span class="badge skip">重複 {{ r.skipped_duplicates }}</span>
+        <span class="badge err" *ngIf="r.errors.length > 0">錯誤 {{ r.errors.length }}</span>
+        <span class="mode-tag" *ngIf="r.dry_run">DRY-RUN</span>
+      </div>
+
+      <h3 *ngIf="r.errors.length > 0">錯誤明細</h3>
+      <p-table *ngIf="r.errors.length > 0" [value]="r.errors" [scrollable]="true" scrollHeight="240px">
+        <ng-template pTemplate="header">
+          <tr><th>列號</th><th>訊息</th></tr>
+        </ng-template>
+        <ng-template pTemplate="body" let-error>
+          <tr>
+            <td>{{ error.row_index }}</td>
+            <td>{{ error.message }}</td>
+          </tr>
+        </ng-template>
+      </p-table>
+
+      <h3 *ngIf="r.rows.length > 0">解析後預覽</h3>
+      <p-table *ngIf="r.rows.length > 0" [value]="r.rows" [scrollable]="true" scrollHeight="400px"
+               [paginator]="true" [rows]="20">
+        <ng-template pTemplate="header">
+          <tr>
+            <th>列號</th>
+            <th *ngFor="let key of payloadKeys(r.rows)">{{ key }}</th>
+            <th>fingerprint</th>
+          </tr>
+        </ng-template>
+        <ng-template pTemplate="body" let-row>
+          <tr>
+            <td>{{ row.row_index }}</td>
+            <td *ngFor="let key of payloadKeys(r.rows)">{{ row.payload[key] }}</td>
+            <td class="fp">{{ row.fingerprint | slice:0:8 }}…</td>
+          </tr>
+        </ng-template>
+      </p-table>
+    </ng-container>
+  </p-card>
+</div>

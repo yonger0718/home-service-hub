@@ -7,78 +7,142 @@
   </div>
 </div>
 
-  <div class="hub-modern-list">
-    @for (t of transactions(); track t.id) {
-      <app-list-item [clickable]="true" (itemClick)="showMenu($event, t)">
-        <ng-container left>
-          <div class="main-text">{{ t.symbol }}</div>
-          <div class="sub-text">
-            {{ t.trade_date | date:'yyyy-MM-dd' }} • 
-            <span [class]="{'txn-type-buy': t.type === 'BUY', 'txn-type-sell': t.type === 'SELL'}">
-              {{ t.type === 'BUY' ? '買進' : '賣出' }}
-            </span>
-          </div>
-        </ng-container>
-        <ng-container right>
-          <div class="text-end">
-            <div class="amount-text" [class]="{'txn-type-buy': t.type === 'BUY', 'txn-type-sell': t.type === 'SELL'}">
-              {{ (t.price * t.quantity) | currency:'TWD':'symbol':'1.0-0' }}
-            </div>
-            <div class="sub-text">{{ t.quantity | number }} 股 @ {{ t.price | number:'1.1-2' }}</div>
-          </div>
-        </ng-container>
-      </app-list-item>
-    } @empty {
-      <div class="empty-state">
-        <i class="pi pi-list"></i>
-        <h4>無交易紀錄</h4>
-        <p>尚未記錄任何股票交易。</p>
-      </div>
+<div class="hub-filter-bar">
+  <div class="search-wrap">
+    <i class="pi pi-search"></i>
+    <input
+      type="text"
+      [ngModel]="searchInput()"
+      (ngModelChange)="onSearchInput($event)"
+      placeholder="搜尋代碼或名稱（例如 2330 或 台積電）" />
+  </div>
+  <div class="filter-controls">
+    <p-datepicker
+      [(ngModel)]="dateRange"
+      selectionMode="range"
+      [readonlyInput]="true"
+      dateFormat="yy-mm-dd"
+      placeholder="日期範圍"
+      appendTo="body"
+      [showClear]="true"
+      styleClass="hub-mini-datepicker"
+      (onSelect)="onDateRangeChange(dateRange)"
+      (onClear)="onDateRangeChange(null)">
+    </p-datepicker>
+    <p-select
+      [options]="sideOptions"
+      optionLabel="label"
+      optionValue="value"
+      [ngModel]="query().side ?? null"
+      (onChange)="onSideChange($event.value)"
+      placeholder="買賣"
+      [showClear]="true"
+      styleClass="hub-mini-select">
+    </p-select>
+    <p-select
+      [options]="sortOptions"
+      optionLabel="label"
+      optionValue="value"
+      [ngModel]="query().sort ?? 'trade_date:desc'"
+      (onChange)="onSortChange($event.value)"
+      styleClass="hub-mini-select">
+    </p-select>
+    @if (hasActiveFilters()) {
+      <p-button icon="pi pi-filter-slash" severity="secondary" [text]="true" (onClick)="clearFilters()" pTooltip="清除篩選"></p-button>
     }
   </div>
+</div>
 
-  <p-menu #menu [model]="menuItems" [popup]="true" appendTo="body"></p-menu>
+<div class="hub-result-meta">
+  <span class="meta-count">{{ total() }} 筆</span>
+  @if (loading()) {
+    <span class="meta-loading"><p-progressSpinner styleClass="w-1rem h-1rem" strokeWidth="4"></p-progressSpinner> 查詢中…</span>
+  }
+</div>
 
-  <p-dialog
-    [header]="isEdit() ? '修改交易' : '新增交易'"
-    [(visible)]="showDialog"
-    [modal]="true"
-    [dismissableMask]="true"
-    appendTo="body"
-    styleClass="hub-dialog-md portfolio-form-dialog"
-    contentStyleClass="portfolio-form-content">
-    <div class="row g-2 mt-1 hub-form-grid">
-      <div class="col-12 mb-1">
-        <label class="d-block mb-1 small fw-bold">交易類型</label>
-        <p-selectButton [options]="transactionTypes" [(ngModel)]="newTransaction.type" styleClass="w-100"></p-selectButton>
-      </div>
-      <div class="col-6">
-        <label class="d-block mb-1 small fw-bold">股票代碼</label>
-        <input pInputText [(ngModel)]="newTransaction.symbol" placeholder="例如: 2330" class="w-100" />
-      </div>
-      <div class="col-6">
-        <label class="d-block mb-1 small fw-bold">交易日期</label>
-        <p-datepicker [(ngModel)]="newTransaction.trade_date" [fluid]="true" appendTo="body" dateFormat="yy-mm-dd"></p-datepicker>
-      </div>
-      <div class="col-6">
-        <label class="d-block mb-1 small fw-bold">成交股數</label>
-        <p-inputNumber [(ngModel)]="newTransaction.quantity" [min]="0" [fluid]="true"></p-inputNumber>
-      </div>
-      <div class="col-6">
-        <label class="d-block mb-1 small fw-bold">成交單價</label>
-        <p-inputNumber [(ngModel)]="newTransaction.price" mode="decimal" [minFractionDigits]="1" [fluid]="true"></p-inputNumber>
-      </div>
-      <div class="col-6">
-        <label class="d-block mb-1 small fw-bold">手續費</label>
-        <p-inputNumber [(ngModel)]="newTransaction.fee" [fluid]="true"></p-inputNumber>
-      </div>
-      <div class="col-6">
-        <label class="d-block mb-1 small fw-bold">交易稅</label>
-        <p-inputNumber [(ngModel)]="newTransaction.tax" [fluid]="true"></p-inputNumber>
-      </div>
+<div class="hub-modern-list" [class.is-loading]="loading()">
+  @for (t of transactions(); track t.id) {
+    <app-list-item [clickable]="true" (itemClick)="showMenu($event, t)">
+      <ng-container left>
+        <div class="main-text">{{ symbolDisplay(t) }}</div>
+        <div class="sub-text">
+          {{ t.trade_date | date:'yyyy-MM-dd' }} •
+          <span [class]="{'txn-type-buy': t.type === 'BUY', 'txn-type-sell': t.type === 'SELL'}">
+            {{ t.type === 'BUY' ? '買進' : '賣出' }}
+          </span>
+        </div>
+      </ng-container>
+      <ng-container right>
+        <div class="text-end">
+          <div class="amount-text" [class]="{'txn-type-buy': t.type === 'BUY', 'txn-type-sell': t.type === 'SELL'}">
+            {{ allInTotal(t) | currency:'TWD':'symbol':'1.0-0' }}
+          </div>
+          <div class="sub-text">{{ t.quantity | number }} 股 @ {{ allInUnitPrice(t) | number:'1.2-2' }}</div>
+        </div>
+      </ng-container>
+    </app-list-item>
+  } @empty {
+    <div class="empty-state">
+      <i class="pi pi-list"></i>
+      <h4>無交易紀錄</h4>
+      <p>調整篩選條件或新增一筆交易。</p>
     </div>
-    <ng-template pTemplate="footer">
-      <p-button label="取消" icon="pi pi-times" [text]="true" (onClick)="showDialog.set(false)"></p-button>
-      <p-button label="儲存交易" (onClick)="saveTransaction()" styleClass="hub-btn-primary"></p-button>
-    </ng-template>
-  </p-dialog>
+  }
+</div>
+
+@if (total() > (query().limit ?? 25)) {
+  <p-paginator
+    [first]="query().offset ?? 0"
+    [rows]="query().limit ?? 25"
+    [totalRecords]="total()"
+    [rowsPerPageOptions]="rowsPerPageOptions"
+    (onPageChange)="onPageChange($event)"
+    styleClass="hub-paginator">
+  </p-paginator>
+}
+
+<p-menu #menu [model]="menuItems" [popup]="true" appendTo="body"></p-menu>
+
+<p-dialog
+  [header]="isEdit() ? '修改交易' : '新增交易'"
+  [(visible)]="showDialog"
+  [modal]="true"
+  [dismissableMask]="true"
+  appendTo="body"
+  styleClass="hub-dialog-md portfolio-form-dialog"
+  contentStyleClass="portfolio-form-content">
+  <div class="row g-2 mt-1 hub-form-grid">
+    <div class="col-12 mb-1">
+      <label class="d-block mb-1 small fw-bold">交易類型</label>
+      <p-selectButton [options]="transactionTypes" [(ngModel)]="newTransaction.type" styleClass="w-100"></p-selectButton>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">股票代碼</label>
+      <input pInputText [(ngModel)]="newTransaction.symbol" placeholder="例如: 2330" class="w-100" />
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">交易日期</label>
+      <p-datepicker [(ngModel)]="newTransaction.trade_date" [fluid]="true" appendTo="body" dateFormat="yy-mm-dd"></p-datepicker>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">成交股數</label>
+      <p-inputNumber [(ngModel)]="newTransaction.quantity" [min]="0" [fluid]="true"></p-inputNumber>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">成交單價</label>
+      <p-inputNumber [(ngModel)]="newTransaction.price" mode="decimal" [minFractionDigits]="1" [fluid]="true"></p-inputNumber>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">手續費</label>
+      <p-inputNumber [(ngModel)]="newTransaction.fee" [fluid]="true"></p-inputNumber>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">交易稅</label>
+      <p-inputNumber [(ngModel)]="newTransaction.tax" [fluid]="true"></p-inputNumber>
+    </div>
+  </div>
+  <ng-template pTemplate="footer">
+    <p-button label="取消" icon="pi pi-times" [text]="true" (onClick)="showDialog.set(false)"></p-button>
+    <p-button label="儲存交易" (onClick)="saveTransaction()" styleClass="hub-btn-primary"></p-button>
+  </ng-template>
+</p-dialog>

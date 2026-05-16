@@ -13,8 +13,32 @@ export interface Transaction {
   trade_date?: string | Date;
   fee: number;
   tax: number;
+  is_day_trade?: boolean;
   created_at?: string;
   updated_at?: string;
+}
+
+export type ImportKind = 'transactions' | 'dividends';
+
+export interface ImportRow {
+  row_index: number;
+  fingerprint: string;
+  payload: Record<string, string | null>;
+}
+
+export interface ImportError {
+  row_index: number;
+  message: string;
+}
+
+export interface ImportResult {
+  parsed: number;
+  created: number;
+  skipped_duplicates: number;
+  dry_run: boolean;
+  errors: ImportError[];
+  created_ids: number[];
+  rows: ImportRow[];
 }
 
 export interface Dividend {
@@ -23,8 +47,26 @@ export interface Dividend {
   amount: number;
   ex_dividend_date: string | Date;
   received_date?: string | Date;
+  fee?: number;
+  tax?: number;
+  cash_dividend_per_share?: number;
+  stock_dividend_shares?: number;
+  source?: string;
+  quantity_at_record_date?: number;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface UpcomingEvent {
+  date: string;
+  symbol: string;
+  name?: string;
+  type: 'CASH_DIV' | 'STOCK_DIV' | 'BOTH' | 'FACE_VALUE';
+  cash_dividend?: string;
+  stock_dividend_shares?: string;
+  ratio?: string;
+  reference_price_change?: string;
+  source?: string;
 }
 
 export interface StockHolding {
@@ -55,6 +97,25 @@ export interface PortfolioSummary {
   portfolio_xirr?: number;    // 整體投資組合年化報酬率
 }
 
+export interface NetworthPoint {
+  date: string;
+  total_market_value: string;
+  total_cost: string;
+  total_unrealized_pnl: string;
+  total_dividends: string;
+  portfolio_xirr: string | null;
+}
+
+export interface CorporateAction {
+  id: number;
+  symbol: string;
+  effective_date: string;
+  action_type: string;
+  ratio: string;
+  source: string;
+  source_event_key: string;
+}
+
 export interface ExDividendRecord {
   symbol: string;
   name: string;
@@ -62,4 +123,29 @@ export interface ExDividendRecord {
   ex_rights_date?: string;
   cash_dividend?: string;
   stock_dividend?: string;
+}
+
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
+export interface TransactionQuery {
+  offset?: number;
+  limit?: number;
+  symbol?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  side?: 'BUY' | 'SELL' | null;
+  sort?: string;
+}
+
+export interface DividendQuery {
+  offset?: number;
+  limit?: number;
+  symbol?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  source?: string | null;
+  sort?: string;
 }
