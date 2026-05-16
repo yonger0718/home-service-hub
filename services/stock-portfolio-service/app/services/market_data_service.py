@@ -155,6 +155,15 @@ def parse_tpex_daily_quotes(
 ) -> list[DailyPriceRow]:
     data = _json_payload(payload)
     rows: list[DailyPriceRow] = []
+    payload_date = data.get("date") if isinstance(data, dict) else None
+    expected = date.strftime("%Y%m%d")
+    if payload_date and str(payload_date) != expected:
+        logger.warning(
+            "TPEx returned date=%s for requested %s; dropping rows",
+            payload_date,
+            expected,
+        )
+        return rows
     tables = data.get("tables") if isinstance(data, dict) else None
     if not isinstance(tables, list):
         return rows
@@ -323,7 +332,7 @@ def fetch_twse_date(date: dt_date) -> list[DailyPriceRow]:
 def fetch_tpex_date(date: dt_date) -> list[DailyPriceRow]:
     payload = _http_get(
         TPEX_DAILY_URL,
-        {"type": "AL", "date": date.strftime("%Y%m%d"), "response": "json"},
+        {"type": "AL", "date": date.strftime("%Y/%m/%d"), "response": "json"},
     )
     if payload is None:
         return []
@@ -338,26 +347,53 @@ def fetch_tpex_date(date: dt_date) -> list[DailyPriceRow]:
 
 
 def upsert_rows(db: Session, rows: Iterable[DailyPriceRow]) -> int:
-    """Insert-or-update via composite-PK merge. Returns count written."""
+    """Insert-or-update via composite-PK upsert. Returns count written.
 
-    written = 0
+    Uses PG ``ON CONFLICT (symbol, date) DO UPDATE`` when running against
+    Postgres so concurrent backfills writing the same ``(symbol, date)``
+    cannot blow up the whole batch with ``UniqueViolation``. Falls back to
+    per-row ``Session.merge`` (slow but portable) for SQLite-backed tests.
+    """
+    deduped: dict[tuple[str, dt_date], dict] = {}
     for row in rows:
-        db.merge(
-            PriceHistory(
-                symbol=row.symbol,
-                date=row.date,
-                open=row.open,
-                high=row.high,
-                low=row.low,
-                close=row.close,
-                volume=row.volume,
-                turnover=row.turnover,
-                source=row.source,
-            )
+        deduped[(row.symbol, row.date)] = {
+            "symbol": row.symbol,
+            "date": row.date,
+            "open": row.open,
+            "high": row.high,
+            "low": row.low,
+            "close": row.close,
+            "volume": row.volume,
+            "turnover": row.turnover,
+            "source": row.source,
+        }
+    payload = list(deduped.values())
+    if not payload:
+        return 0
+
+    dialect = db.bind.dialect.name if db.bind is not None else ""
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        stmt = pg_insert(PriceHistory).values(payload)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["symbol", "date"],
+            set_={
+                "open": stmt.excluded.open,
+                "high": stmt.excluded.high,
+                "low": stmt.excluded.low,
+                "close": stmt.excluded.close,
+                "volume": stmt.excluded.volume,
+                "turnover": stmt.excluded.turnover,
+                "source": stmt.excluded.source,
+            },
         )
-        written += 1
+        db.execute(stmt)
+    else:
+        for entry in payload:
+            db.merge(PriceHistory(**entry))
     db.commit()
-    return written
+    return len(payload)
 
 
 def backfill_date(db: Session, date: dt_date, *, market: str = "BOTH") -> dict:

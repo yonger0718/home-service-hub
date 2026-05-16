@@ -33,6 +33,7 @@ def write_today_snapshot(
         total_cost=summary.total_cost,
         total_unrealized_pnl=summary.total_unrealized_pnl,
         total_dividends=summary.total_dividends,
+        total_realized_pnl=summary.total_realized_pnl,
         portfolio_xirr=summary.portfolio_xirr,
     )
     merged = db.merge(row)
@@ -42,14 +43,38 @@ def write_today_snapshot(
 
 
 def list_snapshots(
-    db: Session, *, from_date: dt_date, to_date: dt_date
+    db: Session,
+    *,
+    from_date: Optional[dt_date] = None,
+    to_date: Optional[dt_date] = None,
+    interval: str = "day",
 ) -> list[PortfolioSnapshot]:
-    return (
-        db.query(PortfolioSnapshot)
-        .filter(
-            PortfolioSnapshot.date >= from_date,
-            PortfolioSnapshot.date <= to_date,
-        )
-        .order_by(PortfolioSnapshot.date.asc())
-        .all()
+    """Return snapshot rows; optionally downsampled.
+
+    ``interval``:
+      - ``day``: every row
+      - ``week``: last row in each ISO week
+      - ``month``: last row in each calendar month
+    """
+    if interval not in ("day", "week", "month"):
+        raise ValueError(f"unsupported interval: {interval}")
+
+    q = db.query(PortfolioSnapshot)
+    if from_date is not None:
+        q = q.filter(PortfolioSnapshot.date >= from_date)
+    if to_date is not None:
+        q = q.filter(PortfolioSnapshot.date <= to_date)
+    rows = q.order_by(PortfolioSnapshot.date.asc()).all()
+
+    if interval == "day" or not rows:
+        return rows
+
+    bucket_of = (
+        (lambda d: d.isocalendar()[:2]) if interval == "week"
+        else (lambda d: (d.year, d.month))
     )
+    # Keep the last row of each bucket (rows already sorted ascending).
+    by_bucket: dict = {}
+    for row in rows:
+        by_bucket[bucket_of(row.date)] = row
+    return [by_bucket[k] for k in sorted(by_bucket.keys())]

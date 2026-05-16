@@ -83,7 +83,7 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.post<ImportResult>(url, form);
   }
 
-  getNetworthHistory(from?: string, to?: string): Observable<NetworthPoint[]> {
+  getNetworthHistory(from?: string, to?: string, interval: 'day' | 'week' | 'month' = 'day'): Observable<NetworthPoint[]> {
     let params: HttpParams | undefined;
 
     if (from) {
@@ -92,6 +92,10 @@ export class PortfolioService extends BaseApiService<Transaction> {
 
     if (to) {
       params = (params ?? new HttpParams()).set('to', to);
+    }
+
+    if (interval !== 'day') {
+      params = (params ?? new HttpParams()).set('interval', interval);
     }
 
     return this.http.get<NetworthPoint[]>('/api/portfolio/history', params ? { params } : {});
