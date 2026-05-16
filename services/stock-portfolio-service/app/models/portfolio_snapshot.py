@@ -14,6 +14,7 @@ class PortfolioSnapshot(Base):
     total_cost = Column(Numeric(20, 4), nullable=False)
     total_unrealized_pnl = Column(Numeric(20, 4), nullable=False)
     total_dividends = Column(Numeric(20, 4), nullable=False)
+    total_realized_pnl = Column(Numeric(20, 4), nullable=False, server_default="0")
     portfolio_xirr = Column(Numeric(10, 6), nullable=True)
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

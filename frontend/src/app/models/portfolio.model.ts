@@ -93,6 +93,7 @@ export interface PortfolioSummary {
   total_unrealized_pnl_percent: number;
   total_day_pnl: number;
   total_dividends: number;
+  total_realized_pnl: number;     // 累積已實現損益（含當沖）
   holdings: StockHolding[];
   portfolio_xirr?: number;    // 整體投資組合年化報酬率
 }
@@ -103,6 +104,7 @@ export interface NetworthPoint {
   total_cost: string;
   total_unrealized_pnl: string;
   total_dividends: string;
+  total_realized_pnl: string;
   portfolio_xirr: string | null;
 }
 
