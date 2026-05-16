@@ -53,7 +53,16 @@ class DailyPriceRow:
 
 # ---------- TWSE MI_INDEX parsing (ported from stonk twse_daily.py) ----------
 
-_TWSE_REQUIRED_FIELDS = {"證券代號", "證券名稱", "成交股數", "成交金額", "收盤價"}
+_TWSE_REQUIRED_FIELDS = {
+    "證券代號",
+    "證券名稱",
+    "成交股數",
+    "成交金額",
+    "開盤價",
+    "最高價",
+    "最低價",
+    "收盤價",
+}
 
 
 def parse_twse_mi_index(

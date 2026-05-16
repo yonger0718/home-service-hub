@@ -64,9 +64,10 @@ def resolve_name(db: Session, name: str) -> Optional[str]:
 def backfill_transactions(db: Session, *, dry_run: bool = False) -> dict:
     """Rewrite transactions.symbol from Chinese name -> ticker where resolvable.
 
-    Recomputes import_fingerprint over the rewritten row so future re-imports
-    of the same broker CSV remain idempotent. Surfaces collisions where the
-    new fingerprint already exists on a different row.
+    ``import_fingerprint`` is preserved on rewrite so future re-imports of the
+    original Chinese-named CSV continue to dedupe against the rewritten row.
+    ``collisions`` is reserved for future use (always empty under the current
+    preserve-fingerprint contract).
     """
     updated = 0
     unresolved: list[str] = []

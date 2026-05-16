@@ -73,6 +73,7 @@ def backfill_dividends(db: Session = Depends(get_db)) -> BackfillResult:
             try:
                 result = dividend_auto_record_service.auto_record_for_event(db, event, name=name)
             except Exception as exc:  # noqa: BLE001
+                db.rollback()
                 logger.exception(
                     "dividends.backfill.event_failed",
                     extra={"symbol": symbol, "ex_date": event.ex_date.isoformat(), "error": str(exc)},
@@ -84,7 +85,15 @@ def backfill_dividends(db: Session = Depends(get_db)) -> BackfillResult:
                 stock_inserted += 1
             if result.skipped_reason == "no_holding":
                 skipped_no_holding += 1
-        db.commit()
+        try:
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.exception(
+                "dividends.backfill.commit_failed",
+                extra={"symbol": symbol, "error": str(exc)},
+            )
+            continue
 
     return BackfillResult(
         symbols_scanned=symbols_scanned,

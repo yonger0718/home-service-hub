@@ -124,8 +124,8 @@ export class NetworthChartComponent implements OnInit {
     this.loadTrigger$.next(this.selectedWindow());
   }
 
-  onWindowChange(window: NetworthWindow): void {
-    if (window === this.selectedWindow()) {
+  onWindowChange(window: NetworthWindow | null): void {
+    if (!window || window === this.selectedWindow()) {
       return;
     }
 

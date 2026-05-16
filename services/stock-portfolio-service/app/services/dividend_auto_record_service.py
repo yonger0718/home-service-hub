@@ -161,24 +161,25 @@ def _insert_cash(
         select(Dividend.id).where(Dividend.import_fingerprint == fp)
     ).first() is not None:
         return False
-    db.add(
-        Dividend(
-            symbol=symbol,
-            amount=amount,
-            ex_dividend_date=_ex_date_dt(ex_date),
-            fee=fee,
-            tax=tax,
-            cash_dividend_per_share=cash_per_share,
-            stock_dividend_shares=0,
-            source=f"auto:{source}",
-            quantity_at_record_date=qty,
-            import_fingerprint=fp,
-        )
-    )
+    sp = db.begin_nested()
     try:
+        db.add(
+            Dividend(
+                symbol=symbol,
+                amount=amount,
+                ex_dividend_date=_ex_date_dt(ex_date),
+                fee=fee,
+                tax=tax,
+                cash_dividend_per_share=cash_per_share,
+                stock_dividend_shares=0,
+                source=f"auto:{source}",
+                quantity_at_record_date=qty,
+                import_fingerprint=fp,
+            )
+        )
         db.flush()
     except IntegrityError:
-        db.rollback()
+        sp.rollback()
         return False
     return True
 
@@ -197,23 +198,24 @@ def _insert_stock(
         select(Transaction.id).where(Transaction.import_fingerprint == fp)
     ).first() is not None:
         return False
-    db.add(
-        Transaction(
-            symbol=symbol,
-            name=name,
-            type=TransactionType.BUY,
-            quantity=shares,
-            price=Decimal("0"),
-            trade_date=_ex_date_dt(ex_date),
-            fee=Decimal("0"),
-            tax=Decimal("0"),
-            is_day_trade=False,
-            import_fingerprint=fp,
-        )
-    )
+    sp = db.begin_nested()
     try:
+        db.add(
+            Transaction(
+                symbol=symbol,
+                name=name,
+                type=TransactionType.BUY,
+                quantity=shares,
+                price=Decimal("0"),
+                trade_date=_ex_date_dt(ex_date),
+                fee=Decimal("0"),
+                tax=Decimal("0"),
+                is_day_trade=False,
+                import_fingerprint=fp,
+            )
+        )
         db.flush()
     except IntegrityError:
-        db.rollback()
+        sp.rollback()
         return False
     return True

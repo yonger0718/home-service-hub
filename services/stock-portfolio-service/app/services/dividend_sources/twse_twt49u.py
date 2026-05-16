@@ -71,19 +71,40 @@ def parse_twt49u(raw: bytes | str | list[dict[str, Any]]) -> list[DividendEventR
     return rows
 
 
-def _coerce_list(raw: bytes | str | list) -> list:
+def _coerce_list(raw: bytes | str | dict | list) -> list:
     if isinstance(raw, list):
         return raw
+    if isinstance(raw, dict):
+        return _extract_list_from_dict(raw)
     if isinstance(raw, bytes):
         try:
-            return json.loads(raw.decode("utf-8-sig"))
+            parsed = json.loads(raw.decode("utf-8-sig"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return []
+        return _normalise_parsed(parsed)
     if isinstance(raw, str):
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
         except json.JSONDecodeError:
             return []
+        return _normalise_parsed(parsed)
+    return []
+
+
+def _normalise_parsed(parsed: Any) -> list:
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        return _extract_list_from_dict(parsed)
+    return []
+
+
+def _extract_list_from_dict(payload: dict) -> list:
+    """TWSE OpenAPI sometimes wraps rows in {"data": [...]} or {"Data": [...]}."""
+    for key in ("data", "Data", "rows"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
     return []
 
 
