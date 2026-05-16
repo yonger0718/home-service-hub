@@ -248,6 +248,37 @@ def test_transactions_symbol_filter_normalises_input(client, db_session):
     assert all(r["symbol"] == "0050" for r in body["items"])
 
 
+def test_transactions_symbol_filter_escapes_like_wildcards(client, db_session):
+    """A user-typed '_' or '%' must match literally, not as a SQL wildcard.
+
+    Seed has 0050, 0056, 2330 — none contain `_` or `%`, so a stem
+    containing those characters must yield zero matches instead of
+    matching everything via the wildcard interpretation.
+    """
+    _seed_transactions(db_session)
+    for stem in ["0_", "%", "0%50"]:
+        body = client.get(
+            "/api/portfolio/transactions",
+            params={"symbol": stem, "limit": 100},
+        ).json()
+        assert body["total"] == 0, f"stem={stem!r} leaked through wildcard"
+
+
+def test_transactions_symbol_filter_whitespace_only_does_not_match_all(
+    client, db_session
+):
+    """Whitespace-only input must not collapse to ILIKE '%' (which would
+    silently return every row and defeat the filter)."""
+    _seed_transactions(db_session)
+    # Whitespace passes the truthiness check but sanitizes to empty stem;
+    # the route should treat it as "no symbol filter" rather than ILIKE '%'.
+    body = client.get(
+        "/api/portfolio/transactions",
+        params={"symbol": "   ", "limit": 100},
+    ).json()
+    assert body["total"] == 5  # all seeded rows — same as omitting symbol
+
+
 def test_transactions_symbol_filter_is_prefix_match(client, db_session):
     """Typing a stem matches every symbol that starts with it.
 
