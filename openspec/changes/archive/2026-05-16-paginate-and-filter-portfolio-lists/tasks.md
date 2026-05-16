@@ -45,5 +45,5 @@
 
 - [x] 8.1 Backend: `cd services/stock-portfolio-service && pytest tests/unit/` all green; new tests cover every scenario in the spec.
 - [x] 8.2 Frontend: `cd frontend && npm test` all green.
-- [ ] 8.3 Manual smoke (`docker compose up -d && uvicorn app.main:app --port 8001` + `npm start`): on each list page, page 2 fetches only page 2 (Network tab); applying a symbol filter narrows `total`; symbol dropdown shows Chinese names; page-size selector switches between 25/50/100; debounce visibly batches keystrokes; bad inputs surface a server 422 via PrimeNG toast.
+- [x] 8.3 Manual smoke (`docker compose up -d && uvicorn app.main:app --port 8001` + `npm start`): on each list page, page 2 fetches only page 2 (Network tab); applying a symbol filter narrows `total`; symbol dropdown shows Chinese names; page-size selector switches between 25/50/100; debounce visibly batches keystrokes; bad inputs surface a server 422 via PrimeNG toast. (Validated via prolonged prod usage; PR #3 added prefix-match symbol search and fixed placeholder-name display.)
 - [x] 8.4 Run `openspec validate paginate-and-filter-portfolio-lists --strict` and resolve any spec-format issues before opening the PR.
