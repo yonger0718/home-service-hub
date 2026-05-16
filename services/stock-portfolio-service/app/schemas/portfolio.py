@@ -118,6 +118,7 @@ class PortfolioSummary(BaseModel):
     total_unrealized_pnl_percent: Decimal
     total_day_pnl: Decimal = Decimal("0.0")          # 投資組合今日總損益
     total_dividends: Decimal
+    total_realized_pnl: Decimal = Decimal("0.0")     # 累積已實現損益（含當沖）
     holdings: List[StockHolding]
     portfolio_xirr: Optional[Decimal] = None          # 整體投資組合年化報酬率
     quotes_status: Literal["ok", "partial", "unavailable"] = "ok"

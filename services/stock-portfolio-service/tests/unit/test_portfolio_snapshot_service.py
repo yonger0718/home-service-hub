@@ -10,12 +10,13 @@ from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.services import portfolio_snapshot_service as snap_svc
 
 
-def _fake_summary(market_value="1000", cost="800", unrealized_pnl="200", dividends="50", xirr="0.12"):
+def _fake_summary(market_value="1000", cost="800", unrealized_pnl="200", dividends="50", xirr="0.12", realized_pnl="0"):
     class S:
         total_market_value = Decimal(market_value)
         total_cost = Decimal(cost)
         total_unrealized_pnl = Decimal(unrealized_pnl)
         total_dividends = Decimal(dividends)
+        total_realized_pnl = Decimal(realized_pnl)
         portfolio_xirr = Decimal(xirr) if xirr is not None else None
     return S()
 
@@ -66,20 +67,63 @@ def test_list_snapshots_returns_inclusive_range_ascending(db_session):
     assert [r.total_market_value for r in rows] == [Decimal("200"), Decimal("300")]
 
 
-def test_history_endpoint_returns_default_90_day_window(client, db_session):
-    target = date(2026, 5, 14)
-    with patch.object(snap_svc.portfolio_service, "get_portfolio_summary",
-                      return_value=_fake_summary()):
-        snap_svc.write_today_snapshot(db_session, today=target)
-    # No from/to → defaults to last 90 days ending today; today is in 2026 so
-    # the May-14 row may or may not fall in the window depending on clock. Use
-    # explicit range to keep this deterministic.
-    response = client.get("/api/portfolio/history", params={"from": "2026-05-01", "to": "2026-05-31"})
+def test_history_endpoint_no_range_returns_all(client, db_session):
+    for d in (date(2020, 1, 1), date(2026, 5, 14)):
+        with patch.object(snap_svc.portfolio_service, "get_portfolio_summary",
+                          return_value=_fake_summary()):
+            snap_svc.write_today_snapshot(db_session, today=d)
+    # No from/to → return everything (no implicit 90-day window).
+    response = client.get("/api/portfolio/history")
     assert response.status_code == 200
     body = response.json()
-    assert len(body) == 1
-    assert body[0]["date"] == "2026-05-14"
-    assert body[0]["total_market_value"] == "1000.0000"
+    assert len(body) == 2
+    assert body[0]["date"] == "2020-01-01"
+    assert body[1]["date"] == "2026-05-14"
+
+
+def test_list_snapshots_downsample_week_keeps_last_per_iso_week(db_session):
+    # 2026-05-11 Mon, 12 Tue, 13 Wed, 14 Thu, 15 Fri (ISO week 20)
+    # 2026-05-18 Mon, 19 Tue (ISO week 21)
+    days = [date(2026, 5, d) for d in (11, 12, 13, 14, 15, 18, 19)]
+    for d in days:
+        with patch.object(snap_svc.portfolio_service, "get_portfolio_summary",
+                          return_value=_fake_summary()):
+            snap_svc.write_today_snapshot(db_session, today=d)
+    rows = snap_svc.list_snapshots(db_session, interval="week")
+    # One per ISO week, last row in week wins.
+    assert [r.date for r in rows] == [date(2026, 5, 15), date(2026, 5, 19)]
+
+
+def test_list_snapshots_downsample_month_keeps_last_per_month(db_session):
+    days = [date(2026, 4, 29), date(2026, 4, 30), date(2026, 5, 14), date(2026, 5, 16)]
+    for d in days:
+        with patch.object(snap_svc.portfolio_service, "get_portfolio_summary",
+                          return_value=_fake_summary()):
+            snap_svc.write_today_snapshot(db_session, today=d)
+    rows = snap_svc.list_snapshots(db_session, interval="month")
+    assert [r.date for r in rows] == [date(2026, 4, 30), date(2026, 5, 16)]
+
+
+def test_list_snapshots_rejects_unknown_interval(db_session):
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        snap_svc.list_snapshots(db_session, interval="yearly")
+
+
+def test_history_endpoint_interval_param(client, db_session):
+    for d in [date(2026, 5, 11), date(2026, 5, 12), date(2026, 5, 15), date(2026, 5, 18)]:
+        with patch.object(snap_svc.portfolio_service, "get_portfolio_summary",
+                          return_value=_fake_summary()):
+            snap_svc.write_today_snapshot(db_session, today=d)
+    response = client.get("/api/portfolio/history", params={"interval": "week"})
+    assert response.status_code == 200
+    dates = [r["date"] for r in response.json()]
+    assert dates == ["2026-05-15", "2026-05-18"]
+
+
+def test_history_endpoint_rejects_invalid_interval(client):
+    response = client.get("/api/portfolio/history", params={"interval": "yearly"})
+    assert response.status_code == 422
 
 
 def test_history_endpoint_empty_range(client):

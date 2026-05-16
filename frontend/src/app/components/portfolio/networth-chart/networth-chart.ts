@@ -74,6 +74,22 @@ export class NetworthChartComponent implements OnInit {
           tension: 0.25,
           fill: false,
         },
+        {
+          // 累積總損益 = (市值 − 成本) + 已實現損益 + 累積股利
+          // Lifetime cumulative P&L from this portfolio.
+          label: '累積總損益',
+          data: points.map(point => {
+            const mv = Number(point.total_market_value);
+            const cost = Number(point.total_cost);
+            const realized = Number(point.total_realized_pnl ?? 0);
+            const div = Number(point.total_dividends ?? 0);
+            return (mv - cost) + realized + div;
+          }),
+          borderColor: '#16a34a',
+          backgroundColor: '#16a34a',
+          tension: 0.25,
+          fill: false,
+        },
       ],
     };
   });
@@ -108,7 +124,8 @@ export class NetworthChartComponent implements OnInit {
         switchMap(window => {
           this.loading.set(true);
           const range = this.getDateRange(window);
-          return this.portfolioService.getNetworthHistory(range.from, range.to).pipe(
+          const interval = this.getInterval(window);
+          return this.portfolioService.getNetworthHistory(range.from, range.to, interval).pipe(
             catchError(error => {
               console.error('Failed to load networth history', error);
               return of<NetworthPoint[]>([]);
@@ -122,6 +139,17 @@ export class NetworthChartComponent implements OnInit {
         this.loading.set(false);
       });
     this.loadTrigger$.next(this.selectedWindow());
+  }
+
+  private getInterval(window: NetworthWindow): 'day' | 'week' | 'month' {
+    // 1M = daily (~22 pts), 3M = daily (~63 pts), 1Y = weekly (~52 pts),
+    // All = monthly (~60 pts across ~5y). Keeps every chart at ~20-60 data points.
+    switch (window) {
+      case '1M': return 'day';
+      case '3M': return 'day';
+      case '1Y': return 'week';
+      case 'All': return 'month';
+    }
   }
 
   onWindowChange(window: NetworthWindow | null): void {
