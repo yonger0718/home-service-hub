@@ -51,6 +51,7 @@ export class App implements OnInit, OnDestroy {
     else if (url === '/portfolio') newTitle = '投資概覽';
     else if (url === '/portfolio/transactions') newTitle = '股票交易紀錄';
     else if (url === '/portfolio/dividends') newTitle = '股利領取紀錄';
+    else if (url === '/portfolio/import') newTitle = '匯入 CSV';
     else if (url === '/accounting/dashboard') newTitle = '記帳分析';
     else if (url === '/accounting/transactions') newTitle = '交易紀錄';
     else if (url === '/accounting/settings') newTitle = '會計設定';
