@@ -5,7 +5,7 @@
 - [x] 1.3 Implement step 2: call `dividend_event_service.fetch_for_holdings({touched symbols})` for each affected TW year, convert each `DividendEventRow` whose `ex_dividend_date in [recalc_from, recalc_to]` to `HistoricalDividendEvent`, feed through `dividend_auto_record_service.auto_record_for_event`; record per-event failures
 - [x] 1.4 Implement step 3: call `networth_backfill_service.run_backfill(db, recalc_from, recalc_to, phase="both")`; record result
 - [x] 1.5 Wrap each step in its own try/except so one failure does not skip later steps; log `event=post_import.step_failed step=<name>` with exception
-- [x] 1.6 Add module-level `asyncio.Lock` `_RECALC_LOCK` and acquire it around the whole chain
+- [x] 1.6 Add module-level `threading.Lock` `_RECALC_LOCK` and acquire it in `schedule_chain_sync` around the whole chain (thread lock, not asyncio.Lock — `BackgroundTasks` spawns a fresh event loop per call, which would orphan an asyncio primitive)
 - [x] 1.7 Store the latest `ChainResult` in a module-level dict keyed by start-time so the status endpoint can read it; prune entries older than 10 minutes on each write
 
 ## 2. Backend — router wiring

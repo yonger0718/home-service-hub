@@ -1,6 +1,6 @@
 ## Context
 
-CSV import (`POST /api/portfolio/import/transactions/commit` and `/dividends/commit`) currently inserts rows in a single transaction and returns a count. Three independent downstream systems hold derived state:
+CSV import (`POST /api/portfolio/imports/transactions` and `/dividends`) currently inserts rows in a single transaction and returns a count. Three independent downstream systems hold derived state:
 
 1. **`symbol_map`** — maps Chinese names → tickers, used by transaction listing UI.
 2. **`dividend_event` cache** — populated by `dividend_event_service` from TWT48U OpenAPI + multi-source fallback.
@@ -48,14 +48,14 @@ Steps run sequentially: symbol-name backfill → dividend re-fetch → networth 
 Rationale: a TWSE outage during dividend fetch should not block the networth backfill from running with the price data we already have cached.
 
 ### D5 — Manual re-trigger endpoint accepts a date range
-```
-POST /api/portfolio/import/recalc
+```http
+POST /api/portfolio/imports/recalc
 Body: { "start_date": "2024-01-15", "end_date": "2026-05-17" }
 ```
 Defaults: `start_date = min(transactions.trade_date)`, `end_date = today`. Lets the user re-run the chain after fixing transient TWSE errors without re-uploading the CSV.
 
 ### D6 — Frontend toast, not blocking modal
-Import commit returns immediately (200 OK with the row count). UI shows a non-blocking "Recalculation running…" toast. Toast updates to success / partial / failed via a polling call to `GET /api/portfolio/import/recalc/status` (in-memory status object keyed by request id).
+Import commit returns immediately (200 OK with the row count). UI shows a non-blocking "Recalculation running…" toast. Toast updates to success / partial / failed via a polling call to `GET /api/portfolio/imports/recalc/status` (in-memory status object keyed by request id).
 
 Alternative: block the import UI until chain finishes. Rejected — TW history backfill can take 5-10 min; blocking would feel broken.
 
@@ -64,7 +64,7 @@ Alternative: block the import UI until chain finishes. Rejected — TW history b
 - **[Risk]** `BackgroundTasks` state is in-process — restart mid-chain loses the run.
   **Mitigation**: manual `/recalc` endpoint covers retries; status object is best-effort and not persisted.
 - **[Risk]** Two imports in quick succession overlap chains, contending for TWSE rate limit.
-  **Mitigation**: use an `asyncio.Lock` keyed on "recalc-chain-running"; second import's chain waits, OR returns 409 if user prefers. Default: serialize via lock.
+  **Mitigation**: use a `threading.Lock` (not `asyncio.Lock` — FastAPI `BackgroundTasks` runs each invocation on a fresh event loop via `asyncio.run`, so an asyncio primitive bound to one loop would raise `RuntimeError` from another). Second import's chain waits on the lock.
 - **[Risk]** User loses their toast (refresh) and assumes chain failed.
   **Mitigation**: `/recalc/status` returns last result for ~10 minutes after completion; UI fetches on import-page mount.
 - **[Risk]** Networth backfill of large range slows TWSE for other features.

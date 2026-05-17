@@ -161,15 +161,27 @@ def test_dividend_step_swallows_inner_exception(db_session):
 
 
 def test_recalc_lock_serializes_concurrent_chains(db_session):
-    enter_order: list[str] = []
-    exit_order: list[str] = []
+    """Two `schedule_chain_sync` invocations from different threads must run
+    sequentially under `_RECALC_LOCK`. The second chain's first step cannot
+    begin until the first chain's last step has finished — assert strict
+    interleave by timestamps, not just call counts."""
+    import threading
+    import time as _t
+
+    # Tagging by `threading.current_thread()` would lie here — the step runs in
+    # the asyncio default executor, not the caller thread. Track phase only;
+    # with the lock the sequence must be enter→exit→enter→exit. Without the
+    # lock the two enters would bunch up before either exit.
+    events: list[tuple[str, float]] = []  # (phase, monotonic)
+    events_lock = threading.Lock()
+    barrier = threading.Barrier(2)
 
     def slow_symbol(_f):
-        enter_order.append("symbol")
-        # Simulate slow step
-        import time as _t
+        with events_lock:
+            events.append(("enter", _t.monotonic()))
         _t.sleep(0.05)
-        exit_order.append("symbol")
+        with events_lock:
+            events.append(("exit", _t.monotonic()))
         return orch.StepResult("symbol_map_backfill", "ok")
 
     def noop_dividends(_f, _s, _a, _b):
@@ -178,27 +190,32 @@ def test_recalc_lock_serializes_concurrent_chains(db_session):
     def noop_networth(_f, _a, _b):
         return orch.StepResult("networth_backfill", "ok")
 
-    async def runner():
-        with patch.object(orch, "_step_symbol_map_backfill", side_effect=slow_symbol), \
-             patch.object(orch, "_step_dividends", side_effect=noop_dividends), \
-             patch.object(orch, "_step_networth_backfill", side_effect=noop_networth):
-            today = datetime.now(TW).date()
-            await asyncio.gather(
-                orch.run_chain(
-                    _session_factory(db_session),
-                    recalc_from=today, recalc_to=today, touched_symbols={"2330"},
-                ),
-                orch.run_chain(
-                    _session_factory(db_session),
-                    recalc_from=today, recalc_to=today, touched_symbols={"2330"},
-                ),
-            )
+    today = datetime.now(TW).date()
 
-    asyncio.run(runner())
-    # Two chains each call slow_symbol once → 2 enters total.
-    # Because of the lock, the second can only enter after the first exits.
-    assert len(enter_order) == 2
-    assert len(exit_order) == 2
+    def runner():
+        barrier.wait()  # release both threads simultaneously
+        orch.schedule_chain_sync(
+            _session_factory(db_session),
+            recalc_from=today, recalc_to=today, touched_symbols={"2330"},
+        )
+
+    with patch.object(orch, "_step_symbol_map_backfill", side_effect=slow_symbol), \
+         patch.object(orch, "_step_dividends", side_effect=noop_dividends), \
+         patch.object(orch, "_step_networth_backfill", side_effect=noop_networth):
+        t1 = threading.Thread(target=runner, name="chain-a")
+        t2 = threading.Thread(target=runner, name="chain-b")
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+
+    # Each thread enters + exits once → 4 events total.
+    assert len(events) == 4, events
+    by_time = sorted(events, key=lambda e: e[1])
+    phases = [phase for phase, _ in by_time]
+    assert phases == ["enter", "exit", "enter", "exit"], (
+        f"lock did not serialize; phase order was {phases} (expected "
+        "enter→exit→enter→exit; without the lock the two enters would "
+        "interleave as enter→enter→exit→exit)"
+    )
 
 
 # ---------- latest_status / TTL ----------
