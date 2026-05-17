@@ -50,7 +50,9 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     {
       label: '交易',
       value: 'transactions',
-      hint: '代號(symbol), 類別(type), 股數(quantity), 價格(price), 交易日期(trade_date), 手續費(fee), 稅金(tax), 名稱(name) — 任一語言皆可',
+      hint:
+        '代號(symbol), 類別(type), 股數(quantity), 價格(price), 交易日期(trade_date), 手續費(fee), 稅金(tax), 名稱(name) — 任一語言皆可；' +
+        '另可附加 order_id(委託書號/訂單編號) 區分同日同價同量交易',
     },
     {
       label: '股利',
