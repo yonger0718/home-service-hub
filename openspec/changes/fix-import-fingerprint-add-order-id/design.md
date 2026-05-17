@@ -2,7 +2,7 @@
 
 Today's fingerprint:
 
-```
+```text
 SOURCE_TRANSACTIONS | symbol | type | quantity | price(.4f) | trade_date.iso | fee(.4f) | tax(.4f)
 ```
 
@@ -48,7 +48,7 @@ Store nothing about `order_id` in the database. Only fold it into the SHA256 inp
 
 When `order_id` is absent or empty, the canonical hash string appends `""` — but only if we change the format. To preserve byte-for-byte hash compatibility with existing rows, we **conditionally** append the order-id segment:
 
-```
+```python
 canonical = "|".join([
     SOURCE_TRANSACTIONS, symbol, type_, str(quantity),
     f"{price:.4f}", trade_date.iso, f"{fee:.4f}", f"{tax:.4f}",
@@ -64,7 +64,7 @@ if order_id:
 ### 4. Chinese header synonyms
 
 Extend `TRANSACTION_HEADER_SYNONYMS`:
-```
+```python
 "委託書號": "order_id", "訂單編號": "order_id", "委託編號": "order_id",
 ```
 
