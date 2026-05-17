@@ -78,14 +78,51 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.get<ExDividendRecord[]>('/api/portfolio/ex-dividends/upcoming');
   }
 
+  verifyOverrideSymbol(
+    name: string,
+    code: string,
+    tradeDate: string,
+  ): Observable<{
+    name: string;
+    code: string;
+    status: 'verified' | 'name_mismatch' | 'not_traded_on_date' | 'fetch_failed' | 'user_overridden';
+    expected_name: string | null;
+    fetched_name: string | null;
+  }> {
+    return this.http.post<{
+      name: string;
+      code: string;
+      status:
+        | 'verified'
+        | 'name_mismatch'
+        | 'not_traded_on_date'
+        | 'fetch_failed'
+        | 'user_overridden';
+      expected_name: string | null;
+      fetched_name: string | null;
+    }>('/api/portfolio/imports/verify-symbol', {
+      name,
+      code,
+      trade_date: tradeDate,
+    });
+  }
+
   uploadCsv(
     kind: ImportKind,
     file: File,
     dryRun: boolean,
     hasHeader: boolean = true,
+    nameOverrides?: Record<string, string>,
+    confirmedOverrides?: string[],
   ): Observable<ImportResult> {
     const form = new FormData();
     form.append('file', file, file.name);
+    if (nameOverrides && Object.keys(nameOverrides).length > 0) {
+      form.append('name_overrides', JSON.stringify(nameOverrides));
+    }
+    if (confirmedOverrides && confirmedOverrides.length > 0) {
+      form.append('confirmed_overrides', JSON.stringify(confirmedOverrides));
+    }
     const url =
       `/api/portfolio/imports/${kind}` +
       `?dry_run=${dryRun ? 'true' : 'false'}` +

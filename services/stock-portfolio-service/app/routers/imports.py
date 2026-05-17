@@ -1,8 +1,10 @@
 """CSV import endpoints for transactions + dividends.
 
 POST a multipart ``file`` (the CSV) with optional ``?dry_run=true`` to
-preview without writing. The response is the structured ``ImportResult``
-plus the parsed rows (so the UI can render a preview table).
+preview without writing. 國泰 broker CSVs (detected by preamble row) are
+auto-routed to the rehash-capable parser — same upload UX, no extra
+parameter. The response is the structured ``ImportResult`` plus the
+parsed rows (so the UI can render a preview table).
 
 After a successful (non-dry-run) commit with ``created > 0`` the service
 schedules ``post_import_orchestrator.run_chain`` in a ``BackgroundTasks``
@@ -13,17 +15,18 @@ triggered manually via ``POST /api/portfolio/imports/recalc``.
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from datetime import date as dt_date, datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, get_db
 from ..models import portfolio as portfolio_models
-from ..services import import_service, post_import_orchestrator
+from ..services import broker_cathay_service, import_service, per_date_verify, post_import_orchestrator
 
 router = APIRouter(prefix="/api/portfolio/imports", tags=["Portfolio Imports"])
 
@@ -69,6 +72,16 @@ def _serialize_result(
         "dry_run": result.dry_run,
         "errors": [asdict(error) for error in result.errors],
         "created_ids": result.created_ids,
+        "rehashed": result.rehashed,
+        "skipped_unresolved": result.skipped_unresolved,
+        "skipped_unverified": result.skipped_unverified,
+        "unresolved_names": [asdict(name) for name in result.unresolved_names],
+        "override_validations": [
+            asdict(validation) for validation in result.override_validations
+        ],
+        "would_rehash": result.would_rehash,
+        "would_insert": result.would_insert,
+        "would_skip_duplicate": result.would_skip_duplicate,
         "rows": _serialize_parse(parsed),
         "recalc_scheduled": recalc_scheduled,
     }
@@ -135,16 +148,61 @@ def _maybe_schedule_chain(
 def import_transactions(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    name_overrides: str = Form(default=""),
+    confirmed_overrides: str = Form(default=""),
     dry_run: bool = Query(default=False),
     has_header: bool = Query(default=True),
     db: Session = Depends(get_db),
 ) -> dict:
     raw = _read_upload(file)
+    csv_format = import_service.detect_csv_format(raw)
     try:
-        parsed = import_service.parse_transactions_csv(raw, has_header=has_header)
+        overrides_dict = json.loads(name_overrides) if name_overrides.strip() else None
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="name_overrides must be a JSON object",
+        ) from exc
+    if overrides_dict is not None and not isinstance(overrides_dict, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="name_overrides must be a JSON object",
+        )
+    try:
+        confirmed_list = (
+            json.loads(confirmed_overrides) if confirmed_overrides.strip() else []
+        )
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="confirmed_overrides must be a JSON array of strings",
+        ) from exc
+    if not isinstance(confirmed_list, list) or not all(
+        isinstance(name, str) for name in confirmed_list
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="confirmed_overrides must be a JSON array of strings",
+        )
+    confirmed_set = set(confirmed_list)
+    try:
+        if csv_format == "cathay":
+            parsed = broker_cathay_service.parse_cathay_rows(
+                raw,
+                name_overrides=overrides_dict,
+            )
+            result = broker_cathay_service.parse_cathay_transactions_csv(
+                raw,
+                dry_run=dry_run,
+                db=db,
+                name_overrides=overrides_dict,
+                confirmed_overrides=confirmed_set,
+            )
+        else:
+            parsed = import_service.parse_transactions_csv(raw, has_header=has_header)
+            result = import_service.commit_transactions(db, parsed, dry_run=dry_run)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result = import_service.commit_transactions(db, parsed, dry_run=dry_run)
     recalc_scheduled = False
     if not result.dry_run and result.created > 0:
         symbols, min_trade = _touched_symbols_and_min_trade_date(db, result.created_ids)
@@ -175,6 +233,27 @@ def import_dividends(
             background_tasks, touched_symbols=symbols, recalc_from=min_ex
         )
     return _serialize_result(parsed, result, recalc_scheduled=recalc_scheduled)
+
+
+@router.post("/verify-symbol")
+def verify_symbol(body: dict = Body(...)) -> dict:
+    name = (body.get("name") or "").strip()
+    code = (body.get("code") or "").strip()
+    raw_date = (body.get("trade_date") or "").strip()
+    if not name or not code or not raw_date:
+        raise HTTPException(
+            status_code=400,
+            detail="name, code, and trade_date are required",
+        )
+    try:
+        trade_date = dt_date.fromisoformat(raw_date)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="trade_date must be YYYY-MM-DD",
+        ) from exc
+    validation = per_date_verify.verify_single(name, code, trade_date)
+    return asdict(validation)
 
 
 @router.post("/recalc")
