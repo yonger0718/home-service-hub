@@ -1,4 +1,5 @@
 <p-toast></p-toast>
+<p-confirmDialog></p-confirmDialog>
 
 <div class="import-page">
   <p-card>
@@ -52,13 +53,12 @@
     </div>
 
     <ng-container *ngIf="recalcStatus() as s">
-      <div class="recalc-banner" *ngIf="s.state !== 'idle'">
+      <div class="recalc-banner" *ngIf="s.state === 'running' || s.state === 'partial' || s.state === 'failed'">
         <ng-container [ngSwitch]="s.state">
           <span *ngSwitchCase="'running'">
             <i class="pi pi-spin pi-spinner"></i>
             資料重算執行中（步驟：{{ s.current_step ?? '排隊中' }}）…
           </span>
-          <span *ngSwitchCase="'completed'" class="ok">資料重算完成</span>
           <span *ngSwitchCase="'partial'" class="warn">
             重算部分失敗
             <p-button label="重試" icon="pi pi-refresh" size="small" severity="warn"
@@ -80,6 +80,73 @@
         <span class="badge skip">重複 {{ r.skipped_duplicates }}</span>
         <span class="badge err" *ngIf="r.errors.length > 0">錯誤 {{ r.errors.length }}</span>
         <span class="mode-tag" *ngIf="r.dry_run">DRY-RUN</span>
+      </div>
+      <div *ngIf="r.rehashed && r.rehashed > 0">重算指紋 {{ r.rehashed }} 筆</div>
+      <div *ngIf="r.skipped_unresolved && r.skipped_unresolved > 0" class="warn">
+        ⚠️ 未識別 {{ r.skipped_unresolved }} 筆，將略過（請於下方填入代號後再次預覽）
+      </div>
+
+      <ng-container *ngIf="hasOverrideRows()">
+        <h3>未識別股名（請手動填入代號）</h3>
+        <p-table [value]="unresolvedRows()" [scrollable]="true" scrollHeight="240px"
+                 [rowTrackBy]="trackByName" dataKey="name">
+          <ng-template pTemplate="header">
+            <tr><th>股名</th><th>筆數</th><th>樣本日期</th><th>對應代號</th><th>驗證</th><th>確認送出</th></tr>
+          </ng-template>
+          <ng-template pTemplate="body" let-u>
+            <tr>
+              <td>{{ u.name }}</td>
+              <td>{{ u.occurrences }}</td>
+              <td>{{ u.sample_dates.join(', ') }}</td>
+              <td>
+                <input pInputText type="text"
+                       [value]="nameOverrides()[u.name] || ''"
+                       (input)="setOverride(u.name, $any($event.target).value)"
+                       placeholder="例：2888">
+                <p-button label="驗證" icon="pi pi-search" size="small" severity="info"
+                          [loading]="isVerifying(u.name)"
+                          [disabled]="!nameOverrides()[u.name]?.trim()"
+                          (onClick)="verifyName(u.name, u.sample_dates)"
+                          styleClass="ml-2"></p-button>
+              </td>
+              <td>
+                <ng-container *ngIf="validationFor(u.name) as v">
+                  <i [class]="validationIcon(v.status).icon"
+                     [style.color]="validationIcon(v.status).color"
+                     [pTooltip]="v.status === 'name_mismatch'
+                       ? validationIcon(v.status).label + '：查到「' + v.fetched_name + '」'
+                       : validationIcon(v.status).label"></i>
+                  <small class="muted" *ngIf="v.status === 'name_mismatch'">
+                    （查到「{{ v.fetched_name }}」）
+                  </small>
+                </ng-container>
+                <span *ngIf="!validationFor(u.name) && nameOverrides()[u.name]?.trim()" class="muted">
+                  尚未驗證
+                </span>
+              </td>
+              <td>
+                <ng-container *ngIf="validationFor(u.name) as v">
+                  <p-checkbox *ngIf="needsConfirm(v.status)"
+                              [binary]="true"
+                              [ngModel]="confirmedOverrides().has(u.name)"
+                              (ngModelChange)="toggleConfirm(u.name, $event)">
+                  </p-checkbox>
+                </ng-container>
+              </td>
+            </tr>
+          </ng-template>
+        </p-table>
+        <div class="actions">
+          <p-button label="套用對應並再次預覽" icon="pi pi-refresh" severity="secondary"
+                    [disabled]="!file() || busy()" (onClick)="preview()"></p-button>
+          <small class="muted" *ngIf="pendingOverrideCount() > 0">
+            尚有 {{ pendingOverrideCount() }} 個未填；正式匯入時這些列仍會被略過
+          </small>
+        </div>
+      </ng-container>
+
+      <div *ngIf="r.skipped_unverified && r.skipped_unverified > 0" class="warn">
+        ⚠️ 未驗證 {{ r.skipped_unverified }} 筆（未勾「確認送出」的代號），將略過
       </div>
 
       <h3 *ngIf="r.errors.length > 0">錯誤明細</h3>
