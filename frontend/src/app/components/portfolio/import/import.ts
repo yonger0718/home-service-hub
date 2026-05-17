@@ -214,9 +214,11 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   }
 
   validationFor(name: string): { status: OverrideStatus; expected_name?: string | null; fetched_name?: string | null } | null {
-    // Local per-row verify result wins; fall back to whatever batch dry-run returned.
-    return this.localValidations().get(name)
-      ?? this.result()?.override_validations?.find(v => v.name === name)
+    // Latest backend response wins so post-commit (where the server actually
+    // verified during the import) supersedes any stale local-per-row state.
+    // Local cache only fills the gap before the next preview/commit lands.
+    return this.result()?.override_validations?.find(v => v.name === name)
+      ?? this.localValidations().get(name)
       ?? null;
   }
 

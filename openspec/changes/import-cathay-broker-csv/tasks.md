@@ -11,7 +11,7 @@
 
 ## 3. 國泰 parser
 
-- [x] 3.1 New module `app/services/broker_cathay_service.py` exposing `parse_cathay_transactions_csv(raw_bytes: bytes, *, rehash: bool, dry_run: bool, db: Session) -> ImportResult`.
+- [x] 3.1 New module `app/services/broker_cathay_service.py` exposing `parse_cathay_transactions_csv(raw_bytes: bytes, *, dry_run: bool, db: Session, name_overrides: dict[str, str] | None = None, confirmed_overrides: set[str] | None = None) -> ImportResult` (rehash auto-applied on the cathay dispatch path — no caller-facing toggle).
 - [x] 3.2 Inside the parser: open with `csv.reader`, drop the preamble line (`readline()` once before constructing `DictReader`), then `DictReader` to enumerate data rows.
 - [x] 3.3 Per-row pipeline: resolve `股名 → symbol` (task 1.3); map `買賣別 → type` via `CATHAY_SIDE_MAP` and split prefix into `broker_subtype`; parse `日期` as `YYYY/MM/DD` → `date`; strip comma thousands separators from `成交股數`, `成交價`, `手續費`, `交易稅`; carry `委託書號 → order_id` (empty string → `None`); ignore all margin/interest columns; populate `payload` dict including `broker_subtype`.
 - [x] 3.4 Compute fingerprint via existing `_transaction_fingerprint` from `import_service` (re-export from there or import directly). DO NOT duplicate the hash function.
@@ -44,7 +44,7 @@
 - [x] 6.11 `test_rehash_existing_legacy_row_updates_in_place_no_insert` — seed DB row with `legacy_fp`, run rehash, assert `rehashed=1, created=0`, assert row's `import_fingerprint` now equals `new_fp`.
 - [x] 6.12 `test_rehash_recovers_same_day_collision_twin` — seed 1 row at `legacy_fp` representing collision, feed CSV with 2 rows + distinct `order_id`, assert `rehashed=1, created=1`, final DB has 2 rows.
 - [x] 6.13 `test_rehash_idempotent_second_run_all_skipped` — run rehash twice, second run reports `skipped_duplicates == N`, `rehashed=0`, `created=0`.
-- [x] 6.14 `test_rehash_unresolvable_name_rolls_back_batch` — CSV with one bad row → DB unchanged, response surfaces error.
+- [x] 6.14 `test_unresolved_name_collected_not_raised` — CSV with one unknown 股名 → row skipped + accumulated into `unresolved_names`; resolvable rows continue and the batch is NOT rolled back. (Post-revision semantics from section 11.5 — unknown names surface to the override UX, only `ambiguous symbol` matches still hard-fail.)
 - [x] 6.15 `test_dry_run_rehash_reports_counts_writes_nothing` — assert response counts non-zero, DB row count and hashes unchanged.
 - [x] 6.16 ~~`test_rehash_on_generic_csv_rejected_with_400`~~ — N/A after design revision (no `rehash` query param exists; nothing to reject). Test removed.
 
@@ -84,7 +84,7 @@ Goal: instead of rolling back on unresolved names, surface the unresolved list t
 - [x] 11.2 New dataclass `@dataclass UnresolvedName { name: str, occurrences: int, sample_dates: list[str] }` exported from `broker_cathay_service` (or `import_service` if shared).
 - [x] 11.3 Extend `ParseResult` (shared with generic path) with `unresolved_names: list[UnresolvedName] = field(default_factory=list)`. Generic path always empty.
 - [x] 11.4 Extend `ImportResult` with `skipped_unresolved: int = 0`. Generic path stays 0.
-- [x] 11.5 Change cathay row pipeline: on `resolve_symbol` ValueError where reason is "cannot resolve" (unknown name) → accumulate into `unresolved_names` and skip the row; do NOT roll back. On `resolve_symbol` ValueError where reason is "ambiguous" → row-level hard error (`errors`) AND batch rollback (current behavior).
+- [x] 11.5 Change cathay row pipeline: on `resolve_symbol` ValueError whose message contains "cannot resolve" (unknown name) OR "ambiguous symbol" (multiple candidates in `NAME_TO_SYMBOL`) → accumulate into `unresolved_names` and skip the row; do NOT roll back. Both flow into the same override UX so the user can pick the right ticker. Any other ValueError still propagates as a hard error.
 - [x] 11.6 Router: accept multipart form field `name_overrides: str = Form(default="")` (JSON-encoded). Parse to `dict[str, str]` (or `{}` if empty). Pass to `parse_cathay_transactions_csv`. Generic path ignores it.
 - [x] 11.7 `parse_cathay_transactions_csv(raw, *, dry_run, db, name_overrides)` — plumb through.
 - [x] 11.8 `_serialize_result` in router includes `skipped_unresolved` + `unresolved_names`. Generic path defaults both to `0`/`[]`.

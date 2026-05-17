@@ -299,24 +299,27 @@ def test_unresolved_does_not_rollback_resolved_rows(db_session):
     assert db_session.query(models.Transaction).count() == 2
 
 
-def test_ambiguous_name_still_rolls_back_batch(db_session, monkeypatch):
+def test_ambiguous_name_surfaces_to_unresolved_panel(db_session, monkeypatch):
+    """Per PR #6 review: ambiguous names (multiple candidates in
+    NAME_TO_SYMBOL) now flow into the same override UX as unknown names,
+    instead of hard-failing the batch. The user picks the right ticker on the
+    frontend; resolvable rows commit as usual."""
     monkeypatch.setitem(broker_cathay_service.NAME_TO_SYMBOL, "模擬曖昧", ["A", "B"])
     tx = _seed_legacy_transaction(db_session)
-    before_hash = tx.import_fingerprint
     result = broker_cathay_service.parse_cathay_transactions_csv(
         _cathay_csv(_row(order_id="aT532"), _row(name="模擬曖昧", order_id="bad")),
         dry_run=False,
         db=db_session,
     )
 
-    assert result.rehashed == 0
+    # Resolvable row still rehashes; ambiguous one is collected for the
+    # override panel rather than poisoning the whole batch.
+    assert result.rehashed == 1
     assert result.created == 0
-    assert len(result.errors) == 1
-    assert "ambiguous symbol" in result.errors[0].message
-    assert result.unresolved_names == []
+    assert result.errors == []
+    assert [u.name for u in result.unresolved_names] == ["模擬曖昧"]
+    assert result.skipped_unresolved == 1
     assert db_session.query(models.Transaction).count() == 1
-    db_session.refresh(tx)
-    assert tx.import_fingerprint == before_hash
 
 
 def test_endpoint_accepts_name_overrides_form_field(client, monkeypatch):

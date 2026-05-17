@@ -1,3 +1,3 @@
 # Stock Portfolio Service
 
-To refresh the bundled broker name map, run `python scripts/refresh_name_to_symbol.py` from this service root. The script copies `/home/opc/workspace/stonk/code_name_map.json` into `app/data/name_to_symbol.json`.
+To refresh the bundled broker name map, run `python scripts/refresh_name_to_symbol.py` from this service root. The script regenerates `app/data/name_to_symbol.json` by enumerating `twstock.codes` (TWSE listed + TPEx OTC + ETFs + ETNs + active warrants), so the only prerequisite is an up-to-date `twstock` dependency.
