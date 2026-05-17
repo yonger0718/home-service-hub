@@ -40,6 +40,28 @@
                 [disabled]="!file() && !result()" (onClick)="onClear()"></p-button>
     </div>
 
+    <ng-container *ngIf="recalcStatus() as s">
+      <div class="recalc-banner" *ngIf="s.state !== 'idle'">
+        <ng-container [ngSwitch]="s.state">
+          <span *ngSwitchCase="'running'">
+            <i class="pi pi-spin pi-spinner"></i>
+            資料重算執行中（步驟：{{ s.current_step ?? '排隊中' }}）…
+          </span>
+          <span *ngSwitchCase="'completed'" class="ok">資料重算完成</span>
+          <span *ngSwitchCase="'partial'" class="warn">
+            重算部分失敗
+            <p-button label="重試" icon="pi pi-refresh" size="small" severity="warn"
+                      (onClick)="retryRecalc()"></p-button>
+          </span>
+          <span *ngSwitchCase="'failed'" class="err">
+            重算失敗
+            <p-button label="重試" icon="pi pi-refresh" size="small" severity="danger"
+                      (onClick)="retryRecalc()"></p-button>
+          </span>
+        </ng-container>
+      </div>
+    </ng-container>
+
     <ng-container *ngIf="result() as r">
       <div class="summary">
         <span class="badge">解析 {{ r.parsed }}</span>
