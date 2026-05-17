@@ -13,7 +13,7 @@
 - [x] 2.1 Modify `app/routers/imports.py` `import_transactions` handler to accept `BackgroundTasks` and schedule `post_import_orchestrator.run_chain` when `dry_run=False`, `result.created > 0`, and `POST_IMPORT_RECALC_ENABLED != "false"`; touched symbols + recalc_from derived from the newly-created rows
 - [x] 2.2 Same wiring for `import_dividends`
 - [x] 2.3 Add `recalc_scheduled: bool` to both endpoints' response body
-- [x] 2.4 Add `POST /api/portfolio/imports/recalc` endpoint accepting `{start_date?, end_date?}`; default start to `min(transactions.trade_date)`, end to today_tw; return 409 if no transactions exist
+- [x] 2.4 Add `POST /api/portfolio/imports/recalc` endpoint accepting `{start_date?, end_date?}`; default start to `min(transactions.trade_date)`, end to today; return 409 if no transactions exist
 - [x] 2.5 Add `GET /api/portfolio/imports/recalc/status` endpoint reading from the orchestrator's in-memory result dict; return `{state: "idle"}` when no recent run
 
 ## 3. Backend — config + feature flag
@@ -23,7 +23,7 @@
 
 ## 4. Backend — tests
 
-- [x] 4.1 Unit test: chain skipped when `inserted_count == 0`
+- [x] 4.1 Unit test: chain skipped when `result.created == 0`
 - [x] 4.2 Unit test: chain calls steps in order — symbol-map → dividends → networth
 - [x] 4.3 Unit test: step 2 failure does not skip step 3 (mock dividend service to raise)
 - [x] 4.4 Unit test: feature-flag off → orchestrator not scheduled
