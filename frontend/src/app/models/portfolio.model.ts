@@ -31,10 +31,39 @@ export interface ImportError {
   message: string;
 }
 
+export interface UnresolvedName {
+  name: string;
+  occurrences: number;
+  sample_dates: string[];
+}
+
+export type OverrideStatus =
+  | 'verified'
+  | 'name_mismatch'
+  | 'not_traded_on_date'
+  | 'fetch_failed'
+  | 'user_overridden';
+
+export interface OverrideValidation {
+  name: string;
+  code: string;
+  status: OverrideStatus;
+  expected_name?: string | null;
+  fetched_name?: string | null;
+}
+
 export interface ImportResult {
   parsed: number;
   created: number;
   skipped_duplicates: number;
+  rehashed?: number;
+  would_rehash?: number;
+  would_insert?: number;
+  would_skip_duplicate?: number;
+  skipped_unresolved?: number;
+  skipped_unverified?: number;
+  unresolved_names?: UnresolvedName[];
+  override_validations?: OverrideValidation[];
   dry_run: boolean;
   errors: ImportError[];
   created_ids: number[];

@@ -25,11 +25,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
+from typing import Literal
 
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as models
 from . import portfolio_service as svc
+from .per_date_verify import OverrideValidation
 
 TRANSACTION_FIELDS = (
     "symbol",
@@ -94,9 +96,17 @@ class ParseError:
 
 
 @dataclass
+class UnresolvedName:
+    name: str
+    occurrences: int
+    sample_dates: list[str]
+
+
+@dataclass
 class ParseResult:
     rows: list[ParsedRow]
     errors: list[ParseError]
+    unresolved_names: list[UnresolvedName] = field(default_factory=list)
 
 
 @dataclass
@@ -107,6 +117,14 @@ class ImportResult:
     errors: list[ParseError]
     dry_run: bool
     created_ids: list[int] = field(default_factory=list)
+    rehashed: int = 0
+    skipped_unresolved: int = 0
+    skipped_unverified: int = 0
+    unresolved_names: list[UnresolvedName] = field(default_factory=list)
+    override_validations: list[OverrideValidation] = field(default_factory=list)
+    would_rehash: int = 0
+    would_insert: int = 0
+    would_skip_duplicate: int = 0
 
 
 def _required(row: dict, key: str, row_index: int) -> str:
@@ -198,6 +216,16 @@ def _prepend_canonical_header(raw: bytes, expected: tuple[str, ...]) -> bytes:
     if raw.startswith(b"\xef\xbb\xbf"):
         raw = raw[3:]
     return header + raw
+
+
+def detect_csv_format(raw: bytes) -> Literal["generic", "cathay"]:
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        # Surface as ValueError so the router translates to 400 instead of 500.
+        raise ValueError("CSV must be UTF-8 encoded") from exc
+    first_non_empty = next((line for line in text.splitlines() if line.strip()), "")
+    return "cathay" if first_non_empty.startswith("根據您篩選的結果") else "generic"
 
 
 def _transaction_fingerprint(
@@ -459,6 +487,10 @@ def commit_transactions(
         errors=errors,
         dry_run=dry_run,
         created_ids=created_ids,
+        rehashed=0,
+        skipped_unresolved=0,
+        skipped_unverified=0,
+        override_validations=[],
     )
 
 
@@ -491,4 +523,8 @@ def commit_dividends(
         errors=errors,
         dry_run=dry_run,
         created_ids=created_ids,
+        rehashed=0,
+        skipped_unresolved=0,
+        skipped_unverified=0,
+        override_validations=[],
     )
