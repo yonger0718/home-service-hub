@@ -6,9 +6,14 @@ symbols → networth backfill across the affected date range. Each step is
 isolated so a single TWSE outage cannot block the rest of the chain.
 
 State is kept in-process: a module-level ``_LATEST_RESULTS`` dict keyed
-by start timestamp, plus an ``asyncio.Lock`` that serializes concurrent
+by start timestamp, plus a ``threading.Lock`` that serializes concurrent
 invocations. This fits the single-instance deployment; a worker queue
 would be overkill and adds an operational surface for one user.
+
+The lock is a thread lock (not asyncio.Lock) because FastAPI ``BackgroundTasks``
+runs sync callables in worker threads, each of which spins up its own event loop
+via ``asyncio.run``. An asyncio.Lock bound to a different loop would raise
+``RuntimeError`` under concurrent invocations.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import date as dt_date, datetime, timedelta, timezone
 from typing import Callable, ContextManager, Optional
@@ -31,7 +37,8 @@ from .dividend_history_service import HistoricalDividendEvent
 logger = logging.getLogger(__name__)
 
 _TW_OFFSET = timezone(timedelta(hours=8))
-_RECALC_LOCK = asyncio.Lock()
+_RECALC_LOCK = threading.Lock()
+_RESULTS_LOCK = threading.Lock()
 _LATEST_RESULTS: dict[str, "ChainResult"] = {}
 _RESULT_TTL_SEC = 600  # status endpoint surfaces the last run for 10 min
 _FLAG_ENV = "POST_IMPORT_RECALC_ENABLED"
@@ -72,7 +79,8 @@ def today_tw() -> dt_date:
     return datetime.now(_TW_OFFSET).date()
 
 
-def _prune_results(now: datetime) -> None:
+def _prune_results_locked(now: datetime) -> None:
+    """Caller must hold _RESULTS_LOCK."""
     cutoff = now - timedelta(seconds=_RESULT_TTL_SEC)
     stale = [
         key
@@ -85,17 +93,19 @@ def _prune_results(now: datetime) -> None:
 
 
 def _store(result: ChainResult) -> None:
-    _prune_results(datetime.now(timezone.utc))
-    _LATEST_RESULTS[result.started_at] = result
+    with _RESULTS_LOCK:
+        _prune_results_locked(datetime.now(timezone.utc))
+        _LATEST_RESULTS[result.started_at] = result
 
 
 def latest_status() -> dict:
     """Return the most recent chain result (or `{state: idle}` if none recent)."""
-    _prune_results(datetime.now(timezone.utc))
-    if not _LATEST_RESULTS:
-        return {"state": "idle"}
-    most_recent_key = max(_LATEST_RESULTS.keys())
-    result = _LATEST_RESULTS[most_recent_key]
+    with _RESULTS_LOCK:
+        _prune_results_locked(datetime.now(timezone.utc))
+        if not _LATEST_RESULTS:
+            return {"state": "idle"}
+        most_recent_key = max(_LATEST_RESULTS.keys())
+        result = _LATEST_RESULTS[most_recent_key]
     return _serialize(result)
 
 
@@ -122,7 +132,8 @@ def _serialize(result: ChainResult) -> dict:
 
 def reset_state_for_tests() -> None:
     """Drop in-memory state. Tests only."""
-    _LATEST_RESULTS.clear()
+    with _RESULTS_LOCK:
+        _LATEST_RESULTS.clear()
 
 
 # ---------- Chain steps ----------
@@ -155,7 +166,7 @@ def _step_dividends(
             detail={"reason": "no touched symbols"},
         )
     try:
-        years = sorted({recalc_from.year, recalc_to.year})
+        years = list(range(recalc_from.year, recalc_to.year + 1))
         events_processed = 0
         cash_inserted = 0
         stock_inserted = 0
@@ -273,7 +284,9 @@ async def run_chain(
     recalc_to: dt_date,
     touched_symbols: set[str],
 ) -> ChainResult:
-    """Run the full recalc chain. Holds ``_RECALC_LOCK`` for the duration."""
+    """Run the full recalc chain. Caller (``schedule_chain_sync``) holds
+    ``_RECALC_LOCK`` for the duration so this coroutine does not touch the lock
+    itself — see module docstring for why the lock is ``threading.Lock``."""
     started = datetime.now(timezone.utc)
     result = ChainResult(
         state="running",
@@ -285,42 +298,41 @@ async def run_chain(
     )
     _store(result)
 
-    async with _RECALC_LOCK:
-        loop = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop()
 
-        for step_name, runner in (
-            ("symbol_map_backfill", lambda: _step_symbol_map_backfill(session_factory)),
-            (
-                "dividend_auto_record",
-                lambda: _step_dividends(
-                    session_factory, touched_symbols, recalc_from, recalc_to
-                ),
+    for step_name, runner in (
+        ("symbol_map_backfill", lambda: _step_symbol_map_backfill(session_factory)),
+        (
+            "dividend_auto_record",
+            lambda: _step_dividends(
+                session_factory, touched_symbols, recalc_from, recalc_to
             ),
-            (
-                "networth_backfill",
-                lambda: _step_networth_backfill(session_factory, recalc_from, recalc_to),
-            ),
-        ):
-            result.current_step = step_name
-            _store(result)
-            step_result = await loop.run_in_executor(None, runner)
-            result.steps.append(step_result)
-            _store(result)
-
-        result.current_step = None
-        result.finished_at = datetime.now(timezone.utc).isoformat()
-        result.state = _final_state(result.steps)
+        ),
+        (
+            "networth_backfill",
+            lambda: _step_networth_backfill(session_factory, recalc_from, recalc_to),
+        ),
+    ):
+        result.current_step = step_name
         _store(result)
-        logger.info(
-            "post_import.chain_done",
-            extra={
-                "state": result.state,
-                "started_at": result.started_at,
-                "finished_at": result.finished_at,
-                "touched_symbols": result.touched_symbols,
-            },
-        )
-        return result
+        step_result = await loop.run_in_executor(None, runner)
+        result.steps.append(step_result)
+        _store(result)
+
+    result.current_step = None
+    result.finished_at = datetime.now(timezone.utc).isoformat()
+    result.state = _final_state(result.steps)
+    _store(result)
+    logger.info(
+        "post_import.chain_done",
+        extra={
+            "state": result.state,
+            "started_at": result.started_at,
+            "finished_at": result.finished_at,
+            "touched_symbols": result.touched_symbols,
+        },
+    )
+    return result
 
 
 def schedule_chain_sync(
@@ -330,12 +342,18 @@ def schedule_chain_sync(
     recalc_to: dt_date,
     touched_symbols: set[str],
 ) -> ChainResult:
-    """Sync entrypoint for FastAPI ``BackgroundTasks`` (which calls regular callables)."""
-    return asyncio.run(
-        run_chain(
-            session_factory,
-            recalc_from=recalc_from,
-            recalc_to=recalc_to,
-            touched_symbols=touched_symbols,
+    """Sync entrypoint for FastAPI ``BackgroundTasks`` (which calls regular callables).
+
+    Serializes concurrent chain runs via ``_RECALC_LOCK``. The lock is acquired
+    here (sync, before spawning the event loop) so each ``asyncio.run`` below
+    operates on its own loop without ever touching the shared lock primitive.
+    """
+    with _RECALC_LOCK:
+        return asyncio.run(
+            run_chain(
+                session_factory,
+                recalc_from=recalc_from,
+                recalc_to=recalc_to,
+                touched_symbols=touched_symbols,
+            )
         )
-    )

@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { finalize } from 'rxjs';
 
 import { ButtonModule } from 'primeng/button';
 import { CardModule } from 'primeng/card';
@@ -65,7 +66,8 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   readonly recalcStatus = signal<RecalcStatus>({ state: 'idle' });
   readonly hasHeader = signal<boolean>(true);
 
-  private pollHandle: ReturnType<typeof setInterval> | null = null;
+  private pollHandle: ReturnType<typeof setTimeout> | null = null;
+  private statusRequestInFlight = false;
 
   ngOnInit(): void {
     // Refresh might have happened mid-recalc — surface the current state on mount.
@@ -152,27 +154,41 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
 
   private startPolling(): void {
     this.stopPolling();
-    this.fetchRecalcStatus(false);
-    this.pollHandle = setInterval(() => this.fetchRecalcStatus(false), POLL_INTERVAL_MS);
+    this.fetchRecalcStatus(true);
+  }
+
+  private scheduleNextPoll(): void {
+    this.stopPolling();
+    this.pollHandle = setTimeout(() => this.fetchRecalcStatus(false), POLL_INTERVAL_MS);
   }
 
   private stopPolling(): void {
     if (this.pollHandle !== null) {
-      clearInterval(this.pollHandle);
+      clearTimeout(this.pollHandle);
       this.pollHandle = null;
     }
   }
 
   private fetchRecalcStatus(startPollingIfRunning: boolean): void {
-    this.portfolioService.getRecalcStatus().subscribe({
+    // In-flight guard: a slow status response must not race a freshly-fired one.
+    // The chained setTimeout below only schedules the next poll after the current
+    // request settles, so this guard is mainly belt-and-suspenders for the
+    // ngOnInit + post-commit double-call edges.
+    if (this.statusRequestInFlight) return;
+    this.statusRequestInFlight = true;
+    this.portfolioService.getRecalcStatus().pipe(
+      finalize(() => {
+        this.statusRequestInFlight = false;
+      }),
+    ).subscribe({
       next: status => {
         const prevState = this.recalcStatus().state;
         this.recalcStatus.set(status);
         if (status.state === 'running') {
-          if (startPollingIfRunning && this.pollHandle === null) {
-            this.pollHandle = setInterval(
-              () => this.fetchRecalcStatus(false), POLL_INTERVAL_MS,
-            );
+          // Keep polling as long as we were polling already (prevState=running),
+          // or the caller explicitly asked us to start (ngOnInit / startPolling).
+          if (startPollingIfRunning || prevState === 'running') {
+            this.scheduleNextPoll();
           }
           return;
         }
@@ -206,7 +222,18 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
         this.stopPolling();
       },
       error: () => {
-        // Status endpoint failing should not loop forever.
+        // Status endpoint failing should not loop forever, and should not leave
+        // the banner stuck on 'running' (which would mislead the user into
+        // thinking work is still happening).
+        this.recalcStatus.update(prev =>
+          prev.state === 'running' ? { ...prev, state: 'failed' } : prev,
+        );
+        this.messageService.add({
+          severity: 'warn',
+          summary: '無法取得重算狀態',
+          detail: '請稍後重試，或手動點擊「重試」',
+          life: 5000,
+        });
         this.stopPolling();
       },
     });

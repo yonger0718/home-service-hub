@@ -11,7 +11,7 @@ CSV import currently writes rows and stops. The portfolio summary, dividend even
   3. **Dividend re-fetch**: call `dividend_event_service` for each newly-touched symbol (covers ex-dividend dates in the imported range).
   4. **Networth backfill**: fire `networth_backfill_service.backfill_range(start=min(new_tx.trade_date), end=today)`.
 - Expose CSV upload in primary navigation (top-level link in `app.html`, route already at `/portfolio/import`).
-- Add a `POST /api/portfolio/import/recalc` endpoint to manually re-trigger the chain (no CSV needed) — used for retries when a chain step fails.
+- Add a `POST /api/portfolio/imports/recalc` endpoint to manually re-trigger the chain (no CSV needed) — used for retries when a chain step fails.
 - Surface chain progress + result in the import page UI (toast on completion, error banner on partial failure).
 
 ## Capabilities
