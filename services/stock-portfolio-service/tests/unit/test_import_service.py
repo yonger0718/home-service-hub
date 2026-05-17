@@ -50,7 +50,7 @@ def test_parse_transactions_rejects_bad_header():
     ("row", "needle"),
     [
         (",BUY,10,600,2026-05-15T01:30:00Z,0,0,", "'symbol'"),
-        ("2330,HOLD,10,600,2026-05-15T01:30:00Z,0,0,", "BUY or SELL"),
+        ("2330,HOLD,10,600,2026-05-15T01:30:00Z,0,0,", "BUY/SELL"),
         ("2330,BUY,0,600,2026-05-15T01:30:00Z,0,0,", "positive"),
         ("2330,BUY,abc,600,2026-05-15T01:30:00Z,0,0,", "integer"),
         ("2330,BUY,10,-1,2026-05-15T01:30:00Z,0,0,", "positive"),
@@ -213,3 +213,69 @@ def test_endpoint_rejects_bad_header(client):
     body = response.json()
     error_text = body.get("detail") or body.get("message") or ""
     assert "header" in error_text
+
+
+# ---------- Localised headers + Chinese type values ----------
+
+
+def test_parse_transactions_accepts_chinese_headers():
+    raw = (
+        "代號,類別,股數,價格,交易日期,手續費,稅金,名稱\n"
+        "2330,買進,10,600.00,2026-05-15T01:30:00Z,28,0,台積電\n"
+        "0050,賣出,5,140.50,2026-05-15T02:00:00Z,5,14,\n"
+    ).encode("utf-8")
+    parsed = import_service.parse_transactions_csv(raw)
+    assert parsed.errors == []
+    assert len(parsed.rows) == 2
+    assert parsed.rows[0].payload["type"] == "BUY"
+    assert parsed.rows[1].payload["type"] == "SELL"
+    assert parsed.rows[0].payload["symbol"] == "2330"
+
+
+def test_parse_transactions_mixes_english_and_chinese_columns():
+    raw = (
+        "代碼,type,股數,price,trade_date,fee,tax,name\n"
+        "2330,買,10,600,2026-05-15T01:30:00Z,28,0,\n"
+    ).encode("utf-8")
+    parsed = import_service.parse_transactions_csv(raw)
+    assert parsed.errors == []
+    assert parsed.rows[0].payload["type"] == "BUY"
+
+
+def test_parse_transactions_ignores_unknown_extra_columns():
+    raw = (
+        "symbol,type,quantity,price,trade_date,fee,tax,name,備註\n"
+        "2330,BUY,10,600,2026-05-15T01:30:00Z,0,0,,broker-export\n"
+    ).encode("utf-8")
+    parsed = import_service.parse_transactions_csv(raw)
+    assert parsed.errors == []
+    assert len(parsed.rows) == 1
+
+
+def test_parse_transactions_no_header_mode():
+    raw = b"2330,BUY,10,600.00,2026-05-15T01:30:00Z,28,0,\n"
+    parsed = import_service.parse_transactions_csv(raw, has_header=False)
+    assert parsed.errors == []
+    assert len(parsed.rows) == 1
+    assert parsed.rows[0].payload["symbol"] == "2330"
+
+
+def test_parse_dividends_accepts_chinese_headers():
+    raw = (
+        "代號,金額,除息日,入帳日\n"
+        "2330,3000,2026-06-12T00:00:00Z,2026-07-15T00:00:00Z\n"
+    ).encode("utf-8")
+    parsed = import_service.parse_dividends_csv(raw)
+    assert parsed.errors == []
+    assert parsed.rows[0].payload["symbol"] == "2330"
+    assert parsed.rows[0].payload["amount"] == Decimal("3000")
+
+
+def test_endpoint_has_header_false_query(client):
+    raw = b"2330,BUY,10,600.00,2026-05-15T01:30:00Z,28,0,\n"
+    response = client.post(
+        "/api/portfolio/imports/transactions?has_header=false",
+        files={"file": ("tx.csv", BytesIO(raw), "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 1

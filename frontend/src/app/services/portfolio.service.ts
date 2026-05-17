@@ -10,6 +10,8 @@ import {
   ImportKind,
   ImportResult,
   NetworthPoint,
+  RecalcStatus,
+  RecalcTriggerResponse,
   CorporateAction,
   UpcomingEvent,
   Paged,
@@ -76,11 +78,27 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.get<ExDividendRecord[]>('/api/portfolio/ex-dividends/upcoming');
   }
 
-  uploadCsv(kind: ImportKind, file: File, dryRun: boolean): Observable<ImportResult> {
+  uploadCsv(
+    kind: ImportKind,
+    file: File,
+    dryRun: boolean,
+    hasHeader: boolean = true,
+  ): Observable<ImportResult> {
     const form = new FormData();
     form.append('file', file, file.name);
-    const url = `/api/portfolio/imports/${kind}?dry_run=${dryRun ? 'true' : 'false'}`;
+    const url =
+      `/api/portfolio/imports/${kind}` +
+      `?dry_run=${dryRun ? 'true' : 'false'}` +
+      `&has_header=${hasHeader ? 'true' : 'false'}`;
     return this.http.post<ImportResult>(url, form);
+  }
+
+  getRecalcStatus(): Observable<RecalcStatus> {
+    return this.http.get<RecalcStatus>('/api/portfolio/imports/recalc/status');
+  }
+
+  triggerRecalc(range?: { start_date?: string; end_date?: string }): Observable<RecalcTriggerResponse> {
+    return this.http.post<RecalcTriggerResponse>('/api/portfolio/imports/recalc', range ?? {});
   }
 
   getNetworthHistory(from?: string, to?: string, interval: 'day' | 'week' | 'month' = 'day'): Observable<NetworthPoint[]> {

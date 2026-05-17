@@ -39,6 +39,32 @@ export interface ImportResult {
   errors: ImportError[];
   created_ids: number[];
   rows: ImportRow[];
+  recalc_scheduled?: boolean;
+}
+
+export interface RecalcStepResult {
+  name: string;
+  status: 'ok' | 'failed' | 'skipped' | 'partial';
+  detail?: Record<string, unknown>;
+  error?: string | null;
+}
+
+export interface RecalcStatus {
+  state: 'idle' | 'running' | 'completed' | 'partial' | 'failed';
+  started_at?: string;
+  finished_at?: string | null;
+  recalc_from?: string | null;
+  recalc_to?: string | null;
+  touched_symbols?: string[];
+  current_step?: string | null;
+  steps?: RecalcStepResult[];
+}
+
+export interface RecalcTriggerResponse {
+  recalc_scheduled: boolean;
+  start_date: string;
+  end_date: string;
+  touched_symbols: string[];
 }
 
 export interface Dividend {

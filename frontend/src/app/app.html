@@ -24,6 +24,9 @@
       <a class="dock-item sub-item" routerLink="/portfolio/dividends" routerLinkActive="active" pTooltip="股利領取紀錄" tooltipPosition="right">
         <i class="pi pi-percentage"></i>
       </a>
+      <a class="dock-item sub-item" routerLink="/portfolio/import" routerLinkActive="active" pTooltip="匯入 CSV" tooltipPosition="right">
+        <i class="pi pi-upload"></i>
+      </a>
       <div class="dock-divider"></div>
       <a class="dock-item sub-item" routerLink="/accounting/dashboard" routerLinkActive="active" pTooltip="記帳分析" tooltipPosition="right">
         <i class="pi pi-chart-pie"></i>
@@ -63,6 +66,7 @@
           <button routerLink="/portfolio" routerLinkActive="active" [routerLinkActiveOptions]="{exact: true}">概覽</button>
           <button routerLink="/portfolio/transactions" routerLinkActive="active">交易</button>
           <button routerLink="/portfolio/dividends" routerLinkActive="active">股利</button>
+          <button routerLink="/portfolio/import" routerLinkActive="active">匯入 CSV</button>
         }
         @if (mainTab() === 'accounting') {
           <button routerLink="/accounting/transactions" routerLinkActive="active">紀錄</button>

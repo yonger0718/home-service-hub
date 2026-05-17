@@ -37,6 +37,41 @@
   margin-bottom: 1rem;
 }
 
+.header-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.5rem 0 1.25rem;
+
+  label {
+    cursor: pointer;
+    font-weight: 500;
+  }
+
+  .muted {
+    flex-basis: 100%;
+    margin-left: 1.75rem;
+    color: var(--text-color-secondary, #6b7280);
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+}
+
+.recalc-banner {
+  margin: 0.5rem 0 1.25rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 0.5rem;
+  background: var(--surface-100, #f3f4f6);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+
+  .ok { color: #166534; font-weight: 500; }
+  .warn { color: #854d0e; display: inline-flex; align-items: center; gap: 0.5rem; }
+  .err { color: #b91c1c; display: inline-flex; align-items: center; gap: 0.5rem; }
+}
+
 .filename {
   font-family: var(--font-family-monospace, monospace);
   color: var(--text-color-secondary, #6b7280);
