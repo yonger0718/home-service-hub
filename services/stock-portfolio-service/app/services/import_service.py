@@ -48,6 +48,12 @@ SOURCE_DIVIDENDS = "manual-csv-v1:dividends"
 # Traditional Chinese column-name synonyms → canonical English keys.
 # Lets a Taiwan-localised CSV ship "代號,類別,股數,..." instead of the
 # canonical English headers.
+#
+# `order_id` is intentionally NOT in TRANSACTION_FIELDS — it's an optional
+# extension column folded into the fingerprint hash when present. Keeping it
+# out of TRANSACTION_FIELDS preserves: (a) byte-for-byte hash compatibility
+# with pre-feature CSVs that have no order_id column, and (b) the no-header
+# CSV mode (which auto-prepends TRANSACTION_FIELDS as the canonical header).
 TRANSACTION_HEADER_SYNONYMS = {
     "代號": "symbol", "代碼": "symbol", "股票代號": "symbol",
     "類別": "type", "買賣別": "type", "交易類別": "type",
@@ -57,6 +63,8 @@ TRANSACTION_HEADER_SYNONYMS = {
     "手續費": "fee",
     "稅金": "tax", "證交稅": "tax",
     "名稱": "name", "股票名稱": "name",
+    "order_id": "order_id",
+    "委託書號": "order_id", "訂單編號": "order_id", "委託編號": "order_id",
 }
 DIVIDEND_HEADER_SYNONYMS = {
     "代號": "symbol", "代碼": "symbol", "股票代號": "symbol",
@@ -200,8 +208,17 @@ def _transaction_fingerprint(
     trade_date: datetime,
     fee: Decimal,
     tax: Decimal,
+    order_id: str | None = None,
 ) -> str:
-    """SHA256 over the canonical row; identical CSV rows produce identical hashes."""
+    """SHA256 over the canonical row; identical CSV rows produce identical hashes.
+
+    When `order_id` is supplied (typically from a Taiwan broker export's
+    ``委託書號`` column), it is appended as ``|order_id=<value>`` so that
+    otherwise-identical same-day fills produce distinct fingerprints. When
+    absent, the canonical string is byte-for-byte identical to the
+    pre-``order_id`` format — re-uploading old CSVs continues to dedupe
+    cleanly.
+    """
 
     canonical = "|".join(
         (
@@ -215,6 +232,8 @@ def _transaction_fingerprint(
             f"{tax:.4f}",
         )
     )
+    if order_id:
+        canonical += f"|order_id={order_id}"
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -280,9 +299,10 @@ def parse_transactions_csv(raw: bytes, *, has_header: bool = True) -> ParseResul
             if tax < 0:
                 raise ValueError(f"row {row_index}: 'tax' must be non-negative")
             name = (raw_row.get("name") or "").strip() or None
+            order_id = (raw_row.get("order_id") or "").strip() or None
 
             fingerprint = _transaction_fingerprint(
-                symbol, type_, quantity, price, trade_date, fee, tax
+                symbol, type_, quantity, price, trade_date, fee, tax, order_id
             )
             rows.append(
                 ParsedRow(
@@ -297,6 +317,7 @@ def parse_transactions_csv(raw: bytes, *, has_header: bool = True) -> ParseResul
                         "fee": fee,
                         "tax": tax,
                         "name": name,
+                        "order_id": order_id,
                     },
                 )
             )
