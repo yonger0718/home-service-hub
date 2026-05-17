@@ -54,8 +54,8 @@
 
 ## 8. Verification
 
-- [x] 8.1 `pytest tests/unit/ -k post_import` green — 19/19 (full suite 324/324)
-- [x] 8.2 `npm test` green — 10/10 (also `ng build` clean)
+- [x] 8.1 `pytest tests/unit/ -k post_import` green — 19/19 (full suite 330/330)
+- [x] 8.2 `npm test` green — 10/10
 - [ ] 8.3 Manual: upload a 50-row CSV → toast appears → poll completes → chart updates within ~30 s for a 1-week range
 - [ ] 8.4 Manual: upload a 500-row CSV spanning 2 years → toast appears → chart populates back to earliest date within 5-10 min
 - [ ] 8.5 Manual: re-upload same CSV → `inserted_count = 0`, no toast, no TWSE traffic
