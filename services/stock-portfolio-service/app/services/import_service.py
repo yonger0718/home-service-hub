@@ -45,6 +45,32 @@ DIVIDEND_FIELDS = ("symbol", "amount", "ex_dividend_date", "received_date")
 SOURCE_TRANSACTIONS = "manual-csv-v1:transactions"
 SOURCE_DIVIDENDS = "manual-csv-v1:dividends"
 
+# Traditional Chinese column-name synonyms → canonical English keys.
+# Lets a Taiwan-localised CSV ship "代號,類別,股數,..." instead of the
+# canonical English headers.
+TRANSACTION_HEADER_SYNONYMS = {
+    "代號": "symbol", "代碼": "symbol", "股票代號": "symbol",
+    "類別": "type", "買賣別": "type", "交易類別": "type",
+    "股數": "quantity", "數量": "quantity",
+    "價格": "price", "成交價": "price", "單價": "price",
+    "交易日期": "trade_date", "日期": "trade_date", "成交日": "trade_date",
+    "手續費": "fee",
+    "稅金": "tax", "證交稅": "tax",
+    "名稱": "name", "股票名稱": "name",
+}
+DIVIDEND_HEADER_SYNONYMS = {
+    "代號": "symbol", "代碼": "symbol", "股票代號": "symbol",
+    "金額": "amount", "股利金額": "amount",
+    "除息日": "ex_dividend_date", "除息日期": "ex_dividend_date",
+    "入帳日": "received_date", "入帳日期": "received_date",
+}
+
+# Type column value synonyms (e.g. "買進" → "BUY").
+TYPE_VALUE_SYNONYMS = {
+    "買進": "BUY", "買": "BUY", "現買": "BUY",
+    "賣出": "SELL", "賣": "SELL", "現賣": "SELL",
+}
+
 
 @dataclass
 class ParsedRow:
@@ -106,18 +132,64 @@ def _parse_datetime(value: str, key: str, row_index: int) -> datetime:
     return parsed
 
 
-def _validate_header(fieldnames: list[str] | None, expected: tuple[str, ...]) -> None:
-    if fieldnames is None:
+def _normalize_header(
+    fieldnames: list[str] | None,
+    expected: tuple[str, ...],
+    synonyms: dict[str, str],
+) -> dict[str, str]:
+    """Return mapping {source-column → canonical-column}.
+
+    Accepts canonical English names OR any localised synonym. Raises if a
+    required canonical column cannot be mapped from the source header.
+    """
+    if not fieldnames:
         raise ValueError("CSV is empty")
-    actual = tuple(name.strip() for name in fieldnames)
-    if actual != expected:
+    mapping: dict[str, str] = {}
+    for raw in fieldnames:
+        if raw is None:
+            continue
+        key = raw.strip()
+        if not key:
+            continue
+        canonical = key if key in expected else synonyms.get(key)
+        if canonical is None:
+            # Unknown column — ignore (lenient) rather than reject, so brokers
+            # that include extra metadata columns still import.
+            continue
+        mapping[raw] = canonical
+    missing = [col for col in expected if col not in mapping.values()]
+    # Optional columns are tolerated; required columns are not.
+    required = {
+        TRANSACTION_FIELDS: {"symbol", "type", "quantity", "price", "trade_date"},
+        DIVIDEND_FIELDS: {"symbol", "amount", "ex_dividend_date"},
+    }[expected]
+    missing_required = [col for col in missing if col in required]
+    if missing_required:
         raise ValueError(
-            "CSV header must be: "
-            + ",".join(expected)
-            + " (got: "
-            + ",".join(actual)
-            + ")"
+            "CSV header missing required column(s): "
+            + ",".join(missing_required)
+            + " (accepted English names: " + ",".join(expected) + ")"
         )
+    return mapping
+
+
+def _remap_row(row: dict, mapping: dict[str, str]) -> dict:
+    """Translate one DictReader row from source-columns to canonical-columns."""
+    out: dict[str, str] = {}
+    for source_key, value in row.items():
+        canonical = mapping.get(source_key)
+        if canonical is not None:
+            out[canonical] = value
+    return out
+
+
+def _prepend_canonical_header(raw: bytes, expected: tuple[str, ...]) -> bytes:
+    """Insert a canonical English header at the top of a header-less CSV."""
+    header = (",".join(expected) + "\n").encode("utf-8")
+    # Strip UTF-8 BOM if present so we don't end up with BOM mid-stream.
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    return header + raw
 
 
 def _transaction_fingerprint(
@@ -160,21 +232,27 @@ def _dividend_fingerprint(
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def parse_transactions_csv(raw: bytes) -> ParseResult:
+def parse_transactions_csv(raw: bytes, *, has_header: bool = True) -> ParseResult:
+    if not has_header:
+        raw = _prepend_canonical_header(raw, TRANSACTION_FIELDS)
     text = raw.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
-    _validate_header(reader.fieldnames, TRANSACTION_FIELDS)
+    header_map = _normalize_header(
+        reader.fieldnames, TRANSACTION_FIELDS, TRANSACTION_HEADER_SYNONYMS
+    )
     rows: list[ParsedRow] = []
     errors: list[ParseError] = []
-    for row_index, raw_row in enumerate(reader, start=1):
+    for row_index, source_row in enumerate(reader, start=1):
+        raw_row = _remap_row(source_row, header_map)
         try:
             symbol = svc.sanitize_symbol(_required(raw_row, "symbol", row_index))
             if not symbol:
                 raise ValueError(f"row {row_index}: 'symbol' is blank after normalization")
-            type_ = _required(raw_row, "type", row_index).upper()
+            type_raw = _required(raw_row, "type", row_index).strip()
+            type_ = TYPE_VALUE_SYNONYMS.get(type_raw, type_raw.upper())
             if type_ not in {"BUY", "SELL"}:
                 raise ValueError(
-                    f"row {row_index}: 'type' must be BUY or SELL (got {type_!r})"
+                    f"row {row_index}: 'type' must be BUY/SELL or 買進/賣出 (got {type_raw!r})"
                 )
             quantity_raw = _required(raw_row, "quantity", row_index)
             try:
@@ -227,13 +305,18 @@ def parse_transactions_csv(raw: bytes) -> ParseResult:
     return ParseResult(rows=rows, errors=errors)
 
 
-def parse_dividends_csv(raw: bytes) -> ParseResult:
+def parse_dividends_csv(raw: bytes, *, has_header: bool = True) -> ParseResult:
+    if not has_header:
+        raw = _prepend_canonical_header(raw, DIVIDEND_FIELDS)
     text = raw.decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(text))
-    _validate_header(reader.fieldnames, DIVIDEND_FIELDS)
+    header_map = _normalize_header(
+        reader.fieldnames, DIVIDEND_FIELDS, DIVIDEND_HEADER_SYNONYMS
+    )
     rows: list[ParsedRow] = []
     errors: list[ParseError] = []
-    for row_index, raw_row in enumerate(reader, start=1):
+    for row_index, source_row in enumerate(reader, start=1):
+        raw_row = _remap_row(source_row, header_map)
         try:
             symbol = svc.sanitize_symbol(_required(raw_row, "symbol", row_index))
             if not symbol:

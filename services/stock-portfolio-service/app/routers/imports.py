@@ -136,11 +136,12 @@ def import_transactions(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     dry_run: bool = Query(default=False),
+    has_header: bool = Query(default=True),
     db: Session = Depends(get_db),
 ) -> dict:
     raw = _read_upload(file)
     try:
-        parsed = import_service.parse_transactions_csv(raw)
+        parsed = import_service.parse_transactions_csv(raw, has_header=has_header)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = import_service.commit_transactions(db, parsed, dry_run=dry_run)
@@ -158,11 +159,12 @@ def import_dividends(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     dry_run: bool = Query(default=False),
+    has_header: bool = Query(default=True),
     db: Session = Depends(get_db),
 ) -> dict:
     raw = _read_upload(file)
     try:
-        parsed = import_service.parse_dividends_csv(raw)
+        parsed = import_service.parse_dividends_csv(raw, has_header=has_header)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     result = import_service.commit_dividends(db, parsed, dry_run=dry_run)

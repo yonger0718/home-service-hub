@@ -16,8 +16,19 @@
     </ng-template>
 
     <p class="hint">
-      CSV 標題列必須為：<code>{{ headerHint }}</code>
+      欄位（任一語言皆可）：<code>{{ headerHint }}</code>
     </p>
+
+    <div class="header-toggle">
+      <p-checkbox
+        [binary]="true"
+        [ngModel]="hasHeader()"
+        (ngModelChange)="hasHeader.set($event)"
+        inputId="has-header-toggle">
+      </p-checkbox>
+      <label for="has-header-toggle">CSV 含標題列</label>
+      <small class="muted">取消勾選表示 CSV 第一列即為資料（系統會自動補上標題列）</small>
+    </div>
 
     <div class="actions">
       <p-fileUpload

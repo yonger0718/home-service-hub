@@ -78,10 +78,18 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.get<ExDividendRecord[]>('/api/portfolio/ex-dividends/upcoming');
   }
 
-  uploadCsv(kind: ImportKind, file: File, dryRun: boolean): Observable<ImportResult> {
+  uploadCsv(
+    kind: ImportKind,
+    file: File,
+    dryRun: boolean,
+    hasHeader: boolean = true,
+  ): Observable<ImportResult> {
     const form = new FormData();
     form.append('file', file, file.name);
-    const url = `/api/portfolio/imports/${kind}?dry_run=${dryRun ? 'true' : 'false'}`;
+    const url =
+      `/api/portfolio/imports/${kind}` +
+      `?dry_run=${dryRun ? 'true' : 'false'}` +
+      `&has_header=${hasHeader ? 'true' : 'false'}`;
     return this.http.post<ImportResult>(url, form);
   }
 

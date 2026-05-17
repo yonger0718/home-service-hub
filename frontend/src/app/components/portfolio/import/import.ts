@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 
 import { ButtonModule } from 'primeng/button';
 import { CardModule } from 'primeng/card';
+import { CheckboxModule } from 'primeng/checkbox';
 import { FileUploadModule } from 'primeng/fileupload';
 import { MessageService } from 'primeng/api';
 import { SelectButtonModule } from 'primeng/selectbutton';
@@ -29,6 +30,7 @@ const POLL_INTERVAL_MS = 5_000;
     FormsModule,
     ButtonModule,
     CardModule,
+    CheckboxModule,
     FileUploadModule,
     SelectButtonModule,
     TableModule,
@@ -47,12 +49,12 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     {
       label: '交易',
       value: 'transactions',
-      hint: 'symbol,type,quantity,price,trade_date,fee,tax,name',
+      hint: '代號(symbol), 類別(type), 股數(quantity), 價格(price), 交易日期(trade_date), 手續費(fee), 稅金(tax), 名稱(name) — 任一語言皆可',
     },
     {
       label: '股利',
       value: 'dividends',
-      hint: 'symbol,amount,ex_dividend_date,received_date',
+      hint: '代號(symbol), 金額(amount), 除息日(ex_dividend_date), 入帳日(received_date) — 任一語言皆可',
     },
   ];
 
@@ -61,6 +63,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   readonly busy = signal<boolean>(false);
   readonly result = signal<ImportResult | null>(null);
   readonly recalcStatus = signal<RecalcStatus>({ state: 'idle' });
+  readonly hasHeader = signal<boolean>(true);
 
   private pollHandle: ReturnType<typeof setInterval> | null = null;
 
@@ -120,7 +123,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
       return;
     }
     this.busy.set(true);
-    this.portfolioService.uploadCsv(this.kind(), file, dryRun).subscribe({
+    this.portfolioService.uploadCsv(this.kind(), file, dryRun, this.hasHeader()).subscribe({
       next: result => {
         this.result.set(result);
         this.busy.set(false);
