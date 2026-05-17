@@ -20,9 +20,14 @@ class FakeResponse:
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache() -> None:
+def _clear_cache_and_tls(monkeypatch) -> None:
     per_date_verify._NAME_CACHE.clear()
     per_date_verify._ERROR_CACHE.clear()
+    # Pin TWSE_TLS_MODE so the tests don't pick up whatever .env happens to
+    # configure (the dev box runs with `insecure` to work around the OL-ARM
+    # cert issue, which would make these tests assert `verify=False`).
+    monkeypatch.setenv("TWSE_TLS_MODE", "fallback")
+    monkeypatch.delenv("TWSE_SSL_VERIFY", raising=False)
 
 
 def test_fetch_twse_returns_name_for_4digit_code(monkeypatch) -> None:
@@ -177,12 +182,24 @@ def test_verify_marks_different_name_as_name_mismatch(monkeypatch) -> None:
 
 
 def test_verify_marks_empty_response_as_not_traded_on_date(monkeypatch) -> None:
+    """4-digit codes now fall through TWSE → TPEx (per PR #6 review), so both
+    sides must return empty for the final status to be `not_traded_on_date`."""
+
     def fake_get(url: str, *, timeout: int, verify: bool) -> FakeResponse:
+        if "twse.com.tw" in url:
+            return FakeResponse(
+                {
+                    "stat": "OK",
+                    "title": "110年07月 2888 新光金           各日成交資訊",
+                    "data": [],
+                }
+            )
+        # TPEx fall-through also returns no rows.
         return FakeResponse(
             {
-                "stat": "OK",
-                "title": "110年07月 2888 新光金           各日成交資訊",
-                "data": [],
+                "tables": [
+                    {"title": "個股日成交資訊", "subtitle": "2888 新光金 110年07月", "data": []}
+                ]
             }
         )
 

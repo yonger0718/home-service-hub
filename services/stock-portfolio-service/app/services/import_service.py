@@ -220,7 +220,11 @@ def _prepend_canonical_header(raw: bytes, expected: tuple[str, ...]) -> bytes:
 
 
 def detect_csv_format(raw: bytes) -> Literal["generic", "cathay"]:
-    text = raw.decode("utf-8-sig")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        # Surface as ValueError so the router translates to 400 instead of 500.
+        raise ValueError("CSV must be UTF-8 encoded") from exc
     first_non_empty = next((line for line in text.splitlines() if line.strip()), "")
     return "cathay" if first_non_empty.startswith("根據您篩選的結果") else "generic"
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 import re
@@ -10,14 +11,32 @@ from typing import Literal
 import requests
 from requests.exceptions import SSLError
 
-from .twse_client import bootstrap_truststore
+from .twse_client import TLSMode, bootstrap_truststore, get_tls_mode
+
+logger = logging.getLogger(__name__)
 
 
 def _get_with_tls_fallback(url: str, *, timeout: int = 10) -> requests.Response:
-    """GET with verify=True; on SSLError fall back to verify=False (TWSE-OL-ARM quirk)."""
+    """GET honouring `TWSE_TLS_MODE` exactly like `market_data_service._http_get`:
+
+    * ``insecure`` → single `verify=False` request, no probe.
+    * ``verify``   → single `verify=True` request; SSLError re-raised.
+    * ``fallback`` (default) → try `verify=True`; on SSLError log + retry with
+      `verify=False`. Mirrors the canonical TWSE-on-OL-ARM workaround so
+      observability matches the rest of the codebase instead of silently
+      downgrading.
+    """
+    mode = get_tls_mode()
+    if mode == TLSMode.INSECURE:
+        return requests.get(url, timeout=timeout, verify=False)
     try:
         return requests.get(url, timeout=timeout, verify=True)
-    except SSLError:
+    except SSLError as exc:
+        if mode != TLSMode.FALLBACK:
+            raise
+        logger.warning(
+            "per_date_verify TLS verification failed; retrying insecurely: %s", exc
+        )
         return requests.get(url, timeout=timeout, verify=False)
 
 ValidationStatus = Literal[
@@ -129,13 +148,11 @@ def fetch_name_for_date(code: str, trade_date: date) -> tuple[str | None, Status
         cached_name = _NAME_CACHE[cache_key]
         return (cached_name, "ok") if cached_name is not None else (None, "not_traded")
 
-    # 4-digit codes are TWSE-only by convention. Anything longer (warrants, ETNs)
-    # can live on either exchange, so try both — first hit wins, cache prevents
-    # re-fetching, and `not_traded` from one side falls through to the other.
-    if _TWSE_CODE_RE.fullmatch(code):
-        fetchers = (_fetch_twse_name,)
-    else:
-        fetchers = (_fetch_twse_name, _fetch_tpex_name)
+    # Always try both exchanges: 4-digit codes aren't actually TWSE-exclusive
+    # (e.g. some 5/6/8xxx ranges trade on TPEx), and the cache + `not_traded`
+    # fall-through keeps the cost ≈1 extra request only on the genuinely-empty
+    # path. TWSE first so listed equities resolve in one hop.
+    fetchers = (_fetch_twse_name, _fetch_tpex_name)
 
     fetched_name: str | None = None
     status_hint: StatusHint = "error"

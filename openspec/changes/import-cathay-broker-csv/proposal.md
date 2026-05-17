@@ -31,7 +31,7 @@ This change accepts the 國泰 broker CSV verbatim and provides a one-shot **sma
 
 ## Impact
 
-- **Backend** (`services/stock-portfolio-service/`): new `app/services/broker_cathay_service.py`, new `app/data/name_to_symbol.json` (asset), new router endpoint, extends `parse_transactions_csv` only with a thin dispatcher (preamble sniff + format pick).
+- **Backend** (`services/stock-portfolio-service/`): new `app/services/broker_cathay_service.py`, new `app/data/name_to_symbol.json` (asset). Extends the existing `POST /api/portfolio/imports/transactions` route with format auto-dispatch (preamble sniff in `detect_csv_format`) — no new endpoint; generic parsing stays behind the same path. One new endpoint `POST /api/portfolio/imports/verify-symbol` is added strictly for per-row override verification.
 - **Frontend** (`frontend/src/app/components/portfolio/import/`): one new result-panel summary line `重算指紋 N 筆` when auto-rehash ran. No new toggles; existing upload UX unchanged.
 - **No DB migration.** Hash-only design preserved.
 - **No new dependencies.**

@@ -107,7 +107,7 @@
                           [loading]="isVerifying(u.name)"
                           [disabled]="!nameOverrides()[u.name]?.trim()"
                           (onClick)="verifyName(u.name, u.sample_dates)"
-                          styleClass="ml-2"></p-button>
+                          styleClass="ms-2"></p-button>
               </td>
               <td>
                 <ng-container *ngIf="validationFor(u.name) as v">
