@@ -7,7 +7,7 @@ Phase 1 whole-market price fetch (TWSE `MI_INDEX` + TPEx `daily`) can return a 2
 - Add per-source rolling-30-day-median row-count baseline computed from `price_history`.
 - Before upserting a Phase 1 fetch, compare today's row count against the baseline; if count is **< 80%** of the median (per source), classify the response as **partial** and skip the upsert (no `price_history` rows inserted for that source + date).
 - Emit a structured warning log with `source`, `date`, `fetched_rows`, `baseline_median`, `ratio`.
-- During cold-start (fewer than 10 prior trading days of `price_history` for the source), skip the partial check and log `insufficient_baseline`.
+- During cold-start (fewer than 10 prior trading days of `price_history` for the source), skip the partial check and log `phase1.partial_check_skipped_cold_start`.
 - No DB schema change. No new endpoint. No retry logic change inside `_fetch_with_retry`.
 
 ## Capabilities
