@@ -16,6 +16,7 @@ Idempotent: both phases upsert via ``Session.merge``.
 from __future__ import annotations
 
 import logging
+import statistics
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -24,7 +25,7 @@ from datetime import date as dt_date, timedelta
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
-from sqlalchemy import case, delete, literal, select, union_all
+from sqlalchemy import case, delete, func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
@@ -36,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_THROTTLE_SEC = 1.5
 RETRY_DELAYS_SEC = (2.0, 5.0)
+PARTIAL_FETCH_RATIO = 0.8
+PARTIAL_FETCH_MIN_BASELINE_DAYS = 10
+PARTIAL_FETCH_BASELINE_WINDOW_DAYS = 30
+PARTIAL_FETCH_LOOKBACK_DAYS = 45
 
 
 @dataclass
@@ -125,6 +130,64 @@ def _existing_price_dates(
     for source, d in rows:
         out.setdefault(source, set()).add(d)
     return out
+
+
+def _recent_row_counts(session: Session, *, source: str, today: dt_date) -> list[int]:
+    """Return recent per-date ``price_history`` counts for one source."""
+    cutoff = today - timedelta(days=PARTIAL_FETCH_LOOKBACK_DAYS)
+    rows = (
+        session.query(PriceHistory.date, func.count())
+        .filter(
+            PriceHistory.source == source,
+            PriceHistory.date >= cutoff,
+            PriceHistory.date < today,
+        )
+        .group_by(PriceHistory.date)
+        .order_by(PriceHistory.date.desc())
+        .limit(PARTIAL_FETCH_BASELINE_WINDOW_DAYS)
+        .all()
+    )
+    return [int(count) for _date, count in rows]
+
+
+def _is_partial_response(
+    session: Session,
+    *,
+    source: str,
+    date: dt_date,
+    fetched_rows: int,
+) -> bool:
+    """Return whether a non-empty whole-market fetch is under baseline."""
+    if fetched_rows == 0:
+        return False
+
+    baseline = _recent_row_counts(session, source=source, today=date)
+    if len(baseline) < PARTIAL_FETCH_MIN_BASELINE_DAYS:
+        logger.info(
+            "phase1.partial_check_skipped_cold_start",
+            extra={
+                "source": source,
+                "date": date.isoformat(),
+                "baseline_days": len(baseline),
+            },
+        )
+        return False
+
+    baseline_median = statistics.median(baseline)
+    ratio = fetched_rows / baseline_median
+    if ratio < PARTIAL_FETCH_RATIO:
+        logger.warning(
+            "phase1.partial_fetch_skipped",
+            extra={
+                "source": source,
+                "date": date.isoformat(),
+                "fetched_rows": fetched_rows,
+                "baseline_median": baseline_median,
+                "ratio": ratio,
+            },
+        )
+        return True
+    return False
 
 
 def compute_active_dates(
@@ -305,6 +368,30 @@ def backfill_prices_range(
                 result.errors.append(
                     BackfillError(date=date, reason=f"{missing} returned no rows")
                 )
+                continue
+
+            if twse_rows and _is_partial_response(
+                db,
+                source="TWSE",
+                date=date,
+                fetched_rows=len(twse_rows),
+            ):
+                twse_rows = []
+                result.errors.append(
+                    BackfillError(date=date, reason="TWSE partial response, skipped")
+                )
+            if tpex_rows and _is_partial_response(
+                db,
+                source="TPEx",
+                date=date,
+                fetched_rows=len(tpex_rows),
+            ):
+                tpex_rows = []
+                result.errors.append(
+                    BackfillError(date=date, reason="TPEx partial response, skipped")
+                )
+
+            if not twse_rows and not tpex_rows:
                 continue
 
             try:
