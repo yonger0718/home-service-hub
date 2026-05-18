@@ -65,6 +65,6 @@ def test_networth_step_short_circuits_empty_active_dates(
         "dates_inactive": 5,
         "rows_written": 0,
         "snapshots_written": 0,
+        "stale_rows_deleted": 0,
         "errors": [],
     }
-

@@ -76,17 +76,23 @@ def _run_chain_with_fake_fetchers(
     recalc_from: date,
     recalc_to: date,
     touched_symbols: set[str],
+    closed_dates: set[date] | None = None,
 ) -> tuple[list[date], list[date]]:
     twse_calls: list[date] = []
     tpex_calls: list[date] = []
     real_backfill = nbs.backfill_prices_range
+    closed_dates = closed_dates or set()
 
     def _twse(d: date) -> list[Any]:
         twse_calls.append(d)
+        if d in closed_dates:
+            return []
         return [_row("2330", d, "TWSE")]
 
     def _tpex(d: date) -> list[Any]:
         tpex_calls.append(d)
+        if d in closed_dates:
+            return []
         return [_row("6488", d, "TPEx")]
 
     def _backfill_with_fakes(
@@ -197,3 +203,48 @@ def test_open_position_chain_replays_every_held_weekday(
     assert set(tpex_calls) == expected
     assert {row.date for row in db_session.query(PriceHistory).all()} == expected
     assert {row.date for row in db_session.query(PortfolioSnapshot).all()} == expected
+
+
+def test_chain_forward_fills_lny_cluster_and_replaces_stale_row(
+    db_session: Any, monkeypatch: Any
+) -> None:
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        trade_date=date(2022, 1, 26),
+    )
+    db_session.add(
+        PortfolioSnapshot(
+            date=date(2022, 1, 27),
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("209065.625"),
+            total_unrealized_pnl=Decimal("-209065.625"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+
+    cluster = {date(2022, 1, day) for day in range(27, 32)} | {
+        date(2022, 2, day) for day in range(1, 5)
+    }
+    _run_chain_with_fake_fetchers(
+        db_session,
+        monkeypatch,
+        recalc_from=date(2022, 1, 26),
+        recalc_to=date(2022, 2, 7),
+        touched_symbols={"2330"},
+        closed_dates=cluster,
+    )
+
+    snaps = {row.date: row for row in db_session.query(PortfolioSnapshot).all()}
+    pre_cluster_mv = snaps[date(2022, 1, 26)].total_market_value
+    assert cluster <= set(snaps)
+    for d in cluster:
+        assert snaps[d].total_market_value == pre_cluster_mv
+        assert snaps[d].total_cost == snaps[date(2022, 1, 26)].total_cost
+    assert snaps[date(2022, 1, 27)].total_market_value != Decimal("0")
+    assert snaps[date(2022, 2, 7)].total_market_value == Decimal("1000")

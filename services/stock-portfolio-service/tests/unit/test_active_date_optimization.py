@@ -237,6 +237,88 @@ def test_compute_active_dates_excludes_weekends(db_session: Any) -> None:
     }
 
 
+def test_compute_active_dates_can_include_non_trading_dates(db_session: Any) -> None:
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        trade_date=date(2024, 9, 13),
+    )
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.SELL,
+        qty=100,
+        trade_date=date(2024, 9, 16),
+    )
+
+    assert nbs.compute_active_dates(
+        db_session,
+        date(2024, 9, 13),
+        date(2024, 9, 16),
+        include_non_trading=True,
+    ) == {
+        date(2024, 9, 13),
+        date(2024, 9, 14),
+        date(2024, 9, 15),
+        date(2024, 9, 16),
+    }
+
+
+def test_compute_active_dates_default_stays_weekday_only(db_session: Any) -> None:
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        trade_date=date(2024, 9, 13),
+    )
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.SELL,
+        qty=100,
+        trade_date=date(2024, 9, 16),
+    )
+
+    assert nbs.compute_active_dates(
+        db_session, date(2024, 9, 13), date(2024, 9, 16)
+    ) == {
+        date(2024, 9, 13),
+        date(2024, 9, 16),
+    }
+
+
+def test_compute_active_dates_calendar_interval_ends_on_closing_sell(
+    db_session: Any,
+) -> None:
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        trade_date=date(2024, 9, 12),
+    )
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.SELL,
+        qty=100,
+        trade_date=date(2024, 9, 13),
+    )
+
+    assert nbs.compute_active_dates(
+        db_session,
+        date(2024, 9, 12),
+        date(2024, 9, 16),
+        include_non_trading=True,
+    ) == {
+        date(2024, 9, 12),
+        date(2024, 9, 13),
+    }
+
+
 def test_compute_active_dates_empty_portfolio_returns_empty_set(db_session: Any) -> None:
     assert (
         nbs.compute_active_dates(

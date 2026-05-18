@@ -8,6 +8,7 @@ import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -239,6 +240,39 @@ def test_latest_status_returns_recent_result(db_session):
     status = orch.latest_status()
     assert status["state"] == "completed"
     assert status["touched_symbols"] == ["2330"]
+
+
+def test_latest_status_includes_stale_rows_deleted(db_session: Any) -> None:
+    today = datetime.now(TW).date()
+    outcome = orch.networth_backfill_service.NetworthBackfillResult(
+        stale_rows_deleted=2
+    )
+    with patch.object(
+        orch.networth_backfill_service,
+        "compute_active_dates",
+        return_value={today},
+    ), patch.object(
+        orch.networth_backfill_service,
+        "run_backfill",
+        return_value=outcome,
+    ):
+        result = orch.ChainResult(
+            state="running",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            recalc_from=today.isoformat(),
+            recalc_to=today.isoformat(),
+            steps=[
+                orch._step_networth_backfill(
+                    _session_factory(db_session), today, today
+                )
+            ],
+        )
+        result.state = "completed"
+        result.finished_at = datetime.now(timezone.utc).isoformat()
+        orch._store(result)
+
+    status = orch.latest_status()
+    assert status["steps"][0]["detail"]["stale_rows_deleted"] == 2
 
 
 def test_latest_status_prunes_old_entries():
