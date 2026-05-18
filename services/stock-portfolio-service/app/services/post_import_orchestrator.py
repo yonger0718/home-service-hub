@@ -361,6 +361,49 @@ async def run_chain(
     return result
 
 
+async def run_chain_quotes_only(
+    session_factory: Callable[[], ContextManager],
+    *,
+    today: dt_date,
+    touched_symbols: set[str],
+) -> ChainResult:
+    started = datetime.now(timezone.utc)
+    result = ChainResult(
+        state="running",
+        started_at=started.isoformat(),
+        recalc_from=today.isoformat(),
+        recalc_to=today.isoformat(),
+        touched_symbols=sorted(touched_symbols),
+        current_step="awaiting_lock",
+    )
+    _store(result)
+
+    loop = asyncio.get_running_loop()
+    result.current_step = "networth_backfill"
+    _store(result)
+    step_result = await loop.run_in_executor(
+        None,
+        lambda: _step_networth_backfill(session_factory, today, today),
+    )
+    result.steps.append(step_result)
+    _store(result)
+
+    result.current_step = None
+    result.finished_at = datetime.now(timezone.utc).isoformat()
+    result.state = _final_state(result.steps)
+    _store(result)
+    logger.info(
+        "post_import.quotes_refresh_done",
+        extra={
+            "state": result.state,
+            "started_at": result.started_at,
+            "finished_at": result.finished_at,
+            "touched_symbols": result.touched_symbols,
+        },
+    )
+    return result
+
+
 def schedule_chain_sync(
     session_factory: Callable[[], ContextManager],
     *,
@@ -380,6 +423,22 @@ def schedule_chain_sync(
                 session_factory,
                 recalc_from=recalc_from,
                 recalc_to=recalc_to,
+                touched_symbols=touched_symbols,
+            )
+        )
+
+
+def schedule_quotes_refresh_sync(
+    session_factory: Callable[[], ContextManager],
+    *,
+    touched_symbols: set[str],
+) -> ChainResult:
+    today = today_tw()
+    with _RECALC_LOCK:
+        return asyncio.run(
+            run_chain_quotes_only(
+                session_factory,
+                today=today,
                 touched_symbols=touched_symbols,
             )
         )

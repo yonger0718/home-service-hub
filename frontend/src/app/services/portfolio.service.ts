@@ -38,6 +38,18 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.get<PortfolioSummary>('/api/portfolio/summary');
   }
 
+  refreshQuotes(): Observable<{
+    refresh_scheduled: boolean;
+    date: string;
+    touched_symbols: string[];
+  }> {
+    return this.http.post<{
+      refresh_scheduled: boolean;
+      date: string;
+      touched_symbols: string[];
+    }>('/api/portfolio/imports/refresh-quotes', null);
+  }
+
   getTransactions(query: TransactionQuery = {}): Observable<Paged<Transaction>> {
     return this.http.get<Paged<Transaction>>('/api/portfolio/transactions', {
       params: buildParams(query as Record<string, unknown>),
