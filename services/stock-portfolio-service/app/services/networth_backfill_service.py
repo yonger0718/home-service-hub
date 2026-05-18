@@ -24,6 +24,7 @@ from datetime import date as dt_date, timedelta
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
+from sqlalchemy import case, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
@@ -47,6 +48,7 @@ class BackfillError:
 class PriceBackfillResult:
     dates_processed: int = 0
     dates_skipped: int = 0
+    dates_inactive: int = 0
     rows_written: int = 0
     errors: List[BackfillError] = field(default_factory=list)
 
@@ -54,6 +56,7 @@ class PriceBackfillResult:
 @dataclass
 class SnapshotReplayResult:
     dates_processed: int = 0
+    dates_inactive: int = 0
     snapshots_written: int = 0
     errors: List[BackfillError] = field(default_factory=list)
 
@@ -118,6 +121,89 @@ def _existing_price_dates(
     return out
 
 
+def compute_active_dates(
+    db: Session,
+    from_d: dt_date,
+    to_d: dt_date,
+) -> set[dt_date]:
+    """Return held weekdays in ``[from_d, to_d]`` from all tx/dividend events."""
+    tx_events = select(
+        portfolio_models.Transaction.symbol.label("symbol"),
+        portfolio_models.Transaction.trade_date.label("event_at"),
+        case(
+            (
+                portfolio_models.Transaction.type
+                == portfolio_models.TransactionType.BUY,
+                portfolio_models.Transaction.quantity,
+            ),
+            else_=-portfolio_models.Transaction.quantity,
+        ).label("delta"),
+        case(
+            (
+                portfolio_models.Transaction.type
+                == portfolio_models.TransactionType.BUY,
+                literal(0),
+            ),
+            else_=literal(2),
+        ).label("event_rank"),
+    )
+    dividend_events = (
+        select(
+            portfolio_models.Dividend.symbol.label("symbol"),
+            portfolio_models.Dividend.ex_dividend_date.label("event_at"),
+            portfolio_models.Dividend.stock_dividend_shares.label("delta"),
+            literal(1).label("event_rank"),
+        )
+        .where(portfolio_models.Dividend.stock_dividend_shares > 0)
+    )
+    events = union_all(tx_events, dividend_events).subquery()
+    rows = db.execute(
+        select(
+            events.c.symbol,
+            events.c.event_at,
+            events.c.delta,
+            events.c.event_rank,
+        ).order_by(
+            events.c.symbol,
+            events.c.event_at,
+            events.c.event_rank,
+        )
+    ).all()
+
+    active_dates: set[dt_date] = set()
+    current_symbol: Optional[str] = None
+    running_qty = 0
+    open_date: Optional[dt_date] = None
+
+    def add_interval(start: dt_date, end: dt_date) -> None:
+        clipped_start = max(start, from_d)
+        clipped_end = min(end, to_d)
+        if clipped_start <= clipped_end:
+            active_dates.update(_iter_trading_days(clipped_start, clipped_end))
+
+    for symbol, event_at, delta, _event_rank in rows:
+        if symbol != current_symbol:
+            if current_symbol is not None and open_date is not None:
+                add_interval(open_date, to_d)
+            current_symbol = symbol
+            running_qty = 0
+            open_date = None
+
+        event_date = event_at.date() if hasattr(event_at, "date") else event_at
+        previous_qty = running_qty
+        running_qty += int(delta or 0)
+        if previous_qty == 0 and running_qty != 0:
+            open_date = event_date
+        elif previous_qty != 0 and running_qty == 0 and open_date is not None:
+            add_interval(open_date, event_date)
+            open_date = None
+
+    if current_symbol is not None and open_date is not None:
+        add_interval(open_date, to_d)
+
+    return active_dates
+
+
 # ---------- Phase 1: prices ----------
 
 
@@ -130,6 +216,7 @@ def backfill_prices_range(
     sleep: Callable[[float], None] = time.sleep,
     twse_fetcher: Callable[[dt_date], list] = market_data_service.fetch_twse_date,
     tpex_fetcher: Callable[[dt_date], list] = market_data_service.fetch_tpex_date,
+    active_dates: Optional[set[dt_date]] = None,
 ) -> PriceBackfillResult:
     """Walk ``[from_d, to_d]`` weekdays, persist TWSE+TPEx rows per date.
 
@@ -149,6 +236,9 @@ def backfill_prices_range(
     pool = ThreadPoolExecutor(max_workers=2)
     try:
         for date in _iter_trading_days(from_d, to_d):
+            if active_dates is not None and date not in active_dates:
+                result.dates_inactive += 1
+                continue
             need_twse = date not in twse_done
             need_tpex = date not in tpex_done
             if not need_twse and not need_tpex:
@@ -256,6 +346,8 @@ def replay_snapshots_range(
     db: Session,
     from_d: dt_date,
     to_d: dt_date,
+    *,
+    active_dates: Optional[set[dt_date]] = None,
 ) -> SnapshotReplayResult:
     """Recompute one ``portfolio_snapshot`` row per date in range.
 
@@ -318,6 +410,10 @@ def replay_snapshots_range(
         # path also only writes Mon-Fri so this keeps the time-series
         # uniform.
         if cur.weekday() >= 5:
+            cur += timedelta(days=1)
+            continue
+        if active_dates is not None and cur not in active_dates:
+            result.dates_inactive += 1
             cur += timedelta(days=1)
             continue
         # Full-market holiday: neither TWSE nor TPEx returned prices.
@@ -430,6 +526,7 @@ def replay_snapshots_range(
 class NetworthBackfillResult:
     dates_processed: int = 0
     dates_skipped: int = 0
+    dates_inactive: int = 0
     snapshots_written: int = 0
     rows_written: int = 0
     errors: List[BackfillError] = field(default_factory=list)
@@ -442,6 +539,7 @@ def run_backfill(
     *,
     phase: str = "both",
     throttle_sec: float = DEFAULT_THROTTLE_SEC,
+    active_dates: Optional[set[dt_date]] = None,
 ) -> NetworthBackfillResult:
     """Dispatch on ``phase`` ∈ {prices, snapshots, both}."""
     combined = NetworthBackfillResult()
@@ -451,16 +549,27 @@ def run_backfill(
 
     if phase in {"prices", "both"}:
         pres = backfill_prices_range(
-            db, from_d, to_d, throttle_sec=throttle_sec
+            db,
+            from_d,
+            to_d,
+            throttle_sec=throttle_sec,
+            active_dates=active_dates,
         )
         combined.dates_processed += pres.dates_processed
         combined.dates_skipped += pres.dates_skipped
+        combined.dates_inactive = max(combined.dates_inactive, pres.dates_inactive)
         combined.rows_written += pres.rows_written
         combined.errors.extend(pres.errors)
 
     if phase in {"snapshots", "both"}:
-        sres = replay_snapshots_range(db, from_d, to_d)
+        sres = replay_snapshots_range(
+            db,
+            from_d,
+            to_d,
+            active_dates=active_dates,
+        )
         combined.snapshots_written += sres.snapshots_written
+        combined.dates_inactive = max(combined.dates_inactive, sres.dates_inactive)
         if phase == "snapshots":
             combined.dates_processed += sres.dates_processed
         combined.errors.extend(sres.errors)

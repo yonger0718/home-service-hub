@@ -242,12 +242,39 @@ def _step_networth_backfill(
 ) -> StepResult:
     try:
         with session_factory() as db:
+            active_dates = networth_backfill_service.compute_active_dates(
+                db, recalc_from, recalc_to
+            )
+            if not active_dates:
+                inactive_weekdays = sum(
+                    1
+                    for _ in networth_backfill_service._iter_trading_days(
+                        recalc_from, recalc_to
+                    )
+                )
+                return StepResult(
+                    name="networth_backfill",
+                    status="ok",
+                    detail={
+                        "dates_processed": 0,
+                        "dates_skipped": 0,
+                        "dates_inactive": inactive_weekdays,
+                        "rows_written": 0,
+                        "snapshots_written": 0,
+                        "errors": [],
+                    },
+                )
             outcome = networth_backfill_service.run_backfill(
-                db, recalc_from, recalc_to, phase="both"
+                db,
+                recalc_from,
+                recalc_to,
+                phase="both",
+                active_dates=active_dates,
             )
         detail = {
             "dates_processed": outcome.dates_processed,
             "dates_skipped": outcome.dates_skipped,
+            "dates_inactive": outcome.dates_inactive,
             "rows_written": outcome.rows_written,
             "snapshots_written": outcome.snapshots_written,
             "errors": [
