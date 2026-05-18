@@ -258,6 +258,7 @@ def _step_networth_backfill(
                         "dates_inactive": inactive_weekdays,
                         "rows_written": 0,
                         "snapshots_written": 0,
+                        "stale_rows_deleted": 0,
                         "errors": [],
                     },
                 )
@@ -274,6 +275,7 @@ def _step_networth_backfill(
             "dates_inactive": outcome.dates_inactive,
             "rows_written": outcome.rows_written,
             "snapshots_written": outcome.snapshots_written,
+            "stale_rows_deleted": outcome.stale_rows_deleted,
             "errors": [
                 {"date": err.date.isoformat(), "reason": err.reason}
                 for err in outcome.errors

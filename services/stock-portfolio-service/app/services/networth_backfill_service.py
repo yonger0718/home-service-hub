@@ -24,7 +24,7 @@ from datetime import date as dt_date, timedelta
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
-from sqlalchemy import case, literal, select, union_all
+from sqlalchemy import case, delete, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
@@ -58,6 +58,7 @@ class SnapshotReplayResult:
     dates_processed: int = 0
     dates_inactive: int = 0
     snapshots_written: int = 0
+    stale_rows_deleted: int = 0
     errors: List[BackfillError] = field(default_factory=list)
 
 
@@ -130,8 +131,10 @@ def compute_active_dates(
     db: Session,
     from_d: dt_date,
     to_d: dt_date,
+    *,
+    include_non_trading: bool = False,
 ) -> set[dt_date]:
-    """Return held weekdays in ``[from_d, to_d]`` from all tx/dividend events."""
+    """Return held dates in ``[from_d, to_d]`` from all tx/dividend events."""
     tx_events = select(
         portfolio_models.Transaction.symbol.label("symbol"),
         portfolio_models.Transaction.trade_date.label("event_at"),
@@ -187,7 +190,13 @@ def compute_active_dates(
         clipped_start = max(start, from_d)
         clipped_end = min(end, to_d)
         if clipped_start <= clipped_end:
-            active_dates.update(_iter_trading_days(clipped_start, clipped_end))
+            if include_non_trading:
+                cur = clipped_start
+                while cur <= clipped_end:
+                    active_dates.add(cur)
+                    cur += timedelta(days=1)
+            else:
+                active_dates.update(_iter_trading_days(clipped_start, clipped_end))
 
     for symbol, event_at, delta, _event_rank in rows:
         if symbol != current_symbol:
@@ -370,6 +379,9 @@ def replay_snapshots_range(
     going forward).
     """
     result = SnapshotReplayResult()
+    held_calendar = compute_active_dates(
+        db, from_d, to_d, include_non_trading=True
+    )
 
     transactions = (
         db.query(portfolio_models.Transaction)
@@ -397,6 +409,23 @@ def replay_snapshots_range(
     )
     price_map = _load_price_map(db, from_d, to_d)
     trading_dates = {d for (_s, d) in price_map.keys()}
+    prior_snapshot = (
+        db.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.date < from_d,
+            PortfolioSnapshot.total_market_value > 0,
+        )
+        .order_by(PortfolioSnapshot.date.desc())
+        .first()
+    )
+    last_trading_mv: Decimal | None = (
+        Decimal(prior_snapshot.total_market_value)
+        if prior_snapshot is not None
+        else None
+    )
+    last_trading_cost: Decimal | None = (
+        Decimal(prior_snapshot.total_cost) if prior_snapshot is not None else None
+    )
 
     qty: Dict[str, int] = defaultdict(int)
     cost: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
@@ -409,28 +438,29 @@ def replay_snapshots_range(
     cumulative_dividends = Decimal("0")
     cumulative_realized = Decimal("0")
     warned_missing: set[tuple[str, dt_date]] = set()
+    stale_candidates: list[dt_date] = []
+
+    def write_snapshot(snapshot_date: dt_date, row: PortfolioSnapshot) -> bool:
+        """Merge one snapshot inside its own SAVEPOINT."""
+        sp = db.begin_nested()
+        try:
+            db.merge(row)
+            sp.commit()
+            result.snapshots_written += 1
+            return True
+        except Exception as exc:  # noqa: BLE001 — per-date isolation
+            sp.rollback()
+            logger.exception(
+                "networth_backfill.replay.date_failed",
+                extra={"date": snapshot_date.isoformat(), "error": str(exc)},
+            )
+            result.errors.append(BackfillError(date=snapshot_date, reason=str(exc)))
+            return False
 
     tx_i = 0
     div_i = 0
     cur = from_d
     while cur <= to_d:
-        # Skip weekends — no market quote, no snapshot row. Daily-cron
-        # path also only writes Mon-Fri so this keeps the time-series
-        # uniform.
-        if cur.weekday() >= 5:
-            cur += timedelta(days=1)
-            continue
-        if active_dates is not None and cur not in active_dates:
-            result.dates_inactive += 1
-            cur += timedelta(days=1)
-            continue
-        # Full-market holiday: neither TWSE nor TPEx returned prices.
-        # Skip snapshot — otherwise MV would compute as 0 because every
-        # holding misses its price lookup, giving a spurious crash on
-        # the chart.
-        if cur not in trading_dates:
-            cur += timedelta(days=1)
-            continue
         # Advance transactions up to and including ``cur``.
         while tx_i < len(transactions) and _trade_date_of(transactions[tx_i]) <= cur:
             t = transactions[tx_i]
@@ -463,35 +493,79 @@ def replay_snapshots_range(
             cumulative_dividends += Decimal(dividends[div_i].amount)
             div_i += 1
 
-        # Wrap each date in a SAVEPOINT so a per-date failure only rolls back
-        # this date's work, not every snapshot previously merged in this run.
-        sp = db.begin_nested()
-        try:
-            mv = Decimal("0")
-            for sym, q in qty.items():
-                if q <= 0 or signed_net.get(sym, 0) <= 0:
-                    continue
-                close = price_map.get((sym, cur))
-                if close is None:
-                    key = (sym, cur)
-                    if key not in warned_missing:
-                        warned_missing.add(key)
-                        logger.warning(
-                            "networth_backfill.replay.missing_price",
-                            extra={"symbol": sym, "date": cur.isoformat()},
-                        )
-                    continue
-                mv += Decimal(q) * Decimal(close)
+        is_weekend = cur.weekday() >= 5
+        is_inactive = active_dates is not None and cur not in active_dates
+        is_holiday = cur not in trading_dates
+        would_skip = is_weekend or is_inactive or is_holiday
+        if is_inactive and not is_weekend:
+            result.dates_inactive += 1
 
-            total_cost = sum(
-                (
-                    c
-                    for s, c in cost.items()
-                    if qty[s] > 0 and signed_net.get(s, 0) > 0
-                ),
-                Decimal("0"),
-            )
-            row = PortfolioSnapshot(
+        if would_skip:
+            wrote_forward_fill = False
+            if (
+                cur in held_calendar
+                and last_trading_mv is not None
+                and last_trading_cost is not None
+                and sum(qty.values()) > 0
+            ):
+                wrote_forward_fill = write_snapshot(
+                    cur,
+                    PortfolioSnapshot(
+                        date=cur,
+                        total_market_value=last_trading_mv,
+                        total_cost=last_trading_cost,
+                        total_unrealized_pnl=last_trading_mv - last_trading_cost,
+                        total_dividends=cumulative_dividends,
+                        total_realized_pnl=cumulative_realized,
+                        portfolio_xirr=None,
+                    ),
+                )
+            if not wrote_forward_fill:
+                stale_candidates.append(cur)
+            cur += timedelta(days=1)
+            continue
+
+        mv = Decimal("0")
+        for sym, q in qty.items():
+            if q <= 0 or signed_net.get(sym, 0) <= 0:
+                continue
+            close = price_map.get((sym, cur))
+            if close is None:
+                key = (sym, cur)
+                if key not in warned_missing:
+                    warned_missing.add(key)
+                    logger.warning(
+                        "networth_backfill.replay.missing_price",
+                        extra={"symbol": sym, "date": cur.isoformat()},
+                    )
+                continue
+            mv += Decimal(q) * Decimal(close)
+
+        total_cost = sum(
+            (
+                c
+                for s, c in cost.items()
+                if qty[s] > 0 and signed_net.get(s, 0) > 0
+            ),
+            Decimal("0"),
+        )
+
+        # Data-gap guard: every held symbol's price lookup missed on a
+        # date that price_history nominally covers (trading_dates check
+        # passed because *some* row exists, but none for our holdings).
+        # Writing mv=0,cost>0 would pollute `last_trading_mv` and
+        # propagate the zero through every subsequent forward-fill.
+        # Treat as a stale candidate so the bulk DELETE removes any
+        # pre-existing bad row and the chart bridges the gap via
+        # interpolation against the prior good snapshot.
+        if mv == 0 and total_cost > 0:
+            stale_candidates.append(cur)
+            cur += timedelta(days=1)
+            continue
+
+        wrote_trading_day = write_snapshot(
+            cur,
+            PortfolioSnapshot(
                 date=cur,
                 total_market_value=mv,
                 total_cost=total_cost,
@@ -499,20 +573,24 @@ def replay_snapshots_range(
                 total_dividends=cumulative_dividends,
                 total_realized_pnl=cumulative_realized,
                 portfolio_xirr=None,
-            )
-            db.merge(row)
-            sp.commit()
-            result.snapshots_written += 1
+            ),
+        )
+        if wrote_trading_day:
             result.dates_processed += 1
-        except Exception as exc:  # noqa: BLE001 — per-date isolation
-            sp.rollback()
-            logger.exception(
-                "networth_backfill.replay.date_failed",
-                extra={"date": cur.isoformat(), "error": str(exc)},
-            )
-            result.errors.append(BackfillError(date=cur, reason=str(exc)))
+            last_trading_mv = mv
+            last_trading_cost = total_cost
 
         cur += timedelta(days=1)
+
+    if stale_candidates:
+        delete_result = db.execute(
+            delete(PortfolioSnapshot).where(
+                PortfolioSnapshot.date.in_(stale_candidates),
+                PortfolioSnapshot.total_market_value == 0,
+                PortfolioSnapshot.total_cost > 0,
+            )
+        )
+        result.stale_rows_deleted = max(delete_result.rowcount or 0, 0)
 
     try:
         db.commit()
@@ -536,6 +614,7 @@ class NetworthBackfillResult:
     dates_skipped: int = 0
     dates_inactive: int = 0
     snapshots_written: int = 0
+    stale_rows_deleted: int = 0
     rows_written: int = 0
     errors: List[BackfillError] = field(default_factory=list)
 
@@ -577,6 +656,7 @@ def run_backfill(
             active_dates=active_dates,
         )
         combined.snapshots_written += sres.snapshots_written
+        combined.stale_rows_deleted += sres.stale_rows_deleted
         combined.dates_inactive = max(combined.dates_inactive, sres.dates_inactive)
         if phase == "snapshots":
             combined.dates_processed += sres.dates_processed

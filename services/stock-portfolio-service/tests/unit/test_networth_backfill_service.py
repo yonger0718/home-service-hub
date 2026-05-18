@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Callable, List
+from typing import Any, Callable, List
 
 import pytest
+from sqlalchemy import event
 
 from app.models import portfolio as portfolio_models
 from app.models.portfolio_snapshot import PortfolioSnapshot
@@ -385,28 +386,40 @@ def test_replay_skips_dates_with_no_price_history(db_session, caplog):
 
 
 def test_replay_missing_symbol_price_contributes_zero(db_session, caplog):
-    """If market is open (some price row exists) but the specific holding's
-    price is missing, that holding contributes 0 to MV — snapshot is still
-    written so the time-series stays continuous.
+    """If the market is open and SOME held symbols have prices, a missing
+    price for ONE holding contributes 0 to MV — snapshot is still written
+    with the partial MV from the other holdings. Only when EVERY held
+    symbol's price is missing (the data-gap case) does the date get
+    skipped; see ``test_replay_skips_data_gap_day_and_preserves_last_trading_mv``.
     """
-    sym = "2330"
-    other = "OTHER"
+    priced_sym = "2330"
+    unpriced_sym = "0050"
     d = date(2026, 5, 14)
     _seed_tx(
         db_session,
-        symbol=sym,
+        symbol=priced_sym,
         side=portfolio_models.TransactionType.BUY,
         qty=10,
         price="500",
         trade_date=d,
     )
-    _seed_price(db_session, symbol=other, d=d, close="1")
+    _seed_tx(
+        db_session,
+        symbol=unpriced_sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=20,
+        price="100",
+        trade_date=d,
+    )
+    _seed_price(db_session, symbol=priced_sym, d=d, close="520")
     db_session.commit()
 
     nbs.replay_snapshots_range(db_session, d, d)
     snap = db_session.query(PortfolioSnapshot).one()
-    assert snap.total_market_value == Decimal("0")
-    assert snap.total_cost == Decimal("5000")
+    # Only the priced symbol contributes to MV; the unpriced one contributes 0.
+    assert snap.total_market_value == Decimal("5200")
+    # Cost still includes both symbols' basis.
+    assert snap.total_cost == Decimal("7000")
 
 
 def test_replay_idempotent(db_session):
@@ -510,7 +523,7 @@ def test_replay_realized_pnl_cumulative_across_dates(db_session):
     assert snaps[date(2026, 5, 15)].total_realized_pnl == Decimal("4000")
 
 
-def test_replay_skips_weekends(db_session):
+def test_replay_forward_fills_held_weekend(db_session: Any) -> None:
     sym = "2330"
     _seed_tx(
         db_session,
@@ -518,20 +531,287 @@ def test_replay_skips_weekends(db_session):
         side=portfolio_models.TransactionType.BUY,
         qty=10,
         price="500",
-        trade_date=date(2026, 5, 14),  # Thu
+        trade_date=date(2024, 9, 13),  # Fri
     )
-    _seed_price(db_session, symbol=sym, d=date(2026, 5, 14), close="500")
-    _seed_price(db_session, symbol=sym, d=date(2026, 5, 15), close="510")  # Fri
-    _seed_price(db_session, symbol=sym, d=date(2026, 5, 18), close="520")  # Mon
+    _seed_price(db_session, symbol=sym, d=date(2024, 9, 13), close="510")
+    _seed_price(db_session, symbol=sym, d=date(2024, 9, 16), close="520")
     db_session.commit()
 
-    # Range covers Thu-Mon inclusive (Sat 16, Sun 17 inside).
-    result = nbs.replay_snapshots_range(db_session, date(2026, 5, 14), date(2026, 5, 18))
-    # 3 weekdays only.
-    assert result.snapshots_written == 3
-    snap_dates = {s.date for s in db_session.query(PortfolioSnapshot).all()}
-    assert date(2026, 5, 16) not in snap_dates
-    assert date(2026, 5, 17) not in snap_dates
+    result = nbs.replay_snapshots_range(
+        db_session, date(2024, 9, 13), date(2024, 9, 16)
+    )
+
+    assert result.snapshots_written == 4
+    snaps = {s.date: s for s in db_session.query(PortfolioSnapshot).all()}
+    assert set(snaps) == {
+        date(2024, 9, 13),
+        date(2024, 9, 14),
+        date(2024, 9, 15),
+        date(2024, 9, 16),
+    }
+    assert snaps[date(2024, 9, 14)].total_market_value == Decimal("5100")
+    assert snaps[date(2024, 9, 15)].total_market_value == Decimal("5100")
+    assert snaps[date(2024, 9, 14)].total_cost == Decimal("5000")
+    assert snaps[date(2024, 9, 15)].total_cost == Decimal("5000")
+
+
+def test_replay_forward_fills_lny_cluster(db_session: Any) -> None:
+    sym = "2330"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=date(2023, 1, 17),
+    )
+    _seed_price(db_session, symbol=sym, d=date(2023, 1, 17), close="510")
+    _seed_price(db_session, symbol=sym, d=date(2023, 1, 30), close="520")
+    db_session.commit()
+
+    result = nbs.replay_snapshots_range(
+        db_session, date(2023, 1, 17), date(2023, 1, 30)
+    )
+
+    snaps = {s.date: s for s in db_session.query(PortfolioSnapshot).all()}
+    assert result.snapshots_written == 14
+    assert set(snaps) == {
+        date(2023, 1, day) for day in range(17, 31)
+    }
+    for day in range(18, 30):
+        assert snaps[date(2023, 1, day)].total_market_value == Decimal("5100")
+        assert snaps[date(2023, 1, day)].total_cost == Decimal("5000")
+
+
+def test_replay_does_not_forward_fill_after_closing_sell(db_session: Any) -> None:
+    sym = "2330"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=date(2024, 9, 12),
+    )
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.SELL,
+        qty=10,
+        price="510",
+        trade_date=date(2024, 9, 13),
+    )
+    _seed_price(db_session, symbol=sym, d=date(2024, 9, 12), close="500")
+    _seed_price(db_session, symbol=sym, d=date(2024, 9, 13), close="510")
+    _seed_price(db_session, symbol=sym, d=date(2024, 9, 16), close="520")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(
+        db_session,
+        date(2024, 9, 13),
+        date(2024, 9, 16),
+        active_dates={date(2024, 9, 13)},
+    )
+
+    assert {s.date for s in db_session.query(PortfolioSnapshot).all()} == {
+        date(2024, 9, 13)
+    }
+
+
+def test_replay_seeds_forward_fill_from_prior_snapshot(db_session: Any) -> None:
+    sym = "2330"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=date(2023, 1, 17),
+    )
+    db_session.add(
+        PortfolioSnapshot(
+            date=date(2023, 1, 17),
+            total_market_value=Decimal("5100"),
+            total_cost=Decimal("5000"),
+            total_unrealized_pnl=Decimal("100"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+
+    result = nbs.replay_snapshots_range(
+        db_session, date(2023, 1, 21), date(2023, 1, 25)
+    )
+
+    snaps = {s.date: s for s in db_session.query(PortfolioSnapshot).all()}
+    assert result.snapshots_written == 5
+    for day in range(21, 26):
+        assert snaps[date(2023, 1, day)].total_market_value == Decimal("5100")
+        assert snaps[date(2023, 1, day)].total_cost == Decimal("5000")
+
+
+def test_replay_forward_fill_advances_saturday_dividend(db_session: Any) -> None:
+    sym = "2330"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=date(2024, 9, 13),
+    )
+    _seed_dividend(db_session, symbol=sym, amount="100", ex_date=date(2024, 9, 14))
+    _seed_price(db_session, symbol=sym, d=date(2024, 9, 13), close="510")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(
+        db_session, date(2024, 9, 13), date(2024, 9, 14)
+    )
+
+    snaps = {s.date: s for s in db_session.query(PortfolioSnapshot).all()}
+    assert snaps[date(2024, 9, 13)].total_dividends == Decimal("0")
+    assert snaps[date(2024, 9, 14)].total_dividends == Decimal("100")
+    assert snaps[date(2024, 9, 14)].portfolio_xirr is None
+
+
+def test_replay_skips_data_gap_day_and_preserves_last_trading_mv(
+    db_session: Any,
+) -> None:
+    """A trading day where every held symbol's price lookup misses must
+    NOT produce a `mv=0 cost>0` snapshot row, and must NOT poison
+    ``last_trading_mv`` for downstream forward-fills.
+    """
+    sym = "2330"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=date(2024, 9, 11),  # Wed
+    )
+    _seed_price(db_session, symbol=sym, d=date(2024, 9, 11), close="510")
+    _seed_price(db_session, symbol=sym, d=date(2024, 9, 13), close="520")
+    # Gap day: 2024-09-12 (Thu) — price_history has SOMEONE else's row
+    # so it passes the `trading_dates` membership check, but no row for 2330.
+    _seed_price(db_session, symbol="0050", d=date(2024, 9, 12), close="170")
+    # Pre-seed a stale `MV=0 cost>0` row on the gap day to confirm the
+    # guard routes through the stale-candidate DELETE path.
+    db_session.add(
+        PortfolioSnapshot(
+            date=date(2024, 9, 12),
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("5000"),
+            total_unrealized_pnl=Decimal("-5000"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+
+    result = nbs.replay_snapshots_range(
+        db_session, date(2024, 9, 11), date(2024, 9, 13)
+    )
+
+    snaps = {s.date: s for s in db_session.query(PortfolioSnapshot).all()}
+    assert date(2024, 9, 12) not in snaps  # gap day not written
+    assert snaps[date(2024, 9, 11)].total_market_value == Decimal("5100")
+    assert snaps[date(2024, 9, 13)].total_market_value == Decimal("5200")
+    # Stale row on the gap day was deleted by the end-of-replay DELETE
+    assert result.stale_rows_deleted == 1
+
+
+def test_replay_deletes_stale_zero_mv_positive_cost_row_on_skipped_date(
+    db_session: Any,
+) -> None:
+    db_session.add(
+        PortfolioSnapshot(
+            date=date(2023, 1, 23),
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("521478.2241"),
+            total_unrealized_pnl=Decimal("-521478.2241"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+
+    result = nbs.replay_snapshots_range(
+        db_session, date(2023, 1, 23), date(2023, 1, 23)
+    )
+
+    assert result.stale_rows_deleted == 1
+    assert db_session.query(PortfolioSnapshot).count() == 0
+
+
+def test_replay_preserves_legit_zero_holding_row_on_skipped_date(
+    db_session: Any,
+) -> None:
+    db_session.add(
+        PortfolioSnapshot(
+            date=date(2024, 5, 1),
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("0"),
+            total_unrealized_pnl=Decimal("0"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+
+    result = nbs.replay_snapshots_range(
+        db_session, date(2024, 5, 1), date(2024, 5, 1)
+    )
+
+    assert result.stale_rows_deleted == 0
+    assert db_session.query(PortfolioSnapshot).count() == 1
+
+
+def test_replay_bulk_deletes_stale_candidates_once(db_session: Any) -> None:
+    start = date(2024, 1, 1)
+    for offset in range(50):
+        d = start.fromordinal(start.toordinal() + offset)
+        db_session.add(
+            PortfolioSnapshot(
+                date=d,
+                total_market_value=Decimal("0"),
+                total_cost=Decimal("1"),
+                total_unrealized_pnl=Decimal("-1"),
+                total_dividends=Decimal("0"),
+                total_realized_pnl=Decimal("0"),
+                portfolio_xirr=None,
+            )
+        )
+    db_session.commit()
+
+    delete_statements: list[str] = []
+
+    def _capture_delete(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        _params: Any,
+        _context: Any,
+        _executemany: Any,
+    ) -> None:
+        if statement.lstrip().upper().startswith("DELETE FROM PORTFOLIO_SNAPSHOT"):
+            delete_statements.append(statement)
+
+    event.listen(db_session.bind, "before_cursor_execute", _capture_delete)
+    try:
+        result = nbs.replay_snapshots_range(
+            db_session, start, start.fromordinal(start.toordinal() + 49)
+        )
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", _capture_delete)
+
+    assert result.stale_rows_deleted == 50
+    assert len(delete_statements) == 1
 
 
 def test_replay_xirr_null_on_backfilled_rows(db_session):
@@ -611,6 +891,22 @@ def test_run_backfill_snapshots_only_does_not_fetch(db_session, monkeypatch):
         db_session, date(2026, 5, 14), date(2026, 5, 14), phase="snapshots"
     )
     assert called["n"] == 0
+
+
+def test_run_backfill_aggregates_stale_rows_deleted(
+    db_session: Any, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(
+        nbs,
+        "replay_snapshots_range",
+        lambda *_args, **_kwargs: nbs.SnapshotReplayResult(stale_rows_deleted=3),
+    )
+
+    result = nbs.run_backfill(
+        db_session, date(2026, 5, 14), date(2026, 5, 14), phase="snapshots"
+    )
+
+    assert result.stale_rows_deleted == 3
 
 
 # ---------- Router smoke ----------
