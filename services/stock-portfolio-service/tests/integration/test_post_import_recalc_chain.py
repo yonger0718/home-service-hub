@@ -247,4 +247,13 @@ def test_chain_forward_fills_lny_cluster_and_replaces_stale_row(
         assert snaps[d].total_market_value == pre_cluster_mv
         assert snaps[d].total_cost == snaps[date(2022, 1, 26)].total_cost
     assert snaps[date(2022, 1, 27)].total_market_value != Decimal("0")
+    stale_remaining = (
+        db_session.query(PortfolioSnapshot)
+        .filter(
+            PortfolioSnapshot.total_market_value == Decimal("0"),
+            PortfolioSnapshot.total_cost > Decimal("0"),
+        )
+        .count()
+    )
+    assert stale_remaining == 0
     assert snaps[date(2022, 2, 7)].total_market_value == Decimal("1000")

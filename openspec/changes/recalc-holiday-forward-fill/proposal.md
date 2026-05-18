@@ -6,7 +6,7 @@ The `portfolio_snapshot` table is currently sparse — Phase 2 skips weekends, m
 
 - Phase 2 (`replay_snapshots_range`) SHALL write a `portfolio_snapshot` row on every weekend and holiday in the requested range, using the previous trading day's market value (forward-fill) when the user held something on that prior trading day. When the user held nothing on the prior trading day, no row is written (matches active-date semantics).
 - The forward-filled row SHALL carry the same `total_market_value` as the prior trading day's snapshot, the prior day's `total_cost` (no tx happened on a holiday), and the cumulative `total_dividends` / `total_realized_pnl` as of that date.
-- Phase 2 SHALL self-heal pre-existing stale `MV=0 cost>0` rows: when about to skip a date that already has a snapshot row in the DB with `total_cost > 0`, the function SHALL DELETE that stale row instead of leaving it. New forward-filled rows (from this change) overwrite via the existing `merge`-on-PK path.
+- Phase 2 SHALL self-heal pre-existing stale `MV=0 cost>0` rows: every skipped date that does not get a forward-fill row SHALL be accumulated into a list of candidates, and at end-of-replay the function SHALL issue ONE bulk DELETE for rows matching `total_market_value = 0 AND total_cost > 0` on those dates. New forward-filled rows (from this change) overwrite via the existing `merge`-on-PK path.
 - The active-date set used by Phase 1 (price fetch) SHALL remain unchanged: holidays still skip the HTTP fetch (no data to fetch), and Phase 1's `dates_inactive` semantics stand. Forward-fill lives entirely in Phase 2.
 
 ## Capabilities
