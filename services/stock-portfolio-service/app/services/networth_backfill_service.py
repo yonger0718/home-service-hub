@@ -73,6 +73,11 @@ def _iter_trading_days(from_d: dt_date, to_d: dt_date):
         cur += timedelta(days=1)
 
 
+def count_trading_days(from_d: dt_date, to_d: dt_date) -> int:
+    """Count weekdays (Mon-Fri) in ``[from_d, to_d]`` inclusive."""
+    return sum(1 for _ in _iter_trading_days(from_d, to_d))
+
+
 def _fetch_with_retry(
     fetcher: Callable[[dt_date], list],
     date: dt_date,
@@ -146,7 +151,7 @@ def compute_active_dates(
             ),
             else_=literal(2),
         ).label("event_rank"),
-    )
+    ).where(portfolio_models.Transaction.trade_date <= to_d)
     dividend_events = (
         select(
             portfolio_models.Dividend.symbol.label("symbol"),
@@ -154,7 +159,10 @@ def compute_active_dates(
             portfolio_models.Dividend.stock_dividend_shares.label("delta"),
             literal(1).label("event_rank"),
         )
-        .where(portfolio_models.Dividend.stock_dividend_shares > 0)
+        .where(
+            portfolio_models.Dividend.stock_dividend_shares > 0,
+            portfolio_models.Dividend.ex_dividend_date <= to_d,
+        )
     )
     events = union_all(tx_events, dividend_events).subquery()
     rows = db.execute(
