@@ -1,11 +1,13 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   OnInit,
   ViewChild,
   inject,
   signal,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
 import { finalize, interval, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
 import { PortfolioService } from '../../../services/portfolio.service';
@@ -31,6 +33,7 @@ import { CorporateActionsPanelComponent } from '../corporate-actions-panel/corpo
 export class PortfolioDashboardComponent implements OnInit {
   private portfolioService = inject(PortfolioService);
   private messageService = inject(MessageService, { optional: true });
+  private destroyRef = inject(DestroyRef);
   protected readonly Number = Number;
 
   @ViewChild(NetworthChartComponent) chart?: NetworthChartComponent;
@@ -95,6 +98,7 @@ export class PortfolioDashboardComponent implements OnInit {
           true,
         ),
         takeUntil(timer(30000)),
+        takeUntilDestroyed(this.destroyRef),
         finalize(() => this.reloadSummaryAndChart()),
       )
       .subscribe({

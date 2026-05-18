@@ -42,12 +42,12 @@ export class PortfolioService extends BaseApiService<Transaction> {
     refresh_scheduled: boolean;
     date: string;
     touched_symbols: string[];
-  }> {
+  } | null> {
     return this.http.post<{
       refresh_scheduled: boolean;
       date: string;
       touched_symbols: string[];
-    }>('/api/portfolio/imports/refresh-quotes', null);
+    } | null>('/api/portfolio/imports/refresh-quotes', null);
   }
 
   getTransactions(query: TransactionQuery = {}): Observable<Paged<Transaction>> {
