@@ -246,11 +246,8 @@ def _step_networth_backfill(
                 db, recalc_from, recalc_to
             )
             if not active_dates:
-                inactive_weekdays = sum(
-                    1
-                    for _ in networth_backfill_service._iter_trading_days(
-                        recalc_from, recalc_to
-                    )
+                inactive_weekdays = networth_backfill_service.count_trading_days(
+                    recalc_from, recalc_to
                 )
                 return StepResult(
                     name="networth_backfill",

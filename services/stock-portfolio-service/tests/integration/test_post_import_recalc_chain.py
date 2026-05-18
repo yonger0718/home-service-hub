@@ -103,7 +103,7 @@ def _run_chain_with_fake_fetchers(
             sleep=lambda _s: None,
             twse_fetcher=_twse,
             tpex_fetcher=_tpex,
-            active_dates=kwargs["active_dates"],
+            active_dates=kwargs.get("active_dates"),
         )
 
     monkeypatch.setattr(nbs, "backfill_prices_range", _backfill_with_fakes)
