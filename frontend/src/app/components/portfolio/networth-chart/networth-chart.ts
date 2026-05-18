@@ -138,7 +138,11 @@ export class NetworthChartComponent implements OnInit {
         this.points.set(points);
         this.loading.set(false);
       });
-    this.loadTrigger$.next(this.selectedWindow());
+    this.loadSelectedWindow();
+  }
+
+  public reload(): void {
+    this.loadSelectedWindow();
   }
 
   private getInterval(window: NetworthWindow): 'day' | 'week' | 'month' {
@@ -159,6 +163,10 @@ export class NetworthChartComponent implements OnInit {
 
     this.selectedWindow.set(window);
     this.loadTrigger$.next(window);
+  }
+
+  private loadSelectedWindow(): void {
+    this.loadTrigger$.next(this.selectedWindow());
   }
 
   private getDateRange(window: NetworthWindow): { from?: string; to?: string } {

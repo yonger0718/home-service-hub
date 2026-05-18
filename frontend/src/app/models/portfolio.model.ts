@@ -71,7 +71,7 @@ export interface ImportResult {
   recalc_scheduled?: boolean;
 }
 
-export interface RecalcStepResult {
+export interface RecalcStepStatus {
   name: string;
   status: 'ok' | 'failed' | 'skipped' | 'partial';
   detail?: Record<string, unknown>;
@@ -86,7 +86,7 @@ export interface RecalcStatus {
   recalc_to?: string | null;
   touched_symbols?: string[];
   current_step?: string | null;
-  steps?: RecalcStepResult[];
+  steps?: RecalcStepStatus[];
 }
 
 export interface RecalcTriggerResponse {

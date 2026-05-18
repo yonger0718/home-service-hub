@@ -6,7 +6,7 @@ import asyncio
 import io
 import os
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -43,11 +43,17 @@ def _session_factory(session):
     return factory
 
 
-def _make_tx(symbol="2330", qty=1000, price="50", days_ago=1):
+def _make_tx(
+    symbol="2330",
+    qty=1000,
+    price="50",
+    days_ago=1,
+    side=portfolio_models.TransactionType.BUY,
+):
     return portfolio_models.Transaction(
         symbol=symbol,
         name=symbol,
-        type=portfolio_models.TransactionType.BUY,
+        type=side,
         quantity=qty,
         price=Decimal(price),
         fee=Decimal("0"),
@@ -125,6 +131,40 @@ def test_step_failure_does_not_skip_later_steps(db_session):
     statuses = {s.name: s.status for s in result.steps}
     assert statuses["dividend_auto_record"] == "failed"
     assert statuses["networth_backfill"] == "ok"
+
+
+def test_quotes_only_chain_runs_single_networth_step_and_stores_status(
+    db_session,
+    monkeypatch,
+):
+    today = date(2026, 5, 18)
+    canned = orch.StepResult(
+        "networth_backfill",
+        "ok",
+        detail={"snapshots_written": 1},
+    )
+    monkeypatch.setattr(orch, "_step_networth_backfill", lambda _f, _a, _b: canned)
+
+    result = asyncio.run(
+        orch.run_chain_quotes_only(
+            _session_factory(db_session),
+            today=today,
+            touched_symbols={"2330"},
+        )
+    )
+
+    assert result.state == "completed"
+    assert result.recalc_from == today.isoformat()
+    assert result.recalc_to == today.isoformat()
+    assert result.steps == [canned]
+    assert orch.latest_status()["steps"] == [
+        {
+            "name": "networth_backfill",
+            "status": "ok",
+            "detail": {"snapshots_written": 1},
+            "error": None,
+        }
+    ]
 
 
 def test_dividend_step_swallows_inner_exception(db_session):
@@ -217,6 +257,30 @@ def test_recalc_lock_serializes_concurrent_chains(db_session):
         "enter→exit→enter→exit; without the lock the two enters would "
         "interleave as enter→enter→exit→exit)"
     )
+
+
+def test_quotes_refresh_schedule_holds_recalc_lock_during_chain(
+    db_session,
+    monkeypatch,
+):
+    today = date(2026, 5, 18)
+    lock_states: list[bool] = []
+
+    def assert_locked(_factory, _from_d, _to_d):
+        lock_states.append(orch._RECALC_LOCK.locked())
+        return orch.StepResult("networth_backfill", "ok")
+
+    monkeypatch.setattr(orch, "today_tw", lambda: today)
+    monkeypatch.setattr(orch, "_step_networth_backfill", assert_locked)
+
+    result = orch.schedule_quotes_refresh_sync(
+        _session_factory(db_session),
+        touched_symbols={"2330"},
+    )
+
+    assert result.state == "completed"
+    assert lock_states == [True]
+    assert orch._RECALC_LOCK.locked() is False
 
 
 # ---------- latest_status / TTL ----------
@@ -430,6 +494,76 @@ def test_manual_recalc_accepts_explicit_range(client, db_session, monkeypatch):
     assert response.status_code == 200
     assert captured["recalc_from"].isoformat() == "2024-01-15"
     assert captured["recalc_to"].isoformat() == "2026-05-17"
+
+
+def test_refresh_quotes_schedules_open_holdings_only(client, db_session, monkeypatch):
+    today = date(2026, 5, 18)
+    db_session.add(_make_tx("2330", qty=100, days_ago=3))
+    db_session.add(_make_tx("0050", qty=50, days_ago=2))
+    db_session.add(_make_tx("6488", qty=10, days_ago=2))
+    db_session.add(
+        _make_tx(
+            "6488",
+            qty=10,
+            days_ago=1,
+            side=portfolio_models.TransactionType.SELL,
+        )
+    )
+    db_session.commit()
+    calls: list[dict] = []
+
+    def fake_schedule(session_factory, *, touched_symbols):
+        calls.append({"touched_symbols": touched_symbols})
+        return orch.ChainResult(
+            state="completed",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    monkeypatch.setattr(orch, "today_tw", lambda: today)
+    monkeypatch.setattr(orch, "schedule_quotes_refresh_sync", fake_schedule)
+
+    response = client.post("/api/portfolio/imports/refresh-quotes")
+
+    assert response.status_code == 202, response.text
+    assert response.json() == {
+        "refresh_scheduled": True,
+        "date": today.isoformat(),
+        "touched_symbols": ["0050", "2330"],
+    }
+    assert calls == [{"touched_symbols": {"0050", "2330"}}]
+
+
+def test_refresh_quotes_returns_204_for_empty_portfolio(client, monkeypatch):
+    monkeypatch.setattr(orch, "today_tw", lambda: date(2026, 5, 18))
+    schedule_mock = MagicMock()
+    monkeypatch.setattr(orch, "schedule_quotes_refresh_sync", schedule_mock)
+
+    response = client.post("/api/portfolio/imports/refresh-quotes")
+
+    assert response.status_code == 204
+    schedule_mock.assert_not_called()
+
+
+def test_refresh_quotes_returns_409_when_recalc_lock_is_held(
+    client,
+    db_session,
+    monkeypatch,
+):
+    db_session.add(_make_tx("2330", qty=100, days_ago=1))
+    db_session.commit()
+    monkeypatch.setattr(orch, "today_tw", lambda: date(2026, 5, 18))
+    schedule_mock = MagicMock()
+    monkeypatch.setattr(orch, "schedule_quotes_refresh_sync", schedule_mock)
+    orch._RECALC_LOCK.acquire()
+    try:
+        response = client.post("/api/portfolio/imports/refresh-quotes")
+    finally:
+        orch._RECALC_LOCK.release()
+
+    assert response.status_code == 409
+    assert response.json()["message"] == "recalc in progress"
+    schedule_mock.assert_not_called()
 
 
 def test_status_endpoint_returns_idle_when_empty(client):

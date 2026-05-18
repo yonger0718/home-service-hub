@@ -4,8 +4,8 @@ The `刷新行情` button on `/hub/portfolio` only refreshes the summary card (l
 
 ## What Changes
 
-- Backend: new `POST /api/portfolio/refresh-quotes` — fast-path recalc for today only. Skips `symbol_map_backfill` and `dividend_auto_record`; runs ONLY Phase 1 (price fetch for today) + Phase 2 (snapshot replay for today). Touched-symbols set = current open holdings (qty>0 as of today). Returns immediately after scheduling (BackgroundTasks), same status-polling surface as `/imports/recalc` via `GET /api/portfolio/imports/recalc/status`.
-- Frontend: existing `loadSummary()` on `dashboard.ts` first POSTs to `/refresh-quotes`, polls `/imports/recalc/status` until `state != "running"` (with timeout), then reloads summary + reloads chart history. Button stays in `loading` state across the full chain.
+- Backend: new `POST /api/portfolio/imports/refresh-quotes` (mounted on the existing imports router so the status surface stays under `/imports/`) — fast-path recalc for today only. Skips `symbol_map_backfill` and `dividend_auto_record`; runs ONLY Phase 1 (price fetch for today) + Phase 2 (snapshot replay for today). Touched-symbols set = current open holdings (qty>0 as of today). Returns immediately after scheduling (BackgroundTasks), same status-polling surface as `/imports/recalc` via `GET /api/portfolio/imports/recalc/status`.
+- Frontend: existing `loadSummary()` on `dashboard.ts` first POSTs to `/api/portfolio/imports/refresh-quotes`, polls `/imports/recalc/status` until `state != "running"` (with timeout), then reloads summary + reloads chart history. Button stays in `loading` state across the full chain.
 - Concurrency: re-uses the existing `_RECALC_LOCK` in `post_import_orchestrator`; if a full recalc is already running, refresh-quotes returns 409 and the button surfaces a toast.
 - Idempotency: safe to spam — backend dedupes via lock; frontend prevents double-submit via `loading` signal.
 

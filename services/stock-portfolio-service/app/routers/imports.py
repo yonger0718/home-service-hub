@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from datetime import date as dt_date, datetime, timezone
+from datetime import date as dt_date, datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, UploadFile
-from sqlalchemy import func
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Response, UploadFile
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, get_db
@@ -304,6 +304,59 @@ def trigger_recalc(
         "recalc_scheduled": True,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
+        "touched_symbols": sorted(touched),
+    }
+
+
+@router.post("/refresh-quotes", status_code=202, response_model=None)
+def refresh_quotes(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict | Response:
+    today = post_import_orchestrator.today_tw()
+    today_utc_eod = datetime.combine(
+        today,
+        datetime.max.time(),
+        tzinfo=timezone(timedelta(hours=8)),
+    ).astimezone(timezone.utc)
+    signed_qty = case(
+        (
+            portfolio_models.Transaction.type
+            == portfolio_models.TransactionType.BUY,
+            portfolio_models.Transaction.quantity,
+        ),
+        else_=-portfolio_models.Transaction.quantity,
+    )
+    net_qty = func.sum(signed_qty)
+    touched = {
+        symbol
+        for symbol, _qty in (
+            db.query(
+                portfolio_models.Transaction.symbol,
+                net_qty.label("qty"),
+            )
+            .filter(portfolio_models.Transaction.trade_date <= today_utc_eod)
+            .group_by(portfolio_models.Transaction.symbol)
+            .having(net_qty > 0)
+            .all()
+        )
+    }
+    if not touched:
+        return Response(status_code=204)
+
+    if not post_import_orchestrator._RECALC_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="recalc in progress")
+    # The background task re-acquires the lock; this short gap avoids queueing behind a long recalc.
+    post_import_orchestrator._RECALC_LOCK.release()
+
+    background_tasks.add_task(
+        post_import_orchestrator.schedule_quotes_refresh_sync,
+        SessionLocal,
+        touched_symbols=touched,
+    )
+    return {
+        "refresh_scheduled": True,
+        "date": today.isoformat(),
         "touched_symbols": sorted(touched),
     }
 
