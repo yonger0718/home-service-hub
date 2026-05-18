@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterator
 
@@ -257,3 +257,76 @@ def test_chain_forward_fills_lny_cluster_and_replaces_stale_row(
     )
     assert stale_remaining == 0
     assert snaps[date(2022, 2, 7)].total_market_value == Decimal("1000")
+
+
+def test_quotes_refresh_chain_writes_today_price_snapshot_and_single_step_status(
+    db_session: Any,
+    monkeypatch: Any,
+) -> None:
+    today = date(2026, 5, 18)
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        trade_date=today - timedelta(days=3),
+    )
+    db_session.commit()
+    real_backfill = nbs.backfill_prices_range
+
+    def _backfill_with_fakes(
+        db: Any,
+        from_d: date,
+        to_d: date,
+        **kwargs: Any,
+    ) -> nbs.PriceBackfillResult:
+        return real_backfill(
+            db,
+            from_d,
+            to_d,
+            throttle_sec=0,
+            sleep=lambda _s: None,
+            twse_fetcher=lambda d: [_row("2330", d, "TWSE")],
+            tpex_fetcher=lambda d: [_row("6488", d, "TPEx")],
+            active_dates=kwargs.get("active_dates"),
+        )
+
+    monkeypatch.setattr(orch, "today_tw", lambda: today)
+    monkeypatch.setattr(nbs, "backfill_prices_range", _backfill_with_fakes)
+
+    orch.schedule_quotes_refresh_sync(
+        _session_factory(db_session),
+        touched_symbols={"2330"},
+    )
+
+    price = (
+        db_session.query(PriceHistory)
+        .filter(PriceHistory.symbol == "2330", PriceHistory.date == today)
+        .one()
+    )
+    snapshot = (
+        db_session.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.date == today)
+        .one()
+    )
+    status = orch.latest_status()
+
+    assert price.close == Decimal("10")
+    assert snapshot.total_market_value == Decimal("1000")
+    assert status["state"] == "completed"
+    assert status["steps"] == [
+        {
+            "name": "networth_backfill",
+            "status": "ok",
+            "detail": {
+                "dates_processed": 1,
+                "dates_skipped": 0,
+                "dates_inactive": 0,
+                "rows_written": 2,
+                "snapshots_written": 1,
+                "stale_rows_deleted": 0,
+                "errors": [],
+            },
+            "error": None,
+        }
+    ]

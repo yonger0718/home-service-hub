@@ -1,5 +1,15 @@
-import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  OnInit,
+  ViewChild,
+  inject,
+  signal,
+} from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
+import { finalize, interval, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { PortfolioSummary, ExDividendRecord } from '../../../models/portfolio.model';
 import { CardModule } from 'primeng/card';
@@ -9,6 +19,7 @@ import { ButtonModule } from 'primeng/button';
 import { TooltipModule } from 'primeng/tooltip';
 import { AccordionModule } from 'primeng/accordion';
 import { SkeletonModule } from 'primeng/skeleton';
+import { MessageService } from 'primeng/api';
 import { NetworthChartComponent } from '../networth-chart/networth-chart';
 import { CorporateActionsPanelComponent } from '../corporate-actions-panel/corporate-actions-panel';
 
@@ -21,7 +32,11 @@ import { CorporateActionsPanelComponent } from '../corporate-actions-panel/corpo
 })
 export class PortfolioDashboardComponent implements OnInit {
   private portfolioService = inject(PortfolioService);
+  private messageService = inject(MessageService, { optional: true });
+  private destroyRef = inject(DestroyRef);
   protected readonly Number = Number;
+
+  @ViewChild(NetworthChartComponent) chart?: NetworthChartComponent;
 
   summary = signal<PortfolioSummary | null>(null);
   upcomingExDividends = signal<ExDividendRecord[]>([]);
@@ -54,6 +69,44 @@ export class PortfolioDashboardComponent implements OnInit {
 
   loadSummary() {
     this.loading.set(true);
+    this.portfolioService.refreshQuotes().subscribe({
+      next: (response) => {
+        if (response?.refresh_scheduled) {
+          this.pollRecalcStatus();
+          return;
+        }
+
+        this.reloadSummaryAndChart();
+      },
+      error: (err) => {
+        if (err.status === 409) {
+          this.notify('另一筆重算進行中, 稍候再試');
+        } else if (err.status !== 204) {
+          console.error('refreshQuotes failed', err);
+        }
+        this.reloadSummaryAndChart();
+      },
+    });
+  }
+
+  private pollRecalcStatus(): void {
+    interval(1000)
+      .pipe(
+        switchMap(() => this.portfolioService.getRecalcStatus()),
+        takeWhile(
+          status => !['completed', 'partial', 'failed'].includes(status.state),
+          true,
+        ),
+        takeUntil(timer(30000)),
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => this.reloadSummaryAndChart()),
+      )
+      .subscribe({
+        error: (err) => console.error('getRecalcStatus failed', err),
+      });
+  }
+
+  private reloadSummaryAndChart(): void {
     this.portfolioService.getSummary().subscribe({
       next: (data) => {
         this.summary.set(data);
@@ -64,6 +117,20 @@ export class PortfolioDashboardComponent implements OnInit {
         this.loading.set(false);
       }
     });
+    this.chart?.reload();
+  }
+
+  private notify(msg: string): void {
+    if (this.messageService) {
+      this.messageService.add({
+        severity: 'warn',
+        summary: '提醒',
+        detail: msg,
+      });
+      return;
+    }
+
+    console.warn(msg);
   }
 
   getPnlColor(value: number | string): 'success' | 'secondary' | 'info' | 'warn' | 'danger' | 'contrast' {
