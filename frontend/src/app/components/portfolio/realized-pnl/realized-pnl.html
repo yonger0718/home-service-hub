@@ -85,8 +85,7 @@
       <app-list-item [clickable]="true" (itemClick)="toggleExpanded(event)">
         <ng-container left>
           <div class="main-text realized-main-line">
-            <span>{{ event.symbol }}</span>
-            <span class="name text-truncate">{{ symbolDisplay(event) }}</span>
+            <span class="text-truncate">{{ symbolDisplay(event) }}</span>
             @if (event.is_day_trade) {
               <span class="day-trade-badge">當沖</span>
             }
@@ -99,6 +98,9 @@
             }
           </div>
           <div class="sub-text">
+            @if (event.symbol !== symbolDisplay(event)) {
+              {{ event.symbol }} ·
+            }
             {{ event.trade_date }} · {{ event.quantity | number }} 股 · 售價 {{ Number(event.sell_price) | number:'1.2-2' }}
           </div>
         </ng-container>
