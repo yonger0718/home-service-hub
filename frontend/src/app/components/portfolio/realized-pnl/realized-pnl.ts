@@ -145,7 +145,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   }
 
   onDayTradeOnlyChange(value: boolean) {
-    this.updateFilters({ day_trade_only: value || null });
+    this.updateFilters({ day_trade_only: value ? true : null });
   }
 
   onSortChange(sort: string) {
