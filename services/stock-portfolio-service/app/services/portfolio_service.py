@@ -116,6 +116,20 @@ def _load_corp_actions_by_symbol(db: Session) -> Dict[str, List[CorporateAction]
     return grouped
 
 
+def _load_adjusted_transactions(db: Session) -> List:
+    """Load transactions in the portfolio-summary order with split factors applied."""
+    transactions = (
+        db.query(models.Transaction)
+        .order_by(
+            models.Transaction.trade_date,
+            models.Transaction.type.asc(),
+            models.Transaction.id,
+        )
+        .all()
+    )
+    return _apply_corp_action_factors(transactions, _load_corp_actions_by_symbol(db))
+
+
 def _calculate_xirr(cash_flows: List[Tuple[date_type, Decimal]]) -> Optional[Decimal]:
     """
     Compute XIRR from a list of (date, amount) pairs.
@@ -402,6 +416,17 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         dividends = db.query(models.Dividend).all()
         actions_by_symbol = _load_corp_actions_by_symbol(db)
         adjusted_transactions = _apply_corp_action_factors(transactions, actions_by_symbol)
+        from .realized_pnl_service import iter_realized_events
+        realized_events = [
+            event for event in iter_realized_events(adjusted_transactions)
+            if event.note != "no_inventory"
+        ]
+        realized_pnl_by_symbol: Dict[str, Decimal] = {}
+        for event in realized_events:
+            realized_pnl_by_symbol[event.symbol] = (
+                realized_pnl_by_symbol.get(event.symbol, Decimal("0.0"))
+                + event.realized_pnl
+            )
         active_holdings = _aggregate_active_holdings(transactions, actions_by_symbol)
         active_symbols = list(active_holdings.keys())
 
@@ -450,15 +475,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 if h["total_quantity"] > 0:
                     avg_unit_cost = h["total_cost"] / Decimal(h["total_quantity"])
                     avg_unit_cost_ex_fee = h["total_cost_ex_fee"] / Decimal(h["total_quantity"])
-                    sold_qty = min(int(t.quantity), int(h["total_quantity"]))
-                    sold_qty_dec = Decimal(sold_qty)
-                    cost_out = sold_qty_dec * avg_unit_cost
-                    proceeds = (
-                        sold_qty_dec * t.price
-                        - (t.fee or Decimal("0.0"))
-                        - (t.tax or Decimal("0.0"))
-                    )
-                    h["realized_pnl"] = h.get("realized_pnl", Decimal("0.0")) + (proceeds - cost_out)
+                    h["realized_pnl"] = realized_pnl_by_symbol.get(symbol, Decimal("0.0"))
                     h["total_quantity"] -= t.quantity
                     # 賣出時減少庫存成本 (簡易已實現計算方式)
                     h["total_cost"] -= (Decimal(t.quantity) * avg_unit_cost)
