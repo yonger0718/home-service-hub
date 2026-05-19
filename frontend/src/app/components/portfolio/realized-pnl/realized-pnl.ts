@@ -74,7 +74,12 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   searchInput = signal<string>('');
   selectedYear = signal<YearPreset>(null);
   expandedKey = signal<string | null>(null);
-  summary = signal<RealizedPnlSummary>({ filter_scope_total: '0', ytd_total: '0' });
+  summary = signal<RealizedPnlSummary>({
+    filter_scope_total: '0',
+    filter_scope_count: 0,
+    ytd_total: '0',
+    ytd_count: 0,
+  });
 
   dateRange: Date[] | null = null;
   query = signal<RealizedPnlQuery>({
@@ -199,8 +204,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   }
 
   ytdTradeCount(): number {
-    const prefix = `${this.currentYear}-`;
-    return this.events().filter(event => event.trade_date.startsWith(prefix)).length;
+    return this.summary().ytd_count ?? 0;
   }
 
   formatCurrency(value: string | number): string {

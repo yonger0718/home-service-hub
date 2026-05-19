@@ -34,15 +34,17 @@ def get_realized_pnl(
             day_trade_only=day_trade_only,
             sort=sort,
         )
-        filter_scope_total, ytd_total = realized_pnl_service.compute_summary(
-            db,
-            {
-                "symbol": symbol,
-                "date_from": date_from,
-                "date_to": date_to,
-                "year": year,
-                "day_trade_only": day_trade_only,
-            },
+        filter_scope_total, filter_scope_count, ytd_total, ytd_count = (
+            realized_pnl_service.compute_summary(
+                db,
+                {
+                    "symbol": symbol,
+                    "date_from": date_from,
+                    "date_to": date_to,
+                    "year": year,
+                    "day_trade_only": day_trade_only,
+                },
+            )
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -52,6 +54,8 @@ def get_realized_pnl(
         "total": len(events),
         "summary": {
             "filter_scope_total": filter_scope_total,
+            "filter_scope_count": filter_scope_count,
             "ytd_total": ytd_total,
+            "ytd_count": ytd_count,
         },
     }

@@ -202,7 +202,7 @@ def compute_events(
 def compute_summary(
     session: Session,
     filter_query: Mapping[str, object],
-) -> tuple[Decimal, Decimal]:
+) -> tuple[Decimal, int, Decimal, int]:
     events = list(iter_realized_events(_load_adjusted_transactions(session)))
     filtered = _filtered_events(
         events,
@@ -213,20 +213,14 @@ def compute_summary(
         day_trade_only=bool(filter_query.get("day_trade_only", False)),
     )
     current_year = date_type.today().year
-    filter_scope_total = sum(
-        (event.realized_pnl for event in filtered),
-        Decimal("0.0"),
-    )
-    ytd_total = sum(
-        (
-            event.realized_pnl
-            for event in events
-            if (
-                date_type(current_year, 1, 1)
-                <= event.trade_date
-                <= date_type(current_year, 12, 31)
-            )
-        ),
-        Decimal("0.0"),
-    )
-    return _money(filter_scope_total), _money(ytd_total)
+    ytd_events = [
+        event for event in events
+        if (
+            date_type(current_year, 1, 1)
+            <= event.trade_date
+            <= date_type(current_year, 12, 31)
+        )
+    ]
+    filter_scope_total = sum((event.realized_pnl for event in filtered), Decimal("0.0"))
+    ytd_total = sum((event.realized_pnl for event in ytd_events), Decimal("0.0"))
+    return _money(filter_scope_total), len(filtered), _money(ytd_total), len(ytd_events)
