@@ -26,7 +26,9 @@ class RealizedPnlEventOut(BaseModel):
 
 class RealizedPnlSummaryOut(BaseModel):
     filter_scope_total: Decimal
+    filter_scope_count: int
     ytd_total: Decimal
+    ytd_count: int
 
 
 class RealizedPnlPagedOut(BaseModel):

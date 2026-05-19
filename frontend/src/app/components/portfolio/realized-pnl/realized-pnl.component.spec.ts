@@ -56,7 +56,9 @@ describe('PortfolioRealizedPnlComponent', () => {
           total: events.length,
           summary: {
             filter_scope_total: '87180',
+            filter_scope_count: 2,
             ytd_total: '97500',
+            ytd_count: 1,
           },
         }),
       ),

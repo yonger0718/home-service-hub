@@ -86,7 +86,12 @@ def test_realized_pnl_endpoint_happy_path_200(client, db_session) -> None:
     assert set(body) == {"items", "total", "summary"}
     assert body["total"] == 62
     assert len(body["items"]) == 25
-    assert set(body["summary"]) == {"filter_scope_total", "ytd_total"}
+    assert set(body["summary"]) == {
+        "filter_scope_total",
+        "filter_scope_count",
+        "ytd_total",
+        "ytd_count",
+    }
 
 
 def test_realized_pnl_endpoint_pagination_boundary(client, db_session) -> None:
@@ -142,4 +147,6 @@ def test_realized_pnl_endpoint_sort_and_summary(client, db_session) -> None:
     body = response.json()
     assert [item["realized_pnl"] for item in body["items"]] == ["200.00"]
     assert body["summary"]["filter_scope_total"] == "200.00"
+    assert body["summary"]["filter_scope_count"] == 1
     assert body["summary"]["ytd_total"] == "60.00"
+    assert body["summary"]["ytd_count"] == 60

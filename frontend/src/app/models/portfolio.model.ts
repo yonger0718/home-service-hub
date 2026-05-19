@@ -226,7 +226,9 @@ export interface RealizedPnlEvent {
 
 export interface RealizedPnlSummary {
   filter_scope_total: string;
+  filter_scope_count: number;
   ytd_total: string;
+  ytd_count: number;
 }
 
 export interface RealizedPnlQuery {
