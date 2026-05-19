@@ -17,6 +17,8 @@ import {
   Paged,
   TransactionQuery,
   DividendQuery,
+  RealizedPnlPaged,
+  RealizedPnlQuery,
 } from '../models/portfolio.model';
 
 function buildParams(query: Record<string, unknown>): HttpParams {
@@ -70,6 +72,12 @@ export class PortfolioService extends BaseApiService<Transaction> {
 
   getDividends(query: DividendQuery = {}): Observable<Paged<Dividend>> {
     return this.http.get<Paged<Dividend>>('/api/portfolio/dividends', {
+      params: buildParams(query as Record<string, unknown>),
+    });
+  }
+
+  getRealizedPnl(query: RealizedPnlQuery = {}): Observable<RealizedPnlPaged> {
+    return this.http.get<RealizedPnlPaged>('/api/portfolio/realized-pnl', {
       params: buildParams(query as Record<string, unknown>),
     });
   }

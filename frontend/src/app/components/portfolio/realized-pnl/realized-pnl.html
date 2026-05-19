@@ -1,0 +1,160 @@
+<p-toast></p-toast>
+
+<div class="realized-summary-row">
+  <div class="bento-item realized-summary-card" [class.is-loss]="Number(summary().filter_scope_total) < 0">
+    <div class="bento-content">
+      <div class="label">已實現損益 (篩選範圍)</div>
+      <div class="value">{{ formatCurrency(summary().filter_scope_total) }}</div>
+      <div class="meta">{{ total() }} 筆交易</div>
+    </div>
+  </div>
+  <div class="bento-item realized-summary-card" [class.is-loss]="Number(summary().ytd_total) < 0">
+    <div class="bento-content">
+      <div class="label">今年累計 (YTD)</div>
+      <div class="value">{{ formatCurrency(summary().ytd_total) }}</div>
+      <div class="meta">{{ ytdTradeCount() }} 筆交易</div>
+    </div>
+  </div>
+</div>
+
+<div class="hub-filter-bar">
+  <div class="search-wrap">
+    <i class="pi pi-search"></i>
+    <input
+      type="text"
+      [ngModel]="searchInput()"
+      (ngModelChange)="onSearchInput($event)"
+      placeholder="搜尋代碼或名稱（例如 2330 或 台積電）" />
+  </div>
+  <div class="filter-controls">
+    <p-datepicker
+      [(ngModel)]="dateRange"
+      selectionMode="range"
+      [readonlyInput]="true"
+      dateFormat="yy-mm-dd"
+      placeholder="日期範圍"
+      appendTo="body"
+      [showClear]="true"
+      styleClass="hub-mini-datepicker"
+      (onSelect)="onDateRangeChange(dateRange)"
+      (onClear)="onDateRangeChange(null)">
+    </p-datepicker>
+    <p-selectButton
+      [options]="yearPresetOptions"
+      optionLabel="label"
+      optionValue="value"
+      [allowEmpty]="false"
+      [ngModel]="selectedYear()"
+      (ngModelChange)="onYearPresetChange($event)"
+      styleClass="year-preset-control">
+    </p-selectButton>
+    <label class="day-trade-toggle">
+      <span>僅當沖</span>
+      <p-toggleSwitch
+        [ngModel]="query().day_trade_only ?? false"
+        (ngModelChange)="onDayTradeOnlyChange($event)">
+      </p-toggleSwitch>
+    </label>
+    <p-select
+      [options]="sortOptions"
+      optionLabel="label"
+      optionValue="value"
+      [ngModel]="query().sort ?? 'trade_date:desc'"
+      (onChange)="onSortChange($event.value)"
+      styleClass="hub-mini-select">
+    </p-select>
+    @if (hasActiveFilters()) {
+      <p-button icon="pi pi-filter-slash" severity="secondary" [text]="true" (onClick)="clearFilters()" pTooltip="清除篩選"></p-button>
+    }
+  </div>
+</div>
+
+<div class="hub-result-meta">
+  <span class="meta-count">{{ total() }} 筆</span>
+  @if (loading()) {
+    <span class="meta-loading">
+      <p-progressSpinner styleClass="w-1rem h-1rem" strokeWidth="4"></p-progressSpinner>
+      查詢中…
+    </span>
+  }
+</div>
+
+<div class="hub-modern-list" [class.is-loading]="loading()">
+  @for (event of events(); track eventKey(event)) {
+    <div class="realized-row-shell">
+      <app-list-item [clickable]="true" (itemClick)="toggleExpanded(event)">
+        <ng-container left>
+          <div class="main-text realized-main-line">
+            <span class="text-truncate">{{ symbolDisplay(event) }}</span>
+            @if (event.is_day_trade) {
+              <span class="day-trade-badge">當沖</span>
+            }
+            @if (event.note === 'no_inventory') {
+              <i
+                class="pi pi-exclamation-triangle warning-icon"
+                pTooltip="融券 / no-inventory 賣出，成本以 0 計算"
+                tooltipPosition="top">
+              </i>
+            }
+          </div>
+          <div class="sub-text">
+            @if (event.symbol !== symbolDisplay(event)) {
+              {{ event.symbol }} ·
+            }
+            {{ event.trade_date }} · {{ event.quantity | number }} 股 · 售價 {{ Number(event.sell_price) | number:'1.2-2' }}
+          </div>
+        </ng-container>
+        <ng-container right>
+          <div class="text-end">
+            <div class="amount-text realized-pnl" [ngClass]="pnlClass(event.realized_pnl)">
+              {{ formatCurrency(event.realized_pnl) }}
+            </div>
+            <div class="sub-text">均價 {{ Number(event.avg_cost_at_sale) | number:'1.2-2' }}</div>
+          </div>
+        </ng-container>
+      </app-list-item>
+
+      @if (expandedKey() === eventKey(event)) {
+        <div class="realized-detail-panel">
+          <div class="detail-item">
+            <span>成交總額</span>
+            <strong>{{ formatCurrency(event.proceeds_gross) }}</strong>
+          </div>
+          <div class="detail-item">
+            <span>手續費</span>
+            <strong>{{ formatCurrency(event.fee) }}</strong>
+          </div>
+          <div class="detail-item">
+            <span>交易稅</span>
+            <strong>{{ formatCurrency(event.tax) }}</strong>
+          </div>
+          <div class="detail-item">
+            <span>淨收入</span>
+            <strong>{{ formatCurrency(event.proceeds_net) }}</strong>
+          </div>
+          <div class="detail-item">
+            <span>賣出成本</span>
+            <strong>{{ formatCurrency(event.cost_out) }}</strong>
+          </div>
+        </div>
+      }
+    </div>
+  } @empty {
+    <div class="empty-state">
+      <i class="pi pi-chart-line"></i>
+      <h4>無已實現損益</h4>
+      <p>調整篩選條件後再試。</p>
+    </div>
+  }
+</div>
+
+@if (total() > (query().limit ?? 25)) {
+  <p-paginator
+    [first]="query().offset ?? 0"
+    [rows]="query().limit ?? 25"
+    [totalRecords]="total()"
+    [rowsPerPageOptions]="rowsPerPageOptions"
+    (onPageChange)="onPageChange($event)"
+    styleClass="hub-paginator">
+  </p-paginator>
+}

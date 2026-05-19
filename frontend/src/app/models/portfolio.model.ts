@@ -206,3 +206,40 @@ export interface DividendQuery {
   source?: string | null;
   sort?: string;
 }
+
+export interface RealizedPnlEvent {
+  trade_date: string;
+  symbol: string;
+  name: string | null;
+  quantity: number;
+  sell_price: string;
+  avg_cost_at_sale: string;
+  fee: string;
+  tax: string;
+  proceeds_gross: string;
+  proceeds_net: string;
+  cost_out: string;
+  realized_pnl: string;
+  is_day_trade: boolean;
+  note: string | null;
+}
+
+export interface RealizedPnlSummary {
+  filter_scope_total: string;
+  filter_scope_count: number;
+  ytd_total: string;
+  ytd_count: number;
+}
+
+export interface RealizedPnlQuery {
+  offset?: number;
+  limit?: number;
+  symbol?: string | null;
+  date_from?: string | null;
+  date_to?: string | null;
+  year?: number | null;
+  day_trade_only?: boolean | null;
+  sort?: string;
+}
+
+export type RealizedPnlPaged = Paged<RealizedPnlEvent> & { summary: RealizedPnlSummary };
