@@ -72,6 +72,14 @@ class _AdjustedTransaction:
     def tax(self):
         return self._base.tax
 
+    @property
+    def position_side(self):
+        return getattr(self._base, "position_side", models.PositionSide.LONG)
+
+    @property
+    def is_day_trade(self):
+        return getattr(self._base, "is_day_trade", False)
+
 
 def _factor_for_trade(actions: List[CorporateAction], trade_date) -> Decimal:
     """Cumulative product of every action strictly AFTER trade_date."""

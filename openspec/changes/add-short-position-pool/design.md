@@ -38,13 +38,13 @@ CodeRabbit flagged the oversell branch in PR #12 review (#12); the realized P&L 
 
 **Why**: Two orthogonal axes (direction × side) compose cleanly as two columns. Collapsing them into a single 4-value enum forces every consumer (queries, schemas, services, frontend filters, tests) to re-key on a new vocabulary. The Cathay parser, generic CSV parser, manual entry router, all existing pagination/filter logic, and downstream aggregation already key on `type`. A new column is additive and defaults gracefully for legacy rows.
 
-### D2 — Default `LONG` for legacy rows, user re-imports CSV for accurate backfill
+### D2 — Default `LONG` for legacy rows, operator SQL-patches known 短 rows
 
-**Decision**: Alembic migration sets `position_side='LONG'` for every existing row. Provide no automated CSV replay. Document that re-importing the same CSV via the existing idempotent rehash path correctly classifies 短 rows.
+**Decision**: Alembic migration sets `position_side='LONG'` for every existing row. Operator runs a targeted SQL `UPDATE ... SET position_side='SHORT' WHERE id IN (...)` for the small set of legacy 短 rows. **CSV re-import is NOT a safe migration path for legacy rows** — see Risks for why.
 
-**Alternative considered**: One-shot SQL UPDATE that walks broker CSV archives and reclassifies. Or: nullable column to mark "unknown" legacy state.
+**Alternative considered**: (a) Automated CSV replay via the rehash path. (b) Nullable column to mark "unknown" legacy state. (c) One-shot Python script that walks broker CSV archives and reclassifies.
 
-**Why**: 99.8% of legacy rows are LONG; the 4 SHORT rows in the only existing CSV upload (technical proven via sample inspection) are nullified statistically. Building a replay tool for 4 rows is overengineering. Re-import is already idempotent through the rehash machinery added in `import-cathay-broker-csv` — operator runs the same CSV upload, the parser hits each row, recomputes `position_side`, rehashes the row in place. No data loss possible because the rehash path doesn't depend on side.
+**Why**: 99.8% of legacy rows are LONG; the 4 SHORT rows in the existing data are easy to identify by hand. Re-import via rehash *would* be elegant if fees matched, but the fee-folding change in D5 means the new parser produces a different fee value than what's stored in DB for legacy rows (rows that came from an older import path or manual entry). The rehash path keys on fee equality, so it fails to match and falls through to insert — creating duplicate rows instead of correcting in place. SQL patch is surgical and obviously reversible.
 
 ### D3 — `iter_realized_events` carries two pools per symbol; route by `position_side`
 
