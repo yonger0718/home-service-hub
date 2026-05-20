@@ -23,15 +23,16 @@ from .import_service import (
     _transaction_fingerprint,
 )
 
-CATHAY_SIDE_MAP = {
-    "現買": "BUY",
-    "資買": "BUY",
-    "券買": "BUY",
-    "沖買": "BUY",
-    "現賣": "SELL",
-    "資賣": "SELL",
-    "券賣": "SELL",
-    "沖賣": "SELL",
+CATHAY_SIDE_MAP: dict[str, tuple[str, str]] = {
+    # (TransactionType.value, PositionSide.value)
+    "現買": ("BUY", "LONG"),
+    "資買": ("BUY", "LONG"),
+    "沖買": ("BUY", "LONG"),
+    "券買": ("BUY", "SHORT"),
+    "現賣": ("SELL", "LONG"),
+    "資賣": ("SELL", "LONG"),
+    "沖賣": ("SELL", "LONG"),
+    "券賣": ("SELL", "SHORT"),
 }
 
 _DATA_PATH = Path(__file__).resolve().parents[1] / "data/name_to_symbol.json"
@@ -134,19 +135,38 @@ def parse_cathay_rows(
                     continue
                 raise
             side = _required(raw_row, "買賣別", row_index)
-            type_ = CATHAY_SIDE_MAP.get(side)
-            if type_ is None:
+            mapping = CATHAY_SIDE_MAP.get(side)
+            if mapping is None:
                 raise ValueError(f"row {row_index}: unsupported 買賣別 {side!r}")
+            type_, position_side = mapping
             quantity = _parse_quantity(_required(raw_row, "成交股數", row_index), row_index)
             price = _parse_decimal(_required(raw_row, "成交價", row_index), "成交價", row_index)
             if price <= 0:
                 raise ValueError(f"row {row_index}: column '成交價' must be positive")
-            fee = _parse_decimal((raw_row.get("手續費") or "0").strip() or "0", "手續費", row_index)
+            base_fee = _parse_decimal((raw_row.get("手續費") or "0").strip() or "0", "手續費", row_index)
+            interest = _parse_decimal((raw_row.get("利息") or "0").strip() or "0", "利息", row_index)
+            borrow_fee = _parse_decimal(
+                (raw_row.get("券手續費/標借費") or "0").strip() or "0",
+                "券手續費/標借費",
+                row_index,
+            )
             tax = _parse_decimal((raw_row.get("交易稅") or "0").strip() or "0", "交易稅", row_index)
-            if fee < 0:
+            if base_fee < 0:
                 raise ValueError(f"row {row_index}: column '手續費' must be non-negative")
+            if interest < 0:
+                raise ValueError(f"row {row_index}: column '利息' must be non-negative")
+            if borrow_fee < 0:
+                raise ValueError(f"row {row_index}: column '券手續費/標借費' must be non-negative")
             if tax < 0:
                 raise ValueError(f"row {row_index}: column '交易稅' must be non-negative")
+            # Fold 利息 (margin / short interest) + 券手續費 (short borrow fee)
+            # into `fee`. Legacy DB rows imported before this change persisted
+            # only `手續費` — re-importing those rows will NOT match the
+            # legacy fingerprint nor the business-key (both filter on `fee`),
+            # so the rehash path falls through to insert and CREATES A
+            # DUPLICATE. Operators must SQL-patch the legacy rows directly
+            # (see add-short-position-pool design.md Migration Plan).
+            fee = base_fee + interest + borrow_fee
             order_id = (raw_row.get("委託書號") or "").strip() or None
             fingerprint = _transaction_fingerprint(
                 symbol,
@@ -157,6 +177,7 @@ def parse_cathay_rows(
                 fee,
                 tax,
                 order_id=order_id,
+                position_side=position_side,
             )
             rows.append(
                 ParsedRow(
@@ -165,6 +186,7 @@ def parse_cathay_rows(
                     payload={
                         "symbol": symbol,
                         "type": type_,
+                        "position_side": position_side,
                         "quantity": quantity,
                         "price": price,
                         "trade_date": trade_date,
@@ -190,11 +212,18 @@ def parse_cathay_rows(
 
 
 def _row_business_key(row: ParsedRow) -> tuple:
-    """Stable hashable key for matching across the calendar date (time stripped)."""
+    """Stable hashable key for matching across the calendar date (time stripped).
+
+    Includes `position_side` so same-day LONG/SHORT rows with otherwise
+    identical fields (rare but possible — e.g., 現買 alongside 券買 same
+    symbol/qty/price/date) cannot be cross-matched and have side/fingerprint
+    rewritten onto the wrong DB row.
+    """
     p = row.payload
     return (
         p["symbol"],
         p["type"],
+        p.get("position_side", models.PositionSide.LONG.value),
         p["quantity"],
         p["price"],
         p["fee"],
@@ -222,6 +251,7 @@ def _build_business_key_index(
                 models.Transaction.id,
                 models.Transaction.symbol,
                 models.Transaction.type,
+                models.Transaction.position_side,
                 models.Transaction.quantity,
                 models.Transaction.price,
                 models.Transaction.fee,
@@ -232,8 +262,22 @@ def _build_business_key_index(
             .order_by(models.Transaction.id)
             .all()
         )
-        for cand_id, symbol, type_, quantity, price, fee, tax, fingerprint in candidates:
-            key = (symbol, type_.value, quantity, price, fee, tax, trade_date_only)
+        for cand_id, symbol, type_, position_side, quantity, price, fee, tax, fingerprint in candidates:
+            side_value = (
+                position_side.value
+                if position_side is not None
+                else models.PositionSide.LONG.value
+            )
+            key = (
+                symbol,
+                type_.value,
+                side_value,
+                quantity,
+                price,
+                fee,
+                tax,
+                trade_date_only,
+            )
             index[key].append((cand_id, fingerprint))
     return index
 
@@ -280,6 +324,9 @@ def _business_key_match(
         .filter(
             models.Transaction.symbol == payload["symbol"],
             models.Transaction.type == models.TransactionType(payload["type"]),
+            models.Transaction.position_side == models.PositionSide(
+                payload.get("position_side", models.PositionSide.LONG.value)
+            ),
             models.Transaction.quantity == payload["quantity"],
             models.Transaction.price == payload["price"],
             models.Transaction.fee == payload["fee"],
@@ -325,10 +372,14 @@ def _insert_transaction(db: Session, row: ParsedRow) -> models.Transaction:
     # 融券/沖賣 short opens. Trust the statement and skip ledger validation here.
     payload = dict(row.payload)
     payload["type"] = models.TransactionType(payload["type"])
+    payload["position_side"] = models.PositionSide(
+        payload.get("position_side", models.PositionSide.LONG.value)
+    )
     tx = models.Transaction(
         symbol=payload["symbol"],
         name=payload["name"],
         type=payload["type"],
+        position_side=payload["position_side"],
         quantity=payload["quantity"],
         price=payload["price"],
         trade_date=payload["trade_date"],
@@ -451,6 +502,11 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                 )
                 if existing is not None:
                     existing.import_fingerprint = row.fingerprint
+                    existing.position_side = models.PositionSide(
+                        row.payload.get(
+                            "position_side", models.PositionSide.LONG.value
+                        )
+                    )
                     db.flush()
                     rehashed += 1
                     continue
@@ -465,6 +521,11 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                 business_match = _business_key_match(db, row, claimed_ids, batch_fingerprints)
                 if business_match is not None:
                     business_match.import_fingerprint = row.fingerprint
+                    business_match.position_side = models.PositionSide(
+                        row.payload.get(
+                            "position_side", models.PositionSide.LONG.value
+                        )
+                    )
                     # Normalize trade_date to the parsed value so the column matches
                     # what future fingerprints will hash; day-trade detection already
                     # strips time so this is harmless to downstream logic.

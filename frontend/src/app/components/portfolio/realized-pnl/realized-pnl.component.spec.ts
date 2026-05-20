@@ -21,6 +21,7 @@ describe('PortfolioRealizedPnlComponent', () => {
       cost_out: '700000',
       realized_pnl: '97500',
       is_day_trade: true,
+      position_side: 'LONG',
       note: null,
     },
     {
@@ -37,7 +38,8 @@ describe('PortfolioRealizedPnlComponent', () => {
       cost_out: '100000',
       realized_pnl: '-10320',
       is_day_trade: false,
-      note: 'no_inventory',
+      position_side: 'LONG',
+      note: 'no_long_inventory',
     },
   ];
 

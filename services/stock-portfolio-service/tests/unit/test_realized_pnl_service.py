@@ -151,7 +151,7 @@ def test_no_inventory_sell_is_emitted_and_flagged(db_session) -> None:
     assert event.quantity == 100
     assert event.cost_out == Decimal("0")
     assert event.realized_pnl == Decimal("5000.00")
-    assert event.note == "no_inventory"
+    assert event.note == "no_long_inventory"
 
 
 def test_filters_and_sorts_events(db_session) -> None:
@@ -223,6 +223,73 @@ def test_filters_and_sorts_events(db_session) -> None:
         e.trade_date
         for e in realized_pnl_service.compute_events(db_session, sort="trade_date:asc")
     ] == [date(2025, 1, 15), date(2025, 2, 2), date(2026, 1, 1)]
+
+
+def test_symbol_filter_uses_prefix_match(db_session) -> None:
+    _seed_transactions(
+        db_session,
+        [
+            _tx(
+                symbol="0050",
+                side=models.TransactionType.BUY,
+                quantity=100,
+                price="100.00",
+                trade_date=datetime(2025, 1, 1, 9, 0),
+            ),
+            _tx(
+                symbol="0050",
+                side=models.TransactionType.SELL,
+                quantity=10,
+                price="120.00",
+                trade_date=datetime(2025, 1, 2, 9, 0),
+            ),
+            _tx(
+                symbol="0056",
+                side=models.TransactionType.BUY,
+                quantity=100,
+                price="30.00",
+                trade_date=datetime(2025, 1, 3, 9, 0),
+            ),
+            _tx(
+                symbol="0056",
+                side=models.TransactionType.SELL,
+                quantity=10,
+                price="35.00",
+                trade_date=datetime(2025, 1, 4, 9, 0),
+            ),
+            _tx(
+                symbol="2330",
+                side=models.TransactionType.BUY,
+                quantity=100,
+                price="500.00",
+                trade_date=datetime(2025, 1, 5, 9, 0),
+            ),
+            _tx(
+                symbol="2330",
+                side=models.TransactionType.SELL,
+                quantity=10,
+                price="600.00",
+                trade_date=datetime(2025, 1, 6, 9, 0),
+            ),
+        ],
+    )
+
+    # "00" matches every 00xxx ETF (0050 + 0056), excludes 2330
+    assert sorted(
+        {e.symbol for e in realized_pnl_service.compute_events(db_session, symbol="00")}
+    ) == ["0050", "0056"]
+    # "005" still matches both
+    assert sorted(
+        {e.symbol for e in realized_pnl_service.compute_events(db_session, symbol="005")}
+    ) == ["0050", "0056"]
+    # "0050" narrows to single ticker
+    assert {
+        e.symbol for e in realized_pnl_service.compute_events(db_session, symbol="0050")
+    } == {"0050"}
+    # "2" matches only 2330
+    assert {
+        e.symbol for e in realized_pnl_service.compute_events(db_session, symbol="2")
+    } == {"2330"}
 
 
 def test_explicit_date_range_takes_precedence_over_year(db_session) -> None:

@@ -64,7 +64,12 @@
   @for (t of transactions(); track t.id) {
     <app-list-item [clickable]="true" (itemClick)="showMenu($event, t)">
       <ng-container left>
-        <div class="main-text">{{ symbolDisplay(t) }}</div>
+        <div class="main-text">
+          {{ symbolDisplay(t) }}
+          @if (t.position_side === 'SHORT') {
+            <span class="short-badge">融券</span>
+          }
+        </div>
         <div class="sub-text">
           {{ t.trade_date | date:'yyyy-MM-dd' }} •
           <span [class]="{'txn-type-buy': t.type === 'BUY', 'txn-type-sell': t.type === 'SELL'}">

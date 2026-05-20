@@ -113,3 +113,16 @@
     }
   }
 }
+
+.short-badge {
+  background: var(--app-warning-soft, rgba(220, 38, 38, 0.12));
+  border: 1px solid var(--app-warning, #dc2626);
+  border-radius: 999px;
+  color: var(--app-warning, #dc2626);
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 1;
+  margin-left: 0.4rem;
+  padding: 0.18rem 0.4rem;
+  vertical-align: middle;
+}
