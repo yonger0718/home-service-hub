@@ -159,6 +159,13 @@ def parse_cathay_rows(
                 raise ValueError(f"row {row_index}: column '券手續費/標借費' must be non-negative")
             if tax < 0:
                 raise ValueError(f"row {row_index}: column '交易稅' must be non-negative")
+            # Fold 利息 (margin / short interest) + 券手續費 (short borrow fee)
+            # into `fee`. Legacy DB rows imported before this change persisted
+            # only `手續費` — re-importing those rows will NOT match the
+            # legacy fingerprint nor the business-key (both filter on `fee`),
+            # so the rehash path falls through to insert and CREATES A
+            # DUPLICATE. Operators must SQL-patch the legacy rows directly
+            # (see add-short-position-pool design.md Migration Plan).
             fee = base_fee + interest + borrow_fee
             order_id = (raw_row.get("委託書號") or "").strip() or None
             fingerprint = _transaction_fingerprint(

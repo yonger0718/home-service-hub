@@ -45,6 +45,10 @@
 
 ## 7. Manual verification
 
+> **⚠️ Fee divergence note for maintainers**
+>
+> Cathay parser now folds `利息` + `券手續費/標借費` into `fee`. Legacy DB rows (imported via older importer / manual entry) persist a non-folded `fee` value. Both `_legacy_fingerprint` and `_business_key_match` filter on `fee` equality, so re-uploading the same broker CSV would NOT rehash these legacy rows in place — it would fall through to `_insert_transaction` and create a duplicate row alongside the orphan legacy row. The 4 known 短 rows in this repo's data (漢磊 ids 617/623, 技嘉 ids 624/693) were SQL-patched directly in task 7.2; do not re-import those specific 國泰 CSVs as a "fix". For any future legacy 短 rows discovered, apply the same SQL-patch pattern.
+
 - [x] 7.1 Restart `stock-portfolio-service` via PM2. Hit `GET /api/portfolio/realized-pnl` — HTTP 200, every event has `position_side` field.
 - [x] 7.2 SQL-patched 4 legacy 短 rows directly (`UPDATE transactions SET position_side='SHORT' WHERE id IN (617,623,624,693)`). Re-import via UI deliberately SKIPPED — legacy rows have fee mismatch vs new fold formula (DB fee=39 vs CSV fold=141 for 漢磊 券賣) so `business_key_match` would fail and rehash path would CREATE DUPLICATES instead of updating in place.
 - [x] 7.3 SQL spot-check confirms `(SELL, SHORT)=2` (漢磊 + 技嘉 opens) and `(BUY, SHORT)=2` (漢磊 + 技嘉 covers). Remaining 2150 rows = LONG.
