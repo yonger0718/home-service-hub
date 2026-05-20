@@ -208,6 +208,55 @@ def test_long_and_short_pools_are_independent_same_symbol(db_session) -> None:
     assert short_event.realized_pnl == Decimal("15000")
 
 
+def test_long_oversell_does_not_drive_pool_negative(db_session) -> None:
+    # SELL qty exceeds available long inventory: event emits for sold_qty=500
+    # (min of 800 and 500), and the pool decrement must use sold_qty so the
+    # residual stays at 0 — not -300.
+    _seed(
+        db_session,
+        [
+            _tx(
+                symbol="6488",
+                side=models.TransactionType.BUY,
+                quantity=500,
+                price="100.00",
+                trade_date=datetime(2025, 1, 1, 9, 0),
+            ),
+            _tx(
+                symbol="6488",
+                side=models.TransactionType.SELL,
+                quantity=800,
+                price="120.00",
+                trade_date=datetime(2025, 1, 2, 9, 0),
+            ),
+            _tx(
+                symbol="6488",
+                side=models.TransactionType.BUY,
+                quantity=100,
+                price="110.00",
+                trade_date=datetime(2025, 1, 3, 9, 0),
+            ),
+            _tx(
+                symbol="6488",
+                side=models.TransactionType.SELL,
+                quantity=100,
+                price="130.00",
+                trade_date=datetime(2025, 1, 4, 9, 0),
+            ),
+        ],
+    )
+
+    events = realized_pnl_service.compute_events(db_session, sort="trade_date:asc")
+
+    # First SELL: sold_qty=500, realized = 500*(120-100) = 10000
+    # Second SELL: must see pool=100 (not -200), realized = 100*(130-110)=2000
+    assert len(events) == 2
+    assert events[0].quantity == 500
+    assert events[0].realized_pnl == Decimal("10000")
+    assert events[1].quantity == 100
+    assert events[1].realized_pnl == Decimal("2000")
+
+
 def test_short_with_fees_subtract_open_proceeds_net(db_session) -> None:
     # 券賣 open: gross 100*1000=100000, fee 63, tax 300 → net 99637
     # 券買 cover: gross 80*1000=80000, fee 22, no tax → cost_total 80022

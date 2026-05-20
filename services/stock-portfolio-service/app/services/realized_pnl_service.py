@@ -154,13 +154,13 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                 position_side=models.PositionSide.LONG,
             )
 
-            long_pool["total_quantity"] = current_qty - quantity
+            long_pool["total_quantity"] = current_qty - sold_qty
             long_pool["total_cost"] = (
-                Decimal(long_pool["total_cost"]) - (Decimal(quantity) * avg_unit_cost)
+                Decimal(long_pool["total_cost"]) - (sold_qty_dec * avg_unit_cost)
             )
             long_pool["total_cost_ex_fee"] = (
                 Decimal(long_pool["total_cost_ex_fee"])
-                - (Decimal(quantity) * avg_unit_cost_ex_fee)
+                - (sold_qty_dec * avg_unit_cost_ex_fee)
             )
             continue
 

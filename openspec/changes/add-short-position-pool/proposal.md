@@ -29,6 +29,6 @@ Realized P&L compute (`iter_realized_events`) tracks only a long-side pool. SELL
 
 - **Backend**: `app/models/portfolio.py` (column + enum), `app/services/realized_pnl_service.py` (dual pool), `app/services/broker_cathay_service.py` (subtype routing + fee folding), `app/services/portfolio_service.py` (oversell guard in `_step_transactions` mirror), `app/schemas/realized_pnl.py` (+ `position_side`), Alembic new migration.
 - **Frontend**: `models/portfolio.model.ts` (+ `position_side`), `components/portfolio/realized-pnl/*`, `components/portfolio/transaction-list/*`.
-- **Data**: ~2150 legacy rows backfill `LONG`. Sample CSV (2026-05-08) contains 4 真實 短 rows (技嘉, 漢磊). User re-imports CSV after migration to recover correct `SHORT` classification.
+- **Data**: ~2150 legacy rows backfill `LONG`. Sample CSV (2026-05-08) contains 4 真實 短 rows (技嘉, 漢磊). Operator runs a targeted SQL `UPDATE` to flip those rows' `position_side` from `LONG` → `SHORT` — re-importing the CSV would NOT work because the new fee-fold formula (手續費 + 利息 + 券手續費) produces a different fee than the legacy DB values, breaking fingerprint and business-key matching and creating duplicate inserts instead of corrections. See design.md "Migration Plan" for the SQL.
 - **Tests**: new `tests/unit/test_realized_pnl_short_pool.py`, new `tests/unit/test_cathay_position_side.py`, extend invariant test, extend Cathay integration test.
 - **Risk**: low — short-row population is 0.2% of data; long-only paths regression-tested via existing invariant.

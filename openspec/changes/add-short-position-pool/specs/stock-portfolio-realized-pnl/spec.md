@@ -56,7 +56,7 @@ Position-opening transactions (`LONG BUY`, `SHORT SELL`) SHALL NOT emit realized
 #### Scenario: Short cover realizes gain inverted from long math
 
 - **WHEN** a portfolio contains a SHORT SELL of 1000 @ 100 (zero fee, zero tax) followed by a SHORT BUY (cover) of 400 @ 80 (zero fee)
-- **THEN** the endpoint returns one event with `position_side='SHORT'`, `type='BUY'`-derived, `quantity=400`, `avg_cost_at_sale=100` (the short open price), `cost_out=32000` (cover gross), `proceeds_net` reflecting the original short-sell proceeds per share, and `realized_pnl=(100-80)*400 = 8000`
+- **THEN** the endpoint returns one event derived from the SHORT BUY transaction with `position_side='SHORT'`, `quantity=400`, `avg_cost_at_sale=100` (the short open price), `cost_out=32000` (cover gross), `proceeds_net=40000` (covered_qty × avg_open_net_per_share = 400 × 100), and `realized_pnl=(100-80)*400 = 8000`
 
 #### Scenario: Partial short cover leaves residual short inventory
 

@@ -205,11 +205,18 @@ def parse_cathay_rows(
 
 
 def _row_business_key(row: ParsedRow) -> tuple:
-    """Stable hashable key for matching across the calendar date (time stripped)."""
+    """Stable hashable key for matching across the calendar date (time stripped).
+
+    Includes `position_side` so same-day LONG/SHORT rows with otherwise
+    identical fields (rare but possible — e.g., 現買 alongside 券買 same
+    symbol/qty/price/date) cannot be cross-matched and have side/fingerprint
+    rewritten onto the wrong DB row.
+    """
     p = row.payload
     return (
         p["symbol"],
         p["type"],
+        p.get("position_side", models.PositionSide.LONG.value),
         p["quantity"],
         p["price"],
         p["fee"],
@@ -237,6 +244,7 @@ def _build_business_key_index(
                 models.Transaction.id,
                 models.Transaction.symbol,
                 models.Transaction.type,
+                models.Transaction.position_side,
                 models.Transaction.quantity,
                 models.Transaction.price,
                 models.Transaction.fee,
@@ -247,8 +255,22 @@ def _build_business_key_index(
             .order_by(models.Transaction.id)
             .all()
         )
-        for cand_id, symbol, type_, quantity, price, fee, tax, fingerprint in candidates:
-            key = (symbol, type_.value, quantity, price, fee, tax, trade_date_only)
+        for cand_id, symbol, type_, position_side, quantity, price, fee, tax, fingerprint in candidates:
+            side_value = (
+                position_side.value
+                if position_side is not None
+                else models.PositionSide.LONG.value
+            )
+            key = (
+                symbol,
+                type_.value,
+                side_value,
+                quantity,
+                price,
+                fee,
+                tax,
+                trade_date_only,
+            )
             index[key].append((cand_id, fingerprint))
     return index
 
@@ -295,6 +317,9 @@ def _business_key_match(
         .filter(
             models.Transaction.symbol == payload["symbol"],
             models.Transaction.type == models.TransactionType(payload["type"]),
+            models.Transaction.position_side == models.PositionSide(
+                payload.get("position_side", models.PositionSide.LONG.value)
+            ),
             models.Transaction.quantity == payload["quantity"],
             models.Transaction.price == payload["price"],
             models.Transaction.fee == payload["fee"],
