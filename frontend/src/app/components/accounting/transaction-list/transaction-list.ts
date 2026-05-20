@@ -47,6 +47,7 @@ import { Menu } from 'primeng/menu';
 export class TransactionListComponent implements OnInit {
   private accountingService = inject(AccountingService);
   private messageService = inject(MessageService);
+  private currentRequestId = 0;
 
   @ViewChild('menu') menu!: Menu;
   menuItems: MenuItem[] = [];
@@ -162,6 +163,7 @@ export class TransactionListComponent implements OnInit {
   );
 
   ngOnInit() {
+    this.loadLookupData();
     this.loadData();
   }
 
@@ -172,17 +174,23 @@ export class TransactionListComponent implements OnInit {
 
   goPrevMonth() {
     const current = this.selectedMonth();
-    this.selectedMonth.set(new Date(current.getFullYear(), current.getMonth() - 1, 1));
+    const nextDate = new Date(current.getFullYear(), current.getMonth() - 1, 1);
+    this.selectedMonth.set(nextDate);
+    this.loadTransactions(nextDate);
   }
 
   goNextMonth() {
     const current = this.selectedMonth();
-    this.selectedMonth.set(new Date(current.getFullYear(), current.getMonth() + 1, 1));
+    const nextDate = new Date(current.getFullYear(), current.getMonth() + 1, 1);
+    this.selectedMonth.set(nextDate);
+    this.loadTransactions(nextDate);
   }
 
   goCurrentMonth() {
     const now = new Date();
-    this.selectedMonth.set(new Date(now.getFullYear(), now.getMonth(), 1));
+    const nextDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    this.selectedMonth.set(nextDate);
+    this.loadTransactions(nextDate);
   }
 
   clearFilters() {
@@ -200,16 +208,60 @@ export class TransactionListComponent implements OnInit {
   }
 
   loadData() {
-    this.accountingService.getTransactions().subscribe(data => {
-        const sorted = data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-        this.transactions.set(sorted);
+    this.loadTransactions(this.selectedMonth());
+  }
+
+  loadTransactions(currentMonth: Date) {
+    const reqId = ++this.currentRequestId;
+    const year = currentMonth.getFullYear();
+    const month = currentMonth.getMonth(); // 0-indexed
+    
+    // Construct local date range strings safely
+    const dateFrom = `${year}-${(month + 1).toString().padStart(2, '0')}-01`;
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    const dateTo = `${year}-${(month + 1).toString().padStart(2, '0')}-${lastDay.toString().padStart(2, '0')}`;
+
+    this.accountingService.getTransactions(0, 1000, undefined, dateFrom, dateTo).subscribe({
+      next: (data) => {
+        if (reqId === this.currentRequestId) {
+          const sorted = data.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          this.transactions.set(sorted);
+
+          // Truncation detection: if count is exactly 1000, warn the user
+          if (data.length === 1000) {
+            this.messageService.add({
+              severity: 'warn',
+              summary: '資料可能被截斷',
+              detail: '本月交易量已達上限 (1000 筆)，部分較早的交易可能未顯示。',
+              life: 8000
+            });
+          }
+        }
+      },
+      error: (err) => {
+        console.error('Failed to load transactions:', err);
+        if (reqId === this.currentRequestId) {
+          this.messageService.add({
+            severity: 'error',
+            summary: '載入失敗',
+            detail: '無法取得本月交易明細，請稍後再試。'
+          });
+        }
+      }
     });
-    this.accountingService.getCategories().subscribe(data => this.categories.set(data));
+  }
+
+  loadLookupData() {
+    this.accountingService.getCategories().subscribe({
+      next: data => this.categories.set(data),
+      error: err => console.error('Failed to load categories', err)
+    });
     
     forkJoin({
         cards: this.accountingService.getCards(),
         methods: this.accountingService.getPaymentMethods()
-    }).subscribe(({ cards, methods }) => {
+    }).subscribe({
+      next: ({ cards, methods }) => {
         this.cards.set(cards);
         this.paymentMethods.set(methods);
         
@@ -233,6 +285,8 @@ export class TransactionListComponent implements OnInit {
             ...cards.map(c => ({ label: `💳 ${c.name}`, value: c.id.toString() }))
         ];
         this.filterPaymentOptions.set(filterOptions);
+      },
+      error: err => console.error('Failed to load payment options metadata', err)
     });
   }
 
