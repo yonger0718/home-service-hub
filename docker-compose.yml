@@ -1,3 +1,7 @@
+x-internal-no-proxy-env: &internal-no-proxy-env
+  NO_PROXY: "localhost,127.0.0.1,127.0.0.0/8,::1,0.250.250.0/24,*.orb.internal,*.orb.local,vm.orb.internal,services.orb.internal,services2.orb.internal,proxyproxy.orb.internal,gateway.orb.internal,gateway.docker.internal,host.internal,host.orb.internal,host.docker.internal,host.lima.internal,docker.orb.internal,docker.orb.local,k8s.orb.local,docker.for.mac.localhost,docker.for.mac.host.internal,postgres,rabbitmq,tempo,loki,prometheus,grafana,minio,otel-collector,inventory-postgres,inventory-rabbitmq,inventory-tempo,inventory-loki,inventory-prometheus,inventory-grafana,inventory-minio,inventory-otel-collector"
+  no_proxy: "localhost,127.0.0.1,127.0.0.0/8,::1,0.250.250.0/24,*.orb.internal,*.orb.local,vm.orb.internal,services.orb.internal,services2.orb.internal,proxyproxy.orb.internal,gateway.orb.internal,gateway.docker.internal,host.internal,host.orb.internal,host.docker.internal,host.lima.internal,docker.orb.internal,docker.orb.local,k8s.orb.local,docker.for.mac.localhost,docker.for.mac.host.internal,postgres,rabbitmq,tempo,loki,prometheus,grafana,minio,otel-collector,inventory-postgres,inventory-rabbitmq,inventory-tempo,inventory-loki,inventory-prometheus,inventory-grafana,inventory-minio,inventory-otel-collector"
+
 services:
   # --- 1. 資料庫 ---
   postgres:
@@ -105,6 +109,8 @@ services:
     image: otel/opentelemetry-collector-contrib@sha256:213886eb6407af91b87fa47551c3632be1a6419ff3a5114ef1e6fc364628496f
     container_name: inventory-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
+    environment:
+      <<: *internal-no-proxy-env
     volumes:
       - ./infra/config/otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
@@ -134,6 +140,8 @@ services:
   prometheus:
     image: prom/prometheus@sha256:1f0f50f06acaceb0f5670d2c8a658a599affe7b0d8e78b898c1035653849a702
     container_name: inventory-prometheus
+    environment:
+      <<: *internal-no-proxy-env
     ports:
       - "9090:9090"
     volumes:
@@ -161,7 +169,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      <<: *internal-no-proxy-env
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
     depends_on:
       - prometheus
       - loki

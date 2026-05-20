@@ -8,6 +8,7 @@ infra/tempo-data
 *.iws
 *.iml
 *.ipr
+.antigravitycli/
 
 # OS metadata
 .DS_Store
