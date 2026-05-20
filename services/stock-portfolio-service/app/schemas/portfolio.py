@@ -19,6 +19,12 @@ class TransactionType(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
 
+
+class PositionSide(str, Enum):
+    LONG = "LONG"
+    SHORT = "SHORT"
+
+
 class TransactionBase(BaseModel):
     """Shared fields for transaction read/write.
 
@@ -33,6 +39,7 @@ class TransactionBase(BaseModel):
     symbol: str
     name: Optional[str] = None
     type: TransactionType
+    position_side: PositionSide = PositionSide.LONG
     quantity: int
     price: Decimal
     trade_date: Optional[datetime] = None

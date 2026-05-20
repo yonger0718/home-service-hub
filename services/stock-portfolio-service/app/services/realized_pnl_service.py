@@ -26,10 +26,12 @@ class RealizedPnlEvent:
     cost_out: Decimal
     realized_pnl: Decimal
     is_day_trade: bool
+    position_side: models.PositionSide
     note: Optional[str] = None
 
 
 _MONEY_QUANT = Decimal("0.01")
+_ZERO = Decimal("0")
 
 
 def _money(value: Decimal) -> Decimal:
@@ -42,88 +44,188 @@ def _trade_date(value: object) -> date_type:
     return value  # type: ignore[return-value]
 
 
+def _empty_long_pool() -> dict[str, Decimal | int]:
+    return {
+        "total_quantity": 0,
+        "total_cost": Decimal("0.0"),
+        "total_cost_ex_fee": Decimal("0.0"),
+    }
+
+
+def _empty_short_pool() -> dict[str, Decimal | int]:
+    return {
+        "total_quantity": 0,
+        "total_proceeds_gross": Decimal("0.0"),
+        "total_proceeds_net": Decimal("0.0"),
+    }
+
+
 def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator[RealizedPnlEvent]:
-    pools: dict[str, dict[str, Decimal | int]] = {}
+    pools: dict[str, dict[str, dict[str, Decimal | int]]] = {}
 
     for transaction in transactions:
         symbol = sanitize_symbol(transaction.symbol)
-        pool = pools.setdefault(
-            symbol,
-            {
-                "total_quantity": 0,
-                "total_cost": Decimal("0.0"),
-                "total_cost_ex_fee": Decimal("0.0"),
-            },
+        symbol_pools = pools.setdefault(
+            symbol, {"LONG": _empty_long_pool(), "SHORT": _empty_short_pool()}
         )
+        long_pool = symbol_pools["LONG"]
+        short_pool = symbol_pools["SHORT"]
+
         quantity = int(transaction.quantity)
         price = Decimal(transaction.price)
         fee = transaction.fee or Decimal("0.0")
         tax = transaction.tax or Decimal("0.0")
+        side = getattr(transaction, "position_side", None) or models.PositionSide.LONG
+        if not isinstance(side, models.PositionSide):
+            side = models.PositionSide(side)
+        is_day_trade = bool(getattr(transaction, "is_day_trade", False))
+        tx_trade_date = _trade_date(transaction.trade_date)
 
-        if transaction.type == models.TransactionType.BUY:
-            pool["total_quantity"] = int(pool["total_quantity"]) + quantity
-            pool["total_cost"] = (
-                Decimal(pool["total_cost"]) + (Decimal(quantity) * price) + fee
+        if side is models.PositionSide.LONG and transaction.type == models.TransactionType.BUY:
+            long_pool["total_quantity"] = int(long_pool["total_quantity"]) + quantity
+            long_pool["total_cost"] = (
+                Decimal(long_pool["total_cost"]) + (Decimal(quantity) * price) + fee
             )
-            pool["total_cost_ex_fee"] = (
-                Decimal(pool["total_cost_ex_fee"]) + (Decimal(quantity) * price)
+            long_pool["total_cost_ex_fee"] = (
+                Decimal(long_pool["total_cost_ex_fee"]) + (Decimal(quantity) * price)
             )
             continue
 
-        if transaction.type != models.TransactionType.SELL:
+        if side is models.PositionSide.SHORT and transaction.type == models.TransactionType.SELL:
+            proceeds_gross = Decimal(quantity) * price
+            proceeds_net = proceeds_gross - fee - tax
+            short_pool["total_quantity"] = int(short_pool["total_quantity"]) + quantity
+            short_pool["total_proceeds_gross"] = (
+                Decimal(short_pool["total_proceeds_gross"]) + proceeds_gross
+            )
+            short_pool["total_proceeds_net"] = (
+                Decimal(short_pool["total_proceeds_net"]) + proceeds_net
+            )
             continue
 
-        current_qty = int(pool["total_quantity"])
-        proceeds_gross = Decimal(quantity) * price
-        proceeds_net = proceeds_gross - fee - tax
-        if current_qty == 0:
+        if side is models.PositionSide.LONG and transaction.type == models.TransactionType.SELL:
+            current_qty = int(long_pool["total_quantity"])
+            proceeds_gross = Decimal(quantity) * price
+            proceeds_net = proceeds_gross - fee - tax
+            if current_qty == 0:
+                yield RealizedPnlEvent(
+                    trade_date=tx_trade_date,
+                    symbol=symbol,
+                    name=transaction.name,
+                    quantity=quantity,
+                    sell_price=price,
+                    avg_cost_at_sale=_ZERO,
+                    fee=fee,
+                    tax=tax,
+                    proceeds_gross=proceeds_gross,
+                    proceeds_net=proceeds_net,
+                    cost_out=_ZERO,
+                    realized_pnl=proceeds_net,
+                    is_day_trade=is_day_trade,
+                    position_side=models.PositionSide.LONG,
+                    note="no_long_inventory",
+                )
+                continue
+
+            avg_unit_cost = Decimal(long_pool["total_cost"]) / Decimal(current_qty)
+            avg_unit_cost_ex_fee = (
+                Decimal(long_pool["total_cost_ex_fee"]) / Decimal(current_qty)
+            )
+            sold_qty = min(quantity, current_qty)
+            sold_qty_dec = Decimal(sold_qty)
+            proceeds_gross = sold_qty_dec * price
+            proceeds_net = proceeds_gross - fee - tax
+            cost_out = sold_qty_dec * avg_unit_cost
+
             yield RealizedPnlEvent(
-                trade_date=_trade_date(transaction.trade_date),
+                trade_date=tx_trade_date,
                 symbol=symbol,
                 name=transaction.name,
-                quantity=quantity,
+                quantity=sold_qty,
                 sell_price=price,
-                avg_cost_at_sale=Decimal("0"),
+                avg_cost_at_sale=avg_unit_cost,
                 fee=fee,
                 tax=tax,
                 proceeds_gross=proceeds_gross,
                 proceeds_net=proceeds_net,
-                cost_out=Decimal("0"),
-                realized_pnl=proceeds_net,
-                is_day_trade=bool(getattr(transaction, "is_day_trade", False)),
-                note="no_inventory",
+                cost_out=cost_out,
+                realized_pnl=proceeds_net - cost_out,
+                is_day_trade=is_day_trade,
+                position_side=models.PositionSide.LONG,
+            )
+
+            long_pool["total_quantity"] = current_qty - quantity
+            long_pool["total_cost"] = (
+                Decimal(long_pool["total_cost"]) - (Decimal(quantity) * avg_unit_cost)
+            )
+            long_pool["total_cost_ex_fee"] = (
+                Decimal(long_pool["total_cost_ex_fee"])
+                - (Decimal(quantity) * avg_unit_cost_ex_fee)
             )
             continue
 
-        avg_unit_cost = Decimal(pool["total_cost"]) / Decimal(current_qty)
-        avg_unit_cost_ex_fee = Decimal(pool["total_cost_ex_fee"]) / Decimal(current_qty)
-        sold_qty = min(quantity, current_qty)
-        sold_qty_dec = Decimal(sold_qty)
-        proceeds_gross = sold_qty_dec * price
-        proceeds_net = proceeds_gross - fee - tax
-        cost_out = sold_qty_dec * avg_unit_cost
+        if side is models.PositionSide.SHORT and transaction.type == models.TransactionType.BUY:
+            current_short_qty = int(short_pool["total_quantity"])
+            cover_gross = Decimal(quantity) * price
+            cover_cost_total = cover_gross + fee + tax
+            if current_short_qty == 0:
+                yield RealizedPnlEvent(
+                    trade_date=tx_trade_date,
+                    symbol=symbol,
+                    name=transaction.name,
+                    quantity=quantity,
+                    sell_price=price,
+                    avg_cost_at_sale=_ZERO,
+                    fee=fee,
+                    tax=tax,
+                    proceeds_gross=_ZERO,
+                    proceeds_net=_ZERO,
+                    cost_out=cover_cost_total,
+                    realized_pnl=-cover_cost_total,
+                    is_day_trade=is_day_trade,
+                    position_side=models.PositionSide.SHORT,
+                    note="no_short_inventory",
+                )
+                continue
 
-        yield RealizedPnlEvent(
-            trade_date=_trade_date(transaction.trade_date),
-            symbol=symbol,
-            name=transaction.name,
-            quantity=sold_qty,
-            sell_price=price,
-            avg_cost_at_sale=avg_unit_cost,
-            fee=fee,
-            tax=tax,
-            proceeds_gross=proceeds_gross,
-            proceeds_net=proceeds_net,
-            cost_out=cost_out,
-            realized_pnl=proceeds_net - cost_out,
-            is_day_trade=bool(getattr(transaction, "is_day_trade", False)),
-        )
+            avg_open_price = (
+                Decimal(short_pool["total_proceeds_gross"]) / Decimal(current_short_qty)
+            )
+            avg_open_net_per_share = (
+                Decimal(short_pool["total_proceeds_net"]) / Decimal(current_short_qty)
+            )
+            covered_qty = min(quantity, current_short_qty)
+            covered_qty_dec = Decimal(covered_qty)
+            cover_gross_slice = covered_qty_dec * price
+            cover_cost_slice = cover_gross_slice + fee + tax
+            proceeds_gross_slice = covered_qty_dec * avg_open_price
+            proceeds_net_slice = covered_qty_dec * avg_open_net_per_share
 
-        pool["total_quantity"] = current_qty - quantity
-        pool["total_cost"] = Decimal(pool["total_cost"]) - (Decimal(quantity) * avg_unit_cost)
-        pool["total_cost_ex_fee"] = Decimal(pool["total_cost_ex_fee"]) - (
-            Decimal(quantity) * avg_unit_cost_ex_fee
-        )
+            yield RealizedPnlEvent(
+                trade_date=tx_trade_date,
+                symbol=symbol,
+                name=transaction.name,
+                quantity=covered_qty,
+                sell_price=price,
+                avg_cost_at_sale=avg_open_price,
+                fee=fee,
+                tax=tax,
+                proceeds_gross=proceeds_gross_slice,
+                proceeds_net=proceeds_net_slice,
+                cost_out=cover_cost_slice,
+                realized_pnl=proceeds_net_slice - cover_cost_slice,
+                is_day_trade=is_day_trade,
+                position_side=models.PositionSide.SHORT,
+            )
+
+            short_pool["total_quantity"] = current_short_qty - covered_qty
+            short_pool["total_proceeds_gross"] = (
+                Decimal(short_pool["total_proceeds_gross"]) - proceeds_gross_slice
+            )
+            short_pool["total_proceeds_net"] = (
+                Decimal(short_pool["total_proceeds_net"]) - proceeds_net_slice
+            )
+            continue
 
 
 def _filtered_events(
@@ -146,9 +248,12 @@ def _filtered_events(
     normalized_symbol = sanitize_symbol(symbol) if symbol else None
     filtered = events
     if normalized_symbol:
+        # Prefix match so "00" narrows to 00xxx ETFs and "3" matches all 3xxx
+        # tickers — mirrors `list_transactions` / `list_dividends` ILIKE
+        # behavior so the filter UX is consistent across portfolio pages.
         filtered = [
             event for event in filtered
-            if sanitize_symbol(event.symbol) == normalized_symbol
+            if sanitize_symbol(event.symbol).startswith(normalized_symbol)
         ]
     if effective_from is not None:
         filtered = [event for event in filtered if event.trade_date >= effective_from]

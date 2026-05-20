@@ -1,0 +1,118 @@
+## ADDED Requirements
+
+### Requirement: Symbol filter uses prefix match
+
+The endpoint's `symbol` query parameter SHALL match events whose `symbol` starts with the supplied value after `sanitize_symbol` normalization. This mirrors the prefix-match behavior of `list_transactions` / `list_dividends` (ILIKE `'<stem>%'`) so the symbol filter behaves the same across all three portfolio pages.
+
+#### Scenario: Two-digit ETF prefix narrows to ETF family
+
+- **WHEN** a portfolio contains events for `0050`, `0056`, and `2330`
+- **AND** the endpoint is called with `symbol=00`
+- **THEN** only events with `symbol` starting `00` are returned (`0050` + `0056`); `2330` is excluded
+
+#### Scenario: Exact ticker still matches exactly
+
+- **WHEN** the endpoint is called with `symbol=2330`
+- **THEN** only events with `symbol` starting `2330` are returned (the original exact-match behavior is preserved as the degenerate case of prefix matching)
+
+## MODIFIED Requirements
+
+### Requirement: Per-SELL realized event listing
+
+The system SHALL expose `GET /api/portfolio/realized-pnl` returning realized P&L events computed against the corporate-action-adjusted transaction view using moving-average cost basis per `position_side` pool. Each event SHALL include `trade_date`, `symbol`, `name`, `quantity`, `sell_price`, `avg_cost_at_sale`, `fee`, `tax`, `proceeds_gross`, `proceeds_net`, `cost_out`, `realized_pnl`, `is_day_trade`, `position_side`, and an optional `note` field.
+
+Realized events SHALL be emitted for closing transactions only:
+
+- `position_side='LONG'` and `type='SELL'` — long close, realizes gain from long pool.
+- `position_side='SHORT'` and `type='BUY'` — short cover, realizes gain from short pool.
+
+Position-opening transactions (`LONG BUY`, `SHORT SELL`) SHALL NOT emit realized events.
+
+#### Scenario: Long SELL after one long BUY uses that BUY's price as average cost
+
+- **WHEN** a portfolio contains a single LONG BUY of 1000 shares at 100 NT$ followed by a LONG SELL of 400 shares at 120 NT$ with zero fees and zero tax
+- **THEN** the endpoint returns exactly one event with `position_side='LONG'`, `quantity=400`, `avg_cost_at_sale=100`, `cost_out=40000`, `proceeds_net=48000`, and `realized_pnl=8000`
+
+#### Scenario: Long SELL after multiple long BUYs uses moving average
+
+- **WHEN** a portfolio contains LONG BUYs of 1000 @ 100 and 500 @ 130 (both zero fee) followed by a LONG SELL of 600 @ 140 (zero fee, zero tax)
+- **THEN** the endpoint returns one event whose `avg_cost_at_sale` equals the weighted average `110` and whose `realized_pnl` equals `(600 * 140) - (600 * 110) = 18000`
+
+#### Scenario: Fees and taxes are included in net proceeds
+
+- **WHEN** a SELL records `fee=85` and `tax=255`
+- **THEN** the event's `proceeds_net` equals `proceeds_gross - 85 - 255` and `realized_pnl` is computed from `proceeds_net`
+
+#### Scenario: Day-trade flag is propagated
+
+- **WHEN** a SELL transaction has `is_day_trade=true`
+- **THEN** the corresponding event has `is_day_trade=true`
+
+#### Scenario: Short SELL alone emits no realized event
+
+- **WHEN** a portfolio contains a single SHORT SELL of 1000 shares at 100 NT$ (zero fees, zero tax) and no SHORT BUY cover
+- **THEN** the endpoint returns zero events for that symbol
+
+#### Scenario: Short cover realizes gain inverted from long math
+
+- **WHEN** a portfolio contains a SHORT SELL of 1000 @ 100 (zero fee, zero tax) followed by a SHORT BUY (cover) of 400 @ 80 (zero fee)
+- **THEN** the endpoint returns one event with `position_side='SHORT'`, `type='BUY'`-derived, `quantity=400`, `avg_cost_at_sale=100` (the short open price), `cost_out=32000` (cover gross), `proceeds_net` reflecting the original short-sell proceeds per share, and `realized_pnl=(100-80)*400 = 8000`
+
+#### Scenario: Partial short cover leaves residual short inventory
+
+- **WHEN** a portfolio contains a SHORT SELL of 1000 @ 100 (zero fee) followed by a SHORT BUY of 400 @ 80 (zero fee)
+- **THEN** the endpoint returns one event for the covered 400 shares and the residual 600-share short remains in the short pool for future cover events
+
+### Requirement: Aggregate equals dashboard cumulative
+
+The system SHALL guarantee that the sum of `realized_pnl` across every event returned by the endpoint with no filters applied equals `PortfolioSummary.total_realized_pnl` for the same portfolio state. The summary SHALL count both long-side and short-side realized P&L.
+
+#### Scenario: Sum of unfiltered events matches summary (long-only fixture)
+
+- **WHEN** a portfolio contains only LONG transactions
+- **AND** the endpoint is called with no filters
+- **AND** `get_portfolio_summary()` is called for the same portfolio
+- **THEN** `sum(event.realized_pnl for event in response.items_across_all_pages)` equals `summary.total_realized_pnl`
+
+#### Scenario: Sum of unfiltered events matches summary (mixed long + short fixture)
+
+- **WHEN** a portfolio contains both LONG and SHORT round-trips on the same symbol
+- **AND** the endpoint is called with no filters
+- **THEN** `sum(event.realized_pnl)` equals `summary.total_realized_pnl`, including the short-cover gain
+
+### Requirement: No-inventory SELL is flagged
+
+When a closing transaction occurs against zero prior inventory of the matching side (`LONG SELL` with no long pool, or `SHORT BUY` with no short pool), the system SHALL still emit an event and SHALL classify the anomaly in the `note` field.
+
+- `LONG SELL` with empty long pool SHALL emit `cost_out=0`, `realized_pnl=proceeds_net`, `note="no_long_inventory"`.
+- `SHORT BUY` with empty short pool SHALL emit `cost_out=cover_cost+fee+tax`, `realized_pnl=-cost_out`, `note="no_short_inventory"`.
+
+#### Scenario: LONG SELL with no prior long BUY is flagged
+
+- **WHEN** a portfolio contains a LONG SELL of 100 shares of `9999` at 50 NT$ (zero fees, zero tax) with no prior BUY of `9999`
+- **THEN** the response contains an event with `position_side='LONG'`, `cost_out=0`, `realized_pnl=5000`, and `note="no_long_inventory"`
+
+#### Scenario: SHORT BUY with no prior short SELL is flagged
+
+- **WHEN** a portfolio contains a SHORT BUY of 100 shares at 50 NT$ (zero fees, zero tax) with no prior SHORT SELL
+- **THEN** the response contains an event with `position_side='SHORT'`, `cost_out=5000`, `realized_pnl=-5000`, and `note="no_short_inventory"`
+
+### Requirement: Frontend page and navigation
+
+The frontend SHALL provide a route `/portfolio/realized-pnl` rendering a page that displays two aggregate cards (filter-scope total and YTD total), a filter bar (symbol autocomplete, date-from, date-to, year preset chips, day-trade toggle, sort dropdown), an event list using the existing hub-modern-list card layout, and a paginator with selectable page sizes. The top-level navigation SHALL include a link "已實現損益" to this route. Event list rows SHALL display a "融券" badge alongside the existing "當沖" badge when `position_side === 'SHORT'`.
+
+#### Scenario: Page renders with required regions
+
+- **WHEN** a user navigates to `/portfolio/realized-pnl`
+- **THEN** the page renders the aggregate cards, the filter bar, the event list, and the paginator
+
+#### Scenario: Year preset clears manual date range
+
+- **WHEN** a user has typed a manual date range and then clicks a year preset chip
+- **THEN** the manual date range inputs are cleared and the query uses the year preset
+
+#### Scenario: Short cover row shows 融券 badge
+
+- **WHEN** the event list renders an event with `position_side='SHORT'`
+- **THEN** the row card SHALL render a "融券" badge in the badge slot, distinct from and able to co-exist with the "當沖" badge
+

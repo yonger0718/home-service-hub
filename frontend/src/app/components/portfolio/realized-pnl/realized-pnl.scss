@@ -86,6 +86,17 @@
   padding: 0.2rem 0.45rem;
 }
 
+.short-badge {
+  background: var(--app-warning-soft, rgba(220, 38, 38, 0.12));
+  border: 1px solid var(--app-warning, #dc2626);
+  border-radius: 999px;
+  color: var(--app-warning, #dc2626);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+}
+
 .warning-icon {
   color: var(--app-warning);
   font-size: 0.9rem;

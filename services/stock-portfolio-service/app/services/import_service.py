@@ -237,15 +237,18 @@ def _transaction_fingerprint(
     fee: Decimal,
     tax: Decimal,
     order_id: str | None = None,
+    position_side: str | None = None,
 ) -> str:
     """SHA256 over the canonical row; identical CSV rows produce identical hashes.
 
     When `order_id` is supplied (typically from a Taiwan broker export's
     ``委託書號`` column), it is appended as ``|order_id=<value>`` so that
-    otherwise-identical same-day fills produce distinct fingerprints. When
-    absent, the canonical string is byte-for-byte identical to the
-    pre-``order_id`` format — re-uploading old CSVs continues to dedupe
-    cleanly.
+    otherwise-identical same-day fills produce distinct fingerprints.
+
+    When `position_side` is supplied AND not ``"LONG"`` (the default), it is
+    appended as ``|side=SHORT``. LONG is omitted so legacy long-only rows
+    keep the original hash and rehash cleanly against pre-position_side DB
+    state. SHORT differentiates 券買/券賣 rows from same-key 現買/現賣.
     """
 
     canonical = "|".join(
@@ -262,6 +265,8 @@ def _transaction_fingerprint(
     )
     if order_id:
         canonical += f"|order_id={order_id}"
+    if position_side and position_side != "LONG":
+        canonical += f"|side={position_side}"
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 

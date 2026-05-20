@@ -1,6 +1,6 @@
 from datetime import date
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -19,6 +19,7 @@ class RealizedPnlEventOut(BaseModel):
     cost_out: Decimal
     realized_pnl: Decimal
     is_day_trade: bool
+    position_side: Literal["LONG", "SHORT"] = "LONG"
     note: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

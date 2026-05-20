@@ -3,11 +3,14 @@ export enum TransactionType {
   SELL = 'SELL'
 }
 
+export type PositionSide = 'LONG' | 'SHORT';
+
 export interface Transaction {
   id: number;
   symbol: string;
   name?: string;
   type: TransactionType;
+  position_side?: PositionSide;
   quantity: number;
   price: number;
   trade_date?: string | Date;
@@ -221,6 +224,7 @@ export interface RealizedPnlEvent {
   cost_out: string;
   realized_pnl: string;
   is_day_trade: boolean;
+  position_side: PositionSide;
   note: string | null;
 }
 

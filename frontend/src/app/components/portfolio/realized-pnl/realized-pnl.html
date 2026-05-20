@@ -86,13 +86,23 @@
         <ng-container left>
           <div class="main-text realized-main-line">
             <span class="text-truncate">{{ symbolDisplay(event) }}</span>
+            @if (event.position_side === 'SHORT') {
+              <span class="short-badge">融券</span>
+            }
             @if (event.is_day_trade) {
               <span class="day-trade-badge">當沖</span>
             }
-            @if (event.note === 'no_inventory') {
+            @if (event.note === 'no_long_inventory') {
               <i
                 class="pi pi-exclamation-triangle warning-icon"
-                pTooltip="融券 / no-inventory 賣出，成本以 0 計算"
+                pTooltip="LONG 賣出無現股庫存，成本以 0 計算"
+                tooltipPosition="top">
+              </i>
+            }
+            @if (event.note === 'no_short_inventory') {
+              <i
+                class="pi pi-exclamation-triangle warning-icon"
+                pTooltip="SHORT 回補無未平倉空單，視為純成本"
                 tooltipPosition="top">
               </i>
             }

@@ -16,10 +16,12 @@ def _tx(
     fee: str = "0.00",
     tax: str = "0.00",
     is_day_trade: bool = False,
+    position_side: models.PositionSide = models.PositionSide.LONG,
 ) -> models.Transaction:
     return models.Transaction(
         symbol=symbol,
         type=side,
+        position_side=position_side,
         quantity=quantity,
         price=Decimal(price),
         fee=Decimal(fee),
@@ -150,3 +152,50 @@ def test_realized_pnl_endpoint_sort_and_summary(client, db_session) -> None:
     assert body["summary"]["filter_scope_count"] == 1
     assert body["summary"]["ytd_total"] == "60.00"
     assert body["summary"]["ytd_count"] == 60
+
+
+def test_realized_pnl_endpoint_emits_position_side(client, db_session) -> None:
+    _seed_endpoint_portfolio(db_session)
+
+    response = client.get("/api/portfolio/realized-pnl")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert all(
+        item["position_side"] == "LONG" for item in body["items"]
+    ), "long-only fixture should produce only LONG events"
+
+
+def test_realized_pnl_endpoint_returns_short_cover_event(client, db_session) -> None:
+    db_session.add_all(
+        [
+            _tx(
+                symbol="6488",
+                side=models.TransactionType.SELL,
+                position_side=models.PositionSide.SHORT,
+                quantity=1000,
+                price="100.00",
+                trade_date=datetime(2025, 5, 1, 9, 0),
+            ),
+            _tx(
+                symbol="6488",
+                side=models.TransactionType.BUY,
+                position_side=models.PositionSide.SHORT,
+                quantity=1000,
+                price="80.00",
+                trade_date=datetime(2025, 5, 5, 9, 0),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/portfolio/realized-pnl", params={"symbol": "6488"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    [event] = body["items"]
+    assert event["position_side"] == "SHORT"
+    assert event["realized_pnl"] == "20000.00"
