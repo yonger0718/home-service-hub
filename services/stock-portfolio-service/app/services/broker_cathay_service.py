@@ -138,6 +138,7 @@ def parse_cathay_rows(
             mapping = CATHAY_SIDE_MAP.get(side)
             if mapping is None:
                 raise ValueError(f"row {row_index}: unsupported 買賣別 {side!r}")
+            broker_day_trade_marker = side if side in ("沖買", "沖賣") else None
             type_, position_side = mapping
             quantity = _parse_quantity(_required(raw_row, "成交股數", row_index), row_index)
             price = _parse_decimal(_required(raw_row, "成交價", row_index), "成交價", row_index)
@@ -195,6 +196,7 @@ def parse_cathay_rows(
                         "name": name,
                         "order_id": order_id,
                         "broker_subtype": side[0],
+                        "broker_day_trade_marker": broker_day_trade_marker,
                     },
                 )
             )
@@ -385,6 +387,7 @@ def _insert_transaction(db: Session, row: ParsedRow) -> models.Transaction:
         trade_date=payload["trade_date"],
         fee=payload["fee"],
         tax=payload["tax"],
+        broker_day_trade_marker=payload.get("broker_day_trade_marker"),
         import_fingerprint=row.fingerprint,
     )
     db.add(tx)
@@ -507,7 +510,11 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                             "position_side", models.PositionSide.LONG.value
                         )
                     )
+                    existing.broker_day_trade_marker = row.payload.get("broker_day_trade_marker")
                     db.flush()
+                    svc._recompute_day_trade_flags(
+                        db, existing.symbol, svc._trade_calendar_date(existing.trade_date)
+                    )
                     rehashed += 1
                     continue
                 duplicate = (
@@ -530,8 +537,12 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                     # what future fingerprints will hash; day-trade detection already
                     # strips time so this is harmless to downstream logic.
                     business_match.trade_date = row.payload["trade_date"]
+                    business_match.broker_day_trade_marker = row.payload.get("broker_day_trade_marker")
                     claimed_ids.add(business_match.id)
                     db.flush()
+                    svc._recompute_day_trade_flags(
+                        db, business_match.symbol, svc._trade_calendar_date(business_match.trade_date)
+                    )
                     rehashed += 1
                     continue
                 tx = _insert_transaction(db, row)
