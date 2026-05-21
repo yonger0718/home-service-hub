@@ -11,12 +11,18 @@ Two phases:
   and ``price_history`` already in the database.
 
 Idempotent: both phases upsert via ``Session.merge``.
+
+CLI:
+    python -m app.services.networth_backfill_service --rebuild-all
+    python -m app.services.networth_backfill_service --rebuild-all --dry-run
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import statistics
+import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -29,9 +35,12 @@ from sqlalchemy import case, delete, func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
+from ..models.portfolio import PositionSide
 from ..models.portfolio_snapshot import PortfolioSnapshot
 from ..models.price_history import PriceHistory
 from . import market_data_service
+from .portfolio_service import _load_adjusted_transactions
+from .realized_pnl_service import iter_realized_events
 
 logger = logging.getLogger(__name__)
 
@@ -452,6 +461,7 @@ def replay_snapshots_range(
     to_d: dt_date,
     *,
     active_dates: Optional[set[dt_date]] = None,
+    dry_run: bool = False,
 ) -> SnapshotReplayResult:
     """Recompute one ``portfolio_snapshot`` row per date in range.
 
@@ -470,25 +480,23 @@ def replay_snapshots_range(
         db, from_d, to_d, include_non_trading=True
     )
 
-    transactions = (
-        db.query(portfolio_models.Transaction)
-        .order_by(
-            portfolio_models.Transaction.trade_date,
-            portfolio_models.Transaction.id,
-        )
-        .all()
+    transactions = _load_adjusted_transactions(db)
+    events = list(iter_realized_events(transactions))
+    realized_by_date: dict[dt_date, Decimal] = defaultdict(lambda: Decimal("0"))
+    for event in events:
+        realized_by_date[event.trade_date] += event.realized_pnl
+
+    cumulative_realized = sum(
+        (
+            amount
+            for event_date, amount in realized_by_date.items()
+            if event_date < from_d
+        ),
+        Decimal("0"),
     )
-    # Within the same trade_date, force BUYs to be processed before SELLs.
-    # CSV imports (especially day-trades) can land with SELL having a smaller
-    # id than its matching BUY; without this re-order the SELL hits qty=0 and
-    # is silently dropped, leaving phantom holdings that inflate MV and cost.
-    transactions.sort(
-        key=lambda t: (
-            _trade_date_of(t),
-            0 if t.type == portfolio_models.TransactionType.BUY else 1,
-            t.id,
-        )
-    )
+    for event_date in [event_date for event_date in realized_by_date if event_date < from_d]:
+        realized_by_date.pop(event_date, None)
+
     dividends = (
         db.query(portfolio_models.Dividend)
         .order_by(portfolio_models.Dividend.ex_dividend_date)
@@ -523,12 +531,22 @@ def replay_snapshots_range(
     # later BUY+SELL pairs cancel out the deficit.
     signed_net: Dict[str, int] = defaultdict(int)
     cumulative_dividends = Decimal("0")
-    cumulative_realized = Decimal("0")
     warned_missing: set[tuple[str, dt_date]] = set()
     stale_candidates: list[dt_date] = []
 
     def write_snapshot(snapshot_date: dt_date, row: PortfolioSnapshot) -> bool:
         """Merge one snapshot inside its own SAVEPOINT."""
+        if dry_run:
+            existing = db.get(PortfolioSnapshot, snapshot_date)
+            old = (
+                Decimal(existing.total_realized_pnl)
+                if existing is not None
+                else Decimal("0")
+            )
+            new = Decimal(row.total_realized_pnl)
+            print(f"{snapshot_date} old={old} new={new} delta={new - old}")
+            return True
+
         sp = db.begin_nested()
         try:
             db.merge(row)
@@ -548,6 +566,8 @@ def replay_snapshots_range(
     div_i = 0
     cur = from_d
     while cur <= to_d:
+        cumulative_realized += realized_by_date.pop(cur, Decimal("0"))
+
         # Advance transactions up to and including ``cur``.
         while tx_i < len(transactions) and _trade_date_of(transactions[tx_i]) <= cur:
             t = transactions[tx_i]
@@ -555,7 +575,13 @@ def replay_snapshots_range(
             tx_qty = int(t.quantity)
             tx_price = Decimal(t.price)
             tx_fee = Decimal(t.fee or 0)
-            tx_tax = Decimal(t.tax or 0)
+            side = getattr(t, "position_side", None) or PositionSide.LONG
+            if not isinstance(side, PositionSide):
+                side = PositionSide(side)
+            if side is PositionSide.SHORT:
+                # SHORT excluded from long-side aggregates — see design.md decision 2.
+                tx_i += 1
+                continue
             if t.type == portfolio_models.TransactionType.BUY:
                 qty[sym] += tx_qty
                 cost[sym] += Decimal(tx_qty) * tx_price + tx_fee
@@ -565,11 +591,8 @@ def replay_snapshots_range(
                 if qty[sym] > 0:
                     avg = cost[sym] / Decimal(qty[sym])
                     sold = min(tx_qty, qty[sym])
-                    proceeds = Decimal(sold) * tx_price - tx_fee - tx_tax
-                    cost_out = Decimal(sold) * avg
-                    cumulative_realized += proceeds - cost_out
-                    qty[sym] -= tx_qty
-                    cost[sym] -= cost_out
+                    qty[sym] -= sold
+                    cost[sym] -= Decimal(sold) * avg
                     if qty[sym] <= 0:
                         qty[sym] = 0
                         cost[sym] = Decimal("0")
@@ -669,7 +692,7 @@ def replay_snapshots_range(
 
         cur += timedelta(days=1)
 
-    if stale_candidates:
+    if stale_candidates and not dry_run:
         delete_result = db.execute(
             delete(PortfolioSnapshot).where(
                 PortfolioSnapshot.date.in_(stale_candidates),
@@ -678,6 +701,9 @@ def replay_snapshots_range(
             )
         )
         result.stale_rows_deleted = max(delete_result.rowcount or 0, 0)
+
+    if dry_run:
+        return result
 
     try:
         db.commit()
@@ -750,3 +776,55 @@ def run_backfill(
         combined.errors.extend(sres.errors)
 
     return combined
+
+
+def _date_of(value: object) -> dt_date:
+    return value.date() if hasattr(value, "date") else value  # type: ignore[return-value]
+
+
+def _main(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Rebuild portfolio_snapshot rows from transaction history."
+    )
+    parser.add_argument(
+        "--rebuild-all",
+        action="store_true",
+        help="replay snapshots from earliest transaction date through today",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print per-date realized-PnL diffs without writing rows",
+    )
+    args = parser.parse_args(argv)
+
+    if not args.rebuild_all:
+        parser.print_help(sys.stderr)
+        return 2
+
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        transactions = db.query(portfolio_models.Transaction).all()
+        if not transactions:
+            print("No transactions found; nothing to rebuild.")
+            return 0
+
+        from_d = min(_date_of(t.trade_date) for t in transactions)
+        to_d = dt_date.today()
+        result = replay_snapshots_range(db, from_d, to_d, dry_run=args.dry_run)
+        if result.errors:
+            for error in result.errors:
+                print(error, file=sys.stderr)
+            return 1
+        return 0
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    sys.exit(_main())
