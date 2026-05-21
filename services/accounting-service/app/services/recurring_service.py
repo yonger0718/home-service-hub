@@ -61,6 +61,21 @@ def generate_recurring_items(db: Session):
     ).all()
     
     for inst in insts:
+        # 計算基於 start_date 與當前年份月份的實際期數
+        elapsed_months = (current_year - inst.start_date.year) * 12 + (current_month - inst.start_date.month)
+        current_period = elapsed_months + 1
+        
+        if current_period <= 0:
+            logger.info("分期付款 %s 尚未到期 (開始日期為 %s)，跳過生成", inst.name, inst.start_date)
+            continue
+            
+        if current_period > inst.total_periods:
+            # 已經超出分期總期數，將 remaining_periods 歸零，標記為已結束
+            if inst.remaining_periods > 0:
+                inst.remaining_periods = 0
+                logger.info("分期付款 %s 已超出總期數，自動更新剩餘期數為 0", inst.name)
+            continue
+            
         exists = db.query(models.Transaction).filter(
             models.Transaction.installment_id == inst.id,
             extract('year', models.Transaction.date) == current_year,
@@ -68,7 +83,6 @@ def generate_recurring_items(db: Session):
         ).first()
         
         if not exists:
-            current_period = inst.total_periods - inst.remaining_periods + 1
             item_name = f"{inst.name} (第 {current_period}/{inst.total_periods} 期)"
             new_pending = models.Transaction(
                 date=safe_date_replace(today.year, today.month, inst.start_date.day),
@@ -82,7 +96,7 @@ def generate_recurring_items(db: Session):
                 transaction_type="EXPENSE"
             )
             db.add(new_pending)
-            inst.remaining_periods -= 1
+            inst.remaining_periods = inst.total_periods - current_period
 
     db.commit()
 

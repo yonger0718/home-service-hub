@@ -16,14 +16,19 @@ export class AccountingService {
   private http = inject(HttpClient);
   private apiUrl = '/api/accounting';
 
-  // Transactions
-  getTransactions(skip = 0, limit = 300, category?: string): Observable<Transaction[]> {
+  getTransactions(skip = 0, limit = 300, category?: string, dateFrom?: string, dateTo?: string): Observable<Transaction[]> {
     let params = new HttpParams()
       .set('skip', skip.toString())
       .set('limit', limit.toString());
     
     if (category) {
       params = params.set('category', category);
+    }
+    if (dateFrom) {
+      params = params.set('date_from', dateFrom);
+    }
+    if (dateTo) {
+      params = params.set('date_to', dateTo);
     }
     
     return this.http.get<Transaction[]>(`${this.apiUrl}/transactions/`, { params });

@@ -281,3 +281,74 @@ def test_generate_recurring_items_uses_real_month_end_for_installment(db_session
     generated = db_session.query(models.Transaction).filter(models.Transaction.installment_id == installment.id).one()
 
     assert generated.date == date(2026, 3, 31)
+
+
+def test_generate_recurring_items_skips_future_installments(db_session, monkeypatch):
+    db_session.add(models.PaymentMethod(name="Cash", is_active=True))
+    db_session.commit()
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 5, 20)
+
+    monkeypatch.setattr(recurring_service, "date", FixedDate)
+
+    installment = recurring_service.create_installment(
+        db_session,
+        schemas.InstallmentCreate(
+            name="未來分期",
+            total_amount=9000,
+            monthly_amount=3000,
+            total_periods=3,
+            remaining_periods=3,
+            start_date=date(2026, 6, 15), # June 15, 2026 (future)
+            payment_method="Cash",
+        ),
+    )
+
+    recurring_service.generate_recurring_items(db_session)
+    generated = db_session.query(models.Transaction).filter(models.Transaction.installment_id == installment.id).all()
+
+    # Should be empty because it hasn't started yet
+    assert len(generated) == 0
+
+
+def test_generate_recurring_items_determines_period_by_elapsed_months(db_session, monkeypatch):
+    db_session.add(models.PaymentMethod(name="Cash", is_active=True))
+    db_session.commit()
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 5, 20)
+
+    monkeypatch.setattr(recurring_service, "date", FixedDate)
+
+    # Created a 3-period installment with start date Feb 15, 2026
+    # Today is May 20, 2026.
+    # Feb -> Period 1
+    # Mar -> Period 2
+    # Apr -> Period 3
+    # May -> Period 4 (already elapsed/out of range, should skip and set remaining_periods = 0)
+    installment = recurring_service.create_installment(
+        db_session,
+        schemas.InstallmentCreate(
+            name="過期分期",
+            total_amount=9000,
+            monthly_amount=3000,
+            total_periods=3,
+            remaining_periods=3,
+            start_date=date(2026, 2, 15),
+            payment_method="Cash",
+        ),
+    )
+
+    recurring_service.generate_recurring_items(db_session)
+    
+    # Verify remaining periods is updated to 0 automatically
+    db_session.refresh(installment)
+    assert installment.remaining_periods == 0
+
+    generated = db_session.query(models.Transaction).filter(models.Transaction.installment_id == installment.id).all()
+    assert len(generated) == 0
