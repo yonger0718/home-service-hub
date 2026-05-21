@@ -31,7 +31,7 @@ Additionally, odd-lot rows (`quantity < 1000 OR quantity % 1000 != 0`) SHALL nev
 - **WHEN** `_recompute_day_trade_flags(db, '2330', that_date)` runs
 - **THEN** both transactions SHALL have `is_day_trade=true` (priority chain branch 2: no marker, bucket has BUY+SELL, symbol eligible)
 
-#### Scenario: Equity BUY+SELL same day without marker on either side stays false when broker did not tag
+#### Scenario: Equity BUY+SELL same day without marker falls back to legacy heuristic
 
 - **GIVEN** `symbol_map` row `(symbol='2330', type='股票')`
 - **AND** a Cathay-imported `2330` LONG BUY at 09:30 with `broker_day_trade_marker IS NULL` (`買賣別='現買'`)

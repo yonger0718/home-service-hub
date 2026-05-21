@@ -221,6 +221,33 @@ def test_rehash_propagates_broker_day_trade_marker(db_session):
     assert tx.broker_day_trade_marker == "沖買"
 
 
+def test_rehash_recomputes_is_day_trade_after_marker_write(db_session):
+    tx = models.Transaction(
+        symbol="3141",
+        name="晶宏",
+        type=models.TransactionType.BUY,
+        position_side=models.PositionSide.LONG,
+        quantity=1000,
+        price=Decimal("56.3"),
+        trade_date=datetime(2026, 5, 8, 13, 30, tzinfo=timezone.utc),
+        fee=Decimal("22"),
+        tax=Decimal("0"),
+        is_day_trade=False,
+        import_fingerprint=None,
+    )
+    db_session.add(tx)
+    db_session.commit()
+
+    result = broker_cathay_service.parse_cathay_transactions_csv(
+        _cathay_csv(_row(side="沖買")), dry_run=False, db=db_session
+    )
+
+    assert result.rehashed == 1
+    db_session.refresh(tx)
+    assert tx.broker_day_trade_marker == "沖買"
+    assert tx.is_day_trade is True
+
+
 def test_rehash_recovers_same_day_collision_twin(db_session):
     _seed_legacy_transaction(db_session)
     result = broker_cathay_service.parse_cathay_transactions_csv(
