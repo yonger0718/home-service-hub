@@ -512,6 +512,9 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                     )
                     existing.broker_day_trade_marker = row.payload.get("broker_day_trade_marker")
                     db.flush()
+                    svc._recompute_day_trade_flags(
+                        db, existing.symbol, svc._trade_calendar_date(existing.trade_date)
+                    )
                     rehashed += 1
                     continue
                 duplicate = (
@@ -537,6 +540,9 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                     business_match.broker_day_trade_marker = row.payload.get("broker_day_trade_marker")
                     claimed_ids.add(business_match.id)
                     db.flush()
+                    svc._recompute_day_trade_flags(
+                        db, business_match.symbol, svc._trade_calendar_date(business_match.trade_date)
+                    )
                     rehashed += 1
                     continue
                 tx = _insert_transaction(db, row)

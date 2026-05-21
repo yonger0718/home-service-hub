@@ -10,7 +10,10 @@ Cathay broker CSV column `買賣別` carries explicit day-trade markers `沖買`
   1. **Explicit broker marker present** in bucket → `is_day_trade = True` for every row in that (symbol, calendar_date) bucket (subject to warrant eligibility gate, which still rejects).
   2. **No marker, but bucket has both BUY and SELL** → fall back to legacy heuristic (preserves behavior for manual entries / non-Cathay sources where the user has no broker proof).
   3. Otherwise → `False`.
-- Alembic data migration: re-scan all rows whose `import_fingerprint` indicates Cathay origin (heuristic: `position_side != LONG` OR fingerprint shape) and clear `is_day_trade = false` where no broker marker is present and the bucket would now resolve False. Migration must not flip True→True unnecessarily nor touch rows the legacy heuristic gets right.
+- Alembic migrations:
+  - `q4f5g6h7i8j9` adds the `broker_day_trade_marker` column (schema-only).
+  - `r5g6h7i8j9k0` clears `is_day_trade=false` on every existing odd-lot row (per design D5: `quantity < 1000 OR quantity % 1000 != 0` — these are always non-day-trade for the user). Safe and deterministic; no marker dependency.
+  - No board-lot re-scan migration ships (design D3): legacy board-lot rows without markers stay flagged via the heuristic until the operator re-imports the relevant Cathay CSV, at which point the rehash path tags markers and the live recompute converges flags.
 - **BREAKING (internal only)**: bucket-derivation contract for Cathay-imported rows changes; any test or fixture that asserted the heuristic on a 現買+現賣 pair will see `False` if no marker is present.
 
 ## Capabilities

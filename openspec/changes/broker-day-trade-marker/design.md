@@ -104,4 +104,8 @@ Keeping the heuristic fallback means same-day BUY+SELL on a manually-entered equ
 
 ## Open Questions
 
-- Should the marker also be persisted on the rehash path? **Answer (locked):** yes, tasks include rehash patch. Otherwise re-importing the same CSV would not propagate markers to pre-existing rows.
+None — all design questions resolved during proposal review.
+
+## Resolved Design Questions
+
+- **Should the marker also be persisted on the rehash path?** Yes — tasks include rehash patch on both the legacy-fingerprint and business-key match branches. Otherwise re-importing the same CSV would not propagate markers to pre-existing rows.
