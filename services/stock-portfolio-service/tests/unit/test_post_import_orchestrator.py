@@ -497,7 +497,7 @@ def test_manual_recalc_accepts_explicit_range(client, db_session, monkeypatch):
 
 
 def test_refresh_quotes_schedules_open_holdings_only(client, db_session, monkeypatch):
-    today = date(2026, 5, 18)
+    today = datetime.now(timezone.utc).date()
     db_session.add(_make_tx("2330", qty=100, days_ago=3))
     db_session.add(_make_tx("0050", qty=50, days_ago=2))
     db_session.add(_make_tx("6488", qty=10, days_ago=2))
@@ -535,7 +535,7 @@ def test_refresh_quotes_schedules_open_holdings_only(client, db_session, monkeyp
 
 
 def test_refresh_quotes_returns_204_for_empty_portfolio(client, monkeypatch):
-    monkeypatch.setattr(orch, "today_tw", lambda: date(2026, 5, 18))
+    monkeypatch.setattr(orch, "today_tw", lambda: datetime.now(timezone.utc).date())
     schedule_mock = MagicMock()
     monkeypatch.setattr(orch, "schedule_quotes_refresh_sync", schedule_mock)
 
@@ -552,7 +552,7 @@ def test_refresh_quotes_returns_409_when_recalc_lock_is_held(
 ):
     db_session.add(_make_tx("2330", qty=100, days_ago=1))
     db_session.commit()
-    monkeypatch.setattr(orch, "today_tw", lambda: date(2026, 5, 18))
+    monkeypatch.setattr(orch, "today_tw", lambda: datetime.now(timezone.utc).date())
     schedule_mock = MagicMock()
     monkeypatch.setattr(orch, "schedule_quotes_refresh_sync", schedule_mock)
     orch._RECALC_LOCK.acquire()

@@ -130,8 +130,8 @@ def test_commit_transactions_dedupes_duplicates_within_one_csv(db_session):
 
 def test_imported_buy_and_sell_same_day_get_day_trade_flag(db_session):
     raw = _tx_csv(
-        "2330,BUY,10,600.00,2026-05-15T01:30:00Z,28,0,台積電",
-        "2330,SELL,10,610.00,2026-05-15T02:00:00Z,28,18,台積電",
+        "2330,BUY,1000,600.00,2026-05-15T01:30:00Z,28,0,台積電",
+        "2330,SELL,1000,610.00,2026-05-15T02:00:00Z,28,18,台積電",
     )
     parsed = import_service.parse_transactions_csv(raw)
     import_service.commit_transactions(db_session, parsed, dry_run=False)
