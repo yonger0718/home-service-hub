@@ -13,6 +13,7 @@ class SymbolMap(Base):
     name = Column(String(200), primary_key=True)
     symbol = Column(String(32), nullable=False)
     market = Column(String(8), nullable=False)
+    type = Column(String(32), nullable=True)
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
