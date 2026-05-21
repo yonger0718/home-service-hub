@@ -3,6 +3,18 @@
 ## Purpose
 TBD - created by archiving change add-realized-pnl-events-page. Update Purpose after archive.
 ## Requirements
+### Requirement: `iter_realized_events` is the canonical realized-PnL engine
+The system SHALL treat `realized_pnl_service.iter_realized_events` as the single source of truth for realized-PnL across all consumers: `/api/portfolio/realized-pnl` endpoint, `portfolio_snapshot.total_realized_pnl` replay, dashboard cumulative aggregates, and any future report. No consumer SHALL implement its own inline realized-PnL accumulator.
+
+#### Scenario: Snapshot replay calls iter_realized_events
+- **WHEN** `networth_backfill_service._replay_snapshots` computes `total_realized_pnl` for any date
+- **THEN** the value comes from `iter_realized_events` output, not from an inline BUY/SELL FIFO loop
+
+#### Scenario: Endpoint and snapshot agree
+- **WHEN** the same transaction set is processed by `/api/portfolio/realized-pnl?from=A&to=B` and by snapshot replay over `[A, B]`
+- **THEN** `sum(events.net_pnl)` from the endpoint equals `portfolio_snapshot.total_realized_pnl[B] - portfolio_snapshot.total_realized_pnl[day_before(A)]`
+- **AND** divergence greater than `Decimal('0.01')` SHALL be treated as a regression
+
 ### Requirement: Per-SELL realized event listing
 
 The system SHALL expose `GET /api/portfolio/realized-pnl` returning realized P&L events computed against the corporate-action-adjusted transaction view using moving-average cost basis per `position_side` pool. Each event SHALL include `trade_date`, `symbol`, `name`, `quantity`, `sell_price`, `avg_cost_at_sale`, `fee`, `tax`, `proceeds_gross`, `proceeds_net`, `cost_out`, `realized_pnl`, `is_day_trade`, `position_side`, and an optional `note` field.
