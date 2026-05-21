@@ -11,6 +11,7 @@ from ..models import portfolio as models
 from ..models.corporate_action import CorporateAction
 from ..schemas import portfolio as schemas
 from .twse_service import get_stock_quotes
+from . import symbol_map_service
 from shared_lib import get_tracer
 tracer = get_tracer("stock-portfolio-service")
 
@@ -240,7 +241,11 @@ def _recompute_day_trade_flags(
     ]
     has_buy = any(row.type == models.TransactionType.BUY for row in bucket)
     has_sell = any(row.type == models.TransactionType.SELL for row in bucket)
-    new_flag = has_buy and has_sell
+    new_flag = (
+        has_buy
+        and has_sell
+        and symbol_map_service.is_day_trade_eligible(db, normalized)
+    )
     for row in bucket:
         if row.is_day_trade != new_flag:
             row.is_day_trade = new_flag
