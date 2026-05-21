@@ -52,6 +52,7 @@ class Transaction(Base, TimestampMixin):
     trade_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     fee = Column(Numeric(12, 2), default=0.0)                   # 手續費 (選填)
     tax = Column(Numeric(12, 2), default=0.0)                   # 交易稅 (選填)
+    broker_day_trade_marker = Column(String(8), nullable=True)
     is_day_trade = Column(
         Boolean,
         nullable=False,

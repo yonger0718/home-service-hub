@@ -138,6 +138,25 @@ def test_cathay_type_collapse_all_eight_variants(side, type_, subtype):
     assert parsed.rows[0].payload["broker_subtype"] == subtype
 
 
+@pytest.mark.parametrize(
+    ("side", "marker"),
+    [
+        ("沖買", "沖買"),
+        ("沖賣", "沖賣"),
+        ("現買", None),
+        ("現賣", None),
+        ("資買", None),
+        ("資賣", None),
+        ("券買", None),
+        ("券賣", None),
+    ],
+)
+def test_cathay_day_trade_marker_emitted_for_intraday_sides(side, marker):
+    parsed = broker_cathay_service.parse_cathay_rows(_cathay_csv(_row(side=side)))
+    assert parsed.errors == []
+    assert parsed.rows[0].payload["broker_day_trade_marker"] == marker
+
+
 def test_cathay_subtype_does_not_affect_fingerprint():
     parsed = broker_cathay_service.parse_cathay_rows(
         _cathay_csv(_row(side="現買"), _row(side="資買"))
@@ -174,6 +193,32 @@ def test_rehash_existing_legacy_row_updates_in_place_no_insert(db_session):
     assert db_session.query(models.Transaction).count() == 1
     db_session.refresh(tx)
     assert tx.import_fingerprint == _new_fp("aT532")
+
+
+def test_rehash_propagates_broker_day_trade_marker(db_session):
+    tx = models.Transaction(
+        symbol="3141",
+        name="晶宏",
+        type=models.TransactionType.BUY,
+        position_side=models.PositionSide.LONG,
+        quantity=1000,
+        price=Decimal("56.3"),
+        trade_date=datetime(2026, 5, 8, 13, 30, tzinfo=timezone.utc),
+        fee=Decimal("22"),
+        tax=Decimal("0"),
+        import_fingerprint=None,
+    )
+    db_session.add(tx)
+    db_session.commit()
+
+    result = broker_cathay_service.parse_cathay_transactions_csv(
+        _cathay_csv(_row(side="沖買")), dry_run=False, db=db_session
+    )
+
+    assert result.rehashed == 1
+    assert result.created == 0
+    db_session.refresh(tx)
+    assert tx.broker_day_trade_marker == "沖買"
 
 
 def test_rehash_recovers_same_day_collision_twin(db_session):
