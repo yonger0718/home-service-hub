@@ -5,3 +5,14 @@ To refresh the bundled broker name map, run `python scripts/refresh_name_to_symb
 Post-import networth recalculation now derives the weekdays where the portfolio actually had exposure and limits both historical price fetches and snapshot replay to those active dates. The optimization is always applied by the post-import chain, so a fully closed historical position no longer causes the service to walk every later weekday in the requested range. In recalc status, `dates_inactive` counts weekdays skipped because no symbol was held; it is intentionally separate from `dates_skipped`, which still means a fetched date where both markets were empty (for example, a holiday).
 
 Snapshot replay still keeps Phase 1 price fetches weekday-only, but it now forward-fills weekends and full-market holidays inside held intervals with the previous trading day's market value and cost so historical charts stay dense through long closures. When replay skips a date instead of writing a row, it also self-heals legacy stale snapshots matching `total_market_value = 0` and `total_cost > 0`; recalc status exposes the cleanup count as `stale_rows_deleted`.
+
+## Rebuild CLI
+
+After deploying realized-PnL replay fixes, rebuild stale snapshot rows explicitly:
+
+```bash
+python -m app.services.networth_backfill_service --rebuild-all --dry-run
+python -m app.services.networth_backfill_service --rebuild-all
+```
+
+Dry-run prints per-date realized-PnL diffs and does not write rows.

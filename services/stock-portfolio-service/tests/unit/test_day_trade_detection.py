@@ -17,7 +17,7 @@ def _make_payload(
     *,
     symbol: str = "2330",
     tx_type: str = "BUY",
-    quantity: int = 10,
+    quantity: int = 1000,
     price: str = "600.00",
     trade_date: datetime | None = None,
 ) -> schemas.TransactionCreate:
@@ -172,7 +172,7 @@ def test_day_trade_exposed_in_get_transactions_response(client):
         json={
             "symbol": "2330",
             "type": "BUY",
-            "quantity": 10,
+            "quantity": 1000,
             "price": "600.00",
             "trade_date": iso_day,
             "fee": "0.00",
@@ -184,7 +184,7 @@ def test_day_trade_exposed_in_get_transactions_response(client):
         json={
             "symbol": "2330",
             "type": "SELL",
-            "quantity": 10,
+            "quantity": 1000,
             "price": "610.00",
             "trade_date": iso_day,
             "fee": "0.00",

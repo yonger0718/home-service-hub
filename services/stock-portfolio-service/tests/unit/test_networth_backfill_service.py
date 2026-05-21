@@ -14,6 +14,8 @@ from app.models import portfolio as portfolio_models
 from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.models.price_history import PriceHistory
 from app.services import networth_backfill_service as nbs
+from app.services.portfolio_service import _load_adjusted_transactions
+from app.services.realized_pnl_service import iter_realized_events
 
 
 # ---------- Fixtures ----------
@@ -55,15 +57,27 @@ def _seed_tx(
     price: str,
     trade_date: date,
     fee: str = "0",
+    tax: str = "0",
+    position_side: portfolio_models.PositionSide = portfolio_models.PositionSide.LONG,
+    is_day_trade: bool = False,
+    hour: int = 0,
 ):
     tx = portfolio_models.Transaction(
         symbol=symbol,
         type=side,
+        position_side=position_side,
         quantity=qty,
         price=Decimal(price),
-        trade_date=datetime.combine(trade_date, datetime.min.time(), tzinfo=timezone.utc),
+        trade_date=datetime(
+            trade_date.year,
+            trade_date.month,
+            trade_date.day,
+            hour,
+            tzinfo=timezone.utc,
+        ),
         fee=Decimal(fee),
-        tax=Decimal("0"),
+        tax=Decimal(tax),
+        is_day_trade=is_day_trade,
     )
     db.add(tx)
     db.flush()
@@ -95,6 +109,16 @@ def _seed_price(db, *, symbol: str, d: date, close: str, source: str = "TWSE"):
         )
     )
     db.flush()
+
+
+def _realized_total(db) -> Decimal:
+    return sum(
+        (
+            event.realized_pnl
+            for event in iter_realized_events(_load_adjusted_transactions(db))
+        ),
+        Decimal("0"),
+    )
 
 
 # ---------- _iter_trading_days ----------
@@ -521,6 +545,250 @@ def test_replay_realized_pnl_cumulative_across_dates(db_session):
     assert snaps[date(2026, 5, 14)].total_realized_pnl == Decimal("0")
     # Day 2: SELL 40 @ 600, avg cost 500 → (600-500) * 40 = 4000
     assert snaps[date(2026, 5, 15)].total_realized_pnl == Decimal("4000")
+
+
+def test_short_only_history_zero_mv_realized_matches_engine(db_session):
+    sym = "6488"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.SELL,
+        qty=100,
+        price="100",
+        trade_date=date(2026, 5, 14),
+        position_side=portfolio_models.PositionSide.SHORT,
+    )
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        price="80",
+        trade_date=date(2026, 5, 15),
+        position_side=portfolio_models.PositionSide.SHORT,
+    )
+    _seed_price(db_session, symbol=sym, d=date(2026, 5, 14), close="100")
+    _seed_price(db_session, symbol=sym, d=date(2026, 5, 15), close="80")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, date(2026, 5, 14), date(2026, 5, 15))
+
+    snap = (
+        db_session.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.date == date(2026, 5, 15))
+        .one()
+    )
+    assert snap.total_market_value == Decimal("0")
+    assert snap.total_realized_pnl == _realized_total(db_session)
+
+
+def test_mixed_long_short_same_symbol_same_day(db_session):
+    sym = "2330"
+    d = date(2026, 5, 14)
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        price="10",
+        trade_date=d,
+        hour=9,
+    )
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.SELL,
+        qty=40,
+        price="15",
+        trade_date=d,
+        hour=10,
+    )
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.SELL,
+        qty=50,
+        price="20",
+        trade_date=d,
+        position_side=portfolio_models.PositionSide.SHORT,
+        hour=11,
+    )
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=50,
+        price="18",
+        trade_date=d,
+        position_side=portfolio_models.PositionSide.SHORT,
+        hour=12,
+    )
+    _seed_price(db_session, symbol=sym, d=d, close="16")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, d, d)
+
+    snap = db_session.query(PortfolioSnapshot).one()
+    assert snap.total_market_value == Decimal("960")
+    assert snap.total_cost == Decimal("600")
+    assert snap.total_realized_pnl == _realized_total(db_session)
+
+
+def test_day_trade_pair_applies_taiwan_tax_rule(db_session):
+    sym = "3034"
+    d = date(2026, 5, 14)
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.SELL,
+        qty=100,
+        price="100",
+        trade_date=d,
+        tax="15",
+        position_side=portfolio_models.PositionSide.SHORT,
+        is_day_trade=True,
+        hour=9,
+    )
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        price="90",
+        trade_date=d,
+        position_side=portfolio_models.PositionSide.SHORT,
+        is_day_trade=True,
+        hour=10,
+    )
+    _seed_price(db_session, symbol=sym, d=d, close="95")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, d, d)
+
+    snap = db_session.query(PortfolioSnapshot).one()
+    assert snap.total_realized_pnl == _realized_total(db_session)
+
+
+def test_oversell_realized_matches_engine_no_silent_drop(db_session):
+    sym = "0050"
+    d = date(2026, 5, 14)
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        price="10",
+        trade_date=d,
+        hour=9,
+    )
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.SELL,
+        qty=150,
+        price="20",
+        trade_date=d,
+        fee="15",
+        hour=10,
+    )
+    _seed_price(db_session, symbol=sym, d=d, close="20")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, d, d)
+
+    snap = db_session.query(PortfolioSnapshot).one()
+    assert snap.total_market_value == Decimal("0")
+    assert snap.total_cost == Decimal("0")
+    assert snap.total_realized_pnl == _realized_total(db_session)
+
+
+def test_replay_idempotent_same_range_same_rows(db_session):
+    sym = "2330"
+    d = date(2026, 5, 14)
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=d,
+    )
+    _seed_price(db_session, symbol=sym, d=d, close="600")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, d, d)
+    first = [
+        (
+            row.date,
+            row.total_market_value,
+            row.total_cost,
+            row.total_unrealized_pnl,
+            row.total_dividends,
+            row.total_realized_pnl,
+            row.portfolio_xirr,
+        )
+        for row in db_session.query(PortfolioSnapshot).order_by(PortfolioSnapshot.date)
+    ]
+
+    nbs.replay_snapshots_range(db_session, d, d)
+    second = [
+        (
+            row.date,
+            row.total_market_value,
+            row.total_cost,
+            row.total_unrealized_pnl,
+            row.total_dividends,
+            row.total_realized_pnl,
+            row.portfolio_xirr,
+        )
+        for row in db_session.query(PortfolioSnapshot).order_by(PortfolioSnapshot.date)
+    ]
+
+    assert second == first
+
+
+def test_replay_dry_run_prints_diff_without_writing(db_session, capsys):
+    sym = "2330"
+    d = date(2026, 5, 14)
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        price="10",
+        trade_date=d,
+        hour=9,
+    )
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.SELL,
+        qty=100,
+        price="12",
+        trade_date=d,
+        hour=10,
+    )
+    _seed_price(db_session, symbol=sym, d=d, close="12")
+    db_session.add(
+        PortfolioSnapshot(
+            date=d,
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("0"),
+            total_unrealized_pnl=Decimal("0"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+
+    result = nbs.replay_snapshots_range(db_session, d, d, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert f"{d} old=0.0000 new=200.00 delta=200.0000" in out
+    assert result.snapshots_written == 0
+    snap = db_session.get(PortfolioSnapshot, d)
+    assert snap.total_realized_pnl == Decimal("0")
 
 
 def test_replay_forward_fills_held_weekend(db_session: Any) -> None:
