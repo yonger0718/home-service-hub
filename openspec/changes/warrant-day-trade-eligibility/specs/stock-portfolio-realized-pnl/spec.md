@@ -2,7 +2,7 @@
 
 ### Requirement: Day-trade flag respects instrument eligibility
 
-The system SHALL set `transactions.is_day_trade=true` only for transactions whose symbol is eligible for Taiwan 現股當沖 per `symbol_map_service.is_day_trade_eligible`. Same-symbol same-day BUY+SELL pairs on ineligible instruments (whose `symbol_map.type` contains any of `認購`, `認售`, `牛證`, `熊證` — i.e. 認購權證, 認售權證, 牛證, 熊證 in any market variant) SHALL retain `is_day_trade=false`. This gating SHALL apply to the live transaction create/update flow. A one-shot backfill migration SHALL ALSO clear `is_day_trade=false` on every existing row currently flagged `true` whose symbol is ineligible. The migration SHALL NOT modify rows for eligible symbols (the legacy bucket heuristic's positive-direction over-classification is out of scope and is tracked separately).
+The system SHALL set `transactions.is_day_trade=true` only for transactions whose symbol is eligible for Taiwan 現股當沖 per `symbol_map_service.is_day_trade_eligible`. Same-symbol same-day BUY+SELL pairs on ineligible instruments (whose `symbol_map.type` contains any of `認購`, `認售`, `牛證`, `熊證` — i.e. 認購權證, 認售權證, 牛證, 熊證 in any market variant) SHALL retain `is_day_trade=false`. This gating SHALL apply to the live transaction create/update flow. A one-shot backfill migration SHALL ALSO set `transactions.is_day_trade=false` on every existing row currently flagged `true` whose symbol is ineligible. The migration SHALL NOT modify rows for eligible symbols (the legacy bucket heuristic's positive-direction over-classification is out of scope and is tracked separately).
 
 #### Scenario: Warrant BUY+SELL same day stays non-day-trade
 
