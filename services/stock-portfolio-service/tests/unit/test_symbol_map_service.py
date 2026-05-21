@@ -13,11 +13,20 @@ from app.services import symbol_map_service as svc
 
 
 def _stub_codes(**entries):
-    """Build a fake twstock.codes dict whose values have .name and .market attributes."""
-    return {
-        code: SimpleNamespace(name=name, market=market)
-        for code, (name, market) in entries.items()
-    }
+    """Build a fake twstock.codes dict whose values have .name/.market/.type attributes.
+
+    Tuples accept either ``(name, market)`` or ``(name, market, type)`` to keep
+    legacy tests untouched while exercising the new ``type`` propagation.
+    """
+    out = {}
+    for code, fields in entries.items():
+        if len(fields) == 3:
+            name, market, instrument_type = fields
+        else:
+            name, market = fields
+            instrument_type = None
+        out[code] = SimpleNamespace(name=name, market=market, type=instrument_type)
+    return out
 
 
 @pytest.fixture
@@ -200,6 +209,71 @@ def test_names_endpoint_prefers_meaningful_transaction_name_over_placeholder(
     assert response.status_code == 200
     body = response.json()
     assert body["00675L"] == "富邦臺灣加權正2"
+
+
+def test_refresh_writes_instrument_type(db_session, fake_twstock):
+    fake_twstock.codes = _stub_codes(
+        **{
+            "2330": ("台積電", "TWSE", "股票"),
+            "045378": ("warrant", "TWSE", "認購權證"),
+        }
+    )
+    svc.refresh_all_from_twstock(db_session)
+
+    rows = {r.symbol: r.type for r in db_session.query(SymbolMap).all()}
+    assert rows["2330"] == "股票"
+    assert rows["045378"] == "認購權證"
+
+
+def test_is_day_trade_eligible_false_for_listed_call_put_warrant(db_session):
+    """twstock bundles call+put warrants under '上市認購(售)權證'."""
+    db_session.add(
+        SymbolMap(name="warrant", symbol="045378", market="TWSE", type="上市認購(售)權證")
+    )
+    db_session.commit()
+    assert svc.is_day_trade_eligible(db_session, "045378") is False
+
+
+def test_is_day_trade_eligible_false_for_otc_warrant(db_session):
+    db_session.add(
+        SymbolMap(name="otc-warrant", symbol="738910", market="TPEX", type="上櫃認購(售)權證")
+    )
+    db_session.commit()
+    assert svc.is_day_trade_eligible(db_session, "738910") is False
+
+
+def test_is_day_trade_eligible_false_for_bull_cert(db_session):
+    db_session.add(
+        SymbolMap(name="bull-cert", symbol="082300", market="TWSE", type="牛證")
+    )
+    db_session.commit()
+    assert svc.is_day_trade_eligible(db_session, "082300") is False
+
+
+def test_is_day_trade_eligible_false_for_bear_cert(db_session):
+    db_session.add(
+        SymbolMap(name="bear-cert", symbol="084300", market="TWSE", type="熊證")
+    )
+    db_session.commit()
+    assert svc.is_day_trade_eligible(db_session, "084300") is False
+
+
+def test_is_day_trade_eligible_true_for_equity(db_session):
+    db_session.add(
+        SymbolMap(name="台積電", symbol="2330", market="TWSE", type="股票")
+    )
+    db_session.commit()
+    assert svc.is_day_trade_eligible(db_session, "2330") is True
+
+
+def test_is_day_trade_eligible_true_for_unmapped(db_session):
+    assert svc.is_day_trade_eligible(db_session, "9999") is True
+
+
+def test_is_day_trade_eligible_true_when_type_is_null(db_session):
+    db_session.add(SymbolMap(name="legacy", symbol="1234", market="TWSE", type=None))
+    db_session.commit()
+    assert svc.is_day_trade_eligible(db_session, "1234") is True
 
 
 def test_names_endpoint_falls_back_to_symbol_map_when_only_placeholder_tx(
