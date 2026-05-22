@@ -29,7 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..models.portfolio import Dividend, Transaction, TransactionType
+from ..models.portfolio import Dividend, PositionSide, Transaction, TransactionType
 from .dividend_history_service import HistoricalDividendEvent
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,7 @@ def _qty_held_on(db: Session, symbol: str, on_date: dt_date) -> Decimal:
     Per Taiwan ex-dividend rule the shareholder of record on the day
     *before* the ex-dividend date receives the dividend. So we count
     every trade with ``trade_date < ex_date``.
+    Only LONG-side transactions contribute to dividend-eligible quantity.
     """
     cutoff = datetime.combine(on_date, time.min, tzinfo=_TW_OFFSET)
     buy_total = (
@@ -62,6 +63,7 @@ def _qty_held_on(db: Session, symbol: str, on_date: dt_date) -> Decimal:
             select(func.coalesce(func.sum(Transaction.quantity), 0)).where(
                 Transaction.symbol == symbol,
                 Transaction.type == TransactionType.BUY,
+                Transaction.position_side == PositionSide.LONG,
                 Transaction.trade_date < cutoff,
             )
         ).scalar_one()
@@ -71,6 +73,7 @@ def _qty_held_on(db: Session, symbol: str, on_date: dt_date) -> Decimal:
             select(func.coalesce(func.sum(Transaction.quantity), 0)).where(
                 Transaction.symbol == symbol,
                 Transaction.type == TransactionType.SELL,
+                Transaction.position_side == PositionSide.LONG,
                 Transaction.trade_date < cutoff,
             )
         ).scalar_one()

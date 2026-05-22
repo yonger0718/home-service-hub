@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.models.portfolio import Dividend, Transaction, TransactionType
+from app.models.portfolio import Dividend, PositionSide, Transaction, TransactionType
 from app.services import dividend_auto_record_service as svc
 from app.services.dividend_history_service import HistoricalDividendEvent
 
@@ -23,10 +23,20 @@ def _event(symbol="2330", ex=date(2026, 6, 15), cash=None, stock_per_thousand=No
     )
 
 
-def _add_trade(db, *, symbol, qty, trade_date, type_=TransactionType.BUY, price=Decimal("100.00")):
+def _add_trade(
+    db,
+    *,
+    symbol,
+    qty,
+    trade_date,
+    type_=TransactionType.BUY,
+    price=Decimal("100.00"),
+    position_side=PositionSide.LONG,
+):
     tx = Transaction(
         symbol=symbol,
         type=type_,
+        position_side=position_side,
         quantity=qty,
         price=price,
         trade_date=datetime.combine(trade_date, datetime.min.time(), tzinfo=TW),
@@ -52,6 +62,63 @@ def test_qty_held_on_signed_with_sell(db_session):
     _add_trade(db_session, symbol=sym, qty=1000, trade_date=date(2026, 5, 1))
     _add_trade(db_session, symbol=sym, qty=300, trade_date=date(2026, 5, 10), type_=TransactionType.SELL)
     assert svc._qty_held_on(db_session, sym, ex) == Decimal("700")
+
+
+def test_qty_held_on_counts_synthetic_stock_dividend_buy(db_session):
+    """Synthetic stock-div Transaction omits position_side; SQLAlchemy default
+    must persist it as LONG so a later ex-date still counts the gifted shares."""
+    sym = "2330"
+    earlier_ex = date(2026, 3, 15)
+    later_ex = date(2026, 9, 15)
+    _add_trade(db_session, symbol=sym, qty=1000, trade_date=date(2026, 2, 1))
+
+    inserted = svc._insert_stock(
+        db_session,
+        symbol=sym,
+        ex_date=earlier_ex,
+        shares=100,
+        source="TWT49U",
+        name=None,
+    )
+    assert inserted is True
+    db_session.flush()
+
+    persisted = (
+        db_session.query(Transaction)
+        .filter(Transaction.symbol == sym, Transaction.price == Decimal("0"))
+        .one()
+    )
+    assert persisted.position_side == PositionSide.LONG
+
+    assert svc._qty_held_on(db_session, sym, later_ex) == Decimal("1100")
+
+
+def test_qty_held_on_skips_short_sell(db_session):
+    sym, ex = "2330", date(2026, 6, 15)
+    _add_trade(db_session, symbol=sym, qty=1000, trade_date=date(2026, 5, 1))
+    _add_trade(
+        db_session,
+        symbol=sym,
+        qty=500,
+        trade_date=date(2026, 5, 10),
+        type_=TransactionType.SELL,
+        position_side=PositionSide.SHORT,
+    )
+    assert svc._qty_held_on(db_session, sym, ex) == Decimal("1000")
+
+
+def test_qty_held_on_skips_short_cover_buy(db_session):
+    sym, ex = "2330", date(2026, 6, 15)
+    _add_trade(db_session, symbol=sym, qty=1000, trade_date=date(2026, 5, 1))
+    _add_trade(
+        db_session,
+        symbol=sym,
+        qty=500,
+        trade_date=date(2026, 5, 10),
+        type_=TransactionType.BUY,
+        position_side=PositionSide.SHORT,
+    )
+    assert svc._qty_held_on(db_session, sym, ex) == Decimal("1000")
 
 
 def test_compute_nhi_surtax_below_threshold_returns_zero():
@@ -125,6 +192,56 @@ def test_no_holding_returns_skipped(db_session):
     result = svc.auto_record_for_event(db_session, event)
     assert result == svc.AutoRecordResult(False, False, "no_holding")
     assert db_session.query(Dividend).count() == 0
+
+
+def test_auto_record_short_only_skips(db_session):
+    _add_trade(
+        db_session,
+        symbol="2330",
+        qty=500,
+        trade_date=date(2026, 5, 1),
+        type_=TransactionType.SELL,
+        position_side=PositionSide.SHORT,
+    )
+    event = _event(cash=Decimal("2.00"))
+    result = svc.auto_record_for_event(db_session, event)
+    assert result == svc.AutoRecordResult(False, False, "no_holding")
+    assert db_session.query(Dividend).count() == 0
+
+
+def test_auto_record_mixed_long_short_uses_long_qty(db_session):
+    _add_trade(db_session, symbol="2330", qty=1000, trade_date=date(2026, 5, 1))
+    _add_trade(
+        db_session,
+        symbol="2330",
+        qty=500,
+        trade_date=date(2026, 5, 10),
+        type_=TransactionType.SELL,
+        position_side=PositionSide.SHORT,
+    )
+    event = _event(cash=Decimal("2.00"))
+    result = svc.auto_record_for_event(db_session, event)
+    assert result == svc.AutoRecordResult(True, False, None)
+    row = db_session.query(Dividend).one()
+    assert row.quantity_at_record_date == Decimal("1000")
+    assert row.amount == Decimal("1990.00")
+
+
+def test_auto_record_stock_dividend_uses_long_qty(db_session):
+    _add_trade(db_session, symbol="2330", qty=1000, trade_date=date(2026, 5, 1))
+    _add_trade(
+        db_session,
+        symbol="2330",
+        qty=500,
+        trade_date=date(2026, 5, 10),
+        type_=TransactionType.SELL,
+        position_side=PositionSide.SHORT,
+    )
+    event = _event(cash=None, stock_per_thousand=Decimal("100"))
+    result = svc.auto_record_for_event(db_session, event)
+    assert result == svc.AutoRecordResult(False, True, None)
+    tx = db_session.query(Transaction).filter(Transaction.price == Decimal("0")).one()
+    assert tx.quantity == 100
 
 
 def test_idempotent_on_repeat(db_session):
