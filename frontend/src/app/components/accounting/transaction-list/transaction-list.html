@@ -78,6 +78,11 @@
             <span class="cat">{{ txn.categoryName }}</span>
             <span class="dot">•</span>
             <span class="payment">{{ txn.cardName || txn.paymentMethod }}</span>
+            @if (txn.relatedTransactionId) {
+              <span class="reimburse-info">
+                <span class="refund-tag">退款</span>
+              </span>
+            }
             @if (txn.transactionAmount !== txn.paidAmount) {
               <span class="reimburse-info">
                 <span class="reimburse-tag">代墊</span>

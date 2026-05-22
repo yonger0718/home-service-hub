@@ -76,12 +76,19 @@ export class TransactionListComponent implements OnInit {
 
   monthSummary = computed(() => {
     const txns = this.monthTransactions();
-    const expense = txns
+    const refundAmount = txns
+      .filter(t => t.transactionType === 'INCOME' && t.relatedTransactionId)
+      .reduce((sum, t) => sum + (t.paidAmount || 0), 0);
+
+    const rawExpense = txns
       .filter(t => t.transactionType === 'EXPENSE')
       .reduce((sum, t) => sum + (t.paidAmount || 0), 0);
+    const expense = Math.max(rawExpense - refundAmount, 0);
+
     const income = txns
-      .filter(t => t.transactionType === 'INCOME')
+      .filter(t => t.transactionType === 'INCOME' && !t.relatedTransactionId)
       .reduce((sum, t) => sum + (t.paidAmount || 0), 0);
+
     return {
       expense,
       income,
