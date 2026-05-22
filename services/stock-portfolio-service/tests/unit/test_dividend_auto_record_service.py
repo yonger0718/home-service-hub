@@ -64,6 +64,35 @@ def test_qty_held_on_signed_with_sell(db_session):
     assert svc._qty_held_on(db_session, sym, ex) == Decimal("700")
 
 
+def test_qty_held_on_counts_synthetic_stock_dividend_buy(db_session):
+    """Synthetic stock-div Transaction omits position_side; SQLAlchemy default
+    must persist it as LONG so a later ex-date still counts the gifted shares."""
+    sym = "2330"
+    earlier_ex = date(2026, 3, 15)
+    later_ex = date(2026, 9, 15)
+    _add_trade(db_session, symbol=sym, qty=1000, trade_date=date(2026, 2, 1))
+
+    inserted = svc._insert_stock(
+        db_session,
+        symbol=sym,
+        ex_date=earlier_ex,
+        shares=100,
+        source="TWT49U",
+        name=None,
+    )
+    assert inserted is True
+    db_session.flush()
+
+    persisted = (
+        db_session.query(Transaction)
+        .filter(Transaction.symbol == sym, Transaction.price == Decimal("0"))
+        .one()
+    )
+    assert persisted.position_side == PositionSide.LONG
+
+    assert svc._qty_held_on(db_session, sym, later_ex) == Decimal("1100")
+
+
 def test_qty_held_on_skips_short_sell(db_session):
     sym, ex = "2330", date(2026, 6, 15)
     _add_trade(db_session, symbol=sym, qty=1000, trade_date=date(2026, 5, 1))
