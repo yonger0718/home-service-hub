@@ -307,3 +307,44 @@ def test_rehash_preserves_existing_instrument_type_after_recycle(
 
     refreshed = db_session.query(models.Transaction).filter_by(symbol=symbol).one()
     assert refreshed.instrument_type == "上櫃認購(售)權證"
+
+
+def test_update_transaction_restamps_instrument_type_when_symbol_changes(db_session):
+    db_session.add_all(
+        [
+            SymbolMap(name="warrant", symbol="045378", market="TWSE", type="上市認購(售)權證"),
+            SymbolMap(name="etf", symbol="0050", market="TWSE", type="上市ETF"),
+        ]
+    )
+    db_session.commit()
+
+    created = portfolio_service.create_transaction(
+        db_session,
+        schemas.TransactionCreate(
+            symbol="0050",
+            name="etf",
+            type=schemas.TransactionType.BUY,
+            quantity=1000,
+            price=Decimal("50.00"),
+            fee=Decimal("0.00"),
+            tax=Decimal("0.00"),
+            trade_date=datetime(2026, 5, 20, 1, 30, tzinfo=timezone.utc),
+        ),
+    )
+    assert created.instrument_type is None
+
+    updated = portfolio_service.update_transaction(
+        db_session,
+        created.id,
+        schemas.TransactionCreate(
+            symbol="045378",
+            name="warrant",
+            type=schemas.TransactionType.BUY,
+            quantity=1000,
+            price=Decimal("50.00"),
+            fee=Decimal("0.00"),
+            tax=Decimal("0.00"),
+            trade_date=datetime(2026, 5, 20, 1, 30, tzinfo=timezone.utc),
+        ),
+    )
+    assert updated.instrument_type == "上市認購(售)權證"

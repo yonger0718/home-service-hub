@@ -826,6 +826,11 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
     else:
         update_data["trade_date"] = db_transaction.trade_date
 
+    if update_data["symbol"] != old_symbol or db_transaction.instrument_type is None:
+        update_data["instrument_type"] = symbol_map_service.lookup_warrant_type(
+            db, update_data["symbol"]
+        )
+
     _validate_transaction_ledger(db, update_data, existing_transaction=db_transaction)
 
     for key, value in update_data.items():
