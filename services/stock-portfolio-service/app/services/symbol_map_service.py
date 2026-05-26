@@ -88,8 +88,13 @@ def is_day_trade_eligible(
     ``{認購, 認售, 牛證, 熊證}`` are ineligible (warrants + 牛熊證). The
     substring check covers twstock's actual format ``上市認購(售)權證`` /
     ``上櫃認購(售)權證`` rather than an exact-prefix match.
+
+    When ``instrument_type`` is non-None (including empty string), the
+    stamped value is authoritative and the live ``symbol_map`` lookup is
+    skipped — this preserves the snapshot-first contract for warrant rows
+    even if the caller explicitly stamped ``''``.
     """
-    if instrument_type:
+    if instrument_type is not None:
         return not any(
             token in instrument_type for token in _INELIGIBLE_TYPE_SUBSTRINGS
         )

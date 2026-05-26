@@ -2,7 +2,7 @@
 
 ### Requirement: Day-trade eligibility prefers per-row stamped `instrument_type` over live `symbol_map` lookup
 
-`symbol_map_service.is_day_trade_eligible` SHALL accept an optional `instrument_type` argument. When the caller passes a non-empty value, the helper SHALL determine eligibility from that value alone and SHALL NOT query `symbol_map`. When the argument is `None` or empty, the helper SHALL preserve the existing behavior (live `symbol_map` lookup, fail-open on unmapped / NULL).
+`symbol_map_service.is_day_trade_eligible` SHALL accept an optional `instrument_type` argument. When the caller passes a non-None value (including the empty string), the helper SHALL determine eligibility from that value alone and SHALL NOT query `symbol_map`. When the argument is `None`, the helper SHALL preserve the existing behavior (live `symbol_map` lookup, fail-open on unmapped / NULL).
 
 `_recompute_day_trade_flags` SHALL pass each row's `instrument_type` into the eligibility helper so that historical warrant rows stay ineligible regardless of subsequent `symbol_map` mutations (e.g. warrant-code recycle).
 
@@ -16,9 +16,9 @@
 - **THEN** `is_day_trade_eligible(db, symbol, instrument_type=None)` returns `True`
 - **AND** existing same-day BUY+SELL heuristic behavior is preserved
 
-#### Scenario: Empty-string stamped value is treated as NULL
+#### Scenario: Empty-string stamped value is authoritative non-warrant
 - **WHEN** the caller passes `instrument_type=''`
-- **THEN** the helper falls through to the live `symbol_map` lookup as if `None` were passed
+- **THEN** the helper returns `True` (no warrant tokens present) without querying `symbol_map`, preserving snapshot-first precedence even when the stamped value is blank
 
 #### Scenario: Non-warrant stamped value returns True without symbol_map query
 - **WHEN** a transactions row has `instrument_type = '上市ETF'` (defensive case: backfill should not stamp this, but the helper still handles it)

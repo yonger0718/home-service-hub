@@ -27,7 +27,10 @@ def _cathay_csv(name: str, *, order_id: str = "snap1") -> bytes:
         f"22,0,0,0,0,0,0,{order_id}"
     )
     return (
-        "根據您篩選的結果，總計有1筆資料\n" + CATHAY_HEADER + row + "\n"
+        "根據您篩選的結果，總計有1筆資料\n"  # noqa: RUF001 — fullwidth punctuation matches Cathay CSV header literally
+        + CATHAY_HEADER
+        + row
+        + "\n"
     ).encode("utf-8")
 
 
@@ -117,10 +120,7 @@ def test_is_day_trade_eligible_stamped_non_warrant_is_true_without_live_lookup()
     )
 
 
-@pytest.mark.parametrize("instrument_type", [None, ""])
-def test_is_day_trade_eligible_null_or_empty_stamp_falls_through_to_live_lookup(
-    db_session, instrument_type: str | None
-):
+def test_is_day_trade_eligible_null_stamp_falls_through_to_live_lookup(db_session):
     db_session.add(
         SymbolMap(name="warrant", symbol="045378", market="TWSE", type="上市認購(售)權證")
     )
@@ -128,9 +128,19 @@ def test_is_day_trade_eligible_null_or_empty_stamp_falls_through_to_live_lookup(
 
     assert (
         symbol_map_service.is_day_trade_eligible(
-            db_session, "045378", instrument_type=instrument_type
+            db_session, "045378", instrument_type=None
         )
         is False
+    )
+
+
+def test_is_day_trade_eligible_empty_string_stamp_is_authoritative_non_warrant():
+    """Empty string is a non-None stamp -> authoritative, no live lookup."""
+    assert (
+        symbol_map_service.is_day_trade_eligible(
+            _NoQuerySession(), "045378", instrument_type=""
+        )
+        is True
     )
 
 
