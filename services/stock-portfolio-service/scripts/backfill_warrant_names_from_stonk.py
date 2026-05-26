@@ -99,10 +99,10 @@ def _preview(db: Session, overrides: dict[str, tuple[str, str]]) -> list[dict]:
 def _apply(db: Session, diffs: list[dict]) -> None:
     for d in diffs:
         symbol = d["symbol"]
-        stmt = update(P.Transaction).where(P.Transaction.symbol == symbol).values(
-            name=d["correct_name"],
-            instrument_type=d["correct_instrument_type"],
-        )
+        values: dict[str, str] = {"name": d["correct_name"]}
+        if d["correct_instrument_type"] is not None:
+            values["instrument_type"] = d["correct_instrument_type"]
+        stmt = update(P.Transaction).where(P.Transaction.symbol == symbol).values(**values)
         db.execute(stmt)
     db.commit()
 
