@@ -40,6 +40,7 @@ class Transaction(Base, TimestampMixin):
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, index=True, nullable=False)  # 股票代碼, e.g., 2330
     name = Column(String, nullable=True)               # 股票名稱
+    instrument_type = Column(String(64), nullable=True)
     type = Column(Enum(TransactionType), nullable=False)
     position_side = Column(
         Enum(PositionSide, name="position_side_enum"),

@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as models
-from . import per_date_verify, portfolio_service as svc
+from . import per_date_verify, portfolio_service as svc, symbol_map_service
 from .import_service import (
     ImportResult,
     ParseError,
@@ -388,6 +388,7 @@ def _insert_transaction(db: Session, row: ParsedRow) -> models.Transaction:
         fee=payload["fee"],
         tax=payload["tax"],
         broker_day_trade_marker=payload.get("broker_day_trade_marker"),
+        instrument_type=symbol_map_service.lookup_warrant_type(db, payload["symbol"]),
         import_fingerprint=row.fingerprint,
     )
     db.add(tx)
@@ -511,6 +512,8 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                         )
                     )
                     existing.broker_day_trade_marker = row.payload.get("broker_day_trade_marker")
+                    if existing.instrument_type is None:
+                        existing.instrument_type = symbol_map_service.lookup_warrant_type(db, existing.symbol)
                     db.flush()
                     svc._recompute_day_trade_flags(
                         db, existing.symbol, svc._trade_calendar_date(existing.trade_date)
@@ -538,6 +541,8 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                     # strips time so this is harmless to downstream logic.
                     business_match.trade_date = row.payload["trade_date"]
                     business_match.broker_day_trade_marker = row.payload.get("broker_day_trade_marker")
+                    if business_match.instrument_type is None:
+                        business_match.instrument_type = symbol_map_service.lookup_warrant_type(db, business_match.symbol)
                     claimed_ids.add(business_match.id)
                     db.flush()
                     svc._recompute_day_trade_flags(
