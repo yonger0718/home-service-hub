@@ -246,9 +246,19 @@ def _recompute_day_trade_flags(
         for row in board_lot
     )
     if marker_present:
-        board_flag = symbol_map_service.is_day_trade_eligible(db, normalized)
+        board_flag = all(
+            symbol_map_service.is_day_trade_eligible(
+                db, normalized, getattr(row, "instrument_type", None)
+            )
+            for row in board_lot
+        )
     elif has_buy and has_sell:
-        board_flag = symbol_map_service.is_day_trade_eligible(db, normalized)
+        board_flag = all(
+            symbol_map_service.is_day_trade_eligible(
+                db, normalized, getattr(row, "instrument_type", None)
+            )
+            for row in board_lot
+        )
     else:
         board_flag = False
     for row in bucket:
@@ -672,6 +682,9 @@ def create_transaction(db: Session, transaction: schemas.TransactionCreate):
     transaction_data = transaction.model_dump()
     transaction_data["symbol"] = sanitize_symbol(transaction_data["symbol"])
     transaction_data["trade_date"] = transaction_data.get("trade_date") or datetime.now(timezone.utc)
+    transaction_data["instrument_type"] = symbol_map_service.lookup_warrant_type(
+        db, transaction_data["symbol"]
+    )
 
     _validate_transaction_ledger(db, transaction_data)
 
