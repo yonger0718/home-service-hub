@@ -33,7 +33,7 @@
 
 - [x] 6.1 `openspec validate warrant-name-snapshot --strict` clean
 - [x] 6.2 Full test pass: `cd services/stock-portfolio-service && pytest tests/unit/ -k "broker_cathay or day_trade or portfolio_service or symbol_map"`
-- [ ] 6.3 PR commit + push following project conventions; await CodeRabbit then merge
+- [x] 6.3 PR commit + push following project conventions; await CodeRabbit then merge
 - [x] 6.4 Apply migrations on dev DB via `.venv/bin/alembic upgrade head`; verify warrant rows stamped and non-warrant rows untouched with a SELECT count probe
 
 ## 7. Historical-name backfill (post-recycle recovery)
