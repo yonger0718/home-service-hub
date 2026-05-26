@@ -348,3 +348,40 @@ def test_update_transaction_restamps_instrument_type_when_symbol_changes(db_sess
         ),
     )
     assert updated.instrument_type == "上市認購(售)權證"
+
+
+def test_update_transaction_restamps_when_existing_stamp_is_null(db_session):
+    """Same-symbol edit on a legacy row (instrument_type IS NULL) backfills the snapshot."""
+    db_session.add(
+        SymbolMap(name="warrant", symbol="045378", market="TWSE", type="上市認購(售)權證")
+    )
+    legacy = models.Transaction(
+        symbol="045378",
+        name="legacy warrant",
+        instrument_type=None,
+        type=models.TransactionType.BUY,
+        position_side=models.PositionSide.LONG,
+        quantity=1000,
+        price=Decimal("50.00"),
+        fee=Decimal("0.00"),
+        tax=Decimal("0.00"),
+        trade_date=datetime(2026, 5, 20, 1, 30, tzinfo=timezone.utc),
+    )
+    db_session.add(legacy)
+    db_session.commit()
+
+    updated = portfolio_service.update_transaction(
+        db_session,
+        legacy.id,
+        schemas.TransactionCreate(
+            symbol="045378",
+            name="legacy warrant",
+            type=schemas.TransactionType.BUY,
+            quantity=1000,
+            price=Decimal("55.00"),
+            fee=Decimal("0.00"),
+            tax=Decimal("0.00"),
+            trade_date=datetime(2026, 5, 20, 1, 30, tzinfo=timezone.utc),
+        ),
+    )
+    assert updated.instrument_type == "上市認購(售)權證"
