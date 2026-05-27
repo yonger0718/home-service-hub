@@ -42,6 +42,6 @@
 - [x] 5.1 All 128 backend unit tests pass
 - [x] 5.2 Alembic upgrade head clean from fresh DB; downgrade reversible per step
 - [x] 5.3 Frontend proxy `frontend/proxy.conf.js` already covers `/api/portfolio/*` — no edit needed
-- [ ] 5.4 Manual end-to-end: upload 50-row CSV via Angular import page; confirm dedupe on second upload
-- [ ] 5.5 Manual end-to-end: trigger backfill for a recent trading day; verify `price_history` populated
-- [ ] 5.6 Manual end-to-end: same-day BUY+SELL on one symbol → both rows show `is_day_trade=true`
+- [x] 5.4 Manual end-to-end: upload 50-row CSV via Angular import page; confirm dedupe on second upload
+- [x] 5.5 Manual end-to-end: trigger backfill for a recent trading day; verify `price_history` populated
+- [x] 5.6 Manual end-to-end: same-day BUY+SELL on one symbol → both rows show `is_day_trade=true`
