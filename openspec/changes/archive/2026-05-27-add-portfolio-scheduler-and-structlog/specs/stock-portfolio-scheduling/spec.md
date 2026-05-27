@@ -1,21 +1,5 @@
 ## ADDED Requirements
 
-### Requirement: Service runs an in-process background scheduler with three TW cron jobs
-
-The service SHALL boot a `BackgroundScheduler` on FastAPI startup (when enabled) and SHALL register exactly three jobs anchored to `Asia/Taipei`.
-
-#### Scenario: Scheduler registers tw_daily_prices
-- **WHEN** the scheduler boots
-- **THEN** a job with id `tw_daily_prices` SHALL be registered with a cron trigger of `hour=17, minute=0, day_of_week=mon-fri, timezone=Asia/Taipei`
-
-#### Scenario: Scheduler registers quote_refresh
-- **WHEN** the scheduler boots
-- **THEN** a job with id `quote_refresh` SHALL be registered with a cron trigger of `minute=*/15, hour=9-13, day_of_week=mon-fri, timezone=Asia/Taipei`
-
-#### Scenario: Scheduler registers portfolio_snapshot
-- **WHEN** the scheduler boots
-- **THEN** a job with id `portfolio_snapshot` SHALL be registered with a cron trigger of `hour=15, minute=30, timezone=Asia/Taipei`
-
 ### Requirement: Scheduler lifecycle is bound to the FastAPI process
 
 The service SHALL start the scheduler on FastAPI `startup` and SHALL stop it cleanly on `shutdown`.

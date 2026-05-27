@@ -43,4 +43,4 @@
 
 - [x] 5.1 Full `pytest` — 188 prior + new tests pass
 - [x] 5.2 Existing `/api/portfolio/ex-dividends/upcoming` endpoint output byte-identical for the TWT48U path
-- [ ] 5.3 Manual: hit `/api/portfolio/dividend-events?year=2025` against a real TWSE backend (optional, low priority)
+- [x] 5.3 Manual: hit `/api/portfolio/dividend-events?year=2025` against a real TWSE backend (optional, low priority)

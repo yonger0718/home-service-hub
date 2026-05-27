@@ -23,6 +23,6 @@
 ## 4. Verification
 
 - [x] 4.1 Run full `pytest` in `services/stock-portfolio-service/` — all prior tests (128) plus new logging + scheduler tests pass (158 total)
-- [ ] 4.2 Boot the service locally with `uvicorn app.main:app --port 8001` and confirm the startup log line is a single JSON object with `event=scheduler.started` and three job entries
-- [ ] 4.3 Toggle `LOG_FORMAT=console` and confirm the renderer switches without restarting Python
-- [ ] 4.4 Toggle `SCHEDULER_ENABLED=false` and confirm no scheduler boot log appears and shutdown is clean
+- [x] 4.2 Boot the service locally with `uvicorn app.main:app --port 8001` and confirm the startup log line is a single JSON object with `event=scheduler.started` and three job entries
+- [x] 4.3 Toggle `LOG_FORMAT=console` and confirm the renderer switches without restarting Python
+- [x] 4.4 Toggle `SCHEDULER_ENABLED=false` and confirm no scheduler boot log appears and shutdown is clean

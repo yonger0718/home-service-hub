@@ -44,4 +44,4 @@
 - [x] 7.1 Full `pytest` — 167 prior + new tests pass
 - [x] 7.2 Alembic upgrade/downgrade clean
 - [x] 7.3 `npm run build` clean
-- [ ] 7.4 Manual: POST backfill for a known year (e.g. one containing a 2330 face-value change if any), verify GET returns rows and dashboard panel renders
+- [x] 7.4 Manual: POST backfill for a known year (e.g. one containing a 2330 face-value change if any), verify GET returns rows and dashboard panel renders

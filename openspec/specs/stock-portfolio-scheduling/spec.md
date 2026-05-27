@@ -47,3 +47,49 @@ The service SHALL boot a `BackgroundScheduler` on FastAPI startup (when enabled)
 - **WHEN** the underlying snapshot write raises an exception (e.g. TWSE outage breaks the live summary)
 - **THEN** the job callable SHALL log `event=snapshot.failed` and SHALL NOT propagate the exception so the scheduler thread stays alive
 
+### Requirement: Scheduler lifecycle is bound to the FastAPI process
+
+The service SHALL start the scheduler on FastAPI `startup` and SHALL stop it cleanly on `shutdown`.
+
+#### Scenario: Scheduler is gated by `SCHEDULER_ENABLED`
+- **WHEN** `SCHEDULER_ENABLED=false`
+- **THEN** the scheduler SHALL NOT start and no jobs SHALL be registered
+
+#### Scenario: Shutdown waits no longer than necessary
+- **WHEN** the FastAPI app shuts down
+- **THEN** the scheduler SHALL be torn down with `wait=False` so the process does not hang on in-flight jobs
+
+### Requirement: Daily price backfill job invokes the existing market-data service
+
+The `tw_daily_prices` job callable SHALL call `market_data_service.backfill_date(today, market="BOTH")` inside a fresh DB session and SHALL log the structured result.
+
+#### Scenario: Job triggers backfill with the correct market
+- **WHEN** the `tw_daily_prices` callable is invoked
+- **THEN** `backfill_date` SHALL be called once with `market="BOTH"` and today's date in `Asia/Taipei`
+
+### Requirement: Quote-refresh job is gated by TW market hours
+
+The `quote_refresh` callable SHALL short-circuit when `is_tw_market_session(now)` returns false.
+
+#### Scenario: Inside session window
+- **GIVEN** the current TW time is a weekday at 10:00
+- **WHEN** the callable runs
+- **THEN** it SHALL fetch quotes for active-holding symbols
+
+#### Scenario: Outside session window
+- **GIVEN** the current TW time is a weekday at 14:00
+- **WHEN** the callable runs
+- **THEN** it SHALL NOT call the quote fetcher
+
+#### Scenario: Weekend short-circuit
+- **GIVEN** the current TW time is a Saturday at 10:00
+- **WHEN** the callable runs
+- **THEN** it SHALL NOT call the quote fetcher
+
+#### Scenario: Session boundaries are inclusive-open
+- **GIVEN** session window is defined as `09:00 <= time < 13:30`
+- **WHEN** the time is exactly `09:00`
+- **THEN** `is_tw_market_session` SHALL return true
+- **WHEN** the time is exactly `13:30`
+- **THEN** `is_tw_market_session` SHALL return false
+
