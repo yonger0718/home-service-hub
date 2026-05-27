@@ -72,8 +72,10 @@ graph TD
 
 - **🤖 AI Agent First**: 服務設計之初即考量 AI Agent的調用需求，具備良好的 API 結構與錯誤回傳機制。
 - **全鏈路分散式追蹤 (End-to-End Tracing)**: 從 AI Agent 发起請求到資料庫回應，完整記錄每一毫秒的延遲與日誌。
+- **結構化日誌 (Structured Logging)**: Python 服務以 `structlog` 輸出 JSON 日誌，無縫接入 Loki / Grafana。本地開發可切 `LOG_FORMAT=console` 改用人類可讀格式。
 - **AI 驅動記帳系統**: 支援自然語言解析，自動將口語化描述轉化為精確的財務交易。
-- **智慧庫存與投資**: 整合物件儲存 (MinIO) 管理實體物資，並自動抓取即時台股數據。
+- **智慧庫存與投資**: 整合物件儲存 (MinIO) 管理實體物資，並自動抓取即時台股數據；台股組合支援 CSV 匯入、每日 OHLC 回填、除權息事件抓取、減資/分割自動調整成本基礎，以及當沖標記推導。
+- **In-process Scheduler**: 台股組合服務內建 APScheduler，每日 17:00 回補 TWSE/TPEx 收盤、盤中每 15 分鐘刷新報價、15:30 寫入淨值快照。可透過 `SCHEDULER_ENABLED=false` 關閉。
 
 ## 🚀 快速開始 (Getting Started)
 
@@ -86,6 +88,12 @@ graph TD
 - **Accounting**: `uvicorn app.main:app --port 8000`
 - **Stock**: `uvicorn app.main:app --port 8001`
 - **Frontend**: `npm start`
+
+### 3. Stock Portfolio 服務環境變數
+- `SCHEDULER_ENABLED` (預設 `true`)：設 `false` 停用內建 APScheduler（測試 / CI 必設）。
+- `LOG_FORMAT` (預設 `json`)：設 `console` 切換為人類可讀格式。
+
+服務細節（端點清單、Scheduler cron、Day-trade 推導規則等）見 [`services/stock-portfolio-service/README.md`](services/stock-portfolio-service/README.md)。
 
 ## 🗺 發展路線 (Roadmap)
 
