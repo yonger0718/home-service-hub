@@ -110,7 +110,11 @@ def _iter_records(data: dict[str, Any]) -> Iterable[list]:
 
 
 def fetch_tpex_otc(year: Optional[int] = None) -> list[DividendEventRow]:
-    payload = _http_get(URL, {"response": "json"})
+    params: dict[str, str] = {"response": "json"}
+    if year is not None:
+        params["startDate"] = f"{year}/01/01"
+        params["endDate"] = f"{year}/12/31"
+    payload = _http_get(URL, params)
     if payload is None:
         return []
     try:

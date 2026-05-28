@@ -14,14 +14,15 @@ from ..models.symbol_map import SymbolMap
 
 logger = logging.getLogger(__name__)
 
-_TICKER_PATTERN = re.compile(r"^[0-9A-Za-z]")  # numeric or alphanumeric (covers 00XX ETFs)
+_TICKER_PATTERN = re.compile(r"^[0-9A-Za-z]+$")  # full token must be ASCII alnum
 
 
 def _looks_like_ticker(symbol: str) -> bool:
-    """Returns True if the symbol starts with a digit or ASCII letter (TWSE/TPEx ticker shape)."""
-    if not symbol:
+    """Returns True if the symbol is entirely ASCII alphanumeric (TWSE/TPEx ticker shape)."""
+    cleaned = (symbol or "").strip()
+    if not cleaned:
         return False
-    return bool(_TICKER_PATTERN.match(symbol))
+    return bool(_TICKER_PATTERN.fullmatch(cleaned))
 
 
 def refresh_all_from_twstock(db: Session) -> dict:

@@ -273,63 +273,45 @@ def _int_or_none(value: object) -> int | None:
 
 
 def _http_get(url: str, params: dict[str, str]) -> bytes | None:
-    """GET ``url`` honouring the same TLS-fallback policy as ``TWSEClient``.
+    """GET ``url`` with TLS verification.
 
-    Backfill is rare (daily, manual) so we skip the retry/cache stack and just
-    do a single request with optional verify-then-insecure fallback.
+    Fails closed on certificate errors. Operator-only ``TWSE_TLS_MODE=insecure``
+    skips verification entirely; any other mode (including ``fallback``) requires
+    a valid TLS chain and returns ``None`` on ``SSLError`` to avoid persisting
+    MITM-tampered OHLC into ``price_history``.
     """
 
     bootstrap_truststore()
-    mode = get_tls_mode()
-    verify_first = mode != TLSMode.INSECURE
+    verify = get_tls_mode() != TLSMode.INSECURE
     try:
         response = requests.get(
-            url, params=params, timeout=DEFAULT_TIMEOUT_SEC, verify=verify_first
+            url, params=params, timeout=DEFAULT_TIMEOUT_SEC, verify=verify
         )
         response.raise_for_status()
         return response.content
     except requests.exceptions.SSLError as exc:
-        if mode != TLSMode.FALLBACK:
-            logger.error("Market-data verified request failed: %s", exc)
-            return None
-        logger.warning("Market-data TLS verification failed; retrying insecurely: %s", exc)
+        logger.error("Market-data TLS verification failed (failing closed): %s", exc)
+        return None
     except requests.exceptions.RequestException as exc:
         logger.error("Market-data request failed: %s", exc)
         return None
 
-    try:
-        response = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT_SEC, verify=False)
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.RequestException as exc:
-        logger.error("Market-data insecure fallback failed: %s", exc)
-        return None
-
 
 def _http_post_form(url: str, data: dict[str, str]) -> bytes | None:
-    """POST form-encoded body to ``url`` with the same TLS-fallback policy as ``_http_get``."""
+    """POST form-encoded body with the same fail-closed TLS policy as ``_http_get``."""
     bootstrap_truststore()
-    mode = get_tls_mode()
-    verify_first = mode != TLSMode.INSECURE
+    verify = get_tls_mode() != TLSMode.INSECURE
     try:
-        response = requests.post(url, data=data, timeout=DEFAULT_TIMEOUT_SEC, verify=verify_first)
+        response = requests.post(
+            url, data=data, timeout=DEFAULT_TIMEOUT_SEC, verify=verify
+        )
         response.raise_for_status()
         return response.content
     except requests.exceptions.SSLError as exc:
-        if mode != TLSMode.FALLBACK:
-            logger.error("Market-data verified POST failed: %s", exc)
-            return None
-        logger.warning("Market-data TLS verification failed; retrying insecurely: %s", exc)
+        logger.error("Market-data TLS verification failed (failing closed): %s", exc)
+        return None
     except requests.exceptions.RequestException as exc:
         logger.error("Market-data POST failed: %s", exc)
-        return None
-
-    try:
-        response = requests.post(url, data=data, timeout=DEFAULT_TIMEOUT_SEC, verify=False)
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.RequestException as exc:
-        logger.error("Market-data insecure POST fallback failed: %s", exc)
         return None
 
 

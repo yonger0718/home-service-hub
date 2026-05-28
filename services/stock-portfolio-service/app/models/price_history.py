@@ -25,6 +25,13 @@ class PriceHistory(Base):
     __table_args__ = (
         PrimaryKeyConstraint("symbol", "date", name="pk_price_history"),
         CheckConstraint("close > 0", name="ck_price_history_close_positive"),
+        CheckConstraint("open IS NULL OR open > 0", name="ck_price_history_open_positive"),
+        CheckConstraint("high IS NULL OR high > 0", name="ck_price_history_high_positive"),
+        CheckConstraint("low IS NULL OR low > 0", name="ck_price_history_low_positive"),
+        CheckConstraint(
+            "high IS NULL OR low IS NULL OR high >= low",
+            name="ck_price_history_high_gte_low",
+        ),
         Index("ix_price_history_date", "date"),
     )
 

@@ -135,10 +135,8 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     for (const [ticker, name] of Object.entries(map)) {
       if (name === input) return ticker;
     }
-    for (const [ticker, name] of Object.entries(map)) {
-      if (name && name.includes(input)) return ticker;
-    }
-    return input;
+    const matches = Object.entries(map).filter(([, name]) => name?.includes(input));
+    return matches.length === 1 ? matches[0][0] : null;
   }
 
   onDateRangeChange(range: Date[] | null) {
@@ -225,6 +223,15 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       accept: () => {
         this.portfolioService.deleteTransaction(transaction.id).subscribe({
           next: () => {
+            const nextTotal = Math.max(this.total() - 1, 0);
+            const limit = this.query().limit ?? 25;
+            const maxOffset = nextTotal > 0
+              ? Math.floor((nextTotal - 1) / limit) * limit
+              : 0;
+            this.query.set({
+              ...this.query(),
+              offset: Math.min(this.query().offset ?? 0, maxOffset),
+            });
             this.messageService.add({ severity: 'success', summary: '成功', detail: '紀錄已刪除' });
             this.fetch();
           },

@@ -101,7 +101,7 @@ def _apply_corp_action_factors(
         return list(transactions)
     adjusted: list = []
     for txn in transactions:
-        sym_actions = actions_by_symbol.get(txn.symbol.strip().upper(), None)
+        sym_actions = actions_by_symbol.get(sanitize_symbol(txn.symbol), None)
         if not sym_actions:
             adjusted.append(txn)
             continue
@@ -121,7 +121,7 @@ def _load_corp_actions_by_symbol(db: Session) -> Dict[str, List[CorporateAction]
     )
     grouped: Dict[str, List[CorporateAction]] = {}
     for row in rows:
-        grouped.setdefault(row.symbol, []).append(row)
+        grouped.setdefault(sanitize_symbol(row.symbol), []).append(row)
     return grouped
 
 
@@ -229,11 +229,16 @@ def _recompute_day_trade_flags(
     """
 
     normalized = sanitize_symbol(symbol)
+    day_start = datetime.combine(calendar_date, datetime.min.time(), tzinfo=timezone.utc)
+    day_end = day_start + _ONE_DAY
     rows = (
         db.query(models.Transaction)
         .filter(models.Transaction.symbol == normalized)
+        .filter(models.Transaction.trade_date >= day_start)
+        .filter(models.Transaction.trade_date < day_end)
         .all()
     )
+    # _trade_calendar_date normalises to UTC date; rows already bounded above.
     bucket = [
         row for row in rows
         if _trade_calendar_date(row.trade_date) == calendar_date

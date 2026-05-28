@@ -27,6 +27,7 @@ from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Literal
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as models
@@ -271,7 +272,10 @@ def _transaction_fingerprint(
 
 
 def _dividend_fingerprint(
-    symbol: str, amount: Decimal, ex_dividend_date: datetime
+    symbol: str,
+    amount: Decimal,
+    ex_dividend_date: datetime,
+    received_date: datetime | None,
 ) -> str:
     canonical = "|".join(
         (
@@ -279,6 +283,9 @@ def _dividend_fingerprint(
             symbol,
             f"{amount:.4f}",
             ex_dividend_date.astimezone(timezone.utc).isoformat(),
+            received_date.astimezone(timezone.utc).isoformat()
+            if received_date is not None
+            else "",
         )
     )
     return sha256(canonical.encode("utf-8")).hexdigest()
@@ -392,7 +399,9 @@ def parse_dividends_csv(raw: bytes, *, has_header: bool = True) -> ParseResult:
                 else None
             )
 
-            fingerprint = _dividend_fingerprint(symbol, amount, ex_dividend_date)
+            fingerprint = _dividend_fingerprint(
+                symbol, amount, ex_dividend_date, received_date
+            )
             rows.append(
                 ParsedRow(
                     row_index=row_index,
@@ -481,6 +490,12 @@ def commit_transactions(
             continue
         try:
             db_tx = _persist_transaction(db, row)
+        except IntegrityError:
+            # Another request inserted the same fingerprint between snapshot
+            # and our flush — treat as duplicate, keep session usable.
+            db.rollback()
+            skipped += 1
+            continue
         except ValueError as exc:
             errors.append(ParseError(row_index=row.row_index, message=str(exc)))
             continue
@@ -519,7 +534,12 @@ def commit_dividends(
         seen_in_batch.add(row.fingerprint)
         if dry_run:
             continue
-        db_div = _persist_dividend(db, row)
+        try:
+            db_div = _persist_dividend(db, row)
+        except IntegrityError:
+            db.rollback()
+            skipped += 1
+            continue
         created_ids.append(db_div.id)
     return ImportResult(
         parsed=len(parsed.rows),

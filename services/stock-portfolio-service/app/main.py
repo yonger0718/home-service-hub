@@ -47,8 +47,13 @@ def _start_scheduler() -> None:
     if not scheduler_module.is_enabled():
         logger.info("scheduler.disabled")
         return
-    _scheduler = scheduler_module.build_scheduler(SessionLocal)
-    _scheduler.start()
+    try:
+        _scheduler = scheduler_module.build_scheduler(SessionLocal)
+        _scheduler.start()
+    except Exception as exc:  # noqa: BLE001 — scheduler is optional; API must stay up
+        _scheduler = None
+        logger.exception("scheduler.bootstrap.failed", extra={"error": str(exc)})
+        return
     job_ids = [job.id for job in _scheduler.get_jobs()]
     logger.info("scheduler.started", extra={"jobs": job_ids})
 
