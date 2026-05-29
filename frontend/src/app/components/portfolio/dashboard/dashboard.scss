@@ -56,6 +56,17 @@
   background: var(--app-trend-negative-soft);
 }
 
+.xirr-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  align-items: flex-start;
+}
+
+.xirr-placeholder {
+  cursor: help;
+}
+
 /* Holdings List V2 */
 .hub-holdings-list {
   display: flex;
@@ -144,4 +155,17 @@
 @keyframes slideDown {
   from { opacity: 0; transform: translateY(-10px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+:host ::ng-deep {
+  .xirr-window-control .p-selectbutton {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+
+  .xirr-window-control .p-togglebutton {
+    min-width: 3rem;
+    padding-inline: 0.55rem;
+  }
 }

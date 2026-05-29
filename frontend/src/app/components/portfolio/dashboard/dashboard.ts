@@ -9,23 +9,27 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { finalize, interval, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { PortfolioSummary, ExDividendRecord } from '../../../models/portfolio.model';
+import { PortfolioSummary, ExDividendRecord, StockHolding } from '../../../models/portfolio.model';
 import { CardModule } from 'primeng/card';
 import { TableModule } from 'primeng/table';
 import { TagModule } from 'primeng/tag';
 import { ButtonModule } from 'primeng/button';
 import { TooltipModule } from 'primeng/tooltip';
+import { SelectButtonModule } from 'primeng/selectbutton';
 import { AccordionModule } from 'primeng/accordion';
 import { SkeletonModule } from 'primeng/skeleton';
 import { MessageService } from 'primeng/api';
 import { NetworthChartComponent } from '../networth-chart/networth-chart';
 import { CorporateActionsPanelComponent } from '../corporate-actions-panel/corporate-actions-panel';
 
+type XirrWindow = '1m' | '3m' | '1y' | 'ytd' | 'all';
+
 @Component({
   selector: 'app-portfolio-dashboard',
-  imports: [CommonModule, CardModule, TableModule, TagModule, ButtonModule, TooltipModule, AccordionModule, SkeletonModule, NetworthChartComponent, CorporateActionsPanelComponent],
+  imports: [CommonModule, FormsModule, CardModule, TableModule, TagModule, ButtonModule, TooltipModule, SelectButtonModule, AccordionModule, SkeletonModule, NetworthChartComponent, CorporateActionsPanelComponent],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -43,6 +47,17 @@ export class PortfolioDashboardComponent implements OnInit {
   loading = signal<boolean>(false);
   showWithDividend = signal<boolean>(false);
   expandedSymbols = signal<Set<string>>(new Set());
+  xirrWindow = signal<XirrWindow>('1y');
+
+  readonly xirrWindowOptions: { label: string; value: XirrWindow }[] = [
+    { label: '1M', value: '1m' },
+    { label: '3M', value: '3m' },
+    { label: '1Y', value: '1y' },
+    { label: 'YTD', value: 'ytd' },
+    { label: '全部', value: 'all' },
+  ];
+
+  readonly xirrGapTooltip = '缺少此期間的淨值或價格資料。請執行 python -m app.services.networth_backfill_service --rebuild-all 後再重新整理。';
 
   ngOnInit() {
     this.loadSummary();
@@ -147,6 +162,23 @@ export class PortfolioDashboardComponent implements OnInit {
   formatXirr(value: number | null | undefined): string {
     if (value == null) return 'N/A';
     return (value * 100).toFixed(2) + '%';
+  }
+
+  selectedXirr(source: PortfolioSummary | StockHolding): number | null | undefined {
+    const isSummary = 'holdings' in source;
+
+    switch (this.xirrWindow()) {
+      case '1m':
+        return isSummary ? source.portfolio_xirr_1m : source.xirr_1m;
+      case '3m':
+        return isSummary ? source.portfolio_xirr_3m : source.xirr_3m;
+      case '1y':
+        return isSummary ? source.portfolio_xirr_1y : source.xirr_1y;
+      case 'ytd':
+        return isSummary ? source.portfolio_xirr_ytd : source.xirr_ytd;
+      case 'all':
+        return isSummary ? source.portfolio_xirr : source.xirr;
+    }
   }
 
   loadExDividends() {
