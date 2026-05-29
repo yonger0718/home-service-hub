@@ -142,6 +142,10 @@ export interface StockHolding {
   total_dividends: number;
   total_pnl_with_dividend: number;
   xirr?: number;              // 年化報酬率，e.g. 0.1523 = 15.23%
+  xirr_1m: number | null;
+  xirr_3m: number | null;
+  xirr_1y: number | null;
+  xirr_ytd: number | null;
 }
 
 export interface PortfolioSummary {
@@ -154,6 +158,10 @@ export interface PortfolioSummary {
   total_realized_pnl: number;     // 累積已實現損益（含當沖）
   holdings: StockHolding[];
   portfolio_xirr?: number;    // 整體投資組合年化報酬率
+  portfolio_xirr_1m: number | null;
+  portfolio_xirr_3m: number | null;
+  portfolio_xirr_1y: number | null;
+  portfolio_xirr_ytd: number | null;
 }
 
 export interface NetworthPoint {

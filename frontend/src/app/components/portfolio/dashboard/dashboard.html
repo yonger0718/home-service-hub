@@ -76,10 +76,28 @@
         <!-- 投資組合年化報酬率 -->
         <div class="bento-item bento-normal xirr-card">
           <div class="bento-content">
-            <div class="label">年化報酬率 (XIRR)</div>
-            <div class="value" [class.up]="(summary()!.portfolio_xirr ?? 0) > 0"
-                               [class.down]="(summary()!.portfolio_xirr ?? 0) < 0">
-              {{ formatXirr(summary()!.portfolio_xirr) }}
+            <div class="xirr-card-header">
+              <div class="label">年化報酬率 (XIRR)</div>
+              <div class="xirr-window-control">
+                <p-selectButton
+                  [options]="xirrWindowOptions"
+                  optionLabel="label"
+                  optionValue="value"
+                  [allowEmpty]="false"
+                  [ngModel]="xirrWindow()"
+                  (ngModelChange)="xirrWindow.set($event)">
+                </p-selectButton>
+              </div>
+            </div>
+            @let portfolioXirr = selectedXirr(summary()!);
+            <div class="value" [class.up]="(portfolioXirr ?? 0) > 0"
+                               [class.down]="(portfolioXirr ?? 0) < 0">
+              @if (portfolioXirr == null) {
+                <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明"
+                      [pTooltip]="xirrGapTooltip" tooltipPosition="top">—</span>
+              } @else {
+                {{ formatXirr(portfolioXirr) }}
+              }
             </div>
             <div class="meta">含息 / 含買賣手續費</div>
           </div>
@@ -138,7 +156,18 @@
                       <div class="d-item"><small>含息損益</small><div [class]="{'up': stock.total_pnl_with_dividend > 0, 'down': stock.total_pnl_with_dividend < 0}">{{ formatCurrency(stock.total_pnl_with_dividend) }}</div></div>
                       <div class="d-item"><small>不含息損益</small><div [class]="{'up': stock.unrealized_pnl > 0, 'down': stock.unrealized_pnl < 0}">{{ formatCurrency(stock.unrealized_pnl) }}</div></div>
                       <div class="d-item"><small>累計股利</small><div>{{ formatCurrency(stock.total_dividends) }}</div></div>
-                      <div class="d-item"><small>年化報酬率</small><div>{{ formatXirr(stock.xirr) }}</div></div>
+                      <div class="d-item">
+                        <small>年化報酬率</small>
+                        @let holdingXirr = selectedXirr(stock);
+                        <div [class.up]="(holdingXirr ?? 0) > 0" [class.down]="(holdingXirr ?? 0) < 0">
+                          @if (holdingXirr == null) {
+                            <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明"
+                      [pTooltip]="xirrGapTooltip" tooltipPosition="top">—</span>
+                          } @else {
+                            {{ formatXirr(holdingXirr) }}
+                          }
+                        </div>
+                      </div>
                     </div>
                   </div>
                 }

@@ -1,19 +1,29 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import Column, func
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 from datetime import date as date_type, datetime, timedelta, timezone
 
 _ONE_DAY = timedelta(days=1)
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 import math
 import os
+from dateutil.relativedelta import relativedelta
 from ..models import portfolio as models
 from ..models.corporate_action import CorporateAction
+from ..models.portfolio_snapshot import PortfolioSnapshot
+from ..models.price_history import PriceHistory
 from ..schemas import portfolio as schemas
 from .twse_service import get_stock_quotes
 from . import symbol_map_service
 from shared_lib import get_tracer
 tracer = get_tracer("stock-portfolio-service")
+
+_XIRR_WINDOWS: Tuple[Literal["1m", "3m", "1y", "ytd"], ...] = (
+    "1m",
+    "3m",
+    "1y",
+    "ytd",
+)
 
 
 class _AdjustedTransaction:
@@ -175,6 +185,94 @@ def _calculate_xirr(cash_flows: List[Tuple[date_type, Decimal]]) -> Optional[Dec
         return Decimal(str(round(result, 6)))
     except Exception:
         return None
+
+
+def _window_start(
+    today: date_type,
+    window: Literal["1m", "3m", "1y", "ytd"],
+) -> date_type:
+    if window == "1m":
+        return today - relativedelta(months=1)
+    if window == "3m":
+        return today - relativedelta(months=3)
+    if window == "1y":
+        return today - relativedelta(years=1)
+    return date_type(today.year, 1, 1)
+
+
+def _calculate_windowed_xirr(
+    window_start: date_type,
+    today: date_type,
+    cashflows: List[Tuple[date_type, Decimal]],
+    opening_mv: Optional[Decimal],
+    closing_mv: Decimal,
+) -> Optional[Decimal]:
+    windowed_flows: List[Tuple[date_type, Decimal]] = []
+    if opening_mv is not None and opening_mv > Decimal("0"):
+        windowed_flows.append((window_start, -opening_mv))
+
+    windowed_flows.extend(
+        sorted(
+            [
+                (cf_date, amount)
+                for cf_date, amount in cashflows
+                if window_start <= cf_date <= today
+            ],
+            key=lambda item: item[0],
+        )
+    )
+    windowed_flows.append((today, closing_mv))
+    return _calculate_xirr(windowed_flows)
+
+
+def _quantity_at_window_start(
+    transactions: List[models.Transaction],
+    symbol: str,
+    window_start: date_type,
+) -> Decimal:
+    normalized = sanitize_symbol(symbol)
+    quantity = Decimal("0")
+    for transaction in transactions:
+        t_side = getattr(transaction, "position_side", None) or models.PositionSide.LONG
+        if not isinstance(t_side, models.PositionSide):
+            t_side = models.PositionSide(t_side)
+        if t_side is not models.PositionSide.LONG:
+            continue
+
+        if sanitize_symbol(transaction.symbol) != normalized:
+            continue
+
+        trade_date = (
+            transaction.trade_date.date()
+            if hasattr(transaction.trade_date, "date")
+            else transaction.trade_date
+        )
+        if trade_date >= window_start:
+            continue
+
+        signed_quantity = Decimal(transaction.quantity)
+        if transaction.type == models.TransactionType.BUY:
+            quantity += signed_quantity
+        elif transaction.type == models.TransactionType.SELL:
+            quantity -= signed_quantity
+    return quantity
+
+
+def _lookup_window_open_price(
+    db: Session,
+    symbol: str,
+    window_start: date_type,
+) -> Optional[Decimal]:
+    row = (
+        db.query(PriceHistory)
+        .filter(PriceHistory.symbol == sanitize_symbol(symbol))
+        .filter(PriceHistory.date <= window_start)
+        .filter(PriceHistory.date >= window_start - timedelta(days=7))
+        .order_by(PriceHistory.date.desc())
+        .first()
+    )
+    return row.close if row is not None else None
+
 
 def sanitize_symbol(symbol: str) -> str:
     """
@@ -504,6 +602,11 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             )
         active_holdings = _aggregate_active_holdings(transactions, actions_by_symbol)
         active_symbols = list(active_holdings.keys())
+        today = date_type.today()
+        window_starts = {
+            window: _window_start(today, window)
+            for window in _XIRR_WINDOWS
+        }
 
         span.set_attribute("portfolio.transaction_count", len(transactions))
         span.set_attribute("portfolio.dividend_count", len(dividends))
@@ -620,10 +723,37 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             # Per-stock XIRR: append terminal market value at today
             stock_xirr: Optional[Decimal] = None
             if current_price > 0 and symbol in cashflows_map:
-                today = date_type.today()
                 stock_flows = sorted(cashflows_map.get(symbol, []), key=lambda x: x[0])
                 stock_flows_with_terminal = stock_flows + [(today, market_value)]
                 stock_xirr = _calculate_xirr(stock_flows_with_terminal)
+
+            stock_windowed_xirr: Dict[str, Optional[Decimal]] = {
+                window: None for window in _XIRR_WINDOWS
+            }
+            if current_price > 0 and symbol in cashflows_map:
+                for window, window_start in window_starts.items():
+                    qty_at_window_start = _quantity_at_window_start(
+                        adjusted_transactions,
+                        symbol,
+                        window_start,
+                    )
+                    opening_mv: Optional[Decimal] = None
+                    if qty_at_window_start > Decimal("0"):
+                        opening_price = _lookup_window_open_price(
+                            db,
+                            symbol,
+                            window_start,
+                        )
+                        if opening_price is None:
+                            continue
+                        opening_mv = qty_at_window_start * opening_price
+                    stock_windowed_xirr[window] = _calculate_windowed_xirr(
+                        window_start,
+                        today,
+                        cashflows_map.get(symbol, []),
+                        opening_mv,
+                        market_value,
+                    )
 
             holdings_list.append(schemas.StockHolding(
                 symbol=symbol,
@@ -639,7 +769,11 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 day_pnl=day_pnl,
                 total_dividends=stock_div,
                 total_pnl_with_dividend=(unrealized_pnl + stock_div).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-                xirr=stock_xirr
+                xirr=stock_xirr,
+                xirr_1m=stock_windowed_xirr["1m"],
+                xirr_3m=stock_windowed_xirr["3m"],
+                xirr_1y=stock_windowed_xirr["1y"],
+                xirr_ytd=stock_windowed_xirr["ytd"],
             ))
 
             if current_price > 0:
@@ -651,15 +785,37 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
 
         total_pnl_percent = ((total_unrealized_pnl / total_cost) * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if total_cost > 0 else Decimal("0.0")
 
-        # Portfolio XIRR: aggregate all cash flows across all held symbols
-        all_cashflows: List[Tuple[date_type, Decimal]] = []
-        for symbol in active_symbols:
-            all_cashflows.extend(cashflows_map.get(symbol, []))
+        # Portfolio XIRR: aggregate all cash flows, including closed positions.
+        all_cashflows: List[Tuple[date_type, Decimal]] = [
+            flow for flows in cashflows_map.values() for flow in flows
+        ]
         all_cashflows.sort(key=lambda x: x[0])
         portfolio_xirr: Optional[Decimal] = None
         if total_market_value > 0 and all_cashflows:
-            all_cashflows_with_terminal = all_cashflows + [(date_type.today(), total_market_value)]
+            all_cashflows_with_terminal = all_cashflows + [(today, total_market_value)]
             portfolio_xirr = _calculate_xirr(all_cashflows_with_terminal)
+
+        portfolio_windowed_xirr: Dict[str, Optional[Decimal]] = {
+            window: None for window in _XIRR_WINDOWS
+        }
+        if total_market_value > 0:
+            for window, window_start in window_starts.items():
+                snapshot = (
+                    db.query(PortfolioSnapshot)
+                    .filter(PortfolioSnapshot.date <= window_start)
+                    .filter(PortfolioSnapshot.date >= window_start - timedelta(days=7))
+                    .order_by(PortfolioSnapshot.date.desc())
+                    .first()
+                )
+                if snapshot is None:
+                    continue
+                portfolio_windowed_xirr[window] = _calculate_windowed_xirr(
+                    window_start,
+                    today,
+                    all_cashflows,
+                    snapshot.total_market_value,
+                    total_market_value,
+                )
 
         # Sum realised P&L across every symbol with realized events (long close +
         # short cover + no-inventory anomalies). Sourced from iter_realized_events
@@ -679,6 +835,10 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             total_realized_pnl=total_realized_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             holdings=holdings_list,
             portfolio_xirr=portfolio_xirr,
+            portfolio_xirr_1m=portfolio_windowed_xirr["1m"],
+            portfolio_xirr_3m=portfolio_windowed_xirr["3m"],
+            portfolio_xirr_1y=portfolio_windowed_xirr["1y"],
+            portfolio_xirr_ytd=portfolio_windowed_xirr["ytd"],
             quotes_status=quote_status,
         )
 

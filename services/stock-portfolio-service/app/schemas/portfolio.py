@@ -117,6 +117,10 @@ class StockHolding(BaseModel):
     total_dividends: Decimal = Decimal("0.0")
     total_pnl_with_dividend: Decimal # 含息損益
     xirr: Optional[Decimal] = None   # 年化報酬率，如 0.1523 = 15.23%
+    xirr_1m: Optional[Decimal] = None
+    xirr_3m: Optional[Decimal] = None
+    xirr_1y: Optional[Decimal] = None
+    xirr_ytd: Optional[Decimal] = None
 
 class PortfolioSummary(BaseModel):
     total_market_value: Decimal
@@ -128,6 +132,10 @@ class PortfolioSummary(BaseModel):
     total_realized_pnl: Decimal = Decimal("0.0")     # 累積已實現損益（含當沖）
     holdings: List[StockHolding]
     portfolio_xirr: Optional[Decimal] = None          # 整體投資組合年化報酬率
+    portfolio_xirr_1m: Optional[Decimal] = None
+    portfolio_xirr_3m: Optional[Decimal] = None
+    portfolio_xirr_1y: Optional[Decimal] = None
+    portfolio_xirr_ytd: Optional[Decimal] = None
     quotes_status: Literal["ok", "partial", "unavailable"] = "ok"
 
 
