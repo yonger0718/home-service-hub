@@ -93,7 +93,8 @@
             <div class="value" [class.up]="(portfolioXirr ?? 0) > 0"
                                [class.down]="(portfolioXirr ?? 0) < 0">
               @if (portfolioXirr == null) {
-                <span class="xirr-placeholder" [pTooltip]="xirrGapTooltip" tooltipPosition="top">—</span>
+                <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明"
+                      [pTooltip]="xirrGapTooltip" tooltipPosition="top">—</span>
               } @else {
                 {{ formatXirr(portfolioXirr) }}
               }
@@ -160,7 +161,8 @@
                         @let holdingXirr = selectedXirr(stock);
                         <div [class.up]="(holdingXirr ?? 0) > 0" [class.down]="(holdingXirr ?? 0) < 0">
                           @if (holdingXirr == null) {
-                            <span class="xirr-placeholder" [pTooltip]="xirrGapTooltip" tooltipPosition="top">—</span>
+                            <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明"
+                      [pTooltip]="xirrGapTooltip" tooltipPosition="top">—</span>
                           } @else {
                             {{ formatXirr(holdingXirr) }}
                           }

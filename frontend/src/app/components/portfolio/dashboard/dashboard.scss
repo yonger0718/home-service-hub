@@ -157,6 +157,7 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* stylelint-disable-next-line selector-pseudo-element-no-unknown */
 :host ::ng-deep {
   .xirr-window-control .p-selectbutton {
     display: flex;

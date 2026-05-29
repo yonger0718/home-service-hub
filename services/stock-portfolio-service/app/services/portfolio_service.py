@@ -803,6 +803,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 snapshot = (
                     db.query(PortfolioSnapshot)
                     .filter(PortfolioSnapshot.date <= window_start)
+                    .filter(PortfolioSnapshot.date >= window_start - timedelta(days=7))
                     .order_by(PortfolioSnapshot.date.desc())
                     .first()
                 )
