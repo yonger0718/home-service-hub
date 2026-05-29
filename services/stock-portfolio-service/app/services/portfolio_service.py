@@ -785,10 +785,10 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
 
         total_pnl_percent = ((total_unrealized_pnl / total_cost) * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if total_cost > 0 else Decimal("0.0")
 
-        # Portfolio XIRR: aggregate all cash flows across all held symbols
-        all_cashflows: List[Tuple[date_type, Decimal]] = []
-        for symbol in active_symbols:
-            all_cashflows.extend(cashflows_map.get(symbol, []))
+        # Portfolio XIRR: aggregate all cash flows, including closed positions.
+        all_cashflows: List[Tuple[date_type, Decimal]] = [
+            flow for flows in cashflows_map.values() for flow in flows
+        ]
         all_cashflows.sort(key=lambda x: x[0])
         portfolio_xirr: Optional[Decimal] = None
         if total_market_value > 0 and all_cashflows:
