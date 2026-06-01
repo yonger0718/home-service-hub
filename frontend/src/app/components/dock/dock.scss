@@ -1,0 +1,98 @@
+.hub-dock {
+  align-items: center;
+  background: var(--app-surface-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-right: 1px solid var(--app-border);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  left: 0;
+  padding: 1.5rem 0;
+  position: fixed;
+  top: 0;
+  width: 72px;
+  z-index: 1000;
+}
+
+.dock-logo {
+  align-items: center;
+  border-radius: var(--radius-md);
+  box-shadow: var(--app-card-shadow);
+  display: flex;
+  height: 40px;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+  overflow: hidden;
+  width: 40px;
+
+  img {
+    display: block;
+    height: 100%;
+    width: 100%;
+  }
+}
+
+.dock-nav {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.dock-divider {
+  background: var(--app-border);
+  height: 1px;
+  margin: 0.5rem 0;
+  width: 32px;
+}
+
+.dock-item {
+  align-items: center;
+  background: transparent;
+  border-radius: var(--radius-md);
+  color: var(--app-text-muted);
+  display: flex;
+  height: 44px;
+  justify-content: center;
+  text-decoration: none;
+  transition: all var(--dur-fast) var(--ease-standard);
+  width: 44px;
+
+  i {
+    font-size: 1.2rem;
+  }
+
+  &:hover {
+    background: var(--app-accent-soft);
+    color: var(--app-text);
+    transform: scale(1.05);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+  }
+
+  &.active {
+    background: var(--app-primary);
+    color: #fff;
+    box-shadow: var(--app-card-shadow);
+  }
+
+  &.sub {
+    height: 36px;
+    width: 36px;
+
+    i {
+      font-size: 1rem;
+    }
+  }
+}
+
+@media (max-width: 759.98px) {
+  .hub-dock {
+    display: none;
+  }
+}

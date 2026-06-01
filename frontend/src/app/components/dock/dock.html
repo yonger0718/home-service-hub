@@ -1,0 +1,29 @@
+<aside class="hub-dock" aria-label="Primary navigation">
+  <a class="dock-logo" routerLink="/" aria-label="Home Hub">
+    <img src="assets/app-icon.svg" [alt]="logoAlt" />
+  </a>
+
+  <nav class="dock-nav">
+    @for (group of groups; track group.id) {
+      @if (!$first) {
+        <div class="dock-divider" aria-hidden="true"></div>
+      }
+
+      @for (item of group.items; track item.id) {
+        <a
+          class="dock-item"
+          [class.sub]="item.sub"
+          [class.active]="activeId() === item.id"
+          [routerLink]="item.path"
+          routerLinkActive="active"
+          [routerLinkActiveOptions]="{ exact: item.exact ?? false }"
+          [title]="item.title"
+          [attr.aria-label]="item.title"
+          [attr.aria-current]="activeId() === item.id ? 'page' : null"
+        >
+          <i class="pi {{ item.icon }}" aria-hidden="true"></i>
+        </a>
+      }
+    }
+  </nav>
+</aside>

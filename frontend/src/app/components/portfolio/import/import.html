@@ -2,184 +2,82 @@
 <p-confirmDialog></p-confirmDialog>
 
 <div class="import-page">
-  <p-card>
-    <ng-template pTemplate="header">
-      <div class="header">
-        <h2>匯入 CSV</h2>
-        <p-selectButton
-          [options]="kindOptions"
-          [ngModel]="kind()"
-          (ngModelChange)="kind.set($event); onClear()"
-          optionLabel="label"
-          optionValue="value">
-        </p-selectButton>
-      </div>
-    </ng-template>
+  <div class="imp-card">
+    <section class="imp-section">
+      <div class="imp-step-label"><span class="imp-step-num">1</span>上傳 CSV 檔案</div>
+      <small class="imp-hint">支援自動偵測：國泰證券（含「根據您篩選的結果」前置列）與通用欄位格式。</small>
+      @if (!file()) {
+        <label class="dropzone" (drop)="onDrop($event)" (dragover)="onDragOver($event)">
+          <i class="pi pi-cloud-upload" aria-hidden="true"></i>
+          <span>將 CSV 拖曳至此，或選擇檔案</span>
+          <small>支援 .csv · UTF-8 編碼</small>
+          <input type="file" accept=".csv,text/csv" (change)="onNativeFileChange($event)" />
+        </label>
+      } @else {
+        <app-file-chip [filename]="file()!.name" [parsedCount]="parsedCount()" (remove)="onClear()"></app-file-chip>
+        @if (detectedFormatLabel(); as label) {
+          <div class="imp-detected">偵測格式：<strong>{{ label }}</strong></div>
+        }
+      }
+    </section>
 
-    <p class="hint">
-      欄位（任一語言皆可）：<code>{{ headerHint }}</code>
-    </p>
-
-    <div class="header-toggle">
-      <p-checkbox
-        [binary]="true"
-        [ngModel]="hasHeader()"
-        (ngModelChange)="hasHeader.set($event)"
-        inputId="has-header-toggle">
-      </p-checkbox>
-      <label for="has-header-toggle">CSV 含標題列</label>
-      <small class="muted">取消勾選表示 CSV 第一列即為資料（系統會自動補上標題列）</small>
-    </div>
-
-    <div class="actions">
-      <p-fileUpload
-        mode="basic"
-        chooseLabel="選擇檔案"
-        name="file"
-        accept=".csv,text/csv"
-        [auto]="true"
-        [customUpload]="true"
-        (uploadHandler)="onSelect($event)">
-      </p-fileUpload>
-
-      <span *ngIf="file() as f" class="filename">{{ f.name }}</span>
-
-      <p-button label="預覽 (Dry-Run)" icon="pi pi-search" severity="secondary"
-                [disabled]="!file() || busy()" (onClick)="preview()"></p-button>
-      <p-button label="正式匯入" icon="pi pi-upload"
-                [disabled]="!file() || busy()" (onClick)="commit()"></p-button>
-      <p-button label="清除" icon="pi pi-times" severity="secondary" [outlined]="true"
-                [disabled]="!file() && !result()" (onClick)="onClear()"></p-button>
-    </div>
-
-    <ng-container *ngIf="recalcStatus() as s">
-      <div class="recalc-banner" *ngIf="s.state === 'running' || s.state === 'partial' || s.state === 'failed'">
-        <ng-container [ngSwitch]="s.state">
-          <span *ngSwitchCase="'running'">
-            <i class="pi pi-spin pi-spinner"></i>
-            資料重算執行中（步驟：{{ s.current_step ?? '排隊中' }}）…
-          </span>
-          <span *ngSwitchCase="'partial'" class="warn">
-            重算部分失敗
-            <p-button label="重試" icon="pi pi-refresh" size="small" severity="warn"
-                      (onClick)="retryRecalc()"></p-button>
-          </span>
-          <span *ngSwitchCase="'failed'" class="err">
-            重算失敗
-            <p-button label="重試" icon="pi pi-refresh" size="small" severity="danger"
-                      (onClick)="retryRecalc()"></p-button>
-          </span>
-        </ng-container>
-      </div>
-    </ng-container>
-
-    <ng-container *ngIf="result() as r">
-      <div class="summary">
-        <span class="badge">解析 {{ r.parsed }}</span>
-        <span class="badge ok">{{ r.dry_run ? '可新增' : '已新增' }} {{ r.created }}</span>
-        <span class="badge skip">重複 {{ r.skipped_duplicates }}</span>
-        <span class="badge err" *ngIf="r.errors.length > 0">錯誤 {{ r.errors.length }}</span>
-        <span class="mode-tag" *ngIf="r.dry_run">DRY-RUN</span>
-      </div>
-      <div *ngIf="r.rehashed && r.rehashed > 0">重算指紋 {{ r.rehashed }} 筆</div>
-      <div *ngIf="r.skipped_unresolved && r.skipped_unresolved > 0" class="warn">
-        ⚠️ 未識別 {{ r.skipped_unresolved }} 筆，將略過（請於下方填入代號後再次預覽）
-      </div>
-
-      <ng-container *ngIf="hasOverrideRows()">
-        <h3>未識別股名（請手動填入代號）</h3>
-        <p-table [value]="unresolvedRows()" [scrollable]="true" scrollHeight="240px"
-                 [rowTrackBy]="trackByName" dataKey="name">
-          <ng-template pTemplate="header">
-            <tr><th>股名</th><th>筆數</th><th>樣本日期</th><th>對應代號</th><th>驗證</th><th>確認送出</th></tr>
-          </ng-template>
-          <ng-template pTemplate="body" let-u>
-            <tr>
-              <td>{{ u.name }}</td>
-              <td>{{ u.occurrences }}</td>
-              <td>{{ u.sample_dates.join(', ') }}</td>
-              <td>
-                <input pInputText type="text"
-                       [value]="nameOverrides()[u.name] || ''"
-                       (input)="setOverride(u.name, $any($event.target).value)"
-                       placeholder="例：2888">
-                <p-button label="驗證" icon="pi pi-search" size="small" severity="info"
-                          [loading]="isVerifying(u.name)"
-                          [disabled]="!nameOverrides()[u.name]?.trim()"
-                          (onClick)="verifyName(u.name, u.sample_dates)"
-                          styleClass="ms-2"></p-button>
-              </td>
-              <td>
-                <ng-container *ngIf="validationFor(u.name) as v">
-                  <i [class]="validationIcon(v.status).icon"
-                     [style.color]="validationIcon(v.status).color"
-                     [pTooltip]="v.status === 'name_mismatch'
-                       ? validationIcon(v.status).label + '：查到「' + v.fetched_name + '」'
-                       : validationIcon(v.status).label"></i>
-                  <small class="muted" *ngIf="v.status === 'name_mismatch'">
-                    （查到「{{ v.fetched_name }}」）
-                  </small>
-                </ng-container>
-                <span *ngIf="!validationFor(u.name) && nameOverrides()[u.name]?.trim()" class="muted">
-                  尚未驗證
-                </span>
-              </td>
-              <td>
-                <ng-container *ngIf="validationFor(u.name) as v">
-                  <p-checkbox *ngIf="needsConfirm(v.status)"
-                              [binary]="true"
-                              [ngModel]="confirmedOverrides().has(u.name)"
-                              (ngModelChange)="toggleConfirm(u.name, $event)">
-                  </p-checkbox>
-                </ng-container>
-              </td>
-            </tr>
-          </ng-template>
-        </p-table>
-        <div class="actions">
-          <p-button label="套用對應並再次預覽" icon="pi pi-refresh" severity="secondary"
-                    [disabled]="!file() || busy()" (onClick)="preview()"></p-button>
-          <small class="muted" *ngIf="pendingOverrideCount() > 0">
-            尚有 {{ pendingOverrideCount() }} 個未填；正式匯入時這些列仍會被略過
-          </small>
+    @if (result(); as r) {
+      <section class="imp-section">
+        <div class="imp-step-label"><span class="imp-step-num">2</span>確認交易預覽</div>
+        <div class="summary">
+          <span class="badge">解析 {{ r.parsed }}</span>
+          <span class="badge ok">{{ r.dry_run ? '可新增' : '已新增' }} {{ r.created }}</span>
+          <span class="badge skip">重複 {{ r.skipped_duplicates }}</span>
+          @if (r.errors.length > 0) {
+            <span class="badge err">錯誤 {{ r.errors.length }}</span>
+          }
         </div>
-      </ng-container>
 
-      <div *ngIf="r.skipped_unverified && r.skipped_unverified > 0" class="warn">
-        ⚠️ 未驗證 {{ r.skipped_unverified }} 筆（未勾「確認送出」的代號），將略過
-      </div>
+        @if (r.rows.length > 0) {
+          <div class="preview-scroll">
+            <table class="preview-table">
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>股票</th>
+                  <th>買賣</th>
+                  <th class="num">股數</th>
+                  <th class="num">價格</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (row of r.rows; track row.row_index) {
+                  <tr>
+                    <td>{{ rowValue(row, ['trade_date', 'date', '日期']) || '-' }}</td>
+                    <td>
+                      {{ rowValue(row, ['name', '名稱', '股票']) || rowValue(row, ['symbol', '代號']) || '-' }}
+                      <span>{{ rowValue(row, ['symbol', '代號']) || '' }}</span>
+                    </td>
+                    <td><app-side-tag [variant]="rowSide(row)" [label]="rowSide(row) === 'buy' ? '買進' : '賣出'"></app-side-tag></td>
+                    <td class="num">{{ rowValue(row, ['quantity', 'qty', '股數']) || '-' }}</td>
+                    <td class="num">{{ rowValue(row, ['price', '價格']) || '-' }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
 
-      <h3 *ngIf="r.errors.length > 0">錯誤明細</h3>
-      <p-table *ngIf="r.errors.length > 0" [value]="r.errors" [scrollable]="true" scrollHeight="240px">
-        <ng-template pTemplate="header">
-          <tr><th>列號</th><th>訊息</th></tr>
-        </ng-template>
-        <ng-template pTemplate="body" let-error>
-          <tr>
-            <td>{{ error.row_index }}</td>
-            <td>{{ error.message }}</td>
-          </tr>
-        </ng-template>
-      </p-table>
+        @if (r.errors.length > 0) {
+          <div class="error-list">
+            @for (error of r.errors; track error.row_index) {
+              <div>第 {{ error.row_index }} 列：{{ error.message }}</div>
+            }
+          </div>
+        }
+      </section>
+    }
 
-      <h3 *ngIf="r.rows.length > 0">解析後預覽</h3>
-      <p-table *ngIf="r.rows.length > 0" [value]="r.rows" [scrollable]="true" scrollHeight="400px"
-               [paginator]="true" [rows]="20">
-        <ng-template pTemplate="header">
-          <tr>
-            <th>列號</th>
-            <th *ngFor="let key of payloadKeys(r.rows)">{{ key }}</th>
-            <th>fingerprint</th>
-          </tr>
-        </ng-template>
-        <ng-template pTemplate="body" let-row>
-          <tr>
-            <td>{{ row.row_index }}</td>
-            <td *ngFor="let key of payloadKeys(r.rows)">{{ row.payload[key] }}</td>
-            <td class="fp">{{ row.fingerprint | slice:0:8 }}…</td>
-          </tr>
-        </ng-template>
-      </p-table>
-    </ng-container>
-  </p-card>
+    <footer class="imp-footer">
+      <app-btn variant="ghost" icon="pi-times" (click)="onClear()">取消</app-btn>
+      <app-btn icon="pi-check" [disabled]="!file() || busy() || !result()" [loading]="busy()" (click)="commit()">
+        確認匯入 {{ parsedCount() }} 筆
+      </app-btn>
+    </footer>
+  </div>
 </div>

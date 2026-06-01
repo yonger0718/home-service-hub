@@ -1,55 +1,148 @@
-.portfolio-form-page {
-  .page-header {
-    gap: 0.75rem;
-  }
-
-  .form-label {
-    color: var(--app-text);
-    display: block;
-    font-size: 0.9rem;
-    font-weight: 600;
-    margin-bottom: 0.4rem;
-  }
-
-  .dialog-footer-actions {
-    display: flex;
-    gap: 0.5rem;
-    justify-content: flex-end;
-  }
-
-  .action-cell {
-    white-space: nowrap;
-  }
+.page-head,
+.head-actions,
+.result-meta {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
 }
 
-.dividend-amount {
+.page-head {
+  justify-content: flex-end;
+  margin-bottom: 1.25rem;
+}
+
+.summary-row {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 1.25rem;
+}
+
+.summary-item {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 16px;
+  box-shadow: var(--app-card-shadow);
+  padding: 1rem 1.25rem;
+}
+
+.l {
+  color: var(--app-text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.v {
+  color: var(--app-text);
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  margin-top: 0.35rem;
+}
+
+.dividend,
+.upcoming-amount {
   color: var(--app-dividend);
 }
 
-.list-chevron {
-  font-size: 0.8rem;
-  opacity: 0.5;
+.upcoming-card {
+  display: block;
+  margin-bottom: 1.5rem;
 }
 
-.hub-result-meta {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.5rem;
-  font-size: 0.85rem;
-  color: var(--app-text-muted);
+.upcoming-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
 
-  .meta-loading {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
+.upcoming-item {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  display: flex;
+  justify-content: space-between;
+  padding: 0.85rem 1rem;
+}
+
+.upcoming-name {
+  color: var(--app-text);
+  font-size: 0.92rem;
+  font-weight: 700;
+
+  span {
+    color: var(--app-text-muted);
+    font-size: 0.76rem;
+    font-weight: 600;
   }
 }
 
-.hub-modern-list.is-loading {
-  opacity: 0.55;
-  pointer-events: none;
-  transition: opacity 0.15s;
+.upcoming-date,
+.upcoming-empty {
+  color: var(--app-text-muted);
+  font-size: 0.74rem;
+  margin-top: 2px;
+}
+
+.upcoming-amount {
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.filter-bar {
+  margin-bottom: 1rem;
+}
+
+.search-wrap {
+  position: relative;
+
+  i {
+    color: var(--app-text-muted);
+    left: 1rem;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  input {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 16px;
+    color: var(--app-text);
+    font: inherit;
+    padding: 0.75rem 1rem 0.75rem 2.75rem;
+    width: 100%;
+  }
+}
+
+.result-meta {
+  color: var(--app-text-muted);
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.empty {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 4rem 2rem;
+  text-align: center;
+
+  i {
+    font-size: 4rem;
+    margin-bottom: 1.5rem;
+    opacity: 0.4;
+  }
+
+  h4 {
+    color: var(--app-text);
+    margin: 0 0 0.5rem;
+  }
 }
 
 :host ::ng-deep {
@@ -62,46 +155,10 @@
   .portfolio-form-content .p-inputnumber-input {
     width: 100%;
   }
+}
 
-  @media (max-width: 767.98px) {
-    .portfolio-form-page {
-      padding: 1rem !important;
-    }
-
-    .portfolio-form-page .page-header {
-      align-items: stretch !important;
-      flex-direction: column;
-    }
-
-    .portfolio-form-page .page-header .p-button {
-      width: 100%;
-    }
-
-    .portfolio-form-dialog .p-dialog-header {
-      padding: 1rem 1rem 0.5rem;
-    }
-
-    .portfolio-form-dialog .p-dialog-content {
-      padding: 0.75rem 1rem;
-    }
-
-    .portfolio-form-dialog .p-dialog-footer {
-      padding: 0.5rem 1rem 1rem;
-    }
-
-    .portfolio-form-page .dialog-footer-actions {
-      flex-direction: column-reverse;
-      width: 100%;
-    }
-
-    .portfolio-form-page .dialog-footer-actions .p-button {
-      width: 100%;
-    }
-
-    .portfolio-form-page .action-cell {
-      display: flex;
-      gap: 0.25rem;
-      justify-content: flex-end;
-    }
+@media (max-width: 760px) {
+  .summary-row {
+    grid-template-columns: 1fr;
   }
 }

@@ -1,0 +1,46 @@
+.tag {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-bold);
+  gap: 5px;
+  padding: 0.25rem 0.75rem;
+  white-space: nowrap;
+
+  i {
+    font-size: 0.6rem;
+  }
+}
+
+.tag-neutral {
+  background: var(--app-surface-soft);
+  border-color: var(--app-border);
+  color: var(--app-text-muted);
+}
+
+.tag-accent {
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+}
+
+.tag-success {
+  background: var(--app-state-success-bg);
+  color: var(--app-success);
+}
+
+.tag-warning {
+  background: var(--app-state-warning-bg);
+  color: var(--app-warning);
+}
+
+.tag-danger {
+  background: var(--app-state-danger-bg);
+  color: var(--app-danger);
+}
+
+.tag-dividend {
+  background: var(--app-state-dividend-bg);
+  color: var(--app-dividend);
+}

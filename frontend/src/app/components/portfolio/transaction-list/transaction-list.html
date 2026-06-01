@@ -1,99 +1,48 @@
 <p-toast></p-toast>
 <p-confirmDialog styleClass="hub-dialog-md"></p-confirmDialog>
 
-<div class="hub-page-header justify-content-end">
-  <div class="header-actions">
-    <p-button label="新增交易" icon="pi pi-plus" (onClick)="openNew()" styleClass="hub-btn-primary"></p-button>
+<div class="page-head justify-content-end">
+  <div class="head-actions">
+    <app-btn variant="secondary" icon="pi-upload" (click)="clearFilters()">清除篩選</app-btn>
+    <app-btn icon="pi-plus" (click)="openNew()">新增交易</app-btn>
   </div>
 </div>
 
-<div class="hub-filter-bar">
+<div class="filter-bar">
   <div class="search-wrap">
-    <i class="pi pi-search"></i>
+    <i class="pi pi-search" aria-hidden="true"></i>
     <input
       type="text"
       [ngModel]="searchInput()"
       (ngModelChange)="onSearchInput($event)"
-      placeholder="搜尋代碼或名稱（例如 2330 或 台積電）" />
+      placeholder="搜尋代碼或名稱" />
   </div>
   <div class="filter-controls">
-    <p-datepicker
-      [(ngModel)]="dateRange"
-      selectionMode="range"
-      [readonlyInput]="true"
-      dateFormat="yy-mm-dd"
-      placeholder="日期範圍"
-      appendTo="body"
-      [showClear]="true"
-      styleClass="hub-mini-datepicker"
-      (onSelect)="onDateRangeChange(dateRange)"
-      (onClear)="onDateRangeChange(null)">
-    </p-datepicker>
-    <p-select
-      [options]="sideOptions"
-      optionLabel="label"
-      optionValue="value"
-      [ngModel]="query().side ?? null"
-      (onChange)="onSideChange($event.value)"
-      placeholder="買賣"
-      [showClear]="true"
-      styleClass="hub-mini-select">
-    </p-select>
-    <p-select
-      [options]="sortOptions"
-      optionLabel="label"
-      optionValue="value"
-      [ngModel]="query().sort ?? 'trade_date:desc'"
-      (onChange)="onSortChange($event.value)"
-      styleClass="hub-mini-select">
-    </p-select>
-    @if (hasActiveFilters()) {
-      <p-button icon="pi pi-filter-slash" severity="secondary" [text]="true" (onClick)="clearFilters()" pTooltip="清除篩選"></p-button>
-    }
+    <app-seg-toggle
+      ariaLabel="買賣篩選"
+      [options]="sideFilterOptions"
+      [value]="query().side ?? 'ALL'"
+      (change)="onSideFilterChange($event)"
+    ></app-seg-toggle>
   </div>
 </div>
 
-<div class="hub-result-meta">
-  <span class="meta-count">{{ total() }} 筆</span>
+<div class="result-meta">
+  <span>{{ total() }} 筆</span>
   @if (loading()) {
-    <span class="meta-loading"><p-progressSpinner styleClass="w-1rem h-1rem" strokeWidth="4"></p-progressSpinner> 查詢中…</span>
+    <span>查詢中...</span>
   }
 </div>
 
-<div class="hub-modern-list" [class.is-loading]="loading()">
-  @for (t of transactions(); track t.id) {
-    <app-list-item [clickable]="true" (itemClick)="showMenu($event, t)">
-      <ng-container left>
-        <div class="main-text">
-          {{ symbolDisplay(t) }}
-          @if (t.position_side === 'SHORT') {
-            <span class="short-badge">融券</span>
-          }
-        </div>
-        <div class="sub-text">
-          {{ t.trade_date | date:'yyyy-MM-dd' }} •
-          <span [class]="{'txn-type-buy': t.type === 'BUY', 'txn-type-sell': t.type === 'SELL'}">
-            {{ t.type === 'BUY' ? '買進' : '賣出' }}
-          </span>
-        </div>
-      </ng-container>
-      <ng-container right>
-        <div class="text-end">
-          <div class="amount-text" [class]="{'txn-type-buy': t.type === 'BUY', 'txn-type-sell': t.type === 'SELL'}">
-            {{ allInTotal(t) | currency:'TWD':'symbol':'1.0-0' }}
-          </div>
-          <div class="sub-text">{{ t.quantity | number }} 股 @ {{ allInUnitPrice(t) | number:'1.2-2' }}</div>
-        </div>
-      </ng-container>
-    </app-list-item>
-  } @empty {
-    <div class="empty-state">
-      <i class="pi pi-list"></i>
-      <h4>無交易紀錄</h4>
-      <p>調整篩選條件或新增一筆交易。</p>
-    </div>
-  }
-</div>
+<app-timeline [rows]="timelineRows()"></app-timeline>
+
+@if (!loading() && timelineRows().length === 0) {
+  <div class="empty">
+    <i class="pi pi-list" aria-hidden="true"></i>
+    <h4>無股票交易</h4>
+    <p>調整篩選條件或新增一筆交易。</p>
+  </div>
+}
 
 @if (total() > (query().limit ?? 25)) {
   <p-paginator
@@ -147,7 +96,7 @@
     </div>
   </div>
   <ng-template pTemplate="footer">
-    <p-button label="取消" icon="pi pi-times" [text]="true" (onClick)="showDialog.set(false)"></p-button>
-    <p-button label="儲存交易" (onClick)="saveTransaction()" styleClass="hub-btn-primary"></p-button>
+    <app-btn variant="ghost" icon="pi-times" (click)="showDialog.set(false)">取消</app-btn>
+    <app-btn (click)="saveTransaction()">儲存交易</app-btn>
   </ng-template>
 </p-dialog>

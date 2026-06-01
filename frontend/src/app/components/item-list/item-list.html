@@ -1,82 +1,74 @@
 <p-toast></p-toast>
-<div class="hub-page-header justify-content-end">
-  <div class="header-actions">
-    <p-button label="新增物品" icon="pi pi-plus" (onClick)="showDialog()" styleClass="hub-btn-primary"></p-button>
+
+<div class="page-head justify-content-end">
+  <div class="head-actions">
+    <app-btn icon="pi-plus" (click)="showDialog()">新增物品</app-btn>
   </div>
 </div>
 
-<div class="hub-filter-bar">
+<div class="filter-bar">
   <div class="search-wrap">
-    <i class="pi pi-search"></i>
-    <input type="text" [(ngModel)]="searchKeyword" (ngModelChange)="loadItems()" placeholder="搜尋物品名稱、類別或位置..." />
+    <i class="pi pi-search" aria-hidden="true"></i>
+    <input type="text" [(ngModel)]="searchKeyword" (ngModelChange)="loadItems()" placeholder="搜尋物品名稱、類別或位置..." aria-label="搜尋物品" />
   </div>
   <div class="filter-controls">
-    <div class="hub-toggle-pill">
-      <input type="checkbox" id="lowStockOnly" [(ngModel)]="lowStockOnly" (change)="loadItems()" />
-      <label for="lowStockOnly">
-        <i class="pi pi-exclamation-triangle mr-1"></i> 只看低庫存
-      </label>
-    </div>
+    <button class="toggle-pill" type="button" [class.on]="lowStockOnly" [attr.aria-pressed]="lowStockOnly" (click)="lowStockOnly = !lowStockOnly">
+      <i class="pi pi-exclamation-triangle" aria-hidden="true"></i> 只看低庫存
+    </button>
   </div>
 </div>
 
-<div class="hub-inventory-grid">
-  @for (item of items(); track item.id) {
-    <div class="hub-inventory-card" [class.low-stock]="item.stockStatus === 'LOW' || item.stockStatus === 'OUT'">
-      <div class="item-visual">
+<div class="inv-grid">
+  @for (item of displayedItems(); track item.id) {
+    <article class="inv-card" [class.low]="isLowStock(item)">
+      <div class="inv-vis">
         @if (item.imageUrl) {
-          <p-image [src]="item.imageUrl" [preview]="true" width="64" height="64" styleClass="hub-item-image" loading="lazy"></p-image>
+          <p-image [src]="item.imageUrl" [preview]="true" width="52" height="52" styleClass="hub-item-image" loading="lazy"></p-image>
         } @else {
-          <div class="item-icon-placeholder">
-            <i class="pi pi-box"></i>
-          </div>
+          <div class="inv-ph"><i class="pi pi-box" aria-hidden="true"></i></div>
         }
-        <div class="stock-badge" [class]="getStockStatusSeverity(item)">
-          {{ getStockStatusLabel(item) }}
-        </div>
+        <span class="inv-badge" [class]="getStockStatusSeverity(item)">{{ getStockStatusLabel(item) }}</span>
       </div>
 
-      <div class="item-body">
-        <div class="item-main">
-          <h3 class="item-name">{{ item.name }}</h3>
-          <div class="item-tags">
-            <span class="hub-tag secondary"><i class="pi pi-tag"></i> {{ item.category || '未分類' }}</span>
-            <span class="hub-tag secondary"><i class="pi pi-map-marker"></i> {{ item.location || '未知位置' }}</span>
-          </div>
-        </div>
-
-        <div class="item-stock-info">
-          <div class="qty-display">
-            <span class="current">{{ item.quantity }}</span>
-            <span class="target">/ {{ item.targetQuantity || '-' }}</span>
-          </div>
-          <p-progressbar [value]="calculateStockPercentage(item)" [showValue]="false"
-                         [styleClass]="(item.stockStatus === 'LOW' || item.stockStatus === 'OUT') ? 'hub-mini-progress progress-alert' : 'hub-mini-progress progress-safe'"></p-progressbar>
-        </div>
+      <div class="inv-name">{{ item.name }}</div>
+      <div class="inv-tags">
+        <app-tag variant="neutral" icon="pi-tag">{{ item.category || '未分類' }}</app-tag>
+        <app-tag variant="neutral" icon="pi-map-marker">{{ item.location || '未知位置' }}</app-tag>
       </div>
 
-      <div class="item-actions">
-        <div class="action-group main-actions">
-          <p-button icon="pi pi-minus" [rounded]="true" [text]="true" severity="danger" (onClick)="consumeOne(item)" pTooltip="使用 -1"></p-button>
-          <p-button icon="pi pi-plus" [rounded]="true" [text]="true" severity="success" (onClick)="openQuickAction(item, 'RESTOCK')" pTooltip="快速補貨"></p-button>
+      <div class="inv-qty">
+        <span class="cur">{{ item.quantity }}</span>
+        <span class="tgt">/ {{ item.targetQuantity || item.minQuantity || '-' }}</span>
+      </div>
+      <div class="inv-bar">
+        <i [style.width.%]="calculateStockPercentage(item)" [class.low]="isLowStock(item)"></i>
+      </div>
+
+      <div class="inv-actions">
+        <div class="grp">
+          <button class="icon-btn neg" type="button" aria-label="使用一個" [disabled]="item.quantity <= 0" (click)="adjustQuantity(item, -1)">
+            <i class="pi pi-minus" aria-hidden="true"></i>
+          </button>
+          <button class="icon-btn pos" type="button" aria-label="補貨一個" (click)="adjustQuantity(item, 1)">
+            <i class="pi pi-plus" aria-hidden="true"></i>
+          </button>
         </div>
-        <div class="action-group more-actions">
-          <p-button icon="pi pi-history" [rounded]="true" [text]="true" severity="secondary" (onClick)="openHistory(item)" pTooltip="歷史紀錄"></p-button>
-          <p-button icon="pi pi-pencil" [rounded]="true" [text]="true" severity="secondary" (onClick)="editItem(item)" pTooltip="編輯"></p-button>
-          <p-button icon="pi pi-trash" [rounded]="true" [text]="true" severity="secondary" (onClick)="deleteItem(item.id)" pTooltip="刪除"></p-button>
+        <div class="grp">
+          <button class="icon-btn" type="button" aria-label="歷史紀錄" (click)="openHistory(item)"><i class="pi pi-history" aria-hidden="true"></i></button>
+          <button class="icon-btn" type="button" aria-label="編輯" (click)="editItem(item)"><i class="pi pi-pencil" aria-hidden="true"></i></button>
+          <button class="icon-btn" type="button" aria-label="刪除" (click)="deleteItem(item.id)"><i class="pi pi-trash" aria-hidden="true"></i></button>
         </div>
       </div>
-    </div>
+    </article>
   } @empty {
-    <div class="empty-state full-width">
-      <i class="pi pi-box"></i>
+    <div class="empty">
+      <i class="pi pi-box" aria-hidden="true"></i>
       <h4>空空如也</h4>
-      <p>目前沒有符合條件的庫存物品，點擊右上方按鈕新增一個吧！</p>
+      <p>目前沒有符合條件的庫存物品。</p>
     </div>
   }
 </div>
 
-<!-- Dialogs -->
 <p-dialog [header]="isEdit ? '編輯物品' : '新增物品'" [(visible)]="displayDialog" [modal]="true"
           styleClass="hub-dialog-form" [dismissableMask]="true" appendTo="body">
   <div class="row g-2 mt-1 hub-form-grid">
@@ -123,8 +115,8 @@
   }
 
   <ng-template pTemplate="footer">
-    <p-button label="取消" icon="pi pi-times" [text]="true" (onClick)="displayDialog = false"></p-button>
-    <p-button label="儲存" icon="pi pi-check" (onClick)="saveItem()" [disabled]="!canSaveItem()"></p-button>
+    <app-btn variant="ghost" icon="pi-times" (click)="displayDialog = false">取消</app-btn>
+    <app-btn icon="pi-check" (click)="saveItem()" [disabled]="!canSaveItem()">儲存</app-btn>
   </ng-template>
 </p-dialog>
 
@@ -148,8 +140,8 @@
     <input pInputText [(ngModel)]="actionReason" class="w-100" />
   </div>
   <ng-template pTemplate="footer">
-    <p-button label="取消" [text]="true" (onClick)="displayActionDialog = false"></p-button>
-    <p-button label="送出" (onClick)="submitAction()"></p-button>
+    <app-btn variant="ghost" (click)="displayActionDialog = false">取消</app-btn>
+    <app-btn (click)="submitAction()">送出</app-btn>
   </ng-template>
 </p-dialog>
 

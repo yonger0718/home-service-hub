@@ -17,6 +17,9 @@ import { TooltipModule } from 'primeng/tooltip';
 
 import { ImportKind, ImportResult, OverrideStatus, RecalcStatus, UnresolvedName } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { BtnComponent } from '../../ui/btn/btn';
+import { FileChipComponent } from '../../ui/file-chip/file-chip';
+import { SideTagComponent } from '../../ui/side-tag/side-tag';
 
 interface ImportOption {
   label: string;
@@ -42,6 +45,9 @@ const POLL_INTERVAL_MS = 5_000;
     TableModule,
     ToastModule,
     TooltipModule,
+    BtnComponent,
+    FileChipComponent,
+    SideTagComponent,
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './import.html',
@@ -85,6 +91,13 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   private pollHandle: ReturnType<typeof setTimeout> | null = null;
   private statusRequestInFlight = false;
 
+  detectedFormatLabel(): string | null {
+    const fmt = this.result()?.csv_format;
+    if (fmt === 'cathay') return '國泰證券';
+    if (fmt === 'generic') return '通用 CSV';
+    return null;
+  }
+
   ngOnInit(): void {
     // Refresh might have happened mid-recalc — surface the current state on mount.
     this.fetchRecalcStatus(/*startPollingIfRunning=*/ true);
@@ -102,6 +115,29 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     const next = event.files?.[0] ?? null;
     this.file.set(next);
     this.result.set(null);
+    if (next) {
+      this.preview();
+    }
+  }
+
+  onNativeFileChange(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    this.onSelect({ files: [file] });
+    input.value = '';
+  }
+
+  onDrop(event: DragEvent): void {
+    event.preventDefault();
+    const file = event.dataTransfer?.files?.[0];
+    if (file) {
+      this.onSelect({ files: [file] });
+    }
+  }
+
+  onDragOver(event: DragEvent): void {
+    event.preventDefault();
   }
 
   onClear(): void {
@@ -457,5 +493,22 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
 
   payloadKeys(rows: ImportResult['rows']): string[] {
     return rows.length === 0 ? [] : Object.keys(rows[0].payload);
+  }
+
+  rowValue(row: ImportResult['rows'][number], keys: string[]): string | null {
+    for (const key of keys) {
+      const value = row.payload[key];
+      if (value !== undefined && value !== null && value !== '') return value;
+    }
+    return null;
+  }
+
+  rowSide(row: ImportResult['rows'][number]): 'buy' | 'sell' {
+    const value = String(this.rowValue(row, ['type', 'side', '買賣', '類別']) ?? '').toUpperCase();
+    return value.includes('SELL') || value.includes('賣') ? 'sell' : 'buy';
+  }
+
+  parsedCount(): number {
+    return this.result()?.parsed ?? 0;
   }
 }

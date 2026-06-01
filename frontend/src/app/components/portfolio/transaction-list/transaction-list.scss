@@ -1,54 +1,88 @@
-.portfolio-form-page {
-  .page-header {
-    gap: 0.75rem;
-  }
-
-  .form-label {
-    color: var(--app-text);
-    display: block;
-    font-size: 0.9rem;
-    font-weight: 600;
-    margin-bottom: 0.4rem;
-  }
-
-  .dialog-footer-actions {
-    display: flex;
-    gap: 0.5rem;
-    justify-content: flex-end;
-  }
-
-  .action-cell {
-    white-space: nowrap;
-  }
-}
-
-.txn-type-buy {
-  color: var(--app-danger);
-}
-
-.txn-type-sell {
-  color: var(--app-success);
-}
-
-.hub-result-meta {
-  display: flex;
+.page-head,
+.head-actions,
+.filter-controls,
+.result-meta {
   align-items: center;
+  display: flex;
   gap: 0.75rem;
-  margin-bottom: 0.5rem;
-  font-size: 0.85rem;
-  color: var(--app-text-muted);
+}
 
-  .meta-loading {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
+.page-head {
+  justify-content: flex-end;
+  margin-bottom: 1.25rem;
+}
+
+.filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.search-wrap {
+  position: relative;
+  width: 100%;
+
+  i {
+    color: var(--app-text-muted);
+    left: 1rem;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+  }
+
+  input {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 16px;
+    color: var(--app-text);
+    font: inherit;
+    font-weight: 500;
+    padding: 0.75rem 1rem 0.75rem 2.75rem;
+    width: 100%;
+
+    &:focus {
+      border-color: var(--app-primary);
+      box-shadow: 0 0 0 4px var(--app-focus-ring);
+      outline: none;
+    }
   }
 }
 
-.hub-modern-list.is-loading {
-  opacity: 0.55;
-  pointer-events: none;
-  transition: opacity 0.15s;
+.filter-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.result-meta {
+  color: var(--app-text-muted);
+  font-size: 0.85rem;
+  margin-bottom: 0.5rem;
+}
+
+.empty {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 4rem 2rem;
+  text-align: center;
+
+  i {
+    font-size: 4rem;
+    margin-bottom: 1.5rem;
+    opacity: 0.4;
+  }
+
+  h4 {
+    color: var(--app-text);
+    margin: 0 0 0.5rem;
+  }
+
+  p {
+    margin: 0;
+  }
 }
 
 :host ::ng-deep {
@@ -62,63 +96,13 @@
   .portfolio-form-content .p-inputnumber-input {
     width: 100%;
   }
-
-  @media (max-width: 767.98px) {
-    .portfolio-form-page {
-      padding: 1rem !important;
-    }
-
-    .portfolio-form-page .page-header {
-      align-items: stretch !important;
-      flex-direction: column;
-    }
-
-    .portfolio-form-page .page-header .p-button {
-      width: 100%;
-    }
-
-    .portfolio-form-dialog .p-dialog-header {
-      padding: 1rem 1rem 0.5rem;
-    }
-
-    .portfolio-form-dialog .p-dialog-content {
-      padding: 0.75rem 1rem;
-    }
-
-    .portfolio-form-dialog .p-dialog-footer {
-      padding: 0.5rem 1rem 1rem;
-    }
-
-    .portfolio-form-page .dialog-footer-actions {
-      flex-direction: column-reverse;
-      width: 100%;
-    }
-
-    .portfolio-form-page .dialog-footer-actions .p-button {
-      width: 100%;
-    }
-
-    .portfolio-form-content .p-selectbutton {
-      display: flex;
-    }
-
-    .portfolio-form-content .p-selectbutton .p-togglebutton {
-      flex: 1;
-    }
-
-    .portfolio-form-page .action-cell {
-      display: flex;
-      gap: 0.25rem;
-      justify-content: flex-end;
-    }
-  }
 }
 
 .short-badge {
-  background: var(--app-warning-soft, rgba(220, 38, 38, 0.12));
-  border: 1px solid var(--app-warning, #dc2626);
+  background: var(--app-state-warning-bg);
+  border: 1px solid var(--app-warning);
   border-radius: 999px;
-  color: var(--app-warning, #dc2626);
+  color: var(--app-warning);
   font-size: 0.7rem;
   font-weight: 800;
   line-height: 1;

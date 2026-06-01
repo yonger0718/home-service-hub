@@ -1,7 +1,7 @@
-import { Component, OnDestroy, OnInit, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { Dividend, DividendQuery } from '../../../models/portfolio.model';
+import { Dividend, DividendQuery, ExDividendRecord } from '../../../models/portfolio.model';
 import { TableModule } from 'primeng/table';
 import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
@@ -17,7 +17,9 @@ import { ConfirmDialogModule } from 'primeng/confirmdialog';
 import { ToastModule } from 'primeng/toast';
 import { MenuModule } from 'primeng/menu';
 import { Menu } from 'primeng/menu';
-import { ListItemComponent } from '../../shared/list-item/list-item';
+import { BtnComponent } from '../../ui/btn/btn';
+import { BentoComponent } from '../../ui/bento/bento';
+import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 
 const SORT_OPTIONS = [
   { value: 'ex_dividend_date:desc', label: '除息日 新→舊' },
@@ -38,7 +40,8 @@ const SOURCE_OPTIONS = [
     CommonModule, TableModule, ButtonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, DatePickerModule, SelectModule,
     PaginatorModule, ProgressSpinnerModule,
-    ConfirmDialogModule, ToastModule, MenuModule, ListItemComponent,
+    ConfirmDialogModule, ToastModule, MenuModule,
+    BtnComponent, BentoComponent, TimelineComponent,
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './dividend-list.html',
@@ -57,6 +60,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   total = signal<number>(0);
   loading = signal<boolean>(false);
   symbolNames = signal<Record<string, string>>({});
+  upcomingExDividends = signal<ExDividendRecord[]>([]);
   showDialog = signal<boolean>(false);
   isEdit = signal<boolean>(false);
 
@@ -67,6 +71,32 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly sortOptions = SORT_OPTIONS;
   readonly sourceOptions = SOURCE_OPTIONS;
   readonly rowsPerPageOptions = [25, 50, 100];
+
+  readonly dividendTotal = computed(() => this.dividends().reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0));
+  readonly averagePerShareDividend = computed(() => {
+    const rows = this.dividends();
+    if (!rows.length) return 0;
+    const perShareRows = rows.filter(row => Number(row.cash_dividend_per_share || 0) > 0 && Number(row.quantity_at_record_date || 0) > 0);
+    return perShareRows.length ? perShareRows.reduce((sum, row) => sum + Number(row.cash_dividend_per_share), 0) / perShareRows.length : 0;
+  });
+  readonly timelineRows = computed<TimelineRow[]>(() =>
+    this.dividends().map(dividend => {
+      const name = this.nameFor(dividend.symbol) ?? dividend.symbol;
+      const perShare = Number(dividend.cash_dividend_per_share || 0);
+      const qty = Number(dividend.quantity_at_record_date || 0);
+      return {
+        date: dividend.ex_dividend_date,
+        side: 'cash',
+        sideLabel: '股利',
+        primary: `${name} ${dividend.symbol}`,
+        meta: perShare > 0 && qty > 0
+          ? `每股 ${perShare.toFixed(2)} × ${qty.toLocaleString('zh-TW')}`
+          : '現金股利',
+        amount: `+${this.formatCurrency(dividend.amount)}`,
+        amountVariant: 'dividend',
+      };
+    }),
+  );
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
@@ -102,6 +132,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
+    this.loadUpcomingExDividends();
     this.fetch();
   }
 
@@ -202,6 +233,21 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${y}-${m}-${day}`;
+  }
+
+  formatCurrency(value: number | string | null | undefined): string {
+    return new Intl.NumberFormat('zh-TW', {
+      style: 'currency',
+      currency: 'TWD',
+      minimumFractionDigits: 0,
+    }).format(Number(value ?? 0));
+  }
+
+  private loadUpcomingExDividends(): void {
+    this.portfolioService.getUpcomingExDividends().subscribe({
+      next: data => this.upcomingExDividends.set(data),
+      error: () => this.upcomingExDividends.set([]),
+    });
   }
 
   showMenu(event: MouseEvent, dividend: Dividend) {

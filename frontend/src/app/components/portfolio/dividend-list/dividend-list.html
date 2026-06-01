@@ -1,88 +1,71 @@
 <p-toast></p-toast>
 <p-confirmDialog styleClass="hub-dialog-md"></p-confirmDialog>
 
-<div class="hub-page-header justify-content-end">
-  <div class="header-actions">
-    <p-button label="新增股利" icon="pi pi-plus" (onClick)="openNew()" styleClass="hub-btn-primary"></p-button>
+<div class="page-head justify-content-end">
+  <div class="head-actions">
+    <app-btn variant="secondary" icon="pi-calendar">2026 全年</app-btn>
+    <app-btn icon="pi-plus" (click)="openNew()">新增股利</app-btn>
   </div>
 </div>
 
-<div class="hub-filter-bar">
+<div class="summary-row">
+  <div class="summary-item">
+    <div class="l">本年度累計股利</div>
+    <div class="v dividend">{{ formatCurrency(dividendTotal()) }}</div>
+  </div>
+  <div class="summary-item">
+    <div class="l">平均每股股利</div>
+    <div class="v">{{ averagePerShareDividend() | number:'1.2-2' }}</div>
+  </div>
+  <div class="summary-item">
+    <div class="l">領取筆數</div>
+    <div class="v">{{ total() }} 筆</div>
+  </div>
+</div>
+
+<app-bento class="upcoming-card" title="即將除權息提醒">
+  <div class="upcoming-grid">
+    @for (row of upcomingExDividends(); track row.symbol + row.ex_dividend_date) {
+      <div class="upcoming-item">
+        <div>
+          <div class="upcoming-name">{{ row.name || row.symbol }} <span>{{ row.symbol }}</span></div>
+          <div class="upcoming-date">除息日 {{ row.ex_dividend_date || '-' }}</div>
+        </div>
+        <div class="upcoming-amount">{{ row.cash_dividend || '-' }}</div>
+      </div>
+    } @empty {
+      <div class="upcoming-empty">目前沒有即將除權息提醒</div>
+    }
+  </div>
+</app-bento>
+
+<div class="filter-bar">
   <div class="search-wrap">
-    <i class="pi pi-search"></i>
+    <i class="pi pi-search" aria-hidden="true"></i>
     <input
       type="text"
       [ngModel]="searchInput()"
       (ngModelChange)="onSearchInput($event)"
-      placeholder="搜尋代碼或名稱（例如 0050 或 元大台灣50）" />
-  </div>
-  <div class="filter-controls">
-    <p-datepicker
-      [(ngModel)]="dateRange"
-      selectionMode="range"
-      [readonlyInput]="true"
-      dateFormat="yy-mm-dd"
-      placeholder="除息日範圍"
-      appendTo="body"
-      [showClear]="true"
-      styleClass="hub-mini-datepicker"
-      (onSelect)="onDateRangeChange(dateRange)"
-      (onClear)="onDateRangeChange(null)">
-    </p-datepicker>
-    <p-select
-      [options]="sourceOptions"
-      optionLabel="label"
-      optionValue="value"
-      [ngModel]="query().source ?? null"
-      (onChange)="onSourceChange($event.value)"
-      placeholder="來源"
-      [showClear]="true"
-      styleClass="hub-mini-select">
-    </p-select>
-    <p-select
-      [options]="sortOptions"
-      optionLabel="label"
-      optionValue="value"
-      [ngModel]="query().sort ?? 'ex_dividend_date:desc'"
-      (onChange)="onSortChange($event.value)"
-      styleClass="hub-mini-select">
-    </p-select>
-    @if (hasActiveFilters()) {
-      <p-button icon="pi pi-filter-slash" severity="secondary" [text]="true" (onClick)="clearFilters()" pTooltip="清除篩選"></p-button>
-    }
+      placeholder="搜尋代碼或名稱" />
   </div>
 </div>
 
-<div class="hub-result-meta">
-  <span class="meta-count">{{ total() }} 筆</span>
+<div class="result-meta">
+  <span>{{ total() }} 筆</span>
   @if (loading()) {
-    <span class="meta-loading"><p-progressSpinner styleClass="w-1rem h-1rem" strokeWidth="4"></p-progressSpinner> 查詢中…</span>
+    <span>查詢中...</span>
   }
 </div>
 
-<div class="hub-modern-list" [class.is-loading]="loading()">
-  @for (d of dividends(); track d.id) {
-    <app-list-item [clickable]="true" (itemClick)="showMenu($event, d)">
-      <ng-container left>
-        <div class="main-text">{{ nameFor(d.symbol) ?? d.symbol }}</div>
-        <div class="sub-text">
-          {{ d.symbol }} · {{ d.ex_dividend_date | date:'yyyy-MM-dd' }} 除息
-        </div>
-      </ng-container>
-      <ng-container right>
-        <div class="text-end">
-          <div class="amount-text dividend-amount">{{ d.amount | currency:'TWD':'symbol':'1.0-0' }}</div>
-        </div>
-      </ng-container>
-    </app-list-item>
-  } @empty {
-    <div class="empty-state">
-      <i class="pi pi-percentage"></i>
-      <h4>無股利紀錄</h4>
-      <p>調整篩選條件或新增一筆股利。</p>
-    </div>
-  }
-</div>
+<app-timeline [rows]="timelineRows()"></app-timeline>
+
+@if (!loading() && timelineRows().length === 0) {
+  <div class="empty">
+    <i class="pi pi-percentage" aria-hidden="true"></i>
+    <h4>無股利紀錄</h4>
+    <p>調整篩選條件或新增一筆股利。</p>
+  </div>
+}
 
 @if (total() > (query().limit ?? 25)) {
   <p-paginator
@@ -107,11 +90,11 @@
   contentStyleClass="portfolio-form-content">
   <div class="row g-2 mt-1 hub-form-grid">
     <div class="col-12">
-      <label class="d-block mb-1 small fw-bold">股票代碼</label>
+      <label class="d-block mb-1 small fw-bold">股票代號</label>
       <input pInputText [(ngModel)]="newDividend.symbol" placeholder="例如: 2330" class="w-100" />
     </div>
     <div class="col-6">
-      <label class="d-block mb-1 small fw-bold">股利金額 (TWD，扣除手續費 / 補充保費後)</label>
+      <label class="d-block mb-1 small fw-bold">股利金額</label>
       <p-inputNumber [(ngModel)]="newDividend.amount" [min]="0" mode="decimal" [fluid]="true"></p-inputNumber>
       @if (grossHint()) {
         <div class="small text-muted mt-1">{{ grossHint() }}</div>
@@ -126,12 +109,12 @@
       <p-inputNumber [(ngModel)]="newDividend.fee" [min]="0" mode="decimal" [fluid]="true"></p-inputNumber>
     </div>
     <div class="col-6">
-      <label class="d-block mb-1 small fw-bold">補充保費 (二代健保)</label>
+      <label class="d-block mb-1 small fw-bold">補充保費</label>
       <p-inputNumber [(ngModel)]="newDividend.tax" [min]="0" mode="decimal" [fluid]="true"></p-inputNumber>
     </div>
   </div>
   <ng-template pTemplate="footer">
-    <p-button label="取消" icon="pi pi-times" [text]="true" (onClick)="showDialog.set(false)"></p-button>
-    <p-button label="儲存股利" (onClick)="saveDividend()" styleClass="hub-btn-primary"></p-button>
+    <app-btn variant="ghost" icon="pi-times" (click)="showDialog.set(false)">取消</app-btn>
+    <app-btn (click)="saveDividend()">儲存股利</app-btn>
   </ng-template>
 </p-dialog>

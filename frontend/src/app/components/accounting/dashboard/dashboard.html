@@ -1,274 +1,118 @@
-<div class="hub-dashboard-container">
-  <div class="hub-page-header justify-content-between align-items-center">
-    <div class="page-copy">
-      <h2 class="hub-section-title">記帳分析</h2>
-    </div>
-    <div class="header-actions">
-      <p-datepicker [(ngModel)]="selectedMonth" view="month" dateFormat="yy/mm" 
-                  (onSelect)="loadReport()" placeholder="選擇月份" appendTo="body"
-                  styleClass="hub-month-picker"></p-datepicker>
+<div class="accounting-dashboard">
+  <div class="page-head">
+    <h2 class="section-title">記帳分析</h2>
+    <div class="head-actions">
+      <p-datepicker
+        [(ngModel)]="selectedMonth"
+        view="month"
+        dateFormat="yy/mm"
+        (onSelect)="loadReport()"
+        placeholder="選擇月份"
+        appendTo="body"
+        styleClass="hub-month-picker">
+      </p-datepicker>
     </div>
   </div>
 
   @if (report()) {
-    <!-- Bento Grid 佈局 -->
-    <div class="hub-bento-grid">
-      
-      <!-- 主卡片：總支出 (大區塊) -->
-      <div class="bento-item bento-hero expense-card">
-        <div class="bento-content">
-          <div class="label">本月總支出</div>
-          <div class="value">{{ report()?.summary?.totalExpense | currency:'TWD':'symbol':'1.0-0' }}</div>
-          <div class="meta">
-            @if (compareReport()?.summary?.totalExpenseDelta; as delta) {
-              <span [class.up]="delta > 0" [class.down]="delta <= 0">
-                <i class="pi" [class]="delta > 0 ? 'pi-arrow-up' : 'pi-arrow-down'"></i>
-                {{ (delta < 0 ? -delta : delta) | currency:'TWD':'symbol':'1.0-0' }} 較上月
-              </span>
-            }
-          </div>
-        </div>
-        <div class="bento-bg-icon">
-          <i class="pi pi-shopping-cart"></i>
+    <div class="bento-grid">
+      <div class="bento b-third">
+        <div class="label">本月總支出</div>
+        <div class="value expense">{{ report()?.summary?.totalExpense | currency:'TWD':'symbol':'1.0-0' }}</div>
+        <div class="meta">
+          @if (compareReport()?.summary?.totalExpenseDelta; as delta) {
+            <span class="cash-delta" [class.increase]="delta > 0" [class.decrease]="delta < 0">
+              <i class="pi" [class]="delta > 0 ? 'pi-arrow-up' : 'pi-arrow-down'" aria-hidden="true"></i>
+              {{ (delta < 0 ? -delta : delta) | currency:'TWD':'symbol':'1.0-0' }} 較上月
+            </span>
+          }
         </div>
       </div>
 
-      <!-- 結餘卡片 -->
-      <div class="bento-item bento-normal surplus-card">
-        <div class="bento-content">
-          <div class="label">本月結餘</div>
-          <div class="value">{{ report()?.summary?.surplus | currency:'TWD':'symbol':'1.0-0' }}</div>
-          <div class="progress-mini">
-            <div class="progress-bar" [style.width.%]="report()?.summary?.savingsRate"></div>
-          </div>
-          <div class="meta">儲蓄率 {{ report()?.summary?.savingsRate | number:'1.1-1' }}%</div>
-        </div>
+      <div class="bento b-third">
+        <div class="label">本月結餘</div>
+        <div class="value">{{ report()?.summary?.surplus | currency:'TWD':'symbol':'1.0-0' }}</div>
+        <div class="meta">儲蓄率 {{ report()?.summary?.savingsRate | number:'1.1-1' }}%</div>
       </div>
 
-      <!-- 收入卡片 -->
-      <div class="bento-item bento-normal income-card">
-        <div class="bento-content">
-          <div class="label">本月總收入</div>
-          <div class="value">{{ report()?.summary?.totalIncome | currency:'TWD':'symbol':'1.0-0' }}</div>
-        </div>
-        <div class="bento-bg-icon-small">
-          <i class="pi pi-wallet"></i>
-        </div>
+      <div class="bento b-third">
+        <div class="label">本月總收入</div>
+        <div class="value income">{{ report()?.summary?.totalIncome | currency:'TWD':'symbol':'1.0-0' }}</div>
+        <div class="meta">薪資與其他收入</div>
       </div>
 
-      <!-- 圖表區塊：支出比例 -->
-      <div class="bento-item bento-wide chart-card">
+      <div class="bento b-wide">
         <h3 class="card-title">支出分類</h3>
         @if (chartData) {
-          <div class="hub-chart-layout">
-            <div class="hub-chart-wrap">
-              <p-chart type="doughnut" [data]="chartData" [options]="chartOptions"></p-chart>
-              <div class="chart-center-label">
+          <div class="chart-layout">
+            <div class="chart-wrap">
+              <p-chart #expenseChart type="doughnut" [data]="chartData" [options]="chartOptions"></p-chart>
+              <div class="chart-center">
                 <span class="l">總額</span>
                 <span class="v">{{ report()?.summary?.totalExpense | currency:'TWD':'':'1.0-0' }}</span>
               </div>
             </div>
-            <div class="hub-custom-legend">
+            <div class="legend">
               @for (item of report()?.expenseBreakdown; track item.category; let i = $index) {
                 <div class="legend-item">
                   <span class="dot" [style.background-color]="chartData.datasets[0].backgroundColor[i]"></span>
                   <span class="name">{{ item.category }}</span>
-                  <span class="val">{{ item.percentage | number:'1.0-0' }}%</span>
+                  <span class="pct">{{ item.percentage | number:'1.0-0' }}%</span>
+                  <span class="val">{{ item.amount | currency:'TWD':'symbol':'1.0-0' }}</span>
                 </div>
               }
             </div>
           </div>
         } @else {
-          <div class="hub-empty-chart">無數據</div>
+          <div class="empty-chart">無數據</div>
         }
       </div>
 
-      <!-- 趨勢變化區塊 -->
-      <div class="bento-item bento-tall trends-card">
+      <div class="bento b-tall">
         <h3 class="card-title">類別變化</h3>
-        <div class="trends-list">
+        <div class="change-list">
           @for (c of getTopCategoryChanges(); track c.category) {
-            <div class="trend-row">
-              <div class="trend-info">
-                <span class="cat-name">{{ c.category }}</span>
-                <span class="cat-amounts">{{ c.currentAmount | currency:'TWD':'symbol':'1.0-0' }}</span>
+            <div class="change-row">
+              <div>
+                <div class="cat-name">{{ c.category }}</div>
+                <div class="cat-amount">{{ c.currentAmount | currency:'TWD':'symbol':'1.0-0' }}</div>
               </div>
-              <div class="trend-badge" [class.danger]="c.deltaAmount > 0" [class.success]="c.deltaAmount < 0">
-                {{ getDeltaSign(c.deltaAmount) }}{{ (c.deltaAmount < 0 ? -c.deltaAmount : c.deltaAmount) | currency:'TWD':'symbol':'1.0-0' }}
-              </div>
+              <span class="cash-pct" [class.increase]="c.deltaAmount > 0" [class.decrease]="c.deltaAmount < 0">
+                {{ getDeltaSign(c.deltaPercent) }}{{ (c.deltaPercent < 0 ? -c.deltaPercent : c.deltaPercent) | number:'1.1-1' }}%
+              </span>
             </div>
           } @empty {
-            <div class="text-center p-4 text-muted">無明顯變化</div>
+            <div class="empty-chart">無明顯變化</div>
           }
         </div>
       </div>
 
-      <!-- 信用卡監控 (底部長條區塊) -->
-      <div class="bento-item bento-full credit-monitor-card">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-          <h3 class="card-title m-0">信用卡額度監控</h3>
-          <p-button icon="pi pi-cog" [text]="true" routerLink="/accounting/settings"></p-button>
+      <div class="bento b-full">
+        <div class="card-head">
+          <h3 class="card-title">信用卡額度監控</h3>
+          <app-btn variant="ghost" icon="pi-cog" [iconOnly]="true" ariaLabel="信用卡設定" (click)="openCardSettings()"></app-btn>
         </div>
-        
-        <div class="hub-credit-grid">
+        <div class="credit-grid">
           @for (card of cardUsage(); track card.cardName) {
-            <div class="hub-credit-widget">
+            <div class="credit-widget" [class.over]="card.usagePercentage >= 100">
               <div class="widget-header">
                 <span class="card-name">{{ card.cardName }}</span>
-                <span class="usage-pct" [class.warning]="card.usagePercentage >= 80" [class.danger]="card.usagePercentage >= 100">
+                <span class="usage-pct" [class.warning]="card.usagePercentage >= 80" [class.over]="card.usagePercentage >= 100">
                   {{ card.usagePercentage | number:'1.0-0' }}%
                 </span>
               </div>
-              <p-progressBar [value]="card.usagePercentage" [showValue]="false" 
-                             [styleClass]="card.usagePercentage >= 100 ? 'hub-progress progress-alert' : (card.usagePercentage >= 80 ? 'hub-progress progress-caution' : 'hub-progress progress-safe')"></p-progressBar>
+              <div class="limit-track">
+                <span [style.width.%]="card.usagePercentage > 100 ? 100 : card.usagePercentage"></span>
+              </div>
               <div class="widget-footer">
-                <span class="usage-amount" [class.refund]="card.currentUsage < 0">
-                  {{ getCardUsageLabel(card) }} {{ getAbsoluteCardUsage(card) | currency:'TWD':'symbol':'1.0-0' }}
-                </span>
-                <span class="cycle-range">週期 {{ formatCardCycle(card) }}</span>
+                <span>{{ getCardUsageLabel(card) }} {{ getAbsoluteCardUsage(card) | currency:'TWD':'symbol':'1.0-0' }}</span>
+                <span>週期 {{ formatCardCycle(card) }}</span>
                 <span>剩餘 {{ card.remainingToThreshold | currency:'TWD':'symbol':'1.0-0' }}</span>
               </div>
             </div>
           }
         </div>
       </div>
-
     </div>
   }
-
-  <section class="hub-annual-section">
-    <div class="section-heading">
-      <div>
-        <h3 class="section-title">年度趨勢</h3>
-      </div>
-      <div class="section-actions">
-        <p-select
-          [options]="yearOptions"
-          optionLabel="label"
-          optionValue="value"
-          [(ngModel)]="selectedAnnualYear"
-          (onChange)="loadAnnualReport()"
-          appendTo="body"
-          styleClass="hub-year-select"
-        ></p-select>
-      </div>
-    </div>
-
-    @if (annualLoading()) {
-      <div class="hub-state-card">
-        <i class="pi pi-spin pi-spinner"></i>
-        <div class="hub-state-copy">
-          <h4>年度趨勢載入中</h4>
-          <p>正在整理 {{ selectedAnnualYear }} 年的收支與分類資料。</p>
-        </div>
-      </div>
-    } @else if (annualError(); as annualErrorMessage) {
-      <div class="hub-state-card error-state">
-        <i class="pi pi-exclamation-triangle"></i>
-        <div class="hub-state-copy">
-          <h4>無法載入年度趨勢</h4>
-          <p>{{ annualErrorMessage }}</p>
-        </div>
-        <div class="hub-state-actions">
-          <p-button label="重新載入" icon="pi pi-refresh" severity="secondary" (onClick)="loadAnnualReport()"></p-button>
-        </div>
-      </div>
-    } @else if (annualReport(); as annual) {
-      <div class="annual-summary-grid">
-        <div class="bento-item annual-summary-card income-card">
-          <div class="bento-content">
-            <div class="label">全年收入</div>
-            <div class="value">{{ annual.summary.totalIncome | currency:'TWD':'symbol':'1.0-0' }}</div>
-            <div class="meta">{{ annual.year }} 年累計入帳</div>
-          </div>
-        </div>
-
-        <div class="bento-item annual-summary-card expense-card">
-          <div class="bento-content">
-            <div class="label">全年支出</div>
-            <div class="value">{{ annual.summary.totalExpense | currency:'TWD':'symbol':'1.0-0' }}</div>
-            <div class="meta">支出峰值 {{ formatAnnualMonth(annual.summary.highestExpenseMonth) }}</div>
-          </div>
-        </div>
-
-        <div class="bento-item annual-summary-card surplus-card">
-          <div class="bento-content">
-            <div class="label">全年結餘</div>
-            <div class="value">{{ annual.summary.surplus | currency:'TWD':'symbol':'1.0-0' }}</div>
-            <div class="meta">儲蓄率 {{ annual.summary.savingsRate | number:'1.1-1' }}%</div>
-          </div>
-        </div>
-
-        <div class="bento-item annual-summary-card period-summary-card">
-          <div class="bento-content">
-            <div class="label">支出區間摘要</div>
-            <div class="annual-highlight">
-              <div class="annual-highlight-item">
-                <span class="highlight-label">最高支出月</span>
-                <span class="highlight-value">{{ formatAnnualMonth(annual.summary.highestExpenseMonth) }}</span>
-              </div>
-              <div class="annual-highlight-item">
-                <span class="highlight-label">最低支出月</span>
-                <span class="highlight-value">{{ formatAnnualMonth(annual.summary.lowestExpenseMonth) }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      @if (hasAnnualActivity()) {
-        <div class="annual-chart-grid">
-          <div class="bento-item annual-chart-card annual-trend-card">
-            <div class="annual-chart-header">
-              <h4 class="card-title">收入 / 支出 / 結餘趨勢</h4>
-            </div>
-            <div class="annual-chart-wrap">
-              <p-chart type="line" [data]="annualTrendChartData" [options]="annualLineChartOptions"></p-chart>
-            </div>
-          </div>
-
-          <div class="bento-item annual-chart-card annual-category-card">
-            <div class="annual-chart-header">
-              <h4 class="card-title">Top 5 分類趨勢</h4>
-            </div>
-
-            @if (annualCategoryChartData) {
-              <div class="annual-category-layout">
-                <div class="annual-chart-wrap annual-category-chart-wrap">
-                  <p-chart type="line" [data]="annualCategoryChartData" [options]="annualCategoryChartOptions"></p-chart>
-                </div>
-                <div class="annual-top-category-list">
-                  @for (category of getAnnualTopCategories(); track category.category) {
-                    <div class="annual-top-category-item">
-                      <div>
-                        <div class="category-name">{{ category.category }}</div>
-                        <div class="category-meta">月均 {{ category.average | currency:'TWD':'symbol':'1.0-0' }}</div>
-                      </div>
-                      <div class="category-total">{{ category.total | currency:'TWD':'symbol':'1.0-0' }}</div>
-                    </div>
-                  }
-                </div>
-              </div>
-            } @else {
-              <div class="hub-state-card compact">
-                <i class="pi pi-chart-line"></i>
-                <div class="hub-state-copy">
-                  <h4>尚無分類支出資料</h4>
-                  <p>這個年度目前沒有可繪製的支出分類趨勢。</p>
-                </div>
-              </div>
-            }
-          </div>
-        </div>
-      } @else {
-        <div class="hub-state-card empty-state-card">
-          <i class="pi pi-calendar"></i>
-          <div class="hub-state-copy">
-            <h4>{{ selectedAnnualYear }} 年尚無年度趨勢資料</h4>
-            <p>目前全年收入、支出與分類趨勢都為空，待交易資料進來後會直接顯示在這裡。</p>
-          </div>
-        </div>
-      }
-    }
-  </section>
 </div>

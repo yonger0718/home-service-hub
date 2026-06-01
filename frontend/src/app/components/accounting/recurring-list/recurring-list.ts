@@ -107,7 +107,7 @@ export class RecurringListComponent implements OnInit {
         const combined = [
             { label: '現金', value: 'CASH', type: 'CASH' },
             ...cards.map(c => ({ 
-                label: `💳 ${c.name}`, 
+                label: c.name, 
                 value: `CARD_${c.id}`, 
                 type: 'CARD',
                 cardId: c.id,

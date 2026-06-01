@@ -1,0 +1,29 @@
+<div class="mobile-nav-shell" aria-label="Mobile navigation">
+  <div class="m-subnav">
+    <nav class="seg-control" [attr.aria-label]="currentGroup().label + ' sub navigation'">
+      @for (item of currentGroup().items; track item.id) {
+        <a
+          [routerLink]="item.path"
+          [class.active]="activeId() === item.id"
+          [attr.aria-current]="activeId() === item.id ? 'page' : null"
+        >
+          {{ item.label }}
+        </a>
+      }
+    </nav>
+  </div>
+
+  <nav class="m-tabbar" aria-label="Primary mobile tabs">
+    @for (group of groups; track group.id) {
+      <a
+        class="m-tab"
+        [class.active]="activeGroupId() === group.id"
+        [routerLink]="group.defaultPath"
+        [attr.aria-current]="activeGroupId() === group.id ? 'page' : null"
+      >
+        <i class="pi {{ group.icon }}" aria-hidden="true"></i>
+        <span>{{ group.label }}</span>
+      </a>
+    }
+  </nav>
+</div>

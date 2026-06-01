@@ -64,6 +64,7 @@ def _serialize_result(
     result: import_service.ImportResult,
     *,
     recalc_scheduled: bool = False,
+    csv_format: str = "generic",
 ) -> dict:
     return {
         "parsed": result.parsed,
@@ -84,6 +85,7 @@ def _serialize_result(
         "would_skip_duplicate": result.would_skip_duplicate,
         "rows": _serialize_parse(parsed),
         "recalc_scheduled": recalc_scheduled,
+        "csv_format": csv_format,
     }
 
 
@@ -209,7 +211,7 @@ def import_transactions(
         recalc_scheduled = _maybe_schedule_chain(
             background_tasks, touched_symbols=symbols, recalc_from=min_trade
         )
-    return _serialize_result(parsed, result, recalc_scheduled=recalc_scheduled)
+    return _serialize_result(parsed, result, recalc_scheduled=recalc_scheduled, csv_format=csv_format)
 
 
 @router.post("/dividends")

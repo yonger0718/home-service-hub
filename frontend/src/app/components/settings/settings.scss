@@ -1,0 +1,132 @@
+.settings-page {
+  max-width: 760px;
+}
+
+.page-head {
+  margin-bottom: 1.5rem;
+}
+
+.section-title {
+  color: var(--app-text);
+  font-size: 1.25rem;
+  font-weight: 800;
+  margin: 0;
+}
+
+.set-section {
+  margin-bottom: 2rem;
+}
+
+.set-section-title {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin: 0 0 0.75rem;
+  padding-left: 0.25rem;
+  text-transform: uppercase;
+}
+
+.set-card {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--app-card-shadow);
+  overflow: hidden;
+}
+
+.set-row {
+  align-items: center;
+  border-bottom: 1px solid var(--app-border);
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1.1rem 1.25rem;
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.set-label {
+  align-items: center;
+  display: flex;
+  gap: 0.85rem;
+  min-width: 0;
+
+  > i {
+    color: var(--app-text-muted);
+    flex-shrink: 0;
+    font-size: 1.15rem;
+    text-align: center;
+    width: 24px;
+  }
+}
+
+.t {
+  color: var(--app-text);
+  font-size: 0.95rem;
+  font-weight: var(--fw-bold);
+}
+
+.d {
+  color: var(--app-text-muted);
+  font-size: 0.78rem;
+  margin-top: 2px;
+}
+
+.preview {
+  background: var(--app-surface-soft);
+  justify-content: flex-start;
+}
+
+.set-sublabel {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-weight: var(--fw-bold);
+}
+
+.prev-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.pill-preview {
+  align-items: center;
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-bold);
+  gap: 6px;
+  padding: 0.32rem 0.8rem;
+}
+
+.pill-preview i {
+  font-size: 0.7rem;
+}
+
+.pos {
+  background: var(--app-trend-positive-soft);
+  color: var(--app-trend-positive);
+}
+
+.neg {
+  background: var(--app-trend-negative-soft);
+  color: var(--app-trend-negative);
+}
+
+@media (max-width: 759.98px) {
+  .set-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+.caption {
+  color: var(--app-text-muted);
+  font-size: 0.78rem;
+  margin: 0.75rem 0 0;
+  padding-left: 0.25rem;
+}
