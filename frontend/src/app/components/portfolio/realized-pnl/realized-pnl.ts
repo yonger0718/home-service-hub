@@ -61,9 +61,8 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   readonly rowsPerPageOptions = [25, 50, 100];
   readonly yearPresetOptions = [
     { value: 'YTD', label: 'YTD' },
-    { value: 2026, label: '2026' },
-    { value: 2025, label: '2025' },
-    { value: 2024, label: '2024' },
+    { value: this.currentYear - 1, label: String(this.currentYear - 1) },
+    { value: this.currentYear - 2, label: String(this.currentYear - 2) },
     { value: null, label: 'All' },
   ];
 
