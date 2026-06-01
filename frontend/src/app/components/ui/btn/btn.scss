@@ -1,0 +1,74 @@
+.btn {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  display: inline-flex;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-bold);
+  gap: 7px;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0.6rem 1.1rem;
+  transition: all var(--dur-fast) var(--ease-ios);
+  white-space: nowrap;
+
+  i {
+    font-size: 0.9rem;
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+  }
+
+  &:active:not(:disabled) {
+    transform: scale(0.97);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+}
+
+.btn-primary {
+  background: var(--app-primary);
+  color: #fff;
+
+  &:hover:not(:disabled) {
+    background: var(--app-primary-hover);
+  }
+}
+
+.btn-secondary {
+  background: var(--app-surface);
+  border-color: var(--app-border);
+  color: var(--app-text);
+
+  &:hover:not(:disabled) {
+    background: var(--app-surface-soft);
+  }
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--app-text-muted);
+
+  &:hover:not(:disabled) {
+    background: var(--app-accent-soft);
+    color: var(--app-text);
+  }
+}
+
+.btn-icon {
+  border-radius: var(--radius-pill);
+  height: 38px;
+  padding: 0;
+  width: 38px;
+
+  .btn-content {
+    display: none;
+  }
+}

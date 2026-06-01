@@ -1,0 +1,33 @@
+.seg-toggle {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 3px;
+
+  button {
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-bold);
+    padding: 0.45rem 0.9rem;
+    transition: all var(--dur-fast) var(--ease-ios);
+    white-space: nowrap;
+
+    &.active {
+      background: var(--app-surface);
+      box-shadow: var(--app-card-shadow);
+      color: var(--app-text);
+    }
+
+    &:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 4px var(--app-focus-ring);
+    }
+  }
+}

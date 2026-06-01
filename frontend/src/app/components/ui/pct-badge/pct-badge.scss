@@ -1,0 +1,22 @@
+.pct-badge {
+  align-items: center;
+  background: var(--app-trend-positive-soft);
+  border-radius: var(--radius-pill);
+  color: var(--app-trend-positive);
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-bold);
+  gap: 4px;
+  padding: 0.25rem 0.7rem;
+}
+
+.pct-badge.down {
+  background: var(--app-trend-negative-soft);
+  color: var(--app-trend-negative);
+}
+
+.pct-badge.neutral {
+  background: var(--app-accent-soft);
+  color: var(--app-text-muted);
+}

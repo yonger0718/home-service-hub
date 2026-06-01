@@ -1,4 +1,4 @@
-import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
+import { APP_INITIALIZER, ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
 import { provideRouter, withViewTransitions } from '@angular/router';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
@@ -8,6 +8,11 @@ import { MessageService } from 'primeng/api';
 
 import { routes } from './app.routes';
 import { errorLoggingInterceptor } from './interceptors/error-logging.interceptor';
+import { AppearanceService } from './services/appearance.service';
+
+function initializeAppearance(appearance: AppearanceService): () => void {
+  return () => appearance.initialize();
+}
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -18,6 +23,12 @@ export const appConfig: ApplicationConfig = {
     provideRouter(routes, withViewTransitions()),
     provideAnimationsAsync(),
     MessageService,
+    {
+      provide: APP_INITIALIZER,
+      useFactory: initializeAppearance,
+      deps: [AppearanceService],
+      multi: true
+    },
     providePrimeNG({
       theme: {
         preset: Aura,

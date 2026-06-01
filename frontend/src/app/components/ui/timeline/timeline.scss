@@ -1,0 +1,110 @@
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tl-item {
+  align-items: stretch;
+  display: flex;
+  gap: 12px;
+}
+
+.tl-date {
+  flex-shrink: 0;
+  padding-top: 0.85rem;
+  text-align: center;
+  width: 40px;
+
+  .d {
+    color: var(--app-text);
+    display: block;
+    font-size: 1.1rem;
+    font-weight: var(--fw-heavy);
+    line-height: 1;
+  }
+
+  .m {
+    color: var(--app-text-muted);
+    font-size: 0.62rem;
+    font-weight: var(--fw-bold);
+    text-transform: uppercase;
+  }
+}
+
+.tl-card {
+  align-items: center;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-lg);
+  cursor: default;
+  display: flex;
+  flex: 1;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0.85rem 1rem;
+  transition: all var(--dur-fast) var(--ease-ios);
+
+  &:hover {
+    border-color: var(--app-accent-soft-strong);
+    box-shadow: var(--app-card-shadow);
+    transform: translateY(-1px);
+  }
+}
+
+.tl-lhs {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  min-width: 0;
+}
+
+.tl-name {
+  color: var(--app-text);
+  font-size: 0.95rem;
+  font-weight: var(--fw-bold);
+}
+
+.tl-meta {
+  color: var(--app-text-muted);
+  font-size: 0.72rem;
+  font-weight: var(--fw-semibold);
+  margin-top: 2px;
+}
+
+.tl-amt {
+  color: var(--app-text);
+  flex-shrink: 0;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-heavy);
+  margin-left: 1rem;
+}
+
+.positive {
+  color: var(--app-trend-positive);
+}
+
+.negative {
+  color: var(--app-trend-negative);
+}
+
+.buy {
+  color: var(--app-buy);
+}
+
+.sell {
+  color: var(--app-sell);
+}
+
+.dividend {
+  color: var(--app-dividend);
+}
+
+.income {
+  color: var(--c-green);
+}
+
+.expense {
+  color: var(--app-text);
+}

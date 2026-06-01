@@ -22,6 +22,8 @@ import { FileUploadModule } from 'primeng/fileupload';
 import { ImageModule } from 'primeng/image';
 import { TooltipModule } from 'primeng/tooltip';
 import { MessageService } from 'primeng/api';
+import { BtnComponent } from '../ui/btn/btn';
+import { TagComponent } from '../ui/tag/tag';
 
 @Component({
   selector: 'app-item-list',
@@ -40,7 +42,9 @@ import { MessageService } from 'primeng/api';
     AutoCompleteModule,
     FileUploadModule,
     ImageModule,
-    TooltipModule
+    TooltipModule,
+    BtnComponent,
+    TagComponent
   ],
   providers: [MessageService],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -72,6 +76,12 @@ export class ItemListComponent implements OnInit {
   filteredCategories: string[] = [];
   allLocations: string[] = [];
   filteredLocations: string[] = [];
+
+  displayedItems(): ItemResponse[] {
+    return this.lowStockOnly
+      ? this.items().filter(item => this.isLowStock(item))
+      : this.items();
+  }
 
   calculateStockPercentage(item: ItemResponse): number {
     if (!item.targetQuantity || item.targetQuantity <= 0) {
@@ -189,13 +199,34 @@ export class ItemListComponent implements OnInit {
   }
 
   consumeOne(item: ItemResponse) {
-    const payload: InventoryTransactionRequest = {
-      type: 'CONSUME',
-      deltaQuantity: 1,
-      operatorName: 'web-ui',
-      reason: '快速使用 -1'
-    };
-    this.submitTransaction(item.id, payload, '扣庫成功');
+    this.adjustQuantity(item, -1);
+  }
+
+  adjustQuantity(item: ItemResponse, delta: 1 | -1): void {
+    if (delta < 0 && item.quantity <= 0) {
+      return;
+    }
+
+    const nextQuantity = Math.max(0, item.quantity + delta);
+    this.items.update(rows => rows.map(row =>
+      row.id === item.id ? this.withQuantity(row, nextQuantity) : row,
+    ));
+
+    const payload: InventoryTransactionRequest = delta > 0
+      ? { type: 'RESTOCK', deltaQuantity: 1, operatorName: 'web-ui', reason: '快速補貨 +1' }
+      : { type: 'CONSUME', deltaQuantity: 1, operatorName: 'web-ui', reason: '快速使用 -1' };
+
+    this.itemService.createTransaction(item.id, payload).subscribe({
+      next: result => {
+        if (result?.item) {
+          this.items.update(rows => rows.map(row => row.id === item.id ? result.item : row));
+        }
+      },
+      error: err => {
+        this.items.update(rows => rows.map(row => row.id === item.id ? item : row));
+        this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '操作失敗' });
+      },
+    });
   }
 
   openQuickAction(item: ItemResponse, type: 'RESTOCK' | 'ADJUST') {
@@ -254,15 +285,21 @@ export class ItemListComponent implements OnInit {
   }
 
   getStockStatusLabel(item: ItemResponse): string {
-    if (item.stockStatus === 'OUT') return '缺貨';
-    if (item.stockStatus === 'LOW') return '低庫存';
+    const status = this.liveStockStatus(item);
+    if (status === 'OUT') return '缺貨';
+    if (status === 'LOW') return '低庫存';
     return '正常';
   }
 
   getStockStatusSeverity(item: ItemResponse): 'danger' | 'warn' | 'success' {
-    if (item.stockStatus === 'OUT') return 'danger';
-    if (item.stockStatus === 'LOW') return 'warn';
+    const status = this.liveStockStatus(item);
+    if (status === 'OUT') return 'danger';
+    if (status === 'LOW') return 'warn';
     return 'success';
+  }
+
+  isLowStock(item: ItemResponse): boolean {
+    return this.liveStockStatus(item) !== 'NORMAL';
   }
 
   canSaveItem(): boolean {
@@ -295,5 +332,21 @@ export class ItemListComponent implements OnInit {
       },
       error: err => this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '操作失敗' })
     });
+  }
+
+  private withQuantity(item: ItemResponse, quantity: number): ItemResponse {
+    return {
+      ...item,
+      quantity,
+      isLowStock: quantity <= (item.minQuantity ?? 0),
+      stockStatus: quantity === 0 ? 'OUT' : quantity <= (item.minQuantity ?? 0) ? 'LOW' : 'NORMAL',
+    };
+  }
+
+  private liveStockStatus(item: ItemResponse): 'OUT' | 'LOW' | 'NORMAL' {
+    if (item.quantity <= 0) return 'OUT';
+    if (item.minQuantity != null && item.quantity <= item.minQuantity) return 'LOW';
+    if (item.stockStatus === 'OUT' || item.stockStatus === 'LOW') return item.stockStatus;
+    return 'NORMAL';
   }
 }

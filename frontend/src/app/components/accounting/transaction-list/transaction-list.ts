@@ -19,6 +19,9 @@ import { RadioButtonModule } from 'primeng/radiobutton';
 import { SelectButtonModule } from 'primeng/selectbutton';
 import { MessageService, MenuItem } from 'primeng/api';
 import { Menu } from 'primeng/menu';
+import { BtnComponent } from '../../ui/btn/btn';
+import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
+import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 
 @Component({
   selector: 'app-transaction-list',
@@ -37,7 +40,10 @@ import { Menu } from 'primeng/menu';
     TooltipModule,
     MenuModule,
     RadioButtonModule,
-    SelectButtonModule
+    SelectButtonModule,
+    BtnComponent,
+    SegToggleComponent,
+    TimelineComponent
   ],
   providers: [MessageService],
   templateUrl: './transaction-list.html',
@@ -61,7 +67,7 @@ export class TransactionListComponent implements OnInit {
   selectedCategory = signal<string | undefined>(undefined);
   selectedPaymentMethod = signal<string | undefined>(undefined);
   selectedKeyword = signal<string>('');
-  selectedType = signal<'ALL' | 'EXPENSE' | 'INCOME'>('ALL');
+  selectedType = signal<'ALL' | 'EXPENSE' | 'INCOME' | 'CARD'>('ALL');
   selectedMonth = signal<Date>(new Date());
 
   monthTransactions = computed(() => {
@@ -106,7 +112,7 @@ export class TransactionListComponent implements OnInit {
 
     if (cat) tags.push(`分類：${cat}`);
     if (pm) tags.push(`支付：${pm}`);
-    if (type !== 'ALL') tags.push(`類型：${type === 'EXPENSE' ? '支出' : '收入'}`);
+    if (type !== 'ALL') tags.push(`類型：${type === 'EXPENSE' ? '支出' : type === 'INCOME' ? '收入' : '信用卡'}`);
     if (keyword) tags.push(`關鍵字：${keyword}`);
     return tags;
   });
@@ -135,7 +141,9 @@ export class TransactionListComponent implements OnInit {
         }
     }
 
-    if (type !== 'ALL') {
+    if (type === 'CARD') {
+      result = result.filter(txn => !!txn.cardId);
+    } else if (type !== 'ALL') {
       result = result.filter(txn => txn.transactionType === type);
     }
 
@@ -159,8 +167,34 @@ export class TransactionListComponent implements OnInit {
 
   typeOptions = [
     { label: '支出', value: 'EXPENSE' },
-    { label: '收入', value: 'INCOME' }
+    { label: '收入', value: 'INCOME' },
+    { label: '信用卡', value: 'CARD' }
   ];
+
+  readonly filterTypeOptions: SegToggleOption[] = [
+    { label: '全部', value: 'ALL' },
+    { label: '支出', value: 'EXPENSE' },
+    { label: '收入', value: 'INCOME' },
+    { label: '信用卡', value: 'CARD' },
+  ];
+
+  readonly dialogTypeOptions: SegToggleOption[] = [
+    { label: '支出', value: 'EXPENSE' },
+    { label: '收入', value: 'INCOME' },
+    { label: '信用卡', value: 'CARD' },
+  ];
+
+  readonly timelineRows = computed<TimelineRow[]>(() =>
+    this.filteredTransactions().map(txn => ({
+      date: txn.date,
+      side: txn.transactionType === 'INCOME' ? 'buy' : 'sell',
+      sideLabel: txn.transactionType === 'INCOME' ? '收' : '支',
+      primary: txn.item,
+      meta: [txn.categoryName, txn.cardName || txn.paymentMethod, txn.note].filter(Boolean).join(' · '),
+      amount: `${txn.transactionType === 'EXPENSE' ? '-' : '+'}${this.formatCurrency(txn.transactionAmount)}`,
+      amountVariant: txn.transactionType === 'INCOME' ? 'income' : 'expense',
+    })),
+  );
 
   paymentOptions = signal<any[]>([]);
   filterPaymentOptions = signal<any[]>([]);
@@ -205,6 +239,10 @@ export class TransactionListComponent implements OnInit {
     this.selectedPaymentMethod.set(undefined);
     this.selectedType.set('ALL');
     this.selectedKeyword.set('');
+  }
+
+  setFilterType(value: string) {
+    this.selectedType.set(value as 'ALL' | 'EXPENSE' | 'INCOME' | 'CARD');
   }
 
   isNewDay(index: number): boolean {
@@ -276,7 +314,7 @@ export class TransactionListComponent implements OnInit {
         const combined = [
             { label: '現金', value: 'CASH', type: 'CASH' },
             ...cards.map(c => ({ 
-                label: `💳 ${c.name}`, 
+                label: c.name, 
                 value: `CARD_${c.id}`, 
                 type: 'CARD',
                 cardId: c.id,
@@ -289,7 +327,7 @@ export class TransactionListComponent implements OnInit {
         const filterOptions = [
             { label: '現金', value: '現金' },
             { label: '--- 信用卡 ---', value: null, disabled: true },
-            ...cards.map(c => ({ label: `💳 ${c.name}`, value: c.id.toString() }))
+            ...cards.map(c => ({ label: c.name, value: c.id.toString() }))
         ];
         this.filterPaymentOptions.set(filterOptions);
       },
@@ -320,6 +358,16 @@ export class TransactionListComponent implements OnInit {
     this.txnDate = new Date();
     this.isEdit = false;
     this.displayDialog = true;
+  }
+
+  setDialogType(value: string) {
+    this.newTxn.transactionType = value === 'CARD' ? 'CARD' : value;
+    if (value === 'CARD' && this.cards().length > 0) {
+      const card = this.cards()[0];
+      this.selectedPaymentValue = `CARD_${card.id}`;
+      this.newTxn.cardId = card.id;
+      this.newTxn.paymentMethod = card.defaultPaymentMethod || '信用卡';
+    }
   }
 
   showMenu(event: MouseEvent, txn: Transaction) {
@@ -473,6 +521,10 @@ export class TransactionListComponent implements OnInit {
   }
 
   saveTransaction() {
+    if (!this.canSaveTransaction()) {
+      this.messageService.add({ severity: 'warn', summary: '提醒', detail: '請填寫必要欄位' });
+      return;
+    }
     const year = this.txnDate.getFullYear();
     const month = (this.txnDate.getMonth() + 1).toString().padStart(2, '0');
     const day = this.txnDate.getDate().toString().padStart(2, '0');
@@ -485,7 +537,7 @@ export class TransactionListComponent implements OnInit {
       transactionAmount: this.newTxn.transactionAmount,
       paymentMethod: this.newTxn.paymentMethod,
       cardId: this.newTxn.cardId,
-      transactionType: this.newTxn.transactionType,
+      transactionType: this.newTxn.transactionType === 'CARD' ? 'EXPENSE' : this.newTxn.transactionType,
       note: this.newTxn.note
     };
 
@@ -508,6 +560,22 @@ export class TransactionListComponent implements OnInit {
             error: () => this.messageService.add({ severity: 'error', summary: '錯誤', detail: '建立失敗' })
           });
     }
+  }
+
+  canSaveTransaction(): boolean {
+    return !!this.newTxn.item?.trim()
+      && !!this.newTxn.categoryId
+      && Number(this.newTxn.transactionAmount) > 0
+      && this.txnDate instanceof Date
+      && !Number.isNaN(this.txnDate.getTime());
+  }
+
+  formatCurrency(value: number | string | null | undefined): string {
+    return new Intl.NumberFormat('zh-TW', {
+      style: 'currency',
+      currency: 'TWD',
+      minimumFractionDigits: 0,
+    }).format(Number(value ?? 0));
   }
 
   deleteTransaction(id: number) {

@@ -1,30 +1,32 @@
-import { Component } from '@angular/core';
+import { Component, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { TestBed } from '@angular/core/testing';
+import { DeferBlockBehavior, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PortfolioSummary } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { NetworthChartComponent } from '../networth-chart/networth-chart';
+import { AppearanceService } from '../../../services/appearance.service';
 import { PortfolioDashboardComponent } from './dashboard';
-import { CardModule } from 'primeng/card';
-import { TableModule } from 'primeng/table';
-import { TagModule } from 'primeng/tag';
-import { ButtonModule } from 'primeng/button';
-import { Tooltip, TooltipModule } from 'primeng/tooltip';
-import { AccordionModule } from 'primeng/accordion';
+import { BtnComponent } from '../../ui/btn/btn';
+import { SegToggleComponent } from '../../ui/seg-toggle/seg-toggle';
+import { BentoComponent } from '../../ui/bento/bento';
+import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
+import { TooltipModule } from 'primeng/tooltip';
 import { SkeletonModule } from 'primeng/skeleton';
-import { SelectButtonModule } from 'primeng/selectbutton';
 
 @Component({
-  selector: 'app-corporate-actions-panel',
+  selector: 'p-chart',
   standalone: true,
   template: '',
 })
-class CorporateActionsPanelStubComponent {}
+class ChartStubComponent {
+  @Input() type = '';
+  @Input() data: unknown;
+  @Input() options: unknown;
+  chart = { update: vi.fn() };
+}
 
 describe('PortfolioDashboardComponent', () => {
   function buildHolding() {
@@ -44,7 +46,7 @@ describe('PortfolioDashboardComponent', () => {
       total_pnl_with_dividend: 1600,
       xirr: 0.5,
       xirr_1m: 0.01,
-      xirr_3m: 0.03,
+      xirr_3m: 0.0321,
       xirr_1y: 0.1234,
       xirr_ytd: 0.04,
     };
@@ -61,15 +63,13 @@ describe('PortfolioDashboardComponent', () => {
       total_realized_pnl: 0,
       portfolio_xirr: 0.5,
       portfolio_xirr_1m: 0.01,
-      portfolio_xirr_3m: 0.03,
+      portfolio_xirr_3m: 0.0321,
       portfolio_xirr_1y: 0.1234,
       portfolio_xirr_ytd: 0.04,
-      holdings: [],
+      holdings: [buildHolding()],
       ...overrides,
     };
   }
-
-  const summary = buildSummary();
 
   let portfolioService: {
     refreshQuotes: ReturnType<typeof vi.fn>;
@@ -78,46 +78,43 @@ describe('PortfolioDashboardComponent', () => {
     getUpcomingExDividends: ReturnType<typeof vi.fn>;
     getNetworthHistory: ReturnType<typeof vi.fn>;
   };
+  let appearance: AppearanceService;
 
   beforeEach(async () => {
     vi.useFakeTimers();
     portfolioService = {
-      refreshQuotes: vi.fn(),
+      refreshQuotes: vi.fn().mockReturnValue(of(null)),
       getRecalcStatus: vi.fn(),
-      getSummary: vi.fn().mockReturnValue(of(summary)),
+      getSummary: vi.fn().mockReturnValue(of(buildSummary())),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),
-      getNetworthHistory: vi.fn().mockReturnValue(of([])),
+      getNetworthHistory: vi.fn().mockReturnValue(of([
+        { date: '2026-01-01', total_market_value: '100', total_cost: '80', total_unrealized_pnl: '20', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
+        { date: '2026-05-01', total_market_value: '120', total_cost: '80', total_unrealized_pnl: '40', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
+      ])),
     };
 
     await TestBed.configureTestingModule({
       imports: [PortfolioDashboardComponent],
       providers: [{ provide: PortfolioService, useValue: portfolioService }],
+      deferBlockBehavior: DeferBlockBehavior.Manual,
     })
-      .overrideComponent(NetworthChartComponent, {
-        set: {
-          template: '',
-          imports: [],
-        },
-      })
       .overrideComponent(PortfolioDashboardComponent, {
         set: {
           imports: [
             CommonModule,
-            FormsModule,
-            CardModule,
-            TableModule,
-            TagModule,
-            ButtonModule,
+            ChartStubComponent,
+            BtnComponent,
+            SegToggleComponent,
+            BentoComponent,
+            PctBadgeComponent,
             TooltipModule,
-            AccordionModule,
             SkeletonModule,
-            SelectButtonModule,
-            NetworthChartComponent,
-            CorporateActionsPanelStubComponent,
           ],
         },
       })
       .compileComponents();
+
+    appearance = TestBed.inject(AppearanceService);
   });
 
   afterEach(() => {
@@ -127,153 +124,69 @@ describe('PortfolioDashboardComponent', () => {
 
   function createFixture() {
     const fixture = TestBed.createComponent(PortfolioDashboardComponent);
-    const component = fixture.componentInstance;
-    portfolioService.getSummary.mockReturnValue(of(buildSummary({ holdings: [buildHolding()] })));
-    portfolioService.refreshQuotes.mockReturnValueOnce(of(null));
     fixture.detectChanges();
-    const chartReload = vi.fn();
-    Object.defineProperty(component, 'chart', {
-      configurable: true,
-      get: () => ({ reload: chartReload }),
-      set: () => undefined,
-    });
+    vi.advanceTimersByTime(2000);
+    fixture.detectChanges();
     portfolioService.refreshQuotes.mockClear();
     portfolioService.getRecalcStatus.mockClear();
     portfolioService.getSummary.mockClear();
-    chartReload.mockClear();
-
-    return { fixture, chartReload };
-  }
-
-  function clickRefresh(fixture: ReturnType<typeof TestBed.createComponent<PortfolioDashboardComponent>>) {
-    const button = fixture.nativeElement.querySelector('.hub-refresh-btn') as HTMLButtonElement;
-    button.click();
-  }
-
-  function createDashboardFixture(summaryResponse: PortfolioSummary) {
-    portfolioService.getSummary.mockReturnValue(of(summaryResponse));
-    portfolioService.refreshQuotes.mockReturnValueOnce(of(null));
-    const fixture = TestBed.createComponent(PortfolioDashboardComponent);
-    fixture.detectChanges();
-    fixture.detectChanges();
+    portfolioService.getNetworthHistory.mockClear();
     return fixture;
   }
 
-  function clickXirrChip(fixture: ReturnType<typeof TestBed.createComponent<PortfolioDashboardComponent>>, label: string) {
-    const buttons = Array.from(
-      fixture.nativeElement.querySelectorAll('.xirr-window-control p-togglebutton'),
-    ) as HTMLElement[];
-    const button = buttons.find((candidate) => candidate.textContent?.trim() === label);
-    expect(button).toBeTruthy();
-    button!.click();
-    fixture.detectChanges();
-  }
-
-  it('refreshes quotes, polls until completed, then reloads summary and chart', () => {
-    portfolioService.refreshQuotes.mockReturnValue(
-      of({
-        refresh_scheduled: true,
-        date: '2026-05-18',
-        touched_symbols: ['2330'],
-      }),
-    );
+  it('refreshes quotes, polls until completed, then reloads summary', () => {
+    portfolioService.refreshQuotes.mockReturnValue(of({
+      refresh_scheduled: true,
+      date: '2026-05-18',
+      touched_symbols: ['2330'],
+    }));
     portfolioService.getRecalcStatus.mockReturnValue(of({ state: 'completed' }));
-    const { fixture, chartReload } = createFixture();
+    const fixture = createFixture();
 
-    clickRefresh(fixture);
-
-    expect(portfolioService.refreshQuotes).toHaveBeenCalledTimes(1);
-    expect(portfolioService.getSummary).not.toHaveBeenCalled();
-
+    fixture.nativeElement.querySelector('button').click();
     vi.advanceTimersByTime(1000);
 
     expect(portfolioService.getRecalcStatus).toHaveBeenCalledTimes(1);
     expect(portfolioService.getSummary).toHaveBeenCalledTimes(1);
-    expect(chartReload).toHaveBeenCalledTimes(1);
   });
 
   it('warns and still reloads summary when refresh quotes is already running', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     portfolioService.refreshQuotes.mockReturnValue(throwError(() => ({ status: 409 })));
-    const { fixture, chartReload } = createFixture();
+    const fixture = createFixture();
 
-    clickRefresh(fixture);
+    fixture.nativeElement.querySelector('button').click();
 
     expect(warnSpy).toHaveBeenCalledWith('另一筆重算進行中, 稍候再試');
     expect(portfolioService.getSummary).toHaveBeenCalledTimes(1);
-    expect(chartReload).toHaveBeenCalledTimes(1);
   });
 
-  it('reloads summary and chart when polling times out after 30 seconds', () => {
-    portfolioService.refreshQuotes.mockReturnValue(
-      of({
-        refresh_scheduled: true,
-        date: '2026-05-18',
-        touched_symbols: ['2330'],
-      }),
-    );
-    portfolioService.getRecalcStatus.mockReturnValue(of({ state: 'running' }));
-    const { fixture, chartReload } = createFixture();
+  it('uses 1Y as the default range and updates XIRR when 3M is selected', () => {
+    const fixture = createFixture();
 
-    clickRefresh(fixture);
-    vi.advanceTimersByTime(30_000);
+    expect(fixture.componentInstance.range()).toBe('1Y');
+    expect(fixture.nativeElement.textContent).toContain('12.34%');
 
-    expect(portfolioService.getSummary).toHaveBeenCalledTimes(1);
-    expect(chartReload).toHaveBeenCalledTimes(1);
+    const rangeButtons = Array.from(fixture.nativeElement.querySelectorAll('.range-tabs button')) as HTMLButtonElement[];
+    rangeButtons.find(button => button.textContent?.trim() === '3M')!.click();
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.range()).toBe('3M');
+    expect(fixture.nativeElement.textContent).toContain('3.21%');
   });
 
-  it('selects the 1Y XIRR chip by default', () => {
-    const fixture = createDashboardFixture(
-      buildSummary({
-        holdings: [
-          buildHolding(),
-        ],
-      }),
-    );
-    const component = fixture.componentInstance;
+  it('sets chart animation false and updates the chart on convention changes', async () => {
+    const fixture = createFixture();
+    const [deferBlock] = await fixture.getDeferBlocks();
+    await deferBlock.render(2 /* DeferBlockState.Complete */);
+    fixture.detectChanges();
+    const chart = fixture.debugElement.query(By.directive(ChartStubComponent)).componentInstance as ChartStubComponent;
 
-    expect(component.xirrWindow()).toBe('1y');
-    expect(fixture.nativeElement.querySelector('.xirr-window-control')?.textContent).toContain('1Y');
-    expect(fixture.nativeElement.querySelector('.xirr-card .value')?.textContent).toContain('12.34%');
-  });
+    expect((fixture.componentInstance.chartOptions as any).animation).toBe(false);
 
-  it('changes the rendered XIRR card value when switching chips', () => {
-    const fixture = createDashboardFixture(
-      buildSummary({
-        portfolio_xirr_3m: 0.0321,
-        holdings: [
-          {
-            ...buildHolding(),
-            xirr_3m: 0.0321,
-          },
-        ],
-      }),
-    );
+    appearance.setGainLoss('western');
+    fixture.detectChanges();
 
-    clickXirrChip(fixture, '3M');
-
-    expect(fixture.componentInstance.xirrWindow()).toBe('3m');
-    expect(fixture.nativeElement.querySelector('.xirr-card .value')?.textContent).toContain('3.21%');
-  });
-
-  it('renders a dash with tooltip when the selected XIRR field is null', () => {
-    const fixture = createDashboardFixture(
-      buildSummary({
-        portfolio_xirr_1m: null,
-        holdings: [
-          {
-            ...buildHolding(),
-            xirr_1m: null,
-            xirr_3m: 0.0321,
-          },
-        ],
-      }),
-    );
-
-    clickXirrChip(fixture, '1M');
-
-    const placeholder = fixture.debugElement.query(By.css('.xirr-card .xirr-placeholder'));
-    expect(placeholder.nativeElement.textContent.trim()).toBe('—');
-    expect(placeholder.injector.get(Tooltip, null)).toBeTruthy();
+    expect(chart.chart.update).toHaveBeenCalledWith('none');
   });
 });

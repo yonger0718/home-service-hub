@@ -1,218 +1,137 @@
-<div class="hub-dashboard-container">
-  <div class="hub-page-header justify-content-end">
-    <div class="header-actions">
-      <p-button label="刷新行情" icon="pi pi-refresh" [loading]="loading()" (onClick)="loadSummary()" 
-                styleClass="hub-refresh-btn"></p-button>
+<div class="portfolio-dashboard">
+  <div class="page-head justify-content-end">
+    <div class="head-actions">
+      <app-btn variant="secondary" icon="pi-refresh" [loading]="loading()" (click)="loadSummary()">刷新行情</app-btn>
     </div>
   </div>
 
   @if (loading()) {
-    <div class="hub-bento-grid">
-      @for (i of [1,2,3,4]; track i) {
-        <div class="bento-item">
+    <div class="bento-grid">
+      @for (i of [1, 2, 3, 4]; track i) {
+        <app-bento>
           <p-skeleton width="40%" styleClass="mb-3"></p-skeleton>
           <p-skeleton width="80%" height="2.5rem"></p-skeleton>
-        </div>
+        </app-bento>
       }
     </div>
-  } @else {
-    @if (summary() && summary()!.holdings.length > 0) {
-      <div class="hub-bento-grid">
-        
-        <!-- 總市值 (大卡片) -->
-        <div class="bento-item bento-hero market-value-card">
-          <div class="bento-content">
-            <div class="label">當前總市值</div>
-            <div class="value">{{ formatCurrency(summary()!.total_market_value) }}</div>
-            <div class="meta">
-              <span>總成本 {{ formatCurrency(summary()!.total_cost) }}</span>
-            </div>
-          </div>
-          <div class="bento-bg-icon">
-            <i class="pi pi-briefcase"></i>
-          </div>
-        </div>
+  } @else if (summary() && summary()!.holdings.length > 0) {
+    <div class="bento-grid">
+      <app-bento>
+        <div class="label">總市值</div>
+        <div class="value">{{ formatCurrency(summary()!.total_market_value) }}</div>
+        <div class="meta">總成本 {{ formatCurrency(summary()!.total_cost) }}</div>
+      </app-bento>
 
-        <!-- 未實現損益 (帶切換功能) -->
-        <div class="bento-item bento-normal pnl-card" [class.is-loss]="Number(summary()!.total_unrealized_pnl) < 0">
-          <div class="bento-content">
-            <div class="d-flex justify-content-between align-items-start">
-              <div class="label">未實現損益</div>
-              <p-button [icon]="showWithDividend() ? 'pi pi-percentage' : 'pi pi-money-bill'" 
-                        [text]="true" size="small" (onClick)="toggleDividend()"></p-button>
-            </div>
-            <div class="value">
-              {{ formatCurrency(showWithDividend() ? (Number(summary()!.total_unrealized_pnl) + Number(summary()!.total_dividends)) : summary()!.total_unrealized_pnl) }}
-            </div>
-            <div class="meta pct-badge">
-              {{ (showWithDividend() ?
-                  (Number(summary()!.total_cost) > 0 ? ((Number(summary()!.total_unrealized_pnl) + Number(summary()!.total_dividends)) / Number(summary()!.total_cost) * 100) : 0) :
-                  summary()!.total_unrealized_pnl_percent) | number:'1.2-2' }}%
-            </div>
-          </div>
+      <app-bento>
+        <div class="label">未實現損益</div>
+        <div class="value" [class.up]="summary()!.total_unrealized_pnl >= 0" [class.down]="summary()!.total_unrealized_pnl < 0">
+          {{ formatCurrency(summary()!.total_unrealized_pnl) }}
         </div>
+        <app-pct-badge [value]="summary()!.total_unrealized_pnl_percent"></app-pct-badge>
+      </app-bento>
 
-        <!-- 今日損益 -->
-        <div class="bento-item bento-normal day-pnl-card" [class.is-loss]="Number(summary()!.total_day_pnl) < 0">
-          <div class="bento-content">
-            <div class="label">今日總預估損益</div>
-            <div class="value">{{ formatCurrency(summary()!.total_day_pnl) }}</div>
-            <div class="meta">今日表現</div>
-          </div>
+      <app-bento>
+        <div class="label">年化報酬率</div>
+        @let portfolioXirr = selectedPortfolioXirr();
+        <div class="value" [class.up]="(portfolioXirr ?? 0) > 0" [class.down]="(portfolioXirr ?? 0) < 0">
+          @if (portfolioXirr == null) {
+            <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
+          } @else {
+            {{ formatXirr(portfolioXirr) }}
+          }
         </div>
+        <div class="meta">XIRR · {{ range() }}</div>
+      </app-bento>
 
-        <!-- 累計股利 -->
-        <div class="bento-item bento-normal dividend-card">
-          <div class="bento-content">
-            <div class="label">累計股利收入</div>
-            <div class="value">{{ formatCurrency(summary()!.total_dividends) }}</div>
-            <div class="meta">已入帳現金</div>
+      <app-bento>
+        <div class="label">本年度股利</div>
+        <div class="value dividend">{{ formatCurrency(summary()!.total_dividends) }}</div>
+        <div class="meta">已入帳現金</div>
+      </app-bento>
+
+      <app-bento class="b-full" [full]="true">
+        <div class="chart-head">
+          <div class="chart-head-left">
+            <h3 class="card-title">淨值走勢</h3>
+            <app-pct-badge [value]="periodReturn()"></app-pct-badge>
           </div>
-          <div class="bento-bg-icon-small">
-            <i class="pi pi-percentage"></i>
-          </div>
+          <app-seg-toggle
+            class="range-tabs"
+            ariaLabel="淨值區間"
+            [options]="rangeOptions"
+            [value]="range()"
+            (change)="selectRange($event)"
+          ></app-seg-toggle>
         </div>
+        <div class="networth-chart">
+          @defer (when !!chartData) {
+            <p-chart #netWorthChart type="line" [data]="chartData" [options]="chartOptions"></p-chart>
+          } @placeholder {
+            <p-skeleton width="100%" height="100%"></p-skeleton>
+          }
+        </div>
+      </app-bento>
 
-        <!-- 投資組合年化報酬率 -->
-        <div class="bento-item bento-normal xirr-card">
-          <div class="bento-content">
-            <div class="xirr-card-header">
-              <div class="label">年化報酬率 (XIRR)</div>
-              <div class="xirr-window-control">
-                <p-selectButton
-                  [options]="xirrWindowOptions"
-                  optionLabel="label"
-                  optionValue="value"
-                  [allowEmpty]="false"
-                  [ngModel]="xirrWindow()"
-                  (ngModelChange)="xirrWindow.set($event)">
-                </p-selectButton>
+      <app-bento class="b-full" title="持股明細" [full]="true">
+        <div class="holdings">
+          @for (stock of summary()!.holdings; track stock.symbol) {
+            <article class="stock-row" (click)="toggleHoldingExpand(stock.symbol)" tabindex="0">
+              <div class="stock-top">
+                <div class="stock-sym">
+                  <span class="s">{{ stock.name || stock.symbol }}</span>
+                  <span class="n">{{ stock.symbol }}</span>
+                </div>
+                <div class="stock-price">
+                  <span class="p">{{ stock.current_price | number:'1.2-2' }}</span>
+                  <span class="c" [class.up]="stock.day_change_amount >= 0" [class.down]="stock.day_change_amount < 0">
+                    {{ stock.day_change_amount >= 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
+                    ({{ stock.day_change_percent >= 0 ? '+' : '' }}{{ stock.day_change_percent | number:'1.2-2' }}%)
+                  </span>
+                </div>
               </div>
-            </div>
-            @let portfolioXirr = selectedXirr(summary()!);
-            <div class="value" [class.up]="(portfolioXirr ?? 0) > 0"
-                               [class.down]="(portfolioXirr ?? 0) < 0">
-              @if (portfolioXirr == null) {
-                <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明"
-                      [pTooltip]="xirrGapTooltip" tooltipPosition="top">—</span>
-              } @else {
-                {{ formatXirr(portfolioXirr) }}
-              }
-            </div>
-            <div class="meta">含息 / 含買賣手續費</div>
-          </div>
-          <div class="bento-bg-icon-small">
-            <i class="pi pi-chart-line"></i>
-          </div>
-        </div>
 
-        <div class="bento-item bento-full networth-chart-card">
-          <app-networth-chart></app-networth-chart>
-        </div>
-
-        <div class="bento-item bento-full corporate-actions-card">
-          <app-corporate-actions-panel></app-corporate-actions-panel>
-        </div>
-
-        <!-- 持股分佈/清單 (全寬) -->
-        <div class="bento-item bento-full holdings-card">
-          <h3 class="card-title">持股明細</h3>
-          
-          <div class="hub-holdings-list">
-            @for (stock of summary()?.holdings; track stock.symbol) {
-              <div class="hub-stock-row" (click)="toggleHoldingExpand(stock.symbol)">
-                <div class="stock-main-info">
-                  <div class="stock-symbol-group">
-                    <span class="symbol">{{ stock.name || stock.symbol }}</span>
-                    <span class="name text-truncate">{{ stock.symbol }}</span>
-                  </div>
-                  <div class="stock-price-group">
-                    <span class="current-price">{{ stock.current_price | number:'1.2-2' }}</span>
-                    <span class="day-change" [class]="{'up': stock.day_change_amount > 0, 'down': stock.day_change_amount < 0}">
-                      {{ stock.day_change_amount > 0 ? '+' : '' }}{{ stock.day_change_amount | number:'1.2-2' }}
-                      ({{ stock.day_change_percent > 0 ? '+' : '' }}{{ stock.day_change_percent | number:'1.2-2' }}%)
-                    </span>
-                  </div>
+              <div class="stock-stats">
+                <div class="st"><span class="l">股數</span><span class="v">{{ stock.total_quantity | number }}</span></div>
+                <div class="st">
+                  <span class="l">報酬</span>
+                  <span class="v" [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">
+                    {{ stock.unrealized_pnl_percent | number:'1.2-2' }}%
+                  </span>
                 </div>
-                
-                <div class="stock-stats">
-                  <div class="stat-item">
-                    <span class="l">股數</span>
-                    <span class="v">{{ stock.total_quantity | number }}</span>
-                  </div>
-                  <div class="stat-item">
-                    <span class="l">報酬</span>
-                    <span class="v pnl-tag" [class]="getPnlColor(stock.unrealized_pnl)">
-                      {{ stock.unrealized_pnl_percent | number:'1.2-2' }}%
-                    </span>
-                  </div>
-                </div>
+              </div>
 
-                @if (isHoldingExpanded(stock.symbol)) {
-                  <div class="stock-details-panel">
-                    <div class="detail-grid">
-                      <div class="d-item"><small>市值</small><div>{{ formatCurrency(stock.market_value) }}</div></div>
-                      <div class="d-item"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>
-                      <div class="d-item"><small>含息損益</small><div [class]="{'up': stock.total_pnl_with_dividend > 0, 'down': stock.total_pnl_with_dividend < 0}">{{ formatCurrency(stock.total_pnl_with_dividend) }}</div></div>
-                      <div class="d-item"><small>不含息損益</small><div [class]="{'up': stock.unrealized_pnl > 0, 'down': stock.unrealized_pnl < 0}">{{ formatCurrency(stock.unrealized_pnl) }}</div></div>
-                      <div class="d-item"><small>累計股利</small><div>{{ formatCurrency(stock.total_dividends) }}</div></div>
-                      <div class="d-item">
-                        <small>年化報酬率</small>
-                        @let holdingXirr = selectedXirr(stock);
-                        <div [class.up]="(holdingXirr ?? 0) > 0" [class.down]="(holdingXirr ?? 0) < 0">
-                          @if (holdingXirr == null) {
-                            <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明"
-                      [pTooltip]="xirrGapTooltip" tooltipPosition="top">—</span>
-                          } @else {
-                            {{ formatXirr(holdingXirr) }}
-                          }
-                        </div>
+              @if (isHoldingExpanded(stock.symbol)) {
+                <div class="detail-panel">
+                  <div class="detail-grid">
+                    <div class="d"><small>市值</small><div>{{ formatCurrency(stock.market_value) }}</div></div>
+                    <div class="d"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>
+                    <div class="d"><small>累計股利</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
+                    <div class="d"><small>未實現損益</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ formatCurrency(stock.unrealized_pnl) }}</div></div>
+                    <div class="d"><small>含息損益</small><div [class.up]="stock.total_pnl_with_dividend >= 0" [class.down]="stock.total_pnl_with_dividend < 0">{{ formatCurrency(stock.total_pnl_with_dividend) }}</div></div>
+                    <div class="d">
+                      <small>XIRR</small>
+                      @let holdingXirr = selectedXirr(stock);
+                      <div [class.up]="(holdingXirr ?? 0) > 0" [class.down]="(holdingXirr ?? 0) < 0">
+                        @if (holdingXirr == null) {
+                          <span class="xirr-placeholder" tabindex="0" aria-label="缺少此期間的 XIRR 資料說明" [pTooltip]="xirrGapTooltip">—</span>
+                        } @else {
+                          {{ formatXirr(holdingXirr) }}
+                        }
                       </div>
                     </div>
                   </div>
-                }
-              </div>
-            }
-          </div>
+                </div>
+              }
+            </article>
+          }
         </div>
-
-        <!-- 即將除權息提醒 -->
-        @if (upcomingExDividends().length > 0) {
-          <div class="bento-item bento-full exdiv-card">
-            <h3 class="card-title">
-              <i class="pi pi-bell"></i> 即將除權息提醒
-            </h3>
-            <p-table [value]="upcomingExDividends()" [tableStyle]="{'min-width': '30rem'}" styleClass="p-datatable-sm">
-              <ng-template pTemplate="header">
-                <tr>
-                  <th>代號</th>
-                  <th>名稱</th>
-                  <th>除息日</th>
-                  <th>除權日</th>
-                  <th>現金股利</th>
-                </tr>
-              </ng-template>
-              <ng-template pTemplate="body" let-row>
-                <tr>
-                  <td><strong>{{ row.symbol }}</strong></td>
-                  <td>{{ row.name }}</td>
-                  <td>{{ row.ex_dividend_date ?? '-' }}</td>
-                  <td>{{ row.ex_rights_date ?? '-' }}</td>
-                  <td>{{ row.cash_dividend ?? '-' }}</td>
-                </tr>
-              </ng-template>
-            </p-table>
-          </div>
-        }
-
-      </div>
-    } @else {
-      <div class="empty-state">
-        <i class="pi pi-chart-line"></i>
-        <h4>尚未建立投資組合</h4>
-        <p>記錄你的第一筆股票交易，開始追蹤投資績效。</p>
-        <p-button label="前往記錄交易" icon="pi pi-plus" routerLink="/portfolio/transactions" styleClass="hub-btn-primary"></p-button>
-      </div>
-    }
+      </app-bento>
+    </div>
+  } @else {
+    <div class="empty">
+      <i class="pi pi-chart-line" aria-hidden="true"></i>
+      <h4>尚未建立投資組合</h4>
+      <p>記錄你的第一筆股票交易，開始追蹤投資績效。</p>
+    </div>
   }
 </div>

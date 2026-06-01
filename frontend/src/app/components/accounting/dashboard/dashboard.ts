@@ -1,6 +1,8 @@
-import { Component, OnInit, inject, signal, ChangeDetectionStrategy } from '@angular/core';
+import { Component, DestroyRef, OnInit, ViewChild, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { AccountingService } from '../../../services/accounting.service';
+import { AppearanceService } from '../../../services/appearance.service';
 import {
   AnnualCategoryTrend,
   AnnualReport,
@@ -9,25 +11,29 @@ import {
   MonthlyCompareReport,
   MonthlyReport
 } from '../../../models/accounting.model';
-import { ChartModule } from 'primeng/chart';
+import { ChartModule, UIChart } from 'primeng/chart';
 import { DatePickerModule } from 'primeng/datepicker';
 import { ProgressBarModule } from 'primeng/progressbar';
 import { FormsModule } from '@angular/forms';
 import { CardModule } from 'primeng/card';
 import { ButtonModule } from 'primeng/button';
 import { TableModule } from 'primeng/table';
-import { RouterLink } from '@angular/router';
 import { SelectModule } from 'primeng/select';
+import { BtnComponent } from '../../ui/btn/btn';
 
 @Component({
   selector: 'app-accounting-dashboard',
-  imports: [CommonModule, ChartModule, DatePickerModule, FormsModule, CardModule, ProgressBarModule, ButtonModule, TableModule, RouterLink, SelectModule],
+  imports: [CommonModule, ChartModule, DatePickerModule, FormsModule, CardModule, ProgressBarModule, ButtonModule, TableModule, SelectModule, BtnComponent],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AccountingDashboardComponent implements OnInit {
   private accountingService = inject(AccountingService);
+  private appearance = inject(AppearanceService);
+  private destroyRef = inject(DestroyRef);
+
+  @ViewChild('expenseChart') expenseChart?: UIChart;
 
   selectedMonth = new Date();
   selectedAnnualYear = new Date().getFullYear();
@@ -45,6 +51,7 @@ export class AccountingDashboardComponent implements OnInit {
   annualTrendChartData: any;
   annualCategoryChartData: any;
   chartOptions = {
+    animation: false,
     plugins: {
         legend: {
             display: false
@@ -107,7 +114,13 @@ export class AccountingDashboardComponent implements OnInit {
   ngOnInit() {
     this.loadReport();
     this.loadCardUsage();
-    this.loadAnnualReport();
+    this.appearance.dark$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => {
+        const report = this.report();
+        if (report) this.prepareChartData(report);
+        this.expenseChart?.chart?.update?.('none');
+      });
   }
 
   loadCardUsage() {
@@ -237,8 +250,14 @@ export class AccountingDashboardComponent implements OnInit {
     
     // 擴充色票，確保分類多時不會沒顏色
     const modernPalette = [
-      '#42A5F5', '#66BB6A', '#FFA726', '#AB47BC', '#EF5350', '#26A69A', '#EC407A', '#78909C',
-      '#5C6BC0', '#8D6E63', '#26C6DA', '#D4E157', '#FF7043', '#9CCC65', '#29B6F6', '#FFEE58'
+      this.cssVar('--app-primary'),
+      '#665efd',
+      '#8e84fb',
+      this.cssVar('--c-red'),
+      '#f96bee',
+      this.cssVar('--app-text-muted'),
+      this.cssVar('--app-dividend'),
+      this.cssVar('--app-success'),
     ];
     
     // 根據分類數量循環生成背景色
@@ -254,6 +273,10 @@ export class AccountingDashboardComponent implements OnInit {
         }
       ]
     };
+  }
+
+  private cssVar(name: string): string {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
 
   preparePaymentChartData(report: MonthlyReport) {

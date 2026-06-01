@@ -3,47 +3,132 @@
 @import "bootstrap-icons/font/bootstrap-icons.css";
 @import "primeicons/primeicons.css";
 
+/* ==========================================================================
+   Home Hub (HH) — Colors & Type Foundations
+   Base palette lifted from the production Angular app; evolved for the current
+   brand: calm slate/navy neutral chrome, INDIGO as the single action accent,
+   and market-convention trend colors (red/green) with a selectable convention.
+   ========================================================================== */
+
 :root {
   color-scheme: light;
-  /* Neutral foundation */
-  --app-bg: #f1f3f6;
-  --app-surface: #fafcff;
-  --app-surface-glass: rgba(250, 252, 255, 0.8);
-  --app-surface-soft: #edf1f6;
-  --app-border: #d8dee7;
-  --app-text: #151821;
-  --app-text-muted: #6b7280;
 
-  /* Accent and state tokens (modular color system) */
-  --app-accent: #1d2433;
+  /* ---- Neutral foundation ------------------------------------------------ */
+  --app-bg: #f1f3f6;            /* page background — cool off-white */
+  --app-surface: #fafcff;       /* card / panel surface */
+  --app-surface-glass: rgba(250, 252, 255, 0.8); /* frosted nav & headers */
+  --app-surface-soft: #edf1f6;  /* inset / secondary surface */
+  --app-border: #d8dee7;        /* hairline borders */
+  --app-text: #151821;          /* primary text — near-black navy */
+  --app-text-muted: #6b7280;    /* secondary / label text */
+
+  /* ---- Neutral chrome accent (deep navy — structural emphasis only) ------ */
+  --app-accent: #1d2433;        /* neutral emphasis: KPI borders, logo, etc. */
   --app-accent-soft: rgba(29, 36, 51, 0.08);
   --app-accent-soft-strong: rgba(29, 36, 51, 0.14);
-  --app-focus-ring: rgba(29, 36, 51, 0.14);
-  --app-success: #5f7f98;
-  --app-warning: #7b87a8;
-  --app-danger: #7b6c9c;
-  --app-dividend: #7e78a8;
-  --app-state-success-bg: rgba(95, 127, 152, 0.12);
-  --app-state-warning-bg: rgba(123, 135, 168, 0.12);
-  --app-state-danger-bg: rgba(123, 108, 156, 0.12);
+
+  /* ---- Action accent (INDIGO — the one interactive color) ---------------
+     Used SPARINGLY for action only: primary buttons, active nav, focus ring,
+     links, "buy". Shared with the marketing site's brand indigo. ---------- */
+  --app-primary: #533afd;
+  --app-primary-hover: #4434d4;
+  --app-primary-press: #2e2b8c;
+  --app-primary-soft: rgba(83, 58, 253, 0.10);
+  --app-focus-ring: rgba(83, 58, 253, 0.22);
+
+  --app-success: #5f7f98;       /* muted slate blue */
+  --app-warning: #7b87a8;       /* muted blue-gray */
+  --app-danger:  #7b6c9c;       /* muted lavender */
+  --app-dividend:#7e78a8;       /* muted violet — dividends */
+
+  --app-state-success-bg:  rgba(95, 127, 152, 0.12);
+  --app-state-warning-bg:  rgba(123, 135, 168, 0.12);
+  --app-state-danger-bg:   rgba(123, 108, 156, 0.12);
   --app-state-dividend-bg: rgba(126, 120, 168, 0.08);
 
-  /* Trend colors are intentionally non red/green */
-  --app-trend-positive: #5f7f98;
-  --app-trend-negative: #7b87a8;
-  --app-trend-positive-soft: rgba(95, 127, 152, 0.12);
-  --app-trend-negative-soft: rgba(123, 135, 168, 0.12);
-  --app-card-shadow: 0 10px 30px rgba(18, 26, 40, 0.045);
-  --app-raised-shadow: 0 16px 36px rgba(18, 26, 40, 0.09);
-  --app-inset-line: rgba(255, 255, 255, 0.62);
+  /* ---- Trend / market colors --------------------------------------------
+     Red & green are defined once; the gain/loss CONVENTION (below) decides
+     which hue means "positive". Default = 紅漲綠跌 (Taiwan / Asian: red up,
+     green down). Switch to [data-gainloss="western"] for green-up. ---------- */
+  --c-red: #e5484d;    --c-green: #1f9d6b;
+  --c-red-soft: rgba(229, 72, 77, 0.12);   --c-green-soft: rgba(31, 157, 107, 0.12);
 
-  --p-primary-color: var(--app-accent) !important;
-  --p-primary-contrast-color: var(--app-surface) !important;
-  --p-primary-hover-color: #2f3a4d !important;
-  --p-primary-active-color: #3f4b61 !important;
+  --app-buy:  #533afd;  --app-buy-soft:  rgba(83, 58, 253, 0.10);   /* purchases = indigo */
+  --app-sell: #51607a;  --app-sell-soft: rgba(81, 96, 121, 0.12);   /* proceeds = neutral slate */
+
+  /* default convention: 紅漲綠跌 */
+  --app-trend-positive: var(--c-red);   --app-trend-negative: var(--c-green);
+  --app-trend-positive-soft: var(--c-red-soft); --app-trend-negative-soft: var(--c-green-soft);
+
+  /* ---- Elevation --------------------------------------------------------- */
+  --app-card-shadow:  0 10px 30px rgba(18, 26, 40, 0.045);
+  --app-raised-shadow:0 16px 36px rgba(18, 26, 40, 0.09);
+  --app-inset-line:   rgba(255, 255, 255, 0.62); /* top inner highlight on cards */
+
+  /* ---- Radii (observed in app) ------------------------------------------- */
+  --radius-pill: 999px;
+  --radius-sm: 8px;     /* segmented pills, small tags */
+  --radius-md: 12px;    /* cards, app logo, mini selects */
+  --radius-lg: 16px;    /* list items, search field */
+  --radius-xl: 20px;    /* bento tiles */
+  --radius-sheet: 24px; /* mobile bottom sheets */
+
+  /* ---- Spacing scale (rem) ----------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  /* ---- Motion ------------------------------------------------------------ */
+  --ease-ios: cubic-bezier(0.2, 0.8, 0.2, 1);   /* springy iOS feel */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 0.2s;
+  --dur-base: 0.3s;
+
+  /* ========================================================================
+     TYPE — system font stack (SF Pro on Apple, falls back to system-ui).
+     The app uses the native stack; we keep it for authenticity.
+     ====================================================================== */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  --font-numeric: var(--font-sans); /* tabular-nums applied where needed */
+
+  /* Base type ramp */
+  --fs-display: 1.75rem;  /* 28px — page hero title (.hub-title) */
+  --fs-value:   2rem;     /* 32px — big KPI numbers (.bento value) */
+  --fs-h2:      1.25rem;  /* 20px — section titles, weight 800 */
+  --fs-h3:      1.15rem;  /* 18px — header title / list main-text */
+  --fs-card-title: 1rem;  /* 16px — uppercase card titles */
+  --fs-body:    0.95rem;  /* ~15px — default body */
+  --fs-sm:      0.85rem;  /* 13.6px — secondary */
+  --fs-label:   0.75rem;  /* 12px — UPPERCASE tracked labels */
+  --fs-micro:   0.7rem;   /* 11px — tags, captions */
+
+  --fw-regular: 500;  /* body baseline leans medium */
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --fw-heavy: 800;    /* KPI values & section titles */
+
+  --lh-tight: 1.1;
+  --lh-base: 1.45;
+
+  --tracking-tight: -0.02em;  /* titles */
+  --tracking-tighter: -0.03em;/* hero title */
+  --tracking-label: 0.08em;   /* uppercase labels */
+
+  --p-primary-color: var(--app-primary) !important;
+  --p-primary-contrast-color: #fff !important;
+  --p-primary-hover-color: var(--app-primary-hover) !important;
+  --p-primary-active-color: var(--app-primary-press) !important;
 }
 
-@mixin dark-theme-styles {
+/* ==========================================================================
+   DARK THEME — applied via .app-dark-mode on a wrapper element.
+   ========================================================================== */
+.app-dark-mode {
   color-scheme: dark;
   --app-bg: #0f1218;
   --app-surface: #171c24;
@@ -55,7 +140,11 @@
   --app-accent: #e6ebf5;
   --app-accent-soft: rgba(230, 235, 245, 0.12);
   --app-accent-soft-strong: rgba(230, 235, 245, 0.18);
-  --app-focus-ring: rgba(230, 235, 245, 0.18);
+  --app-primary: #8b7dff;
+  --app-primary-hover: #9a8ffd;
+  --app-primary-press: #b9b0ff;
+  --app-primary-soft: rgba(139, 125, 255, 0.16);
+  --app-focus-ring: rgba(139, 125, 255, 0.30);
   --app-success: #8daec7;
   --app-warning: #96a5c5;
   --app-danger: #a494c6;
@@ -64,19 +153,20 @@
   --app-state-warning-bg: rgba(150, 165, 197, 0.15);
   --app-state-danger-bg: rgba(164, 148, 198, 0.16);
   --app-state-dividend-bg: rgba(171, 166, 208, 0.12);
-  --app-trend-positive: #8daec7;
-  --app-trend-negative: #96a5c5;
-  --app-trend-positive-soft: rgba(141, 174, 199, 0.16);
-  --app-trend-negative-soft: rgba(150, 165, 197, 0.16);
+  /* dark-tuned red/green + buy/sell — trend still derives via the convention */
+  --c-red: #ff6369;    --c-green: #43c98a;
+  --c-red-soft: rgba(255, 99, 105, 0.16);  --c-green-soft: rgba(67, 201, 138, 0.16);
+  --app-buy: #8b7dff;  --app-buy-soft: rgba(139, 125, 255, 0.16);
+  --app-sell: #9aa6bd; --app-sell-soft: rgba(154, 166, 189, 0.16);
   --app-card-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
   --app-raised-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
   --app-inset-line: rgba(255, 255, 255, 0.05);
 
   /* 強制覆蓋 PrimeNG */
-  --p-primary-color: var(--app-accent) !important;
-  --p-primary-contrast-color: #111214 !important;
-  --p-primary-hover-color: #e5e7eb !important;
-  --p-primary-active-color: #f3f4f6 !important;
+  --p-primary-color: var(--app-primary) !important;
+  --p-primary-contrast-color: #fff !important;
+  --p-primary-hover-color: var(--app-primary-hover) !important;
+  --p-primary-active-color: var(--app-primary-press) !important;
 
   /* iOS Style Overrides for Bootstrap Utility Classes */
   .bg-white, 
@@ -122,7 +212,7 @@
     border-color: var(--app-border) !important;
     
     &:focus {
-      border-color: var(--app-accent) !important;
+      border-color: var(--app-primary) !important;
       box-shadow: 0 0 0 2px var(--app-focus-ring) !important;
     }
   }
@@ -140,8 +230,8 @@
       background-color: var(--app-surface-soft) !important;
     }
     &.p-highlight {
-        background-color: var(--app-accent) !important;
-        color: var(--app-surface) !important;
+        background-color: var(--app-primary) !important;
+        color: #fff !important;
     }
   }
 
@@ -178,25 +268,46 @@
         background-color: var(--app-surface-soft) !important;
       }
       &.p-highlight {
-        background-color: var(--app-accent) !important;
-        color: var(--app-surface) !important;
+        background-color: var(--app-primary) !important;
+        color: #fff !important;
       }
     }
   }
 }
 
-/* Explicit Overrides (Manual Toggle) */
-.app-dark-mode {
-  @include dark-theme-styles;
+/* ==========================================================================
+   GAIN / LOSS CONVENTION — set data-gainloss on a wrapper (or <html>).
+   Default (no attribute) is 紅漲綠跌. Both work in light & dark because they
+   reference --c-red / --c-green, which the dark theme re-tunes above.
+   ========================================================================== */
+[data-gainloss="asian"] {        /* 紅漲綠跌 — Taiwan / Asian markets */
+  --app-trend-positive: var(--c-red);   --app-trend-negative: var(--c-green);
+  --app-trend-positive-soft: var(--c-red-soft); --app-trend-negative-soft: var(--c-green-soft);
+}
+[data-gainloss="western"] {      /* 綠漲紅跌 — Western markets */
+  --app-trend-positive: var(--c-green); --app-trend-negative: var(--c-red);
+  --app-trend-positive-soft: var(--c-green-soft); --app-trend-negative-soft: var(--c-red-soft);
 }
 
+/* ==========================================================================
+   SEMANTIC ELEMENT STYLES — convenience classes mirroring the app.
+   ========================================================================== */
 body {
   background-color: var(--app-bg);
   color: var(--app-text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
-  transition: background-color 0.3s ease, color 0.3s ease;
+  font-family: var(--font-sans);
   margin: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
+
+.hh-title       { font-size: var(--fs-display); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tighter); color: var(--app-text); line-height: var(--lh-tight); }
+.hh-section-title { font-size: var(--fs-h2); font-weight: var(--fw-heavy); letter-spacing: var(--tracking-tight); color: var(--app-text); }
+.hh-value       { font-size: var(--fs-value); font-weight: var(--fw-heavy); line-height: var(--lh-tight); color: var(--app-text); font-variant-numeric: tabular-nums; }
+.hh-card-title  { font-size: var(--fs-card-title); font-weight: var(--fw-bold); text-transform: uppercase; letter-spacing: 0.05em; color: var(--app-text); }
+.hh-label       { font-size: var(--fs-label); font-weight: var(--fw-bold); text-transform: uppercase; letter-spacing: var(--tracking-label); color: var(--app-text-muted); }
+.hh-body        { font-size: var(--fs-body); font-weight: var(--fw-regular); line-height: var(--lh-base); color: var(--app-text); }
+.hh-muted       { color: var(--app-text-muted); }
 
 .card {
   background-color: var(--app-surface);

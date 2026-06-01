@@ -1,146 +1,28 @@
-.hub-status-filter {
-  display: flex;
-  gap: 0.5rem;
-  overflow-x: auto;
-  padding-bottom: 0.5rem;
-  scrollbar-width: none;
-  
-  &::-webkit-scrollbar { display: none; }
-
-  .filter-pill {
-    white-space: nowrap;
-    padding: 0.6rem 1.25rem;
-    border-radius: 999px;
-    border: 1px solid var(--app-border);
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    font-size: 0.85rem;
-    font-weight: 700;
-    transition: all 0.2s;
-    cursor: pointer;
-
-    &.active {
-      background: var(--app-accent);
-      color: var(--app-surface);
-      border-color: var(--app-accent);
-      box-shadow: var(--app-card-shadow);
-    }
-
-    &.success.active { background: var(--app-success); border-color: var(--app-success); box-shadow: var(--app-card-shadow); color: var(--app-surface); }
-    &.secondary.active { background: var(--app-text-muted); border-color: var(--app-text-muted); box-shadow: none; }
-  }
-}
-
-.hub-shopping-list {
+.empty {
+  align-items: center;
+  color: var(--app-text-muted);
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-}
+  justify-content: center;
+  min-height: min(520px, calc(100vh - 180px));
+  padding: 4rem 2rem;
+  text-align: center;
 
-.hub-shopping-item {
-  background: var(--app-surface);
-  border-radius: 16px;
-  border: 1px solid var(--app-border);
-  padding: 1rem;
-  transition: all 0.2s;
-
-  &:hover {
-    border-color: var(--app-accent);
-    transform: translateX(4px);
+  i {
+    font-size: 4rem;
+    margin-bottom: 1.5rem;
+    opacity: 0.4;
   }
 
-  &.purchased {
-    opacity: 0.6;
-    .item-name { text-decoration: line-through; color: var(--app-text-muted); }
-    .item-check i { color: var(--app-success); }
+  h4 {
+    color: var(--app-text);
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin: 0 0 0.5rem;
   }
 
-  .item-main-row {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-  }
-
-  .item-check {
-    cursor: pointer;
-    font-size: 1.5rem;
-    color: var(--app-border);
-    display: flex;
-    align-items: center;
-    transition: transform 0.1s;
-    &:active { transform: scale(0.9); }
-  }
-
-  .item-info {
-    flex: 1;
-    min-width: 0;
-
-    .item-name {
-      font-weight: 700;
-      font-size: 1.1rem;
-      margin-bottom: 0.25rem;
-      color: var(--app-text);
-    }
-
-    .item-meta {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.8rem;
-      font-weight: 600;
-      color: var(--app-text-muted);
-      
-      .dot { opacity: 0.5; }
-    }
-
-    .item-note {
-      margin-top: 0.4rem;
-      font-size: 0.85rem;
-      color: var(--app-warning);
-      background: var(--app-state-warning-bg);
-      padding: 0.2rem 0.6rem;
-      border-radius: 6px;
-      display: inline-block;
-    }
-  }
-
-  .item-actions {
-    display: flex;
-    gap: 0.25rem;
-  }
-}
-
-/* 共用的 V2 按鈕與頁首樣式 */
-:host ::ng-deep {
-  .hub-btn-primary {
-    background: var(--app-accent) !important;
-    border: none !important;
-    border-radius: 12px !important;
-    padding: 0.6rem 1.25rem !important;
-    font-weight: 700 !important;
-    box-shadow: var(--app-card-shadow) !important;
-  }
-
-  .hub-btn-secondary {
-    background: var(--app-surface-soft) !important;
-    color: var(--app-text) !important;
-    border: 1px solid var(--app-border) !important;
-    border-radius: 12px !important;
-    padding: 0.6rem 1.25rem !important;
-    font-weight: 700 !important;
-  }
-}
-
-.hub-page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-  flex-wrap: wrap;
-
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
+  p {
+    margin: 0;
+    max-width: 320px;
   }
 }

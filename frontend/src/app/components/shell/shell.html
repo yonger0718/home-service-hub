@@ -1,0 +1,19 @@
+<div class="hub-layout">
+  <app-dock [activeId]="activeItem().id"></app-dock>
+
+  <div class="hub-main">
+    <header class="hub-header">
+      <img class="hub-logo" src="assets/logo-lockup.svg" alt="Home Hub" />
+      <h1 class="title">{{ title() }}</h1>
+    </header>
+
+    <main class="hub-page">
+      <router-outlet></router-outlet>
+    </main>
+  </div>
+
+  <app-mobile-nav
+    [activeId]="activeItem().id"
+    [activeGroupId]="activeItem().group"
+  ></app-mobile-nav>
+</div>

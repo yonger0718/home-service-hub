@@ -72,6 +72,7 @@ export interface ImportResult {
   created_ids: number[];
   rows: ImportRow[];
   recalc_scheduled?: boolean;
+  csv_format?: 'generic' | 'cathay';
 }
 
 export interface RecalcStepStatus {

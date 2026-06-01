@@ -30,11 +30,11 @@ describe('App', () => {
     expect(app).toBeTruthy();
   });
 
-  it('should render top title area', async () => {
+  it('should render shell title area', async () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await fixture.whenStable();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelector('.header-title')?.textContent).toContain('庫存管理');
+    expect(compiled.querySelector('.hub-header .title')?.textContent).toContain('庫存管理');
   });
 });

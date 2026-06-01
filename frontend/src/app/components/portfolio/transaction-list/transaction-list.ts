@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { Transaction, TransactionType, TransactionQuery } from '../../../models/portfolio.model';
@@ -18,7 +18,9 @@ import { ConfirmDialogModule } from 'primeng/confirmdialog';
 import { ToastModule } from 'primeng/toast';
 import { MenuModule } from 'primeng/menu';
 import { Menu } from 'primeng/menu';
-import { ListItemComponent } from '../../shared/list-item/list-item';
+import { BtnComponent } from '../../ui/btn/btn';
+import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
+import { TimelineComponent, TimelineRow } from '../../ui/timeline/timeline';
 
 const SORT_OPTIONS = [
   { value: 'trade_date:desc', label: '日期 新→舊' },
@@ -38,7 +40,8 @@ const SIDE_OPTIONS = [
     CommonModule, TableModule, ButtonModule, DialogModule, FormsModule,
     InputTextModule, InputNumberModule, SelectButtonModule, SelectModule,
     DatePickerModule, PaginatorModule, ProgressSpinnerModule,
-    ConfirmDialogModule, ToastModule, MenuModule, ListItemComponent,
+    ConfirmDialogModule, ToastModule, MenuModule,
+    BtnComponent, SegToggleComponent, TimelineComponent,
   ],
   providers: [ConfirmationService, MessageService],
   templateUrl: './transaction-list.html',
@@ -66,7 +69,27 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   query = signal<TransactionQuery>({ offset: 0, limit: 25, sort: 'trade_date:desc' });
   readonly sortOptions = SORT_OPTIONS;
   readonly sideOptions = SIDE_OPTIONS;
+  readonly sideFilterOptions: SegToggleOption[] = [
+    { label: '全部', value: 'ALL' },
+    { label: '買進', value: 'BUY' },
+    { label: '賣出', value: 'SELL' },
+  ];
   readonly rowsPerPageOptions = [25, 50, 100];
+
+  readonly timelineRows = computed<TimelineRow[]>(() =>
+    this.transactions().map(t => {
+      const isBuy = t.type === TransactionType.BUY;
+      return {
+        date: t.trade_date ?? '',
+        side: isBuy ? 'buy' : 'sell',
+        sideLabel: isBuy ? '買進' : '賣出',
+        primary: `${this.symbolDisplay(t)} ${t.symbol}`,
+        meta: `${Number(t.quantity).toLocaleString('zh-TW')} × ${Number(t.price).toFixed(2)}`,
+        amount: `${isBuy ? '-' : '+'}${this.formatCurrency(this.allInTotal(t))}`,
+        amountVariant: isBuy ? 'buy' : 'sell',
+      };
+    }),
+  );
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
@@ -154,6 +177,10 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   onSideChange(side: 'BUY' | 'SELL' | null) {
     this.updateFilters({ side: side ?? null });
+  }
+
+  onSideFilterChange(side: string) {
+    this.onSideChange(side === 'ALL' ? null : side as 'BUY' | 'SELL');
   }
 
   onSortChange(sort: string) {
@@ -253,6 +280,14 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   allInUnitPrice(t: Transaction): number {
     const qty = Number(t.quantity);
     return qty > 0 ? this.allInTotal(t) / qty : Number(t.price);
+  }
+
+  formatCurrency(value: number | string | null | undefined): string {
+    return new Intl.NumberFormat('zh-TW', {
+      style: 'currency',
+      currency: 'TWD',
+      minimumFractionDigits: 0,
+    }).format(Number(value ?? 0));
   }
 
   saveTransaction() {

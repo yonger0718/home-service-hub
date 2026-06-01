@@ -1,172 +1,260 @@
-@use "../../accounting/dashboard/dashboard.scss" as acct;
+.portfolio-dashboard {
+  padding-bottom: 2rem;
+}
 
+.page-head {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
 
-/* 繼承 Bento Grid 基本樣式並客製化 */
+.head-actions {
+  display: flex;
+  gap: 0.75rem;
+}
 
-.market-value-card {
-  background: linear-gradient(145deg, var(--app-surface) 0%, var(--app-accent-soft) 100%);
-  border-left: 6px solid var(--app-accent);
-  .value { 
-    color: var(--app-text); 
-    text-shadow: none;
+.bento-grid {
+  display: grid;
+  gap: 1.25rem;
+  grid-auto-rows: minmax(140px, auto);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+app-bento {
+  display: block;
+}
+
+.b-full {
+  grid-column: 1 / -1;
+}
+
+.label {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+}
+
+.value {
+  color: var(--app-text);
+  font-size: 2rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  line-height: 1.1;
+
+  &.up {
+    color: var(--app-trend-positive);
+  }
+
+  &.down {
+    color: var(--app-trend-negative);
+  }
+
+  &.dividend {
+    color: var(--app-dividend);
   }
 }
 
-.pnl-card, .day-pnl-card {
-  background: linear-gradient(145deg, var(--app-surface) 0%, var(--app-trend-positive-soft) 100%);
-  border-left: 6px solid var(--app-trend-positive);
-  .value { 
-    color: var(--app-trend-positive); 
-    text-shadow: none;
-  }
-  
-  &.is-loss {
-    background: linear-gradient(145deg, var(--app-surface) 0%, var(--app-trend-negative-soft) 100%);
-    border-left-color: var(--app-trend-negative);
-    .value { 
-      color: var(--app-trend-negative);
-      text-shadow: none;
-    }
+.meta {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-top: 0.75rem;
+}
+
+.chart-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.chart-head-left {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+}
+
+.card-title {
+  color: var(--app-text);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.range-tabs {
+  display: block;
+}
+
+.networth-chart {
+  height: 220px;
+  position: relative;
+
+  p-chart,
+  canvas {
+    height: 100% !important;
+    width: 100% !important;
   }
 }
 
-.dividend-card {
-  background: linear-gradient(145deg, var(--app-surface) 0%, var(--app-state-dividend-bg) 100%);
-  border-left: 6px solid color-mix(in srgb, var(--app-dividend) 72%, var(--app-border));
+.holdings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
 
-  .value {
-    color: var(--app-dividend) !important;
-  }
+.stock-row {
+  background: linear-gradient(180deg, var(--app-surface-soft) 0%, var(--app-surface) 100%);
+  border: 1px solid var(--app-border);
+  border-radius: 16px;
+  box-shadow: var(--app-card-shadow);
+  cursor: pointer;
+  display: block;
+  padding: 1rem;
+  transition: all 0.2s var(--ease-ios);
 
-  .meta {
-    color: var(--app-text-muted);
+  &:hover,
+  &:focus-visible {
+    border-color: var(--app-accent-soft-strong);
+    box-shadow: var(--app-raised-shadow);
+    outline: none;
   }
 }
 
-.pct-badge {
-  display: inline-block;
-  padding: 0.25rem 0.75rem;
-  background: var(--app-trend-positive-soft);
-  border-radius: 999px;
-  margin-top: 0.5rem;
+.stock-top {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.stock-sym,
+.stock-price {
+  display: flex;
+  flex-direction: column;
+}
+
+.stock-price {
+  text-align: right;
+}
+
+.stock-sym .s,
+.stock-price .p {
+  color: var(--app-text);
+  font-size: 1.1rem;
+  font-weight: 800;
+}
+
+.stock-sym .n {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+}
+
+.stock-price .c {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.stock-stats {
+  display: flex;
+  gap: 1.5rem;
+}
+
+.st {
+  display: flex;
+  flex-direction: column;
+}
+
+.l {
+  color: var(--app-text-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.v,
+.d div {
+  color: var(--app-text);
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
 }
 
-.is-loss .pct-badge {
-  background: var(--app-trend-negative-soft);
+.up {
+  color: var(--app-trend-positive);
 }
 
-.xirr-card-header {
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
-  align-items: flex-start;
+.down {
+  color: var(--app-trend-negative);
+}
+
+.dividend {
+  color: var(--app-dividend);
+}
+
+.detail-panel {
+  border-top: 1px solid var(--app-border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.detail-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.d small {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
 }
 
 .xirr-placeholder {
   cursor: help;
 }
 
-/* Holdings List V2 */
-.hub-holdings-list {
+.empty {
+  align-items: center;
+  color: var(--app-text-muted);
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-}
+  justify-content: center;
+  padding: 4rem 2rem;
+  text-align: center;
 
-.hub-stock-row {
-  background: linear-gradient(180deg, var(--app-surface-soft) 0%, var(--app-surface) 100%);
-  border-radius: 16px;
-  padding: 1rem;
-  cursor: pointer;
-  transition: all 0.2s;
-  border: 1px solid var(--app-border);
-  box-shadow: var(--app-card-shadow);
-
-  &:hover {
-    background: linear-gradient(180deg, var(--app-surface) 0%, var(--app-surface-soft) 100%);
-    border-color: var(--app-accent-soft-strong);
-    box-shadow: var(--app-raised-shadow);
+  i {
+    font-size: 4rem;
+    margin-bottom: 1.5rem;
+    opacity: 0.4;
   }
 
-  .stock-main-info {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 0.75rem;
+  h4 {
+    color: var(--app-text);
+    font-weight: 700;
+    margin: 0 0 0.5rem;
   }
 
-  .stock-symbol-group {
-    display: flex;
-    flex-direction: column;
-    .symbol { font-weight: 800; font-size: 1.1rem; color: var(--app-text); }
-    .name { font-size: 0.8rem; color: var(--app-text-muted); max-width: 120px; }
-  }
-
-  .stock-price-group {
-    text-align: right;
-    display: flex;
-    flex-direction: column;
-    .current-price { font-weight: 700; font-size: 1.1rem; color: var(--app-text); }
-    .day-change { 
-      font-size: 0.85rem; font-weight: 600; 
-      &.up { color: var(--app-trend-positive); }
-      &.down { color: var(--app-trend-negative); }
-    }
-  }
-
-  .stock-stats {
-    display: flex;
-    gap: 1.5rem;
-    .stat-item {
-      display: flex;
-      flex-direction: column;
-      .l { font-size: 0.7rem; color: var(--app-text-muted); font-weight: 600; }
-      .v { font-weight: 700; font-size: 0.9rem; color: var(--app-text); }
-    }
+  p {
+    margin: 0;
+    max-width: 300px;
   }
 }
 
-.pnl-tag {
-  &.danger { color: var(--app-trend-positive); }
-  &.success { color: var(--app-trend-negative); }
-}
-
-.stock-details-panel {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--app-border);
-  animation: slideDown 0.3s ease-out;
-}
-
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 1rem;
-  
-  .d-item {
-    small { color: var(--app-text-muted); font-size: 0.75rem; }
-    div { font-weight: 700; font-size: 0.95rem; color: var(--app-text); }
-    .up { color: var(--app-trend-positive); }
-    .down { color: var(--app-trend-negative); }
+@media (max-width: 1200px) {
+  .bento-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@keyframes slideDown {
-  from { opacity: 0; transform: translateY(-10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* stylelint-disable-next-line selector-pseudo-element-no-unknown */
-:host ::ng-deep {
-  .xirr-window-control .p-selectbutton {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem;
-  }
-
-  .xirr-window-control .p-togglebutton {
-    min-width: 3rem;
-    padding-inline: 0.55rem;
+@media (max-width: 760px) {
+  .bento-grid,
+  .detail-grid {
+    grid-template-columns: 1fr;
   }
 }

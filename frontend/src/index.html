@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>InventoryUi</title>
-  <base href="/">
+  <base href="/hub/">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="apple-touch-icon" href="favicon.svg">
@@ -11,6 +11,32 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="HomeHub">
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var storage = null;
+      try {
+        storage = window.localStorage;
+      } catch (error) {
+        storage = null;
+      }
+
+      var storedDark = storage ? storage.getItem('hh-dark') : null;
+      var prefersDark = false;
+      try {
+        prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      } catch (error) {
+        prefersDark = false;
+      }
+
+      var dark = storedDark === '1' || (storedDark === null && prefersDark);
+      var storedGainLoss = storage ? storage.getItem('hh-gainloss') : null;
+      var gainLoss = storedGainLoss === 'western' ? 'western' : 'asian';
+
+      root.classList.toggle('app-dark-mode', dark);
+      root.setAttribute('data-gainloss', gainLoss);
+    })();
+  </script>
 </head>
 <body>
   <app-root></app-root>

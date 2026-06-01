@@ -1,0 +1,64 @@
+.file-chip {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: 0.85rem;
+  padding: 0.75rem 1rem;
+}
+
+.fi {
+  align-items: center;
+  background: var(--app-state-success-bg);
+  border-radius: 9px;
+  color: var(--app-success);
+  display: flex;
+  flex-shrink: 0;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+.file-meta {
+  min-width: 0;
+}
+
+.fn {
+  color: var(--app-text);
+  font-size: 0.86rem;
+  font-weight: var(--fw-bold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fm {
+  color: var(--app-text-muted);
+  font-size: 0.74rem;
+  margin-top: 1px;
+}
+
+button {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-pill);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  margin-left: auto;
+  width: 32px;
+
+  &:hover {
+    background: var(--app-accent-soft);
+    color: var(--app-text);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 4px var(--app-focus-ring);
+  }
+}

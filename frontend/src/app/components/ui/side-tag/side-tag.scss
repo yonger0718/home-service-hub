@@ -1,0 +1,23 @@
+.side-tag {
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: var(--fw-heavy);
+  letter-spacing: 0.02em;
+  padding: 0.3rem 0.6rem;
+}
+
+.buy {
+  background: var(--app-buy-soft);
+  color: var(--app-buy);
+}
+
+.sell {
+  background: var(--app-sell-soft);
+  color: var(--app-sell);
+}
+
+.cash {
+  background: var(--app-state-dividend-bg);
+  color: var(--app-dividend);
+}
