@@ -25,6 +25,7 @@ export interface SegToggleOption {
           #segmentButton
           type="button"
           role="radio"
+          [attr.tabindex]="selected() === option.value ? 0 : -1"
           [class.active]="selected() === option.value"
           [attr.aria-checked]="selected() === option.value"
           [attr.aria-label]="option.ariaLabel || option.label"
@@ -64,13 +65,13 @@ export class SegToggleComponent {
   }
 
   protected onKeydown(event: KeyboardEvent, index: number): void {
-    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
     event.preventDefault();
 
     const options = this.options();
     if (!options.length) return;
 
-    const offset = event.key === 'ArrowRight' ? 1 : -1;
+    const offset = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1;
     const nextIndex = (index + offset + options.length) % options.length;
     this.select(options[nextIndex].value);
     queueMicrotask(() => this.buttons?.get(nextIndex)?.nativeElement.focus());
