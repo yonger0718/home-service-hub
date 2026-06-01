@@ -75,7 +75,15 @@
       <app-bento class="b-full" title="持股明細" [full]="true">
         <div class="holdings">
           @for (stock of summary()!.holdings; track stock.symbol) {
-            <article class="stock-row" (click)="toggleHoldingExpand(stock.symbol)" tabindex="0">
+            <article
+              class="stock-row"
+              role="button"
+              tabindex="0"
+              [attr.aria-expanded]="isHoldingExpanded(stock.symbol)"
+              (click)="toggleHoldingExpand(stock.symbol)"
+              (keydown.enter)="toggleHoldingExpand(stock.symbol)"
+              (keydown.space)="toggleHoldingExpand(stock.symbol); $event.preventDefault()"
+            >
               <div class="stock-top">
                 <div class="stock-sym">
                   <span class="s">{{ stock.name || stock.symbol }}</span>

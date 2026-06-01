@@ -40,6 +40,8 @@ export class BtnComponent {
   protected readonly normalizedIcon = computed(() => this.icon().replace(/^pi\s+/, ''));
 
   protected onClick(event: MouseEvent): void {
+    // stop native bubble so ancestor (click) handlers don't fire twice: once from
+    // this.click.emit and again from the DOM-bubble of the inner <button>
     event.stopPropagation();
 
     if (this.disabled() || this.loading()) {

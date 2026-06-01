@@ -21,14 +21,22 @@ export class AppearanceService {
 
   setDark(value: boolean): void {
     this.dark$.next(value);
-    this.storage?.setItem(DARK_KEY, value ? '1' : '0');
+    this.persist(DARK_KEY, value ? '1' : '0');
     this.apply();
   }
 
   setGainLoss(value: GainLossConvention): void {
     this.gainLoss$.next(value);
-    this.storage?.setItem(GAIN_LOSS_KEY, value);
+    this.persist(GAIN_LOSS_KEY, value);
     this.apply();
+  }
+
+  private persist(key: string, value: string): void {
+    try {
+      this.storage?.setItem(key, value);
+    } catch {
+      // localStorage write failed (quota / blocked); keep in-memory state
+    }
   }
 
   private apply(): void {

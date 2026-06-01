@@ -284,7 +284,14 @@ export class PortfolioDashboardComponent implements OnInit {
       historyInterval = 'month';
     }
 
-    return { from: from.toISOString().slice(0, 10), interval: historyInterval };
+    return { from: this.formatDateOnly(from), interval: historyInterval };
+  }
+
+  private formatDateOnly(date: Date): string {
+    const yyyy = date.getFullYear();
+    const mm = `${date.getMonth() + 1}`.padStart(2, '0');
+    const dd = `${date.getDate()}`.padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
   }
 
   private refreshChartTheme(): void {

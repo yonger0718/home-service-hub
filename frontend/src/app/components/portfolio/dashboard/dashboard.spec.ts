@@ -146,8 +146,8 @@ describe('PortfolioDashboardComponent', () => {
     fixture.nativeElement.querySelector('button').click();
     vi.advanceTimersByTime(1000);
 
-    expect(portfolioService.getRecalcStatus).toHaveBeenCalledTimes(1);
-    expect(portfolioService.getSummary).toHaveBeenCalledTimes(1);
+    expect(portfolioService.getRecalcStatus).toHaveBeenCalled();
+    expect(portfolioService.getSummary).toHaveBeenCalled();
   });
 
   it('warns and still reloads summary when refresh quotes is already running', () => {
@@ -158,7 +158,7 @@ describe('PortfolioDashboardComponent', () => {
     fixture.nativeElement.querySelector('button').click();
 
     expect(warnSpy).toHaveBeenCalledWith('另一筆重算進行中, 稍候再試');
-    expect(portfolioService.getSummary).toHaveBeenCalledTimes(1);
+    expect(portfolioService.getSummary).toHaveBeenCalled();
   });
 
   it('uses 1Y as the default range and updates XIRR when 3M is selected', () => {

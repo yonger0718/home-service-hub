@@ -1,5 +1,6 @@
 import { Component, DestroyRef, OnInit, ViewChild, inject, signal, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { AccountingService } from '../../../services/accounting.service';
 import { AppearanceService } from '../../../services/appearance.service';
@@ -32,6 +33,11 @@ export class AccountingDashboardComponent implements OnInit {
   private accountingService = inject(AccountingService);
   private appearance = inject(AppearanceService);
   private destroyRef = inject(DestroyRef);
+  private router = inject(Router);
+
+  openCardSettings(): void {
+    this.router.navigate(['/accounting/cards']);
+  }
 
   @ViewChild('expenseChart') expenseChart?: UIChart;
 

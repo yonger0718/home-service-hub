@@ -90,7 +90,7 @@
       <div class="bento b-full">
         <div class="card-head">
           <h3 class="card-title">信用卡額度監控</h3>
-          <app-btn variant="ghost" icon="pi-cog" [iconOnly]="true" ariaLabel="信用卡設定"></app-btn>
+          <app-btn variant="ghost" icon="pi-cog" [iconOnly]="true" ariaLabel="信用卡設定" (click)="openCardSettings()"></app-btn>
         </div>
         <div class="credit-grid">
           @for (card of cardUsage(); track card.cardName) {

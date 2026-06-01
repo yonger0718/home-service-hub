@@ -223,7 +223,7 @@ export class ItemListComponent implements OnInit {
         }
       },
       error: err => {
-        this.items.update(rows => rows.map(row => row.id === item.id ? item : row));
+        this.loadItems();
         this.messageService.add({ severity: 'error', summary: '錯誤', detail: err?.error?.message || '操作失敗' });
       },
     });

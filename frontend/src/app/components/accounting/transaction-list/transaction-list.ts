@@ -367,6 +367,10 @@ export class TransactionListComponent implements OnInit {
       this.selectedPaymentValue = `CARD_${card.id}`;
       this.newTxn.cardId = card.id;
       this.newTxn.paymentMethod = card.defaultPaymentMethod || '信用卡';
+    } else {
+      this.newTxn.cardId = null;
+      this.selectedPaymentValue = 'CASH';
+      this.newTxn.paymentMethod = '現金';
     }
   }
 
@@ -521,6 +525,10 @@ export class TransactionListComponent implements OnInit {
   }
 
   saveTransaction() {
+    if (this.newTxn.transactionType === 'CARD' && !this.newTxn.cardId) {
+      this.messageService.add({ severity: 'warn', summary: '提醒', detail: '信用卡交易必須選擇卡片' });
+      return;
+    }
     if (!this.canSaveTransaction()) {
       this.messageService.add({ severity: 'warn', summary: '提醒', detail: '請填寫必要欄位' });
       return;
@@ -563,11 +571,13 @@ export class TransactionListComponent implements OnInit {
   }
 
   canSaveTransaction(): boolean {
+    const hasRequiredCard = this.newTxn.transactionType !== 'CARD' || !!this.newTxn.cardId;
     return !!this.newTxn.item?.trim()
       && !!this.newTxn.categoryId
       && Number(this.newTxn.transactionAmount) > 0
       && this.txnDate instanceof Date
-      && !Number.isNaN(this.txnDate.getTime());
+      && !Number.isNaN(this.txnDate.getTime())
+      && hasRequiredCard;
   }
 
   formatCurrency(value: number | string | null | undefined): string {

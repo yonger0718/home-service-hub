@@ -32,7 +32,7 @@
 <div class="filter-bar">
   <div class="search-wrap">
     <i class="pi pi-search" aria-hidden="true"></i>
-    <input type="text" [ngModel]="selectedKeyword()" (ngModelChange)="selectedKeyword.set($event || '')" placeholder="搜尋項目、備註..." />
+    <input id="txn-search" type="text" [ngModel]="selectedKeyword()" (ngModelChange)="selectedKeyword.set($event || '')" placeholder="搜尋項目、備註..." aria-label="搜尋交易" />
   </div>
   <div class="filter-controls">
     <p-select
@@ -85,28 +85,28 @@
       ></app-seg-toggle>
     </div>
     <div class="field full">
-      <label>標題</label>
-      <input pInputText [(ngModel)]="newTxn.item" placeholder="例如：午餐、Netflix 訂閱" />
+      <label for="txn-item">標題</label>
+      <input id="txn-item" pInputText [(ngModel)]="newTxn.item" placeholder="例如：午餐、Netflix 訂閱" />
     </div>
     <div class="field">
-      <label>日期</label>
-      <p-datepicker [(ngModel)]="txnDate" dateFormat="yy-mm-dd" [fluid]="true" appendTo="body"></p-datepicker>
+      <label for="txn-date">日期</label>
+      <p-datepicker inputId="txn-date" [(ngModel)]="txnDate" dateFormat="yy-mm-dd" [fluid]="true" appendTo="body"></p-datepicker>
     </div>
     <div class="field">
-      <label>分類</label>
-      <p-select [options]="categories()" optionLabel="name" optionValue="id" [(ngModel)]="newTxn.categoryId" placeholder="選擇分類" (onChange)="onCategoryChange($event.value)" [fluid]="true" appendTo="body"></p-select>
+      <label for="txn-category">分類</label>
+      <p-select inputId="txn-category" [options]="categories()" optionLabel="name" optionValue="id" [(ngModel)]="newTxn.categoryId" placeholder="選擇分類" (onChange)="onCategoryChange($event.value)" [fluid]="true" appendTo="body"></p-select>
     </div>
     <div class="field">
-      <label>支付方式</label>
-      <p-select [options]="paymentOptions()" optionLabel="label" optionValue="value" [(ngModel)]="selectedPaymentValue" placeholder="選擇卡片或現金" [fluid]="true" (onChange)="onCombinedPaymentChange($event)" appendTo="body"></p-select>
+      <label for="txn-payment">支付方式</label>
+      <p-select inputId="txn-payment" [options]="paymentOptions()" optionLabel="label" optionValue="value" [(ngModel)]="selectedPaymentValue" placeholder="選擇卡片或現金" [fluid]="true" (onChange)="onCombinedPaymentChange($event)" appendTo="body"></p-select>
     </div>
     <div class="field">
-      <label>交易金額</label>
-      <p-inputNumber [ngModel]="newTxn.transactionAmount" (ngModelChange)="onTransactionAmountChange($event)" mode="currency" currency="TWD" locale="zh-TW" [minFractionDigits]="0" [maxFractionDigits]="0" [fluid]="true"></p-inputNumber>
+      <label for="txn-amount">交易金額</label>
+      <p-inputNumber inputId="txn-amount" [ngModel]="newTxn.transactionAmount" (ngModelChange)="onTransactionAmountChange($event)" mode="currency" currency="TWD" locale="zh-TW" [minFractionDigits]="0" [maxFractionDigits]="0" [fluid]="true"></p-inputNumber>
     </div>
     <div class="field full">
-      <label>備註</label>
-      <input pInputText [(ngModel)]="newTxn.note" />
+      <label for="txn-note">備註</label>
+      <input id="txn-note" pInputText [(ngModel)]="newTxn.note" />
     </div>
   </div>
   <ng-template pTemplate="footer">
