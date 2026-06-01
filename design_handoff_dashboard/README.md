@@ -195,10 +195,10 @@ Both controls are exposed on the **Settings** screen (#7).
   (violet) amount. See `DividendList` in `screens-dividends-import.jsx`.
 
 ### 4. CSV import — 匯入 CSV (`import`)
-- A **3-step card** (`.imp-card`): (1) broker-format `<select>` (永豐金/元大/國泰/富邦/通用),
-  (2) dropzone → on file, a `.file-chip` showing filename + parsed count, (3) a **preview table**
-  (`.preview-table`) of parsed rows with buy/sell tags. Footer has 取消 / 確認匯入 N 筆. The flow is
-  interactive in the mock (`ImportCSV` in `screens-dividends-import.jsx`); wire to the real importer.
+- A **2-step card** (`.imp-card`): (1) dropzone → on file, a `.file-chip` showing filename + parsed
+  count, (2) a **preview table** (`.preview-table`) of parsed rows with buy/sell tags. The broker
+  format is **auto-detected by the backend** (`csv_format`: `cathay`|`generic`) and shown as a
+  detected-format chip — no broker `<select>`. Footer has 取消 / 確認匯入 N 筆. Wire to the real importer.
 
 ### 5. Accounting analytics — 記帳分析 (`accounting-dash`)
 - Expense **doughnut** (Chart.js) with a custom legend, a category-change list, and a credit-card

@@ -23,19 +23,19 @@ class SegToggleHostComponent {
 }
 
 describe('SegToggleComponent', () => {
-  it('renders aria-pressed and emits selected option on click', () => {
+  it('renders aria-checked and emits selected option on click', () => {
     const fixture = TestBed.createComponent(SegToggleHostComponent);
     fixture.detectChanges();
 
     const buttons = fixture.nativeElement.querySelectorAll('button') as NodeListOf<HTMLButtonElement>;
-    expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
-    expect(buttons[1].getAttribute('aria-pressed')).toBe('false');
+    expect(buttons[0].getAttribute('aria-checked')).toBe('true');
+    expect(buttons[1].getAttribute('aria-checked')).toBe('false');
 
     buttons[1].click();
     fixture.detectChanges();
 
     expect(fixture.componentInstance.emitted).toEqual(['two']);
-    expect(buttons[1].getAttribute('aria-pressed')).toBe('true');
+    expect(buttons[1].getAttribute('aria-checked')).toBe('true');
   });
 
   it('supports arrow-key navigation', () => {
@@ -47,6 +47,6 @@ describe('SegToggleComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.componentInstance.emitted).toEqual(['two']);
-    expect(buttons[1].getAttribute('aria-pressed')).toBe('true');
+    expect(buttons[1].getAttribute('aria-checked')).toBe('true');
   });
 });

@@ -1,4 +1,4 @@
-import { Component, DestroyRef, OnInit, ViewChild, inject, signal, ChangeDetectionStrategy } from '@angular/core';
+import { ChangeDetectionStrategy, ChangeDetectorRef, Component, DestroyRef, OnInit, ViewChild, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -34,6 +34,7 @@ export class AccountingDashboardComponent implements OnInit {
   private appearance = inject(AppearanceService);
   private destroyRef = inject(DestroyRef);
   private router = inject(Router);
+  private cdr = inject(ChangeDetectorRef);
 
   openCardSettings(): void {
     this.router.navigate(['/accounting/cards']);
@@ -125,6 +126,9 @@ export class AccountingDashboardComponent implements OnInit {
       .subscribe(() => {
         const report = this.report();
         if (report) this.prepareChartData(report);
+        // OnPush: subscription is outside Angular's input cycle, so markForCheck so
+        // <p-chart>'s data setter reinits Chart.js with the new palette
+        this.cdr.markForCheck();
         this.expenseChart?.chart?.update?.('none');
       });
   }

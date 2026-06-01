@@ -73,7 +73,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly rowsPerPageOptions = [25, 50, 100];
 
   readonly dividendTotal = computed(() => this.dividends().reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0));
-  readonly averageYield = computed(() => {
+  readonly averagePerShareDividend = computed(() => {
     const rows = this.dividends();
     if (!rows.length) return 0;
     const perShareRows = rows.filter(row => Number(row.cash_dividend_per_share || 0) > 0 && Number(row.quantity_at_record_date || 0) > 0);

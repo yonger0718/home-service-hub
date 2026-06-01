@@ -1,5 +1,6 @@
 import {
   ChangeDetectionStrategy,
+  ChangeDetectorRef,
   Component,
   DestroyRef,
   OnInit,
@@ -48,6 +49,7 @@ export class PortfolioDashboardComponent implements OnInit {
   private readonly appearance = inject(AppearanceService);
   private readonly messageService = inject(MessageService, { optional: true });
   private readonly destroyRef = inject(DestroyRef);
+  private readonly cdr = inject(ChangeDetectorRef);
 
   @ViewChild('netWorthChart') netWorthChart?: UIChart;
 
@@ -296,6 +298,10 @@ export class PortfolioDashboardComponent implements OnInit {
 
   private refreshChartTheme(): void {
     this.rebuildChart();
+    // OnPush: subscription callback runs outside Angular's input-binding cycle, so
+    // markForCheck() ensures the new chartData/chartOptions reach <p-chart>'s setter
+    // (which reinits Chart.js with new colours) instead of only redrawing old config.
+    this.cdr.markForCheck();
     this.netWorthChart?.chart?.update?.('none');
   }
 

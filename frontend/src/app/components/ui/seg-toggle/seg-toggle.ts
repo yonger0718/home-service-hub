@@ -19,13 +19,14 @@ export interface SegToggleOption {
 @Component({
   selector: 'app-seg-toggle',
   template: `
-    <div class="seg-toggle" role="group" [attr.aria-label]="ariaLabel() || null">
+    <div class="seg-toggle" role="radiogroup" [attr.aria-label]="ariaLabel() || null">
       @for (option of options(); track option.value; let index = $index) {
         <button
           #segmentButton
           type="button"
+          role="radio"
           [class.active]="selected() === option.value"
-          [attr.aria-pressed]="selected() === option.value"
+          [attr.aria-checked]="selected() === option.value"
           [attr.aria-label]="option.ariaLabel || option.label"
           (click)="select(option.value)"
           (keydown)="onKeydown($event, index)"

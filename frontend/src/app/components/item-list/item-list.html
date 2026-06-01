@@ -9,10 +9,10 @@
 <div class="filter-bar">
   <div class="search-wrap">
     <i class="pi pi-search" aria-hidden="true"></i>
-    <input type="text" [(ngModel)]="searchKeyword" (ngModelChange)="loadItems()" placeholder="搜尋物品名稱、類別或位置..." />
+    <input type="text" [(ngModel)]="searchKeyword" (ngModelChange)="loadItems()" placeholder="搜尋物品名稱、類別或位置..." aria-label="搜尋物品" />
   </div>
   <div class="filter-controls">
-    <button class="toggle-pill" type="button" [class.on]="lowStockOnly" (click)="lowStockOnly = !lowStockOnly">
+    <button class="toggle-pill" type="button" [class.on]="lowStockOnly" [attr.aria-pressed]="lowStockOnly" (click)="lowStockOnly = !lowStockOnly">
       <i class="pi pi-exclamation-triangle" aria-hidden="true"></i> 只看低庫存
     </button>
   </div>
