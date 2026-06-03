@@ -31,6 +31,55 @@ def test_write_today_snapshot_inserts_row(db_session):
     assert db_session.query(PortfolioSnapshot).count() == 1
 
 
+def test_write_today_snapshot_carries_cash_total(db_session):
+    target = date(2026, 5, 14)
+    with (
+        patch.object(
+            snap_svc.portfolio_service,
+            "get_portfolio_summary",
+            return_value=_fake_summary(),
+        ),
+        patch.object(
+            snap_svc.cash_account_service,
+            "get_total_balance_in",
+            return_value=(Decimal("150500"), []),
+        ) as cash_total,
+    ):
+        row = snap_svc.write_today_snapshot(db_session, today=target)
+
+    assert row.total_cash_twd == Decimal("150500")
+    cash_total.assert_called_once_with(db_session, "TWD", asof=target)
+
+
+def test_write_today_snapshot_warns_skipped_currency_and_writes_cash(db_session, caplog):
+    target = date(2026, 5, 14)
+    with (
+        patch.object(
+            snap_svc.portfolio_service,
+            "get_portfolio_summary",
+            return_value=_fake_summary(),
+        ),
+        patch.object(
+            snap_svc.cash_account_service,
+            "get_total_balance_in",
+            return_value=(Decimal("100000"), ["JPY"]),
+        ),
+    ):
+        row = snap_svc.write_today_snapshot(db_session, today=target)
+
+    assert row.total_cash_twd == Decimal("100000")
+    assert "snapshot total_cash_twd skipped currencies: ['JPY']" in caplog.text
+
+
+def test_write_today_snapshot_zero_accounts_writes_zero_cash(db_session):
+    target = date(2026, 5, 14)
+    with patch.object(snap_svc.portfolio_service, "get_portfolio_summary",
+                      return_value=_fake_summary()):
+        row = snap_svc.write_today_snapshot(db_session, today=target)
+
+    assert row.total_cash_twd == Decimal("0")
+
+
 def test_write_today_snapshot_is_idempotent_same_day(db_session):
     target = date(2026, 5, 14)
     with patch.object(snap_svc.portfolio_service, "get_portfolio_summary",

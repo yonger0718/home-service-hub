@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Callable, List
 
 import pytest
@@ -464,6 +465,129 @@ def test_replay_idempotent(db_session):
     assert db_session.query(PortfolioSnapshot).count() == 1
     snap = db_session.query(PortfolioSnapshot).one()
     assert snap.total_market_value == Decimal("6000")
+
+
+def test_replay_rebuild_updates_existing_snapshot_cash_total(db_session, monkeypatch):
+    d = date(2026, 5, 14)
+    sym = "2330"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=d,
+    )
+    _seed_price(db_session, symbol=sym, d=d, close="600")
+    db_session.add(
+        PortfolioSnapshot(
+            date=d,
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("0"),
+            total_unrealized_pnl=Decimal("0"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            total_cash_twd=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        nbs,
+        "cash_account_service",
+        SimpleNamespace(
+            get_total_balance_in=lambda db, currency, asof=None: (
+                Decimal("123456"),
+                [],
+            )
+        ),
+        raising=False,
+    )
+
+    result = nbs.replay_snapshots_range(db_session, d, d)
+
+    assert result.snapshots_written == 1
+    snap = db_session.get(PortfolioSnapshot, d)
+    assert snap.total_market_value == Decimal("6000")
+    assert snap.total_cash_twd == Decimal("123456")
+
+
+def test_replay_skipped_cash_currency_writes_convertible_total(db_session, monkeypatch):
+    d = date(2026, 5, 14)
+    sym = "2330"
+    calls: list[date | None] = []
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=d,
+    )
+    _seed_price(db_session, symbol=sym, d=d, close="600")
+    db_session.commit()
+
+    def cash_total(db, currency, asof=None):
+        calls.append(asof)
+        return Decimal("500"), ["JPY"]
+
+    monkeypatch.setattr(
+        nbs,
+        "cash_account_service",
+        SimpleNamespace(get_total_balance_in=cash_total),
+        raising=False,
+    )
+
+    result = nbs.replay_snapshots_range(db_session, d, d)
+
+    assert result.snapshots_written == 1
+    snap = db_session.get(PortfolioSnapshot, d)
+    assert snap.total_cash_twd == Decimal("500")
+    assert calls == [d]
+
+
+def test_replay_dry_run_does_not_update_cash_total(db_session, monkeypatch):
+    d = date(2026, 5, 14)
+    sym = "2330"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=d,
+    )
+    _seed_price(db_session, symbol=sym, d=d, close="600")
+    db_session.add(
+        PortfolioSnapshot(
+            date=d,
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("0"),
+            total_unrealized_pnl=Decimal("0"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            total_cash_twd=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+    monkeypatch.setattr(
+        nbs,
+        "cash_account_service",
+        SimpleNamespace(
+            get_total_balance_in=lambda db, currency, asof=None: (
+                Decimal("999"),
+                [],
+            )
+        ),
+        raising=False,
+    )
+
+    result = nbs.replay_snapshots_range(db_session, d, d, dry_run=True)
+
+    assert result.snapshots_written == 0
+    snap = db_session.get(PortfolioSnapshot, d)
+    assert snap.total_cash_twd == Decimal("0")
 
 
 def test_replay_handles_day_trade_with_sell_id_lower_than_buy(db_session):

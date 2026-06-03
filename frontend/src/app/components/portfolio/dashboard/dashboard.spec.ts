@@ -55,6 +55,8 @@ describe('PortfolioDashboardComponent', () => {
   function buildSummary(overrides: Partial<PortfolioSummary> = {}): PortfolioSummary {
     return {
       total_market_value: 1000,
+      total_cash_twd: '250',
+      total_assets_twd: '1250',
       total_cost: 900,
       total_unrealized_pnl: 100,
       total_unrealized_pnl_percent: 11.11,
@@ -88,8 +90,8 @@ describe('PortfolioDashboardComponent', () => {
       getSummary: vi.fn().mockReturnValue(of(buildSummary())),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),
       getNetworthHistory: vi.fn().mockReturnValue(of([
-        { date: '2026-01-01', total_market_value: '100', total_cost: '80', total_unrealized_pnl: '20', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
-        { date: '2026-05-01', total_market_value: '120', total_cost: '80', total_unrealized_pnl: '40', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
+        { date: '2026-01-01', total_market_value: '100', total_cash_twd: '40', total_assets_twd: '140', total_cost: '80', total_unrealized_pnl: '20', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
+        { date: '2026-05-01', total_market_value: '120', total_cash_twd: '60', total_assets_twd: '180', total_cost: '80', total_unrealized_pnl: '40', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
       ])),
     };
 
@@ -173,6 +175,87 @@ describe('PortfolioDashboardComponent', () => {
 
     expect(fixture.componentInstance.range()).toBe('3M');
     expect(fixture.nativeElement.textContent).toContain('3.21%');
+  });
+
+  it('renders the total assets tile above the market value tile', () => {
+    portfolioService.getSummary.mockReturnValue(of(buildSummary({
+      total_market_value: 500000,
+      total_cash_twd: '100000',
+      total_assets_twd: '600000',
+    })));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+
+    const labels = Array.from(root.querySelectorAll<HTMLElement>('.label')).map(element =>
+      element.textContent?.trim(),
+    );
+    const totalAssetsIndex = labels.indexOf('總資產');
+    const marketValueIndex = labels.indexOf('總市值');
+
+    expect(totalAssetsIndex).toBeGreaterThanOrEqual(0);
+    expect(marketValueIndex).toBeGreaterThanOrEqual(0);
+    expect(totalAssetsIndex).toBeLessThan(marketValueIndex);
+    expect(fixture.nativeElement.textContent).toContain(fixture.componentInstance.formatCurrency(600000));
+    expect(fixture.nativeElement.textContent).toContain(fixture.componentInstance.formatCurrency(500000));
+  });
+
+  it('renders total assets equal to market value when cash is zero', () => {
+    portfolioService.getSummary.mockReturnValue(of(buildSummary({
+      total_market_value: 500000,
+      total_cash_twd: '0',
+      total_assets_twd: '500000',
+    })));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+
+    const totalAssetsCard = Array.from(root.querySelectorAll<HTMLElement>('app-bento')).find(card =>
+      card.textContent?.includes('總資產'),
+    );
+
+    expect(totalAssetsCard?.textContent).toContain(fixture.componentInstance.formatCurrency(500000));
+  });
+
+  it('builds total assets and total market value datasets', () => {
+    const fixture = createFixture();
+    const chartData = fixture.componentInstance.chartData as any;
+    const chartOptions = fixture.componentInstance.chartOptions as any;
+
+    expect(chartData.datasets).toHaveLength(2);
+    expect(chartData.datasets[0]).toMatchObject({
+      label: '總資產',
+      data: [140, 180],
+      fill: true,
+    });
+    expect(chartData.datasets[1]).toMatchObject({
+      label: '總市值',
+      data: [100, 120],
+      fill: true,
+    });
+    expect(chartOptions.scales.y.stacked).toBe(false);
+  });
+
+  it('collapses total assets onto total market value when backfill has not populated cash', () => {
+    portfolioService.getNetworthHistory.mockReturnValue(of([
+      { date: '2026-01-01', total_market_value: '100', total_cash_twd: '0', total_assets_twd: '100', total_cost: '80', total_unrealized_pnl: '20', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
+      { date: '2026-05-01', total_market_value: '120', total_cash_twd: '0', total_assets_twd: '120', total_cost: '80', total_unrealized_pnl: '40', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
+    ]));
+    const fixture = createFixture();
+    const chartData = fixture.componentInstance.chartData as any;
+
+    expect(chartData.datasets).toHaveLength(2);
+    expect(chartData.datasets[0].data).toEqual([100, 120]);
+    expect(chartData.datasets[1].data).toEqual([100, 120]);
+  });
+
+  it('preserves the two-line chart layout when switching ranges', () => {
+    const fixture = createFixture();
+
+    const rangeButtons = Array.from(fixture.nativeElement.querySelectorAll('.range-tabs button')) as HTMLButtonElement[];
+    rangeButtons.find(button => button.textContent?.trim() === '3M')!.click();
+    fixture.detectChanges();
+
+    expect((fixture.componentInstance.chartData as any).datasets).toHaveLength(2);
+    expect((fixture.componentInstance.chartOptions as any).scales.y.stacked).toBe(false);
   });
 
   it('sets chart animation false and updates the chart on convention changes', async () => {

@@ -6,13 +6,16 @@ the same calendar day via ``Session.merge``.
 
 from __future__ import annotations
 
+import logging
 from datetime import date as dt_date, datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from ..models.portfolio_snapshot import PortfolioSnapshot
-from . import portfolio_service
+from . import cash_account_service, portfolio_service
+
+logger = logging.getLogger(__name__)
 
 _TW_OFFSET = timezone(timedelta(hours=8))
 
@@ -27,6 +30,11 @@ def write_today_snapshot(
     """Build the live summary and upsert a row for ``today`` (TW calendar)."""
     target = today or _today_tw()
     summary = portfolio_service.get_portfolio_summary(db)
+    cash_total_twd, skipped = cash_account_service.get_total_balance_in(
+        db, "TWD", asof=target
+    )
+    if skipped:
+        logger.warning("snapshot total_cash_twd skipped currencies: %s", skipped)
     row = PortfolioSnapshot(
         date=target,
         total_market_value=summary.total_market_value,
@@ -34,6 +42,7 @@ def write_today_snapshot(
         total_unrealized_pnl=summary.total_unrealized_pnl,
         total_dividends=summary.total_dividends,
         total_realized_pnl=summary.total_realized_pnl,
+        total_cash_twd=cash_total_twd,
         portfolio_xirr=summary.portfolio_xirr,
     )
     merged = db.merge(row)

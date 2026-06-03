@@ -68,6 +68,8 @@ def _serialize_snapshot(row) -> dict:
     return {
         "date": row.date.isoformat(),
         "total_market_value": str(row.total_market_value),
+        "total_cash_twd": str(row.total_cash_twd),
+        "total_assets_twd": str(row.total_market_value + row.total_cash_twd),
         "total_cost": str(row.total_cost),
         "total_unrealized_pnl": str(row.total_unrealized_pnl),
         "total_dividends": str(row.total_dividends),

@@ -826,15 +826,21 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             realized_pnl_by_symbol.values(),
             Decimal("0.0"),
         )
+        total_market_value_twd = total_market_value.quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        total_cash_twd, _skipped = cash_account_service.get_total_balance_in(db, "TWD")
 
         return schemas.PortfolioSummary(
-            total_market_value=total_market_value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            total_market_value=total_market_value_twd,
             total_cost=total_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             total_unrealized_pnl=total_unrealized_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             total_unrealized_pnl_percent=total_pnl_percent,
             total_day_pnl=total_day_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             total_dividends=total_dividends.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             total_realized_pnl=total_realized_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            total_cash_twd=total_cash_twd,
+            total_assets_twd=total_market_value_twd + total_cash_twd,
             holdings=holdings_list,
             portfolio_xirr=portfolio_xirr,
             portfolio_xirr_1m=portfolio_windowed_xirr["1m"],

@@ -38,6 +38,7 @@ from ..models import portfolio as portfolio_models
 from ..models.portfolio import PositionSide
 from ..models.portfolio_snapshot import PortfolioSnapshot
 from ..models.price_history import PriceHistory
+from . import cash_account_service
 from . import market_data_service
 from .portfolio_service import _load_adjusted_transactions
 from .realized_pnl_service import iter_realized_events
@@ -562,6 +563,12 @@ def replay_snapshots_range(
             result.errors.append(BackfillError(date=snapshot_date, reason=str(exc)))
             return False
 
+    def total_cash_twd(snapshot_date: dt_date) -> Decimal:
+        cash_total, _skipped = cash_account_service.get_total_balance_in(
+            db, "TWD", asof=snapshot_date
+        )
+        return cash_total
+
     tx_i = 0
     div_i = 0
     cur = from_d
@@ -627,6 +634,7 @@ def replay_snapshots_range(
                         total_unrealized_pnl=last_trading_mv - last_trading_cost,
                         total_dividends=cumulative_dividends,
                         total_realized_pnl=cumulative_realized,
+                        total_cash_twd=total_cash_twd(cur),
                         portfolio_xirr=None,
                     ),
                 )
@@ -682,6 +690,7 @@ def replay_snapshots_range(
                 total_unrealized_pnl=mv - total_cost,
                 total_dividends=cumulative_dividends,
                 total_realized_pnl=cumulative_realized,
+                total_cash_twd=total_cash_twd(cur),
                 portfolio_xirr=None,
             ),
         )

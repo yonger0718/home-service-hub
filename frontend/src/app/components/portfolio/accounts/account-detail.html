@@ -58,6 +58,21 @@
     }
   </p-card>
 
+  @if (isOverdraft()) {
+    <div class="overdraft-banner" role="alert">
+      <i class="pi pi-exclamation-triangle"></i>
+      <span class="overdraft-text">
+        帳戶餘額為負（-{{ formatCurrency(overdraftAmount(), account()?.currency || 'TWD') }}），可能漏記入金。
+      </span>
+      <p-button
+        icon="pi pi-plus"
+        label="新增入金歸零"
+        severity="warn"
+        (onClick)="openTopupQuickFix()">
+      </p-button>
+    </div>
+  }
+
   <div class="section-header transactions-header">
     <h3>現金交易</h3>
     <div class="transactions-actions">

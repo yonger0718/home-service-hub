@@ -16,6 +16,11 @@
     </div>
   } @else if (summary() && summary()!.holdings.length > 0) {
     <div class="bento-grid">
+      <app-bento class="b-full primary-tile" [full]="true">
+        <div class="label">總資產</div>
+        <div class="value">{{ formatCurrency(summary()!.total_assets_twd) }}</div>
+      </app-bento>
+
       <app-bento>
         <div class="label">總市值</div>
         <div class="value">{{ formatCurrency(summary()!.total_market_value) }}</div>

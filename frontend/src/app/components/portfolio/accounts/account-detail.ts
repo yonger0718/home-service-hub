@@ -380,6 +380,30 @@ export class PortfolioAccountDetailComponent implements OnInit {
     this.transactionDialogVisible.set(true);
   }
 
+  isOverdraft(): boolean {
+    const account = this.account();
+    if (!account) return false;
+    return Number(account.native_balance) < 0;
+  }
+
+  overdraftAmount(): string {
+    const account = this.account();
+    if (!account) return '0';
+    return Math.abs(Number(account.native_balance)).toString();
+  }
+
+  openTopupQuickFix(): void {
+    const account = this.account();
+    if (!account) return;
+    this.transactionForm.reset({
+      txn_date: this.todayIso(),
+      type: 'deposit',
+      amount: Math.abs(Number(account.native_balance)).toString(),
+      note: '補登未記錄入金',
+    });
+    this.transactionDialogVisible.set(true);
+  }
+
   closeTransactionDialog(): void {
     this.transactionDialogVisible.set(false);
   }
