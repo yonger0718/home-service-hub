@@ -79,11 +79,13 @@ describe('PortfolioDashboardComponent', () => {
     getSummary: ReturnType<typeof vi.fn>;
     getUpcomingExDividends: ReturnType<typeof vi.fn>;
     getNetworthHistory: ReturnType<typeof vi.fn>;
+    cashLedgerChanged$: import('rxjs').Observable<void>;
   };
   let appearance: AppearanceService;
 
   beforeEach(async () => {
     vi.useFakeTimers();
+    const { NEVER } = await import('rxjs');
     portfolioService = {
       refreshQuotes: vi.fn().mockReturnValue(of(null)),
       getRecalcStatus: vi.fn(),
@@ -93,6 +95,7 @@ describe('PortfolioDashboardComponent', () => {
         { date: '2026-01-01', total_market_value: '100', total_cash_twd: '40', total_assets_twd: '140', total_cost: '80', total_unrealized_pnl: '20', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
         { date: '2026-05-01', total_market_value: '120', total_cash_twd: '60', total_assets_twd: '180', total_cost: '80', total_unrealized_pnl: '40', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
       ])),
+      cashLedgerChanged$: NEVER,
     };
 
     await TestBed.configureTestingModule({

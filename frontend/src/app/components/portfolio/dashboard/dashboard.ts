@@ -114,6 +114,14 @@ export class PortfolioDashboardComponent implements OnInit {
     combineLatest([this.appearance.dark$, this.appearance.gainLoss$])
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(() => this.refreshChartTheme());
+
+    this.portfolioService.cashLedgerChanged$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => {
+        this.networthCache.clear();
+        this.reloadSummary();
+        this.loadNetworthHistory();
+      });
   }
 
   selectRange(value: string): void {
