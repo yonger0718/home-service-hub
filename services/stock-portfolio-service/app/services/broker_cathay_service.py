@@ -13,7 +13,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as models
-from . import per_date_verify, portfolio_service as svc, symbol_map_service
+from ..models.cash_transaction import CashTxnSource
+from . import cash_account_service, per_date_verify, portfolio_service as svc, symbol_map_service
 from .import_service import (
     ImportResult,
     ParseError,
@@ -368,7 +369,11 @@ def _legacy_fingerprint(row: ParsedRow) -> str:
     )
 
 
-def _insert_transaction(db: Session, row: ParsedRow) -> models.Transaction:
+def _insert_transaction(
+    db: Session,
+    row: ParsedRow,
+    cash_account_id: int | None = None,
+) -> models.Transaction:
     # Broker statement is canonical: every row was filled, so the ledger guard the
     # generic path uses (which forbids selling without holdings) would wrongly reject
     # 融券/沖賣 short opens. Trust the statement and skip ledger validation here.
@@ -396,6 +401,16 @@ def _insert_transaction(db: Session, row: ParsedRow) -> models.Transaction:
     svc._recompute_day_trade_flags(
         db, tx.symbol, svc._trade_calendar_date(tx.trade_date)
     )
+    if cash_account_service.cash_leg_enabled():
+        account_id = cash_account_id
+        if account_id is None:
+            account_id = cash_account_service.resolve_default_cathay_twd_account(db).id
+        cash_account_service.sync_transaction_cash_legs(
+            db,
+            tx,
+            account_id,
+            CashTxnSource.CSV_IMPORT,
+        )
     return tx
 
 
@@ -497,6 +512,9 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
     batch_fingerprints = {row.fingerprint for row in parsed.rows}
     try:
         with db.begin():
+            cash_account_id: int | None = None
+            if cash_account_service.cash_leg_enabled():
+                cash_account_id = cash_account_service.resolve_default_cathay_twd_account(db).id
             for row in parsed.rows:
                 legacy_fp = _legacy_fingerprint(row)
                 existing = (
@@ -518,6 +536,13 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                     svc._recompute_day_trade_flags(
                         db, existing.symbol, svc._trade_calendar_date(existing.trade_date)
                     )
+                    if cash_account_id is not None:
+                        cash_account_service.sync_transaction_cash_legs(
+                            db,
+                            existing,
+                            cash_account_id,
+                            CashTxnSource.CSV_IMPORT,
+                        )
                     rehashed += 1
                     continue
                 duplicate = (
@@ -548,11 +573,24 @@ def _commit_rehash(db: Session, parsed: ParseResult) -> ImportResult:
                     svc._recompute_day_trade_flags(
                         db, business_match.symbol, svc._trade_calendar_date(business_match.trade_date)
                     )
+                    if cash_account_id is not None:
+                        cash_account_service.sync_transaction_cash_legs(
+                            db,
+                            business_match,
+                            cash_account_id,
+                            CashTxnSource.CSV_IMPORT,
+                        )
                     rehashed += 1
                     continue
-                tx = _insert_transaction(db, row)
+                tx = _insert_transaction(db, row, cash_account_id)
                 created += 1
                 created_ids.append(tx.id)
+    except (
+        cash_account_service.CashAccountNotFound,
+        cash_account_service.CashAccountAmbiguous,
+    ):
+        db.rollback()
+        raise
     except ValueError as exc:
         db.rollback()
         errors.append(ParseError(row_index=0, message=str(exc)))

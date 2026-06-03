@@ -30,7 +30,9 @@ from typing import Literal
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..models.cash_transaction import CashTxnSource
 from ..models import portfolio as models
+from . import cash_account_service
 from . import portfolio_service as svc
 from .per_date_verify import OverrideValidation
 
@@ -463,6 +465,15 @@ def _persist_dividend(db: Session, row: ParsedRow) -> models.Dividend:
         import_fingerprint=row.fingerprint,
     )
     db.add(db_div)
+    db.flush()
+    if cash_account_service.cash_leg_enabled():
+        account = cash_account_service.resolve_default_cathay_twd_account(db)
+        cash_account_service.sync_dividend_cash_leg(
+            db,
+            db_div,
+            account.id,
+            CashTxnSource.AUTO_DERIVE,
+        )
     db.commit()
     db.refresh(db_div)
     return db_div

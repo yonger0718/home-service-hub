@@ -29,7 +29,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..models.cash_transaction import CashTxnSource
 from ..models.portfolio import Dividend, PositionSide, Transaction, TransactionType
+from . import cash_account_service
 from .dividend_history_service import HistoricalDividendEvent
 
 logger = logging.getLogger(__name__)
@@ -166,24 +168,38 @@ def _insert_cash(
         return False
     sp = db.begin_nested()
     try:
-        db.add(
-            Dividend(
-                symbol=symbol,
-                amount=amount,
-                ex_dividend_date=_ex_date_dt(ex_date),
-                fee=fee,
-                tax=tax,
-                cash_dividend_per_share=cash_per_share,
-                stock_dividend_shares=0,
-                source=f"auto:{source}",
-                quantity_at_record_date=qty,
-                import_fingerprint=fp,
-            )
+        dv = Dividend(
+            symbol=symbol,
+            amount=amount,
+            ex_dividend_date=_ex_date_dt(ex_date),
+            fee=fee,
+            tax=tax,
+            cash_dividend_per_share=cash_per_share,
+            stock_dividend_shares=0,
+            source=f"auto:{source}",
+            quantity_at_record_date=qty,
+            import_fingerprint=fp,
         )
+        db.add(dv)
         db.flush()
+        if cash_account_service.cash_leg_enabled():
+            account = cash_account_service.resolve_default_cathay_twd_account(db)
+            cash_account_service.sync_dividend_cash_leg(
+                db,
+                dv,
+                account.id,
+                CashTxnSource.AUTO_DERIVE,
+            )
+            db.flush()
     except IntegrityError:
         sp.rollback()
         return False
+    except (
+        cash_account_service.CashAccountNotFound,
+        cash_account_service.CashAccountAmbiguous,
+    ):
+        sp.rollback()
+        raise
     return True
 
 

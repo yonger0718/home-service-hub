@@ -8,6 +8,7 @@ from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 import math
 import os
 from dateutil.relativedelta import relativedelta
+from ..models.cash_transaction import CashTxnSource
 from ..models import portfolio as models
 from ..models.corporate_action import CorporateAction
 from ..models.portfolio_snapshot import PortfolioSnapshot
@@ -15,6 +16,7 @@ from ..models.price_history import PriceHistory
 from ..schemas import portfolio as schemas
 from .twse_service import get_stock_quotes
 from . import symbol_map_service
+from . import cash_account_service
 from shared_lib import get_tracer
 tracer = get_tracer("stock-portfolio-service")
 
@@ -856,6 +858,20 @@ def create_transaction(db: Session, transaction: schemas.TransactionCreate):
     db_transaction = models.Transaction(**transaction_data)
     db.add(db_transaction)
     db.flush()
+    if cash_account_service.cash_leg_enabled():
+        try:
+            account = cash_account_service.resolve_default_cathay_twd_account(db)
+            cash_account_service.sync_transaction_cash_legs(
+                db,
+                db_transaction,
+                account.id,
+                CashTxnSource.AUTO_DERIVE,
+            )
+        except (
+            cash_account_service.CashAccountNotFound,
+            cash_account_service.CashAccountAmbiguous,
+        ):
+            raise
     _recompute_day_trade_flags(
         db,
         db_transaction.symbol,
@@ -872,6 +888,15 @@ def create_dividend(db: Session, dividend: schemas.DividendCreate):
 
     db_dividend = models.Dividend(**dividend_data)
     db.add(db_dividend)
+    db.flush()
+    if cash_account_service.cash_leg_enabled():
+        account = cash_account_service.resolve_default_cathay_twd_account(db)
+        cash_account_service.sync_dividend_cash_leg(
+            db,
+            db_dividend,
+            account.id,
+            CashTxnSource.AUTO_DERIVE,
+        )
     db.commit()
     db.refresh(db_dividend)
     return db_dividend
@@ -997,6 +1022,20 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
         setattr(db_transaction, key, value)
 
     db.flush()
+    if cash_account_service.cash_leg_enabled():
+        try:
+            account = cash_account_service.resolve_default_cathay_twd_account(db)
+            cash_account_service.sync_transaction_cash_legs(
+                db,
+                db_transaction,
+                account.id,
+                CashTxnSource.AUTO_DERIVE,
+            )
+        except (
+            cash_account_service.CashAccountNotFound,
+            cash_account_service.CashAccountAmbiguous,
+        ):
+            raise
 
     new_symbol = sanitize_symbol(db_transaction.symbol)
     new_calendar = _trade_calendar_date(db_transaction.trade_date)
@@ -1018,6 +1057,8 @@ def delete_transaction(db: Session, transaction_id: int):
 
     db.delete(db_transaction)
     db.flush()
+    if cash_account_service.cash_leg_enabled():
+        cash_account_service.delete_transaction_cash_legs(db, transaction_id)
     _recompute_day_trade_flags(db, symbol, calendar)
     db.commit()
     return True
@@ -1085,6 +1126,15 @@ def update_dividend(db: Session, dividend_id: int, dividend_update: schemas.Divi
     for key, value in update_data.items():
         setattr(db_dividend, key, value)
     
+    db.flush()
+    if cash_account_service.cash_leg_enabled():
+        account = cash_account_service.resolve_default_cathay_twd_account(db)
+        cash_account_service.sync_dividend_cash_leg(
+            db,
+            db_dividend,
+            account.id,
+            CashTxnSource.AUTO_DERIVE,
+        )
     db.commit()
     db.refresh(db_dividend)
     return db_dividend
@@ -1093,6 +1143,8 @@ def delete_dividend(db: Session, dividend_id: int):
     db_dividend = db.query(models.Dividend).filter(models.Dividend.id == dividend_id).first()
     if not db_dividend:
         return False
+    if cash_account_service.cash_leg_enabled():
+        cash_account_service.delete_dividend_cash_leg(db, dividend_id)
     db.delete(db_dividend)
     db.commit()
     return True

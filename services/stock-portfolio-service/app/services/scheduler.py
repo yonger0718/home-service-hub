@@ -33,6 +33,7 @@ from datetime import timedelta as _timedelta
 from . import (
     dividend_auto_record_service,
     dividend_event_service,
+    fx_rate_service,
     market_data_service,
     portfolio_service,
     portfolio_snapshot_service,
@@ -212,6 +213,26 @@ def run_symbol_map_refresh(session_factory: Callable[[], ContextManager]) -> dic
     return {"status": "ok", **result}
 
 
+def run_fx_rate_daily(session_factory: Callable[[], ContextManager]) -> dict:
+    """Refresh daily FX snapshots; swallow failures so the cron keeps running."""
+    try:
+        with session_factory() as session:
+            result = fx_rate_service.fetch_and_store(session)
+    except Exception as exc:  # noqa: BLE001 — scheduler must not die
+        logger.exception("scheduler.fx_rate_daily.failed", extra={"error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    logger.info(
+        "scheduler.fx_rate_daily.done",
+        extra={"success": result.success, "upserted_count": result.upserted_count},
+    )
+    return {
+        "status": "ok" if result.success else "failed",
+        "success": result.success,
+        "upserted_count": result.upserted_count,
+        "error": result.error,
+    }
+
+
 def build_scheduler(session_factory: Callable[[], ContextManager]) -> BackgroundScheduler:
     """Construct a configured ``BackgroundScheduler``; caller starts it."""
     scheduler = BackgroundScheduler(timezone=TW_TIMEZONE)
@@ -247,6 +268,13 @@ def build_scheduler(session_factory: Callable[[], ContextManager]) -> Background
         run_dividend_auto_record,
         CronTrigger(hour=18, minute=0, day_of_week="mon-fri", timezone=TW_TIMEZONE),
         id="dividend_auto_record",
+        kwargs={"session_factory": session_factory},
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_fx_rate_daily,
+        CronTrigger(hour=2, minute=0, timezone=TW_TIMEZONE),
+        id="fx_rate_daily",
         kwargs={"session_factory": session_factory},
         replace_existing=True,
     )

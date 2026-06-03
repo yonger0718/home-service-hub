@@ -19,6 +19,16 @@ import {
   DividendQuery,
   RealizedPnlPaged,
   RealizedPnlQuery,
+  AccountsList,
+  BalanceHistory,
+  CashTransaction,
+  CashTransactionPaged,
+  CashTransactionQuery,
+  CreateBrokerAccount,
+  CreateCashTransaction,
+  BrokerAccount,
+  FxFetchResult,
+  PatchBrokerAccount,
 } from '../models/portfolio.model';
 
 function buildParams(query: Record<string, unknown>): HttpParams {
@@ -221,5 +231,50 @@ export class PortfolioService extends BaseApiService<Transaction> {
       stock_inserted: number;
       skipped_no_holding: number;
     }>('/api/portfolio/dividends/backfill', {});
+  }
+
+  getAccounts(opts: { in_currency?: string; include_inactive?: boolean } = {}): Observable<AccountsList> {
+    return this.http.get<AccountsList>('/api/portfolio/accounts/', {
+      params: buildParams(opts as Record<string, unknown>),
+    });
+  }
+
+  createAccount(body: CreateBrokerAccount): Observable<BrokerAccount> {
+    return this.http.post<BrokerAccount>('/api/portfolio/accounts/', body);
+  }
+
+  patchAccount(id: number, patch: PatchBrokerAccount): Observable<BrokerAccount> {
+    return this.http.patch<BrokerAccount>(`/api/portfolio/accounts/${id}`, patch);
+  }
+
+  getCashTransactions(
+    id: number,
+    query: CashTransactionQuery & { merge_related?: boolean } = {},
+  ): Observable<CashTransactionPaged> {
+    return this.http.get<CashTransactionPaged>(`/api/portfolio/accounts/${id}/cash-transactions`, {
+      params: buildParams(query as Record<string, unknown>),
+    });
+  }
+
+  createCashTransaction(id: number, body: CreateCashTransaction): Observable<CashTransaction> {
+    return this.http.post<CashTransaction>(`/api/portfolio/accounts/${id}/cash-transactions`, body);
+  }
+
+  deleteCashTransaction(accountId: number, txnId: number): Observable<{ deleted_id: number }> {
+    return this.http.delete<{ deleted_id: number }>(`/api/portfolio/accounts/${accountId}/cash-transactions/${txnId}`);
+  }
+
+  getBalanceHistory(id: number, range: { date_from: string; date_to: string }): Observable<BalanceHistory> {
+    return this.http.get<BalanceHistory>(`/api/portfolio/accounts/${id}/balance-history`, {
+      params: buildParams(range),
+    });
+  }
+
+  refreshFxRates(opts: {
+    base_currencies?: string[];
+    quote_currencies?: string[];
+    asof?: string;
+  } = {}): Observable<FxFetchResult> {
+    return this.http.post<FxFetchResult>('/api/portfolio/fx/refresh', opts);
   }
 }

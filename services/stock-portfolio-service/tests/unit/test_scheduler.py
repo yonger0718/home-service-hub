@@ -41,6 +41,7 @@ def test_build_scheduler_registers_three_jobs():
         "portfolio_snapshot",
         "symbol_map_refresh",
         "dividend_auto_record",
+        "fx_rate_daily",
     }
 
 

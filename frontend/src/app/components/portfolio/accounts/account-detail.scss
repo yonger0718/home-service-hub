@@ -1,0 +1,301 @@
+.account-detail-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.account-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+
+  h2 {
+    color: var(--app-text);
+    font-size: 1.35rem;
+    font-weight: 800;
+    margin: 0.25rem 0 0;
+  }
+}
+
+.broker-label,
+.balance-label {
+  color: var(--app-text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.account-meta {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.86rem;
+  font-weight: 600;
+  gap: 0.6rem;
+  margin-top: 0.65rem;
+}
+
+.header-balance {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  text-align: right;
+}
+
+.balance-value {
+  color: var(--app-text);
+  font-size: 1.45rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.section-header {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+
+  h3 {
+    color: var(--app-text);
+    font-size: 1.15rem;
+    font-weight: 800;
+    margin: 0;
+  }
+}
+
+.transactions-header {
+  margin-top: 0.25rem;
+}
+
+.transactions-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.merge-toggle {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: inline-flex;
+  font-size: 0.86rem;
+  font-weight: 700;
+  gap: 0.5rem;
+}
+
+.balance-chart {
+  height: 20rem;
+  margin-top: 1rem;
+}
+
+.chart-loading,
+.networth-empty {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  font-weight: 700;
+  height: 18rem;
+  justify-content: center;
+}
+
+.transaction-main-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.leg-chevron {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  height: 1.75rem;
+  justify-content: center;
+  margin-left: -0.25rem;
+  padding: 0;
+  transition: background-color 0.15s, color 0.15s;
+  width: 1.75rem;
+
+  i {
+    font-size: 0.8rem;
+    transition: transform 0.15s;
+  }
+
+  &:hover {
+    background: var(--app-surface-soft);
+    color: var(--app-text);
+  }
+
+  &.is-expanded i {
+    transform: rotate(90deg);
+  }
+}
+
+.type-badge {
+  background: var(--app-accent-soft);
+  border: 1px solid var(--app-accent-soft-strong);
+  border-radius: 999px;
+  color: var(--app-accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+}
+
+.leg-count-badge {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  color: var(--app-text-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+}
+
+.note-icon {
+  color: var(--app-text-muted);
+  font-size: 0.9rem;
+}
+
+.transaction-amount {
+  color: var(--app-text);
+
+  &.is-positive {
+    color: var(--app-trend-positive);
+  }
+
+  &.is-negative {
+    color: var(--app-trend-negative);
+  }
+}
+
+.transaction-right-actions {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+
+.transaction-group {
+  display: grid;
+}
+
+.transaction-sub-legs {
+  border-left: 2px solid var(--app-border);
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.25rem 0 0.6rem 1.4rem;
+  padding-left: 0.85rem;
+}
+
+.transaction-sub-leg {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  min-height: 2.2rem;
+}
+
+.sub-leg-left {
+  min-width: 0;
+}
+
+.sub-leg-main {
+  align-items: center;
+  color: var(--app-text);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.84rem;
+  font-weight: 700;
+  gap: 0.4rem;
+}
+
+.hub-result-meta {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  font-size: 0.85rem;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+
+  .meta-loading {
+    align-items: center;
+    display: inline-flex;
+    gap: 0.4rem;
+  }
+}
+
+.hub-modern-list.is-loading {
+  opacity: 0.55;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.account-form {
+  display: grid;
+  gap: 1rem;
+  min-width: min(26rem, 82vw);
+
+  label {
+    display: grid;
+    gap: 0.4rem;
+
+    span {
+      color: var(--app-text-muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+  }
+}
+
+.active-checkbox {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.55rem;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.25rem;
+}
+
+:host ::ng-deep {
+  .account-header-card,
+  .balance-chart-card {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 16px;
+    box-shadow: var(--app-card-shadow);
+  }
+
+  .balance-chart-card {
+    margin-top: 0.25rem;
+  }
+
+  @media (max-width: 767.98px) {
+    .account-header,
+    .section-header {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .header-balance {
+      align-items: flex-start;
+      text-align: left;
+    }
+
+    .transactions-actions {
+      justify-content: flex-start;
+    }
+  }
+}

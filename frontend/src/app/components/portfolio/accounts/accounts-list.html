@@ -1,0 +1,113 @@
+<p-toast></p-toast>
+
+<div class="accounts-page">
+  <div class="accounts-header">
+    <p-card styleClass="accounts-summary-card">
+      <div class="summary-label">現金帳戶總額</div>
+      <div class="summary-value">
+        {{ formatCurrency(accountsList().total_target_balance, accountsList().target_currency || 'TWD') }}
+      </div>
+      @if (accountsList().skipped_currencies.length > 0) {
+        <div class="summary-footnote">未換算: {{ accountsList().skipped_currencies.join(', ') }}</div>
+      } @else {
+        <div class="summary-footnote">以 TWD 換算</div>
+      }
+    </p-card>
+
+    <p-button
+      icon="pi pi-plus"
+      label="新增帳戶"
+      styleClass="accounts-add-button"
+      (onClick)="openCreateDialog()">
+    </p-button>
+  </div>
+
+  @if (loading()) {
+    <div class="hub-result-meta">
+      <span class="meta-loading">
+        <p-progressSpinner styleClass="w-1rem h-1rem" strokeWidth="4"></p-progressSpinner>
+        查詢中…
+      </span>
+    </div>
+  }
+
+  <div class="row g-3 accounts-grid" [class.is-loading]="loading()">
+    @for (account of accounts(); track account.id) {
+      <div class="col-12 col-md-4">
+        <p-card styleClass="account-card h-100" (click)="goToDetail(account)" tabindex="0">
+          <div class="account-card-header">
+            <div>
+              <div class="broker-label">{{ brokerLabel(account.broker) }}</div>
+              <h3>{{ account.nickname }}</h3>
+            </div>
+            <p-tag
+              [value]="account.is_active ? '啟用' : '停用'"
+              [severity]="account.is_active ? 'success' : 'secondary'">
+            </p-tag>
+          </div>
+          <div class="account-currency">{{ account.currency }}</div>
+          <div class="account-balance">{{ formatCurrency(account.native_balance, account.currency) }}</div>
+          @if (account.target_balance && account.target_currency) {
+            <div class="account-target">TWD {{ formatCurrency(account.target_balance, account.target_currency) }}</div>
+          }
+        </p-card>
+      </div>
+    } @empty {
+      <div class="col-12">
+        <div class="empty-state">
+          <i class="pi pi-wallet"></i>
+          <h4>尚無現金帳戶</h4>
+          <p>新增帳戶後即可追蹤券商現金餘額。</p>
+        </div>
+      </div>
+    }
+  </div>
+</div>
+
+<p-dialog
+  header="新增帳戶"
+  [modal]="true"
+  [draggable]="false"
+  [resizable]="false"
+  [visible]="createDialogVisible()"
+  (visibleChange)="createDialogVisible.set($event)"
+  styleClass="accounts-dialog">
+  <form [formGroup]="createForm" (ngSubmit)="submitCreate()" class="account-form">
+    <label>
+      <span>券商</span>
+      <p-select
+        formControlName="broker"
+        [options]="brokerOptions"
+        optionLabel="label"
+        optionValue="value"
+        appendTo="body">
+      </p-select>
+    </label>
+    <label>
+      <span>暱稱</span>
+      <input pInputText formControlName="nickname" />
+    </label>
+    <label>
+      <span>幣別</span>
+      <p-select
+        formControlName="currency"
+        [options]="currencyOptions"
+        optionLabel="label"
+        optionValue="value"
+        appendTo="body">
+      </p-select>
+    </label>
+    <label>
+      <span>期初餘額</span>
+      <input pInputText formControlName="opening_balance" inputmode="decimal" />
+    </label>
+    <label>
+      <span>期初日期</span>
+      <p-datepicker formControlName="opening_date" dateFormat="yy-mm-dd" appendTo="body"></p-datepicker>
+    </label>
+    <div class="dialog-actions">
+      <p-button label="取消" severity="secondary" [text]="true" type="button" (onClick)="closeCreateDialog()"></p-button>
+      <p-button label="建立" icon="pi pi-check" type="submit" [loading]="creating()"></p-button>
+    </div>
+  </form>
+</p-dialog>
