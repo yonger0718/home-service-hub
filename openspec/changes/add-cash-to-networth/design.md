@@ -12,7 +12,7 @@ The two never meet, so the dashboard shows partial net worth. This change wires 
 - Snapshot rows carry `total_cash_twd` so the chart can render historical net worth without per-render cash recomputation
 - Live summary endpoint exposes `total_cash_twd` + `total_assets_twd` so the dashboard tile renders in one call
 - Backfill recomputes historical cash for the entire snapshot range
-- Stacked chart: stocks bottom, cash top, top edge = total assets
+- Two-line chart: `總資產` (`total_assets_twd`) overlaid on `總市值` (`total_market_value`); vertical gap = cash
 
 **Non-Goals:**
 - Per-account or per-currency series (single TWD-converted line is enough)

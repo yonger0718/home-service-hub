@@ -22,7 +22,7 @@
 ### Modified Capabilities
 
 - `stock-portfolio-cash-accounts`: live summary aggregation exposed via portfolio summary endpoint; snapshot writer reads cash totals (introduces dependency from `portfolio_snapshot_service` to `cash_account_service.get_total_balance_in`)
-- `frontend-portfolio-dashboard`: networth chart becomes stacked area (stocks + cash); new 總資產 tile above existing tile row
+- `frontend-portfolio-dashboard`: networth chart becomes a two-line overlay (`總資產` over `總市值`, gap = cash); new 總資產 tile above existing tile row
 
 ## Impact
 
@@ -38,8 +38,8 @@
 
 **Frontend** (`frontend/src/app/`):
 - `models/portfolio.model.ts`: extend `NetworthPoint` with `total_cash_twd` + `total_assets_twd`; extend `PortfolioSummary` with the same two
-- `components/portfolio/dashboard/dashboard.{ts,html,scss}`: stacked-area dataset (two series: `stocks`, `cash`), new tile, recompute cache invalidation rules unchanged
-- `components/portfolio/dashboard/dashboard.spec.ts`: stacked dataset assertions, tile renders combined total
+- `components/portfolio/dashboard/dashboard.{ts,html,scss}`: two-line overlay datasets (`總資產` + `總市值`), new tile, recompute cache invalidation rules unchanged
+- `components/portfolio/dashboard/dashboard.spec.ts`: two-dataset (non-stacked) assertions, tile renders combined total
 
 **Rollout**:
 - Deploy backend + migration (`alembic upgrade head`) → existing snapshots keep `total_cash_twd = 0` (NOT NULL with default)
