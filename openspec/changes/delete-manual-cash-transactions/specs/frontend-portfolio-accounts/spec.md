@@ -15,7 +15,7 @@ Confirming the dialog SHALL call `DELETE /api/portfolio/accounts/{id}/cash-trans
 
 #### Scenario: Non-manual row hides trash icon
 
-- **GIVEN** a row with `source=auto_derive` (or `csv_import`, `backfill`) in the rendered list
+- **GIVEN** a row with `source=auto_derive` or `source=csv_import` in the rendered list
 - **THEN** no trash icon is rendered on the row
 
 #### Scenario: Confirmation dialog shows row context

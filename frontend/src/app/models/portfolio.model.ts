@@ -268,6 +268,8 @@ export type CashTransactionType =
   | 'margin_interest' | 'wire_fee'
   | 'fx_convert';
 
+export type CreateCashTransactionType = Exclude<CashTransactionType, 'trade'>;
+
 export type CashTransactionSource = 'manual' | 'csv_import' | 'auto_derive';
 
 export interface BrokerAccount {
@@ -289,7 +291,7 @@ export interface CreateBrokerAccount {
   nickname: string;
   currency: string;
   opening_balance?: string;
-  opening_date?: string;
+  opening_date: string;
   is_active?: boolean;
 }
 
@@ -318,7 +320,7 @@ export interface CashTransaction {
 
 export interface CreateCashTransaction {
   txn_date: string;
-  type: CashTransactionType;
+  type: CreateCashTransactionType;
   amount: string;
   currency: string;
   note?: string | null;

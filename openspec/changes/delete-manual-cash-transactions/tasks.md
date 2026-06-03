@@ -33,4 +33,4 @@
 - [ ] 6.2 Click trash icon → confirmation dialog shows correct amount + date + note
 - [ ] 6.3 Confirm → row disappears, balance + chart update
 - [ ] 6.4 Verify a `source=auto_derive` row (any BUY/SELL leg) shows NO trash icon
-- [ ] 6.5 Verify a `source=backfill` row (any historical leg) shows NO trash icon
+- [ ] 6.5 Verify a backfilled row (`source=csv_import` or `source=auto_derive`, depending on origin) shows NO trash icon

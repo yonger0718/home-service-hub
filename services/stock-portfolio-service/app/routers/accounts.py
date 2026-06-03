@@ -144,7 +144,7 @@ def delete_cash_transaction(
                 status_code=403,
                 content={"detail": "only manual cash transactions can be deleted"},
             )
-        raise
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"deleted_id": deleted_id}
 
 

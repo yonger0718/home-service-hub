@@ -42,6 +42,7 @@ import {
   CashTransactionSource,
   CashTransactionType,
   CreateCashTransaction,
+  CreateCashTransactionType,
   PatchBrokerAccount,
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
@@ -151,6 +152,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
   readonly typeOptions = TYPE_OPTIONS;
   readonly manualTypeOptions = MANUAL_TYPE_OPTIONS;
   readonly sortOptions = SORT_OPTIONS;
+  readonly defaultPageSize = DEFAULT_PAGE_SIZE;
   readonly rowsPerPageOptions = [25, 50, 100];
   readonly selectedWindow = signal<BalanceWindow>('3M');
   readonly accountId = signal<number>(0);
@@ -184,7 +186,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
 
   transactionForm = this.fb.group({
     txn_date: this.fb.nonNullable.control<string | Date>(this.todayIso(), Validators.required),
-    type: this.fb.nonNullable.control<CashTransactionType>('deposit', Validators.required),
+    type: this.fb.nonNullable.control<CreateCashTransactionType>('deposit', Validators.required),
     amount: this.fb.nonNullable.control('', Validators.required),
     note: this.fb.nonNullable.control(''),
   });

@@ -212,10 +212,10 @@
     }
   </div>
 
-  @if (total() > (query().limit ?? 25)) {
+  @if (total() > (query().limit ?? defaultPageSize)) {
     <p-paginator
       [first]="query().offset ?? 0"
-      [rows]="query().limit ?? 25"
+      [rows]="query().limit ?? defaultPageSize"
       [totalRecords]="total()"
       [rowsPerPageOptions]="rowsPerPageOptions"
       (onPageChange)="onPageChange($event)"

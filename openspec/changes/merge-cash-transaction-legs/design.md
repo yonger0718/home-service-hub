@@ -49,7 +49,7 @@ A pure client-side group fails because pagination is server-driven: a page-25 bo
 
 **Decision**: when `merge_related=true`, compute the full filtered list of "virtual rows" first, then slice.
 
-```
+```python
 virtual_rows =
   [group(rt_id) for rt_id in distinct(filtered.related_transaction_id WHERE NOT NULL)] +
   [row for row in filtered WHERE row.related_transaction_id IS NULL]

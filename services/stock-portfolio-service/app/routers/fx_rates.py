@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -37,20 +37,23 @@ def refresh_fx_rates(
     payload: FxRefreshRequest | None = None,
     db: Session = Depends(get_db),
 ) -> FetchResultResponse:
-    result = fx_rate_service.fetch_and_store(
-        db,
-        base_currencies=(
-            payload.base_currencies
-            if payload and payload.base_currencies is not None
-            else fx_rate_service.DEFAULT_BASE_CURRENCIES
-        ),
-        quote_currencies=(
-            payload.quote_currencies
-            if payload and payload.quote_currencies is not None
-            else fx_rate_service.DEFAULT_QUOTE_CURRENCIES
-        ),
-        asof=payload.asof if payload else None,
-    )
+    try:
+        result = fx_rate_service.fetch_and_store(
+            db,
+            base_currencies=(
+                payload.base_currencies
+                if payload and payload.base_currencies is not None
+                else fx_rate_service.DEFAULT_BASE_CURRENCIES
+            ),
+            quote_currencies=(
+                payload.quote_currencies
+                if payload and payload.quote_currencies is not None
+                else fx_rate_service.DEFAULT_QUOTE_CURRENCIES
+            ),
+            asof=payload.asof if payload else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return FetchResultResponse(
         success=result.success,
         per_base={

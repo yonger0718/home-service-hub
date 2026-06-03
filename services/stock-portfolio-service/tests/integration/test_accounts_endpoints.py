@@ -4,6 +4,7 @@ from decimal import Decimal
 from app.models.broker_account import BrokerAccount, BrokerEnum
 from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
 from app.models.fx_rate import FxRate
+from app.routers import accounts as accounts_router
 
 
 def _account(
@@ -253,6 +254,18 @@ def test_delete_missing_cash_transaction_returns_404(client, db_session) -> None
     assert response.status_code == 404
 
 
+def test_delete_cash_transaction_value_error_returns_422(client, monkeypatch) -> None:
+    def fail_delete(db_session, account_id: int, txn_id: int) -> int:
+        raise ValueError("invalid delete state")
+
+    monkeypatch.setattr(accounts_router.cash_account_service, "delete_manual_cash_transaction", fail_delete)
+
+    response = client.delete("/api/portfolio/accounts/1/cash-transactions/1")
+
+    assert response.status_code == 422
+    assert response.json()["message"] == "invalid delete state"
+
+
 def test_delete_wrong_account_cash_transaction_returns_404(client, db_session) -> None:
     account = _account(nickname="Main")
     other = _account(nickname="Other")
@@ -274,6 +287,13 @@ def test_delete_wrong_account_cash_transaction_returns_404(client, db_session) -
 
     assert response.status_code == 404
     assert db_session.get(CashTransaction, row.id) is not None
+
+
+def test_fx_refresh_invalid_base_currency_returns_422(client) -> None:
+    response = client.post("/api/portfolio/fx/refresh", json={"base_currencies": ["../foo"]})
+
+    assert response.status_code == 422
+    assert response.json()["message"] == "invalid currency code"
 
 
 def test_cash_transactions_endpoint_paginates(client, db_session) -> None:

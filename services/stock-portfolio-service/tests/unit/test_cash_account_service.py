@@ -2,6 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -153,6 +154,16 @@ def test_create_manual_cash_transaction_rejects_currency_mismatch(db_session) ->
                 amount=Decimal("100"),
                 currency="USD",
             ),
+        )
+
+
+def test_cash_transaction_create_rejects_non_alpha_currency() -> None:
+    with pytest.raises(ValidationError):
+        CashTransactionCreate(
+            txn_date=date(2026, 6, 1),
+            type=CashTxnType.DEPOSIT,
+            amount=Decimal("100"),
+            currency="1$A",
         )
 
 

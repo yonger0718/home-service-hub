@@ -2,7 +2,7 @@
 
 ### Requirement: Broker account model
 
-The system SHALL persist one row per (broker, currency) pair in a new `broker_account` table with columns: `id` (PK), `broker` (enum: `cathay`, `sinopac`, `firstrade`, `ib`, `cs`, `other`), `nickname` (VARCHAR(64), unique per broker), `currency` (ISO-4217 3-letter), `opening_balance` (NUMERIC(20,4), default 0), `opening_date` (DATE, default `CURRENT_DATE`), `is_active` (BOOLEAN, default TRUE), `created_at` (TIMESTAMPTZ, default `now()`). The pair `(broker, nickname)` SHALL be UNIQUE.
+The system SHALL persist broker accounts in a new `broker_account` table with columns: `id` (PK), `broker` (enum: `cathay`, `sinopac`, `firstrade`, `ib`, `cs`, `other`), `nickname` (VARCHAR(64)), `currency` (ISO-4217 3-letter), `opening_balance` (NUMERIC(20,4), default 0), `opening_date` (DATE, default `CURRENT_DATE`), `is_active` (BOOLEAN, default TRUE), `created_at` (TIMESTAMPTZ, default `now()`). Account identity is `(broker, nickname)` — that pair SHALL be UNIQUE — so a single broker MAY hold multiple accounts in different currencies (each with a distinct nickname).
 
 #### Scenario: Creating an account persists all required fields
 - **WHEN** a client POSTs `{"broker":"firstrade","nickname":"Firstrade Main","currency":"USD","opening_balance":"12345.67","opening_date":"2026-01-01"}` to `/api/portfolio/accounts`

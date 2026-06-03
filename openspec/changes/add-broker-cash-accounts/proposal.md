@@ -18,7 +18,7 @@ Portfolio service today only models holdings; cash sitting at each broker is inv
 
 ### New Capabilities
 - `stock-portfolio-cash-accounts`: broker account model, cash transaction ledger, FX-rate-aware multi-currency balance compute, backfill from existing transactions/dividends, REST endpoints.
-- `stock-portfolio-fx-rates`: daily FX rate fetch from `open.er-api.com`, persistence, look-up service for cross-currency aggregation.
+- `stock-portfolio-fx-rates`: daily FX rate fetch from `fawazahmed0/currency-api` (jsDelivr primary, currency-api.pages.dev fallback), persistence, look-up service for cross-currency aggregation.
 - `frontend-portfolio-accounts`: Angular page (`/portfolio/accounts` + detail), accounts list cards, cash transaction list, manual deposit/withdraw form, balance-over-time chart, nav entry.
 
 ### Modified Capabilities

@@ -10,7 +10,7 @@ from ..models.cash_transaction import CashTxnSource, CashTxnType
 
 def _normalize_currency(value: str) -> str:
     normalized = value.strip().upper()
-    if len(normalized) != 3:
+    if len(normalized) != 3 or not normalized.isalpha():
         raise ValueError("currency must be a 3-letter ISO code")
     return normalized
 

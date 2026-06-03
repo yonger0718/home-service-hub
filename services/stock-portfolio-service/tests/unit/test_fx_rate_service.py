@@ -139,6 +139,33 @@ def test_quote_not_in_payload_is_skipped_silently(db_session) -> None:
     ]
 
 
+@pytest.mark.parametrize("currency", ["../foo", "1$A", "U", "USDX"])
+def test_fetch_and_store_rejects_invalid_base_currency(db_session, currency: str) -> None:
+    def http_get(url: str, *, timeout: int):
+        raise AssertionError("invalid currency should not be fetched")
+
+    with pytest.raises(ValueError, match="invalid currency code"):
+        fx_rate_service.fetch_and_store(
+            db_session,
+            base_currencies=[currency],
+            quote_currencies=["USD"],
+            http_get=http_get,
+        )
+
+
+def test_fetch_and_store_rejects_invalid_quote_currency(db_session) -> None:
+    def http_get(url: str, *, timeout: int):
+        raise AssertionError("invalid currency should not be fetched")
+
+    with pytest.raises(ValueError, match="invalid currency code"):
+        fx_rate_service.fetch_and_store(
+            db_session,
+            base_currencies=["USD"],
+            quote_currencies=["1$A"],
+            http_get=http_get,
+        )
+
+
 def test_upsert_overwrites_stale_row(db_session) -> None:
     db_session.add(
         FxRate(

@@ -50,6 +50,12 @@ def _normalize_currency(value: str) -> str:
     return value.strip().upper()
 
 
+def _validate_currency_code(value: str) -> None:
+    currency = _normalize_currency(value)
+    if len(currency) != 3 or not all("A" <= char <= "Z" for char in currency):
+        raise ValueError("invalid currency code")
+
+
 def _unique_currencies(values: tuple[str, ...] | list[str]) -> list[str]:
     seen: set[str] = set()
     normalized: list[str] = []
@@ -142,6 +148,9 @@ def fetch_and_store(
     asof: date | None = None,
     http_get: HttpGet | None = None,
 ) -> FetchResult:
+    for currency in [*base_currencies, *quote_currencies]:
+        _validate_currency_code(currency)
+
     http_get = http_get or requests.get
     slot = "latest" if asof is None else asof.isoformat()
     bases = _unique_currencies(base_currencies)
