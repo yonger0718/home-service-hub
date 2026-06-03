@@ -513,6 +513,7 @@ def _refresh_today_snapshot(session: Session) -> None:
     try:
         portfolio_snapshot_service.write_today_snapshot(session)
     except Exception:
+        session.rollback()
         logger = logging.getLogger(__name__)
         logger.warning("cash_account_service: failed to refresh today snapshot", exc_info=True)
 

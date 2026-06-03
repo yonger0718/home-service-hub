@@ -393,12 +393,11 @@ export class PortfolioAccountDetailComponent implements OnInit {
   }
 
   openTopupQuickFix(): void {
-    const account = this.account();
-    if (!account) return;
+    if (!this.account()) return;
     this.transactionForm.reset({
       txn_date: this.todayIso(),
       type: 'deposit',
-      amount: Math.abs(Number(account.native_balance)).toString(),
+      amount: this.overdraftAmount(),
       note: '補登未記錄入金',
     });
     this.transactionDialogVisible.set(true);
