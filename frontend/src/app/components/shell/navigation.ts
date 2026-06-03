@@ -41,6 +41,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: 'dividends', path: '/portfolio/dividends', icon: 'pi-percentage', label: '股利', title: '股利領取紀錄', group: 'portfolio', sub: true },
       { id: 'import', path: '/portfolio/import', icon: 'pi-upload', label: '匯入', title: '匯入 CSV', group: 'portfolio', sub: true },
       { id: 'realized-pnl', path: '/portfolio/realized-pnl', icon: 'pi-dollar', label: '已實現', title: '已實現損益', group: 'portfolio', sub: true },
+      { id: 'accounts', path: '/portfolio/accounts', icon: 'pi-wallet', label: '現金', title: '現金帳戶', group: 'portfolio', sub: true },
     ],
   },
   {

@@ -1,0 +1,295 @@
+<p-toast></p-toast>
+<p-confirmDialog styleClass="hub-dialog-md"></p-confirmDialog>
+
+<div class="account-detail-page">
+  <p-card styleClass="account-header-card">
+    @if (account(); as current) {
+      <div class="account-header">
+        <div>
+          <div class="broker-label">{{ brokerLabel(current.broker) }} · {{ current.currency }}</div>
+          <h2>{{ current.nickname }}</h2>
+          <div class="account-meta">
+            <span>期初 {{ formatCurrency(current.opening_balance, current.currency) }}</span>
+            <span>{{ current.opening_date }}</span>
+            <p-tag
+              [value]="current.is_active ? '啟用' : '停用'"
+              [severity]="current.is_active ? 'success' : 'secondary'">
+            </p-tag>
+          </div>
+        </div>
+        <div class="header-balance">
+          <div class="balance-label">目前餘額</div>
+          <div class="balance-value">{{ formatCurrency(current.native_balance, current.currency) }}</div>
+          <p-button icon="pi pi-pencil" label="編輯" severity="secondary" (onClick)="openEditDialog()"></p-button>
+        </div>
+      </div>
+    } @else {
+      <div class="account-header">
+        <div>
+          <div class="broker-label">讀取中</div>
+          <h2>現金帳戶</h2>
+        </div>
+      </div>
+    }
+  </p-card>
+
+  <p-card styleClass="balance-chart-card">
+    <div class="section-header">
+      <h3>餘額走勢</h3>
+      <p-selectButton
+        [options]="windowOptions"
+        optionLabel="label"
+        optionValue="value"
+        [allowEmpty]="false"
+        [ngModel]="selectedWindow()"
+        (ngModelChange)="onWindowChange($event)">
+      </p-selectButton>
+    </div>
+    @if (loadingHistory()) {
+      <div class="chart-loading">
+        <p-progressSpinner styleClass="w-2rem h-2rem" strokeWidth="4"></p-progressSpinner>
+      </div>
+    } @else if (balanceHistory().points.length === 0) {
+      <div class="networth-empty">尚無資料</div>
+    } @else {
+      <div class="balance-chart">
+        <p-chart type="line" [data]="chartData()" [options]="chartOptions"></p-chart>
+      </div>
+    }
+  </p-card>
+
+  <div class="section-header transactions-header">
+    <h3>現金交易</h3>
+    <div class="transactions-actions">
+      <label class="merge-toggle" for="mergeRelatedCashTransactions">
+        <span>合併同筆交易</span>
+        <p-toggleswitch
+          inputId="mergeRelatedCashTransactions"
+          [ngModel]="mergeRelated()"
+          (ngModelChange)="onMergeRelatedChange($event)">
+        </p-toggleswitch>
+      </label>
+      <p-button icon="pi pi-plus" label="新增交易" (onClick)="openTransactionDialog()"></p-button>
+    </div>
+  </div>
+
+  <div class="hub-filter-bar">
+    <div class="filter-controls">
+      <p-datepicker
+        [(ngModel)]="dateRange"
+        selectionMode="range"
+        [readonlyInput]="true"
+        dateFormat="yy-mm-dd"
+        placeholder="日期範圍"
+        appendTo="body"
+        [showClear]="true"
+        styleClass="hub-mini-datepicker"
+        (onSelect)="onDateRangeChange(dateRange)"
+        (onClear)="onDateRangeChange(null)">
+      </p-datepicker>
+      <p-multiselect
+        [options]="typeOptions"
+        optionLabel="label"
+        optionValue="value"
+        [ngModel]="selectedTypes()"
+        [selectionLimit]="1"
+        placeholder="類型"
+        appendTo="body"
+        styleClass="hub-mini-select"
+        (ngModelChange)="onTypeFilterChange($event)">
+      </p-multiselect>
+      <p-select
+        [options]="sortOptions"
+        optionLabel="label"
+        optionValue="value"
+        [ngModel]="query().sort ?? 'txn_date:desc'"
+        (onChange)="onSortChange($event.value)"
+        styleClass="hub-mini-select">
+      </p-select>
+      @if (hasActiveFilters()) {
+        <p-button icon="pi pi-filter-slash" severity="secondary" [text]="true" (onClick)="clearFilters()" pTooltip="清除篩選"></p-button>
+      }
+    </div>
+  </div>
+
+  <div class="hub-result-meta">
+    <span class="meta-count">{{ total() }} 筆</span>
+    @if (loadingTransactions()) {
+      <span class="meta-loading">
+        <p-progressSpinner styleClass="w-1rem h-1rem" strokeWidth="4"></p-progressSpinner>
+        查詢中…
+      </span>
+    }
+  </div>
+
+  <div class="hub-modern-list" [class.is-loading]="loadingTransactions()">
+    @for (txn of transactions(); track transactionKey(txn)) {
+      <div class="transaction-group" [class.is-expanded]="isTransactionExpanded(txn.id)">
+        <app-list-item [clickable]="false">
+          <ng-container left>
+            <div class="main-text transaction-main-line">
+              @if (hasChildLegs(txn)) {
+                <button
+                  type="button"
+                  class="leg-chevron"
+                  [class.is-expanded]="isTransactionExpanded(txn.id)"
+                  [attr.aria-expanded]="isTransactionExpanded(txn.id)"
+                  [attr.aria-label]="isTransactionExpanded(txn.id) ? '收合同筆交易明細' : '展開同筆交易明細'"
+                  (click)="$event.stopPropagation(); toggleTransactionLegs(txn.id)"
+                  pTooltip="交易明細"
+                  tooltipPosition="top">
+                  <i class="pi pi-chevron-right"></i>
+                </button>
+              }
+              <span>{{ txn.txn_date }}</span>
+              <span class="type-badge">{{ typeLabel(txn.type) }}</span>
+              @if (hasChildLegs(txn)) {
+                <span class="leg-count-badge">{{ txn.child_legs?.length }} 筆</span>
+              }
+              <p-tag [value]="sourceLabel(txn.source)" [severity]="sourceSeverity(txn.source)"></p-tag>
+              @if (txn.note) {
+                <i
+                  class="pi pi-info-circle note-icon"
+                  role="img"
+                  tabindex="0"
+                  aria-label="交易備註"
+                  [pTooltip]="txn.note"
+                  tooltipPosition="top">
+                </i>
+              }
+            </div>
+            <div class="sub-text">{{ txn.currency }} · {{ txn.created_at }}</div>
+          </ng-container>
+          <ng-container right>
+            <div class="transaction-right-actions">
+              <div class="text-end">
+                <div class="amount-text transaction-amount" [ngClass]="amountClass(txn.amount)">
+                  {{ formatCurrency(txn.amount, txn.currency) }}
+                </div>
+              </div>
+              @if (txn.source === 'manual') {
+                <p-button
+                  icon="pi pi-trash"
+                  severity="danger"
+                  [text]="true"
+                  [rounded]="true"
+                  size="small"
+                  styleClass="cash-delete-button"
+                  ariaLabel="刪除交易"
+                  pTooltip="刪除交易"
+                  tooltipPosition="top"
+                  (onClick)="confirmDelete(txn)">
+                </p-button>
+              }
+            </div>
+          </ng-container>
+        </app-list-item>
+        @if (isTransactionExpanded(txn.id)) {
+          <div class="transaction-sub-legs">
+            @for (leg of txn.child_legs ?? []; track transactionKey(leg)) {
+              <div class="transaction-sub-leg">
+                <div class="sub-leg-left">
+                  <div class="sub-leg-main">
+                    <span>{{ leg.txn_date }}</span>
+                    <span class="type-badge">{{ typeLabel(leg.type) }}</span>
+                  </div>
+                  <div class="sub-text">{{ leg.currency }} · {{ leg.created_at }}</div>
+                </div>
+                <div class="amount-text transaction-amount" [ngClass]="amountClass(leg.amount)">
+                  {{ formatCurrency(leg.amount, leg.currency) }}
+                </div>
+              </div>
+            }
+          </div>
+        }
+      </div>
+    } @empty {
+      <div class="empty-state">
+        <i class="pi pi-wallet"></i>
+        <h4>無現金交易</h4>
+        <p>調整篩選條件後再試。</p>
+      </div>
+    }
+  </div>
+
+  @if (total() > (query().limit ?? defaultPageSize)) {
+    <p-paginator
+      [first]="query().offset ?? 0"
+      [rows]="query().limit ?? defaultPageSize"
+      [totalRecords]="total()"
+      [rowsPerPageOptions]="rowsPerPageOptions"
+      (onPageChange)="onPageChange($event)"
+      styleClass="hub-paginator">
+    </p-paginator>
+  }
+</div>
+
+<p-dialog
+  header="編輯帳戶"
+  [modal]="true"
+  [draggable]="false"
+  [resizable]="false"
+  [visible]="editDialogVisible()"
+  (visibleChange)="editDialogVisible.set($event)"
+  styleClass="accounts-dialog">
+  <form [formGroup]="editForm" (ngSubmit)="submitEdit()" class="account-form">
+    <label>
+      <span>暱稱</span>
+      <input pInputText formControlName="nickname" />
+    </label>
+    <label>
+      <span>期初餘額</span>
+      <input pInputText formControlName="opening_balance" inputmode="decimal" />
+    </label>
+    <label>
+      <span>期初日期</span>
+      <p-datepicker formControlName="opening_date" dateFormat="yy-mm-dd" appendTo="body"></p-datepicker>
+    </label>
+    <label class="active-checkbox">
+      <p-checkbox formControlName="is_active" [binary]="true"></p-checkbox>
+      <span>啟用帳戶</span>
+    </label>
+    <div class="dialog-actions">
+      <p-button label="取消" severity="secondary" [text]="true" type="button" (onClick)="closeEditDialog()"></p-button>
+      <p-button label="儲存" icon="pi pi-check" type="submit" [loading]="savingAccount()"></p-button>
+    </div>
+  </form>
+</p-dialog>
+
+<p-dialog
+  header="新增交易"
+  [modal]="true"
+  [draggable]="false"
+  [resizable]="false"
+  [visible]="transactionDialogVisible()"
+  (visibleChange)="transactionDialogVisible.set($event)"
+  styleClass="accounts-dialog">
+  <form [formGroup]="transactionForm" (ngSubmit)="submitTransaction()" class="account-form">
+    <label>
+      <span>日期</span>
+      <p-datepicker formControlName="txn_date" dateFormat="yy-mm-dd" appendTo="body"></p-datepicker>
+    </label>
+    <label>
+      <span>類型</span>
+      <p-select
+        formControlName="type"
+        [options]="manualTypeOptions"
+        optionLabel="label"
+        optionValue="value"
+        appendTo="body">
+      </p-select>
+    </label>
+    <label>
+      <span>金額</span>
+      <input pInputText formControlName="amount" inputmode="decimal" />
+    </label>
+    <label>
+      <span>備註</span>
+      <input pInputText formControlName="note" />
+    </label>
+    <div class="dialog-actions">
+      <p-button label="取消" severity="secondary" [text]="true" type="button" (onClick)="closeTransactionDialog()"></p-button>
+      <p-button label="建立" icon="pi pi-check" type="submit" [loading]="savingTransaction()"></p-button>
+    </div>
+  </form>
+</p-dialog>

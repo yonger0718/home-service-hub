@@ -256,3 +256,121 @@ export interface RealizedPnlQuery {
 }
 
 export type RealizedPnlPaged = Paged<RealizedPnlEvent> & { summary: RealizedPnlSummary };
+
+export type BrokerEnum = 'cathay' | 'sinopac' | 'firstrade' | 'ib' | 'cs' | 'other';
+
+export type CashTransactionType =
+  | 'deposit' | 'withdraw'
+  | 'trade'
+  | 'buy_settle' | 'sell_settle'
+  | 'fee' | 'tax'
+  | 'dividend_cash' | 'interest_in'
+  | 'margin_interest' | 'wire_fee'
+  | 'fx_convert';
+
+export type CreateCashTransactionType = Exclude<CashTransactionType, 'trade'>;
+
+export type CashTransactionSource = 'manual' | 'csv_import' | 'auto_derive';
+
+export interface BrokerAccount {
+  id: number;
+  broker: BrokerEnum;
+  nickname: string;
+  currency: string;
+  opening_balance: string;
+  opening_date: string;
+  is_active: boolean;
+  created_at: string;
+  native_balance: string;
+  target_balance?: string | null;
+  target_currency?: string | null;
+}
+
+export interface CreateBrokerAccount {
+  broker: BrokerEnum;
+  nickname: string;
+  currency: string;
+  opening_balance?: string;
+  opening_date: string;
+  is_active?: boolean;
+}
+
+export interface PatchBrokerAccount {
+  nickname?: string;
+  opening_balance?: string;
+  opening_date?: string;
+  is_active?: boolean;
+}
+
+export interface CashTransaction {
+  id: number;
+  account_id: number;
+  txn_date: string;
+  type: CashTransactionType;
+  amount: string;
+  currency: string;
+  note?: string | null;
+  related_transaction_id?: number | null;
+  related_dividend_id?: number | null;
+  child_legs?: CashTransaction[] | null;
+  source: CashTransactionSource;
+  import_fingerprint: string;
+  created_at: string;
+}
+
+export interface CreateCashTransaction {
+  txn_date: string;
+  type: CreateCashTransactionType;
+  amount: string;
+  currency: string;
+  note?: string | null;
+}
+
+export interface CashTransactionQuery {
+  date_from?: string;
+  date_to?: string;
+  type?: CashTransactionType;
+  sort?: string;
+  offset?: number;
+  limit?: number;
+  merge_related?: boolean;
+}
+
+export interface CashTransactionPaged {
+  items: CashTransaction[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface BalancePoint {
+  date: string;
+  balance: string;
+}
+
+export interface BalanceHistory {
+  account_id: number;
+  currency: string;
+  points: BalancePoint[];
+}
+
+export interface AccountsList {
+  items: BrokerAccount[];
+  target_currency: string | null;
+  total_target_balance: string | null;
+  skipped_currencies: string[];
+}
+
+export interface FxFetchPerBase {
+  success: boolean;
+  upserted: number;
+  source_url: string | null;
+  error: string | null;
+}
+
+export interface FxFetchResult {
+  success: boolean;
+  per_base: Record<string, FxFetchPerBase>;
+  upserted_count: number;
+  error: string | null;
+}
