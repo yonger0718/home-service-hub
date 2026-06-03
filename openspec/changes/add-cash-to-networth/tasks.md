@@ -38,7 +38,7 @@
 
 ## 7. Frontend — networth chart stacked
 
-- [x] 7.1 In `dashboard.ts`, when transforming `chartPoints()` into chart data, produce TWO series: `{label: "持股市值", data: [point.total_market_value]}` and `{label: "現金", data: [point.total_cash_twd]}`. Configure the chart options with `stacked: true` on the y-axis and `fill: true` on each dataset
+- [x] 7.1 In `dashboard.ts`, when transforming `chartPoints()` into chart data, produce TWO overlaid series: `{label: "總資產", data: total_assets_twd}` (top, accent color) and `{label: "總市值", data: total_market_value}` (overlay, trend color). Configure `scales.y.stacked = false` and `fill: true` on each dataset so the cash portion is visible as the vertical gap between the two lines
 - [x] 7.2 Verify the existing window selector / cache logic still works with the new dataset shape
 - [x] 7.3 Dashboard spec: chart datasets array has length 2 in stacked configuration; switching window preserves the layout
 

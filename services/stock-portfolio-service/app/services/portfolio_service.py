@@ -829,7 +829,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         total_market_value_twd = total_market_value.quantize(
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
-        total_cash_twd, _skipped = cash_account_service.get_total_balance_in(db, "TWD")
+        total_cash_twd, _skipped = cash_account_service.get_total_balance_in(db, "TWD", asof=today)
 
         return schemas.PortfolioSummary(
             total_market_value=total_market_value_twd,

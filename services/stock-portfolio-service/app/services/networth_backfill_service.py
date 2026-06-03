@@ -564,9 +564,14 @@ def replay_snapshots_range(
             return False
 
     def total_cash_twd(snapshot_date: dt_date) -> Decimal:
-        cash_total, _skipped = cash_account_service.get_total_balance_in(
+        cash_total, skipped = cash_account_service.get_total_balance_in(
             db, "TWD", asof=snapshot_date
         )
+        if skipped:
+            logger.warning(
+                "networth_backfill.replay.cash_skipped_currencies",
+                extra={"date": snapshot_date.isoformat(), "skipped": skipped},
+            )
         return cash_total
 
     tx_i = 0

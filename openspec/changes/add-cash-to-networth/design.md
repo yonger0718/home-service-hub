@@ -50,13 +50,13 @@ The two never meet, so the dashboard shows partial net worth. This change wires 
 
 **Why**: the dashboard tile and the summary both load on dashboard mount; piggybacking on the existing call is cheaper than two round trips. Service-side cost is one extra cash balance compute (~5ms over 5000 rows).
 
-### D5. Stacked area chart over separate line
+### D5. Two overlaid area series (revised after first cut)
 
-**Decision**: chart datasets become `[{name: "stocks", data: [...]}, {name: "cash", data: [...]}]` with `stack: true`; the visual top edge equals `total_assets_twd`.
+**Decision**: chart datasets become `[{label: "總資產", data: total_assets_twd}, {label: "總市值", data: total_market_value}]` with `scales.y.stacked = false`. The two series share the same absolute scale; the vertical gap between the lines visually represents cash.
 
-**Why**: stacked area makes the cash/stocks proportion visible at a glance, which is the main motivation for the user feature ("see what counts as wealth"). A separate total-line buries the cash portion.
+**Why**: initial implementation used a stacked area (`現金` + `持股市值` bands). After viewing it, the user fed back that the more useful framing is the two headline metrics they already track (`總市值` and `總資產`), with cash as the gap. Stacked bands made cash feel like a separate category rather than part of total assets.
 
-**Alternative considered**: single combined line → rejected (loses the cash/stocks proportion; defeats the educational point).
+**Alternative considered**: stacked area (initial cut) — rejected after user review. Single combined line — rejected (loses the market-value reference; user can't tell at a glance how much of the chart is investment performance vs cash injection).
 
 ### D6. Backfill column default = 0, not NULL
 

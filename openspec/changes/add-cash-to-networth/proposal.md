@@ -9,7 +9,7 @@
 - Extend `networth_backfill_service` to compute `total_cash_twd` for each historical date in the backfill window using the same logic
 - `GET /api/portfolio/history` response items add `total_cash_twd: string` field
 - New `total_assets_twd: string` derived field on response items = `total_market_value + total_cash_twd` (server-side, no extra cost)
-- Frontend dashboard networth chart: stacked area (stocks bottom, cash top); the top edge represents `total_assets_twd`. Window selector (1M/3M/1Y/All) unchanged
+- Frontend dashboard networth chart: two overlaid (non-stacked) area series — `總資產` (top, `total_assets_twd`) over `總市值` (`total_market_value`); the vertical gap represents cash. Window selector (1M/3M/1Y/All) unchanged
 - New dashboard tile `總資產` above the existing tile row, showing LIVE `summary.total_market_value + Σ get_total_balance_in("TWD")` (current value, not from snapshot)
 - LIVE summary endpoint (`GET /api/portfolio/summary`) gains `total_cash_twd: string` and `total_assets_twd: string` derived fields so the tile renders without a second call
 

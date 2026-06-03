@@ -14,7 +14,7 @@
         </app-bento>
       }
     </div>
-  } @else if (summary() && summary()!.holdings.length > 0) {
+  } @else if (summary() && (summary()!.holdings.length > 0 || Number(summary()!.total_assets_twd) > 0)) {
     <div class="bento-grid">
       <app-bento class="b-full primary-tile" [full]="true">
         <div class="label">總資產</div>

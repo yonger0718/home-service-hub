@@ -433,6 +433,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
         this.messageService.add({ severity: 'success', summary: '已新增', detail: '交易已建立' });
         this.loadBalanceHistory();
         this.fetchTransactions();
+        this.loadAccount();
         this.portfolioService.notifyCashLedgerChanged();
       },
       error: () => {
