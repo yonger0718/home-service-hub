@@ -29,3 +29,17 @@ def test_history_endpoint_items_include_cash_and_total_assets(client, db_session
     assert len(body) == 1
     assert Decimal(body[0]["total_cash_twd"]) == Decimal("100000")
     assert Decimal(body[0]["total_assets_twd"]) == Decimal("600000")
+
+
+def test_price_history_endpoint_rejects_unknown_market(client) -> None:
+    response = client.get(
+        "/api/portfolio/price-history",
+        params={
+            "symbol": "2330",
+            "market": "XYZ",
+            "from": "2026-01-01",
+            "to": "2026-01-02",
+        },
+    )
+
+    assert response.status_code == 422

@@ -147,7 +147,7 @@ def test_realized_pnl_endpoint_sort_and_summary(client, db_session) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert [item["realized_pnl"] for item in body["items"]] == ["200.00"]
+    assert [item["realized_pnl"] for item in body["items"]] == ["200.0000"]
     assert body["summary"]["filter_scope_total"] == "200.00"
     assert body["summary"]["filter_scope_count"] == 1
     assert body["summary"]["ytd_total"] == "60.00"
@@ -198,4 +198,4 @@ def test_realized_pnl_endpoint_returns_short_cover_event(client, db_session) -> 
     assert body["total"] == 1
     [event] = body["items"]
     assert event["position_side"] == "SHORT"
-    assert event["realized_pnl"] == "20000.00"
+    assert event["realized_pnl"] == "20000.0000"

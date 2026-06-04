@@ -32,7 +32,7 @@ corp_router = APIRouter(prefix="/api/portfolio/corporate-actions", tags=["Portfo
 @router.get("")
 def get_price_history(
     symbol: str = Query(...),
-    market: str = Query(default="TW"),
+    market: str = Query(default="TW", pattern="^(TW|US|LSE)$"),
     from_date: dt_date = Query(..., alias="from"),
     to_date: dt_date = Query(..., alias="to"),
     db: Session = Depends(get_db),

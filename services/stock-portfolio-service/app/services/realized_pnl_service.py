@@ -74,10 +74,16 @@ def _to_twd_per_share(row: object) -> Decimal:
         raise ValueError(f"missing fx_rate_to_twd for transaction ({_row_ref(row)})")
     price = Decimal(getattr(row, "price"))
     if fx_rate is None:
-        if currency == "TWD":
-            return price.quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP)
         return price
     return price * Decimal(fx_rate)
+
+
+def _to_twd_money(row: object, raw_value: object) -> Decimal:
+    value = Decimal(raw_value or "0")
+    fx_rate = getattr(row, "fx_rate_to_twd", None)
+    if fx_rate is None:
+        return value
+    return value * Decimal(fx_rate)
 
 
 def _quantity(value: object) -> Decimal:
@@ -102,8 +108,8 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
 
         quantity = _quantity(transaction.quantity)
         price = _to_twd_per_share(transaction)
-        fee = transaction.fee or Decimal("0.0")
-        tax = transaction.tax or Decimal("0.0")
+        fee = _to_twd_money(transaction, transaction.fee)
+        tax = _to_twd_money(transaction, transaction.tax)
         side = getattr(transaction, "position_side", None) or models.PositionSide.LONG
         if not isinstance(side, models.PositionSide):
             side = models.PositionSide(side)

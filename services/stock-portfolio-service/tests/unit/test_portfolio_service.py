@@ -3,6 +3,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from app.models import portfolio as models
 from app.schemas import portfolio as schemas
@@ -44,6 +45,68 @@ class TestPortfolioService:
         assert portfolio_service.sanitize_symbol("0050.TW") == "0050"
         assert portfolio_service.sanitize_symbol("00919.two") == "00919"
         assert portfolio_service.sanitize_symbol(" 2330 ") == "2330"
+
+    def test_stock_holding_accepts_fractional_total_quantity(self):
+        holding = schemas.StockHolding(
+            symbol="AAPL",
+            total_quantity=Decimal("0.5"),
+            avg_cost=Decimal("100"),
+            current_price=Decimal("110"),
+            market_value=Decimal("55"),
+            unrealized_pnl=Decimal("5"),
+            unrealized_pnl_percent=Decimal("10"),
+            total_pnl_with_dividend=Decimal("5"),
+        )
+
+        assert holding.total_quantity == Decimal("0.5")
+
+    def test_transaction_create_requires_fx_rate_for_non_twd_currency(self):
+        with pytest.raises(ValidationError) as exc:
+            schemas.TransactionCreate(
+                symbol="AAPL",
+                market="US",
+                type=schemas.TransactionType.BUY,
+                quantity=Decimal("1"),
+                price=Decimal("100"),
+                currency="USD",
+                fx_rate_to_twd=None,
+            )
+
+        assert "fx_rate_to_twd required when currency='USD'" in str(exc.value)
+
+    def test_dividend_create_requires_fx_rate_for_non_twd_currency(self):
+        with pytest.raises(ValidationError) as exc:
+            schemas.DividendCreate(
+                symbol="AAPL",
+                market="US",
+                amount=Decimal("10"),
+                currency="USD",
+                fx_rate_to_twd=None,
+                ex_dividend_date=datetime(2026, 1, 1),
+            )
+
+        assert "fx_rate_to_twd required when currency='USD'" in str(exc.value)
+
+    def test_schema_symbol_normalization_preserves_foreign_dot_symbol(self):
+        us_tx = schemas.TransactionCreate(
+            symbol="BRK.B",
+            market="US",
+            type=schemas.TransactionType.BUY,
+            quantity=Decimal("1"),
+            price=Decimal("100"),
+            currency="USD",
+            fx_rate_to_twd=Decimal("32"),
+        )
+        tw_tx = schemas.TransactionCreate(
+            symbol="2330.TW",
+            market="TW",
+            type=schemas.TransactionType.BUY,
+            quantity=Decimal("1"),
+            price=Decimal("100"),
+        )
+
+        assert us_tx.symbol == "BRK.B"
+        assert tw_tx.symbol == "2330"
 
     def test_resolve_sort_trade_date_normalizes_aware_datetimes_to_utc_naive(self):
         aware_trade_date = datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)
@@ -176,6 +239,55 @@ class TestPortfolioService:
         assert summary.quotes_status == "unavailable"
         assert summary.total_market_value == Decimal("0.00")
         assert summary.total_unrealized_pnl == Decimal("0.00")
+
+    @patch("app.services.portfolio_service.get_stock_quotes")
+    def test_get_portfolio_summary_keeps_same_ticker_markets_separate(
+        self, mock_get_quotes, db_session
+    ):
+        db_session.add_all(
+            [
+                models.Transaction(
+                    symbol="ABC",
+                    market="TW",
+                    name="TW ABC",
+                    type=models.TransactionType.BUY,
+                    quantity=Decimal("10"),
+                    price=Decimal("100"),
+                    fee=Decimal("0"),
+                    tax=Decimal("0"),
+                    trade_date=datetime(2026, 1, 1),
+                ),
+                models.Transaction(
+                    symbol="ABC",
+                    market="US",
+                    name="US ABC",
+                    type=models.TransactionType.BUY,
+                    quantity=Decimal("0.5"),
+                    price=Decimal("20"),
+                    currency="USD",
+                    fx_rate_to_twd=Decimal("32"),
+                    fee=Decimal("0"),
+                    tax=Decimal("0"),
+                    trade_date=datetime(2026, 1, 2),
+                ),
+            ]
+        )
+        db_session.commit()
+        mock_get_quotes.return_value = {
+            "ABC": {
+                "symbol": "ABC",
+                "name": "ABC",
+                "current_price": Decimal("110"),
+                "yesterday_close": Decimal("109"),
+            }
+        }
+
+        summary = portfolio_service.get_portfolio_summary(db_session)
+
+        assert [holding.total_quantity for holding in summary.holdings] == [
+            Decimal("10"),
+            Decimal("0.5000"),
+        ]
 
     def test_create_update_delete_transaction_and_dividend(self, db_session):
         created_tx = portfolio_service.create_transaction(

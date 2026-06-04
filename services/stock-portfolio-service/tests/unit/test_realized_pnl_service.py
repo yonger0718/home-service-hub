@@ -364,6 +364,36 @@ def test_twd_native_realized_pnl_stays_unchanged(db_session) -> None:
     assert event.realized_pnl == Decimal("20000")
 
 
+def test_twd_realized_pnl_preserves_four_decimal_price(db_session) -> None:
+    _seed_transactions(
+        db_session,
+        [
+            _tx(
+                symbol="2330",
+                side=models.TransactionType.BUY,
+                quantity=100,
+                price="10.1234",
+                trade_date=datetime(2025, 1, 1, 9, 0),
+            ),
+            _tx(
+                symbol="2330",
+                side=models.TransactionType.SELL,
+                quantity=100,
+                price="11.1234",
+                trade_date=datetime(2025, 1, 2, 9, 0),
+            ),
+        ],
+    )
+
+    [event] = realized_pnl_service.compute_events(db_session)
+
+    assert event.avg_cost_at_sale == Decimal("10.1234")
+    assert event.sell_price == Decimal("11.1234")
+    assert event.cost_out == Decimal("1012.3400")
+    assert event.proceeds_gross == Decimal("1112.3400")
+    assert event.realized_pnl == Decimal("100.0000")
+
+
 def test_usd_realized_pnl_uses_frozen_fx_per_leg(db_session) -> None:
     _seed_transactions(
         db_session,
@@ -396,6 +426,42 @@ def test_usd_realized_pnl_uses_frozen_fx_per_leg(db_session) -> None:
     assert event.cost_out == Decimal("32000.0")
     assert event.proceeds_gross == Decimal("36300.0")
     assert event.realized_pnl == Decimal("4300.0")
+
+
+def test_foreign_realized_pnl_converts_fee_and_tax_with_frozen_fx(db_session) -> None:
+    _seed_transactions(
+        db_session,
+        [
+            _tx(
+                symbol="AAPL",
+                side=models.TransactionType.BUY,
+                quantity=1,
+                price="100",
+                trade_date=datetime(2025, 1, 1, 9, 0),
+                market="US",
+                currency="USD",
+                fx_rate_to_twd="32",
+            ),
+            _tx(
+                symbol="AAPL",
+                side=models.TransactionType.SELL,
+                quantity=1,
+                price="110",
+                fee="1",
+                tax="0.5",
+                trade_date=datetime(2025, 1, 2, 9, 0),
+                market="US",
+                currency="USD",
+                fx_rate_to_twd="32",
+            ),
+        ],
+    )
+
+    [event] = realized_pnl_service.compute_events(db_session)
+
+    assert event.fee == Decimal("32")
+    assert event.tax == Decimal("16.0")
+    assert event.proceeds_net == Decimal("3472.0")
 
 
 def test_foreign_realized_pnl_requires_frozen_fx(db_session) -> None:

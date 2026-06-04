@@ -522,7 +522,11 @@ def replay_snapshots_range(
     }
     cash_activity_dates = cash_txn_dates | opening_dates
 
-    transactions = _load_adjusted_transactions(db)
+    transactions = [
+        transaction
+        for transaction in _load_adjusted_transactions(db)
+        if (getattr(transaction, "market", "TW") or "TW").upper() == "TW"
+    ]
     events = list(iter_realized_events(transactions))
     realized_by_date: dict[dt_date, Decimal] = defaultdict(lambda: Decimal("0"))
     for event in events:
@@ -541,6 +545,7 @@ def replay_snapshots_range(
 
     dividends = (
         db.query(portfolio_models.Dividend)
+        .filter(portfolio_models.Dividend.market == "TW")
         .order_by(portfolio_models.Dividend.ex_dividend_date)
         .all()
     )
@@ -571,14 +576,14 @@ def replay_snapshots_range(
         Decimal(prior_snapshot.total_cost) if prior_snapshot is not None else None
     )
 
-    qty: Dict[str, int] = defaultdict(int)
+    qty: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     cost: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     # Signed running BUY-SELL per symbol (no clamp). Matches the
     # portfolio_service active-holdings convention: if net <= 0 at a
     # given date, treat the symbol as fully exited so a dropped SELL
     # (qty=0 at the time) doesn't leave phantom holdings behind once
     # later BUY+SELL pairs cancel out the deficit.
-    signed_net: Dict[str, int] = defaultdict(int)
+    signed_net: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     cumulative_dividends = Decimal("0")
     warned_missing: set[tuple[str, dt_date]] = set()
     stale_candidates: list[dt_date] = []
@@ -650,7 +655,7 @@ def replay_snapshots_range(
         while tx_i < len(transactions) and _trade_date_of(transactions[tx_i]) <= cur:
             t = transactions[tx_i]
             sym = t.symbol
-            tx_qty = int(t.quantity)
+            tx_qty = Decimal(t.quantity)
             tx_price = Decimal(t.price)
             tx_fee = Decimal(t.fee or 0)
             side = getattr(t, "position_side", None) or PositionSide.LONG
@@ -662,15 +667,15 @@ def replay_snapshots_range(
                 continue
             if t.type == portfolio_models.TransactionType.BUY:
                 qty[sym] += tx_qty
-                cost[sym] += Decimal(tx_qty) * tx_price + tx_fee
+                cost[sym] += tx_qty * tx_price + tx_fee
                 signed_net[sym] += tx_qty
             else:  # SELL
                 signed_net[sym] -= tx_qty
                 if qty[sym] > 0:
-                    avg = cost[sym] / Decimal(qty[sym])
+                    avg = cost[sym] / qty[sym]
                     sold = min(tx_qty, qty[sym])
                     qty[sym] -= sold
-                    cost[sym] -= Decimal(sold) * avg
+                    cost[sym] -= sold * avg
                     if qty[sym] <= 0:
                         qty[sym] = 0
                         cost[sym] = Decimal("0")
