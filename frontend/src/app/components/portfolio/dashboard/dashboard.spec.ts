@@ -227,7 +227,7 @@ describe('PortfolioDashboardComponent', () => {
     expect(chartData.datasets[0]).toMatchObject({
       label: '總資產',
       data: [140, 180],
-      fill: true,
+      fill: '+1',
     });
     expect(chartData.datasets[1]).toMatchObject({
       label: '總市值',

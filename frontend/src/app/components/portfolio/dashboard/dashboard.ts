@@ -331,7 +331,7 @@ export class PortfolioDashboardComponent implements OnInit {
           backgroundColor: cashFill,
           borderWidth: 2.5,
           tension: 0.35,
-          fill: true,
+          fill: '+1',
           pointRadius: 0,
           pointHoverRadius: 4,
         },
