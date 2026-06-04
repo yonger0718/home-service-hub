@@ -149,3 +149,14 @@
     }
   }
 }
+
+.account-card-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  align-items: flex-end;
+}
+
+.account-balance--overdraft {
+  color: var(--app-trend-negative, #f59e0b);
+}

@@ -40,13 +40,18 @@
               <div class="broker-label">{{ brokerLabel(account.broker) }}</div>
               <h3>{{ account.nickname }}</h3>
             </div>
-            <p-tag
-              [value]="account.is_active ? '啟用' : '停用'"
-              [severity]="account.is_active ? 'success' : 'secondary'">
-            </p-tag>
+            <div class="account-card-tags">
+              @if (isOverdraft(account)) {
+                <p-tag value="未記錄入金" severity="warn"></p-tag>
+              }
+              <p-tag
+                [value]="account.is_active ? '啟用' : '停用'"
+                [severity]="account.is_active ? 'success' : 'secondary'">
+              </p-tag>
+            </div>
           </div>
           <div class="account-currency">{{ account.currency }}</div>
-          <div class="account-balance">{{ formatCurrency(account.native_balance, account.currency) }}</div>
+          <div class="account-balance" [class.account-balance--overdraft]="isOverdraft(account)">{{ formatCurrency(account.native_balance, account.currency) }}</div>
           @if (account.target_balance && account.target_currency) {
             <div class="account-target">TWD {{ formatCurrency(account.target_balance, account.target_currency) }}</div>
           }

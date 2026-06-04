@@ -151,6 +151,8 @@ export interface StockHolding {
 
 export interface PortfolioSummary {
   total_market_value: number;
+  total_cash_twd: string;
+  total_assets_twd: string;
   total_cost: number;
   total_unrealized_pnl: number;
   total_unrealized_pnl_percent: number;
@@ -168,6 +170,8 @@ export interface PortfolioSummary {
 export interface NetworthPoint {
   date: string;
   total_market_value: string;
+  total_cash_twd: string;
+  total_assets_twd: string;
   total_cost: string;
   total_unrealized_pnl: string;
   total_dividends: string;

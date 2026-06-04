@@ -114,6 +114,14 @@ export class PortfolioDashboardComponent implements OnInit {
     combineLatest([this.appearance.dark$, this.appearance.gainLoss$])
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe(() => this.refreshChartTheme());
+
+    this.portfolioService.cashLedgerChanged$
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe(() => {
+        this.networthCache.clear();
+        this.reloadSummary();
+        this.loadNetworthHistory();
+      });
   }
 
   selectRange(value: string): void {
@@ -307,18 +315,31 @@ export class PortfolioDashboardComponent implements OnInit {
 
   private rebuildChart(): void {
     const points = this.chartPoints();
-    const values = this.chartValues();
     const up = this.periodReturn() >= 0;
-    const line = this.cssVar(up ? '--app-trend-positive' : '--app-trend-negative');
-    const fill = this.cssVar(up ? '--app-trend-positive-soft' : '--app-trend-negative-soft');
+    const stockLine = this.cssVar(up ? '--app-trend-positive' : '--app-trend-negative');
+    const stockFill = this.cssVar(up ? '--app-trend-positive-soft' : '--app-trend-negative-soft');
+    const cashLine = this.cssVar('--app-accent');
+    const cashFill = this.cssVar('--app-accent-soft');
 
     this.chartData = {
       labels: points.map(point => this.formatChartLabel(point.date)),
       datasets: [
         {
-          data: values,
-          borderColor: line,
-          backgroundColor: fill,
+          label: '總資產',
+          data: points.map(point => this.totalAssetsValue(point)),
+          borderColor: cashLine,
+          backgroundColor: cashFill,
+          borderWidth: 2.5,
+          tension: 0.35,
+          fill: '+1',
+          pointRadius: 0,
+          pointHoverRadius: 4,
+        },
+        {
+          label: '總市值',
+          data: points.map(point => this.numberFrom(point.total_market_value)),
+          borderColor: stockLine,
+          backgroundColor: stockFill,
           borderWidth: 2.5,
           tension: 0.35,
           fill: true,
@@ -331,7 +352,17 @@ export class PortfolioDashboardComponent implements OnInit {
   }
 
   private chartValues(): number[] {
-    return this.chartPoints().map(point => Number(point.total_market_value || 0));
+    return this.chartPoints().map(point => this.totalAssetsValue(point));
+  }
+
+  private totalAssetsValue(point: NetworthPoint): number {
+    const explicitTotal = this.numberFrom(point.total_assets_twd);
+    if (explicitTotal !== 0) return explicitTotal;
+    return this.numberFrom(point.total_market_value) + this.numberFrom(point.total_cash_twd);
+  }
+
+  private numberFrom(value: number | string | null | undefined): number {
+    return Number(value || 0);
   }
 
   private buildChartOptions(): any {
@@ -370,6 +401,7 @@ export class PortfolioDashboardComponent implements OnInit {
           ticks: { color: muted, font: { size: 11 } },
         },
         y: {
+          stacked: false,
           grid: { color: grid },
           ticks: {
             color: muted,

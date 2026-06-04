@@ -262,6 +262,11 @@ describe('PortfolioAccountDetailComponent', () => {
       && request.params.get('offset') === '0'
       && request.params.get('limit') === '25',
     ).flush({ items: [], total: 0, offset: 0, limit: 25 });
+    httpMock.expectOne(request =>
+      request.method === 'GET'
+      && request.url === '/api/portfolio/accounts/'
+      && request.params.get('include_inactive') === 'true',
+    ).flush({ items: [], target_currency: null, total_target_balance: null, skipped_currencies: [] });
   });
 
   it('refetches cash transactions with new offset and persisted limit on paginator change', () => {

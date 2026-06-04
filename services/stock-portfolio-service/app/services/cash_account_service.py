@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from datetime import date, timedelta
 from decimal import Decimal
@@ -502,7 +503,19 @@ def create_manual_cash_transaction(
     session.add(row)
     session.commit()
     session.refresh(row)
+    _refresh_today_snapshot(session)
     return row
+
+
+def _refresh_today_snapshot(session: Session) -> None:
+    from . import portfolio_snapshot_service
+
+    try:
+        portfolio_snapshot_service.write_today_snapshot(session)
+    except Exception:
+        session.rollback()
+        logger = logging.getLogger(__name__)
+        logger.warning("cash_account_service: failed to refresh today snapshot", exc_info=True)
 
 
 def delete_manual_cash_transaction(session: Session, account_id: int, txn_id: int) -> int:
@@ -517,6 +530,7 @@ def delete_manual_cash_transaction(session: Session, account_id: int, txn_id: in
     deleted_id = int(row.id)
     session.delete(row)
     session.commit()
+    _refresh_today_snapshot(session)
     return deleted_id
 
 

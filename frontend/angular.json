@@ -75,7 +75,8 @@
               "mac-mini.local",
               "192.168.0.100"
             ],
-            "proxyConfig": "proxy.conf.js"
+            "proxyConfig": "proxy.conf.js",
+            "servePath": "/hub/"
           },
           "configurations": {
             "production": {

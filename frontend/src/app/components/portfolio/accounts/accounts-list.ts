@@ -163,6 +163,10 @@ export class PortfolioAccountsListComponent implements OnInit {
     return BROKER_LABELS[broker] ?? broker;
   }
 
+  isOverdraft(account: BrokerAccount): boolean {
+    return Number(account.native_balance) < 0;
+  }
+
   formatCurrency(value: string | number | null | undefined, currency: string): string {
     const amount = Number(value ?? 0);
     const maximumFractionDigits = currency === 'JPY' || currency === 'TWD' ? 0 : 2;

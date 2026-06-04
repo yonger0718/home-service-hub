@@ -380,6 +380,29 @@ export class PortfolioAccountDetailComponent implements OnInit {
     this.transactionDialogVisible.set(true);
   }
 
+  isOverdraft(): boolean {
+    const account = this.account();
+    if (!account) return false;
+    return Number(account.native_balance) < 0;
+  }
+
+  overdraftAmount(): string {
+    const account = this.account();
+    if (!account) return '0';
+    return Math.abs(Number(account.native_balance)).toString();
+  }
+
+  openTopupQuickFix(): void {
+    if (!this.account()) return;
+    this.transactionForm.reset({
+      txn_date: this.todayIso(),
+      type: 'deposit',
+      amount: this.overdraftAmount(),
+      note: '補登未記錄入金',
+    });
+    this.transactionDialogVisible.set(true);
+  }
+
   closeTransactionDialog(): void {
     this.transactionDialogVisible.set(false);
   }
@@ -409,6 +432,8 @@ export class PortfolioAccountDetailComponent implements OnInit {
         this.messageService.add({ severity: 'success', summary: '已新增', detail: '交易已建立' });
         this.loadBalanceHistory();
         this.fetchTransactions();
+        this.loadAccount();
+        this.portfolioService.notifyCashLedgerChanged();
       },
       error: () => {
         this.savingTransaction.set(false);
@@ -445,6 +470,7 @@ export class PortfolioAccountDetailComponent implements OnInit {
         this.fetchTransactions();
         this.loadBalanceHistory();
         this.loadAccount();
+        this.portfolioService.notifyCashLedgerChanged();
         this.messageService.add({ severity: 'success', summary: '成功', detail: '已刪除' });
       },
       error: error => {

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, Subject } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 import {
   PortfolioSummary,
@@ -45,6 +45,13 @@ function buildParams(query: Record<string, unknown>): HttpParams {
 })
 export class PortfolioService extends BaseApiService<Transaction> {
   protected override baseUrl = '/api/portfolio/transactions';
+
+  private readonly cashLedgerChangedSubject = new Subject<void>();
+  readonly cashLedgerChanged$ = this.cashLedgerChangedSubject.asObservable();
+
+  notifyCashLedgerChanged(): void {
+    this.cashLedgerChangedSubject.next();
+  }
 
   getSummary(): Observable<PortfolioSummary> {
     return this.http.get<PortfolioSummary>('/api/portfolio/summary');
