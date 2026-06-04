@@ -563,6 +563,13 @@ def replay_snapshots_range(
     cumulative_dividends = Decimal("0")
     warned_missing: set[tuple[str, dt_date]] = set()
     stale_candidates: list[dt_date] = []
+    # Distinct list of dates the NEW cash-only gate suppressed. These
+    # dates may carry a phantom all-zero row written by a prior
+    # backfill, which must be cleaned up so `--rebuild-all` actually
+    # repairs history. Kept separate from `stale_candidates` so the
+    # explicit `active_dates` opt-out path (caller said "leave my
+    # inactive-date rows alone") is unaffected.
+    gated_phantom_candidates: list[dt_date] = []
 
     def write_snapshot(snapshot_date: dt_date, row: PortfolioSnapshot) -> bool:
         """Merge one snapshot inside its own SAVEPOINT."""
@@ -744,6 +751,10 @@ def replay_snapshots_range(
             and cur not in cash_activity_dates
             and cur not in stock_activity_dates
         ):
+            # Pre-existing all-zero rows on a now-gated date must be
+            # cleaned up by the end-of-run DELETE, otherwise a prior
+            # backfill's phantom rows survive --rebuild-all.
+            gated_phantom_candidates.append(cur)
             cur += timedelta(days=1)
             continue
 
@@ -775,7 +786,21 @@ def replay_snapshots_range(
                 PortfolioSnapshot.total_cost > 0,
             )
         )
-        result.stale_rows_deleted = max(delete_result.rowcount or 0, 0)
+        result.stale_rows_deleted += max(delete_result.rowcount or 0, 0)
+
+    if gated_phantom_candidates and not dry_run:
+        phantom_result = db.execute(
+            delete(PortfolioSnapshot).where(
+                PortfolioSnapshot.date.in_(gated_phantom_candidates),
+                PortfolioSnapshot.total_market_value == 0,
+                PortfolioSnapshot.total_cost == 0,
+                PortfolioSnapshot.total_cash_twd == 0,
+                PortfolioSnapshot.total_dividends == 0,
+                PortfolioSnapshot.total_realized_pnl == 0,
+                PortfolioSnapshot.portfolio_xirr.is_(None),
+            )
+        )
+        result.stale_rows_deleted += max(phantom_result.rowcount or 0, 0)
 
     if dry_run:
         return result

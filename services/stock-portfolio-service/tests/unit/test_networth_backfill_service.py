@@ -768,6 +768,35 @@ def test_main_rebuild_all_uses_earliest_cash_date_when_no_stock(
     assert calls == [(cash_date, date.today(), True)]
 
 
+def test_replay_deletes_preexisting_all_zero_snapshot_on_gated_date(db_session):
+    """`--rebuild-all` must clean up phantom all-zero rows left by prior
+    backfill runs on dates the new gate now skips. Without this, the
+    rollout step in the PR description does not actually repair history.
+    Regression for CodeRabbit Major outside-diff on PR #24."""
+    phantom_date = date(2025, 4, 2)
+    db_session.add(
+        PortfolioSnapshot(
+            date=phantom_date,
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("0"),
+            total_unrealized_pnl=Decimal("0"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            total_cash_twd=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    # Seed a price row so phantom_date hits the trading-day branch
+    # (otherwise it lands in would_skip and the test wouldn't exercise
+    # the new gate).
+    _seed_price(db_session, symbol="2330", d=phantom_date, close="500")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, phantom_date, phantom_date)
+
+    assert db_session.get(PortfolioSnapshot, phantom_date) is None
+
+
 def test_replay_skips_trading_days_without_cash_activity_for_cash_only_user(
     db_session,
 ):
