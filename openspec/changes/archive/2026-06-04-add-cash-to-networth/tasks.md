@@ -44,9 +44,9 @@
 
 ## 8. Operational rollout
 
-- [ ] 8.1 Operator runs `alembic upgrade head` against the production DB
-- [ ] 8.2 Operator runs `python -m app.services.networth_backfill_service --rebuild-all` to populate historical cash totals
-- [ ] 8.3 Operator verifies dashboard chart shows the cash band and the tile shows the combined total
+- [x] 8.1 Operator runs `alembic upgrade head` against the production DB
+- [x] 8.2 Operator runs `python -m app.services.networth_backfill_service --rebuild-all` to populate historical cash totals
+- [x] 8.3 Operator verifies dashboard chart shows the cash band and the tile shows the combined total
 
 ## 9. Verification
 
