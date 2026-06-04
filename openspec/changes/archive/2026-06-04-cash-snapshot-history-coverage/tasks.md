@@ -27,6 +27,6 @@
 
 ## 5. Operational rollout
 
-- [ ] 5.1 Deploy backend
-- [ ] 5.2 Operator runs `python -m app.services.networth_backfill_service --rebuild-all` to fill cash-only-period gaps and recompute the broadened window
-- [ ] 5.3 Operator verifies dashboard chart shows the cash band over previously-empty periods, and that backdated cash CRUD now updates the chart immediately for the historical range
+- [x] 5.1 Deploy backend
+- [x] 5.2 Operator runs `python -m app.services.networth_backfill_service --rebuild-all` to fill cash-only-period gaps and recompute the broadened window
+- [x] 5.3 Operator verifies dashboard chart shows the cash band over previously-empty periods, and that backdated cash CRUD now updates the chart immediately for the historical range
