@@ -9,7 +9,7 @@ with two adaptations:
   carries. Both upstream APIs return JSON when called with ``response=json``
   (TWSE) or modern Accept headers (TPEx), so the fallback is dead weight.
 
-Persistence uses ``Session.merge`` against the composite (symbol, date)
+Persistence uses ``Session.merge`` against the composite (symbol, market, date)
 primary key on ``price_history``, so repeat fetches of the same trading day
 are idempotent.
 """
@@ -349,15 +349,16 @@ def fetch_tpex_date(date: dt_date) -> list[DailyPriceRow]:
 def upsert_rows(db: Session, rows: Iterable[DailyPriceRow]) -> int:
     """Insert-or-update via composite-PK upsert. Returns count written.
 
-    Uses PG ``ON CONFLICT (symbol, date) DO UPDATE`` when running against
-    Postgres so concurrent backfills writing the same ``(symbol, date)``
+    Uses PG ``ON CONFLICT (symbol, market, date) DO UPDATE`` when running against
+    Postgres so concurrent backfills writing the same ``(symbol, market, date)``
     cannot blow up the whole batch with ``UniqueViolation``. Falls back to
     per-row ``Session.merge`` (slow but portable) for SQLite-backed tests.
     """
-    deduped: dict[tuple[str, dt_date], dict] = {}
+    deduped: dict[tuple[str, str, dt_date], dict] = {}
     for row in rows:
-        deduped[(row.symbol, row.date)] = {
+        deduped[(row.symbol, "TW", row.date)] = {
             "symbol": row.symbol,
+            "market": "TW",
             "date": row.date,
             "open": row.open,
             "high": row.high,
@@ -377,7 +378,7 @@ def upsert_rows(db: Session, rows: Iterable[DailyPriceRow]) -> int:
 
         stmt = pg_insert(PriceHistory).values(payload)
         stmt = stmt.on_conflict_do_update(
-            index_elements=["symbol", "date"],
+            index_elements=["symbol", "market", "date"],
             set_={
                 "open": stmt.excluded.open,
                 "high": stmt.excluded.high,
@@ -399,6 +400,8 @@ def upsert_rows(db: Session, rows: Iterable[DailyPriceRow]) -> int:
 def backfill_date(db: Session, date: dt_date, *, market: str = "BOTH") -> dict:
     """Fetch + persist one trading day from TWSE, TPEx, or both."""
 
+    # This parameter is the TW sub-exchange filter (TWSE/TPEX/BOTH), not the
+    # top-level PriceHistory.market column added for TW/US/LSE market scope.
     market = market.upper()
     twse_rows: list[DailyPriceRow] = []
     tpex_rows: list[DailyPriceRow] = []
@@ -420,6 +423,7 @@ def list_history(
     db: Session,
     *,
     symbol: str,
+    market: str = "TW",
     from_date: dt_date,
     to_date: dt_date,
 ) -> list[PriceHistory]:
@@ -428,6 +432,7 @@ def list_history(
         db.query(PriceHistory)
         .filter(
             PriceHistory.symbol == normalized,
+            PriceHistory.market == market.upper(),
             PriceHistory.date >= from_date,
             PriceHistory.date <= to_date,
         )

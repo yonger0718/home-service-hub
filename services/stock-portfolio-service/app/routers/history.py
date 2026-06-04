@@ -32,12 +32,13 @@ corp_router = APIRouter(prefix="/api/portfolio/corporate-actions", tags=["Portfo
 @router.get("")
 def get_price_history(
     symbol: str = Query(...),
+    market: str = Query(default="TW"),
     from_date: dt_date = Query(..., alias="from"),
     to_date: dt_date = Query(..., alias="to"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     rows = market_data_service.list_history(
-        db, symbol=symbol, from_date=from_date, to_date=to_date
+        db, symbol=symbol, market=market, from_date=from_date, to_date=to_date
     )
     return [
         {

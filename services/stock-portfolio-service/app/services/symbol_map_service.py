@@ -41,7 +41,7 @@ def refresh_all_from_twstock(db: Session) -> dict:
     count = 0
     for code, entry in twstock.codes.items():
         name = getattr(entry, "name", None)
-        market = getattr(entry, "market", "") or ""
+        exchange = getattr(entry, "market", "") or ""
         instrument_type = getattr(entry, "type", None)
         if not name or not code:
             continue
@@ -49,7 +49,8 @@ def refresh_all_from_twstock(db: Session) -> dict:
             SymbolMap(
                 name=name,
                 symbol=code,
-                market=market[:8],
+                exchange=exchange[:8],
+                market="TW",
                 type=(instrument_type[:32] if instrument_type else None),
             )
         )
@@ -68,7 +69,7 @@ def lookup_warrant_type(db: Session, symbol: str) -> Optional[str]:
         return None
     row = (
         db.query(SymbolMap.type)
-        .filter(SymbolMap.symbol == symbol)
+        .filter(SymbolMap.symbol == symbol, SymbolMap.market == "TW")
         .first()
     )
     if row is None or not row[0]:
@@ -103,7 +104,7 @@ def is_day_trade_eligible(
         return True
     row = (
         db.query(SymbolMap.type)
-        .filter(SymbolMap.symbol == symbol)
+        .filter(SymbolMap.symbol == symbol, SymbolMap.market == "TW")
         .first()
     )
     if row is None or not row[0]:
@@ -112,11 +113,14 @@ def is_day_trade_eligible(
     return not any(token in type_value for token in _INELIGIBLE_TYPE_SUBSTRINGS)
 
 
-def resolve_name(db: Session, name: str) -> Optional[str]:
+def resolve_name(db: Session, name: str, *, market: str = "TW") -> Optional[str]:
     """Return the ticker for a Chinese name, or None if unmapped."""
     row = (
         db.query(SymbolMap)
-        .filter(func.lower(SymbolMap.name) == name.strip().lower())
+        .filter(
+            func.lower(SymbolMap.name) == name.strip().lower(),
+            SymbolMap.market == market.upper(),
+        )
         .one_or_none()
     )
     return row.symbol if row is not None else None

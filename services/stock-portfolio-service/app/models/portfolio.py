@@ -34,11 +34,12 @@ class Transaction(Base, TimestampMixin):
         CheckConstraint("coalesce(fee, 0) >= 0", name="ck_transactions_fee_nonnegative"),
         CheckConstraint("coalesce(tax, 0) >= 0", name="ck_transactions_tax_nonnegative"),
         UniqueConstraint("import_fingerprint", name="uq_transactions_import_fingerprint"),
-        Index("ix_transactions_symbol_trade_date", "symbol", "trade_date"),
+        Index("ix_transactions_symbol_market_trade_date", "symbol", "market", "trade_date"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, index=True, nullable=False)  # 股票代碼, e.g., 2330
+    market = Column(String(8), nullable=False, default="TW", server_default="TW")
     name = Column(String, nullable=True)               # 股票名稱
     instrument_type = Column(String(64), nullable=True)
     type = Column(Enum(TransactionType), nullable=False)
@@ -48,8 +49,10 @@ class Transaction(Base, TimestampMixin):
         default=PositionSide.LONG,
         server_default=PositionSide.LONG.value,
     )
-    quantity = Column(Integer, nullable=False)         # 股數
-    price = Column(Numeric(12, 2), nullable=False)              # 成交單價
+    quantity = Column(Numeric(18, 4), nullable=False)         # 股數
+    price = Column(Numeric(18, 4), nullable=False)              # 成交單價
+    currency = Column(String(3), nullable=False, default="TWD", server_default="TWD")
+    fx_rate_to_twd = Column(Numeric(20, 8), nullable=True)
     trade_date = Column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     fee = Column(Numeric(12, 2), default=0.0)                   # 手續費 (選填)
     tax = Column(Numeric(12, 2), default=0.0)                   # 交易稅 (選填)
@@ -74,7 +77,10 @@ class Dividend(Base, TimestampMixin):
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, index=True, nullable=False)
-    amount = Column(Numeric(12, 2), nullable=False)             # 總金額 (扣除 fee + tax 後)
+    market = Column(String(8), nullable=False, default="TW", server_default="TW")
+    amount = Column(Numeric(18, 4), nullable=False)             # 總金額 (扣除 fee + tax 後)
+    currency = Column(String(3), nullable=False, default="TWD", server_default="TWD")
+    fx_rate_to_twd = Column(Numeric(20, 8), nullable=True)
     ex_dividend_date = Column(DateTime(timezone=True), nullable=False, index=True) # 除息日
     received_date = Column(DateTime(timezone=True), server_default=func.now()) # 入帳日
     import_fingerprint = Column(String(64), nullable=True)

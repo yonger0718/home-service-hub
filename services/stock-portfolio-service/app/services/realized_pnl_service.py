@@ -16,7 +16,7 @@ class RealizedPnlEvent:
     trade_date: date_type
     symbol: str
     name: Optional[str]
-    quantity: int
+    quantity: Decimal
     sell_price: Decimal
     avg_cost_at_sale: Decimal
     fee: Decimal
@@ -60,19 +60,48 @@ def _empty_short_pool() -> dict[str, Decimal | int]:
     }
 
 
+def _row_ref(row: object) -> str:
+    row_id = getattr(row, "id", None)
+    symbol = getattr(row, "symbol", None)
+    trade_date = getattr(row, "trade_date", None)
+    return f"id={row_id!r}, symbol={symbol!r}, trade_date={trade_date!r}"
+
+
+def _to_twd_per_share(row: object) -> Decimal:
+    currency = (getattr(row, "currency", "TWD") or "TWD").upper()
+    fx_rate = getattr(row, "fx_rate_to_twd", None)
+    if currency != "TWD" and fx_rate is None:
+        raise ValueError(f"missing fx_rate_to_twd for transaction ({_row_ref(row)})")
+    price = Decimal(getattr(row, "price"))
+    if fx_rate is None:
+        if currency == "TWD":
+            return price.quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP)
+        return price
+    return price * Decimal(fx_rate)
+
+
+def _quantity(value: object) -> Decimal:
+    quantity = Decimal(value)
+    integral = quantity.to_integral_value()
+    if quantity == integral:
+        return integral
+    return quantity
+
+
 def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator[RealizedPnlEvent]:
-    pools: dict[str, dict[str, dict[str, Decimal | int]]] = {}
+    pools: dict[tuple[str, str], dict[str, dict[str, Decimal | int]]] = {}
 
     for transaction in transactions:
         symbol = sanitize_symbol(transaction.symbol)
+        market = (getattr(transaction, "market", "TW") or "TW").upper()
         symbol_pools = pools.setdefault(
-            symbol, {"LONG": _empty_long_pool(), "SHORT": _empty_short_pool()}
+            (symbol, market), {"LONG": _empty_long_pool(), "SHORT": _empty_short_pool()}
         )
         long_pool = symbol_pools["LONG"]
         short_pool = symbol_pools["SHORT"]
 
-        quantity = int(transaction.quantity)
-        price = Decimal(transaction.price)
+        quantity = _quantity(transaction.quantity)
+        price = _to_twd_per_share(transaction)
         fee = transaction.fee or Decimal("0.0")
         tax = transaction.tax or Decimal("0.0")
         side = getattr(transaction, "position_side", None) or models.PositionSide.LONG
@@ -82,19 +111,19 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
         tx_trade_date = _trade_date(transaction.trade_date)
 
         if side is models.PositionSide.LONG and transaction.type == models.TransactionType.BUY:
-            long_pool["total_quantity"] = int(long_pool["total_quantity"]) + quantity
+            long_pool["total_quantity"] = Decimal(long_pool["total_quantity"]) + quantity
             long_pool["total_cost"] = (
-                Decimal(long_pool["total_cost"]) + (Decimal(quantity) * price) + fee
+                Decimal(long_pool["total_cost"]) + (quantity * price) + fee
             )
             long_pool["total_cost_ex_fee"] = (
-                Decimal(long_pool["total_cost_ex_fee"]) + (Decimal(quantity) * price)
+                Decimal(long_pool["total_cost_ex_fee"]) + (quantity * price)
             )
             continue
 
         if side is models.PositionSide.SHORT and transaction.type == models.TransactionType.SELL:
-            proceeds_gross = Decimal(quantity) * price
+            proceeds_gross = quantity * price
             proceeds_net = proceeds_gross - fee - tax
-            short_pool["total_quantity"] = int(short_pool["total_quantity"]) + quantity
+            short_pool["total_quantity"] = Decimal(short_pool["total_quantity"]) + quantity
             short_pool["total_proceeds_gross"] = (
                 Decimal(short_pool["total_proceeds_gross"]) + proceeds_gross
             )
@@ -104,8 +133,8 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
             continue
 
         if side is models.PositionSide.LONG and transaction.type == models.TransactionType.SELL:
-            current_qty = int(long_pool["total_quantity"])
-            proceeds_gross = Decimal(quantity) * price
+            current_qty = Decimal(long_pool["total_quantity"])
+            proceeds_gross = quantity * price
             proceeds_net = proceeds_gross - fee - tax
             if current_qty == 0:
                 yield RealizedPnlEvent(
@@ -132,10 +161,9 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                 Decimal(long_pool["total_cost_ex_fee"]) / Decimal(current_qty)
             )
             sold_qty = min(quantity, current_qty)
-            sold_qty_dec = Decimal(sold_qty)
-            proceeds_gross = sold_qty_dec * price
+            proceeds_gross = sold_qty * price
             proceeds_net = proceeds_gross - fee - tax
-            cost_out = sold_qty_dec * avg_unit_cost
+            cost_out = sold_qty * avg_unit_cost
 
             yield RealizedPnlEvent(
                 trade_date=tx_trade_date,
@@ -156,17 +184,17 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
 
             long_pool["total_quantity"] = current_qty - sold_qty
             long_pool["total_cost"] = (
-                Decimal(long_pool["total_cost"]) - (sold_qty_dec * avg_unit_cost)
+                Decimal(long_pool["total_cost"]) - (sold_qty * avg_unit_cost)
             )
             long_pool["total_cost_ex_fee"] = (
                 Decimal(long_pool["total_cost_ex_fee"])
-                - (sold_qty_dec * avg_unit_cost_ex_fee)
+                - (sold_qty * avg_unit_cost_ex_fee)
             )
             continue
 
         if side is models.PositionSide.SHORT and transaction.type == models.TransactionType.BUY:
-            current_short_qty = int(short_pool["total_quantity"])
-            cover_gross = Decimal(quantity) * price
+            current_short_qty = Decimal(short_pool["total_quantity"])
+            cover_gross = quantity * price
             cover_cost_total = cover_gross + fee + tax
             if current_short_qty == 0:
                 yield RealizedPnlEvent(
@@ -195,11 +223,10 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                 Decimal(short_pool["total_proceeds_net"]) / Decimal(current_short_qty)
             )
             covered_qty = min(quantity, current_short_qty)
-            covered_qty_dec = Decimal(covered_qty)
-            cover_gross_slice = covered_qty_dec * price
+            cover_gross_slice = covered_qty * price
             cover_cost_slice = cover_gross_slice + fee + tax
-            proceeds_gross_slice = covered_qty_dec * avg_open_price
-            proceeds_net_slice = covered_qty_dec * avg_open_net_per_share
+            proceeds_gross_slice = covered_qty * avg_open_price
+            proceeds_net_slice = covered_qty * avg_open_net_per_share
 
             yield RealizedPnlEvent(
                 trade_date=tx_trade_date,

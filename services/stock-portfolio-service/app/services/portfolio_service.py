@@ -52,6 +52,10 @@ class _AdjustedTransaction:
         return self._base.symbol
 
     @property
+    def market(self):
+        return getattr(self._base, "market", "TW")
+
+    @property
     def name(self):
         return self._base.name
 
@@ -76,6 +80,14 @@ class _AdjustedTransaction:
         if self._factor == 1:
             return self._base.price
         return self._base.price / self._factor
+
+    @property
+    def currency(self):
+        return getattr(self._base, "currency", "TWD")
+
+    @property
+    def fx_rate_to_twd(self):
+        return getattr(self._base, "fx_rate_to_twd", None)
 
     @property
     def fee(self):
@@ -243,6 +255,8 @@ def _quantity_at_window_start(
 
         if sanitize_symbol(transaction.symbol) != normalized:
             continue
+        if (getattr(transaction, "market", "TW") or "TW").upper() != "TW":
+            continue
 
         trade_date = (
             transaction.trade_date.date()
@@ -268,6 +282,7 @@ def _lookup_window_open_price(
     row = (
         db.query(PriceHistory)
         .filter(PriceHistory.symbol == sanitize_symbol(symbol))
+        .filter(PriceHistory.market == "TW")
         .filter(PriceHistory.date <= window_start)
         .filter(PriceHistory.date >= window_start - timedelta(days=7))
         .order_by(PriceHistory.date.desc())
@@ -314,8 +329,9 @@ def _trade_calendar_date(trade_date: datetime) -> date_type:
     return _resolve_sort_trade_date(trade_date).date()
 
 
-def _is_odd_lot(quantity: int) -> bool:
-    return quantity < 1000 or quantity % 1000 != 0
+def _is_odd_lot(quantity: object) -> bool:
+    quantity_dec = Decimal(quantity)
+    return quantity_dec < Decimal("1000") or quantity_dec % Decimal("1000") != 0
 
 
 def _recompute_day_trade_flags(
@@ -323,9 +339,9 @@ def _recompute_day_trade_flags(
 ) -> None:
     """Flip ``is_day_trade`` for every transaction in the (symbol, date) bucket.
 
-    A transaction is a day-trade when the same symbol has BOTH a BUY and a
-    SELL on the same calendar trade date. All rows in the bucket share the
-    same flag; recompute and persist in-place. Caller commits.
+    A transaction is a day-trade when the same TW-market symbol has BOTH a
+    BUY and a SELL on the same calendar trade date. Foreign-market rows in
+    the same symbol/date bucket are always cleared. Caller commits.
     """
 
     normalized = sanitize_symbol(symbol)
@@ -343,7 +359,11 @@ def _recompute_day_trade_flags(
         row for row in rows
         if _trade_calendar_date(row.trade_date) == calendar_date
     ]
-    board_lot = [row for row in bucket if not _is_odd_lot(row.quantity)]
+    tw_bucket = [
+        row for row in bucket
+        if (getattr(row, "market", "TW") or "TW").upper() == "TW"
+    ]
+    board_lot = [row for row in tw_bucket if not _is_odd_lot(row.quantity)]
     has_buy = any(row.type == models.TransactionType.BUY for row in board_lot)
     has_sell = any(row.type == models.TransactionType.SELL for row in board_lot)
     marker_present = any(
@@ -367,20 +387,21 @@ def _recompute_day_trade_flags(
     else:
         board_flag = False
     for row in bucket:
-        new_flag = False if _is_odd_lot(row.quantity) else board_flag
+        is_tw = (getattr(row, "market", "TW") or "TW").upper() == "TW"
+        new_flag = is_tw and not _is_odd_lot(row.quantity) and board_flag
         if row.is_day_trade != new_flag:
             row.is_day_trade = new_flag
 
 
 def _validate_symbol_ledger(symbol: str, ledger_entries: List[Dict[str, object]]) -> None:
-    long_qty = 0
-    short_qty = 0
+    long_qty = Decimal("0")
+    short_qty = Decimal("0")
 
     for entry in sorted(
         ledger_entries,
         key=lambda item: (item["sort_trade_date"], item["sort_id"]),
     ):
-        quantity = int(entry["quantity"])
+        quantity = Decimal(entry["quantity"])
         side = entry.get("position_side", models.PositionSide.LONG)
         if not isinstance(side, models.PositionSide):
             side = models.PositionSide(side)
@@ -400,10 +421,11 @@ def _validate_symbol_ledger(symbol: str, ledger_entries: List[Dict[str, object]]
                 continue
             if available <= 0:
                 raise ValueError(
-                    f"Cannot sell {quantity} shares of {symbol} without holdings"
+                    f"Cannot sell {_display_quantity(quantity)} shares of {symbol} without holdings"
                 )
             raise ValueError(
-                f"Cannot sell {quantity} shares of {symbol}; only {available} available"
+                f"Cannot sell {_display_quantity(quantity)} shares of {symbol}; "
+                f"only {_display_quantity(available)} available"
             )
 
         available = short_qty
@@ -412,11 +434,18 @@ def _validate_symbol_ledger(symbol: str, ledger_entries: List[Dict[str, object]]
             continue
         if available <= 0:
             raise ValueError(
-                f"Cannot cover {quantity} shares of {symbol} without open short"
+                f"Cannot cover {_display_quantity(quantity)} shares of {symbol} without open short"
             )
         raise ValueError(
-            f"Cannot cover {quantity} shares of {symbol}; only {available} open short"
+            f"Cannot cover {_display_quantity(quantity)} shares of {symbol}; "
+            f"only {_display_quantity(available)} open short"
         )
+
+
+def _display_quantity(value: Decimal) -> str:
+    if value == value.to_integral_value():
+        return str(value.to_integral_value())
+    return format(value.normalize(), "f")
 
 
 def _validate_transaction_ledger(
@@ -425,11 +454,19 @@ def _validate_transaction_ledger(
     existing_transaction: Optional[models.Transaction] = None,
 ) -> None:
     proposed_symbol = sanitize_symbol(str(transaction_data["symbol"]))
-    symbols_to_validate = {proposed_symbol}
+    proposed_market = str(transaction_data.get("market", "TW") or "TW").upper()
+    keys_to_validate = {(proposed_symbol, proposed_market)}
     if existing_transaction is not None:
-        symbols_to_validate.add(sanitize_symbol(existing_transaction.symbol))
+        keys_to_validate.add(
+            (
+                sanitize_symbol(existing_transaction.symbol),
+                str(getattr(existing_transaction, "market", "TW") or "TW").upper(),
+            )
+        )
 
-    ledger_map: Dict[str, List[Dict[str, object]]] = {symbol: [] for symbol in symbols_to_validate}
+    ledger_map: Dict[tuple[str, str], List[Dict[str, object]]] = {
+        key: [] for key in keys_to_validate
+    }
     persisted_transactions = (
         db.query(models.Transaction)
         .order_by(models.Transaction.trade_date, models.Transaction.id)
@@ -440,11 +477,14 @@ def _validate_transaction_ledger(
         if existing_transaction is not None and transaction.id == existing_transaction.id:
             continue
 
-        symbol = sanitize_symbol(transaction.symbol)
-        if symbol not in symbols_to_validate:
+        key = (
+            sanitize_symbol(transaction.symbol),
+            str(getattr(transaction, "market", "TW") or "TW").upper(),
+        )
+        if key not in keys_to_validate:
             continue
 
-        ledger_map[symbol].append(
+        ledger_map[key].append(
             {
                 "sort_trade_date": _resolve_sort_trade_date(transaction.trade_date),
                 "sort_id": transaction.id,
@@ -464,7 +504,7 @@ def _validate_transaction_ledger(
             getattr(proposed_side_raw, "value", proposed_side_raw)
         )
     )
-    ledger_map[proposed_symbol].append(
+    ledger_map[(proposed_symbol, proposed_market)].append(
         {
             "sort_trade_date": _resolve_sort_trade_date(transaction_data["trade_date"]),
             "sort_id": existing_transaction.id if existing_transaction is not None else float("inf"),
@@ -476,7 +516,7 @@ def _validate_transaction_ledger(
         }
     )
 
-    for symbol, entries in ledger_map.items():
+    for (symbol, _market), entries in ledger_map.items():
         _validate_symbol_ledger(symbol, entries)
 
 
@@ -517,7 +557,7 @@ def _aggregate_active_holdings(
     return {
         symbol: holding
         for symbol, holding in holdings.items()
-        if int(holding["total_quantity"]) > 0
+        if Decimal(holding["total_quantity"]) > 0
     }
 
 
@@ -572,6 +612,22 @@ def _estimate_sell_costs(gross_market_value: Decimal) -> Decimal:
     tax = (gross_market_value * tax_rate).quantize(Decimal("1"), rounding=ROUND_DOWN)
     return fee + tax
 
+
+def _dividend_amount_twd(row: models.Dividend) -> Decimal:
+    currency = (getattr(row, "currency", "TWD") or "TWD").upper()
+    fx_rate = getattr(row, "fx_rate_to_twd", None)
+    if currency != "TWD" and fx_rate is None:
+        raise ValueError(
+            f"missing fx_rate_to_twd for dividend "
+            f"(id={getattr(row, 'id', None)!r}, symbol={row.symbol!r}, "
+            f"ex_dividend_date={row.ex_dividend_date!r})"
+        )
+    amount = Decimal(row.amount)
+    if fx_rate is None:
+        return amount
+    return amount * Decimal(fx_rate)
+
+
 def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
     """
     計算投資組合總覽，包含未實現損益與單日損益
@@ -623,10 +679,11 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         dividend_map = {}
         for d in dividends:
             symbol = sanitize_symbol(d.symbol)
-            dividend_map[symbol] = dividend_map.get(symbol, Decimal("0.0")) + d.amount
+            amount_twd = _dividend_amount_twd(d)
+            dividend_map[symbol] = dividend_map.get(symbol, Decimal("0.0")) + amount_twd
             # XIRR: dividend inflow
             cf_date = d.ex_dividend_date.date() if hasattr(d.ex_dividend_date, 'date') else d.ex_dividend_date
-            cashflows_map.setdefault(symbol, []).append((cf_date, d.amount))
+            cashflows_map.setdefault(symbol, []).append((cf_date, amount_twd))
 
         # 交易統計 (計算平均成本與持股數，採用 corporate-action 調整後的視圖)
         # SHORT rows are intentionally skipped here — long-side holdings_map only

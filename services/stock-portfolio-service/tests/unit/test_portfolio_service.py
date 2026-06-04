@@ -399,6 +399,40 @@ class TestPortfolioService:
 
         assert db_session.query(models.Transaction).count() == 1
 
+    def test_create_transaction_rejects_short_cover_above_open_short(self, db_session):
+        portfolio_service.create_transaction(
+            db_session,
+            schemas.TransactionCreate(
+                symbol="0050",
+                name="元大台灣50",
+                type=schemas.TransactionType.SELL,
+                position_side=schemas.PositionSide.SHORT,
+                quantity=Decimal("10"),
+                price=Decimal("100"),
+                fee=Decimal("0"),
+                tax=Decimal("0"),
+                trade_date=datetime(2026, 5, 1, 9, 0),
+            ),
+        )
+
+        with pytest.raises(ValueError, match="only 10 open short"):
+            portfolio_service.create_transaction(
+                db_session,
+                schemas.TransactionCreate(
+                    symbol="0050",
+                    name="元大台灣50",
+                    type=schemas.TransactionType.BUY,
+                    position_side=schemas.PositionSide.SHORT,
+                    quantity=Decimal("11"),
+                    price=Decimal("101"),
+                    fee=Decimal("0"),
+                    tax=Decimal("0"),
+                    trade_date=datetime(2026, 5, 2, 9, 0),
+                ),
+            )
+
+        assert db_session.query(models.Transaction).count() == 1
+
     @patch("app.services.portfolio_service.get_stock_quotes")
     def test_create_transaction_allows_partial_sell(self, mock_get_quotes, db_session):
         mock_get_quotes.return_value = {

@@ -1,11 +1,12 @@
 """Snapshot upsert idempotency, range listing, history endpoint."""
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
 
+from app.models import portfolio as portfolio_models
 from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.services import portfolio_snapshot_service as snap_svc
 
@@ -118,6 +119,42 @@ def test_write_today_snapshot_preserves_null_xirr(db_session):
                       return_value=_fake_summary(xirr=None)):
         row = snap_svc.write_today_snapshot(db_session, today=target)
     assert row.portfolio_xirr is None
+
+
+def test_write_today_snapshot_uses_replay_precision_for_realized_pnl(db_session):
+    target = date(2026, 5, 14)
+    db_session.add_all(
+        [
+            portfolio_models.Transaction(
+                symbol="2330",
+                type=portfolio_models.TransactionType.BUY,
+                quantity=3,
+                price=Decimal("10"),
+                fee=Decimal("0.01"),
+                tax=Decimal("0"),
+                trade_date=datetime(2026, 5, 14, 9, tzinfo=timezone.utc),
+            ),
+            portfolio_models.Transaction(
+                symbol="2330",
+                type=portfolio_models.TransactionType.SELL,
+                quantity=1,
+                price=Decimal("10"),
+                fee=Decimal("0"),
+                tax=Decimal("0"),
+                trade_date=datetime(2026, 5, 14, 10, tzinfo=timezone.utc),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    with patch.object(
+        snap_svc.portfolio_service,
+        "get_portfolio_summary",
+        return_value=_fake_summary(realized_pnl="0.00"),
+    ):
+        row = snap_svc.write_today_snapshot(db_session, today=target)
+
+    assert row.total_realized_pnl.quantize(Decimal("0.0001")) == Decimal("-0.0033")
 
 
 def test_refresh_snapshot_cash_range_updates_only_cash_and_inserts_cash_only(

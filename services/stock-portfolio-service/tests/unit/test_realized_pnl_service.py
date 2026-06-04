@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from app.models import portfolio as models
 from app.models.corporate_action import CorporateAction
-from app.services import realized_pnl_service
+from app.services import portfolio_service, realized_pnl_service
 
 
 def _tx(
@@ -19,13 +19,19 @@ def _tx(
     fee: str = "0.00",
     tax: str = "0.00",
     is_day_trade: bool = False,
+    market: str = "TW",
+    currency: str = "TWD",
+    fx_rate_to_twd: str | None = None,
 ) -> models.Transaction:
     return models.Transaction(
         symbol=symbol,
+        market=market,
         name=name,
         type=side,
         quantity=quantity,
         price=Decimal(price),
+        currency=currency,
+        fx_rate_to_twd=Decimal(fx_rate_to_twd) if fx_rate_to_twd is not None else None,
         fee=Decimal(fee),
         tax=Decimal(tax),
         trade_date=trade_date,
@@ -328,3 +334,111 @@ def test_explicit_date_range_takes_precedence_over_year(db_session) -> None:
     )
 
     assert [event.trade_date for event in events] == [date(2026, 1, 1)]
+
+
+def test_twd_native_realized_pnl_stays_unchanged(db_session) -> None:
+    _seed_transactions(
+        db_session,
+        [
+            _tx(
+                symbol="2330",
+                side=models.TransactionType.BUY,
+                quantity=1000,
+                price="100",
+                trade_date=datetime(2025, 1, 1, 9, 0),
+            ),
+            _tx(
+                symbol="2330",
+                side=models.TransactionType.SELL,
+                quantity=1000,
+                price="120",
+                trade_date=datetime(2025, 1, 2, 9, 0),
+            ),
+        ],
+    )
+
+    [event] = realized_pnl_service.compute_events(db_session)
+
+    assert event.avg_cost_at_sale == Decimal("100")
+    assert event.proceeds_gross == Decimal("120000")
+    assert event.realized_pnl == Decimal("20000")
+
+
+def test_usd_realized_pnl_uses_frozen_fx_per_leg(db_session) -> None:
+    _seed_transactions(
+        db_session,
+        [
+            _tx(
+                symbol="AAPL",
+                side=models.TransactionType.BUY,
+                quantity=10,
+                price="100",
+                trade_date=datetime(2025, 1, 1, 9, 0),
+                market="US",
+                currency="USD",
+                fx_rate_to_twd="32.0",
+            ),
+            _tx(
+                symbol="AAPL",
+                side=models.TransactionType.SELL,
+                quantity=10,
+                price="110",
+                trade_date=datetime(2025, 1, 2, 9, 0),
+                market="US",
+                currency="USD",
+                fx_rate_to_twd="33.0",
+            ),
+        ],
+    )
+
+    [event] = realized_pnl_service.compute_events(db_session)
+
+    assert event.cost_out == Decimal("32000.0")
+    assert event.proceeds_gross == Decimal("36300.0")
+    assert event.realized_pnl == Decimal("4300.0")
+
+
+def test_foreign_realized_pnl_requires_frozen_fx(db_session) -> None:
+    _seed_transactions(
+        db_session,
+        [
+            _tx(
+                symbol="AAPL",
+                side=models.TransactionType.BUY,
+                quantity=10,
+                price="100",
+                trade_date=datetime(2025, 1, 1, 9, 0),
+                market="US",
+                currency="USD",
+                fx_rate_to_twd=None,
+            )
+        ],
+    )
+
+    try:
+        realized_pnl_service.compute_events(db_session)
+    except ValueError as exc:
+        assert "missing fx_rate_to_twd" in str(exc)
+        assert "AAPL" in str(exc)
+    else:
+        raise AssertionError("expected missing-FX ValueError")
+
+
+def test_usd_dividend_converts_to_twd_total_dividends(db_session) -> None:
+    db_session.add(
+        models.Dividend(
+            symbol="AAPL",
+            market="US",
+            amount=Decimal("50.0"),
+            currency="USD",
+            fx_rate_to_twd=Decimal("32.5"),
+            ex_dividend_date=datetime(2025, 1, 5, 9, 0),
+            fee=Decimal("0"),
+            tax=Decimal("0"),
+        )
+    )
+    db_session.commit()
+
+    summary = portfolio_service.get_portfolio_summary(db_session)
+
+    assert summary.total_dividends == Decimal("1625.00")

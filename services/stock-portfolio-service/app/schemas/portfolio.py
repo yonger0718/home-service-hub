@@ -33,15 +33,18 @@ class TransactionBase(BaseModel):
     rounding them, which would crash the GET response if a high-precision
     value ever reached this layer. Strict precision is enforced on
     ``TransactionCreate`` (the input edge) and at the DB layer via
-    ``NUMERIC(12, 2)``. This class stays permissive on output.
+    ``NUMERIC(18, 4)``. This class stays permissive on output.
     """
 
     symbol: str
+    market: str = "TW"
     name: Optional[str] = None
     type: TransactionType
     position_side: PositionSide = PositionSide.LONG
-    quantity: int
+    quantity: Decimal
     price: Decimal
+    currency: str = "TWD"
+    fx_rate_to_twd: Optional[Decimal] = None
     trade_date: Optional[datetime] = None
     fee: Decimal = Decimal("0.0")
     tax: Decimal = Decimal("0.0")
@@ -52,8 +55,8 @@ class TransactionBase(BaseModel):
         return _normalize_symbol(value)
 
 class TransactionCreate(TransactionBase):
-    quantity: int = Field(..., gt=0)
-    price: Decimal = Field(..., gt=Decimal("0"), decimal_places=2)
+    quantity: Decimal = Field(..., gt=0, decimal_places=4)
+    price: Decimal = Field(..., gt=Decimal("0"), decimal_places=4)
     fee: Decimal = Field(default=Decimal("0.0"), ge=Decimal("0"), decimal_places=2)
     tax: Decimal = Field(default=Decimal("0.0"), ge=Decimal("0"), decimal_places=2)
 
@@ -65,6 +68,10 @@ class Transaction(TransactionBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+TransactionUpdate = TransactionCreate
+TransactionResponse = Transaction
+
 class DividendBase(BaseModel):
     """Shared fields for dividend read/write.
 
@@ -72,7 +79,10 @@ class DividendBase(BaseModel):
     """
 
     symbol: str
+    market: str = "TW"
     amount: Decimal
+    currency: str = "TWD"
+    fx_rate_to_twd: Optional[Decimal] = None
     ex_dividend_date: datetime
     received_date: Optional[datetime] = None
     fee: Decimal = Decimal("0")
@@ -88,7 +98,7 @@ class DividendBase(BaseModel):
         return _normalize_symbol(value)
 
 class DividendCreate(DividendBase):
-    amount: Decimal = Field(..., gt=Decimal("0"), decimal_places=2)
+    amount: Decimal = Field(..., gt=Decimal("0"), decimal_places=4)
     fee: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), decimal_places=2)
     tax: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), decimal_places=2)
     stock_dividend_shares: int = Field(default=0, ge=0)
@@ -99,6 +109,10 @@ class Dividend(DividendBase):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+DividendUpdate = DividendCreate
+DividendResponse = Dividend
 
 # --- 計算後的模型 ---
 

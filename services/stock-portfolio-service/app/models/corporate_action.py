@@ -27,6 +27,7 @@ class CorporateAction(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol = Column(String(32), nullable=False)
+    market = Column(String(8), nullable=False, default="TW", server_default="TW")
     effective_date = Column(Date, nullable=False)
     action_type = Column(String(32), nullable=False, server_default="FACE_VALUE_CHANGE")
     ratio = Column(Numeric(18, 8), nullable=False)

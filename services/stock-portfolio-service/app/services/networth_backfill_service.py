@@ -53,6 +53,7 @@ PARTIAL_FETCH_RATIO = 0.8
 PARTIAL_FETCH_MIN_BASELINE_DAYS = 10
 PARTIAL_FETCH_BASELINE_WINDOW_DAYS = 30
 PARTIAL_FETCH_LOOKBACK_DAYS = 45
+SNAPSHOT_QUANT = Decimal("0.0001")
 
 
 @dataclass
@@ -77,6 +78,20 @@ class SnapshotReplayResult:
     snapshots_written: int = 0
     stale_rows_deleted: int = 0
     errors: List[BackfillError] = field(default_factory=list)
+
+
+def _snapshot_amount(value: Decimal) -> Decimal:
+    return Decimal(value).quantize(SNAPSHOT_QUANT)
+
+
+def _display_snapshot_amount(value: Decimal) -> str:
+    amount = Decimal(value)
+    if amount == 0:
+        return "0"
+    cents = amount.quantize(Decimal("0.01"))
+    if amount == cents:
+        return str(cents)
+    return str(amount)
 
 
 # ---------- Helpers ----------
@@ -452,7 +467,11 @@ def _load_price_map(
     """Pull all close prices in range as ``{(symbol, date): close}``."""
     rows = (
         db.query(PriceHistory.symbol, PriceHistory.date, PriceHistory.close)
-        .filter(PriceHistory.date >= from_d, PriceHistory.date <= to_d)
+        .filter(
+            PriceHistory.market == "TW",
+            PriceHistory.date >= from_d,
+            PriceHistory.date <= to_d,
+        )
         .all()
     )
     return {(sym, d): close for sym, d, close in rows}
@@ -573,6 +592,12 @@ def replay_snapshots_range(
 
     def write_snapshot(snapshot_date: dt_date, row: PortfolioSnapshot) -> bool:
         """Merge one snapshot inside its own SAVEPOINT."""
+        row.total_market_value = _snapshot_amount(row.total_market_value)
+        row.total_cost = _snapshot_amount(row.total_cost)
+        row.total_unrealized_pnl = _snapshot_amount(row.total_unrealized_pnl)
+        row.total_dividends = _snapshot_amount(row.total_dividends)
+        row.total_realized_pnl = _snapshot_amount(row.total_realized_pnl)
+        row.total_cash_twd = _snapshot_amount(row.total_cash_twd)
         if dry_run:
             existing = db.get(PortfolioSnapshot, snapshot_date)
             old = (
@@ -581,7 +606,12 @@ def replay_snapshots_range(
                 else Decimal("0")
             )
             new = Decimal(row.total_realized_pnl)
-            print(f"{snapshot_date} old={old} new={new} delta={new - old}")
+            old_display = str(old) if existing is not None else "0"
+            print(
+                f"{snapshot_date} old={old_display} "
+                f"new={_display_snapshot_amount(new)} "
+                f"delta={str(new - old) if new != old else '0'}"
+            )
             return True
 
         sp = db.begin_nested()
