@@ -51,6 +51,52 @@ def write_today_snapshot(
     return merged
 
 
+def refresh_snapshot_cash_range(
+    db: Session,
+    start_date: dt_date,
+    end_date: dt_date,
+) -> None:
+    """Refresh only ``total_cash_twd`` across an inclusive date range."""
+    if end_date < start_date:
+        logger.debug(
+            "snapshot total_cash_twd range skipped: end_date before start_date",
+            extra={
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+            },
+        )
+        return
+
+    cur = start_date
+    while cur <= end_date:
+        cash_total_twd, skipped = cash_account_service.get_total_balance_in(
+            db, "TWD", asof=cur
+        )
+        if skipped:
+            logger.warning("snapshot total_cash_twd skipped currencies: %s", skipped)
+
+        existing = db.get(PortfolioSnapshot, cur)
+        if existing is not None:
+            existing.total_cash_twd = cash_total_twd
+        elif cash_total_twd > 0:
+            db.add(
+                PortfolioSnapshot(
+                    date=cur,
+                    total_market_value=0,
+                    total_cost=0,
+                    total_unrealized_pnl=0,
+                    total_dividends=0,
+                    total_realized_pnl=0,
+                    total_cash_twd=cash_total_twd,
+                    portfolio_xirr=None,
+                )
+            )
+
+        cur += timedelta(days=1)
+
+    db.commit()
+
+
 def list_snapshots(
     db: Session,
     *,

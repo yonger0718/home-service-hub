@@ -35,6 +35,7 @@ from sqlalchemy import case, delete, func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
+from ..models.cash_transaction import CashTransaction
 from ..models.portfolio import PositionSide
 from ..models.portfolio_snapshot import PortfolioSnapshot
 from ..models.price_history import PriceHistory
@@ -644,6 +645,22 @@ def replay_snapshots_range(
                     ),
                 )
             if not wrote_forward_fill:
+                cash_total = total_cash_twd(cur)
+                if cash_total > 0:
+                    wrote_forward_fill = write_snapshot(
+                        cur,
+                        PortfolioSnapshot(
+                            date=cur,
+                            total_market_value=Decimal("0"),
+                            total_cost=Decimal("0"),
+                            total_unrealized_pnl=Decimal("0"),
+                            total_dividends=cumulative_dividends,
+                            total_realized_pnl=cumulative_realized,
+                            total_cash_twd=cash_total,
+                            portfolio_xirr=None,
+                        ),
+                    )
+            if not wrote_forward_fill:
                 stale_candidates.append(cur)
             cur += timedelta(days=1)
             continue
@@ -821,11 +838,22 @@ def _main(argv: Optional[list[str]] = None) -> int:
     db = SessionLocal()
     try:
         transactions = db.query(portfolio_models.Transaction).all()
-        if not transactions:
+        earliest_stock_date = (
+            min(_date_of(t.trade_date) for t in transactions)
+            if transactions
+            else None
+        )
+        earliest_cash_date = db.query(func.min(CashTransaction.txn_date)).scalar()
+        candidates = [
+            d
+            for d in (earliest_stock_date, earliest_cash_date)
+            if d is not None
+        ]
+        if not candidates:
             print("No transactions found; nothing to rebuild.")
             return 0
 
-        from_d = min(_date_of(t.trade_date) for t in transactions)
+        from_d = min(candidates)
         to_d = dt_date.today()
         result = replay_snapshots_range(db, from_d, to_d, dry_run=args.dry_run)
         if result.errors:

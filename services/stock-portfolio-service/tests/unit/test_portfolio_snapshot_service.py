@@ -120,6 +120,86 @@ def test_write_today_snapshot_preserves_null_xirr(db_session):
     assert row.portfolio_xirr is None
 
 
+def test_refresh_snapshot_cash_range_updates_only_cash_and_inserts_cash_only(
+    db_session,
+):
+    existing_date = date(2026, 6, 1)
+    insert_date = date(2026, 6, 2)
+    skip_date = date(2026, 6, 3)
+    db_session.add(
+        PortfolioSnapshot(
+            date=existing_date,
+            total_market_value=Decimal("1000"),
+            total_cost=Decimal("700"),
+            total_unrealized_pnl=Decimal("300"),
+            total_dividends=Decimal("10"),
+            total_realized_pnl=Decimal("5"),
+            total_cash_twd=Decimal("1"),
+            portfolio_xirr=Decimal("0.12"),
+        )
+    )
+    db_session.commit()
+
+    cash_by_date = {
+        existing_date: Decimal("250"),
+        insert_date: Decimal("500"),
+        skip_date: Decimal("0"),
+    }
+
+    def cash_total(_db, _currency, asof=None):
+        return cash_by_date[asof], []
+
+    with patch.object(
+        snap_svc.cash_account_service,
+        "get_total_balance_in",
+        side_effect=cash_total,
+    ):
+        snap_svc.refresh_snapshot_cash_range(
+            db_session,
+            existing_date,
+            skip_date,
+        )
+
+    rows = {
+        row.date: row
+        for row in db_session.query(PortfolioSnapshot).order_by(PortfolioSnapshot.date)
+    }
+    assert set(rows) == {existing_date, insert_date}
+
+    existing = rows[existing_date]
+    assert existing.total_cash_twd == Decimal("250")
+    assert existing.total_market_value == Decimal("1000")
+    assert existing.total_cost == Decimal("700")
+    assert existing.total_unrealized_pnl == Decimal("300")
+    assert existing.total_dividends == Decimal("10")
+    assert existing.total_realized_pnl == Decimal("5")
+    assert existing.portfolio_xirr == Decimal("0.120000")
+
+    inserted = rows[insert_date]
+    assert inserted.total_cash_twd == Decimal("500")
+    assert inserted.total_market_value == Decimal("0")
+    assert inserted.total_cost == Decimal("0")
+    assert inserted.total_unrealized_pnl == Decimal("0")
+    assert inserted.total_dividends == Decimal("0")
+    assert inserted.total_realized_pnl == Decimal("0")
+    assert inserted.portfolio_xirr is None
+
+
+def test_refresh_snapshot_cash_range_inverted_range_noops(db_session):
+    with patch.object(
+        snap_svc.cash_account_service,
+        "get_total_balance_in",
+    ) as cash_total:
+        snap_svc.refresh_snapshot_cash_range(
+            db_session,
+            date(2026, 6, 3),
+            date(2026, 6, 1),
+        )
+
+    cash_total.assert_not_called()
+    assert db_session.query(PortfolioSnapshot).count() == 0
+
+
 def test_list_snapshots_returns_inclusive_range_ascending(db_session):
     for d, mv in [
         (date(2026, 5, 10), "100"),
