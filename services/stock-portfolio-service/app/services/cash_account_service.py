@@ -23,6 +23,8 @@ from ..schemas.cash_account import (
 )
 from . import fx_rate_service
 
+logger = logging.getLogger(__name__)
+
 OUTFLOW_TYPES = {
     CashTxnType.WITHDRAW,
     CashTxnType.BUY_SETTLE,
@@ -503,19 +505,36 @@ def create_manual_cash_transaction(
     session.add(row)
     session.commit()
     session.refresh(row)
-    _refresh_today_snapshot(session)
+    from . import portfolio_snapshot_service
+
+    today = portfolio_snapshot_service._today_tw()
+    _refresh_snapshot_cash_range(session, min(row.txn_date, today), today)
     return row
 
 
-def _refresh_today_snapshot(session: Session) -> None:
+def _refresh_snapshot_cash_range(
+    session: Session,
+    start_date: date,
+    end_date: date,
+) -> None:
     from . import portfolio_snapshot_service
 
     try:
-        portfolio_snapshot_service.write_today_snapshot(session)
+        portfolio_snapshot_service.refresh_snapshot_cash_range(
+            session,
+            start_date,
+            end_date,
+        )
     except Exception:
         session.rollback()
-        logger = logging.getLogger(__name__)
-        logger.warning("cash_account_service: failed to refresh today snapshot", exc_info=True)
+        logger.warning(
+            "cash_account_service: failed to refresh cash snapshot range",
+            extra={
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+            },
+            exc_info=True,
+        )
 
 
 def delete_manual_cash_transaction(session: Session, account_id: int, txn_id: int) -> int:
@@ -528,9 +547,13 @@ def delete_manual_cash_transaction(session: Session, account_id: int, txn_id: in
         raise ValueError("not_manual")
 
     deleted_id = int(row.id)
+    deleted_txn_date = row.txn_date
     session.delete(row)
     session.commit()
-    _refresh_today_snapshot(session)
+    from . import portfolio_snapshot_service
+
+    today = portfolio_snapshot_service._today_tw()
+    _refresh_snapshot_cash_range(session, min(deleted_txn_date, today), today)
     return deleted_id
 
 

@@ -35,6 +35,8 @@ from sqlalchemy import case, delete, func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
+from ..models.broker_account import BrokerAccount
+from ..models.cash_transaction import CashTransaction
 from ..models.portfolio import PositionSide
 from ..models.portfolio_snapshot import PortfolioSnapshot
 from ..models.price_history import PriceHistory
@@ -480,6 +482,26 @@ def replay_snapshots_range(
     held_calendar = compute_active_dates(
         db, from_d, to_d, include_non_trading=True
     )
+    # Cash-activity dates: only these days are allowed to emit a cash-only
+    # snapshot row when no stock activity exists. Without this gate, every
+    # calendar day where the running cash balance is positive would write a
+    # row, inflating the snapshot table by 365 rows/year per cash-only
+    # period. Sources: explicit cash transactions + account opening dates
+    # for accounts that started with a non-zero opening_balance.
+    cash_txn_dates = {
+        row[0]
+        for row in db.query(CashTransaction.txn_date).distinct().all()
+        if row[0] is not None
+    }
+    opening_dates = {
+        row[0]
+        for row in db.query(BrokerAccount.opening_date)
+        .filter(BrokerAccount.opening_balance != 0)
+        .distinct()
+        .all()
+        if row[0] is not None
+    }
+    cash_activity_dates = cash_txn_dates | opening_dates
 
     transactions = _load_adjusted_transactions(db)
     events = list(iter_realized_events(transactions))
@@ -505,6 +527,13 @@ def replay_snapshots_range(
     )
     price_map = _load_price_map(db, from_d, to_d)
     trading_dates = {d for (_s, d) in price_map.keys()}
+    # Stock activity dates — transaction trade dates plus dividend
+    # ex-dividend dates. Used by the trading-day cash-only gate so a
+    # close-out SELL or dividend date still writes a row even when
+    # holdings are zero and cash did not change that day.
+    stock_activity_dates = {
+        _trade_date_of(t) for t in transactions
+    } | {_ex_date_of(d) for d in dividends}
     prior_snapshot = (
         db.query(PortfolioSnapshot)
         .filter(
@@ -534,6 +563,13 @@ def replay_snapshots_range(
     cumulative_dividends = Decimal("0")
     warned_missing: set[tuple[str, dt_date]] = set()
     stale_candidates: list[dt_date] = []
+    # Distinct list of dates the NEW cash-only gate suppressed. These
+    # dates may carry a phantom all-zero row written by a prior
+    # backfill, which must be cleaned up so `--rebuild-all` actually
+    # repairs history. Kept separate from `stale_candidates` so the
+    # explicit `active_dates` opt-out path (caller said "leave my
+    # inactive-date rows alone") is unaffected.
+    gated_phantom_candidates: list[dt_date] = []
 
     def write_snapshot(snapshot_date: dt_date, row: PortfolioSnapshot) -> bool:
         """Merge one snapshot inside its own SAVEPOINT."""
@@ -643,6 +679,22 @@ def replay_snapshots_range(
                         portfolio_xirr=None,
                     ),
                 )
+            if not wrote_forward_fill and cur in cash_activity_dates:
+                cash_total = total_cash_twd(cur)
+                if cash_total != 0:
+                    wrote_forward_fill = write_snapshot(
+                        cur,
+                        PortfolioSnapshot(
+                            date=cur,
+                            total_market_value=Decimal("0"),
+                            total_cost=Decimal("0"),
+                            total_unrealized_pnl=Decimal("0"),
+                            total_dividends=cumulative_dividends,
+                            total_realized_pnl=cumulative_realized,
+                            total_cash_twd=cash_total,
+                            portfolio_xirr=None,
+                        ),
+                    )
             if not wrote_forward_fill:
                 stale_candidates.append(cur)
             cur += timedelta(days=1)
@@ -686,6 +738,26 @@ def replay_snapshots_range(
             cur += timedelta(days=1)
             continue
 
+        # Cash-only on a trading day (no held stock at all) — only emit
+        # when the date has actual activity (stock txn / dividend /
+        # cash). Otherwise we'd bloat the snapshot table by one row per
+        # trading day where price_history happens to cover the symbol.
+        # Mirrors the gate in the would_skip branch above. Close-out
+        # SELL and dividend dates remain captured because they're in
+        # stock_activity_dates.
+        if (
+            mv == 0
+            and total_cost == 0
+            and cur not in cash_activity_dates
+            and cur not in stock_activity_dates
+        ):
+            # Pre-existing all-zero rows on a now-gated date must be
+            # cleaned up by the end-of-run DELETE, otherwise a prior
+            # backfill's phantom rows survive --rebuild-all.
+            gated_phantom_candidates.append(cur)
+            cur += timedelta(days=1)
+            continue
+
         wrote_trading_day = write_snapshot(
             cur,
             PortfolioSnapshot(
@@ -714,7 +786,21 @@ def replay_snapshots_range(
                 PortfolioSnapshot.total_cost > 0,
             )
         )
-        result.stale_rows_deleted = max(delete_result.rowcount or 0, 0)
+        result.stale_rows_deleted += max(delete_result.rowcount or 0, 0)
+
+    if gated_phantom_candidates and not dry_run:
+        phantom_result = db.execute(
+            delete(PortfolioSnapshot).where(
+                PortfolioSnapshot.date.in_(gated_phantom_candidates),
+                PortfolioSnapshot.total_market_value == 0,
+                PortfolioSnapshot.total_cost == 0,
+                PortfolioSnapshot.total_cash_twd == 0,
+                PortfolioSnapshot.total_dividends == 0,
+                PortfolioSnapshot.total_realized_pnl == 0,
+                PortfolioSnapshot.portfolio_xirr.is_(None),
+            )
+        )
+        result.stale_rows_deleted += max(phantom_result.rowcount or 0, 0)
 
     if dry_run:
         return result
@@ -821,11 +907,30 @@ def _main(argv: Optional[list[str]] = None) -> int:
     db = SessionLocal()
     try:
         transactions = db.query(portfolio_models.Transaction).all()
-        if not transactions:
+        earliest_stock_date = (
+            min(_date_of(t.trade_date) for t in transactions)
+            if transactions
+            else None
+        )
+        earliest_cash_date = db.query(func.min(CashTransaction.txn_date)).scalar()
+        # Include accounts initialized with a non-zero opening_balance even
+        # when they have no cash_transaction rows yet — their cash history
+        # starts at opening_date, not at the first explicit deposit.
+        earliest_opening_date = (
+            db.query(func.min(BrokerAccount.opening_date))
+            .filter(BrokerAccount.opening_balance != 0)
+            .scalar()
+        )
+        candidates = [
+            d
+            for d in (earliest_stock_date, earliest_cash_date, earliest_opening_date)
+            if d is not None
+        ]
+        if not candidates:
             print("No transactions found; nothing to rebuild.")
             return 0
 
-        from_d = min(_date_of(t.trade_date) for t in transactions)
+        from_d = min(candidates)
         to_d = dt_date.today()
         result = replay_snapshots_range(db, from_d, to_d, dry_run=args.dry_run)
         if result.errors:

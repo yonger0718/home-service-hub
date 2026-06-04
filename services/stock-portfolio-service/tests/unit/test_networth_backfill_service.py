@@ -11,6 +11,9 @@ from typing import Any, Callable, List
 import pytest
 from sqlalchemy import event
 
+import app.database
+from app.models.broker_account import BrokerAccount, BrokerEnum
+from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
 from app.models import portfolio as portfolio_models
 from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.models.price_history import PriceHistory
@@ -110,6 +113,47 @@ def _seed_price(db, *, symbol: str, d: date, close: str, source: str = "TWSE"):
         )
     )
     db.flush()
+
+
+def _seed_cash_account(
+    db,
+    *,
+    currency: str = "TWD",
+    opening_date: date = date(2025, 1, 1),
+):
+    account = BrokerAccount(
+        broker=BrokerEnum.OTHER,
+        nickname=f"Cash {currency}",
+        currency=currency,
+        opening_balance=Decimal("0"),
+        opening_date=opening_date,
+        is_active=True,
+    )
+    db.add(account)
+    db.flush()
+    return account
+
+
+def _seed_cash_tx(
+    db,
+    *,
+    account_id: int,
+    txn_date: date,
+    amount: str,
+    type_: CashTxnType = CashTxnType.DEPOSIT,
+):
+    row = CashTransaction(
+        account_id=account_id,
+        txn_date=txn_date,
+        type=type_,
+        amount=Decimal(amount),
+        currency="TWD",
+        source=CashTxnSource.MANUAL,
+        import_fingerprint=f"test-cash-{account_id}-{txn_date}-{amount}",
+    )
+    db.add(row)
+    db.flush()
+    return row
 
 
 def _realized_total(db) -> Decimal:
@@ -588,6 +632,251 @@ def test_replay_dry_run_does_not_update_cash_total(db_session, monkeypatch):
     assert result.snapshots_written == 0
     snap = db_session.get(PortfolioSnapshot, d)
     assert snap.total_cash_twd == Decimal("0")
+
+
+def test_replay_cash_only_user_gets_snapshot_row_on_cash_date(db_session):
+    d = date(2025, 4, 1)
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=d, amount="1000")
+    db_session.commit()
+
+    result = nbs.replay_snapshots_range(db_session, d, d)
+
+    assert result.snapshots_written == 1
+    snap = db_session.get(PortfolioSnapshot, d)
+    assert snap is not None
+    assert snap.total_cash_twd == Decimal("1000.0000")
+    assert snap.total_market_value == Decimal("0")
+    assert snap.total_cost == Decimal("0")
+
+
+def test_replay_cash_only_period_after_liquidation_emits_cash_rows(db_session):
+    sym = "2330"
+    buy_date = date(2025, 9, 29)
+    sell_date = date(2025, 9, 30)
+    withdrawal_date = date(2025, 10, 15)
+    later_withdrawal_date = date(2026, 1, 10)
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=buy_date,
+    )
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.SELL,
+        qty=10,
+        price="510",
+        trade_date=sell_date,
+    )
+    _seed_price(db_session, symbol=sym, d=buy_date, close="500")
+    _seed_price(db_session, symbol=sym, d=sell_date, close="510")
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=withdrawal_date, amount="1000")
+    _seed_cash_tx(
+        db_session,
+        account_id=account.id,
+        txn_date=later_withdrawal_date,
+        amount="-200",
+        type_=CashTxnType.WITHDRAW,
+    )
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, buy_date, later_withdrawal_date)
+
+    snaps = {s.date: s for s in db_session.query(PortfolioSnapshot).all()}
+    assert snaps[withdrawal_date].total_market_value == Decimal("0")
+    assert snaps[withdrawal_date].total_cost == Decimal("0")
+    assert snaps[withdrawal_date].total_cash_twd == Decimal("1000.0000")
+    assert snaps[later_withdrawal_date].total_market_value == Decimal("0")
+    assert snaps[later_withdrawal_date].total_cost == Decimal("0")
+    assert snaps[later_withdrawal_date].total_cash_twd == Decimal("800.0000")
+
+
+def test_replay_overlapping_stock_and_cash_date_writes_one_snapshot(db_session):
+    d = date(2025, 6, 20)
+    sym = "2330"
+    _seed_tx(
+        db_session,
+        symbol=sym,
+        side=portfolio_models.TransactionType.BUY,
+        qty=10,
+        price="500",
+        trade_date=d,
+    )
+    _seed_price(db_session, symbol=sym, d=d, close="510")
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=d, amount="2000")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, d, d)
+
+    snaps = db_session.query(PortfolioSnapshot).filter(PortfolioSnapshot.date == d).all()
+    assert len(snaps) == 1
+    assert snaps[0].total_market_value == Decimal("5100")
+    assert snaps[0].total_cash_twd == Decimal("2000.0000")
+
+
+def test_replay_empty_ledger_is_noop(db_session):
+    result = nbs.replay_snapshots_range(
+        db_session,
+        date(2026, 6, 1),
+        date(2026, 6, 1),
+    )
+
+    assert result.snapshots_written == 0
+    assert db_session.query(PortfolioSnapshot).count() == 0
+
+
+def test_replay_cash_only_dry_run_logs_without_writing(db_session, capsys):
+    d = date(2025, 4, 1)
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=d, amount="1000")
+    db_session.commit()
+
+    result = nbs.replay_snapshots_range(db_session, d, d, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert f"{d} old=0 new=0 delta=0" in out
+    assert result.snapshots_written == 0
+    assert db_session.query(PortfolioSnapshot).count() == 0
+
+
+def test_main_rebuild_all_uses_earliest_cash_date_when_no_stock(
+    db_session,
+    monkeypatch,
+):
+    cash_date = date(2025, 4, 1)
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=cash_date, amount="1000")
+    db_session.commit()
+    calls: list[tuple[date, date, bool]] = []
+
+    monkeypatch.setattr(app.database, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+
+    def capture_replay(_db, from_d, to_d, *, dry_run=False):
+        calls.append((from_d, to_d, dry_run))
+        return nbs.SnapshotReplayResult()
+
+    monkeypatch.setattr(nbs, "replay_snapshots_range", capture_replay)
+
+    assert nbs._main(["--rebuild-all", "--dry-run"]) == 0
+    assert calls == [(cash_date, date.today(), True)]
+
+
+def test_replay_deletes_preexisting_all_zero_snapshot_on_gated_date(db_session):
+    """`--rebuild-all` must clean up phantom all-zero rows left by prior
+    backfill runs on dates the new gate now skips. Without this, the
+    rollout step in the PR description does not actually repair history.
+    Regression for CodeRabbit Major outside-diff on PR #24."""
+    phantom_date = date(2025, 4, 2)
+    db_session.add(
+        PortfolioSnapshot(
+            date=phantom_date,
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("0"),
+            total_unrealized_pnl=Decimal("0"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            total_cash_twd=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    # Seed a price row so phantom_date hits the trading-day branch
+    # (otherwise it lands in would_skip and the test wouldn't exercise
+    # the new gate).
+    _seed_price(db_session, symbol="2330", d=phantom_date, close="500")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, phantom_date, phantom_date)
+
+    assert db_session.get(PortfolioSnapshot, phantom_date) is None
+
+
+def test_replay_skips_trading_days_without_cash_activity_for_cash_only_user(
+    db_session,
+):
+    """Trading-day branch must also gate cash-only emits on cash_activity_dates.
+    Without this gate a cash-only user inflates `portfolio_snapshot` by one
+    row per trading day for which price_history rows exist (irrespective of
+    their own activity).
+    Regression for CodeRabbit Major outside-diff finding on PR #24."""
+    activity_date = date(2025, 4, 1)
+    trading_only_date = date(2025, 4, 2)
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=activity_date, amount="1000")
+    # Seed price rows for both dates so they enter the trading-day branch
+    # (would_skip = False because is_holiday becomes False).
+    _seed_price(db_session, symbol="2330", d=activity_date, close="500")
+    _seed_price(db_session, symbol="2330", d=trading_only_date, close="510")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, activity_date, trading_only_date)
+
+    written_dates = {row.date for row in db_session.query(PortfolioSnapshot).all()}
+    assert written_dates == {activity_date}, (
+        "trading-day cash-only emit must be gated on cash_activity_dates; "
+        f"got {written_dates}"
+    )
+
+
+def test_replay_skips_calendar_days_without_cash_activity_between_two_cash_dates(
+    db_session,
+):
+    """Cash-only emit must be gated on `cur in cash_activity_dates`. Without
+    this gate, every skipped calendar day with a positive running cash
+    balance would inflate `portfolio_snapshot` by hundreds of rows.
+    Regression for Codex P2 finding on PR #24."""
+    first = date(2025, 4, 1)
+    last = date(2025, 4, 10)
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=first, amount="1000")
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=last, amount="500")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, first, last)
+
+    written_dates = {row.date for row in db_session.query(PortfolioSnapshot).all()}
+    assert written_dates == {first, last}, (
+        f"expected snapshot rows only on cash-activity dates; got {written_dates}"
+    )
+
+
+def test_main_rebuild_all_uses_opening_date_when_only_opening_balance(
+    db_session,
+    monkeypatch,
+):
+    """Account initialized with a non-zero opening_balance but zero
+    cash_transaction rows MUST anchor the rebuild window at opening_date.
+    Regression for Codex P2 finding on PR #24."""
+    opening = date(2025, 2, 14)
+    account = BrokerAccount(
+        broker=BrokerEnum.OTHER,
+        nickname="Opening Only",
+        currency="TWD",
+        opening_balance=Decimal("5000"),
+        opening_date=opening,
+        is_active=True,
+    )
+    db_session.add(account)
+    db_session.commit()
+    calls: list[tuple[date, date, bool]] = []
+
+    monkeypatch.setattr(app.database, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+
+    def capture_replay(_db, from_d, to_d, *, dry_run=False):
+        calls.append((from_d, to_d, dry_run))
+        return nbs.SnapshotReplayResult()
+
+    monkeypatch.setattr(nbs, "replay_snapshots_range", capture_replay)
+
+    assert nbs._main(["--rebuild-all", "--dry-run"]) == 0
+    assert calls == [(opening, date.today(), True)]
 
 
 def test_replay_handles_day_trade_with_sell_id_lower_than_buy(db_session):
@@ -1316,9 +1605,18 @@ def test_endpoint_runs_snapshots_phase(client, db_session, monkeypatch):
     # Avoid hitting the network in phase=snapshots
     monkeypatch.setattr(nbs.market_data_service, "fetch_twse_date", lambda d: [])
     monkeypatch.setattr(nbs.market_data_service, "fetch_tpex_date", lambda d: [])
-    # Seed at least one price row so the date is not treated as a full
-    # market holiday (which would skip the snapshot row).
+    # Seed a price row and a cash transaction so the date has real
+    # activity. Without holdings, dividends, realized PnL, OR cash
+    # activity the new gate (PR #24) intentionally skips writing an
+    # all-zero row.
     _seed_price(db_session, symbol="ANY", d=date(2026, 5, 14), close="1")
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(
+        db_session,
+        account_id=account.id,
+        txn_date=date(2026, 5, 14),
+        amount="1000",
+    )
     db_session.commit()
     res = client.post(
         "/api/portfolio/history/backfill-networth",

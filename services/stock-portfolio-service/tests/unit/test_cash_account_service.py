@@ -10,7 +10,7 @@ from app.models.broker_account import BrokerAccount, BrokerEnum
 from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
 from app.models.fx_rate import FxRate
 from app.schemas.cash_account import CashTransactionCreate
-from app.services import cash_account_service
+from app.services import cash_account_service, portfolio_snapshot_service
 
 
 def _account(
@@ -137,6 +137,197 @@ def test_create_manual_cash_transaction_normalizes_and_is_idempotent(db_session)
         cash_account_service.create_manual_cash_transaction(db_session, account.id, payload)
     db_session.rollback()
     assert db_session.execute(select(CashTransaction)).scalars().all()[0].amount == Decimal("-200.0000")
+
+
+def test_create_manual_cash_transaction_refreshes_today_range(
+    db_session,
+    monkeypatch,
+) -> None:
+    today = date(2026, 6, 4)
+    account = _account(currency="USD")
+    db_session.add(account)
+    db_session.commit()
+    calls: list[tuple[date, date]] = []
+
+    monkeypatch.setattr(portfolio_snapshot_service, "_today_tw", lambda: today)
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "write_today_snapshot",
+        lambda _session: (_ for _ in ()).throw(AssertionError("used today writer")),
+    )
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "refresh_snapshot_cash_range",
+        lambda _session, start, end: calls.append((start, end)),
+        raising=False,
+    )
+
+    cash_account_service.create_manual_cash_transaction(
+        db_session,
+        account.id,
+        CashTransactionCreate(
+            txn_date=today,
+            type=CashTxnType.DEPOSIT,
+            amount=Decimal("100"),
+            currency="USD",
+        ),
+    )
+
+    assert calls == [(today, today)]
+
+
+def test_create_manual_cash_transaction_refreshes_backdated_range(
+    db_session,
+    monkeypatch,
+) -> None:
+    today = date(2026, 6, 4)
+    backdated = date(2026, 6, 1)
+    account = _account(currency="USD")
+    db_session.add(account)
+    db_session.commit()
+    calls: list[tuple[date, date]] = []
+
+    monkeypatch.setattr(portfolio_snapshot_service, "_today_tw", lambda: today)
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "write_today_snapshot",
+        lambda _session: (_ for _ in ()).throw(AssertionError("used today writer")),
+    )
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "refresh_snapshot_cash_range",
+        lambda _session, start, end: calls.append((start, end)),
+        raising=False,
+    )
+
+    cash_account_service.create_manual_cash_transaction(
+        db_session,
+        account.id,
+        CashTransactionCreate(
+            txn_date=backdated,
+            type=CashTxnType.DEPOSIT,
+            amount=Decimal("100"),
+            currency="USD",
+        ),
+    )
+
+    assert calls == [(backdated, today)]
+
+
+def test_create_manual_cash_transaction_future_date_refreshes_today_only(
+    db_session,
+    monkeypatch,
+) -> None:
+    today = date(2026, 6, 4)
+    future = date(2026, 7, 1)
+    account = _account(currency="USD")
+    db_session.add(account)
+    db_session.commit()
+    calls: list[tuple[date, date]] = []
+
+    monkeypatch.setattr(portfolio_snapshot_service, "_today_tw", lambda: today)
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "write_today_snapshot",
+        lambda _session: (_ for _ in ()).throw(AssertionError("used today writer")),
+    )
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "refresh_snapshot_cash_range",
+        lambda _session, start, end: calls.append((start, end)),
+        raising=False,
+    )
+
+    cash_account_service.create_manual_cash_transaction(
+        db_session,
+        account.id,
+        CashTransactionCreate(
+            txn_date=future,
+            type=CashTxnType.DEPOSIT,
+            amount=Decimal("100"),
+            currency="USD",
+        ),
+    )
+
+    assert calls == [(today, today)]
+
+
+def test_delete_manual_cash_transaction_refreshes_captured_txn_date_range(
+    db_session,
+    monkeypatch,
+) -> None:
+    today = date(2026, 6, 4)
+    backdated = date(2026, 6, 1)
+    account = _account()
+    db_session.add(account)
+    db_session.commit()
+    row = _cash(account.id, backdated, CashTxnType.DEPOSIT, "500")
+    db_session.add(row)
+    db_session.commit()
+    txn_id = row.id
+    calls: list[tuple[date, date]] = []
+
+    monkeypatch.setattr(portfolio_snapshot_service, "_today_tw", lambda: today)
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "write_today_snapshot",
+        lambda _session: (_ for _ in ()).throw(AssertionError("used today writer")),
+    )
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "refresh_snapshot_cash_range",
+        lambda _session, start, end: calls.append((start, end)),
+        raising=False,
+    )
+
+    deleted_id = cash_account_service.delete_manual_cash_transaction(
+        db_session,
+        account.id,
+        txn_id,
+    )
+
+    assert deleted_id == txn_id
+    assert calls == [(backdated, today)]
+
+
+def test_create_manual_cash_transaction_refresh_failure_preserves_cash_commit(
+    db_session,
+    monkeypatch,
+    caplog,
+) -> None:
+    today = date(2026, 6, 4)
+    account = _account(currency="USD")
+    db_session.add(account)
+    db_session.commit()
+
+    monkeypatch.setattr(portfolio_snapshot_service, "_today_tw", lambda: today)
+    monkeypatch.setattr(portfolio_snapshot_service, "write_today_snapshot", lambda _session: None)
+
+    def fail_refresh(_session, _start, _end):
+        raise RuntimeError("snapshot failed")
+
+    monkeypatch.setattr(
+        portfolio_snapshot_service,
+        "refresh_snapshot_cash_range",
+        fail_refresh,
+        raising=False,
+    )
+
+    cash_account_service.create_manual_cash_transaction(
+        db_session,
+        account.id,
+        CashTransactionCreate(
+            txn_date=today,
+            type=CashTxnType.DEPOSIT,
+            amount=Decimal("100"),
+            currency="USD",
+        ),
+    )
+
+    rows = db_session.execute(select(CashTransaction)).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].amount == Decimal("100.0000")
+    assert "failed to refresh cash snapshot range" in caplog.text
 
 
 def test_create_manual_cash_transaction_rejects_currency_mismatch(db_session) -> None:
