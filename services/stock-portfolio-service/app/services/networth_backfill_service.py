@@ -35,6 +35,7 @@ from sqlalchemy import case, delete, func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
+from ..models.broker_account import BrokerAccount
 from ..models.cash_transaction import CashTransaction
 from ..models.portfolio import PositionSide
 from ..models.portfolio_snapshot import PortfolioSnapshot
@@ -481,6 +482,26 @@ def replay_snapshots_range(
     held_calendar = compute_active_dates(
         db, from_d, to_d, include_non_trading=True
     )
+    # Cash-activity dates: only these days are allowed to emit a cash-only
+    # snapshot row when no stock activity exists. Without this gate, every
+    # calendar day where the running cash balance is positive would write a
+    # row, inflating the snapshot table by 365 rows/year per cash-only
+    # period. Sources: explicit cash transactions + account opening dates
+    # for accounts that started with a non-zero opening_balance.
+    cash_txn_dates = {
+        row[0]
+        for row in db.query(CashTransaction.txn_date).distinct().all()
+        if row[0] is not None
+    }
+    opening_dates = {
+        row[0]
+        for row in db.query(BrokerAccount.opening_date)
+        .filter(BrokerAccount.opening_balance != 0)
+        .distinct()
+        .all()
+        if row[0] is not None
+    }
+    cash_activity_dates = cash_txn_dates | opening_dates
 
     transactions = _load_adjusted_transactions(db)
     events = list(iter_realized_events(transactions))
@@ -644,9 +665,9 @@ def replay_snapshots_range(
                         portfolio_xirr=None,
                     ),
                 )
-            if not wrote_forward_fill:
+            if not wrote_forward_fill and cur in cash_activity_dates:
                 cash_total = total_cash_twd(cur)
-                if cash_total > 0:
+                if cash_total != 0:
                     wrote_forward_fill = write_snapshot(
                         cur,
                         PortfolioSnapshot(
@@ -844,9 +865,17 @@ def _main(argv: Optional[list[str]] = None) -> int:
             else None
         )
         earliest_cash_date = db.query(func.min(CashTransaction.txn_date)).scalar()
+        # Include accounts initialized with a non-zero opening_balance even
+        # when they have no cash_transaction rows yet — their cash history
+        # starts at opening_date, not at the first explicit deposit.
+        earliest_opening_date = (
+            db.query(func.min(BrokerAccount.opening_date))
+            .filter(BrokerAccount.opening_balance != 0)
+            .scalar()
+        )
         candidates = [
             d
-            for d in (earliest_stock_date, earliest_cash_date)
+            for d in (earliest_stock_date, earliest_cash_date, earliest_opening_date)
             if d is not None
         ]
         if not candidates:

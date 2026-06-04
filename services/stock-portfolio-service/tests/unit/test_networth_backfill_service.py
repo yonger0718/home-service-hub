@@ -768,6 +768,61 @@ def test_main_rebuild_all_uses_earliest_cash_date_when_no_stock(
     assert calls == [(cash_date, date.today(), True)]
 
 
+def test_replay_skips_calendar_days_without_cash_activity_between_two_cash_dates(
+    db_session,
+):
+    """Cash-only emit must be gated on `cur in cash_activity_dates`. Without
+    this gate, every skipped calendar day with a positive running cash
+    balance would inflate `portfolio_snapshot` by hundreds of rows.
+    Regression for Codex P2 finding on PR #24."""
+    first = date(2025, 4, 1)
+    last = date(2025, 4, 10)
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=first, amount="1000")
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=last, amount="500")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, first, last)
+
+    written_dates = {row.date for row in db_session.query(PortfolioSnapshot).all()}
+    assert written_dates == {first, last}, (
+        f"expected snapshot rows only on cash-activity dates; got {written_dates}"
+    )
+
+
+def test_main_rebuild_all_uses_opening_date_when_only_opening_balance(
+    db_session,
+    monkeypatch,
+):
+    """Account initialized with a non-zero opening_balance but zero
+    cash_transaction rows MUST anchor the rebuild window at opening_date.
+    Regression for Codex P2 finding on PR #24."""
+    opening = date(2025, 2, 14)
+    account = BrokerAccount(
+        broker=BrokerEnum.OTHER,
+        nickname="Opening Only",
+        currency="TWD",
+        opening_balance=Decimal("5000"),
+        opening_date=opening,
+        is_active=True,
+    )
+    db_session.add(account)
+    db_session.commit()
+    calls: list[tuple[date, date, bool]] = []
+
+    monkeypatch.setattr(app.database, "SessionLocal", lambda: db_session)
+    monkeypatch.setattr(db_session, "close", lambda: None)
+
+    def capture_replay(_db, from_d, to_d, *, dry_run=False):
+        calls.append((from_d, to_d, dry_run))
+        return nbs.SnapshotReplayResult()
+
+    monkeypatch.setattr(nbs, "replay_snapshots_range", capture_replay)
+
+    assert nbs._main(["--rebuild-all", "--dry-run"]) == 0
+    assert calls == [(opening, date.today(), True)]
+
+
 def test_replay_handles_day_trade_with_sell_id_lower_than_buy(db_session):
     """SELL inserted with smaller id than BUY (e.g. CSV reorder) must still net to zero.
 

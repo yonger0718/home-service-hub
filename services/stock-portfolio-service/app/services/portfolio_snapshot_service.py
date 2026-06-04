@@ -51,6 +51,20 @@ def write_today_snapshot(
     return merged
 
 
+def _is_cash_only_row(row: PortfolioSnapshot) -> bool:
+    """Match the shape inserted by ``refresh_snapshot_cash_range`` — all stock
+    columns zero and no XIRR. Used to safely prune helper-created rows when
+    a later refresh drops cash back to zero."""
+    return (
+        row.total_market_value == 0
+        and row.total_cost == 0
+        and row.total_unrealized_pnl == 0
+        and row.total_dividends == 0
+        and row.total_realized_pnl == 0
+        and row.portfolio_xirr is None
+    )
+
+
 def refresh_snapshot_cash_range(
     db: Session,
     start_date: dt_date,
@@ -77,8 +91,11 @@ def refresh_snapshot_cash_range(
 
         existing = db.get(PortfolioSnapshot, cur)
         if existing is not None:
-            existing.total_cash_twd = cash_total_twd
-        elif cash_total_twd > 0:
+            if cash_total_twd == 0 and _is_cash_only_row(existing):
+                db.delete(existing)
+            else:
+                existing.total_cash_twd = cash_total_twd
+        elif cash_total_twd != 0:
             db.add(
                 PortfolioSnapshot(
                     date=cur,

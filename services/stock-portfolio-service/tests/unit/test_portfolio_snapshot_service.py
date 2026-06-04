@@ -185,6 +185,84 @@ def test_refresh_snapshot_cash_range_updates_only_cash_and_inserts_cash_only(
     assert inserted.portfolio_xirr is None
 
 
+def test_refresh_snapshot_cash_range_inserts_row_for_negative_cash(db_session):
+    """Backdated withdrawal on a date with no prior snapshot leaves cash
+    negative (e.g. staking liability). The row MUST be written so the chart
+    surfaces the overdraft instead of hiding it."""
+    target = date(2026, 6, 5)
+
+    with patch.object(
+        snap_svc.cash_account_service,
+        "get_total_balance_in",
+        return_value=(Decimal("-500"), []),
+    ):
+        snap_svc.refresh_snapshot_cash_range(db_session, target, target)
+
+    row = db_session.get(PortfolioSnapshot, target)
+    assert row is not None
+    assert row.total_cash_twd == Decimal("-500")
+    assert row.total_market_value == Decimal("0")
+
+
+def test_refresh_snapshot_cash_range_deletes_helper_only_row_when_cash_zero(db_session):
+    """A helper-created cash-only row whose cash later drops back to zero
+    must be removed so the chart does not show a phantom zero point."""
+    target = date(2026, 6, 6)
+    db_session.add(
+        PortfolioSnapshot(
+            date=target,
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("0"),
+            total_unrealized_pnl=Decimal("0"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            total_cash_twd=Decimal("400"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+
+    with patch.object(
+        snap_svc.cash_account_service,
+        "get_total_balance_in",
+        return_value=(Decimal("0"), []),
+    ):
+        snap_svc.refresh_snapshot_cash_range(db_session, target, target)
+
+    assert db_session.get(PortfolioSnapshot, target) is None
+
+
+def test_refresh_snapshot_cash_range_keeps_stock_row_when_cash_zero(db_session):
+    """A row owned by replay_snapshots_range (stock columns non-zero) must
+    NOT be deleted when cash drops to zero — just update the cash column."""
+    target = date(2026, 6, 7)
+    db_session.add(
+        PortfolioSnapshot(
+            date=target,
+            total_market_value=Decimal("1500"),
+            total_cost=Decimal("1000"),
+            total_unrealized_pnl=Decimal("500"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            total_cash_twd=Decimal("250"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+
+    with patch.object(
+        snap_svc.cash_account_service,
+        "get_total_balance_in",
+        return_value=(Decimal("0"), []),
+    ):
+        snap_svc.refresh_snapshot_cash_range(db_session, target, target)
+
+    row = db_session.get(PortfolioSnapshot, target)
+    assert row is not None
+    assert row.total_cash_twd == Decimal("0")
+    assert row.total_market_value == Decimal("1500")
+
+
 def test_refresh_snapshot_cash_range_inverted_range_noops(db_session):
     with patch.object(
         snap_svc.cash_account_service,

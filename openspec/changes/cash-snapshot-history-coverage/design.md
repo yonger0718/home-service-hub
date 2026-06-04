@@ -74,9 +74,15 @@ Likewise, in the trading-day branch when `mv == 0 and total_cost == 0` (no held 
 
 **Decision**: in `_main` / wherever `from_d` is auto-derived ("rebuild-all" mode), the derivation SHALL be:
 
+```python
+from_d = min(
+    earliest_stock_date or +inf,
+    earliest_cash_date or +inf,
+    earliest_opening_date or +inf,
+)
 ```
-from_d = min(earliest_stock_date or +inf, earliest_cash_date or +inf)
-```
+
+`earliest_opening_date` comes from `MIN(broker_account.opening_date)` over accounts with `opening_balance != 0`, so accounts initialized with a non-zero opening balance and zero `cash_transaction` rows still anchor the rebuild window.
 
 When both are absent, the rebuild is a no-op (no history exists yet).
 
@@ -92,9 +98,9 @@ When both are absent, the rebuild is a no-op (no history exists yet).
 
 ## Risks / Trade-offs
 
-- **Backdated CRUD latency proportional to range** → Mitigation: range only walks ACTIVITY dates that already exist as snapshot rows (a subset of "all days in the range") in the backfill path. For CRUD, we may still walk every date in the range. Acceptable since backdating is rare; revisit if profiling shows pain.
-- **Cash-only-period snapshot rows inflate row count** → Mitigation: rows are bounded by `COUNT(DISTINCT cash_transaction.txn_date)`, which scales with user-visible activity, not calendar days.
-- **`refresh_snapshot_range` becomes a hot path if someone deletes the entire ledger** → Mitigation: bulk-delete flow is not exposed today (no UI). If added, it can call the backfill CLI instead of N range refreshes.
+- **Backdated CRUD latency proportional to range** → Mitigation: CRUD walks every calendar day in `[min(txn_date, today), today]` once. The per-date work is one cash balance compute (single SQL aggregation). Backdating is rare; revisit if profiling shows pain.
+- **Cash-only-period snapshot rows inflate row count** → Mitigation: the backfill loop still iterates every calendar day, but cash-only emits are GATED on `cur in cash_activity_dates` (`DISTINCT cash_transaction.txn_date ∪ broker_account.opening_date for opening_balance != 0`). Row count therefore scales with user-visible activity, not calendar days.
+- **`refresh_snapshot_cash_range` becomes a hot path if someone deletes the entire ledger** → Mitigation: bulk-delete flow is not exposed today (no UI). If added, it can call the backfill CLI instead of N range refreshes.
 
 ## Migration Plan
 
