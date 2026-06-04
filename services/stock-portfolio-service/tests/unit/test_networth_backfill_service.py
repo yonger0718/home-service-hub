@@ -768,6 +768,33 @@ def test_main_rebuild_all_uses_earliest_cash_date_when_no_stock(
     assert calls == [(cash_date, date.today(), True)]
 
 
+def test_replay_skips_trading_days_without_cash_activity_for_cash_only_user(
+    db_session,
+):
+    """Trading-day branch must also gate cash-only emits on cash_activity_dates.
+    Without this gate a cash-only user inflates `portfolio_snapshot` by one
+    row per trading day for which price_history rows exist (irrespective of
+    their own activity).
+    Regression for CodeRabbit Major outside-diff finding on PR #24."""
+    activity_date = date(2025, 4, 1)
+    trading_only_date = date(2025, 4, 2)
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(db_session, account_id=account.id, txn_date=activity_date, amount="1000")
+    # Seed price rows for both dates so they enter the trading-day branch
+    # (would_skip = False because is_holiday becomes False).
+    _seed_price(db_session, symbol="2330", d=activity_date, close="500")
+    _seed_price(db_session, symbol="2330", d=trading_only_date, close="510")
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, activity_date, trading_only_date)
+
+    written_dates = {row.date for row in db_session.query(PortfolioSnapshot).all()}
+    assert written_dates == {activity_date}, (
+        "trading-day cash-only emit must be gated on cash_activity_dates; "
+        f"got {written_dates}"
+    )
+
+
 def test_replay_skips_calendar_days_without_cash_activity_between_two_cash_dates(
     db_session,
 ):
@@ -1549,9 +1576,18 @@ def test_endpoint_runs_snapshots_phase(client, db_session, monkeypatch):
     # Avoid hitting the network in phase=snapshots
     monkeypatch.setattr(nbs.market_data_service, "fetch_twse_date", lambda d: [])
     monkeypatch.setattr(nbs.market_data_service, "fetch_tpex_date", lambda d: [])
-    # Seed at least one price row so the date is not treated as a full
-    # market holiday (which would skip the snapshot row).
+    # Seed a price row and a cash transaction so the date has real
+    # activity. Without holdings, dividends, realized PnL, OR cash
+    # activity the new gate (PR #24) intentionally skips writing an
+    # all-zero row.
     _seed_price(db_session, symbol="ANY", d=date(2026, 5, 14), close="1")
+    account = _seed_cash_account(db_session)
+    _seed_cash_tx(
+        db_session,
+        account_id=account.id,
+        txn_date=date(2026, 5, 14),
+        amount="1000",
+    )
     db_session.commit()
     res = client.post(
         "/api/portfolio/history/backfill-networth",

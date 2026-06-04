@@ -527,6 +527,13 @@ def replay_snapshots_range(
     )
     price_map = _load_price_map(db, from_d, to_d)
     trading_dates = {d for (_s, d) in price_map.keys()}
+    # Stock activity dates — transaction trade dates plus dividend
+    # ex-dividend dates. Used by the trading-day cash-only gate so a
+    # close-out SELL or dividend date still writes a row even when
+    # holdings are zero and cash did not change that day.
+    stock_activity_dates = {
+        _trade_date_of(t) for t in transactions
+    } | {_ex_date_of(d) for d in dividends}
     prior_snapshot = (
         db.query(PortfolioSnapshot)
         .filter(
@@ -721,6 +728,22 @@ def replay_snapshots_range(
         # interpolation against the prior good snapshot.
         if mv == 0 and total_cost > 0:
             stale_candidates.append(cur)
+            cur += timedelta(days=1)
+            continue
+
+        # Cash-only on a trading day (no held stock at all) — only emit
+        # when the date has actual activity (stock txn / dividend /
+        # cash). Otherwise we'd bloat the snapshot table by one row per
+        # trading day where price_history happens to cover the symbol.
+        # Mirrors the gate in the would_skip branch above. Close-out
+        # SELL and dividend dates remain captured because they're in
+        # stock_activity_dates.
+        if (
+            mv == 0
+            and total_cost == 0
+            and cur not in cash_activity_dates
+            and cur not in stock_activity_dates
+        ):
             cur += timedelta(days=1)
             continue
 

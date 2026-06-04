@@ -149,10 +149,17 @@ def test_refresh_snapshot_cash_range_updates_only_cash_and_inserts_cash_only(
     def cash_total(_db, _currency, asof=None):
         return cash_by_date[asof], []
 
-    with patch.object(
-        snap_svc.cash_account_service,
-        "get_total_balance_in",
-        side_effect=cash_total,
+    with (
+        patch.object(
+            snap_svc.cash_account_service,
+            "get_total_balance_in",
+            side_effect=cash_total,
+        ),
+        patch.object(
+            snap_svc,
+            "_cash_activity_dates",
+            return_value={insert_date},
+        ),
     ):
         snap_svc.refresh_snapshot_cash_range(
             db_session,
@@ -188,13 +195,17 @@ def test_refresh_snapshot_cash_range_updates_only_cash_and_inserts_cash_only(
 def test_refresh_snapshot_cash_range_inserts_row_for_negative_cash(db_session):
     """Backdated withdrawal on a date with no prior snapshot leaves cash
     negative (e.g. staking liability). The row MUST be written so the chart
-    surfaces the overdraft instead of hiding it."""
+    surfaces the overdraft instead of hiding it. Date is in
+    cash_activity_dates because the txn itself happens on that date."""
     target = date(2026, 6, 5)
 
-    with patch.object(
-        snap_svc.cash_account_service,
-        "get_total_balance_in",
-        return_value=(Decimal("-500"), []),
+    with (
+        patch.object(
+            snap_svc.cash_account_service,
+            "get_total_balance_in",
+            return_value=(Decimal("-500"), []),
+        ),
+        patch.object(snap_svc, "_cash_activity_dates", return_value={target}),
     ):
         snap_svc.refresh_snapshot_cash_range(db_session, target, target)
 
@@ -202,6 +213,30 @@ def test_refresh_snapshot_cash_range_inserts_row_for_negative_cash(db_session):
     assert row is not None
     assert row.total_cash_twd == Decimal("-500")
     assert row.total_market_value == Decimal("0")
+
+
+def test_refresh_snapshot_cash_range_skips_insert_on_non_activity_date(db_session):
+    """Backdated CRUD walks every day in range, but cash-only rows must
+    only be inserted on dates with actual cash activity. Without this gate
+    a 1-year backdated deposit would insert ~365 phantom rows."""
+    start = date(2026, 6, 1)
+    end = date(2026, 6, 3)
+    activity_date = date(2026, 6, 1)  # only this day has cash activity
+
+    with (
+        patch.object(
+            snap_svc.cash_account_service,
+            "get_total_balance_in",
+            return_value=(Decimal("1000"), []),
+        ),
+        patch.object(snap_svc, "_cash_activity_dates", return_value={activity_date}),
+    ):
+        snap_svc.refresh_snapshot_cash_range(db_session, start, end)
+
+    rows = {row.date for row in db_session.query(PortfolioSnapshot).all()}
+    assert rows == {activity_date}, (
+        f"only the activity date may be inserted; got {rows}"
+    )
 
 
 def test_refresh_snapshot_cash_range_deletes_helper_only_row_when_cash_zero(db_session):
