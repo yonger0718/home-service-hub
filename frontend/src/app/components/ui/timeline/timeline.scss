@@ -66,10 +66,24 @@
 }
 
 .tl-meta {
+  align-items: center;
   color: var(--app-text-muted);
+  display: flex;
   font-size: 0.72rem;
   font-weight: var(--fw-semibold);
+  gap: 0.35rem;
   margin-top: 2px;
+}
+
+.tl-meta-badge {
+  background: var(--app-accent-soft);
+  border: 1px solid var(--app-accent-soft-strong);
+  border-radius: 999px;
+  color: var(--app-accent);
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0.14rem 0.38rem;
 }
 
 .tl-amt {

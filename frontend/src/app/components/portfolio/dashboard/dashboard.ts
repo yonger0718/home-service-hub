@@ -20,7 +20,15 @@ import { MessageService } from 'primeng/api';
 
 import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
-import { PortfolioSummary, ExDividendRecord, NetworthPoint, StockHolding } from '../../../models/portfolio.model';
+import {
+  ExDividendRecord,
+  MarketCode,
+  NetworthPoint,
+  PortfolioSummary,
+  StockHolding,
+  holdingKey,
+} from '../../../models/portfolio.model';
+import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { BentoComponent } from '../../ui/bento/bento';
@@ -39,6 +47,7 @@ type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
     SegToggleComponent,
     BentoComponent,
     PctBadgeComponent,
+    NativeAmountPipe,
   ],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
@@ -59,7 +68,7 @@ export class PortfolioDashboardComponent implements OnInit {
   readonly loading = signal(false);
   readonly range = signal<PortfolioRange>('1Y');
   readonly chartPoints = signal<NetworthPoint[]>([]);
-  readonly expandedSymbol = signal<string | null>(null);
+  readonly expandedHoldingKey = signal<string | null>(null);
 
   readonly rangeOptions: SegToggleOption[] = [
     { label: '1M', value: '1M' },
@@ -85,6 +94,14 @@ export class PortfolioDashboardComponent implements OnInit {
     if (!summary) return null;
     return this.selectedXirr(summary);
   });
+
+  readonly flatHoldings = computed(() => this.summary()?.holdings ?? []);
+
+  readonly showMarketGroups = computed(() =>
+    this.flatHoldings().some(holding => holding.market !== 'TW'),
+  );
+
+  readonly holdingGroups = computed(() => this.groupHoldingsByMarket(this.flatHoldings()));
 
   private readonly networthCache = new Map<PortfolioRange, NetworthPoint[]>();
   private readonly prefetchOrder: PortfolioRange[] = ['1M', '3M', 'YTD', '5Y'];
@@ -136,12 +153,49 @@ export class PortfolioDashboardComponent implements OnInit {
     this.loadNetworthHistory();
   }
 
-  toggleHoldingExpand(symbol: string): void {
-    this.expandedSymbol.set(this.expandedSymbol() === symbol ? null : symbol);
+  toggleHoldingExpand(holding: StockHolding): void {
+    const key = this.holdingTrackKey(holding);
+    this.expandedHoldingKey.set(this.expandedHoldingKey() === key ? null : key);
   }
 
-  isHoldingExpanded(symbol: string): boolean {
-    return this.expandedSymbol() === symbol;
+  isHoldingExpanded(holding: StockHolding): boolean {
+    return this.expandedHoldingKey() === this.holdingTrackKey(holding);
+  }
+
+  holdingTrackKey(holding: StockHolding): string {
+    return holdingKey(holding);
+  }
+
+  groupHoldingsByMarket(
+    holdings: StockHolding[],
+    sortBy?: keyof Pick<StockHolding, 'unrealized_pnl'>,
+    direction: 'asc' | 'desc' = 'asc',
+  ): { market: MarketCode; holdings: StockHolding[] }[] {
+    const order: MarketCode[] = ['TW', 'US', 'LSE'];
+
+    return order
+      .map(market => {
+        const rows = holdings.filter(holding => holding.market === market);
+        if (sortBy) {
+          rows.sort((a, b) => {
+            const left = Number(a[sortBy] ?? 0);
+            const right = Number(b[sortBy] ?? 0);
+            return direction === 'asc' ? left - right : right - left;
+          });
+        }
+        return { market, holdings: rows };
+      })
+      .filter(group => group.holdings.length > 0);
+  }
+
+  fxTooltip(holding: StockHolding): string | null {
+    if (holding.market === 'TW' || holding.live_fx_rate_to_twd == null) return null;
+    return `Revalued at 1 ${holding.native_currency} = ${holding.live_fx_rate_to_twd} TWD`;
+  }
+
+  marketValueDisplay(holding: StockHolding): string {
+    if (holding.market !== 'TW' && holding.live_fx_rate_to_twd == null) return '—';
+    return this.formatCurrency(holding.market_value);
   }
 
   loadSummary(): void {

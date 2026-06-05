@@ -60,6 +60,13 @@
   margin-bottom: 0.5rem;
 }
 
+.field-error {
+  color: var(--app-trend-negative);
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-top: 0.35rem;
+}
+
 .empty {
   align-items: center;
   color: var(--app-text-muted);
