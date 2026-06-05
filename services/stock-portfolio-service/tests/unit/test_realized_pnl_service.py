@@ -490,7 +490,7 @@ def test_foreign_realized_pnl_requires_frozen_fx(db_session) -> None:
         raise AssertionError("expected missing-FX ValueError")
 
 
-def test_usd_dividend_converts_to_twd_total_dividends(db_session) -> None:
+def test_usd_dividend_is_excluded_from_tw_only_summary_total_dividends(db_session) -> None:
     db_session.add(
         models.Dividend(
             symbol="AAPL",
@@ -507,4 +507,4 @@ def test_usd_dividend_converts_to_twd_total_dividends(db_session) -> None:
 
     summary = portfolio_service.get_portfolio_summary(db_session)
 
-    assert summary.total_dividends == Decimal("1625.00")
+    assert summary.total_dividends == Decimal("0.00")

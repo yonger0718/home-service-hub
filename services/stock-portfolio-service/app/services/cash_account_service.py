@@ -328,6 +328,16 @@ def delete_transaction_cash_legs(session: Session, transaction_id: int) -> int:
     return int(result.rowcount or 0)
 
 
+def delete_auto_derived_transaction_cash_legs(session: Session, transaction_id: int) -> int:
+    result = session.execute(
+        delete(CashTransaction).where(
+            CashTransaction.related_transaction_id == transaction_id,
+            CashTransaction.source == CashTxnSource.AUTO_DERIVE,
+        )
+    )
+    return int(result.rowcount or 0)
+
+
 def sync_dividend_cash_leg(
     session: Session,
     dividend: object,
@@ -378,6 +388,16 @@ def sync_dividend_cash_leg(
 def delete_dividend_cash_leg(session: Session, dividend_id: int) -> int:
     result = session.execute(
         delete(CashTransaction).where(CashTransaction.related_dividend_id == dividend_id)
+    )
+    return int(result.rowcount or 0)
+
+
+def delete_auto_derived_dividend_cash_leg(session: Session, dividend_id: int) -> int:
+    result = session.execute(
+        delete(CashTransaction).where(
+            CashTransaction.related_dividend_id == dividend_id,
+            CashTransaction.source == CashTxnSource.AUTO_DERIVE,
+        )
     )
     return int(result.rowcount or 0)
 

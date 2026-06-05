@@ -10,7 +10,7 @@ def _normalize_symbol(value: str, market: Optional[str] = None) -> str:
         raise ValueError("symbol must be a string")
 
     normalized = value.strip().upper()
-    normalized_market = (market or "TW").upper()
+    normalized_market = (market or "TW").strip().upper()
     if normalized_market == "TW":
         for suffix in (".TWO", ".TW"):
             if normalized.endswith(suffix):
@@ -23,11 +23,16 @@ def _normalize_symbol(value: str, market: Optional[str] = None) -> str:
 
 
 def _require_fx_rate_for_foreign_currency(currency: str, fx_rate_to_twd: Optional[Decimal]) -> None:
-    normalized_currency = (currency or "TWD").upper()
-    if normalized_currency != "TWD" and fx_rate_to_twd is None:
-        raise ValueError(
-            f"fx_rate_to_twd required when currency='{normalized_currency}'"
-        )
+    normalized_currency = (currency or "TWD").strip().upper()
+    if normalized_currency != "TWD":
+        if fx_rate_to_twd is None:
+            raise ValueError(
+                f"fx_rate_to_twd required when currency='{normalized_currency}'"
+            )
+        if fx_rate_to_twd <= 0:
+            raise ValueError(
+                f"fx_rate_to_twd must be > 0 when currency='{normalized_currency}'"
+            )
 
 class TransactionType(str, Enum):
     BUY = "BUY"
@@ -66,8 +71,8 @@ class TransactionBase(BaseModel):
     @model_validator(mode="after")
     def normalize_symbol(self) -> Self:
         self.symbol = _normalize_symbol(self.symbol, self.market)
-        self.market = (self.market or "TW").upper()
-        self.currency = (self.currency or "TWD").upper()
+        self.market = (self.market or "TW").strip().upper()
+        self.currency = (self.currency or "TWD").strip().upper()
         return self
 
 class TransactionCreate(TransactionBase):
@@ -116,8 +121,8 @@ class DividendBase(BaseModel):
     @model_validator(mode="after")
     def normalize_symbol(self) -> Self:
         self.symbol = _normalize_symbol(self.symbol, self.market)
-        self.market = (self.market or "TW").upper()
-        self.currency = (self.currency or "TWD").upper()
+        self.market = (self.market or "TW").strip().upper()
+        self.currency = (self.currency or "TWD").strip().upper()
         return self
 
 class DividendCreate(DividendBase):

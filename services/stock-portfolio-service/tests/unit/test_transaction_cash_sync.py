@@ -143,6 +143,38 @@ def test_create_foreign_transaction_skips_twd_cash_sync(db_session, monkeypatch)
     assert _cash_rows(db_session, transaction.id) == []
 
 
+def test_update_transaction_to_foreign_currency_deletes_stale_twd_cash_legs(
+    db_session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    transaction = portfolio_service.create_transaction(
+        db_session,
+        _payload(tx_type=schemas.TransactionType.BUY, fee="22.00", tax="0.00"),
+    )
+    assert set(_cash_by_type(db_session, transaction.id)) == {
+        CashTxnType.BUY_SETTLE,
+        CashTxnType.FEE,
+    }
+
+    portfolio_service.update_transaction(
+        db_session,
+        transaction.id,
+        _payload(
+            tx_type=schemas.TransactionType.BUY,
+            symbol="AAPL",
+            market="US",
+            currency="USD",
+            fx_rate_to_twd="32",
+            fee="22.00",
+            tax="0.00",
+        ),
+    )
+
+    assert _cash_rows(db_session, transaction.id) == []
+
+
 def test_update_transaction_updates_existing_fee_cash_leg_without_inserting(db_session, monkeypatch) -> None:
     monkeypatch.setenv("CASH_LEG_ENABLED", "true")
     _add_cathay_account(db_session)

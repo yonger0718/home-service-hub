@@ -112,6 +112,30 @@ def test_portfolio_create_foreign_dividend_skips_twd_cash_sync(
     assert _dividend_cash_rows(db_session) == []
 
 
+def test_update_dividend_to_foreign_currency_deletes_stale_twd_cash_leg(
+    db_session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    dividend = portfolio_service.create_dividend(db_session, _dividend_payload())
+    assert [row.related_dividend_id for row in _dividend_cash_rows(db_session)] == [dividend.id]
+
+    portfolio_service.update_dividend(
+        db_session,
+        dividend.id,
+        _dividend_payload(
+            symbol="AAPL",
+            market="US",
+            amount="10.00",
+            currency="USD",
+            fx_rate_to_twd="32",
+        ),
+    )
+
+    assert _dividend_cash_rows(db_session) == []
+
+
 def test_generic_csv_dividend_import_emits_auto_derive_cash_leg(db_session, monkeypatch) -> None:
     monkeypatch.setenv("CASH_LEG_ENABLED", "true")
     _add_cathay_account(db_session)

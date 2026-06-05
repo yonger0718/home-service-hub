@@ -117,7 +117,7 @@ def _factor_for_trade(actions: List[CorporateAction], trade_date) -> Decimal:
 
 
 def _row_market(row: object) -> str:
-    return str(getattr(row, "market", "TW") or "TW").upper()
+    return str(getattr(row, "market", "TW") or "TW").strip().upper()
 
 
 def _normalize_symbol_for_market(symbol: str, market: Optional[str] = None) -> str:
@@ -262,7 +262,7 @@ def _quantity_at_window_start(
         window_start = market  # type: ignore[assignment]
         market = "TW"
     normalized = _normalize_symbol_for_market(symbol, market)
-    normalized_market = (market or "TW").upper()
+    normalized_market = (market or "TW").strip().upper()
     quantity = Decimal("0")
     for transaction in transactions:
         t_side = getattr(transaction, "position_side", None) or models.PositionSide.LONG
@@ -643,7 +643,7 @@ def _estimate_sell_costs(gross_market_value: Decimal) -> Decimal:
 
 
 def _dividend_amount_twd(row: models.Dividend) -> Decimal:
-    currency = (getattr(row, "currency", "TWD") or "TWD").upper()
+    currency = (getattr(row, "currency", "TWD") or "TWD").strip().upper()
     fx_rate = getattr(row, "fx_rate_to_twd", None)
     if currency != "TWD" and fx_rate is None:
         raise ValueError(
@@ -663,12 +663,20 @@ def _sync_transaction_cash_legs_if_twd(
 ) -> None:
     if not cash_account_service.cash_leg_enabled():
         return
-    currency = (getattr(transaction, "currency", "TWD") or "TWD").upper()
+    currency = (getattr(transaction, "currency", "TWD") or "TWD").strip().upper()
     if currency != "TWD":
+        deleted_count = cash_account_service.delete_auto_derived_transaction_cash_legs(
+            db,
+            transaction.id,
+        )
         # TODO Phase 2: route multi-currency cash legs to matching currency accounts.
         logger.info(
             "portfolio.cash_sync.skipped_non_twd_transaction",
-            extra={"transaction_id": transaction.id, "currency": currency},
+            extra={
+                "transaction_id": transaction.id,
+                "currency": currency,
+                "deleted_auto_derived_cash_legs": deleted_count,
+            },
         )
         return
     try:
@@ -692,12 +700,20 @@ def _sync_dividend_cash_leg_if_twd(
 ) -> None:
     if not cash_account_service.cash_leg_enabled():
         return
-    currency = (getattr(dividend, "currency", "TWD") or "TWD").upper()
+    currency = (getattr(dividend, "currency", "TWD") or "TWD").strip().upper()
     if currency != "TWD":
+        deleted_count = cash_account_service.delete_auto_derived_dividend_cash_leg(
+            db,
+            dividend.id,
+        )
         # TODO Phase 2: route multi-currency cash legs to matching currency accounts.
         logger.info(
             "portfolio.cash_sync.skipped_non_twd_dividend",
-            extra={"dividend_id": dividend.id, "currency": currency},
+            extra={
+                "dividend_id": dividend.id,
+                "currency": currency,
+                "deleted_auto_derived_cash_legs": deleted_count,
+            },
         )
         return
     account = cash_account_service.resolve_default_cathay_twd_account(db)
@@ -740,7 +756,12 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 + event.realized_pnl
             )
         active_holdings = _aggregate_active_holdings(transactions, actions_by_symbol)
-        active_keys = list(active_holdings.keys())
+        active_keys = [
+            key
+            for key in active_holdings.keys()
+            if key[1] == "TW"
+        ]
+        active_key_set = set(active_keys)
         active_symbols = [symbol for symbol, _market in active_keys]
         today = date_type.today()
         window_starts = {
@@ -761,6 +782,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         dividend_map = {}
         for d in dividends:
             key = _symbol_market_key(d)
+            if key[1] != "TW":
+                continue
             amount_twd = _dividend_amount_twd(d)
             dividend_map[key] = dividend_map.get(key, Decimal("0.0")) + amount_twd
             # XIRR: dividend inflow
@@ -779,6 +802,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 continue
 
             key = _symbol_market_key(t)
+            if key[1] != "TW":
+                continue
             symbol, market = key
             if key not in holdings_map:
                 holdings_map[key] = {
