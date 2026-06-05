@@ -151,11 +151,12 @@ DividendResponse = Dividend
 
 class StockHolding(BaseModel):
     symbol: str
+    market: str = "TW"
     name: Optional[str] = None
     total_quantity: Decimal
     avg_cost: Decimal
-    current_price: Decimal
-    market_value: Decimal
+    current_price: Optional[Decimal]
+    market_value: Optional[Decimal]
     unrealized_pnl: Decimal
     unrealized_pnl_percent: Decimal
     day_change_amount: Decimal = Decimal("0.0")      # 單日漲跌金額
@@ -168,6 +169,10 @@ class StockHolding(BaseModel):
     xirr_3m: Optional[Decimal] = None
     xirr_1y: Optional[Decimal] = None
     xirr_ytd: Optional[Decimal] = None
+    # TW rows intentionally leave these as None; foreign rows carry yfinance native data.
+    native_close: Optional[Decimal] = None
+    native_currency: Optional[str] = None
+    live_fx_rate_to_twd: Optional[Decimal] = None
 
 class PortfolioSummary(BaseModel):
     total_market_value: Decimal

@@ -44,7 +44,8 @@ class PriceHistory(Base):
     close = Column(Numeric(12, 4), nullable=False)
     volume = Column(BigInteger, nullable=True)
     turnover = Column(Numeric(20, 2), nullable=True)
-    source = Column(String(16), nullable=False)  # "TWSE" | "TPEx"
+    currency = Column(String(8), nullable=False, default="TWD", server_default="TWD")
+    source = Column(String(16), nullable=False)  # "TWSE" | "TPEx" | "yfinance"
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

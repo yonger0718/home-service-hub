@@ -298,7 +298,7 @@ class TestPortfolioService:
 
     @patch("app.services.portfolio_service._calculate_xirr")
     @patch("app.services.portfolio_service.get_stock_quotes")
-    def test_get_portfolio_summary_suppresses_foreign_holdings_from_tw_quote_pipeline(
+    def test_get_portfolio_summary_keeps_foreign_holdings_out_of_tw_quote_pipeline(
         self,
         mock_get_quotes,
         mock_calculate_xirr,
@@ -353,11 +353,12 @@ class TestPortfolioService:
         summary = portfolio_service.get_portfolio_summary(db_session)
 
         mock_get_quotes.assert_called_once_with(["0050"])
-        assert summary.quotes_status == "ok"
-        assert [holding.symbol for holding in summary.holdings] == ["0050"]
+        assert summary.quotes_status == "partial"
+        assert [holding.symbol for holding in summary.holdings] == ["0050", "AAPL"]
+        assert summary.holdings[1].market_value is None
         assert summary.portfolio_xirr == Decimal("0.123456")
-        assert all(
-            amount != Decimal("-100")
+        assert any(
+            amount == Decimal("-3200.00000000")
             for flows in captured_flows
             for _date, amount in flows
         )
@@ -407,10 +408,12 @@ class TestPortfolioService:
         summary = portfolio_service.get_portfolio_summary(db_session)
 
         mock_get_quotes.assert_called_once_with(["ABC"])
-        assert [holding.symbol for holding in summary.holdings] == ["ABC"]
+        assert [holding.symbol for holding in summary.holdings] == ["ABC", "ABC"]
         assert [holding.total_quantity for holding in summary.holdings] == [
             Decimal("10"),
+            Decimal("0.5000"),
         ]
+        assert summary.holdings[1].market_value is None
 
     def test_create_update_delete_transaction_and_dividend(self, db_session):
         created_tx = portfolio_service.create_transaction(
