@@ -273,7 +273,7 @@ def compute_active_dates(
 
     active_dates: set[dt_date] = set()
     current_symbol: Optional[str] = None
-    running_qty = 0
+    running_qty: Decimal = Decimal("0")
     open_date: Optional[dt_date] = None
 
     def add_interval(start: dt_date, end: dt_date) -> None:
@@ -293,12 +293,12 @@ def compute_active_dates(
             if current_symbol is not None and open_date is not None:
                 add_interval(open_date, to_d)
             current_symbol = symbol
-            running_qty = 0
+            running_qty = Decimal("0")
             open_date = None
 
         event_date = event_at.date() if hasattr(event_at, "date") else event_at
         previous_qty = running_qty
-        running_qty += int(delta or 0)
+        running_qty += Decimal(delta) if delta is not None else Decimal("0")
         if previous_qty == 0 and running_qty != 0:
             open_date = event_date
         elif previous_qty != 0 and running_qty == 0 and open_date is not None:
