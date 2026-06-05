@@ -1,19 +1,38 @@
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from datetime import datetime, date
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Self
 from enum import Enum
 from decimal import Decimal
 
 
-def _normalize_symbol(value: str) -> str:
+def _normalize_symbol(value: str, market: Optional[str] = None) -> str:
     if not isinstance(value, str):
         raise ValueError("symbol must be a string")
 
-    normalized = value.split('.')[0].strip().upper()
+    normalized = value.strip().upper()
+    normalized_market = (market or "TW").strip().upper()
+    if normalized_market == "TW":
+        for suffix in (".TWO", ".TW"):
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)]
+                break
     if not normalized:
         raise ValueError("symbol must not be blank")
 
     return normalized
+
+
+def _require_fx_rate_for_foreign_currency(currency: str, fx_rate_to_twd: Optional[Decimal]) -> None:
+    normalized_currency = (currency or "TWD").strip().upper()
+    if normalized_currency != "TWD":
+        if fx_rate_to_twd is None:
+            raise ValueError(
+                f"fx_rate_to_twd required when currency='{normalized_currency}'"
+            )
+        if fx_rate_to_twd <= 0:
+            raise ValueError(
+                f"fx_rate_to_twd must be > 0 when currency='{normalized_currency}'"
+            )
 
 class TransactionType(str, Enum):
     BUY = "BUY"
@@ -33,29 +52,39 @@ class TransactionBase(BaseModel):
     rounding them, which would crash the GET response if a high-precision
     value ever reached this layer. Strict precision is enforced on
     ``TransactionCreate`` (the input edge) and at the DB layer via
-    ``NUMERIC(12, 2)``. This class stays permissive on output.
+    ``NUMERIC(18, 4)``. This class stays permissive on output.
     """
 
     symbol: str
+    market: str = "TW"
     name: Optional[str] = None
     type: TransactionType
     position_side: PositionSide = PositionSide.LONG
-    quantity: int
+    quantity: Decimal
     price: Decimal
+    currency: str = "TWD"
+    fx_rate_to_twd: Optional[Decimal] = None
     trade_date: Optional[datetime] = None
     fee: Decimal = Decimal("0.0")
     tax: Decimal = Decimal("0.0")
 
-    @field_validator("symbol")
-    @classmethod
-    def normalize_symbol(cls, value: str) -> str:
-        return _normalize_symbol(value)
+    @model_validator(mode="after")
+    def normalize_symbol(self) -> Self:
+        self.symbol = _normalize_symbol(self.symbol, self.market)
+        self.market = (self.market or "TW").strip().upper()
+        self.currency = (self.currency or "TWD").strip().upper()
+        return self
 
 class TransactionCreate(TransactionBase):
-    quantity: int = Field(..., gt=0)
-    price: Decimal = Field(..., gt=Decimal("0"), decimal_places=2)
+    quantity: Decimal = Field(..., gt=0, decimal_places=4)
+    price: Decimal = Field(..., gt=Decimal("0"), decimal_places=4)
     fee: Decimal = Field(default=Decimal("0.0"), ge=Decimal("0"), decimal_places=2)
     tax: Decimal = Field(default=Decimal("0.0"), ge=Decimal("0"), decimal_places=2)
+
+    @model_validator(mode="after")
+    def require_fx_rate_for_foreign_currency(self) -> Self:
+        _require_fx_rate_for_foreign_currency(self.currency, self.fx_rate_to_twd)
+        return self
 
 class Transaction(TransactionBase):
     id: int
@@ -65,6 +94,10 @@ class Transaction(TransactionBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+TransactionUpdate = TransactionCreate
+TransactionResponse = Transaction
+
 class DividendBase(BaseModel):
     """Shared fields for dividend read/write.
 
@@ -72,7 +105,10 @@ class DividendBase(BaseModel):
     """
 
     symbol: str
+    market: str = "TW"
     amount: Decimal
+    currency: str = "TWD"
+    fx_rate_to_twd: Optional[Decimal] = None
     ex_dividend_date: datetime
     received_date: Optional[datetime] = None
     fee: Decimal = Decimal("0")
@@ -82,16 +118,23 @@ class DividendBase(BaseModel):
     source: Optional[str] = None
     quantity_at_record_date: Optional[Decimal] = None
 
-    @field_validator("symbol")
-    @classmethod
-    def normalize_symbol(cls, value: str) -> str:
-        return _normalize_symbol(value)
+    @model_validator(mode="after")
+    def normalize_symbol(self) -> Self:
+        self.symbol = _normalize_symbol(self.symbol, self.market)
+        self.market = (self.market or "TW").strip().upper()
+        self.currency = (self.currency or "TWD").strip().upper()
+        return self
 
 class DividendCreate(DividendBase):
-    amount: Decimal = Field(..., gt=Decimal("0"), decimal_places=2)
+    amount: Decimal = Field(..., gt=Decimal("0"), decimal_places=4)
     fee: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), decimal_places=2)
     tax: Decimal = Field(default=Decimal("0"), ge=Decimal("0"), decimal_places=2)
     stock_dividend_shares: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def require_fx_rate_for_foreign_currency(self) -> Self:
+        _require_fx_rate_for_foreign_currency(self.currency, self.fx_rate_to_twd)
+        return self
 
 class Dividend(DividendBase):
     id: int
@@ -100,12 +143,16 @@ class Dividend(DividendBase):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+DividendUpdate = DividendCreate
+DividendResponse = Dividend
+
 # --- 計算後的模型 ---
 
 class StockHolding(BaseModel):
     symbol: str
     name: Optional[str] = None
-    total_quantity: int
+    total_quantity: Decimal
     avg_cost: Decimal
     current_price: Decimal
     market_value: Decimal

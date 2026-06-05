@@ -83,6 +83,20 @@ def test_resolve_name_returns_none_for_unknown(db_session):
     assert svc.resolve_name(db_session, "不存在") is None
 
 
+def test_resolve_name_defaults_tw_and_filters_explicit_market(db_session):
+    db_session.add_all(
+        [
+            SymbolMap(name="鴻海", symbol="2317", exchange="TWSE", market="TW"),
+            SymbolMap(name="Apple Inc", symbol="AAPL", exchange=None, market="US"),
+        ]
+    )
+    db_session.commit()
+
+    assert svc.resolve_name(db_session, "鴻海") == "2317"
+    assert svc.resolve_name(db_session, "鴻海", market="US") is None
+    assert svc.resolve_name(db_session, "Apple Inc", market="US") == "AAPL"
+
+
 def _make_tx(symbol, name="dummy", qty=1000, price="50.00", fp=None):
     return models.Transaction(
         symbol=symbol,

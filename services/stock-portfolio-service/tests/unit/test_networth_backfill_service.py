@@ -454,6 +454,37 @@ def test_replay_skips_dates_with_no_price_history(db_session, caplog):
     assert db_session.query(PortfolioSnapshot).count() == 0
 
 
+def test_replay_ignores_foreign_only_transaction_stale_delete(db_session):
+    d = date(2026, 5, 14)
+    _seed_tx(
+        db_session,
+        symbol="AAPL",
+        side=portfolio_models.TransactionType.BUY,
+        qty=1,
+        price="100",
+        trade_date=d,
+    ).market = "US"
+    _seed_price(db_session, symbol="2330", d=d, close="500")
+    db_session.add(
+        PortfolioSnapshot(
+            date=d,
+            total_market_value=Decimal("0"),
+            total_cost=Decimal("100"),
+            total_unrealized_pnl=Decimal("-100"),
+            total_dividends=Decimal("0"),
+            total_realized_pnl=Decimal("0"),
+            total_cash_twd=Decimal("0"),
+            portfolio_xirr=None,
+        )
+    )
+    db_session.commit()
+
+    result = nbs.replay_snapshots_range(db_session, d, d)
+
+    assert result.stale_rows_deleted == 0
+    assert db_session.get(PortfolioSnapshot, d) is not None
+
+
 def test_replay_missing_symbol_price_contributes_zero(db_session, caplog):
     """If the market is open and SOME held symbols have prices, a missing
     price for ONE holding contributes 0 to MV — snapshot is still written

@@ -34,10 +34,16 @@ def _dividend_payload(
     symbol: str = "0050.tw",
     amount: str = "4500.00",
     ex_date: datetime | None = None,
+    market: str = "TW",
+    currency: str = "TWD",
+    fx_rate_to_twd: str | None = None,
 ) -> schemas.DividendCreate:
     return schemas.DividendCreate(
         symbol=symbol,
+        market=market,
         amount=Decimal(amount),
+        currency=currency,
+        fx_rate_to_twd=Decimal(fx_rate_to_twd) if fx_rate_to_twd is not None else None,
         ex_dividend_date=ex_date or datetime(2026, 6, 1, tzinfo=timezone.utc),
         received_date=datetime(2026, 6, 15, tzinfo=timezone.utc),
     )
@@ -84,6 +90,50 @@ def test_portfolio_create_dividend_emits_auto_derive_cash_leg(db_session, monkey
     assert row.amount == Decimal("4500.0000")
     assert row.currency == "TWD"
     assert row.source == CashTxnSource.AUTO_DERIVE
+
+
+def test_portfolio_create_foreign_dividend_skips_twd_cash_sync(
+    db_session, monkeypatch
+) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+
+    portfolio_service.create_dividend(
+        db_session,
+        _dividend_payload(
+            symbol="AAPL",
+            market="US",
+            amount="10.00",
+            currency="USD",
+            fx_rate_to_twd="32",
+        ),
+    )
+
+    assert _dividend_cash_rows(db_session) == []
+
+
+def test_update_dividend_to_foreign_currency_deletes_stale_twd_cash_leg(
+    db_session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    dividend = portfolio_service.create_dividend(db_session, _dividend_payload())
+    assert [row.related_dividend_id for row in _dividend_cash_rows(db_session)] == [dividend.id]
+
+    portfolio_service.update_dividend(
+        db_session,
+        dividend.id,
+        _dividend_payload(
+            symbol="AAPL",
+            market="US",
+            amount="10.00",
+            currency="USD",
+            fx_rate_to_twd="32",
+        ),
+    )
+
+    assert _dividend_cash_rows(db_session) == []
 
 
 def test_generic_csv_dividend_import_emits_auto_derive_cash_leg(db_session, monkeypatch) -> None:

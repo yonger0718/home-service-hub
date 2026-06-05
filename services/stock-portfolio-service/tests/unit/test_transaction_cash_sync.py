@@ -37,13 +37,20 @@ def _payload(
     fee: str = "22.00",
     tax: str = "0.00",
     trade_date: datetime | None = None,
+    symbol: str = "2330",
+    market: str = "TW",
+    currency: str = "TWD",
+    fx_rate_to_twd: str | None = None,
 ) -> schemas.TransactionCreate:
     return schemas.TransactionCreate(
-        symbol="2330",
+        symbol=symbol,
+        market=market,
         name="台積電",
         type=tx_type,
         quantity=quantity,
         price=Decimal(price),
+        currency=currency,
+        fx_rate_to_twd=Decimal(fx_rate_to_twd) if fx_rate_to_twd is not None else None,
         fee=Decimal(fee),
         tax=Decimal(tax),
         trade_date=trade_date or datetime(2026, 5, 1, 1, 30, tzinfo=timezone.utc),
@@ -116,6 +123,56 @@ def test_create_buy_transaction_emits_settlement_and_fee_cash_legs(db_session, m
     assert set(rows) == {CashTxnType.BUY_SETTLE, CashTxnType.FEE}
     assert rows[CashTxnType.BUY_SETTLE].amount == Decimal("-50000.0000")
     assert rows[CashTxnType.FEE].amount == Decimal("-22.0000")
+
+
+def test_create_foreign_transaction_skips_twd_cash_sync(db_session, monkeypatch) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+
+    transaction = portfolio_service.create_transaction(
+        db_session,
+        _payload(
+            tx_type=schemas.TransactionType.BUY,
+            symbol="AAPL",
+            market="US",
+            currency="USD",
+            fx_rate_to_twd="32",
+        ),
+    )
+
+    assert _cash_rows(db_session, transaction.id) == []
+
+
+def test_update_transaction_to_foreign_currency_deletes_stale_twd_cash_legs(
+    db_session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("CASH_LEG_ENABLED", "true")
+    _add_cathay_account(db_session)
+    transaction = portfolio_service.create_transaction(
+        db_session,
+        _payload(tx_type=schemas.TransactionType.BUY, fee="22.00", tax="0.00"),
+    )
+    assert set(_cash_by_type(db_session, transaction.id)) == {
+        CashTxnType.BUY_SETTLE,
+        CashTxnType.FEE,
+    }
+
+    portfolio_service.update_transaction(
+        db_session,
+        transaction.id,
+        _payload(
+            tx_type=schemas.TransactionType.BUY,
+            symbol="AAPL",
+            market="US",
+            currency="USD",
+            fx_rate_to_twd="32",
+            fee="22.00",
+            tax="0.00",
+        ),
+    )
+
+    assert _cash_rows(db_session, transaction.id) == []
 
 
 def test_update_transaction_updates_existing_fee_cash_leg_without_inserting(db_session, monkeypatch) -> None:

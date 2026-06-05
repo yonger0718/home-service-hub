@@ -384,11 +384,14 @@ def _insert_transaction(
     )
     tx = models.Transaction(
         symbol=payload["symbol"],
+        market="TW",
         name=payload["name"],
         type=payload["type"],
         position_side=payload["position_side"],
         quantity=payload["quantity"],
         price=payload["price"],
+        currency="TWD",
+        fx_rate_to_twd=None,
         trade_date=payload["trade_date"],
         fee=payload["fee"],
         tax=payload["tax"],

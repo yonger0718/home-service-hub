@@ -5,6 +5,7 @@ from datetime import date as date_type, datetime, timedelta, timezone
 
 _ONE_DAY = timedelta(days=1)
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+import logging
 import math
 import os
 from dateutil.relativedelta import relativedelta
@@ -19,6 +20,7 @@ from . import symbol_map_service
 from . import cash_account_service
 from shared_lib import get_tracer
 tracer = get_tracer("stock-portfolio-service")
+logger = logging.getLogger(__name__)
 
 _XIRR_WINDOWS: Tuple[Literal["1m", "3m", "1y", "ytd"], ...] = (
     "1m",
@@ -52,6 +54,10 @@ class _AdjustedTransaction:
         return self._base.symbol
 
     @property
+    def market(self):
+        return getattr(self._base, "market", "TW")
+
+    @property
     def name(self):
         return self._base.name
 
@@ -67,15 +73,21 @@ class _AdjustedTransaction:
     def quantity(self):
         if self._factor == 1:
             return self._base.quantity
-        return int(
-            (Decimal(self._base.quantity) * self._factor).to_integral_value(rounding=ROUND_DOWN)
-        )
+        return Decimal(self._base.quantity) * self._factor
 
     @property
     def price(self):
         if self._factor == 1:
             return self._base.price
         return self._base.price / self._factor
+
+    @property
+    def currency(self):
+        return getattr(self._base, "currency", "TWD")
+
+    @property
+    def fx_rate_to_twd(self):
+        return getattr(self._base, "fx_rate_to_twd", None)
 
     @property
     def fee(self):
@@ -104,16 +116,29 @@ def _factor_for_trade(actions: List[CorporateAction], trade_date) -> Decimal:
     return factor
 
 
+def _row_market(row: object) -> str:
+    return str(getattr(row, "market", "TW") or "TW").strip().upper()
+
+
+def _normalize_symbol_for_market(symbol: str, market: Optional[str] = None) -> str:
+    return schemas._normalize_symbol(symbol, market)
+
+
+def _symbol_market_key(row: object) -> tuple[str, str]:
+    market = _row_market(row)
+    return (_normalize_symbol_for_market(str(getattr(row, "symbol", "")), market), market)
+
+
 def _apply_corp_action_factors(
     transactions: List[models.Transaction],
-    actions_by_symbol: Optional[Dict[str, List[CorporateAction]]],
+    actions_by_symbol: Optional[Dict[tuple[str, str], List[CorporateAction]]],
 ) -> List:
     """Return transactions (or adjusted views) with factor applied."""
     if not actions_by_symbol:
         return list(transactions)
     adjusted: list = []
     for txn in transactions:
-        sym_actions = actions_by_symbol.get(sanitize_symbol(txn.symbol), None)
+        sym_actions = actions_by_symbol.get(_symbol_market_key(txn), None)
         if not sym_actions:
             adjusted.append(txn)
             continue
@@ -125,15 +150,15 @@ def _apply_corp_action_factors(
     return adjusted
 
 
-def _load_corp_actions_by_symbol(db: Session) -> Dict[str, List[CorporateAction]]:
+def _load_corp_actions_by_symbol(db: Session) -> Dict[tuple[str, str], List[CorporateAction]]:
     rows = (
         db.query(CorporateAction)
         .order_by(CorporateAction.effective_date.asc(), CorporateAction.id.asc())
         .all()
     )
-    grouped: Dict[str, List[CorporateAction]] = {}
+    grouped: Dict[tuple[str, str], List[CorporateAction]] = {}
     for row in rows:
-        grouped.setdefault(sanitize_symbol(row.symbol), []).append(row)
+        grouped.setdefault(_symbol_market_key(row), []).append(row)
     return grouped
 
 
@@ -230,9 +255,14 @@ def _calculate_windowed_xirr(
 def _quantity_at_window_start(
     transactions: List[models.Transaction],
     symbol: str,
-    window_start: date_type,
+    market: str | date_type,
+    window_start: Optional[date_type] = None,
 ) -> Decimal:
-    normalized = sanitize_symbol(symbol)
+    if window_start is None:
+        window_start = market  # type: ignore[assignment]
+        market = "TW"
+    normalized = _normalize_symbol_for_market(symbol, market)
+    normalized_market = (market or "TW").strip().upper()
     quantity = Decimal("0")
     for transaction in transactions:
         t_side = getattr(transaction, "position_side", None) or models.PositionSide.LONG
@@ -241,7 +271,7 @@ def _quantity_at_window_start(
         if t_side is not models.PositionSide.LONG:
             continue
 
-        if sanitize_symbol(transaction.symbol) != normalized:
+        if _symbol_market_key(transaction) != (normalized, normalized_market):
             continue
 
         trade_date = (
@@ -263,11 +293,16 @@ def _quantity_at_window_start(
 def _lookup_window_open_price(
     db: Session,
     symbol: str,
-    window_start: date_type,
+    market: str | date_type,
+    window_start: Optional[date_type] = None,
 ) -> Optional[Decimal]:
+    if window_start is None:
+        window_start = market  # type: ignore[assignment]
+        market = "TW"
     row = (
         db.query(PriceHistory)
-        .filter(PriceHistory.symbol == sanitize_symbol(symbol))
+        .filter(PriceHistory.symbol == _normalize_symbol_for_market(symbol, market))
+        .filter(PriceHistory.market == (market or "TW").upper())
         .filter(PriceHistory.date <= window_start)
         .filter(PriceHistory.date >= window_start - timedelta(days=7))
         .order_by(PriceHistory.date.desc())
@@ -314,8 +349,9 @@ def _trade_calendar_date(trade_date: datetime) -> date_type:
     return _resolve_sort_trade_date(trade_date).date()
 
 
-def _is_odd_lot(quantity: int) -> bool:
-    return quantity < 1000 or quantity % 1000 != 0
+def _is_odd_lot(quantity: object) -> bool:
+    quantity_dec = Decimal(quantity)
+    return quantity_dec < Decimal("1000") or quantity_dec % Decimal("1000") != 0
 
 
 def _recompute_day_trade_flags(
@@ -323,9 +359,9 @@ def _recompute_day_trade_flags(
 ) -> None:
     """Flip ``is_day_trade`` for every transaction in the (symbol, date) bucket.
 
-    A transaction is a day-trade when the same symbol has BOTH a BUY and a
-    SELL on the same calendar trade date. All rows in the bucket share the
-    same flag; recompute and persist in-place. Caller commits.
+    A transaction is a day-trade when the same TW-market symbol has BOTH a
+    BUY and a SELL on the same calendar trade date. Foreign-market rows in
+    the same symbol/date bucket are always cleared. Caller commits.
     """
 
     normalized = sanitize_symbol(symbol)
@@ -343,7 +379,11 @@ def _recompute_day_trade_flags(
         row for row in rows
         if _trade_calendar_date(row.trade_date) == calendar_date
     ]
-    board_lot = [row for row in bucket if not _is_odd_lot(row.quantity)]
+    tw_bucket = [
+        row for row in bucket
+        if (getattr(row, "market", "TW") or "TW").upper() == "TW"
+    ]
+    board_lot = [row for row in tw_bucket if not _is_odd_lot(row.quantity)]
     has_buy = any(row.type == models.TransactionType.BUY for row in board_lot)
     has_sell = any(row.type == models.TransactionType.SELL for row in board_lot)
     marker_present = any(
@@ -367,20 +407,21 @@ def _recompute_day_trade_flags(
     else:
         board_flag = False
     for row in bucket:
-        new_flag = False if _is_odd_lot(row.quantity) else board_flag
+        is_tw = (getattr(row, "market", "TW") or "TW").upper() == "TW"
+        new_flag = is_tw and not _is_odd_lot(row.quantity) and board_flag
         if row.is_day_trade != new_flag:
             row.is_day_trade = new_flag
 
 
 def _validate_symbol_ledger(symbol: str, ledger_entries: List[Dict[str, object]]) -> None:
-    long_qty = 0
-    short_qty = 0
+    long_qty = Decimal("0")
+    short_qty = Decimal("0")
 
     for entry in sorted(
         ledger_entries,
         key=lambda item: (item["sort_trade_date"], item["sort_id"]),
     ):
-        quantity = int(entry["quantity"])
+        quantity = Decimal(entry["quantity"])
         side = entry.get("position_side", models.PositionSide.LONG)
         if not isinstance(side, models.PositionSide):
             side = models.PositionSide(side)
@@ -400,10 +441,11 @@ def _validate_symbol_ledger(symbol: str, ledger_entries: List[Dict[str, object]]
                 continue
             if available <= 0:
                 raise ValueError(
-                    f"Cannot sell {quantity} shares of {symbol} without holdings"
+                    f"Cannot sell {_display_quantity(quantity)} shares of {symbol} without holdings"
                 )
             raise ValueError(
-                f"Cannot sell {quantity} shares of {symbol}; only {available} available"
+                f"Cannot sell {_display_quantity(quantity)} shares of {symbol}; "
+                f"only {_display_quantity(available)} available"
             )
 
         available = short_qty
@@ -412,11 +454,18 @@ def _validate_symbol_ledger(symbol: str, ledger_entries: List[Dict[str, object]]
             continue
         if available <= 0:
             raise ValueError(
-                f"Cannot cover {quantity} shares of {symbol} without open short"
+                f"Cannot cover {_display_quantity(quantity)} shares of {symbol} without open short"
             )
         raise ValueError(
-            f"Cannot cover {quantity} shares of {symbol}; only {available} open short"
+            f"Cannot cover {_display_quantity(quantity)} shares of {symbol}; "
+            f"only {_display_quantity(available)} open short"
         )
+
+
+def _display_quantity(value: Decimal) -> str:
+    if value == value.to_integral_value():
+        return str(value.to_integral_value())
+    return format(value.normalize(), "f")
 
 
 def _validate_transaction_ledger(
@@ -424,12 +473,25 @@ def _validate_transaction_ledger(
     transaction_data: Dict[str, object],
     existing_transaction: Optional[models.Transaction] = None,
 ) -> None:
-    proposed_symbol = sanitize_symbol(str(transaction_data["symbol"]))
-    symbols_to_validate = {proposed_symbol}
+    proposed_market = str(transaction_data.get("market", "TW") or "TW").upper()
+    proposed_symbol = _normalize_symbol_for_market(
+        str(transaction_data["symbol"]), proposed_market
+    )
+    keys_to_validate = {(proposed_symbol, proposed_market)}
     if existing_transaction is not None:
-        symbols_to_validate.add(sanitize_symbol(existing_transaction.symbol))
+        keys_to_validate.add(
+            (
+                _normalize_symbol_for_market(
+                    existing_transaction.symbol,
+                    getattr(existing_transaction, "market", "TW"),
+                ),
+                _row_market(existing_transaction),
+            )
+        )
 
-    ledger_map: Dict[str, List[Dict[str, object]]] = {symbol: [] for symbol in symbols_to_validate}
+    ledger_map: Dict[tuple[str, str], List[Dict[str, object]]] = {
+        key: [] for key in keys_to_validate
+    }
     persisted_transactions = (
         db.query(models.Transaction)
         .order_by(models.Transaction.trade_date, models.Transaction.id)
@@ -440,11 +502,11 @@ def _validate_transaction_ledger(
         if existing_transaction is not None and transaction.id == existing_transaction.id:
             continue
 
-        symbol = sanitize_symbol(transaction.symbol)
-        if symbol not in symbols_to_validate:
+        key = _symbol_market_key(transaction)
+        if key not in keys_to_validate:
             continue
 
-        ledger_map[symbol].append(
+        ledger_map[key].append(
             {
                 "sort_trade_date": _resolve_sort_trade_date(transaction.trade_date),
                 "sort_id": transaction.id,
@@ -464,7 +526,7 @@ def _validate_transaction_ledger(
             getattr(proposed_side_raw, "value", proposed_side_raw)
         )
     )
-    ledger_map[proposed_symbol].append(
+    ledger_map[(proposed_symbol, proposed_market)].append(
         {
             "sort_trade_date": _resolve_sort_trade_date(transaction_data["trade_date"]),
             "sort_id": existing_transaction.id if existing_transaction is not None else float("inf"),
@@ -476,15 +538,15 @@ def _validate_transaction_ledger(
         }
     )
 
-    for symbol, entries in ledger_map.items():
+    for (symbol, _market), entries in ledger_map.items():
         _validate_symbol_ledger(symbol, entries)
 
 
 def _aggregate_active_holdings(
     transactions: List[models.Transaction],
-    actions_by_symbol: Optional[Dict[str, List[CorporateAction]]] = None,
-) -> Dict[str, Dict[str, object]]:
-    holdings: Dict[str, Dict[str, object]] = {}
+    actions_by_symbol: Optional[Dict[tuple[str, str], List[CorporateAction]]] = None,
+) -> Dict[tuple[str, str], Dict[str, object]]:
+    holdings: Dict[tuple[str, str], Dict[str, object]] = {}
 
     adjusted = _apply_corp_action_factors(transactions, actions_by_symbol)
 
@@ -498,26 +560,28 @@ def _aggregate_active_holdings(
         if t_side is not models.PositionSide.LONG:
             continue
 
-        symbol = sanitize_symbol(transaction.symbol)
-        if symbol not in holdings:
-            holdings[symbol] = {
+        key = _symbol_market_key(transaction)
+        symbol, market = key
+        if key not in holdings:
+            holdings[key] = {
                 "symbol": symbol,
+                "market": market,
                 "name": transaction.name,
-                "total_quantity": 0,
+                "total_quantity": Decimal("0"),
             }
 
-        holdings[symbol]["total_quantity"] += (
-            transaction.quantity
+        holdings[key]["total_quantity"] += (
+            Decimal(transaction.quantity)
             if transaction.type == models.TransactionType.BUY
-            else -transaction.quantity
+            else -Decimal(transaction.quantity)
         )
-        if transaction.name and not holdings[symbol]["name"]:
-            holdings[symbol]["name"] = transaction.name
+        if transaction.name and not holdings[key]["name"]:
+            holdings[key]["name"] = transaction.name
 
     return {
-        symbol: holding
-        for symbol, holding in holdings.items()
-        if int(holding["total_quantity"]) > 0
+        key: holding
+        for key, holding in holdings.items()
+        if Decimal(holding["total_quantity"]) > 0
     }
 
 
@@ -527,7 +591,12 @@ def get_active_holdings(db: Session) -> Dict[str, Dict[str, object]]:
         .order_by(models.Transaction.trade_date, models.Transaction.id)
         .all()
     )
-    return _aggregate_active_holdings(transactions, _load_corp_actions_by_symbol(db))
+    active = _aggregate_active_holdings(transactions, _load_corp_actions_by_symbol(db))
+    return {
+        symbol: holding
+        for (symbol, market), holding in active.items()
+        if market == "TW"
+    }
 
 
 def _get_quote_status(active_symbols: List[str], quotes: Dict[str, Dict]) -> str:
@@ -572,6 +641,90 @@ def _estimate_sell_costs(gross_market_value: Decimal) -> Decimal:
     tax = (gross_market_value * tax_rate).quantize(Decimal("1"), rounding=ROUND_DOWN)
     return fee + tax
 
+
+def _dividend_amount_twd(row: models.Dividend) -> Decimal:
+    currency = (getattr(row, "currency", "TWD") or "TWD").strip().upper()
+    fx_rate = getattr(row, "fx_rate_to_twd", None)
+    if currency != "TWD" and fx_rate is None:
+        raise ValueError(
+            f"missing fx_rate_to_twd for dividend "
+            f"(id={getattr(row, 'id', None)!r}, symbol={row.symbol!r}, "
+            f"ex_dividend_date={row.ex_dividend_date!r})"
+        )
+    amount = Decimal(row.amount)
+    if fx_rate is None:
+        return amount
+    return amount * Decimal(fx_rate)
+
+
+def _sync_transaction_cash_legs_if_twd(
+    db: Session,
+    transaction: models.Transaction,
+) -> None:
+    if not cash_account_service.cash_leg_enabled():
+        return
+    currency = (getattr(transaction, "currency", "TWD") or "TWD").strip().upper()
+    if currency != "TWD":
+        deleted_count = cash_account_service.delete_auto_derived_transaction_cash_legs(
+            db,
+            transaction.id,
+        )
+        # TODO Phase 2: route multi-currency cash legs to matching currency accounts.
+        logger.info(
+            "portfolio.cash_sync.skipped_non_twd_transaction",
+            extra={
+                "transaction_id": transaction.id,
+                "currency": currency,
+                "deleted_auto_derived_cash_legs": deleted_count,
+            },
+        )
+        return
+    try:
+        account = cash_account_service.resolve_default_cathay_twd_account(db)
+        cash_account_service.sync_transaction_cash_legs(
+            db,
+            transaction,
+            account.id,
+            CashTxnSource.AUTO_DERIVE,
+        )
+    except (
+        cash_account_service.CashAccountNotFound,
+        cash_account_service.CashAccountAmbiguous,
+    ):
+        raise
+
+
+def _sync_dividend_cash_leg_if_twd(
+    db: Session,
+    dividend: models.Dividend,
+) -> None:
+    if not cash_account_service.cash_leg_enabled():
+        return
+    currency = (getattr(dividend, "currency", "TWD") or "TWD").strip().upper()
+    if currency != "TWD":
+        deleted_count = cash_account_service.delete_auto_derived_dividend_cash_leg(
+            db,
+            dividend.id,
+        )
+        # TODO Phase 2: route multi-currency cash legs to matching currency accounts.
+        logger.info(
+            "portfolio.cash_sync.skipped_non_twd_dividend",
+            extra={
+                "dividend_id": dividend.id,
+                "currency": currency,
+                "deleted_auto_derived_cash_legs": deleted_count,
+            },
+        )
+        return
+    account = cash_account_service.resolve_default_cathay_twd_account(db)
+    cash_account_service.sync_dividend_cash_leg(
+        db,
+        dividend,
+        account.id,
+        CashTxnSource.AUTO_DERIVE,
+    )
+
+
 def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
     """
     計算投資組合總覽，包含未實現損益與單日損益
@@ -603,7 +756,13 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 + event.realized_pnl
             )
         active_holdings = _aggregate_active_holdings(transactions, actions_by_symbol)
-        active_symbols = list(active_holdings.keys())
+        active_keys = [
+            key
+            for key in active_holdings.keys()
+            if key[1] == "TW"
+        ]
+        active_key_set = set(active_keys)
+        active_symbols = [symbol for symbol, _market in active_keys]
         today = date_type.today()
         window_starts = {
             window: _window_start(today, window)
@@ -617,16 +776,19 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
 
         # 整理每檔股票的狀態
         holdings_map = {}
-        cashflows_map: Dict[str, List[Tuple[date_type, Decimal]]] = {}
+        cashflows_map: Dict[tuple[str, str], List[Tuple[date_type, Decimal]]] = {}
 
         # 股利統計
         dividend_map = {}
         for d in dividends:
-            symbol = sanitize_symbol(d.symbol)
-            dividend_map[symbol] = dividend_map.get(symbol, Decimal("0.0")) + d.amount
+            key = _symbol_market_key(d)
+            if key[1] != "TW":
+                continue
+            amount_twd = _dividend_amount_twd(d)
+            dividend_map[key] = dividend_map.get(key, Decimal("0.0")) + amount_twd
             # XIRR: dividend inflow
             cf_date = d.ex_dividend_date.date() if hasattr(d.ex_dividend_date, 'date') else d.ex_dividend_date
-            cashflows_map.setdefault(symbol, []).append((cf_date, d.amount))
+            cashflows_map.setdefault(key, []).append((cf_date, amount_twd))
 
         # 交易統計 (計算平均成本與持股數，採用 corporate-action 調整後的視圖)
         # SHORT rows are intentionally skipped here — long-side holdings_map only
@@ -639,19 +801,23 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             if t_side is not models.PositionSide.LONG:
                 continue
 
-            symbol = sanitize_symbol(t.symbol)
-            if symbol not in holdings_map:
-                holdings_map[symbol] = {
+            key = _symbol_market_key(t)
+            if key[1] != "TW":
+                continue
+            symbol, market = key
+            if key not in holdings_map:
+                holdings_map[key] = {
                     "symbol": symbol,
+                    "market": market,
                     "name": t.name,
-                    "total_quantity": 0,
+                    "total_quantity": Decimal("0"),
                     "total_cost": Decimal("0.0"),
                     "total_cost_ex_fee": Decimal("0.0"),
                 }
 
-            h = holdings_map[symbol]
+            h = holdings_map[key]
             if t.type == models.TransactionType.BUY:
-                h["total_quantity"] += t.quantity
+                h["total_quantity"] += Decimal(t.quantity)
                 # 買入總成本 = (單價 * 股數) + 手續費
                 h["total_cost"] += (Decimal(t.quantity) * t.price) + (t.fee or Decimal("0.0"))
                 # 成交均價口徑(不含手續費)
@@ -659,19 +825,19 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 # XIRR: buy outflow
                 cf_date = t.trade_date.date() if hasattr(t.trade_date, 'date') else t.trade_date
                 outflow = -((Decimal(t.quantity) * t.price) + (t.fee or Decimal("0.0")) + (t.tax or Decimal("0.0")))
-                cashflows_map.setdefault(symbol, []).append((cf_date, outflow))
+                cashflows_map.setdefault(key, []).append((cf_date, outflow))
             elif t.type == models.TransactionType.SELL:
                 if h["total_quantity"] > 0:
                     avg_unit_cost = h["total_cost"] / Decimal(h["total_quantity"])
                     avg_unit_cost_ex_fee = h["total_cost_ex_fee"] / Decimal(h["total_quantity"])
-                    h["total_quantity"] -= t.quantity
+                    h["total_quantity"] -= Decimal(t.quantity)
                     # 賣出時減少庫存成本 (簡易已實現計算方式)
                     h["total_cost"] -= (Decimal(t.quantity) * avg_unit_cost)
                     h["total_cost_ex_fee"] -= (Decimal(t.quantity) * avg_unit_cost_ex_fee)
                     # XIRR: sell inflow
                     cf_date = t.trade_date.date() if hasattr(t.trade_date, 'date') else t.trade_date
                     inflow = (Decimal(t.quantity) * t.price) - (t.fee or Decimal("0.0")) - (t.tax or Decimal("0.0"))
-                    cashflows_map.setdefault(symbol, []).append((cf_date, inflow))
+                    cashflows_map.setdefault(key, []).append((cf_date, inflow))
                 else:
                     pass
 
@@ -688,8 +854,9 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         total_day_pnl = Decimal("0.0")
         total_dividends = sum(dividend_map.values(), Decimal("0.0"))
 
-        for symbol in active_symbols:
-            h = holdings_map[symbol]
+        for key in active_keys:
+            symbol, market = key
+            h = holdings_map[key]
             quote = quotes.get(symbol, {})
             # 如果抓不到即時價格，暫以 0 處理，但在計算損益時應避免顯示全賠
             current_price = quote.get("current_price", Decimal("0.0"))
@@ -720,23 +887,24 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 day_change_percent = Decimal("0.0")
                 day_pnl = Decimal("0.0")
             
-            stock_div = dividend_map.get(symbol, Decimal("0.0")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            stock_div = dividend_map.get(key, Decimal("0.0")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
             # Per-stock XIRR: append terminal market value at today
             stock_xirr: Optional[Decimal] = None
-            if current_price > 0 and symbol in cashflows_map:
-                stock_flows = sorted(cashflows_map.get(symbol, []), key=lambda x: x[0])
+            if current_price > 0 and key in cashflows_map:
+                stock_flows = sorted(cashflows_map.get(key, []), key=lambda x: x[0])
                 stock_flows_with_terminal = stock_flows + [(today, market_value)]
                 stock_xirr = _calculate_xirr(stock_flows_with_terminal)
 
             stock_windowed_xirr: Dict[str, Optional[Decimal]] = {
                 window: None for window in _XIRR_WINDOWS
             }
-            if current_price > 0 and symbol in cashflows_map:
+            if current_price > 0 and key in cashflows_map:
                 for window, window_start in window_starts.items():
                     qty_at_window_start = _quantity_at_window_start(
                         adjusted_transactions,
                         symbol,
+                        market,
                         window_start,
                     )
                     opening_mv: Optional[Decimal] = None
@@ -744,6 +912,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                         opening_price = _lookup_window_open_price(
                             db,
                             symbol,
+                            market,
                             window_start,
                         )
                         if opening_price is None:
@@ -752,7 +921,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                     stock_windowed_xirr[window] = _calculate_windowed_xirr(
                         window_start,
                         today,
-                        cashflows_map.get(symbol, []),
+                        cashflows_map.get(key, []),
                         opening_mv,
                         market_value,
                     )
@@ -853,7 +1022,10 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
 def create_transaction(db: Session, transaction: schemas.TransactionCreate):
     # Task 2: 清理 symbol
     transaction_data = transaction.model_dump()
-    transaction_data["symbol"] = sanitize_symbol(transaction_data["symbol"])
+    transaction_data["symbol"] = _normalize_symbol_for_market(
+        transaction_data["symbol"],
+        transaction_data.get("market", "TW"),
+    )
     transaction_data["trade_date"] = transaction_data.get("trade_date") or datetime.now(timezone.utc)
     transaction_data["instrument_type"] = symbol_map_service.lookup_warrant_type(
         db, transaction_data["symbol"]
@@ -864,20 +1036,7 @@ def create_transaction(db: Session, transaction: schemas.TransactionCreate):
     db_transaction = models.Transaction(**transaction_data)
     db.add(db_transaction)
     db.flush()
-    if cash_account_service.cash_leg_enabled():
-        try:
-            account = cash_account_service.resolve_default_cathay_twd_account(db)
-            cash_account_service.sync_transaction_cash_legs(
-                db,
-                db_transaction,
-                account.id,
-                CashTxnSource.AUTO_DERIVE,
-            )
-        except (
-            cash_account_service.CashAccountNotFound,
-            cash_account_service.CashAccountAmbiguous,
-        ):
-            raise
+    _sync_transaction_cash_legs_if_twd(db, db_transaction)
     _recompute_day_trade_flags(
         db,
         db_transaction.symbol,
@@ -890,19 +1049,15 @@ def create_transaction(db: Session, transaction: schemas.TransactionCreate):
 def create_dividend(db: Session, dividend: schemas.DividendCreate):
     # Task 2: 清理 symbol
     dividend_data = dividend.model_dump()
-    dividend_data["symbol"] = sanitize_symbol(dividend_data["symbol"])
+    dividend_data["symbol"] = _normalize_symbol_for_market(
+        dividend_data["symbol"],
+        dividend_data.get("market", "TW"),
+    )
 
     db_dividend = models.Dividend(**dividend_data)
     db.add(db_dividend)
     db.flush()
-    if cash_account_service.cash_leg_enabled():
-        account = cash_account_service.resolve_default_cathay_twd_account(db)
-        cash_account_service.sync_dividend_cash_leg(
-            db,
-            db_dividend,
-            account.id,
-            CashTxnSource.AUTO_DERIVE,
-        )
+    _sync_dividend_cash_leg_if_twd(db, db_dividend)
     db.commit()
     db.refresh(db_dividend)
     return db_dividend
@@ -1007,11 +1162,17 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
     if not db_transaction:
         return None
 
-    old_symbol = sanitize_symbol(db_transaction.symbol)
+    old_symbol = _normalize_symbol_for_market(
+        db_transaction.symbol,
+        getattr(db_transaction, "market", "TW"),
+    )
     old_calendar = _trade_calendar_date(db_transaction.trade_date)
 
     update_data = transaction_update.model_dump(exclude_unset=True)
-    update_data["symbol"] = sanitize_symbol(update_data["symbol"])
+    update_data["symbol"] = _normalize_symbol_for_market(
+        update_data["symbol"],
+        update_data.get("market", getattr(db_transaction, "market", "TW")),
+    )
     if "trade_date" in update_data:
         update_data["trade_date"] = update_data["trade_date"] or db_transaction.trade_date
     else:
@@ -1028,22 +1189,12 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
         setattr(db_transaction, key, value)
 
     db.flush()
-    if cash_account_service.cash_leg_enabled():
-        try:
-            account = cash_account_service.resolve_default_cathay_twd_account(db)
-            cash_account_service.sync_transaction_cash_legs(
-                db,
-                db_transaction,
-                account.id,
-                CashTxnSource.AUTO_DERIVE,
-            )
-        except (
-            cash_account_service.CashAccountNotFound,
-            cash_account_service.CashAccountAmbiguous,
-        ):
-            raise
+    _sync_transaction_cash_legs_if_twd(db, db_transaction)
 
-    new_symbol = sanitize_symbol(db_transaction.symbol)
+    new_symbol = _normalize_symbol_for_market(
+        db_transaction.symbol,
+        getattr(db_transaction, "market", "TW"),
+    )
     new_calendar = _trade_calendar_date(db_transaction.trade_date)
     _recompute_day_trade_flags(db, old_symbol, old_calendar)
     if (new_symbol, new_calendar) != (old_symbol, old_calendar):
@@ -1058,7 +1209,10 @@ def delete_transaction(db: Session, transaction_id: int):
     if not db_transaction:
         return False
 
-    symbol = sanitize_symbol(db_transaction.symbol)
+    symbol = _normalize_symbol_for_market(
+        db_transaction.symbol,
+        getattr(db_transaction, "market", "TW"),
+    )
     calendar = _trade_calendar_date(db_transaction.trade_date)
 
     db.delete(db_transaction)
@@ -1127,20 +1281,16 @@ def update_dividend(db: Session, dividend_id: int, dividend_update: schemas.Divi
         return None
     
     update_data = dividend_update.model_dump(exclude_unset=True)
-    update_data["symbol"] = sanitize_symbol(update_data["symbol"])
+    update_data["symbol"] = _normalize_symbol_for_market(
+        update_data["symbol"],
+        update_data.get("market", getattr(db_dividend, "market", "TW")),
+    )
     
     for key, value in update_data.items():
         setattr(db_dividend, key, value)
     
     db.flush()
-    if cash_account_service.cash_leg_enabled():
-        account = cash_account_service.resolve_default_cathay_twd_account(db)
-        cash_account_service.sync_dividend_cash_leg(
-            db,
-            db_dividend,
-            account.id,
-            CashTxnSource.AUTO_DERIVE,
-        )
+    _sync_dividend_cash_leg_if_twd(db, db_dividend)
     db.commit()
     db.refresh(db_dividend)
     return db_dividend

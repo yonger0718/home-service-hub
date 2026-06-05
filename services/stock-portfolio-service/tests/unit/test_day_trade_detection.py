@@ -198,3 +198,86 @@ def test_day_trade_exposed_in_get_transactions_response(client):
     assert body["total"] == 2
     assert len(body["items"]) == 2
     assert all(row["is_day_trade"] is True for row in body["items"])
+
+
+def test_us_same_day_buy_sell_never_flags_day_trade(db_session):
+    trade_day = datetime(2026, 5, 15, 1, 30, tzinfo=timezone.utc)
+    buy = svc.create_transaction(
+        db_session,
+        schemas.TransactionCreate(
+            symbol="AAPL",
+            market="US",
+            type=schemas.TransactionType.BUY,
+            quantity=Decimal("10"),
+            price=Decimal("100.00"),
+            currency="USD",
+            fx_rate_to_twd=Decimal("32.0"),
+            trade_date=trade_day,
+            fee=Decimal("0.00"),
+            tax=Decimal("0.00"),
+        ),
+    )
+    sell = svc.create_transaction(
+        db_session,
+        schemas.TransactionCreate(
+            symbol="AAPL",
+            market="US",
+            type=schemas.TransactionType.SELL,
+            quantity=Decimal("10"),
+            price=Decimal("110.00"),
+            currency="USD",
+            fx_rate_to_twd=Decimal("33.0"),
+            trade_date=trade_day,
+            fee=Decimal("0.00"),
+            tax=Decimal("0.00"),
+        ),
+    )
+
+    db_session.refresh(buy)
+    db_session.refresh(sell)
+    assert buy.is_day_trade is False
+    assert sell.is_day_trade is False
+
+
+def test_tw_and_us_same_symbol_same_day_do_not_cross_pair(db_session):
+    prior_day = datetime(2026, 5, 14, 1, 30, tzinfo=timezone.utc)
+    trade_day = datetime(2026, 5, 15, 1, 30, tzinfo=timezone.utc)
+    svc.create_transaction(
+        db_session,
+        schemas.TransactionCreate(
+            symbol="S",
+            market="US",
+            type=schemas.TransactionType.BUY,
+            quantity=Decimal("1000"),
+            price=Decimal("10.00"),
+            currency="USD",
+            fx_rate_to_twd=Decimal("32.0"),
+            trade_date=prior_day,
+            fee=Decimal("0.00"),
+            tax=Decimal("0.00"),
+        ),
+    )
+    tw_buy = svc.create_transaction(
+        db_session,
+        _make_payload(symbol="S", tx_type="BUY", trade_date=trade_day),
+    )
+    us_sell = svc.create_transaction(
+        db_session,
+        schemas.TransactionCreate(
+            symbol="S",
+            market="US",
+            type=schemas.TransactionType.SELL,
+            quantity=Decimal("1000"),
+            price=Decimal("11.00"),
+            currency="USD",
+            fx_rate_to_twd=Decimal("33.0"),
+            trade_date=trade_day,
+            fee=Decimal("0.00"),
+            tax=Decimal("0.00"),
+        ),
+    )
+
+    db_session.refresh(tw_buy)
+    db_session.refresh(us_sell)
+    assert tw_buy.is_day_trade is False
+    assert us_sell.is_day_trade is False

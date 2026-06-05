@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date as dt_date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -24,6 +25,20 @@ _TW_OFFSET = timezone(timedelta(hours=8))
 
 def _today_tw() -> dt_date:
     return datetime.now(_TW_OFFSET).date()
+
+
+def _snapshot_realized_pnl(db: Session) -> Decimal:
+    from .realized_pnl_service import iter_realized_events
+
+    return sum(
+        (
+            event.realized_pnl
+            for event in iter_realized_events(
+                portfolio_service._load_adjusted_transactions(db)
+            )
+        ),
+        Decimal("0"),
+    )
 
 
 def write_today_snapshot(
@@ -43,7 +58,7 @@ def write_today_snapshot(
         total_cost=summary.total_cost,
         total_unrealized_pnl=summary.total_unrealized_pnl,
         total_dividends=summary.total_dividends,
-        total_realized_pnl=summary.total_realized_pnl,
+        total_realized_pnl=_snapshot_realized_pnl(db),
         total_cash_twd=cash_total_twd,
         portfolio_xirr=summary.portfolio_xirr,
     )

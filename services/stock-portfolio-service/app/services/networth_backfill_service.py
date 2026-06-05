@@ -53,6 +53,7 @@ PARTIAL_FETCH_RATIO = 0.8
 PARTIAL_FETCH_MIN_BASELINE_DAYS = 10
 PARTIAL_FETCH_BASELINE_WINDOW_DAYS = 30
 PARTIAL_FETCH_LOOKBACK_DAYS = 45
+SNAPSHOT_QUANT = Decimal("0.0001")
 
 
 @dataclass
@@ -77,6 +78,20 @@ class SnapshotReplayResult:
     snapshots_written: int = 0
     stale_rows_deleted: int = 0
     errors: List[BackfillError] = field(default_factory=list)
+
+
+def _snapshot_amount(value: Decimal) -> Decimal:
+    return Decimal(value).quantize(SNAPSHOT_QUANT)
+
+
+def _display_snapshot_amount(value: Decimal) -> str:
+    amount = Decimal(value)
+    if amount == 0:
+        return "0"
+    cents = amount.quantize(Decimal("0.01"))
+    if amount == cents:
+        return str(cents)
+    return str(amount)
 
 
 # ---------- Helpers ----------
@@ -258,7 +273,7 @@ def compute_active_dates(
 
     active_dates: set[dt_date] = set()
     current_symbol: Optional[str] = None
-    running_qty = 0
+    running_qty: Decimal = Decimal("0")
     open_date: Optional[dt_date] = None
 
     def add_interval(start: dt_date, end: dt_date) -> None:
@@ -278,12 +293,12 @@ def compute_active_dates(
             if current_symbol is not None and open_date is not None:
                 add_interval(open_date, to_d)
             current_symbol = symbol
-            running_qty = 0
+            running_qty = Decimal("0")
             open_date = None
 
         event_date = event_at.date() if hasattr(event_at, "date") else event_at
         previous_qty = running_qty
-        running_qty += int(delta or 0)
+        running_qty += Decimal(delta) if delta is not None else Decimal("0")
         if previous_qty == 0 and running_qty != 0:
             open_date = event_date
         elif previous_qty != 0 and running_qty == 0 and open_date is not None:
@@ -452,7 +467,11 @@ def _load_price_map(
     """Pull all close prices in range as ``{(symbol, date): close}``."""
     rows = (
         db.query(PriceHistory.symbol, PriceHistory.date, PriceHistory.close)
-        .filter(PriceHistory.date >= from_d, PriceHistory.date <= to_d)
+        .filter(
+            PriceHistory.market == "TW",
+            PriceHistory.date >= from_d,
+            PriceHistory.date <= to_d,
+        )
         .all()
     )
     return {(sym, d): close for sym, d, close in rows}
@@ -503,7 +522,11 @@ def replay_snapshots_range(
     }
     cash_activity_dates = cash_txn_dates | opening_dates
 
-    transactions = _load_adjusted_transactions(db)
+    transactions = [
+        transaction
+        for transaction in _load_adjusted_transactions(db)
+        if (getattr(transaction, "market", "TW") or "TW").upper() == "TW"
+    ]
     events = list(iter_realized_events(transactions))
     realized_by_date: dict[dt_date, Decimal] = defaultdict(lambda: Decimal("0"))
     for event in events:
@@ -522,6 +545,7 @@ def replay_snapshots_range(
 
     dividends = (
         db.query(portfolio_models.Dividend)
+        .filter(portfolio_models.Dividend.market == "TW")
         .order_by(portfolio_models.Dividend.ex_dividend_date)
         .all()
     )
@@ -552,14 +576,14 @@ def replay_snapshots_range(
         Decimal(prior_snapshot.total_cost) if prior_snapshot is not None else None
     )
 
-    qty: Dict[str, int] = defaultdict(int)
+    qty: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     cost: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     # Signed running BUY-SELL per symbol (no clamp). Matches the
     # portfolio_service active-holdings convention: if net <= 0 at a
     # given date, treat the symbol as fully exited so a dropped SELL
     # (qty=0 at the time) doesn't leave phantom holdings behind once
     # later BUY+SELL pairs cancel out the deficit.
-    signed_net: Dict[str, int] = defaultdict(int)
+    signed_net: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     cumulative_dividends = Decimal("0")
     warned_missing: set[tuple[str, dt_date]] = set()
     stale_candidates: list[dt_date] = []
@@ -573,6 +597,12 @@ def replay_snapshots_range(
 
     def write_snapshot(snapshot_date: dt_date, row: PortfolioSnapshot) -> bool:
         """Merge one snapshot inside its own SAVEPOINT."""
+        row.total_market_value = _snapshot_amount(row.total_market_value)
+        row.total_cost = _snapshot_amount(row.total_cost)
+        row.total_unrealized_pnl = _snapshot_amount(row.total_unrealized_pnl)
+        row.total_dividends = _snapshot_amount(row.total_dividends)
+        row.total_realized_pnl = _snapshot_amount(row.total_realized_pnl)
+        row.total_cash_twd = _snapshot_amount(row.total_cash_twd)
         if dry_run:
             existing = db.get(PortfolioSnapshot, snapshot_date)
             old = (
@@ -581,7 +611,12 @@ def replay_snapshots_range(
                 else Decimal("0")
             )
             new = Decimal(row.total_realized_pnl)
-            print(f"{snapshot_date} old={old} new={new} delta={new - old}")
+            old_display = str(old) if existing is not None else "0"
+            print(
+                f"{snapshot_date} old={old_display} "
+                f"new={_display_snapshot_amount(new)} "
+                f"delta={str(new - old) if new != old else '0'}"
+            )
             return True
 
         sp = db.begin_nested()
@@ -620,7 +655,7 @@ def replay_snapshots_range(
         while tx_i < len(transactions) and _trade_date_of(transactions[tx_i]) <= cur:
             t = transactions[tx_i]
             sym = t.symbol
-            tx_qty = int(t.quantity)
+            tx_qty = Decimal(t.quantity)
             tx_price = Decimal(t.price)
             tx_fee = Decimal(t.fee or 0)
             side = getattr(t, "position_side", None) or PositionSide.LONG
@@ -632,15 +667,15 @@ def replay_snapshots_range(
                 continue
             if t.type == portfolio_models.TransactionType.BUY:
                 qty[sym] += tx_qty
-                cost[sym] += Decimal(tx_qty) * tx_price + tx_fee
+                cost[sym] += tx_qty * tx_price + tx_fee
                 signed_net[sym] += tx_qty
             else:  # SELL
                 signed_net[sym] -= tx_qty
                 if qty[sym] > 0:
-                    avg = cost[sym] / Decimal(qty[sym])
+                    avg = cost[sym] / qty[sym]
                     sold = min(tx_qty, qty[sym])
                     qty[sym] -= sold
-                    cost[sym] -= Decimal(sold) * avg
+                    cost[sym] -= sold * avg
                     if qty[sym] <= 0:
                         qty[sym] = 0
                         cost[sym] = Decimal("0")

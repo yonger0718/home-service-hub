@@ -3,6 +3,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from app.models import portfolio as models
 from app.schemas import portfolio as schemas
@@ -44,6 +45,124 @@ class TestPortfolioService:
         assert portfolio_service.sanitize_symbol("0050.TW") == "0050"
         assert portfolio_service.sanitize_symbol("00919.two") == "00919"
         assert portfolio_service.sanitize_symbol(" 2330 ") == "2330"
+
+    def test_stock_holding_accepts_fractional_total_quantity(self):
+        holding = schemas.StockHolding(
+            symbol="AAPL",
+            total_quantity=Decimal("0.5"),
+            avg_cost=Decimal("100"),
+            current_price=Decimal("110"),
+            market_value=Decimal("55"),
+            unrealized_pnl=Decimal("5"),
+            unrealized_pnl_percent=Decimal("10"),
+            total_pnl_with_dividend=Decimal("5"),
+        )
+
+        assert holding.total_quantity == Decimal("0.5")
+
+    def test_transaction_create_requires_fx_rate_for_non_twd_currency(self):
+        with pytest.raises(ValidationError) as exc:
+            schemas.TransactionCreate(
+                symbol="AAPL",
+                market="US",
+                type=schemas.TransactionType.BUY,
+                quantity=Decimal("1"),
+                price=Decimal("100"),
+                currency="USD",
+                fx_rate_to_twd=None,
+            )
+
+        assert "fx_rate_to_twd required when currency='USD'" in str(exc.value)
+
+    def test_transaction_create_normalizes_whitespace_market_and_currency(self):
+        tx = schemas.TransactionCreate(
+            symbol="2330.tw",
+            market=" tw ",
+            type=schemas.TransactionType.BUY,
+            quantity=Decimal("1"),
+            price=Decimal("100"),
+            currency=" twd ",
+        )
+
+        assert tx.symbol == "2330"
+        assert tx.market == "TW"
+        assert tx.currency == "TWD"
+
+    def test_transaction_create_rejects_non_positive_foreign_fx_rate(self):
+        for fx_rate in (Decimal("0"), Decimal("-1")):
+            with pytest.raises(ValidationError) as exc:
+                schemas.TransactionCreate(
+                    symbol="AAPL",
+                    market="US",
+                    type=schemas.TransactionType.BUY,
+                    quantity=Decimal("1"),
+                    price=Decimal("100"),
+                    currency="USD",
+                    fx_rate_to_twd=fx_rate,
+                )
+
+            assert "fx_rate_to_twd must be > 0 when currency='USD'" in str(exc.value)
+
+    def test_dividend_create_requires_fx_rate_for_non_twd_currency(self):
+        with pytest.raises(ValidationError) as exc:
+            schemas.DividendCreate(
+                symbol="AAPL",
+                market="US",
+                amount=Decimal("10"),
+                currency="USD",
+                fx_rate_to_twd=None,
+                ex_dividend_date=datetime(2026, 1, 1),
+            )
+
+        assert "fx_rate_to_twd required when currency='USD'" in str(exc.value)
+
+    def test_dividend_create_normalizes_whitespace_market_and_currency(self):
+        dividend = schemas.DividendCreate(
+            symbol="0050.two",
+            market=" tw ",
+            amount=Decimal("10"),
+            currency=" twd ",
+            ex_dividend_date=datetime(2026, 1, 1),
+        )
+
+        assert dividend.symbol == "0050"
+        assert dividend.market == "TW"
+        assert dividend.currency == "TWD"
+
+    def test_dividend_create_rejects_non_positive_foreign_fx_rate(self):
+        for fx_rate in (Decimal("0"), Decimal("-1")):
+            with pytest.raises(ValidationError) as exc:
+                schemas.DividendCreate(
+                    symbol="AAPL",
+                    market="US",
+                    amount=Decimal("10"),
+                    currency="USD",
+                    fx_rate_to_twd=fx_rate,
+                    ex_dividend_date=datetime(2026, 1, 1),
+                )
+
+            assert "fx_rate_to_twd must be > 0 when currency='USD'" in str(exc.value)
+
+    def test_schema_symbol_normalization_preserves_foreign_dot_symbol(self):
+        us_tx = schemas.TransactionCreate(
+            symbol="BRK.B",
+            market="US",
+            type=schemas.TransactionType.BUY,
+            quantity=Decimal("1"),
+            price=Decimal("100"),
+            currency="USD",
+            fx_rate_to_twd=Decimal("32"),
+        )
+        tw_tx = schemas.TransactionCreate(
+            symbol="2330.TW",
+            market="TW",
+            type=schemas.TransactionType.BUY,
+            quantity=Decimal("1"),
+            price=Decimal("100"),
+        )
+
+        assert us_tx.symbol == "BRK.B"
+        assert tw_tx.symbol == "2330"
 
     def test_resolve_sort_trade_date_normalizes_aware_datetimes_to_utc_naive(self):
         aware_trade_date = datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)
@@ -176,6 +295,122 @@ class TestPortfolioService:
         assert summary.quotes_status == "unavailable"
         assert summary.total_market_value == Decimal("0.00")
         assert summary.total_unrealized_pnl == Decimal("0.00")
+
+    @patch("app.services.portfolio_service._calculate_xirr")
+    @patch("app.services.portfolio_service.get_stock_quotes")
+    def test_get_portfolio_summary_suppresses_foreign_holdings_from_tw_quote_pipeline(
+        self,
+        mock_get_quotes,
+        mock_calculate_xirr,
+        db_session,
+    ):
+        db_session.add_all(
+            [
+                models.Transaction(
+                    symbol="0050",
+                    market="TW",
+                    name="元大台灣50",
+                    type=models.TransactionType.BUY,
+                    quantity=Decimal("10"),
+                    price=Decimal("100"),
+                    fee=Decimal("0"),
+                    tax=Decimal("0"),
+                    trade_date=datetime(2026, 1, 1),
+                ),
+                models.Transaction(
+                    symbol="AAPL",
+                    market="US",
+                    name="Apple",
+                    type=models.TransactionType.BUY,
+                    quantity=Decimal("1"),
+                    price=Decimal("100"),
+                    currency="USD",
+                    fx_rate_to_twd=Decimal("32"),
+                    fee=Decimal("0"),
+                    tax=Decimal("0"),
+                    trade_date=datetime(2026, 1, 2),
+                ),
+            ]
+        )
+        db_session.commit()
+        mock_get_quotes.return_value = {
+            "0050": {
+                "symbol": "0050",
+                "name": "元大台灣50",
+                "current_price": Decimal("120"),
+                "yesterday_close": Decimal("119"),
+                "time": "13:30:00",
+            }
+        }
+        captured_flows = []
+
+        def capture_xirr(flows):
+            captured_flows.append(list(flows))
+            return Decimal("0.123456")
+
+        mock_calculate_xirr.side_effect = capture_xirr
+
+        summary = portfolio_service.get_portfolio_summary(db_session)
+
+        mock_get_quotes.assert_called_once_with(["0050"])
+        assert summary.quotes_status == "ok"
+        assert [holding.symbol for holding in summary.holdings] == ["0050"]
+        assert summary.portfolio_xirr == Decimal("0.123456")
+        assert all(
+            amount != Decimal("-100")
+            for flows in captured_flows
+            for _date, amount in flows
+        )
+
+    @patch("app.services.portfolio_service.get_stock_quotes")
+    def test_get_portfolio_summary_keeps_same_ticker_markets_separate(
+        self, mock_get_quotes, db_session
+    ):
+        db_session.add_all(
+            [
+                models.Transaction(
+                    symbol="ABC",
+                    market="TW",
+                    name="TW ABC",
+                    type=models.TransactionType.BUY,
+                    quantity=Decimal("10"),
+                    price=Decimal("100"),
+                    fee=Decimal("0"),
+                    tax=Decimal("0"),
+                    trade_date=datetime(2026, 1, 1),
+                ),
+                models.Transaction(
+                    symbol="ABC",
+                    market="US",
+                    name="US ABC",
+                    type=models.TransactionType.BUY,
+                    quantity=Decimal("0.5"),
+                    price=Decimal("20"),
+                    currency="USD",
+                    fx_rate_to_twd=Decimal("32"),
+                    fee=Decimal("0"),
+                    tax=Decimal("0"),
+                    trade_date=datetime(2026, 1, 2),
+                ),
+            ]
+        )
+        db_session.commit()
+        mock_get_quotes.return_value = {
+            "ABC": {
+                "symbol": "ABC",
+                "name": "ABC",
+                "current_price": Decimal("110"),
+                "yesterday_close": Decimal("109"),
+            }
+        }
+
+        summary = portfolio_service.get_portfolio_summary(db_session)
+
+        mock_get_quotes.assert_called_once_with(["ABC"])
+        assert [holding.symbol for holding in summary.holdings] == ["ABC"]
+        assert [holding.total_quantity for holding in summary.holdings] == [
+            Decimal("10"),
+        ]
 
     def test_create_update_delete_transaction_and_dividend(self, db_session):
         created_tx = portfolio_service.create_transaction(
@@ -390,6 +625,40 @@ class TestPortfolioService:
                     name="元大台灣50",
                     type=schemas.TransactionType.SELL,
                     quantity=11,
+                    price=Decimal("101"),
+                    fee=Decimal("0"),
+                    tax=Decimal("0"),
+                    trade_date=datetime(2026, 5, 2, 9, 0),
+                ),
+            )
+
+        assert db_session.query(models.Transaction).count() == 1
+
+    def test_create_transaction_rejects_short_cover_above_open_short(self, db_session):
+        portfolio_service.create_transaction(
+            db_session,
+            schemas.TransactionCreate(
+                symbol="0050",
+                name="元大台灣50",
+                type=schemas.TransactionType.SELL,
+                position_side=schemas.PositionSide.SHORT,
+                quantity=Decimal("10"),
+                price=Decimal("100"),
+                fee=Decimal("0"),
+                tax=Decimal("0"),
+                trade_date=datetime(2026, 5, 1, 9, 0),
+            ),
+        )
+
+        with pytest.raises(ValueError, match="only 10 open short"):
+            portfolio_service.create_transaction(
+                db_session,
+                schemas.TransactionCreate(
+                    symbol="0050",
+                    name="元大台灣50",
+                    type=schemas.TransactionType.BUY,
+                    position_side=schemas.PositionSide.SHORT,
+                    quantity=Decimal("11"),
                     price=Decimal("101"),
                     fee=Decimal("0"),
                     tax=Decimal("0"),

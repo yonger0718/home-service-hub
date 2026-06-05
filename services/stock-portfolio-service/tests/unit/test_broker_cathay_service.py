@@ -195,6 +195,18 @@ def test_rehash_existing_legacy_row_updates_in_place_no_insert(db_session):
     assert tx.import_fingerprint == _new_fp("aT532")
 
 
+def test_cathay_insert_stamps_tw_market_and_twd_currency(db_session):
+    result = broker_cathay_service.parse_cathay_transactions_csv(
+        _cathay_csv(_row()), dry_run=False, db=db_session
+    )
+
+    assert result.created == 1
+    tx = db_session.query(models.Transaction).one()
+    assert tx.market == "TW"
+    assert tx.currency == "TWD"
+    assert tx.fx_rate_to_twd is None
+
+
 def test_rehash_propagates_broker_day_trade_marker(db_session):
     tx = models.Transaction(
         symbol="3141",

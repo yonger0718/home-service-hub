@@ -1,6 +1,6 @@
 """Daily OHLC history table for TWSE / TPEx symbols.
 
-One row per (symbol, trading-date). Backfilled by the market-data service
+One row per (symbol, market, trading-date). Backfilled by the market-data service
 after market close and queried for charts / range analytics.
 """
 
@@ -23,7 +23,7 @@ from ..database import Base
 class PriceHistory(Base):
     __tablename__ = "price_history"
     __table_args__ = (
-        PrimaryKeyConstraint("symbol", "date", name="pk_price_history"),
+        PrimaryKeyConstraint("symbol", "market", "date", name="pk_price_history"),
         CheckConstraint("close > 0", name="ck_price_history_close_positive"),
         CheckConstraint("open IS NULL OR open > 0", name="ck_price_history_open_positive"),
         CheckConstraint("high IS NULL OR high > 0", name="ck_price_history_high_positive"),
@@ -36,6 +36,7 @@ class PriceHistory(Base):
     )
 
     symbol = Column(String(32), nullable=False)
+    market = Column(String(8), nullable=False, default="TW", server_default="TW")
     date = Column(Date, nullable=False)
     open = Column(Numeric(12, 4), nullable=True)
     high = Column(Numeric(12, 4), nullable=True)
