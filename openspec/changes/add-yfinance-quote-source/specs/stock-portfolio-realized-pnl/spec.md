@@ -45,7 +45,7 @@ Cost basis SHALL continue to be computed by the Phase 1 frozen-FX realized-PnL e
 
 ### Requirement: `StockHolding` exposes native price, currency, and live FX rate
 
-The `StockHolding` schema SHALL expose `native_close: Decimal | None`, `native_currency: str | None`, and `live_fx_rate_to_twd: Decimal | None` for each holding. For TW rows these fields MAY be `None` or set to the TW close + `'TWD'` + `1.0` — implementations SHALL pick one and document it; consumers MUST NOT rely on TW rows carrying either shape.
+The `StockHolding` schema SHALL expose `market: str`, `native_close: Decimal | None`, `native_currency: str | None`, and `live_fx_rate_to_twd: Decimal | None` for each holding. For TW rows `market` SHALL default to `'TW'`; the native price fields MAY be `None` or set to the TW close + `'TWD'` + `1.0` — implementations SHALL pick one and document it; consumers MUST NOT rely on TW rows carrying either shape.
 
 #### Scenario: Foreign holding response carries native price + FX
 
@@ -58,3 +58,10 @@ The `StockHolding` schema SHALL expose `native_close: Decimal | None`, `native_c
 - **GIVEN** an LSE GBp holding revalued from `native_close=8050.0` and GBP rate `40.0`
 - **WHEN** `get_portfolio_summary(db)` returns
 - **THEN** the holding entry SHALL include `native_close=Decimal('8050.0')`, `native_currency='GBp'`, `live_fx_rate_to_twd=Decimal('40.0')` (the GBP base rate; the divide-by-100 happens internally for `market_value_twd`)
+
+#### Scenario: Same ticker across markets returns distinct holdings keyed by market
+
+- **GIVEN** the ledger contains open `RIO` holdings in both `market='US'` and `market='LSE'`
+- **WHEN** `get_portfolio_summary(db)` returns
+- **THEN** the response SHALL include two distinct `StockHolding` entries for `RIO`
+- **AND** one entry SHALL carry `market='US'` and the other SHALL carry `market='LSE'`

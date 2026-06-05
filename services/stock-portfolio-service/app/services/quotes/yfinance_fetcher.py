@@ -42,7 +42,10 @@ def _normalize_items(items: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
 
 
 def _yf_symbol(symbol: str, market: str) -> str:
-    return f"{symbol}{_SYMBOL_SUFFIX[market]}"
+    suffix = _SYMBOL_SUFFIX[market]
+    if suffix and not symbol.endswith(suffix):
+        return f"{symbol}{suffix}"
+    return symbol
 
 
 def _decimal_or_none(raw: object) -> Decimal | None:
@@ -165,6 +168,33 @@ def fetch(items: list[tuple[str, str]]) -> tuple[list[QuoteRow], list[str]]:
                 _skip(symbol, str(exc), errors)
 
     return rows, errors
+
+
+def get_quotes(db: Session, items: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+    """Return latest persisted yfinance quotes keyed by (symbol, market).
+
+    Missing or unsupported items are omitted from the returned mapping.
+    """
+    quotes: dict[tuple[str, str], dict] = {}
+    for symbol, market in _normalize_items(items):
+        if market not in _SYMBOL_SUFFIX:
+            continue
+        row = (
+            db.query(PriceHistory)
+            .filter(PriceHistory.symbol == symbol)
+            .filter(PriceHistory.market == market)
+            .order_by(PriceHistory.date.desc())
+            .first()
+        )
+        if row is None:
+            continue
+        quotes[(symbol, market)] = {
+            "close": Decimal(row.close),
+            "date": row.date,
+            "currency": row.currency,
+            "source": row.source,
+        }
+    return quotes
 
 
 def refresh_daily_ohlc(db: Session, items: list[tuple[str, str]]) -> RefreshResult:

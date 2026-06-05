@@ -81,6 +81,53 @@ def test_lse_ticker_fetched_with_l_suffix(monkeypatch) -> None:
     assert rows[0].close == Decimal("8050.0")
 
 
+def test_lse_ticker_with_existing_suffix_is_not_double_suffixed(monkeypatch) -> None:
+    seen = []
+
+    def fake_download(tickers, **kwargs):
+        seen.extend(tickers)
+        return pd.concat({"VOD.L": _df("8050.0")}, axis=1)
+
+    monkeypatch.setattr(yfinance_fetcher.yf, "download", fake_download)
+    monkeypatch.setattr(yfinance_fetcher.yf, "Ticker", _FakeTicker)
+    _FakeTicker.metadata = {"VOD.L": {"currency": "GBp", "regularMarketPrice": "8050.0"}}
+
+    rows, errors = yfinance_fetcher.fetch([("VOD.L", "LSE")])
+
+    assert seen == ["VOD.L"]
+    assert errors == []
+    assert rows[0].symbol == "VOD.L"
+
+
+def test_get_quotes_reads_latest_price_history(db_session) -> None:
+    db_session.add_all(
+        [
+            PriceHistory(
+                symbol="AAPL",
+                market="US",
+                date=date(2026, 6, 4),
+                close=Decimal("190.00"),
+                currency="USD",
+                source="yfinance",
+            ),
+            PriceHistory(
+                symbol="AAPL",
+                market="US",
+                date=date(2026, 6, 5),
+                close=Decimal("195.50"),
+                currency="USD",
+                source="yfinance",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    quotes = yfinance_fetcher.get_quotes(db_session, [("AAPL", "US")])
+
+    assert quotes[("AAPL", "US")]["close"] == Decimal("195.5000")
+    assert quotes[("AAPL", "US")]["currency"] == "USD"
+
+
 def test_gbp_minor_unit_is_persisted_verbatim(db_session, monkeypatch) -> None:
     def fake_download(tickers, **kwargs):
         return pd.concat({"VOD.L": _df("8050.0")}, axis=1)

@@ -30,6 +30,13 @@ The service SHALL expose `quotes.dispatcher.refresh_daily_ohlc(db, items: list[t
 - **THEN** the item SHALL be counted in `skipped_count` and an entry SHALL appear in `errors` naming the unsupported market
 - **AND** no fetcher SHALL be invoked for that item
 
+#### Scenario: Foreign get_quotes lookups read price_history
+
+- **GIVEN** a latest `price_history` row exists for `('AAPL', 'US')` with `close=Decimal('195.50')`, `currency='USD'`, and `source='yfinance'`
+- **WHEN** `get_quotes(db, [('AAPL', 'US')])` runs
+- **THEN** the yfinance backend SHALL return a quote keyed by `('AAPL', 'US')`
+- **AND** the quote SHALL include the persisted `close`, `date`, `currency`, and `source`
+
 ### Requirement: yfinance fetcher applies per-market symbol suffixes
 
 The service SHALL expose `quotes.yfinance_fetcher.fetch(items: list[tuple[str, str]]) -> list[QuoteRow]` that maps each item's market to a yfinance suffix before requesting prices. Initial mapping SHALL be `{'US': '', 'LSE': '.L'}`. New markets SHALL be added by extending this mapping only.
@@ -43,6 +50,12 @@ The service SHALL expose `quotes.yfinance_fetcher.fetch(items: list[tuple[str, s
 
 - **WHEN** `fetch([('VOD', 'LSE')])` runs
 - **THEN** the underlying yfinance request SHALL use `'VOD.L'`
+
+#### Scenario: Symbol already carrying market suffix is not double-suffixed
+
+- **WHEN** `fetch([('VOD.L', 'LSE')])` runs
+- **THEN** the underlying yfinance request SHALL use `'VOD.L'`
+- **AND** the request SHALL NOT use `'VOD.L.L'`
 
 ### Requirement: yfinance fetcher persists OHLC and native currency to `price_history`
 
@@ -92,6 +105,14 @@ The service SHALL register an APScheduler job `foreign_price_refresh` running da
 - **GIVEN** the ledger contains an open US position in `AAPL`, a closed US position in `MSFT`, and an open TW position in `2330`
 - **WHEN** the job fires
 - **THEN** the dispatcher SHALL be invoked with `[('AAPL', 'US')]` only — `MSFT` (closed) and `2330` (TW) SHALL NOT appear in the call
+
+#### Scenario: Refresh selection respects corporate-action-adjusted quantity
+
+- **GIVEN** the ledger contains a US `AAPL` buy of `100` shares before a `2-for-1` split
+- **AND** the ledger contains a post-split sell of `150` shares
+- **WHEN** the job selects open foreign positions
+- **THEN** `AAPL` SHALL be selected because the corporate-action-adjusted quantity is `50`
+- **AND** the raw unadjusted sum `100 - 150 = -50` SHALL NOT exclude the symbol
 
 #### Scenario: Empty ledger short-circuits
 

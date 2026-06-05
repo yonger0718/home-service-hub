@@ -151,6 +151,7 @@ DividendResponse = Dividend
 
 class StockHolding(BaseModel):
     symbol: str
+    market: str = "TW"
     name: Optional[str] = None
     total_quantity: Decimal
     avg_cost: Decimal

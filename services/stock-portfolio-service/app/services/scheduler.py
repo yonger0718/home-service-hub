@@ -23,15 +23,12 @@ from __future__ import annotations
 import logging
 import os
 from datetime import date, datetime, time, timezone, timedelta
+from decimal import Decimal
 from typing import Callable, ContextManager
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import case, func
-
 from datetime import timedelta as _timedelta
-
-from ..models import portfolio as models
 
 from . import (
     dividend_auto_record_service,
@@ -258,26 +255,17 @@ def run_fx_rate_refresh(session_factory: Callable[[], ContextManager]) -> dict:
 
 
 def _open_foreign_positions(db) -> list[tuple[str, str]]:
-    signed_quantity = case(
-        (models.Transaction.type == models.TransactionType.BUY, models.Transaction.quantity),
-        else_=-models.Transaction.quantity,
-    )
-    rows = (
-        db.query(
-            models.Transaction.symbol,
-            models.Transaction.market,
-            func.sum(signed_quantity).label("net_quantity"),
-        )
-        .filter(models.Transaction.market != "TW")
-        .filter(models.Transaction.position_side == models.PositionSide.LONG)
-        .group_by(models.Transaction.symbol, models.Transaction.market)
-        .having(func.sum(signed_quantity) > 0)
-        .order_by(models.Transaction.market, models.Transaction.symbol)
-        .all()
+    active_holdings = portfolio_service._aggregate_active_holdings(
+        portfolio_service._load_adjusted_transactions(db),
+        None,
     )
     return [
-        (str(row.symbol).strip().upper(), str(row.market).strip().upper())
-        for row in rows
+        (symbol, market)
+        for (symbol, market), info in sorted(
+            active_holdings.items(),
+            key=lambda item: (item[0][1], item[0][0]),
+        )
+        if market != "TW" and Decimal(info["total_quantity"]) > 0
     ]
 
 

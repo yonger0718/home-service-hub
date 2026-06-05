@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 from app.models import portfolio as models
+from app.models.corporate_action import CorporateAction
 from app.services import scheduler as sched
 from app.services.quotes.fx_rate_service import RefreshResult
 
@@ -89,6 +90,49 @@ def test_foreign_price_refresh_selects_only_open_non_tw_positions(db_session) ->
 
     refresh.assert_called_once_with(db_session, [("AAPL", "US")])
     assert result["requested"] == 1
+
+
+def test_open_foreign_positions_respects_corporate_action_adjusted_quantity(db_session) -> None:
+    db_session.add_all(
+        [
+            models.Transaction(
+                symbol="AAPL",
+                market="US",
+                type=models.TransactionType.BUY,
+                quantity=Decimal("100"),
+                price=Decimal("100"),
+                currency="USD",
+                fx_rate_to_twd=Decimal("32"),
+                fee=Decimal("0"),
+                tax=Decimal("0"),
+                trade_date=datetime(2026, 1, 1),
+            ),
+            models.Transaction(
+                symbol="AAPL",
+                market="US",
+                type=models.TransactionType.SELL,
+                quantity=Decimal("150"),
+                price=Decimal("60"),
+                currency="USD",
+                fx_rate_to_twd=Decimal("32"),
+                fee=Decimal("0"),
+                tax=Decimal("0"),
+                trade_date=datetime(2026, 2, 1),
+            ),
+            CorporateAction(
+                symbol="AAPL",
+                market="US",
+                effective_date=date(2026, 1, 15),
+                action_type="SPLIT",
+                ratio=Decimal("2"),
+                source="test",
+                source_event_key="AAPL-US-2026-01-15",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    assert sched._open_foreign_positions(db_session) == [("AAPL", "US")]
 
 
 def test_foreign_price_refresh_empty_ledger_short_circuits(db_session) -> None:

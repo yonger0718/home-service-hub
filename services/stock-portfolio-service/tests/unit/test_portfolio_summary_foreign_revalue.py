@@ -70,6 +70,67 @@ def test_us_holding_revalues_at_live_fx(db_session, monkeypatch) -> None:
     assert holding.live_fx_rate_to_twd == Decimal("32.00000000")
 
 
+def test_foreign_dividend_contributes_to_totals_and_xirr(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(portfolio_service, "date_type", FrozenDate)
+    db_session.add_all(
+        [
+            _buy("AAPL", "US", "100", "32", qty="1"),
+            models.Dividend(
+                symbol="AAPL",
+                market="US",
+                amount=Decimal("10"),
+                currency="USD",
+                fx_rate_to_twd=Decimal("32"),
+                ex_dividend_date=datetime(2026, 3, 1),
+                received_date=datetime(2026, 3, 5),
+            ),
+            _price("AAPL", "US", "100", "USD"),
+            _fx("USD", "32"),
+        ]
+    )
+    db_session.commit()
+
+    with patch("app.services.portfolio_service.get_stock_quotes", return_value={}):
+        summary = portfolio_service.get_portfolio_summary(db_session)
+
+    holding = summary.holdings[0]
+    assert holding.total_dividends == Decimal("320.00")
+    assert summary.total_dividends == Decimal("320.00")
+    assert holding.xirr is not None
+    assert holding.xirr > Decimal("0")
+    assert summary.portfolio_xirr is not None
+    assert summary.portfolio_xirr > Decimal("0")
+
+
+def test_same_ticker_across_markets_returns_distinct_market_holdings(
+    db_session,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(portfolio_service, "date_type", FrozenDate)
+    tx_us = _buy("RIO", "US", "10", "32", qty="1")
+    tx_lse = _buy("RIO", "LSE", "20", "40", qty="1")
+    db_session.add_all(
+        [
+            tx_us,
+            tx_lse,
+            _price("RIO", "US", "12", "USD"),
+            _price("RIO", "LSE", "21", "GBP"),
+            _fx("USD", "32"),
+            _fx("GBP", "40"),
+        ]
+    )
+    db_session.commit()
+
+    with patch("app.services.portfolio_service.get_stock_quotes", return_value={}):
+        summary = portfolio_service.get_portfolio_summary(db_session)
+
+    markets_by_symbol = {
+        (holding.symbol, holding.market)
+        for holding in summary.holdings
+    }
+    assert markets_by_symbol == {("RIO", "US"), ("RIO", "LSE")}
+
+
 def test_lse_gbp_minor_unit_divides_by_100_then_applies_gbp_rate(db_session, monkeypatch) -> None:
     monkeypatch.setattr(portfolio_service, "date_type", FrozenDate)
     db_session.add_all([_buy("VOD", "LSE", "80", "40", qty="100"), _price("VOD", "LSE", "8050.0", "GBp"), _fx("GBP", "40")])

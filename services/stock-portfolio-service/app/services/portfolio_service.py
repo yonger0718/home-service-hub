@@ -841,6 +841,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             )
         active_holdings = _aggregate_active_holdings(transactions, actions_by_symbol)
         active_keys = list(active_holdings.keys())
+        active_key_set = set(active_keys)
         tw_active_keys = [
             key
             for key in active_keys
@@ -871,7 +872,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         dividend_map = {}
         for d in dividends:
             key = _symbol_market_key(d)
-            if key[1] != "TW":
+            if key[1] != "TW" and key not in active_key_set:
                 continue
             amount_twd = _dividend_amount_twd(d)
             dividend_map[key] = dividend_map.get(key, Decimal("0.0")) + amount_twd
@@ -1020,6 +1021,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
 
             holdings_list.append(schemas.StockHolding(
                 symbol=symbol,
+                market=market,
                 name=quote.get("name") or h["name"] or symbol,
                 total_quantity=h["total_quantity"],
                 avg_cost=avg_cost,
@@ -1084,6 +1086,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
 
             holdings_list.append(schemas.StockHolding(
                 symbol=symbol,
+                market=market,
                 name=h["name"] or symbol,
                 total_quantity=h["total_quantity"],
                 avg_cost=avg_cost,

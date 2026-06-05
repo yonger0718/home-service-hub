@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 
+from app.models.price_history import PriceHistory
 from app.services.quotes import dispatcher
 from app.services.quotes.fx_rate_service import RefreshResult
 
@@ -83,3 +86,29 @@ def test_bare_symbol_get_quotes_defaults_to_tw(monkeypatch) -> None:
     assert quotes == {("2330", "TW"): {"symbol": "2330", "market": "TW"}}
     assert tw.quote_calls == [[("2330", "TW")]]
     assert yf.quote_calls == []
+
+
+def test_mixed_get_quotes_dispatches_tw_and_yfinance_without_attribute_error(
+    db_session,
+    monkeypatch,
+) -> None:
+    tw = _Backend([], [])
+    monkeypatch.setattr(dispatcher, "twse_backend", tw)
+    db_session.add(
+        PriceHistory(
+            symbol="AAPL",
+            market="US",
+            date=date(2026, 6, 5),
+            close=Decimal("195.50"),
+            currency="USD",
+            source="yfinance",
+        )
+    )
+    db_session.commit()
+
+    quotes = dispatcher.get_quotes(db_session, [("AAPL", "US"), ("2330", "TW")])
+
+    assert quotes[("AAPL", "US")]["close"] == Decimal("195.5000")
+    assert quotes[("AAPL", "US")]["currency"] == "USD"
+    assert quotes[("2330", "TW")] == {"symbol": "2330", "market": "TW"}
+    assert tw.quote_calls == [[("2330", "TW")]]
