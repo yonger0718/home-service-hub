@@ -11,7 +11,8 @@ from typing import Iterable
 import pandas as pd
 import structlog
 import yfinance as yf
-from sqlalchemy.orm import Session
+from sqlalchemy import func, tuple_
+from sqlalchemy.orm import Session, aliased
 
 from ...models.price_history import PriceHistory
 from .fx_rate_service import RefreshResult
@@ -37,15 +38,18 @@ class QuoteRow:
 def _normalize_items(items: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
     normalized: list[tuple[str, str]] = []
     for symbol, market in items:
-        normalized.append((str(symbol).strip().upper(), str(market or "TW").strip().upper()))
+        canonical_symbol = str(symbol).strip().upper()
+        canonical_market = str(market or "TW").strip().upper()
+        suffix = _SYMBOL_SUFFIX.get(canonical_market, "")
+        if suffix and canonical_symbol.endswith(suffix):
+            canonical_symbol = canonical_symbol[: -len(suffix)]
+        normalized.append((canonical_symbol, canonical_market))
     return normalized
 
 
 def _yf_symbol(symbol: str, market: str) -> str:
     suffix = _SYMBOL_SUFFIX[market]
-    if suffix and not symbol.endswith(suffix):
-        return f"{symbol}{suffix}"
-    return symbol
+    return f"{symbol}{suffix}" if suffix else symbol
 
 
 def _decimal_or_none(raw: object) -> Decimal | None:
@@ -171,30 +175,49 @@ def fetch(items: list[tuple[str, str]]) -> tuple[list[QuoteRow], list[str]]:
 
 
 def get_quotes(db: Session, items: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
-    """Return latest persisted yfinance quotes keyed by (symbol, market).
+    """Return latest persisted yfinance quotes keyed by canonical (symbol, market).
 
-    Missing or unsupported items are omitted from the returned mapping.
+    Issues a single batched query that selects the latest `date` row per
+    `(symbol, market)` pair. Missing or unsupported items are omitted.
     """
-    quotes: dict[tuple[str, str], dict] = {}
-    for symbol, market in _normalize_items(items):
-        if market not in _SYMBOL_SUFFIX:
-            continue
-        row = (
-            db.query(PriceHistory)
-            .filter(PriceHistory.symbol == symbol)
-            .filter(PriceHistory.market == market)
-            .order_by(PriceHistory.date.desc())
-            .first()
+    keys = [
+        (symbol, market)
+        for symbol, market in _normalize_items(items)
+        if market in _SYMBOL_SUFFIX
+    ]
+    if not keys:
+        return {}
+
+    latest_subq = (
+        db.query(
+            PriceHistory.symbol.label("symbol"),
+            PriceHistory.market.label("market"),
+            func.max(PriceHistory.date).label("max_date"),
         )
-        if row is None:
-            continue
-        quotes[(symbol, market)] = {
+        .filter(tuple_(PriceHistory.symbol, PriceHistory.market).in_(keys))
+        .group_by(PriceHistory.symbol, PriceHistory.market)
+        .subquery()
+    )
+    ph = aliased(PriceHistory)
+    rows = (
+        db.query(ph)
+        .join(
+            latest_subq,
+            (ph.symbol == latest_subq.c.symbol)
+            & (ph.market == latest_subq.c.market)
+            & (ph.date == latest_subq.c.max_date),
+        )
+        .all()
+    )
+    return {
+        (row.symbol, row.market): {
             "close": Decimal(row.close),
             "date": row.date,
             "currency": row.currency,
             "source": row.source,
         }
-    return quotes
+        for row in rows
+    }
 
 
 def refresh_daily_ohlc(db: Session, items: list[tuple[str, str]]) -> RefreshResult:

@@ -96,7 +96,7 @@ def test_lse_ticker_with_existing_suffix_is_not_double_suffixed(monkeypatch) -> 
 
     assert seen == ["VOD.L"]
     assert errors == []
-    assert rows[0].symbol == "VOD.L"
+    assert rows[0].symbol == "VOD"
 
 
 def test_get_quotes_reads_latest_price_history(db_session) -> None:
@@ -145,6 +145,78 @@ def test_gbp_minor_unit_is_persisted_verbatim(db_session, monkeypatch) -> None:
     assert row.close == Decimal("8050.0000")
     assert row.currency == "GBp"
     assert row.source == "yfinance"
+
+
+def test_get_quotes_resolves_both_spellings_to_canonical_key(db_session) -> None:
+    db_session.add(
+        PriceHistory(
+            symbol="VOD",
+            market="LSE",
+            date=date(2026, 6, 5),
+            close=Decimal("8050.0"),
+            currency="GBp",
+            source="yfinance",
+        )
+    )
+    db_session.commit()
+
+    bare = yfinance_fetcher.get_quotes(db_session, [("VOD", "LSE")])
+    suffixed = yfinance_fetcher.get_quotes(db_session, [("VOD.L", "LSE")])
+
+    assert ("VOD", "LSE") in bare and ("VOD", "LSE") in suffixed
+    assert bare[("VOD", "LSE")]["close"] == Decimal("8050.0000")
+    assert suffixed[("VOD", "LSE")]["close"] == Decimal("8050.0000")
+    assert ("VOD.L", "LSE") not in suffixed
+
+
+def test_get_quotes_batches_multiple_keys_in_one_query(db_session) -> None:
+    db_session.add_all(
+        [
+            PriceHistory(
+                symbol="AAPL",
+                market="US",
+                date=date(2026, 6, 3),
+                close=Decimal("180.0"),
+                currency="USD",
+                source="yfinance",
+            ),
+            PriceHistory(
+                symbol="AAPL",
+                market="US",
+                date=date(2026, 6, 5),
+                close=Decimal("195.5"),
+                currency="USD",
+                source="yfinance",
+            ),
+            PriceHistory(
+                symbol="MSFT",
+                market="US",
+                date=date(2026, 6, 4),
+                close=Decimal("420.0"),
+                currency="USD",
+                source="yfinance",
+            ),
+            PriceHistory(
+                symbol="VOD",
+                market="LSE",
+                date=date(2026, 6, 5),
+                close=Decimal("8050.0"),
+                currency="GBp",
+                source="yfinance",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    quotes = yfinance_fetcher.get_quotes(
+        db_session, [("AAPL", "US"), ("MSFT", "US"), ("VOD.L", "LSE")]
+    )
+
+    assert set(quotes) == {("AAPL", "US"), ("MSFT", "US"), ("VOD", "LSE")}
+    assert quotes[("AAPL", "US")]["close"] == Decimal("195.5000")
+    assert quotes[("AAPL", "US")]["date"] == date(2026, 6, 5)
+    assert quotes[("MSFT", "US")]["close"] == Decimal("420.0000")
+    assert quotes[("VOD", "LSE")]["currency"] == "GBp"
 
 
 def test_missing_currency_skips_ticker_without_writing(db_session, monkeypatch) -> None:

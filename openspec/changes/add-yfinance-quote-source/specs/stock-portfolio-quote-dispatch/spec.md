@@ -57,6 +57,13 @@ The service SHALL expose `quotes.yfinance_fetcher.fetch(items: list[tuple[str, s
 - **THEN** the underlying yfinance request SHALL use `'VOD.L'`
 - **AND** the request SHALL NOT use `'VOD.L.L'`
 
+#### Scenario: LSE symbol stores canonically without vendor suffix
+
+- **WHEN** `refresh_daily_ohlc(db, [('VOD.L', 'LSE')])` runs
+- **THEN** the persisted `price_history` row SHALL have `symbol='VOD'` (suffix-stripped canonical form)
+- **AND** the underlying yfinance request SHALL still use the ticker string `'VOD.L'`
+- **AND** `get_quotes(db, [('VOD', 'LSE')])` and `get_quotes(db, [('VOD.L', 'LSE')])` SHALL return the same row keyed by `('VOD', 'LSE')`
+
 ### Requirement: yfinance fetcher persists OHLC and native currency to `price_history`
 
 For each ticker the yfinance fetcher SHALL upsert a `price_history` row keyed by `(symbol, market, date)` carrying daily `open`, `high`, `low`, `close`, `volume`, `source='yfinance'`, and the new `currency` column populated from yfinance `meta.currency`. The fetcher SHALL NOT transform the native price into TWD; FX conversion happens in the read path.
