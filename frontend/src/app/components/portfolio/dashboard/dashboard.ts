@@ -95,7 +95,12 @@ export class PortfolioDashboardComponent implements OnInit {
     return this.selectedXirr(summary);
   });
 
-  readonly flatHoldings = computed(() => this.summary()?.holdings ?? []);
+  readonly flatHoldings = computed(() =>
+    (this.summary()?.holdings ?? []).map(holding => ({
+      ...holding,
+      market: (holding.market ?? 'TW') as MarketCode,
+    })),
+  );
 
   readonly showMarketGroups = computed(() =>
     this.flatHoldings().some(holding => holding.market !== 'TW'),

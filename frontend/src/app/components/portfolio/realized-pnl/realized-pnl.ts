@@ -83,7 +83,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   });
 
   readonly showForeignColumns = computed(() =>
-    this.events().some(event => event.market !== 'TW'),
+    this.events().some(event => (event.market ?? 'TW') !== 'TW'),
   );
 
   dateRange: Date[] | null = null;
