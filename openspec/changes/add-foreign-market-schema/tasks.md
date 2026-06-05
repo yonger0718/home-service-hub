@@ -9,7 +9,7 @@
 - [x] 1.7 In `upgrade()`: drop `pk_price_history`, recreate as `PRIMARY KEY (symbol, market, date)`
 - [x] 1.8 In `upgrade()`: drop `ix_transactions_symbol_trade_date`, create `ix_transactions_symbol_market_trade_date` on `(symbol, market, trade_date)`
 - [x] 1.9 In `downgrade()`: reverse every step above; document one-way risk once foreign rows exist
-- [ ] 1.10 Verify `alembic upgrade head` + `alembic downgrade -1` round-trip clean on a fresh local DB
+- [x] 1.10 Verify `alembic upgrade head` + `alembic downgrade -1` round-trip clean on a fresh local DB (exact-revision round-trip passed live PG: `upgrade y2n3o4p5q6r7` → `downgrade x1m2n3o4p5q6` → `upgrade y2n3o4p5q6r7`; generic `upgrade head` blocked by pre-existing duplicate revision `m0b1c2d3e4f5` baseline issue, unrelated to this change)
 
 ## 2. ORM Models
 
