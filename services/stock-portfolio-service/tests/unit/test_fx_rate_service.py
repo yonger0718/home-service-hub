@@ -9,7 +9,9 @@ import requests
 from sqlalchemy import select
 
 from app.models.fx_rate import FxRate
+from app.models.fx_rate import FXRate
 from app.services import fx_rate_service
+from app.services.quotes import fx_rate_service as quote_fx_rate_service
 
 
 class FakeResponse:
@@ -208,3 +210,120 @@ def test_get_rate_exact_asof_missing_and_usd_pivot(db_session) -> None:
     assert fx_rate_service.get_rate(db_session, date(2026, 5, 31), "USD", "TWD") == Decimal("31.80")
     assert fx_rate_service.get_rate(db_session, date(2026, 6, 1), "JPY", "TWD") is None
     assert fx_rate_service.get_rate(db_session, date(2026, 6, 1), "GBP", "TWD") == Decimal("40.7035")
+
+
+class _FakeTicker:
+    prices: dict[str, object] = {}
+
+    def __init__(self, yf_symbol: str) -> None:
+        self.yf_symbol = yf_symbol
+
+    @property
+    def fast_info(self) -> dict[str, object]:
+        value = self.prices[self.yf_symbol]
+        if isinstance(value, Exception):
+            raise value
+        return {"regularMarketPrice": value}
+
+
+def _phase2_rows(db_session) -> list[FXRate]:
+    return (
+        db_session.execute(select(FXRate).order_by(FXRate.currency, FXRate.date))
+        .scalars()
+        .all()
+    )
+
+
+def test_phase2_refresh_today_writes_usd_and_gbp_rows(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(quote_fx_rate_service, "_today_taipei", lambda: date(2026, 6, 5))
+    monkeypatch.setattr(quote_fx_rate_service.yf, "Ticker", _FakeTicker)
+    _FakeTicker.prices = {"USDTWD=X": "32.10", "GBPTWD=X": "40.25"}
+
+    result = quote_fx_rate_service.refresh_today(db_session)
+
+    assert result.ok_count == 2
+    assert result.skipped_count == 0
+    assert result.errors == []
+    assert [(r.currency, r.date, r.rate_to_twd, r.source) for r in _phase2_rows(db_session)] == [
+        ("GBP", date(2026, 6, 5), Decimal("40.25000000"), "yfinance"),
+        ("USD", date(2026, 6, 5), Decimal("32.10000000"), "yfinance"),
+    ]
+
+
+def test_phase2_refresh_today_is_idempotent_and_overwrites(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(quote_fx_rate_service, "_today_taipei", lambda: date(2026, 6, 5))
+    monkeypatch.setattr(quote_fx_rate_service.yf, "Ticker", _FakeTicker)
+    _FakeTicker.prices = {"USDTWD=X": "32.10", "GBPTWD=X": "40.25"}
+    quote_fx_rate_service.refresh_today(db_session)
+    _FakeTicker.prices = {"USDTWD=X": "33.00", "GBPTWD=X": "41.00"}
+
+    result = quote_fx_rate_service.refresh_today(db_session)
+
+    assert result.ok_count == 2
+    assert db_session.query(FXRate).count() == 2
+    assert {
+        row.currency: row.rate_to_twd for row in _phase2_rows(db_session)
+    } == {"GBP": Decimal("41.00000000"), "USD": Decimal("33.00000000")}
+
+
+def test_phase2_refresh_today_partial_failure_keeps_ok_ticker(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(quote_fx_rate_service, "_today_taipei", lambda: date(2026, 6, 5))
+    monkeypatch.setattr(quote_fx_rate_service.yf, "Ticker", _FakeTicker)
+    _FakeTicker.prices = {
+        "USDTWD=X": "32.10",
+        "GBPTWD=X": RuntimeError("transport down"),
+    }
+
+    result = quote_fx_rate_service.refresh_today(db_session)
+
+    assert result.ok_count == 1
+    assert result.skipped_count == 1
+    assert "GBP" in result.errors[0]
+    assert [(r.currency, r.rate_to_twd) for r in _phase2_rows(db_session)] == [
+        ("USD", Decimal("32.10000000"))
+    ]
+
+
+def test_phase2_get_rate_gbp_minor_unit_divides_by_100(db_session) -> None:
+    db_session.add(
+        FXRate(
+            currency="GBP",
+            date=date(2026, 6, 5),
+            rate_to_twd=Decimal("40.0"),
+            source="test",
+        )
+    )
+    db_session.commit()
+
+    assert quote_fx_rate_service.get_rate(db_session, "GBp", date(2026, 6, 5)) == Decimal("0.40000000")
+
+
+def test_phase2_get_rate_returns_latest_on_or_before(db_session) -> None:
+    db_session.add_all(
+        [
+            FXRate(currency="USD", date=date(2026, 6, 3), rate_to_twd=Decimal("32.0"), source="test"),
+            FXRate(currency="USD", date=date(2026, 6, 5), rate_to_twd=Decimal("33.0"), source="test"),
+        ]
+    )
+    db_session.commit()
+
+    assert quote_fx_rate_service.get_rate(db_session, "USD", date(2026, 6, 4)) == Decimal("32.00000000")
+
+
+def test_phase2_get_rate_returns_none_without_prior_row(db_session) -> None:
+    db_session.add(
+        FXRate(currency="USD", date=date(2026, 6, 3), rate_to_twd=Decimal("32.0"), source="test")
+    )
+    db_session.commit()
+
+    assert quote_fx_rate_service.get_rate(db_session, "USD", date(2026, 6, 2)) is None
+
+
+def test_phase2_upsert_rejects_gbp_minor_unit(db_session) -> None:
+    with pytest.raises(ValueError, match="GBp"):
+        quote_fx_rate_service._upsert_rate(
+            db_session,
+            currency="GBp",
+            date_=date(2026, 6, 5),
+            rate_to_twd=Decimal("0.4"),
+        )

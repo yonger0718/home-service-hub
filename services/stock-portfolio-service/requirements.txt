@@ -11,3 +11,4 @@ structlog==25.4.0
 twstock==1.5.1
 lxml>=6.1.0
 python-dateutil>=2.9
+yfinance==0.2.66

@@ -12,6 +12,28 @@ from app.database import Base, get_db
 from app.main import app
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--live",
+        action="store_true",
+        default=False,
+        help="run tests marked live",
+    )
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live: tests that call live external services")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--live"):
+        return
+    skip_live = pytest.mark.skip(reason="need --live option to run")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip_live)
+
+
 @pytest.fixture()
 def db_session():
     engine = create_engine(

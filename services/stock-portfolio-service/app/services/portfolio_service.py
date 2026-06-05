@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import Column, func
 from typing import Dict, List, Literal, Optional, Tuple
 from datetime import date as date_type, datetime, timedelta, timezone
+from dataclasses import dataclass
 
 _ONE_DAY = timedelta(days=1)
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
@@ -18,6 +19,7 @@ from ..schemas import portfolio as schemas
 from .twse_service import get_stock_quotes
 from . import symbol_map_service
 from . import cash_account_service
+from .quotes import fx_rate_service as live_fx_rate_service
 from shared_lib import get_tracer
 tracer = get_tracer("stock-portfolio-service")
 logger = logging.getLogger(__name__)
@@ -657,6 +659,88 @@ def _dividend_amount_twd(row: models.Dividend) -> Decimal:
     return amount * Decimal(fx_rate)
 
 
+def _row_price_twd(row: object) -> Decimal:
+    price = Decimal(getattr(row, "price"))
+    fx_rate = getattr(row, "fx_rate_to_twd", None)
+    if fx_rate is None:
+        return price
+    return price * Decimal(fx_rate)
+
+
+def _row_money_twd(row: object, raw_value: object) -> Decimal:
+    value = Decimal(raw_value or "0")
+    fx_rate = getattr(row, "fx_rate_to_twd", None)
+    if fx_rate is None:
+        return value
+    return value * Decimal(fx_rate)
+
+
+@dataclass(frozen=True)
+class _ForeignRevalue:
+    market_value_twd: Optional[Decimal]
+    current_price_twd: Optional[Decimal]
+    native_close: Optional[Decimal]
+    native_currency: Optional[str]
+    live_fx_rate_to_twd: Optional[Decimal]
+
+    @property
+    def available(self) -> bool:
+        return self.market_value_twd is not None
+
+
+def _revalue_foreign_holding(db: Session, holding: Dict[str, object]) -> _ForeignRevalue:
+    symbol = str(holding["symbol"])
+    market = str(holding["market"])
+    row = (
+        db.query(PriceHistory)
+        .filter(PriceHistory.symbol == symbol)
+        .filter(PriceHistory.market == market)
+        .order_by(PriceHistory.date.desc())
+        .first()
+    )
+    if row is None or row.close is None:
+        return _ForeignRevalue(
+            market_value_twd=None,
+            current_price_twd=None,
+            native_close=None,
+            native_currency=None,
+            live_fx_rate_to_twd=None,
+        )
+
+    native_close = Decimal(row.close)
+    native_currency = str(getattr(row, "currency", "TWD") or "TWD").strip()
+    if native_currency == "GBp":
+        native_close_in_base = native_close / Decimal("100")
+        base_currency = "GBP"
+    else:
+        native_close_in_base = native_close
+        base_currency = native_currency.upper()
+
+    live_fx = live_fx_rate_service.get_rate(db, base_currency, date_type.today())
+    if live_fx is None:
+        return _ForeignRevalue(
+            market_value_twd=None,
+            current_price_twd=None,
+            native_close=native_close,
+            native_currency=native_currency,
+            live_fx_rate_to_twd=None,
+        )
+
+    current_price_twd = (native_close_in_base * live_fx).quantize(
+        Decimal("0.00000001"), rounding=ROUND_HALF_UP
+    )
+    market_value_twd = (Decimal(holding["total_quantity"]) * current_price_twd).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+    return _ForeignRevalue(
+        market_value_twd=market_value_twd,
+        current_price_twd=current_price_twd,
+        native_close=native_close,
+        native_currency=native_currency,
+        live_fx_rate_to_twd=live_fx,
+    )
+
+
 def _sync_transaction_cash_legs_if_twd(
     db: Session,
     transaction: models.Transaction,
@@ -756,13 +840,18 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 + event.realized_pnl
             )
         active_holdings = _aggregate_active_holdings(transactions, actions_by_symbol)
-        active_keys = [
+        active_keys = list(active_holdings.keys())
+        tw_active_keys = [
             key
-            for key in active_holdings.keys()
+            for key in active_keys
             if key[1] == "TW"
         ]
-        active_key_set = set(active_keys)
-        active_symbols = [symbol for symbol, _market in active_keys]
+        foreign_active_keys = [
+            key
+            for key in active_keys
+            if key[1] != "TW"
+        ]
+        active_symbols = [symbol for symbol, _market in tw_active_keys]
         today = date_type.today()
         window_starts = {
             window: _window_start(today, window)
@@ -802,8 +891,6 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 continue
 
             key = _symbol_market_key(t)
-            if key[1] != "TW":
-                continue
             symbol, market = key
             if key not in holdings_map:
                 holdings_map[key] = {
@@ -816,15 +903,18 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 }
 
             h = holdings_map[key]
+            price_twd = _row_price_twd(t)
+            fee_twd = _row_money_twd(t, t.fee)
+            tax_twd = _row_money_twd(t, t.tax)
             if t.type == models.TransactionType.BUY:
                 h["total_quantity"] += Decimal(t.quantity)
                 # 買入總成本 = (單價 * 股數) + 手續費
-                h["total_cost"] += (Decimal(t.quantity) * t.price) + (t.fee or Decimal("0.0"))
+                h["total_cost"] += (Decimal(t.quantity) * price_twd) + fee_twd
                 # 成交均價口徑(不含手續費)
-                h["total_cost_ex_fee"] += (Decimal(t.quantity) * t.price)
+                h["total_cost_ex_fee"] += (Decimal(t.quantity) * price_twd)
                 # XIRR: buy outflow
                 cf_date = t.trade_date.date() if hasattr(t.trade_date, 'date') else t.trade_date
-                outflow = -((Decimal(t.quantity) * t.price) + (t.fee or Decimal("0.0")) + (t.tax or Decimal("0.0")))
+                outflow = -((Decimal(t.quantity) * price_twd) + fee_twd + tax_twd)
                 cashflows_map.setdefault(key, []).append((cf_date, outflow))
             elif t.type == models.TransactionType.SELL:
                 if h["total_quantity"] > 0:
@@ -836,7 +926,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                     h["total_cost_ex_fee"] -= (Decimal(t.quantity) * avg_unit_cost_ex_fee)
                     # XIRR: sell inflow
                     cf_date = t.trade_date.date() if hasattr(t.trade_date, 'date') else t.trade_date
-                    inflow = (Decimal(t.quantity) * t.price) - (t.fee or Decimal("0.0")) - (t.tax or Decimal("0.0"))
+                    inflow = (Decimal(t.quantity) * price_twd) - fee_twd - tax_twd
                     cashflows_map.setdefault(key, []).append((cf_date, inflow))
                 else:
                     pass
@@ -854,7 +944,9 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         total_day_pnl = Decimal("0.0")
         total_dividends = sum(dividend_map.values(), Decimal("0.0"))
 
-        for key in active_keys:
+        foreign_available_count = 0
+
+        for key in tw_active_keys:
             symbol, market = key
             h = holdings_map[key]
             quote = quotes.get(symbol, {})
@@ -953,6 +1045,86 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 total_day_pnl += day_pnl
             
             total_cost += h["total_cost"]
+
+        for key in foreign_active_keys:
+            symbol, market = key
+            h = holdings_map[key]
+            total_qty_dec = Decimal(h["total_quantity"])
+            avg_cost = (h["total_cost"] / total_qty_dec).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            revalue = _revalue_foreign_holding(db, h)
+
+            current_price = revalue.current_price_twd or Decimal("0.0")
+            market_value = revalue.market_value_twd
+            if market_value is not None:
+                foreign_available_count += 1
+                unrealized_pnl = (market_value - h["total_cost"]).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                pnl_percent = (
+                    ((unrealized_pnl / h["total_cost"]) * Decimal("100")).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    if h["total_cost"] > 0
+                    else Decimal("0.0")
+                )
+            else:
+                unrealized_pnl = Decimal("0.0")
+                pnl_percent = Decimal("0.0")
+
+            stock_div = dividend_map.get(key, Decimal("0.0")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
+            stock_xirr: Optional[Decimal] = None
+            if market_value is not None and market_value > 0 and key in cashflows_map:
+                stock_flows = sorted(cashflows_map.get(key, []), key=lambda x: x[0])
+                stock_xirr = _calculate_xirr(stock_flows + [(today, market_value)])
+
+            holdings_list.append(schemas.StockHolding(
+                symbol=symbol,
+                name=h["name"] or symbol,
+                total_quantity=h["total_quantity"],
+                avg_cost=avg_cost,
+                current_price=current_price if market_value is not None else None,
+                market_value=market_value,
+                unrealized_pnl=unrealized_pnl,
+                unrealized_pnl_percent=pnl_percent,
+                day_change_amount=Decimal("0.0"),
+                day_change_percent=Decimal("0.0"),
+                day_pnl=Decimal("0.0"),
+                total_dividends=stock_div,
+                total_pnl_with_dividend=(unrealized_pnl + stock_div).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                ),
+                xirr=stock_xirr,
+                xirr_1m=None,
+                xirr_3m=None,
+                xirr_1y=None,
+                xirr_ytd=None,
+                native_close=revalue.native_close,
+                native_currency=revalue.native_currency,
+                live_fx_rate_to_twd=revalue.live_fx_rate_to_twd,
+            ))
+
+            if market_value is not None:
+                total_market_value += market_value
+                total_unrealized_pnl += unrealized_pnl
+
+            total_cost += h["total_cost"]
+
+        if foreign_active_keys:
+            available_count = min(len(quotes), len(tw_active_keys)) + foreign_available_count
+            total_requested = len(tw_active_keys) + len(foreign_active_keys)
+            if total_requested == 0:
+                quote_status = "ok"
+            elif available_count == 0:
+                quote_status = "unavailable"
+            elif available_count < total_requested:
+                quote_status = "partial"
+            else:
+                quote_status = "ok"
 
         total_pnl_percent = ((total_unrealized_pnl / total_cost) * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if total_cost > 0 else Decimal("0.0")
 

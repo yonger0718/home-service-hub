@@ -27,8 +27,11 @@ from typing import Callable, ContextManager
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import case, func
 
 from datetime import timedelta as _timedelta
+
+from ..models import portfolio as models
 
 from . import (
     dividend_auto_record_service,
@@ -41,6 +44,8 @@ from . import (
     twse_service,
 )
 from .dividend_history_service import HistoricalDividendEvent
+from .quotes import dispatcher as quote_dispatcher
+from .quotes import fx_rate_service as quote_fx_rate_service
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +238,80 @@ def run_fx_rate_daily(session_factory: Callable[[], ContextManager]) -> dict:
     }
 
 
+def run_fx_rate_refresh(session_factory: Callable[[], ContextManager]) -> dict:
+    """Refresh yfinance USD/GBP → TWD snapshots; never crash scheduler."""
+    logger.info("fx_rate_refresh.started")
+    try:
+        with session_factory() as db:
+            result = quote_fx_rate_service.refresh_today(db)
+    except Exception as exc:  # noqa: BLE001 — scheduler must not die
+        logger.exception("fx_rate_refresh.failed", extra={"error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    summary = {
+        "status": "ok",
+        "ok_count": result.ok_count,
+        "skipped_count": result.skipped_count,
+        "errors": result.errors,
+    }
+    logger.info("fx_rate_refresh.finished", extra=summary)
+    return summary
+
+
+def _open_foreign_positions(db) -> list[tuple[str, str]]:
+    signed_quantity = case(
+        (models.Transaction.type == models.TransactionType.BUY, models.Transaction.quantity),
+        else_=-models.Transaction.quantity,
+    )
+    rows = (
+        db.query(
+            models.Transaction.symbol,
+            models.Transaction.market,
+            func.sum(signed_quantity).label("net_quantity"),
+        )
+        .filter(models.Transaction.market != "TW")
+        .filter(models.Transaction.position_side == models.PositionSide.LONG)
+        .group_by(models.Transaction.symbol, models.Transaction.market)
+        .having(func.sum(signed_quantity) > 0)
+        .order_by(models.Transaction.market, models.Transaction.symbol)
+        .all()
+    )
+    return [
+        (str(row.symbol).strip().upper(), str(row.market).strip().upper())
+        for row in rows
+    ]
+
+
+def run_foreign_price_refresh(session_factory: Callable[[], ContextManager]) -> dict:
+    """Refresh yfinance OHLC rows for open non-TW positions."""
+    logger.info("foreign_price_refresh.started")
+    try:
+        with session_factory() as db:
+            items = _open_foreign_positions(db)
+            if not items:
+                summary = {
+                    "status": "ok",
+                    "requested": 0,
+                    "ok_count": 0,
+                    "skipped_count": 0,
+                    "errors": [],
+                }
+                logger.info("foreign_price_refresh.finished", extra=summary)
+                return summary
+            result = quote_dispatcher.refresh_daily_ohlc(db, items)
+    except Exception as exc:  # noqa: BLE001 — scheduler must not die
+        logger.exception("foreign_price_refresh.failed", extra={"error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    summary = {
+        "status": "ok",
+        "requested": len(items),
+        "ok_count": result.ok_count,
+        "skipped_count": result.skipped_count,
+        "errors": result.errors,
+    }
+    logger.info("foreign_price_refresh.finished", extra=summary)
+    return summary
+
+
 def build_scheduler(session_factory: Callable[[], ContextManager]) -> BackgroundScheduler:
     """Construct a configured ``BackgroundScheduler``; caller starts it."""
     scheduler = BackgroundScheduler(timezone=TW_TIMEZONE)
@@ -278,6 +357,21 @@ def build_scheduler(session_factory: Callable[[], ContextManager]) -> Background
         kwargs={"session_factory": session_factory},
         replace_existing=True,
     )
+    if is_enabled():
+        scheduler.add_job(
+            run_fx_rate_refresh,
+            CronTrigger(hour=17, minute=0, timezone=TW_TIMEZONE),
+            id="fx_rate_refresh",
+            kwargs={"session_factory": session_factory},
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            run_foreign_price_refresh,
+            CronTrigger(hour=17, minute=30, timezone=TW_TIMEZONE),
+            id="foreign_price_refresh",
+            kwargs={"session_factory": session_factory},
+            replace_existing=True,
+        )
     return scheduler
 
 

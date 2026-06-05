@@ -24,13 +24,15 @@ All routes are prefixed `/api/portfolio` (Angular dev proxies `/api/portfolio` h
 
 ## Scheduler
 
-In-process APScheduler (`BackgroundScheduler`, `Asia/Taipei`) boots on FastAPI startup. Three jobs:
+In-process APScheduler (`BackgroundScheduler`, `Asia/Taipei`) boots on FastAPI startup when `SCHEDULER_ENABLED` is truthy. Phase 2 foreign-market jobs use `yfinance` for Yahoo Finance quote/FX snapshots; no Yahoo API key is required, but outbound network access to Yahoo Finance must be available.
 
 | Job ID | Cron | Action |
 |---|---|---|
 | `tw_daily_prices` | `17:00 mon-fri` | `market_data_service.backfill_date(today, market="BOTH")` |
 | `quote_refresh` | `*/15 9-13 mon-fri` (gated by `is_tw_market_session`) | refresh quotes for active holdings |
 | `portfolio_snapshot` | `15:30 mon-fri` | write today's networth snapshot row |
+| `fx_rate_refresh` | `17:00 daily` | fetch USD/TWD and GBP/TWD into `fx_rates` via yfinance |
+| `foreign_price_refresh` | `17:30 daily` | refresh yfinance OHLC for open non-TW holdings |
 
 Env toggle: `SCHEDULER_ENABLED=false` skips boot entirely (used in tests + CI).
 

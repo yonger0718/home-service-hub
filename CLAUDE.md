@@ -59,6 +59,8 @@ pytest tests/unit/
 pytest tests/integration/
 ```
 
+Foreign holdings use the Phase 2 hybrid FX model: live market value is latest native close from `price_history` multiplied by the latest `fx_rates.rate_to_twd`, while cost basis stays frozen at the transaction/dividend row's `fx_rate_to_twd`. LSE `GBp` prices are stored as pence and divided by 100 on the read path before applying the GBP/TWD rate.
+
 ### Frontend (Angular)
 ```bash
 cd frontend
