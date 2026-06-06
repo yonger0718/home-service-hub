@@ -312,30 +312,3 @@ app-bento {
   }
 }
 
-.broker-cash-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.broker-cash-add {
-  background: transparent;
-  border: 1px solid var(--p-surface-300);
-  border-radius: 50%;
-  width: 1.6rem;
-  height: 1.6rem;
-  cursor: pointer;
-  color: var(--app-text);
-  font-size: 1rem;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.broker-cash-add:hover {
-  background: var(--p-surface-100);
-}
-.broker-cash-empty {
-  color: var(--p-text-muted-color);
-  font-size: 0.9rem;
-  padding-top: 0.5rem;
-}

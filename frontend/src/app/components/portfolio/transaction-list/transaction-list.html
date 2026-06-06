@@ -99,7 +99,25 @@
     </div>
     <div class="col-6">
       <label class="d-block mb-1 small fw-bold">交易日期</label>
-      <p-datepicker [(ngModel)]="newTransaction.trade_date" [fluid]="true" appendTo="body" dateFormat="yy-mm-dd"></p-datepicker>
+      <p-datepicker
+        [(ngModel)]="newTransaction.trade_date"
+        (ngModelChange)="onTradeDateChange()"
+        [fluid]="true"
+        appendTo="body"
+        dateFormat="yy-mm-dd">
+      </p-datepicker>
+    </div>
+    <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">券商</label>
+      <p-select
+        [options]="formBrokerOptions"
+        optionLabel="label"
+        optionValue="value"
+        [ngModel]="newTransaction.broker ?? defaultBrokerForMarket()"
+        (ngModelChange)="newTransaction.broker = $event"
+        [fluid]="true"
+        appendTo="body">
+      </p-select>
     </div>
     <div class="col-6">
       <label class="d-block mb-1 small fw-bold">成交股數</label>
@@ -120,16 +138,26 @@
     @if (isForeignTrade()) {
       <div class="col-6">
         <label class="d-block mb-1 small fw-bold">幣別</label>
-        <input pInputText [(ngModel)]="newTransaction.currency" class="w-100" />
+        <input
+          pInputText
+          [(ngModel)]="newTransaction.currency"
+          (ngModelChange)="onCurrencyChange()"
+          class="w-100" />
       </div>
       <div class="col-6">
-        <label class="d-block mb-1 small fw-bold">匯率 (TWD)</label>
+        <label class="d-block mb-1 small fw-bold">
+          匯率 (TWD)
+          @if (fxRateFetching()) { <small class="text-muted">查詢中…</small> }
+        </label>
         <p-inputNumber
           [(ngModel)]="newTransaction.fx_rate_to_twd"
           mode="decimal"
           [minFractionDigits]="2"
           [fluid]="true">
         </p-inputNumber>
+        @if (fxRateAuto()) {
+          <small class="text-muted">自動帶入 {{ fxRateAuto() }}（可手動覆寫）</small>
+        }
         @if (showFxRateError()) {
           <div class="field-error">匯率必須大於 0</div>
         }

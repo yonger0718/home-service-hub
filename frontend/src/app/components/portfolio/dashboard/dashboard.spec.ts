@@ -30,16 +30,6 @@ class ChartStubComponent {
   chart = { update: vi.fn() };
 }
 
-@Component({
-  selector: 'app-cash-flow-form',
-  standalone: true,
-  template: '',
-})
-class CashFlowFormStubComponent {
-  @Input() visible = false;
-  @Input() initialBroker: string | null = null;
-}
-
 describe('PortfolioDashboardComponent', () => {
   function buildHolding(): StockHolding {
     return {
@@ -99,7 +89,6 @@ describe('PortfolioDashboardComponent', () => {
     refreshQuotes: ReturnType<typeof vi.fn>;
     getRecalcStatus: ReturnType<typeof vi.fn>;
     getSummary: ReturnType<typeof vi.fn>;
-    getBrokerCashFlows: ReturnType<typeof vi.fn>;
     getUpcomingExDividends: ReturnType<typeof vi.fn>;
     getNetworthHistory: ReturnType<typeof vi.fn>;
     cashLedgerChanged$: import('rxjs').Observable<void>;
@@ -113,7 +102,6 @@ describe('PortfolioDashboardComponent', () => {
       refreshQuotes: vi.fn().mockReturnValue(of(null)),
       getRecalcStatus: vi.fn(),
       getSummary: vi.fn().mockReturnValue(of(buildSummary())),
-      getBrokerCashFlows: vi.fn().mockReturnValue(of([])),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),
       getNetworthHistory: vi.fn().mockReturnValue(of([
         { date: '2026-01-01', total_market_value: '100', total_cash_twd: '40', total_assets_twd: '140', total_cost: '80', total_unrealized_pnl: '20', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null },
@@ -133,7 +121,6 @@ describe('PortfolioDashboardComponent', () => {
             CommonModule,
             RouterLink,
             ChartStubComponent,
-            CashFlowFormStubComponent,
             BtnComponent,
             SegToggleComponent,
             BentoComponent,
@@ -162,7 +149,6 @@ describe('PortfolioDashboardComponent', () => {
     portfolioService.refreshQuotes.mockClear();
     portfolioService.getRecalcStatus.mockClear();
     portfolioService.getSummary.mockClear();
-    portfolioService.getBrokerCashFlows.mockClear();
     portfolioService.getNetworthHistory.mockClear();
     return fixture;
   }
@@ -244,19 +230,6 @@ describe('PortfolioDashboardComponent', () => {
     );
 
     expect(totalAssetsCard?.textContent).toContain(fixture.componentInstance.formatCurrency(500000));
-  });
-
-  it('renders per-broker cash balances when provided', () => {
-    portfolioService.getBrokerCashFlows.mockReturnValue(of([
-      { broker: 'IB', currency: 'USD', balance: '61.51', as_of_date: '2026-06-06' },
-      { broker: 'FIRSTRADE', currency: 'USD', balance: '80.26', as_of_date: '2026-06-06' },
-      { broker: 'SCHWAB', currency: 'USD', balance: '1500.00', as_of_date: '2026-06-06' },
-    ]));
-    const fixture = createFixture();
-
-    expect(fixture.nativeElement.textContent).toContain('券商現金');
-    expect(fixture.nativeElement.textContent).toContain('IB');
-    expect(fixture.nativeElement.textContent).toContain('1,500.00 USD');
   });
 
   it('builds total assets and total market value datasets', () => {

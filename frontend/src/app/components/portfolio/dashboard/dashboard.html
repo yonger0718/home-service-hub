@@ -27,29 +27,6 @@
         </app-bento>
       }
 
-      <app-bento class="b-full" [full]="true">
-        <div class="broker-cash-header">
-          <div class="label">券商現金</div>
-          <button type="button" class="broker-cash-add" (click)="openCashForm()" aria-label="新增現金流">＋</button>
-        </div>
-        @if (brokerCashBalances().length > 0) {
-          <div class="broker-cash-list">
-            @for (cash of brokerCashBalances(); track cash.broker + cash.currency) {
-              <div class="broker-cash-row">
-                <span>{{ cash.broker }}</span>
-                <strong>{{ formatBrokerCash(cash) }}</strong>
-              </div>
-            }
-          </div>
-        } @else {
-          <div class="broker-cash-empty">尚無資料</div>
-        }
-      </app-bento>
-      <app-cash-flow-form
-        [visible]="cashFormVisible()"
-        (visibleChange)="cashFormVisible.set($event)"
-        (created)="onCashFlowCreated()">
-      </app-cash-flow-form>
 
       @let totals = filteredTotals()!;
       <app-bento>

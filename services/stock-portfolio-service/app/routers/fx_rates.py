@@ -1,15 +1,45 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..services import fx_rate_service
+from ..services.quotes import fx_rate_service as quotes_fx_service
 
 router = APIRouter(prefix="/api/portfolio/fx", tags=["Portfolio"])
+
+
+class FxRateLookupResponse(BaseModel):
+    currency: str
+    date: date
+    rate_to_twd: Decimal | None
+
+
+@router.get("/rate", response_model=FxRateLookupResponse)
+def lookup_fx_rate(
+    currency: str = Query(..., min_length=3, max_length=3),
+    on: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> FxRateLookupResponse:
+    """Latest fx_rates.rate_to_twd on or before ``on`` (defaults today).
+
+    Drives the add-transaction form's FX auto-fill. Returns ``rate_to_twd:
+    null`` when no coverage exists so the UI can fall back to manual entry.
+    """
+    cur = currency.strip().upper()
+    if cur == "TWD":
+        return FxRateLookupResponse(currency=cur, date=on or date.today(), rate_to_twd=Decimal("1"))
+    base_currency = "GBP" if cur == "GBP" else cur
+    asof = on or date.today()
+    rate = quotes_fx_service.get_rate(db, base_currency, asof)
+    if rate is not None and cur == "GBp":
+        rate = rate / Decimal("100")
+    return FxRateLookupResponse(currency=cur, date=asof, rate_to_twd=rate)
 
 
 class FxRefreshRequest(BaseModel):

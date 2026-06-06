@@ -1,7 +1,9 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
+import { BROKER_LABELS, Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
+
+const BROKER_LABELS_MAP = BROKER_LABELS;
 import { TableModule } from 'primeng/table';
 import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
@@ -243,7 +245,8 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     return !!(q.symbol || q.date_from || q.date_to || q.side);
   }
 
-  private toIsoDate(d: Date): string {
+  private toIsoDate(d: Date | string): string {
+    if (typeof d === 'string') return d.slice(0, 10);
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
@@ -364,15 +367,68 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     return this.selectedMarket() !== 'TW';
   }
 
+  defaultBrokerForMarket(): Broker {
+    return this.selectedMarket() === 'TW' ? 'TW_CATHAY' : 'FOREIGN_MANUAL';
+  }
+
+  readonly formBrokerOptions = (Object.keys(BROKER_LABELS_MAP) as Broker[]).map(broker => ({
+    label: BROKER_LABELS_MAP[broker],
+    value: broker,
+  }));
+
   onMarketChange(market: MarketCode): void {
     this.newTransaction.market = market;
     this.fxSubmitAttempted.set(false);
     if (market === 'TW') {
       delete this.newTransaction.currency;
       delete this.newTransaction.fx_rate_to_twd;
+      this.fxRateAuto.set(null);
+      this.newTransaction.broker = 'TW_CATHAY';
       return;
     }
     this.newTransaction.currency = DEFAULT_CURRENCY_BY_MARKET[market];
+    this.newTransaction.broker = this.defaultBrokerForMarket();
+    this.tryFetchFxRate();
+  }
+
+  onTradeDateChange(): void {
+    this.tryFetchFxRate();
+  }
+
+  onCurrencyChange(): void {
+    this.tryFetchFxRate();
+  }
+
+  readonly fxRateAuto = signal<string | null>(null);
+  readonly fxRateFetching = signal<boolean>(false);
+
+  private tryFetchFxRate(): void {
+    if (!this.isForeignTrade()) {
+      this.fxRateAuto.set(null);
+      return;
+    }
+    const currency = (this.newTransaction.currency ?? '').toUpperCase();
+    const tradeDate = this.newTransaction.trade_date;
+    if (!currency || currency === 'TWD' || !tradeDate) return;
+    const iso = this.toIsoDate(tradeDate as Date | string);
+    this.fxRateFetching.set(true);
+    this.portfolioService.getFxRate(currency, iso).subscribe({
+      next: result => {
+        this.fxRateFetching.set(false);
+        if (result.rate_to_twd == null) {
+          this.fxRateAuto.set(null);
+          return;
+        }
+        this.fxRateAuto.set(String(result.rate_to_twd));
+        if (this.newTransaction.fx_rate_to_twd == null || Number(this.newTransaction.fx_rate_to_twd) <= 0) {
+          this.newTransaction.fx_rate_to_twd = Number(result.rate_to_twd);
+        }
+      },
+      error: () => {
+        this.fxRateFetching.set(false);
+        this.fxRateAuto.set(null);
+      },
+    });
   }
 
   showFxRateError(): boolean {

@@ -23,7 +23,6 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
 import {
   ExDividendRecord,
-  BrokerCashBalance,
   MarketCode,
   NetworthPoint,
   PortfolioSummary,
@@ -35,7 +34,6 @@ import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
-import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 
 type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
 
@@ -52,7 +50,6 @@ type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
     BentoComponent,
     PctBadgeComponent,
     NativeAmountPipe,
-    CashFlowFormComponent,
   ],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
@@ -69,8 +66,6 @@ export class PortfolioDashboardComponent implements OnInit {
 
   protected readonly Number = Number;
   readonly summary = signal<PortfolioSummary | null>(null);
-  readonly brokerCashBalances = signal<BrokerCashBalance[]>([]);
-  readonly cashFormVisible = signal<boolean>(false);
   readonly upcomingExDividends = signal<ExDividendRecord[]>([]);
   readonly loading = signal(false);
   readonly range = signal<PortfolioRange>('1Y');
@@ -193,7 +188,6 @@ export class PortfolioDashboardComponent implements OnInit {
   ngOnInit(): void {
     this.loading.set(true);
     this.reloadSummary();
-    this.loadBrokerCashFlows();
     this.portfolioService.refreshQuotes().subscribe({
       next: (response) => {
         if (response?.refresh_scheduled) {
@@ -222,7 +216,6 @@ export class PortfolioDashboardComponent implements OnInit {
       .subscribe(() => {
         this.networthCache.clear();
         this.reloadSummary();
-        this.loadBrokerCashFlows();
         this.loadNetworthHistory();
       });
   }
@@ -350,15 +343,6 @@ export class PortfolioDashboardComponent implements OnInit {
     return `${numeric.toFixed(decimals)} ${currency}`;
   }
 
-  formatBrokerCash(balance: BrokerCashBalance): string {
-    const numeric = Number(balance.balance ?? 0);
-    if (!Number.isFinite(numeric)) return `${balance.balance} ${balance.currency}`;
-    return `${numeric.toLocaleString('en-US', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })} ${balance.currency}`;
-  }
-
   formatXirr(value: number | null | undefined): string {
     if (value == null) return 'N/A';
     return `${(value * 100).toFixed(2)}%`;
@@ -412,24 +396,6 @@ export class PortfolioDashboardComponent implements OnInit {
     this.portfolioService.getUpcomingExDividends().subscribe({
       next: (data) => this.upcomingExDividends.set(data),
       error: () => this.upcomingExDividends.set([]),
-    });
-  }
-
-  openCashForm(): void {
-    this.cashFormVisible.set(true);
-  }
-
-  onCashFlowCreated(): void {
-    this.loadBrokerCashFlows();
-  }
-
-  private loadBrokerCashFlows(): void {
-    this.portfolioService.getBrokerCashFlows().subscribe({
-      next: rows => this.brokerCashBalances.set(rows),
-      error: err => {
-        console.error('Failed to load broker cash flows', err);
-        this.brokerCashBalances.set([]);
-      },
     });
   }
 

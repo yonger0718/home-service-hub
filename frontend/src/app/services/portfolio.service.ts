@@ -208,6 +208,13 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.post<BrokerCashBalance>('/api/portfolio/broker-cash-flows', payload);
   }
 
+  getFxRate(currency: string, on: string): Observable<{ currency: string; date: string; rate_to_twd: string | number | null }> {
+    return this.http.get<{ currency: string; date: string; rate_to_twd: string | number | null }>(
+      '/api/portfolio/fx/rate',
+      { params: new HttpParams().set('currency', currency).set('on', on) },
+    );
+  }
+
   getRecalcStatus(): Observable<RecalcStatus> {
     return this.http.get<RecalcStatus>('/api/portfolio/imports/recalc/status');
   }
