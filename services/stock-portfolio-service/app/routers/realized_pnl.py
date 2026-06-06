@@ -19,6 +19,7 @@ def get_realized_pnl(
     date_to: Optional[date_type] = Query(default=None),
     year: Optional[int] = Query(default=None),
     day_trade_only: bool = Query(default=False),
+    broker: Optional[str] = Query(default=None),
     sort: str = Query(default="trade_date:desc"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=25, ge=1, le=200),
@@ -32,6 +33,7 @@ def get_realized_pnl(
             date_to=date_to,
             year=year,
             day_trade_only=day_trade_only,
+            broker=broker,
             sort=sort,
         )
         filter_scope_total, filter_scope_count, ytd_total, ytd_count = (
@@ -43,6 +45,7 @@ def get_realized_pnl(
                     "date_to": date_to,
                     "year": year,
                     "day_trade_only": day_trade_only,
+                    "broker": broker,
                 },
             )
         )

@@ -56,6 +56,7 @@ describe('PortfolioRealizedPnlComponent', () => {
   let portfolioService: {
     getRealizedPnl: ReturnType<typeof vi.fn>;
     getSymbolNames: ReturnType<typeof vi.fn>;
+    getTransactionBrokers: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
@@ -75,6 +76,7 @@ describe('PortfolioRealizedPnlComponent', () => {
         }),
       ),
       getSymbolNames: vi.fn().mockReturnValue(of({ '2330': '台積電', '2317': '鴻海' })),
+      getTransactionBrokers: vi.fn().mockReturnValue(of([])),
     };
 
     await TestBed.configureTestingModule({

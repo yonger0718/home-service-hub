@@ -36,7 +36,17 @@ def upgrade() -> None:
         "transactions",
         f"broker IS NULL OR broker IN ({BROKER_SQL})",
     )
-    op.execute("UPDATE transactions SET broker='TW_MANUAL' WHERE broker IS NULL")
+    # Market-aware backfill: TW rows default to TW_CATHAY (the only Taiwan
+    # broker actually wired up on day one); everything else gets the
+    # FOREIGN_MANUAL sentinel until a CSV re-import retags it. Using
+    # TW_MANUAL unconditionally would misclassify pre-existing foreign rows
+    # and skew the new per-broker cash/balance filters.
+    op.execute(
+        "UPDATE transactions SET broker='TW_CATHAY' WHERE broker IS NULL AND market='TW'"
+    )
+    op.execute(
+        "UPDATE transactions SET broker='FOREIGN_MANUAL' WHERE broker IS NULL"
+    )
     op.create_table(
         "broker_cash_flows",
         sa.Column("id", sa.Integer(), nullable=False),

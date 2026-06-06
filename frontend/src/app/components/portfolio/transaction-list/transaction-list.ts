@@ -273,7 +273,15 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   openNew() {
     this.isEdit.set(false);
     this.fxSubmitAttempted.set(false);
-    this.newTransaction = { type: TransactionType.BUY, market: 'TW', quantity: 0, price: 0, fee: 0, tax: 0 };
+    this.newTransaction = {
+      type: TransactionType.BUY,
+      market: 'TW',
+      quantity: 0,
+      price: 0,
+      fee: 0,
+      tax: 0,
+      broker: 'TW_CATHAY',
+    };
     this.showDialog.set(true);
   }
 
@@ -371,10 +379,19 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     return this.selectedMarket() === 'TW' ? 'TW_CATHAY' : 'FOREIGN_MANUAL';
   }
 
-  readonly formBrokerOptions = (Object.keys(BROKER_LABELS_MAP) as Broker[]).map(broker => ({
-    label: BROKER_LABELS_MAP[broker],
-    value: broker,
-  }));
+  private readonly TW_BROKERS: Broker[] = ['TW_CATHAY', 'TW_SINOPAC', 'TW_MANUAL'];
+  private readonly FOREIGN_BROKERS: Broker[] = ['IB', 'FIRSTRADE', 'SCHWAB', 'FOREIGN_MANUAL'];
+
+  /** Restrict the broker dropdown to the brokers whose cash legs route to the
+   * selected market. Without this guard, picking TW_SINOPAC on a TW trade
+   * still routes settlement to the default Cathay TWD account (legacy code
+   * path), silently corrupting the ledger. Same idea for foreign markets:
+   * TW_* brokers don't track non-TWD cash. */
+  formBrokerOptionsForMarket(): { label: string; value: Broker }[] {
+    const market = this.selectedMarket();
+    const allowed = market === 'TW' ? this.TW_BROKERS : this.FOREIGN_BROKERS;
+    return allowed.map(broker => ({ label: BROKER_LABELS_MAP[broker], value: broker }));
+  }
 
   onMarketChange(market: MarketCode): void {
     this.newTransaction.market = market;
@@ -401,6 +418,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   readonly fxRateAuto = signal<string | null>(null);
   readonly fxRateFetching = signal<boolean>(false);
+  private fxFetchSeq = 0;
 
   private tryFetchFxRate(): void {
     if (!this.isForeignTrade()) {
@@ -411,9 +429,11 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     const tradeDate = this.newTransaction.trade_date;
     if (!currency || currency === 'TWD' || !tradeDate) return;
     const iso = this.toIsoDate(tradeDate as Date | string);
+    const seq = ++this.fxFetchSeq;
     this.fxRateFetching.set(true);
     this.portfolioService.getFxRate(currency, iso).subscribe({
       next: result => {
+        if (seq !== this.fxFetchSeq) return;
         this.fxRateFetching.set(false);
         if (result.rate_to_twd == null) {
           this.fxRateAuto.set(null);
@@ -425,6 +445,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         }
       },
       error: () => {
+        if (seq !== this.fxFetchSeq) return;
         this.fxRateFetching.set(false);
         this.fxRateAuto.set(null);
       },

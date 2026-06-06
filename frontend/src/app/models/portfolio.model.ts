@@ -346,6 +346,7 @@ export interface RealizedPnlQuery {
   date_to?: string | null;
   year?: number | null;
   day_trade_only?: boolean | null;
+  broker?: Broker | null;
   sort?: string;
 }
 

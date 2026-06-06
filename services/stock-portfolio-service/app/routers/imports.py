@@ -66,6 +66,19 @@ def _serialize_result(
     recalc_scheduled: bool = False,
     csv_format: str = "generic",
 ) -> dict:
+    serialized_rows = _serialize_parse(parsed)
+    # Broker imports surface a separate UI that expects a ``counts`` /
+    # ``transactions`` / ``cash_flows`` / ``detected_broker`` shape — derive
+    # these from the same ParseResult so both UIs read the same response.
+    transactions = [
+        row for row in serialized_rows
+        if row["payload"].get("_kind") == "transaction" or row["payload"].get("_kind") is None
+    ]
+    cash_flows = [
+        row for row in serialized_rows
+        if row["payload"].get("_kind") == "cash_flow"
+    ]
+    detected_broker = csv_format if csv_format != "generic" else None
     return {
         "parsed": result.parsed,
         "created": result.created,
@@ -86,9 +99,17 @@ def _serialize_result(
         "would_rehash": result.would_rehash,
         "would_insert": result.would_insert,
         "would_skip_duplicate": result.would_skip_duplicate,
-        "rows": _serialize_parse(parsed),
+        "rows": serialized_rows,
         "recalc_scheduled": recalc_scheduled,
         "csv_format": csv_format,
+        "detected_broker": detected_broker,
+        "transactions": transactions,
+        "cash_flows": cash_flows,
+        "counts": {
+            "created": result.created,
+            "skipped": result.skipped_duplicates,
+            "rejected": len(result.errors),
+        },
     }
 
 

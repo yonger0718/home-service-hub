@@ -12,12 +12,14 @@ describe('PortfolioRealizedPnlComponent foreign columns', () => {
   let portfolioService: {
     getRealizedPnl: ReturnType<typeof vi.fn>;
     getSymbolNames: ReturnType<typeof vi.fn>;
+    getTransactionBrokers: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
     portfolioService = {
       getRealizedPnl: vi.fn().mockReturnValue(of(paged([event()]))),
       getSymbolNames: vi.fn().mockReturnValue(of({})),
+      getTransactionBrokers: vi.fn().mockReturnValue(of([])),
     };
 
     await TestBed.configureTestingModule({

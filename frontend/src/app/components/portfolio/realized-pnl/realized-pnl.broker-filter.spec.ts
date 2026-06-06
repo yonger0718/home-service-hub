@@ -12,12 +12,14 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
   let portfolioService: {
     getRealizedPnl: ReturnType<typeof vi.fn>;
     getSymbolNames: ReturnType<typeof vi.fn>;
+    getTransactionBrokers: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
     portfolioService = {
       getRealizedPnl: vi.fn().mockReturnValue(of(paged([]))),
       getSymbolNames: vi.fn().mockReturnValue(of({})),
+      getTransactionBrokers: vi.fn().mockReturnValue(of([])),
     };
 
     await TestBed.configureTestingModule({
@@ -41,7 +43,7 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
               <article class="event-row">
                 <span class="symbol">{{ event.symbol }}</span>
                 @if (showBrokerColumn() && showBrokerBadge(event)) {
-                  <span class="broker-badge">{{ event.broker }}</span>
+                  <span class="broker-badge">{{ brokerLabel(event.broker) }}</span>
                 }
               </article>
             }
@@ -52,6 +54,7 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
   });
 
   it('renders broker filter chips for mixed broker datasets', () => {
+    portfolioService.getTransactionBrokers.mockReturnValue(of(['IB', 'FIRSTRADE', 'TW_CATHAY']));
     portfolioService.getRealizedPnl.mockReturnValue(of(paged([
       event({ symbol: 'IB1', broker: 'IB' }),
       event({ symbol: 'FT1', broker: 'FIRSTRADE' }),
@@ -67,7 +70,8 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
     expect(fixture.nativeElement.textContent).toContain('Firstrade');
   });
 
-  it('filters rows when selecting a broker chip', () => {
+  it('refetches with broker query when selecting a chip', () => {
+    portfolioService.getTransactionBrokers.mockReturnValue(of(['IB', 'FIRSTRADE']));
     portfolioService.getRealizedPnl.mockReturnValue(of(paged([
       event({ symbol: 'IB1', broker: 'IB' }),
       event({ symbol: 'FT1', broker: 'FIRSTRADE' }),
@@ -78,15 +82,18 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
     const ibButton = Array.from(fixture.nativeElement.querySelectorAll('.broker-filter button') as NodeListOf<HTMLButtonElement>)
       .find(button => button.textContent?.trim() === 'IB')!;
     expect(ibButton).toBeDefined();
+    portfolioService.getRealizedPnl.mockClear();
     ibButton.click();
     fixture.detectChanges();
 
     expect(fixture.componentInstance.selectedBroker()).toBe('IB');
-    expect(fixture.nativeElement.textContent).toContain('IB1');
-    expect(fixture.nativeElement.textContent).not.toContain('FT1');
+    const lastCall = portfolioService.getRealizedPnl.mock.calls.at(-1)?.[0];
+    expect(lastCall?.broker).toBe('IB');
+    expect(lastCall?.offset).toBe(0);
   });
 
   it('shows broker filter chip for TW manual rows labeled as 國泰', () => {
+    portfolioService.getTransactionBrokers.mockReturnValue(of(['TW_MANUAL']));
     portfolioService.getRealizedPnl.mockReturnValue(of(paged([
       event({ symbol: 'TW1', broker: 'TW_MANUAL' }),
       event({ symbol: 'TW2', broker: null }),
@@ -97,7 +104,7 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
 
     const buttons = Array.from(fixture.nativeElement.querySelectorAll('.broker-filter button')) as HTMLButtonElement[];
     expect(buttons.map(button => button.textContent?.trim())).toEqual(['全部', '國泰']);
-    expect(fixture.nativeElement.querySelector('.broker-badge')?.textContent?.trim()).toBe('TW_MANUAL');
+    expect(fixture.nativeElement.querySelector('.broker-badge')?.textContent?.trim()).toBe('國泰');
   });
 });
 

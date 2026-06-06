@@ -110,11 +110,10 @@
     <div class="col-6">
       <label class="d-block mb-1 small fw-bold">券商</label>
       <p-select
-        [options]="formBrokerOptions"
+        [options]="formBrokerOptionsForMarket()"
         optionLabel="label"
         optionValue="value"
-        [ngModel]="newTransaction.broker ?? defaultBrokerForMarket()"
-        (ngModelChange)="newTransaction.broker = $event"
+        [(ngModel)]="newTransaction.broker"
         [fluid]="true"
         appendTo="body">
       </p-select>

@@ -275,6 +275,7 @@ def _filtered_events(
     date_to: Optional[date_type] = None,
     year: Optional[int] = None,
     day_trade_only: bool = False,
+    broker: Optional[str] = None,
 ) -> list[RealizedPnlEvent]:
     effective_from = date_from
     effective_to = date_to
@@ -300,6 +301,8 @@ def _filtered_events(
         filtered = [event for event in filtered if event.trade_date <= effective_to]
     if day_trade_only:
         filtered = [event for event in filtered if event.is_day_trade]
+    if broker:
+        filtered = [event for event in filtered if event.broker == broker]
     return filtered
 
 
@@ -329,6 +332,7 @@ def compute_events(
     date_to: Optional[date_type] = None,
     year: Optional[int] = None,
     day_trade_only: bool = False,
+    broker: Optional[str] = None,
     sort: str = "trade_date:desc",
 ) -> list[RealizedPnlEvent]:
     events = list(iter_realized_events(_load_adjusted_transactions(session)))
@@ -339,6 +343,7 @@ def compute_events(
         date_to=date_to,
         year=year,
         day_trade_only=day_trade_only,
+        broker=broker,
     )
     return _sort_events(filtered, sort)
 
@@ -355,6 +360,7 @@ def compute_summary(
         date_to=filter_query.get("date_to"),  # type: ignore[arg-type]
         year=filter_query.get("year"),  # type: ignore[arg-type]
         day_trade_only=bool(filter_query.get("day_trade_only", False)),
+        broker=filter_query.get("broker"),  # type: ignore[arg-type]
     )
     current_year = date_type.today().year
     ytd_events = [

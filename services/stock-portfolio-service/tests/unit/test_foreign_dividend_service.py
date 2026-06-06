@@ -101,7 +101,7 @@ def test_refresh_today_skips_missing_fx_and_isolates_ticker_failure(
     assert result["skipped"] == 2
     assert db_session.query(models.Dividend).count() == 2
     assert "MSFT" in FakeTicker.calls
-    assert "VOD" in FakeTicker.calls
+    assert "VOD.L" in FakeTicker.calls
 
 
 def test_refresh_today_does_not_fetch_closed_positions(db_session, monkeypatch) -> None:

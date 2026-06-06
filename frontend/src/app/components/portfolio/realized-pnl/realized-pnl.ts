@@ -77,6 +77,10 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   searchInput = signal<string>('');
   selectedYear = signal<YearPreset>(null);
   selectedBroker = signal<'ALL' | Broker>('ALL');
+  /** Catalog of brokers present in the user's data, fetched independently of
+   * the paginated/filtered events list so chips don't disappear after the
+   * server narrows results to a single broker. */
+  readonly brokerCatalog = signal<Broker[]>([]);
   expandedKey = signal<string | null>(null);
   summary = signal<RealizedPnlSummary>({
     filter_scope_total: '0',
@@ -101,11 +105,10 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   readonly showBrokerColumn = computed(() => this.availableBrokers().length > 0);
   readonly showBrokerFilter = computed(() => this.availableBrokers().length > 0);
 
-  readonly filteredEvents = computed(() => {
-    const broker = this.selectedBroker();
-    const rows = this.events();
-    return broker === 'ALL' ? rows : rows.filter(event => event.broker === broker);
-  });
+  /** Server applies the broker filter via query param so pagination total +
+   * summary stay accurate. Kept as a passthrough so existing template
+   * bindings to filteredEvents() don't need to change. */
+  readonly filteredEvents = computed(() => this.events());
 
   dateRange: Date[] | null = null;
   query = signal<RealizedPnlQuery>({
@@ -119,6 +122,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
+    this.portfolioService.getTransactionBrokers().subscribe(brokers => this.brokerCatalog.set(brokers));
     this.fetch();
   }
 
@@ -212,8 +216,15 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   }
 
   selectBrokerFilter(value: string): void {
-    this.selectedBroker.set(value as 'ALL' | Broker);
+    const next = value as 'ALL' | Broker;
+    this.selectedBroker.set(next);
     this.expandedKey.set(null);
+    this.query.set({
+      ...this.query(),
+      broker: next === 'ALL' ? null : next,
+      offset: 0,
+    });
+    this.fetch();
   }
 
   showBrokerBadge(event: RealizedPnlEvent): boolean {
@@ -272,15 +283,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   }
 
   private availableBrokers(): Broker[] {
-    const seen = new Set<Broker>();
-    const brokers: Broker[] = [];
-    for (const event of this.events()) {
-      const broker = event.broker;
-      if (!broker || seen.has(broker)) continue;
-      seen.add(broker);
-      brokers.push(broker);
-    }
-    return brokers;
+    return this.brokerCatalog();
   }
 
   private ensureSelectedBroker(): void {

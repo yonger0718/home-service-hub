@@ -27,6 +27,26 @@ _PHASE4_TO_TXN_TYPE: dict[schemas.BrokerCashFlowType, CashTxnType] = {
     schemas.BrokerCashFlowType.FEE: CashTxnType.FEE,
 }
 
+_OUTFLOW_TYPES: set[schemas.BrokerCashFlowType] = {
+    schemas.BrokerCashFlowType.WITHDRAWAL,
+    schemas.BrokerCashFlowType.FEE,
+}
+
+
+def _normalize_outflow_sign(
+    type_: schemas.BrokerCashFlowType, amount: Decimal
+) -> Decimal:
+    """Withdrawals and fees must reduce balance.
+
+    list_balances() sums broker_cash_flows.amount directly, so an outflow
+    entered as a positive number would inflate the balance. Mirror the
+    cash_account_service.normalize_amount convention by forcing outflows
+    negative regardless of how the user entered them.
+    """
+    if type_ in _OUTFLOW_TYPES:
+        return -amount.copy_abs()
+    return amount
+
 
 @router.get("/broker-cash-flows", response_model=list[schemas.BrokerCashBalance])
 def get_broker_cash_flows(
@@ -101,7 +121,7 @@ def create_broker_cash_flow(
                     broker=broker_value,
                     date=payload.date,
                     type=payload.type.value,
-                    amount=payload.amount,
+                    amount=_normalize_outflow_sign(payload.type, payload.amount),
                     currency=payload.currency,
                     fx_rate_to_twd=payload.fx_rate_to_twd,
                     note=payload.note,

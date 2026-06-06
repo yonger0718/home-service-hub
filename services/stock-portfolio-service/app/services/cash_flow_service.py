@@ -184,36 +184,39 @@ def get_broker_balance(db: Session, broker: str, as_of_date: date) -> Decimal:
 
 
 def _legacy_tw_cathay_balance(db: Session, *, as_of_date: date) -> Decimal | None:
-    """Sum of cash_transaction rows on the legacy Cathay TWD account.
+    """opening_balance + sum(cash_transaction) for the legacy Cathay TWD account.
 
     The legacy ledger pre-dates Phase 4 broker_cash_flows and is still the
     source of truth for TW deposits/withdrawals/dividend_cash plus the
     pre-materialized buy_settle/sell_settle/fee/tax legs. We virtualize a
     single (TW_CATHAY, TWD) row in ``list_balances`` so the dashboard tile
-    and the accounts page render the same figure.
+    and the accounts page render the same figure. opening_balance must be
+    included so fresh installs (no cash_transaction history) still show the
+    user-entered seed.
     """
     from ..models.broker_account import BrokerAccount, BrokerEnum
     from ..models.cash_transaction import CashTransaction
 
-    account_id = (
-        db.query(BrokerAccount.id)
+    row = (
+        db.query(BrokerAccount.id, BrokerAccount.opening_balance)
         .filter(
             BrokerAccount.broker == BrokerEnum.CATHAY,
             BrokerAccount.currency == "TWD",
             BrokerAccount.is_active.is_(True),
         )
         .order_by(BrokerAccount.id.asc())
-        .scalar()
+        .first()
     )
-    if account_id is None:
+    if row is None:
         return None
-    total = (
+    account_id, opening_balance = row
+    txn_sum = (
         db.query(func.coalesce(func.sum(CashTransaction.amount), 0))
         .filter(CashTransaction.account_id == account_id)
         .filter(CashTransaction.txn_date <= as_of_date)
         .scalar()
     )
-    return Decimal(total or "0")
+    return Decimal(opening_balance or "0") + Decimal(txn_sum or "0")
 
 
 def list_balances(db: Session, *, as_of_date: date | None = None) -> list[dict[str, object]]:

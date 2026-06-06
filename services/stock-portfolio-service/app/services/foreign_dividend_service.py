@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 
 import structlog
@@ -10,8 +10,44 @@ from sqlalchemy.orm import Session
 from ..models import portfolio as models
 from ..models.fx_rate import FXRate
 from . import portfolio_service
+from .quotes.yfinance_fetcher import _SYMBOL_SUFFIX
 
 log = structlog.get_logger(__name__)
+
+
+def _to_yfinance_symbol(symbol: str, market: str) -> str:
+    """Reproduce the quote-fetcher convention: append .L for LSE, no suffix for US.
+
+    Canonical symbols in this codebase strip the .L suffix; the quote and
+    dividend fetchers add it back before calling yf.Ticker.
+    """
+    suffix = _SYMBOL_SUFFIX.get(market, "")
+    return f"{symbol}{suffix}"
+
+
+def _quantity_held_at(
+    transactions: list, symbol: str, market: str, ex_date: date
+) -> Decimal:
+    """Sum signed quantity for (symbol, market) where trade_date <= ex_date.
+
+    yfinance returns the ticker's whole dividend series; we only want to
+    record ex-dates where the user actually owned shares so XIRR and TWD
+    cash totals reflect what was actually received.
+    """
+    total = Decimal("0")
+    for txn in transactions:
+        if txn.symbol != symbol or (txn.market or "") != market:
+            continue
+        trade_date = txn.trade_date
+        trade_d = trade_date.date() if hasattr(trade_date, "date") else trade_date
+        if trade_d > ex_date:
+            continue
+        qty = Decimal(str(txn.quantity or 0))
+        if txn.type == models.TransactionType.BUY:
+            total += qty
+        elif txn.type == models.TransactionType.SELL:
+            total -= qty
+    return total
 
 
 def _open_foreign_positions(db: Session) -> list[tuple[str, str]]:
@@ -71,13 +107,17 @@ def refresh_today(db: Session) -> dict[str, object]:
     skipped = 0
     errors: list[str] = []
     positions = _open_foreign_positions(db)
+    transactions = portfolio_service._load_adjusted_transactions(db)
     for symbol, market in positions:
         try:
-            ticker = yf.Ticker(symbol)
+            ticker = yf.Ticker(_to_yfinance_symbol(symbol, market))
             currency = _fast_info_currency(ticker)
             dividends = ticker.dividends
             for index, raw_amount in dividends.items():
                 ex_date = index.date() if hasattr(index, "date") else index
+                quantity = _quantity_held_at(transactions, symbol, market, ex_date)
+                if quantity <= 0:
+                    continue
                 fx_rate = _exact_fx_rate(db, currency, ex_date)
                 if _fx_lookup_currency(currency) != "TWD" and fx_rate is None:
                     skipped += 1
@@ -89,7 +129,8 @@ def refresh_today(db: Session) -> dict[str, object]:
                         reason="missing_fx",
                     )
                     continue
-                amount = _decimal_amount(raw_amount)
+                per_share = _decimal_amount(raw_amount)
+                amount = per_share * quantity
                 ex_dt = datetime.combine(ex_date, time.min, tzinfo=timezone.utc)
                 existing = (
                     db.query(models.Dividend)
@@ -110,7 +151,7 @@ def refresh_today(db: Session) -> dict[str, object]:
                             received_date=ex_dt,
                             fee=Decimal("0"),
                             tax=Decimal("0"),
-                            cash_dividend_per_share=amount,
+                            cash_dividend_per_share=per_share,
                             source="yfinance",
                         )
                     )
@@ -119,7 +160,7 @@ def refresh_today(db: Session) -> dict[str, object]:
                     existing.amount = amount
                     existing.currency = currency
                     existing.fx_rate_to_twd = fx_rate
-                    existing.cash_dividend_per_share = amount
+                    existing.cash_dividend_per_share = per_share
                     existing.source = "yfinance"
                     updated += 1
             db.commit()
