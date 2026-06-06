@@ -9,11 +9,11 @@ export type HoldingKey = `${string}|${MarketCode}`;
 
 export interface HoldingIdentity {
   symbol: string;
-  market: MarketCode | string;
+  market: MarketCode;
 }
 
 export function holdingKey(h: HoldingIdentity): HoldingKey {
-  return `${h.symbol}|${h.market}` as HoldingKey;
+  return `${h.symbol}|${h.market}`;
 }
 
 export interface Transaction {
@@ -160,6 +160,10 @@ export interface StockHolding {
   native_close: number | string | null;
   native_currency: string | null;
   live_fx_rate_to_twd: number | string | null;
+  avg_cost_native: number | string | null;
+  market_value_native: number | string | null;
+  unrealized_pnl_native: number | string | null;
+  unrealized_pnl_percent_native: number | string | null;
   xirr?: number;              // 年化報酬率，e.g. 0.1523 = 15.23%
   xirr_1m: number | null;
   xirr_3m: number | null;

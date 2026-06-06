@@ -4,7 +4,7 @@
 - [x] 1.2 Extend `Transaction` in the same file with `market?: 'TW' | 'US' | 'LSE'`, `currency?: string`, `fx_rate_to_twd?: number | string`
 - [x] 1.3 Add a `RealizedPnlEvent`-shaped type (or extend existing) with `market`, `native_proceeds`, `native_cost`, `native_currency` mirroring the Phase 2 backend response
 - [x] 1.4 Add exported helper `holdingKey(h: { symbol: string; market: string }): string` returning `\`${symbol}|${market}\`` in `portfolio.model.ts`
-- [x] 1.5 Add unit test `tests/unit/holding-key.spec.ts` covering: same symbol two markets yield two keys; bare-symbol input rejected at type level
+- [x] 1.5 Add unit test `frontend/src/app/models/holding-key.spec.ts` covering: same symbol two markets yield two keys; bare-symbol input rejected at type level
 
 ## 2. nativeAmount pipe
 

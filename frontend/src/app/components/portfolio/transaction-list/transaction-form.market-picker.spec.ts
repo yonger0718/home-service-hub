@@ -74,9 +74,9 @@ describe('PortfolioTransactionListComponent market picker', () => {
     };
     fixture.nativeElement.querySelector('.save').click();
 
-    expect(portfolioService.createTransaction).toHaveBeenCalledWith(
-      expect.not.objectContaining({ currency: expect.anything(), fx_rate_to_twd: expect.anything() }),
-    );
+    const payload = portfolioService.createTransaction.mock.calls[0][0];
+    expect(payload).not.toHaveProperty('currency');
+    expect(payload).not.toHaveProperty('fx_rate_to_twd');
   });
 
   it('prefills USD for US trades', () => {

@@ -114,6 +114,45 @@ describe('PortfolioDashboardComponent holding groups', () => {
     );
   });
 
+  it('exposes one filter option per present market plus All, and filters rows on selection', () => {
+    portfolioService.getSummary.mockReturnValue(of(buildSummary([
+      buildHolding({ symbol: '2330', market: 'TW' }),
+      buildHolding({ symbol: 'AAPL', market: 'US', native_close: 190.5, native_currency: 'USD' }),
+      buildHolding({ symbol: 'VOD', market: 'LSE', native_close: 8050, native_currency: 'GBp' }),
+    ])));
+    const fixture = TestBed.createComponent(PortfolioDashboardComponent);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+
+    expect(component.marketFilterOptions().map(o => o.value)).toEqual(['ALL', 'TW', 'US', 'LSE']);
+    expect(component.filteredHoldings()).toHaveLength(3);
+    expect(component.showMarketGroups()).toBe(true);
+
+    component.selectMarketFilter('US');
+    expect(component.filteredHoldings().map(h => h.symbol)).toEqual(['AAPL']);
+    expect(component.showMarketGroups()).toBe(false);
+  });
+
+  it('recomputes KPI totals from filtered holdings when a market is selected', () => {
+    portfolioService.getSummary.mockReturnValue(of(buildSummary([
+      buildHolding({ symbol: '2330', market: 'TW', market_value: 6500, unrealized_pnl: 1500, total_dividends: 100, avg_cost: 500, total_quantity: 10 }),
+      buildHolding({ symbol: 'AAPL', market: 'US', market_value: 5994, unrealized_pnl: 200, total_dividends: 40, avg_cost: 30, total_quantity: 10 }),
+    ])));
+    const fixture = TestBed.createComponent(PortfolioDashboardComponent);
+    fixture.detectChanges();
+    const component = fixture.componentInstance;
+
+    expect(component.isMarketFiltered()).toBe(false);
+
+    component.selectMarketFilter('US');
+    expect(component.isMarketFiltered()).toBe(true);
+    const us = component.filteredTotals()!;
+    expect(us.total_market_value).toBeCloseTo(5994, 1);
+    expect(us.total_unrealized_pnl).toBeCloseTo(200, 1);
+    expect(us.total_dividends).toBeCloseTo(40, 1);
+    expect(us.total_cost).toBeCloseTo(300, 1);
+  });
+
   it('keeps market grouping when rows are sorted by unrealized PnL', () => {
     const component = TestBed.createComponent(PortfolioDashboardComponent).componentInstance;
     const grouped = component.groupHoldingsByMarket([
@@ -167,6 +206,10 @@ function buildHolding(overrides: Partial<StockHolding> = {}): StockHolding {
     native_close: 650,
     native_currency: 'TWD',
     live_fx_rate_to_twd: null,
+    avg_cost_native: null,
+    market_value_native: null,
+    unrealized_pnl_native: null,
+    unrealized_pnl_percent_native: null,
     xirr: 0.5,
     xirr_1m: 0.01,
     xirr_3m: 0.0321,

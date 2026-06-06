@@ -295,7 +295,10 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     const gross = Number(t.price) * Number(t.quantity);
     const fee = Number(t.fee || 0);
     const tax = Number(t.tax || 0);
-    return t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
+    const native = t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
+    if (!t.market || t.market === 'TW') return native;
+    const fx = Number(t.fx_rate_to_twd ?? 0);
+    return fx > 0 ? native * fx : native;
   }
 
   allInUnitPrice(t: Transaction): number {

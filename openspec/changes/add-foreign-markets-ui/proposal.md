@@ -27,4 +27,4 @@ Phases 1 and 2 of the foreign-market rollout shipped end-to-end backend support 
 - APIs: consumed only; no backend signature changes. Phase 2 response fields (`market`, `native_close`, `native_currency`, `live_fx_rate_to_twd`) move from "ignored" to "rendered".
 - Dependencies: existing Angular 21 + PrimeNG + Bootstrap 5 only — no new packages.
 - Tests: Vitest unit tests for the new components and the composite-key contract; existing dashboard tests updated to reflect the new column shape.
-- Risk: composite-key cutover is a frontend-only invariant change — any cached selection or chart that still keys on `symbol` will silently break, so every consumer of `HoldingsService` must be migrated in the same change.
+- Risk: composite-key cutover is a frontend-only invariant change — any cached selection or chart that still keys on `symbol` will silently break, so every consumer of `PortfolioService` must be migrated in the same change.

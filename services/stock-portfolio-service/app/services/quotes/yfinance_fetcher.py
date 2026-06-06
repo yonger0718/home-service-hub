@@ -240,3 +240,100 @@ def refresh_daily_ohlc(db: Session, items: list[tuple[str, str]]) -> RefreshResu
         )
     db.commit()
     return RefreshResult(ok_count=len(rows), skipped_count=len(errors), errors=errors)
+
+
+def fetch_history(
+    items: list[tuple[str, str]],
+    period: str = "1mo",
+) -> tuple[list[QuoteRow], list[str]]:
+    """Fetch every available daily OHLC row over ``period`` for each (symbol, market).
+
+    Same dispatch + per-ticker isolation as :func:`fetch`, but emits one
+    :class:`QuoteRow` per trading day instead of only the latest.
+    """
+    rows: list[QuoteRow] = []
+    errors: list[str] = []
+
+    grouped: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    for symbol, market in _normalize_items(items):
+        if market not in _SYMBOL_SUFFIX:
+            _skip(symbol, f"unsupported market {market}", errors)
+            continue
+        grouped[market].append((symbol, market, _yf_symbol(symbol, market)))
+
+    for market_items in grouped.values():
+        yf_symbols = [yf_symbol for _symbol, _market, yf_symbol in market_items]
+        try:
+            history = yf.download(
+                yf_symbols,
+                period=period,
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=False,
+                progress=False,
+                threads=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            for symbol, _market, yf_symbol in market_items:
+                _skip(symbol, f"{yf_symbol} download failed: {exc}", errors)
+            continue
+
+        for symbol, market, yf_symbol in market_items:
+            try:
+                meta = _meta_for(yf_symbol)
+                currency = meta.get("currency")
+                if not isinstance(currency, str) or not currency.strip():
+                    raise ValueError("missing currency")
+                frame = _frame_for_symbol(history, yf_symbol, len(market_items))
+                for row_index, row in frame.iterrows():
+                    close_raw = row.get("Close")
+                    if close_raw is None or pd.isna(close_raw):
+                        continue
+                    rows.append(
+                        QuoteRow(
+                            symbol=symbol,
+                            market=market,
+                            date=_date_from_index(row_index),
+                            open=_decimal_or_none(row.get("Open")),
+                            high=_decimal_or_none(row.get("High")),
+                            low=_decimal_or_none(row.get("Low")),
+                            close=_decimal_required(close_raw, "close"),
+                            volume=(
+                                int(row.get("Volume"))
+                                if row.get("Volume") is not None and not pd.isna(row.get("Volume"))
+                                else None
+                            ),
+                            currency=currency.strip(),
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001 - per-ticker isolation
+                _skip(symbol, str(exc), errors)
+
+    return rows, errors
+
+
+def backfill_range(
+    db: Session,
+    items: list[tuple[str, str]],
+    period: str = "1mo",
+) -> RefreshResult:
+    """Backfill ``price_history`` with ``period`` of daily OHLC per item."""
+    rows, errors = fetch_history(items, period=period)
+    for row in rows:
+        db.merge(
+            PriceHistory(
+                symbol=row.symbol,
+                market=row.market,
+                date=row.date,
+                open=row.open,
+                high=row.high,
+                low=row.low,
+                close=row.close,
+                volume=row.volume,
+                turnover=None,
+                currency=row.currency,
+                source="yfinance",
+            )
+        )
+    db.commit()
+    return RefreshResult(ok_count=len(rows), skipped_count=len(errors), errors=errors)
