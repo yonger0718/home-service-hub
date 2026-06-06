@@ -323,8 +323,12 @@ export interface RealizedPnlEvent {
   proceeds_net: string;
   cost_out: string;
   realized_pnl: string;
+  native_sell_price?: string | number | null;
+  native_proceeds_gross?: string | number | null;
   native_proceeds: string | number | null;
   native_cost: string | number | null;
+  native_fee?: string | number | null;
+  native_tax?: string | number | null;
   native_currency: string | null;
   is_day_trade: boolean;
   position_side: PositionSide;

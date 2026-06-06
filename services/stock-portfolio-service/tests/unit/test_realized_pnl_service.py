@@ -428,6 +428,14 @@ def test_usd_realized_pnl_uses_frozen_fx_per_leg(db_session) -> None:
     assert event.cost_out == Decimal("32000.0")
     assert event.proceeds_gross == Decimal("36300.0")
     assert event.realized_pnl == Decimal("4300.0")
+    # Native fields preserve the USD numbers so the UI can render foreign
+    # rows in their own currency rather than the FX-converted TWD totals.
+    assert event.market == "US"
+    assert event.native_currency == "USD"
+    assert event.native_sell_price == Decimal("110")
+    assert event.native_proceeds_gross == Decimal("1100")
+    assert event.native_proceeds == Decimal("1100")
+    assert event.native_cost == Decimal("1000")
 
 
 def test_foreign_realized_pnl_converts_fee_and_tax_with_frozen_fx(db_session) -> None:
@@ -464,6 +472,10 @@ def test_foreign_realized_pnl_converts_fee_and_tax_with_frozen_fx(db_session) ->
     assert event.fee == Decimal("32")
     assert event.tax == Decimal("16.0")
     assert event.proceeds_net == Decimal("3472.0")
+    # Native fee/tax stay in the source currency (USD), not the TWD legs.
+    assert event.native_fee == Decimal("1")
+    assert event.native_tax == Decimal("0.5")
+    assert event.native_proceeds == Decimal("108.5")
 
 
 def test_foreign_realized_pnl_requires_frozen_fx(db_session) -> None:

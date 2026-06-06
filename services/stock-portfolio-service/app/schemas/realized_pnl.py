@@ -22,6 +22,14 @@ class RealizedPnlEventOut(BaseModel):
     position_side: Literal["LONG", "SHORT"] = "LONG"
     broker: Optional[str] = None
     note: Optional[str] = None
+    market: str = "TW"
+    native_currency: Optional[str] = None
+    native_sell_price: Optional[Decimal] = None
+    native_proceeds_gross: Optional[Decimal] = None
+    native_proceeds: Optional[Decimal] = None
+    native_cost: Optional[Decimal] = None
+    native_fee: Optional[Decimal] = None
+    native_tax: Optional[Decimal] = None
 
     model_config = ConfigDict(from_attributes=True)
 

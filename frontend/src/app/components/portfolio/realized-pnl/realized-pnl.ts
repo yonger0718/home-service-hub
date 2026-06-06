@@ -45,7 +45,6 @@ const SORT_OPTIONS = [
     ToastModule,
     ToggleSwitchModule,
     TooltipModule,
-    NativeAmountPipe,
     ListItemComponent,
     SegToggleComponent,
   ],
@@ -57,6 +56,7 @@ const SORT_OPTIONS = [
 export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private messageService = inject(MessageService);
+  private nativeAmountPipe = new NativeAmountPipe();
   private currentYear = new Date().getFullYear();
 
   readonly Number = Number;
@@ -262,6 +262,48 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       currency: 'TWD',
       maximumFractionDigits: 0,
     });
+  }
+
+  private isForeign(event: RealizedPnlEvent): boolean {
+    return event.market !== 'TW' && !!event.native_currency;
+  }
+
+  displayAmount(
+    event: RealizedPnlEvent,
+    twdValue: string | number,
+    nativeValue: string | number | null | undefined,
+  ): string {
+    if (!this.isForeign(event)) return this.formatCurrency(twdValue);
+    return this.nativeAmountPipe.transform(nativeValue ?? null, event.native_currency);
+  }
+
+  displayPnl(event: RealizedPnlEvent): string {
+    if (!this.isForeign(event)) return this.formatCurrency(event.realized_pnl);
+    const proceeds = Number(event.native_proceeds ?? 0);
+    const cost = Number(event.native_cost ?? 0);
+    return this.nativeAmountPipe.transform(proceeds - cost, event.native_currency);
+  }
+
+  pnlValueForClass(event: RealizedPnlEvent): number {
+    if (!this.isForeign(event)) return Number(event.realized_pnl);
+    return Number(event.native_proceeds ?? 0) - Number(event.native_cost ?? 0);
+  }
+
+  displaySellPrice(event: RealizedPnlEvent): string {
+    if (!this.isForeign(event)) {
+      return Number(event.sell_price).toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return this.nativeAmountPipe.transform(event.native_sell_price ?? null, event.native_currency);
+  }
+
+  displayAvgCost(event: RealizedPnlEvent): string {
+    if (!this.isForeign(event)) {
+      return Number(event.avg_cost_at_sale).toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    const qty = Number(event.quantity);
+    if (!qty) return this.nativeAmountPipe.transform(null, event.native_currency);
+    const avg = Number(event.native_cost ?? 0) / qty;
+    return this.nativeAmountPipe.transform(avg, event.native_currency);
   }
 
   pnlClass(value: string | number): Record<string, boolean> {
