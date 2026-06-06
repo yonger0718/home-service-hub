@@ -682,6 +682,8 @@ class _ForeignRevalue:
     native_close: Optional[Decimal]
     native_currency: Optional[str]
     live_fx_rate_to_twd: Optional[Decimal]
+    prev_close_twd: Optional[Decimal] = None
+    prev_native_close: Optional[Decimal] = None
 
     @property
     def available(self) -> bool:
@@ -691,14 +693,15 @@ class _ForeignRevalue:
 def _revalue_foreign_holding(db: Session, holding: Dict[str, object]) -> _ForeignRevalue:
     symbol = str(holding["symbol"])
     market = str(holding["market"])
-    row = (
+    rows = (
         db.query(PriceHistory)
         .filter(PriceHistory.symbol == symbol)
         .filter(PriceHistory.market == market)
         .order_by(PriceHistory.date.desc())
-        .first()
+        .limit(2)
+        .all()
     )
-    if row is None or row.close is None:
+    if not rows or rows[0].close is None:
         return _ForeignRevalue(
             market_value_twd=None,
             current_price_twd=None,
@@ -707,6 +710,7 @@ def _revalue_foreign_holding(db: Session, holding: Dict[str, object]) -> _Foreig
             live_fx_rate_to_twd=None,
         )
 
+    row = rows[0]
     native_close = Decimal(row.close)
     native_currency = str(getattr(row, "currency", "TWD") or "TWD").strip()
     if native_currency == "GBp":
@@ -732,12 +736,24 @@ def _revalue_foreign_holding(db: Session, holding: Dict[str, object]) -> _Foreig
     market_value_twd = (Decimal(holding["total_quantity"]) * current_price_twd).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )
+
+    prev_close_twd: Optional[Decimal] = None
+    prev_native_close: Optional[Decimal] = None
+    if len(rows) > 1 and rows[1].close is not None:
+        prev_native_close = Decimal(rows[1].close)
+        prev_in_base = prev_native_close / Decimal("100") if native_currency == "GBp" else prev_native_close
+        prev_close_twd = (prev_in_base * live_fx).quantize(
+            Decimal("0.00000001"), rounding=ROUND_HALF_UP
+        )
+
     return _ForeignRevalue(
         market_value_twd=market_value_twd,
         current_price_twd=current_price_twd,
         native_close=native_close,
         native_currency=native_currency,
         live_fx_rate_to_twd=live_fx,
+        prev_close_twd=prev_close_twd,
+        prev_native_close=prev_native_close,
     )
 
 
@@ -870,12 +886,21 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
 
         # 股利統計
         dividend_map = {}
+        # 原幣股利累計 (foreign only): {key: {currency: total_amount}}. Caller
+        # picks the holding's native_currency entry; missing → KPI hidden.
+        dividend_native_by_cur: dict[tuple[str, str], dict[str, Decimal]] = {}
         for d in dividends:
             key = _symbol_market_key(d)
             if key[1] != "TW" and key not in active_key_set:
                 continue
             amount_twd = _dividend_amount_twd(d)
             dividend_map[key] = dividend_map.get(key, Decimal("0.0")) + amount_twd
+            if key[1] != "TW":
+                native_cur = (getattr(d, "currency", None) or "").strip().upper()
+                if not native_cur:
+                    continue
+                by_cur = dividend_native_by_cur.setdefault(key, {})
+                by_cur[native_cur] = by_cur.get(native_cur, Decimal("0.0")) + Decimal(d.amount)
             # XIRR: dividend inflow
             cf_date = d.ex_dividend_date.date() if hasattr(d.ex_dividend_date, 'date') else d.ex_dividend_date
             cashflows_map.setdefault(key, []).append((cf_date, amount_twd))
@@ -901,18 +926,23 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                     "total_quantity": Decimal("0"),
                     "total_cost": Decimal("0.0"),
                     "total_cost_ex_fee": Decimal("0.0"),
+                    "total_cost_native": Decimal("0.0"),
                 }
 
             h = holdings_map[key]
             price_twd = _row_price_twd(t)
             fee_twd = _row_money_twd(t, t.fee)
             tax_twd = _row_money_twd(t, t.tax)
+            native_price = Decimal(t.price)
             if t.type == models.TransactionType.BUY:
                 h["total_quantity"] += Decimal(t.quantity)
                 # 買入總成本 = (單價 * 股數) + 手續費
                 h["total_cost"] += (Decimal(t.quantity) * price_twd) + fee_twd
                 # 成交均價口徑(不含手續費)
                 h["total_cost_ex_fee"] += (Decimal(t.quantity) * price_twd)
+                # 原幣成本: 原幣單價 + 原幣手續費 (與 total_cost 同樣 frozen-FX 口徑)
+                native_fee = Decimal(t.fee or "0")
+                h["total_cost_native"] += (Decimal(t.quantity) * native_price) + native_fee
                 # XIRR: buy outflow
                 cf_date = t.trade_date.date() if hasattr(t.trade_date, 'date') else t.trade_date
                 outflow = -((Decimal(t.quantity) * price_twd) + fee_twd + tax_twd)
@@ -921,10 +951,12 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 if h["total_quantity"] > 0:
                     avg_unit_cost = h["total_cost"] / Decimal(h["total_quantity"])
                     avg_unit_cost_ex_fee = h["total_cost_ex_fee"] / Decimal(h["total_quantity"])
+                    avg_unit_cost_native = h["total_cost_native"] / Decimal(h["total_quantity"])
                     h["total_quantity"] -= Decimal(t.quantity)
                     # 賣出時減少庫存成本 (簡易已實現計算方式)
                     h["total_cost"] -= (Decimal(t.quantity) * avg_unit_cost)
                     h["total_cost_ex_fee"] -= (Decimal(t.quantity) * avg_unit_cost_ex_fee)
+                    h["total_cost_native"] -= (Decimal(t.quantity) * avg_unit_cost_native)
                     # XIRR: sell inflow
                     cf_date = t.trade_date.date() if hasattr(t.trade_date, 'date') else t.trade_date
                     inflow = (Decimal(t.quantity) * price_twd) - fee_twd - tax_twd
@@ -1084,6 +1116,62 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 stock_flows = sorted(cashflows_map.get(key, []), key=lambda x: x[0])
                 stock_xirr = _calculate_xirr(stock_flows + [(today, market_value)])
 
+            day_change_amount = Decimal("0.0")
+            day_change_percent = Decimal("0.0")
+            day_pnl = Decimal("0.0")
+            if (
+                market_value is not None
+                and revalue.native_close is not None
+                and revalue.prev_native_close is not None
+                and revalue.prev_native_close > 0
+                and revalue.current_price_twd is not None
+                and revalue.prev_close_twd is not None
+            ):
+                native_quant = Decimal("0.0001") if revalue.native_currency == "GBp" else Decimal("0.01")
+                day_change_amount = (revalue.native_close - revalue.prev_native_close).quantize(
+                    native_quant, rounding=ROUND_HALF_UP
+                )
+                day_change_percent = (
+                    ((revalue.native_close - revalue.prev_native_close) / revalue.prev_native_close)
+                    * Decimal("100")
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                day_pnl = (
+                    (revalue.current_price_twd - revalue.prev_close_twd) * total_qty_dec
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                total_day_pnl += day_pnl
+
+            native_quant = Decimal("0.0001") if revalue.native_currency == "GBp" else Decimal("0.01")
+            total_cost_native = Decimal(h.get("total_cost_native") or "0")
+            avg_cost_native: Optional[Decimal] = None
+            market_value_native: Optional[Decimal] = None
+            unrealized_pnl_native: Optional[Decimal] = None
+            unrealized_pnl_percent_native: Optional[Decimal] = None
+            total_dividends_native: Optional[Decimal] = None
+            total_pnl_with_dividend_native: Optional[Decimal] = None
+            if total_qty_dec > 0:
+                avg_cost_native = (total_cost_native / total_qty_dec).quantize(
+                    native_quant, rounding=ROUND_HALF_UP
+                )
+            if revalue.native_close is not None:
+                market_value_native = (total_qty_dec * revalue.native_close).quantize(
+                    native_quant, rounding=ROUND_HALF_UP
+                )
+                if total_cost_native > 0:
+                    pnl_n = market_value_native - total_cost_native
+                    unrealized_pnl_native = pnl_n.quantize(native_quant, rounding=ROUND_HALF_UP)
+                    unrealized_pnl_percent_native = (
+                        (pnl_n / total_cost_native) * Decimal("100")
+                    ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            by_cur = dividend_native_by_cur.get(key)
+            if by_cur and revalue.native_currency:
+                native_div = by_cur.get(revalue.native_currency)
+                if native_div is not None and len(by_cur) == 1:
+                    total_dividends_native = native_div.quantize(native_quant, rounding=ROUND_HALF_UP)
+                    if unrealized_pnl_native is not None:
+                        total_pnl_with_dividend_native = (
+                            unrealized_pnl_native + total_dividends_native
+                        ).quantize(native_quant, rounding=ROUND_HALF_UP)
+
             holdings_list.append(schemas.StockHolding(
                 symbol=symbol,
                 market=market,
@@ -1094,13 +1182,19 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 market_value=market_value,
                 unrealized_pnl=unrealized_pnl,
                 unrealized_pnl_percent=pnl_percent,
-                day_change_amount=Decimal("0.0"),
-                day_change_percent=Decimal("0.0"),
-                day_pnl=Decimal("0.0"),
+                day_change_amount=day_change_amount,
+                day_change_percent=day_change_percent,
+                day_pnl=day_pnl,
                 total_dividends=stock_div,
                 total_pnl_with_dividend=(unrealized_pnl + stock_div).quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_UP
                 ),
+                avg_cost_native=avg_cost_native,
+                market_value_native=market_value_native,
+                unrealized_pnl_native=unrealized_pnl_native,
+                unrealized_pnl_percent_native=unrealized_pnl_percent_native,
+                total_dividends_native=total_dividends_native,
+                total_pnl_with_dividend_native=total_pnl_with_dividend_native,
                 xirr=stock_xirr,
                 xirr_1m=None,
                 xirr_3m=None,

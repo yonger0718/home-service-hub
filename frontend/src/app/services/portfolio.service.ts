@@ -1,8 +1,10 @@
 import { Injectable } from '@angular/core';
 import { HttpParams } from '@angular/common/http';
-import { Observable, Subject } from 'rxjs';
+import { Observable, Subject, tap } from 'rxjs';
 import { BaseApiService } from './base-api.service';
 import {
+  HoldingIdentity,
+  HoldingKey,
   PortfolioSummary,
   Transaction,
   Dividend,
@@ -29,6 +31,8 @@ import {
   BrokerAccount,
   FxFetchResult,
   PatchBrokerAccount,
+  StockHolding,
+  holdingKey,
 } from '../models/portfolio.model';
 
 function buildParams(query: Record<string, unknown>): HttpParams {
@@ -47,6 +51,7 @@ export class PortfolioService extends BaseApiService<Transaction> {
   protected override baseUrl = '/api/portfolio/transactions';
 
   private readonly cashLedgerChangedSubject = new Subject<void>();
+  private readonly holdingsCache = new Map<HoldingKey, StockHolding>();
   readonly cashLedgerChanged$ = this.cashLedgerChangedSubject.asObservable();
 
   notifyCashLedgerChanged(): void {
@@ -54,7 +59,18 @@ export class PortfolioService extends BaseApiService<Transaction> {
   }
 
   getSummary(): Observable<PortfolioSummary> {
-    return this.http.get<PortfolioSummary>('/api/portfolio/summary');
+    return this.http.get<PortfolioSummary>('/api/portfolio/summary').pipe(
+      tap(summary => this.cacheHoldings(summary.holdings)),
+    );
+  }
+
+  getCachedHolding(key: HoldingKey | HoldingIdentity): StockHolding | undefined {
+    const resolved = this.resolveHoldingKey(key);
+    return resolved ? this.holdingsCache.get(resolved) : undefined;
+  }
+
+  getCachedHoldings(): StockHolding[] {
+    return [...this.holdingsCache.values()];
   }
 
   refreshQuotes(): Observable<{
@@ -283,5 +299,19 @@ export class PortfolioService extends BaseApiService<Transaction> {
     asof?: string;
   } = {}): Observable<FxFetchResult> {
     return this.http.post<FxFetchResult>('/api/portfolio/fx/refresh', opts);
+  }
+
+  private cacheHoldings(holdings: StockHolding[]): void {
+    this.holdingsCache.clear();
+    for (const holding of holdings) {
+      this.holdingsCache.set(holdingKey(holding), holding);
+    }
+  }
+
+  private resolveHoldingKey(key: HoldingKey | HoldingIdentity): HoldingKey | undefined {
+    if (typeof key === 'string') {
+      return key.includes('|') ? key as HoldingKey : undefined;
+    }
+    return holdingKey(key);
   }
 }

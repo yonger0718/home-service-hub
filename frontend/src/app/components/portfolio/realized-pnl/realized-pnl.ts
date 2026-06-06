@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ButtonModule } from 'primeng/button';
@@ -15,6 +15,7 @@ import { MessageService } from 'primeng/api';
 
 import { RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { ListItemComponent } from '../../shared/list-item/list-item';
 
 const PAGE_SIZE_KEY = 'portfolio.realizedPnl.pageSize';
@@ -43,6 +44,7 @@ const SORT_OPTIONS = [
     ToastModule,
     ToggleSwitchModule,
     TooltipModule,
+    NativeAmountPipe,
     ListItemComponent,
   ],
   providers: [MessageService],
@@ -79,6 +81,10 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     ytd_total: '0',
     ytd_count: 0,
   });
+
+  readonly showForeignColumns = computed(() =>
+    this.events().some(event => (event.market ?? 'TW') !== 'TW'),
+  );
 
   dateRange: Date[] | null = null;
   query = signal<RealizedPnlQuery>({
@@ -191,6 +197,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     return [
       event.trade_date,
       event.symbol,
+      event.market,
       event.quantity,
       event.sell_price,
       event.realized_pnl,

@@ -89,6 +89,9 @@
             @if (event.position_side === 'SHORT') {
               <span class="short-badge">融券</span>
             }
+            @if (showForeignColumns() && event.market !== 'TW') {
+              <span class="market-badge">{{ event.market }}</span>
+            }
             @if (event.is_day_trade) {
               <span class="day-trade-badge">當沖</span>
             }
@@ -118,6 +121,11 @@
               {{ event.symbol }} ·
             }
             {{ event.trade_date }} · {{ event.quantity | number }} 股 · 售價 {{ Number(event.sell_price) | number:'1.2-2' }}
+            @if (showForeignColumns()) {
+              <span class="native-amount">
+                · Native {{ event.native_proceeds | nativeAmount: event.native_currency }} / {{ event.native_cost | nativeAmount: event.native_currency }}
+              </span>
+            }
           </div>
         </ng-container>
         <ng-container right>

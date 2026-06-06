@@ -20,7 +20,15 @@ import { MessageService } from 'primeng/api';
 
 import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
-import { PortfolioSummary, ExDividendRecord, NetworthPoint, StockHolding } from '../../../models/portfolio.model';
+import {
+  ExDividendRecord,
+  MarketCode,
+  NetworthPoint,
+  PortfolioSummary,
+  StockHolding,
+  holdingKey,
+} from '../../../models/portfolio.model';
+import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { BentoComponent } from '../../ui/bento/bento';
@@ -39,6 +47,7 @@ type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
     SegToggleComponent,
     BentoComponent,
     PctBadgeComponent,
+    NativeAmountPipe,
   ],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
@@ -59,7 +68,8 @@ export class PortfolioDashboardComponent implements OnInit {
   readonly loading = signal(false);
   readonly range = signal<PortfolioRange>('1Y');
   readonly chartPoints = signal<NetworthPoint[]>([]);
-  readonly expandedSymbol = signal<string | null>(null);
+  readonly expandedHoldingKey = signal<string | null>(null);
+  readonly marketFilter = signal<'ALL' | MarketCode>('ALL');
 
   readonly rangeOptions: SegToggleOption[] = [
     { label: '1M', value: '1M' },
@@ -84,6 +94,90 @@ export class PortfolioDashboardComponent implements OnInit {
     const summary = this.summary();
     if (!summary) return null;
     return this.selectedXirr(summary);
+  });
+
+  readonly flatHoldings = computed(() =>
+    (this.summary()?.holdings ?? []).map(holding => ({
+      ...holding,
+      market: (holding.market ?? 'TW') as MarketCode,
+    })),
+  );
+
+  readonly availableMarkets = computed<MarketCode[]>(() => {
+    const order: MarketCode[] = ['TW', 'US', 'LSE'];
+    const present = new Set(this.flatHoldings().map(h => h.market));
+    return order.filter(m => present.has(m));
+  });
+
+  readonly marketFilterOptions = computed<SegToggleOption[]>(() => [
+    { label: 'All', value: 'ALL' },
+    ...this.availableMarkets().map(m => ({ label: m, value: m })),
+  ]);
+
+  readonly filteredHoldings = computed(() => {
+    const filter = this.marketFilter();
+    const rows = this.flatHoldings();
+    return filter === 'ALL' ? rows : rows.filter(h => h.market === filter);
+  });
+
+  readonly showMarketGroups = computed(() =>
+    this.filteredHoldings().some(holding => holding.market !== 'TW'),
+  );
+
+  readonly holdingGroups = computed(() => this.groupHoldingsByMarket(this.filteredHoldings()));
+
+  readonly isMarketFiltered = computed(() => this.marketFilter() !== 'ALL');
+
+  readonly displayCurrency = computed<string>(() => {
+    const filter = this.marketFilter();
+    if (filter === 'ALL' || filter === 'TW') return 'TWD';
+    const rows = this.filteredHoldings();
+    return rows[0]?.native_currency ?? (filter === 'US' ? 'USD' : 'GBP');
+  });
+
+  readonly filteredTotals = computed(() => {
+    const summary = this.summary();
+    if (!summary) return null;
+    const filter = this.marketFilter();
+    const cur = this.displayCurrency();
+
+    if (filter === 'ALL') {
+      return {
+        currency: 'TWD',
+        total_market_value: Number(summary.total_market_value ?? 0),
+        total_cost: Number(summary.total_cost ?? 0),
+        total_unrealized_pnl: Number(summary.total_unrealized_pnl ?? 0),
+        total_unrealized_pnl_percent: Number(summary.total_unrealized_pnl_percent ?? 0),
+        total_dividends: Number(summary.total_dividends ?? 0),
+        dividends_in_twd: true,
+      };
+    }
+
+    const rows = this.filteredHoldings();
+    if (cur === 'TWD') {
+      const total_market_value = rows.reduce((s, h) => s + Number(h.market_value ?? 0), 0);
+      const total_cost = rows.reduce((s, h) => s + Number(h.avg_cost ?? 0) * Number(h.total_quantity ?? 0), 0);
+      const total_unrealized_pnl = rows.reduce((s, h) => s + Number(h.unrealized_pnl ?? 0), 0);
+      const total_dividends = rows.reduce((s, h) => s + Number(h.total_dividends ?? 0), 0);
+      const total_unrealized_pnl_percent = total_cost > 0 ? (total_unrealized_pnl / total_cost) * 100 : 0;
+      return { currency: cur, total_market_value, total_cost, total_unrealized_pnl, total_unrealized_pnl_percent, total_dividends, dividends_in_twd: false };
+    }
+
+    const total_market_value = rows.reduce(
+      (s, h) => s + Number(h.market_value_native ?? Number(h.total_quantity ?? 0) * Number(h.native_close ?? 0)),
+      0,
+    );
+    const total_cost = rows.reduce(
+      (s, h) => s + Number(h.avg_cost_native ?? 0) * Number(h.total_quantity ?? 0),
+      0,
+    );
+    const total_unrealized_pnl = rows.reduce(
+      (s, h) => s + Number(h.unrealized_pnl_native ?? 0),
+      0,
+    );
+    const total_unrealized_pnl_percent = total_cost > 0 ? (total_unrealized_pnl / total_cost) * 100 : 0;
+    const total_dividends = rows.reduce((s, h) => s + Number(h.total_dividends ?? 0), 0);
+    return { currency: cur, total_market_value, total_cost, total_unrealized_pnl, total_unrealized_pnl_percent, total_dividends, dividends_in_twd: true };
   });
 
   private readonly networthCache = new Map<PortfolioRange, NetworthPoint[]>();
@@ -136,12 +230,59 @@ export class PortfolioDashboardComponent implements OnInit {
     this.loadNetworthHistory();
   }
 
-  toggleHoldingExpand(symbol: string): void {
-    this.expandedSymbol.set(this.expandedSymbol() === symbol ? null : symbol);
+  selectMarketFilter(value: string): void {
+    this.marketFilter.set(value as 'ALL' | MarketCode);
+    this.expandedHoldingKey.set(null);
   }
 
-  isHoldingExpanded(symbol: string): boolean {
-    return this.expandedSymbol() === symbol;
+  toggleHoldingExpand(holding: StockHolding): void {
+    const key = this.holdingTrackKey(holding);
+    this.expandedHoldingKey.set(this.expandedHoldingKey() === key ? null : key);
+  }
+
+  isHoldingExpanded(holding: StockHolding): boolean {
+    return this.expandedHoldingKey() === this.holdingTrackKey(holding);
+  }
+
+  holdingTrackKey(holding: StockHolding): string {
+    return holdingKey(holding);
+  }
+
+  groupHoldingsByMarket(
+    holdings: StockHolding[],
+    sortBy?: keyof Pick<StockHolding, 'unrealized_pnl'>,
+    direction: 'asc' | 'desc' = 'asc',
+  ): { market: MarketCode; holdings: StockHolding[] }[] {
+    const order: MarketCode[] = ['TW', 'US', 'LSE'];
+
+    return order
+      .map(market => {
+        const rows = holdings.filter(holding => holding.market === market);
+        if (sortBy) {
+          rows.sort((a, b) => {
+            const left = Number(a[sortBy] ?? 0);
+            const right = Number(b[sortBy] ?? 0);
+            return direction === 'asc' ? left - right : right - left;
+          });
+        }
+        return { market, holdings: rows };
+      })
+      .filter(group => group.holdings.length > 0);
+  }
+
+  fxTooltip(holding: StockHolding): string | null {
+    if (
+      holding.market === 'TW'
+      || holding.live_fx_rate_to_twd == null
+      || holding.native_currency == null
+    ) return null;
+    const label = holding.native_currency === 'GBp' ? 'GBP' : holding.native_currency;
+    return `Revalued at 1 ${label} = ${holding.live_fx_rate_to_twd} TWD`;
+  }
+
+  marketValueDisplay(holding: StockHolding): string {
+    if (holding.market !== 'TW' && holding.live_fx_rate_to_twd == null) return '—';
+    return this.formatCurrency(holding.market_value);
   }
 
   loadSummary(): void {
@@ -171,6 +312,33 @@ export class PortfolioDashboardComponent implements OnInit {
       currency: 'TWD',
       minimumFractionDigits: 0,
     }).format(Number(value ?? 0));
+  }
+
+  nativeMarketValue(holding: StockHolding): number | null {
+    const qty = Number(holding.total_quantity ?? 0);
+    const close = Number(holding.native_close ?? 0);
+    if (!qty || !close) return null;
+    return qty * close;
+  }
+
+  nativeFromTwd(twdValue: number | string | null | undefined, holding: StockHolding): number | null {
+    if (twdValue == null || twdValue === '') return null;
+    const v = Number(twdValue);
+    if (!Number.isFinite(v)) return null;
+    if (holding.market === 'TW') return v;
+    const fx = Number(holding.live_fx_rate_to_twd ?? 0);
+    if (fx <= 0) return null;
+    const base = v / fx;
+    return holding.native_currency === 'GBp' ? base * 100 : base;
+  }
+
+  formatNative(value: number | string | null | undefined, currency: string | null | undefined): string {
+    if (value == null || value === '') return '—';
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return '—';
+    if (!currency || currency === 'TWD') return this.formatCurrency(numeric);
+    const decimals = currency === 'GBp' ? 4 : 2;
+    return `${numeric.toFixed(decimals)} ${currency}`;
   }
 
   formatXirr(value: number | null | undefined): string {

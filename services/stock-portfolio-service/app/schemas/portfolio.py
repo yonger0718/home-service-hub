@@ -173,6 +173,13 @@ class StockHolding(BaseModel):
     native_close: Optional[Decimal] = None
     native_currency: Optional[str] = None
     live_fx_rate_to_twd: Optional[Decimal] = None
+    # Native KPIs (foreign rows only). avg_cost_native: cost basis in native currency.
+    avg_cost_native: Optional[Decimal] = None
+    market_value_native: Optional[Decimal] = None
+    unrealized_pnl_native: Optional[Decimal] = None
+    unrealized_pnl_percent_native: Optional[Decimal] = None
+    total_dividends_native: Optional[Decimal] = None
+    total_pnl_with_dividend_native: Optional[Decimal] = None
 
 class PortfolioSummary(BaseModel):
     total_market_value: Decimal

@@ -10,6 +10,7 @@ export interface TimelineRow {
   sideLabel?: string;
   primary: string;
   meta?: string;
+  metaBadge?: string;
   amount?: string;
   amountVariant?: TimelineAmountVariant;
 }
@@ -43,8 +44,15 @@ interface TimelineGroup {
                 <app-side-tag [variant]="row.side" [label]="row.sideLabel || ''"></app-side-tag>
                 <div>
                   <div class="tl-name">{{ row.primary }}</div>
-                  @if (row.meta) {
-                    <div class="tl-meta">{{ row.meta }}</div>
+                  @if (row.meta || row.metaBadge) {
+                    <div class="tl-meta">
+                      @if (row.metaBadge) {
+                        <span class="tl-meta-badge">{{ row.metaBadge }}</span>
+                      }
+                      @if (row.meta) {
+                        <span>{{ row.meta }}</span>
+                      }
+                    </div>
                   }
                 </div>
               </div>

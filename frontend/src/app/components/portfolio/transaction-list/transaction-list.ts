@@ -1,7 +1,7 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { Transaction, TransactionType, TransactionQuery } from '../../../models/portfolio.model';
+import { MarketCode, Transaction, TransactionType, TransactionQuery } from '../../../models/portfolio.model';
 import { TableModule } from 'primeng/table';
 import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
@@ -33,6 +33,17 @@ const SIDE_OPTIONS = [
   { value: 'BUY', label: '買進' },
   { value: 'SELL', label: '賣出' },
 ];
+
+const MARKET_OPTIONS: { label: MarketCode; value: MarketCode }[] = [
+  { label: 'TW', value: 'TW' },
+  { label: 'US', value: 'US' },
+  { label: 'LSE', value: 'LSE' },
+];
+
+const DEFAULT_CURRENCY_BY_MARKET: Record<Exclude<MarketCode, 'TW'>, string> = {
+  US: 'USD',
+  LSE: 'GBP',
+};
 
 @Component({
   selector: 'app-portfolio-transactions',
@@ -75,6 +86,8 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     { label: '賣出', value: 'SELL' },
   ];
   readonly rowsPerPageOptions = [25, 50, 100];
+  readonly marketOptions = MARKET_OPTIONS;
+  readonly fxSubmitAttempted = signal(false);
 
   readonly timelineRows = computed<TimelineRow[]>(() =>
     this.transactions().map(t => {
@@ -84,6 +97,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         side: isBuy ? 'buy' : 'sell',
         sideLabel: isBuy ? '買進' : '賣出',
         primary: `${this.symbolDisplay(t)} ${t.symbol}`,
+        metaBadge: t.market && t.market !== 'TW' ? t.market : undefined,
         meta: `${Number(t.quantity).toLocaleString('zh-TW')} × ${Number(t.price).toFixed(2)}`,
         amount: `${isBuy ? '-' : '+'}${this.formatCurrency(this.allInTotal(t))}`,
         amountVariant: isBuy ? 'buy' : 'sell',
@@ -96,6 +110,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   newTransaction: Partial<Transaction> = {
     type: TransactionType.BUY,
+    market: 'TW',
     quantity: 0,
     price: 0,
     fee: 0,
@@ -232,13 +247,19 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   openNew() {
     this.isEdit.set(false);
-    this.newTransaction = { type: TransactionType.BUY, quantity: 0, price: 0, fee: 0, tax: 0 };
+    this.fxSubmitAttempted.set(false);
+    this.newTransaction = { type: TransactionType.BUY, market: 'TW', quantity: 0, price: 0, fee: 0, tax: 0 };
     this.showDialog.set(true);
   }
 
   editTransaction(transaction: Transaction) {
     this.isEdit.set(true);
-    this.newTransaction = { ...transaction, trade_date: transaction.trade_date ? new Date(transaction.trade_date) : undefined };
+    this.fxSubmitAttempted.set(false);
+    this.newTransaction = {
+      ...transaction,
+      market: transaction.market ?? 'TW',
+      trade_date: transaction.trade_date ? new Date(transaction.trade_date) : undefined,
+    };
     this.showDialog.set(true);
   }
 
@@ -274,7 +295,10 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     const gross = Number(t.price) * Number(t.quantity);
     const fee = Number(t.fee || 0);
     const tax = Number(t.tax || 0);
-    return t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
+    const native = t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
+    if (!t.market || t.market === 'TW') return native;
+    const fx = Number(t.fx_rate_to_twd ?? 0);
+    return fx > 0 ? native * fx : native;
   }
 
   allInUnitPrice(t: Transaction): number {
@@ -290,9 +314,58 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     }).format(Number(value ?? 0));
   }
 
+  selectedMarket(): MarketCode {
+    return this.newTransaction.market ?? 'TW';
+  }
+
+  isForeignTrade(): boolean {
+    return this.selectedMarket() !== 'TW';
+  }
+
+  onMarketChange(market: MarketCode): void {
+    this.newTransaction.market = market;
+    this.fxSubmitAttempted.set(false);
+    if (market === 'TW') {
+      delete this.newTransaction.currency;
+      delete this.newTransaction.fx_rate_to_twd;
+      return;
+    }
+    this.newTransaction.currency = DEFAULT_CURRENCY_BY_MARKET[market];
+  }
+
+  showFxRateError(): boolean {
+    return this.fxSubmitAttempted() && this.isFxRateInvalid();
+  }
+
+  private isFxRateInvalid(): boolean {
+    if (!this.isForeignTrade()) return false;
+    const rate = Number(this.newTransaction.fx_rate_to_twd);
+    return !Number.isFinite(rate) || rate <= 0;
+  }
+
+  private transactionPayload(): Partial<Transaction> {
+    const payload: Partial<Transaction> = { ...this.newTransaction };
+    const market = this.selectedMarket();
+    if (market === 'TW') {
+      delete payload.market;
+      delete payload.currency;
+      delete payload.fx_rate_to_twd;
+      return payload;
+    }
+
+    payload.market = market;
+    payload.currency = payload.currency || DEFAULT_CURRENCY_BY_MARKET[market];
+    payload.fx_rate_to_twd = Number(payload.fx_rate_to_twd);
+    return payload;
+  }
+
   saveTransaction() {
+    this.fxSubmitAttempted.set(true);
+    if (this.isFxRateInvalid()) return;
+
+    const payload = this.transactionPayload();
     if (this.isEdit() && this.newTransaction.id) {
-      this.portfolioService.updateTransaction(this.newTransaction.id, this.newTransaction).subscribe({
+      this.portfolioService.updateTransaction(this.newTransaction.id, payload).subscribe({
         next: () => {
           this.showDialog.set(false);
           this.fetch();
@@ -303,7 +376,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         },
       });
     } else {
-      this.portfolioService.createTransaction(this.newTransaction).subscribe({
+      this.portfolioService.createTransaction(payload).subscribe({
         next: () => {
           this.showDialog.set(false);
           this.fetch();

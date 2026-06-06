@@ -86,6 +86,23 @@
   padding: 0.2rem 0.45rem;
 }
 
+.market-badge {
+  background: var(--app-accent-soft);
+  border: 1px solid var(--app-accent-soft-strong);
+  border-radius: 999px;
+  color: var(--app-accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+}
+
+.native-amount {
+  color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
 .short-badge {
   background: var(--app-warning-soft, rgba(220, 38, 38, 0.12));
   border: 1px solid var(--app-warning, #dc2626);

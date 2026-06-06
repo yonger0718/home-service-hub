@@ -71,6 +71,18 @@
       <p-selectButton [options]="transactionTypes" [(ngModel)]="newTransaction.type" styleClass="w-100"></p-selectButton>
     </div>
     <div class="col-6">
+      <label class="d-block mb-1 small fw-bold">市場</label>
+      <p-select
+        [options]="marketOptions"
+        optionLabel="label"
+        optionValue="value"
+        [ngModel]="selectedMarket()"
+        (ngModelChange)="onMarketChange($event)"
+        [fluid]="true"
+        appendTo="body">
+      </p-select>
+    </div>
+    <div class="col-6">
       <label class="d-block mb-1 small fw-bold">股票代碼</label>
       <input pInputText [(ngModel)]="newTransaction.symbol" placeholder="例如: 2330" class="w-100" />
     </div>
@@ -94,6 +106,24 @@
       <label class="d-block mb-1 small fw-bold">交易稅</label>
       <p-inputNumber [(ngModel)]="newTransaction.tax" [fluid]="true"></p-inputNumber>
     </div>
+    @if (isForeignTrade()) {
+      <div class="col-6">
+        <label class="d-block mb-1 small fw-bold">幣別</label>
+        <input pInputText [(ngModel)]="newTransaction.currency" class="w-100" />
+      </div>
+      <div class="col-6">
+        <label class="d-block mb-1 small fw-bold">匯率 (TWD)</label>
+        <p-inputNumber
+          [(ngModel)]="newTransaction.fx_rate_to_twd"
+          mode="decimal"
+          [minFractionDigits]="2"
+          [fluid]="true">
+        </p-inputNumber>
+        @if (showFxRateError()) {
+          <div class="field-error">匯率必須大於 0</div>
+        }
+      </div>
+    }
   </div>
   <ng-template pTemplate="footer">
     <app-btn variant="ghost" icon="pi-times" (click)="showDialog.set(false)">取消</app-btn>

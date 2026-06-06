@@ -5,7 +5,7 @@ import { By } from '@angular/platform-browser';
 import { of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PortfolioSummary } from '../../../models/portfolio.model';
+import { PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
 import { PortfolioDashboardComponent } from './dashboard';
@@ -15,6 +15,7 @@ import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
 import { TooltipModule } from 'primeng/tooltip';
 import { SkeletonModule } from 'primeng/skeleton';
+import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 
 @Component({
   selector: 'p-chart',
@@ -29,9 +30,10 @@ class ChartStubComponent {
 }
 
 describe('PortfolioDashboardComponent', () => {
-  function buildHolding() {
+  function buildHolding(): StockHolding {
     return {
       symbol: '2330',
+      market: 'TW',
       name: '台積電',
       total_quantity: 10,
       avg_cost: 500,
@@ -44,6 +46,15 @@ describe('PortfolioDashboardComponent', () => {
       day_pnl: 50,
       total_dividends: 100,
       total_pnl_with_dividend: 1600,
+      native_close: 650,
+      native_currency: 'TWD',
+      live_fx_rate_to_twd: null,
+    avg_cost_native: null,
+    market_value_native: null,
+    unrealized_pnl_native: null,
+    unrealized_pnl_percent_native: null,
+    total_dividends_native: null,
+    total_pnl_with_dividend_native: null,
       xirr: 0.5,
       xirr_1m: 0.01,
       xirr_3m: 0.0321,
@@ -114,6 +125,7 @@ describe('PortfolioDashboardComponent', () => {
             PctBadgeComponent,
             TooltipModule,
             SkeletonModule,
+            NativeAmountPipe,
           ],
         },
       })
