@@ -14,13 +14,28 @@
       }
     </p-card>
 
-    <p-button
-      icon="pi pi-plus"
-      label="新增帳戶"
-      styleClass="accounts-add-button"
-      (onClick)="openCreateDialog()">
-    </p-button>
+    <div class="accounts-header-actions">
+      <p-button
+        icon="pi pi-money-bill"
+        label="現金流"
+        severity="secondary"
+        styleClass="accounts-add-button"
+        (onClick)="openCashForm()">
+      </p-button>
+      <p-button
+        icon="pi pi-plus"
+        label="新增帳戶"
+        styleClass="accounts-add-button"
+        (onClick)="openCreateDialog()">
+      </p-button>
+    </div>
   </div>
+
+  <app-cash-flow-form
+    [visible]="cashFormVisible()"
+    (visibleChange)="cashFormVisible.set($event)"
+    (created)="fetchAccounts()">
+  </app-cash-flow-form>
 
   @if (loading()) {
     <div class="hub-result-meta">

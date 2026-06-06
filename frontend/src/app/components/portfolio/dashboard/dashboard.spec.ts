@@ -30,6 +30,16 @@ class ChartStubComponent {
   chart = { update: vi.fn() };
 }
 
+@Component({
+  selector: 'app-cash-flow-form',
+  standalone: true,
+  template: '',
+})
+class CashFlowFormStubComponent {
+  @Input() visible = false;
+  @Input() initialBroker: string | null = null;
+}
+
 describe('PortfolioDashboardComponent', () => {
   function buildHolding(): StockHolding {
     return {
@@ -123,6 +133,7 @@ describe('PortfolioDashboardComponent', () => {
             CommonModule,
             RouterLink,
             ChartStubComponent,
+            CashFlowFormStubComponent,
             BtnComponent,
             SegToggleComponent,
             BentoComponent,

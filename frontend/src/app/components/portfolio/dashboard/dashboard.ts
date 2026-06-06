@@ -35,6 +35,7 @@ import { BtnComponent } from '../../ui/btn/btn';
 import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
+import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 
 type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
 
@@ -51,6 +52,7 @@ type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
     BentoComponent,
     PctBadgeComponent,
     NativeAmountPipe,
+    CashFlowFormComponent,
   ],
   templateUrl: './dashboard.html',
   styleUrl: './dashboard.scss',
@@ -68,6 +70,7 @@ export class PortfolioDashboardComponent implements OnInit {
   protected readonly Number = Number;
   readonly summary = signal<PortfolioSummary | null>(null);
   readonly brokerCashBalances = signal<BrokerCashBalance[]>([]);
+  readonly cashFormVisible = signal<boolean>(false);
   readonly upcomingExDividends = signal<ExDividendRecord[]>([]);
   readonly loading = signal(false);
   readonly range = signal<PortfolioRange>('1Y');
@@ -410,6 +413,14 @@ export class PortfolioDashboardComponent implements OnInit {
       next: (data) => this.upcomingExDividends.set(data),
       error: () => this.upcomingExDividends.set([]),
     });
+  }
+
+  openCashForm(): void {
+    this.cashFormVisible.set(true);
+  }
+
+  onCashFlowCreated(): void {
+    this.loadBrokerCashFlows();
   }
 
   private loadBrokerCashFlows(): void {

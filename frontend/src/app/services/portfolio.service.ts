@@ -13,6 +13,7 @@ import {
   ImportResult,
   Broker,
   BrokerCashBalance,
+  BrokerCashFlow,
   BrokerCsvImportResult,
   NetworthPoint,
   RecalcStatus,
@@ -201,6 +202,10 @@ export class PortfolioService extends BaseApiService<Transaction> {
 
   getBrokerCashFlows(): Observable<BrokerCashBalance[]> {
     return this.http.get<BrokerCashBalance[]>('/api/portfolio/broker-cash-flows');
+  }
+
+  createBrokerCashFlow(payload: BrokerCashFlow): Observable<BrokerCashBalance> {
+    return this.http.post<BrokerCashBalance>('/api/portfolio/broker-cash-flows', payload);
   }
 
   getRecalcStatus(): Observable<RecalcStatus> {
