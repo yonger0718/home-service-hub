@@ -594,6 +594,19 @@ def _commit_broker_rows(
             new_market = market_overrides.get(payload.get("symbol"))
             if new_market and payload.get("market") != new_market:
                 payload["market"] = new_market
+                row.fingerprint = _broker_transaction_fingerprint(
+                    broker=payload["broker"],
+                    symbol=payload["symbol"],
+                    market=payload["market"],
+                    type_=payload["type"],
+                    quantity=payload["quantity"],
+                    price=payload["price"],
+                    trade_date=payload["trade_date"],
+                    fee=payload["fee"],
+                    tax=payload["tax"],
+                    currency=payload["currency"],
+                    note=payload.get("name"),
+                )
     seen_transactions: set[str] = set()
     created_ids: list[int] = []
     errors = list(parsed.errors)

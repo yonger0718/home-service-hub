@@ -8,7 +8,7 @@ The `POST /api/portfolio/imports/csv` endpoint SHALL sniff the first lines of th
 - Firstrade: header row contains both `交易類別` and `代號`
 - Schwab: header is `"Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"`
 
-Any upload whose header does not match a broker signature SHALL fall through to the existing manual CSV path with no behaviour change. The dispatcher SHALL stamp `transactions.broker` per row with the matching broker enum value (`IB`, `FIRSTRADE`, `SCHWAB`); the manual path SHALL stamp `TW_MANUAL` by default and SHALL accept a client-supplied broker override.
+Any upload whose header does not match a broker signature SHALL fall through to the existing manual CSV path with no behaviour change. The dispatcher SHALL stamp `transactions.broker` per row with the matching broker enum value (`IB`, `FIRSTRADE`, `SCHWAB`); the manual path SHALL stamp `TW_MANUAL` by default. (Per-row or per-upload broker override is not part of this change — `transactions.broker` is set from the sniffed dispatcher result alone.)
 
 #### Scenario: IB statement is routed to the IB parser
 - **WHEN** a client uploads a CSV whose first line is `Statement,Header,域名稱,域值`

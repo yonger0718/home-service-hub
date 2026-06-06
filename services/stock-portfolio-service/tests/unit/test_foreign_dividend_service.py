@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import ClassVar
 
 import pandas as pd
 
@@ -46,8 +47,8 @@ def _seed_fx(db_session, *dates: date) -> None:
 
 
 class FakeTicker:
-    calls: list[str] = []
-    failures: set[str] = set()
+    calls: ClassVar[list[str]] = []
+    failures: ClassVar[set[str]] = set()
 
     def __init__(self, symbol: str) -> None:
         self.symbol = symbol

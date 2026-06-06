@@ -18,7 +18,10 @@ SCHWAB_HEADER = [
 
 
 def sniff(raw_bytes: bytes) -> models.Broker | None:
-    text = raw_bytes.decode("utf-8-sig")
+    try:
+        text = raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
     lines = [line for line in text.splitlines()[:5] if line.strip()]
     if not lines:
         return None

@@ -115,7 +115,12 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
         if not isinstance(side, models.PositionSide):
             side = models.PositionSide(side)
         is_day_trade = bool(getattr(transaction, "is_day_trade", False))
-        broker = getattr(transaction, "broker", None) or models.Broker.TW_MANUAL.value
+        default_broker = (
+            models.Broker.TW_MANUAL.value
+            if market == "TW"
+            else models.Broker.FOREIGN_MANUAL.value
+        )
+        broker = getattr(transaction, "broker", None) or default_broker
         tx_trade_date = _trade_date(transaction.trade_date)
 
         if side is models.PositionSide.LONG and transaction.type == models.TransactionType.BUY:

@@ -117,5 +117,5 @@ Rollback: drop the new table + revert the column (nullable add → drop is safe,
 
 ## Open Questions
 
-- For LSE-via-IB rows where `Price Currency = GBP`, do we treat the trade as `market='LSE'`? Decision needed at parse time. Default: yes, infer `market='LSE'` when ticker resolves on yfinance with `.L` suffix; fall back to `market='US'` otherwise.
+- For LSE-via-IB rows where `Price Currency = GBP`, do we treat the trade as `market='LSE'`? Decision needed at parse time. Default: yes, infer `market='LSE'` when `Price Currency == GBP`; fall back to `market='US'` otherwise. (No yfinance network call at import — deterministic currency-based heuristic with an optional `market_resolver` hook for symbol-map overrides applied later in `import_service`.)
 - `dividend_cash` cash-flow rows from broker CSVs vs `dividends` table rows from yfinance: same dividend, two paths. For Phase 4 they coexist; reconciliation deferred to Phase 5.

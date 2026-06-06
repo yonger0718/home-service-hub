@@ -95,9 +95,9 @@ def write_cash_flows(
         )
         db.add(db_row)
         try:
-            db.flush()
+            with db.begin_nested():
+                db.flush()
         except IntegrityError:
-            db.rollback()
             skipped += 1
             continue
         created_ids.append(db_row.id)

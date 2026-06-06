@@ -31,13 +31,15 @@ def lookup_fx_rate(
     Drives the add-transaction form's FX auto-fill. Returns ``rate_to_twd:
     null`` when no coverage exists so the UI can fall back to manual entry.
     """
-    cur = currency.strip().upper()
+    raw_cur = currency.strip()
+    is_gbp_pence = raw_cur == "GBp"
+    cur = "GBp" if is_gbp_pence else raw_cur.upper()
     if cur == "TWD":
         return FxRateLookupResponse(currency=cur, date=on or date.today(), rate_to_twd=Decimal("1"))
-    base_currency = "GBP" if cur == "GBP" else cur
+    base_currency = "GBP" if is_gbp_pence else cur
     asof = on or date.today()
     rate = quotes_fx_service.get_rate(db, base_currency, asof)
-    if rate is not None and cur == "GBp":
+    if rate is not None and is_gbp_pence:
         rate = rate / Decimal("100")
     return FxRateLookupResponse(currency=cur, date=asof, rate_to_twd=rate)
 

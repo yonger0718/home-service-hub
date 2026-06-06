@@ -57,7 +57,7 @@ def parse(
         if raw[:2] != ["轉賬歷史", "Data"] or transfer_header is None:
             continue
         row_index = csv_index
-        data = dict(zip(transfer_header, raw[2:]))
+        data = dict(zip(transfer_header, raw[2:], strict=True))
         try:
             action = (data.get("交易類型") or "").strip()
             trade_date = _trade_date(data.get("日期") or "")

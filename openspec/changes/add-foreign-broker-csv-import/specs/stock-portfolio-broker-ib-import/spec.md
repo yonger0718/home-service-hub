@@ -21,9 +21,9 @@ The service SHALL accept Interactive Brokers multi-section CSVs at `POST /api/po
 - **WHEN** an IB equity row carries `佣金=-1.78`
 - **THEN** the resulting `transactions` row SHALL have `fee=1.78` (absolute value, stored positive)
 
-### Requirement: IB importer infers market from yfinance suffix resolution
+### Requirement: IB importer infers market from `Price Currency`
 
-The importer SHALL set `transactions.market='LSE'` when the resolved yfinance ticker for `代碼` ends with `.L`, and `transactions.market='US'` otherwise. The resolution SHALL be deterministic given the `代碼` + `Price Currency` pair and SHALL NOT make a yfinance network call during import.
+The importer SHALL set `transactions.market='LSE'` when the row's `Price Currency == 'GBP'`, and `transactions.market='US'` otherwise. The inference SHALL be deterministic from the CSV row alone and SHALL NOT make a yfinance network call during import. (An optional `market_resolver` hook MAY override the heuristic via the symbol-map table, applied later in `import_service`.)
 
 #### Scenario: USD-denominated ticker resolves as US market
 - **GIVEN** an IB row `(代碼='AAPL', Price Currency='USD')`

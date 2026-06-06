@@ -1461,11 +1461,15 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
         update_data["trade_date"] = update_data["trade_date"] or db_transaction.trade_date
     else:
         update_data["trade_date"] = db_transaction.trade_date
+    resolved_market = (
+        update_data.get("market") or getattr(db_transaction, "market", "TW") or "TW"
+    ).upper()
     update_data["broker"] = (
         update_data.get("broker")
+        or getattr(db_transaction, "broker", None)
         or (
             models.Broker.TW_MANUAL.value
-            if (update_data.get("market") or getattr(db_transaction, "market", "TW") or "TW").upper() == "TW"
+            if resolved_market == "TW"
             else models.Broker.FOREIGN_MANUAL.value
         )
     )
