@@ -1,0 +1,106 @@
+<p-toast></p-toast>
+
+<div class="broker-import-page">
+  <header class="broker-import-head">
+    <div>
+      <h2>匯入券商對帳單</h2>
+      @if (result(); as r) {
+        <div class="broker-line">
+          <span class="broker-chip">{{ detectedBrokerLabel() }}</span>
+          @if (!r.detected_broker) {
+            <span class="manual-warning">通用 CSV 解析</span>
+          }
+        </div>
+      }
+    </div>
+  </header>
+
+  <section class="upload-panel">
+    <label class="file-zone">
+      <i class="pi pi-cloud-upload" aria-hidden="true"></i>
+      <span>{{ file()?.name || '選擇 CSV 檔案' }}</span>
+      <input #fileInput type="file" accept=".csv,text/csv" (change)="onFileSelected($event)" />
+    </label>
+    <div class="upload-actions">
+      <p-button label="Preview" icon="pi pi-search" severity="secondary" [disabled]="!file() || busy()" [loading]="busy()" (onClick)="preview()"></p-button>
+      <p-button label="Commit" icon="pi pi-check" [disabled]="!file() || busy() || !result()" [loading]="busy()" (onClick)="commit()"></p-button>
+      <p-button icon="pi pi-times" severity="secondary" [text]="true" [disabled]="busy()" (onClick)="clear()" ariaLabel="清除"></p-button>
+    </div>
+  </section>
+
+  @if (busy()) {
+    <div class="loading-row">
+      <p-progressSpinner styleClass="w-2rem h-2rem" strokeWidth="4"></p-progressSpinner>
+    </div>
+  }
+
+  @if (result(); as r) {
+    <section class="result-strip">
+      <span>{{ r.dry_run ? '可新增' : '已新增' }} {{ r.counts.created }}</span>
+      <span>重複 {{ r.counts.skipped }}</span>
+      <span>錯誤 {{ r.counts.rejected }}</span>
+    </section>
+
+    @if (transactions().length > 0) {
+      <section class="preview-section">
+        <h3>交易預覽</h3>
+        <p-table [value]="transactions()" styleClass="broker-preview-table">
+          <ng-template pTemplate="header">
+            <tr>
+              <th>日期</th>
+              <th>券商</th>
+              <th>股票</th>
+              <th>買賣</th>
+              <th class="num">股數</th>
+              <th class="num">價格</th>
+            </tr>
+          </ng-template>
+          <ng-template pTemplate="body" let-row>
+            <tr>
+              <td>{{ field(row, ['trade_date', 'date']) }}</td>
+              <td>{{ field(row, ['broker']) }}</td>
+              <td>{{ field(row, ['symbol', '代號']) }}</td>
+              <td>{{ field(row, ['type', 'side', '交易類型']) }}</td>
+              <td class="num">{{ field(row, ['quantity', 'qty', '交易量']) }}</td>
+              <td class="num">{{ field(row, ['price', '價格']) }}</td>
+            </tr>
+          </ng-template>
+        </p-table>
+      </section>
+    }
+
+    @if (cashFlows().length > 0) {
+      <section class="preview-section">
+        <h3>現金流預覽</h3>
+        <p-table [value]="cashFlows()" styleClass="broker-preview-table">
+          <ng-template pTemplate="header">
+            <tr>
+              <th>日期</th>
+              <th>券商</th>
+              <th>類型</th>
+              <th>幣別</th>
+              <th class="num">金額</th>
+            </tr>
+          </ng-template>
+          <ng-template pTemplate="body" let-row>
+            <tr>
+              <td>{{ field(row, ['date', 'trade_date']) }}</td>
+              <td>{{ field(row, ['broker']) }}</td>
+              <td>{{ field(row, ['type']) }}</td>
+              <td>{{ field(row, ['currency']) }}</td>
+              <td class="num">{{ field(row, ['amount']) }}</td>
+            </tr>
+          </ng-template>
+        </p-table>
+      </section>
+    }
+  }
+
+  @if (errors().length > 0) {
+    <section class="error-list">
+      @for (error of errors(); track error.row_index) {
+        <div>第 {{ error.row_index }} 列：{{ error.reason }}</div>
+      }
+    </section>
+  }
+</div>

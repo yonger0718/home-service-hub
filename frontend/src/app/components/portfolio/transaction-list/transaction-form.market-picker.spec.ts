@@ -5,13 +5,14 @@ import { of } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PortfolioService } from '../../../services/portfolio.service';
-import { TransactionType } from '../../../models/portfolio.model';
+import { Transaction, TransactionType } from '../../../models/portfolio.model';
 import { PortfolioTransactionListComponent } from './transaction-list';
 
 describe('PortfolioTransactionListComponent market picker', () => {
   let portfolioService: {
     getSymbolNames: ReturnType<typeof vi.fn>;
     getTransactions: ReturnType<typeof vi.fn>;
+    getTransactionBrokers: ReturnType<typeof vi.fn>;
     createTransaction: ReturnType<typeof vi.fn>;
     updateTransaction: ReturnType<typeof vi.fn>;
     deleteTransaction: ReturnType<typeof vi.fn>;
@@ -21,6 +22,7 @@ describe('PortfolioTransactionListComponent market picker', () => {
     portfolioService = {
       getSymbolNames: vi.fn().mockReturnValue(of({})),
       getTransactions: vi.fn().mockReturnValue(of({ items: [], total: 0 })),
+      getTransactionBrokers: vi.fn().mockReturnValue(of([])),
       createTransaction: vi.fn().mockReturnValue(of({})),
       updateTransaction: vi.fn().mockReturnValue(of({})),
       deleteTransaction: vi.fn().mockReturnValue(of(undefined)),
@@ -133,12 +135,28 @@ describe('PortfolioTransactionListComponent market picker', () => {
 
     const rows = fixture.componentInstance.timelineRows();
 
-    expect(rows[0].metaBadge).toBeUndefined();
-    expect(rows[1].metaBadge).toBe('US');
+    expect(rows[0].metaBadge).toBe('國泰');
+    expect(rows[1].metaBadge).toBe('US · 國泰');
+  });
+
+  it('adds broker badges for non-default broker rows', () => {
+    const fixture = TestBed.createComponent(PortfolioTransactionListComponent);
+    fixture.detectChanges();
+    fixture.componentInstance.transactions.set([
+      transaction({ symbol: 'TW1', market: 'TW', broker: 'TW_MANUAL' }),
+      transaction({ symbol: 'TW2', market: 'TW', broker: 'TW_CATHAY' }),
+      transaction({ symbol: 'IB1', market: 'US', broker: 'IB' }),
+    ]);
+
+    const rows = fixture.componentInstance.timelineRows();
+
+    expect(rows[0].metaBadge).toBe('國泰');
+    expect(rows[1].metaBadge).toBe('國泰');
+    expect(rows[2].metaBadge).toBe('US · IB');
   });
 });
 
-function transaction(overrides: Partial<Parameters<PortfolioTransactionListComponent['symbolDisplay']>[0]> = {}) {
+function transaction(overrides: Partial<Transaction> = {}): Transaction {
   return {
     id: 1,
     symbol: '2330',
@@ -147,6 +165,7 @@ function transaction(overrides: Partial<Parameters<PortfolioTransactionListCompo
     price: 100,
     fee: 0,
     tax: 0,
+    broker: 'TW_MANUAL' as const,
     trade_date: '2026-05-01',
     ...overrides,
   };

@@ -17,12 +17,25 @@ def _job_ids(monkeypatch, enabled: str) -> set[str]:
 
 
 def test_foreign_jobs_registered_when_scheduler_enabled(monkeypatch) -> None:
-    assert {"fx_rate_refresh", "foreign_price_refresh"} <= _job_ids(monkeypatch, "true")
+    assert {"fx_rate_refresh", "foreign_price_refresh", "foreign_dividend_refresh"} <= _job_ids(monkeypatch, "true")
 
 
 def test_foreign_jobs_absent_when_scheduler_disabled(monkeypatch) -> None:
     assert "fx_rate_refresh" not in _job_ids(monkeypatch, "false")
     assert "foreign_price_refresh" not in _job_ids(monkeypatch, "false")
+    assert "foreign_dividend_refresh" not in _job_ids(monkeypatch, "false")
+
+
+def test_foreign_dividend_refresh_uses_17_45_taipei(monkeypatch) -> None:
+    monkeypatch.setenv("SCHEDULER_ENABLED", "true")
+    scheduler = sched.build_scheduler(MagicMock())
+    job = scheduler.get_job("foreign_dividend_refresh")
+
+    assert job is not None
+    fields = {f.name: str(f) for f in job.trigger.fields}
+    assert fields["hour"] == "17"
+    assert fields["minute"] == "45"
+    assert str(job.trigger.timezone) == "Asia/Taipei"
 
 
 def test_foreign_price_refresh_selects_only_open_non_tw_positions(db_session) -> None:
@@ -156,6 +169,23 @@ def test_fx_rate_refresh_failure_logs_and_does_not_raise() -> None:
 
     with patch.object(sched.quote_fx_rate_service, "refresh_today", side_effect=RuntimeError("down")):
         result = sched.run_fx_rate_refresh(factory)
+
+    assert result["status"] == "failed"
+    assert "down" in result["error"]
+
+
+def test_foreign_dividend_refresh_failure_logs_and_does_not_raise() -> None:
+    db = MagicMock()
+    factory = MagicMock()
+    factory.return_value.__enter__.return_value = db
+    factory.return_value.__exit__.return_value = False
+
+    with patch.object(
+        sched.foreign_dividend_service,
+        "refresh_today",
+        side_effect=RuntimeError("down"),
+    ):
+        result = sched.run_foreign_dividend_refresh(factory)
 
     assert result["status"] == "failed"
     assert "down" in result["error"]

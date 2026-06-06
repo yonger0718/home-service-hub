@@ -1,7 +1,9 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { MarketCode, Transaction, TransactionType, TransactionQuery } from '../../../models/portfolio.model';
+import { BROKER_LABELS, Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
+
+const BROKER_LABELS_MAP = BROKER_LABELS;
 import { TableModule } from 'primeng/table';
 import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
@@ -85,6 +87,20 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     { label: '買進', value: 'BUY' },
     { label: '賣出', value: 'SELL' },
   ];
+  readonly availableBrokers = signal<Broker[]>([]);
+  readonly brokerFilterOptions = computed<SegToggleOption[]>(() => {
+    const brokers = this.availableBrokers();
+    if (brokers.length === 0) return [];
+    return [
+      { label: '全部', value: 'ALL' },
+      ...brokers.map(broker => ({ label: this.brokerLabel(broker), value: broker })),
+    ];
+  });
+  selectedBroker = signal<'ALL' | Broker>('ALL');
+
+  private brokerLabel(broker: Broker): string {
+    return brokerLabel(broker);
+  }
   readonly rowsPerPageOptions = [25, 50, 100];
   readonly marketOptions = MARKET_OPTIONS;
   readonly fxSubmitAttempted = signal(false);
@@ -97,9 +113,9 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         side: isBuy ? 'buy' : 'sell',
         sideLabel: isBuy ? '買進' : '賣出',
         primary: `${this.symbolDisplay(t)} ${t.symbol}`,
-        metaBadge: t.market && t.market !== 'TW' ? t.market : undefined,
+        metaBadge: this.timelineBadge(t),
         meta: `${Number(t.quantity).toLocaleString('zh-TW')} × ${Number(t.price).toFixed(2)}`,
-        amount: `${isBuy ? '-' : '+'}${this.formatCurrency(this.allInTotal(t))}`,
+        amount: `${isBuy ? '-' : '+'}${this.formatTransactionAmount(t)}`,
         amountVariant: isBuy ? 'buy' : 'sell',
       };
     }),
@@ -124,6 +140,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
+    this.portfolioService.getTransactionBrokers().subscribe(brokers => this.availableBrokers.set(brokers));
     this.fetch();
   }
 
@@ -198,6 +215,12 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     this.onSideChange(side === 'ALL' ? null : side as 'BUY' | 'SELL');
   }
 
+  onBrokerFilterChange(value: string) {
+    const broker = value === 'ALL' ? null : (value as Broker);
+    this.selectedBroker.set(value === 'ALL' ? 'ALL' : (value as Broker));
+    this.updateFilters({ broker });
+  }
+
   onSortChange(sort: string) {
     this.updateFilters({ sort });
   }
@@ -212,6 +235,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   clearFilters() {
     this.searchInput.set('');
     this.dateRange = null;
+    this.selectedBroker.set('ALL');
     this.query.set({ offset: 0, limit: this.query().limit ?? 25, sort: 'trade_date:desc' });
     this.fetch();
   }
@@ -221,7 +245,8 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     return !!(q.symbol || q.date_from || q.date_to || q.side);
   }
 
-  private toIsoDate(d: Date): string {
+  private toIsoDate(d: Date | string): string {
+    if (typeof d === 'string') return d.slice(0, 10);
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
@@ -248,7 +273,15 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   openNew() {
     this.isEdit.set(false);
     this.fxSubmitAttempted.set(false);
-    this.newTransaction = { type: TransactionType.BUY, market: 'TW', quantity: 0, price: 0, fee: 0, tax: 0 };
+    this.newTransaction = {
+      type: TransactionType.BUY,
+      market: 'TW',
+      quantity: 0,
+      price: 0,
+      fee: 0,
+      tax: 0,
+      broker: 'TW_CATHAY',
+    };
     this.showDialog.set(true);
   }
 
@@ -295,10 +328,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     const gross = Number(t.price) * Number(t.quantity);
     const fee = Number(t.fee || 0);
     const tax = Number(t.tax || 0);
-    const native = t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
-    if (!t.market || t.market === 'TW') return native;
-    const fx = Number(t.fx_rate_to_twd ?? 0);
-    return fx > 0 ? native * fx : native;
+    return t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
   }
 
   allInUnitPrice(t: Transaction): number {
@@ -314,6 +344,29 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     }).format(Number(value ?? 0));
   }
 
+  formatTransactionAmount(t: Transaction): string {
+    const value = this.allInTotal(t);
+    const currency = (t.currency ?? 'TWD').toUpperCase();
+    // GBp = pence; render verbatim 4dp with GBp suffix (per Phase 3 native-display rule).
+    if (t.currency === 'GBp') {
+      return `${value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} GBp`;
+    }
+    const decimals = currency === 'TWD' ? 0 : 2;
+    const formatted = value.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+    return `${formatted} ${currency}`;
+  }
+
+  timelineBadge(t: Transaction): string | undefined {
+    const badges = [
+      t.market && t.market !== 'TW' ? t.market : null,
+      t.broker ? this.brokerLabel(t.broker) : null,
+    ].filter(Boolean) as string[];
+    return badges.length > 0 ? badges.join(' · ') : undefined;
+  }
+
   selectedMarket(): MarketCode {
     return this.newTransaction.market ?? 'TW';
   }
@@ -322,15 +375,81 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     return this.selectedMarket() !== 'TW';
   }
 
+  defaultBrokerForMarket(): Broker {
+    return this.selectedMarket() === 'TW' ? 'TW_CATHAY' : 'FOREIGN_MANUAL';
+  }
+
+  private readonly TW_BROKERS: Broker[] = ['TW_CATHAY', 'TW_SINOPAC', 'TW_MANUAL'];
+  private readonly FOREIGN_BROKERS: Broker[] = ['IB', 'FIRSTRADE', 'SCHWAB', 'FOREIGN_MANUAL'];
+
+  /** Restrict the broker dropdown to the brokers whose cash legs route to the
+   * selected market. Without this guard, picking TW_SINOPAC on a TW trade
+   * still routes settlement to the default Cathay TWD account (legacy code
+   * path), silently corrupting the ledger. Same idea for foreign markets:
+   * TW_* brokers don't track non-TWD cash. */
+  formBrokerOptionsForMarket(): { label: string; value: Broker }[] {
+    const market = this.selectedMarket();
+    const allowed = market === 'TW' ? this.TW_BROKERS : this.FOREIGN_BROKERS;
+    return allowed.map(broker => ({ label: BROKER_LABELS_MAP[broker], value: broker }));
+  }
+
   onMarketChange(market: MarketCode): void {
     this.newTransaction.market = market;
     this.fxSubmitAttempted.set(false);
     if (market === 'TW') {
       delete this.newTransaction.currency;
       delete this.newTransaction.fx_rate_to_twd;
+      this.fxRateAuto.set(null);
+      this.newTransaction.broker = 'TW_CATHAY';
       return;
     }
     this.newTransaction.currency = DEFAULT_CURRENCY_BY_MARKET[market];
+    this.newTransaction.broker = this.defaultBrokerForMarket();
+    this.tryFetchFxRate();
+  }
+
+  onTradeDateChange(): void {
+    this.tryFetchFxRate();
+  }
+
+  onCurrencyChange(): void {
+    this.tryFetchFxRate();
+  }
+
+  readonly fxRateAuto = signal<string | null>(null);
+  readonly fxRateFetching = signal<boolean>(false);
+  private fxFetchSeq = 0;
+
+  private tryFetchFxRate(): void {
+    if (!this.isForeignTrade()) {
+      this.fxRateAuto.set(null);
+      return;
+    }
+    const currency = (this.newTransaction.currency ?? '').toUpperCase();
+    const tradeDate = this.newTransaction.trade_date;
+    if (!currency || currency === 'TWD' || !tradeDate) return;
+    const iso = this.toIsoDate(tradeDate as Date | string);
+    const seq = ++this.fxFetchSeq;
+    this.fxRateFetching.set(true);
+    this.portfolioService.getFxRate(currency, iso).subscribe({
+      next: result => {
+        if (seq !== this.fxFetchSeq) return;
+        this.fxRateFetching.set(false);
+        if (result.rate_to_twd == null) {
+          this.fxRateAuto.set(null);
+          return;
+        }
+        this.fxRateAuto.set(String(result.rate_to_twd));
+        if (this.newTransaction.fx_rate_to_twd == null || Number(this.newTransaction.fx_rate_to_twd) <= 0) {
+          this.newTransaction.fx_rate_to_twd = Number(result.rate_to_twd);
+        }
+      },
+      error: () => {
+        if (seq !== this.fxFetchSeq) return;
+        this.fxRateFetching.set(false);
+        this.fxRateAuto.set(null);
+      },
+    });
   }
 
   showFxRateError(): boolean {

@@ -2,6 +2,7 @@ import { Component, Input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { DeferBlockBehavior, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
+import { provideRouter, RouterLink } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -111,13 +112,14 @@ describe('PortfolioDashboardComponent', () => {
 
     await TestBed.configureTestingModule({
       imports: [PortfolioDashboardComponent],
-      providers: [{ provide: PortfolioService, useValue: portfolioService }],
+      providers: [{ provide: PortfolioService, useValue: portfolioService }, provideRouter([])],
       deferBlockBehavior: DeferBlockBehavior.Manual,
     })
       .overrideComponent(PortfolioDashboardComponent, {
         set: {
           imports: [
             CommonModule,
+            RouterLink,
             ChartStubComponent,
             BtnComponent,
             SegToggleComponent,

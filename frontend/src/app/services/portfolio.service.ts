@@ -11,6 +11,10 @@ import {
   ExDividendRecord,
   ImportKind,
   ImportResult,
+  Broker,
+  BrokerCashBalance,
+  BrokerCashFlow,
+  BrokerCsvImportResult,
   NetworthPoint,
   RecalcStatus,
   RecalcTriggerResponse,
@@ -89,6 +93,10 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.get<Paged<Transaction>>('/api/portfolio/transactions', {
       params: buildParams(query as Record<string, unknown>),
     });
+  }
+
+  getTransactionBrokers(): Observable<Broker[]> {
+    return this.http.get<Broker[]>('/api/portfolio/transactions/brokers');
   }
 
   createTransaction(transaction: Partial<Transaction>): Observable<Transaction> {
@@ -181,6 +189,30 @@ export class PortfolioService extends BaseApiService<Transaction> {
       `?dry_run=${dryRun ? 'true' : 'false'}` +
       `&has_header=${hasHeader ? 'true' : 'false'}`;
     return this.http.post<ImportResult>(url, form);
+  }
+
+  uploadBrokerCsv(file: File, dryRun: boolean): Observable<BrokerCsvImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<BrokerCsvImportResult>(
+      `/api/portfolio/imports/csv?dry_run=${dryRun ? 'true' : 'false'}`,
+      form,
+    );
+  }
+
+  getBrokerCashFlows(): Observable<BrokerCashBalance[]> {
+    return this.http.get<BrokerCashBalance[]>('/api/portfolio/broker-cash-flows');
+  }
+
+  createBrokerCashFlow(payload: BrokerCashFlow): Observable<BrokerCashBalance> {
+    return this.http.post<BrokerCashBalance>('/api/portfolio/broker-cash-flows', payload);
+  }
+
+  getFxRate(currency: string, on: string): Observable<{ currency: string; date: string; rate_to_twd: string | number | null }> {
+    return this.http.get<{ currency: string; date: string; rate_to_twd: string | number | null }>(
+      '/api/portfolio/fx/rate',
+      { params: new HttpParams().set('currency', currency).set('on', on) },
+    );
   }
 
   getRecalcStatus(): Observable<RecalcStatus> {

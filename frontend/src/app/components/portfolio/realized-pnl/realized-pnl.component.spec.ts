@@ -11,6 +11,7 @@ describe('PortfolioRealizedPnlComponent', () => {
       trade_date: '2026-05-01',
       symbol: '2330',
       market: 'TW',
+      broker: 'TW_MANUAL',
       name: '台積電',
       quantity: 1000,
       sell_price: '800',
@@ -32,6 +33,7 @@ describe('PortfolioRealizedPnlComponent', () => {
       trade_date: '2025-03-03',
       symbol: '2317',
       market: 'TW',
+      broker: 'TW_MANUAL',
       name: '鴻海',
       quantity: 500,
       sell_price: '180',
@@ -54,6 +56,7 @@ describe('PortfolioRealizedPnlComponent', () => {
   let portfolioService: {
     getRealizedPnl: ReturnType<typeof vi.fn>;
     getSymbolNames: ReturnType<typeof vi.fn>;
+    getTransactionBrokers: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
@@ -73,6 +76,7 @@ describe('PortfolioRealizedPnlComponent', () => {
         }),
       ),
       getSymbolNames: vi.fn().mockReturnValue(of({ '2330': '台積電', '2317': '鴻海' })),
+      getTransactionBrokers: vi.fn().mockReturnValue(of([])),
     };
 
     await TestBed.configureTestingModule({

@@ -10,6 +10,7 @@ import {
   signal,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { combineLatest, finalize, interval, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
 
@@ -40,6 +41,7 @@ type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
   selector: 'app-portfolio-dashboard',
   imports: [
     CommonModule,
+    RouterLink,
     ChartModule,
     SkeletonModule,
     TooltipModule,

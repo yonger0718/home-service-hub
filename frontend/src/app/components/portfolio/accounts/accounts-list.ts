@@ -21,6 +21,7 @@ import {
   CreateBrokerAccount,
 } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
+import { CashFlowFormComponent } from '../cash-flow-form/cash-flow-form';
 
 const EMPTY_ACCOUNTS_LIST: AccountsList = {
   items: [],
@@ -62,6 +63,7 @@ const BROKER_LABELS: Record<BrokerEnum, string> = {
     SelectModule,
     TagModule,
     ToastModule,
+    CashFlowFormComponent,
   ],
   providers: [MessageService],
   templateUrl: './accounts-list.html',
@@ -81,6 +83,11 @@ export class PortfolioAccountsListComponent implements OnInit {
   readonly loading = signal<boolean>(false);
   readonly createDialogVisible = signal<boolean>(false);
   readonly creating = signal<boolean>(false);
+  readonly cashFormVisible = signal<boolean>(false);
+
+  openCashForm(): void {
+    this.cashFormVisible.set(true);
+  }
 
   createForm = this.fb.group({
     broker: this.fb.nonNullable.control<BrokerEnum>('cathay', Validators.required),

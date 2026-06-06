@@ -1,6 +1,10 @@
 <div class="portfolio-dashboard">
   <div class="page-head justify-content-end">
     <div class="head-actions">
+      <a routerLink="/portfolio/import-broker" class="btn btn-outline-secondary btn-sm">
+        <i class="pi pi-upload" aria-hidden="true"></i>
+        匯入券商
+      </a>
       <app-btn variant="secondary" icon="pi-refresh" [loading]="loading()" (click)="loadSummary()">刷新行情</app-btn>
     </div>
   </div>
@@ -22,6 +26,7 @@
           <div class="value">{{ formatCurrency(summary()!.total_assets_twd) }}</div>
         </app-bento>
       }
+
 
       @let totals = filteredTotals()!;
       <app-bento>

@@ -27,7 +27,16 @@ class RealizedPnlEvent:
     realized_pnl: Decimal
     is_day_trade: bool
     position_side: models.PositionSide
+    broker: Optional[str] = None
     note: Optional[str] = None
+    market: str = "TW"
+    native_currency: Optional[str] = None
+    native_sell_price: Optional[Decimal] = None
+    native_proceeds_gross: Optional[Decimal] = None
+    native_proceeds: Optional[Decimal] = None
+    native_cost: Optional[Decimal] = None
+    native_fee: Optional[Decimal] = None
+    native_tax: Optional[Decimal] = None
 
 
 _MONEY_QUANT = Decimal("0.01")
@@ -49,6 +58,7 @@ def _empty_long_pool() -> dict[str, Decimal | int]:
         "total_quantity": 0,
         "total_cost": Decimal("0.0"),
         "total_cost_ex_fee": Decimal("0.0"),
+        "total_native_cost": Decimal("0.0"),
     }
 
 
@@ -57,6 +67,8 @@ def _empty_short_pool() -> dict[str, Decimal | int]:
         "total_quantity": 0,
         "total_proceeds_gross": Decimal("0.0"),
         "total_proceeds_net": Decimal("0.0"),
+        "total_native_proceeds_gross": Decimal("0.0"),
+        "total_native_proceeds_net": Decimal("0.0"),
     }
 
 
@@ -110,10 +122,20 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
         price = _to_twd_per_share(transaction)
         fee = _to_twd_money(transaction, transaction.fee)
         tax = _to_twd_money(transaction, transaction.tax)
+        native_price = Decimal(getattr(transaction, "price"))
+        native_fee = Decimal(transaction.fee or "0")
+        native_tax = Decimal(transaction.tax or "0")
+        native_currency = (getattr(transaction, "currency", None) or "TWD")
         side = getattr(transaction, "position_side", None) or models.PositionSide.LONG
         if not isinstance(side, models.PositionSide):
             side = models.PositionSide(side)
         is_day_trade = bool(getattr(transaction, "is_day_trade", False))
+        default_broker = (
+            models.Broker.TW_MANUAL.value
+            if market == "TW"
+            else models.Broker.FOREIGN_MANUAL.value
+        )
+        broker = getattr(transaction, "broker", None) or default_broker
         tx_trade_date = _trade_date(transaction.trade_date)
 
         if side is models.PositionSide.LONG and transaction.type == models.TransactionType.BUY:
@@ -124,11 +146,18 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
             long_pool["total_cost_ex_fee"] = (
                 Decimal(long_pool["total_cost_ex_fee"]) + (quantity * price)
             )
+            long_pool["total_native_cost"] = (
+                Decimal(long_pool["total_native_cost"])
+                + (quantity * native_price)
+                + native_fee
+            )
             continue
 
         if side is models.PositionSide.SHORT and transaction.type == models.TransactionType.SELL:
             proceeds_gross = quantity * price
             proceeds_net = proceeds_gross - fee - tax
+            native_proceeds_gross = quantity * native_price
+            native_proceeds_net = native_proceeds_gross - native_fee - native_tax
             short_pool["total_quantity"] = Decimal(short_pool["total_quantity"]) + quantity
             short_pool["total_proceeds_gross"] = (
                 Decimal(short_pool["total_proceeds_gross"]) + proceeds_gross
@@ -136,12 +165,20 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
             short_pool["total_proceeds_net"] = (
                 Decimal(short_pool["total_proceeds_net"]) + proceeds_net
             )
+            short_pool["total_native_proceeds_gross"] = (
+                Decimal(short_pool["total_native_proceeds_gross"]) + native_proceeds_gross
+            )
+            short_pool["total_native_proceeds_net"] = (
+                Decimal(short_pool["total_native_proceeds_net"]) + native_proceeds_net
+            )
             continue
 
         if side is models.PositionSide.LONG and transaction.type == models.TransactionType.SELL:
             current_qty = Decimal(long_pool["total_quantity"])
             proceeds_gross = quantity * price
             proceeds_net = proceeds_gross - fee - tax
+            native_proceeds_gross = quantity * native_price
+            native_proceeds_net = native_proceeds_gross - native_fee - native_tax
             if current_qty == 0:
                 yield RealizedPnlEvent(
                     trade_date=tx_trade_date,
@@ -158,7 +195,16 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                     realized_pnl=proceeds_net,
                     is_day_trade=is_day_trade,
                     position_side=models.PositionSide.LONG,
+                    broker=broker,
                     note="no_long_inventory",
+                    market=market,
+                    native_currency=native_currency,
+                    native_sell_price=native_price,
+                    native_proceeds_gross=native_proceeds_gross,
+                    native_proceeds=native_proceeds_net,
+                    native_cost=_ZERO,
+                    native_fee=native_fee,
+                    native_tax=native_tax,
                 )
                 continue
 
@@ -166,10 +212,16 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
             avg_unit_cost_ex_fee = (
                 Decimal(long_pool["total_cost_ex_fee"]) / Decimal(current_qty)
             )
+            avg_native_unit_cost = (
+                Decimal(long_pool["total_native_cost"]) / Decimal(current_qty)
+            )
             sold_qty = min(quantity, current_qty)
             proceeds_gross = sold_qty * price
             proceeds_net = proceeds_gross - fee - tax
             cost_out = sold_qty * avg_unit_cost
+            native_proceeds_gross = sold_qty * native_price
+            native_proceeds_net = native_proceeds_gross - native_fee - native_tax
+            native_cost_out = sold_qty * avg_native_unit_cost
 
             yield RealizedPnlEvent(
                 trade_date=tx_trade_date,
@@ -186,6 +238,15 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                 realized_pnl=proceeds_net - cost_out,
                 is_day_trade=is_day_trade,
                 position_side=models.PositionSide.LONG,
+                broker=broker,
+                market=market,
+                native_currency=native_currency,
+                native_sell_price=native_price,
+                native_proceeds_gross=native_proceeds_gross,
+                native_proceeds=native_proceeds_net,
+                native_cost=native_cost_out,
+                native_fee=native_fee,
+                native_tax=native_tax,
             )
 
             long_pool["total_quantity"] = current_qty - sold_qty
@@ -196,12 +257,18 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                 Decimal(long_pool["total_cost_ex_fee"])
                 - (sold_qty * avg_unit_cost_ex_fee)
             )
+            long_pool["total_native_cost"] = (
+                Decimal(long_pool["total_native_cost"])
+                - (sold_qty * avg_native_unit_cost)
+            )
             continue
 
         if side is models.PositionSide.SHORT and transaction.type == models.TransactionType.BUY:
             current_short_qty = Decimal(short_pool["total_quantity"])
             cover_gross = quantity * price
             cover_cost_total = cover_gross + fee + tax
+            native_cover_gross_total = quantity * native_price
+            native_cover_cost_total = native_cover_gross_total + native_fee + native_tax
             if current_short_qty == 0:
                 yield RealizedPnlEvent(
                     trade_date=tx_trade_date,
@@ -218,7 +285,16 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                     realized_pnl=-cover_cost_total,
                     is_day_trade=is_day_trade,
                     position_side=models.PositionSide.SHORT,
+                    broker=broker,
                     note="no_short_inventory",
+                    market=market,
+                    native_currency=native_currency,
+                    native_sell_price=native_price,
+                    native_proceeds_gross=_ZERO,
+                    native_proceeds=_ZERO,
+                    native_cost=native_cover_cost_total,
+                    native_fee=native_fee,
+                    native_tax=native_tax,
                 )
                 continue
 
@@ -228,11 +304,21 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
             avg_open_net_per_share = (
                 Decimal(short_pool["total_proceeds_net"]) / Decimal(current_short_qty)
             )
+            avg_open_native_gross_per_share = (
+                Decimal(short_pool["total_native_proceeds_gross"]) / Decimal(current_short_qty)
+            )
+            avg_open_native_net_per_share = (
+                Decimal(short_pool["total_native_proceeds_net"]) / Decimal(current_short_qty)
+            )
             covered_qty = min(quantity, current_short_qty)
             cover_gross_slice = covered_qty * price
             cover_cost_slice = cover_gross_slice + fee + tax
             proceeds_gross_slice = covered_qty * avg_open_price
             proceeds_net_slice = covered_qty * avg_open_net_per_share
+            native_cover_gross_slice = covered_qty * native_price
+            native_cover_cost_slice = native_cover_gross_slice + native_fee + native_tax
+            native_proceeds_gross_slice = covered_qty * avg_open_native_gross_per_share
+            native_proceeds_net_slice = covered_qty * avg_open_native_net_per_share
 
             yield RealizedPnlEvent(
                 trade_date=tx_trade_date,
@@ -249,6 +335,15 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                 realized_pnl=proceeds_net_slice - cover_cost_slice,
                 is_day_trade=is_day_trade,
                 position_side=models.PositionSide.SHORT,
+                broker=broker,
+                market=market,
+                native_currency=native_currency,
+                native_sell_price=native_price,
+                native_proceeds_gross=native_proceeds_gross_slice,
+                native_proceeds=native_proceeds_net_slice,
+                native_cost=native_cover_cost_slice,
+                native_fee=native_fee,
+                native_tax=native_tax,
             )
 
             short_pool["total_quantity"] = current_short_qty - covered_qty
@@ -257,6 +352,12 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
             )
             short_pool["total_proceeds_net"] = (
                 Decimal(short_pool["total_proceeds_net"]) - proceeds_net_slice
+            )
+            short_pool["total_native_proceeds_gross"] = (
+                Decimal(short_pool["total_native_proceeds_gross"]) - native_proceeds_gross_slice
+            )
+            short_pool["total_native_proceeds_net"] = (
+                Decimal(short_pool["total_native_proceeds_net"]) - native_proceeds_net_slice
             )
             continue
 
@@ -269,6 +370,7 @@ def _filtered_events(
     date_to: Optional[date_type] = None,
     year: Optional[int] = None,
     day_trade_only: bool = False,
+    broker: Optional[str] = None,
 ) -> list[RealizedPnlEvent]:
     effective_from = date_from
     effective_to = date_to
@@ -294,6 +396,8 @@ def _filtered_events(
         filtered = [event for event in filtered if event.trade_date <= effective_to]
     if day_trade_only:
         filtered = [event for event in filtered if event.is_day_trade]
+    if broker:
+        filtered = [event for event in filtered if event.broker == broker]
     return filtered
 
 
@@ -323,6 +427,7 @@ def compute_events(
     date_to: Optional[date_type] = None,
     year: Optional[int] = None,
     day_trade_only: bool = False,
+    broker: Optional[str] = None,
     sort: str = "trade_date:desc",
 ) -> list[RealizedPnlEvent]:
     events = list(iter_realized_events(_load_adjusted_transactions(session)))
@@ -333,6 +438,7 @@ def compute_events(
         date_to=date_to,
         year=year,
         day_trade_only=day_trade_only,
+        broker=broker,
     )
     return _sort_events(filtered, sort)
 
@@ -349,6 +455,7 @@ def compute_summary(
         date_to=filter_query.get("date_to"),  # type: ignore[arg-type]
         year=filter_query.get("year"),  # type: ignore[arg-type]
         day_trade_only=bool(filter_query.get("day_trade_only", False)),
+        broker=filter_query.get("broker"),  # type: ignore[arg-type]
     )
     current_year = date_type.today().year
     ytd_events = [

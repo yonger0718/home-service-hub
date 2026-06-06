@@ -44,6 +44,24 @@ class PositionSide(str, Enum):
     SHORT = "SHORT"
 
 
+class Broker(str, Enum):
+    TW_CATHAY = "TW_CATHAY"
+    TW_SINOPAC = "TW_SINOPAC"
+    TW_MANUAL = "TW_MANUAL"
+    IB = "IB"
+    FIRSTRADE = "FIRSTRADE"
+    SCHWAB = "SCHWAB"
+    FOREIGN_MANUAL = "FOREIGN_MANUAL"
+
+
+class BrokerCashFlowType(str, Enum):
+    DEPOSIT = "deposit"
+    WITHDRAWAL = "withdrawal"
+    INTEREST = "interest"
+    DIVIDEND_CASH = "dividend_cash"
+    FEE = "fee"
+
+
 class TransactionBase(BaseModel):
     """Shared fields for transaction read/write.
 
@@ -67,12 +85,15 @@ class TransactionBase(BaseModel):
     trade_date: Optional[datetime] = None
     fee: Decimal = Decimal("0.0")
     tax: Decimal = Decimal("0.0")
+    broker: Optional[Broker] = None
 
     @model_validator(mode="after")
     def normalize_symbol(self) -> Self:
         self.symbol = _normalize_symbol(self.symbol, self.market)
         self.market = (self.market or "TW").strip().upper()
         self.currency = (self.currency or "TWD").strip().upper()
+        if self.broker is None:
+            self.broker = Broker.TW_MANUAL if self.market == "TW" else Broker.FOREIGN_MANUAL
         return self
 
 class TransactionCreate(TransactionBase):
@@ -223,3 +244,33 @@ class PagedTransactions(BaseModel):
 class PagedDividends(BaseModel):
     items: List[Dividend]
     total: int
+
+
+class BrokerCashFlowIn(BaseModel):
+    broker: Broker
+    date: date
+    type: BrokerCashFlowType
+    amount: Decimal
+    currency: str
+    fx_rate_to_twd: Optional[Decimal] = None
+    note: Optional[str] = None
+    import_fingerprint: Optional[str] = None
+
+    @model_validator(mode="after")
+    def normalize_currency(self) -> Self:
+        self.currency = (self.currency or "TWD").strip().upper()
+        return self
+
+
+class BrokerCashFlowOut(BrokerCashFlowIn):
+    id: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class BrokerCashBalance(BaseModel):
+    broker: Broker
+    currency: str
+    balance: Decimal
+    as_of_date: date

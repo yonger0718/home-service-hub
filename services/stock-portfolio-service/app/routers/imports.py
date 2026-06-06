@@ -66,12 +66,28 @@ def _serialize_result(
     recalc_scheduled: bool = False,
     csv_format: str = "generic",
 ) -> dict:
+    serialized_rows = _serialize_parse(parsed)
+    # Broker imports surface a separate UI that expects a ``counts`` /
+    # ``transactions`` / ``cash_flows`` / ``detected_broker`` shape — derive
+    # these from the same ParseResult so both UIs read the same response.
+    transactions = [
+        row for row in serialized_rows
+        if row["payload"].get("_kind") == "transaction" or row["payload"].get("_kind") is None
+    ]
+    cash_flows = [
+        row for row in serialized_rows
+        if row["payload"].get("_kind") == "cash_flow"
+    ]
+    detected_broker = csv_format if csv_format != "generic" else None
     return {
         "parsed": result.parsed,
         "created": result.created,
         "skipped_duplicates": result.skipped_duplicates,
         "dry_run": result.dry_run,
-        "errors": [asdict(error) for error in result.errors],
+        "errors": [
+            {**asdict(error), "reason": error.message}
+            for error in result.errors
+        ],
         "created_ids": result.created_ids,
         "rehashed": result.rehashed,
         "skipped_unresolved": result.skipped_unresolved,
@@ -83,9 +99,17 @@ def _serialize_result(
         "would_rehash": result.would_rehash,
         "would_insert": result.would_insert,
         "would_skip_duplicate": result.would_skip_duplicate,
-        "rows": _serialize_parse(parsed),
+        "rows": serialized_rows,
         "recalc_scheduled": recalc_scheduled,
         "csv_format": csv_format,
+        "detected_broker": detected_broker,
+        "transactions": transactions,
+        "cash_flows": cash_flows,
+        "counts": {
+            "created": result.created,
+            "skipped": result.skipped_duplicates,
+            "rejected": len(result.errors),
+        },
     }
 
 
@@ -212,6 +236,27 @@ def import_transactions(
             background_tasks, touched_symbols=symbols, recalc_from=min_trade
         )
     return _serialize_result(parsed, result, recalc_scheduled=recalc_scheduled, csv_format=csv_format)
+
+
+@router.post("/csv")
+def import_csv(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    name_overrides: str = Form(default=""),
+    confirmed_overrides: str = Form(default=""),
+    dry_run: bool = Query(default=False),
+    has_header: bool = Query(default=True),
+    db: Session = Depends(get_db),
+) -> dict:
+    return import_transactions(
+        background_tasks=background_tasks,
+        file=file,
+        name_overrides=name_overrides,
+        confirmed_overrides=confirmed_overrides,
+        dry_run=dry_run,
+        has_header=has_header,
+        db=db,
+    )
 
 
 @router.post("/dividends")

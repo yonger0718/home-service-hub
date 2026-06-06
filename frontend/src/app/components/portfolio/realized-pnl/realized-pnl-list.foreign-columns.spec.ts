@@ -12,12 +12,14 @@ describe('PortfolioRealizedPnlComponent foreign columns', () => {
   let portfolioService: {
     getRealizedPnl: ReturnType<typeof vi.fn>;
     getSymbolNames: ReturnType<typeof vi.fn>;
+    getTransactionBrokers: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
     portfolioService = {
       getRealizedPnl: vi.fn().mockReturnValue(of(paged([event()]))),
       getSymbolNames: vi.fn().mockReturnValue(of({})),
+      getTransactionBrokers: vi.fn().mockReturnValue(of([])),
     };
 
     await TestBed.configureTestingModule({
@@ -104,6 +106,7 @@ function event(overrides: Partial<RealizedPnlEvent> = {}): RealizedPnlEvent {
     position_side: 'LONG' as const,
     note: null,
     market: 'TW' as const,
+    broker: 'TW_MANUAL' as const,
     native_proceeds: '80000',
     native_cost: '70000',
     native_currency: 'TWD',

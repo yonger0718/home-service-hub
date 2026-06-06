@@ -13,10 +13,11 @@ import { ToggleSwitchModule } from 'primeng/toggleswitch';
 import { TooltipModule } from 'primeng/tooltip';
 import { MessageService } from 'primeng/api';
 
-import { RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary } from '../../../models/portfolio.model';
+import { Broker, RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary, brokerLabel } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { ListItemComponent } from '../../shared/list-item/list-item';
+import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 
 const PAGE_SIZE_KEY = 'portfolio.realizedPnl.pageSize';
 const DEFAULT_PAGE_SIZE = 25;
@@ -44,8 +45,8 @@ const SORT_OPTIONS = [
     ToastModule,
     ToggleSwitchModule,
     TooltipModule,
-    NativeAmountPipe,
     ListItemComponent,
+    SegToggleComponent,
   ],
   providers: [MessageService],
   templateUrl: './realized-pnl.html',
@@ -55,6 +56,7 @@ const SORT_OPTIONS = [
 export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   private portfolioService = inject(PortfolioService);
   private messageService = inject(MessageService);
+  private nativeAmountPipe = new NativeAmountPipe();
   private currentYear = new Date().getFullYear();
 
   readonly Number = Number;
@@ -74,6 +76,11 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   symbolNames = signal<Record<string, string>>({});
   searchInput = signal<string>('');
   selectedYear = signal<YearPreset>(null);
+  selectedBroker = signal<'ALL' | Broker>('ALL');
+  /** Catalog of brokers present in the user's data, fetched independently of
+   * the paginated/filtered events list so chips don't disappear after the
+   * server narrows results to a single broker. */
+  readonly brokerCatalog = signal<Broker[]>([]);
   expandedKey = signal<string | null>(null);
   summary = signal<RealizedPnlSummary>({
     filter_scope_total: '0',
@@ -85,6 +92,23 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   readonly showForeignColumns = computed(() =>
     this.events().some(event => (event.market ?? 'TW') !== 'TW'),
   );
+
+  readonly brokerFilterOptions = computed<SegToggleOption[]>(() => [
+    { label: '全部', value: 'ALL' },
+    ...this.availableBrokers().map(broker => ({ label: brokerLabel(broker), value: broker })),
+  ]);
+
+  brokerLabel(broker: Broker | null | undefined): string {
+    return brokerLabel(broker);
+  }
+
+  readonly showBrokerColumn = computed(() => this.availableBrokers().length > 0);
+  readonly showBrokerFilter = computed(() => this.availableBrokers().length > 0);
+
+  /** Server applies the broker filter via query param so pagination total +
+   * summary stay accurate. Kept as a passthrough so existing template
+   * bindings to filteredEvents() don't need to change. */
+  readonly filteredEvents = computed(() => this.events());
 
   dateRange: Date[] | null = null;
   query = signal<RealizedPnlQuery>({
@@ -98,6 +122,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
+    this.portfolioService.getTransactionBrokers().subscribe(brokers => this.brokerCatalog.set(brokers));
     this.fetch();
   }
 
@@ -112,6 +137,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       next: paged => {
         if (seq !== this.fetchSeq) return;
         this.events.set(paged.items);
+        this.ensureSelectedBroker();
         this.total.set(paged.total);
         this.summary.set(paged.summary);
         this.expandedKey.set(null);
@@ -174,6 +200,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     this.searchInput.set('');
     this.dateRange = null;
     this.selectedYear.set(null);
+    this.selectedBroker.set('ALL');
     this.expandedKey.set(null);
     this.query.set({
       offset: 0,
@@ -185,7 +212,23 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
 
   hasActiveFilters(): boolean {
     const q = this.query();
-    return !!(q.symbol || q.date_from || q.date_to || q.year || q.day_trade_only);
+    return !!(q.symbol || q.date_from || q.date_to || q.year || q.day_trade_only || this.selectedBroker() !== 'ALL');
+  }
+
+  selectBrokerFilter(value: string): void {
+    const next = value as 'ALL' | Broker;
+    this.selectedBroker.set(next);
+    this.expandedKey.set(null);
+    this.query.set({
+      ...this.query(),
+      broker: next === 'ALL' ? null : next,
+      offset: 0,
+    });
+    this.fetch();
+  }
+
+  showBrokerBadge(event: RealizedPnlEvent): boolean {
+    return !!event.broker;
   }
 
   toggleExpanded(event: RealizedPnlEvent) {
@@ -221,6 +264,48 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     });
   }
 
+  private isForeign(event: RealizedPnlEvent): boolean {
+    return event.market !== 'TW' && !!event.native_currency;
+  }
+
+  displayAmount(
+    event: RealizedPnlEvent,
+    twdValue: string | number,
+    nativeValue: string | number | null | undefined,
+  ): string {
+    if (!this.isForeign(event)) return this.formatCurrency(twdValue);
+    return this.nativeAmountPipe.transform(nativeValue ?? null, event.native_currency);
+  }
+
+  displayPnl(event: RealizedPnlEvent): string {
+    if (!this.isForeign(event)) return this.formatCurrency(event.realized_pnl);
+    const proceeds = Number(event.native_proceeds ?? 0);
+    const cost = Number(event.native_cost ?? 0);
+    return this.nativeAmountPipe.transform(proceeds - cost, event.native_currency);
+  }
+
+  pnlValueForClass(event: RealizedPnlEvent): number {
+    if (!this.isForeign(event)) return Number(event.realized_pnl);
+    return Number(event.native_proceeds ?? 0) - Number(event.native_cost ?? 0);
+  }
+
+  displaySellPrice(event: RealizedPnlEvent): string {
+    if (!this.isForeign(event)) {
+      return Number(event.sell_price).toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    return this.nativeAmountPipe.transform(event.native_sell_price ?? null, event.native_currency);
+  }
+
+  displayAvgCost(event: RealizedPnlEvent): string {
+    if (!this.isForeign(event)) {
+      return Number(event.avg_cost_at_sale).toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    const qty = Number(event.quantity);
+    if (!qty) return this.nativeAmountPipe.transform(null, event.native_currency);
+    const avg = Number(event.native_cost ?? 0) / qty;
+    return this.nativeAmountPipe.transform(avg, event.native_currency);
+  }
+
   pnlClass(value: string | number): Record<string, boolean> {
     const amount = Number(value);
     return {
@@ -236,6 +321,18 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       this.filterDebounce = setTimeout(() => this.fetch(), 300);
     } else {
       this.fetch();
+    }
+  }
+
+  private availableBrokers(): Broker[] {
+    return this.brokerCatalog();
+  }
+
+  private ensureSelectedBroker(): void {
+    const selected = this.selectedBroker();
+    if (selected === 'ALL') return;
+    if (!this.availableBrokers().includes(selected)) {
+      this.selectedBroker.set('ALL');
     }
   }
 

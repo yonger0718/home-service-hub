@@ -22,7 +22,7 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date as date_type, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Literal
@@ -30,8 +30,10 @@ from typing import Literal
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..models.fx_rate import FXRate
 from ..models.cash_transaction import CashTxnSource
 from ..models import portfolio as models
+from .cash_flow_service import CashFlowRow, write_cash_flows
 from . import cash_account_service
 from . import portfolio_service as svc
 from .per_date_verify import OverrideValidation
@@ -49,6 +51,7 @@ TRANSACTION_FIELDS = (
 DIVIDEND_FIELDS = ("symbol", "amount", "ex_dividend_date", "received_date")
 SOURCE_TRANSACTIONS = "manual-csv-v1:transactions"
 SOURCE_DIVIDENDS = "manual-csv-v1:dividends"
+SOURCE_BROKER_TRANSACTIONS = "broker-csv-v1:transactions"
 
 # Traditional Chinese column-name synonyms → canonical English keys.
 # Lets a Taiwan-localised CSV ship "代號,類別,股數,..." instead of the
@@ -221,14 +224,19 @@ def _prepend_canonical_header(raw: bytes, expected: tuple[str, ...]) -> bytes:
     return header + raw
 
 
-def detect_csv_format(raw: bytes) -> Literal["generic", "cathay"]:
+def detect_csv_format(raw: bytes) -> Literal["generic", "cathay", "IB", "FIRSTRADE", "SCHWAB"]:
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         # Surface as ValueError so the router translates to 400 instead of 500.
         raise ValueError("CSV must be UTF-8 encoded") from exc
     first_non_empty = next((line for line in text.splitlines() if line.strip()), "")
-    return "cathay" if first_non_empty.startswith("根據您篩選的結果") else "generic"
+    if first_non_empty.startswith("根據您篩選的結果"):
+        return "cathay"
+    from .broker_dispatch_service import sniff
+
+    broker = sniff(raw)
+    return broker.value if broker is not None else "generic"
 
 
 def _transaction_fingerprint(
@@ -273,6 +281,39 @@ def _transaction_fingerprint(
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _broker_transaction_fingerprint(
+    *,
+    broker: str,
+    symbol: str,
+    market: str,
+    type_: str,
+    quantity: Decimal,
+    price: Decimal,
+    trade_date: datetime,
+    fee: Decimal,
+    tax: Decimal,
+    currency: str,
+    note: str | None = None,
+) -> str:
+    canonical = "|".join(
+        (
+            SOURCE_BROKER_TRANSACTIONS,
+            broker,
+            market,
+            symbol,
+            type_,
+            f"{quantity:.4f}",
+            f"{price:.4f}",
+            trade_date.astimezone(timezone.utc).isoformat(),
+            f"{fee:.4f}",
+            f"{tax:.4f}",
+            currency.upper(),
+            note or "",
+        )
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _dividend_fingerprint(
     symbol: str,
     amount: Decimal,
@@ -294,6 +335,23 @@ def _dividend_fingerprint(
 
 
 def parse_transactions_csv(raw: bytes, *, has_header: bool = True) -> ParseResult:
+    from .broker_dispatch_service import sniff
+
+    broker = sniff(raw)
+    if broker is not None:
+        if broker is models.Broker.IB:
+            from . import broker_ib_service
+
+            return broker_ib_service.parse(raw)
+        if broker is models.Broker.FIRSTRADE:
+            from . import broker_firstrade_service
+
+            return broker_firstrade_service.parse(raw)
+        if broker is models.Broker.SCHWAB:
+            from . import broker_schwab_service
+
+            return broker_schwab_service.parse(raw)
+
     if not has_header:
         raw = _prepend_canonical_header(raw, TRANSACTION_FIELDS)
     text = raw.decode("utf-8-sig")
@@ -436,13 +494,20 @@ def _persist_transaction(db: Session, row: ParsedRow) -> models.Transaction:
     svc._validate_transaction_ledger(db, payload)
     db_tx = models.Transaction(
         symbol=payload["symbol"],
+        market=payload.get("market", "TW"),
         name=payload["name"],
         type=payload["type"],
+        position_side=models.PositionSide(
+            payload.get("position_side", models.PositionSide.LONG.value)
+        ),
         quantity=payload["quantity"],
         price=payload["price"],
+        currency=payload.get("currency", "TWD"),
+        fx_rate_to_twd=payload.get("fx_rate_to_twd"),
         trade_date=payload["trade_date"],
         fee=payload["fee"],
         tax=payload["tax"],
+        broker=payload.get("broker", models.Broker.TW_MANUAL.value),
         import_fingerprint=row.fingerprint,
     )
     db.add(db_tx)
@@ -453,6 +518,179 @@ def _persist_transaction(db: Session, row: ParsedRow) -> models.Transaction:
     db.commit()
     db.refresh(db_tx)
     return db_tx
+
+
+def _row_date(value: object) -> date_type:
+    return value.date() if hasattr(value, "date") else value  # type: ignore[return-value]
+
+
+def _exact_fx_rate(db: Session, currency: str, date_: date_type) -> Decimal | None:
+    normalized = (currency or "TWD").strip().upper()
+    if normalized == "TWD":
+        return None
+    rate = (
+        db.query(FXRate.rate_to_twd)
+        .filter(FXRate.currency == normalized)
+        .filter(FXRate.date == date_)
+        .scalar()
+    )
+    return Decimal(rate) if rate is not None else None
+
+
+def _missing_fx_error(row: ParsedRow, date_: date_type, currency: str) -> ParseError:
+    return ParseError(
+        row_index=row.row_index,
+        message=f"missing FX rate for {date_.isoformat()} {currency}",
+    )
+
+
+def _resolve_symbol_market(db: Session, symbol: str) -> str | None:
+    """Return distinct ``symbol_map.market`` for ``symbol`` if exactly one mapping exists.
+
+    Lets broker parsers override their heuristic market guess (e.g. IB strips
+    ``.L`` so the parser can't tell ACWD-LSE from ACWD-US). Returns ``None`` when
+    the symbol is unmapped or maps to multiple markets so the caller falls back
+    to the heuristic.
+    """
+    from ..models.symbol_map import SymbolMap
+
+    markets = {
+        row[0]
+        for row in db.query(SymbolMap.market)
+        .filter(SymbolMap.symbol == symbol)
+        .distinct()
+        .all()
+    }
+    return markets.pop() if len(markets) == 1 else None
+
+
+def _commit_broker_rows(
+    db: Session, parsed: ParseResult, *, dry_run: bool
+) -> ImportResult:
+    existing_transactions: set[str] = {
+        fingerprint
+        for (fingerprint,) in db.query(models.Transaction.import_fingerprint)
+        .filter(models.Transaction.import_fingerprint.is_not(None))
+        .all()
+    }
+    # Override each transaction row's market via symbol_map when the symbol has
+    # a single mapped market. Parsers that strip exchange suffixes (IB) misroute
+    # otherwise. Done once per upload, then fingerprint is regenerated below.
+    market_overrides: dict[str, str] = {}
+    for row in parsed.rows:
+        if row.payload.get("_kind", "transaction") != "transaction":
+            continue
+        symbol = row.payload.get("symbol")
+        if not symbol or symbol in market_overrides:
+            continue
+        resolved = _resolve_symbol_market(db, symbol)
+        if resolved is not None:
+            market_overrides[symbol] = resolved
+    if market_overrides:
+        for row in parsed.rows:
+            payload = row.payload
+            if payload.get("_kind", "transaction") != "transaction":
+                continue
+            new_market = market_overrides.get(payload.get("symbol"))
+            if new_market and payload.get("market") != new_market:
+                payload["market"] = new_market
+                row.fingerprint = _broker_transaction_fingerprint(
+                    broker=payload["broker"],
+                    symbol=payload["symbol"],
+                    market=payload["market"],
+                    type_=payload["type"],
+                    quantity=payload["quantity"],
+                    price=payload["price"],
+                    trade_date=payload["trade_date"],
+                    fee=payload["fee"],
+                    tax=payload["tax"],
+                    currency=payload["currency"],
+                    note=payload.get("name"),
+                )
+    seen_transactions: set[str] = set()
+    created_ids: list[int] = []
+    errors = list(parsed.errors)
+    skipped = 0
+    created = 0
+    for row in parsed.rows:
+        payload = row.payload
+        kind = payload.get("_kind", "transaction")
+        if kind == "cash_flow":
+            flow_date = payload["date"]
+            currency = str(payload["currency"]).upper()
+            fx_rate = _exact_fx_rate(db, currency, flow_date)
+            if currency != "TWD" and fx_rate is None:
+                errors.append(_missing_fx_error(row, flow_date, currency))
+                continue
+            flow_row = CashFlowRow(
+                broker=payload["broker"],
+                date=flow_date,
+                type=payload["cash_flow_type"],
+                amount=payload["amount"],
+                currency=currency,
+                fx_rate_to_twd=fx_rate,
+                note=payload.get("note"),
+                import_fingerprint=row.fingerprint,
+            )
+            result = write_cash_flows(db, [flow_row], dry_run=dry_run)
+            skipped += result.skipped_duplicates
+            created += result.created
+            continue
+
+        if row.fingerprint in existing_transactions or row.fingerprint in seen_transactions:
+            skipped += 1
+            continue
+        seen_transactions.add(row.fingerprint)
+        trade_date = _row_date(payload["trade_date"])
+        currency = str(payload.get("currency", "TWD")).upper()
+        fx_rate = _exact_fx_rate(db, currency, trade_date)
+        if currency != "TWD" and fx_rate is None:
+            errors.append(_missing_fx_error(row, trade_date, currency))
+            continue
+        if dry_run:
+            continue
+        tx = models.Transaction(
+            symbol=payload["symbol"],
+            market=payload["market"],
+            name=payload.get("name"),
+            type=models.TransactionType(payload["type"]),
+            position_side=models.PositionSide(
+                payload.get("position_side", models.PositionSide.LONG.value)
+            ),
+            quantity=payload["quantity"],
+            price=payload["price"],
+            currency=currency,
+            fx_rate_to_twd=fx_rate,
+            trade_date=payload["trade_date"],
+            fee=payload["fee"],
+            tax=payload["tax"],
+            broker=payload["broker"],
+            import_fingerprint=row.fingerprint,
+        )
+        db.add(tx)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            skipped += 1
+            continue
+        svc._recompute_day_trade_flags(db, tx.symbol, svc._trade_calendar_date(tx.trade_date))
+        db.commit()
+        db.refresh(tx)
+        created_ids.append(tx.id)
+        created += 1
+    return ImportResult(
+        parsed=len(parsed.rows),
+        created=created,
+        skipped_duplicates=skipped,
+        errors=errors,
+        dry_run=dry_run,
+        created_ids=created_ids,
+        rehashed=0,
+        skipped_unresolved=0,
+        skipped_unverified=0,
+        override_validations=[],
+    )
 
 
 def _persist_dividend(db: Session, row: ParsedRow) -> models.Dividend:
@@ -482,6 +720,9 @@ def _persist_dividend(db: Session, row: ParsedRow) -> models.Dividend:
 def commit_transactions(
     db: Session, parsed: ParseResult, *, dry_run: bool
 ) -> ImportResult:
+    if any(row.payload.get("_kind") in {"transaction", "cash_flow"} for row in parsed.rows):
+        return _commit_broker_rows(db, parsed, dry_run=dry_run)
+
     existing: set[str] = {
         fingerprint
         for (fingerprint,) in db.query(models.Transaction.import_fingerprint)

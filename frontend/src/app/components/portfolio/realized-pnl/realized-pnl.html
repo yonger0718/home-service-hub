@@ -69,6 +69,17 @@
   </div>
 </div>
 
+@if (showBrokerFilter()) {
+  <div class="broker-filter-row">
+    <app-seg-toggle
+      ariaLabel="券商篩選"
+      [options]="brokerFilterOptions()"
+      [value]="selectedBroker()"
+      (change)="selectBrokerFilter($event)"
+    ></app-seg-toggle>
+  </div>
+}
+
 <div class="hub-result-meta">
   <span class="meta-count">{{ total() }} 筆</span>
   @if (loading()) {
@@ -80,7 +91,7 @@
 </div>
 
 <div class="hub-modern-list" [class.is-loading]="loading()">
-  @for (event of events(); track eventKey(event)) {
+  @for (event of filteredEvents(); track eventKey(event)) {
     <div class="realized-row-shell">
       <app-list-item [clickable]="true" (itemClick)="toggleExpanded(event)">
         <ng-container left>
@@ -91,6 +102,9 @@
             }
             @if (showForeignColumns() && event.market !== 'TW') {
               <span class="market-badge">{{ event.market }}</span>
+            }
+            @if (showBrokerColumn() && showBrokerBadge(event)) {
+              <span class="market-badge broker-badge">{{ brokerLabel(event.broker) }}</span>
             }
             @if (event.is_day_trade) {
               <span class="day-trade-badge">當沖</span>
@@ -120,20 +134,15 @@
             @if (event.symbol !== symbolDisplay(event)) {
               {{ event.symbol }} ·
             }
-            {{ event.trade_date }} · {{ event.quantity | number }} 股 · 售價 {{ Number(event.sell_price) | number:'1.2-2' }}
-            @if (showForeignColumns()) {
-              <span class="native-amount">
-                · Native {{ event.native_proceeds | nativeAmount: event.native_currency }} / {{ event.native_cost | nativeAmount: event.native_currency }}
-              </span>
-            }
+            {{ event.trade_date }} · {{ event.quantity | number }} 股 · 售價 {{ displaySellPrice(event) }}
           </div>
         </ng-container>
         <ng-container right>
           <div class="text-end">
-            <div class="amount-text realized-pnl" [ngClass]="pnlClass(event.realized_pnl)">
-              {{ formatCurrency(event.realized_pnl) }}
+            <div class="amount-text realized-pnl" [ngClass]="pnlClass(pnlValueForClass(event))">
+              {{ displayPnl(event) }}
             </div>
-            <div class="sub-text">均價 {{ Number(event.avg_cost_at_sale) | number:'1.2-2' }}</div>
+            <div class="sub-text">均價 {{ displayAvgCost(event) }}</div>
           </div>
         </ng-container>
       </app-list-item>
@@ -142,23 +151,23 @@
         <div class="realized-detail-panel">
           <div class="detail-item">
             <span>成交總額</span>
-            <strong>{{ formatCurrency(event.proceeds_gross) }}</strong>
+            <strong>{{ displayAmount(event, event.proceeds_gross, event.native_proceeds_gross) }}</strong>
           </div>
           <div class="detail-item">
             <span>手續費</span>
-            <strong>{{ formatCurrency(event.fee) }}</strong>
+            <strong>{{ displayAmount(event, event.fee, event.native_fee) }}</strong>
           </div>
           <div class="detail-item">
             <span>交易稅</span>
-            <strong>{{ formatCurrency(event.tax) }}</strong>
+            <strong>{{ displayAmount(event, event.tax, event.native_tax) }}</strong>
           </div>
           <div class="detail-item">
             <span>淨收入</span>
-            <strong>{{ formatCurrency(event.proceeds_net) }}</strong>
+            <strong>{{ displayAmount(event, event.proceeds_net, event.native_proceeds) }}</strong>
           </div>
           <div class="detail-item">
             <span>賣出成本</span>
-            <strong>{{ formatCurrency(event.cost_out) }}</strong>
+            <strong>{{ displayAmount(event, event.cost_out, event.native_cost) }}</strong>
           </div>
         </div>
       }

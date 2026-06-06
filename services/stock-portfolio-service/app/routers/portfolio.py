@@ -41,6 +41,22 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Transaction not found")
     return {"message": "Transaction deleted"}
 
+@router.get("/transactions/brokers", response_model=list[str])
+def list_transaction_brokers(db: Session = Depends(get_db)):
+    """Distinct non-null brokers present in transactions.
+
+    Drives the broker filter chip row on the transaction list page so chips
+    only appear for brokers the user actually has data for.
+    """
+    rows = (
+        db.query(models.Transaction.broker)
+        .filter(models.Transaction.broker.isnot(None))
+        .distinct()
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
 @router.get("/transactions", response_model=schemas.PagedTransactions)
 def get_transactions(
     limit: int = Query(default=25, ge=1, le=100),
@@ -49,6 +65,7 @@ def get_transactions(
     date_from: Optional[date_type] = Query(default=None),
     date_to: Optional[date_type] = Query(default=None),
     side: Optional[Literal["BUY", "SELL"]] = Query(default=None),
+    broker: Optional[str] = Query(default=None),
     sort: str = Query(default="trade_date:desc"),
     db: Session = Depends(get_db),
 ):
@@ -65,6 +82,7 @@ def get_transactions(
         date_from=date_from,
         date_to=date_to,
         side=side,
+        broker=broker,
         sort_field=sort_field,
         sort_dir=sort_dir,
         offset=offset,

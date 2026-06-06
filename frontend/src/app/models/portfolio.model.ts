@@ -6,6 +6,29 @@ export enum TransactionType {
 export type PositionSide = 'LONG' | 'SHORT';
 export type MarketCode = 'TW' | 'US' | 'LSE';
 export type HoldingKey = `${string}|${MarketCode}`;
+export type Broker =
+  | 'TW_CATHAY'
+  | 'TW_SINOPAC'
+  | 'TW_MANUAL'
+  | 'IB'
+  | 'FIRSTRADE'
+  | 'SCHWAB'
+  | 'FOREIGN_MANUAL';
+
+export const BROKER_LABELS: Record<Broker, string> = {
+  IB: 'IB',
+  FIRSTRADE: 'Firstrade',
+  SCHWAB: 'Schwab',
+  TW_CATHAY: '國泰',
+  TW_SINOPAC: '永豐',
+  TW_MANUAL: '國泰',
+  FOREIGN_MANUAL: '海外手動',
+};
+
+export function brokerLabel(broker: Broker | null | undefined): string {
+  if (!broker) return '';
+  return BROKER_LABELS[broker] ?? broker;
+}
 
 export interface HoldingIdentity {
   symbol: string;
@@ -21,6 +44,7 @@ export interface Transaction {
   symbol: string;
   name?: string;
   type: TransactionType;
+  broker?: Broker | null;
   market?: MarketCode;
   currency?: string;
   fx_rate_to_twd?: number | string;
@@ -87,6 +111,42 @@ export interface ImportResult {
   rows: ImportRow[];
   recalc_scheduled?: boolean;
   csv_format?: 'generic' | 'cathay';
+}
+
+export interface BrokerCashFlow {
+  id?: number;
+  broker: Broker;
+  date: string;
+  type: 'deposit' | 'withdrawal' | 'interest' | 'dividend_cash' | 'fee' | string;
+  amount: string | number;
+  currency: string;
+  fx_rate_to_twd?: string | number | null;
+  note?: string | null;
+  import_fingerprint?: string | null;
+  created_at?: string;
+}
+
+export interface BrokerCashBalance {
+  broker: Broker;
+  currency: string;
+  balance: string | number;
+  as_of_date: string;
+}
+
+export interface BrokerCsvImportResult {
+  detected_broker: string | null;
+  dry_run: boolean;
+  transactions: any[];
+  cash_flows: any[];
+  counts: {
+    created: number;
+    skipped: number;
+    rejected: number;
+  };
+  errors: {
+    row_index: number;
+    reason: string;
+  }[];
 }
 
 export interface RecalcStepStatus {
@@ -234,6 +294,7 @@ export interface TransactionQuery {
   date_from?: string | null;
   date_to?: string | null;
   side?: 'BUY' | 'SELL' | null;
+  broker?: Broker | null;
   sort?: string;
 }
 
@@ -251,6 +312,7 @@ export interface RealizedPnlEvent {
   trade_date: string;
   symbol: string;
   market: MarketCode;
+  broker?: Broker | null;
   name: string | null;
   quantity: number;
   sell_price: string;
@@ -261,8 +323,12 @@ export interface RealizedPnlEvent {
   proceeds_net: string;
   cost_out: string;
   realized_pnl: string;
+  native_sell_price?: string | number | null;
+  native_proceeds_gross?: string | number | null;
   native_proceeds: string | number | null;
   native_cost: string | number | null;
+  native_fee?: string | number | null;
+  native_tax?: string | number | null;
   native_currency: string | null;
   is_day_trade: boolean;
   position_side: PositionSide;
@@ -284,6 +350,7 @@ export interface RealizedPnlQuery {
   date_to?: string | null;
   year?: number | null;
   day_trade_only?: boolean | null;
+  broker?: Broker | null;
   sort?: string;
 }
 
