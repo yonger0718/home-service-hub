@@ -21,7 +21,16 @@ from ..schemas.cash_account import (
     CashTransactionCreate,
     CashTransactionOut,
 )
-from . import fx_rate_service
+from . import cash_flow_service, fx_rate_service
+from ..models import portfolio as portfolio_models
+
+_BROKER_ENUM_TO_PHASE4: dict[BrokerEnum, str] = {
+    BrokerEnum.CATHAY: portfolio_models.Broker.TW_CATHAY.value,
+    BrokerEnum.SINOPAC: portfolio_models.Broker.TW_SINOPAC.value,
+    BrokerEnum.FIRSTRADE: portfolio_models.Broker.FIRSTRADE.value,
+    BrokerEnum.IB: portfolio_models.Broker.IB.value,
+    BrokerEnum.CS: portfolio_models.Broker.SCHWAB.value,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -763,11 +772,20 @@ def list_accounts(
     total_target_balance = Decimal("0") if target_currency else None
     skipped_currencies: list[str] = []
 
+    cash_flow_index: dict[tuple[str, str], Decimal] = {
+        (str(row["broker"]), str(row["currency"])): Decimal(str(row["balance"]))
+        for row in cash_flow_service.list_balances(session, as_of_date=asof_date)
+    }
+
     for account in session.execute(stmt.order_by(BrokerAccount.id.asc())).scalars():
-        native_balance = get_balance(session, account.id, asof_date)
+        phase4_broker = _BROKER_ENUM_TO_PHASE4.get(account.broker)
+        account_currency = _normalize_currency(account.currency)
+        if phase4_broker is not None and (phase4_broker, account_currency) in cash_flow_index:
+            native_balance = cash_flow_index[(phase4_broker, account_currency)]
+        else:
+            native_balance = get_balance(session, account.id, asof_date)
         target_balance: Decimal | None = None
         if target_currency is not None:
-            account_currency = _normalize_currency(account.currency)
             if account_currency == target_currency:
                 target_balance = native_balance
             else:
