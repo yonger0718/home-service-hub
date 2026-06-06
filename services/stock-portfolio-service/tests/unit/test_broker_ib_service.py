@@ -61,6 +61,32 @@ def test_ib_gbp_row_infers_lse_market() -> None:
     assert parsed.rows[0].payload["currency"] == "GBP"
 
 
+def test_ib_commit_uses_symbol_map_market_override(db_session) -> None:
+    """ACWD/AVGS-style: IB strips ``.L`` suffix so the parser guesses ``US``;
+    a ``symbol_map`` row pinning the symbol to LSE must override the guess."""
+    from app.models.symbol_map import SymbolMap
+
+    _seed_fx(db_session, "USD", date(2026, 6, 1), date(2026, 6, 2))
+    db_session.add(SymbolMap(name="ACWD UCITS", symbol="ACWD", market="LSE"))
+    db_session.commit()
+
+    raw = (
+        "Statement,Header,域名稱,域值\n"
+        "總結,Header,域名稱,域值\n"
+        "總結,Data,基礎貨幣,USD\n"
+        "轉賬歷史,Header,日期,賬戶,說明,交易類型,代碼,交易量,價格,Price Currency,總額,佣金,淨金額\n"
+        "轉賬歷史,Data,2026-06-02,U,ACWD trade,買,ACWD,1,325.05,USD,-325.05,-1.78,-326.83\n"
+    ).encode("utf-8")
+    parsed = broker_ib_service.parse(raw)
+    # Parser still emits US (default heuristic), import_service overrides on commit.
+    assert parsed.rows[0].payload["market"] == "US"
+    result = import_service.commit_transactions(db_session, parsed, dry_run=False)
+    assert result.errors == []
+    assert result.created == 1
+    persisted = db_session.query(models.Transaction).first()
+    assert persisted.market == "LSE"
+
+
 def test_ib_commit_populates_fx_and_rejects_missing_fx(db_session) -> None:
     _seed_fx(db_session, "USD", date(2026, 6, 1), date(2026, 6, 2))
     parsed = broker_ib_service.parse(FIXTURE.read_bytes())

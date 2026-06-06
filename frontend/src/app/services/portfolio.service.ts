@@ -11,6 +11,7 @@ import {
   ExDividendRecord,
   ImportKind,
   ImportResult,
+  Broker,
   BrokerCashBalance,
   BrokerCsvImportResult,
   NetworthPoint,
@@ -91,6 +92,10 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.get<Paged<Transaction>>('/api/portfolio/transactions', {
       params: buildParams(query as Record<string, unknown>),
     });
+  }
+
+  getTransactionBrokers(): Observable<Broker[]> {
+    return this.http.get<Broker[]>('/api/portfolio/transactions/brokers');
   }
 
   createTransaction(transaction: Partial<Transaction>): Observable<Transaction> {

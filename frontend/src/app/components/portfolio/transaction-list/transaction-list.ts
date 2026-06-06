@@ -1,7 +1,7 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal, ViewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { PortfolioService } from '../../../services/portfolio.service';
-import { MarketCode, Transaction, TransactionType, TransactionQuery } from '../../../models/portfolio.model';
+import { Broker, MarketCode, Transaction, TransactionType, TransactionQuery, brokerLabel } from '../../../models/portfolio.model';
 import { TableModule } from 'primeng/table';
 import { ButtonModule } from 'primeng/button';
 import { DialogModule } from 'primeng/dialog';
@@ -85,6 +85,20 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     { label: '買進', value: 'BUY' },
     { label: '賣出', value: 'SELL' },
   ];
+  readonly availableBrokers = signal<Broker[]>([]);
+  readonly brokerFilterOptions = computed<SegToggleOption[]>(() => {
+    const brokers = this.availableBrokers();
+    if (brokers.length === 0) return [];
+    return [
+      { label: '全部', value: 'ALL' },
+      ...brokers.map(broker => ({ label: this.brokerLabel(broker), value: broker })),
+    ];
+  });
+  selectedBroker = signal<'ALL' | Broker>('ALL');
+
+  private brokerLabel(broker: Broker): string {
+    return brokerLabel(broker);
+  }
   readonly rowsPerPageOptions = [25, 50, 100];
   readonly marketOptions = MARKET_OPTIONS;
   readonly fxSubmitAttempted = signal(false);
@@ -99,7 +113,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         primary: `${this.symbolDisplay(t)} ${t.symbol}`,
         metaBadge: this.timelineBadge(t),
         meta: `${Number(t.quantity).toLocaleString('zh-TW')} × ${Number(t.price).toFixed(2)}`,
-        amount: `${isBuy ? '-' : '+'}${this.formatCurrency(this.allInTotal(t))}`,
+        amount: `${isBuy ? '-' : '+'}${this.formatTransactionAmount(t)}`,
         amountVariant: isBuy ? 'buy' : 'sell',
       };
     }),
@@ -124,6 +138,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.portfolioService.getSymbolNames().subscribe(map => this.symbolNames.set(map));
+    this.portfolioService.getTransactionBrokers().subscribe(brokers => this.availableBrokers.set(brokers));
     this.fetch();
   }
 
@@ -198,6 +213,12 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     this.onSideChange(side === 'ALL' ? null : side as 'BUY' | 'SELL');
   }
 
+  onBrokerFilterChange(value: string) {
+    const broker = value === 'ALL' ? null : (value as Broker);
+    this.selectedBroker.set(value === 'ALL' ? 'ALL' : (value as Broker));
+    this.updateFilters({ broker });
+  }
+
   onSortChange(sort: string) {
     this.updateFilters({ sort });
   }
@@ -212,6 +233,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
   clearFilters() {
     this.searchInput.set('');
     this.dateRange = null;
+    this.selectedBroker.set('ALL');
     this.query.set({ offset: 0, limit: this.query().limit ?? 25, sort: 'trade_date:desc' });
     this.fetch();
   }
@@ -295,10 +317,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     const gross = Number(t.price) * Number(t.quantity);
     const fee = Number(t.fee || 0);
     const tax = Number(t.tax || 0);
-    const native = t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
-    if (!t.market || t.market === 'TW') return native;
-    const fx = Number(t.fx_rate_to_twd ?? 0);
-    return fx > 0 ? native * fx : native;
+    return t.type === TransactionType.BUY ? gross + fee + tax : gross - fee - tax;
   }
 
   allInUnitPrice(t: Transaction): number {
@@ -314,10 +333,25 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     }).format(Number(value ?? 0));
   }
 
+  formatTransactionAmount(t: Transaction): string {
+    const value = this.allInTotal(t);
+    const currency = (t.currency ?? 'TWD').toUpperCase();
+    // GBp = pence; render verbatim 4dp with GBp suffix (per Phase 3 native-display rule).
+    if (t.currency === 'GBp') {
+      return `${value.toLocaleString('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 4 })} GBp`;
+    }
+    const decimals = currency === 'TWD' ? 0 : 2;
+    const formatted = value.toLocaleString('en-US', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+    });
+    return `${formatted} ${currency}`;
+  }
+
   timelineBadge(t: Transaction): string | undefined {
     const badges = [
       t.market && t.market !== 'TW' ? t.market : null,
-      t.broker && t.broker !== 'TW_MANUAL' ? t.broker : null,
+      t.broker ? this.brokerLabel(t.broker) : null,
     ].filter(Boolean) as string[];
     return badges.length > 0 ? badges.join(' · ') : undefined;
   }

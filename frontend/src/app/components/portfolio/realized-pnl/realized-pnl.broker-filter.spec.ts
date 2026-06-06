@@ -62,9 +62,9 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
     fixture.detectChanges();
 
     const buttons = Array.from(fixture.nativeElement.querySelectorAll('.broker-filter button')) as HTMLButtonElement[];
-    expect(buttons.map(button => button.textContent?.trim())).toEqual(['ALL', 'IB', 'FIRSTRADE', 'TW_CATHAY']);
+    expect(buttons.map(button => button.textContent?.trim())).toEqual(['全部', 'IB', 'Firstrade', '國泰']);
     expect(fixture.nativeElement.textContent).toContain('IB1');
-    expect(fixture.nativeElement.textContent).toContain('FIRSTRADE');
+    expect(fixture.nativeElement.textContent).toContain('Firstrade');
   });
 
   it('filters rows when selecting a broker chip', () => {
@@ -77,6 +77,7 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
 
     const ibButton = Array.from(fixture.nativeElement.querySelectorAll('.broker-filter button') as NodeListOf<HTMLButtonElement>)
       .find(button => button.textContent?.trim() === 'IB')!;
+    expect(ibButton).toBeDefined();
     ibButton.click();
     fixture.detectChanges();
 
@@ -85,7 +86,7 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
     expect(fixture.nativeElement.textContent).not.toContain('FT1');
   });
 
-  it('hides broker filter and broker column for TW manual only datasets', () => {
+  it('shows broker filter chip for TW manual rows labeled as 國泰', () => {
     portfolioService.getRealizedPnl.mockReturnValue(of(paged([
       event({ symbol: 'TW1', broker: 'TW_MANUAL' }),
       event({ symbol: 'TW2', broker: null }),
@@ -94,8 +95,9 @@ describe('PortfolioRealizedPnlComponent broker filter', () => {
     const fixture = TestBed.createComponent(PortfolioRealizedPnlComponent);
     fixture.detectChanges();
 
-    expect(fixture.nativeElement.querySelector('.broker-filter')).toBeNull();
-    expect(fixture.nativeElement.querySelector('.broker-badge')).toBeNull();
+    const buttons = Array.from(fixture.nativeElement.querySelectorAll('.broker-filter button')) as HTMLButtonElement[];
+    expect(buttons.map(button => button.textContent?.trim())).toEqual(['全部', '國泰']);
+    expect(fixture.nativeElement.querySelector('.broker-badge')?.textContent?.trim()).toBe('TW_MANUAL');
   });
 });
 

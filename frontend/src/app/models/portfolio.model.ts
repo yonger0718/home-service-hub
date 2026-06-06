@@ -15,6 +15,21 @@ export type Broker =
   | 'SCHWAB'
   | 'FOREIGN_MANUAL';
 
+export const BROKER_LABELS: Record<Broker, string> = {
+  IB: 'IB',
+  FIRSTRADE: 'Firstrade',
+  SCHWAB: 'Schwab',
+  TW_CATHAY: '國泰',
+  TW_SINOPAC: '永豐',
+  TW_MANUAL: '國泰',
+  FOREIGN_MANUAL: '海外手動',
+};
+
+export function brokerLabel(broker: Broker | null | undefined): string {
+  if (!broker) return '';
+  return BROKER_LABELS[broker] ?? broker;
+}
+
 export interface HoldingIdentity {
   symbol: string;
   market: MarketCode;
@@ -279,6 +294,7 @@ export interface TransactionQuery {
   date_from?: string | null;
   date_to?: string | null;
   side?: 'BUY' | 'SELL' | null;
+  broker?: Broker | null;
   sort?: string;
 }
 

@@ -4,6 +4,7 @@ import csv
 import io
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from typing import Callable
 
 import structlog
 
@@ -34,7 +35,11 @@ def _market_for(symbol: str, currency: str) -> str:
     return "LSE" if currency.upper() == "GBP" else "US"
 
 
-def parse(raw_bytes: bytes) -> ParseResult:
+def parse(
+    raw_bytes: bytes,
+    *,
+    market_resolver: "Callable[[str, str], str | None] | None" = None,
+) -> ParseResult:
     reader = csv.reader(io.StringIO(raw_bytes.decode("utf-8-sig")))
     rows: list[ParsedRow] = []
     errors: list[ParseError] = []
@@ -62,7 +67,7 @@ def parse(raw_bytes: bytes) -> ParseResult:
                 quantity = abs(_decimal(data.get("交易量") or "0"))
                 price = _decimal(data.get("價格") or "0")
                 currency = (data.get("Price Currency") or base_currency).strip().upper()
-                market = _market_for(symbol, currency)
+                market = (market_resolver(symbol, currency) if market_resolver else None) or _market_for(symbol, currency)
                 fee = abs(_decimal(data.get("佣金") or "0"))
                 type_ = "BUY" if action == "買" else "SELL"
                 note = (data.get("說明") or "").strip() or None

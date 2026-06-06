@@ -13,7 +13,7 @@ import { ToggleSwitchModule } from 'primeng/toggleswitch';
 import { TooltipModule } from 'primeng/tooltip';
 import { MessageService } from 'primeng/api';
 
-import { Broker, RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary } from '../../../models/portfolio.model';
+import { Broker, RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary, brokerLabel } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { ListItemComponent } from '../../shared/list-item/list-item';
@@ -90,9 +90,13 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   );
 
   readonly brokerFilterOptions = computed<SegToggleOption[]>(() => [
-    { label: 'ALL', value: 'ALL' },
-    ...this.availableBrokers().map(broker => ({ label: broker, value: broker })),
+    { label: '全部', value: 'ALL' },
+    ...this.availableBrokers().map(broker => ({ label: brokerLabel(broker), value: broker })),
   ]);
+
+  brokerLabel(broker: Broker | null | undefined): string {
+    return brokerLabel(broker);
+  }
 
   readonly showBrokerColumn = computed(() => this.availableBrokers().length > 0);
   readonly showBrokerFilter = computed(() => this.availableBrokers().length > 0);
@@ -213,7 +217,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   }
 
   showBrokerBadge(event: RealizedPnlEvent): boolean {
-    return !!event.broker && event.broker !== 'TW_MANUAL';
+    return !!event.broker;
   }
 
   toggleExpanded(event: RealizedPnlEvent) {
@@ -272,7 +276,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     const brokers: Broker[] = [];
     for (const event of this.events()) {
       const broker = event.broker;
-      if (!broker || broker === 'TW_MANUAL' || seen.has(broker)) continue;
+      if (!broker || seen.has(broker)) continue;
       seen.add(broker);
       brokers.push(broker);
     }

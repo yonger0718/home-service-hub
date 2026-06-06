@@ -5,7 +5,7 @@ from datetime import date
 from decimal import Decimal
 from hashlib import sha256
 
-from sqlalchemy import func
+from sqlalchemy import Date, cast, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -110,14 +110,73 @@ def write_cash_flows(
     )
 
 
+def _trade_cash_deltas(
+    db: Session, *, as_of_date: date
+) -> dict[tuple[str, str], Decimal]:
+    """Per (broker, currency) net cash impact from BUY/SELL transactions.
+
+    BUY → outflow (qty*price + fee + tax); SELL → inflow (qty*price - fee - tax).
+    Stored in the transaction's native currency. TW_MANUAL rows excluded because
+    they predate Phase 4 broker tagging and would otherwise double-count against
+    the legacy TWD cash accounting path.
+    """
+    rows = (
+        db.query(
+            models.Transaction.broker,
+            models.Transaction.currency,
+            models.Transaction.type,
+            func.coalesce(
+                func.sum(
+                    models.Transaction.quantity * models.Transaction.price
+                ),
+                0,
+            ),
+            func.coalesce(func.sum(models.Transaction.fee), 0),
+            func.coalesce(func.sum(models.Transaction.tax), 0),
+        )
+        .filter(models.Transaction.broker.isnot(None))
+        .filter(models.Transaction.broker != models.Broker.TW_MANUAL.value)
+        .filter(cast(models.Transaction.trade_date, Date) <= as_of_date)
+        .group_by(
+            models.Transaction.broker,
+            models.Transaction.currency,
+            models.Transaction.type,
+        )
+        .all()
+    )
+    deltas: dict[tuple[str, str], Decimal] = {}
+    for broker, currency, tx_type, gross, fee, tax in rows:
+        gross_d = Decimal(gross or "0")
+        fee_d = Decimal(fee or "0")
+        tax_d = Decimal(tax or "0")
+        cur = (currency or "TWD").upper()
+        if tx_type == models.TransactionType.BUY:
+            delta = -(gross_d + fee_d + tax_d)
+        else:
+            delta = gross_d - fee_d - tax_d
+        key = (broker, cur)
+        deltas[key] = deltas.get(key, Decimal("0")) + delta
+    return deltas
+
+
 def get_broker_balance(db: Session, broker: str, as_of_date: date) -> Decimal:
+    """Sum of explicit cash flows MINUS trade outflows PLUS trade inflows.
+
+    Returned in the broker's primary currency only — multi-currency brokers
+    should use :func:`list_balances` to see the per-currency split.
+    """
     value = (
         db.query(func.coalesce(func.sum(models.BrokerCashFlow.amount), 0))
         .filter(models.BrokerCashFlow.broker == broker)
         .filter(models.BrokerCashFlow.date <= as_of_date)
         .scalar()
     )
-    return Decimal(value or "0")
+    balance = Decimal(value or "0")
+    trade_deltas = _trade_cash_deltas(db, as_of_date=as_of_date)
+    for (b, _cur), delta in trade_deltas.items():
+        if b == broker:
+            balance += delta
+    return balance
 
 
 def list_balances(db: Session, *, as_of_date: date | None = None) -> list[dict[str, object]]:
@@ -133,12 +192,19 @@ def list_balances(db: Session, *, as_of_date: date | None = None) -> list[dict[s
         .order_by(models.BrokerCashFlow.broker, models.BrokerCashFlow.currency)
         .all()
     )
+    per_key: dict[tuple[str, str], Decimal] = {
+        (broker, currency): Decimal(balance or "0")
+        for broker, currency, balance in rows
+    }
+    trade_deltas = _trade_cash_deltas(db, as_of_date=effective_date)
+    for key, delta in trade_deltas.items():
+        per_key[key] = per_key.get(key, Decimal("0")) + delta
     return [
         {
             "broker": broker,
             "currency": currency,
-            "balance": Decimal(balance or "0"),
+            "balance": balance,
             "as_of_date": effective_date,
         }
-        for broker, currency, balance in rows
+        for (broker, currency), balance in sorted(per_key.items())
     ]

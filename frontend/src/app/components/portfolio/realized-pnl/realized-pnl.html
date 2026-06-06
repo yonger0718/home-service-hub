@@ -104,7 +104,7 @@
               <span class="market-badge">{{ event.market }}</span>
             }
             @if (showBrokerColumn() && showBrokerBadge(event)) {
-              <span class="market-badge broker-badge">{{ event.broker }}</span>
+              <span class="market-badge broker-badge">{{ brokerLabel(event.broker) }}</span>
             }
             @if (event.is_day_trade) {
               <span class="day-trade-badge">當沖</span>

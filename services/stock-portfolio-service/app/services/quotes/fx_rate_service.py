@@ -85,6 +85,50 @@ def _upsert_rate(
     db.commit()
 
 
+def backfill_range(db: Session, *, period: str = "6mo") -> RefreshResult:
+    """Backfill USD/GBP TWD rates for the trailing ``period`` from yfinance.
+
+    Triggered manually (CLI) when users upload broker CSVs with trade dates
+    that predate the daily ``refresh_today`` cron. Per-currency isolation —
+    a yfinance failure on one ticker does not abort the batch.
+    """
+    ok_count = 0
+    skipped_count = 0
+    errors: list[str] = []
+
+    for currency in _SUPPORTED_CURRENCIES:
+        yf_symbol = _YF_TICKER_MAP[currency]
+        try:
+            history = yf.Ticker(yf_symbol).history(period=period, auto_adjust=False)
+            if history.empty:
+                raise ValueError("empty history")
+            for row_index, row in history.iterrows():
+                close = row.get("Close")
+                if close is None or close != close:  # NaN-safe (no pandas import)
+                    continue
+                row_date = row_index.date() if hasattr(row_index, "date") else row_index
+                _upsert_rate(
+                    db,
+                    currency=currency,
+                    date_=row_date,
+                    rate_to_twd=Decimal(str(close)).quantize(_RATE_QUANT),
+                )
+                ok_count += 1
+        except Exception as exc:  # noqa: BLE001 - per-ticker isolation
+            db.rollback()
+            skipped_count += 1
+            error = f"{currency} ({yf_symbol}): {exc}"
+            errors.append(error)
+            log.warning(
+                "quotes.fx_rate.backfill_skip",
+                currency=currency,
+                yf_symbol=yf_symbol,
+                reason=str(exc),
+            )
+
+    return RefreshResult(ok_count=ok_count, skipped_count=skipped_count, errors=errors)
+
+
 def refresh_today(db: Session) -> RefreshResult:
     today = _today_taipei()
     ok_count = 0

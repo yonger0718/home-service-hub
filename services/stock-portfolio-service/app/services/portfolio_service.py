@@ -1385,6 +1385,7 @@ def list_transactions(
     date_from: Optional[date_type] = None,
     date_to: Optional[date_type] = None,
     side: Optional[str] = None,
+    broker: Optional[str] = None,
     sort_field: str = "trade_date",
     sort_dir: str = "desc",
     offset: int = 0,
@@ -1425,6 +1426,8 @@ def list_transactions(
         base = base.filter(models.Transaction.trade_date < end_exclusive)
     if side:
         base = base.filter(models.Transaction.type == side)
+    if broker:
+        base = base.filter(models.Transaction.broker == broker)
 
     total = base.with_entities(func.count(models.Transaction.id)).scalar() or 0
 

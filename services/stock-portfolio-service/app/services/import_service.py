@@ -544,6 +544,26 @@ def _missing_fx_error(row: ParsedRow, date_: date_type, currency: str) -> ParseE
     )
 
 
+def _resolve_symbol_market(db: Session, symbol: str) -> str | None:
+    """Return distinct ``symbol_map.market`` for ``symbol`` if exactly one mapping exists.
+
+    Lets broker parsers override their heuristic market guess (e.g. IB strips
+    ``.L`` so the parser can't tell ACWD-LSE from ACWD-US). Returns ``None`` when
+    the symbol is unmapped or maps to multiple markets so the caller falls back
+    to the heuristic.
+    """
+    from ..models.symbol_map import SymbolMap
+
+    markets = {
+        row[0]
+        for row in db.query(SymbolMap.market)
+        .filter(SymbolMap.symbol == symbol)
+        .distinct()
+        .all()
+    }
+    return markets.pop() if len(markets) == 1 else None
+
+
 def _commit_broker_rows(
     db: Session, parsed: ParseResult, *, dry_run: bool
 ) -> ImportResult:
@@ -553,6 +573,27 @@ def _commit_broker_rows(
         .filter(models.Transaction.import_fingerprint.is_not(None))
         .all()
     }
+    # Override each transaction row's market via symbol_map when the symbol has
+    # a single mapped market. Parsers that strip exchange suffixes (IB) misroute
+    # otherwise. Done once per upload, then fingerprint is regenerated below.
+    market_overrides: dict[str, str] = {}
+    for row in parsed.rows:
+        if row.payload.get("_kind", "transaction") != "transaction":
+            continue
+        symbol = row.payload.get("symbol")
+        if not symbol or symbol in market_overrides:
+            continue
+        resolved = _resolve_symbol_market(db, symbol)
+        if resolved is not None:
+            market_overrides[symbol] = resolved
+    if market_overrides:
+        for row in parsed.rows:
+            payload = row.payload
+            if payload.get("_kind", "transaction") != "transaction":
+                continue
+            new_market = market_overrides.get(payload.get("symbol"))
+            if new_market and payload.get("market") != new_market:
+                payload["market"] = new_market
     seen_transactions: set[str] = set()
     created_ids: list[int] = []
     errors = list(parsed.errors)

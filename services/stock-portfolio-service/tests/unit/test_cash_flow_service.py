@@ -69,6 +69,85 @@ def test_balance_sums_mixed_flows_up_to_as_of_date(db_session) -> None:
     ) == Decimal("1000.0000")
 
 
+def test_balance_includes_trade_settlements(db_session) -> None:
+    from datetime import datetime
+
+    cash_flow_service.write_cash_flows(
+        db_session,
+        [
+            cash_flow_service.CashFlowRow(
+                broker=models.Broker.FIRSTRADE.value,
+                date=date(2026, 6, 5),
+                type=models.BrokerCashFlowType.DEPOSIT.value,
+                amount=Decimal("2500"),
+                currency="USD",
+                fx_rate_to_twd=Decimal("31.3"),
+                note="wire",
+                import_fingerprint="fp-wire",
+            ),
+        ],
+    )
+    db_session.add_all([
+        models.Transaction(
+            symbol="UUUU",
+            name="Energy Fuels",
+            broker=models.Broker.FIRSTRADE.value,
+            market="US",
+            currency="USD",
+            type=models.TransactionType.BUY,
+            quantity=Decimal("10"),
+            price=Decimal("15.00"),
+            fee=Decimal("0.50"),
+            tax=Decimal("0.00"),
+            trade_date=datetime(2026, 6, 5, 9, 0),
+        ),
+        models.Transaction(
+            symbol="UUUU",
+            name="Energy Fuels",
+            broker=models.Broker.FIRSTRADE.value,
+            market="US",
+            currency="USD",
+            type=models.TransactionType.SELL,
+            quantity=Decimal("5"),
+            price=Decimal("18.00"),
+            fee=Decimal("0.25"),
+            tax=Decimal("0.00"),
+            trade_date=datetime(2026, 6, 6, 9, 0),
+        ),
+    ])
+    db_session.commit()
+
+    # 2500 wire − (10*15 + 0.50) + (5*18 − 0.25) = 2500 − 150.50 + 89.75 = 2439.25
+    balances = cash_flow_service.list_balances(db_session, as_of_date=date(2026, 6, 6))
+    firstrade = [b for b in balances if b["broker"] == models.Broker.FIRSTRADE.value][0]
+    assert firstrade["currency"] == "USD"
+    assert firstrade["balance"] == Decimal("2439.2500")
+
+
+def test_balance_excludes_tw_manual_trade_rows(db_session) -> None:
+    from datetime import datetime
+
+    # Pre-Phase-4 TW row that got backfilled to TW_MANUAL must NOT influence
+    # any per-broker cash balance; the legacy TWD cash accounting path owns it.
+    db_session.add(
+        models.Transaction(
+            symbol="2330",
+            broker=models.Broker.TW_MANUAL.value,
+            market="TW",
+            currency="TWD",
+            type=models.TransactionType.BUY,
+            quantity=Decimal("1000"),
+            price=Decimal("600"),
+            fee=Decimal("100"),
+            tax=Decimal("0"),
+            trade_date=datetime(2026, 6, 5, 9, 0),
+        )
+    )
+    db_session.commit()
+    balances = cash_flow_service.list_balances(db_session, as_of_date=date(2026, 6, 6))
+    assert balances == []
+
+
 def test_duplicate_fingerprint_skips(db_session) -> None:
     row = cash_flow_service.CashFlowRow(
         broker=models.Broker.IB.value,

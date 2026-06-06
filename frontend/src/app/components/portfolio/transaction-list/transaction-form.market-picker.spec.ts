@@ -12,6 +12,7 @@ describe('PortfolioTransactionListComponent market picker', () => {
   let portfolioService: {
     getSymbolNames: ReturnType<typeof vi.fn>;
     getTransactions: ReturnType<typeof vi.fn>;
+    getTransactionBrokers: ReturnType<typeof vi.fn>;
     createTransaction: ReturnType<typeof vi.fn>;
     updateTransaction: ReturnType<typeof vi.fn>;
     deleteTransaction: ReturnType<typeof vi.fn>;
@@ -21,6 +22,7 @@ describe('PortfolioTransactionListComponent market picker', () => {
     portfolioService = {
       getSymbolNames: vi.fn().mockReturnValue(of({})),
       getTransactions: vi.fn().mockReturnValue(of({ items: [], total: 0 })),
+      getTransactionBrokers: vi.fn().mockReturnValue(of([])),
       createTransaction: vi.fn().mockReturnValue(of({})),
       updateTransaction: vi.fn().mockReturnValue(of({})),
       deleteTransaction: vi.fn().mockReturnValue(of(undefined)),
@@ -133,8 +135,8 @@ describe('PortfolioTransactionListComponent market picker', () => {
 
     const rows = fixture.componentInstance.timelineRows();
 
-    expect(rows[0].metaBadge).toBeUndefined();
-    expect(rows[1].metaBadge).toBe('US');
+    expect(rows[0].metaBadge).toBe('國泰');
+    expect(rows[1].metaBadge).toBe('US · 國泰');
   });
 
   it('adds broker badges for non-default broker rows', () => {
@@ -148,8 +150,8 @@ describe('PortfolioTransactionListComponent market picker', () => {
 
     const rows = fixture.componentInstance.timelineRows();
 
-    expect(rows[0].metaBadge).toBeUndefined();
-    expect(rows[1].metaBadge).toBe('TW_CATHAY');
+    expect(rows[0].metaBadge).toBe('國泰');
+    expect(rows[1].metaBadge).toBe('國泰');
     expect(rows[2].metaBadge).toBe('US · IB');
   });
 });

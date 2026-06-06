@@ -216,6 +216,50 @@ def test_transactions_invalid_side_rejected(client):
     assert client.get("/api/portfolio/transactions", params={"side": "HOLD"}).status_code == 422
 
 
+def test_transactions_broker_filter(client, db_session):
+    from app.models import portfolio as models
+
+    _seed_transactions(db_session)
+    # _seed_transactions left broker NULL; backfill the first two to IB and
+    # one to FIRSTRADE so we can assert the filter splits them out.
+    rows = (
+        db_session.query(models.Transaction)
+        .order_by(models.Transaction.id.asc())
+        .all()
+    )
+    rows[0].broker = models.Broker.IB.value
+    rows[1].broker = models.Broker.IB.value
+    rows[2].broker = models.Broker.FIRSTRADE.value
+    db_session.commit()
+
+    ib = client.get("/api/portfolio/transactions", params={"broker": "IB"}).json()
+    ft = client.get("/api/portfolio/transactions", params={"broker": "FIRSTRADE"}).json()
+    assert ib["total"] == 2
+    assert all(r["broker"] == "IB" for r in ib["items"])
+    assert ft["total"] == 1
+    assert all(r["broker"] == "FIRSTRADE" for r in ft["items"])
+
+
+def test_transactions_brokers_endpoint_returns_distinct_present(client, db_session):
+    from app.models import portfolio as models
+
+    _seed_transactions(db_session)
+    rows = (
+        db_session.query(models.Transaction)
+        .order_by(models.Transaction.id.asc())
+        .all()
+    )
+    rows[0].broker = models.Broker.IB.value
+    rows[1].broker = models.Broker.IB.value
+    rows[2].broker = models.Broker.FIRSTRADE.value
+    rows[3].broker = models.Broker.TW_MANUAL.value
+    rows[4].broker = models.Broker.TW_MANUAL.value
+    db_session.commit()
+
+    body = client.get("/api/portfolio/transactions/brokers").json()
+    assert sorted(body) == ["FIRSTRADE", "IB", "TW_MANUAL"]
+
+
 def test_transactions_date_range_filter(client, db_session):
     _seed_transactions(db_session)
     body = client.get(

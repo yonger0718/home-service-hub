@@ -27,6 +27,17 @@
   </div>
 </div>
 
+@if (brokerFilterOptions().length > 0) {
+  <div class="broker-filter-row">
+    <app-seg-toggle
+      ariaLabel="券商篩選"
+      [options]="brokerFilterOptions()"
+      [value]="selectedBroker()"
+      (change)="onBrokerFilterChange($event)"
+    ></app-seg-toggle>
+  </div>
+}
+
 <div class="result-meta">
   <span>{{ total() }} 筆</span>
   @if (loading()) {
