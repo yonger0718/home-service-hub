@@ -26,6 +26,7 @@ describe('PortfolioDashboardComponent holding groups', () => {
     refreshQuotes: ReturnType<typeof vi.fn>;
     getRecalcStatus: ReturnType<typeof vi.fn>;
     getSummary: ReturnType<typeof vi.fn>;
+    getBrokerCashFlows: ReturnType<typeof vi.fn>;
     getUpcomingExDividends: ReturnType<typeof vi.fn>;
     getNetworthHistory: ReturnType<typeof vi.fn>;
     cashLedgerChanged$: import('rxjs').Observable<void>;
@@ -38,6 +39,7 @@ describe('PortfolioDashboardComponent holding groups', () => {
       refreshQuotes: vi.fn().mockReturnValue(of(null)),
       getRecalcStatus: vi.fn(),
       getSummary: vi.fn().mockReturnValue(of(buildSummary([buildHolding()]))),
+      getBrokerCashFlows: vi.fn().mockReturnValue(of([])),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),
       getNetworthHistory: vi.fn().mockReturnValue(of([])),
       cashLedgerChanged$: NEVER,

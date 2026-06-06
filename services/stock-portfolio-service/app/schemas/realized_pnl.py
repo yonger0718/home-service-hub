@@ -20,6 +20,7 @@ class RealizedPnlEventOut(BaseModel):
     realized_pnl: Decimal
     is_day_trade: bool
     position_side: Literal["LONG", "SHORT"] = "LONG"
+    broker: Optional[str] = None
     note: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

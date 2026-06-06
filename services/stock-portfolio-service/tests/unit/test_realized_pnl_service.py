@@ -22,6 +22,7 @@ def _tx(
     market: str = "TW",
     currency: str = "TWD",
     fx_rate_to_twd: str | None = None,
+    broker: str | None = None,
 ) -> models.Transaction:
     return models.Transaction(
         symbol=symbol,
@@ -32,6 +33,7 @@ def _tx(
         price=Decimal(price),
         currency=currency,
         fx_rate_to_twd=Decimal(fx_rate_to_twd) if fx_rate_to_twd is not None else None,
+        broker=broker,
         fee=Decimal(fee),
         tax=Decimal(tax),
         trade_date=trade_date,
@@ -508,3 +510,59 @@ def test_usd_dividend_is_excluded_from_tw_only_summary_total_dividends(db_sessio
     summary = portfolio_service.get_portfolio_summary(db_session)
 
     assert summary.total_dividends == Decimal("0.00")
+
+
+def test_realized_events_emit_originating_broker(db_session) -> None:
+    _seed_transactions(
+        db_session,
+        [
+            _tx(
+                symbol="ACWD",
+                side=models.TransactionType.BUY,
+                quantity=5,
+                price="325",
+                trade_date=datetime(2026, 6, 2, 9, 0),
+                market="US",
+                currency="USD",
+                fx_rate_to_twd="31",
+                broker="IB",
+            ),
+            _tx(
+                symbol="ACWD",
+                side=models.TransactionType.SELL,
+                quantity=5,
+                price="350",
+                trade_date=datetime(2026, 7, 15, 9, 0),
+                market="US",
+                currency="USD",
+                fx_rate_to_twd="31",
+                broker="IB",
+            ),
+            _tx(
+                symbol="2330",
+                side=models.TransactionType.BUY,
+                quantity=1000,
+                price="600",
+                trade_date=datetime(2026, 6, 1, 9, 0),
+                broker="TW_CATHAY",
+            ),
+            _tx(
+                symbol="2330",
+                side=models.TransactionType.SELL,
+                quantity=1000,
+                price="610",
+                trade_date=datetime(2026, 6, 2, 9, 0),
+                broker="TW_CATHAY",
+            ),
+        ],
+    )
+
+    events = sorted(
+        realized_pnl_service.compute_events(db_session),
+        key=lambda event: event.symbol,
+    )
+
+    assert {event.symbol: event.broker for event in events} == {
+        "ACWD": "IB",
+        "2330": "TW_CATHAY",
+    }

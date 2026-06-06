@@ -27,6 +27,7 @@ class RealizedPnlEvent:
     realized_pnl: Decimal
     is_day_trade: bool
     position_side: models.PositionSide
+    broker: Optional[str] = None
     note: Optional[str] = None
 
 
@@ -114,6 +115,7 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
         if not isinstance(side, models.PositionSide):
             side = models.PositionSide(side)
         is_day_trade = bool(getattr(transaction, "is_day_trade", False))
+        broker = getattr(transaction, "broker", None) or models.Broker.TW_MANUAL.value
         tx_trade_date = _trade_date(transaction.trade_date)
 
         if side is models.PositionSide.LONG and transaction.type == models.TransactionType.BUY:
@@ -158,6 +160,7 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                     realized_pnl=proceeds_net,
                     is_day_trade=is_day_trade,
                     position_side=models.PositionSide.LONG,
+                    broker=broker,
                     note="no_long_inventory",
                 )
                 continue
@@ -186,6 +189,7 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                 realized_pnl=proceeds_net - cost_out,
                 is_day_trade=is_day_trade,
                 position_side=models.PositionSide.LONG,
+                broker=broker,
             )
 
             long_pool["total_quantity"] = current_qty - sold_qty
@@ -218,6 +222,7 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                     realized_pnl=-cover_cost_total,
                     is_day_trade=is_day_trade,
                     position_side=models.PositionSide.SHORT,
+                    broker=broker,
                     note="no_short_inventory",
                 )
                 continue
@@ -249,6 +254,7 @@ def iter_realized_events(transactions: Iterable[models.Transaction]) -> Iterator
                 realized_pnl=proceeds_net_slice - cover_cost_slice,
                 is_day_trade=is_day_trade,
                 position_side=models.PositionSide.SHORT,
+                broker=broker,
             )
 
             short_pool["total_quantity"] = current_short_qty - covered_qty

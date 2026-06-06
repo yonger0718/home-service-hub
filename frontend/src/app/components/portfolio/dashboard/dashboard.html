@@ -1,6 +1,10 @@
 <div class="portfolio-dashboard">
   <div class="page-head justify-content-end">
     <div class="head-actions">
+      <a routerLink="/portfolio/import-broker" class="btn btn-outline-secondary btn-sm">
+        <i class="pi pi-upload" aria-hidden="true"></i>
+        匯入券商
+      </a>
       <app-btn variant="secondary" icon="pi-refresh" [loading]="loading()" (click)="loadSummary()">刷新行情</app-btn>
     </div>
   </div>
@@ -20,6 +24,20 @@
         <app-bento class="b-full primary-tile" [full]="true">
           <div class="label">總資產</div>
           <div class="value">{{ formatCurrency(summary()!.total_assets_twd) }}</div>
+        </app-bento>
+      }
+
+      @if (brokerCashBalances().length > 0) {
+        <app-bento class="b-full" [full]="true">
+          <div class="label">券商現金</div>
+          <div class="broker-cash-list">
+            @for (cash of brokerCashBalances(); track cash.broker + cash.currency) {
+              <div class="broker-cash-row">
+                <span>{{ cash.broker }}</span>
+                <strong>{{ formatBrokerCash(cash) }}</strong>
+              </div>
+            }
+          </div>
         </app-bento>
       }
 

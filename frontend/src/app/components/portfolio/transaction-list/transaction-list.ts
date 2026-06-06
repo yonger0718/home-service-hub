@@ -97,7 +97,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
         side: isBuy ? 'buy' : 'sell',
         sideLabel: isBuy ? '買進' : '賣出',
         primary: `${this.symbolDisplay(t)} ${t.symbol}`,
-        metaBadge: t.market && t.market !== 'TW' ? t.market : undefined,
+        metaBadge: this.timelineBadge(t),
         meta: `${Number(t.quantity).toLocaleString('zh-TW')} × ${Number(t.price).toFixed(2)}`,
         amount: `${isBuy ? '-' : '+'}${this.formatCurrency(this.allInTotal(t))}`,
         amountVariant: isBuy ? 'buy' : 'sell',
@@ -312,6 +312,14 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
       currency: 'TWD',
       minimumFractionDigits: 0,
     }).format(Number(value ?? 0));
+  }
+
+  timelineBadge(t: Transaction): string | undefined {
+    const badges = [
+      t.market && t.market !== 'TW' ? t.market : null,
+      t.broker && t.broker !== 'TW_MANUAL' ? t.broker : null,
+    ].filter(Boolean) as string[];
+    return badges.length > 0 ? badges.join(' · ') : undefined;
   }
 
   selectedMarket(): MarketCode {

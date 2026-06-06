@@ -33,6 +33,7 @@ from datetime import timedelta as _timedelta
 from . import (
     dividend_auto_record_service,
     dividend_event_service,
+    foreign_dividend_service,
     fx_rate_service,
     market_data_service,
     portfolio_service,
@@ -300,6 +301,20 @@ def run_foreign_price_refresh(session_factory: Callable[[], ContextManager]) -> 
     return summary
 
 
+def run_foreign_dividend_refresh(session_factory: Callable[[], ContextManager]) -> dict:
+    """Refresh yfinance dividend rows for open foreign positions."""
+    logger.info("foreign_dividend_refresh.started")
+    try:
+        with session_factory() as db:
+            result = foreign_dividend_service.refresh_today(db)
+    except Exception as exc:  # noqa: BLE001 — scheduler must not die
+        logger.exception("foreign_dividends.failed", extra={"error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    summary = {"status": "ok", **result}
+    logger.info("foreign_dividend_refresh.finished", extra=summary)
+    return summary
+
+
 def build_scheduler(session_factory: Callable[[], ContextManager]) -> BackgroundScheduler:
     """Construct a configured ``BackgroundScheduler``; caller starts it."""
     scheduler = BackgroundScheduler(timezone=TW_TIMEZONE)
@@ -357,6 +372,13 @@ def build_scheduler(session_factory: Callable[[], ContextManager]) -> Background
             run_foreign_price_refresh,
             CronTrigger(hour=17, minute=30, timezone=TW_TIMEZONE),
             id="foreign_price_refresh",
+            kwargs={"session_factory": session_factory},
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            run_foreign_dividend_refresh,
+            CronTrigger(hour=17, minute=45, timezone=TW_TIMEZONE),
+            id="foreign_dividend_refresh",
             kwargs={"session_factory": session_factory},
             replace_existing=True,
         )

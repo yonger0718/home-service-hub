@@ -11,6 +11,8 @@ import {
   ExDividendRecord,
   ImportKind,
   ImportResult,
+  BrokerCashBalance,
+  BrokerCsvImportResult,
   NetworthPoint,
   RecalcStatus,
   RecalcTriggerResponse,
@@ -181,6 +183,19 @@ export class PortfolioService extends BaseApiService<Transaction> {
       `?dry_run=${dryRun ? 'true' : 'false'}` +
       `&has_header=${hasHeader ? 'true' : 'false'}`;
     return this.http.post<ImportResult>(url, form);
+  }
+
+  uploadBrokerCsv(file: File, dryRun: boolean): Observable<BrokerCsvImportResult> {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    return this.http.post<BrokerCsvImportResult>(
+      `/api/portfolio/imports/csv?dry_run=${dryRun ? 'true' : 'false'}`,
+      form,
+    );
+  }
+
+  getBrokerCashFlows(): Observable<BrokerCashBalance[]> {
+    return this.http.get<BrokerCashBalance[]>('/api/portfolio/broker-cash-flows');
   }
 
   getRecalcStatus(): Observable<RecalcStatus> {

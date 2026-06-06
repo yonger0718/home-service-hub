@@ -104,6 +104,7 @@ function event(overrides: Partial<RealizedPnlEvent> = {}): RealizedPnlEvent {
     position_side: 'LONG' as const,
     note: null,
     market: 'TW' as const,
+    broker: 'TW_MANUAL' as const,
     native_proceeds: '80000',
     native_cost: '70000',
     native_currency: 'TWD',

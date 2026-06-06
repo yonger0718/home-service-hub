@@ -107,6 +107,10 @@ class _AdjustedTransaction:
     def is_day_trade(self):
         return getattr(self._base, "is_day_trade", False)
 
+    @property
+    def broker(self):
+        return getattr(self._base, "broker", None)
+
 
 def _factor_for_trade(actions: List[CorporateAction], trade_date) -> Decimal:
     """Cumulative product of every action strictly AFTER trade_date."""
@@ -1296,6 +1300,14 @@ def create_transaction(db: Session, transaction: schemas.TransactionCreate):
         transaction_data.get("market", "TW"),
     )
     transaction_data["trade_date"] = transaction_data.get("trade_date") or datetime.now(timezone.utc)
+    transaction_data["broker"] = (
+        transaction_data.get("broker")
+        or (
+            models.Broker.TW_MANUAL.value
+            if (transaction_data.get("market") or "TW").upper() == "TW"
+            else models.Broker.FOREIGN_MANUAL.value
+        )
+    )
     transaction_data["instrument_type"] = symbol_map_service.lookup_warrant_type(
         db, transaction_data["symbol"]
     )
@@ -1446,6 +1458,14 @@ def update_transaction(db: Session, transaction_id: int, transaction_update: sch
         update_data["trade_date"] = update_data["trade_date"] or db_transaction.trade_date
     else:
         update_data["trade_date"] = db_transaction.trade_date
+    update_data["broker"] = (
+        update_data.get("broker")
+        or (
+            models.Broker.TW_MANUAL.value
+            if (update_data.get("market") or getattr(db_transaction, "market", "TW") or "TW").upper() == "TW"
+            else models.Broker.FOREIGN_MANUAL.value
+        )
+    )
 
     if update_data["symbol"] != old_symbol or db_transaction.instrument_type is None:
         update_data["instrument_type"] = symbol_map_service.lookup_warrant_type(

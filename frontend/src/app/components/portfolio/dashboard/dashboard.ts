@@ -10,6 +10,7 @@ import {
   signal,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { combineLatest, finalize, interval, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
 
@@ -22,6 +23,7 @@ import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
 import {
   ExDividendRecord,
+  BrokerCashBalance,
   MarketCode,
   NetworthPoint,
   PortfolioSummary,
@@ -40,6 +42,7 @@ type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
   selector: 'app-portfolio-dashboard',
   imports: [
     CommonModule,
+    RouterLink,
     ChartModule,
     SkeletonModule,
     TooltipModule,
@@ -64,6 +67,7 @@ export class PortfolioDashboardComponent implements OnInit {
 
   protected readonly Number = Number;
   readonly summary = signal<PortfolioSummary | null>(null);
+  readonly brokerCashBalances = signal<BrokerCashBalance[]>([]);
   readonly upcomingExDividends = signal<ExDividendRecord[]>([]);
   readonly loading = signal(false);
   readonly range = signal<PortfolioRange>('1Y');
@@ -186,6 +190,7 @@ export class PortfolioDashboardComponent implements OnInit {
   ngOnInit(): void {
     this.loading.set(true);
     this.reloadSummary();
+    this.loadBrokerCashFlows();
     this.portfolioService.refreshQuotes().subscribe({
       next: (response) => {
         if (response?.refresh_scheduled) {
@@ -214,6 +219,7 @@ export class PortfolioDashboardComponent implements OnInit {
       .subscribe(() => {
         this.networthCache.clear();
         this.reloadSummary();
+        this.loadBrokerCashFlows();
         this.loadNetworthHistory();
       });
   }
@@ -341,6 +347,15 @@ export class PortfolioDashboardComponent implements OnInit {
     return `${numeric.toFixed(decimals)} ${currency}`;
   }
 
+  formatBrokerCash(balance: BrokerCashBalance): string {
+    const numeric = Number(balance.balance ?? 0);
+    if (!Number.isFinite(numeric)) return `${balance.balance} ${balance.currency}`;
+    return `${numeric.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })} ${balance.currency}`;
+  }
+
   formatXirr(value: number | null | undefined): string {
     if (value == null) return 'N/A';
     return `${(value * 100).toFixed(2)}%`;
@@ -394,6 +409,16 @@ export class PortfolioDashboardComponent implements OnInit {
     this.portfolioService.getUpcomingExDividends().subscribe({
       next: (data) => this.upcomingExDividends.set(data),
       error: () => this.upcomingExDividends.set([]),
+    });
+  }
+
+  private loadBrokerCashFlows(): void {
+    this.portfolioService.getBrokerCashFlows().subscribe({
+      next: rows => this.brokerCashBalances.set(rows),
+      error: err => {
+        console.error('Failed to load broker cash flows', err);
+        this.brokerCashBalances.set([]);
+      },
     });
   }
 

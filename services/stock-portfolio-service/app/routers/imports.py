@@ -71,7 +71,10 @@ def _serialize_result(
         "created": result.created,
         "skipped_duplicates": result.skipped_duplicates,
         "dry_run": result.dry_run,
-        "errors": [asdict(error) for error in result.errors],
+        "errors": [
+            {**asdict(error), "reason": error.message}
+            for error in result.errors
+        ],
         "created_ids": result.created_ids,
         "rehashed": result.rehashed,
         "skipped_unresolved": result.skipped_unresolved,
@@ -212,6 +215,27 @@ def import_transactions(
             background_tasks, touched_symbols=symbols, recalc_from=min_trade
         )
     return _serialize_result(parsed, result, recalc_scheduled=recalc_scheduled, csv_format=csv_format)
+
+
+@router.post("/csv")
+def import_csv(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    name_overrides: str = Form(default=""),
+    confirmed_overrides: str = Form(default=""),
+    dry_run: bool = Query(default=False),
+    has_header: bool = Query(default=True),
+    db: Session = Depends(get_db),
+) -> dict:
+    return import_transactions(
+        background_tasks=background_tasks,
+        file=file,
+        name_overrides=name_overrides,
+        confirmed_overrides=confirmed_overrides,
+        dry_run=dry_run,
+        has_header=has_header,
+        db=db,
+    )
 
 
 @router.post("/dividends")

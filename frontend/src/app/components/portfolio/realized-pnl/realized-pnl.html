@@ -69,6 +69,17 @@
   </div>
 </div>
 
+@if (showBrokerFilter()) {
+  <div class="broker-filter-row">
+    <app-seg-toggle
+      ariaLabel="券商篩選"
+      [options]="brokerFilterOptions()"
+      [value]="selectedBroker()"
+      (change)="selectBrokerFilter($event)"
+    ></app-seg-toggle>
+  </div>
+}
+
 <div class="hub-result-meta">
   <span class="meta-count">{{ total() }} 筆</span>
   @if (loading()) {
@@ -80,7 +91,7 @@
 </div>
 
 <div class="hub-modern-list" [class.is-loading]="loading()">
-  @for (event of events(); track eventKey(event)) {
+  @for (event of filteredEvents(); track eventKey(event)) {
     <div class="realized-row-shell">
       <app-list-item [clickable]="true" (itemClick)="toggleExpanded(event)">
         <ng-container left>
@@ -91,6 +102,9 @@
             }
             @if (showForeignColumns() && event.market !== 'TW') {
               <span class="market-badge">{{ event.market }}</span>
+            }
+            @if (showBrokerColumn() && showBrokerBadge(event)) {
+              <span class="market-badge broker-badge">{{ event.broker }}</span>
             }
             @if (event.is_day_trade) {
               <span class="day-trade-badge">當沖</span>

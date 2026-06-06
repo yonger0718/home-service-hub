@@ -13,10 +13,11 @@ import { ToggleSwitchModule } from 'primeng/toggleswitch';
 import { TooltipModule } from 'primeng/tooltip';
 import { MessageService } from 'primeng/api';
 
-import { RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary } from '../../../models/portfolio.model';
+import { Broker, RealizedPnlEvent, RealizedPnlQuery, RealizedPnlSummary } from '../../../models/portfolio.model';
 import { PortfolioService } from '../../../services/portfolio.service';
 import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { ListItemComponent } from '../../shared/list-item/list-item';
+import { SegToggleComponent, SegToggleOption } from '../../ui/seg-toggle/seg-toggle';
 
 const PAGE_SIZE_KEY = 'portfolio.realizedPnl.pageSize';
 const DEFAULT_PAGE_SIZE = 25;
@@ -46,6 +47,7 @@ const SORT_OPTIONS = [
     TooltipModule,
     NativeAmountPipe,
     ListItemComponent,
+    SegToggleComponent,
   ],
   providers: [MessageService],
   templateUrl: './realized-pnl.html',
@@ -74,6 +76,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   symbolNames = signal<Record<string, string>>({});
   searchInput = signal<string>('');
   selectedYear = signal<YearPreset>(null);
+  selectedBroker = signal<'ALL' | Broker>('ALL');
   expandedKey = signal<string | null>(null);
   summary = signal<RealizedPnlSummary>({
     filter_scope_total: '0',
@@ -85,6 +88,20 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
   readonly showForeignColumns = computed(() =>
     this.events().some(event => (event.market ?? 'TW') !== 'TW'),
   );
+
+  readonly brokerFilterOptions = computed<SegToggleOption[]>(() => [
+    { label: 'ALL', value: 'ALL' },
+    ...this.availableBrokers().map(broker => ({ label: broker, value: broker })),
+  ]);
+
+  readonly showBrokerColumn = computed(() => this.availableBrokers().length > 0);
+  readonly showBrokerFilter = computed(() => this.availableBrokers().length > 0);
+
+  readonly filteredEvents = computed(() => {
+    const broker = this.selectedBroker();
+    const rows = this.events();
+    return broker === 'ALL' ? rows : rows.filter(event => event.broker === broker);
+  });
 
   dateRange: Date[] | null = null;
   query = signal<RealizedPnlQuery>({
@@ -112,6 +129,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       next: paged => {
         if (seq !== this.fetchSeq) return;
         this.events.set(paged.items);
+        this.ensureSelectedBroker();
         this.total.set(paged.total);
         this.summary.set(paged.summary);
         this.expandedKey.set(null);
@@ -174,6 +192,7 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
     this.searchInput.set('');
     this.dateRange = null;
     this.selectedYear.set(null);
+    this.selectedBroker.set('ALL');
     this.expandedKey.set(null);
     this.query.set({
       offset: 0,
@@ -185,7 +204,16 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
 
   hasActiveFilters(): boolean {
     const q = this.query();
-    return !!(q.symbol || q.date_from || q.date_to || q.year || q.day_trade_only);
+    return !!(q.symbol || q.date_from || q.date_to || q.year || q.day_trade_only || this.selectedBroker() !== 'ALL');
+  }
+
+  selectBrokerFilter(value: string): void {
+    this.selectedBroker.set(value as 'ALL' | Broker);
+    this.expandedKey.set(null);
+  }
+
+  showBrokerBadge(event: RealizedPnlEvent): boolean {
+    return !!event.broker && event.broker !== 'TW_MANUAL';
   }
 
   toggleExpanded(event: RealizedPnlEvent) {
@@ -236,6 +264,26 @@ export class PortfolioRealizedPnlComponent implements OnInit, OnDestroy {
       this.filterDebounce = setTimeout(() => this.fetch(), 300);
     } else {
       this.fetch();
+    }
+  }
+
+  private availableBrokers(): Broker[] {
+    const seen = new Set<Broker>();
+    const brokers: Broker[] = [];
+    for (const event of this.events()) {
+      const broker = event.broker;
+      if (!broker || broker === 'TW_MANUAL' || seen.has(broker)) continue;
+      seen.add(broker);
+      brokers.push(broker);
+    }
+    return brokers;
+  }
+
+  private ensureSelectedBroker(): void {
+    const selected = this.selectedBroker();
+    if (selected === 'ALL') return;
+    if (!this.availableBrokers().includes(selected)) {
+      this.selectedBroker.set('ALL');
     }
   }
 

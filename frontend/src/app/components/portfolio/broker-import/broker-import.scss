@@ -1,0 +1,156 @@
+.broker-import-page {
+  display: grid;
+  gap: 1rem;
+  max-width: 980px;
+}
+
+.broker-import-head {
+  align-items: flex-end;
+  display: flex;
+  justify-content: space-between;
+
+  h2 {
+    color: var(--app-text);
+    font-size: 1.35rem;
+    font-weight: var(--fw-heavy);
+    margin: 0;
+  }
+}
+
+.broker-line {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.broker-chip,
+.manual-warning,
+.result-strip span {
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0.28rem 0.55rem;
+}
+
+.broker-chip {
+  background: var(--app-accent-soft);
+  border: 1px solid var(--app-accent-soft-strong);
+  color: var(--app-accent);
+}
+
+.manual-warning {
+  background: var(--app-state-warning-bg);
+  color: var(--app-warning);
+}
+
+.upload-panel,
+.preview-section,
+.error-list {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.upload-panel {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.file-zone {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border: 1px dashed var(--app-border);
+  border-radius: 8px;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  flex: 1;
+  font-weight: var(--fw-semibold);
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.85rem 1rem;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  input {
+    display: none;
+  }
+}
+
+.upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.loading-row {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.result-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+
+  span {
+    background: var(--app-surface-soft);
+    color: var(--app-text-muted);
+  }
+}
+
+.preview-section {
+  h3 {
+    color: var(--app-text);
+    font-size: 0.95rem;
+    font-weight: var(--fw-bold);
+    margin: 0 0 0.75rem;
+  }
+}
+
+:host ::ng-deep .broker-preview-table {
+  font-size: 0.84rem;
+
+  th {
+    color: var(--app-text-muted);
+    font-size: 0.72rem;
+    white-space: nowrap;
+  }
+
+  td {
+    color: var(--app-text);
+    white-space: nowrap;
+  }
+
+  .num {
+    text-align: right;
+  }
+}
+
+.error-list {
+  color: var(--app-danger);
+  font-size: 0.84rem;
+}
+
+@media (max-width: 760px) {
+  .upload-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .upload-actions {
+    justify-content: flex-start;
+  }
+}

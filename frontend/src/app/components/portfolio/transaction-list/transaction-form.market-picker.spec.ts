@@ -5,7 +5,7 @@ import { of } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PortfolioService } from '../../../services/portfolio.service';
-import { TransactionType } from '../../../models/portfolio.model';
+import { Transaction, TransactionType } from '../../../models/portfolio.model';
 import { PortfolioTransactionListComponent } from './transaction-list';
 
 describe('PortfolioTransactionListComponent market picker', () => {
@@ -136,9 +136,25 @@ describe('PortfolioTransactionListComponent market picker', () => {
     expect(rows[0].metaBadge).toBeUndefined();
     expect(rows[1].metaBadge).toBe('US');
   });
+
+  it('adds broker badges for non-default broker rows', () => {
+    const fixture = TestBed.createComponent(PortfolioTransactionListComponent);
+    fixture.detectChanges();
+    fixture.componentInstance.transactions.set([
+      transaction({ symbol: 'TW1', market: 'TW', broker: 'TW_MANUAL' }),
+      transaction({ symbol: 'TW2', market: 'TW', broker: 'TW_CATHAY' }),
+      transaction({ symbol: 'IB1', market: 'US', broker: 'IB' }),
+    ]);
+
+    const rows = fixture.componentInstance.timelineRows();
+
+    expect(rows[0].metaBadge).toBeUndefined();
+    expect(rows[1].metaBadge).toBe('TW_CATHAY');
+    expect(rows[2].metaBadge).toBe('US · IB');
+  });
 });
 
-function transaction(overrides: Partial<Parameters<PortfolioTransactionListComponent['symbolDisplay']>[0]> = {}) {
+function transaction(overrides: Partial<Transaction> = {}): Transaction {
   return {
     id: 1,
     symbol: '2330',
@@ -147,6 +163,7 @@ function transaction(overrides: Partial<Parameters<PortfolioTransactionListCompo
     price: 100,
     fee: 0,
     tax: 0,
+    broker: 'TW_MANUAL' as const,
     trade_date: '2026-05-01',
     ...overrides,
   };

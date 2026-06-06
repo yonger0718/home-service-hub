@@ -6,6 +6,14 @@ export enum TransactionType {
 export type PositionSide = 'LONG' | 'SHORT';
 export type MarketCode = 'TW' | 'US' | 'LSE';
 export type HoldingKey = `${string}|${MarketCode}`;
+export type Broker =
+  | 'TW_CATHAY'
+  | 'TW_SINOPAC'
+  | 'TW_MANUAL'
+  | 'IB'
+  | 'FIRSTRADE'
+  | 'SCHWAB'
+  | 'FOREIGN_MANUAL';
 
 export interface HoldingIdentity {
   symbol: string;
@@ -21,6 +29,7 @@ export interface Transaction {
   symbol: string;
   name?: string;
   type: TransactionType;
+  broker?: Broker | null;
   market?: MarketCode;
   currency?: string;
   fx_rate_to_twd?: number | string;
@@ -87,6 +96,42 @@ export interface ImportResult {
   rows: ImportRow[];
   recalc_scheduled?: boolean;
   csv_format?: 'generic' | 'cathay';
+}
+
+export interface BrokerCashFlow {
+  id?: number;
+  broker: Broker;
+  date: string;
+  type: 'deposit' | 'withdrawal' | 'interest' | 'dividend_cash' | 'fee' | string;
+  amount: string | number;
+  currency: string;
+  fx_rate_to_twd?: string | number | null;
+  note?: string | null;
+  import_fingerprint?: string | null;
+  created_at?: string;
+}
+
+export interface BrokerCashBalance {
+  broker: Broker;
+  currency: string;
+  balance: string | number;
+  as_of_date: string;
+}
+
+export interface BrokerCsvImportResult {
+  detected_broker: string | null;
+  dry_run: boolean;
+  transactions: any[];
+  cash_flows: any[];
+  counts: {
+    created: number;
+    skipped: number;
+    rejected: number;
+  };
+  errors: {
+    row_index: number;
+    reason: string;
+  }[];
 }
 
 export interface RecalcStepStatus {
@@ -251,6 +296,7 @@ export interface RealizedPnlEvent {
   trade_date: string;
   symbol: string;
   market: MarketCode;
+  broker?: Broker | null;
   name: string | null;
   quantity: number;
   sell_price: string;
