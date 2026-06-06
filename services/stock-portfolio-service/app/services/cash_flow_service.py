@@ -116,9 +116,9 @@ def _trade_cash_deltas(
     """Per (broker, currency) net cash impact from BUY/SELL transactions.
 
     BUY → outflow (qty*price + fee + tax); SELL → inflow (qty*price - fee - tax).
-    Stored in the transaction's native currency. TW_MANUAL rows excluded because
-    they predate Phase 4 broker tagging and would otherwise double-count against
-    the legacy TWD cash accounting path.
+    Stored in the transaction's native currency. TW_MANUAL and TW_CATHAY excluded:
+    the legacy cash_transaction ledger (account_id=1) already materializes their
+    buy_settle/sell_settle/fee/tax rows and is folded in by ``list_balances``.
     """
     rows = (
         db.query(
@@ -135,7 +135,11 @@ def _trade_cash_deltas(
             func.coalesce(func.sum(models.Transaction.tax), 0),
         )
         .filter(models.Transaction.broker.isnot(None))
-        .filter(models.Transaction.broker != models.Broker.TW_MANUAL.value)
+        .filter(
+            models.Transaction.broker.notin_(
+                [models.Broker.TW_MANUAL.value, models.Broker.TW_CATHAY.value]
+            )
+        )
         .filter(cast(models.Transaction.trade_date, Date) <= as_of_date)
         .group_by(
             models.Transaction.broker,
@@ -179,6 +183,39 @@ def get_broker_balance(db: Session, broker: str, as_of_date: date) -> Decimal:
     return balance
 
 
+def _legacy_tw_cathay_balance(db: Session, *, as_of_date: date) -> Decimal | None:
+    """Sum of cash_transaction rows on the legacy Cathay TWD account.
+
+    The legacy ledger pre-dates Phase 4 broker_cash_flows and is still the
+    source of truth for TW deposits/withdrawals/dividend_cash plus the
+    pre-materialized buy_settle/sell_settle/fee/tax legs. We virtualize a
+    single (TW_CATHAY, TWD) row in ``list_balances`` so the dashboard tile
+    and the accounts page render the same figure.
+    """
+    from ..models.broker_account import BrokerAccount, BrokerEnum
+    from ..models.cash_transaction import CashTransaction
+
+    account_id = (
+        db.query(BrokerAccount.id)
+        .filter(
+            BrokerAccount.broker == BrokerEnum.CATHAY,
+            BrokerAccount.currency == "TWD",
+            BrokerAccount.is_active.is_(True),
+        )
+        .order_by(BrokerAccount.id.asc())
+        .scalar()
+    )
+    if account_id is None:
+        return None
+    total = (
+        db.query(func.coalesce(func.sum(CashTransaction.amount), 0))
+        .filter(CashTransaction.account_id == account_id)
+        .filter(CashTransaction.txn_date <= as_of_date)
+        .scalar()
+    )
+    return Decimal(total or "0")
+
+
 def list_balances(db: Session, *, as_of_date: date | None = None) -> list[dict[str, object]]:
     effective_date = as_of_date or date.today()
     rows = (
@@ -199,6 +236,10 @@ def list_balances(db: Session, *, as_of_date: date | None = None) -> list[dict[s
     trade_deltas = _trade_cash_deltas(db, as_of_date=effective_date)
     for key, delta in trade_deltas.items():
         per_key[key] = per_key.get(key, Decimal("0")) + delta
+    tw_balance = _legacy_tw_cathay_balance(db, as_of_date=effective_date)
+    if tw_balance is not None:
+        key = (models.Broker.TW_CATHAY.value, "TWD")
+        per_key[key] = per_key.get(key, Decimal("0")) + tw_balance
     return [
         {
             "broker": broker,
