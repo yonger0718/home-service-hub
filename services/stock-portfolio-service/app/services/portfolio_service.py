@@ -886,12 +886,21 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
 
         # 股利統計
         dividend_map = {}
+        # 原幣股利累計 (foreign only): {key: {currency: total_amount}}. Caller
+        # picks the holding's native_currency entry; missing → KPI hidden.
+        dividend_native_by_cur: dict[tuple[str, str], dict[str, Decimal]] = {}
         for d in dividends:
             key = _symbol_market_key(d)
             if key[1] != "TW" and key not in active_key_set:
                 continue
             amount_twd = _dividend_amount_twd(d)
             dividend_map[key] = dividend_map.get(key, Decimal("0.0")) + amount_twd
+            if key[1] != "TW":
+                native_cur = (getattr(d, "currency", None) or "").strip().upper()
+                if not native_cur:
+                    continue
+                by_cur = dividend_native_by_cur.setdefault(key, {})
+                by_cur[native_cur] = by_cur.get(native_cur, Decimal("0.0")) + Decimal(d.amount)
             # XIRR: dividend inflow
             cf_date = d.ex_dividend_date.date() if hasattr(d.ex_dividend_date, 'date') else d.ex_dividend_date
             cashflows_map.setdefault(key, []).append((cf_date, amount_twd))
@@ -931,8 +940,9 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 h["total_cost"] += (Decimal(t.quantity) * price_twd) + fee_twd
                 # 成交均價口徑(不含手續費)
                 h["total_cost_ex_fee"] += (Decimal(t.quantity) * price_twd)
-                # 原幣成本: 直接以原幣單價累計, 無 FX 影響 (Phase 3 native KPI)
-                h["total_cost_native"] += (Decimal(t.quantity) * native_price)
+                # 原幣成本: 原幣單價 + 原幣手續費 (與 total_cost 同樣 frozen-FX 口徑)
+                native_fee = Decimal(t.fee or "0")
+                h["total_cost_native"] += (Decimal(t.quantity) * native_price) + native_fee
                 # XIRR: buy outflow
                 cf_date = t.trade_date.date() if hasattr(t.trade_date, 'date') else t.trade_date
                 outflow = -((Decimal(t.quantity) * price_twd) + fee_twd + tax_twd)
@@ -1136,6 +1146,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             market_value_native: Optional[Decimal] = None
             unrealized_pnl_native: Optional[Decimal] = None
             unrealized_pnl_percent_native: Optional[Decimal] = None
+            total_dividends_native: Optional[Decimal] = None
+            total_pnl_with_dividend_native: Optional[Decimal] = None
             if total_qty_dec > 0:
                 avg_cost_native = (total_cost_native / total_qty_dec).quantize(
                     native_quant, rounding=ROUND_HALF_UP
@@ -1150,6 +1162,15 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                     unrealized_pnl_percent_native = (
                         (pnl_n / total_cost_native) * Decimal("100")
                     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            by_cur = dividend_native_by_cur.get(key)
+            if by_cur and revalue.native_currency:
+                native_div = by_cur.get(revalue.native_currency)
+                if native_div is not None and len(by_cur) == 1:
+                    total_dividends_native = native_div.quantize(native_quant, rounding=ROUND_HALF_UP)
+                    if unrealized_pnl_native is not None:
+                        total_pnl_with_dividend_native = (
+                            unrealized_pnl_native + total_dividends_native
+                        ).quantize(native_quant, rounding=ROUND_HALF_UP)
 
             holdings_list.append(schemas.StockHolding(
                 symbol=symbol,
@@ -1172,6 +1193,8 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 market_value_native=market_value_native,
                 unrealized_pnl_native=unrealized_pnl_native,
                 unrealized_pnl_percent_native=unrealized_pnl_percent_native,
+                total_dividends_native=total_dividends_native,
+                total_pnl_with_dividend_native=total_pnl_with_dividend_native,
                 xirr=stock_xirr,
                 xirr_1m=None,
                 xirr_3m=None,

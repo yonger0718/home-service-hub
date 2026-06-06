@@ -130,7 +130,9 @@ describe('PortfolioDashboardComponent holding groups', () => {
 
     component.selectMarketFilter('US');
     expect(component.filteredHoldings().map(h => h.symbol)).toEqual(['AAPL']);
-    expect(component.showMarketGroups()).toBe(false);
+    // Foreign-only filter must keep grouped (native-aware) rendering, otherwise
+    // rows fall back to TW-only formatters — see CodeRabbit PR #27 review.
+    expect(component.showMarketGroups()).toBe(true);
   });
 
   it('recomputes KPI totals from filtered holdings when a market is selected', () => {
@@ -210,6 +212,8 @@ function buildHolding(overrides: Partial<StockHolding> = {}): StockHolding {
     market_value_native: null,
     unrealized_pnl_native: null,
     unrealized_pnl_percent_native: null,
+    total_dividends_native: null,
+    total_pnl_with_dividend_native: null,
     xirr: 0.5,
     xirr_1m: 0.01,
     xirr_3m: 0.0321,

@@ -154,11 +154,19 @@
                               </div>
                             </div>
                             <div class="d"><small>平均成本</small><div>{{ (stock.avg_cost_native ?? nativeFromTwd(stock.avg_cost, stock)) | nativeAmount: stock.native_currency }}</div></div>
-                            <div class="d"><small>累計股利</small><div class="dividend">{{ nativeFromTwd(stock.total_dividends, stock) | nativeAmount: stock.native_currency }}</div></div>
+                            @if (stock.total_dividends_native != null) {
+                              <div class="d"><small>累計股利</small><div class="dividend">{{ stock.total_dividends_native | nativeAmount: stock.native_currency }}</div></div>
+                            } @else {
+                              <div class="d"><small>累計股利 (TWD)</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
+                            }
                             @let nativeUnrealized = stock.unrealized_pnl_native ?? nativeFromTwd(stock.unrealized_pnl, stock);
                             <div class="d"><small>未實現損益</small><div [class.up]="(+(nativeUnrealized ?? 0)) >= 0" [class.down]="(+(nativeUnrealized ?? 0)) < 0">{{ nativeUnrealized | nativeAmount: stock.native_currency }}</div></div>
-                            @let nativePnlDiv = nativeFromTwd(stock.total_pnl_with_dividend, stock);
-                            <div class="d"><small>含息損益</small><div [class.up]="(nativePnlDiv ?? 0) >= 0" [class.down]="(nativePnlDiv ?? 0) < 0">{{ nativePnlDiv | nativeAmount: stock.native_currency }}</div></div>
+                            @if (stock.total_pnl_with_dividend_native != null) {
+                              @let nativePnlDiv = +stock.total_pnl_with_dividend_native;
+                              <div class="d"><small>含息損益</small><div [class.up]="nativePnlDiv >= 0" [class.down]="nativePnlDiv < 0">{{ stock.total_pnl_with_dividend_native | nativeAmount: stock.native_currency }}</div></div>
+                            } @else {
+                              <div class="d"><small>含息損益 (TWD)</small><div [class.up]="stock.total_pnl_with_dividend >= 0" [class.down]="stock.total_pnl_with_dividend < 0">{{ formatCurrency(stock.total_pnl_with_dividend) }}</div></div>
+                            }
                           } @else {
                             <div class="d"><small>市值</small><div>{{ formatCurrency(stock.market_value) }}</div></div>
                             <div class="d"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>

@@ -164,6 +164,8 @@ export interface StockHolding {
   market_value_native: number | string | null;
   unrealized_pnl_native: number | string | null;
   unrealized_pnl_percent_native: number | string | null;
+  total_dividends_native: number | string | null;
+  total_pnl_with_dividend_native: number | string | null;
   xirr?: number;              // 年化報酬率，e.g. 0.1523 = 15.23%
   xirr_1m: number | null;
   xirr_3m: number | null;

@@ -121,7 +121,6 @@ export class PortfolioDashboardComponent implements OnInit {
   });
 
   readonly showMarketGroups = computed(() =>
-    this.marketFilter() === 'ALL' &&
     this.filteredHoldings().some(holding => holding.market !== 'TW'),
   );
 

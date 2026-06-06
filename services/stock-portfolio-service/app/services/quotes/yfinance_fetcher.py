@@ -285,6 +285,8 @@ def fetch_history(
                 if not isinstance(currency, str) or not currency.strip():
                     raise ValueError("missing currency")
                 frame = _frame_for_symbol(history, yf_symbol, len(market_items))
+                if frame.empty:
+                    raise ValueError("missing price history")
                 for row_index, row in frame.iterrows():
                     close_raw = row.get("Close")
                     if close_raw is None or pd.isna(close_raw):

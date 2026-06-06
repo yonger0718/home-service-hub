@@ -178,6 +178,8 @@ class StockHolding(BaseModel):
     market_value_native: Optional[Decimal] = None
     unrealized_pnl_native: Optional[Decimal] = None
     unrealized_pnl_percent_native: Optional[Decimal] = None
+    total_dividends_native: Optional[Decimal] = None
+    total_pnl_with_dividend_native: Optional[Decimal] = None
 
 class PortfolioSummary(BaseModel):
     total_market_value: Decimal

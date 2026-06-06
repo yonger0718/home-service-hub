@@ -76,6 +76,8 @@ function buildHolding(overrides: Partial<StockHolding> = {}): StockHolding {
     market_value_native: null,
     unrealized_pnl_native: null,
     unrealized_pnl_percent_native: null,
+    total_dividends_native: null,
+    total_pnl_with_dividend_native: null,
     xirr: 0.5,
     xirr_1m: 0.01,
     xirr_3m: 0.0321,
