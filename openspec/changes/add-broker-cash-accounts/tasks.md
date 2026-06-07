@@ -83,17 +83,17 @@
 
 ## 11. Operational rollout
 
-- [ ] 11.1 Document the rollout in `services/stock-portfolio-service/README.md`: phase 0 deploy (flag off) → phase 1 create Cathay account + dry-run backfill → phase 2 commit backfill → phase 3 flip flag → phase 4 create non-Cathay accounts
+- [x] 11.1 Document the rollout in `services/stock-portfolio-service/README.md`: phase 0 deploy (flag off) → phase 1 create Cathay account + dry-run backfill → phase 2 commit backfill → phase 3 flip flag → phase 4 create non-Cathay accounts
 - [x] 11.2 Operator runs `python -m app.services.cash_backfill_service --all --dry-run` against the live DB, captures counts in the rollout doc (2196 txns + 70 dividends → 5173 projected rows)
 - [x] 11.3 Operator runs the same command without `--dry-run` to commit backfill (5173 inserted, idempotent re-run = 0)
-- [ ] 11.4 Operator flips `CASH_LEG_ENABLED` and restarts the stock-portfolio-service
+- [x] 11.4 Operator flips `CASH_LEG_ENABLED` and restarts the stock-portfolio-service
 - [x] 11.5 Operator triggers `POST /api/portfolio/fx/refresh` to seed the first day's FX rates (6 rows: USD/TWD/GBP/JPY ↔)
-- [ ] 11.6 Operator verifies the new page renders, balance matches expectation, balance-over-time chart shows historical curve
+- [x] 11.6 Operator verifies the new page renders, balance matches expectation, balance-over-time chart shows historical curve
 
 ## 12. Verification
 
-- [ ] 12.1 `cd services/stock-portfolio-service && pytest tests/unit/` clean
-- [ ] 12.2 `pytest tests/integration/` clean
-- [ ] 12.3 `cd frontend && npm test` clean
-- [ ] 12.4 `npm run build` succeeds without new errors
-- [ ] 12.5 Manual smoke (after rollout phase 3): create a manual deposit on a Firstrade account, confirm it appears in the list and updates the chart; edit a Cathay transaction's fee, confirm the linked cash row updates
+- [x] 12.1 `cd services/stock-portfolio-service && pytest tests/unit/` clean
+- [x] 12.2 `pytest tests/integration/` clean
+- [x] 12.3 `cd frontend && npm test` clean
+- [x] 12.4 `npm run build` succeeds without new errors
+- [x] 12.5 Manual smoke (after rollout phase 3): create a manual deposit on a Firstrade account, confirm it appears in the list and updates the chart; edit a Cathay transaction's fee, confirm the linked cash row updates

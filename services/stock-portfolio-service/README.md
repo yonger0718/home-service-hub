@@ -86,3 +86,15 @@ Rewrites `app/data/name_to_symbol.json` by enumerating `twstock.codes` (TWSE lis
 Post-import networth recalculation derives the weekdays where the portfolio actually had exposure and limits both historical price fetches and snapshot replay to those active dates. A fully closed historical position no longer causes the service to walk every later weekday in the requested range. In recalc status, `dates_inactive` counts weekdays skipped because no symbol was held; it is separate from `dates_skipped`, which means a fetched date where both markets were empty (e.g. a holiday).
 
 Snapshot replay keeps Phase 1 price fetches weekday-only, but forward-fills weekends and full-market holidays inside held intervals with the previous trading day's market value and cost so historical charts stay dense through long closures. When replay skips a date instead of writing a row, it also self-heals legacy stale snapshots matching `total_market_value = 0` and `total_cost > 0`; recalc status exposes the cleanup count as `stale_rows_deleted`.
+
+## Broker cash accounts rollout
+
+`broker_account` + `cash_transaction` ledger is gated behind `CASH_LEG_ENABLED` (default `false`). Cathay CSV imports and `create_transaction` / `update_transaction` / `delete_transaction` only emit cash legs when the flag is on. Rollout sequence:
+
+1. **Deploy with flag off.** Migrations run idempotently; existing flows untouched. Use `GET /api/portfolio/accounts` to confirm the empty endpoint responds.
+2. **Seed the Cathay account.** `POST /api/portfolio/accounts` with `{broker: "TW_CATHAY", currency: "TWD", opening_balance: "<seed>"}` then dry-run the backfill: `python -m app.services.cash_backfill_service --dry-run`. The dry run prints the per-source counts (`csv_import` from existing Cathay transactions/dividends, `auto_derive` from manual rows) without writing.
+3. **Commit the backfill.** Re-run without `--dry-run`. Idempotency is enforced via `import_fingerprint` on both transactions and dividends, so reruns are safe.
+4. **Flip the flag.** Set `CASH_LEG_ENABLED=true` in the service env and restart. New manual transactions and CSV imports now write linked cash rows.
+5. **Onboard the rest.** Repeat step 2 for SinoPac / Firstrade / IB / Schwab accounts (one row per broker × currency). Phase 4 broker importers already emit `broker_cash_flows`; this rollout layer folds them into the unified `cash_transaction` ledger.
+
+Frontend `/portfolio/accounts` page renders the resulting balances (native + TWD-converted), a typed cash transaction list with filters, a manual deposit/withdraw form, and a balance-over-time chart. The 合併同筆交易 toggle on the detail page collapses settle/fee/tax legs into a single row per trade (per-account `localStorage` persisted). Manual rows can be deleted with the trash icon — `auto_derive` and `csv_import` rows are locked.

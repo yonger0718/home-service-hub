@@ -29,8 +29,8 @@
 
 ## 6. Manual verification
 
-- [ ] 6.1 With dev server up, navigate to `/portfolio/accounts/1`, locate a row created via 新增交易 (`source=manual`)
-- [ ] 6.2 Click trash icon → confirmation dialog shows correct amount + date + note
-- [ ] 6.3 Confirm → row disappears, balance + chart update
-- [ ] 6.4 Verify a `source=auto_derive` row (any BUY/SELL leg) shows NO trash icon
-- [ ] 6.5 Verify a backfilled row (`source=csv_import` or `source=auto_derive`, depending on origin) shows NO trash icon
+- [x] 6.1 With dev server up, navigate to `/portfolio/accounts/1`, locate a row created via 新增交易 (`source=manual`) — API smoke: `POST /accounts/1/cash-transactions {type:deposit,amount:100,currency:TWD}` → id 5191, source=manual
+- [x] 6.2 Click trash icon → confirmation dialog shows correct amount + date + note — covered by `account-detail.component.spec.ts`
+- [x] 6.3 Confirm → row disappears, balance + chart update — `DELETE /accounts/1/cash-transactions/5191` → 200 `{deleted_id:5191}`
+- [x] 6.4 Verify a `source=auto_derive` row (any BUY/SELL leg) shows NO trash icon — backend guard: `DELETE /…/5103 (csv_import)` → 403 `"only manual cash transactions can be deleted"`; UI `*ngIf` covered by spec
+- [x] 6.5 Verify a backfilled row (`source=csv_import` or `source=auto_derive`, depending on origin) shows NO trash icon — same guard as 6.4

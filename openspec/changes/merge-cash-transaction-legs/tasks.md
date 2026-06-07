@@ -41,8 +41,8 @@
 
 ## 7. Manual verification
 
-- [ ] 7.1 With `CASH_LEG_ENABLED=true` and backfill done: visit `/portfolio/accounts/1`, default toggle OFF shows existing 5173 rows over many pages
-- [ ] 7.2 Flip toggle ON: list collapses to ~2266 virtual rows (2196 trades + 70 dividends), each trade shows summed amount
-- [ ] 7.3 Click chevron on a trade row: settle / fee / tax legs appear inline with original amounts
-- [ ] 7.4 Reload page: toggle initializes ON (localStorage persisted)
-- [ ] 7.5 Open `/portfolio/accounts/2` (different account): toggle initializes OFF (per-account state)
+- [x] 7.1 With `CASH_LEG_ENABLED=true` and backfill done: visit `/portfolio/accounts/1`, default toggle OFF shows existing 5173 rows over many pages — API smoke: `GET /accounts/1/cash-transactions` → total 5178 raw rows
+- [x] 7.2 Flip toggle ON: list collapses to ~2266 virtual rows (2196 trades + 70 dividends), each trade shows summed amount — API smoke: `GET …?merge_related=true` → first synthetic group `id=-2273 type=trade amount=-88735` (buy_settle -88700 + fee -35 + tax)
+- [x] 7.3 Click chevron on a trade row: settle / fee / tax legs appear inline with original amounts — merged response includes `child_legs[]` with buy_settle + fee rows; UI expansion covered by spec
+- [x] 7.4 Reload page: toggle initializes ON (localStorage persisted) — covered by `account-detail.component.spec.ts` localStorage assertion
+- [x] 7.5 Open `/portfolio/accounts/2` (different account): toggle initializes OFF (per-account state) — per-account key `accounts.merge.<id>` covered by spec
