@@ -1,22 +1,32 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from dataclasses import dataclass, field
 from datetime import date as dt_date
 from datetime import datetime
 from decimal import Decimal
 
+import structlog
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.broker_account import BrokerAccount
+from app.models.broker_account import BrokerAccount, BrokerEnum
 from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
-from app.models.portfolio import Dividend, Transaction, TransactionType
+from app.models.portfolio import Broker, Dividend, Transaction, TransactionType
 from app.services import cash_account_service
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
+
+_BROKER_ENUM_MAP: dict[str, BrokerEnum] = {
+    Broker.TW_CATHAY.value: BrokerEnum.CATHAY,
+    Broker.TW_SINOPAC.value: BrokerEnum.SINOPAC,
+    Broker.TW_MANUAL.value: BrokerEnum.CATHAY,
+    Broker.IB.value: BrokerEnum.IB,
+    Broker.FIRSTRADE.value: BrokerEnum.FIRSTRADE,
+    Broker.SCHWAB.value: BrokerEnum.CS,
+    Broker.FOREIGN_MANUAL.value: BrokerEnum.OTHER,
+}
 
 
 @dataclass
@@ -97,6 +107,93 @@ def _cash_row_exists(session: Session, fingerprint: str) -> bool:
     )
 
 
+def _normalize_currency(value: str | None) -> str:
+    return (value or "TWD").upper()
+
+
+def _resolve_account_for_broker_currency(
+    session: Session,
+    *,
+    broker: str | None,
+    currency: str | None,
+) -> BrokerAccount | None:
+    if broker is None:
+        return cash_account_service.resolve_default_cathay_twd_account(session)
+
+    mapped_broker = _BROKER_ENUM_MAP.get(broker)
+    if mapped_broker is None:
+        logger.warning("cash_backfill.broker_unmapped", broker=broker)
+        return None
+
+    normalized_currency = _normalize_currency(currency)
+    account = session.scalar(
+        select(BrokerAccount)
+        .where(
+            BrokerAccount.broker == mapped_broker,
+            BrokerAccount.currency == normalized_currency,
+            BrokerAccount.is_active.is_(True),
+        )
+        .order_by(BrokerAccount.id.asc())
+    )
+    if account is None:
+        logger.warning(
+            "cash_backfill.account_missing",
+            broker=mapped_broker.value,
+            currency=normalized_currency,
+        )
+        return None
+    return account
+
+
+def _resolve_account_for_transaction(
+    session: Session,
+    transaction: Transaction,
+) -> BrokerAccount | None:
+    return _resolve_account_for_broker_currency(
+        session,
+        broker=transaction.broker,
+        currency=transaction.currency,
+    )
+
+
+def _resolve_account_for_dividend(
+    session: Session,
+    dividend: Dividend,
+) -> BrokerAccount | None:
+    query = (
+        select(Transaction)
+        .where(
+            Transaction.symbol == dividend.symbol,
+            Transaction.trade_date <= dividend.ex_dividend_date,
+        )
+        .order_by(Transaction.trade_date.desc(), Transaction.id.desc())
+        .limit(1)
+    )
+    if dividend.market:
+        query = query.where(Transaction.market == dividend.market)
+
+    transaction = session.scalar(query)
+    if transaction is not None:
+        return _resolve_account_for_broker_currency(
+            session,
+            broker=transaction.broker,
+            currency=dividend.currency,
+        )
+
+    currency = _normalize_currency(dividend.currency)
+    if currency == "TWD":
+        return cash_account_service.resolve_default_cathay_twd_account(session)
+
+    logger.warning(
+        "cash_backfill.dividend_broker_missing",
+        dividend_id=dividend.id,
+        symbol=dividend.symbol,
+        market=dividend.market,
+        currency=currency,
+    )
+    return None
+
+
 def _add_transaction_cash_row(
     session: Session,
     *,
@@ -145,13 +242,22 @@ def _add_dividend_cash_row(
 def replay_all(session: Session, *, dry_run: bool = False) -> BackfillResult:
     result = BackfillResult(dry_run=dry_run)
     try:
-        default_account = cash_account_service.resolve_default_cathay_twd_account(session)
-
         transactions = session.scalars(
             select(Transaction).order_by(Transaction.trade_date.asc(), Transaction.id.asc())
         ).all()
         for transaction in transactions:
             result.transactions_processed += 1
+            account = _resolve_account_for_transaction(session, transaction)
+            if account is None:
+                result.cash_rows_skipped += 1
+                logger.warning(
+                    "cash_backfill.transaction_skipped",
+                    transaction_id=transaction.id,
+                    broker=transaction.broker,
+                    currency=_normalize_currency(transaction.currency),
+                )
+                continue
+
             rows_added = 0
             for leg in _transaction_legs(transaction):
                 leg_name = str(leg["leg_name"])
@@ -165,11 +271,11 @@ def replay_all(session: Session, *, dry_run: bool = False) -> BackfillResult:
                     continue
 
                 result.cash_rows_inserted += 1
-                _increment_summary(result, default_account.id, leg_name)
+                _increment_summary(result, account.id, leg_name)
                 if not dry_run:
                     _add_transaction_cash_row(
                         session,
-                        account=default_account,
+                        account=account,
                         transaction=transaction,
                         leg=leg,
                         fingerprint=fingerprint,
@@ -183,6 +289,18 @@ def replay_all(session: Session, *, dry_run: bool = False) -> BackfillResult:
         ).all()
         for dividend in dividends:
             result.dividends_processed += 1
+            account = _resolve_account_for_dividend(session, dividend)
+            if account is None:
+                result.cash_rows_skipped += 1
+                logger.warning(
+                    "cash_backfill.dividend_skipped",
+                    dividend_id=dividend.id,
+                    symbol=dividend.symbol,
+                    market=dividend.market,
+                    currency=_normalize_currency(dividend.currency),
+                )
+                continue
+
             fingerprint = cash_account_service.compute_backfill_fingerprint(
                 "dividends",
                 dividend.id,
@@ -193,11 +311,11 @@ def replay_all(session: Session, *, dry_run: bool = False) -> BackfillResult:
                 continue
 
             result.cash_rows_inserted += 1
-            _increment_summary(result, default_account.id, "dividend_cash")
+            _increment_summary(result, account.id, "dividend_cash")
             if not dry_run:
                 _add_dividend_cash_row(
                     session,
-                    account=default_account,
+                    account=account,
                     dividend=dividend,
                     fingerprint=fingerprint,
                 )
@@ -231,7 +349,7 @@ def _main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="replay every transaction and dividend row",
+        help="deprecated no-op; replay always processes every transaction and dividend row",
     )
     parser.add_argument(
         "--dry-run",
@@ -239,10 +357,6 @@ def _main(argv: list[str] | None = None) -> int:
         help="compute rows that would be inserted without writing them",
     )
     args = parser.parse_args(argv)
-
-    if not args.all:
-        parser.print_help(sys.stderr)
-        return 2
 
     from app.database import SessionLocal
 
