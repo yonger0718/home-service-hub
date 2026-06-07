@@ -302,7 +302,7 @@ def _replay_broker_cash_flows(
                     txn_date=flow.date,
                     type=mapped_type,
                     amount=flow.amount,
-                    currency=flow.currency.upper(),
+                    currency=_normalize_currency(flow.currency),
                     related_transaction_id=None,
                     related_dividend_id=None,
                     note=flow.note,
