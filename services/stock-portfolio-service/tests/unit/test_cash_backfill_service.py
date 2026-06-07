@@ -6,7 +6,14 @@ from sqlalchemy import select
 
 from app.models.broker_account import BrokerAccount, BrokerEnum
 from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
-from app.models.portfolio import Broker, Dividend, Transaction, TransactionType
+from app.models.portfolio import (
+    Broker,
+    BrokerCashFlow,
+    BrokerCashFlowType,
+    Dividend,
+    Transaction,
+    TransactionType,
+)
 from app.services import cash_backfill_service, cash_account_service
 
 
@@ -69,6 +76,27 @@ def _dividend(
         currency=currency,
         ex_dividend_date=ex_dividend_date,
         import_fingerprint=f"dividend-csv-{index}",
+    )
+
+
+def _broker_cash_flow(
+    *,
+    broker: Broker | str = Broker.FIRSTRADE,
+    date_: date = date(2025, 1, 1),
+    type_: BrokerCashFlowType = BrokerCashFlowType.DEPOSIT,
+    amount: str = "1000.00",
+    currency: str = "USD",
+    note: str | None = None,
+) -> BrokerCashFlow:
+    return BrokerCashFlow(
+        broker=broker.value if isinstance(broker, Broker) else broker,
+        date=date_,
+        type=type_.value,
+        amount=Decimal(amount),
+        currency=currency,
+        fx_rate_to_twd=None,
+        note=note,
+        import_fingerprint=f"broker-cash-flow-{broker}-{date_.isoformat()}-{type_.value}",
     )
 
 
@@ -339,3 +367,98 @@ def test_replay_routes_dividend_using_prior_matching_transaction_broker(db_sessi
     assert row is not None
     assert row.account_id == firstrade.id
     assert result.per_account_summary[firstrade.id]["dividend_cash"] == 1
+
+
+def test_replay_bridges_broker_cash_flows_to_matching_account(db_session) -> None:
+    firstrade = _account(
+        broker=BrokerEnum.FIRSTRADE,
+        nickname="Firstrade USD",
+        currency="USD",
+    )
+    deposit = _broker_cash_flow(
+        type_=BrokerCashFlowType.DEPOSIT,
+        amount="1000.00",
+        note="ACH deposit",
+    )
+    interest = _broker_cash_flow(
+        date_=date(2025, 1, 2),
+        type_=BrokerCashFlowType.INTEREST,
+        amount="5.00",
+        note="cash interest",
+    )
+    db_session.add_all([firstrade, deposit, interest])
+    db_session.commit()
+
+    result = cash_backfill_service.replay_all(db_session)
+
+    rows = db_session.scalars(
+        select(CashTransaction).order_by(CashTransaction.txn_date.asc(), CashTransaction.id.asc())
+    ).all()
+    assert len(rows) == 2
+    assert {row.account_id for row in rows} == {firstrade.id}
+    assert [(row.type, row.amount) for row in rows] == [
+        (CashTxnType.DEPOSIT, Decimal("1000.0000")),
+        (CashTxnType.INTEREST_IN, Decimal("5.0000")),
+    ]
+    assert {row.source for row in rows} == {CashTxnSource.CSV_IMPORT}
+    assert result.cash_rows_inserted == 2
+    assert result.cash_rows_skipped == 0
+    assert result.per_account_summary[firstrade.id] == {"deposit": 1, "interest_in": 1}
+
+
+def test_replay_skips_broker_cash_flow_when_account_missing(db_session) -> None:
+    cathay = _account()
+    schwab_deposit = _broker_cash_flow(
+        broker=Broker.SCHWAB,
+        type_=BrokerCashFlowType.DEPOSIT,
+        amount="1000.00",
+    )
+    db_session.add_all([cathay, schwab_deposit])
+    db_session.commit()
+
+    result = cash_backfill_service.replay_all(db_session)
+
+    assert result.cash_rows_inserted == 0
+    assert result.cash_rows_skipped == 1
+    assert result.per_account_summary == {}
+    assert _cash_rows(db_session) == []
+
+
+def test_replay_skips_existing_broker_cash_flow_fingerprint(db_session) -> None:
+    firstrade = _account(
+        broker=BrokerEnum.FIRSTRADE,
+        nickname="Firstrade USD",
+        currency="USD",
+    )
+    deposit = _broker_cash_flow(
+        type_=BrokerCashFlowType.DEPOSIT,
+        amount="1000.00",
+    )
+    db_session.add_all([firstrade, deposit])
+    db_session.commit()
+    fingerprint = cash_account_service.compute_backfill_fingerprint(
+        "broker_cash_flows",
+        deposit.id,
+        CashTxnType.DEPOSIT.value,
+    )
+    db_session.add(
+        CashTransaction(
+            account_id=firstrade.id,
+            txn_date=deposit.date,
+            type=CashTxnType.DEPOSIT,
+            amount=Decimal("1000.00"),
+            currency="USD",
+            related_transaction_id=None,
+            related_dividend_id=None,
+            source=CashTxnSource.CSV_IMPORT,
+            import_fingerprint=fingerprint,
+        )
+    )
+    db_session.commit()
+
+    result = cash_backfill_service.replay_all(db_session)
+
+    rows = _cash_rows(db_session)
+    assert len(rows) == 1
+    assert result.cash_rows_inserted == 0
+    assert result.cash_rows_skipped == 1

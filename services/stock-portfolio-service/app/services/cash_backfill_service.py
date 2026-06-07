@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models.broker_account import BrokerAccount, BrokerEnum
 from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
-from app.models.portfolio import Broker, Dividend, Transaction, TransactionType
+from app.models.portfolio import Broker, BrokerCashFlow, Dividend, Transaction, TransactionType
 from app.services import cash_account_service
 
 logger = structlog.get_logger(__name__)
@@ -26,6 +26,14 @@ _BROKER_ENUM_MAP: dict[str, BrokerEnum] = {
     Broker.FIRSTRADE.value: BrokerEnum.FIRSTRADE,
     Broker.SCHWAB.value: BrokerEnum.CS,
     Broker.FOREIGN_MANUAL.value: BrokerEnum.OTHER,
+}
+
+_BROKER_CASH_FLOW_TYPE_MAP: dict[str, CashTxnType] = {
+    "deposit": CashTxnType.DEPOSIT,
+    "withdrawal": CashTxnType.WITHDRAW,
+    "interest": CashTxnType.INTEREST_IN,
+    "dividend_cash": CashTxnType.DIVIDEND_CASH,
+    "fee": CashTxnType.FEE,
 }
 
 
@@ -239,6 +247,75 @@ def _add_dividend_cash_row(
     )
 
 
+def _replay_broker_cash_flows(
+    session: Session,
+    *,
+    dry_run: bool,
+    result: BackfillResult,
+) -> None:
+    flows = session.scalars(
+        select(BrokerCashFlow).order_by(BrokerCashFlow.date.asc(), BrokerCashFlow.id.asc())
+    ).all()
+    rows_added = 0
+    for flow in flows:
+        account = _resolve_account_for_broker_currency(
+            session,
+            broker=flow.broker,
+            currency=flow.currency,
+        )
+        if account is None:
+            result.cash_rows_skipped += 1
+            logger.warning(
+                "cash_backfill.broker_cash_flow_skipped",
+                broker=flow.broker,
+                currency=_normalize_currency(flow.currency),
+                broker_cash_flow_id=flow.id,
+            )
+            continue
+
+        mapped_type = _BROKER_CASH_FLOW_TYPE_MAP.get(flow.type)
+        if mapped_type is None:
+            result.cash_rows_skipped += 1
+            logger.warning(
+                "cash_backfill.broker_cash_flow_type_unmapped",
+                broker_cash_flow_id=flow.id,
+                type=flow.type,
+            )
+            continue
+
+        type_value = mapped_type.value
+        fingerprint = cash_account_service.compute_backfill_fingerprint(
+            "broker_cash_flows",
+            flow.id,
+            type_value,
+        )
+        if _cash_row_exists(session, fingerprint):
+            result.cash_rows_skipped += 1
+            continue
+
+        result.cash_rows_inserted += 1
+        _increment_summary(result, account.id, type_value)
+        if not dry_run:
+            session.add(
+                CashTransaction(
+                    account_id=account.id,
+                    txn_date=flow.date,
+                    type=mapped_type,
+                    amount=flow.amount,
+                    currency=flow.currency.upper(),
+                    related_transaction_id=None,
+                    related_dividend_id=None,
+                    note=flow.note,
+                    source=CashTxnSource.CSV_IMPORT,
+                    import_fingerprint=fingerprint,
+                )
+            )
+            rows_added += 1
+
+    if rows_added:
+        session.flush()
+
+
 def replay_all(session: Session, *, dry_run: bool = False) -> BackfillResult:
     result = BackfillResult(dry_run=dry_run)
     try:
@@ -320,6 +397,8 @@ def replay_all(session: Session, *, dry_run: bool = False) -> BackfillResult:
                     fingerprint=fingerprint,
                 )
                 session.flush()
+
+        _replay_broker_cash_flows(session, dry_run=dry_run, result=result)
 
         if not dry_run:
             session.commit()
