@@ -43,6 +43,7 @@ from ..models.price_history import PriceHistory
 from . import cash_account_service
 from . import market_data_service
 from .portfolio_service import _load_adjusted_transactions
+from .quotes import fx_rate_service
 from .realized_pnl_service import iter_realized_events
 
 logger = logging.getLogger(__name__)
@@ -463,18 +464,26 @@ def _ex_date_of(d: portfolio_models.Dividend) -> dt_date:
 
 def _load_price_map(
     db: Session, from_d: dt_date, to_d: dt_date
-) -> Dict[tuple[str, dt_date], Decimal]:
-    """Pull all close prices in range as ``{(symbol, date): close}``."""
+) -> Dict[tuple[str, str, dt_date], tuple[Decimal, str | None]]:
+    """Pull close prices in range as ``{(symbol, market, date): (close, currency)}``."""
     rows = (
-        db.query(PriceHistory.symbol, PriceHistory.date, PriceHistory.close)
+        db.query(
+            PriceHistory.symbol,
+            PriceHistory.market,
+            PriceHistory.date,
+            PriceHistory.close,
+            PriceHistory.currency,
+        )
         .filter(
-            PriceHistory.market == "TW",
             PriceHistory.date >= from_d,
             PriceHistory.date <= to_d,
         )
         .all()
     )
-    return {(sym, d): close for sym, d, close in rows}
+    return {
+        (sym, (market or "TW").upper(), d): (Decimal(close), currency)
+        for sym, market, d, close, currency in rows
+    }
 
 
 def replay_snapshots_range(
@@ -522,11 +531,7 @@ def replay_snapshots_range(
     }
     cash_activity_dates = cash_txn_dates | opening_dates
 
-    transactions = [
-        transaction
-        for transaction in _load_adjusted_transactions(db)
-        if (getattr(transaction, "market", "TW") or "TW").upper() == "TW"
-    ]
+    transactions = list(_load_adjusted_transactions(db))
     events = list(iter_realized_events(transactions))
     realized_by_date: dict[dt_date, Decimal] = defaultdict(lambda: Decimal("0"))
     for event in events:
@@ -545,12 +550,14 @@ def replay_snapshots_range(
 
     dividends = (
         db.query(portfolio_models.Dividend)
-        .filter(portfolio_models.Dividend.market == "TW")
         .order_by(portfolio_models.Dividend.ex_dividend_date)
         .all()
     )
     price_map = _load_price_map(db, from_d, to_d)
-    trading_dates = {d for (_s, d) in price_map.keys()}
+    trading_dates = {d for (_s, _m, d) in price_map.keys()}
+    trading_dates_by_market: Dict[str, set[dt_date]] = defaultdict(set)
+    for (_sym, _market, _d) in price_map.keys():
+        trading_dates_by_market[_market].add(_d)
     # Stock activity dates — transaction trade dates plus dividend
     # ex-dividend dates. Used by the trading-day cash-only gate so a
     # close-out SELL or dividend date still writes a row even when
@@ -576,16 +583,43 @@ def replay_snapshots_range(
         Decimal(prior_snapshot.total_cost) if prior_snapshot is not None else None
     )
 
-    qty: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
-    cost: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    # Pre-seed forward-fill cache from the most recent price_history row
+    # before from_d for each (symbol, market). Lets a foreign-market
+    # holiday on the first date of the range still revalue against the
+    # last known close instead of dropping the symbol's contribution.
+    seed_rows = (
+        db.query(
+            PriceHistory.symbol,
+            PriceHistory.market,
+            PriceHistory.close,
+            PriceHistory.currency,
+            PriceHistory.date,
+        )
+        .filter(PriceHistory.date < from_d)
+        .order_by(
+            PriceHistory.symbol.asc(),
+            PriceHistory.market.asc(),
+            PriceHistory.date.desc(),
+        )
+        .all()
+    )
+    last_close_by_key: Dict[tuple[str, str], tuple[Decimal, str | None]] = {}
+    for sym, market, close, currency, _d in seed_rows:
+        key = (sym, (market or "TW").upper())
+        if key not in last_close_by_key:
+            last_close_by_key[key] = (Decimal(close), currency)
+
+    qty: Dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
+    cost: Dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
     # Signed running BUY-SELL per symbol (no clamp). Matches the
     # portfolio_service active-holdings convention: if net <= 0 at a
     # given date, treat the symbol as fully exited so a dropped SELL
     # (qty=0 at the time) doesn't leave phantom holdings behind once
     # later BUY+SELL pairs cancel out the deficit.
-    signed_net: Dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    signed_net: Dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
     cumulative_dividends = Decimal("0")
-    warned_missing: set[tuple[str, dt_date]] = set()
+    warned_missing: set[tuple[str, str, dt_date]] = set()
+    warned_missing_fx: set[tuple[str, str, dt_date]] = set()
     stale_candidates: list[dt_date] = []
     # Distinct list of dates the NEW cash-only gate suppressed. These
     # dates may carry a phantom all-zero row written by a prior
@@ -655,9 +689,12 @@ def replay_snapshots_range(
         while tx_i < len(transactions) and _trade_date_of(transactions[tx_i]) <= cur:
             t = transactions[tx_i]
             sym = t.symbol
+            market = (getattr(t, "market", "TW") or "TW").upper()
+            state_key = (sym, market)
             tx_qty = Decimal(t.quantity)
             tx_price = Decimal(t.price)
             tx_fee = Decimal(t.fee or 0)
+            tx_fx = Decimal(getattr(t, "fx_rate_to_twd", None) or 1)
             side = getattr(t, "position_side", None) or PositionSide.LONG
             if not isinstance(side, PositionSide):
                 side = PositionSide(side)
@@ -666,24 +703,27 @@ def replay_snapshots_range(
                 tx_i += 1
                 continue
             if t.type == portfolio_models.TransactionType.BUY:
-                qty[sym] += tx_qty
-                cost[sym] += tx_qty * tx_price + tx_fee
-                signed_net[sym] += tx_qty
+                qty[state_key] += tx_qty
+                cost[state_key] += tx_qty * tx_price * tx_fx + tx_fee * tx_fx
+                signed_net[state_key] += tx_qty
             else:  # SELL
-                signed_net[sym] -= tx_qty
-                if qty[sym] > 0:
-                    avg = cost[sym] / qty[sym]
-                    sold = min(tx_qty, qty[sym])
-                    qty[sym] -= sold
-                    cost[sym] -= sold * avg
-                    if qty[sym] <= 0:
-                        qty[sym] = 0
-                        cost[sym] = Decimal("0")
+                signed_net[state_key] -= tx_qty
+                if qty[state_key] > 0:
+                    avg = cost[state_key] / qty[state_key]
+                    sold = min(tx_qty, qty[state_key])
+                    qty[state_key] -= sold
+                    cost[state_key] -= sold * avg
+                    if qty[state_key] <= 0:
+                        qty[state_key] = 0
+                        cost[state_key] = Decimal("0")
             tx_i += 1
 
         # Advance dividends up to and including ``cur``.
         while div_i < len(dividends) and _ex_date_of(dividends[div_i]) <= cur:
-            cumulative_dividends += Decimal(dividends[div_i].amount)
+            dividend = dividends[div_i]
+            cumulative_dividends += Decimal(dividend.amount) * Decimal(
+                dividend.fx_rate_to_twd or 1
+            )
             div_i += 1
 
         is_weekend = cur.weekday() >= 5
@@ -736,20 +776,57 @@ def replay_snapshots_range(
             continue
 
         mv = Decimal("0")
-        for sym, q in qty.items():
-            if q <= 0 or signed_net.get(sym, 0) <= 0:
+        for (sym, market), q in qty.items():
+            state_key = (sym, market)
+            if q <= 0 or signed_net.get(state_key, 0) <= 0:
                 continue
-            close = price_map.get((sym, cur))
-            if close is None:
-                key = (sym, cur)
-                if key not in warned_missing:
-                    warned_missing.add(key)
-                    logger.warning(
-                        "networth_backfill.replay.missing_price",
-                        extra={"symbol": sym, "date": cur.isoformat()},
-                    )
-                continue
-            mv += Decimal(q) * Decimal(close)
+            price_row = price_map.get((sym, market, cur))
+            if price_row is None:
+                # Foreign market closed on a TW-open day (e.g. US Memorial
+                # Day, UK bank holidays): the symbol's own market has no
+                # rows for ``cur`` at all. Fall back to the last known
+                # close so the holding still revalues. A TW symbol with
+                # no row on an otherwise-active TW day is a true data
+                # gap (e.g. partial fetch) and contributes 0 as before.
+                market_closed = cur not in trading_dates_by_market.get(market, set())
+                cached = last_close_by_key.get((sym, market)) if market_closed else None
+                if cached is None:
+                    key = (sym, market, cur)
+                    if key not in warned_missing:
+                        warned_missing.add(key)
+                        logger.warning(
+                            "networth_backfill.replay.missing_price",
+                            extra={
+                                "symbol": sym,
+                                "market": market,
+                                "date": cur.isoformat(),
+                            },
+                        )
+                    continue
+                close, currency = cached
+            else:
+                close, currency = price_row
+                last_close_by_key[(sym, market)] = (close, currency)
+            if currency in (None, "TWD"):
+                price_fx = Decimal("1")
+            else:
+                rate = fx_rate_service.get_rate(db, currency, as_of=cur)
+                if rate is None:
+                    key = (sym, market, cur)
+                    if key not in warned_missing_fx:
+                        warned_missing_fx.add(key)
+                        logger.warning(
+                            "networth_backfill.replay.missing_fx_rate",
+                            extra={
+                                "symbol": sym,
+                                "market": market,
+                                "currency": currency,
+                                "date": cur.isoformat(),
+                            },
+                        )
+                    continue
+                price_fx = Decimal(rate)
+            mv += Decimal(q) * close * price_fx
 
         total_cost = sum(
             (

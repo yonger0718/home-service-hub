@@ -14,6 +14,7 @@ from sqlalchemy import event
 import app.database
 from app.models.broker_account import BrokerAccount, BrokerEnum
 from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
+from app.models.fx_rate import FXRate
 from app.models import portfolio as portfolio_models
 from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.models.price_history import PriceHistory
@@ -65,13 +66,21 @@ def _seed_tx(
     position_side: portfolio_models.PositionSide = portfolio_models.PositionSide.LONG,
     is_day_trade: bool = False,
     hour: int = 0,
+    market: str = "TW",
+    currency: str = "TWD",
+    fx_rate_to_twd: str | None = "1",
 ):
     tx = portfolio_models.Transaction(
         symbol=symbol,
+        market=market,
         type=side,
         position_side=position_side,
         quantity=qty,
         price=Decimal(price),
+        currency=currency,
+        fx_rate_to_twd=(
+            Decimal(fx_rate_to_twd) if fx_rate_to_twd is not None else None
+        ),
         trade_date=datetime(
             trade_date.year,
             trade_date.month,
@@ -88,10 +97,24 @@ def _seed_tx(
     return tx
 
 
-def _seed_dividend(db, *, symbol: str, amount: str, ex_date: date):
+def _seed_dividend(
+    db,
+    *,
+    symbol: str,
+    amount: str,
+    ex_date: date,
+    market: str = "TW",
+    currency: str = "TWD",
+    fx_rate_to_twd: str | None = "1",
+):
     div = portfolio_models.Dividend(
         symbol=symbol,
+        market=market,
         amount=Decimal(amount),
+        currency=currency,
+        fx_rate_to_twd=(
+            Decimal(fx_rate_to_twd) if fx_rate_to_twd is not None else None
+        ),
         ex_dividend_date=datetime.combine(ex_date, datetime.min.time(), tzinfo=timezone.utc),
         fee=Decimal("0"),
         tax=Decimal("0"),
@@ -103,13 +126,36 @@ def _seed_dividend(db, *, symbol: str, amount: str, ex_date: date):
     return div
 
 
-def _seed_price(db, *, symbol: str, d: date, close: str, source: str = "TWSE"):
+def _seed_price(
+    db,
+    *,
+    symbol: str,
+    d: date,
+    close: str,
+    source: str = "TWSE",
+    market: str = "TW",
+    currency: str = "TWD",
+):
     db.add(
         PriceHistory(
             symbol=symbol,
+            market=market,
             date=d,
             close=Decimal(close),
+            currency=currency,
             source=source,
+        )
+    )
+    db.flush()
+
+
+def _seed_fx(db, *, currency: str, d: date, rate: str):
+    db.add(
+        FXRate(
+            currency=currency,
+            date=d,
+            rate_to_twd=Decimal(rate),
+            source="test",
         )
     )
     db.flush()
@@ -381,6 +427,138 @@ def test_replay_simple_buy_and_close(db_session):
     assert snaps[date(2026, 5, 15)].total_market_value == Decimal("52000")
 
 
+def test_replay_includes_foreign_holdings(db_session):
+    snapshot_date = date(2026, 5, 14)
+    _seed_fx(db_session, currency="USD", d=snapshot_date, rate="31.5")
+    _seed_price(
+        db_session,
+        symbol="2330",
+        d=snapshot_date,
+        close="600",
+    )
+    _seed_price(
+        db_session,
+        symbol="UUUU",
+        d=snapshot_date,
+        close="10",
+        source="yfinance",
+        market="US",
+        currency="USD",
+    )
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        price="600",
+        trade_date=snapshot_date,
+    )
+    _seed_tx(
+        db_session,
+        symbol="UUUU",
+        side=portfolio_models.TransactionType.BUY,
+        qty=50,
+        price="10",
+        trade_date=snapshot_date,
+        market="US",
+        currency="USD",
+        fx_rate_to_twd="31.0",
+    )
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, snapshot_date, snapshot_date)
+
+    snap = db_session.query(PortfolioSnapshot).one()
+    assert snap.total_market_value == Decimal("75750")
+    assert snap.total_cost == Decimal("75500")
+
+
+def test_replay_forward_fills_foreign_close_on_us_holiday(db_session):
+    """TW market open + US market closed (e.g. Memorial Day): foreign
+    holding should revalue against its prior US close, not drop to 0
+    cost-with-no-mv (which would crash the chart by total_cost amount).
+    """
+    prior_date = date(2026, 5, 22)
+    holiday_date = date(2026, 5, 25)
+    _seed_fx(db_session, currency="USD", d=prior_date, rate="31.5")
+    _seed_fx(db_session, currency="USD", d=holiday_date, rate="31.5")
+    # TW row exists for both dates → both are "trading days" overall;
+    # US row only exists on prior_date.
+    _seed_price(db_session, symbol="2330", d=prior_date, close="600")
+    _seed_price(db_session, symbol="2330", d=holiday_date, close="600")
+    _seed_price(
+        db_session,
+        symbol="UUUU",
+        d=prior_date,
+        close="10",
+        source="yfinance",
+        market="US",
+        currency="USD",
+    )
+    _seed_tx(
+        db_session,
+        symbol="2330",
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        price="600",
+        trade_date=prior_date,
+    )
+    _seed_tx(
+        db_session,
+        symbol="UUUU",
+        side=portfolio_models.TransactionType.BUY,
+        qty=50,
+        price="10",
+        trade_date=prior_date,
+        market="US",
+        currency="USD",
+        fx_rate_to_twd="31.0",
+    )
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, prior_date, holiday_date)
+    snaps = {s.date: s for s in db_session.query(PortfolioSnapshot).all()}
+
+    # Prior date: TW 60000 + US 50*10*31.5 = 75750
+    assert snaps[prior_date].total_market_value == Decimal("75750")
+    # Holiday date: TW 60000 + US forward-fill 50*10*31.5 = 75750
+    assert snaps[holiday_date].total_market_value == Decimal("75750")
+    # Cost stays frozen for both dates: TW 60000 + US 50*10*31.0 = 75500
+    assert snaps[holiday_date].total_cost == Decimal("75500")
+
+
+def test_replay_lse_gbp_uses_get_rate_divisor(db_session):
+    snapshot_date = date(2026, 5, 14)
+    _seed_fx(db_session, currency="GBP", d=snapshot_date, rate="41.0")
+    _seed_price(
+        db_session,
+        symbol="VOD",
+        d=snapshot_date,
+        close="180",
+        source="yfinance",
+        market="LSE",
+        currency="GBp",
+    )
+    _seed_tx(
+        db_session,
+        symbol="VOD",
+        side=portfolio_models.TransactionType.BUY,
+        qty=100,
+        price="180",
+        trade_date=snapshot_date,
+        market="LSE",
+        currency="GBp",
+        fx_rate_to_twd="0.40",
+    )
+    db_session.commit()
+
+    nbs.replay_snapshots_range(db_session, snapshot_date, snapshot_date)
+
+    snap = db_session.query(PortfolioSnapshot).one()
+    assert snap.total_market_value == Decimal("7380")
+    assert snap.total_cost == Decimal("7200")
+
+
 def test_replay_sell_reduces_holdings_and_cost(db_session):
     sym = "2330"
     _seed_tx(
@@ -454,16 +632,19 @@ def test_replay_skips_dates_with_no_price_history(db_session, caplog):
     assert db_session.query(PortfolioSnapshot).count() == 0
 
 
-def test_replay_ignores_foreign_only_transaction_stale_delete(db_session):
+def test_replay_foreign_only_missing_price_deletes_stale_snapshot(db_session):
     d = date(2026, 5, 14)
-    _seed_tx(
+    tx = _seed_tx(
         db_session,
         symbol="AAPL",
         side=portfolio_models.TransactionType.BUY,
         qty=1,
         price="100",
         trade_date=d,
-    ).market = "US"
+        market="US",
+        currency="USD",
+        fx_rate_to_twd="30",
+    )
     _seed_price(db_session, symbol="2330", d=d, close="500")
     db_session.add(
         PortfolioSnapshot(
@@ -481,8 +662,9 @@ def test_replay_ignores_foreign_only_transaction_stale_delete(db_session):
 
     result = nbs.replay_snapshots_range(db_session, d, d)
 
-    assert result.stale_rows_deleted == 0
-    assert db_session.get(PortfolioSnapshot, d) is not None
+    assert tx.market == "US"
+    assert result.stale_rows_deleted == 1
+    assert db_session.get(PortfolioSnapshot, d) is None
 
 
 def test_replay_missing_symbol_price_contributes_zero(db_session, caplog):
