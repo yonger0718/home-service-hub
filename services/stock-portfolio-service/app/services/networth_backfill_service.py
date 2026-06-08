@@ -31,7 +31,7 @@ from datetime import date as dt_date, timedelta
 from decimal import Decimal
 from typing import Callable, Dict, List, Optional
 
-from sqlalchemy import case, delete, func, literal, select, union_all
+from sqlalchemy import and_, case, delete, func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from ..models import portfolio as portfolio_models
@@ -587,27 +587,39 @@ def replay_snapshots_range(
     # before from_d for each (symbol, market). Lets a foreign-market
     # holiday on the first date of the range still revalue against the
     # last known close instead of dropping the symbol's contribution.
+    # SQL pushes the per-key max-date selection so we don't pull every
+    # historical row into Python.
+    latest_pre_from = (
+        db.query(
+            PriceHistory.symbol.label("symbol"),
+            PriceHistory.market.label("market"),
+            func.max(PriceHistory.date).label("max_date"),
+        )
+        .filter(PriceHistory.date < from_d)
+        .group_by(PriceHistory.symbol, PriceHistory.market)
+        .subquery()
+    )
     seed_rows = (
         db.query(
             PriceHistory.symbol,
             PriceHistory.market,
             PriceHistory.close,
             PriceHistory.currency,
-            PriceHistory.date,
         )
-        .filter(PriceHistory.date < from_d)
-        .order_by(
-            PriceHistory.symbol.asc(),
-            PriceHistory.market.asc(),
-            PriceHistory.date.desc(),
+        .join(
+            latest_pre_from,
+            and_(
+                PriceHistory.symbol == latest_pre_from.c.symbol,
+                PriceHistory.market == latest_pre_from.c.market,
+                PriceHistory.date == latest_pre_from.c.max_date,
+            ),
         )
         .all()
     )
     last_close_by_key: Dict[tuple[str, str], tuple[Decimal, str | None]] = {}
-    for sym, market, close, currency, _d in seed_rows:
+    for sym, market, close, currency in seed_rows:
         key = (sym, (market or "TW").upper())
-        if key not in last_close_by_key:
-            last_close_by_key[key] = (Decimal(close), currency)
+        last_close_by_key[key] = (Decimal(close), currency)
 
     qty: Dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
     cost: Dict[tuple[str, str], Decimal] = defaultdict(lambda: Decimal("0"))
