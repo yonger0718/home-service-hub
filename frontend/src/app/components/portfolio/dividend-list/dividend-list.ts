@@ -85,6 +85,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       const perShare = Number(dividend.cash_dividend_per_share || 0);
       const qty = Number(dividend.quantity_at_record_date || 0);
       return {
+        id: dividend.id,
         date: dividend.ex_dividend_date,
         side: 'cash',
         sideLabel: '股利',
@@ -248,6 +249,11 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
       next: data => this.upcomingExDividends.set(data),
       error: () => this.upcomingExDividends.set([]),
     });
+  }
+
+  onRowAction(action: { id: string | number; event: MouseEvent }) {
+    const record = this.dividends().find(row => row.id === action.id);
+    if (record) this.showMenu(action.event, record);
   }
 
   showMenu(event: MouseEvent, dividend: Dividend) {

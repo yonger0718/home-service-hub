@@ -70,7 +70,7 @@ export class PortfolioBrokerImportComponent {
 
   field(row: any, keys: string[]): string {
     for (const key of keys) {
-      const value = row?.[key];
+      const value = row?.payload?.[key] ?? row?.[key];
       if (value !== undefined && value !== null && value !== '') return String(value);
     }
     return '-';

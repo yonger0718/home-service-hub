@@ -4,6 +4,7 @@ from decimal import Decimal
 from app.models.broker_account import BrokerAccount, BrokerEnum
 from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
 from app.models.fx_rate import FxRate
+from app.models.portfolio import Transaction, Dividend
 from app.routers import accounts as accounts_router
 
 
@@ -176,6 +177,8 @@ def test_delete_manual_cash_transaction_returns_200_count_drops_and_balance_shif
 
 
 def test_delete_auto_derive_cash_transaction_returns_403(client, db_session) -> None:
+    db_session.add_all([Transaction(id=i, symbol="AAPL", type="BUY", quantity=1, price=1) for i in (100, 101)])
+    db_session.commit()
     account = _account()
     db_session.add(account)
     db_session.commit()
@@ -199,6 +202,8 @@ def test_delete_auto_derive_cash_transaction_returns_403(client, db_session) -> 
 
 
 def test_delete_csv_import_cash_transaction_returns_403(client, db_session) -> None:
+    db_session.add_all([Transaction(id=i, symbol="AAPL", type="BUY", quantity=1, price=1) for i in (100, 101)])
+    db_session.commit()
     account = _account()
     db_session.add(account)
     db_session.commit()
@@ -222,6 +227,8 @@ def test_delete_csv_import_cash_transaction_returns_403(client, db_session) -> N
 
 
 def test_delete_backfill_cash_transaction_returns_403(client, db_session) -> None:
+    db_session.add_all([Transaction(id=i, symbol="AAPL", type="BUY", quantity=1, price=1) for i in (100, 101)])
+    db_session.commit()
     account = _account()
     db_session.add(account)
     db_session.commit()
@@ -355,6 +362,9 @@ def _cash_row(
 
 
 def test_cash_transactions_endpoint_merge_related_groups_and_paginates(client, db_session) -> None:
+    db_session.add_all([Transaction(id=i, symbol="AAPL", type="BUY", quantity=1, price=1) for i in (100, 101)])
+    db_session.add(Dividend(id=10, symbol="AAPL", amount=75, ex_dividend_date=date(2026, 6, 3)))
+    db_session.commit()
     account = _account()
     db_session.add(account)
     db_session.commit()
@@ -463,6 +473,8 @@ def test_cash_transactions_endpoint_merge_related_groups_and_paginates(client, d
 
 
 def test_cash_transactions_endpoint_merge_related_type_filter_fee(client, db_session) -> None:
+    db_session.add_all([Transaction(id=i, symbol="AAPL", type="BUY", quantity=1, price=1) for i in (100, 101)])
+    db_session.commit()
     account = _account()
     db_session.add(account)
     db_session.commit()

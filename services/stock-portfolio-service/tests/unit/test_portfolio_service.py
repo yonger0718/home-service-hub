@@ -491,6 +491,8 @@ class TestPortfolioService:
             ),
         )
 
+        original_trade_date = created_tx.trade_date
+
         updated_tx = portfolio_service.update_transaction(
             db_session,
             created_tx.id,
@@ -544,6 +546,8 @@ class TestPortfolioService:
             ),
         )
 
+        original_trade_date = created_tx.trade_date
+
         updated_tx = portfolio_service.update_transaction(
             db_session,
             created_tx.id,
@@ -573,6 +577,8 @@ class TestPortfolioService:
                 received_date=original_received_date,
             ),
         )
+
+        original_received_date = created_dividend.received_date
 
         updated_dividend = portfolio_service.update_dividend(
             db_session,

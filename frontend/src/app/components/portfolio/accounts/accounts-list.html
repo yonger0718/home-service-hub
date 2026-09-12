@@ -49,7 +49,9 @@
   <div class="row g-3 accounts-grid" [class.is-loading]="loading()">
     @for (account of accounts(); track account.id) {
       <div class="col-12 col-md-4">
-        <p-card styleClass="account-card h-100" (click)="goToDetail(account)" tabindex="0">
+        <p-card styleClass="account-card h-100" (click)="goToDetail(account)"
+        (keydown.enter)="goToDetail(account)" (keydown.space)="$event.preventDefault(); goToDetail(account)"
+        role="link" tabindex="0">
           <div class="account-card-header">
             <div>
               <div class="broker-label">{{ brokerLabel(account.broker) }}</div>

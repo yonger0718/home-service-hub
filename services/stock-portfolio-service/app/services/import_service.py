@@ -701,6 +701,7 @@ def _persist_dividend(db: Session, row: ParsedRow) -> models.Dividend:
         ex_dividend_date=payload["ex_dividend_date"],
         received_date=payload.get("received_date"),
         import_fingerprint=row.fingerprint,
+        source="csv",
     )
     db.add(db_div)
     db.flush()

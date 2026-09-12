@@ -215,6 +215,9 @@ def test_delete_transaction_removes_linked_cash_legs_only(db_session, monkeypatc
     monkeypatch.setenv("CASH_LEG_ENABLED", "true")
     account = _add_cathay_account(db_session)
     transaction = _create_sell_with_inventory(db_session)
+    other_transaction = Transaction(id=9999, symbol="0050", type="BUY", quantity=1, price=1)
+    db_session.add(other_transaction)
+    db_session.commit()
     other_cash = CashTransaction(
         account_id=account.id,
         txn_date=date(2026, 5, 1),

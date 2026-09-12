@@ -109,6 +109,7 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     this.transactions().map(t => {
       const isBuy = t.type === TransactionType.BUY;
       return {
+        id: t.id,
         date: t.trade_date ?? '',
         side: isBuy ? 'buy' : 'sell',
         sideLabel: isBuy ? '買進' : '賣出',
@@ -259,6 +260,11 @@ export class PortfolioTransactionListComponent implements OnInit, OnDestroy {
     // symbol_map dictionary instead.
     const stored = t.name && t.name !== t.symbol ? t.name : null;
     return stored || this.symbolNames()[t.symbol] || t.symbol;
+  }
+
+  onRowAction(action: { id: string | number; event: MouseEvent }) {
+    const record = this.transactions().find(row => row.id === action.id);
+    if (record) this.showMenu(action.event, record);
   }
 
   showMenu(event: MouseEvent, transaction: Transaction) {

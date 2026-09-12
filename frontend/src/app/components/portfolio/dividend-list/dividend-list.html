@@ -3,18 +3,18 @@
 
 <div class="page-head justify-content-end">
   <div class="head-actions">
-    <app-btn variant="secondary" icon="pi-calendar">2026 全年</app-btn>
+    <app-btn variant="secondary" (click)="clearFilters()">清除篩選</app-btn>
     <app-btn icon="pi-plus" (click)="openNew()">新增股利</app-btn>
   </div>
 </div>
 
 <div class="summary-row">
   <div class="summary-item">
-    <div class="l">本年度累計股利</div>
+    <div class="l">本頁股利合計</div>
     <div class="v dividend">{{ formatCurrency(dividendTotal()) }}</div>
   </div>
   <div class="summary-item">
-    <div class="l">平均每股股利</div>
+    <div class="l">本頁平均每股股利</div>
     <div class="v">{{ averagePerShareDividend() | number:'1.2-2' }}</div>
   </div>
   <div class="summary-item">
@@ -50,6 +50,24 @@
   </div>
 </div>
 
+
+  <div class="filter-controls">
+    <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
+      [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body"
+      dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
+    <select aria-label="排序" [ngModel]="query().sort" (ngModelChange)="onSortChange($event)">
+      @for (option of sortOptions; track option.value) {
+        <option [value]="option.value">{{ option.label }}</option>
+      }
+    </select>
+    <select aria-label="股利來源" [ngModel]="query().source ?? ''" (ngModelChange)="onSourceChange($event || null)">
+      <option value="">全部來源</option>
+      @for (option of sourceOptions; track option.value) {
+        <option [value]="option.value">{{ option.label }}</option>
+      }
+    </select>
+  </div>
+
 <div class="result-meta">
   <span>{{ total() }} 筆</span>
   @if (loading()) {
@@ -57,7 +75,7 @@
   }
 </div>
 
-<app-timeline [rows]="timelineRows()"></app-timeline>
+<app-timeline [rows]="timelineRows()" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
 
 @if (!loading() && timelineRows().length === 0) {
   <div class="empty">

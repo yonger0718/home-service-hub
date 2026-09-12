@@ -6,6 +6,19 @@
     <section class="imp-section">
       <div class="imp-step-label"><span class="imp-step-num">1</span>上傳 CSV 檔案</div>
       <small class="imp-hint">支援自動偵測：國泰證券（含「根據您篩選的結果」前置列）與通用欄位格式。</small>
+      <div class="import-options">
+        <label>匯入類型
+          <select aria-label="匯入類型" [ngModel]="kind()" [disabled]="busy()"
+            (ngModelChange)="onImportOptionsChange($event, hasHeader())">
+            @for (option of kindOptions; track option.value) {
+              <option [value]="option.value">{{ option.label }}</option>
+            }
+          </select>
+        </label>
+        <label><input type="checkbox" [ngModel]="hasHeader()" [disabled]="busy()"
+          (ngModelChange)="onImportOptionsChange(kind(), $event)" />首列為欄位名稱</label>
+      </div>
+      <small class="imp-hint">{{ headerHint }}</small>
       @if (!file()) {
         <label class="dropzone" (drop)="onDrop($event)" (dragover)="onDragOver($event)">
           <i class="pi pi-cloud-upload" aria-hidden="true"></i>
@@ -23,7 +36,7 @@
 
     @if (result(); as r) {
       <section class="imp-section">
-        <div class="imp-step-label"><span class="imp-step-num">2</span>確認交易預覽</div>
+        <div class="imp-step-label"><span class="imp-step-num">2</span>確認{{ kind() === 'dividends' ? '股利' : '交易' }}預覽</div>
         <div class="summary">
           <span class="badge">解析 {{ r.parsed }}</span>
           <span class="badge ok">{{ r.dry_run ? '可新增' : '已新增' }} {{ r.created }}</span>
@@ -40,22 +53,29 @@
                 <tr>
                   <th>日期</th>
                   <th>股票</th>
-                  <th>買賣</th>
-                  <th class="num">股數</th>
-                  <th class="num">價格</th>
+                  @if (kind() === 'transactions') {
+                    <th>買賣</th><th class="num">股數</th><th class="num">價格</th>
+                  } @else {
+                    <th class="num">股利金額</th><th>入帳日</th>
+                  }
                 </tr>
               </thead>
               <tbody>
                 @for (row of r.rows; track row.row_index) {
                   <tr>
-                    <td>{{ rowValue(row, ['trade_date', 'date', '日期']) || '-' }}</td>
+                    <td>{{ rowValue(row, ['trade_date', 'ex_dividend_date', 'date', '日期']) || '-' }}</td>
                     <td>
                       {{ rowValue(row, ['name', '名稱', '股票']) || rowValue(row, ['symbol', '代號']) || '-' }}
                       <span>{{ rowValue(row, ['symbol', '代號']) || '' }}</span>
                     </td>
+                    @if (kind() === 'transactions') {
                     <td><app-side-tag [variant]="rowSide(row)" [label]="rowSide(row) === 'buy' ? '買進' : '賣出'"></app-side-tag></td>
                     <td class="num">{{ rowValue(row, ['quantity', 'qty', '股數']) || '-' }}</td>
                     <td class="num">{{ rowValue(row, ['price', '價格']) || '-' }}</td>
+                    } @else {
+                      <td class="num">{{ rowValue(row, ['amount', '金額']) || '-' }}</td>
+                      <td>{{ rowValue(row, ['received_date', '入帳日']) || '-' }}</td>
+                    }
                   </tr>
                 }
               </tbody>
@@ -73,8 +93,41 @@
       </section>
     }
 
+    @if (hasOverrideRows()) {
+      <section class="imp-section override-panel">
+        <h3>確認股票代號</h3>
+        @for (row of unresolvedRows(); track row.name) {
+          <div class="override-row">
+            <label>{{ row.name }}（{{ row.occurrences }} 筆）
+              <input [attr.aria-label]="row.name + ' 代號'" [ngModel]="nameOverrides()[row.name] || ''"
+                [disabled]="busy() || isVerifying(row.name)" (ngModelChange)="setOverride(row.name, $event)" />
+            </label>
+            <app-btn variant="secondary" [disabled]="busy() || isVerifying(row.name) || !nameOverrides()[row.name]"
+              (click)="verifyName(row.name, row.sample_dates)">驗證代號</app-btn>
+            @if (validationFor(row.name); as validation) {
+              <span>{{ validationIcon(validation.status).label }} {{ validation.fetched_name || '' }}</span>
+              @if (needsConfirm(validation.status)) {
+                <label><input type="checkbox" [ngModel]="confirmedOverrides().has(row.name)" [disabled]="busy()"
+                  (ngModelChange)="toggleConfirm(row.name, $event)" />確認使用此代號</label>
+              }
+            }
+          </div>
+        }
+      </section>
+    }
+
+    <section class="imp-section recalc-panel" aria-live="polite">
+      <div>資料重算：{{ recalcStatus().state }}</div>
+      @for (step of recalcStatus().steps ?? []; track step.name) {
+        <div>{{ step.name }}：{{ step.status }} {{ step.error || '' }}</div>
+      }
+      <app-btn variant="secondary" [disabled]="recalcSubmitting() || recalcStatus().state === 'running'"
+        (click)="retryRecalc()">重算資料</app-btn>
+    </section>
+
     <footer class="imp-footer">
-      <app-btn variant="ghost" icon="pi-times" (click)="onClear()">取消</app-btn>
+      <app-btn variant="secondary" [disabled]="!file() || busy()" (click)="preview()">重新預覽</app-btn>
+      <app-btn variant="ghost" icon="pi-times" [disabled]="busy()" (click)="onClear()">取消</app-btn>
       <app-btn icon="pi-check" [disabled]="!file() || busy() || !result()" [loading]="busy()" (click)="commit()">
         確認匯入 {{ parsedCount() }} 筆
       </app-btn>

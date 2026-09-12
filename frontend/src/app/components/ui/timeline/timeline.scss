@@ -122,3 +122,22 @@
 .expense {
   color: var(--app-text);
 }
+
+.tl-action {
+  background: transparent;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-lg);
+  color: var(--app-text);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-size: 1.25rem;
+  margin-left: 0.5rem;
+  min-height: 44px;
+  min-width: 44px;
+}
+
+@media (max-width: 480px) {
+  .tl-card:has(.tl-action) { flex-wrap: wrap; gap: 0.5rem; }
+  .tl-card:has(.tl-action) .tl-lhs { width: 100%; }
+  .tl-card:has(.tl-action) .tl-amt { margin-left: 0; }
+}

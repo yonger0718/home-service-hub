@@ -37,6 +37,21 @@ describe('PortfolioBrokerImportComponent', () => {
     expect(fixture.nativeElement.textContent).not.toContain('已新增 1');
   });
 
+  it('renders the nested payloads returned by the real broker API', () => {
+    portfolioService.uploadBrokerCsv.mockReturnValue(of(result({
+      transactions: [{ row_index: 2, payload: { symbol: 'MSFT', quantity: '2', price: '321.50', type: 'BUY', trade_date: '2026-06-05', broker: 'FIRSTRADE' } }],
+      cash_flows: [{ row_index: 3, payload: { date: '2026-06-05', broker: 'FIRSTRADE', cash_flow_type: 'deposit', amount: '2500.00', currency: 'USD' } }],
+    })));
+    const fixture = TestBed.createComponent(PortfolioBrokerImportComponent);
+    fixture.componentInstance.onFileSelected(fileEvent(csvFile('ft.csv')));
+    fixture.detectChanges();
+    const tables = fixture.nativeElement.querySelectorAll('tbody');
+    expect(tables[0].textContent).toContain('MSFT');
+    expect(tables[0].textContent).toContain('321.50');
+    expect(tables[1].textContent).toContain('2500.00');
+    expect(tables[1].textContent).toContain('deposit');
+  });
+
   it('commits the selected file and emits a success toast', () => {
     const fixture = TestBed.createComponent(PortfolioBrokerImportComponent);
     fixture.detectChanges();

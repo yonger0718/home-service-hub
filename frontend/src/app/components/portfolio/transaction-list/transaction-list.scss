@@ -117,3 +117,6 @@
   padding: 0.18rem 0.4rem;
   vertical-align: middle;
 }
+
+.filter-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
+.filter-controls select { background: var(--app-surface); color: var(--app-text); border: 1px solid var(--app-border); border-radius: 8px; padding: 0.5rem; max-width: 100%; }

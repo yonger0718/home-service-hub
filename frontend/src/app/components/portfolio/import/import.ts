@@ -80,6 +80,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   readonly result = signal<ImportResult | null>(null);
   readonly recalcStatus = signal<RecalcStatus>({ state: 'idle' });
   readonly hasHeader = signal<boolean>(true);
+  readonly recalcSubmitting = signal(false);
   readonly nameOverrides = signal<Record<string, string>>({});
   readonly confirmedOverrides = signal<Set<string>>(new Set());
   readonly verifyingNames = signal<Set<string>>(new Set());
@@ -111,7 +112,18 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     return this.kindOptions.find(option => option.value === this.kind())?.hint ?? '';
   }
 
+  onImportOptionsChange(kind: ImportKind, hasHeader: boolean): void {
+    if (this.busy()) return;
+    const file = this.file();
+    this.onClear();
+    this.kind.set(kind);
+    this.hasHeader.set(hasHeader);
+    if (file) this.onSelect({ files: [file] });
+  }
+
   onSelect(event: { files: File[] }): void {
+    if (this.busy()) return;
+    this.onClear();
     const next = event.files?.[0] ?? null;
     this.file.set(next);
     this.result.set(null);
@@ -141,6 +153,7 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   }
 
   onClear(): void {
+    if (this.busy()) return;
     this.file.set(null);
     this.result.set(null);
     this.nameOverrides.set({});
@@ -186,6 +199,9 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
     const local = new Map(this.localValidations());
     local.delete(name);
     this.localValidations.set(local);
+    this.result.update(result => result ? {
+      ...result, override_validations: result.override_validations?.filter(v => v.name !== name),
+    } : null);
   }
 
   verifyName(name: string, sampleDates: string[]): void {
@@ -314,7 +330,9 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
   }
 
   retryRecalc(): void {
-    this.portfolioService.triggerRecalc().subscribe({
+    if (this.recalcSubmitting() || this.recalcStatus().state === 'running') return;
+    this.recalcSubmitting.set(true);
+    this.portfolioService.triggerRecalc().pipe(finalize(() => this.recalcSubmitting.set(false))).subscribe({
       next: () => {
         this.messageService.add({
           severity: 'info', summary: '重新觸發重算', life: 3000,
