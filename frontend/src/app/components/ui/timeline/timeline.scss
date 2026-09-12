@@ -141,3 +141,18 @@
   .tl-card:has(.tl-action) .tl-lhs { width: 100%; }
   .tl-card:has(.tl-action) .tl-amt { margin-left: 0; }
 }
+
+.tl-card-expanded {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  .tl-lhs { flex: 1; }
+  .tl-lhs > div { min-width: 0; overflow-wrap: anywhere; }
+  .tl-meta { flex-wrap: wrap; }
+}
+.tl-details { flex-basis: 100%; min-width: 0; }
+.tl-details:has(> :empty) { display: none; }
+
+@media (max-width: 760px) {
+  .tl-card-expanded .tl-lhs { flex-basis: 100%; }
+  .tl-card-expanded .tl-amt { margin-left: 0; }
+}

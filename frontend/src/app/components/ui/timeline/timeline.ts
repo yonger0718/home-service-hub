@@ -1,4 +1,6 @@
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, input, output, TemplateRef } from '@angular/core';
+
+import { NgTemplateOutlet } from '@angular/common';
 
 import { SideTagComponent, SideTagVariant } from '../side-tag/side-tag';
 
@@ -25,7 +27,7 @@ interface TimelineGroup {
 
 @Component({
   selector: 'app-timeline',
-  imports: [SideTagComponent],
+  imports: [SideTagComponent, NgTemplateOutlet],
   template: `
     <div class="timeline">
       @for (group of groups(); track group.key) {
@@ -40,7 +42,7 @@ interface TimelineGroup {
               <div class="tl-date" aria-hidden="true"></div>
             }
 
-            <article class="tl-card" [attr.data-row-id]="row.id">
+            <article class="tl-card" [class.tl-card-expanded]="rowDetails()" [attr.data-row-id]="row.id">
               <div class="tl-lhs">
                 <app-side-tag [variant]="row.side" [label]="row.sideLabel || ''"></app-side-tag>
                 <div>
@@ -64,6 +66,11 @@ interface TimelineGroup {
                 <button type="button" class="tl-action" [attr.aria-label]="'操作 ' + row.primary"
                   aria-haspopup="menu" (click)="rowAction.emit({ id: row.id, event: $event })">⋯</button>
               }
+              @if (rowDetails(); as details) {
+                <div class="tl-details">
+                  <ng-container [ngTemplateOutlet]="details" [ngTemplateOutletContext]="{ $implicit: row }"></ng-container>
+                </div>
+              }
             </article>
           </div>
         }
@@ -75,6 +82,7 @@ interface TimelineGroup {
 })
 export class TimelineComponent {
   readonly rows = input<TimelineRow[]>([]);
+  readonly rowDetails = input<TemplateRef<{ $implicit: TimelineRow }> | null>(null);
   readonly rowActions = input(false);
   readonly rowAction = output<{ id: string | number; event: MouseEvent }>();
 

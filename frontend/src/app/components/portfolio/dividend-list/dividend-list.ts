@@ -73,15 +73,13 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly rowsPerPageOptions = [25, 50, 100];
 
   readonly dividendTotal = computed(() => this.dividends().filter(d => d.receipt_status === 'confirmed').reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0));
-  readonly averagePerShareDividend = computed(() => {
-    const rows = this.dividends();
-    if (!rows.length) return 0;
-    const perShareRows = rows.filter(row => Number(row.cash_dividend_per_share || 0) > 0 && Number(row.quantity_at_record_date || 0) > 0);
-    return perShareRows.length ? perShareRows.reduce((sum, row) => sum + Number(row.cash_dividend_per_share), 0) / perShareRows.length : 0;
-  });
+  readonly legacyTotal = computed(() => this.dividends()
+    .filter(d => !d.receipt_status || d.receipt_status === 'legacy_unknown')
+    .reduce((sum, d) => sum + Number(d.amount || 0), 0));
+  readonly dividendsById = computed(() => new Map(this.dividends().map(row => [row.id, row])));
   readonly timelineRows = computed<TimelineRow[]>(() =>
     this.dividends().map(dividend => {
-      const name = this.nameFor(dividend.symbol) ?? dividend.symbol;
+      const name = this.nameFor(dividend.symbol);
       const perShare = Number(dividend.cash_dividend_per_share || 0);
       const qty = Number(dividend.quantity_at_record_date || 0);
       return {
@@ -89,7 +87,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
         date: dividend.ex_dividend_date,
         side: 'cash',
         sideLabel: this.receiptLabel(dividend),
-        primary: `${name} ${dividend.symbol}`,
+        primary: name ? `${name} ${dividend.symbol}` : dividend.symbol,
         meta: perShare > 0 && qty > 0
           ? `每股 ${perShare.toFixed(2)} × ${qty.toLocaleString('zh-TW')}`
           : '現金股利',

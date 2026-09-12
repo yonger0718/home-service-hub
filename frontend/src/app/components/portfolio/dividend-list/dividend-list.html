@@ -14,11 +14,11 @@
     <div class="v dividend">{{ formatCurrency(dividendTotal()) }}</div>
   </div>
   <div class="summary-item">
-    <div class="l">本頁平均每股股利</div>
-    <div class="v">{{ averagePerShareDividend() | number:'1.2-2' }}</div>
+    <div class="l">本頁舊資料帳面合計</div>
+    <div class="v">{{ formatCurrency(legacyTotal()) }}</div>
   </div>
   <div class="summary-item">
-    <div class="l">股利紀錄筆數</div>
+    <div class="l">符合篩選紀錄筆數</div>
     <div class="v">{{ total() }} 筆</div>
   </div>
 </div>
@@ -75,21 +75,21 @@
   }
 </div>
 
-<section aria-label="股利收款狀態">
-  @for (row of dividends(); track row.id) {
-    <div class="receipt-row">
-      <strong>{{ row.symbol }} — {{ receiptLabel(row) }}</strong>
-      <div>除息日 {{ row.ex_dividend_date | date:'yyyy-MM-dd' }} · 每股 {{ row.cash_dividend_per_share ?? '未知' }} · 淨額 {{ formatCurrency(row.amount) }}</div>
-      <div>預定發放日 {{ row.payment_date ?? '未知' }} {{ row.payment_date_source ?? '' }} · 實際收款日 {{ row.receipt_date ?? '未確認' }}</div>
-      @if (row.review_reason) { <div>{{ row.review_reason }}</div> }
-      @if (row.source_correction) { <div>來源資料已變更；已確認金額及現金帳不變，需人工釐清。</div> }
+<p class="receipt-note">待收款及待釐清金額不計入可用現金或報酬。舊資料收款未核實，保留原帳務，不能再次入帳；金額合計僅涵蓋本頁。</p>
+
+<ng-template #receiptDetails let-item>
+  @if (dividendsById().get(item.id); as row) {
+    <div class="receipt-details">
+      @if (row.payment_date) { <span>預定發放日 {{ row.payment_date }} {{ row.payment_date_source ?? '' }}</span> }
+      @if (row.receipt_date) { <span>實際收款日 {{ row.receipt_date }}</span> }
+      @if (row.review_reason) { <span>{{ row.review_reason }}</span> }
+      @if (row.source_correction) { <span>來源資料已變更；已確認金額及現金帳不變，需人工釐清。</span> }
       @if (row.receipt_status === 'pending') {
         <app-btn variant="secondary" (click)="openReceipt(row)">確認實際收款</app-btn>
       }
     </div>
   }
-  <p>待收款不計入可用現金或報酬。舊資料收款狀態未核實，保留原帳務，不能再次入帳。</p>
-</section>
+</ng-template>
 
 <p-dialog header="確認實際收款" [visible]="receiptTarget() !== null" (visibleChange)="!$event && receiptTarget.set(null)" [modal]="true">
   <p>僅在核對實際入帳後確認。預定發放日期不是收款證明；確認將更新現金帳，不能直接編輯撤銷。</p>
@@ -101,7 +101,7 @@
   <app-btn [disabled]="receiptBusy() || !receiptDate || !receiptAccountId" (click)="confirmReceipt()">確認已收到並入帳</app-btn>
 </p-dialog>
 
-<app-timeline [rows]="timelineRows()" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
+<app-timeline [rows]="timelineRows()" [rowDetails]="receiptDetails" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
 
 @if (!loading() && timelineRows().length === 0) {
   <div class="empty">
