@@ -1,7 +1,7 @@
 """Post-import recalc chain.
 
 Runs after a successful CSV commit (or on demand via the manual endpoint).
-Sequentially: symbol-name backfill → deferred historical dividends for touched
+Sequentially: symbol-name backfill → pending historical dividend recording for touched
 symbols → networth backfill across the affected date range. Each step is
 isolated so a single TWSE outage cannot block the rest of the chain.
 
@@ -169,6 +169,7 @@ def _step_dividends(
     try:
         with session_factory() as db:
             detail = dividend_reconciliation_service.reconcile(db, touched_symbols, recalc_from, recalc_to)
+            db.commit()
         errors = detail["source_errors"]
         deferred = detail["deferred_events"]
         status = "partial" if errors or deferred else "ok"

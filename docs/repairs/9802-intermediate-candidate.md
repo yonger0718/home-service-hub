@@ -1,5 +1,9 @@
 # Historical dividend reconciliation: intermediate candidate
 
+Historical record: superseded by the approved implementation in
+`9802-receipts.md`. The unmet-A statement below describes the earlier reviewed
+intermediate candidate, not the current full repair candidate.
+
 Acceptance A's recording requirement is **UNMET**. This candidate retrieves and
 reports eligible historical events, but deliberately creates no Dividend,
 Transaction or cash entry at the post-import reconciliation boundary. It is not

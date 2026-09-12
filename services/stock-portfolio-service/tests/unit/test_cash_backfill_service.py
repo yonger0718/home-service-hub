@@ -137,19 +137,18 @@ def test_first_run_replays_transactions_and_dividends_into_cash_rows(db_session)
 
     assert result.transactions_processed == 100
     assert result.dividends_processed == 10
-    assert result.cash_rows_inserted == 260
-    assert result.cash_rows_skipped == 0
+    assert result.cash_rows_inserted == 250
+    assert result.cash_rows_skipped == 10
     assert result.per_account_summary == {
         account.id: {
             "settle": 100,
             "fee": 100,
             "tax": 50,
-            "dividend_cash": 10,
         }
     }
 
     rows = _cash_rows(db_session)
-    assert len(rows) == 260
+    assert len(rows) == 250
     assert {row.account_id for row in rows} == {account.id}
 
 
@@ -159,10 +158,10 @@ def test_replay_is_idempotent_by_backfill_fingerprint(db_session) -> None:
 
     second = cash_backfill_service.replay_all(db_session)
 
-    assert first.cash_rows_inserted == 260
+    assert first.cash_rows_inserted == 250
     assert second.cash_rows_inserted == 0
     assert second.cash_rows_skipped == 260
-    assert len(_cash_rows(db_session)) == 260
+    assert len(_cash_rows(db_session)) == 250
 
 
 def test_dry_run_counts_expected_rows_without_writing(db_session) -> None:
@@ -173,8 +172,8 @@ def test_dry_run_counts_expected_rows_without_writing(db_session) -> None:
     assert result.dry_run is True
     assert result.transactions_processed == 100
     assert result.dividends_processed == 10
-    assert result.cash_rows_inserted == 260
-    assert result.cash_rows_skipped == 0
+    assert result.cash_rows_inserted == 250
+    assert result.cash_rows_skipped == 10
     assert result.per_account_summary[account.id]["settle"] == 100
     assert _cash_rows(db_session) == []
 

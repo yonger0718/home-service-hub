@@ -1,9 +1,9 @@
-"""Read-only historical reconciliation. Never posts financial entries.
+"""Historical reconciliation records pending entitlements, never cash receipts.
 
 Use the existing historical parsers, but validate source envelopes and keep
 errors. Payloads are shared only within this invocation, not process-cached:
 transient outages (and current-year absence) must be retried on the next run.
-Legacy historical/manual recording and cash synchronization remain unchanged.
+All new TW dividend entry paths require explicit receipt confirmation before posting.
 """
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ from sqlalchemy.orm import Session
 
 from ..models.portfolio import PositionSide, Transaction, TransactionType
 from ..models.symbol_map import SymbolMap
-from . import dividend_history_service as history
+from . import dividend_history_service as history, dividend_receipt_service as receipts
 
-DEFERRED_REASON = 'retrieved; recording deferred—payment accounting unsupported'
+DEFERRED_REASON = 'entitlement recorded; explicit receipt confirmation required'
 _TW = timezone(timedelta(hours=8))
 
 
@@ -60,7 +60,7 @@ def _eligible_qty(trades: list[Transaction], ex_date: date, mapped_types: list[s
 
 def reconcile(db: Session, symbols: set[str], start: date, end: date) -> dict:
     detail = {'events_processed': 0, 'cash_inserted': 0, 'stock_inserted': 0,
-              'deferred_events': [], 'source_errors': [], 'event_errors': [], 'sources_succeeded': 0}
+              'deferred_events': [], 'source_errors': [], 'event_errors': [], 'sources_succeeded': 0, 'entitlements': [], 'pending_count': 0}
     if start > end:
         raise ValueError('reconciliation start is after end')
     payloads = {}
@@ -137,17 +137,28 @@ def reconcile(db: Session, symbols: set[str], start: date, end: date) -> dict:
                             continue
                         qty = _eligible_qty(trades, event.ex_date, [m.type for m in maps])
                         if qty <= 0:
+                            if receipts.invalidate_entitlement(db, symbol, event.ex_date):
+                                error(source, symbol, year, 'position correction requires explicit resolution')
                             continue
                         seen.add(identity)
                         payment = payments.get(event.ex_date)
+                        with db.begin_nested():
+                            record, reason = receipts.persist_entitlement(db, event, qty, payment)
+                        detail['entitlements'].append({'id': record.id if record else None, 'symbol': symbol, 'status': record.receipt_status if record else 'unresolved', 'reason': reason})
+                        if record and record.receipt_status == 'pending':
+                            detail['pending_count'] += 1
+                        if reason:
+                            error(source, symbol, year, reason)
+                        if record and record.receipt_status == 'confirmed' and not reason:
+                            continue
                         detail['deferred_events'].append({
                             'symbol': symbol, 'ex_date': event.ex_date.isoformat(),
                             'cash_dividend_per_share': str(event.cash_dividend_per_share) if event.cash_dividend_per_share is not None else None,
                             'stock_dividend_per_thousand': str(event.stock_dividend_per_thousand) if event.stock_dividend_per_thousand is not None else None,
                             'eligible_quantity': str(qty), 'payment_date': payment.isoformat() if payment else None,
-                            'source': source, 'status': 'deferred', 'reason': DEFERRED_REASON,
+                            'id': record.id if record else None, 'source': source, 'status': record.receipt_status if record else 'unresolved', 'reason': reason or DEFERRED_REASON,
                         })
                 except Exception as exc:
                     error(source, symbol, year, exc)
-    detail['events_processed'] = len(detail['deferred_events'])
+    detail['events_processed'] = len(detail['entitlements'])
     return detail

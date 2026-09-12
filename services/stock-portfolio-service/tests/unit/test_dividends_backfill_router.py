@@ -46,7 +46,8 @@ def test_backfill_aggregates_counts_and_inserts(client, db_session):
     body = resp.json()
     assert body["symbols_scanned"] == 1
     assert body["events_seen"] == 1
-    assert body["cash_inserted"] == 1
+    assert body["cash_inserted"] == 0
+    assert body["pending_recorded"] == 1
     assert body["stock_inserted"] == 0
 
 
@@ -101,7 +102,8 @@ def test_backfill_scans_fully_sold_symbols(client, db_session):
         resp = client.post("/api/portfolio/dividends/backfill")
     body = resp.json()
     assert body["symbols_scanned"] == 1
-    assert body["cash_inserted"] == 1
+    assert body["cash_inserted"] == 0
+    assert body["pending_recorded"] == 1
 
 
 def test_backfill_per_symbol_exception_isolated(client, db_session):
@@ -126,4 +128,5 @@ def test_backfill_per_symbol_exception_isolated(client, db_session):
     with patch("app.routers.dividends_backfill.dividend_history_service.fetch_for_symbol_all_years", side_effect=_flaky):
         resp = client.post("/api/portfolio/dividends/backfill")
     assert resp.status_code == 200
-    assert resp.json()["cash_inserted"] == 1
+    assert resp.json()["cash_inserted"] == 0
+    assert resp.json()["pending_recorded"] == 1

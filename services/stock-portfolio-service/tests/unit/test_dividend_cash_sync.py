@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
+from app.services.dividend_receipt_service import confirm_receipt, ReceiptConflict
 
 from app.models.broker_account import BrokerAccount, BrokerEnum
 from app.models.cash_transaction import CashTransaction, CashTxnSource, CashTxnType
@@ -74,19 +76,23 @@ def _add_holding(db_session, *, symbol: str = "2330") -> None:
     db_session.commit()
 
 
-def test_portfolio_create_dividend_emits_auto_derive_cash_leg(db_session, monkeypatch) -> None:
+def test_portfolio_create_dividend_requires_confirmation_for_cash_leg(db_session, monkeypatch) -> None:
     monkeypatch.setenv("CASH_LEG_ENABLED", "true")
     account = _add_cathay_account(db_session)
 
     dividend = portfolio_service.create_dividend(db_session, _dividend_payload())
 
+    assert _dividend_cash_rows(db_session) == []
+    assert dividend.receipt_status == 'pending'
+    account = db_session.query(BrokerAccount).one()
+    confirm_receipt(db_session, dividend.id, date(2026, 6, 20), account.id, dividend.revision)
     rows = _dividend_cash_rows(db_session)
     assert len(rows) == 1
     row = rows[0]
     assert row.account_id == account.id
     assert row.related_dividend_id == dividend.id
     assert row.related_transaction_id is None
-    assert row.txn_date == date(2026, 6, 1)
+    assert row.txn_date == date(2026, 6, 20)
     assert row.amount == Decimal("4500.0000")
     assert row.currency == "TWD"
     assert row.source == CashTxnSource.AUTO_DERIVE
@@ -112,31 +118,17 @@ def test_portfolio_create_foreign_dividend_skips_twd_cash_sync(
     assert _dividend_cash_rows(db_session) == []
 
 
-def test_update_dividend_to_foreign_currency_deletes_stale_twd_cash_leg(
-    db_session,
-    monkeypatch,
-) -> None:
+def test_pending_entitlement_cannot_change_market_identity(db_session, monkeypatch):
     monkeypatch.setenv("CASH_LEG_ENABLED", "true")
     _add_cathay_account(db_session)
     dividend = portfolio_service.create_dividend(db_session, _dividend_payload())
-    assert [row.related_dividend_id for row in _dividend_cash_rows(db_session)] == [dividend.id]
-
-    portfolio_service.update_dividend(
-        db_session,
-        dividend.id,
-        _dividend_payload(
-            symbol="AAPL",
-            market="US",
-            amount="10.00",
-            currency="USD",
-            fx_rate_to_twd="32",
-        ),
-    )
-
+    with pytest.raises(ReceiptConflict):
+        portfolio_service.update_dividend(db_session, dividend.id,
+            _dividend_payload(symbol="AAPL", market="US", amount="10", currency="USD", fx_rate_to_twd="32"))
     assert _dividend_cash_rows(db_session) == []
 
 
-def test_generic_csv_dividend_import_emits_auto_derive_cash_leg(db_session, monkeypatch) -> None:
+def test_generic_csv_dividend_import_requires_confirmation_for_cash_leg(db_session, monkeypatch) -> None:
     monkeypatch.setenv("CASH_LEG_ENABLED", "true")
     _add_cathay_account(db_session)
     raw = (
@@ -149,6 +141,10 @@ def test_generic_csv_dividend_import_emits_auto_derive_cash_leg(db_session, monk
 
     assert result.created == 1
     dividend = db_session.query(Dividend).one()
+    assert _dividend_cash_rows(db_session) == []
+    assert dividend.receipt_status == 'pending'
+    account = db_session.query(BrokerAccount).one()
+    confirm_receipt(db_session, dividend.id, date(2026, 6, 20), account.id, dividend.revision)
     rows = _dividend_cash_rows(db_session)
     assert len(rows) == 1
     assert rows[0].related_dividend_id == dividend.id
@@ -156,7 +152,7 @@ def test_generic_csv_dividend_import_emits_auto_derive_cash_leg(db_session, monk
     assert rows[0].source == CashTxnSource.AUTO_DERIVE
 
 
-def test_auto_record_dividend_emits_auto_derive_cash_leg(db_session, monkeypatch) -> None:
+def test_auto_record_dividend_requires_confirmation_for_cash_leg(db_session, monkeypatch) -> None:
     monkeypatch.setenv("CASH_LEG_ENABLED", "true")
     _add_cathay_account(db_session)
     _add_holding(db_session, symbol="2330")
@@ -172,8 +168,13 @@ def test_auto_record_dividend_emits_auto_derive_cash_leg(db_session, monkeypatch
 
     result = dividend_auto_record_service.auto_record_for_event(db_session, event)
 
-    assert result.cash_inserted is True
+    assert result.pending_recorded is True
+    assert result.cash_inserted is False
     dividend = db_session.query(Dividend).one()
+    assert _dividend_cash_rows(db_session) == []
+    assert dividend.receipt_status == 'pending'
+    account = db_session.query(BrokerAccount).one()
+    confirm_receipt(db_session, dividend.id, date(2026, 6, 20), account.id, dividend.revision)
     rows = _dividend_cash_rows(db_session)
     assert len(rows) == 1
     assert rows[0].related_dividend_id == dividend.id

@@ -44,7 +44,7 @@ def sources():
     orch.reset_state_for_tests()
 
 
-def test_real_fixture_deferred_no_writes_repeat(db_session):
+def test_real_fixture_pending_no_cash_repeat(db_session):
     trade(db_session)
     with patch('app.services.dividend_auto_record_service.auto_record_for_event', side_effect=AssertionError('legacy recorder forbidden')):
         first, second = step(db_session), step(db_session)
@@ -54,8 +54,9 @@ def test_real_fixture_deferred_no_writes_repeat(db_session):
     assert row['symbol'] == '9802' and row['ex_date'] == '2026-09-10'
     assert row['cash_dividend_per_share'] == '3.100000'
     assert row['payment_date'] is None
-    assert row['reason'] == 'retrieved; recording deferred—payment accounting unsupported'
-    assert not db_session.scalars(select(Dividend)).all()
+    assert row['reason'] == 'entitlement recorded; explicit receipt confirmation required'
+    assert len(db_session.scalars(select(Dividend)).all()) == 1
+    assert db_session.query(Dividend).one().receipt_status == 'pending'
     assert not db_session.scalars(select(CashTransaction)).all()
     assert len(db_session.scalars(select(Transaction)).all()) == 1
 
@@ -165,7 +166,8 @@ def test_explicit_source_payment_date_does_not_enable_recording(db_session, sour
     result = step(db_session)
     assert result.status == 'partial'
     assert result.detail['deferred_events'][0]['payment_date'] == '2026-10-15'
-    assert not db_session.scalars(select(Dividend)).all()
+    assert len(db_session.scalars(select(Dividend)).all()) == 1
+    assert db_session.query(Dividend).one().receipt_status == 'pending'
     assert not db_session.scalars(select(CashTransaction)).all()
 
 

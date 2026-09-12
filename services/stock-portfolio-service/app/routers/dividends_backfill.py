@@ -25,6 +25,7 @@ class BackfillResult(BaseModel):
     cash_inserted: int
     stock_inserted: int
     skipped_no_holding: int
+    pending_recorded: int = 0
 
 
 def _symbols_with_first_trade(db: Session) -> list[tuple[str, dt_date, Optional[str]]]:
@@ -71,6 +72,7 @@ def backfill_dividends(db: Session = Depends(get_db)) -> BackfillResult:
     cash_inserted = 0
     stock_inserted = 0
     skipped_no_holding = 0
+    pending_recorded = 0
 
     for symbol, first, name in symbols:
         symbols_scanned += 1
@@ -93,6 +95,7 @@ def backfill_dividends(db: Session = Depends(get_db)) -> BackfillResult:
                     extra={"symbol": symbol, "ex_date": event.ex_date.isoformat(), "error": str(exc)},
                 )
                 continue
+            pending_recorded += int(result.pending_recorded)
             if result.cash_inserted:
                 cash_inserted += 1
             if result.stock_inserted:
@@ -115,4 +118,5 @@ def backfill_dividends(db: Session = Depends(get_db)) -> BackfillResult:
         cash_inserted=cash_inserted,
         stock_inserted=stock_inserted,
         skipped_no_holding=skipped_no_holding,
+        pending_recorded=pending_recorded,
     )

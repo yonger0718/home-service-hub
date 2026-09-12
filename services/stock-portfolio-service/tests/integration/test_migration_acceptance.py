@@ -143,7 +143,7 @@ def test_real_http_background_chain_and_quotes_repeat(client,db_session,monkeypa
   assert [s['status'] for s in status['steps']]==['ok','partial','ok']
   assert status['steps'][1]['detail']['deferred_events'][0]['cash_dividend_per_share']=='2'
   db_session.expire_all()
-  assert db_session.query(models.Dividend).filter_by(symbol='2330').count()==0
+  assert db_session.query(models.Dividend).filter_by(symbol='2330').count()==1
   assert db_session.query(PortfolioSnapshot).count()==4
   assert db_session.query(PriceHistory).count()==8
  r=client.post(BASE+'/imports/refresh-quotes');assert r.status_code==202,r.text
@@ -158,5 +158,6 @@ def test_real_http_background_chain_and_quotes_repeat(client,db_session,monkeypa
  assert client.post(BASE+'/imports/recalc',json={'start_date':'2026-09-01','end_date':'2026-09-04'}).status_code==200
  status=client.get(BASE+'/imports/recalc/status').json()
  assert status['state']=='partial' and status['steps'][1]['status']=='failed',status
- assert db_session.query(models.Dividend).count()==0
+ assert db_session.query(models.Dividend).count()==1
+ assert db_session.query(models.Dividend).one().receipt_status=='pending'
  assert db_session.query(CashTransaction).filter_by(type='dividend_cash').count()==0

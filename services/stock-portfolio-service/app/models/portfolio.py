@@ -1,5 +1,7 @@
 from sqlalchemy import (
     Boolean,
+    JSON,
+    ForeignKey,
     CheckConstraint,
     Column,
     Date,
@@ -100,11 +102,24 @@ class Dividend(Base, TimestampMixin):
     __tablename__ = "dividends"
     __table_args__ = (
         CheckConstraint("length(trim(symbol)) > 0", name="ck_dividends_symbol_not_blank"),
-        CheckConstraint("amount > 0", name="ck_dividends_amount_positive"),
+        CheckConstraint("amount > 0 OR (amount = 0 AND stock_dividend_shares > 0)", name="ck_dividends_amount_positive"),
         CheckConstraint("coalesce(fee, 0) >= 0", name="ck_dividends_fee_nonnegative"),
         CheckConstraint("coalesce(tax, 0) >= 0", name="ck_dividends_tax_nonnegative"),
         UniqueConstraint("import_fingerprint", name="uq_dividends_import_fingerprint"),
+        CheckConstraint("receipt_status IN ('legacy_unknown', 'pending', 'confirmed', 'unresolved')", name="ck_dividends_receipt_status"),
+        CheckConstraint("receipt_status <> 'confirmed' OR (receipt_date IS NOT NULL AND receipt_account_id IS NOT NULL AND receipt_confirmed_at IS NOT NULL)", name="ck_dividends_confirmed_receipt"),
     )
+
+    receipt_status = Column(String(24), nullable=False, default="legacy_unknown", server_default="legacy_unknown")
+    entitlement_key = Column(String(64), nullable=True, unique=True)
+    payment_date = Column(Date, nullable=True)
+    payment_date_source = Column(String(32), nullable=True)
+    receipt_date = Column(Date, nullable=True)
+    receipt_account_id = Column(Integer, ForeignKey('broker_account.id', ondelete='RESTRICT'), nullable=True)
+    receipt_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    revision = Column(Integer, nullable=False, default=1, server_default="1")
+    source_correction = Column(JSON, nullable=True)
+    review_reason = Column(String(250), nullable=True)
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String, index=True, nullable=False)

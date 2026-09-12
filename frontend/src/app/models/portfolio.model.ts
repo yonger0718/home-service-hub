@@ -157,7 +157,7 @@ export interface DeferredDividendEvent {
   eligible_quantity: string;
   payment_date: string | null;
   source: string;
-  status: 'deferred';
+  status: 'deferred' | 'pending' | 'unresolved' | 'confirmed';
   reason: string;
 }
 
@@ -192,6 +192,14 @@ export interface RecalcTriggerResponse {
 }
 
 export interface Dividend {
+  receipt_status?: 'pending' | 'confirmed' | 'legacy_unknown' | 'unresolved';
+  payment_date?: string | null;
+  payment_date_source?: string | null;
+  receipt_date?: string | null;
+  receipt_account_id?: number | null;
+  revision?: number;
+  source_correction?: Record<string, unknown> | null;
+  review_reason?: string | null;
   id: number;
   symbol: string;
   amount: number;
