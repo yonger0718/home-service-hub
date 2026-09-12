@@ -69,7 +69,10 @@ The older automatic backfill endpoint now reports `pending_recorded`; its
 
 ## Migration and rollback notes — operator review only
 
-Migration `a5receipt` follows `z3o4p5q6r7s8`. It adds receipt fields, revision,
+Migration `a5receipt` follows the existing deployed head `a4p5q6r7s8t9`.
+The earlier `0c724c19` candidate incorrectly branched from `z3o4p5q6r7s8`,
+creating two heads; it must not be used for rollout. This correction restores
+the linear `z3o4p5q6r7s8` → `a4p5q6r7s8t9` → `a5receipt` chain. It adds receipt fields, revision,
 source correction, unique entitlement identity, account FK and receipt-state
 checks. It permits amount zero only for a positive stock entitlement. No
 production migration, replay, backfill or service restart was executed.
@@ -80,8 +83,24 @@ run older code against new pending records: older code does not understand the
 receipt boundary. The new code requires the migration's columns before startup.
 Migration preparation here is not deployment authorization.
 
-The synthetic SQLite upgrade test preserves an existing dividend/cash leg and
-verifies unknown receipt state. Downgrade is allowed only before any new
+The regression uses the repository’s actual Alembic graph and `env.py`, with
+a synthetic SQLite deployed-a4 fixture (including its predecessor version row).
+Ordinary `upgrade head` fails on the earlier candidate. After this correction,
+it still fails locally because the pre-existing duplicate revision also appears
+as a head. Release readiness remains blocked pending separate graph resolution.
+The bounded transition is tested with the explicit `a5receipt` target through
+the real environment; this isolates evidence, not an operator workaround. Upgrade, guarded downgrade, permitted `downgrade a4p5q6r7s8t9`,
+and repeated upgrade preserve original dividends, linked/unlinked cash, broker
+accounts, `transactions.broker` and `broker_cash_flows`. No `stamp` or
+`upgrade heads` workaround is used. This is a predecessor-to-head test, not a
+full historical base-to-head migration or PostgreSQL execution.
+
+The pre-existing duplicate revision warning for `m0b1c2d3e4f5` remains
+separate and unchanged; it is not the new a4/receipt fork. In this checkout it
+also leaves `m0b1c2d3e4f5` in the head set, so the single-head regression reports
+an explicit expected failure. Historical revision repair needs separate lead
+triage; no production workaround is recommended. A permitted rollback
+stops at `a4p5q6r7s8t9`, retaining the broker/cash-flow additions. Downgrade is allowed only before any new
 entitlement/receipt exists; otherwise it raises before dropping fields. Reverting
 code/schema after recording new rows needs a separately reviewed export and
 resolution plan, never deletion of pending records or inference of payment.
