@@ -1,7 +1,7 @@
 """add full OHLC integrity constraints to price_history
 
-Revision ID: m0b1c2d3e4f5
-Revises: l9a0b1c2d3e4
+Revision ID: m0b1c2d3e4f6
+Revises: m0b1c2d3e4f5
 Create Date: 2026-05-27 10:00:00.000000
 
 Mirrors the model-level CheckConstraints added to PriceHistory so DB and
@@ -13,8 +13,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "m0b1c2d3e4f5"
-down_revision: Union[str, Sequence[str], None] = "l9a0b1c2d3e4"
+revision: str = "m0b1c2d3e4f6"
+down_revision: Union[str, Sequence[str], None] = "m0b1c2d3e4f5"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

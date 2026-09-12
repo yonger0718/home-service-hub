@@ -85,22 +85,37 @@ Migration preparation here is not deployment authorization.
 
 The regression uses the repository’s actual Alembic graph and `env.py`, with
 a synthetic SQLite deployed-a4 fixture (including its predecessor version row).
-Ordinary `upgrade head` fails on the earlier candidate. After this correction,
-it still fails locally because the pre-existing duplicate revision also appears
-as a head. Release readiness remains blocked pending separate graph resolution.
-The bounded transition is tested with the explicit `a5receipt` target through
-the real environment; this isolates evidence, not an operator workaround. Upgrade, guarded downgrade, permitted `downgrade a4p5q6r7s8t9`,
-and repeated upgrade preserve original dividends, linked/unlinked cash, broker
-accounts, `transactions.broker` and `broker_cash_flows`. No `stamp` or
-`upgrade heads` workaround is used. This is a predecessor-to-head test, not a
-full historical base-to-head migration or PostgreSQL execution.
+Ordinary `upgrade head` now executes the receipt migration from synthetic a4
+through the real environment. Upgrade, guarded downgrade, permitted
+`downgrade a4p5q6r7s8t9`, and repeated upgrade preserve original dividends,
+linked/unlinked cash, accounts, `transactions.broker` and `broker_cash_flows`.
+No stamping or multi-head workaround is used. This is executed SQLite DDL for
+the a4-to-receipt transition, not PostgreSQL execution.
 
-The pre-existing duplicate revision warning for `m0b1c2d3e4f5` remains
-separate and unchanged; it is not the new a4/receipt fork. In this checkout it
-also leaves `m0b1c2d3e4f5` in the head set, so the single-head regression reports
-an explicit expected failure. Historical revision repair needs separate lead
-triage; no production workaround is recommended. A permitted rollback
-stops at `a4p5q6r7s8t9`, retaining the broker/cash-flow additions. Downgrade is allowed only before any new
+The separate historical graph correction preserves realized-PnL revision
+`m0b1c2d3e4f5`, assigns OHLC constraints `m0b1c2d3e4f6` (the historical filename
+is retained), and repoints `n1c2d3e4f5g6` to that unique OHLC revision. The chain
+is `l9` → realized PnL → OHLC → position side. DDL dependencies were inspected:
+`g4` already creates price_history/open/high/low, `h5` creates portfolio_snapshot,
+and the position-side migration only needs the existing transactions table.
+No historical upgrade/downgrade body changes or schema inference are introduced.
+
+The single-head regression is required, with no expected failure. A fresh empty
+SQLite database also traverses every revision exactly once through real env.py
+and ordinary upgrade head, including both historical migrations in that order.
+That fresh traversal instruments migration bodies and executes only Alembic
+version-table DDL: it is graph-only coverage, NOT a fresh PostgreSQL schema test.
+Historical PostgreSQL DDL still requires isolated operator verification.
+
+Existing databases at a4 do not replay historical revisions. This graph repair
+therefore does not assert that missing historical columns/constraints are present
+or repair them. In particular, a database stopped at old ambiguous `m0b1c2d3e4f5`
+cannot be assumed compatible: that marker may represent either original body.
+Inspect actual schema and migration provenance under a separate reviewed plan
+before migration; do not stamp, infer, or automatically repair missing historical
+schema. A permitted receipt rollback stops at a4, retaining broker additions.
+
+Downgrade is allowed only before any new
 entitlement/receipt exists; otherwise it raises before dropping fields. Reverting
 code/schema after recording new rows needs a separately reviewed export and
 resolution plan, never deletion of pending records or inference of payment.
