@@ -165,3 +165,17 @@
 
 .filter-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
 .filter-controls select { background: var(--app-surface); color: var(--app-text); border: 1px solid var(--app-border); border-radius: 8px; padding: 0.5rem; max-width: 100%; }
+
+.receipt-note, .receipt-details {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+.receipt-details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 1rem;
+  overflow-wrap: anywhere;
+}
+.receipt-details:empty { display: none; }
