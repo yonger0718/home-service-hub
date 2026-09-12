@@ -1511,10 +1511,11 @@ def delete_transaction(db: Session, transaction_id: int):
     )
     calendar = _trade_calendar_date(db_transaction.trade_date)
 
-    db.delete(db_transaction)
-    db.flush()
+    # Delete linked cash before PostgreSQL ON DELETE SET NULL clears the link.
     if cash_account_service.cash_leg_enabled():
         cash_account_service.delete_transaction_cash_legs(db, transaction_id)
+    db.delete(db_transaction)
+    db.flush()
     _recompute_day_trade_flags(db, symbol, calendar)
     db.commit()
     return True

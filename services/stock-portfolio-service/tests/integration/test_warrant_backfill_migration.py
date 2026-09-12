@@ -35,8 +35,8 @@ def _load_migration_module():
     return module
 
 
-@pytest.fixture(scope="module")
-def pg_engine():
+@pytest.fixture()
+def pg_engine(db_session):
     try:
         from app.database import SQLALCHEMY_DATABASE_URL
     except Exception as exc:  # pragma: no cover — defensive only

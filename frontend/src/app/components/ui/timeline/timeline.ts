@@ -1,10 +1,11 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
 
 import { SideTagComponent, SideTagVariant } from '../side-tag/side-tag';
 
 export type TimelineAmountVariant = 'neutral' | 'positive' | 'negative' | 'buy' | 'sell' | 'dividend' | 'income' | 'expense';
 
 export interface TimelineRow {
+  id?: string | number;
   date: string | Date;
   side: SideTagVariant;
   sideLabel?: string;
@@ -28,7 +29,7 @@ interface TimelineGroup {
   template: `
     <div class="timeline">
       @for (group of groups(); track group.key) {
-        @for (row of group.rows; track row.primary + row.amount + $index) {
+        @for (row of group.rows; track row.id ?? (row.primary + row.amount + $index)) {
           <div class="tl-item">
             @if ($first) {
               <div class="tl-date">
@@ -39,7 +40,7 @@ interface TimelineGroup {
               <div class="tl-date" aria-hidden="true"></div>
             }
 
-            <article class="tl-card">
+            <article class="tl-card" [attr.data-row-id]="row.id">
               <div class="tl-lhs">
                 <app-side-tag [variant]="row.side" [label]="row.sideLabel || ''"></app-side-tag>
                 <div>
@@ -59,6 +60,10 @@ interface TimelineGroup {
               @if (row.amount) {
                 <div class="tl-amt {{ amountClass(row) }}">{{ row.amount }}</div>
               }
+              @if (rowActions() && row.id !== undefined) {
+                <button type="button" class="tl-action" [attr.aria-label]="'操作 ' + row.primary"
+                  aria-haspopup="menu" (click)="rowAction.emit({ id: row.id, event: $event })">⋯</button>
+              }
             </article>
           </div>
         }
@@ -70,6 +75,8 @@ interface TimelineGroup {
 })
 export class TimelineComponent {
   readonly rows = input<TimelineRow[]>([]);
+  readonly rowActions = input(false);
+  readonly rowAction = output<{ id: string | number; event: MouseEvent }>();
 
   protected readonly groups = computed<TimelineGroup[]>(() => {
     const groups = new Map<string, TimelineGroup>();

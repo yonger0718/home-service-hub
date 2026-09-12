@@ -28,3 +28,24 @@ describe('TimelineComponent', () => {
     expect(rows[0].querySelector('.tl-amt')?.classList.contains('buy')).toBe(true);
   });
 });
+
+
+describe('Timeline row actions', () => {
+  it('keeps stable identities after reordering duplicate-looking rows and hides actions without IDs', () => {
+    const fixture = TestBed.createComponent(TimelineComponent);
+    const row: TimelineRow = { date: '2026-05-01', side: 'buy', primary: 'duplicate', amount: '100' };
+    fixture.componentRef.setInput('rows', [{ ...row, id: 1 }, { ...row, id: 2 }, row]);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelectorAll('button').length).toBe(0);
+    fixture.componentRef.setInput('rowActions', true);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelectorAll('button').length).toBe(2);
+    const ids: (string | number)[] = [];
+    fixture.componentInstance.rowAction.subscribe(action => ids.push(action.id));
+    fixture.nativeElement.querySelector('[data-row-id="2"] button').click();
+    fixture.componentRef.setInput('rows', [{ ...row, id: 2 }, { ...row, id: 1 }]);
+    fixture.detectChanges();
+    fixture.nativeElement.querySelector('button').click();
+    expect(ids).toEqual([2, 2]);
+  });
+});

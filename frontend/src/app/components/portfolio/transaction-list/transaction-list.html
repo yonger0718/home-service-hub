@@ -38,6 +38,18 @@
   </div>
 }
 
+
+  <div class="filter-controls">
+    <p-datepicker ariaLabel="日期範圍" [(ngModel)]="dateRange" selectionMode="range"
+      [readonlyInput]="true" [showClear]="true" placeholder="日期範圍" appendTo="body"
+      dateFormat="yy-mm-dd" (ngModelChange)="onDateRangeChange($event)"></p-datepicker>
+    <select aria-label="排序" [ngModel]="query().sort" (ngModelChange)="onSortChange($event)">
+      @for (option of sortOptions; track option.value) {
+        <option [value]="option.value">{{ option.label }}</option>
+      }
+    </select>
+  </div>
+
 <div class="result-meta">
   <span>{{ total() }} 筆</span>
   @if (loading()) {
@@ -45,7 +57,7 @@
   }
 </div>
 
-<app-timeline [rows]="timelineRows()"></app-timeline>
+<app-timeline [rows]="timelineRows()" [rowActions]="true" (rowAction)="onRowAction($event)"></app-timeline>
 
 @if (!loading() && timelineRows().length === 0) {
   <div class="empty">
