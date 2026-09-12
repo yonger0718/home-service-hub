@@ -302,4 +302,58 @@ describe('PortfolioDashboardComponent', () => {
 
     expect(chart.chart.update).toHaveBeenCalledWith('none');
   });
+  it('renders estimated main/holding amounts and breakdown from the summary response', () => {
+    const holding = { ...buildHolding(), pending_dividends_net: 3090,
+      estimated_pnl_with_dividends: 4690, estimated_pnl_percent: 93.8 };
+    portfolioService.getSummary.mockReturnValue(of(buildSummary({
+      holdings: [holding], estimated_pnl_with_dividends: 4690,
+      estimated_pnl_percent: 93.8, total_pending_dividends_net: 3090,
+    })));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.estimated-total')?.textContent).toContain('4,690');
+    expect(root.querySelector('.stock-stats')?.textContent).toContain('4,690');
+    expect(root.querySelector('.stock-stats')?.textContent).toContain('93.80%');
+    (root.querySelector('.stock-row') as HTMLElement).click();
+    fixture.detectChanges();
+    expect(root.querySelector('.detail-panel')?.textContent).toContain('待收股利');
+    expect(root.querySelector('.detail-panel')?.textContent).toContain('3,090');
+    expect(root.textContent).toContain('已記錄股利');
+    expect(root.textContent).not.toContain('已入帳現金');
+  });
+
+  it('keeps closed TW receivables in TW filter and out of same-symbol US totals', () => {
+    const us = { ...buildHolding(), market: 'US' as const, native_currency: 'USD',
+      estimated_pnl_with_dividends_native: 25, estimated_pnl_percent_native: 5 };
+    portfolioService.getSummary.mockReturnValue(of(buildSummary({ holdings: [us], market_totals: {
+      TW: {currency: 'TWD', cost: 0, market_value: 0, unrealized_pnl: 0, recorded_dividends: 100,
+        pending_dividends_net: 3090, estimated_pnl_with_dividends: 3190, estimated_pnl_percent: null},
+      US: {currency: 'USD', cost: 500, market_value: 520, unrealized_pnl: 20, recorded_dividends: 5,
+        pending_dividends_net: 0, estimated_pnl_with_dividends: 25, estimated_pnl_percent: 5},
+    }})));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+    for (const [market, amount] of [['TW', '3,190'], ['US', '25.00 USD']]) {
+      const button = Array.from(root.querySelectorAll<HTMLButtonElement>('.market-tabs button'))
+        .find(b => b.textContent?.trim() === market)!;
+      button.click(); fixture.detectChanges();
+      expect(root.querySelector('.estimated-total')?.textContent).toContain(amount);
+      expect(root.querySelectorAll('.stock-row')).toHaveLength(market === 'TW' ? 0 : 1);
+    }
+    expect(root.querySelector('.estimated-breakdown')?.textContent).not.toContain('3,090');
+  });
+
+  it('shows unavailable estimated valuation/ratio instead of zero or pending-only profit', () => {
+    portfolioService.getSummary.mockReturnValue(of(buildSummary({
+      estimated_pnl_with_dividends: null, estimated_pnl_percent: null,
+      total_pending_dividends_net: 3090,
+      holdings: [{...buildHolding(), estimated_pnl_with_dividends: null, estimated_pnl_percent: null}],
+    })));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.estimated-total')?.textContent?.trim()).toBe('—');
+    expect(root.querySelector('.stock-stats')?.textContent).not.toContain('30.00%');
+    expect(root.querySelector('.estimated-breakdown')?.textContent).toContain('3,090');
+  });
+
 });

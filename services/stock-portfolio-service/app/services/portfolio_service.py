@@ -10,7 +10,7 @@ import logging
 import math
 import os
 from dateutil.relativedelta import relativedelta
-from ..models.cash_transaction import CashTxnSource
+from ..models.cash_transaction import CashTxnSource, CashTransaction
 from ..models import portfolio as models
 from ..models.corporate_action import CorporateAction
 from ..models.portfolio_snapshot import PortfolioSnapshot
@@ -831,6 +831,59 @@ def _sync_dividend_cash_leg_if_twd(
     )
 
 
+def _pending_dividend_totals(db, dividends, transactions):
+    """Read-only TW cash entitlement projection; manual/CSV remains a declaration.
+
+    Group every status by Taiwan event day before selecting pending rows, so a
+    legacy/confirmed/conflicting peer cannot be added again as an estimate.
+    Automatic eligibility uses the same pre-ex-date rule as confirmation, not
+    today's position. A legitimate later sale therefore leaves the right intact.
+    """
+    from .dividend_receipt_service import TW, ex_day
+    from .dividend_reconciliation_service import _eligible_qty
+    from ..models.symbol_map import SymbolMap
+
+    events = {}
+    for row in dividends:
+        if row.market == 'TW':
+            events.setdefault((row.symbol, ex_day(row.ex_dividend_date)), []).append(row)
+    trades_by_symbol = {}
+    for tx in transactions:
+        if tx.market == 'TW':
+            trades_by_symbol.setdefault(tx.symbol, []).append(tx)
+    automatic_symbols = {row.symbol for row in dividends
+                         if row.market == 'TW' and row.receipt_status == 'pending'
+                         and (row.source or '').startswith('auto:')}
+    types_by_symbol = {}
+    if automatic_symbols:
+        for mapping in db.query(SymbolMap).filter(SymbolMap.market == 'TW', SymbolMap.symbol.in_(automatic_symbols)).all():
+            types_by_symbol.setdefault(mapping.symbol, []).append(mapping.type)
+    pending_ids = [row.id for row in dividends if row.market == 'TW' and row.receipt_status == 'pending']
+    linked_cash = {leg.related_dividend_id for leg in db.query(CashTransaction).filter(
+        CashTransaction.related_dividend_id.in_(pending_ids)).all()} if pending_ids else set()
+    totals = {}
+    today_tw = datetime.now(TW).date()
+    for (symbol, ex_date), peers in events.items():
+        if len(peers) != 1 or ex_date > today_tw:
+            continue
+        row = peers[0]
+        if (row.receipt_status != 'pending' or row.currency != 'TWD'
+                or row.amount <= 0 or row.review_reason or row.source_correction is not None
+                or row.id in linked_cash):
+            continue
+        if (row.source or '').startswith('auto:'):
+            qty = _eligible_qty(trades_by_symbol.get(symbol, []), ex_date, types_by_symbol.get(symbol, []))
+            if qty <= 0 or qty != row.quantity_at_record_date:
+                continue
+        key = (symbol, 'TW')
+        totals[key] = totals.get(key, Decimal(0)) + row.amount
+    return totals
+
+
+def _estimated_ratio(amount, cost):
+    return ((amount / cost) * 100).quantize(Decimal('.01'), rounding=ROUND_HALF_UP) if amount is not None and cost > 0 else None
+
+
 def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
     """
     計算投資組合總覽，包含未實現損益與單日損益
@@ -850,7 +903,9 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             .all()
         )
         # 2. 取得所有股利紀錄
-        dividends = db.query(models.Dividend).filter(models.Dividend.receipt_status.notin_(['pending', 'unresolved'])).all()
+        all_dividends = db.query(models.Dividend).all()
+        pending_map = _pending_dividend_totals(db, all_dividends, transactions)
+        dividends = [d for d in all_dividends if d.receipt_status not in {'pending', 'unresolved'}]
         actions_by_symbol = _load_corp_actions_by_symbol(db)
         adjusted_transactions = _apply_corp_action_factors(transactions, actions_by_symbol)
         from .realized_pnl_service import iter_realized_events
@@ -933,9 +988,11 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                     "total_cost": Decimal("0.0"),
                     "total_cost_ex_fee": Decimal("0.0"),
                     "total_cost_native": Decimal("0.0"),
+                    "cost_currencies": set(),
                 }
 
             h = holdings_map[key]
+            h["cost_currencies"].add(getattr(t, "currency", None))
             price_twd = _row_price_twd(t)
             fee_twd = _row_money_twd(t, t.fee)
             tax_twd = _row_money_twd(t, t.tax)
@@ -1071,6 +1128,9 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 day_change_percent=day_change_percent,
                 day_pnl=day_pnl,
                 total_dividends=stock_div,
+                pending_dividends_net=pending_map.get(key, Decimal(0)),
+                estimated_pnl_with_dividends=(unrealized_pnl + stock_div + pending_map.get(key, Decimal(0))) if current_price > 0 else None,
+                estimated_pnl_percent=_estimated_ratio(unrealized_pnl + stock_div + pending_map.get(key, Decimal(0)), h["total_cost"]) if current_price > 0 else None,
                 total_pnl_with_dividend=(unrealized_pnl + stock_div).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
                 xirr=stock_xirr,
                 xirr_1m=stock_windowed_xirr["1m"],
@@ -1178,10 +1238,20 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                             unrealized_pnl_native + total_dividends_native
                         ).quantize(native_quant, rounding=ROUND_HALF_UP)
 
+            # No dividend rows is known zero; mismatched native currencies are unknown.
+            estimated_native_div = Decimal(0) if not by_cur else total_dividends_native
+            estimated_native = (unrealized_pnl_native + estimated_native_div
+                                if unrealized_pnl_native is not None and estimated_native_div is not None
+                                and revalue.native_currency
+                                and h["cost_currencies"] == {revalue.native_currency} else None)
             holdings_list.append(schemas.StockHolding(
                 symbol=symbol,
                 market=market,
                 name=h["name"] or symbol,
+                estimated_pnl_with_dividends=(unrealized_pnl + stock_div) if market_value is not None else None,
+                estimated_pnl_percent=_estimated_ratio(unrealized_pnl + stock_div, h["total_cost"]) if market_value is not None else None,
+                estimated_pnl_with_dividends_native=estimated_native,
+                estimated_pnl_percent_native=_estimated_ratio(estimated_native, total_cost_native),
                 total_quantity=h["total_quantity"],
                 avg_cost=avg_cost,
                 current_price=current_price if market_value is not None else None,
@@ -1275,7 +1345,42 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
         )
         total_cash_twd, _skipped = cash_account_service.get_total_balance_in(db, "TWD", asof=today)
 
+        total_pending = sum(pending_map.values(), Decimal(0))
+        complete = all(h.estimated_pnl_with_dividends is not None for h in holdings_list)
+        estimated = total_unrealized_pnl + total_dividends + total_pending if complete else None
+        market_totals = {}
+        # TW keeps the established recorded scope, including historical closed
+        # positions. Foreign scope stays active holdings only, in native units.
+        markets = {h.market for h in holdings_list} | {key[1] for key in dividend_map} | {key[1] for key in pending_map}
+        for market in sorted(markets):
+            rows = [h for h in holdings_list if h.market == market]
+            pending = sum((v for k, v in pending_map.items() if k[1] == market), Decimal(0))
+            if market == 'TW':
+                currency = 'TWD'
+                cost = sum((holdings_map[(h.symbol, market)]["total_cost"] for h in rows), Decimal(0))
+                valued = all(h.estimated_pnl_with_dividends is not None for h in rows)
+                mv = sum((h.market_value for h in rows), Decimal(0)) if valued else None
+                price_pnl = sum((h.unrealized_pnl for h in rows), Decimal(0)) if valued else None
+                recorded = sum((v for k, v in dividend_map.items() if k[1] == market), Decimal(0))
+            else:
+                currencies = {h.native_currency for h in rows}
+                currency = next(iter(currencies)) if len(currencies) == 1 and None not in currencies else None
+                matching_cost = currency and all(holdings_map[(h.symbol, market)]["cost_currencies"] == {currency} for h in rows)
+                cost = sum((holdings_map[(h.symbol, market)]["total_cost_native"] for h in rows), Decimal(0)) if matching_cost else None
+                mv = sum((h.market_value_native for h in rows), Decimal(0)) if currency and all(h.market_value_native is not None for h in rows) else None
+                price_pnl = sum((h.unrealized_pnl_native for h in rows), Decimal(0)) if matching_cost and all(h.unrealized_pnl_native is not None for h in rows) else None
+                native_divs = [dividend_native_by_cur.get((h.symbol, market), {}) for h in rows]
+                recorded = sum((d.get(currency, Decimal(0)) for d in native_divs), Decimal(0)) if currency and all(not d or set(d) == {currency} for d in native_divs) else None
+            combined = price_pnl + recorded + pending if price_pnl is not None and recorded is not None else None
+            market_totals[market] = schemas.EstimatedMarketTotals(currency=currency, market_value=mv, cost=cost,
+                unrealized_pnl=price_pnl, recorded_dividends=recorded, pending_dividends_net=pending,
+                estimated_pnl_with_dividends=combined, estimated_pnl_percent=_estimated_ratio(combined, cost or Decimal(0)))
+
         return schemas.PortfolioSummary(
+            total_pending_dividends_net=total_pending,
+            estimated_pnl_with_dividends=estimated,
+            estimated_pnl_percent=_estimated_ratio(estimated, total_cost),
+            market_totals=market_totals,
             total_market_value=total_market_value_twd,
             total_cost=total_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
             total_unrealized_pnl=total_unrealized_pnl.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),

@@ -198,7 +198,12 @@ class StockHolding(BaseModel):
     day_change_percent: Decimal = Decimal("0.0")     # 單日漲跌幅(%)
     day_pnl: Decimal = Decimal("0.0")                # 單日損益
     total_dividends: Decimal = Decimal("0.0")
-    total_pnl_with_dividend: Decimal # 含息損益
+    pending_dividends_net: Decimal = Decimal("0")
+    estimated_pnl_with_dividends: Optional[Decimal] = None
+    estimated_pnl_percent: Optional[Decimal] = None
+    estimated_pnl_with_dividends_native: Optional[Decimal] = None
+    estimated_pnl_percent_native: Optional[Decimal] = None
+    total_pnl_with_dividend: Decimal # preserved recorded-only scope
     xirr: Optional[Decimal] = None   # 年化報酬率，如 0.1523 = 15.23%
     xirr_1m: Optional[Decimal] = None
     xirr_3m: Optional[Decimal] = None
@@ -216,7 +221,22 @@ class StockHolding(BaseModel):
     total_dividends_native: Optional[Decimal] = None
     total_pnl_with_dividend_native: Optional[Decimal] = None
 
+class EstimatedMarketTotals(BaseModel):
+    currency: Optional[str] = None
+    market_value: Optional[Decimal] = None
+    cost: Optional[Decimal] = None
+    unrealized_pnl: Optional[Decimal] = None
+    recorded_dividends: Optional[Decimal] = None
+    pending_dividends_net: Decimal = Decimal("0")
+    estimated_pnl_with_dividends: Optional[Decimal] = None
+    estimated_pnl_percent: Optional[Decimal] = None
+
+
 class PortfolioSummary(BaseModel):
+    total_pending_dividends_net: Decimal = Decimal("0")
+    estimated_pnl_with_dividends: Optional[Decimal] = None
+    estimated_pnl_percent: Optional[Decimal] = None
+    market_totals: dict[str, EstimatedMarketTotals] = Field(default_factory=dict)
     total_market_value: Decimal
     total_cost: Decimal
     total_unrealized_pnl: Decimal
