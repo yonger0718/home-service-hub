@@ -63,6 +63,32 @@ describe('Dividend receipt confirmation', () => {
     expect(fixture.componentInstance.receiptTarget()?.id).toBe(102);
     fixture.destroy();
   });
+  it('preserves the full ex-date for rows with the same day in different years', () => {
+    service.getDividends.mockReturnValue(of({ items: [
+      { ...pending, id: 201, ex_dividend_date: '2024-03-16' },
+      { ...pending, id: 202, ex_dividend_date: '2025-03-16' },
+    ], total: 2 }));
+    const fixture = TestBed.createComponent(PortfolioDividendListComponent);
+    fixture.detectChanges();
+    const root: HTMLElement = fixture.nativeElement;
+    expect(root.querySelector('[data-row-id="201"]')?.textContent).toContain('除息日 2024-03-16');
+    expect(root.querySelector('[data-row-id="202"]')?.textContent).toContain('除息日 2025-03-16');
+    fixture.destroy();
+  });
+  it('preserves meaningful four-decimal per-share precision, including without quantity', () => {
+    service.getDividends.mockReturnValue(of({ items: [
+      { ...pending, id: 201, cash_dividend_per_share: 0.0420, quantity_at_record_date: 1000 },
+      { ...pending, id: 202, cash_dividend_per_share: 0.0421, quantity_at_record_date: 1000 },
+      { ...pending, id: 203, cash_dividend_per_share: 0.0001, quantity_at_record_date: null },
+    ], total: 3 }));
+    const fixture = TestBed.createComponent(PortfolioDividendListComponent);
+    fixture.detectChanges();
+    const root: HTMLElement = fixture.nativeElement;
+    expect(root.querySelector('[data-row-id="201"]')?.textContent).toContain('每股 0.042 × 1,000');
+    expect(root.querySelector('[data-row-id="202"]')?.textContent).toContain('每股 0.0421 × 1,000');
+    expect(root.querySelector('[data-row-id="203"]')?.textContent).toContain('每股 0.0001');
+    fixture.destroy();
+  });
   it('preserves query filters, sorting and pagination', () => {
     const fixture = TestBed.createComponent(PortfolioDividendListComponent);
     fixture.detectChanges();

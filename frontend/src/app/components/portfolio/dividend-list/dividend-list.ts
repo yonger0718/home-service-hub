@@ -88,8 +88,8 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
         side: 'cash',
         sideLabel: this.receiptLabel(dividend),
         primary: name ? `${name} ${dividend.symbol}` : dividend.symbol,
-        meta: perShare > 0 && qty > 0
-          ? `每股 ${perShare.toFixed(2)} × ${qty.toLocaleString('zh-TW')}`
+        meta: dividend.cash_dividend_per_share != null
+          ? `每股 ${perShare.toLocaleString('zh-TW', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}${qty > 0 ? ` × ${qty.toLocaleString('zh-TW')}` : ''}`
           : '現金股利',
         amount: `${dividend.receipt_status === 'confirmed' ? '+' : ''}${this.formatCurrency(dividend.amount)}`,
         amountVariant: 'dividend',

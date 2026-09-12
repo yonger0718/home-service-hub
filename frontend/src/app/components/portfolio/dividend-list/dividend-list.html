@@ -80,6 +80,7 @@
 <ng-template #receiptDetails let-item>
   @if (dividendsById().get(item.id); as row) {
     <div class="receipt-details">
+      <span>除息日 {{ row.ex_dividend_date | date:'yyyy-MM-dd' }}</span>
       @if (row.payment_date) { <span>預定發放日 {{ row.payment_date }} {{ row.payment_date_source ?? '' }}</span> }
       @if (row.receipt_date) { <span>實際收款日 {{ row.receipt_date }}</span> }
       @if (row.review_reason) { <span>{{ row.review_reason }}</span> }
