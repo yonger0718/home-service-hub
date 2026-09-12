@@ -1,7 +1,7 @@
 """Post-import recalc chain.
 
 Runs after a successful CSV commit (or on demand via the manual endpoint).
-Sequentially: symbol-name backfill → dividend auto-record for touched
+Sequentially: symbol-name backfill → deferred historical dividends for touched
 symbols → networth backfill across the affected date range. Each step is
 isolated so a single TWSE outage cannot block the rest of the chain.
 
@@ -27,12 +27,10 @@ from datetime import date as dt_date, datetime, timedelta, timezone
 from typing import Callable, ContextManager, Optional
 
 from . import (
-    dividend_auto_record_service,
-    dividend_event_service,
+    dividend_reconciliation_service,
     networth_backfill_service,
     symbol_map_service,
 )
-from .dividend_history_service import HistoricalDividendEvent
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +38,6 @@ _TW_OFFSET = timezone(timedelta(hours=8))
 _RECALC_LOCK = threading.Lock()
 _RESULTS_LOCK = threading.Lock()
 _LATEST_RESULTS: dict[str, "ChainResult"] = {}
-_RESULT_TTL_SEC = 600  # status endpoint surfaces the last run for 10 min
 _FLAG_ENV = "POST_IMPORT_RECALC_ENABLED"
 
 
@@ -50,7 +47,7 @@ _FLAG_ENV = "POST_IMPORT_RECALC_ENABLED"
 @dataclass
 class StepResult:
     name: str
-    status: str  # "ok" | "failed" | "skipped"
+    status: str  # "ok" | "failed" | "skipped" | "partial"
     detail: dict = field(default_factory=dict)
     error: Optional[str] = None
 
@@ -65,6 +62,7 @@ class ChainResult:
     touched_symbols: list[str] = field(default_factory=list)
     steps: list[StepResult] = field(default_factory=list)
     current_step: Optional[str] = None
+    kind: str = "import"
 
 
 # ---------- Module helpers ----------
@@ -79,39 +77,42 @@ def today_tw() -> dt_date:
     return datetime.now(_TW_OFFSET).date()
 
 
-def _prune_results_locked(now: datetime) -> None:
+def _prune_results_locked() -> None:
     """Caller must hold _RESULTS_LOCK."""
-    cutoff = now - timedelta(seconds=_RESULT_TTL_SEC)
-    stale = [
-        key
-        for key, result in _LATEST_RESULTS.items()
-        if result.finished_at
-        and datetime.fromisoformat(result.finished_at) < cutoff
-    ]
-    for key in stale:
-        _LATEST_RESULTS.pop(key, None)
+    # Keep the newest result of each kind until superseded (or process restart).
+    # A TTL must not turn unresolved import work into idle after quote activity.
+    newest = {}
+    for key, result in _LATEST_RESULTS.items():
+        newest[result.kind] = max(key, newest.get(result.kind, key))
+    for key, result in list(_LATEST_RESULTS.items()):
+        if key != newest[result.kind]:
+            _LATEST_RESULTS.pop(key, None)
 
 
 def _store(result: ChainResult) -> None:
     with _RESULTS_LOCK:
-        _prune_results_locked(datetime.now(timezone.utc))
         _LATEST_RESULTS[result.started_at] = result
+        _prune_results_locked()
 
 
 def latest_status() -> dict:
-    """Return the most recent chain result (or `{state: idle}` if none recent)."""
+    """Return the latest import plus separate quote result; bounded in-process state."""
     with _RESULTS_LOCK:
-        _prune_results_locked(datetime.now(timezone.utc))
+        _prune_results_locked()
         if not _LATEST_RESULTS:
             return {"state": "idle"}
-        most_recent_key = max(_LATEST_RESULTS.keys())
-        result = _LATEST_RESULTS[most_recent_key]
-    return _serialize(result)
+        imports = [r for r in _LATEST_RESULTS.values() if r.kind == "import"]
+        quotes = [r for r in _LATEST_RESULTS.values() if r.kind == "quotes"]
+        result = max(imports or quotes, key=lambda r: r.started_at)
+        status = _serialize(result)
+        status["quote_refresh"] = _serialize(max(quotes, key=lambda r: r.started_at)) if quotes else {"state": "idle"}
+        return status
 
 
 def _serialize(result: ChainResult) -> dict:
     return {
         "state": result.state,
+        "kind": result.kind,
         "started_at": result.started_at,
         "finished_at": result.finished_at,
         "recalc_from": result.recalc_from,
@@ -166,65 +167,19 @@ def _step_dividends(
             detail={"reason": "no touched symbols"},
         )
     try:
-        years = list(range(recalc_from.year, recalc_to.year + 1))
-        events_processed = 0
-        cash_inserted = 0
-        stock_inserted = 0
-        per_event_errors: list[dict] = []
         with session_factory() as db:
-            for year in years:
-                rows = dividend_event_service.fetch_for_holdings(
-                    touched_symbols, year=year
-                )
-                for row in rows:
-                    if row.ex_dividend_date < recalc_from or row.ex_dividend_date > recalc_to:
-                        continue
-                    historical = HistoricalDividendEvent(
-                        symbol=row.symbol,
-                        ex_date=row.ex_dividend_date,
-                        cash_dividend_per_share=row.cash_dividend,
-                        stock_dividend_per_thousand=(
-                            (row.stock_dividend * 1000) if row.stock_dividend is not None else None
-                        ),
-                        previous_close=None,
-                        reference_price=None,
-                        source=row.source,
-                    )
-                    events_processed += 1
-                    try:
-                        outcome = dividend_auto_record_service.auto_record_for_event(
-                            db, historical
-                        )
-                    except Exception as inner:  # noqa: BLE001 — one bad event must not kill the step
-                        logger.exception(
-                            "post_import.dividend_event_failed",
-                            extra={
-                                "symbol": row.symbol,
-                                "ex_date": row.ex_dividend_date.isoformat(),
-                                "error": str(inner),
-                            },
-                        )
-                        per_event_errors.append(
-                            {
-                                "symbol": row.symbol,
-                                "ex_date": row.ex_dividend_date.isoformat(),
-                                "error": str(inner),
-                            }
-                        )
-                        continue
-                    if outcome.cash_inserted:
-                        cash_inserted += 1
-                    if outcome.stock_inserted:
-                        stock_inserted += 1
-            db.commit()
-        detail = {
-            "events_processed": events_processed,
-            "cash_inserted": cash_inserted,
-            "stock_inserted": stock_inserted,
-            "event_errors": per_event_errors,
-        }
-        status = "ok" if not per_event_errors else "partial"
-        return StepResult(name="dividend_auto_record", status=status, detail=detail)
+            detail = dividend_reconciliation_service.reconcile(db, touched_symbols, recalc_from, recalc_to)
+        errors = detail["source_errors"]
+        deferred = detail["deferred_events"]
+        status = "partial" if errors or deferred else "ok"
+        if errors and not detail["sources_succeeded"]:
+            status = "failed"
+        return StepResult(
+            name="dividend_auto_record", status=status, detail=detail,
+            error="historical sources incomplete" if errors else (
+                dividend_reconciliation_service.DEFERRED_REASON if deferred else None
+            ),
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "post_import.step_failed",
@@ -370,6 +325,7 @@ async def run_chain_quotes_only(
     started = datetime.now(timezone.utc)
     result = ChainResult(
         state="running",
+        kind="quotes",
         started_at=started.isoformat(),
         recalc_from=today.isoformat(),
         recalc_to=today.isoformat(),

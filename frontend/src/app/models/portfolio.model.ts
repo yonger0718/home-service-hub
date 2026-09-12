@@ -149,14 +149,31 @@ export interface BrokerCsvImportResult {
   }[];
 }
 
+export interface DeferredDividendEvent {
+  symbol: string;
+  ex_date: string;
+  cash_dividend_per_share: string | null;
+  stock_dividend_per_thousand: string | null;
+  eligible_quantity: string;
+  payment_date: string | null;
+  source: string;
+  status: 'deferred';
+  reason: string;
+}
+
 export interface RecalcStepStatus {
   name: string;
   status: 'ok' | 'failed' | 'skipped' | 'partial';
-  detail?: Record<string, unknown>;
+  detail?: Record<string, unknown> & {
+    deferred_events?: DeferredDividendEvent[];
+    source_errors?: { source: string; symbol: string; year: number; reason: string }[];
+  };
   error?: string | null;
 }
 
 export interface RecalcStatus {
+  kind?: 'import' | 'quotes';
+  quote_refresh?: RecalcStatus;
   state: 'idle' | 'running' | 'completed' | 'partial' | 'failed';
   started_at?: string;
   finished_at?: string | null;

@@ -241,11 +241,17 @@ def fetch_symbol_year(symbol: str, year: int) -> list[HistoricalDividendEvent]:
             extra={"symbol": symbol, "year": year, "error": str(exc)},
         )
         return []
+    return events_from_twse_rows(symbol, rows)
+
+
+def events_from_twse_rows(symbol: str, rows: list, *, detail_fetcher=None) -> list[HistoricalDividendEvent]:
+    """Shared historical conversion; callers may supply an uncached detail boundary."""
+    detail_fetcher = detail_fetcher or _fetch_detail
     events: list[HistoricalDividendEvent] = []
     for ex_date, prev_close, ref_price, detail_param, div_value, div_type in rows:
         cash, stock_per_thousand = (None, None)
         if detail_param is not None:
-            cash, stock_per_thousand = _fetch_detail(symbol, detail_param)
+            cash, stock_per_thousand = detail_fetcher(symbol, detail_param)
         # Fallback: when detail endpoint returns empty, infer from the
         # main row using the combined dividend value + 權/息 type.
         if cash is None and stock_per_thousand is None and div_value is not None and div_type:

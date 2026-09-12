@@ -369,7 +369,7 @@ export class PortfolioDashboardComponent implements OnInit {
     interval(1000)
       .pipe(
         switchMap(() => this.portfolioService.getRecalcStatus()),
-        takeWhile(status => !['completed', 'partial', 'failed'].includes(status.state), true),
+        takeWhile(status => !['completed', 'partial', 'failed'].includes(status.quote_refresh?.state ?? status.state), true),
         takeUntil(timer(30000)),
         takeUntilDestroyed(this.destroyRef),
         finalize(() => this.reloadSummary()),
