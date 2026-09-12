@@ -148,7 +148,7 @@ export class PortfolioDashboardComponent implements OnInit {
         currency: 'TWD',
         total_market_value: summary.total_market_value,
         total_cost: summary.total_cost,
-        total_unrealized_pnl: summary.estimated_pnl_with_dividends == null ? null : summary.total_unrealized_pnl,
+        total_unrealized_pnl: summary.total_unrealized_pnl,
         total_dividends: summary.total_dividends,
         pending_dividends_net: summary.total_pending_dividends_net,
         estimated_pnl_with_dividends: this.optionalNumber(summary.estimated_pnl_with_dividends),

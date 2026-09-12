@@ -183,7 +183,7 @@
                             <div class="d"><small>市值</small><div>{{ formatCurrency(stock.market_value) }}</div></div>
                             <div class="d"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>
                             <div class="d"><small>已記錄股利</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
-                            <div class="d"><small>未實現價差</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ formatNative(stock.estimated_pnl_with_dividends == null ? null : stock.unrealized_pnl, 'TWD') }}</div></div>
+                            <div class="d"><small>未實現價差</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ formatNative(stock.unrealized_pnl, 'TWD') }}</div></div>
                             <div class="d"><small>待收股利</small><div>{{ formatNative(stock.pending_dividends_net, 'TWD') }}</div></div>
                       <div class="d"><small>預估含息損益</small><div>{{ formatNative(holdingEstimate(stock), 'TWD') }}</div></div>
                           }
@@ -249,7 +249,7 @@
                       <div class="d"><small>市值</small><div>{{ formatCurrency(stock.market_value) }}</div></div>
                       <div class="d"><small>平均成本</small><div>{{ stock.avg_cost | number:'1.2-2' }}</div></div>
                       <div class="d"><small>已記錄股利</small><div class="dividend">{{ formatCurrency(stock.total_dividends) }}</div></div>
-                      <div class="d"><small>未實現價差</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ formatNative(stock.estimated_pnl_with_dividends == null ? null : stock.unrealized_pnl, 'TWD') }}</div></div>
+                      <div class="d"><small>未實現價差</small><div [class.up]="stock.unrealized_pnl >= 0" [class.down]="stock.unrealized_pnl < 0">{{ formatNative(stock.unrealized_pnl, 'TWD') }}</div></div>
                       <div class="d"><small>待收股利</small><div>{{ formatNative(stock.pending_dividends_net, 'TWD') }}</div></div>
                       <div class="d"><small>預估含息損益</small><div>{{ formatNative(holdingEstimate(stock), 'TWD') }}</div></div>
                       <div class="d">

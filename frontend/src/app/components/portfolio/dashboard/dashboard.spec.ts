@@ -356,4 +356,35 @@ describe('PortfolioDashboardComponent', () => {
     expect(root.querySelector('.estimated-breakdown')?.textContent).toContain('3,090');
   });
 
+  it.each([
+    [false, 1500], [true, 1500], [false, 0], [true, 0], [false, -1500], [true, -1500],
+  ])('preserves price-only values with null estimates (grouped=%s, price=%s)', (grouped, price) => {
+    const tw = { ...buildHolding(), unrealized_pnl: Number(price),
+      estimated_pnl_with_dividends: null, estimated_pnl_percent: null };
+    const holdings = grouped
+      ? [tw, { ...buildHolding(), market: 'US' as const, native_currency: 'USD' }]
+      : [tw];
+    portfolioService.getSummary.mockReturnValue(of(buildSummary({
+      total_unrealized_pnl: Number(price), estimated_pnl_with_dividends: null,
+      estimated_pnl_percent: null, holdings,
+    })));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+    const formatted = fixture.componentInstance.formatNative(Number(price), 'TWD');
+    const breakdownPrice = Array.from(root.querySelectorAll('.estimated-breakdown > div'))
+      .find(element => element.textContent?.includes('未實現價差'));
+    expect(breakdownPrice?.textContent).toContain(formatted);
+    expect(root.querySelector('.estimated-total')?.textContent?.trim()).toBe('—');
+    expect(root.querySelector('[aria-label="預估含息損益率無法計算"]')).not.toBeNull();
+    (root.querySelector('.stock-row') as HTMLElement).click();
+    fixture.detectChanges();
+    const priceDetail = Array.from(root.querySelectorAll('.detail-panel .d'))
+      .find(element => element.querySelector('small')?.textContent === '未實現價差');
+    const estimateDetail = Array.from(root.querySelectorAll('.detail-panel .d'))
+      .find(element => element.querySelector('small')?.textContent === '預估含息損益');
+    expect(priceDetail?.querySelector('div')?.textContent?.trim()).toBe(formatted);
+    expect(estimateDetail?.querySelector('div')?.textContent?.trim()).toBe('—');
+    expect(root.querySelector('.stock-stats')?.textContent).not.toContain('30.00%');
+  });
+
 });
