@@ -271,3 +271,51 @@ def test_unlinked_matching_cash_is_ambiguous_not_a_second_receipt(client, db_ses
     reconcile(db_session)
     assert db_session.query(Dividend).one().receipt_status == 'unresolved'
     assert db_session.query(CashTransaction).count() == 1
+
+
+@pytest.mark.parametrize('stored_date,incoming_date', [
+    ('2026-09-10T00:00:00+08:00', '2026-09-09T16:00:00Z'),
+    ('2026-09-09T16:00:00+00:00', '2026-09-10T00:00:00+08:00'),
+])
+@pytest.mark.parametrize('identity_change', [None, 'day', 'symbol', 'market'])
+def test_pending_edit_uses_tw_calendar_identity(client, db_session, stored_date, incoming_date, identity_change):
+    """Real HTTP/schema/service/CAS path, preserving the PG aware-load boundary.
+
+    SQLite drops timezone offsets. Supply its ORM-loaded value as PostgreSQL
+    would, without mocking the router, schema, service or update statement.
+    Keep the object in the identity map so the service receives this aware value.
+    """
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    seed(db_session)
+    response = client.post(BASE + '/dividends', json={
+        'symbol': '9802', 'market': 'TW', 'amount': '100',
+        'ex_dividend_date': '2026-09-10T00:00:00+08:00',
+    })
+    assert response.status_code == 200, response.text
+    row = db_session.get(Dividend, response.json()['id'])
+    aware = datetime.fromisoformat(stored_date)
+    set_committed_value(row, 'ex_dividend_date', aware)
+    assert row.ex_dividend_date.tzinfo is not None
+    assert db_session.query(Dividend).filter(Dividend.id == row.id).first() is row
+    revision = row.revision
+    payload = {'symbol': '9802', 'market': 'TW', 'amount': '101', 'ex_dividend_date': incoming_date}
+    if identity_change == 'day':
+        # Same UTC date as the equivalent instant, but previous Taiwan ex-day.
+        payload['ex_dividend_date'] = '2026-09-09T15:59:59Z'
+    elif identity_change == 'symbol':
+        payload['symbol'] = '2330'
+    elif identity_change == 'market':
+        payload['market'] = 'US'
+    result = client.put(BASE + f'/dividends/{row.id}', json=payload)
+    if identity_change is None:
+        assert result.status_code == 200, result.text
+        assert Decimal(result.json()['amount']) == 101
+        assert result.json()['revision'] == revision + 1
+    else:
+        assert result.status_code == 409, result.text
+        assert 'entitlement identity cannot be edited' in result.text
+        db_session.refresh(row)
+        assert row.amount == 100 and row.revision == revision
+        assert row.symbol == '9802' and row.market == 'TW'
+    assert db_session.query(CashTransaction).count() == 0

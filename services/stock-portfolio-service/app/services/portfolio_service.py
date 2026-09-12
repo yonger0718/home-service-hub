@@ -1581,11 +1581,11 @@ def update_dividend(db: Session, dividend_id: int, dividend_update: schemas.Divi
     if not db_dividend:
         return None
     
-    from .dividend_receipt_service import ReceiptConflict
+    from .dividend_receipt_service import ReceiptConflict, ex_day
     if db_dividend.market == 'TW':
         if db_dividend.receipt_status != 'pending':
             raise ReceiptConflict('confirmed/legacy/unresolved dividend is immutable; explicit resolution required')
-        if dividend_update.symbol != db_dividend.symbol or dividend_update.ex_dividend_date.date() != db_dividend.ex_dividend_date.date() or dividend_update.market != db_dividend.market:
+        if dividend_update.symbol != db_dividend.symbol or ex_day(dividend_update.ex_dividend_date) != ex_day(db_dividend.ex_dividend_date) or dividend_update.market != db_dividend.market:
             raise ReceiptConflict('entitlement identity cannot be edited')
     update_data = dividend_update.model_dump(exclude_unset=True)
     update_data["symbol"] = _normalize_symbol_for_market(
