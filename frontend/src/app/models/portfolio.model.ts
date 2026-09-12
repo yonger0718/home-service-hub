@@ -227,7 +227,23 @@ export interface UpcomingEvent {
   source?: string;
 }
 
+export interface EstimatedMarketTotals {
+  currency: string | null;
+  market_value: number | string | null;
+  cost: number | string | null;
+  unrealized_pnl: number | string | null;
+  recorded_dividends: number | string | null;
+  pending_dividends_net: number | string;
+  estimated_pnl_with_dividends: number | string | null;
+  estimated_pnl_percent: number | string | null;
+}
+
 export interface StockHolding {
+  pending_dividends_net?: number | string;
+  estimated_pnl_with_dividends?: number | string | null;
+  estimated_pnl_percent?: number | string | null;
+  estimated_pnl_with_dividends_native?: number | string | null;
+  estimated_pnl_percent_native?: number | string | null;
   symbol: string;
   market: MarketCode;
   name?: string;
@@ -259,6 +275,10 @@ export interface StockHolding {
 }
 
 export interface PortfolioSummary {
+  total_pending_dividends_net?: number | string;
+  estimated_pnl_with_dividends?: number | string | null;
+  estimated_pnl_percent?: number | string | null;
+  market_totals?: Partial<Record<MarketCode, EstimatedMarketTotals>>;
   total_market_value: number;
   total_cash_twd: string;
   total_assets_twd: string;

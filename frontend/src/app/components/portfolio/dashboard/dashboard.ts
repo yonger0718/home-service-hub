@@ -107,7 +107,7 @@ export class PortfolioDashboardComponent implements OnInit {
 
   readonly availableMarkets = computed<MarketCode[]>(() => {
     const order: MarketCode[] = ['TW', 'US', 'LSE'];
-    const present = new Set(this.flatHoldings().map(h => h.market));
+    const present = new Set([...this.flatHoldings().map(h => h.market), ...Object.keys(this.summary()?.market_totals ?? {})]);
     return order.filter(m => present.has(m));
   });
 
@@ -146,41 +146,49 @@ export class PortfolioDashboardComponent implements OnInit {
     if (filter === 'ALL') {
       return {
         currency: 'TWD',
-        total_market_value: Number(summary.total_market_value ?? 0),
-        total_cost: Number(summary.total_cost ?? 0),
-        total_unrealized_pnl: Number(summary.total_unrealized_pnl ?? 0),
-        total_unrealized_pnl_percent: Number(summary.total_unrealized_pnl_percent ?? 0),
-        total_dividends: Number(summary.total_dividends ?? 0),
-        dividends_in_twd: true,
+        total_market_value: summary.total_market_value,
+        total_cost: summary.total_cost,
+        total_unrealized_pnl: summary.total_unrealized_pnl,
+        total_dividends: summary.total_dividends,
+        pending_dividends_net: summary.total_pending_dividends_net,
+        estimated_pnl_with_dividends: this.optionalNumber(summary.estimated_pnl_with_dividends),
+        estimated_pnl_percent: this.optionalNumber(summary.estimated_pnl_percent),
       };
     }
-
-    const rows = this.filteredHoldings();
-    if (cur === 'TWD') {
-      const total_market_value = rows.reduce((s, h) => s + Number(h.market_value ?? 0), 0);
-      const total_cost = rows.reduce((s, h) => s + Number(h.avg_cost ?? 0) * Number(h.total_quantity ?? 0), 0);
-      const total_unrealized_pnl = rows.reduce((s, h) => s + Number(h.unrealized_pnl ?? 0), 0);
-      const total_dividends = rows.reduce((s, h) => s + Number(h.total_dividends ?? 0), 0);
-      const total_unrealized_pnl_percent = total_cost > 0 ? (total_unrealized_pnl / total_cost) * 100 : 0;
-      return { currency: cur, total_market_value, total_cost, total_unrealized_pnl, total_unrealized_pnl_percent, total_dividends, dividends_in_twd: false };
-    }
-
-    const total_market_value = rows.reduce(
-      (s, h) => s + Number(h.market_value_native ?? Number(h.total_quantity ?? 0) * Number(h.native_close ?? 0)),
-      0,
-    );
-    const total_cost = rows.reduce(
-      (s, h) => s + Number(h.avg_cost_native ?? 0) * Number(h.total_quantity ?? 0),
-      0,
-    );
-    const total_unrealized_pnl = rows.reduce(
-      (s, h) => s + Number(h.unrealized_pnl_native ?? 0),
-      0,
-    );
-    const total_unrealized_pnl_percent = total_cost > 0 ? (total_unrealized_pnl / total_cost) * 100 : 0;
-    const total_dividends = rows.reduce((s, h) => s + Number(h.total_dividends ?? 0), 0);
-    return { currency: cur, total_market_value, total_cost, total_unrealized_pnl, total_unrealized_pnl_percent, total_dividends, dividends_in_twd: true };
+    // Server aggregates exact costs and closed TW receivables; summing displayed
+    // holdings would lose that scope and use rounded average-cost denominators.
+    const totals = summary.market_totals?.[filter];
+    return {
+      currency: totals?.currency ?? cur,
+      total_market_value: totals?.market_value,
+      total_cost: totals?.cost,
+      total_unrealized_pnl: totals?.unrealized_pnl,
+      total_dividends: totals?.recorded_dividends,
+      pending_dividends_net: totals?.pending_dividends_net,
+      estimated_pnl_with_dividends: this.optionalNumber(totals?.estimated_pnl_with_dividends),
+      estimated_pnl_percent: this.optionalNumber(totals?.estimated_pnl_percent),
+    };
   });
+
+  private optionalNumber(value: number | string | null | undefined): number | null {
+    if (value == null || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  holdingEstimate(holding: StockHolding): number | null {
+    return this.optionalNumber(holding.market === 'TW'
+      ? holding.estimated_pnl_with_dividends : holding.estimated_pnl_with_dividends_native);
+  }
+
+  holdingEstimatePercent(holding: StockHolding): number | null {
+    return this.optionalNumber(holding.market === 'TW'
+      ? holding.estimated_pnl_percent : holding.estimated_pnl_percent_native);
+  }
+
+  holdingCurrency(holding: StockHolding): string | null {
+    return holding.market === 'TW' ? 'TWD' : holding.native_currency;
+  }
 
   private readonly networthCache = new Map<PortfolioRange, NetworthPoint[]>();
   private readonly prefetchOrder: PortfolioRange[] = ['1M', '3M', 'YTD', '5Y'];

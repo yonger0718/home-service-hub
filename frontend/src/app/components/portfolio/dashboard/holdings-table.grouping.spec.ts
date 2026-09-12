@@ -137,24 +137,30 @@ describe('PortfolioDashboardComponent holding groups', () => {
     expect(component.showMarketGroups()).toBe(true);
   });
 
-  it('recomputes KPI totals from filtered holdings when a market is selected', () => {
-    portfolioService.getSummary.mockReturnValue(of(buildSummary([
-      buildHolding({ symbol: '2330', market: 'TW', market_value: 6500, unrealized_pnl: 1500, total_dividends: 100, avg_cost: 500, total_quantity: 10 }),
-      buildHolding({ symbol: 'AAPL', market: 'US', market_value: 5994, unrealized_pnl: 200, total_dividends: 40, avg_cost: 30, total_quantity: 10 }),
-    ])));
+  it('uses exact native market aggregates rather than rounded holding costs', () => {
+    const summary = buildSummary([
+      buildHolding({ symbol: '2330', market: 'TW' }),
+      buildHolding({ symbol: 'AAPL', market: 'US', avg_cost_native: 30, total_quantity: 10 }),
+    ]);
+    summary.market_totals = { US: {
+      currency: 'USD', market_value: 500, cost: 300.04,
+      unrealized_pnl: 199.96, recorded_dividends: 40, pending_dividends_net: 0,
+      estimated_pnl_with_dividends: 239.96, estimated_pnl_percent: 79.98,
+    }};
+    portfolioService.getSummary.mockReturnValue(of(summary));
     const fixture = TestBed.createComponent(PortfolioDashboardComponent);
     fixture.detectChanges();
     const component = fixture.componentInstance;
-
     expect(component.isMarketFiltered()).toBe(false);
-
     component.selectMarketFilter('US');
     expect(component.isMarketFiltered()).toBe(true);
     const us = component.filteredTotals()!;
-    expect(us.total_market_value).toBeCloseTo(5994, 1);
-    expect(us.total_unrealized_pnl).toBeCloseTo(200, 1);
-    expect(us.total_dividends).toBeCloseTo(40, 1);
-    expect(us.total_cost).toBeCloseTo(300, 1);
+    expect(us.currency).toBe('USD');
+    expect(us.total_market_value).toBe(500);
+    expect(us.total_unrealized_pnl).toBe(199.96);
+    expect(us.total_dividends).toBe(40);
+    expect(us.total_cost).toBe(300.04);
+    expect(us.estimated_pnl_percent).toBe(79.98);
   });
 
   it('keeps market grouping when rows are sorted by unrealized PnL', () => {
