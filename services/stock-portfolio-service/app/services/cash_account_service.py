@@ -353,12 +353,17 @@ def sync_dividend_cash_leg(
     account_id: int,
     source: CashTxnSource,
 ) -> CashTransaction | None:
+    if getattr(dividend, 'market', 'TW') == 'TW' and getattr(dividend, 'receipt_status', 'legacy_unknown') != 'confirmed':
+        # Retain any legacy cash leg untouched; never infer receipt or create one.
+        return None
     account = session.get(BrokerAccount, account_id)
     if account is None:
         raise ValueError("account not found")
 
     leg_fp = compute_backfill_fingerprint("dividends", dividend.id, "dividend_cash")
-    txn_date = _dividend_ex_date(dividend)
+    txn_date = dividend.receipt_date if getattr(dividend, 'receipt_status', None) == 'confirmed' else _dividend_ex_date(dividend)
+    if getattr(dividend, 'receipt_status', None) == 'confirmed' and dividend.receipt_account_id != account_id:
+        raise ValueError('confirmed receipt account is immutable')
     amount = _as_decimal(dividend.amount)
     currency = _normalize_currency(account.currency)
     row = session.execute(

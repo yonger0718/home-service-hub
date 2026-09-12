@@ -72,15 +72,10 @@ def test_qty_held_on_counts_synthetic_stock_dividend_buy(db_session):
     later_ex = date(2026, 9, 15)
     _add_trade(db_session, symbol=sym, qty=1000, trade_date=date(2026, 2, 1))
 
-    inserted = svc._insert_stock(
-        db_session,
-        symbol=sym,
-        ex_date=earlier_ex,
-        shares=100,
-        source="TWT49U",
-        name=None,
-    )
-    assert inserted is True
+    # Existing pre-migration gift: omitted position_side still defaults LONG.
+    db_session.add(Transaction(symbol=sym, type=TransactionType.BUY, quantity=100,
+        price=0, trade_date=datetime.combine(earlier_ex, datetime.min.time(), tzinfo=TW),
+        fee=0, tax=0, is_day_trade=False))
     db_session.flush()
 
     persisted = (
@@ -135,7 +130,8 @@ def test_cash_branch_inserts_with_fee_and_zero_tax_below_threshold(db_session):
     _add_trade(db_session, symbol="2330", qty=1000, trade_date=date(2026, 5, 1))
     event = _event(cash=Decimal("2.00"))
     result = svc.auto_record_for_event(db_session, event)
-    assert result.cash_inserted is True
+    assert result.pending_recorded is True
+    assert result.cash_inserted is False
     assert result.stock_inserted is False
     row = db_session.query(Dividend).one()
     assert row.amount == Decimal("1990.00")
@@ -164,19 +160,14 @@ def test_amount_is_clamped_to_minimum_positive(db_session):
     assert row.amount == Decimal("0.01")
 
 
-def test_stock_branch_inserts_zero_cost_transaction(db_session):
+def test_stock_branch_records_pending_without_transaction(db_session):
     _add_trade(db_session, symbol="2330", qty=1500, trade_date=date(2026, 5, 1))
-    event = _event(cash=None, stock_per_thousand=Decimal("100"))
-    result = svc.auto_record_for_event(db_session, event)
-    assert result.stock_inserted is True
-    assert result.cash_inserted is False
-    txns = db_session.query(Transaction).filter(Transaction.price == Decimal("0")).all()
-    assert len(txns) == 1
-    tx = txns[0]
-    assert tx.symbol == "2330"
-    assert tx.type == TransactionType.BUY
-    assert tx.quantity == 150
-    assert tx.import_fingerprint and tx.import_fingerprint.startswith("") and "auto-stk-div" not in tx.import_fingerprint  # fingerprint is sha256 hex
+    result = svc.auto_record_for_event(db_session, _event(stock_per_thousand=Decimal("100")))
+    assert result.pending_recorded and not result.stock_inserted
+    row = db_session.query(Dividend).one()
+    assert row.stock_dividend_shares == 150 and row.amount == 0
+    assert row.receipt_status == "pending"
+    assert db_session.query(Transaction).filter(Transaction.price == 0).count() == 0
 
 
 def test_stock_branch_skipped_when_floored_to_zero(db_session):
@@ -221,7 +212,7 @@ def test_auto_record_mixed_long_short_uses_long_qty(db_session):
     )
     event = _event(cash=Decimal("2.00"))
     result = svc.auto_record_for_event(db_session, event)
-    assert result == svc.AutoRecordResult(True, False, None)
+    assert result == svc.AutoRecordResult(False, False, None, True)
     row = db_session.query(Dividend).one()
     assert row.quantity_at_record_date == Decimal("1000")
     assert row.amount == Decimal("1990.00")
@@ -239,9 +230,9 @@ def test_auto_record_stock_dividend_uses_long_qty(db_session):
     )
     event = _event(cash=None, stock_per_thousand=Decimal("100"))
     result = svc.auto_record_for_event(db_session, event)
-    assert result == svc.AutoRecordResult(False, True, None)
-    tx = db_session.query(Transaction).filter(Transaction.price == Decimal("0")).one()
-    assert tx.quantity == 100
+    assert result == svc.AutoRecordResult(False, False, None, True)
+    assert db_session.query(Dividend).one().stock_dividend_shares == 100
+    assert db_session.query(Transaction).filter(Transaction.price == 0).count() == 0
 
 
 def test_idempotent_on_repeat(db_session):
@@ -250,7 +241,7 @@ def test_idempotent_on_repeat(db_session):
     r1 = svc.auto_record_for_event(db_session, event)
     db_session.commit()
     r2 = svc.auto_record_for_event(db_session, event)
-    assert r1 == svc.AutoRecordResult(True, True, None)
+    assert r1 == svc.AutoRecordResult(False, False, None, True)
     assert r2 == svc.AutoRecordResult(False, False, None)
     assert db_session.query(Dividend).count() == 1
-    assert db_session.query(Transaction).filter(Transaction.price == Decimal("0")).count() == 1
+    assert db_session.query(Transaction).filter(Transaction.price == Decimal("0")).count() == 0

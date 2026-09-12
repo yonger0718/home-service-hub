@@ -45,4 +45,47 @@ describe('Portfolio import controls', () => {
     response.next({}); response.complete();
     expect(component.recalcSubmitting()).toBe(false);
   });
+  it('shows deferred historical amount and dates alongside quote success', () => {
+    service.getRecalcStatus.mockReturnValue(of({
+      state: 'partial', kind: 'import', quote_refresh: { state: 'completed', kind: 'quotes' },
+      steps: [{ name: 'dividend_auto_record', status: 'partial', detail: {
+        source_errors: [{ source: 'TWT49U', symbol: '9802', year: 2026, reason: 'detail unavailable' }],
+        deferred_events: [{ symbol: '9802', ex_date: '2026-09-10', cash_dividend_per_share: '3.100000',
+          payment_date: null, reason: 'retrieved; recording deferred—payment accounting unsupported' }],
+      } }],
+    }));
+    const fixture = TestBed.createComponent(PortfolioImportComponent);
+    fixture.detectChanges();
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('匯入重算：partial');
+    expect(text).toContain('報價更新（不含股利）：completed');
+    expect(text).toContain('9802');
+    expect(text).toContain('2026-09-10');
+    expect(text).toContain('3.100000');
+    expect(text).toContain('發放日：未知');
+    expect(text).toContain('recording deferred');
+    expect(text).toContain('detail unavailable');
+    expect(text).not.toContain('2026-10-15');
+  });
+  it('does not label a quote-only run as completed import reconciliation', () => {
+    service.getRecalcStatus.mockReturnValue(of({ state: 'completed', kind: 'quotes', quote_refresh: { state: 'completed' } }));
+    const fixture = TestBed.createComponent(PortfolioImportComponent);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('匯入重算：idle');
+  });
+
+  it('updates running quote status without losing a partial import', () => {
+    vi.useFakeTimers();
+    service.getRecalcStatus.mockReturnValue(of({ state: 'partial', kind: 'import', quote_refresh: { state: 'running' } }));
+    const fixture = TestBed.createComponent(PortfolioImportComponent);
+    fixture.detectChanges();
+    service.getRecalcStatus.mockReturnValue(of({ state: 'partial', kind: 'import', quote_refresh: { state: 'completed' } }));
+    vi.advanceTimersByTime(5000);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('匯入重算：partial');
+    expect(fixture.nativeElement.textContent).toContain('報價更新（不含股利）：completed');
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
 });

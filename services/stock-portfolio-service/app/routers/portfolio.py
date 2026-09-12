@@ -5,6 +5,8 @@ from typing import List, Literal, Optional
 from ..database import get_db
 from ..schemas import portfolio as schemas
 from ..services import portfolio_service
+from ..services.dividend_receipt_service import confirm_receipt, ReceiptConflict
+from sqlalchemy.exc import IntegrityError, OperationalError
 from ..models import portfolio as models
 
 router = APIRouter(
@@ -92,18 +94,30 @@ def get_transactions(
 
 @router.post("/dividends", response_model=schemas.Dividend)
 def create_dividend(dividend: schemas.DividendCreate, db: Session = Depends(get_db)):
-    return portfolio_service.create_dividend(db, dividend)
+    try:
+        return portfolio_service.create_dividend(db, dividend)
+    except (ReceiptConflict, IntegrityError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Dividend already exists or requires explicit resolution") from exc
 
 @router.put("/dividends/{dividend_id}", response_model=schemas.Dividend)
 def update_dividend(dividend_id: int, dividend: schemas.DividendCreate, db: Session = Depends(get_db)):
-    updated = portfolio_service.update_dividend(db, dividend_id, dividend)
+    try:
+        updated = portfolio_service.update_dividend(db, dividend_id, dividend)
+    except ReceiptConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Dividend not found")
     return updated
 
 @router.delete("/dividends/{dividend_id}")
 def delete_dividend(dividend_id: int, db: Session = Depends(get_db)):
-    success = portfolio_service.delete_dividend(db, dividend_id)
+    try:
+        success = portfolio_service.delete_dividend(db, dividend_id)
+    except ReceiptConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Dividend not found")
     return {"message": "Dividend deleted"}
@@ -138,3 +152,15 @@ def get_dividends(
         limit=limit,
     )
     return {"items": items, "total": total}
+
+
+@router.post("/dividends/{dividend_id}/confirm-receipt", response_model=schemas.Dividend)
+def confirm_dividend_receipt(dividend_id: int, confirmation: schemas.ReceiptConfirmation, db: Session = Depends(get_db)):
+    try:
+        return confirm_receipt(db, dividend_id, confirmation.receipt_date, confirmation.account_id, confirmation.revision)
+    except (ReceiptConflict, IntegrityError) as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc) if isinstance(exc, ReceiptConflict) else "Receipt conflicts with existing ledger; reload") from exc
+    except OperationalError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Concurrent receipt or database contention; reload before retry") from exc

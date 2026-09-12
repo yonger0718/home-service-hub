@@ -255,6 +255,7 @@ def compute_active_dates(
         )
         .where(
             portfolio_models.Dividend.stock_dividend_shares > 0,
+            portfolio_models.Dividend.receipt_status == 'legacy_unknown',
             portfolio_models.Dividend.ex_dividend_date <= to_d,
         )
     )
@@ -458,6 +459,8 @@ def _trade_date_of(t: portfolio_models.Transaction) -> dt_date:
 
 
 def _ex_date_of(d: portfolio_models.Dividend) -> dt_date:
+    if d.receipt_status == 'confirmed':
+        return d.receipt_date
     ex = d.ex_dividend_date
     return ex.date() if hasattr(ex, "date") else ex
 
@@ -550,9 +553,11 @@ def replay_snapshots_range(
 
     dividends = (
         db.query(portfolio_models.Dividend)
+        .filter(portfolio_models.Dividend.receipt_status.notin_(['pending', 'unresolved']))
         .order_by(portfolio_models.Dividend.ex_dividend_date)
         .all()
     )
+    dividends.sort(key=_ex_date_of)
     price_map = _load_price_map(db, from_d, to_d)
     trading_dates = {d for (_s, _m, d) in price_map.keys()}
     trading_dates_by_market: Dict[str, set[dt_date]] = defaultdict(set)

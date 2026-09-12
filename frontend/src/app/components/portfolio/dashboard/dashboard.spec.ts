@@ -169,6 +169,19 @@ describe('PortfolioDashboardComponent', () => {
     expect(portfolioService.getSummary).toHaveBeenCalled();
   });
 
+  it('continues quote polling while the separate import remains partial', () => {
+    portfolioService.refreshQuotes.mockReturnValue(of({ refresh_scheduled: true }));
+    portfolioService.getRecalcStatus.mockReturnValue(of({ state: 'partial', quote_refresh: { state: 'completed' } }));
+    const fixture = createFixture();
+    portfolioService.getRecalcStatus.mockReturnValue(of({ state: 'partial', quote_refresh: { state: 'running' } }));
+    fixture.nativeElement.querySelector('button').click();
+    vi.advanceTimersByTime(1000);
+    expect(portfolioService.getSummary).not.toHaveBeenCalled();
+    portfolioService.getRecalcStatus.mockReturnValue(of({ state: 'partial', quote_refresh: { state: 'completed' } }));
+    vi.advanceTimersByTime(1000);
+    expect(portfolioService.getSummary).toHaveBeenCalledTimes(1);
+  });
+
   it('warns and still reloads summary when refresh quotes is already running', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     portfolioService.refreshQuotes.mockReturnValue(throwError(() => ({ status: 409 })));

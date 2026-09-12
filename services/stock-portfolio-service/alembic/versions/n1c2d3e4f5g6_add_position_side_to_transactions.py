@@ -1,7 +1,7 @@
 """add position_side column to transactions
 
 Revision ID: n1c2d3e4f5g6
-Revises: m0b1c2d3e4f5
+Revises: m0b1c2d3e4f6
 Create Date: 2026-05-20 12:00:00.000000
 
 Adds a ``position_side`` discriminator (LONG / SHORT) on ``transactions``
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 
 
 revision: str = "n1c2d3e4f5g6"
-down_revision: Union[str, Sequence[str], None] = "m0b1c2d3e4f5"
+down_revision: Union[str, Sequence[str], None] = "m0b1c2d3e4f6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

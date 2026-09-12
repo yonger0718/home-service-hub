@@ -366,6 +366,11 @@ def replay_all(session: Session, *, dry_run: bool = False) -> BackfillResult:
         ).all()
         for dividend in dividends:
             result.dividends_processed += 1
+            if dividend.market == 'TW':
+                # Confirmation owns TW posting atomically. Never infer legacy
+                # receipt or reconstruct pending/missing confirmed cash here.
+                result.cash_rows_skipped += 1
+                continue
             account = _resolve_account_for_dividend(session, dividend)
             if account is None:
                 result.cash_rows_skipped += 1

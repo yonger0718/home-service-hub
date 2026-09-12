@@ -157,7 +157,21 @@ class DividendCreate(DividendBase):
         _require_fx_rate_for_foreign_currency(self.currency, self.fx_rate_to_twd)
         return self
 
+class ReceiptConfirmation(BaseModel):
+    receipt_date: date
+    account_id: int = Field(gt=0)
+    revision: int = Field(ge=1)
+
+
 class Dividend(DividendBase):
+    receipt_status: str = "legacy_unknown"
+    payment_date: Optional[date] = None
+    payment_date_source: Optional[str] = None
+    receipt_date: Optional[date] = None
+    receipt_account_id: Optional[int] = None
+    revision: int = 1
+    source_correction: Optional[dict] = None
+    review_reason: Optional[str] = None
     id: int
     created_at: datetime
     updated_at: datetime

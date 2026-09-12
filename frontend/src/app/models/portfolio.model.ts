@@ -149,14 +149,31 @@ export interface BrokerCsvImportResult {
   }[];
 }
 
+export interface DeferredDividendEvent {
+  symbol: string;
+  ex_date: string;
+  cash_dividend_per_share: string | null;
+  stock_dividend_per_thousand: string | null;
+  eligible_quantity: string;
+  payment_date: string | null;
+  source: string;
+  status: 'deferred' | 'pending' | 'unresolved' | 'confirmed';
+  reason: string;
+}
+
 export interface RecalcStepStatus {
   name: string;
   status: 'ok' | 'failed' | 'skipped' | 'partial';
-  detail?: Record<string, unknown>;
+  detail?: Record<string, unknown> & {
+    deferred_events?: DeferredDividendEvent[];
+    source_errors?: { source: string; symbol: string; year: number; reason: string }[];
+  };
   error?: string | null;
 }
 
 export interface RecalcStatus {
+  kind?: 'import' | 'quotes';
+  quote_refresh?: RecalcStatus;
   state: 'idle' | 'running' | 'completed' | 'partial' | 'failed';
   started_at?: string;
   finished_at?: string | null;
@@ -175,6 +192,14 @@ export interface RecalcTriggerResponse {
 }
 
 export interface Dividend {
+  receipt_status?: 'pending' | 'confirmed' | 'legacy_unknown' | 'unresolved';
+  payment_date?: string | null;
+  payment_date_source?: string | null;
+  receipt_date?: string | null;
+  receipt_account_id?: number | null;
+  revision?: number;
+  source_correction?: Record<string, unknown> | null;
+  review_reason?: string | null;
   id: number;
   symbol: string;
   amount: number;

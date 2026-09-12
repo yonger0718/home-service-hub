@@ -72,7 +72,7 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   readonly sourceOptions = SOURCE_OPTIONS;
   readonly rowsPerPageOptions = [25, 50, 100];
 
-  readonly dividendTotal = computed(() => this.dividends().reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0));
+  readonly dividendTotal = computed(() => this.dividends().filter(d => d.receipt_status === 'confirmed').reduce((sum, dividend) => sum + Number(dividend.amount || 0), 0));
   readonly averagePerShareDividend = computed(() => {
     const rows = this.dividends();
     if (!rows.length) return 0;
@@ -88,16 +88,49 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
         id: dividend.id,
         date: dividend.ex_dividend_date,
         side: 'cash',
-        sideLabel: '股利',
+        sideLabel: this.receiptLabel(dividend),
         primary: `${name} ${dividend.symbol}`,
         meta: perShare > 0 && qty > 0
           ? `每股 ${perShare.toFixed(2)} × ${qty.toLocaleString('zh-TW')}`
           : '現金股利',
-        amount: `+${this.formatCurrency(dividend.amount)}`,
+        amount: `${dividend.receipt_status === 'confirmed' ? '+' : ''}${this.formatCurrency(dividend.amount)}`,
         amountVariant: 'dividend',
       };
     }),
   );
+
+  receiptTarget = signal<Dividend | null>(null);
+  receiptBusy = signal(false);
+  receiptDate = '';
+  receiptAccountId: number | null = null;
+  receiptAccounts = signal<{ id: number; nickname: string; currency: string }[]>([]);
+
+  receiptLabel(row: Dividend): string {
+    return ({ pending: '待確認收款', confirmed: '已確認收款', legacy_unknown: '舊資料：收款未核實', unresolved: '待人工釐清' })[row.receipt_status ?? 'legacy_unknown'];
+  }
+
+  openReceipt(row: Dividend): void {
+    if (row.receipt_status !== 'pending') return;
+    this.receiptTarget.set(row);
+    this.receiptDate = '';
+    this.receiptAccountId = null;
+    this.portfolioService.getAccounts().subscribe({
+      next: result => this.receiptAccounts.set(result.items.filter(a => a.is_active && a.currency === 'TWD')),
+      error: () => this.messageService.add({ severity: 'error', summary: '無法取得收款帳戶' }),
+    });
+  }
+
+  confirmReceipt(): void {
+    const row = this.receiptTarget();
+    if (!row || !this.receiptDate || !this.receiptAccountId || this.receiptBusy()) return;
+    this.receiptBusy.set(true);
+    this.portfolioService.confirmDividendReceipt(row.id, { receipt_date: this.receiptDate,
+      account_id: this.receiptAccountId, revision: row.revision ?? 1 }).subscribe({
+      next: () => { this.receiptBusy.set(false); this.receiptTarget.set(null); this.fetch(); },
+      error: err => { this.receiptBusy.set(false); this.receiptTarget.set(null); this.fetch();
+        this.messageService.add({ severity: 'error', summary: '收款確認未完成', detail: err.error?.detail ?? '請重新載入後核對' }); },
+    });
+  }
 
   private filterDebounce: ReturnType<typeof setTimeout> | null = null;
   private fetchSeq = 0;
@@ -257,6 +290,10 @@ export class PortfolioDividendListComponent implements OnInit, OnDestroy {
   }
 
   showMenu(event: MouseEvent, dividend: Dividend) {
+    if (dividend.receipt_status && dividend.receipt_status !== 'pending') {
+      this.messageService.add({ severity: 'info', summary: '需人工釐清，不可直接改寫已收款或舊資料' });
+      return;
+    }
     this.menuItems = [
       { label: '編輯', icon: 'pi pi-pencil', command: () => this.editDividend(dividend) },
       { separator: true },

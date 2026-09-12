@@ -802,6 +802,8 @@ def _sync_dividend_cash_leg_if_twd(
     db: Session,
     dividend: models.Dividend,
 ) -> None:
+    if dividend.market == "TW" and dividend.receipt_status != "confirmed":
+        return
     if not cash_account_service.cash_leg_enabled():
         return
     currency = (getattr(dividend, "currency", "TWD") or "TWD").strip().upper()
@@ -848,7 +850,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
             .all()
         )
         # 2. 取得所有股利紀錄
-        dividends = db.query(models.Dividend).all()
+        dividends = db.query(models.Dividend).filter(models.Dividend.receipt_status.notin_(['pending', 'unresolved'])).all()
         actions_by_symbol = _load_corp_actions_by_symbol(db)
         adjusted_transactions = _apply_corp_action_factors(transactions, actions_by_symbol)
         from .realized_pnl_service import iter_realized_events
@@ -906,7 +908,7 @@ def get_portfolio_summary(db: Session) -> schemas.PortfolioSummary:
                 by_cur = dividend_native_by_cur.setdefault(key, {})
                 by_cur[native_cur] = by_cur.get(native_cur, Decimal("0.0")) + Decimal(d.amount)
             # XIRR: dividend inflow
-            cf_date = d.ex_dividend_date.date() if hasattr(d.ex_dividend_date, 'date') else d.ex_dividend_date
+            cf_date = d.receipt_date if d.receipt_status == 'confirmed' else (d.ex_dividend_date.date() if hasattr(d.ex_dividend_date, 'date') else d.ex_dividend_date)
             cashflows_map.setdefault(key, []).append((cf_date, amount_twd))
 
         # 交易統計 (計算平均成本與持股數，採用 corporate-action 調整後的視圖)
@@ -1335,6 +1337,8 @@ def create_dividend(db: Session, dividend: schemas.DividendCreate):
         dividend_data.get("market", "TW"),
     )
 
+    from . import dividend_receipt_service
+    dividend_data = dividend_receipt_service.prepare_manual(db, dividend_data)
     db_dividend = models.Dividend(**dividend_data)
     db.add(db_dividend)
     db.flush()
@@ -1577,12 +1581,32 @@ def update_dividend(db: Session, dividend_id: int, dividend_update: schemas.Divi
     if not db_dividend:
         return None
     
+    from .dividend_receipt_service import ReceiptConflict, ex_day
+    if db_dividend.market == 'TW':
+        if db_dividend.receipt_status != 'pending':
+            raise ReceiptConflict('confirmed/legacy/unresolved dividend is immutable; explicit resolution required')
+        if dividend_update.symbol != db_dividend.symbol or ex_day(dividend_update.ex_dividend_date) != ex_day(db_dividend.ex_dividend_date) or dividend_update.market != db_dividend.market:
+            raise ReceiptConflict('entitlement identity cannot be edited')
     update_data = dividend_update.model_dump(exclude_unset=True)
     update_data["symbol"] = _normalize_symbol_for_market(
         update_data["symbol"],
         update_data.get("market", getattr(db_dividend, "market", "TW")),
     )
     
+    if db_dividend.market == 'TW':
+        from sqlalchemy import update
+        revision = db_dividend.revision
+        update_data.pop('received_date', None)
+        changed = db.execute(update(models.Dividend).where(models.Dividend.id == dividend_id,
+            models.Dividend.receipt_status == 'pending', models.Dividend.revision == revision)
+            .values(**update_data, revision=revision + 1).execution_options(synchronize_session=False))
+        if changed.rowcount != 1:
+            db.rollback()
+            raise ReceiptConflict('entitlement changed concurrently; reload')
+        db.commit()
+        db.refresh(db_dividend)
+        return db_dividend
+
     for key, value in update_data.items():
         setattr(db_dividend, key, value)
     
@@ -1596,6 +1620,22 @@ def delete_dividend(db: Session, dividend_id: int):
     db_dividend = db.query(models.Dividend).filter(models.Dividend.id == dividend_id).first()
     if not db_dividend:
         return False
+    if db_dividend.market == 'TW':
+        from .dividend_receipt_service import ReceiptConflict
+        if db_dividend.receipt_status != 'pending':
+            raise ReceiptConflict('confirmed/legacy/unresolved dividend deletion requires explicit resolution')
+        from ..models.cash_transaction import CashTransaction
+        if db.query(CashTransaction).filter(CashTransaction.related_dividend_id == dividend_id).first():
+            raise ReceiptConflict('pre-existing cash leg requires explicit resolution')
+        from sqlalchemy import delete
+        deleted = db.execute(delete(models.Dividend).where(models.Dividend.id == dividend_id,
+            models.Dividend.receipt_status == 'pending', models.Dividend.revision == db_dividend.revision)
+            .execution_options(synchronize_session=False))
+        if deleted.rowcount != 1:
+            db.rollback()
+            raise ReceiptConflict('entitlement changed concurrently; reload')
+        db.commit()
+        return True
     if cash_account_service.cash_leg_enabled():
         cash_account_service.delete_dividend_cash_leg(db, dividend_id)
     db.delete(db_dividend)

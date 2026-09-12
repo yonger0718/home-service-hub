@@ -695,24 +695,13 @@ def _commit_broker_rows(
 
 def _persist_dividend(db: Session, row: ParsedRow) -> models.Dividend:
     payload = row.payload
-    db_div = models.Dividend(
-        symbol=payload["symbol"],
-        amount=payload["amount"],
-        ex_dividend_date=payload["ex_dividend_date"],
-        received_date=payload.get("received_date"),
-        import_fingerprint=row.fingerprint,
-        source="csv",
-    )
+    from .dividend_receipt_service import prepare_manual
+    values = prepare_manual(db, dict(symbol=payload["symbol"], amount=payload["amount"],
+        ex_dividend_date=payload["ex_dividend_date"], received_date=payload.get("received_date"),
+        import_fingerprint=row.fingerprint, source="csv"))
+    db_div = models.Dividend(**values)
     db.add(db_div)
     db.flush()
-    if cash_account_service.cash_leg_enabled():
-        account = cash_account_service.resolve_default_cathay_twd_account(db)
-        cash_account_service.sync_dividend_cash_leg(
-            db,
-            db_div,
-            account.id,
-            CashTxnSource.AUTO_DERIVE,
-        )
     db.commit()
     db.refresh(db_div)
     return db_div
@@ -792,6 +781,10 @@ def commit_dividends(
         except IntegrityError:
             db.rollback()
             skipped += 1
+            continue
+        except ValueError as exc:
+            db.rollback()
+            errors.append(ParseError(row_index=row.row_index, message=str(exc)))
             continue
         created_ids.append(db_div.id)
     return ImportResult(

@@ -127,6 +127,10 @@ export class PortfolioService extends BaseApiService<Transaction> {
     return this.http.post<Dividend>('/api/portfolio/dividends', dividend);
   }
 
+  confirmDividendReceipt(id: number, body: { receipt_date: string; account_id: number; revision: number }): Observable<Dividend> {
+    return this.http.post<Dividend>(`/api/portfolio/dividends/${id}/confirm-receipt`, body);
+  }
+
   updateDividend(id: number, dividend: Partial<Dividend>): Observable<Dividend> {
     return this.http.put<Dividend>(`/api/portfolio/dividends/${id}`, dividend);
   }

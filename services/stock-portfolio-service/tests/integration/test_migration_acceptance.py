@@ -133,23 +133,31 @@ def test_real_http_background_chain_and_quotes_repeat(client,db_session,monkeypa
  def row(d,symbol='2330'):return SimpleNamespace(symbol=symbol,date=d,open=None,high=None,low=None,close=Decimal('110'),volume=None,turnover=None,source='TWSE')
  def prices(db,start,end,**kw):return real(db,start,end,throttle_sec=0,sleep=lambda _:None,twse_fetcher=lambda d:[row(d)],tpex_fetcher=lambda d:[row(d,'6488')],active_dates=kw.get('active_dates'))
  monkeypatch.setattr(nbs,'backfill_prices_range',prices)
- monkeypatch.setattr(dividend_event_service,'fetch_for_holdings',lambda *a,**k:[SimpleNamespace(symbol='2330',ex_dividend_date=date(2026,9,2),cash_dividend=Decimal('2'),stock_dividend=None,source='TWSE')])
+ from app.services import dividend_history_service as history
+ monkeypatch.setattr(history,'_http_get',lambda *a,**k:{'stat':'OK','fields':['資料日期','股票代號','權值+息值','權/息'],'data':[['115/09/02','2330','2','息']]})
+ monkeypatch.setattr(history,'_http_post_form',lambda *a,**k:{'tables':[{'data':[]}]})
  for _ in range(2):
   r=client.post(BASE+'/imports/recalc',json={'start_date':'2026-09-01','end_date':'2026-09-04'});assert r.status_code==200,r.text
   status=client.get(BASE+'/imports/recalc/status').json()
-  assert status['state']=='completed',repr(status)
-  assert len(status['steps'])==3 and all(s['status']=='ok' for s in status['steps'])
+  assert status['state']=='partial',repr(status)
+  assert [s['status'] for s in status['steps']]==['ok','partial','ok']
+  assert status['steps'][1]['detail']['deferred_events'][0]['cash_dividend_per_share']=='2'
   db_session.expire_all()
   assert db_session.query(models.Dividend).filter_by(symbol='2330').count()==1
   assert db_session.query(PortfolioSnapshot).count()==4
   assert db_session.query(PriceHistory).count()==8
  r=client.post(BASE+'/imports/refresh-quotes');assert r.status_code==202,r.text
- assert client.get(BASE+'/imports/recalc/status').json()['state']=='completed'
+ status=client.get(BASE+'/imports/recalc/status').json()
+ assert status['state']=='partial' and status['quote_refresh']['state']=='completed'
+ assert status['steps'][1]['detail']['deferred_events']
  assert db_session.query(PortfolioSnapshot).count()==4
  # A vendor failure must surface as partial, with earlier persisted data retained.
  def fail(*a,**k):raise RuntimeError('fixture provider unavailable')
- monkeypatch.setattr(dividend_event_service,'fetch_for_holdings',fail)
+ monkeypatch.setattr(history,'_http_get',fail)
+ monkeypatch.setattr(history,'_http_post_form',fail)
  assert client.post(BASE+'/imports/recalc',json={'start_date':'2026-09-01','end_date':'2026-09-04'}).status_code==200
  status=client.get(BASE+'/imports/recalc/status').json()
  assert status['state']=='partial' and status['steps'][1]['status']=='failed',status
  assert db_session.query(models.Dividend).count()==1
+ assert db_session.query(models.Dividend).one().receipt_status=='pending'
+ assert db_session.query(CashTransaction).filter_by(type='dividend_cash').count()==0

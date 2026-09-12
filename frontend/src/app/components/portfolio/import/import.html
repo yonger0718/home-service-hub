@@ -117,9 +117,32 @@
     }
 
     <section class="imp-section recalc-panel" aria-live="polite">
-      <div>資料重算：{{ recalcStatus().state }}</div>
-      @for (step of recalcStatus().steps ?? []; track step.name) {
-        <div>{{ step.name }}：{{ step.status }} {{ step.error || '' }}</div>
+      <div>匯入重算：{{ recalcStatus().kind === 'quotes' ? 'idle' : recalcStatus().state }}</div>
+      @if (recalcStatus().kind !== 'quotes' && recalcStatus().started_at) {
+        <small>最近匯入重算：{{ recalcStatus().started_at }}</small>
+      }
+      @if (recalcStatus().kind !== 'quotes') {
+        @for (step of recalcStatus().steps ?? []; track step.name) {
+          <div>{{ step.name === 'dividend_auto_record' ? '歷史股利核對' : step.name }}：{{ step.status }} {{ step.error || '' }}</div>
+          @for (error of step.detail?.source_errors ?? []; track $index) {
+            <div>{{ error.source }} {{ error.symbol }} {{ error.year }}：{{ error.reason }}</div>
+          }
+          @for (event of step.detail?.deferred_events ?? []; track event.symbol + event.ex_date) {
+            <div class="deferred-dividend">
+              <strong>{{ event.symbol }}</strong> 除息日：{{ event.ex_date }}
+              每股現金股利：{{ event.cash_dividend_per_share ?? '未知' }} TWD
+              每仟股配股：{{ event.stock_dividend_per_thousand ?? '未知' }}
+              發放日：{{ event.payment_date ?? '未知' }}
+              <div>權益已記錄；請至股利頁核對並確認實際收款。{{ event.reason }}</div>
+            </div>
+          }
+        }
+      }
+      @if (recalcStatus().quote_refresh; as quotes) {
+        <div>報價更新（不含股利）：{{ quotes.state }}</div>
+        @for (step of quotes.steps ?? []; track step.name) {
+          <div>{{ step.status }} {{ step.error || '' }}</div>
+        }
       }
       <app-btn variant="secondary" [disabled]="recalcSubmitting() || recalcStatus().state === 'running'"
         (click)="retryRecalc()">重算資料</app-btn>

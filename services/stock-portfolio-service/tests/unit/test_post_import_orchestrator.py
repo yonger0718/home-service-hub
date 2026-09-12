@@ -167,35 +167,11 @@ def test_quotes_only_chain_runs_single_networth_step_and_stores_status(
     ]
 
 
-def test_dividend_step_swallows_inner_exception(db_session):
-    """When auto_record_for_event raises, the step records the error and continues."""
-    from app.services import dividend_event_service
-    from app.services.dividend_sources import DividendEventRow
-
-    today = datetime.now(TW).date()
-    row = DividendEventRow(
-        symbol="2330",
-        ex_dividend_date=today,
-        cash_dividend=Decimal("3.0"),
-        stock_dividend=None,
-        source="twt48u",
-    )
-
-    with patch.object(
-        dividend_event_service, "fetch_for_holdings", return_value=[row]
-    ), patch(
-        "app.services.dividend_auto_record_service.auto_record_for_event",
-        side_effect=RuntimeError("twse outage"),
-    ):
-        step = orch._step_dividends(
-            _session_factory(db_session),
-            {"2330"},
-            today,
-            today,
-        )
-    assert step.status == "partial"
-    assert step.detail["event_errors"]
-    assert step.detail["event_errors"][0]["symbol"] == "2330"
+def test_dividend_step_reports_retrieval_exception(db_session):
+    with patch.object(orch.dividend_reconciliation_service, "reconcile", side_effect=RuntimeError("source outage")):
+        step = orch._step_dividends(_session_factory(db_session), {"2330"}, date(2026, 9, 1), date(2026, 9, 12))
+    assert step.status == "failed"
+    assert step.error == "source outage"
 
 
 # ---------- lock serialization ----------
