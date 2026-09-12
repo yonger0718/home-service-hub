@@ -476,8 +476,10 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
             .join(', ');
           this.messageService.add({
             severity: 'warn',
-            summary: '資料重算部分失敗',
-            detail: `失敗步驟：${failed || '未知'}。可點擊「重試」`,
+            summary: '資料重算尚未完成',
+            detail: (status.steps ?? []).some(s => (s.detail?.deferred_events?.length ?? 0) > 0)
+              ? '歷史股利已取得，但暫緩入帳：尚未支援付款會計。重試不會完成入帳。'
+              : `失敗步驟：${failed || '未知'}。可點擊「重試」`,
             life: 8000,
           });
         } else if (status.state === 'failed' && justFinished) {
@@ -488,6 +490,10 @@ export class PortfolioImportComponent implements OnInit, OnDestroy {
             detail: firstError,
             life: 8000,
           });
+        }
+        if (status.quote_refresh?.state === 'running') {
+          this.scheduleNextPoll();
+          return;
         }
         this.stopPolling();
       },

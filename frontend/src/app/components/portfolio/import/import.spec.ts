@@ -74,4 +74,18 @@ describe('Portfolio import controls', () => {
     expect(fixture.nativeElement.textContent).toContain('匯入重算：idle');
   });
 
+  it('updates running quote status without losing a partial import', () => {
+    vi.useFakeTimers();
+    service.getRecalcStatus.mockReturnValue(of({ state: 'partial', kind: 'import', quote_refresh: { state: 'running' } }));
+    const fixture = TestBed.createComponent(PortfolioImportComponent);
+    fixture.detectChanges();
+    service.getRecalcStatus.mockReturnValue(of({ state: 'partial', kind: 'import', quote_refresh: { state: 'completed' } }));
+    vi.advanceTimersByTime(5000);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('匯入重算：partial');
+    expect(fixture.nativeElement.textContent).toContain('報價更新（不含股利）：completed');
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
 });

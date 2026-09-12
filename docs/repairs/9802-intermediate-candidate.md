@@ -66,7 +66,7 @@ fix-only patch and a Git bundle with signed baseline/fix commits. The isolated
 suite exercises actual HTTP/background callers, SQLite eligibility/persistence,
 the supplied public 9802 historical fixture and real historical parsers.
 
-132 relevant backend tests pass; 15 import/dashboard frontend tests pass; Angular
+132 relevant backend tests pass; 16 import/dashboard frontend tests pass; Angular
 development build succeeds. Initial new regression suite on deployed baseline:
 11 failed, 6 passed. Two existing tests were updated where the authorized
 intermediate semantics intentionally replace import recording and quote-status
