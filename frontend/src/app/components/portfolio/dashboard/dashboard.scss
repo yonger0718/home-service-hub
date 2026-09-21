@@ -33,6 +33,16 @@ app-bento {
   .bento-grid > app-bento:not(.b-full) {
     display: grid;
   }
+
+  .kpi-card-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+
+  .kpi-card-footer {
+    margin-top: auto;
+  }
 }
 
 .primary-tile {
