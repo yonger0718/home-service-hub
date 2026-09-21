@@ -74,6 +74,58 @@ app-bento {
   margin-top: 0.75rem;
 }
 
+.estimated-details {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-top: 0.75rem;
+
+  summary {
+    border-radius: 0.25rem;
+    color: var(--app-accent);
+    cursor: pointer;
+    padding: 0.15rem 0;
+
+    &:focus-visible {
+      outline: 2px solid var(--app-accent-soft-strong);
+      outline-offset: 3px;
+    }
+  }
+
+  &[open] summary {
+    margin-bottom: 0.75rem;
+  }
+}
+
+.estimated-breakdown {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.estimated-row {
+  align-items: baseline;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.estimated-row dt {
+  color: var(--app-text-muted);
+}
+
+.estimated-row dd {
+  color: var(--app-text);
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+  text-align: right;
+}
+
+.estimated-explanation {
+  color: var(--app-text-muted);
+  margin: 0.75rem 0 0;
+}
+
 .chart-head {
   align-items: center;
   display: flex;
@@ -311,4 +363,3 @@ app-bento {
     font-size: 2.35rem;
   }
 }
-

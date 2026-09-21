@@ -307,13 +307,31 @@ describe('PortfolioDashboardComponent', () => {
       estimated_pnl_with_dividends: 4690, estimated_pnl_percent: 93.8 };
     portfolioService.getSummary.mockReturnValue(of(buildSummary({
       holdings: [holding], estimated_pnl_with_dividends: 4690,
-      estimated_pnl_percent: 93.8, total_pending_dividends_net: 3090,
+      estimated_pnl_percent: 93.8, total_unrealized_pnl: 1500, total_dividends: 100,
+      total_pending_dividends_net: 3090,
     })));
     const fixture = createFixture();
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelector('.estimated-total')?.textContent).toContain('4,690');
     expect(root.querySelector('.stock-stats')?.textContent).toContain('4,690');
     expect(root.querySelector('.stock-stats')?.textContent).toContain('93.80%');
+    const details = root.querySelector<HTMLDetailsElement>('.estimated-details');
+    expect(details).not.toBeNull();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector('summary')?.textContent?.trim()).toBe('查看損益明細');
+    expect(root.querySelector('.estimated-hint')?.textContent?.trim()).toBe('估算・非可用現金');
+    expect(Array.from(root.querySelectorAll<HTMLElement>('.estimated-row')).map(row => [
+      row.querySelector('dt')?.textContent?.trim(),
+      row.querySelector('dd')?.textContent?.trim(),
+    ])).toEqual([
+      ['未實現價差', fixture.componentInstance.formatNative(1500, 'TWD')],
+      ['已記錄股利', fixture.componentInstance.formatNative(100, 'TWD')],
+      ['待收股利', fixture.componentInstance.formatNative(3090, 'TWD')],
+    ]);
+    expect(details?.textContent).toContain('估計值，非可用現金；資料不足時顯示 —。');
+    details?.querySelector('summary')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    fixture.detectChanges();
+    expect(details?.open).toBe(true);
     (root.querySelector('.stock-row') as HTMLElement).click();
     fixture.detectChanges();
     expect(root.querySelector('.detail-panel')?.textContent).toContain('待收股利');
@@ -353,7 +371,22 @@ describe('PortfolioDashboardComponent', () => {
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelector('.estimated-total')?.textContent?.trim()).toBe('—');
     expect(root.querySelector('.stock-stats')?.textContent).not.toContain('30.00%');
-    expect(root.querySelector('.estimated-breakdown')?.textContent).toContain('3,090');
+    const pendingRow = Array.from(root.querySelectorAll<HTMLElement>('.estimated-row'))
+      .find(row => row.querySelector('dt')?.textContent?.trim() === '待收股利');
+    expect(pendingRow?.querySelector('dd')?.textContent).toContain('3,090');
+  });
+
+  it('shows a dash when pending dividends are unavailable', () => {
+    portfolioService.getSummary.mockReturnValue(of(buildSummary({
+      total_pending_dividends_net: undefined,
+    })));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+    const pendingRow = Array.from(root.querySelectorAll<HTMLElement>('.estimated-row'))
+      .find(row => row.querySelector('dt')?.textContent?.trim() === '待收股利');
+
+    expect(pendingRow?.querySelector('dd')?.textContent?.trim()).toBe('—');
+    expect(root.querySelector('.estimated-explanation')?.textContent).toContain('資料不足時顯示 —');
   });
 
   it.each([

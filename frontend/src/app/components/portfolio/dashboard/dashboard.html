@@ -43,12 +43,25 @@
         @if (totals.estimated_pnl_percent != null) {
           <app-pct-badge [value]="totals.estimated_pnl_percent"></app-pct-badge>
         } @else { <span aria-label="預估含息損益率無法計算">—</span> }
-        <div class="meta estimated-breakdown">
-          <div>未實現價差 {{ formatNative(totals.total_unrealized_pnl, totals.currency) }}</div>
-          <div>已記錄股利 {{ formatNative(totals.total_dividends, totals.currency) }}</div>
-          <div>待收股利 {{ formatNative(totals.pending_dividends_net, totals.currency) }}</div>
-          <div>估計值，非可用現金；資料不足時顯示 —。</div>
-        </div>
+        <div class="meta estimated-hint">估算・非可用現金</div>
+        <details class="estimated-details">
+          <summary>查看損益明細</summary>
+          <dl class="estimated-breakdown">
+            <div class="estimated-row">
+              <dt>未實現價差</dt>
+              <dd>{{ formatNative(totals.total_unrealized_pnl, totals.currency) }}</dd>
+            </div>
+            <div class="estimated-row">
+              <dt>已記錄股利</dt>
+              <dd>{{ formatNative(totals.total_dividends, totals.currency) }}</dd>
+            </div>
+            <div class="estimated-row">
+              <dt>待收股利</dt>
+              <dd>{{ formatNative(totals.pending_dividends_net, totals.currency) }}</dd>
+            </div>
+          </dl>
+          <p class="estimated-explanation">估計值，非可用現金；資料不足時顯示 —。</p>
+        </details>
       </app-bento>
 
       <app-bento>
