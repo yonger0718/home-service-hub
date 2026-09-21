@@ -29,6 +29,12 @@ app-bento {
   grid-column: 1 / -1;
 }
 
+@media (min-width: 761px) {
+  .bento-grid > app-bento:not(.b-full) {
+    display: grid;
+  }
+}
+
 .primary-tile {
   min-height: 168px;
 
