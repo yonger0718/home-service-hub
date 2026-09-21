@@ -364,7 +364,7 @@ describe('PortfolioDashboardComponent', () => {
   it('shows unavailable estimated valuation/ratio instead of zero or pending-only profit', () => {
     portfolioService.getSummary.mockReturnValue(of(buildSummary({
       estimated_pnl_with_dividends: null, estimated_pnl_percent: null,
-      total_pending_dividends_net: undefined,
+      total_pending_dividends_net: 3090,
       holdings: [{...buildHolding(), estimated_pnl_with_dividends: null, estimated_pnl_percent: null}],
     })));
     const fixture = createFixture();
@@ -373,6 +373,18 @@ describe('PortfolioDashboardComponent', () => {
     expect(root.querySelector('.stock-stats')?.textContent).not.toContain('30.00%');
     const pendingRow = Array.from(root.querySelectorAll<HTMLElement>('.estimated-row'))
       .find(row => row.querySelector('dt')?.textContent?.trim() === '待收股利');
+    expect(pendingRow?.querySelector('dd')?.textContent).toContain('3,090');
+  });
+
+  it('shows a dash when pending dividends are unavailable', () => {
+    portfolioService.getSummary.mockReturnValue(of(buildSummary({
+      total_pending_dividends_net: undefined,
+    })));
+    const fixture = createFixture();
+    const root = fixture.nativeElement as HTMLElement;
+    const pendingRow = Array.from(root.querySelectorAll<HTMLElement>('.estimated-row'))
+      .find(row => row.querySelector('dt')?.textContent?.trim() === '待收股利');
+
     expect(pendingRow?.querySelector('dd')?.textContent?.trim()).toBe('—');
     expect(root.querySelector('.estimated-explanation')?.textContent).toContain('資料不足時顯示 —');
   });
