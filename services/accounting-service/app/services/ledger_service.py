@@ -5,7 +5,7 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
-from ..models import Account, Category, LedgerEntry, Project
+from ..models import Account, Category, Counterparty, LedgerEntry, Project
 
 
 def list_accounts(db: Session) -> list[dict]:
@@ -70,18 +70,20 @@ def list_entries(
             Category.name.label("category_name"),
             parent_category.name.label("parent_category_name"),
             Project.name.label("project_name"),
+            Counterparty.name.label("counterparty_name"),
         )
         .join(running, running.c.entry_id == LedgerEntry.id)
         .outerjoin(Category, Category.id == LedgerEntry.category_id)
         .outerjoin(parent_category, parent_category.id == Category.parent_id)
         .outerjoin(Project, Project.id == LedgerEntry.project_id)
+        .outerjoin(Counterparty, Counterparty.id == LedgerEntry.counterparty_id)
         .where(*filters)
         .order_by(LedgerEntry.entry_date.desc(), LedgerEntry.entry_time.desc().nulls_last(), LedgerEntry.seq.desc())
         .limit(limit)
         .offset(offset)
     )
     page = []
-    for entry, running_balance, category_name, parent_category_name, project_name in rows:
+    for entry, running_balance, category_name, parent_category_name, project_name, counterparty_name in rows:
         if category_name is None:
             category = None
         elif parent_category_name is None:
@@ -104,7 +106,7 @@ def list_entries(
                 "project": project_name,
                 "name": entry.name,
                 "merchant": entry.merchant,
-                "counterparty": entry.counterparty,
+                "counterparty": counterparty_name,
                 "description": entry.description,
                 "tags": entry.tags,
                 "parent_entry_id": entry.parent_entry_id,

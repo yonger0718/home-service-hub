@@ -18,7 +18,7 @@ from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
-from ..models import SYSTEM_KINDS, Account, Category, ImportRun, LedgerEntry, Project
+from ..models import SYSTEM_KINDS, Account, Category, Counterparty, ImportRun, LedgerEntry, Project
 from . import fx_rate_service
 from .moze_csv import MozeImportError, MozeRow, ParsedFile, parse_moze_csv
 from .transfer_pairing import PairingResult, pair_transfers
@@ -40,12 +40,13 @@ def _money(value: Decimal) -> str:
 
 
 class _Lookup:
-    """Get-or-create cache for categories and projects inside the ledger transaction."""
+    """Get-or-create cache for categories, projects and counterparties inside the ledger transaction."""
 
     def __init__(self, session: Session):
         self.session = session
         self.categories = {(c.kind, c.parent_id, c.name): c.id for c in session.scalars(select(Category))}
         self.projects = {p.name: p.id for p in session.scalars(select(Project))}
+        self.counterparties = {c.name: c.id for c in session.scalars(select(Counterparty))}
 
     def category_id(self, kind: str, main: str, sub: str) -> int | None:
         if kind in SYSTEM_KINDS:
@@ -75,6 +76,21 @@ class _Lookup:
             self.session.flush()
             self.projects[name] = project.id
         return self.projects[name]
+
+    def counterparty_id(self, name: str | None) -> int | None:
+        if name is None:
+            return None
+        if name not in self.counterparties:
+            counterparty = Counterparty(name=name)
+            self.session.add(counterparty)
+            self.session.flush()
+            self.counterparties[name] = counterparty.id
+        return self.counterparties[name]
+
+
+def _is_settlement(kind: str, amount: Decimal) -> bool:
+    """Mirror of ck_ledger_entry_settlement_sign: 收款 (receivable > 0) and 還款 (payable < 0)."""
+    return (kind == "receivable" and amount > 0) or (kind == "payable" and amount < 0)
 
 
 AMOUNT_QUANTUM = Decimal("0.0001")  # amount is NUMERIC(20,4)
@@ -142,7 +158,8 @@ def _insert_entries(
             project_id=lookup.project_id(row.project),
             name=row.name,
             merchant=row.merchant,
-            counterparty=row.counterparty,
+            counterparty_id=lookup.counterparty_id(row.counterparty),
+            is_settlement=_is_settlement(row.kind, row.amount),
             description=row.description,
             tags=list(row.tags),
             transfer_group_id=pairing.group_by_row.get(row.row_no),
