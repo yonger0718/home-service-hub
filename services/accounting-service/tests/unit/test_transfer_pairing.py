@@ -104,3 +104,35 @@ def test_pass_one_adjacency_counts_records_not_lines(moze):
         moze.row("B", "TWD", "轉入", "100"),
     )
     assert pair_transfers(rows).pass_counts == (1, 0, 0)
+
+
+def test_pass_three_never_pairs_a_leg_left_ambiguous_by_pass_two(moze):
+    rows = _parse(
+        moze,
+        moze.row("A", "TWD", "轉出", "-500"),
+        moze.row("C", "TWD", "支出", "-1", main="飲食"),
+        moze.row("B", "TWD", "轉入", "500"),
+        moze.row("C", "TWD", "轉入", "500"),
+        moze.row("J", "JPY", "轉入", "2300"),
+    )
+    transfer_legs = [r for r in rows if r.kind in ("transfer_out", "transfer_in")]
+    result = pair_transfers(rows)
+    assert result.pass_counts == (0, 0, 0)
+    assert result.group_by_row == {}
+    assert result.unpaired_rows == tuple(r.row_no for r in transfer_legs)
+    assert len(result.unpaired_rows) == 4
+
+
+def test_leg_paired_in_pass_one_is_not_reconsidered_later(moze):
+    rows = _parse(
+        moze,
+        moze.row("A", "TWD", "轉出", "-500"),
+        moze.row("B", "TWD", "轉入", "500"),
+        moze.row("C", "TWD", "支出", "-1", main="飲食"),
+        moze.row("B", "TWD", "轉出", "-500"),
+        moze.row("C", "TWD", "支出", "-1", main="飲食"),
+        moze.row("C", "TWD", "轉入", "500"),
+    )
+    result = pair_transfers(rows)
+    assert result.pass_counts == (1, 1, 0)
+    assert result.unpaired_rows == ()

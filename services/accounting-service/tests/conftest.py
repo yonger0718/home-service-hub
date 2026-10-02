@@ -62,6 +62,12 @@ def no_network(monkeypatch):
     monkeypatch.setattr(fx_rate_service.requests, "get", _blocked)
 
 
+@pytest.fixture(autouse=True)
+def no_import_lock_from_env(monkeypatch):
+    """A production .env setting must never break the suite; lock tests set the flag themselves."""
+    monkeypatch.delenv("ACCOUNTING_IMPORT_LOCKED", raising=False)
+
+
 class FakeResponse:
     def __init__(self, status_code: int, payload: dict | None = None):
         self.status_code = status_code

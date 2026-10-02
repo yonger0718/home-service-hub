@@ -76,3 +76,17 @@ def test_one_request_per_day_and_base(db_session, fake_http):
     ensure_rates(db_session, [(DAY, "JPY", "TWD"), (DAY, "JPY", "USD")], persist=True, http_get=http)
 
     assert len(http.calls) == 1
+
+
+@pytest.mark.parametrize("bad_rate", [0, -0.2, "abc"])
+def test_unparseable_or_non_positive_rate_is_unavailable_but_others_are_cached(db_session, fake_http, bad_rate):
+    day2 = date(2025, 6, 1)
+    http = fake_http({
+        JPY_DAY_URL: _jpy(0.2),
+        "currency-api@2025-06-01/v1/currencies/jpy.json": (200, {"date": "2025-06-01", "jpy": {"twd": bad_rate}}),
+    })
+
+    with pytest.raises(FxRateUnavailableError, match="no FX rate for JPY→TWD on 2025-06-01"):
+        ensure_rates(db_session, [(DAY, "JPY", "TWD"), (day2, "JPY", "TWD")], persist=True, http_get=http)
+
+    assert [r.date for r in db_session.scalars(select(FxRate))] == [DAY]

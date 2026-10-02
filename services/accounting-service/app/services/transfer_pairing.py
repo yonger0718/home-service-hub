@@ -36,16 +36,19 @@ def pair_transfers(rows: Sequence[MozeRow]) -> PairingResult:
     def free(r: MozeRow) -> bool:
         return r.row_no not in partner
 
-    def unique_matches(match) -> list[tuple[MozeRow, MozeRow]]:
+    def unique_matches(match, excluded: frozenset[int] = frozenset()) -> list[tuple[MozeRow, MozeRow]]:
+        def usable(r: MozeRow) -> bool:
+            return free(r) and r.row_no not in excluded
+
         found = []
         for o in outs:
-            if not free(o):
+            if not usable(o):
                 continue
-            candidates = [i for i in ins if free(i) and _same_slot(o, i) and match(o, i)]
+            candidates = [i for i in ins if usable(i) and _same_slot(o, i) and match(o, i)]
             if len(candidates) != 1:
                 continue
             i = candidates[0]
-            counterparts = [p for p in outs if free(p) and _same_slot(p, i) and match(p, i)]
+            counterparts = [p for p in outs if usable(p) and _same_slot(p, i) and match(p, i)]
             if len(counterparts) == 1:
                 found.append((o, i))
         return found
@@ -61,10 +64,20 @@ def pair_transfers(rows: Sequence[MozeRow]) -> PairingResult:
 
     # Pass 2: same currency, exact opposite, unique in both directions.
     # Pass 3: different currency, unique in both directions.
-    for pass_index, match in ((1, _opposite), (2, _cross)):
-        for o, i in unique_matches(match):
-            partner[o.row_no], partner[i.row_no] = i.row_no, o.row_no
-            counts[pass_index] += 1
+    for o, i in unique_matches(_opposite):
+        partner[o.row_no], partner[i.row_no] = i.row_no, o.row_no
+        counts[1] += 1
+
+    # A leg that still has a same-currency opposite counterpart was left ambiguous by pass 2;
+    # pass 3 must not pair it (or use it as a counterpart) across currencies.
+    blocked = frozenset(
+        r.row_no
+        for r in (*outs, *ins)
+        if free(r) and any(free(p) and p.kind != r.kind and _same_slot(r, p) and _opposite(r, p) for p in legs)
+    )
+    for o, i in unique_matches(_cross, blocked):
+        partner[o.row_no], partner[i.row_no] = i.row_no, o.row_no
+        counts[2] += 1
 
     group_by_row: dict[int, uuid.UUID] = {}
     for o in outs:

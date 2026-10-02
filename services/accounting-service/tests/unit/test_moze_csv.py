@@ -114,3 +114,14 @@ def test_quoted_multiline_description_keeps_record_row_numbers(moze):
     rows = parse_moze_csv(ok).rows
     assert [r.row_no for r in rows] == [3, 4]
     assert rows[0].description == "line one, with comma\nline two"
+
+
+def test_amount_with_more_than_four_fractional_digits_is_rejected_naming_row_and_column(moze):
+    data = moze.csv(moze.opening("錢包", "TWD", "0"), moze.row("錢包", "TWD", "支出", "-1.00001"))
+    with pytest.raises(MozeImportError, match="row 3.*金額"):
+        parse_moze_csv(data)
+
+
+def test_amount_with_four_fractional_digits_is_accepted(moze):
+    data = moze.csv(moze.opening("錢包", "TWD", "0"), moze.row("錢包", "TWD", "支出", "-1.2345"))
+    assert parse_moze_csv(data).rows[0].amount == Decimal("-1.2345")

@@ -91,6 +91,8 @@ def _decimal(value: str, column: str, row_no: int) -> Decimal:
         raise MozeImportError(f"row {row_no}: invalid {column} '{value}'") from None
     if not result.is_finite():
         raise MozeImportError(f"row {row_no}: invalid {column} '{value}'")
+    if result.as_tuple().exponent < -4:
+        raise MozeImportError(f"row {row_no}: {column} '{value}' has more than 4 decimal places")
     return result
 
 

@@ -6,7 +6,7 @@ fawazahmed0 currency API that stock-portfolio-service uses (jsDelivr, then pages
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Callable, Iterable
 
 import requests
@@ -57,6 +57,17 @@ def _fetch_day(http_get: HttpGet, day: date, base: str) -> tuple[dict[str, Any] 
     return None, "", "; ".join(errors)
 
 
+def _parse_rate(raw) -> Decimal | None:
+    """Return the quantized rate, or None when it is missing, unparseable or not positive."""
+    if raw is None:
+        return None
+    try:
+        rate = Decimal(str(raw)).quantize(RATE_QUANTUM, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        return None
+    return rate if rate.is_finite() and rate > 0 else None
+
+
 def ensure_rates(
     session: Session,
     needed: Iterable[RateKey],
@@ -90,11 +101,11 @@ def ensure_rates(
     for day, base, quote in missing:
         payload, source, error = fetched[(day, base)]
         raw = payload.get(quote.lower()) if payload is not None else None
-        if raw is None:
-            reason = error or f"no {quote} rate in the {source} payload"
+        rate = _parse_rate(raw)
+        if rate is None:
+            reason = error or f"no usable {quote} rate in the {source} payload"
             failures.append(f"no FX rate for {base}→{quote} on {day.isoformat()}: {reason}")
             continue
-        rate = Decimal(str(raw)).quantize(RATE_QUANTUM, rounding=ROUND_HALF_UP)
         rates[(day, base, quote)] = rate
         new_rows.append({"date": day, "base": base, "quote": quote, "rate": rate, "source": source})
 
