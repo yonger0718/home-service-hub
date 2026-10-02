@@ -126,7 +126,7 @@ The SPA SHALL provide `/accounting/entries/:id` showing: a header in the categor
 
 ### Requirement: Account settings page
 
-The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accounts/new` as a settings-style list: icon and live balance at the top; rows 名稱, 主幣種, 帳戶分組, 圖示, 初始金額, 帳單週期 (closing day with the computed current cycle), 信用帳戶 toggle revealing 繳款期限 (fixed day or days after closing, showing the computed due date), 信用額度, 額度共用 (multi-select of credit accounts), 主帳戶 (picker), 自動扣繳 (account picker); 紅利回饋 (read-only list of the account's rules in 2a); 國外交易手續費 toggle revealing %, rounding, refund flag; 納入總餘額; 封存帳戶; 刪除帳戶 (enabled only with no entries). Saving calls the account write endpoints and validation errors SHALL be shown beside the field.
+The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accounts/new` as a settings-style list: icon and live balance at the top; rows 名稱, 主幣種, 帳戶分組, 圖示, 初始金額, 帳單週期 (closing day with the computed current cycle), 信用帳戶 toggle revealing 繳款期限 (fixed day or days after closing, showing the computed due date), 信用額度, 額度共用 (multi-select of credit accounts), 主帳戶 (picker), 自動扣繳 (account picker); 紅利回饋 (read-only list of the account's rules in 2a); 國外交易手續費 toggle revealing %, rounding, refund flag; 納入總餘額; 封存帳戶; 刪除帳戶 (enabled only with no entries). 主幣種 SHALL be read-only once the account has entries. Saving calls the account write endpoints and validation errors SHALL be shown beside the field. An imported account whose settings were edited locally SHALL show a note "已自訂，匯入不再覆寫" with a 還原 MOZE 設定 action that clears the flag.
 
 #### Scenario: Credit toggle reveals card fields
 - **WHEN** 信用帳戶 is switched on
@@ -139,7 +139,7 @@ The SPA SHALL provide `/accounting/accounts/:id/settings` and `/accounting/accou
 
 ### Requirement: Accounting settings page
 
-The SPA SHALL provide `/accounting/settings` (replacing the redirect) with sections: 資料 (帳戶分組, 類別, 專案, 對象: each a list with add, rename, reorder by drag, hide or archive, and delete when unused; categories show icon and colour pickers and the two-level tree per kind), 顯示 (支出收入顏色, 數字鍵盤順序, 月曆起始星期, 首頁隱藏紅利回饋, 總額縮寫), and 匯入 (upload a MOZE backup zip with a dry-run first, showing the report; the latest import; the import lock state). The settings sub-nav item of the accounting group SHALL point here instead of the global `/settings`.
+The SPA SHALL provide `/accounting/settings` (replacing the redirect) with sections: 資料 (帳戶分組, 類別, 專案, 對象: each a list with add, rename, reorder by drag, hide or archive, and delete when unused; categories show icon and colour pickers and the two-level tree per kind), 顯示 (支出收入顏色, 數字鍵盤順序, 月曆起始星期, 首頁隱藏紅利回饋, 總額縮寫), and 匯入 (upload a MOZE backup zip with a dry-run first, showing the report; the latest import; the import lock state; a 分期 / 週期 list of upcoming scheduled items from `GET /api/accounting/imports/schedules`, read-only until phase 4). The settings sub-nav item of the accounting group SHALL point here instead of the global `/settings`.
 
 #### Scenario: Rename a counterparty
 - **WHEN** `Alan` is renamed to `Alan Chen`

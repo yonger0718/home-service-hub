@@ -22,10 +22,11 @@ The system SHALL persist accounts in an `account` table with these columns:
 - `credit_sharing_id` (UUID, nullable; accounts with the same value share one credit limit)
 - `auto_pay_account_id` (FK → `account.id`, nullable)
 - `fx_fee_pct` (NUMERIC(6,3), nullable), `fx_fee_rounding` (enum `floor`, `round`, `ceil`, `keep`, nullable), `fx_fee_refundable` (BOOLEAN, default FALSE)
+- `settings_locally_edited` (BOOLEAN, default FALSE; set by any settings write, cleared by the owner to let the next import overwrite settings)
 - `moze_id` (VARCHAR(64), UNIQUE, nullable)
 - `created_at` and `updated_at` (TIMESTAMPTZ)
 
-An account's balance SHALL be `opening_balance + Σ ledger_entry.amount` over its entries whose `posted_date` is not after today. The credit-only fields `due_rule`, `due_value`, `credit_limit`, `combined_account_id`, `credit_sharing_id` and `auto_pay_account_id` SHALL be NULL unless `is_credit` is TRUE; `closing_day` and the `fx_fee_*` fields are allowed on any account. `combined_account_id` SHALL NOT point at the account itself and SHALL NOT form a cycle.
+An account's balance SHALL be `opening_balance + Σ ledger_entry.amount` over its entries whose `posted_date` is not after today. `currency` SHALL NOT change while the account has any entry, by edit or by import. The credit-only fields `due_rule`, `due_value`, `credit_limit`, `combined_account_id`, `credit_sharing_id` and `auto_pay_account_id` SHALL be NULL unless `is_credit` is TRUE; `closing_day` and the `fx_fee_*` fields are allowed on any account. `combined_account_id` SHALL NOT point at the account itself and SHALL NOT form a cycle.
 
 #### Scenario: Balance includes opening balance and all entries
 - **GIVEN** an account with `opening_balance = 2000`
@@ -46,6 +47,11 @@ An account's balance SHALL be `opening_balance + Σ ledger_entry.amount` over it
 #### Scenario: Credit fields require the credit flag
 - **WHEN** an account with `is_credit = false` is saved with `credit_limit = 300000`
 - **THEN** the save SHALL be rejected with a validation error naming `credit_limit`
+
+#### Scenario: Currency frozen once entries exist
+- **GIVEN** a TWD account with 3 entries
+- **WHEN** `PUT /api/accounting/accounts/{id}` sets `currency = JPY`
+- **THEN** the response SHALL be HTTP 422 naming `currency`
 
 ### Requirement: Category and project model
 
@@ -187,12 +193,17 @@ The system SHALL persist account groups in `account_group (id, name UNIQUE NOT N
 
 ### Requirement: Counterparty model
 
-The system SHALL persist counterparties in `counterparty (id, name UNIQUE NOT NULL, moze_id UNIQUE nullable)`. `GET /api/accounting/counterparties` SHALL return each counterparty with its open amount: the sum of `receivable`, `payable` and their settling entries' amounts, negated so that a positive value means others owe the owner.
+The system SHALL persist counterparties in `counterparty (id, name UNIQUE NOT NULL, moze_id UNIQUE nullable)`. `GET /api/accounting/counterparties` SHALL return each counterparty with `open_amounts`: one item per currency, each `−Σ amount` over that counterparty's `receivable` and `payable` entries in that currency (settling entries are `receivable` / `payable` entries too, so they are included). A positive value means others owe the owner; a negative value means the owner owes.
 
 #### Scenario: Open amount per counterparty
-- **GIVEN** a receivable of `-420` (代付 for Alan) and a collection of `+200` from Alan
+- **GIVEN** a receivable of `-420 TWD` (代付 for Alan) and a collection of `+200 TWD` from Alan
 - **WHEN** counterparties are listed
-- **THEN** Alan's `open_amount` SHALL be `220`
+- **THEN** Alan's `open_amounts` SHALL be `[{currency: TWD, amount: 220}]`
+
+#### Scenario: Currencies kept apart
+- **GIVEN** Alan also has a payable of `+1000 JPY`
+- **WHEN** counterparties are listed
+- **THEN** Alan's `open_amounts` SHALL contain `TWD 220` and `JPY -1000` as separate items
 
 ### Requirement: Entry group model
 
@@ -207,7 +218,7 @@ The system SHALL persist `entry_group (id, kind enum split | reward_claim | inst
 
 The system SHALL persist reward rules in `reward_rule` with: `id`, `account_id` (FK, NOT NULL), `name`, `method` (enum `percent`, `fixed`), `rate` (NUMERIC(8,4), percent, nullable), `fixed_amount` (NUMERIC(20,4), nullable), `window` (enum, `statement_cycle` only in 2a), `posting` (enum `after_window`, `after_transaction`, `manual`), `delay_days` (SMALLINT), `post_month_offset` (SMALLINT 0–2) and `post_day` (SMALLINT 1–31), `txn_rounding` and `total_rounding` (enum `keep`, `round`, `floor`, `ceil`), `total_cap` (NUMERIC(20,4), nullable), `shared_cap_id` (UUID, nullable), `is_basic` (BOOLEAN), `reward_account_id` (FK), `reward_project_id` (FK, nullable), `starts_on` and `ends_on` (DATE), `is_enabled` (BOOLEAN), `description`, `sort_order`, `moze_id` (UNIQUE, nullable).
 
-The system SHALL persist attachments in `entry_reward_rule (entry_id, rule_id)` with a composite primary key. In 2a rules are created only by import; `GET /api/accounting/accounts/{id}/reward-rules` SHALL list them. No reward is computed in 2a.
+The system SHALL persist attachments in `entry_reward_rule (entry_id, rule_id)` with a composite primary key and `ON DELETE RESTRICT` on `rule_id`. In 2a rules are created only by import; `GET /api/accounting/accounts/{id}/reward-rules` SHALL list them. No reward is computed in 2a. Imports SHALL upsert rules by `moze_id` and SHALL never delete a rule that any entry references (see the backup import spec), so attachments on manual entries survive re-imports.
 
 #### Scenario: Rules listed per account
 - **GIVEN** an account with 3 imported rules, 2 enabled
@@ -259,7 +270,7 @@ Every write SHALL set `source = 'manual'`, SHALL update `category.default_accoun
 
 ### Requirement: Transfer endpoint
 
-`POST /api/accounting/transfers` SHALL take `from_account_id`, `to_account_id` (distinct), `out_amount` (unsigned, in the from-account's currency), `in_amount` (unsigned, in the to-account's currency; defaults to `out_amount` when both currencies match and is required otherwise), `entry_date`, `entry_time`, optional `posted_date`, `category_id` (a `transfer_out` category), `name`, `merchant`, `project_id`, `description`, `tags`, optional `out_fee`, `out_discount`, `in_fee`, `in_discount` children, optional `reward_rule_ids` for the from-account. It SHALL create a `transfer_out` entry of `-out_amount` and a `transfer_in` entry of `+in_amount` sharing a new `transfer_group_id`, with fee and discount children on their respective legs. For cross-currency transfers each leg SHALL store the other leg's amount as `original_amount` / `original_currency` with `fx_rate = in_amount / out_amount` and `fx_source = 'manual'`. `PUT /api/accounting/transfers/{transfer_group_id}` SHALL update both legs together.
+`POST /api/accounting/transfers` SHALL take `from_account_id`, `to_account_id` (distinct), `out_amount` (unsigned, in the from-account's currency), `in_amount` (unsigned, in the to-account's currency; defaults to `out_amount` when both currencies match and is required otherwise), `entry_date`, `entry_time`, optional `posted_date`, `category_id` (a `transfer_out` category), `name`, `merchant`, `project_id`, `description`, `tags`, optional `out_fee`, `out_discount`, `in_fee`, `in_discount` children, optional `reward_rule_ids` for the from-account. It SHALL create a `transfer_out` entry of `-out_amount` and a `transfer_in` entry of `+in_amount` sharing a new `transfer_group_id`, with fee and discount children on their respective legs. For cross-currency transfers each leg SHALL store the other leg's amount, carrying this leg's sign, as `original_amount` / `original_currency`, with `fx_rate = |amount| / |original_amount|` and `fx_source = 'manual'`, so that `original_amount × fx_rate = amount` holds on both legs. `PUT /api/accounting/transfers/{transfer_group_id}` SHALL update both legs together.
 
 #### Scenario: Same-currency transfer
 - **WHEN** a client posts a transfer of `3000` from A to B (both TWD) with an out-fee of `15`
@@ -269,6 +280,7 @@ Every write SHALL set `source = 'manual'`, SHALL update `category.default_accoun
 - **WHEN** a client posts `out_amount = 10000` (TWD) and `in_amount = 46200` (JPY)
 - **THEN** the legs SHALL be `-10000 TWD` and `+46200 JPY` with the same group id
 - **AND** the in-leg SHALL carry `original_amount = 10000`, `original_currency = TWD` and `fx_rate = 4.62`
+- **AND** the out-leg SHALL carry `original_amount = -46200`, `original_currency = JPY` and `fx_rate = 0.2164502165` (`10000 / 46200`, 10 decimals)
 
 ### Requirement: Split endpoint
 
@@ -280,7 +292,7 @@ Every write SHALL set `source = 'manual'`, SHALL update `category.default_accoun
 
 ### Requirement: Settlement endpoint
 
-`POST /api/accounting/entries/{id}/settle` SHALL take `account_id` (the account receiving or paying), `amount` (unsigned, at most the open amount of the target entry), `entry_date`, `entry_time`, `description` and create an entry on that account with `settles_entry_id = {id}`: a `receivable` entry of `+amount` when the target is a `receivable` (收款), a `payable` entry of `-amount` when the target is a `payable` (還款), copying the target's `counterparty_id`. The target's open amount is its `amount` plus the amounts of entries settling it. A request exceeding the open amount SHALL be refused. The detail of a `receivable` or `payable` SHALL report `open_amount` and `is_settled`.
+`POST /api/accounting/entries/{id}/settle` SHALL take `account_id` (the account receiving or paying; its currency MUST equal the target entry's currency, else HTTP 422), `amount` (unsigned, at most the open amount of the target entry), `entry_date`, `entry_time`, `description` and create an entry on that account with `settles_entry_id = {id}`: a `receivable` entry of `+amount` when the target is a `receivable` (收款), a `payable` entry of `-amount` when the target is a `payable` (還款), copying the target's `counterparty_id`. The target's open amount is `|amount + Σ amounts of entries settling it|`, in the target's currency. A request exceeding the open amount SHALL be refused. The detail of a `receivable` or `payable` SHALL report `open_amount` and `is_settled`.
 
 #### Scenario: Partial collection
 - **GIVEN** a receivable of `-420` for Alan on card C
@@ -292,9 +304,14 @@ Every write SHALL set `source = 'manual'`, SHALL update `category.default_accoun
 - **WHEN** a settlement of `300` is posted
 - **THEN** the response SHALL be HTTP 422
 
+#### Scenario: Settlement in another currency refused
+- **GIVEN** a TWD receivable
+- **WHEN** a settlement is posted to a JPY account
+- **THEN** the response SHALL be HTTP 422 naming `currency`
+
 ### Requirement: Refund endpoint
 
-`POST /api/accounting/entries/{id}/refund` SHALL take `account_id` (defaults to the original's account), `amount` (unsigned, at most the original's absolute amount minus prior refunds), `entry_date`, `entry_time`, `description` and create a `refund` entry of `+amount` with `refunds_entry_id = {id}`, the original's category, name and merchant. Refunding a group member SHALL be allowed; refunding a group itself SHALL be refused. The original's detail SHALL report `refunded_amount`.
+`POST /api/accounting/entries/{id}/refund` SHALL take `account_id` (defaults to the original's account; its currency MUST equal the original's currency, else HTTP 422), `amount` (unsigned, at most the original's absolute amount minus prior refunds), `entry_date`, `entry_time`, `description` and create a `refund` entry of `+amount` with `refunds_entry_id = {id}`, the original's category, name and merchant. Refunding a group member SHALL be allowed; refunding a group itself SHALL be refused. The original's detail SHALL report `refunded_amount`.
 
 #### Scenario: Partial refund to another account
 - **GIVEN** an expense of `-1200` on card C
@@ -305,7 +322,7 @@ Every write SHALL set `source = 'manual'`, SHALL update `category.default_accoun
 
 The service SHALL expose CRUD endpoints:
 
-- `POST /api/accounting/accounts`, `PUT /api/accounting/accounts/{id}`, `DELETE /api/accounting/accounts/{id}` (delete allowed only when the account has no entries; otherwise HTTP 409 suggesting archive). `PUT` accepts every account column except `moze_id` and validates credit fields, `combined_account_id` (must be a different, non-archived account; no cycles) and `credit_sharing_id`.
+- `POST /api/accounting/accounts`, `PUT /api/accounting/accounts/{id}`, `DELETE /api/accounting/accounts/{id}` (delete allowed only when the account has no entries; otherwise HTTP 409 suggesting archive). `PUT` accepts every account column except `moze_id` and `settings_locally_edited`, refuses a `currency` change while entries exist, validates credit fields, `combined_account_id` (must be a different, non-archived account; no cycles) and `credit_sharing_id`, and sets `settings_locally_edited = true`. `POST /api/accounting/accounts/{id}/reset-settings-flag` clears the flag.
 - `GET/POST/PUT/DELETE /api/accounting/account-groups`, with `PUT /api/accounting/account-groups/order` taking an ordered id list.
 - `GET /api/accounting/categories?kind=` returning the two-level tree with icons and colours; `POST`, `PUT` (name, icon, colour, parent, hidden, order), `DELETE` (allowed only when unused; otherwise HTTP 409), `PUT /api/accounting/categories/order`.
 - `GET/POST/PUT/DELETE /api/accounting/projects` (delete only when unused).
@@ -323,7 +340,7 @@ The service SHALL expose CRUD endpoints:
 
 ### Requirement: Imported rows are read-only until cutover
 
-While the configuration flag `ACCOUNTING_IMPORT_LOCKED` is false, any `PUT`, `DELETE`, settle or refund request targeting an entry, entry group or account whose `source` is `moze_import` or `moze_backup`, or whose `moze_id` is set, SHALL be refused with HTTP 409 and the message `locked_until_cutover`. Account **settings** writes (`PUT /api/accounting/accounts/{id}`) SHALL be allowed on imported accounts, because a re-import preserves them. When the flag is true, every row SHALL be editable and imports SHALL be refused.
+While the configuration flag `ACCOUNTING_IMPORT_LOCKED` is false, any `PUT`, `DELETE`, settle or refund request targeting an entry or entry group whose `source` is `moze_import` or `moze_backup`, or whose `moze_id` is set, SHALL be refused with HTTP 409 and the message `locked_until_cutover`. Account **settings** writes (`PUT /api/accounting/accounts/{id}`) SHALL be allowed on imported accounts at any time; they set `settings_locally_edited`, and a re-import then leaves that account's settings alone (see the backup import spec, "Accounts, groups, categories…"). When the flag is true, every row SHALL be editable and imports SHALL be refused.
 
 Manual rows (`source = 'manual'`) SHALL be editable at all times and SHALL never be deleted by an import.
 

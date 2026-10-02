@@ -14,9 +14,9 @@ A refused import SHALL write nothing, not even an `import_run` row. Dry runs SHA
 An import SHALL write the ledger in a single database transaction (the *ledger transaction*) that performs these steps in order:
 
 1. Apply any account renames supplied with the import (see "Account renames and disappearing accounts").
-2. Delete every `ledger_entry`, `entry_group`, `entry_reward_rule` and `reward_rule` whose `source` is `moze_import` or `moze_backup`, or whose `moze_id` is set.
+2. Delete every `ledger_entry` and `entry_group` whose `source` is `moze_import` or `moze_backup`, or whose `moze_id` is set, together with their `entry_reward_rule` rows. `reward_rule` rows SHALL NOT be touched by the CSV importer.
 3. For every account named in the file:
-   - if it exists, update its `opening_balance` and `currency` and set `is_archived = false`; its settings columns SHALL be preserved;
+   - if it exists, update its `opening_balance` and set `is_archived = false`; its settings columns SHALL be preserved; `currency` SHALL be updated only when the account has no remaining entries, and a differing currency on an account with manual entries SHALL fail the import naming the account;
    - otherwise, create it.
 4. For every account **not** named in the file that has no remaining entries: set `opening_balance = 0` and `is_archived = true`.
 5. Insert all entries parsed from the file with `source = 'moze_import'`, `posted_date = entry_date`, and the row's 對象 resolved to a `counterparty` row (created when missing).
@@ -58,9 +58,9 @@ When the configuration flag `ACCOUNTING_IMPORT_LOCKED = true` is set, the import
 - **THEN** it SHALL be refused with a message that import is locked, and nothing SHALL change
 
 #### Scenario: CSV import replaces a backup import
-- **GIVEN** the ledger was last filled by a backup import, plus 2 manual entries
+- **GIVEN** the ledger was last filled by a backup import, plus 2 manual entries, one attached to an imported rule
 - **WHEN** a CSV import runs
-- **THEN** every `moze_backup` entry, group and rule SHALL be gone, the CSV entries SHALL be present, and the 2 manual entries SHALL be unchanged
+- **THEN** every `moze_backup` entry and group SHALL be gone, the CSV entries SHALL be present, the 2 manual entries SHALL be unchanged, and the rule and its attachment SHALL still exist
 
 #### Scenario: Account settings survive a CSV re-import
 - **GIVEN** an account with `is_credit = true` and `closing_day = 15`
