@@ -95,6 +95,13 @@ graph TD
 
 服務細節（端點清單、Scheduler cron、Day-trade 推導規則等）見 [`services/stock-portfolio-service/README.md`](services/stock-portfolio-service/README.md)。
 
+### 4. 記帳服務 (Accounting)
+- 前端路由：`/accounting`（時間軸）、`/accounting/entry`（記一筆）、`/accounting/entries/<id>`（明細）、`/accounting/accounts`（帳戶）、`/accounting/accounts/<id>`（存摺）、`/accounting/accounts/<id>/settings`（帳戶設定）、`/accounting/settings`（記帳設定、MOZE 備份匯入）。
+- `ACCOUNTING_IMPORT_LOCKED`（預設 `false`）：切換後設 `true`，拒絕所有 MOZE 匯入並開放編輯匯入的記錄。
+- `MOZE_REALM_EXPORTER`（預設空白 = `node tools/moze-realm-export/index.js`）：MOZE 備份轉換工具；首次使用先 `cd tools/moze-realm-export && npm ci`。
+
+端點清單與匯入 CLI 見 [`services/accounting-service/README.md`](services/accounting-service/README.md)，部署順序與 Caddy 路由見 [`docs/deploy/accounting-phase-2a.md`](docs/deploy/accounting-phase-2a.md)。
+
 ## 🗺 發展路線 (Roadmap)
 
 ### 🟡 Phase 1 & 2: 核心強化與認證 (Active)
