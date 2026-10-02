@@ -90,3 +90,54 @@ def test_unparseable_or_non_positive_rate_is_unavailable_but_others_are_cached(d
         ensure_rates(db_session, [(DAY, "JPY", "TWD"), (day2, "JPY", "TWD")], persist=True, http_get=http)
 
     assert [r.date for r in db_session.scalars(select(FxRate))] == [DAY]
+
+
+PRIMARY = "cdn.jsdelivr.net/npm/@fawazahmed0/" + JPY_DAY_URL
+FALLBACK = "2026-07-10.currency-api.pages.dev/v1/currencies/jpy.json"
+
+
+def _payload(day: str = DAY.isoformat(), **jpy) -> tuple[int, dict | list]:
+    return 200, {"date": day, "jpy": jpy}
+
+
+def _sources(db_session) -> dict[str, str]:
+    return {r.quote: r.source for r in db_session.scalars(select(FxRate))}
+
+
+@pytest.mark.parametrize(
+    "primary",
+    [
+        _payload(usd=0.0068),  # requested quote missing
+        _payload(twd=0),  # zero quote
+        _payload(twd=-1),  # negative quote
+        _payload(twd="abc"),  # unparseable quote
+        (200, [{"jpy": {"twd": 0.2}}]),  # JSON array, not an object
+        (200, {"date": DAY.isoformat(), "jpy": [0.2]}),  # base key is not an object
+        (200, {"date": DAY.isoformat()}),  # base key absent
+    ],
+)
+def test_fallback_used_when_primary_payload_is_unusable(db_session, fake_http, primary):
+    http = fake_http({PRIMARY: primary, FALLBACK: _payload(twd=0.21)})
+
+    rates = ensure_rates(db_session, [(DAY, "JPY", "TWD")], persist=True, http_get=http)
+
+    assert rates == {(DAY, "JPY", "TWD"): Decimal("0.21")}
+    assert _sources(db_session) == {"TWD": "fawazahmed0-pages"}
+
+
+def test_both_sources_unusable_raises_naming_pair_and_date(db_session, fake_http):
+    http = fake_http({PRIMARY: (200, []), FALLBACK: _payload(twd=0)})
+
+    with pytest.raises(FxRateUnavailableError, match="no FX rate for JPY→TWD on 2026-07-10"):
+        ensure_rates(db_session, [(DAY, "JPY", "TWD")], persist=True, http_get=http)
+
+    assert db_session.scalar(select(FxRate)) is None
+
+
+def test_mixed_quotes_keep_primary_rate_and_fill_the_rest_from_fallback(db_session, fake_http):
+    http = fake_http({PRIMARY: _payload(twd=0.2), FALLBACK: _payload(twd=0.5, usd=0.0068)})
+
+    rates = ensure_rates(db_session, [(DAY, "JPY", "TWD"), (DAY, "JPY", "USD")], persist=True, http_get=http)
+
+    assert rates == {(DAY, "JPY", "TWD"): Decimal("0.2"), (DAY, "JPY", "USD"): Decimal("0.0068")}
+    assert _sources(db_session) == {"TWD": "fawazahmed0-jsdelivr", "USD": "fawazahmed0-pages"}

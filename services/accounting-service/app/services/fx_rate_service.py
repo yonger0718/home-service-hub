@@ -45,16 +45,39 @@ def _fetch_json(http_get: HttpGet, url: str) -> tuple[dict[str, Any] | None, str
         return None, str(exc)
 
 
-def _fetch_day(http_get: HttpGet, day: date, base: str) -> tuple[dict[str, Any] | None, str, str | None]:
-    """Return (rates object for `base`, source label, error) for one day."""
+def _rates_object(payload: Any, day: date, base_lc: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Return the `base` rates object when the payload is well-formed, else (None, reason)."""
+    if not isinstance(payload, dict):
+        return None, "payload is not a JSON object"
+    rates = payload.get(base_lc)
+    if not isinstance(rates, dict):
+        return None, f"payload missing rates object for {base_lc}"
+    return rates, None
+
+
+def _resolve_day(
+    http_get: HttpGet, day: date, base: str, quotes: list[str]
+) -> tuple[dict[str, tuple[Decimal, str]], dict[str, str]]:
+    """Resolve each quote for one (day, base): primary first, then the fallback for whatever is still unusable.
+
+    Returns ({quote: (rate, source label)}, {quote: reason it was unavailable from every source}).
+    """
     slot, base_lc = day.isoformat(), base.lower()
-    errors = []
+    resolved: dict[str, tuple[Decimal, str]] = {}
+    reasons: dict[str, list[str]] = {quote: [] for quote in quotes}
     for template, label in ((PRIMARY_URL_TEMPLATE, PRIMARY_SOURCE_LABEL), (FALLBACK_URL_TEMPLATE, FALLBACK_SOURCE_LABEL)):
+        pending = [quote for quote in quotes if quote not in resolved]
+        if not pending:
+            break
         payload, error = _fetch_json(http_get, template.format(slot=slot, base_lc=base_lc))
-        if payload is not None and isinstance(payload.get(base_lc), dict):
-            return payload[base_lc], label, None
-        errors.append(error or f"payload missing rates object for {base_lc}")
-    return None, "", "; ".join(errors)
+        rates, error = (None, error) if error else _rates_object(payload, day, base_lc)
+        for quote in pending:
+            rate = _parse_rate(rates.get(quote.lower())) if rates is not None else None
+            if rate is not None:
+                resolved[quote] = (rate, label)
+            else:
+                reasons[quote].append(error or f"no usable {quote} rate in the {label} payload")
+    return resolved, {quote: "; ".join(reasons[quote]) for quote in quotes if quote not in resolved}
 
 
 def _parse_rate(raw) -> Decimal | None:
@@ -93,19 +116,20 @@ def ensure_rates(
         return rates
 
     http_get = http_get or requests.get
-    days = sorted({(day, base) for day, base, _ in missing})
+    quotes_by_day: dict[tuple[date, str], list[str]] = {}
+    for day, base, quote in missing:
+        quotes_by_day.setdefault((day, base), []).append(quote)
+    days = sorted(quotes_by_day)
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FETCHES) as pool:
-        fetched = dict(zip(days, pool.map(lambda key: _fetch_day(http_get, *key), days)))
+        resolved = dict(zip(days, pool.map(lambda key: _resolve_day(http_get, *key, quotes_by_day[key]), days)))
 
     new_rows, failures = [], []
     for day, base, quote in missing:
-        payload, source, error = fetched[(day, base)]
-        raw = payload.get(quote.lower()) if payload is not None else None
-        rate = _parse_rate(raw)
-        if rate is None:
-            reason = error or f"no usable {quote} rate in the {source} payload"
-            failures.append(f"no FX rate for {base}→{quote} on {day.isoformat()}: {reason}")
+        found, reasons = resolved[(day, base)]
+        if quote not in found:
+            failures.append(f"no FX rate for {base}→{quote} on {day.isoformat()}: {reasons[quote]}")
             continue
+        rate, source = found[quote]
         rates[(day, base, quote)] = rate
         new_rows.append({"date": day, "base": base, "quote": quote, "rate": rate, "source": source})
 
