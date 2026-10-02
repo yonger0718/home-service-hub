@@ -31,7 +31,8 @@ export const CATEGORY_TABS: [CategoryTab, string][] = [
   ['payable', '應付'],
 ];
 
-const SCHEDULE_LABELS: Record<string, string> = { period: '週期', installment: '分期', skipped_record: '未來記錄' };
+/** Partial: an unknown schedule kind shows its raw code (`?? item.kind` in the template). */
+const SCHEDULE_LABELS: Partial<Record<string, string>> = { period: '週期', installment: '分期', skipped_record: '未來記錄' };
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 
 function swap<T>(list: T[], index: number, delta: number): T[] | null {
@@ -71,7 +72,8 @@ export class AccountingSettingsComponent implements OnInit {
 
   readonly newGroup = signal('');
   readonly newCategory = signal('');
-  readonly newSub = signal<Record<number, string>>({});
+  /** Typed text of each main category's 新增子類別 field; Partial, as most rows have none yet. */
+  readonly newSub = signal<Partial<Record<number, string>>>({});
   readonly newProject = signal('');
   readonly newCounterparty = signal('');
 
