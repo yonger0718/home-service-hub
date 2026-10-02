@@ -83,7 +83,14 @@ describe('accounting routes', () => {
     await harness.navigateByUrl('/accounting');
 
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true }));
-    await harness.fixture.whenStable();
+    // The entry form is lazy (loadComponent + import()), which whenStable does not track: poll until the
+    // navigation has settled and the form has rendered so the module is not torn down mid-navigation.
+    const root = harness.fixture.nativeElement as HTMLElement;
+    await vi.waitFor(() => {
+      harness.fixture.detectChanges();
+      expect(TestBed.inject(Router).url).toBe('/accounting/entry');
+      expect(root.querySelector('app-entry-form')).not.toBeNull();
+    });
 
     expect(TestBed.inject(Router).url).toBe('/accounting/entry');
   });
