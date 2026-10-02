@@ -25,7 +25,10 @@ def _four_places(value: Decimal) -> Decimal:
 SignedMoney = Annotated[Decimal, AfterValidator(_four_places)]
 Money = Annotated[Decimal, Field(gt=0), AfterValidator(_four_places)]
 NonNegativeMoney = Annotated[Decimal, Field(ge=0), AfterValidator(_four_places)]
-Rate = Annotated[Decimal, Field(gt=0)]
+MAX_RATE = Decimal("1e9")
+INT32_MIN, INT32_MAX = -(2**31), 2**31 - 1
+Rate = Annotated[Decimal, Field(gt=0, le=MAX_RATE)]
+Int32 = Annotated[int, Field(ge=INT32_MIN, le=INT32_MAX)]  # ids and sort_order are INTEGER columns
 Currency = Annotated[str, Field(min_length=1, max_length=8, pattern=r"^[A-Z0-9]+$")]
 Color = Annotated[str, Field(pattern=r"^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$")]
 ShortText = Annotated[str, Field(max_length=128)]
@@ -39,7 +42,7 @@ class ChildIn(BaseModel):
 
 
 class EntryIn(BaseModel):
-    account_id: int
+    account_id: Int32
     kind: EditableKind
     amount: Money | None = None
     original_amount: Money | None = None
@@ -48,18 +51,18 @@ class EntryIn(BaseModel):
     entry_date: date
     entry_time: time | None = None
     posted_date: date | None = None
-    category_id: int | None = None
-    project_id: int | None = None
+    category_id: Int32 | None = None
+    project_id: Int32 | None = None
     name: ShortText | None = None
     merchant: ShortText | None = None
-    counterparty_id: int | None = None
+    counterparty_id: Int32 | None = None
     description: str | None = None
     tags: list[str] = []
     invoice_number: Annotated[str, Field(max_length=16)] | None = None
     invoice_random: Annotated[str, Field(max_length=8)] | None = None
     fee: ChildIn | None = None
     discount: ChildIn | None = None
-    reward_rule_ids: list[int] = []
+    reward_rule_ids: list[Int32] = []
 
 
 class EntryUpdateIn(EntryIn):
@@ -73,24 +76,24 @@ class SplitMemberIn(EntryIn):
 
 
 class TransferIn(BaseModel):
-    from_account_id: int
-    to_account_id: int
+    from_account_id: Int32
+    to_account_id: Int32
     out_amount: Money
     in_amount: Money | None = None
     entry_date: date
     entry_time: time | None = None
     posted_date: date | None = None
-    category_id: int | None = None
+    category_id: Int32 | None = None
     name: ShortText | None = None
     merchant: ShortText | None = None
     description: str | None = None
-    project_id: int | None = None
+    project_id: Int32 | None = None
     tags: list[str] = []
     out_fee: ChildIn | None = None
     out_discount: ChildIn | None = None
     in_fee: ChildIn | None = None
     in_discount: ChildIn | None = None
-    reward_rule_ids: list[int] = []
+    reward_rule_ids: list[Int32] = []
 
 
 class SplitIn(BaseModel):
@@ -100,13 +103,13 @@ class SplitIn(BaseModel):
     entry_date: date
     entry_time: time | None = None
     posted_date: date | None = None
-    project_id: int | None = None
+    project_id: Int32 | None = None
     tags: list[str] = []
     members: list[SplitMemberIn] = Field(min_length=1)
 
 
 class SettleIn(BaseModel):
-    account_id: int
+    account_id: Int32
     amount: Money
     entry_date: date
     entry_time: time | None = None
@@ -114,7 +117,7 @@ class SettleIn(BaseModel):
 
 
 class RefundIn(BaseModel):
-    account_id: int | None = None
+    account_id: Int32 | None = None
     amount: Money
     entry_date: date
     entry_time: time | None = None
@@ -122,7 +125,7 @@ class RefundIn(BaseModel):
 
 
 class BalanceAdjustmentIn(BaseModel):
-    account_id: int
+    account_id: Int32
     target_balance: SignedMoney
     entry_date: date
     entry_time: time | None = None
@@ -134,23 +137,23 @@ class AccountIn(BaseModel):
     currency: Currency
     opening_balance: SignedMoney = Decimal("0")
     is_archived: bool = False
-    group_id: int | None = None
+    group_id: Int32 | None = None
     icon: Annotated[str, Field(max_length=16)] | None = None
     color: Color | None = None
     note: str | None = None
-    sort_order: int = 0
+    sort_order: Int32 = 0
     include_in_total: bool = True
     is_credit: bool = False
     closing_day: Annotated[int, Field(ge=1, le=31)] | None = None
     due_rule: Literal["fixed_day", "days_after_closing"] | None = None
     due_value: Annotated[int, Field(ge=0, le=120)] | None = None
     credit_limit: NonNegativeMoney | None = None
-    combined_account_id: int | None = None
+    combined_account_id: Int32 | None = None
     credit_sharing_id: UUID | None = None
     # 額度共用: the full list of the OTHER accounts sharing this account's limit. Omitted (None) keeps the old
     # behaviour (credit_sharing_id written as sent); present, the service rebuilds the set from it atomically.
-    credit_sharing_members: list[int] | None = None
-    auto_pay_account_id: int | None = None
+    credit_sharing_members: list[Int32] | None = None
+    auto_pay_account_id: Int32 | None = None
     fx_fee_pct: Annotated[Decimal, Field(ge=0, le=100, max_digits=6, decimal_places=3)] | None = None
     fx_fee_rounding: RoundingMode | None = None
     fx_fee_refundable: bool = False
@@ -158,23 +161,23 @@ class AccountIn(BaseModel):
 
 class AccountGroupIn(BaseModel):
     name: Annotated[str, Field(min_length=1, max_length=64)]
-    sort_order: int = 0
+    sort_order: Int32 = 0
 
 
 class CategoryIn(BaseModel):
     kind: EntryKind
-    parent_id: int | None = None
+    parent_id: Int32 | None = None
     name: Annotated[str, Field(min_length=1, max_length=64)]
     icon: Annotated[str, Field(max_length=16)] | None = None
     color: Color | None = None
-    sort_order: int = 0
+    sort_order: Int32 = 0
     is_hidden: bool = False
 
 
 class ProjectIn(BaseModel):
     name: Annotated[str, Field(min_length=1, max_length=128)]
     is_archived: bool = False
-    sort_order: int = 0
+    sort_order: Int32 = 0
 
 
 class CounterpartyIn(BaseModel):
@@ -193,7 +196,7 @@ class PreferenceIn(BaseModel):
 
 
 class OrderIn(BaseModel):
-    ids: list[int] = Field(min_length=1)
+    ids: list[Int32] = Field(min_length=1)
 
 
 class EntryWriteOut(EntryDetailOut):

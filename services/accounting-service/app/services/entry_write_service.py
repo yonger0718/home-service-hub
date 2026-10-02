@@ -13,7 +13,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..models import Account, Category, Counterparty, EntryGroup, EntryRewardRule, LedgerEntry, Project, RewardRule
-from ..schemas.writes import BalanceAdjustmentIn, ChildIn, EditableKind, EntryIn, EntryUpdateIn
+from ..schemas.writes import MAX_ABS_AMOUNT, BalanceAdjustmentIn, ChildIn, EditableKind, EntryIn, EntryUpdateIn
 from . import fx_rate_service, ledger_service
 from .edit_lock import assert_editable
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (ValidationError re-exported)
@@ -112,6 +112,8 @@ def resolve_fx(
         )
     if result.amount == 0:
         raise ValidationError("amount", "the converted amount rounds to zero")
+    if abs(result.amount) >= MAX_ABS_AMOUNT:
+        raise ValidationError("amount", "the converted amount is too large for NUMERIC(20,4)")
     return result
 
 

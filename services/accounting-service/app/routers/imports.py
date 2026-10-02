@@ -46,6 +46,11 @@ def _parse_renames(raw: str) -> dict[str, str]:
     return renames
 
 
+def _stored_name(filename: str | None, default: str) -> str:
+    """The upload's base name, cut to import_run.file_name's 255 characters."""
+    return (Path(filename or default).name or default)[:255]
+
+
 @router.post("/moze", response_model=ImportReport)
 def import_moze(
     file: UploadFile = File(...),
@@ -58,7 +63,7 @@ def import_moze(
         raise HTTPException(status_code=413, detail="file exceeds 20 MB")
     rename_map = _parse_renames(renames)
     try:
-        return run_import(engine, data, file.filename or "upload.csv", dry_run=dry_run, renames=rename_map)
+        return run_import(engine, data, _stored_name(file.filename, "upload.csv"), dry_run=dry_run, renames=rename_map)
     except ImportLockedError as exc:
         raise HTTPException(status_code=423, detail=str(exc)) from exc
     except ImportAlreadyRunningError as exc:
@@ -78,7 +83,7 @@ def import_moze_backup(
     exporter: list[str] | None = Depends(get_backup_exporter),
 ):
     rename_map = _parse_renames(renames)
-    file_name = Path(file.filename or "backup.zip").name
+    file_name = _stored_name(file.filename, "backup.zip")
     with tempfile.TemporaryDirectory(prefix="moze-upload-") as work:
         zip_path = Path(work) / "upload.zip"
         size = 0

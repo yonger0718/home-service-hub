@@ -423,3 +423,10 @@ def test_counterparty_rename_shows_in_listings_and_delete_rule(client, db_sessio
     assert created.status_code == 201 and created.json()["open_amounts"] == []
     assert client.delete(f"/counterparties/{alan_id}").status_code == 409
     assert client.delete(f"/counterparties/{spare_id}").status_code == 204
+
+
+def test_sort_order_and_ids_beyond_int32_are_422(client, db_session):
+    assert client.post("/projects", json={"name": "大", "sort_order": 2**31}).status_code == 422
+    assert client.post("/account-groups", json={"name": "大", "sort_order": -(2**31) - 1}).status_code == 422
+    assert client.put("/projects/order", json={"ids": [2**31]}).status_code == 422
+    assert client.post("/accounts", json=_account_body(group_id=2**31)).status_code == 422

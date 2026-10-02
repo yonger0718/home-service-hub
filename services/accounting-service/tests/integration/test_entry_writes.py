@@ -674,3 +674,22 @@ def test_fx_for_today_uses_the_latest_release(db_session, seed, fake_http, monke
     )
     entry = db_session.get(LedgerEntry, entry_id)
     assert (entry.amount, entry.fx_rate, entry.fx_source) == (Decimal("-389.34"), Decimal("0.2163"), "fx_api")
+
+
+def test_out_of_range_inputs_are_422_not_500(client, db_session, seed):
+    wallet = seed.account()
+    db_session.commit()
+
+    huge_rate = client.post("/entries", json=_payload(wallet, amount=None, original_amount="1", original_currency="JPY",
+                                                     fx_rate="1000000001"))
+    zero_rate = client.post("/entries", json=_payload(wallet, amount=None, original_amount="1", original_currency="JPY",
+                                                     fx_rate="0"))
+    huge_id = client.post("/entries", json=_payload(wallet, account_id=2**31))
+    huge_rule = client.post("/entries", json=_payload(wallet, reward_rule_ids=[2**31]))
+    overflow = client.post("/entries", json=_payload(wallet, amount=None, original_amount="9999999999999999",
+                                                    original_currency="JPY", fx_rate="1000"))
+
+    for response, field in ((huge_rate, "fx_rate"), (zero_rate, "fx_rate"), (huge_id, "account_id"),
+                            (huge_rule, 0), (overflow, "amount")):
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"][0]["loc"][-1] == field
