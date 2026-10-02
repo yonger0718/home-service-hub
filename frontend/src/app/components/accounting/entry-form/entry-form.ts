@@ -46,7 +46,7 @@ import {
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { accountLabel, isHandledKey } from '../accounting-ui';
+import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey } from '../accounting-ui';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { evaluateAmount, prettyExpression, roundHalfAway } from '../amount-math';
 import { CategoryPickerComponent } from '../category-picker/category-picker';
@@ -898,12 +898,9 @@ export class EntryFormComponent implements OnInit {
       return;
     }
     const target = event.target as HTMLElement | null;
-    if (
-      target?.tagName === 'TEXTAREA' ||
-      target?.tagName === 'BUTTON' ||
-      target?.tagName === 'SUMMARY' ||
-      target?.classList.contains('chip-input')
-    ) {
+    // The same exclusions as the layout's ⏎ shortcut (a <select> picks, a link / button / summary acts), plus the
+    // tag input, which commits its tag.
+    if (NO_ENTER_SAVE_TAGS.has(target?.tagName ?? '') || target?.classList.contains('chip-input')) {
       return;
     }
     event.preventDefault();

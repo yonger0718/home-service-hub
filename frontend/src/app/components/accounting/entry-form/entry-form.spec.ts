@@ -517,6 +517,24 @@ describe('EntryFormComponent', () => {
     expect(left()).toBe(false);
   });
 
+  it('does not save on ⏎ from a <select> (it opens / picks the option)', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    keys(el, '1', '7', '0');
+
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    el.querySelector('.project-select')!.dispatchEvent(enter);
+    settle();
+
+    expect(enter.defaultPrevented).toBe(false);
+    httpMock.expectNone(r => r.method === 'POST');
+    expect(left()).toBe(false);
+  });
+
   it('adds no tag on ⏎ during IME composition in the tag input', async () => {
     const { el } = await open('/accounting/entry');
     respond('/api/accounting/categories', [FOOD]);
