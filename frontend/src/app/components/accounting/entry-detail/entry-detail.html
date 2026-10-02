@@ -1,5 +1,10 @@
 <section class="entry-detail">
   @if (loadError()) {
+    @if (!detail() && !inSheet()) {
+      <div class="error-head">
+        <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
+      </div>
+    }
     <p class="load-error">記錄讀取失敗，請稍後再試。</p>
   }
 

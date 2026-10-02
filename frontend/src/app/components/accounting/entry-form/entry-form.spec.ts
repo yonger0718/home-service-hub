@@ -13,6 +13,7 @@ import { EntryDetail, Project } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetail, makePreference } from '../testing/fixtures';
+import { EntryDetailComponent } from '../entry-detail/entry-detail';
 import { EntryFormComponent, NO_RELATED, RelatedLoad } from './entry-form';
 
 /** Stands in for the timeline so the form's real `navigateByUrl('/accounting')` (leave()) has somewhere to land. */
@@ -39,6 +40,7 @@ const YEN_WALLET = makeAccount({ id: 4, name: '日幣現金', currency: 'JPY' })
 const USD_CARD = makeAccount({ id: 5, name: '美元卡', currency: 'USD' });
 const FX_ACCOUNTS = [...ACCOUNTS, YEN_WALLET, USD_CARD];
 const RAMEN = makeCategory({ id: 13, parent_id: 1, name: '拉麵', default_account_id: 4 });
+const STEAK = makeCategory({ id: 14, parent_id: 1, name: '牛排', default_account_id: 5 });
 const SPLIT_GROUP = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-300.0000', currency: 'TWD' };
 const SPLIT_SEVEN = makeEntryDetail({
   id: 7,
@@ -902,6 +904,34 @@ describe('EntryFormComponent', () => {
   it('applies the same FX reset when a category pick moves the account', async () => {
     const { el } = await open('/accounting/entry', 'phone', FX_ACCOUNTS);
     const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    respond('/api/accounting/categories', [{ ...FOOD, children: [LUNCH, STEAK] }]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    convertYen(el, '.fx-converted', '1166');
+
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '牛排');
+    respond('/api/accounting/accounts/5', makeAccountDetail({ id: 5 }));
+
+    expect(form.accountId()).toBe(5);
+    expect(text(el.querySelector('.form-notice'))).toBe('已重設匯率（帳戶幣別變更）');
+    expect(text(el.querySelector('button.cur'))).toBe('JPY');
+    keys(el, '✓');
+    const req = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries');
+    expect(req.request.body).toMatchObject({
+      account_id: 5,
+      category_id: 14,
+      amount: null,
+      original_amount: '5390',
+      original_currency: 'JPY',
+      fx_rate: null,
+    });
+    req.flush(makeEntryDetail({ id: 99 }));
+    settle();
+  });
+
+  it('drops the conversion when a category pick moves the account to the original currency', async () => {
+    const { el } = await open('/accounting/entry', 'phone', FX_ACCOUNTS);
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
     respond('/api/accounting/categories', [{ ...FOOD, children: [LUNCH, RAMEN] }]);
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     convertYen(el, '.fx-converted', '1166');
@@ -912,7 +942,18 @@ describe('EntryFormComponent', () => {
 
     expect(form.accountId()).toBe(4);
     expect(form.fx()).toBeNull();
-    expect(form.amountExpr()).toBe('5390');
+    keys(el, '✓');
+    const req = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries');
+    expect(req.request.body).toMatchObject({
+      account_id: 4,
+      category_id: 13,
+      amount: '5390',
+      original_amount: null,
+      original_currency: null,
+      fx_rate: null,
+    });
+    req.flush(makeEntryDetail({ id: 99 }));
+    settle();
   });
   // ---- C2: editing a split member -------------------------------------------------------------------------------
 
@@ -959,9 +1000,39 @@ describe('EntryFormComponent', () => {
     settle();
     await Promise.all(navigate!.mock.results.map(result => result.value));
 
-    expect(navigate).toHaveBeenCalledWith('/accounting/entries/22', { replaceUrl: true });
+    expect(navigate).toHaveBeenCalledWith('/accounting/entries/22', { replaceUrl: true, state: { closeTo: 'list' } });
     expect(TestBed.inject(Router).url).toBe('/accounting/entries/22');
     expect(TestBed.inject(Location).back).not.toHaveBeenCalled();
+  });
+
+  it('closes the new split member detail to the timeline, not back to the deleted old id', async () => {
+    TestBed.inject(Router).resetConfig(
+      ROUTES.map(route => (route.path === 'accounting/entries/:id' ? { ...route, component: EntryDetailComponent } : route)),
+    );
+    const group = { ...SPLIT_GROUP, name: '聚餐' };
+    const members = [makeEntry({ id: 7 }), makeEntry({ id: 8 })];
+    const { el } = await open('/accounting/entries/8/edit');
+    respond('/api/accounting/entries/8', { ...SPLIT_EIGHT, group, group_members: members });
+    respond('/api/accounting/entries/7', { ...SPLIT_SEVEN, group, group_members: members });
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/splits/4').flush({ group_id: 4, member_ids: [21, 22] });
+    settle();
+    await Promise.all(navigate!.mock.results.map(result => result.value));
+    expect(TestBed.inject(Router).url).toBe('/accounting/entries/22');
+    settle();
+    respond('/api/accounting/entries/22', { ...SPLIT_EIGHT, id: 22, group, group_members: [makeEntry({ id: 21 }), makeEntry({ id: 22 })] });
+    httpMock.match(r => r.method === 'GET' && r.url === '/api/accounting/accounts').forEach(request => request.flush(ACCOUNTS));
+    settle();
+
+    (harness.routeNativeElement!.querySelector('.close') as HTMLButtonElement).click();
+    await Promise.all(navigate!.mock.results.map(result => result.value));
+
+    expect(TestBed.inject(Location).back).not.toHaveBeenCalled();
+    expect(TestBed.inject(Router).url).toBe('/accounting');
   });
 
   it("uses the edited line's date for the whole split when the owner changed it", async () => {

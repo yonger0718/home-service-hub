@@ -25,7 +25,11 @@
   }
 
   .cat { font-size: 0.8rem; opacity: 0.85; }
+}
 
+/* ✕: in the coloured head, and alone above the load error (a dead page stays closable). */
+.dhead,
+.error-head {
   .close {
     align-items: center;
     background: rgba(255, 255, 255, 0.45);
@@ -178,5 +182,7 @@
   .ico { font-size: 1.1rem; }
   .danger { color: var(--c-red, var(--app-danger)); }
 }
+
+.error-head { min-height: 44px; position: relative; }
 
 .load-error { color: var(--app-danger); }

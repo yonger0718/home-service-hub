@@ -73,6 +73,11 @@ export class EntryDetailComponent implements OnInit {
   readonly detail = signal<EntryDetail | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly loadError = signal(false);
+  /**
+   * Set when the navigation that opened this entry asked ✕ to go to the parent list (`state.closeTo === 'list'`):
+   * after a split member edit the previous history entry is the member's old, deleted id.
+   */
+  private closeToList = false;
   readonly panel = signal<DetailPanel>(null);
   readonly formAccountId = signal<number | null>(null);
   readonly formAmount = signal('');
@@ -224,6 +229,8 @@ export class EntryDetailComponent implements OnInit {
       this.busy.set(false);
       this.routeEntryId.set(id);
       this.passbookId.set(passbook ? Number(params.get('id')) : null);
+      const state = this.router.currentNavigation()?.extras.state ?? (this.location.getState() as Record<string, unknown> | null);
+      this.closeToList = state?.['closeTo'] === 'list';
       this.load(id);
     });
     this.service
@@ -241,8 +248,15 @@ export class EntryDetailComponent implements OnInit {
     return passbook === null ? '/accounting' : `/accounting/accounts/${passbook}`;
   }
 
-  /** ✕ and after a delete: back to where the owner came from (in-app history), else the parent list. */
+  /**
+   * ✕ and after a delete: back to where the owner came from (in-app history), else the parent list. Opened with
+   * `closeTo: 'list'` it always goes to the parent list.
+   */
   close(): void {
+    if (this.closeToList) {
+      void this.router.navigateByUrl(this.parentUrl());
+      return;
+    }
     leavePage(this.router, this.location, this.parentUrl());
   }
 

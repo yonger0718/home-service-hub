@@ -254,6 +254,51 @@ describe('EntryDetailComponent', () => {
     expect(back).toHaveBeenCalledTimes(1);
   });
 
+  it('shows ✕ on the load-error page and leaves it for the parent list', () => {
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = TestBed.createComponent(EntryDetailComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/entries/42').flush({ detail: 'gone' }, { status: 404, statusText: 'Not Found' });
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(navigate).toHaveBeenCalledWith('/accounting');
+  });
+
+  it('closes to the parent list (not back) when opened with closeTo: list, after ✕ and after a delete', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    TestBed.inject(Location).go('/accounting/entries/42', '', { closeTo: 'list' });
+    const fixture = render(RECEIVABLE);
+
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(navigate).toHaveBeenLastCalledWith('/accounting');
+
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.delete-entry')!.click();
+    http.expectOne(r => r.method === 'DELETE').flush(null, { status: 204, statusText: 'No Content' });
+    expect(navigate).toHaveBeenCalledTimes(2);
+    expect(navigate).toHaveBeenLastCalledWith('/accounting');
+    expect(back).not.toHaveBeenCalled();
+  });
+
+  it('closes to the passbook when opened from it with closeTo: list', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    TestBed.inject(Location).go('/accounting/accounts/5/entries/42', '', { closeTo: 'list' });
+    params.next(convertToParamMap({ id: '5', eid: '42' }));
+    const fixture = render(RECEIVABLE);
+
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(navigate).toHaveBeenCalledWith('/accounting/accounts/5');
+  });
+
   it('clears the record when the reload after a successful write fails', () => {
     const fixture = render(RECEIVABLE);
     openForm(fixture, '.action-settle', '220');

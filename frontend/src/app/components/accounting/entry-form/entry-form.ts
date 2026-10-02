@@ -1039,8 +1039,10 @@ export class EntryFormComponent implements OnInit {
       if (plan.kind === 'update-split') {
         // update-split re-inserts every member under new ids: the old id (and the page that showed it) is gone.
         const newId = memberIds[plan.index];
+        // closeTo: the entry before this page in history is the old id too, so the detail's ✕ must not go back().
         void this.router.navigateByUrl(newId === undefined ? '/accounting' : `/accounting/entries/${newId}`, {
           replaceUrl: true,
+          state: { closeTo: 'list' },
         });
         return;
       }
