@@ -106,7 +106,7 @@ def test_unknown_record_type_names_type_and_identifier(backup):
 def test_maps_match_the_spec():
     assert sorted(RECORD_TYPE_TO_KIND) == [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15, 16]
     assert sorted(CATEGORY_TYPE_TO_KIND) == [1, 2, 3, 4, 5, 6, 9, 10, 11, 12]
-    assert ROUNDING_MAP == {0: "keep", 1: "floor", 2: "ceil", 4: "round"}
+    assert ROUNDING_MAP == {0: "keep", 1: "round", 2: "floor", 3: "ceil", 4: "round"}  # MOZE UI order; 4 = 2-decimal round
     assert POSTING_MAP == {0: "after_transaction", 2: "after_window", 3: "manual"}
     assert DUE_RULE_MAP == {0: "fixed_day", 1: "days_after_closing"}
 

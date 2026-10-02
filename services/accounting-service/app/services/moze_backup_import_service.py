@@ -424,7 +424,9 @@ def _upsert_rules(session: Session, data: BackupData, result: SettingsResult) ->
             "account_id": account.id,
             "name": record["name"],
             "method": method,
-            "rate": record["rewardPercentage"] if method == "percent" else None,
+            # MOZE stores a fraction (0.01 = 1 %); reward_rule.rate is a percent, NUMERIC(8,4)
+            "rate": (record["rewardPercentage"] * 100).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+            if method == "percent" else None,
             "fixed_amount": _amount(record["rewardAmount"]) if method == "fixed" else None,
             "window": _mapped(REWARD_WINDOW_MAP, record["rewardPeriodType"], "rewardPeriodType", where),
             "posting": posting,

@@ -15,6 +15,7 @@ from app.models import (
     Project,
     RewardRule,
 )
+from app.services import ledger_service
 from app.services.moze_backup_import_service import moze_uuid
 from app.services.moze_csv import MozeImportError
 from tests.helpers import _import_backup
@@ -64,7 +65,7 @@ def test_credit_card_settings_seeded(db_session, backup):
     assert card.credit_limit == Decimal("300000.0000")
     assert (card.combined_account_id, card.auto_pay_account_id) == (main.id, bank.id)
     assert card.credit_sharing_id == moze_uuid("CS-1")
-    assert (card.fx_fee_pct, card.fx_fee_rounding) == (Decimal("1.500"), "floor")
+    assert (card.fx_fee_pct, card.fx_fee_rounding) == (Decimal("1.500"), "round")
     assert (card.icon, card.moze_id, card.currency) == ("💳", "A-CARD", "TWD")
     assert db_session.get(AccountGroup, card.group_id).name == "信用卡"
     assert (bank.closing_day, bank.due_rule, bank.credit_limit, bank.icon) == (None, None, None, "🏦")
@@ -191,17 +192,19 @@ def _rules_backup(backup, *rules):
 
 def test_percent_rule_with_cap(db_session, backup):
     _import_backup(db_session, _rules_backup(backup, backup.rule(
-        "B-1", rewardPercentage=2, rewardTimeType=2, rewardMonth=1, rewardDay=15, totalRewardLimit=150,
+        "B-1", rewardPercentage=0.02, rewardTimeType=2, rewardMonth=1, rewardDay=15, totalRewardLimit=150,
         rewardAccountID="A-PTS", rewardProjectID="P-REWARD", rewardCalculation=4, totalRewardCalculation=2,
     )))
     rule = db_session.scalar(select(RewardRule))
     assert (rule.method, rule.rate, rule.posting, rule.post_month_offset, rule.post_day) == (
         "percent", Decimal("2.0000"), "after_window", 1, 15)
     assert (rule.total_cap, rule.shared_cap_id, rule.window) == (Decimal("150.0000"), None, "statement_cycle")
-    assert (rule.txn_rounding, rule.total_rounding) == ("round", "ceil")
+    assert (rule.txn_rounding, rule.total_rounding) == ("round", "floor")
     assert rule.reward_account_id == _account(db_session, "點數").id
     assert db_session.get(Project, rule.reward_project_id).name == "回饋專案"
     assert (rule.starts_on, rule.ends_on, rule.is_enabled) == (date(2026, 1, 1), date(2026, 12, 31), True)
+    card = next(a for a in ledger_service.list_accounts(db_session) if a["name"] == "華航卡")
+    assert card["rule_summaries"] == ["回饋 2%"]
 
 
 def test_fixed_rule_with_shared_cap(db_session, backup):
@@ -221,7 +224,7 @@ def test_unsupported_threshold_disables_the_rule(db_session, backup):
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [("rewardPeriodType", 1, "unsupported rewardPeriodType 1"), ("rewardTimeType", 1, "unsupported rewardTimeType 1"),
-     ("rewardCalculation", 3, "unsupported rewardCalculation 3")],
+     ("rewardCalculation", 5, "unsupported rewardCalculation 5")],
 )
 def test_unknown_rule_codes_fail_the_import(db_session, backup, field, value, message):
     with pytest.raises(MozeImportError, match=f"AHBonusReward '回饋': {message}"):
@@ -239,7 +242,7 @@ def test_reimport_updates_rules_in_place_and_handles_orphans(db_session, backup)
     db_session.add(EntryRewardRule(entry_id=manual.id, rule_id=ids["B-2"]))
     db_session.commit()
 
-    summary = _import_backup(db_session, _rules_backup(backup, backup.rule("B-1", rewardPercentage=3)))
+    summary = _import_backup(db_session, _rules_backup(backup, backup.rule("B-1", rewardPercentage=0.03)))
 
     rules = {r.moze_id: r for r in db_session.scalars(select(RewardRule))}
     assert set(rules) == {"B-1", "B-2"}

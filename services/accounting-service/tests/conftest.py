@@ -270,7 +270,7 @@ def _bk_package(identifier="PK-1", records=("R-1",), type_=0, event_type=0, **fi
 def _bk_rule(identifier="B-1", account="A-CARD", **fields) -> dict:
     return {
         "identifier": identifier, "accountID": account, "name": "回饋", "desc": "", "type": 0,
-        "rewardPercentage": 1, "rewardAmount": 0, "rewardPeriodType": 0, "rewardTimeType": 2,
+        "rewardPercentage": 0.01, "rewardAmount": 0, "rewardPeriodType": 0, "rewardTimeType": 2,
         "rewardDelayDays": 0, "rewardMonth": 1, "rewardDay": 15, "rewardCalculation": 0,
         "totalRewardCalculation": 1, "rewardLimit": 0, "totalRewardLimit": 0, "rewardSharingID": None,
         "spendThreshold": 0, "totalSpendThreshold": 0, "minCountThreshold": 0, "isBasic": False,

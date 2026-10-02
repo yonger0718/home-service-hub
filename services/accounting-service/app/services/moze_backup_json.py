@@ -126,7 +126,9 @@ ICON_BY_GROUP: dict[str, str] = {
     "ACCOUNT_OTHERS": "📁",
 }
 
-ROUNDING_MAP: dict[int, str] = {0: "keep", 1: "floor", 2: "ceil", 4: "round"}
+# MOZE UI order: 保留小數 / 四捨五入 / 無條件捨去 / 無條件進位; 4 is the 2-decimal variant, treated as round.
+# Only 1 → round is evidence-backed (Task 11); 2, 3 and 4 stay provisional until 2b computes rewards.
+ROUNDING_MAP: dict[int, str] = {0: "keep", 1: "round", 2: "floor", 3: "ceil", 4: "round"}
 POSTING_MAP: dict[int, str] = {0: "after_transaction", 2: "after_window", 3: "manual"}
 DUE_RULE_MAP: dict[int, str] = {0: "fixed_day", 1: "days_after_closing"}
 REWARD_METHOD_MAP: dict[int, str] = {0: "percent", 1: "fixed"}
