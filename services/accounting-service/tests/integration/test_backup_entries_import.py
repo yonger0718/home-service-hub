@@ -147,7 +147,33 @@ def test_zero_backup_rate_falls_back_to_the_cached_rate(db_session, backup):
     assert (entry.amount, entry.original_amount, entry.original_currency, entry.fx_rate, entry.fx_source) == (
         Decimal("-216.3000"), Decimal("-1000.0000"), "JPY", Decimal("0.2163000000"), "fx_api")
     assert summary["fx_outliers"] == []
-    assert summary["fx_backup_rate_missing"] == {"count": 1, "accounts": ["華航卡"]}
+    assert summary["fx_backup_rate_missing"] == {"count": 1, "accounts": ["華航卡"], "reasons": {"zero_rate": 1}}
+
+
+def test_inverted_backup_conversion_is_normalised(db_session, backup):
+    data = backup.data(
+        accounts=[backup.account("A-CARD", "華航卡")],
+        records=[backup.record("R-INV", "A-CARD", price=-1000, currency="JPY", currencyConversion="R-INV")],
+        conversions=[backup.conversion("R-INV", 5.0, base="JPY", target="TWD")],
+    )
+    summary = _import_backup(db_session, data, rates={JPY_DAY: Decimal("0.2")}, strict=True)
+    entry = _by_moze_id(db_session, "R-INV")
+    assert (entry.amount, entry.original_amount, entry.fx_rate, entry.fx_source) == (
+        Decimal("-200.0000"), Decimal("-1000.0000"), Decimal("0.2"), "moze_backup")
+    assert summary["fx_outliers"] == []
+    assert summary["fx_backup_rate_missing"] == {"count": 0, "accounts": [], "reasons": {}}
+
+
+def test_unrelated_conversion_pair_falls_back(db_session, backup):
+    data = backup.data(
+        accounts=[backup.account("A-CARD", "華航卡")],
+        records=[backup.record("R-PAIR", "A-CARD", price=-1000, currency="JPY", currencyConversion="R-PAIR")],
+        conversions=[backup.conversion("R-PAIR", 1.08, base="USD", target="EUR")],
+    )
+    summary = _import_backup(db_session, data, rates={JPY_DAY: Decimal("0.2163")}, strict=True)
+    entry = _by_moze_id(db_session, "R-PAIR")
+    assert (entry.amount, entry.fx_rate, entry.fx_source) == (Decimal("-216.3000"), Decimal("0.2163000000"), "fx_api")
+    assert summary["fx_backup_rate_missing"] == {"count": 1, "accounts": ["華航卡"], "reasons": {"pair": 1}}
 
 
 def _outlier_data(backup):

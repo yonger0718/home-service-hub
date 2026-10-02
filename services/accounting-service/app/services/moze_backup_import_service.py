@@ -523,7 +523,8 @@ class EntryResult:
     attachments: int = 0
     transfer_rate_mismatches: int = 0
     fx_outliers: list[dict] = field(default_factory=list)
-    fx_backup_rate_missing: list[str] = field(default_factory=list)  # account name per record whose MOZE rate is <= 0
+    # (account name, reason) per main-currency record whose MOZE conversion row gives no usable rate
+    fx_backup_rate_missing: list[tuple[str, str]] = field(default_factory=list)
     refund_direction: str | None = None
     tag_delimiter: str | None = None
 
@@ -536,11 +537,29 @@ def _is_future(record: dict, cutoff: date) -> bool:
     return record["date"].date() > cutoff
 
 
+def _backup_rate(conversion: dict | None, account_currency: str, record_currency: str) -> Decimal | None:
+    """Account-currency units per 1 record-currency unit from an AHCurrencyConversion row, or None if unusable.
+
+    MOZE stores `exchangeRate` as units of `baseCurrencyCode` per 1 unit of `targetCurrencyCode`: base = account
+    currency and target = record currency is used as is; the reverse pair is inverted; a rate not > 0 or any
+    other pair gives None (the record then uses the cached fx_api rate).
+    """
+    if conversion is None or not conversion["exchangeRate"] > 0:
+        return None
+    rate = conversion["exchangeRate"]
+    pair = (conversion["baseCurrencyCode"], conversion["targetCurrencyCode"])
+    if pair == (account_currency, record_currency):
+        return rate
+    if pair == (record_currency, account_currency):
+        return (Decimal(1) / rate).quantize(RATE_QUANTUM, rounding=ROUND_HALF_UP)
+    return None
+
+
 def required_backup_rates(data: BackupData) -> set[tuple[date, str, str]]:
     """(day, record currency, quote) for every foreign record: the MOZE-rate sanity check or the fx_api conversion."""
     main = data.preference["mainCurrency"] or "TWD"
     currencies = _account_currency(data, main)
-    conversions = {conversion["recordID"] for conversion in data.conversions if conversion["exchangeRate"] > 0}
+    conversions = {conversion["recordID"]: conversion for conversion in data.conversions}
     cutoff = data.exported_at.date()
     needed = set()
     for record in data.records:
@@ -548,7 +567,9 @@ def required_backup_rates(data: BackupData) -> set[tuple[date, str, str]]:
         currency = record["currency"] or account_currency
         if account_currency is None or currency == account_currency or _is_future(record, cutoff):
             continue
-        uses_moze_rate = account_currency == main and record["currencyConversion"] in conversions
+        uses_moze_rate = account_currency == main and _backup_rate(
+            conversions.get(record["currencyConversion"]), account_currency, currency
+        ) is not None
         needed.add((record["date"].date(), currency, main if uses_moze_rate else account_currency))
     return needed
 
@@ -569,13 +590,12 @@ def _record_fx(record, account, conversions, rates, main, result, allow_fx_outli
         return None
     day = record["date"].date()
     conversion = conversions.get(record["currencyConversion"])
-    if conversion is not None and not conversion["exchangeRate"] > 0:
-        # MOZE stored no usable rate: convert with the cached daily rate as if no conversion row existed
-        if account.currency == main:
-            result.fx_backup_rate_missing.append(account.name)
-        conversion = None
-    if account.currency == main and conversion is not None:
-        rate = conversion["exchangeRate"]
+    rate = _backup_rate(conversion, account.currency, currency)
+    if account.currency == main and conversion is not None and rate is None:
+        # no usable MOZE rate: convert with the cached daily rate as if no conversion row existed
+        reason = "zero_rate" if not conversion["exchangeRate"] > 0 else "pair"
+        result.fx_backup_rate_missing.append((account.name, reason))
+    if account.currency == main and rate is not None:
         cached = rates.get((day, currency, main))
         if cached is None:
             raise MozeImportError(f"AHRecord '{record['identifier']}': no cached {currency}→{main} rate on {day.isoformat()}")
@@ -1040,7 +1060,8 @@ def replace_ledger_from_backup(
         "fx_outliers": entries.fx_outliers,
         "fx_backup_rate_missing": {
             "count": len(entries.fx_backup_rate_missing),
-            "accounts": sorted(set(entries.fx_backup_rate_missing)),
+            "accounts": sorted({name for name, _ in entries.fx_backup_rate_missing}),
+            "reasons": dict(sorted(Counter(reason for _, reason in entries.fx_backup_rate_missing).items())),
         },
         "confirmed_maps": {
             "due_rule": {str(key): value for key, value in DUE_RULE_MAP.items()},
@@ -1216,7 +1237,7 @@ def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None, exp
     print(f"compared_accounts: {compared['compared']} of {compared['total']}", file=sys.stderr)
     print(f"not_compared: {compared['total'] - compared['compared']}", file=sys.stderr)
     missing = report["summary"]["fx_backup_rate_missing"]
-    print(f"fx_backup_rate_missing: {missing['count']} ({', '.join(missing['accounts'])})", file=sys.stderr)
+    print(f"fx_backup_rate_missing: {missing['count']} {missing['reasons']} ({', '.join(missing['accounts'])})", file=sys.stderr)
     if compared["compared"] == 0:
         print(
             f"WARNING: 0 of {compared['total']} accounts compared; check balances against MOZE by hand",

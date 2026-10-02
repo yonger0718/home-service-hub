@@ -279,7 +279,8 @@ def _bk_rule(identifier="B-1", account="A-CARD", **fields) -> dict:
     }
 
 
-def _bk_conversion(record_id="R-1", rate=0.2163, base="JPY", target="TWD") -> dict:
+def _bk_conversion(record_id="R-1", rate=0.2163, base="TWD", target="JPY") -> dict:
+    """MOZE stores exchangeRate as units of `base` per 1 unit of `target` (TWD per JPY by default)."""
     return {"recordID": record_id, "exchangeRate": rate, "baseCurrencyCode": base, "targetCurrencyCode": target}
 
 

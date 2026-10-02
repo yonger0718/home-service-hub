@@ -174,7 +174,7 @@ def test_report_shape_and_balance_comparison_default(db_session, backup):
     assert summary["confirmed_maps"]["balance_info_key"] is None
     assert summary["confirmed_maps"]["due_rule"] == {"0": "fixed_day", "1": "days_after_closing"}
     assert (summary["rules"], summary["attachments"], summary["counterparties"], summary["groups"]) == (1, 1, 1, 1)
-    assert summary["fx_backup_rate_missing"] == {"count": 0, "accounts": []}
+    assert summary["fx_backup_rate_missing"] == {"count": 0, "accounts": [], "reasons": {}}
 
 
 def test_report_counts_records_whose_moze_rate_is_zero(db_session, backup):
@@ -183,7 +183,7 @@ def test_report_counts_records_whose_moze_rate_is_zero(db_session, backup):
     ])
     doc["classes"]["AHCurrencyConversion"] = [backup.conversion("R-YEN", 0)]
     summary = _import_backup(db_session, parse_backup_doc(doc), rates={(date(2026, 9, 1), "JPY", "TWD"): Decimal("0.2")})
-    assert summary["fx_backup_rate_missing"] == {"count": 1, "accounts": ["華航卡"]}
+    assert summary["fx_backup_rate_missing"] == {"count": 1, "accounts": ["華航卡"], "reasons": {"zero_rate": 1}}
     assert summary["fx_outliers"] == []
 
 
