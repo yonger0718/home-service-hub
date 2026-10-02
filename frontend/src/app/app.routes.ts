@@ -16,12 +16,13 @@ export const routes: Routes = [
   { path: 'portfolio/import-broker', loadComponent: () => import('./components/portfolio/broker-import/broker-import').then(m => m.PortfolioBrokerImportComponent) },
 
   // Accounting routes
-  { path: 'accounting/dashboard', loadComponent: () => import('./components/accounting/dashboard/dashboard').then(m => m.AccountingDashboardComponent) },
-  { path: 'accounting/transactions', loadComponent: () => import('./components/accounting/transaction-list/transaction-list').then(m => m.TransactionListComponent) },
-  { path: 'accounting/settings', loadComponent: () => import('./components/accounting/management-center/management-center').then(m => m.ManagementCenterComponent) },
-  { path: 'accounting/cards', loadComponent: () => import('./components/accounting/card-list/card-list').then(m => m.CardListComponent) },
-  { path: 'accounting/categories', loadComponent: () => import('./components/accounting/category-list/category-list').then(m => m.CategoryListComponent) },
-  { path: 'accounting/recurring', loadComponent: () => import('./components/accounting/recurring-list/recurring-list').then(m => m.RecurringListComponent) },
+  { path: 'accounting', redirectTo: 'accounting/accounts', pathMatch: 'full' },
+  { path: 'accounting/dashboard', redirectTo: 'accounting/accounts' },
+  { path: 'accounting/transactions', redirectTo: 'accounting/accounts' },
+  { path: 'accounting/settings', redirectTo: 'accounting/accounts' },
+  { path: 'accounting/cards', redirectTo: 'accounting/accounts' },
+  { path: 'accounting/categories', redirectTo: 'accounting/accounts' },
+  { path: 'accounting/recurring', redirectTo: 'accounting/accounts' },
 
   { path: '**', redirectTo: '' }
 ];

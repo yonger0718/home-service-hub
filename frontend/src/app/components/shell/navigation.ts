@@ -48,15 +48,10 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'accounting',
     label: '財務',
     icon: 'pi-wallet',
-    defaultPath: '/accounting/transactions',
+    defaultPath: '/accounting/accounts',
     items: [
-      { id: 'accounting-dash', path: '/accounting/dashboard', icon: 'pi-chart-pie', label: '分析', title: '記帳分析', group: 'accounting', sub: true },
-      { id: 'accounting', path: '/accounting/transactions', icon: 'pi-wallet', label: '財務', title: '交易紀錄', group: 'accounting' },
+      { id: 'accounting', path: '/accounting/accounts', icon: 'pi-wallet', label: '帳戶', title: '記帳帳戶', group: 'accounting' },
       { id: 'settings', path: '/settings', icon: 'pi-cog', label: '設定', title: '設定', group: 'accounting', sub: true, exact: true },
-      { id: 'accounting/settings', path: '/accounting/settings', icon: 'pi-sliders-h', label: '管理', title: '會計設定', group: 'accounting', sub: true },
-      { id: 'cards', path: '/accounting/cards', icon: 'pi-credit-card', label: '卡片', title: '信用卡管理', group: 'accounting', sub: true },
-      { id: 'categories', path: '/accounting/categories', icon: 'pi-tags', label: '分類', title: '分類管理', group: 'accounting', sub: true },
-      { id: 'recurring', path: '/accounting/recurring', icon: 'pi-calendar', label: '週期', title: '週期交易', group: 'accounting', sub: true },
     ],
   },
 ];
