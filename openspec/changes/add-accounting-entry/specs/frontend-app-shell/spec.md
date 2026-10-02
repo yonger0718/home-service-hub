@@ -6,7 +6,7 @@ The application SHALL render a frosted top header plus a fixed left dock (groupe
 
 #### Scenario: Desktop renders dock
 - **WHEN** the viewport width is ≥ 760px
-- **THEN** the left dock is visible with three groups (Supplies, Portfolio, Accounting)
+- **THEN** the left dock is visible with four groups (Supplies, Portfolio, Accounting, 設定)
 - **AND** the bottom mobile nav is hidden
 
 #### Scenario: Mobile renders bottom nav
