@@ -141,6 +141,7 @@ export class AccountingLayoutComponent {
 
   /** Escape closes the sheet; marked handled so global shortcuts skip it. */
   onEscape(event: Event): void {
+    if (event.defaultPrevented) return;
     if (!this.sheetOpen()) {
       return;
     }

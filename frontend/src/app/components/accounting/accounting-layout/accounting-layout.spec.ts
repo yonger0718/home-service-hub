@@ -118,6 +118,24 @@ describe('AccountingLayoutComponent', () => {
     opener.remove();
   });
 
+  it('leaves an Escape already handled inside the sheet (the entry form cancels itself)', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    await find(harness, '.detail-pane.open');
+    const navigate = vi.spyOn(router, 'navigateByUrl');
+
+    const inner = document.createElement('button');
+    document.body.appendChild(inner);
+    inner.addEventListener('keydown', event => event.preventDefault());
+    inner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    inner.remove();
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(router.url).toBe('/accounting/entries/5');
+  });
+
   it('leaves Escape alone when no sheet is open, and has no dialog role in panes mode', async () => {
     const harness = await start('panes', '/accounting/entries/5');
     const pane = await find(harness, '.detail-pane');

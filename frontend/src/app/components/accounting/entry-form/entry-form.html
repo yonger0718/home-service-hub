@@ -1,0 +1,254 @@
+<div class="entry-form" [class.entry-form--phone]="isPhone()">
+  <header class="topbar">
+    <button type="button" class="ib cancel" aria-label="取消" (click)="cancel()">✕</button>
+    <h2>{{ title() }}</h2>
+    <button
+      type="button"
+      class="ib ok save"
+      aria-label="儲存"
+      title="長按或 ⇧⏎：儲存並續記"
+      [disabled]="locked() || saving() || loading()"
+      (pointerdown)="onSavePointerDown()"
+      (pointerup)="onSavePointerUp()"
+      (pointerleave)="onSavePointerUp()"
+      (pointercancel)="onSavePointerUp()"
+      (click)="onSaveClick()"
+    >✓</button>
+  </header>
+
+  <app-lock-banner [locked]="locked()" />
+  @if (savedFlash()) {
+    <p class="saved-flash" role="status">已儲存，繼續記下一筆</p>
+  }
+  @if (error(); as message) {
+    <p class="form-error" role="alert">{{ message }}</p>
+  }
+  @if (feeProposal(); as proposal) {
+    <div class="fee-prompt" role="status">
+      <span>已儲存。這個帳戶設有國外交易手續費：</span>
+      <button type="button" class="chip fee add-fee" [disabled]="saving()" (click)="addProposedFee()">＋ 國外交易手續費 {{ proposalText(proposal) }}</button>
+      <button type="button" class="skip-fee" (click)="skipProposedFee()">略過</button>
+    </div>
+  }
+
+  <fieldset class="content" [disabled]="locked() || loading()">
+    <div class="kinds" role="tablist" aria-label="記錄類型">
+      @for (tab of kinds; track tab.kind) {
+        <button
+          type="button"
+          role="tab"
+          class="kind-tab"
+          [class.on]="kind() === tab.kind"
+          [attr.aria-selected]="kind() === tab.kind"
+          [disabled]="tabDisabled(tab.kind)"
+          (click)="selectKind(tab.kind)"
+        >{{ tab.label }}</button>
+      }
+    </div>
+
+    @if (isSystem()) {
+      <p class="lbl">餘額調整</p>
+      <div class="tiles">
+        <label class="tile wide">
+          <span class="cap">帳戶</span>
+          <select class="account-select" (change)="setAccount($any($event.target).value)">
+            @for (option of accountOptions(); track option.id) {
+              <option [value]="option.id" [selected]="option.id === accountId()">{{ accountLabel(option) }}</option>
+            }
+          </select>
+        </label>
+        <div class="tile wide current-balance"><span class="cap">當前餘額</span><span>{{ currentBalance() }}</span></div>
+        <div class="tile amount wide target-tile" [class.invalid]="amountError()">
+          <span class="cur">{{ accountCurrency() }}</span>
+          @if (isPhone()) {
+            <span class="amount-value target-value">{{ targetText() }}</span>
+          } @else {
+            <input
+              class="amount-input target-input"
+              inputmode="decimal"
+              aria-label="調整後餘額"
+              placeholder="0"
+              [value]="targetExpr()"
+              [attr.aria-invalid]="amountError()"
+              (input)="onTargetInput($any($event.target).value)"
+              (blur)="commitTargetInput($any($event.target).value)"
+            />
+          }
+          <span class="cap">調整後餘額</span>
+        </div>
+        <label class="tile wide">
+          <span class="cap">日期</span>
+          <input type="date" class="date-input" [value]="entryDate()" (change)="entryDate.set($any($event.target).value)" />
+        </label>
+      </div>
+      <textarea class="note" placeholder="備註" aria-label="備註" [value]="description()" (input)="description.set($any($event.target).value)"></textarea>
+    } @else {
+      <app-category-picker
+        [kind]="categoryKind() ?? 'expense'"
+        [categories]="categories()"
+        [(selected)]="category"
+        [amount]="stripAmount()"
+        [variant]="isPhone() ? 'grid' : 'bar'"
+        [splittable]="false"
+        (picked)="onCategoryPicked($event)"
+      />
+
+      <div class="tiles">
+        <div class="tile amount wide" [class.invalid]="amountError()">
+          <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx')">{{ entryCurrency() }}</button>
+          @if (isPhone()) {
+            <span class="amount-value">{{ amountText() }}</span>
+          } @else {
+            <input
+              class="amount-input"
+              inputmode="decimal"
+              aria-label="金額，可輸入算式"
+              placeholder="0"
+              [value]="amountExpr()"
+              [attr.aria-invalid]="amountError()"
+              (input)="onAmountInput($any($event.target).value)"
+              (blur)="commitAmountInput($any($event.target).value)"
+            />
+          }
+          <button type="button" class="plus fee-open" aria-label="手續費與折扣" (click)="openSheet('fee')">+</button>
+        </div>
+
+        <div class="tile wide name-tile">
+          <input class="name-input" placeholder="名稱" aria-label="名稱" [value]="name()" (input)="name.set($any($event.target).value)" />
+          <button type="button" class="cap star" disabled aria-label="存為範本（之後開放）">☆</button>
+        </div>
+
+        <label class="tile">
+          <span class="sr-only">帳戶</span>
+          <select class="account-select" (change)="setAccount($any($event.target).value)">
+            @for (option of accountOptions(); track option.id) {
+              <option [value]="option.id" [selected]="option.id === accountId()">{{ accountLabel(option) }}</option>
+            }
+          </select>
+        </label>
+        <label class="tile">
+          <span class="sr-only">專案</span>
+          <select class="project-select" (change)="setProject($any($event.target).value)">
+            <option value="" [selected]="projectId() === null">無專案</option>
+            @for (project of projectOptions(); track project.id) {
+              <option [value]="project.id" [selected]="project.id === projectId()">{{ project.name }}</option>
+            }
+          </select>
+        </label>
+
+        @if (isParty()) {
+          <label class="tile">
+            <span class="sr-only">對象</span>
+            <input
+              class="counterparty-input"
+              list="entry-counterparties"
+              placeholder="對象"
+              [value]="counterpartyName()"
+              (input)="counterpartyName.set($any($event.target).value)"
+            />
+          </label>
+          <datalist id="entry-counterparties">
+            @for (party of counterparties(); track party.id) {
+              <option [value]="party.name"></option>
+            }
+          </datalist>
+        } @else {
+          <label class="tile">
+            <span class="sr-only">商家</span>
+            <input class="merchant-input" placeholder="商家" [value]="merchant()" (input)="merchant.set($any($event.target).value)" />
+          </label>
+        }
+        <label class="tile">
+          <span class="sr-only">日期</span>
+          <input type="date" class="date-input" [value]="entryDate()" (change)="entryDate.set($any($event.target).value)" />
+        </label>
+
+        <label class="tile">
+          <span class="sr-only">時間</span>
+          <input type="time" class="time-input" [value]="entryTime()" (change)="entryTime.set($any($event.target).value)" />
+        </label>
+        <div class="tile invoice-tile">
+          <input class="invoice-input" placeholder="發票號碼" aria-label="發票號碼" maxlength="16" [value]="invoiceNumber()" (input)="invoiceNumber.set($any($event.target).value)" />
+          <input class="random-input" placeholder="隨機碼" aria-label="隨機碼" maxlength="8" [value]="invoiceRandom()" (input)="invoiceRandom.set($any($event.target).value)" />
+        </div>
+      </div>
+
+      <div class="chips">
+        @for (rule of offeredRules(); track rule.id) {
+          <button
+            type="button"
+            class="chip rule-chip"
+            [class.off]="!ruleIds().includes(rule.id)"
+            [attr.aria-pressed]="ruleIds().includes(rule.id)"
+            (click)="toggleRule(rule.id)"
+          >{{ ruleLabel(rule) }}</button>
+        }
+        @for (tag of tags(); track tag) {
+          <button type="button" class="chip tag" [attr.aria-label]="'移除標籤 ' + tag" (click)="removeTag(tag)">#{{ tag }} ×</button>
+        }
+        @if (fee(); as child) {
+          <span class="chip fee">{{ child.name || '手續費' }} −{{ child.amount }}</span>
+        }
+        @if (discount(); as child) {
+          <span class="chip">{{ child.name || '折扣' }} +{{ child.amount }}</span>
+        }
+        <input class="chip-input" placeholder="#標籤 / 紅利回饋" aria-label="新增標籤" (keydown.enter)="onTagEnter($event)" (blur)="onTagBlur($event)" />
+      </div>
+
+      <textarea class="note" placeholder="備註" aria-label="備註" [value]="description()" (input)="description.set($any($event.target).value)"></textarea>
+
+      <details class="advanced">
+        <summary>進階</summary>
+        <label class="adv-row">
+          <span>入帳日</span>
+          <input type="date" class="posted-input" [value]="postedDate() || entryDate()" (change)="postedDate.set($any($event.target).value)" />
+        </label>
+      </details>
+    }
+  </fieldset>
+
+  <div class="entrybottom">
+    @if (footer()) {
+      <div class="foot">{{ footer() }}</div>
+    }
+    @if (isPhone() && !locked()) {
+      @if (isSystem()) {
+        <app-amount-keypad
+          [layout]="preference().keypad_layout"
+          [decimals]="accountDecimals()"
+          [(value)]="targetExpr"
+          (save)="save(false)"
+        />
+      } @else {
+        <app-amount-keypad
+          [layout]="preference().keypad_layout"
+          [quickAmounts]="quick()"
+          [decimals]="decimals()"
+          [(value)]="amountExpr"
+          (next)="focusName()"
+          (save)="save(false)"
+        />
+      }
+    }
+  </div>
+
+  @if (sheet() === 'fx' && account(); as current) {
+    <app-fx-sheet
+      [account]="current"
+      [entryDate]="entryDate()"
+      [originalAmount]="amountPlain()"
+      [(value)]="fx"
+      (closed)="onFxClosed()"
+    />
+  }
+  @if (sheet() === 'fee') {
+    <app-fee-sheet
+      [amount]="signedConverted()"
+      [currency]="accountCurrency()"
+      [kind]="kind()"
+      [(fee)]="fee"
+      [(discount)]="discount"
+      (closed)="sheet.set(null)"
+    />
+  }
+</div>
