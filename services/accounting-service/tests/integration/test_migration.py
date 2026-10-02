@@ -95,3 +95,46 @@ def test_downgrade_restores_revision_8a4c4f9b2d1b_schema(database_factory, alemb
 
     assert _version(url) == "8a4c4f9b2d1b"
     assert _schema(url) == _schema(reference_url)
+
+
+def test_upgrade_holds_legacy_table_locks_before_the_emptiness_check(database_factory, alembic_config, monkeypatch):
+    """A legacy writer must not be able to slip a row in between the empty check and DROP TABLE."""
+    import importlib.util
+    from pathlib import Path
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy.exc import OperationalError
+
+    url = database_factory()
+    command.upgrade(alembic_config(url), "8a4c4f9b2d1b")
+
+    path = next(Path(__file__).parents[2].joinpath("alembic/versions").glob("5d2e7c9a1b3f_*.py"))
+    spec = importlib.util.spec_from_file_location("moze_ledger_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    engine = create_engine(url)
+    writer_engine = create_engine(url)
+    outcome: dict = {}
+    real_check = migration._assert_legacy_tables_empty
+
+    def check_with_concurrent_writer(connection):
+        with writer_engine.connect() as writer:
+            writer.execute(text("SET lock_timeout = '500ms'"))
+            try:
+                writer.execute(text("INSERT INTO categories (name) VALUES ('racer')"))
+                outcome["blocked"] = False
+            except OperationalError as exc:
+                outcome["blocked"] = "lock timeout" in str(exc)
+        real_check(connection)
+
+    monkeypatch.setattr(migration, "_assert_legacy_tables_empty", check_with_concurrent_writer)
+    try:
+        with engine.begin() as conn:
+            with Operations.context(MigrationContext.configure(conn)):
+                migration.upgrade()
+        assert outcome["blocked"] is True
+    finally:
+        engine.dispose()
+        writer_engine.dispose()

@@ -59,6 +59,14 @@ def _timestamp_columns() -> list[sa.Column]:
     ]
 
 
+def _lock_legacy_tables(connection: sa.Connection) -> None:
+    """Block legacy writers until this transaction ends, so the emptiness check cannot go stale."""
+    inspector = sa.inspect(connection)
+    for table_name in LEGACY_TABLES:
+        if inspector.has_table(table_name):
+            connection.execute(sa.text(f'LOCK TABLE "{table_name}" IN ACCESS EXCLUSIVE MODE'))
+
+
 def _assert_legacy_tables_empty(connection: sa.Connection) -> None:
     inspector = sa.inspect(connection)
     non_empty = [
@@ -75,6 +83,7 @@ def _assert_legacy_tables_empty(connection: sa.Connection) -> None:
 
 def upgrade() -> None:
     connection = op.get_bind()
+    _lock_legacy_tables(connection)
     _assert_legacy_tables_empty(connection)
 
     inspector = sa.inspect(connection)
