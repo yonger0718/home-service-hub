@@ -343,7 +343,9 @@ def locked_entry(db: Session, entry_id: int) -> LedgerEntry:
 # deadlocks two concurrent deletes of a transfer's two legs (Task 12 review).
 # The account row is a separate lock class taken only by create_balance_adjustment (account FOR UPDATE, then the
 # balance read and the insert of a new entry); it is taken before any entry lock and no path that holds an entry
-# or group lock ever locks an account row, so it cannot invert the order above.
+# or group lock ever locks an account row, so it cannot invert the order above. Entry inserts do take implicit
+# foreign-key share locks on the account row, which this exclusive lock serialises with; that is harmless because
+# the adjustment path takes no entry lock afterwards.
 
 
 def locked_with_legs(db: Session, entry_id: int, transfer_group_id) -> list[LedgerEntry]:

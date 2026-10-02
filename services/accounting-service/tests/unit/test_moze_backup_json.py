@@ -159,3 +159,12 @@ def test_text_longer_than_its_column_is_refused_naming_the_identifier(backup, tm
 def test_text_at_the_column_limit_is_accepted(backup, tmp_path):
     doc = backup.doc(records=[backup.record("R-1", name="名" * 128, invoiceNumber="A" * 16)])
     assert load_backup_json(backup.write(tmp_path, doc)).records[0]["name"] == "名" * 128
+
+
+def test_surrounding_whitespace_counts_toward_the_limit_because_the_raw_value_is_stored(backup, tmp_path):
+    path = backup.write(tmp_path, backup.doc(records=[backup.record("R-PAD", name="名" * 128 + " ")]))
+
+    with pytest.raises(MozeImportError) as exc:
+        load_backup_json(path)
+
+    assert "'R-PAD'" in str(exc.value) and "'name'" in str(exc.value) and "名" not in str(exc.value)

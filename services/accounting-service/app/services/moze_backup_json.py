@@ -272,7 +272,7 @@ def _check_lengths(name: str, row: dict, where: str) -> None:
     """Refuse text longer than its column; the message names the row's identifier and field, never the text."""
     for field, column in TEXT_COLUMNS.get(name, {}).items():
         value = row.get(field)
-        if isinstance(value, str) and len(value.strip()) > column.type.length:
+        if isinstance(value, str) and value.strip() and len(value) > column.type.length:
             raise MozeImportError(f"{where}: field '{field}' is longer than {column.type.length} characters")
 
 
