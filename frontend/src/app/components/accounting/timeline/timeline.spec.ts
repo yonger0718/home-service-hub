@@ -118,7 +118,7 @@ describe('LedgerTimelineComponent', () => {
   it('shows a split group as one row with its count badge and total', () => {
     const { fixture, el } = render();
     flushSummary('2026-10');
-    const group = { id: 4, kind: 'split' as const, name: '聚餐', count: 2, total: '-410.0000', currency: 'TWD' };
+    const group = { id: 4, kind: 'split' as const, name: '聚餐', merchant: null, description: null, count: 2, total: '-410.0000', currency: 'TWD' };
     flushEntries([
       makeEntry({ id: 40, name: '午餐', amount: '-230.0000', group }),
       makeEntry({ id: 41, kind: 'receivable', name: '代付', amount: '-180.0000', counterparty: 'Alan', group }),

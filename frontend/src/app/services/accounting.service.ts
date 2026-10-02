@@ -178,8 +178,9 @@ export class AccountingService {
     return this.bump(this.http.post<{ group_id: number; member_ids: number[] }>(`${this.apiUrl}/splits`, input));
   }
 
-  updateSplit(groupId: number, input: SplitInput): Observable<unknown> {
-    return this.bump(this.http.put<unknown>(`${this.apiUrl}/splits/${groupId}`, input));
+  /** Replaces every member: the answer carries the members' new ids, in `input.members` order. */
+  updateSplit(groupId: number, input: SplitInput): Observable<{ group_id: number; member_ids: number[] }> {
+    return this.bump(this.http.put<{ group_id: number; member_ids: number[] }>(`${this.apiUrl}/splits/${groupId}`, input));
   }
 
   deleteSplit(groupId: number): Observable<void> {

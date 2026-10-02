@@ -78,6 +78,7 @@ import {
   NO_RELATED,
   RelatedLoad,
   SharedFields,
+  SplitGroupFields,
   buildEntryInput,
   entryInputFromDetail,
   executeEntrySave,
@@ -216,6 +217,10 @@ export class EntryFormComponent implements OnInit {
   readonly members = signal<EntryInput[]>([]);
   /** The loaded entry's split group id, when editing a split member. */
   readonly groupId = signal<number | null>(null);
+  /** The loaded split group's own fields and the edited member's position (split member edits only). */
+  private splitGroup: Omit<SplitGroupFields, 'dateChanged'> | null = null;
+  /** Date / time / posting date as loaded, to tell whether the owner moved the edited split member. */
+  private loadedDates: string | null = null;
   readonly transferEdit = signal<TransferEdit | null>(null);
   readonly transferPanel = viewChild(TransferPanelComponent);
 
@@ -474,8 +479,14 @@ export class EntryFormComponent implements OnInit {
     this.sheet.set(null);
     this.members.set([]);
     this.groupId.set(null);
+    this.splitGroup = null;
+    this.loadedDates = null;
     this.transferEdit.set(null);
     this.transferPanel()?.reset();
+  }
+
+  private datesKey(): string {
+    return [this.entryDate(), this.entryTime(), this.postedDate()].join('|');
   }
 
   /** Stage 1 `getEntry`, stage 2 `loadRelated`; each stage's answer is dropped when a newer `load()` exists. */
@@ -521,14 +532,26 @@ export class EntryFormComponent implements OnInit {
     this.applyDetail(loaded.detail, loaded.copy);
     // A transfer copy is prefilled from both legs but saves as a new transfer (saveTransfer sends no group id then).
     this.transferEdit.set(transferEditFrom(loaded.detail, loaded.related.transfer));
-    if (!loaded.copy && loaded.detail.group?.kind === 'split') {
-      // Editing a split member: the other members become split lines and the save replaces the group's members.
-      this.groupId.set(loaded.detail.group.id);
+    const group = loaded.detail.group;
+    if (!loaded.copy && group?.kind === 'split') {
+      // Editing a split member: the other members (in group order) become split lines and the save replaces the
+      // group's members, putting this one back at its own position under the group's own name / merchant / note.
+      this.groupId.set(group.id);
       this.members.set(loaded.related.members.map(entryInputFromDetail));
+      const index = (loaded.detail.group_members ?? []).findIndex(member => member.id === loaded.detail.id);
+      this.splitGroup = {
+        name: group.name,
+        merchant: group.merchant ?? null,
+        description: group.description ?? null,
+        index: Math.max(index, 0),
+      };
+      this.loadedDates = this.datesKey();
     } else {
       // Not (or no longer) a split member, e.g. a reload after the group was dissolved: the next save is a plain write.
       this.groupId.set(null);
       this.members.set([]);
+      this.splitGroup = null;
+      this.loadedDates = null;
     }
     this.loading.set(false);
   }
@@ -932,7 +955,8 @@ export class EntryFormComponent implements OnInit {
       this.write(request, () => this.finish(keepGoing));
       return;
     }
-    const context = { entryId: targetId, groupId: this.groupId() };
+    const group = this.splitGroup ? { ...this.splitGroup, dateChanged: this.datesKey() !== this.loadedDates } : null;
+    const context = { entryId: targetId, groupId: this.groupId(), group };
     const counterparty: Observable<number | null> = this.isParty()
       ? resolveCounterpartyId(this.accounting, this.counterpartyName(), this.counterparties(), party =>
           this.counterparties.update(list => [...list, party]),
@@ -942,16 +966,31 @@ export class EntryFormComponent implements OnInit {
       map(counterpartyId => planEntrySave(this.buildInput(counterpartyId), this.members(), context)),
       switchMap(plan =>
         executeEntrySave(this.accounting, plan).pipe(
-          // Only single-entry writes answer with an `EntryDetail` (and its `proposed_fee`).
-          map(result => ({ plan, detail: plan.kind === 'create' || plan.kind === 'update' ? (result as EntryDetail) : null })),
+          // Only single-entry writes answer with an `EntryDetail` (and its `proposed_fee`); splits with their ids.
+          map(result => ({
+            plan,
+            detail: plan.kind === 'create' || plan.kind === 'update' ? (result as EntryDetail) : null,
+            memberIds: plan.kind === 'update-split' ? ((result as { member_ids?: number[] } | null)?.member_ids ?? []) : [],
+          })),
         ),
       ),
     );
-    this.write(request, ({ plan, detail }) => {
-      const input = plan.kind === 'create' || plan.kind === 'update' ? plan.input : (plan.input.members[0] as EntryInput);
+    this.write(request, ({ plan, detail, memberIds }) => {
+      const input =
+        plan.kind === 'create' || plan.kind === 'update'
+          ? plan.input
+          : (plan.input.members[plan.kind === 'update-split' ? plan.index : 0] as EntryInput);
       rememberEntryUse(input, this.amount());
       if (detail?.proposed_fee && Number(detail.proposed_fee) > 0 && !input.fee) {
         this.feeProposal.set({ entryId: detail.id, amount: detail.proposed_fee, input, continuous: keepGoing });
+        return;
+      }
+      if (plan.kind === 'update-split') {
+        // update-split re-inserts every member under new ids: the old id (and the page that showed it) is gone.
+        const newId = memberIds[plan.index];
+        void this.router.navigateByUrl(newId === undefined ? '/accounting' : `/accounting/entries/${newId}`, {
+          replaceUrl: true,
+        });
         return;
       }
       this.finish(keepGoing);

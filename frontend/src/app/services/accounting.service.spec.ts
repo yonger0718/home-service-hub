@@ -232,7 +232,7 @@ describe('AccountingService', () => {
 
     httpMock.expectOne('/api/accounting/accounts').flush([makeAccount({ currency: 'JPY', balance_main: null })]);
     httpMock.expectOne('/api/accounting/entries').flush({
-      items: [makeEntry({ group: { id: 4, kind: 'split', name: '旅行', count: 2, total: null, currency: 'JPY' } })],
+      items: [makeEntry({ group: { id: 4, kind: 'split', name: '旅行', merchant: null, description: null, count: 2, total: null, currency: 'JPY' } })],
       total: 1,
       limit: 50,
       offset: 0,

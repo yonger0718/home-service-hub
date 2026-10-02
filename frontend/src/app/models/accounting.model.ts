@@ -119,6 +119,9 @@ export interface EntryGroupSummary {
   id: number;
   kind: EntryGroupKind;
   name: string | null;
+  /** The group row's own merchant / description, so a split edit can rebuild `PUT /splits` from them. */
+  merchant: string | null;
+  description: string | null;
   count: number;
   /** Sum of the members' amounts, in the first member's currency; null for a mixed-currency group without a cached rate. */
   total: string | null;

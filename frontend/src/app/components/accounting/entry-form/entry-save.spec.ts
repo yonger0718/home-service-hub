@@ -81,6 +81,24 @@ describe('entry save plan', () => {
     req.flush({});
   });
 
+  it("puts an edited member back at its index under the group's own fields and the primary's date", () => {
+    const edited = { ...PAID_FOR_ALAN, entry_date: '2026-10-05', entry_time: null, name: null, description: '代付' };
+    const group = { name: '午餐', merchant: '麥當勞', description: '週五', index: 1, dateChanged: false };
+    const plan = planEntrySave(edited, [LUNCH], { entryId: 101, groupId: 12, group });
+    expect(plan).toMatchObject({ kind: 'update-split', groupId: 12, index: 1 });
+    const input = plan.kind === 'update-split' ? plan.input : null;
+    expect(input).toMatchObject({ name: '午餐', merchant: '麥當勞', description: '週五', entry_date: '2026-10-02', entry_time: '12:31' });
+    expect(input!.members.map(member => [member.kind, member.entry_date, member.description])).toEqual([
+      ['expense', '2026-10-02', null],
+      ['receivable', '2026-10-02', '代付'],
+    ]);
+
+    const moved = planEntrySave(edited, [LUNCH], { entryId: 101, groupId: 12, group: { ...group, dateChanged: true } });
+    expect(moved.kind === 'update-split' && moved.input.members.map(member => member.entry_date)).toEqual(['2026-10-05', '2026-10-05']);
+    // A member removed in the form shifts the edited line left, never past the end.
+    expect(planEntrySave(edited, [], { entryId: 101, groupId: 12, group })).toMatchObject({ index: 0 });
+  });
+
   it('updates a single entry in place', () => {
     executeEntrySave(service, planEntrySave(LUNCH, [], { entryId: 100, groupId: null })).subscribe();
     const req = http.expectOne('/api/accounting/entries/100');

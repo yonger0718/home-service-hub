@@ -23,6 +23,7 @@ const ROUTES: Routes = [
   { path: 'accounting', component: AccountingStubComponent },
   { path: 'accounting/entry', component: EntryFormComponent },
   { path: 'accounting/entries/:id/edit', component: EntryFormComponent },
+  { path: 'accounting/entries/:id', component: AccountingStubComponent },
 ];
 
 const ACCOUNTS = [
@@ -38,7 +39,7 @@ const YEN_WALLET = makeAccount({ id: 4, name: '日幣現金', currency: 'JPY' })
 const USD_CARD = makeAccount({ id: 5, name: '美元卡', currency: 'USD' });
 const FX_ACCOUNTS = [...ACCOUNTS, YEN_WALLET, USD_CARD];
 const RAMEN = makeCategory({ id: 13, parent_id: 1, name: '拉麵', default_account_id: 4 });
-const SPLIT_GROUP = { id: 4, kind: 'split' as const, name: null, count: 2, total: '-300.0000', currency: 'TWD' };
+const SPLIT_GROUP = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-300.0000', currency: 'TWD' };
 const SPLIT_SEVEN = makeEntryDetail({
   id: 7,
   account_id: 2,
@@ -892,5 +893,78 @@ describe('EntryFormComponent', () => {
     expect(form.accountId()).toBe(4);
     expect(form.fx()).toBeNull();
     expect(form.amountExpr()).toBe('5390');
+  });
+  // ---- C2: editing a split member -------------------------------------------------------------------------------
+
+  it('edits split member 2 keeping the group fields and member order, then lands on its new id', async () => {
+    const group = { ...SPLIT_GROUP, name: '聚餐', merchant: '鼎泰豐', description: '週五聚餐' };
+    const members = [makeEntry({ id: 7 }), makeEntry({ id: 8 })];
+    const shared = { entry_date: '2026-09-30', entry_time: '19:00:00', posted_date: '2026-09-30', group, group_members: members };
+    const seven = { ...SPLIT_SEVEN, ...shared, merchant: '鼎泰豐' };
+    const eight = makeEntryDetail({
+      ...shared,
+      id: 8,
+      kind: 'receivable',
+      account_id: 2,
+      category_id: 12,
+      name: null,
+      amount: '-100.0000',
+      counterparty: 'Alan',
+      counterparty_id: 5,
+      description: '代墊 Alan',
+    });
+    const { el } = await open('/accounting/entries/8/edit');
+    respond('/api/accounting/entries/8', eight);
+    respond('/api/accounting/entries/7', seven);
+    respond('/api/accounting/categories', [makeCategory({ id: 50, kind: 'receivable', name: '應收款項' })]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.counterparties.set([{ id: 5, name: 'Alan', open_amounts: [], moze_id: null } as never]);
+    keys(el, '⌫', '⌫', '⌫', '1', '2', '0');
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/splits/4');
+    expect(put.request.body).toMatchObject({
+      name: '聚餐',
+      merchant: '鼎泰豐',
+      description: '週五聚餐',
+      entry_date: '2026-09-30',
+      entry_time: '19:00',
+    });
+    const body = put.request.body.members;
+    expect(body.map((line: { amount: string }) => line.amount)).toEqual(['200', '120']);
+    expect(body[1]).toMatchObject({ kind: 'receivable', counterparty_id: 5, description: '代墊 Alan', entry_date: '2026-09-30' });
+    put.flush({ group_id: 4, member_ids: [21, 22] });
+    settle();
+    await Promise.all(navigate!.mock.results.map(result => result.value));
+
+    expect(navigate).toHaveBeenCalledWith('/accounting/entries/22', { replaceUrl: true });
+    expect(TestBed.inject(Router).url).toBe('/accounting/entries/22');
+    expect(TestBed.inject(Location).back).not.toHaveBeenCalled();
+  });
+
+  it("uses the edited line's date for the whole split when the owner changed it", async () => {
+    const group = { ...SPLIT_GROUP, name: '聚餐', merchant: null, description: null };
+    const members = [makeEntry({ id: 7 }), makeEntry({ id: 8 })];
+    const shared = { entry_date: '2026-09-30', entry_time: null, posted_date: '2026-09-30', group, group_members: members };
+    const { el } = await open('/accounting/entries/8/edit');
+    respond('/api/accounting/entries/8', { ...SPLIT_EIGHT, ...shared });
+    respond('/api/accounting/entries/7', { ...SPLIT_SEVEN, ...shared });
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    const date = el.querySelector('.date-input') as HTMLInputElement;
+    date.value = '2026-09-29';
+    date.dispatchEvent(new Event('change'));
+    settle();
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/splits/4');
+    expect(put.request.body.entry_date).toBe('2026-09-29');
+    expect(put.request.body.members.map((line: { entry_date: string }) => line.entry_date)).toEqual(['2026-09-29', '2026-09-29']);
+    expect(put.request.body.members.map((line: { amount: string }) => line.amount)).toEqual(['200', '100']);
+    put.flush({ group_id: 4, member_ids: [21, 22] });
+    settle();
   });
 });
