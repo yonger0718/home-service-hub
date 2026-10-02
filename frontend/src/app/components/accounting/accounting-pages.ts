@@ -14,12 +14,9 @@ export type AccountingListKey = Extract<AccountingPage, 'timeline' | 'accounts'>
 
 type PageLoader = () => Promise<Type<unknown>>;
 
-const placeholder: PageLoader = () =>
-  import('./accounting-placeholder/accounting-placeholder').then(m => m.AccountingPlaceholderComponent);
-
 /**
  * Lazy loaders for every accounting page, shared by `app.routes.ts` and the layout's list pane.
- * Tasks 22–28 each replace their own `placeholder` line with the real component.
+ * Every page is a real component; the layout reuses the list loaders for its left pane.
  */
 export const ACCOUNTING_PAGES: Record<AccountingPage, PageLoader> = {
   timeline: () => import('./timeline/timeline').then(m => m.LedgerTimelineComponent),
