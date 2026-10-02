@@ -121,4 +121,28 @@ describe('FxSheetComponent', () => {
 
     expect(component.value()).toBeNull();
   });
+  it('drops a slow rate for the previous currency and refetches when the entry date changes', () => {
+    const { fixture, el, component } = render();
+    const jpy = httpMock.expectOne(r => r.url === '/api/accounting/fx-rate' && r.params.get('base') === 'JPY');
+    const currency = el.querySelector('.fx-currency') as HTMLSelectElement;
+    currency.value = 'USD';
+    currency.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    httpMock
+      .expectOne(r => r.url === '/api/accounting/fx-rate' && r.params.get('base') === 'USD')
+      .flush({ date: '2026-10-02', base: 'USD', quote: 'TWD', rate: '32.1000000000', source: 'cache' });
+    jpy.flush({ date: '2026-10-02', base: 'JPY', quote: 'TWD', rate: '0.2163000000', source: 'cache' });
+    fixture.detectChanges();
+    expect(component.rate()).toBe('32.1');
+
+    fixture.componentRef.setInput('entryDate', '2026-09-30');
+    fixture.detectChanges();
+    const again = httpMock.expectOne(r => r.url === '/api/accounting/fx-rate');
+    expect(again.request.params.get('date')).toBe('2026-09-30');
+    expect(again.request.params.get('base')).toBe('USD');
+    again.flush({ date: '2026-09-30', base: 'USD', quote: 'TWD', rate: '32.4000000000', source: 'cache' });
+    fixture.detectChanges();
+    expect(component.rate()).toBe('32.4');
+    expect(component.rateDate()).toBe('2026-09-30');
+  });
 });

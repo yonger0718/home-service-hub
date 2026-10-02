@@ -1,4 +1,18 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, input, model, output, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  OnInit,
+  computed,
+  effect,
+  inject,
+  input,
+  model,
+  output,
+  signal,
+  untracked,
+} from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
 import { LedgerAccount } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -38,6 +52,10 @@ function parseNumber(text: string): number {
 })
 export class FxSheetComponent implements OnInit {
   private readonly accounting = inject(AccountingService);
+  private readonly destroyRef = inject(DestroyRef);
+  /** Bumped per rate request; an answer for an older request (another currency or date) is dropped. */
+  private rateRequest = 0;
+  private initialized = false;
 
   readonly account = input.required<LedgerAccount>();
   readonly entryDate = input.required<string>();
@@ -84,7 +102,23 @@ export class FxSheetComponent implements OnInit {
     return this.useOnline() && date ? `${date.replace(/-/g, '/')} 線上匯率` : '手動匯率';
   });
 
+  constructor() {
+    // The online rate is the rate of the entry date: a date changed while the sheet is open refetches it.
+    let seenDate: string | null = null;
+    effect(() => {
+      const date = this.entryDate();
+      untracked(() => {
+        const changed = seenDate !== null && seenDate !== date;
+        seenDate = date;
+        if (changed && this.initialized && this.isForeign() && this.useOnline()) {
+          this.fetchRate();
+        }
+      });
+    });
+  }
+
   ngOnInit(): void {
+    this.initialized = true;
     const value = this.value();
     this.currency.set(value?.original_currency ?? this.account().currency);
     this.original.set(value?.original_amount ?? this.originalAmount());
@@ -167,19 +201,33 @@ export class FxSheetComponent implements OnInit {
 
   private fetchRate(): void {
     this.rateError.set(false);
-    this.accounting.getFxRate(this.entryDate(), this.currency(), this.account().currency).subscribe({
-      next: result => {
-        if (!this.useOnline()) {
-          return;
-        }
-        this.rate.set(String(Number(result.rate)));
-        this.rateDate.set(result.date);
-      },
-      error: () => {
-        this.rateError.set(true);
-        this.useOnline.set(false);
-        this.manual.set('rate');
-      },
-    });
+    const request = ++this.rateRequest;
+    const key = this.rateKey();
+    // Applied only for the latest request, while its currency and date are still the sheet's, in online mode.
+    const current = () => request === this.rateRequest && key === this.rateKey() && this.useOnline();
+    this.accounting
+      .getFxRate(this.entryDate(), this.currency(), this.account().currency)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: result => {
+          if (!current()) {
+            return;
+          }
+          this.rate.set(String(Number(result.rate)));
+          this.rateDate.set(result.date);
+        },
+        error: () => {
+          if (!current()) {
+            return;
+          }
+          this.rateError.set(true);
+          this.useOnline.set(false);
+          this.manual.set('rate');
+        },
+      });
+  }
+
+  private rateKey(): string {
+    return `${this.currency()}|${this.entryDate()}|${this.account().currency}`;
   }
 }
