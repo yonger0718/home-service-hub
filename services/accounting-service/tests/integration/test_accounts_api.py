@@ -344,7 +344,7 @@ def test_account_summary_totals_entries_posted_in_the_period(client, db_session)
     assert response.status_code == 200
     assert response.json() == {
         "account_id": wallet.id, "currency": "TWD", "date_from": "2026-09-02", "date_to": "2026-09-30",
-        "spend": "-205.0000", "income": "3012.0000", "rewards": "30.0000", "net": "2357.0000",
+        "spend": "-185.0000", "income": "3012.0000", "rewards": "30.0000", "net": "2357.0000",  # the refund cuts spend
         "end_balance": "3257.0000", "count": 8,
     }
     summary = ledger_service.period_summary(db_session, wallet.id, date(2026, 9, 2), date(2026, 9, 30))

@@ -175,6 +175,7 @@ def test_month_summary_totals_in_main_currency(client, db_session):
     make_entry(db_session, wallet, "-3000", kind="transfer_out", entry_date=september)
     make_entry(db_session, wallet, "-420", kind="receivable", counterparty_id=alan.id, entry_date=september)
     make_entry(db_session, wallet, "-8", kind="balance_adjustment", entry_date=september)
+    make_entry(db_session, wallet, "570", kind="refund", entry_date=september)  # a refund reduces the expense
     make_entry(db_session, wallet, "-999", entry_date=date(2026, 10, 1))
     db_session.commit()
 
@@ -182,7 +183,7 @@ def test_month_summary_totals_in_main_currency(client, db_session):
 
     assert response.status_code == 200
     assert response.json() == {
-        "month": "2026-09", "currency": "TWD", "expense": "-2015.0000", "income": "50050.0000", "net": "48035.0000",
+        "month": "2026-09", "currency": "TWD", "expense": "-1445.0000", "income": "50050.0000", "net": "48605.0000",
         "missing_rates": [],
     }
 

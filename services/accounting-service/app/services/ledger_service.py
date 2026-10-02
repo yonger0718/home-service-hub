@@ -10,7 +10,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from ..models import (
@@ -443,17 +443,25 @@ def list_all_entries(
     return total, _entry_rows(db, filters, running_accounts=account_ids, limit=limit, offset=offset)
 
 
+def _spend_filter():
+    """Rows that make up spending: negative expense / fee amounts and every refund (refunds are positive and
+    reduce the spending of the period they are dated / posted in)."""
+    return or_(
+        and_(LedgerEntry.kind.in_(EXPENSE_KINDS), LedgerEntry.amount < 0),
+        LedgerEntry.kind == "refund",
+    )
+
+
 def month_summary(db: Session, month: str) -> dict:
-    """Expense (Σ negative expense/fee amounts), income (Σ positive income/reward/interest/discount amounts)
-    and net for entries dated in `month` (YYYY-MM), converted to the main currency with the latest cached rate.
-    Transfers, receivables/payables, refunds and balance adjustments are excluded."""
+    """Expense (Σ negative expense/fee amounts + Σ refund amounts, so a refund reduces the month's expense, as in
+    MOZE's statistics), income (Σ positive income/reward/interest/discount amounts) and net (income + expense)
+    for entries dated in `month` (YYYY-MM), converted to the main currency with the latest cached rate.
+    Transfers, receivables/payables and balance adjustments are excluded."""
     year, month_no = (int(part) for part in month.split("-"))
     start = date(year, month_no, 1)
     end = date(year + (month_no == 12), month_no % 12 + 1, 1)
     in_month = (LedgerEntry.entry_date >= start, LedgerEntry.entry_date < end)
-    expense = func.coalesce(
-        func.sum(LedgerEntry.amount).filter(LedgerEntry.kind.in_(EXPENSE_KINDS), LedgerEntry.amount < 0), 0
-    )
+    expense = func.coalesce(func.sum(LedgerEntry.amount).filter(_spend_filter()), 0)
     income = func.coalesce(
         func.sum(LedgerEntry.amount).filter(LedgerEntry.kind.in_(INCOME_KINDS), LedgerEntry.amount > 0), 0
     )
@@ -483,7 +491,8 @@ def month_summary(db: Session, month: str) -> dict:
 
 
 def period_summary(db: Session, account_id: int, date_from: date, date_to: date) -> dict:
-    """Spend, income, rewards, net and count for one account's entries posted within [date_from, date_to],
+    """Spend (refunds included, as in month_summary), income, rewards, net and count for one account's entries
+    posted within [date_from, date_to],
     plus the balance as of date_to. Computed over the whole period, never over a listing page."""
     account = db.get(Account, account_id)
     if account is None:
@@ -493,7 +502,7 @@ def period_summary(db: Session, account_id: int, date_from: date, date_to: date)
     amount = LedgerEntry.amount
     spend, income, rewards, net, count = db.execute(
         select(
-            func.coalesce(func.sum(amount).filter(LedgerEntry.kind.in_(EXPENSE_KINDS), amount < 0), 0),
+            func.coalesce(func.sum(amount).filter(_spend_filter()), 0),
             func.coalesce(func.sum(amount).filter(LedgerEntry.kind.in_(PERIOD_INCOME_KINDS), amount > 0), 0),
             func.coalesce(func.sum(amount).filter(LedgerEntry.kind == "reward"), 0),
             func.coalesce(func.sum(amount), 0),
