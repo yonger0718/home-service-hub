@@ -210,7 +210,22 @@ def list_accounts(db: Session, *, include_archived: bool = False, as_of: date | 
 
 def get_account(db: Session, account_id: int, *, as_of: date | None = None) -> dict | None:
     rows = _account_rows(db, include_archived=True, account_id=account_id, as_of=as_of)
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    account = rows[0]
+    sharing_id = account["credit_sharing_id"]
+    account["credit_sharing_members"] = (
+        []
+        if sharing_id is None
+        else list(
+            db.scalars(
+                select(Account.id)
+                .where(Account.credit_sharing_id == sharing_id, Account.id != account_id)
+                .order_by(Account.id)
+            )
+        )
+    )
+    return account
 
 
 def list_reward_rules(db: Session, account_id: int) -> list[dict]:

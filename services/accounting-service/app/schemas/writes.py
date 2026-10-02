@@ -147,6 +147,9 @@ class AccountIn(BaseModel):
     credit_limit: NonNegativeMoney | None = None
     combined_account_id: int | None = None
     credit_sharing_id: UUID | None = None
+    # 額度共用: the full list of the OTHER accounts sharing this account's limit. Omitted (None) keeps the old
+    # behaviour (credit_sharing_id written as sent); present, the service rebuilds the set from it atomically.
+    credit_sharing_members: list[int] | None = None
     auto_pay_account_id: int | None = None
     fx_fee_pct: Annotated[Decimal, Field(ge=0, le=100, max_digits=6, decimal_places=3)] | None = None
     fx_fee_rounding: RoundingMode | None = None

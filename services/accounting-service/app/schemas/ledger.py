@@ -76,6 +76,7 @@ class AccountOut(BaseModel):
 class AccountDetailOut(AccountOut):
     note: str | None
     reward_rules: list[RewardRuleOut]
+    credit_sharing_members: list[int] = []
 
 
 class EntryGroupSummaryOut(BaseModel):

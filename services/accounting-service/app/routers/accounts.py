@@ -1,12 +1,14 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Account
 from ..schemas.ledger import AccountDetailOut, AccountOut, AccountPeriodSummaryOut, EntryKind, EntryPage, RewardRuleOut
-from ..services import ledger_service
+from ..schemas.writes import AccountIn
+from ..services import ledger_service, settings_service
+from .errors import service_errors
 
 router = APIRouter(prefix="/accounts", tags=["Accounts"])
 
@@ -61,3 +63,36 @@ def list_entries(
         db, account_id, limit=limit, offset=offset, kind=kind, date_from=date_from, date_to=date_to, q=q
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@router.post("", response_model=AccountDetailOut, status_code=201)
+def post_account(payload: AccountIn, db: Session = Depends(get_db)):
+    with service_errors():
+        account_id = settings_service.create_account(db, payload)
+    db.commit()
+    return ledger_service.get_account(db, account_id)
+
+
+@router.put("/{account_id}", response_model=AccountDetailOut)
+def put_account(account_id: int, payload: AccountIn, db: Session = Depends(get_db)):
+    """Settings writes are allowed on imported accounts at any time (D19); they set settings_locally_edited."""
+    with service_errors():
+        settings_service.update_account(db, account_id, payload)
+    db.commit()
+    return ledger_service.get_account(db, account_id)
+
+
+@router.delete("/{account_id}", status_code=204)
+def remove_account(account_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        settings_service.delete_account(db, account_id)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/{account_id}/reset-settings-flag", response_model=AccountDetailOut)
+def post_reset_settings_flag(account_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        settings_service.reset_settings_flag(db, account_id)
+    db.commit()
+    return ledger_service.get_account(db, account_id)
