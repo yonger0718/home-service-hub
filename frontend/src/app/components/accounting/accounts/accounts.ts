@@ -180,10 +180,22 @@ export class AccountingAccountsComponent {
     });
   }
 
+  private archivedRequest = 0;
+
+  /** Only the latest request's answer is applied (reopened section, reload after a write). */
   private loadArchived(): void {
+    const id = ++this.archivedRequest;
     this.accountingService.getAccounts(true).subscribe({
-      next: all => this.archived.set(all.filter(account => account.is_archived)),
-      error: () => this.archived.set([]),
+      next: all => {
+        if (id === this.archivedRequest) {
+          this.archived.set(all.filter(account => account.is_archived));
+        }
+      },
+      error: () => {
+        if (id === this.archivedRequest) {
+          this.archived.set([]);
+        }
+      },
     });
   }
 

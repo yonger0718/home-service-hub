@@ -150,6 +150,25 @@ describe('AccountingAccountsComponent', () => {
     expect(el.querySelector('.archived-toggle')?.textContent).toContain('封存 (1)');
   });
 
+  it('applies only the latest archived-accounts answer', () => {
+    const fixture = render(ACCOUNTS, LATEST);
+    const el = fixture.nativeElement as HTMLElement;
+    const toggle = () => {
+      el.querySelector<HTMLButtonElement>('.archived-toggle')!.click();
+      fixture.detectChanges();
+    };
+    toggle();
+    toggle();
+    toggle();
+    const [first, second] = http.match(r => r.url === '/api/accounting/accounts' && r.urlWithParams.includes('include_archived=true'));
+    second.flush([account({ id: 31, name: '新封存', is_archived: true })]);
+    first.flush([account({ id: 30, name: '舊帳戶', is_archived: true })]);
+    fixture.detectChanges();
+
+    const archived = Array.from(el.querySelectorAll('.archived .acc-row')).map(r => r.querySelector('.name')?.textContent?.trim());
+    expect(archived).toEqual(['新封存']);
+  });
+
   it('keeps the latest import line with the review count', () => {
     const el = render(ACCOUNTS, LATEST).nativeElement as HTMLElement;
     const status = el.querySelector('.import-status')?.textContent ?? '';

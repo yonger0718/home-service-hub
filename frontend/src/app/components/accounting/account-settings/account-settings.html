@@ -2,7 +2,7 @@
   <header class="topbar">
     <a class="ib" [routerLink]="accountId() === null ? '/accounting/accounts' : ['/accounting/accounts', accountId()]" aria-label="取消">✕</a>
     <h2>{{ accountId() === null ? '新增帳戶' : '帳戶資訊' }}</h2>
-    <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving() || loading()" (click)="save()">✓</button>
+    <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving() || loading() || loadFailed()" (click)="save()">✓</button>
   </header>
 
   <div class="bigicon">
@@ -192,7 +192,7 @@
       <button type="button" class="tog archive-toggle" role="switch" aria-label="封存帳戶" [attr.aria-checked]="form().is_archived" [class.on]="form().is_archived" (click)="toggle('is_archived')"></button>
     </div>
     <div class="rw">
-      <button type="button" class="k delete-account" [disabled]="currencyLocked()" (click)="remove()">{{ confirmDelete() ? '確定刪除？' : '刪除帳戶' }}</button>
+      <button type="button" class="k delete-account" [disabled]="currencyLocked() || loadFailed()" (click)="remove()">{{ confirmDelete() ? '確定刪除？' : '刪除帳戶' }}</button>
       <span class="v">只能刪除沒有記錄的帳戶</span>
     </div>
   }

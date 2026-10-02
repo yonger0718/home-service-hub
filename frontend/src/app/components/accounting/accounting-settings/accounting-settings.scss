@@ -23,13 +23,14 @@ summary.srow::-webkit-details-marker { display: none; }
   align-items: center;
   border-bottom: 1px solid var(--app-border);
   display: flex;
-  flex-wrap: wrap;
+  /* Row controls stay on the row's one line (確定刪除 / 取消 included); the name field gives way. */
+  flex-wrap: nowrap;
   gap: 6px;
   min-height: 44px;
   padding: 4px 0;
 
   &.sub { padding-left: 1.5rem; }
-  button { background: none; border: 0; color: var(--app-text-muted); cursor: pointer; font: inherit; padding: 4px 6px; }
+  button { background: none; border: 0; color: var(--app-text-muted); cursor: pointer; flex-shrink: 0; font: inherit; padding: 4px 6px; white-space: nowrap; }
   button:disabled { opacity: 0.3; }
   button.danger { color: var(--app-danger); font-weight: 700; }
 }

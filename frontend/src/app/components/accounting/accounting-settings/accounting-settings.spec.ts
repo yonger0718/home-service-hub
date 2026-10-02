@@ -338,4 +338,30 @@ describe('AccountingSettingsComponent', () => {
     req.flush(null);
     http.expectOne('/api/accounting/counterparties').flush([COUNTERPARTIES[0]]);
   });
+  it('trims renamed category and project names before saving', () => {
+    change('.cat-row .cat-name', '  早餐  ');
+    const cat = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/categories/1');
+    expect(cat.request.body.name).toBe('早餐');
+    cat.flush({});
+    http.expectOne(r => r.url.startsWith('/api/accounting/categories')).flush(EXPENSE_TREE);
+
+    change('.project-row .project-name', ' 生活費 ');
+    const project = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4');
+    expect(project.request.body.name).toBe('生活費');
+    project.flush({});
+    http.expectOne('/api/accounting/projects').flush(PROJECTS);
+  });
+
+  it('puts 取消 after 確定刪除 and labels every add field', () => {
+    const row = el.querySelector('.cp-row')!;
+    row.querySelector<HTMLButtonElement>('.row-delete')!.click();
+    fixture.detectChanges();
+    const buttons = Array.from(row.querySelectorAll('button')).map(button => button.textContent?.trim());
+    expect(buttons.slice(-2)).toEqual(['確定刪除', '取消']);
+
+    const unlabelled = Array.from(el.querySelectorAll<HTMLInputElement>('.add-row input')).filter(
+      input => !input.getAttribute('aria-label'),
+    );
+    expect(unlabelled.map(input => input.className)).toEqual([]);
+  });
 });

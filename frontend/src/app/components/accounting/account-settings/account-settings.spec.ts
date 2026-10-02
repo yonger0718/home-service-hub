@@ -394,4 +394,61 @@ describe('AccountSettingsComponent', () => {
     req.flush({ ...DETAIL, id: 40, name: '悠遊卡' });
     expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 40]);
   });
+  // ---- T27 leftovers --------------------------------------------------------------------------------------------
+
+  it('refuses to save or delete after the account failed to load', async () => {
+    await setup('11');
+    const fixture = TestBed.createComponent(AccountSettingsComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/accounts/11').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush(LIST);
+    http.expectOne('/api/accounting/account-groups').flush(GROUPS);
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(true);
+    expect(el(fixture).querySelector<HTMLButtonElement>('.delete-account')!.disabled).toBe(true);
+    fixture.componentInstance.save();
+    fixture.componentInstance.remove();
+    http.expectNone(r => r.method === 'PUT' || r.method === 'DELETE' || r.method === 'POST');
+  });
+
+  it('validates the closing day and the due value inline, without a garbage preview', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    const type = (selector: string, value: string) => {
+      const input = el(fixture).querySelector<HTMLInputElement>(selector)!;
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    };
+
+    type('.closing-day', '0');
+    expect(el(fixture).querySelector('.field-error[data-field="closing_day"]')?.textContent?.trim()).toBe('結帳日須為 1–31');
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('');
+    type('.closing-day', '15');
+    type('.due-value', '0');
+    expect(el(fixture).querySelector('.field-error[data-field="due_value"]')?.textContent?.trim()).toBe('請輸入大於 0 的天數');
+    expect(el(fixture).querySelector('.due-preview')?.textContent?.trim()).toBe('');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    http.expectNone('/api/accounting/accounts/11');
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('drops a save answer once another account is shown, and the new form is not left saving', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const put = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/11');
+
+    navigateTo('12');
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12, name: '玉山 UNI', moze_id: null });
+    fixture.detectChanges();
+    expect(fixture.componentInstance.saving()).toBe(false);
+    expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(false);
+
+    put.flush(DETAIL);
+    expect(navigate).not.toHaveBeenCalled();
+  });
 });

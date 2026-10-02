@@ -69,6 +69,11 @@ function intOrNull(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** A whole number within [min, max], typed as text. */
+function validDay(text: string, min: number, max: number): boolean {
+  return /^\d+$/.test(text) && Number(text) >= min && Number(text) <= max;
+}
+
 function textOrNull(value: string): string | null {
   return value.trim() ? value.trim() : null;
 }
@@ -201,13 +206,38 @@ export class AccountSettingsComponent implements OnInit {
   readonly formatMoney = formatMoney;
 
   readonly currencyLocked = computed(() => (this.detail()?.entry_count ?? 0) > 0);
+  /** Edit mode whose account never loaded: nothing to save or delete (✓ and 刪除 stay disabled). */
+  readonly loadFailed = computed(() => this.accountId() !== null && !this.loading() && this.loadedId() !== this.accountId());
+  /** Errors found before sending: closing day 1–31, due value > 0 (a fixed due day also ≤ 31). */
+  readonly localErrors = computed(() => {
+    const form = this.form();
+    const errors: Record<string, string> = {};
+    const closing = form.closing_day.trim();
+    if (closing && !validDay(closing, 1, 31)) {
+      errors['closing_day'] = '結帳日須為 1–31';
+    }
+    const due = form.due_value.trim();
+    if (form.is_credit && form.due_rule && due) {
+      if (form.due_rule === 'fixed_day' && !validDay(due, 1, 31)) {
+        errors['due_value'] = '繳款日須為 1–31';
+      } else if (form.due_rule === 'days_after_closing' && !validDay(due, 1, 366)) {
+        errors['due_value'] = '請輸入大於 0 的天數';
+      }
+    }
+    return errors;
+  });
   readonly closingDay = computed(() => intOrNull(this.form().closing_day));
   readonly period = computed(() => statementPeriod(this.closingDay(), this.today));
-  readonly cycleLabel = computed(() => (this.closingDay() === null ? '每月 1 日 – 月底' : periodLabel(this.period())));
+  readonly cycleLabel = computed(() => {
+    if (this.localErrors()['closing_day']) {
+      return '';
+    }
+    return this.closingDay() === null ? '每月 1 日 – 月底' : periodLabel(this.period());
+  });
   readonly dueLabel = computed(() => {
     const form = this.form();
     const value = intOrNull(form.due_value);
-    if (!form.due_rule || value === null) {
+    if (!form.due_rule || value === null || this.localErrors()['closing_day'] || this.localErrors()['due_value']) {
       return '';
     }
     const due = dueDate(this.period().end, form.due_rule, value);
@@ -265,6 +295,8 @@ export class AccountSettingsComponent implements OnInit {
       }),
       tap(id => {
         this.accountId.set(id);
+        // A save of the previous account may still be in flight; its answer is dropped (see save()).
+        this.saving.set(false);
         this.loadedId.set(null);
         this.detail.set(null);
         this.form.set(EMPTY_FORM);
@@ -358,7 +390,7 @@ export class AccountSettingsComponent implements OnInit {
   }
 
   error(field: string): string | null {
-    return this.errors()[field] ?? null;
+    return this.errors()[field] ?? this.localErrors()[field] ?? null;
   }
 
   ruleLabel(rule: RewardRule): string {
@@ -367,7 +399,7 @@ export class AccountSettingsComponent implements OnInit {
   }
 
   save(): void {
-    if (this.loading() || this.saving()) {
+    if (this.loading() || this.saving() || this.loadFailed()) {
       return;
     }
     const routeId = this.accountId();
@@ -382,18 +414,32 @@ export class AccountSettingsComponent implements OnInit {
       this.errors.set({ name: '請輸入名稱' });
       return;
     }
+    if (Object.keys(this.localErrors()).length > 0) {
+      return; // shown inline beside their fields
+    }
     const input = formToInput(form, this.sharing());
     const request: Observable<AccountDetail> =
       editingId === null ? this.service.createAccount(input) : this.service.updateAccount(editingId, input);
     this.saving.set(true);
+    // Applied only while the page still shows the account (or new-account form) that was saved.
+    const still = () => this.accountId() === routeId && this.loadedId() === editingId;
     request
-      .pipe(map(saved => editingId ?? saved.id))
+      .pipe(
+        map(saved => editingId ?? saved.id),
+        takeUntilDestroyed(this.destroyRef),
+      )
       .subscribe({
         next: id => {
+          if (!still()) {
+            return;
+          }
           this.saving.set(false);
           this.router.navigate(['/accounting/accounts', id]);
         },
         error: err => {
+          if (!still()) {
+            return;
+          }
           this.saving.set(false);
           const fields = fieldErrors(err);
           this.errors.set(fields);
@@ -406,7 +452,7 @@ export class AccountSettingsComponent implements OnInit {
 
   remove(): void {
     const id = this.loadedId();
-    if (id === null || this.loading()) {
+    if (id === null || this.loading() || this.loadFailed()) {
       return;
     }
     if (!this.confirmDelete()) {
@@ -414,9 +460,14 @@ export class AccountSettingsComponent implements OnInit {
       return;
     }
     this.confirmDelete.set(false);
-    this.service.deleteAccount(id).subscribe({
-      next: () => this.router.navigate(['/accounting/accounts']),
+    this.service.deleteAccount(id).pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: () => {
+        if (this.loadedId() === id) {
+          this.router.navigate(['/accounting/accounts']);
+        }
+      },
       error: err =>
+        this.loadedId() === id &&
         this.message.set(
           (err as { status?: number })?.status === 409
             ? '此帳戶已有記錄，無法刪除；請改用「封存帳戶」。'

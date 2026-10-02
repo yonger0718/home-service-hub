@@ -249,7 +249,8 @@ export class AccountingSettingsComponent implements OnInit {
       is_hidden: node.is_hidden,
       ...patch,
     };
-    if (body.name.trim() === '') {
+    body.name = body.name.trim();
+    if (body.name === '') {
       return;
     }
     this.write(this.service.updateCategory(node.id, body), () => this.loadCategories(), '同層已有相同名稱');
@@ -299,7 +300,8 @@ export class AccountingSettingsComponent implements OnInit {
   // 專案
   saveProject(project: Project, patch: Partial<Pick<Project, 'name' | 'is_archived' | 'sort_order'>>): void {
     const body = { name: project.name, is_archived: project.is_archived, sort_order: project.sort_order, ...patch };
-    if (body.name.trim()) {
+    body.name = body.name.trim();
+    if (body.name) {
       this.write(this.service.updateProject(project.id, body), () => this.loadProjects(), '名稱重複');
     }
   }
