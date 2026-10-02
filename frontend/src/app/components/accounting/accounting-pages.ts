@@ -22,7 +22,7 @@ const placeholder: PageLoader = () =>
  * Tasks 22–28 each replace their own `placeholder` line with the real component.
  */
 export const ACCOUNTING_PAGES: Record<AccountingPage, PageLoader> = {
-  timeline: placeholder,
+  timeline: () => import('./timeline/timeline').then(m => m.LedgerTimelineComponent),
   accounts: () => import('./accounts/accounts').then(m => m.AccountingAccountsComponent),
   accountEntries: () => import('./account-entries/account-entries').then(m => m.AccountingAccountEntriesComponent),
   accountSettings: placeholder,
