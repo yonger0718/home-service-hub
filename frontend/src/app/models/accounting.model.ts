@@ -61,7 +61,8 @@ export interface LedgerAccount {
   currency: string;
   opening_balance: string;
   balance: string;
-  balance_main: string;
+  /** Balance in the main currency; null when no rate to the main currency is cached. */
+  balance_main: string | null;
   entry_count: number;
   group_id: number | null;
   group_name: string | null;
@@ -119,8 +120,8 @@ export interface EntryGroupSummary {
   kind: EntryGroupKind;
   name: string | null;
   count: number;
-  /** Sum of the members' amounts, in the first member's currency. */
-  total: string;
+  /** Sum of the members' amounts, in the first member's currency; null for a mixed-currency group without a cached rate. */
+  total: string | null;
   /** Currency of `total` (the first member's currency; `EntryGroupSummaryOut.currency`, Task 4). */
   currency: string;
 }
@@ -462,8 +463,12 @@ export interface BackupImportReport {
   exported_at: string | null;
   kind_counts: Record<string, number>;
   skipped_future: Record<string, number>;
+  /** Future MOZE rows stored by kind; a kind with no rows is absent (`dict(Counter(...))` on the server). */
+  schedules: Partial<Record<ScheduleKind, number>>;
   groups: number;
   transfers: number;
+  /** Transfers whose two legs imply different FX rates. */
+  transfer_rate_mismatches: number;
   rules: number;
   attachments: number;
   counterparties: number;
@@ -473,6 +478,8 @@ export interface BackupImportReport {
   settings_skipped: unknown[];
   accounts: BackupAccountReport[];
   compared_accounts: { compared: number; total: number };
+  /** Names of the accounts whose balance could not be compared with MOZE. */
+  not_compared: string[];
   fx_outliers: unknown[];
   confirmed_maps: Record<string, unknown>;
   accounts_created: string[];

@@ -15,7 +15,7 @@ import {
   SplitInput,
   TransferInput,
 } from '../models/accounting.model';
-import { makePreference } from '../components/accounting/testing/fixtures';
+import { makeAccount, makeEntry, makePreference } from '../components/accounting/testing/fixtures';
 import { AccountingService } from './accounting.service';
 
 const ENTRY_INPUT: EntryInput = {
@@ -222,6 +222,24 @@ describe('AccountingService', () => {
     httpMock.expectOne('/api/accounting/accounts').flush([{ id: 1, name: '錢包' }]);
 
     expect(names).toEqual(['錢包']);
+  });
+
+  it('passes through a null main-currency balance and a null mixed-currency group total', () => {
+    let balances: (string | null)[] = [];
+    let totals: (string | null)[] = [];
+    service.getAccounts().subscribe(accounts => (balances = accounts.map(a => a.balance_main)));
+    service.getAllEntries().subscribe(page => (totals = page.items.map(e => (e.group ? e.group.total : 'no group'))));
+
+    httpMock.expectOne('/api/accounting/accounts').flush([makeAccount({ currency: 'JPY', balance_main: null })]);
+    httpMock.expectOne('/api/accounting/entries').flush({
+      items: [makeEntry({ group: { id: 4, kind: 'split', name: '旅行', count: 2, total: null, currency: 'JPY' } })],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+
+    expect(balances).toEqual([null]);
+    expect(totals).toEqual([null]);
   });
 
   it('asks for archived accounts only when requested', () => {
