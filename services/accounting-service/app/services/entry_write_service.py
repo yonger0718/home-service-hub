@@ -324,6 +324,9 @@ def locked_entry(db: Session, entry_id: int) -> LedgerEntry:
 # nothing else. Taking the group last (after a member) deadlocks against a split PUT that holds the group and
 # waits for that member (plan review round 5); locking the target first and its other leg in a second statement
 # deadlocks two concurrent deletes of a transfer's two legs (Task 12 review).
+# The account row is a separate lock class taken only by create_balance_adjustment (account FOR UPDATE, then the
+# balance read and the insert of a new entry); it is taken before any entry lock and no path that holds an entry
+# or group lock ever locks an account row, so it cannot invert the order above.
 
 
 def locked_with_legs(db: Session, entry_id: int, transfer_group_id) -> list[LedgerEntry]:
@@ -505,8 +508,17 @@ def _plain(value: Decimal) -> str:
 
 
 def create_balance_adjustment(db: Session, payload: BalanceAdjustmentIn) -> int:
-    """Checkpoint at save time (D20): amount = target − the balance right now; zero delta refused."""
-    account = _require(db, Account, payload.account_id, "account_id", "account")
+    """Checkpoint at save time (D20): amount = target − the balance right now; zero delta refused.
+
+    The account row is locked (SELECT … FOR UPDATE) before the balance is read, so a double submit queues:
+    the second request reads the balance including the first's adjustment and is refused with a zero delta
+    instead of applying the delta twice. See the lock-order note above `locked_with_legs`.
+    """
+    account = db.execute(
+        select(Account).where(Account.id == payload.account_id).with_for_update().execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if account is None:
+        raise ValidationError("account_id", f"account {payload.account_id} not found")
     delta = payload.target_balance - ledger_service.account_balance(db, account.id)
     if delta == 0:
         raise ValidationError("target_balance", "the account already has this balance")

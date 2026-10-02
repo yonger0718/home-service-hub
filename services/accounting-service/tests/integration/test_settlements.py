@@ -288,3 +288,23 @@ def test_concurrent_settlements_cannot_exceed_open_amount(pg_engine, db_session,
     assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable_id)) == Decimal("20")
     settlements = db_session.scalars(select(LedgerEntry).where(LedgerEntry.settles_entry_id == receivable_id)).all()
     assert len(settlements) == 1
+
+
+def test_concurrent_balance_adjustments_apply_the_delta_once(pg_engine, db_session, seed):
+    wallet = seed.account("W", opening="1000")
+    seed.entry(wallet, "-100")
+    ews.system_category_id(db_session, "balance_adjustment")  # exists already, as after the first adjustment ever
+    db_session.commit()
+    wallet_id = wallet.id
+
+    adjust = lambda db: ews.create_balance_adjustment(  # noqa: E731
+        db, BalanceAdjustmentIn(account_id=wallet_id, target_balance="500", entry_date=DAY)
+    )
+    result = race(pg_engine, adjust, adjust)
+
+    # The second request waits for the first's account lock, then sees the balance already at the target.
+    assert isinstance(result, ValidationError) and result.field == "target_balance"
+    db_session.expire_all()
+    assert ledger_service.account_balance(db_session, wallet_id) == Decimal("500")
+    adjustments = db_session.scalars(select(LedgerEntry).where(LedgerEntry.kind == "balance_adjustment")).all()
+    assert [entry.amount for entry in adjustments] == [Decimal("-400")]
