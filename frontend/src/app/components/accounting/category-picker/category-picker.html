@@ -1,0 +1,57 @@
+@if (variant() === 'grid') {
+  @if (strip(); as sel) {
+    <div class="strip">
+      <button type="button" class="sel" [attr.aria-label]="'更改類別 ' + sel.name" (click)="reopen()">
+        <span class="ico" [style.background]="colorOf(sel)">{{ iconOf(sel) }}</span>
+        <span class="sel-text">
+          <b>{{ sel.name }}</b>
+          @if (amount()) {
+            <small>{{ amount() }}</small>
+          }
+        </span>
+      </button>
+      <ng-content select="[stripExtra]" />
+      @if (splittable()) {
+        <button type="button" class="add" aria-label="新增拆帳行" (click)="addLine.emit()">+</button>
+        <span class="hint">拆帳：每行可用不同類別、帳戶</span>
+      }
+    </div>
+  } @else if (openParent(); as parent) {
+    <div class="grid" role="listbox" [attr.aria-label]="parent.name + ' 子類別'">
+      <button type="button" class="cat back" (click)="back()">
+        <span class="ico back-ico" aria-hidden="true">‹</span>返回
+      </button>
+      @for (child of visibleChildren(parent); track child.id) {
+        <button type="button" class="cat" [class.on]="selected()?.id === child.id" (click)="pick(child)">
+          <span class="ico" [style.background]="colorOf(child)">{{ iconOf(child) }}</span>{{ child.name }}
+        </button>
+      }
+    </div>
+  } @else {
+    <div class="grid" role="listbox" aria-label="類別">
+      @for (main of mains(); track main.id) {
+        <button type="button" class="cat" [class.on]="isSelectedMain(main)" (click)="tapMain(main)">
+          <span class="ico" [style.background]="colorOf(main)">{{ iconOf(main) }}</span>{{ main.name }}
+        </button>
+      }
+    </div>
+  }
+} @else {
+  <div class="catbar" role="listbox" aria-label="類別">
+    @for (main of mains(); track main.id) {
+      <button type="button" [class.on]="isSelectedMain(main)" (click)="tapMain(main)">
+        <i class="dot" [style.background]="colorOf(main)">{{ iconOf(main) }}</i>{{ chipLabel(main) }}
+      </button>
+    }
+  </div>
+  @if (barParent(); as parent) {
+    @if (visibleChildren(parent).length) {
+      <select class="subselect" aria-label="子類別" (change)="pickChildById(parent, $any($event.target).value)">
+        <option value="">選擇子類別</option>
+        @for (child of visibleChildren(parent); track child.id) {
+          <option [value]="child.id" [selected]="selected()?.id === child.id">{{ child.name }}</option>
+        }
+      </select>
+    }
+  }
+}
