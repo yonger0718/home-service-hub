@@ -475,4 +475,61 @@ describe('EntryFormComponent', () => {
 
     expect(form.preference().keypad_layout).toBe(changed.keypad_layout);
   });
+
+  it('does not save on ⏎ while an IME candidate is committed (keyCode 229) or on the 進階 summary', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    keys(el, '1', '7', '0');
+
+    // Safari: the committing Enter arrives after compositionend with isComposing false and keyCode 229.
+    el.querySelector('.name-input')!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true }),
+    );
+    settle();
+    el.querySelector('.advanced summary')!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    settle();
+
+    httpMock.expectNone(r => r.method === 'POST');
+    expect(left()).toBe(false);
+  });
+
+  it('adds no tag on ⏎ during IME composition in the tag input', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const input = el.querySelector('.chip-input') as HTMLInputElement;
+    input.value = '#午餐';
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
+    settle();
+    expect(el.querySelector('.chip.tag')).toBeNull();
+    expect(input.value).toBe('#午餐');
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    settle();
+    expect(text(el.querySelector('.chip.tag'))).toContain('#午餐');
+    httpMock.expectNone(r => r.method === 'POST');
+  });
+
+  it('refuses to save an edit whose record failed to load', async () => {
+    const { el } = await open('/accounting/entries/9/edit');
+    httpMock
+      .expectOne(r => r.method === 'GET' && r.url === '/api/accounting/entries/9')
+      .flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    settle();
+    respond('/api/accounting/categories', [FOOD]);
+
+    expect((el.querySelector('button.save') as HTMLButtonElement).disabled).toBe(true);
+    (harness.routeDebugElement!.componentInstance as EntryFormComponent).save(false);
+    settle();
+
+    httpMock.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+    expect(text(el.querySelector('.form-error'))).toBe('記錄未載入，無法儲存');
+  });
 });

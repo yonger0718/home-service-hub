@@ -83,7 +83,15 @@ function readCounts(categoryId: number): Record<string, number> {
   try {
     const raw = store()?.getItem(AMOUNT_HISTORY_PREFIX + categoryId);
     const parsed: unknown = raw ? JSON.parse(raw) : {};
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, number>) : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+    // Keep only finite non-negative integer counts; anything else on this device is dropped.
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).filter(
+        (pair): pair is [string, number] => Number.isInteger(pair[1]) && (pair[1] as number) >= 0,
+      ),
+    );
   } catch {
     return {};
   }

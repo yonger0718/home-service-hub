@@ -7,7 +7,7 @@
       class="ib ok save"
       aria-label="儲存"
       title="長按或 ⇧⏎：儲存並續記"
-      [disabled]="locked() || saving() || loading()"
+      [disabled]="locked() || saving() || loading() || loadFailed()"
       (pointerdown)="onSavePointerDown()"
       (pointerup)="onSavePointerUp()"
       (pointerleave)="onSavePointerUp()"

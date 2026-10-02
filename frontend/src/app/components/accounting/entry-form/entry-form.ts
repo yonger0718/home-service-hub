@@ -74,6 +74,11 @@ import {
 } from './entry-draft';
 
 export const LONG_PRESS_MS = 600;
+
+/** ⏎ that commits an IME candidate (Zhuyin, …): Safari sends it after compositionend with keyCode 229. */
+function isImeEnter(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229;
+}
 const FX_FEE_NAME = '國外交易手續費';
 const FLASH_MS = 1500;
 
@@ -203,6 +208,8 @@ export class EntryFormComponent implements OnInit {
   private longPressed = false;
 
   // Derived
+  /** Edit mode whose record failed to load: no update target, so ✓ stays disabled and save() refuses. */
+  readonly loadFailed = computed(() => this.editing() && !this.loading() && this.entryId() === null);
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   readonly isSystem = computed(() => this.kind() === 'system');
   readonly isParty = computed(() => this.kind() === 'receivable' || this.kind() === 'payable');
@@ -354,16 +361,18 @@ export class EntryFormComponent implements OnInit {
       projects: this.accounting.getProjects(),
       counterparties: this.accounting.getCounterparties(),
       preference: this.accounting.getPreference(),
-    }).subscribe({
-      next: data => {
-        this.accounts.set(data.accounts);
-        this.projects.set(data.projects);
-        this.counterparties.set(data.counterparties);
-        this.preference.set(data.preference);
-        this.ready.set(true);
-      },
-      error: () => this.error.set('資料讀取失敗，請稍後再試。'),
-    });
+    })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: data => {
+          this.accounts.set(data.accounts);
+          this.projects.set(data.projects);
+          this.counterparties.set(data.counterparties);
+          this.preference.set(data.preference);
+          this.ready.set(true);
+        },
+        error: () => this.error.set('資料讀取失敗，請稍後再試。'),
+      });
   }
 
   // ---- lifecycle of one record --------------------------------------------
@@ -614,6 +623,9 @@ export class EntryFormComponent implements OnInit {
   }
 
   onTagEnter(event: Event): void {
+    if (isImeEnter(event as KeyboardEvent)) {
+      return;
+    }
     event.preventDefault();
     const input = event.target as HTMLInputElement;
     this.addTags(input.value);
@@ -737,11 +749,11 @@ export class EntryFormComponent implements OnInit {
   }
 
   onKeydown(event: KeyboardEvent): void {
+    // Handled already (a nested control, the tag input), or an IME candidate being committed: not ours.
+    if (event.defaultPrevented || isImeEnter(event)) {
+      return;
+    }
     if (event.key === 'Escape') {
-      // Handled already (e.g. by a nested control): one Esc, one action.
-      if (event.defaultPrevented) {
-        return;
-      }
       // Marked handled so the accounting layout's document-level Esc does not also close its sheet.
       event.preventDefault();
       if (this.sheet()) {
@@ -751,11 +763,16 @@ export class EntryFormComponent implements OnInit {
       }
       return;
     }
-    if (event.key !== 'Enter' || event.isComposing || this.sheet()) {
+    if (event.key !== 'Enter' || this.sheet()) {
       return;
     }
     const target = event.target as HTMLElement | null;
-    if (target?.tagName === 'TEXTAREA' || target?.tagName === 'BUTTON' || target?.classList.contains('chip-input')) {
+    if (
+      target?.tagName === 'TEXTAREA' ||
+      target?.tagName === 'BUTTON' ||
+      target?.tagName === 'SUMMARY' ||
+      target?.classList.contains('chip-input')
+    ) {
       return;
     }
     event.preventDefault();
@@ -809,6 +826,11 @@ export class EntryFormComponent implements OnInit {
     if (this.loading() || this.saving() || this.feeProposal()) {
       return;
     }
+    // Edit whose record never arrived (failed load): never fall through to a create.
+    if (this.loadFailed()) {
+      this.error.set('記錄未載入，無法儲存');
+      return;
+    }
     const problem = this.validate();
     if (problem) {
       this.error.set(problem);
@@ -831,6 +853,7 @@ export class EntryFormComponent implements OnInit {
             targetId === null ? this.accounting.createEntry(input) : this.accounting.updateEntry(targetId, input);
           return request.pipe(map(detail => ({ detail, input })));
         }),
+        takeUntilDestroyed(this.destroyRef),
       )
       .subscribe({
         next: ({ detail, input }) => {
@@ -858,6 +881,7 @@ export class EntryFormComponent implements OnInit {
         entry_time: this.entryTime() || null,
         description: this.description().trim() || null,
       })
+      .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: () => {
           this.saving.set(false);
@@ -949,6 +973,7 @@ export class EntryFormComponent implements OnInit {
     this.saving.set(true);
     this.accounting
       .updateEntry(proposal.entryId, { ...proposal.input, fee: { amount: proposal.amount, name: FX_FEE_NAME } })
+      .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: () => {
           this.saving.set(false);

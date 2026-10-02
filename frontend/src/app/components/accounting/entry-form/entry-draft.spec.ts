@@ -26,6 +26,14 @@ describe('entry draft helpers', () => {
 
     localStorage.setItem('hh.accounting.lastUse.13', '{not json');
     expect(readLastUse(13)).toBeNull();
+
+    // Amount history: only a plain object of finite non-negative integer counts is trusted.
+    localStorage.setItem('hh.accounting.amounts.14', '[3, 5]');
+    expect(quickAmounts(14)).toEqual([]);
+    localStorage.setItem('hh.accounting.amounts.15', '{"170":3,"85":"9","90":-1,"95":1.5,"99":null,"60":2}');
+    expect(quickAmounts(15)).toEqual([170, 60]);
+    recordAmount(15, 85);
+    expect(JSON.parse(localStorage.getItem('hh.accounting.amounts.15')!)).toEqual({ '170': 3, '60': 2, '85': 1 });
   });
 
   it('ranks quick amounts by how often they were saved, six at most', () => {
