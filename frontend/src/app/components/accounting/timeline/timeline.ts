@@ -301,6 +301,19 @@ export class LedgerTimelineComponent implements OnInit {
       );
     });
 
+    // The account filter follows account writes (a new card, a rename, an archive) made beside this list.
+    let seenAccountsChange = this.accounting.accountsChanged();
+    effect(() => {
+      const change = this.accounting.accountsChanged();
+      if (change === seenAccountsChange) {
+        return;
+      }
+      seenAccountsChange = change;
+      untracked(() =>
+        this.accounting.getAccounts().subscribe({ next: accounts => this.accounts.set(accounts), error: () => undefined }),
+      );
+    });
+
     effect(onCleanup => {
       const element = this.sentinel()?.nativeElement;
       if (!element || typeof IntersectionObserver === 'undefined') {
@@ -363,6 +376,11 @@ export class LedgerTimelineComponent implements OnInit {
         error: () => {
           if (id !== this.requestId) {
             return;
+          }
+          if (reset) {
+            // The rows on screen belong to the previous month / filter: never show them beside the error.
+            this.entries.set([]);
+            this.total.set(0);
           }
           this.loadError.set(true);
           this.loading.set(false);

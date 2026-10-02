@@ -257,6 +257,38 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['捷運']);
   });
+
+  it("clears the previous month's rows when the reset load fails, keeping the error", () => {
+    const { fixture, el } = render();
+    flushSummary('2026-10');
+    flushEntries([makeEntry({ id: 1, name: '午餐' })]);
+    fixture.detectChanges();
+
+    (el.querySelector('.month-next') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    flushSummary('2026-11');
+    httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+
+    expect(el.querySelectorAll('.row').length).toBe(0);
+    expect(el.querySelector('.load-error')).not.toBeNull();
+  });
+
+  it('reloads the account filter options after an account write', () => {
+    const { fixture, el } = render('panes');
+    flushSummary('2026-10');
+    flushEntries([]);
+    fixture.detectChanges();
+
+    TestBed.inject(AccountingService).createAccount({ name: '新卡' } as never).subscribe();
+    httpMock!.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/accounts').flush(makeAccount({ id: 9, name: '新卡' }));
+    fixture.detectChanges();
+    httpMock!.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts').flush([...ACCOUNTS, makeAccount({ id: 9, name: '新卡' })]);
+    fixture.detectChanges();
+
+    const options = Array.from(el.querySelectorAll('.filter-account option')).map(text);
+    expect(options).toEqual(['全部帳戶', '玉山 UNI', '富邦 J卡', '新卡']);
+  });
 });
 
 describe('buildDays', () => {
