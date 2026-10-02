@@ -8,7 +8,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from ..models import SYSTEM_KINDS, Account, Category, LedgerEntry, Project
-from .moze_csv import MozeRow, ParsedFile
+from .moze_csv import MozeImportError, MozeRow, ParsedFile
 from .transfer_pairing import PairingResult
 
 SOURCE = "moze_import"
@@ -157,6 +157,39 @@ def _delete_unused_categories_and_projects(session: Session) -> None:
     )
 
 
+def _apply_renames(session: Session, renames: Mapping[str, str]) -> list[dict[str, str]]:
+    applied = []
+    for old_name, new_name in renames.items():
+        account = session.scalar(select(Account).where(Account.name == old_name))
+        if account is None:
+            raise MozeImportError(f"rename {old_name}={new_name}: account '{old_name}' does not exist")
+        other = session.scalar(select(Account).where(Account.name == new_name))
+        if other is not None and other.id != account.id:
+            raise MozeImportError(f"rename {old_name}={new_name}: account '{new_name}' already exists")
+        account.name = new_name
+        session.flush()
+        applied.append({"from": old_name, "to": new_name})
+    return applied
+
+
+def _archive_disappeared_accounts(session: Session, named_in_file: set[str]) -> list[str]:
+    archived = []
+    for account in session.scalars(select(Account).order_by(Account.id)):
+        if account.name in named_in_file:
+            continue
+        has_entries = session.scalar(
+            select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)
+        )
+        if has_entries:
+            continue
+        if not account.is_archived:
+            archived.append(account.name)
+        account.opening_balance = Decimal("0")
+        account.is_archived = True
+    session.flush()
+    return archived
+
+
 def _account_report(account: Account, totals: Mapping[int, tuple[int, Decimal, int, Decimal]]) -> dict:
     count, total, converted_count, converted_total = totals.get(account.id, (0, Decimal("0"), 0, Decimal("0")))
     return {
@@ -187,8 +220,11 @@ def replace_ledger(
     parsed: ParsedFile,
     pairing: PairingResult,
     import_run_id: int | None,
+    renames: Mapping[str, str] | None = None,
 ) -> dict:
-    """Run full-replace steps 2, 3, 5 and 6 in the caller's transaction and return the report summary."""
+    """Run full-replace steps 1-6 in the caller's transaction and return the report summary."""
+    renamed = _apply_renames(session, renames or {})
+
     session.execute(delete(LedgerEntry).where(LedgerEntry.source == SOURCE))
 
     existing = {a.name: a for a in session.scalars(select(Account))}
@@ -206,6 +242,8 @@ def replace_ledger(
             account.is_archived = False
         accounts[name] = account
     session.flush()
+
+    archived = _archive_disappeared_accounts(session, set(parsed.accounts))
 
     inserted = _insert_entries(session, parsed.rows, accounts, pairing, import_run_id)
 
@@ -229,6 +267,8 @@ def replace_ledger(
     return {
         "kind_counts": dict(sorted(Counter(entry.kind for entry in inserted).items())),
         "accounts_created": created,
+        "accounts_archived": archived,
+        "accounts_renamed": renamed,
         "accounts": [_account_report(account, totals) for account in accounts.values()],
         "unpaired_transfers": [_leg_report(rows_by_no[row_no]) for row_no in pairing.unpaired_rows],
         "pairing": dict(zip(("pass1", "pass2", "pass3"), pairing.pass_counts)),
