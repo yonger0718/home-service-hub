@@ -1,80 +1,104 @@
-.ledger-accounts {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  max-width: 100%;
-  min-width: 0;
-}
+.ledger-accounts { display: flex; flex-direction: column; max-width: 100%; min-width: 0; }
 
-.import-status {
-  color: var(--app-text-muted);
-  font-size: 0.85rem;
-  font-weight: 600;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.import-status--failed,
-.load-error {
-  color: var(--app-danger);
-}
-
-.account-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.account-row {
+.accounts-header {
   align-items: center;
-  border: 1px solid var(--app-border);
-  border-radius: 0.75rem;
-  color: var(--app-text);
-  display: grid;
-  gap: 0.15rem 0.75rem;
-  grid-template-areas:
-    'name balance'
-    'meta balance';
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: 0.75rem 1rem;
+  display: flex;
+  justify-content: space-between;
+
+  h2 { font-size: 1.15rem; font-weight: 800; margin: 0; }
+}
+
+.add-account {
+  color: var(--app-primary);
+  font-size: 1.5rem;
+  font-weight: 700;
+  padding: 0 0.5rem;
   text-decoration: none;
 }
 
-.account-name {
-  font-weight: 800;
-  grid-area: name;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.import-status { color: var(--app-text-muted); font-size: 0.85rem; font-weight: 600; margin: 0.25rem 0; overflow-wrap: anywhere; }
+.import-status--failed, .load-error { color: var(--app-danger); }
+
+.nw {
+  background: var(--app-surface-soft);
+  border-radius: var(--radius-md, 0.75rem);
+  margin: 4px 0;
+  padding: 10px 12px;
+
+  small { color: var(--app-text-muted); font-size: 0.7rem; font-weight: 700; }
+  b { display: block; font-size: 1.5rem; font-variant-numeric: tabular-nums; }
+  .totals-line { color: var(--app-text-muted); font-size: 0.72rem; }
 }
 
-.account-meta {
+.grp {
+  align-items: baseline;
+  background: none;
+  border: 0;
   color: var(--app-text-muted);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
   font-size: 0.8rem;
-  grid-area: meta;
-}
-
-.account-balance {
-  font-variant-numeric: tabular-nums;
   font-weight: 800;
-  grid-area: balance;
-  text-align: right;
-  white-space: nowrap;
+  justify-content: space-between;
+  margin: 14px 0 4px;
+  padding: 0;
+  width: 100%;
+
+  b { color: var(--app-text); font-variant-numeric: tabular-nums; }
 }
 
-.amount--negative {
-  color: var(--app-danger);
+.acc-row {
+  align-items: center;
+  border-top: 1px solid var(--app-border);
+  color: inherit;
+  display: grid;
+  gap: 1px 10px;
+  grid-template-areas: 'ico name bal' 'ico meta bal' 'ico due due';
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  padding: 8px 0;
+  text-decoration: none;
 }
+
+.acc-row.sub { padding-left: 22px; }
+
+.ico {
+  align-items: center;
+  background: var(--app-surface-soft);
+  border-radius: 50%;
+  display: flex;
+  font-size: 1.1rem;
+  grid-area: ico;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+
+.name { font-weight: 800; grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta { color: var(--app-text-muted); font-size: 0.72rem; grid-area: meta; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bal { font-variant-numeric: tabular-nums; font-weight: 800; grid-area: bal; text-align: right; white-space: nowrap; }
+.due { display: flex; grid-area: due; justify-content: flex-end; padding-top: 2px; }
+
+.badge {
+  background: var(--app-primary-soft);
+  border-radius: 4px;
+  color: var(--app-primary);
+  font-size: 0.6rem;
+  font-weight: 800;
+  margin-left: 4px;
+  padding: 0 4px;
+  vertical-align: middle;
+}
+
+.pill { border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-muted); font-size: 0.62rem; font-weight: 700; padding: 0 6px; white-space: nowrap; }
+.pill.rv { background: var(--app-primary-soft); border-color: transparent; color: var(--app-primary); }
+.neg { color: var(--c-red, var(--app-danger)); }
+.muted { color: var(--app-text-muted); font-size: 0.85rem; }
 
 .empty-state {
   color: var(--app-text-muted);
   padding: 2rem 1rem;
   text-align: center;
 
-  code {
-    overflow-wrap: anywhere;
-  }
+  a { color: var(--app-primary); font-weight: 700; }
 }

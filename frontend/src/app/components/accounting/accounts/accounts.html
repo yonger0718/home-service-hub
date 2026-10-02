@@ -1,10 +1,30 @@
 <section class="ledger-accounts">
+  <header class="accounts-header">
+    <h2>帳戶</h2>
+    <a class="add-account" routerLink="/accounting/accounts/new" aria-label="新增帳戶">+</a>
+  </header>
+
   @if (latestImport(); as run) {
     <p class="import-status" [class.import-status--failed]="run.status === 'failed'">
-      最近匯入 {{ run.started_at | date: 'yyyy-MM-dd HH:mm' }} · {{ statusLabel(run) }}
-      · 待確認 {{ reviewCount() }} 筆
+      最近匯入 {{ run.started_at | date: 'yyyy-MM-dd HH:mm' }} · {{ statusLabel(run) }} · 待確認 {{ reviewCount() }} 筆
     </p>
   }
+
+  <ng-template #row let-account let-node="node" let-sub="sub">
+    <a class="acc-row" [class.sub]="sub" [routerLink]="['/accounting/accounts', account.id]">
+      <span class="ico">{{ account.icon ?? '📁' }}</span>
+      <span class="name">{{ account.name }}@if (node?.children.length) {<span class="badge">主帳戶 {{ node.children.length }}</span>}</span>
+      <span class="meta">{{ meta(account) }}</span>
+      @if (node?.children.length) {
+        <span class="bal" [class.neg]="node.total < 0">{{ formatMoney(node.total, node.totalCurrency) }}</span>
+      } @else {
+        <span class="bal" [class.neg]="+account.balance < 0">{{ formatMoney(account.balance, account.currency) }}</span>
+      }
+      @if (duePill(account); as pill) {
+        <span class="due"><span class="pill rv">{{ pill }}</span></span>
+      }
+    </a>
+  </ng-template>
 
   @if (loadError()) {
     <p class="load-error">帳戶讀取失敗，請稍後再試。</p>
@@ -12,24 +32,44 @@
     <div class="empty-state">
       <i class="pi pi-upload"></i>
       <h4>尚未匯入 MOZE 資料</h4>
-      <p>
-        請先匯入 MOZE 匯出的 CSV：<code>python -m app.services.moze_import_service &lt;檔案&gt;</code>，
-        或上傳至 <code>POST /api/accounting/imports/moze</code>。
-      </p>
+      <p>請在記帳設定上傳 MOZE 備份 (.zip)，先試算再匯入。</p>
+      <a routerLink="/accounting/settings">前往記帳設定</a>
     </div>
-  } @else {
-    <ul class="account-list">
-      @for (account of accounts(); track account.id) {
-        <li>
-          <a class="account-row" [routerLink]="['/accounting/accounts', account.id]">
-            <span class="account-name">{{ account.name }}</span>
-            <span class="account-meta">{{ account.currency }} · {{ account.entry_count }} 筆</span>
-            <span class="account-balance" [class.amount--negative]="isNegative(account.balance)">
-              {{ formatAmount(account.balance, account.currency) }}
-            </span>
-          </a>
-        </li>
+  } @else if (loaded()) {
+    <div class="nw">
+      <small>總額 {{ mainCurrency() }}</small>
+      <b class="total-amount" [class.neg]="total() < 0">{{ formatMoney(total(), mainCurrency()) }}</b>
+      <span class="totals-line">總資產 {{ formatMoney(assets(), mainCurrency()) }} · 總負債 {{ formatMoney(liabilities(), mainCurrency()) }}</span>
+    </div>
+
+    @for (group of groups(); track group.key) {
+      <button type="button" class="grp" [attr.aria-expanded]="!isCollapsed(group.key)" (click)="toggleGroup(group.key)">
+        <span>{{ group.name }}</span>
+        <b [class.neg]="group.subtotal < 0">{{ formatMoney(group.subtotal, mainCurrency(), { sign: true }) }}</b>
+      </button>
+      @if (!isCollapsed(group.key)) {
+        @for (node of group.nodes; track node.account.id) {
+          <ng-container *ngTemplateOutlet="row; context: { $implicit: node.account, node: node, sub: false }" />
+          @for (child of node.children; track child.id) {
+            <ng-container *ngTemplateOutlet="row; context: { $implicit: child, node: null, sub: true }" />
+          }
+        }
       }
-    </ul>
+    }
+
+    <button type="button" class="grp archived-toggle" [attr.aria-expanded]="archivedOpen()" (click)="toggleArchived()">
+      <span>封存{{ archived() !== null ? ' (' + archived()!.length + ')' : '' }} {{ archivedOpen() ? '⌄' : '›' }}</span>
+    </button>
+    @if (archivedOpen()) {
+      <div class="archived">
+        @for (account of archived() ?? []; track account.id) {
+          <ng-container *ngTemplateOutlet="row; context: { $implicit: account, node: null, sub: false }" />
+        } @empty {
+          @if (archived() !== null) {
+            <p class="muted">沒有封存的帳戶</p>
+          }
+        }
+      </div>
+    }
   }
 </section>
