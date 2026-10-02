@@ -258,4 +258,20 @@ describe('AccountingLayoutComponent', () => {
     expect(navigate).not.toHaveBeenCalled();
     expect(router.url).toBe('/accounting');
   });
+  it('closes the sheet with a swipe to the right, not with a short drag', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    const sheet = await find(harness, '.detail-pane.open');
+    const swipe = (from: number, to: number) => {
+      sheet.dispatchEvent(new MouseEvent('pointerdown', { clientX: from, bubbles: true }));
+      sheet.dispatchEvent(new MouseEvent('pointerup', { clientX: to, bubbles: true }));
+    };
+
+    swipe(100, 150);
+    expect(router.url).toBe('/accounting/entries/5');
+    swipe(100, 200);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+  });
 });

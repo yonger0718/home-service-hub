@@ -10,7 +10,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { makeAccount, makeEntry, makePreference } from '../testing/fixtures';
-import { LedgerTimelineComponent } from './timeline';
+import { LedgerTimelineComponent, buildDays } from './timeline';
 
 const ACCOUNTS = [makeAccount({ id: 1, name: '玉山 UNI' }), makeAccount({ id: 7, name: '富邦 J卡' })];
 
@@ -256,5 +256,47 @@ describe('LedgerTimelineComponent', () => {
     flushEntries([makeEntry({ id: 2, entry_date: '2026-11-01', name: '捷運' })]);
     fixture.detectChanges();
     expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['捷運']);
+  });
+});
+
+describe('buildDays', () => {
+  const group = (total: string | null, currency = 'TWD') => ({
+    id: 4, kind: 'split' as const, name: '旅行', merchant: null, description: null, count: 2, total, currency,
+  });
+
+  it('shows — for a group without a total and leaves it out of the day net', () => {
+    const days = buildDays(
+      [
+        makeEntry({ id: 1, amount: '-100.0000', group: group(null, 'JPY') }),
+        makeEntry({ id: 2, amount: '-50.0000' }),
+      ],
+      'TWD',
+      false,
+    );
+    expect(days[0].rows[0]).toMatchObject({ amountText: '—', tone: 'neutral', groupCount: 2 });
+    expect(days[0].net).toBe(-50);
+  });
+
+  it('keeps one row per split group across pages and per transfer pair, leaving transfers out of the net', () => {
+    const page1 = [
+      makeEntry({ id: 1, amount: '-300.0000', group: group('-410.0000') }),
+      makeEntry({ id: 3, kind: 'transfer_out', amount: '-1000.0000', transfer_group_id: 't-1', account_name: '錢包' }),
+    ];
+    const page2 = [
+      makeEntry({ id: 2, amount: '-110.0000', group: group('-410.0000') }),
+      makeEntry({ id: 4, kind: 'transfer_in', amount: '1000.0000', transfer_group_id: 't-1', account_name: '玉山' }),
+    ];
+    const days = buildDays([...page1, ...page2], 'TWD', false);
+
+    expect(days[0].rows.map(row => row.key)).toEqual(['g4', 'tt-1']);
+    expect(days[0].rows[1]).toMatchObject({ sub: '錢包 → 玉山', tone: 'neutral' });
+    expect(days[0].net).toBe(-410);
+  });
+
+  it('drops rewards when hideRewards is on', () => {
+    const entries = [makeEntry({ id: 1, kind: 'reward', amount: '12.0000' }), makeEntry({ id: 2, amount: '-80.0000' })];
+    expect(buildDays(entries, 'TWD', true)[0].rows.map(row => row.entryId)).toEqual([2]);
+    expect(buildDays(entries, 'TWD', false)[0].rows.map(row => row.entryId)).toEqual([1, 2]);
+    expect(buildDays(entries, 'TWD', true)[0].net).toBe(-80);
   });
 });

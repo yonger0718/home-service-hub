@@ -183,6 +183,24 @@ describe('AccountingAccountsComponent', () => {
     expect(rows(el)[0].querySelector('.name')?.textContent?.trim()).toBe('零錢包');
   });
 
+  it('reloads the balances after an entry write elsewhere (entriesChanged)', () => {
+    const fixture = render(ACCOUNTS, LATEST);
+    const el = fixture.nativeElement as HTMLElement;
+    const service = TestBed.inject(AccountingService);
+
+    service.deleteEntry(99).subscribe();
+    http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
+    fixture.detectChanges();
+
+    http
+      .expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts' && !r.urlWithParams.includes('include_archived=true'))
+      .flush([account({ id: 1, name: '錢包', balance: '9999', balance_main: '9999' }), ...ACCOUNTS.slice(1)]);
+    http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+    fixture.detectChanges();
+
+    expect(rows(el)[0].querySelector('.bal')?.textContent?.trim()).toBe('$9,999');
+  });
+
   it('shows — for a foreign account without a main-currency rate and leaves it out of the sums', () => {
     const el = render([
       account({ id: 1, name: '錢包', balance: '3070', balance_main: '3070' }),
