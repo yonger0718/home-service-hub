@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..schemas.ledger import EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
-from ..schemas.writes import EntryIn, EntryUpdateIn, EntryWriteOut
-from ..services import entry_write_service, ledger_service
+from ..schemas.writes import EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, SettleIn
+from ..services import entry_write_service, ledger_service, settlement_service
 from .errors import service_errors
 
 router = APIRouter(prefix="/entries", tags=["Entries"])
@@ -74,4 +74,17 @@ def remove_entry(entry_id: int, db: Session = Depends(get_db)):
     return Response(status_code=204)
 
 
-# settle and refund endpoints are added in Task 15
+@router.post("/{entry_id}/settle", response_model=EntryDetailOut, status_code=201)
+def post_settlement(entry_id: int, payload: SettleIn, db: Session = Depends(get_db)):
+    with service_errors():
+        new_id = settlement_service.settle(db, entry_id, payload)
+    db.commit()
+    return ledger_service.get_entry_detail(db, new_id)
+
+
+@router.post("/{entry_id}/refund", response_model=EntryDetailOut, status_code=201)
+def post_refund(entry_id: int, payload: RefundIn, db: Session = Depends(get_db)):
+    with service_errors():
+        new_id = settlement_service.refund(db, entry_id, payload)
+    db.commit()
+    return ledger_service.get_entry_detail(db, new_id)
