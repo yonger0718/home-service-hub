@@ -6,7 +6,7 @@ The SPA SHALL provide the route `/accounting/accounts` as the default accounting
 
 - name
 - currency
-- balance, formatted in the account's currency with up to 2 decimals and grouping separators
+- balance, formatted in the account's currency with grouping separators: TWD and JPY rounded to whole units (half away from zero), other currencies with up to 2 decimals; rounding is display-only
 - entry count
 
 Negative balances SHALL be visually distinguished.

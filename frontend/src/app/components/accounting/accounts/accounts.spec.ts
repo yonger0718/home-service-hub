@@ -59,7 +59,7 @@ describe('AccountingAccountsComponent', () => {
 
     const rows = Array.from(el.querySelectorAll('.account-row'));
     expect(rows.map(r => r.querySelector('.account-name')?.textContent?.trim())).toEqual(['台新信用卡', '去日本的錢']);
-    expect(rows[0].querySelector('.account-balance')?.textContent?.trim()).toBe('TWD -15,230.5');
+    expect(rows[0].querySelector('.account-balance')?.textContent?.trim()).toBe('TWD -15,231');
     expect(rows[1].querySelector('.account-balance')?.textContent?.trim()).toBe('JPY 178,500');
     expect(rows[1].querySelector('.account-meta')?.textContent).toContain('4 筆');
     expect(rows[0].getAttribute('href')).toBe('/accounting/accounts/3');
