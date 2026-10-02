@@ -278,6 +278,9 @@ def upgrade() -> None:
     op.create_index("ix_ledger_entry_group_id", "ledger_entry", ["group_id"])
     op.create_index("ix_ledger_entry_settles_entry_id", "ledger_entry", ["settles_entry_id"])
     op.create_index("ix_ledger_entry_reward_source_entry_id", "ledger_entry", ["reward_source_entry_id"])
+    # Every ledger_entry delete runs FK actions on these self-references (final review finding 8).
+    op.create_index("ix_ledger_entry_refunds_entry_id", "ledger_entry", ["refunds_entry_id"])
+    op.create_index("ix_ledger_entry_parent_entry_id", "ledger_entry", ["parent_entry_id"])
 
     op.create_table(
         "entry_reward_rule",
@@ -318,6 +321,8 @@ def downgrade() -> None:
         op.execute(f'LOCK TABLE "{table}" IN ACCESS EXCLUSIVE MODE')
     _assert_downgradable(connection)
 
+    op.drop_index("ix_ledger_entry_parent_entry_id", table_name="ledger_entry")
+    op.drop_index("ix_ledger_entry_refunds_entry_id", table_name="ledger_entry")
     op.drop_table("moze_schedule")
     op.drop_table("entry_reward_rule")
 

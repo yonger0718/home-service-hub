@@ -342,3 +342,10 @@ def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config)
     assert "1 reward_rule rows" in message
     assert "source = manual" not in message
     assert _version(url) == "7b1e4a2c9d05"
+
+
+def test_self_referencing_entry_links_are_indexed(pg_engine):
+    """Every ledger_entry delete runs FK actions on these columns; without an index each one scans the table."""
+    indexes = {i["name"]: tuple(i["column_names"]) for i in inspect(pg_engine).get_indexes("ledger_entry")}
+    assert indexes["ix_ledger_entry_refunds_entry_id"] == ("refunds_entry_id",)
+    assert indexes["ix_ledger_entry_parent_entry_id"] == ("parent_entry_id",)

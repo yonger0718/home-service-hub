@@ -176,6 +176,8 @@ Rollback window: **3 days** after the deploy. A rollback returns `accounting_db`
 
 `alembic downgrade` is **not** the rollback: Task 3's guard refuses on purpose as soon as any 2a data exists (`manual` / `hermes` / `rule` entries, `moze_backup` entries, account groups, rules, schedules, a `moze_backup` import run). `.venv/bin/alembic downgrade 5d2e7c9a1b3f` is only for a migration that failed in step 1, before any import or entry.
 
+The guard does not cover everything 2a can hold. A downgrade would silently drop: cosmetic edits of categories and projects (category `icon` / `color` / `is_hidden` / `sort_order` / default account and project on categories without a `moze_id`; project `is_archived` / `sort_order`), the `preference` row, and the 2a account settings of an account whose `settings_locally_edited` flag was reset (its settings columns are dropped like any other). This is one more reason the only supported rollback is the restore-and-swap below.
+
 `pg_restore --clean` into the live `accounting_db` is **not** the rollback either and must not be used: it fails on the foreign keys of the 2a tables, which reference phase 1 tables the dump wants to drop (verified). The rollback restores into a new database and swaps the database names; the 2a database is renamed, never cleaned or modified.
 
 Rollback script. Save it as `~/backups/home-hub-2a/rollback-2a.sh` (mode `700`) in step 0b, whose failure drill runs it. Every step is a precondition for the next: nothing stops the backend or renames a database until the restored copy has proven itself, and any failure ends the script with a `ROLLBACK STOPPED:` line.

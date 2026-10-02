@@ -235,6 +235,8 @@ class LedgerEntry(Base):
         Index("ix_ledger_entry_group_id", "group_id"),
         Index("ix_ledger_entry_settles_entry_id", "settles_entry_id"),
         Index("ix_ledger_entry_reward_source_entry_id", "reward_source_entry_id"),
+        Index("ix_ledger_entry_refunds_entry_id", "refunds_entry_id"),
+        Index("ix_ledger_entry_parent_entry_id", "parent_entry_id"),
         Index("ix_ledger_entry_source", "source"),
         CheckConstraint(SETTLEMENT_SIGN_SQL, name="ck_ledger_entry_settlement_sign"),
     )
