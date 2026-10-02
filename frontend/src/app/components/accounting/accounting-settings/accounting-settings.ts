@@ -1,6 +1,5 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Observable, Subject, catchError, concatMap, forkJoin, map, of } from 'rxjs';
 
 import {
@@ -54,7 +53,7 @@ function swap<T>(list: T[], index: number, delta: number): T[] | null {
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(document:click)': 'onDocumentClick($event)' },
 })
-export class AccountingSettingsComponent implements OnInit {
+export class AccountingSettingsComponent implements OnInit, OnDestroy {
   private service = inject(AccountingService);
 
   readonly preference = signal<Preference | null>(null);
@@ -105,6 +104,8 @@ export class AccountingSettingsComponent implements OnInit {
 
   constructor() {
     // One PUT at a time, in order: each body is the optimistic state at its toggle, so quick toggles all persist.
+    // Not tied to the page's lifetime: leaving the page completes the subject (ngOnDestroy), so the PUT in flight
+    // and the queued ones still run, and the subscription ends after the last one.
     this.preferenceSaves
       .pipe(
         concatMap(next =>
@@ -113,7 +114,6 @@ export class AccountingSettingsComponent implements OnInit {
             catchError((error: unknown) => of({ saved: null, error })),
           ),
         ),
-        takeUntilDestroyed(),
       )
       .subscribe(({ saved, error }) => {
         this.pendingPreferenceSaves--;
@@ -127,6 +127,10 @@ export class AccountingSettingsComponent implements OnInit {
         this.preference.set(this.savedPreference);
         this.dataMessage.set(writeErrorMessage(error));
       });
+  }
+
+  ngOnDestroy(): void {
+    this.preferenceSaves.complete();
   }
 
   ngOnInit(): void {

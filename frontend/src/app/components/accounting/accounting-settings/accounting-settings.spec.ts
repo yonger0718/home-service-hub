@@ -4,6 +4,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { AccountingService } from '../../../services/accounting.service';
 import { AccountingSettingsComponent } from './accounting-settings';
 
 const PREFERENCE = {
@@ -175,6 +176,24 @@ describe('AccountingSettingsComponent', () => {
 
     expect(el.querySelector('.pref-hide-rewards')?.getAttribute('aria-checked')).toBe('true');
     expect(el.querySelector<HTMLSelectElement>('.pref-colors')!.value).toBe('green_red');
+  });
+
+  it('lets in-flight and queued preference saves finish after the page is left', () => {
+    const service = TestBed.inject(AccountingService);
+    const changesBefore = service.preferenceChanged();
+    el.querySelector<HTMLButtonElement>('.pref-hide-rewards')!.click();
+    fixture.detectChanges();
+    change('.pref-colors', 'green_red');
+
+    fixture.destroy();
+
+    const first = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/preference');
+    expect(first.cancelled).toBe(false);
+    expect(() => first.flush({ ...PREFERENCE, hide_rewards_on_timeline: true })).not.toThrow();
+    const second = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/preference');
+    expect(second.request.body).toEqual({ ...PREFERENCE, hide_rewards_on_timeline: true, expense_income_colors: 'green_red' });
+    expect(() => second.flush({ ...PREFERENCE, hide_rewards_on_timeline: true, expense_income_colors: 'green_red' })).not.toThrow();
+    expect(service.preferenceChanged()).toBe(changesBefore + 2);
   });
 
   it('reverts a preference toggle whose save fails and says why', () => {
