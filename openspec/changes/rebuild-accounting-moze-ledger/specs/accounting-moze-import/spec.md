@@ -99,7 +99,7 @@ The importer SHALL assign `seq` in file row order. A parent entry's children SHA
 
 The importer SHALL create any account, category or project referenced in the file that does not already exist.
 
-An account's `currency` SHALL come from the `幣種` of its rows. The import SHALL fail if one account appears with two different currencies.
+An account's `currency` SHALL be the `幣種` of its single `初始金額` row. Rows on that account MAY carry a different `幣種`; they are converted as described in "Foreign-currency rows".
 
 Rows of every non-system kind SHALL use a category of that kind named after `主類別`, with a child category `子類別` when `子類別` is non-empty and differs from `主類別`. System kinds (`fee`, `discount`, `reward`, `interest`, `balance_adjustment`) SHALL use their fixed category.
 
@@ -108,10 +108,49 @@ Rows of every non-system kind SHALL use a category of that kind named after `主
 - **WHEN** imported
 - **THEN** receivable categories `應收款項/代付` and `應收款項/報帳` SHALL exist and the entries SHALL reference them
 
-#### Scenario: Account appearing with two currencies fails
-- **GIVEN** account `IB` appears in one row with `USD` and in another with `TWD`
+#### Scenario: Account currency comes from its opening row
+- **GIVEN** account `華航卡` has a `初始金額` row in `TWD` and some expense rows in `JPY`
+- **WHEN** imported
+- **THEN** account `華航卡` SHALL have `currency = TWD`
+
+### Requirement: Foreign-currency rows
+
+When a row's `幣種` differs from its account's currency, the importer SHALL convert it to the account currency:
+
+- `original_amount` = `金額`, and `original_currency` = the row's `幣種`.
+- `amount` = `金額 × rate`, rounded half-up to 4 decimal places, where `rate` is the daily rate from the row currency to the account currency on the row's `日期`.
+- `fx_rate` = that rate, and `fx_source = 'fx_api'`.
+- Fee and discount children of the row SHALL be converted with the same rate, and SHALL keep their own `original_amount`.
+- Rows in the account currency SHALL leave `original_amount`, `original_currency`, `fx_rate` and `fx_source` NULL.
+
+**Rates.** Rates SHALL be read from the accounting service's own `fx_rate` cache table, with columns `date`, `base`, `quote`, `rate` and `source`, and primary key `(date, base, quote)`.
+
+- A missing `(date, base, quote)` SHALL be fetched from the daily historical FX source used by stock-portfolio-service: jsDelivr `@fawazahmed0/currency-api@{YYYY-MM-DD}`, with `{YYYY-MM-DD}.currency-api.pages.dev` as fallback. The fetched rate SHALL be stored in the cache.
+- Rate fetching SHALL happen before the ledger transaction starts.
+- If a rate cannot be obtained from either source, the import SHALL fail naming the currency pair and date, and SHALL leave the existing ledger unchanged.
+- The cache SHALL NOT be cleared by imports.
+
+**Pairing.** Transfer pairing SHALL compare the rows' own `幣種` and `金額`, not the converted amounts.
+
+**Report.** The import report SHALL list, per account, the number of converted entries and the sum of their converted amounts, so the owner can compare those accounts with MOZE.
+
+#### Scenario: JPY expense on a TWD card is converted
+- **GIVEN** a TWD account and a `支出` row on it with `幣種 = JPY`, `金額 = -1800` dated `2026/07/10`
+- **AND** the JPY→TWD rate for 2026-07-10 is `0.2` (cached or fetched)
+- **WHEN** imported
+- **THEN** the entry SHALL have `amount = -360.0000`, `currency = TWD`, `original_amount = -1800`, `original_currency = JPY`, `fx_rate = 0.2` and `fx_source = 'fx_api'`
+- **AND** the account balance SHALL decrease by `360`
+
+#### Scenario: Missing rate fails the import without ledger changes
+- **GIVEN** a foreign-currency row dated `2025/06/01`, no cached rate, and both FX sources unreachable
 - **WHEN** an import is attempted
-- **THEN** the import SHALL fail naming the account and both currencies
+- **THEN** the import SHALL fail naming `JPY→TWD` and `2025-06-01`
+- **AND** the existing ledger SHALL be unchanged
+
+#### Scenario: Cached rates are reused
+- **GIVEN** the cache already holds JPY→TWD for 2026-07-10
+- **WHEN** a second import needs that rate
+- **THEN** no network request SHALL be made for it
 
 ### Requirement: Transfer pairing
 
@@ -321,3 +360,4 @@ The importer SHALL be invocable in two ways:
 - **WHEN** `MOZE_20261001_170037.csv` (6,976 rows) is imported against a fresh database
 - **THEN** the import SHALL succeed in under 30 seconds
 - **AND** the report SHALL show 61 accounts and entry counts per kind that match the file, with fee and discount children counted separately
+- **AND** exactly 130 entries across 9 accounts SHALL carry `fx_source = 'fx_api'`

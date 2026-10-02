@@ -51,7 +51,9 @@ The system SHALL persist every money movement in a `ledger_entry` table with the
 - `account_id` (FK → `account.id`, ON DELETE RESTRICT, NOT NULL)
 - `kind` (enum: `expense`, `income`, `transfer_out`, `transfer_in`, `receivable`, `payable`, `balance_adjustment`, `fee`, `discount`, `reward`, `interest`, `refund`)
 - `amount` (NUMERIC(20,4), NOT NULL; positive increases the account balance, negative decreases it)
-- `currency` (copied from the account at insert)
+- `currency` (copied from the account at insert; `amount` is always in this currency)
+- `original_amount` (NUMERIC(20,4), nullable) and `original_currency` (VARCHAR(8), nullable): the amount as recorded, when it was in a different currency
+- `fx_rate` (NUMERIC(20,10), nullable) and `fx_source` (enum `fx_api`, `moze_backup`, nullable): the rate used to convert `original_amount` into `amount`, and where it came from
 - `entry_date` (DATE, NOT NULL)
 - `entry_time` (TIME, nullable)
 - `category_id` (FK, nullable)
@@ -73,6 +75,12 @@ Indexes SHALL exist on `(account_id, entry_date, entry_time, seq)`, `transfer_gr
 - **GIVEN** an account with currency `JPY`
 - **WHEN** an entry is inserted for that account
 - **THEN** the entry's `currency` SHALL be `JPY`
+
+#### Scenario: Converted entry keeps its original amount
+- **GIVEN** a TWD account
+- **WHEN** an entry recorded as `-1800 JPY` is converted at rate `0.2`
+- **THEN** the entry SHALL have `amount = -360`, `currency = TWD`, `original_amount = -1800` and `original_currency = JPY`
+- **AND** only `amount` SHALL count toward the account balance
 
 #### Scenario: A paired transfer shares a group id
 - **WHEN** a transfer moves 1000 from account A to account B

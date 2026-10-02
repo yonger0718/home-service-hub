@@ -9,6 +9,7 @@ This change is the proof-of-concept and the foundation for the whole migration. 
 - **BREAKING**: Drop the current accounting tables (`transactions`, `categories`, `credit_cards`, `subscriptions`, `installments`, `payment_methods`) and their endpoints. The database holds zero rows, so no data is lost.
 - Add the ledger model: `account`, `category` (two levels, scoped by record kind), `project`, `ledger_entry` (signed `NUMERIC(20,4)` amounts with per-entry currency, record kind, source, transfer grouping).
 - Add a MOZE CSV importer (CLI + REST) that performs a transactional full replace of MOZE-sourced data, auto-creates accounts, categories and projects, pairs transfers, and produces an import report with per-account balances and unpaired transfers.
+- Convert foreign-currency rows (130 rows on 9 accounts in the real export) into the account currency using cached daily historical rates. Each entry keeps its original amount, currency and rate.
 - Add read-only REST endpoints: list accounts with balances, list an account's entries, get the latest import report.
 - Replace the accounting pages in the Angular SPA with a minimal read-only view: account list with balances and per-account entry history.
 
@@ -27,5 +28,7 @@ This change is the proof-of-concept and the foundation for the whole migration. 
 - **Code**: `services/accounting-service/app/{models,routers,services,schemas}/` rewritten; new `app/services/moze_import_service.py`; new Alembic migration; `frontend/src/app/components/accounting/` replaced; `frontend/src/app/services/accounting.service.ts` and `models/accounting.model.ts` replaced; routes in `app.routes.ts` updated.
 - **APIs**: all existing `/api/accounting/*` endpoints are removed and replaced by `/api/accounting/accounts`, `/api/accounting/accounts/{id}/entries`, `/api/accounting/imports/moze` and `/api/accounting/imports/latest`.
 - **Caddy**: the `@hub_spa` route list must be updated to the new accounting routes.
+- **Dependencies**: outbound HTTPS from accounting-service to `cdn.jsdelivr.net` (primary) and `currency-api.pages.dev` (fallback) for historical daily FX rates. This is the same source stock-portfolio-service already uses, with no API key. Rates are cached in a new `fx_rate` table in `accounting_db`.
+- **Frontend shell**: `frontend-app-shell` is modified. The `accounting-dash` route id is removed, and the old accounting sub-routes redirect to `/accounting/accounts`.
 - **Hermes**: the `homehub-api` skill references removed endpoints and stale ports (`:4200`, `:8080`); it is updated in the Hermes change (phase 4). Until then Hermes must not write to accounting.
 - **Out of scope here**: entry UI, reward rules, credit-card statements, recurring records and installments, net worth, reports, receivables view, the agent API, the MOZE changelog digest, MOZE backup-file settings import, linking MOZE accounts to broker accounts.
