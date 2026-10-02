@@ -23,6 +23,9 @@
   @if (error(); as message) {
     <p class="form-error" role="alert">{{ message }}</p>
   }
+  @if (notice(); as message) {
+    <p class="form-notice" role="status">{{ message }}</p>
+  }
   @if (feeProposal(); as proposal) {
     <div class="fee-prompt" role="status">
       <span>已儲存。這個帳戶設有國外交易手續費：</span>

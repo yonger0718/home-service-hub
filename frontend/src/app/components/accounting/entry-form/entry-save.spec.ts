@@ -212,7 +212,7 @@ describe('buildEntryInput', () => {
   });
 
   it('sends the original amount and only the manual side of an FX entry', () => {
-    const fx = { original_amount: '30', original_currency: 'USD', fx_rate: '32.1', amount: '963.4', use_online: false, manual: 'amount', rate_date: null } as const;
+    const fx = { original_amount: '30', original_currency: 'USD', account_currency: 'TWD', fx_rate: '32.1', amount: '963.4', use_online: false, manual: 'amount', rate_date: null } as const;
     expect(buildEntryInput({ ...VALUES, amount: 30, fx })).toMatchObject({
       amount: '963',
       original_amount: '30',
@@ -229,6 +229,7 @@ describe('fxFromDetail', () => {
     expect(fxFromDetail({ ...base, fx_source: 'manual' } as unknown as EntryDetail)).toEqual({
       original_amount: '30',
       original_currency: 'USD',
+      account_currency: 'TWD',
       fx_rate: '32.1',
       amount: '963',
       use_online: false,

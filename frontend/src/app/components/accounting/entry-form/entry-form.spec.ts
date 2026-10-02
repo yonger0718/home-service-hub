@@ -34,6 +34,10 @@ const LUNCH = makeCategory({ id: 12, parent_id: 1, name: '午餐', default_accou
 const FOOD = makeCategory({ id: 1, name: '飲食', icon: '🍜', color: '#f0cd92', children: [LUNCH] });
 const SALARY = makeCategory({ id: 30, kind: 'income', name: '薪水', icon: '💰', default_account_id: 2 });
 const OLD_CARD = makeAccount({ id: 3, name: '舊卡', is_archived: true });
+const YEN_WALLET = makeAccount({ id: 4, name: '日幣現金', currency: 'JPY' });
+const USD_CARD = makeAccount({ id: 5, name: '美元卡', currency: 'USD' });
+const FX_ACCOUNTS = [...ACCOUNTS, YEN_WALLET, USD_CARD];
+const RAMEN = makeCategory({ id: 13, parent_id: 1, name: '拉麵', default_account_id: 4 });
 const SPLIT_GROUP = { id: 4, kind: 'split' as const, name: null, count: 2, total: '-300.0000', currency: 'TWD' };
 const SPLIT_SEVEN = makeEntryDetail({
   id: 7,
@@ -783,5 +787,110 @@ describe('EntryFormComponent', () => {
     expect(put.request.url).toBe('/api/accounting/entries/7');
     put.flush(makeEntryDetail({ id: 7 }));
     settle();
+  });
+  // ---- C1: the FX state follows the account currency ------------------------------------------------------------
+
+  /** Opens the 幣種 sheet on the current account, picks JPY (online rate flushed), types ¥5,390 and `field`. */
+  function convertYen(el: HTMLElement, field: '.fx-converted' | '.fx-rate', value: string): void {
+    (el.querySelector('button.cur') as HTMLButtonElement).click();
+    settle();
+    const currency = el.querySelector('.fx-currency') as HTMLSelectElement;
+    currency.value = 'JPY';
+    currency.dispatchEvent(new Event('change'));
+    settle();
+    httpMock
+      .expectOne(r => r.url === '/api/accounting/fx-rate')
+      .flush({ date: '2026-10-02', base: 'JPY', quote: 'TWD', rate: '0.2163000000', source: 'cache' });
+    settle();
+    for (const [selector, text] of [['.fx-original', '5390'], [field, value]]) {
+      const input = el.querySelector(selector) as HTMLInputElement;
+      input.value = text;
+      input.dispatchEvent(new Event('input'));
+      settle();
+    }
+    (el.querySelector('.fx-confirm') as HTMLButtonElement).click();
+    settle();
+  }
+
+  function chooseAccount(el: HTMLElement, id: number): void {
+    const select = el.querySelector('.account-select') as HTMLSelectElement;
+    select.value = String(id);
+    select.dispatchEvent(new Event('change'));
+    settle();
+    respond(`/api/accounting/accounts/${id}`, makeAccountDetail({ id }));
+  }
+
+  it('drops a fixed FX conversion (and the fee) when the account moves to the original currency', async () => {
+    const { el } = await open('/accounting/entry', 'phone', FX_ACCOUNTS);
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    convertYen(el, '.fx-converted', '1166');
+    form.fee.set({ amount: '30', name: null });
+    settle();
+
+    chooseAccount(el, 4);
+
+    expect(form.fx()).toBeNull();
+    expect(text(el.querySelector('.amount-value'))).toBe('5,390');
+    expect(text(el.querySelector('.form-notice'))).toBe('已清除手續費與折扣（帳戶幣別變更）');
+    keys(el, '✓');
+    const req = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries');
+    expect(req.request.body).toMatchObject({
+      account_id: 4,
+      amount: '5390',
+      original_amount: null,
+      original_currency: null,
+      fx_rate: null,
+      fee: null,
+      discount: null,
+    });
+    req.flush(makeEntryDetail({ id: 99 }));
+    settle();
+  });
+
+  it('resets a manual FX rate to the online rate when the account moves to a third currency', async () => {
+    const { el } = await open('/accounting/entry', 'phone', FX_ACCOUNTS);
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    convertYen(el, '.fx-rate', '0.25');
+
+    chooseAccount(el, 5);
+
+    expect(text(el.querySelector('.form-notice'))).toBe('已重設匯率（帳戶幣別變更）');
+    expect(text(el.querySelector('button.cur'))).toBe('JPY');
+    keys(el, '✓');
+    const req = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries');
+    expect(req.request.body).toMatchObject({
+      account_id: 5,
+      amount: null,
+      original_amount: '5390',
+      original_currency: 'JPY',
+      fx_rate: null,
+    });
+    req.flush(makeEntryDetail({ id: 99 }));
+    settle();
+  });
+
+  it('applies the same FX reset when a category pick moves the account', async () => {
+    const { el } = await open('/accounting/entry', 'phone', FX_ACCOUNTS);
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    respond('/api/accounting/categories', [{ ...FOOD, children: [LUNCH, RAMEN] }]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    convertYen(el, '.fx-converted', '1166');
+
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '拉麵');
+    respond('/api/accounting/accounts/4', makeAccountDetail({ id: 4 }));
+
+    expect(form.accountId()).toBe(4);
+    expect(form.fx()).toBeNull();
+    expect(form.amountExpr()).toBe('5390');
   });
 });

@@ -9,6 +9,7 @@ import { FxSheetComponent, FxValue } from './fx-sheet';
 const START: FxValue = {
   original_amount: '5390',
   original_currency: 'JPY',
+  account_currency: 'TWD',
   fx_rate: null,
   amount: null,
   use_online: true,
@@ -79,6 +80,7 @@ describe('FxSheetComponent', () => {
     expect(component.value()).toEqual({
       original_amount: '5390',
       original_currency: 'JPY',
+      account_currency: 'TWD',
       fx_rate: '0.2163',
       amount: '1170',
       use_online: false,

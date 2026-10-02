@@ -217,6 +217,7 @@ export function fxFromDetail(detail: EntryDetail): FxValue | null {
   return {
     original_amount: unsigned(detail.original_amount)!,
     original_currency: detail.original_currency,
+    account_currency: detail.currency,
     fx_rate: detail.fx_rate === null ? null : String(Number(detail.fx_rate)),
     amount: unsigned(detail.amount),
     use_online: online,

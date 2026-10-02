@@ -208,6 +208,8 @@ export class EntryFormComponent implements OnInit {
   readonly sheet = signal<'fx' | 'fee' | null>(null);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
+  /** One-line notice of something the form changed by itself (FX reset after an account-currency change). */
+  readonly notice = signal<string | null>(null);
   readonly savedFlash = signal(false);
   readonly feeProposal = signal<FeeProposal | null>(null);
   /** Extra split lines; empty for a plain entry. */
@@ -449,6 +451,7 @@ export class EntryFormComponent implements OnInit {
   }
 
   private resetFields(): void {
+    this.notice.set(null);
     this.category.set(null);
     this.pendingCategoryId = null;
     this.projectId.set(null);
@@ -556,10 +559,7 @@ export class EntryFormComponent implements OnInit {
     this.rulesTouched = true;
     this.kind.set(detail.kind as WritableEntryKind);
     const archived = this.accounts().find(account => account.id === detail.account_id)?.is_archived ?? false;
-    // A copy is a new record: it never lands on an archived account.
-    this.accountId.set(
-      copy && archived ? (this.accounts().find(account => !account.is_archived)?.id ?? null) : detail.account_id,
-    );
+    this.accountId.set(detail.account_id);
     this.pendingCategoryId = detail.category_id;
     this.resolvePendingCategory();
     const input = entryInputFromDetail(detail);
@@ -572,6 +572,10 @@ export class EntryFormComponent implements OnInit {
     this.fee.set(input.fee);
     this.discount.set(input.discount);
     this.ruleIds.set(input.reward_rule_ids);
+    if (copy && archived) {
+      // A copy is a new record: it never lands on an archived account (the FX state follows the new currency).
+      this.moveToAccount(this.accounts().find(account => !account.is_archived)?.id ?? null);
+    }
   }
 
   private loadCategories(kind: string | null): Observable<CategoryNode[]> {
@@ -631,9 +635,9 @@ export class EntryFormComponent implements OnInit {
       id !== null && id !== undefined && this.accounts().some(account => account.id === id && !account.is_archived);
     const last = readLastUse(node.id);
     if (usable(last?.account_id)) {
-      this.accountId.set(last!.account_id);
+      this.moveToAccount(last!.account_id);
     } else if (usable(node.default_account_id)) {
-      this.accountId.set(node.default_account_id);
+      this.moveToAccount(node.default_account_id);
     }
     if (last) {
       this.projectId.set(last.project_id);
@@ -643,9 +647,40 @@ export class EntryFormComponent implements OnInit {
   }
 
   setAccount(value: string): void {
-    this.accountId.set(value ? Number(value) : null);
+    this.moveToAccount(value ? Number(value) : null);
     if (this.entryId() === null) {
       this.rulesTouched = false;
+    }
+  }
+
+  /**
+   * Every account change of a loaded or typed record goes through here. The FX conversion, fee and discount were
+   * typed against the previous account's currency, so a currency change re-validates them: a conversion back into
+   * the original currency is dropped (the amount stays the original amount); any other change resets it to the
+   * online rate; fee and discount are cleared. A one-line notice says what changed.
+   */
+  private moveToAccount(id: number | null): void {
+    const before = this.accountCurrency();
+    this.accountId.set(id);
+    const after = this.accountCurrency();
+    const fx = this.fx();
+    const changes: string[] = [];
+    if (fx && fx.account_currency !== after) {
+      if (fx.original_currency === after) {
+        this.fx.set(null);
+        this.amountExpr.set(fx.original_amount);
+      } else {
+        this.fx.set({ ...fx, account_currency: after, use_online: true, manual: null, amount: null, fx_rate: null, rate_date: null });
+        changes.push('已重設匯率');
+      }
+    }
+    if ((before !== after || (fx && fx.account_currency !== after)) && (this.fee() || this.discount())) {
+      this.fee.set(null);
+      this.discount.set(null);
+      changes.push('已清除手續費與折扣');
+    }
+    if (changes.length) {
+      this.notice.set(`${changes.join('、')}（帳戶幣別變更）`);
     }
   }
 

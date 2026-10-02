@@ -316,6 +316,7 @@
 }
 
 .form-error,
+.form-notice,
 .saved-flash,
 .fee-prompt {
   border-radius: var(--radius-md);
@@ -328,6 +329,11 @@
 .form-error {
   background: var(--c-red-soft);
   color: var(--c-red);
+}
+
+.form-notice {
+  background: var(--app-state-warning-bg);
+  color: var(--app-text);
 }
 
 .saved-flash {

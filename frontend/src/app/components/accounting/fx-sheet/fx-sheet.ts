@@ -9,6 +9,8 @@ import { currencyDecimals, formatNumber } from '../format';
 export interface FxValue {
   original_amount: string;
   original_currency: string;
+  /** Currency of the account the conversion was made for; `fx_rate` / `amount` are only valid against it. */
+  account_currency: string;
   /** Rate shown: the online one, or what the owner typed. */
   fx_rate: string | null;
   /** Converted amount in the account currency. */
@@ -149,6 +151,7 @@ export class FxSheetComponent implements OnInit {
     this.value.set({
       original_amount: Number.isFinite(original) ? String(original) : '',
       original_currency: this.currency(),
+      account_currency: this.account().currency,
       fx_rate: Number.isFinite(rate) ? String(rate) : null,
       amount: converted === null ? null : String(converted),
       use_online: this.useOnline(),
