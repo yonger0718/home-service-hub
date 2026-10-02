@@ -1,19 +1,12 @@
 from shared_lib import create_app
 
 from .database import engine, get_db
-from .routers import transactions, cards, recurring, categories, payment_methods
 
 app = create_app(
     title="Home Service Hub - Accounting API",
     description="記帳與財務管理微服務。",
-    version="1.2.0",
-    routers=[
-        transactions.router,
-        cards.router,
-        recurring.router,
-        categories.router,
-        payment_methods.router,
-    ],
+    version="2.0.0",
+    routers=[],
     get_db=get_db,
     engine=engine,
     otel_service_name_env="OTEL_SERVICE_NAME_ACCOUNTING",
