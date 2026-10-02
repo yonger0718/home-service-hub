@@ -1,6 +1,11 @@
 <div class="entry-form" [class.entry-form--phone]="isPhone()">
   <header class="topbar">
-    <button type="button" class="ib cancel" aria-label="取消" (click)="cancel()">✕</button>
+    <!-- In the layout's 760–1023 px sheet the sheet's own ✕ is the one close control. -->
+    @if (!inSheet()) {
+      <button type="button" class="ib cancel" aria-label="取消" (click)="cancel()">✕</button>
+    } @else {
+      <span class="ib" aria-hidden="true"></span>
+    }
     <h2>{{ title() }}</h2>
     <button
       type="button"

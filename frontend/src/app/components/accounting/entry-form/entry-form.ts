@@ -236,6 +236,7 @@ export class EntryFormComponent implements OnInit {
   /** Edit mode whose record failed to load: no update target, so ✓ stays disabled and save() refuses. */
   readonly loadFailed = computed(() => this.editing() && !this.loading() && this.entryId() === null);
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+  readonly inSheet = computed(() => this.layoutMode.mode() === 'sheet');
   readonly isSystem = computed(() => this.kind() === 'system');
   readonly isParty = computed(() => this.kind() === 'receivable' || this.kind() === 'payable');
   readonly categoryKind = computed(() => categoryKindFor(this.kind()));

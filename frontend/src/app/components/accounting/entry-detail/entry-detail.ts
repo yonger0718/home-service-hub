@@ -1,5 +1,16 @@
 import { Location } from '@angular/common';
-import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  DestroyRef,
+  ElementRef,
+  Injector,
+  OnInit,
+  afterNextRender,
+  computed,
+  inject,
+  signal,
+} from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Observable } from 'rxjs';
@@ -7,7 +18,7 @@ import { Observable } from 'rxjs';
 import { ENTRY_KIND_LABELS, EntryDetail, EntryKind, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { colorOf, fxConversionLine, iconOf, leavePage } from '../accounting-ui';
+import { NO_ENTER_SAVE_TAGS, colorOf, fxConversionLine, iconOf, isHandledKey, leavePage } from '../accounting-ui';
 import { amountString, parseAmountText } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
@@ -41,6 +52,7 @@ interface Chip {
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(keydown)': 'onKeydown($event)' },
 })
 export class EntryDetailComponent implements OnInit {
   private service = inject(AccountingService);
@@ -49,6 +61,8 @@ export class EntryDetailComponent implements OnInit {
   private location = inject(Location);
   private destroyRef = inject(DestroyRef);
   private layoutMode = inject(LayoutModeService);
+  private host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private injector = inject(Injector);
 
   /** Entry id of the route (`:eid` under a passbook, else `:id`). */
   readonly routeEntryId = signal<number | null>(null);
@@ -323,6 +337,40 @@ export class EntryDetailComponent implements OnInit {
       this.formAmount.set(max > 0 ? amountString(max, detail.currency) : '');
     }
     this.panel.set(panel);
+    if (panel !== 'delete') {
+      // Keys start inside the form, so Esc / ⏎ reach it.
+      afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>('.form-amount')?.focus(), {
+        injector: this.injector,
+      });
+    }
+  }
+
+  /**
+   * Esc with an inline panel (收款 / 還款 / 退款 / 刪除) open closes that panel first and is marked handled, so the
+   * layout's Esc does not also close the sheet. ⏎ in an inline-form field submits it (not on a select, a button or an
+   * IME commit).
+   */
+  onKeydown(event: KeyboardEvent): void {
+    if (isHandledKey(event) || this.panel() === null) {
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.panel.set(null);
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    if (
+      event.key === 'Enter' &&
+      (this.panel() === 'settle' || this.panel() === 'refund') &&
+      target?.closest('.inline-form') &&
+      !NO_ENTER_SAVE_TAGS.has(target.tagName)
+    ) {
+      event.preventDefault();
+      if (!this.busy()) {
+        this.submitForm();
+      }
+    }
   }
 
   setFormAccount(value: string): void {

@@ -8,6 +8,7 @@ import { BehaviorSubject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { EntryDetailComponent } from './entry-detail';
 
 function entry(fields: Record<string, unknown>): LedgerEntry {
@@ -312,5 +313,42 @@ describe('EntryDetailComponent', () => {
     expect(req.request.method).toBe('DELETE');
     req.flush(null, { status: 204, statusText: 'No Content' });
     expect(navigate).toHaveBeenCalledWith('/accounting');
+  });
+  function key(target: Element, init: KeyboardEventInit): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  it('closes an open inline form on Esc before anything else, and submits it on ⏎ (not on an IME commit)', () => {
+    const fixture = render(RECEIVABLE);
+    openForm(fixture, '.action-settle', '220');
+    fixture.detectChanges();
+
+    const esc = key(el(fixture).querySelector('.form-amount')!, { key: 'Escape' });
+    fixture.detectChanges();
+    expect(esc.defaultPrevented).toBe(true);
+    expect(el(fixture).querySelector('.inline-form')).toBeNull();
+
+    openForm(fixture, '.action-settle', '220');
+    fixture.detectChanges();
+    key(el(fixture).querySelector('.form-amount')!, { key: 'Enter', keyCode: 229 });
+    http.expectNone('/api/accounting/entries/42/settle');
+    const enter = key(el(fixture).querySelector('.form-amount')!, { key: 'Enter' });
+    expect(enter.defaultPrevented).toBe(true);
+    http.expectOne('/api/accounting/entries/42/settle').flush({});
+    http.expectOne('/api/accounting/entries/42').flush(RECEIVABLE);
+  });
+
+  it('leaves Esc to the layout when no inline form is open', () => {
+    const fixture = render(RECEIVABLE);
+    const esc = key(el(fixture).querySelector('.entry-detail')!, { key: 'Escape' });
+    expect(esc.defaultPrevented).toBe(false);
+  });
+
+  it("hides its own ✕ inside the layout's sheet", () => {
+    TestBed.inject(LayoutModeService).set('sheet');
+    const fixture = render(RECEIVABLE);
+    expect(el(fixture).querySelector('.close')).toBeNull();
   });
 });

@@ -1043,4 +1043,11 @@ describe('EntryFormComponent', () => {
     expect(chips).toEqual(['手續費 −$30', '折價券 +$1,000']);
     expect(text(el.querySelector('.foot'))).toBe('手續費 −$30 · 折扣 +$1,000 · 總額 −$196');
   });
+  it("hides its own ✕ inside the layout's 760–1023 px sheet", async () => {
+    const { el } = await open('/accounting/entry', 'sheet');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    expect(el.querySelector('.topbar .cancel')).toBeNull();
+    expect(el.querySelector('.topbar .save')).not.toBeNull();
+  });
 });
