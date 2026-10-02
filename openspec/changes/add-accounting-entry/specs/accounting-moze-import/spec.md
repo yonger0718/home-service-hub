@@ -16,7 +16,7 @@ An import SHALL write the ledger in a single database transaction (the *ledger t
 1. Apply any account renames supplied with the import (see "Account renames and disappearing accounts").
 2. Delete every `ledger_entry` and `entry_group` whose `source` is `moze_import` or `moze_backup`, or whose `moze_id` is set, together with their `entry_reward_rule` rows. `reward_rule` rows SHALL NOT be touched by the CSV importer.
 3. For every account named in the file:
-   - if it exists, update its `opening_balance` and set `is_archived = false`; its settings columns SHALL be preserved; `currency` SHALL be updated only when the account has no remaining entries, and a differing currency on an account with manual entries SHALL fail the import naming the account;
+   - if it exists, update its `opening_balance` and set `is_archived = false`; its settings columns SHALL be preserved; `currency` SHALL be updated only when the account has no remaining entries of any `source` after step 2, and a differing currency on an account that still has entries SHALL fail the import naming the account;
    - otherwise, create it.
 4. For every account **not** named in the file that has no remaining entries: set `opening_balance = 0` and `is_archived = true`.
 5. Insert all entries parsed from the file with `source = 'moze_import'`, `posted_date = entry_date`, and the row's 對象 resolved to a `counterparty` row (created when missing).
