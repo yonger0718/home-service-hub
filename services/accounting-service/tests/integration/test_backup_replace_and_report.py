@@ -1,4 +1,5 @@
 import json
+import sys
 import zipfile
 from pathlib import Path
 from datetime import date, datetime
@@ -269,6 +270,40 @@ def test_converter_missing_names_the_path(tmp_path, monkeypatch):
     monkeypatch.setenv("MOZE_REALM_EXPORTER", "/nonexistent/moze-realm-export/index.js")
     with pytest.raises(ConverterError, match="MOZE realm exporter not found: /nonexistent/moze-realm-export/index.js"):
         convert_backup(_zip(tmp_path), tmp_path)
+
+
+def test_exporter_command_accepts_a_single_path_or_a_command_line(tmp_path, monkeypatch):
+    script = tmp_path / "my tools" / "index.js"
+    script.parent.mkdir()
+    script.write_text("// synthetic", encoding="utf-8")
+    monkeypatch.setenv("MOZE_REALM_EXPORTER", str(script))
+    single = service.exporter_command()
+    assert single[1:] == [str(script)] and single[0].endswith("node")
+
+    monkeypatch.setenv("MOZE_REALM_EXPORTER", f"/usr/bin/node '{script}'")
+    assert service.exporter_command() == ["/usr/bin/node", str(script)]
+
+    monkeypatch.setenv("MOZE_REALM_EXPORTER", "/usr/bin/node /nonexistent/moze-realm-export/index.js")
+    with pytest.raises(ConverterError, match="MOZE realm exporter script not found: /nonexistent/moze-realm-export/index.js"):
+        service.exporter_command()
+
+
+def test_converter_runs_from_a_two_word_exporter_setting(tmp_path, backup, monkeypatch):
+    # "<interpreter> <script>.js": a bash wrapper stands in for node and runs the Python fake converter script.
+    script = tmp_path / "exporter.js"
+    script.write_text((Path(__file__).resolve().parents[1] / "fake_exporter.py").read_text(), encoding="utf-8")
+    prepared = tmp_path / "prepared.json"
+    prepared.write_text(json.dumps(_doc(backup), ensure_ascii=False), encoding="utf-8")
+    wrapper = tmp_path / "run-fake"
+    wrapper.write_text(
+        f'#!/bin/bash\nscript="$1"; shift\nexec {sys.executable} "$script" {prepared} 0 "" "$@"\n', encoding="utf-8"
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("MOZE_REALM_EXPORTER", f"{wrapper} {script}")
+
+    out = convert_backup(_zip(tmp_path), tmp_path)
+
+    assert json.loads(out.read_text(encoding="utf-8"))["exported_at"] == "2026-10-01T17:00:37"
 
 
 def _runs(pg_engine):

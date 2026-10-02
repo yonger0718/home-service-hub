@@ -33,7 +33,8 @@ MOZE backup import
     .venv/bin/python -m app.services.moze_backup_import_service <MOZE_4.0.zip> [--rename OLD=NEW ...] [--allow-fx-outliers] [--no-strict] [--keep-json PATH]
 
 The backup importer converts the archive with the Node tool (`MOZE_REALM_EXPORTER` in the root `.env`; default
-`node <repo>/tools/moze-realm-export/index.js`, `node` from `PATH`, 10-minute timeout), then replaces every
+`node <repo>/tools/moze-realm-export/index.js`, `node` from `PATH`, 10-minute timeout; one file path, or a command
+line such as `/usr/bin/node /path/to/index.js`), then replaces every
 `moze_import` and `moze_backup` entry and MOZE group in one transaction under the same lock, upserts groups,
 accounts, categories, projects, counterparties, reward rules (by `moze_id`, never recreated) and the preference row,
 and stores future-dated rows, periods and installments in `moze_schedule`. Manual entries and their rule

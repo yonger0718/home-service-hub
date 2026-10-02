@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -914,14 +915,27 @@ class ConverterError(MozeImportError):
 
 
 def exporter_command() -> list[str]:
-    """`MOZE_REALM_EXPORTER` (a .js script run with node, or an executable), default the repo tool."""
+    """The converter command from `MOZE_REALM_EXPORTER`, default `node <repo>/tools/moze-realm-export/index.js`.
+
+    A value naming one existing file keeps the original behaviour: a `.js` script runs with `node` from PATH,
+    anything else is executed directly. Any other value is split like a shell command line (`shlex.split`, so
+    quotes work) and used as the command, e.g. `/usr/bin/node /path/to/index.js`; its last argument ending in
+    `.js` must exist.
+    """
     configured = os.getenv("MOZE_REALM_EXPORTER", "").strip()
-    script = Path(configured).expanduser() if configured else DEFAULT_EXPORTER_SCRIPT
-    if not script.is_file():
-        raise ConverterError(f"MOZE realm exporter not found: {script}")
-    if script.suffix == ".js":
-        return [shutil.which("node") or "node", str(script)]
-    return [str(script)]
+    single = Path(configured).expanduser() if configured else DEFAULT_EXPORTER_SCRIPT
+    if single.is_file():
+        return [shutil.which("node") or "node", str(single)] if single.suffix == ".js" else [str(single)]
+    try:
+        words = shlex.split(configured)
+    except ValueError as exc:
+        raise ConverterError(f"MOZE_REALM_EXPORTER cannot be parsed: {exc}") from exc
+    if len(words) < 2:
+        raise ConverterError(f"MOZE realm exporter not found: {single}")
+    scripts = [word for word in words[1:] if word.endswith(".js")]
+    if scripts and not Path(scripts[-1]).expanduser().is_file():
+        raise ConverterError(f"MOZE realm exporter script not found: {scripts[-1]}")
+    return words
 
 
 def convert_backup(zip_path: Path, work_dir: Path, exporter: Sequence[str] | None = None, timeout: int = CONVERTER_TIMEOUT_SEC) -> Path:

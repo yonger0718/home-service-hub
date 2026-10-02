@@ -11,7 +11,7 @@ ACCOUNTING_IMPORT_LOCKED=false
 MOZE_REALM_EXPORTER=
 ```
 
-`MOZE_REALM_EXPORTER` empty means the default command `node <repo>/tools/moze-realm-export/index.js`. Set it only when `node` is not on the service's `PATH`, e.g. `MOZE_REALM_EXPORTER=/usr/bin/node /home/opc/workspace/home-hub/tools/moze-realm-export/index.js`. `ACCOUNTING_IMPORT_LOCKED` stays `false` until the 2b cutover; while it is false, MOZE-imported rows are read-only and imports run.
+`MOZE_REALM_EXPORTER` empty means the default command `node <repo>/tools/moze-realm-export/index.js` (`node` from the service's `PATH`). A value naming one existing file is run as before (a `.js` file with `node` from `PATH`, anything else directly). Any other value is split like a shell command line and run as the command, so when `node` is not on the service's `PATH` set e.g. `MOZE_REALM_EXPORTER=/usr/bin/node /home/opc/workspace/home-hub/tools/moze-realm-export/index.js` (quote a path containing spaces); the last `.js` argument must exist, otherwise every backup import answers 422 naming it. `ACCOUNTING_IMPORT_LOCKED` stays `false` until the 2b cutover; while it is false, MOZE-imported rows are read-only and imports run.
 
 ## Converter install (once per checkout, Node ≥ 20)
 
