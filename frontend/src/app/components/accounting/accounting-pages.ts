@@ -25,7 +25,7 @@ export const ACCOUNTING_PAGES: Record<AccountingPage, PageLoader> = {
   timeline: () => import('./timeline/timeline').then(m => m.LedgerTimelineComponent),
   accounts: () => import('./accounts/accounts').then(m => m.AccountingAccountsComponent),
   accountEntries: () => import('./account-entries/account-entries').then(m => m.AccountingAccountEntriesComponent),
-  accountSettings: placeholder,
+  accountSettings: () => import('./account-settings/account-settings').then(m => m.AccountSettingsComponent),
   entryForm: () => import('./entry-form/entry-form').then(m => m.EntryFormComponent),
   entryDetail: () => import('./entry-detail/entry-detail').then(m => m.EntryDetailComponent),
   settings: placeholder,

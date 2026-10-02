@@ -1,0 +1,201 @@
+<section class="account-settings">
+  <header class="topbar">
+    <a class="ib" [routerLink]="accountId() === null ? '/accounting/accounts' : ['/accounting/accounts', accountId()]" aria-label="取消">✕</a>
+    <h2>{{ accountId() === null ? '新增帳戶' : '帳戶資訊' }}</h2>
+    <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving() || loading()" (click)="save()">✓</button>
+  </header>
+
+  <div class="bigicon">
+    <span class="ico">{{ form().icon || '📁' }}</span>
+    @if (detail(); as d) {
+      <b [class.neg]="+d.balance < 0">{{ formatMoney(d.balance, d.currency) }}</b>
+    }
+    <small>{{ form().name || '新帳戶' }}{{ form().note ? ' · 備註：' + form().note : '' }}</small>
+  </div>
+
+  @if (detail()?.settings_locally_edited && detail()?.moze_id) {
+    <div class="custom-note">
+      <span>已自訂，匯入不再覆寫</span>
+      <button type="button" class="reset-flag" (click)="resetFlag()">還原 MOZE 設定</button>
+    </div>
+  }
+  @if (message()) {
+    <p class="form-message" role="alert">{{ message() }}</p>
+  }
+
+  <label class="rw">
+    <span class="k">名稱</span>
+    <input class="v name-input" [value]="form().name" (input)="set('name', $any($event.target).value)" />
+  </label>
+  @if (error('name'); as e) { <small class="field-error" data-field="name">{{ e }}</small> }
+
+  <label class="rw">
+    <span class="k">主幣種</span>
+    <input class="v currency-input" maxlength="8" [disabled]="currencyLocked()" [value]="form().currency" (input)="set('currency', $any($event.target).value)" />
+  </label>
+  @if (currencyLocked()) { <small class="currency-note">已有記錄，無法變更幣種</small> }
+  @if (error('currency'); as e) { <small class="field-error" data-field="currency">{{ e }}</small> }
+
+  <label class="rw">
+    <span class="k">帳戶分組</span>
+    <select class="v group-select" (change)="setIdField('group_id', $any($event.target).value)">
+      <option value="" [selected]="form().group_id === null">未分組</option>
+      @for (group of groups(); track group.id) {
+        <option [value]="group.id" [selected]="group.id === form().group_id">{{ group.name }}</option>
+      }
+    </select>
+  </label>
+
+  <div class="rw">
+    <span class="k">圖示</span>
+    <span class="v icon-fields">
+      <input class="icon-input" maxlength="16" aria-label="圖示" [value]="form().icon" (input)="set('icon', $any($event.target).value)" />
+      <input class="color-input" type="color" aria-label="顏色" [value]="form().color || '#8e8e93'" (change)="set('color', $any($event.target).value)" />
+    </span>
+  </div>
+
+  <label class="rw">
+    <span class="k">初始金額</span>
+    <input class="v opening-input" inputmode="decimal" [value]="form().opening_balance" (input)="set('opening_balance', $any($event.target).value)" />
+  </label>
+  @if (error('opening_balance'); as e) { <small class="field-error" data-field="opening_balance">{{ e }}</small> }
+
+  <label class="rw">
+    <span class="k">帳單週期<br /><small>結帳日（空白 = 月底）</small></span>
+    <span class="v">
+      <input class="closing-day" type="number" min="1" max="31" aria-label="結帳日" [value]="form().closing_day" (input)="set('closing_day', $any($event.target).value)" />
+      <small class="cycle-preview">{{ cycleLabel() }}</small>
+    </span>
+  </label>
+  @if (error('closing_day'); as e) { <small class="field-error" data-field="closing_day">{{ e }}</small> }
+
+  <div class="rw">
+    <span class="k">信用帳戶</span>
+    <button type="button" class="tog credit-toggle" role="switch" aria-label="信用帳戶" [attr.aria-checked]="form().is_credit" [class.on]="form().is_credit" (click)="toggle('is_credit')"></button>
+  </div>
+
+  @if (form().is_credit) {
+    <div class="rw child">
+      <span class="k">繳款期限</span>
+      <span class="v due-fields">
+        <select class="due-rule" aria-label="繳款期限" (change)="set('due_rule', $any($event.target).value)">
+          <option value="" [selected]="form().due_rule === ''">未設定</option>
+          <option value="fixed_day" [selected]="form().due_rule === 'fixed_day'">每月固定日</option>
+          <option value="days_after_closing" [selected]="form().due_rule === 'days_after_closing'">結帳日後天數</option>
+        </select>
+        <input class="due-value" type="number" min="0" max="60" aria-label="繳款日或天數" [value]="form().due_value" (input)="set('due_value', $any($event.target).value)" />
+        <small class="due-preview">{{ dueLabel() }}</small>
+      </span>
+    </div>
+    @if (error('due_value'); as e) { <small class="field-error" data-field="due_value">{{ e }}</small> }
+
+    <label class="rw child">
+      <span class="k">信用額度</span>
+      <input class="v credit-limit" inputmode="decimal" [value]="form().credit_limit" (input)="set('credit_limit', $any($event.target).value)" />
+    </label>
+    @if (error('credit_limit'); as e) { <small class="field-error" data-field="credit_limit">{{ e }}</small> }
+
+    <div class="rw child">
+      <span class="k">額度共用</span>
+      <span class="v sharing-list">
+        @if (sharingCurrent(); as current) {
+          <small class="sharing-current">{{ current }}</small>
+        }
+        @for (other of sharingOptions(); track other.id) {
+          <label class="sharing-option">
+            <input type="checkbox" [attr.data-account-id]="other.id" [checked]="sharing().includes(other.id)" (change)="toggleSharing(other.id, $any($event.target).checked)" />
+            {{ other.name }}{{ other.is_archived ? '（已封存）' : '' }}
+          </label>
+        } @empty {
+          <small>沒有其他信用帳戶</small>
+        }
+      </span>
+    </div>
+    @if (error('credit_sharing_id'); as e) { <small class="field-error" data-field="credit_sharing_id">{{ e }}</small> }
+    @if (error('credit_sharing_members'); as e) { <small class="field-error" data-field="credit_sharing_members">{{ e }}</small> }
+
+    <label class="rw child">
+      <span class="k">主帳戶</span>
+      <select class="v master-select" (change)="setIdField('combined_account_id', $any($event.target).value)">
+        <option value="" [selected]="form().combined_account_id === null">無</option>
+        @for (other of creditOthers(); track other.id) {
+          <option [value]="other.id" [selected]="other.id === form().combined_account_id">{{ other.name }}</option>
+        }
+      </select>
+    </label>
+    @if (error('combined_account_id'); as e) { <small class="field-error" data-field="combined_account_id">{{ e }}</small> }
+
+    <label class="rw child">
+      <span class="k">自動扣繳</span>
+      <select class="v autopay-select" (change)="setIdField('auto_pay_account_id', $any($event.target).value)">
+        <option value="" [selected]="form().auto_pay_account_id === null">無</option>
+        @for (other of accounts(); track other.id) {
+          @if (other.id !== accountId() && !other.is_archived && !other.is_credit) {
+            <option [value]="other.id" [selected]="other.id === form().auto_pay_account_id">{{ other.name }}</option>
+          }
+        }
+      </select>
+    </label>
+  }
+
+  <div class="rw rules-row">
+    <span class="k">紅利回饋</span>
+    <span class="v">
+      @if (rules().length) {
+        <span>{{ rules().length }} 組回饋條件</span>
+        <ul class="rule-list">
+          @for (rule of rules(); track rule.id) {
+            <li class="rule-item" [class.disabled]="!rule.is_enabled">{{ ruleLabel(rule) }}</li>
+          }
+        </ul>
+      } @else {
+        <span>無（2b 起可編輯）</span>
+      }
+    </span>
+  </div>
+
+  <div class="rw">
+    <span class="k">國外交易手續費</span>
+    <button type="button" class="tog fx-toggle" role="switch" aria-label="國外交易手續費" [attr.aria-checked]="form().fx_fee_on" [class.on]="form().fx_fee_on" (click)="toggle('fx_fee_on')"></button>
+  </div>
+  @if (form().fx_fee_on) {
+    <label class="rw child">
+      <span class="k">手續費 %</span>
+      <input class="v fx-pct" inputmode="decimal" [value]="form().fx_fee_pct" (input)="set('fx_fee_pct', $any($event.target).value)" />
+    </label>
+    @if (error('fx_fee_pct'); as e) { <small class="field-error" data-field="fx_fee_pct">{{ e }}</small> }
+    <label class="rw child">
+      <span class="k">計算方式</span>
+      <select class="v fx-rounding" (change)="set('fx_fee_rounding', $any($event.target).value)">
+        @for (option of roundingOptions; track option[0]) {
+          <option [value]="option[0]" [selected]="option[0] === form().fx_fee_rounding">{{ option[1] }}</option>
+        }
+      </select>
+    </label>
+    <div class="rw child">
+      <span class="k">退款時退回手續費</span>
+      <button type="button" class="tog fx-refund-toggle" role="switch" aria-label="退款時退回手續費" [attr.aria-checked]="form().fx_fee_refundable" [class.on]="form().fx_fee_refundable" (click)="toggle('fx_fee_refundable')"></button>
+    </div>
+  }
+
+  <div class="rw">
+    <span class="k">納入總餘額</span>
+    <button type="button" class="tog include-toggle" role="switch" aria-label="納入總餘額" [attr.aria-checked]="form().include_in_total" [class.on]="form().include_in_total" (click)="toggle('include_in_total')"></button>
+  </div>
+
+  <label class="rw note-row">
+    <span class="k">備註</span>
+    <input class="v note-input" [value]="form().note" (input)="set('note', $any($event.target).value)" />
+  </label>
+
+  @if (accountId() !== null) {
+    <div class="rw">
+      <span class="k">封存帳戶</span>
+      <button type="button" class="tog archive-toggle" role="switch" aria-label="封存帳戶" [attr.aria-checked]="form().is_archived" [class.on]="form().is_archived" (click)="toggle('is_archived')"></button>
+    </div>
+    <div class="rw">
+      <button type="button" class="k delete-account" [disabled]="currencyLocked()" (click)="remove()">{{ confirmDelete() ? '確定刪除？' : '刪除帳戶' }}</button>
+      <span class="v">只能刪除沒有記錄的帳戶</span>
+    </div>
+  }
+</section>
