@@ -358,6 +358,7 @@ Execute in numeric order. Tasks 10 and 12 both edit `app/services/moze_import_se
 
 
 
+
 ## Contract additions (merged: sections A, C, D, E after reconciliation)
 
 These extend the backbone "Interface Contract". Where a section's earlier draft disagreed, the producer's definition below wins (backend over frontend).
@@ -11856,8 +11857,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `services/accounting-service/tests/integration/test_splits.py`
 
 **Interfaces:**
-- Consumes: `SplitIn`, `SplitMemberIn`, `EntryIn`, `SplitOut` (Task 12); `entry_write_service.PreparedEntry`, `prepare_entry`, `insert_prepared`, `delete_entries_cascade`, `has_settlements_or_refunds`; `edit_lock.assert_editable`, `edit_lock.EditLockedError`; `errors.ValidationError`, `errors.NotFoundError`; `app.routers.errors.service_errors`; `ledger_service.account_balance`; conftest `seed`.
-- Produces: `split_service.create_split(db, payload, *, http_get=None) -> int`, `split_service.update_split(db, group_id, payload, *, http_get=None) -> None`, `split_service.delete_split(db, group_id) -> None`, plus `split_service.member_payloads(payload) -> list[EntryIn]` and `split_service.member_ids(db, group_id) -> list[int]`; routes `POST /splits` (201 `SplitOut`), `PUT /splits/{group_id}` (200 `SplitOut`), `DELETE /splits/{group_id}` (204). Member validation errors are reported as `members.<index>.<field>`. `update_split` refuses (422 `members`, "groups containing settlements or refunds are edited by deleting and re-settling") a group any of whose members has `is_settlement` true or kind `refund`, or is settled / refunded by another entry (`has_settlements_or_refunds`); it checks with the group's members locked `SELECT … FOR UPDATE`. The split endpoint never creates a settlement: `SplitMemberIn` (an `EntryIn`) has no `is_settlement` field and `insert_prepared` stores `is_settlement=False` (plan review round 3).
+- Consumes: `SplitIn`, `SplitMemberIn`, `EntryIn`, `SplitOut` (Task 12); `entry_write_service.PreparedEntry`, `prepare_entry`, `insert_prepared`, `delete_entries_cascade`, `has_settlements_or_refunds`; `edit_lock.assert_editable`, `edit_lock.EditLockedError`; `errors.ValidationError`, `errors.NotFoundError`; `app.routers.errors.service_errors`; `ledger_service.account_balance`; conftest `seed` and `pg_engine` (Task 3); `tests.helpers.race` (Task 12).
+- Produces: `split_service.create_split(db, payload, *, http_get=None) -> int`, `split_service.update_split(db, group_id, payload, *, http_get=None) -> None`, `split_service.delete_split(db, group_id) -> None`, plus `split_service.member_payloads(payload) -> list[EntryIn]` and `split_service.member_ids(db, group_id) -> list[int]`; routes `POST /splits` (201 `SplitOut`), `PUT /splits/{group_id}` (200 `SplitOut`), `DELETE /splits/{group_id}` (204). Member validation errors are reported as `members.<index>.<field>`. `update_split` refuses (422 `members`, "groups containing settlements or refunds are edited by deleting and re-settling") a group any of whose members has `is_settlement` true or kind `refund`, or is settled / refunded by another entry (`has_settlements_or_refunds`); it checks with the group's members locked `SELECT … FOR UPDATE`. `update_split` and `delete_split` first lock the `entry_group` row `SELECT … FOR UPDATE` (after FX preparation), then the members; lock order is group → members → nothing else, so two writes to one group serialize on the stable group row and the later one sees the earlier one's members (plan review round 4). The split endpoint never creates a settlement: `SplitMemberIn` (an `EntryIn`) has no `is_settlement` field and `insert_prepared` stores `is_settlement=False` (plan review round 3).
 
 - [ ] 14.1 Create `services/accounting-service/tests/integration/test_splits.py`:
 
@@ -11875,7 +11876,8 @@ from app.schemas.writes import SplitIn
 from app.services import ledger_service
 from app.services import split_service as ss
 from app.services.edit_lock import EditLockedError
-from app.services.errors import ValidationError
+from app.services.errors import NotFoundError, ValidationError
+from tests.helpers import race
 
 DAY = date(2026, 9, 1)
 
@@ -12110,6 +12112,59 @@ def test_update_split_refuses_group_with_settled_member(client, db_session, seed
     assert (member.id, member.amount) == (lent_id, Decimal("-200"))
 
 
+def test_concurrent_split_updates_do_not_double_post(pg_engine, db_session, seed):
+    # Plan review round 4 P1: with only the member rows locked, the second PUT re-queried after the first
+    # committed, found none of the old members, and inserted its own beside the first's (−200 and −300 both
+    # stayed, −500 in total). The group row lock makes the second PUT wait and then replace the first's members.
+    wallet = seed.account("A", opening="1000")
+    group_id = ss.create_split(db_session, SplitIn(**_split(_member(wallet, amount="100"))))
+    db_session.commit()
+    wallet_id = wallet.id
+    assert _balance(db_session, wallet_id) == Decimal("900")
+
+    def put(amount):
+        body = _split({"account_id": wallet_id, "kind": "expense", "amount": amount})
+        return lambda db: ss.update_split(db, group_id, SplitIn(**body))
+
+    result = race(pg_engine, put("200"), put("300"))
+
+    assert result == "committed"
+    [member] = _members(db_session, group_id)
+    assert member.amount == Decimal("-300")  # last writer wins
+    assert _balance(db_session, wallet_id) == Decimal("700")  # moved by −300, not −500
+    db_session.expire_all()
+    assert db_session.scalars(select(LedgerEntry.amount).where(LedgerEntry.account_id == wallet_id)).all() == [
+        Decimal("-300")
+    ]
+
+
+def test_delete_split_racing_update_leaves_one_outcome(pg_engine, db_session, seed):
+    # The PUT holds the group lock; the DELETE waits on it, then sees and removes the PUT's members. Never both
+    # sets, and never the PUT's members orphaned beside a deleted group.
+    wallet = seed.account("A", opening="1000")
+    group_id = ss.create_split(db_session, SplitIn(**_split(_member(wallet, amount="100"))))
+    db_session.commit()
+    wallet_id = wallet.id
+    body = _split({"account_id": wallet_id, "kind": "expense", "amount": "300"})
+
+    result = race(
+        pg_engine,
+        lambda db: ss.update_split(db, group_id, SplitIn(**body)),
+        lambda db: ss.delete_split(db, group_id),
+    )
+
+    assert result == "committed" or isinstance(result, NotFoundError)
+    db_session.expire_all()
+    group = db_session.get(EntryGroup, group_id)
+    remaining = db_session.scalars(select(LedgerEntry).where(LedgerEntry.account_id == wallet_id)).all()
+    if group is None:
+        assert remaining == []  # deleted: nothing left, no orphaned members
+        assert _balance(db_session, wallet_id) == Decimal("1000")
+    else:
+        assert [(m.group_id, m.amount) for m in remaining] == [(group_id, Decimal("-300"))]  # only the update's
+        assert _balance(db_session, wallet_id) == Decimal("700")
+
+
 def test_member_payloads_keep_explicit_overrides():
     payload = SplitIn(**_split({"account_id": 1, "kind": "income", "amount": "1", "tags": []}, tags=["群組"]))
     [member] = ss.member_payloads(payload)
@@ -12198,8 +12253,27 @@ def member_ids(db: Session, group_id: int) -> list[int]:
     )
 
 
+# Lock order for every split write: the entry_group row, then its members, then nothing else. The group row is
+# the one stable row two writes to a group share (members are deleted and re-inserted), so it is what makes a
+# second PUT / DELETE wait for the first and then see the first's members instead of the ones it replaced.
+
+
+def _locked_split(db: Session, group_id: int) -> EntryGroup:
+    """The split's entry_group row, SELECT … FOR UPDATE; NotFoundError if a concurrent delete removed it."""
+    group = db.execute(
+        select(EntryGroup)
+        .where(EntryGroup.id == group_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if group is None or group.kind != "split":
+        raise NotFoundError(f"split {group_id} not found")
+    return group
+
+
 def _locked_members(db: Session, group_id: int) -> list[LedgerEntry]:
-    """The group's members, SELECT … FOR UPDATE (the row lock settle / refund take via locked_entry)."""
+    """The group's members, SELECT … FOR UPDATE (the row lock settle / refund take via locked_entry).
+    Callers hold the group lock from _locked_split first."""
     return list(
         db.scalars(
             select(LedgerEntry)
@@ -12235,12 +12309,14 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
     """Replace every member (and their children) and the group fields.
 
     `_prepare_all` runs first because FX resolution may commit the session, which would release the row
-    locks; the members are then locked FOR UPDATE and checked inside that lock, so no settle / refund can
-    commit between the check and the delete. Members are never created with is_settlement: SplitMemberIn
-    has no such field and insert_prepared stores False."""
-    group = _get_split(db, group_id)
-    assert_editable(group)
+    locks; then the group row and the members are locked FOR UPDATE (group → members) and checked inside
+    that lock, so no settle / refund can commit between the check and the delete, and a concurrent PUT /
+    DELETE of the same group waits and then sees this one's members. Members are never created with
+    is_settlement: SplitMemberIn has no such field and insert_prepared stores False."""
+    assert_editable(_get_split(db, group_id))
     prepared = _prepare_all(db, payload, http_get)
+    group = _locked_split(db, group_id)
+    assert_editable(group)
     members = _locked_members(db, group_id)
     _assert_no_settlements(db, members)
     delete_entries_cascade(db, [member.id for member in members])
@@ -12253,9 +12329,12 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
 
 
 def delete_split(db: Session, group_id: int) -> None:
-    group = _get_split(db, group_id)
+    """Same lock order as update_split (group → members), so it waits for a concurrent PUT and then deletes
+    that PUT's members rather than the ones the PUT already replaced."""
+    group = _locked_split(db, group_id)
     assert_editable(group)
-    delete_entries_cascade(db, member_ids(db, group_id))
+    members = _locked_members(db, group_id)
+    delete_entries_cascade(db, [member.id for member in members])
     db.execute(delete(EntryGroup).where(EntryGroup.id == group_id))
 ```
 
@@ -12313,7 +12392,7 @@ from .routers import accounts, entries, imports, settings, splits, transfers
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_splits.py
 ```
 
-Expected: `11 passed` (9 + the 2 plan-review round 3 refusal tests).
+Expected: `13 passed` (9 + the 2 plan-review round 3 refusal tests + the 2 plan-review round 4 concurrency tests).
 
 - [ ] 14.7 Commit:
 
