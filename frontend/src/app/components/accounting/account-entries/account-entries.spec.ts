@@ -5,33 +5,22 @@ import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/route
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { EntryPage, LedgerEntry } from '../../../models/accounting.model';
+import { makeEntry } from '../testing/fixtures';
 import { AccountingAccountEntriesComponent } from './account-entries';
 
 function entry(id: number, overrides: Partial<LedgerEntry> = {}): LedgerEntry {
-  return {
+  return makeEntry({
     id,
-    kind: 'expense',
-    amount: '-120.0000',
-    currency: 'TWD',
-    original_amount: null,
-    original_currency: null,
-    fx_rate: null,
-    fx_source: null,
     entry_date: '2026-09-01',
+    posted_date: '2026-09-01',
     entry_time: '12:30:00',
     category: '飲食/午餐',
     project: '日本行',
     name: '便當',
     merchant: '池上',
-    counterparty: null,
-    description: null,
-    tags: [],
-    parent_entry_id: null,
-    transfer_group_id: null,
-    needs_review: false,
     running_balance: '1880.0000',
     ...overrides,
-  };
+  });
 }
 
 describe('AccountingAccountEntriesComponent', () => {

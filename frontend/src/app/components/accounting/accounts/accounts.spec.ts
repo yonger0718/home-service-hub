@@ -5,11 +5,12 @@ import { provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ImportRun, LedgerAccount } from '../../../models/accounting.model';
+import { makeAccount } from '../testing/fixtures';
 import { AccountingAccountsComponent } from './accounts';
 
 const ACCOUNTS: LedgerAccount[] = [
-  { id: 3, name: '台新信用卡', currency: 'TWD', opening_balance: '0', balance: '-15230.5000', entry_count: 120 },
-  { id: 9, name: '去日本的錢', currency: 'JPY', opening_balance: '180000', balance: '178500.0000', entry_count: 4 },
+  makeAccount({ id: 3, name: '台新信用卡', currency: 'TWD', opening_balance: '0', balance: '-15230.5000', entry_count: 120 }),
+  makeAccount({ id: 9, name: '去日本的錢', currency: 'JPY', opening_balance: '180000', balance: '178500.0000', entry_count: 4 }),
 ];
 
 const LATEST: ImportRun = {

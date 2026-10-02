@@ -1,4 +1,18 @@
 import { Routes } from '@angular/router';
+import { ACCOUNTING_PAGES } from './components/accounting/accounting-pages';
+
+/** One screen per route. Task 21 keeps this table for phones and adds a two-pane table for wider screens. */
+const ACCOUNTING_ROUTES: Routes = [
+  { path: '', pathMatch: 'full', loadComponent: ACCOUNTING_PAGES.timeline },
+  { path: 'accounts', loadComponent: ACCOUNTING_PAGES.accounts },
+  { path: 'accounts/new', loadComponent: ACCOUNTING_PAGES.accountSettings },
+  { path: 'accounts/:id/settings', loadComponent: ACCOUNTING_PAGES.accountSettings },
+  { path: 'accounts/:id', loadComponent: ACCOUNTING_PAGES.accountEntries },
+  { path: 'entry', loadComponent: ACCOUNTING_PAGES.entryForm },
+  { path: 'entries/:id/edit', loadComponent: ACCOUNTING_PAGES.entryForm },
+  { path: 'entries/:id', loadComponent: ACCOUNTING_PAGES.entryDetail },
+  { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
+];
 
 export const routes: Routes = [
   { path: '', loadComponent: () => import('./components/item-list/item-list').then(m => m.ItemListComponent) },
@@ -15,16 +29,17 @@ export const routes: Routes = [
   { path: 'portfolio/import', loadComponent: () => import('./components/portfolio/import/import').then(m => m.PortfolioImportComponent) },
   { path: 'portfolio/import-broker', loadComponent: () => import('./components/portfolio/broker-import/broker-import').then(m => m.PortfolioBrokerImportComponent) },
 
-  // Accounting routes
-  { path: 'accounting', redirectTo: 'accounting/accounts', pathMatch: 'full' },
-  { path: 'accounting/dashboard', redirectTo: 'accounting/accounts' },
-  { path: 'accounting/transactions', redirectTo: 'accounting/accounts' },
-  { path: 'accounting/settings', redirectTo: 'accounting/accounts' },
-  { path: 'accounting/cards', redirectTo: 'accounting/accounts' },
-  { path: 'accounting/categories', redirectTo: 'accounting/accounts' },
-  { path: 'accounting/recurring', redirectTo: 'accounting/accounts' },
-  { path: 'accounting/accounts', loadComponent: () => import('./components/accounting/accounts/accounts').then(m => m.AccountingAccountsComponent) },
-  { path: 'accounting/accounts/:id', loadComponent: () => import('./components/accounting/account-entries/account-entries').then(m => m.AccountingAccountEntriesComponent) },
+  // Accounting routes: phase 1 bookmarks land on the timeline; every page lives under the accounting layout.
+  { path: 'accounting/dashboard', redirectTo: 'accounting' },
+  { path: 'accounting/transactions', redirectTo: 'accounting' },
+  { path: 'accounting/cards', redirectTo: 'accounting' },
+  { path: 'accounting/categories', redirectTo: 'accounting' },
+  { path: 'accounting/recurring', redirectTo: 'accounting' },
+  {
+    path: 'accounting',
+    loadComponent: () => import('./components/accounting/accounting-layout/accounting-layout').then(m => m.AccountingLayoutComponent),
+    children: ACCOUNTING_ROUTES,
+  },
 
   { path: '**', redirectTo: '' }
 ];

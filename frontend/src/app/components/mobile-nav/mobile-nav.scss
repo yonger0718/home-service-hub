@@ -98,6 +98,36 @@
   }
 }
 
+/* Raised centre "+" — the app's primary action (design D23). */
+.m-plus {
+  align-items: center;
+  align-self: flex-start;
+  background: var(--app-primary);
+  border-radius: 50%;
+  box-shadow: 0 8px 20px rgba(83, 58, 253, 0.35);
+  color: #fff;
+  display: flex;
+  flex: 0 0 56px;
+  font-size: 1.9rem;
+  font-weight: 300;
+  height: 56px;
+  justify-content: center;
+  line-height: 1;
+  margin: -14px 6px 0;
+  text-decoration: none;
+  transition: transform var(--dur-fast) var(--ease-standard);
+  width: 56px;
+
+  &:active {
+    transform: scale(0.94);
+  }
+
+  &:focus-visible {
+    box-shadow: 0 0 0 4px var(--app-focus-ring), 0 8px 20px rgba(83, 58, 253, 0.35);
+    outline: none;
+  }
+}
+
 @media (max-width: 759.98px) {
   .mobile-nav-shell {
     display: flex;

@@ -1,4 +1,4 @@
-export type NavGroupId = 'supplies' | 'portfolio' | 'accounting';
+export type NavGroupId = 'supplies' | 'portfolio' | 'accounting' | 'settings';
 
 export interface NavItem {
   id: string;
@@ -48,10 +48,20 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'accounting',
     label: '財務',
     icon: 'pi-wallet',
-    defaultPath: '/accounting/accounts',
+    defaultPath: '/accounting',
     items: [
-      { id: 'accounting', path: '/accounting/accounts', icon: 'pi-wallet', label: '帳戶', title: '記帳帳戶', group: 'accounting' },
-      { id: 'settings', path: '/settings', icon: 'pi-cog', label: '設定', title: '設定', group: 'accounting', sub: true, exact: true },
+      { id: 'accounting-timeline', path: '/accounting', icon: 'pi-list', label: '紀錄', title: '記帳紀錄', group: 'accounting', exact: true },
+      { id: 'accounting', path: '/accounting/accounts', icon: 'pi-wallet', label: '帳戶', title: '記帳帳戶', group: 'accounting', sub: true },
+      { id: 'accounting-settings', path: '/accounting/settings', icon: 'pi-sliders-h', label: '設定', title: '記帳設定', group: 'accounting', sub: true, exact: true },
+    ],
+  },
+  {
+    id: 'settings',
+    label: '設定',
+    icon: 'pi-cog',
+    defaultPath: '/settings',
+    items: [
+      { id: 'settings', path: '/settings', icon: 'pi-cog', label: '設定', title: '設定', group: 'settings', exact: true },
     ],
   },
 ];
