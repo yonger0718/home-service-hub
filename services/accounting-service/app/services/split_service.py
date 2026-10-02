@@ -11,6 +11,7 @@ from ..models import EntryGroup, LedgerEntry
 from ..schemas.writes import EntryIn, SplitIn
 from .edit_lock import assert_editable
 from .entry_write_service import (
+    EDITABLE_KINDS,
     PreparedEntry,
     delete_entries_cascade,
     has_settlements_or_refunds,
@@ -24,13 +25,18 @@ SHARED_FIELDS = ("entry_date", "entry_time", "posted_date", "project_id", "tags"
 
 
 def member_payloads(payload: SplitIn) -> list[EntryIn]:
-    """Each member as a full EntryIn; fields the member did not send come from the group."""
+    """Each member as a full EntryIn; fields the member did not send come from the group, except posted_date,
+    which defaults to the member's own entry_date when the member sent one."""
     members = []
     for member in payload.members:
         data = member.model_dump()
+        own_date = data["entry_date"]  # captured before the loop fills entry_date from the group
         for field in SHARED_FIELDS:
             if field not in member.model_fields_set or (field == "entry_date" and data[field] is None):
-                data[field] = getattr(payload, field)
+                if field == "posted_date" and own_date is not None:
+                    data[field] = own_date  # a member with its own entry_date posts on that date, not the group's
+                else:
+                    data[field] = getattr(payload, field)
         members.append(EntryIn(**data))
     return members
 
@@ -103,6 +109,15 @@ def _assert_no_settlements(db: Session, members: list[LedgerEntry]) -> None:
             )
 
 
+def _assert_no_transfers_or_system_entries(members: list[LedgerEntry]) -> None:
+    """Imported split groups (MOZE packages) can hold a transfer leg whose counterpart is outside the group, or
+    reward / interest / balance-adjustment rows. Rebuilding or deleting the group would orphan the counterpart or
+    delete rows delete_entry refuses, so such groups are edited one entry at a time."""
+    for member in members:
+        if member.transfer_group_id is not None or member.kind not in EDITABLE_KINDS:
+            raise ValidationError("members", "groups containing transfers, rewards or system entries are edited per entry")
+
+
 def create_split(db: Session, payload: SplitIn, *, http_get=None) -> int:
     prepared = _prepare_all(db, payload, http_get)
     group = EntryGroup(kind="split", name=payload.name, merchant=payload.merchant, description=payload.description)
@@ -127,6 +142,7 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
     assert_editable(group)
     members = _locked_members(db, group_id)
     _assert_no_settlements(db, members)
+    _assert_no_transfers_or_system_entries(members)
     delete_entries_cascade(db, [member.id for member in members])
     group.name = payload.name
     group.merchant = payload.merchant
@@ -138,9 +154,11 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
 
 def delete_split(db: Session, group_id: int) -> None:
     """Same lock order as update_split (group → members), so it waits for a concurrent PUT and then deletes
-    that PUT's members rather than the ones the PUT already replaced."""
+    that PUT's members rather than the ones the PUT already replaced. Groups holding transfer legs or
+    non-editable kinds are refused under the member locks; settled members may be deleted (links are cleared)."""
     group = _locked_split(db, group_id)
     assert_editable(group)
     members = _locked_members(db, group_id)
+    _assert_no_transfers_or_system_entries(members)
     delete_entries_cascade(db, [member.id for member in members])
     db.execute(delete(EntryGroup).where(EntryGroup.id == group_id))

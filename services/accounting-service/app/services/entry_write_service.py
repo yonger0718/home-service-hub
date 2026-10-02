@@ -7,17 +7,19 @@ lookup before anything is written, so a multi-entry write (split) inserts all of
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
-from typing import Iterable
+from typing import Iterable, get_args
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..models import Account, Category, Counterparty, EntryGroup, EntryRewardRule, LedgerEntry, Project, RewardRule
-from ..schemas.writes import BalanceAdjustmentIn, ChildIn, EntryIn, EntryUpdateIn
+from ..schemas.writes import BalanceAdjustmentIn, ChildIn, EditableKind, EntryIn, EntryUpdateIn
 from . import fx_rate_service, ledger_service
 from .edit_lock import assert_editable
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (ValidationError re-exported)
 from .moze_import_service import SYSTEM_CATEGORY_NAMES
+
+EDITABLE_KINDS: tuple[str, ...] = get_args(EditableKind)  # kinds a manual entry form can write
 
 AMOUNT_QUANTUM = Decimal("0.0001")
 RATE_QUANTUM = fx_rate_service.RATE_QUANTUM

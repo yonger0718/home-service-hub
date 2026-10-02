@@ -1,5 +1,6 @@
 """Splits: one entry_group of kind split; members of mixed kinds and accounts, defaults from the group."""
 
+import uuid
 from datetime import date, time
 from decimal import Decimal
 
@@ -114,9 +115,9 @@ def test_members_default_to_the_group_fields_unless_they_override(db_session, se
     assert (first.entry_date, first.entry_time, first.posted_date, first.project_id, first.tags) == (
         DAY, time(19, 30), date(2026, 9, 3), trip.id, ["旅行"],
     )
-    assert (second.entry_date, second.entry_time, second.project_id, second.tags) == (
-        date(2026, 9, 2), time(19, 30), life.id, ["自己"],
-    )
+    assert (second.entry_date, second.entry_time, second.posted_date, second.project_id, second.tags) == (
+        date(2026, 9, 2), time(19, 30), date(2026, 9, 2), life.id, ["自己"],
+    )  # a member that overrides entry_date posts on its own date, not the group's posted_date
     [fee] = db_session.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id == first.id)).all()
     assert (fee.amount, fee.group_id, fee.posted_date) == (Decimal("-5"), None, date(2026, 9, 3))
 
@@ -247,6 +248,44 @@ def test_update_split_refuses_group_with_settled_member(client, db_session, seed
     assert [error["loc"] for error in response.json()["detail"]] == [["members"]]
     [member] = _members(db_session, group_id)
     assert (member.id, member.amount) == (lent_id, Decimal("-200"))
+
+
+def test_update_split_refuses_group_with_transfer_leg(client, db_session, seed, monkeypatch):
+    # Fix round 1: an imported split package may hold one leg of a transfer whose counterpart is outside the
+    # group; rebuilding the group would orphan the counterpart.
+    monkeypatch.setenv("ACCOUNTING_IMPORT_LOCKED", "true")
+    a, b = seed.account("A"), seed.account("B")
+    group = seed.group()
+    pair = uuid.uuid4()
+    out_leg = seed.entry(a, "-100", kind="transfer_out", transfer_group_id=pair, group_id=group.id)
+    in_leg = seed.entry(b, "100", kind="transfer_in", transfer_group_id=pair)
+    db_session.commit()
+    group_id, leg_ids = group.id, {out_leg.id, in_leg.id}
+
+    response = client.put(f"/splits/{group_id}", json=_split(_member(a, amount="10")))
+
+    assert response.status_code == 422
+    assert [error["loc"] for error in response.json()["detail"]] == [["members"]]
+    db_session.expire_all()
+    assert {e.id for e in db_session.scalars(select(LedgerEntry).where(LedgerEntry.transfer_group_id == pair))} == leg_ids
+
+
+def test_delete_split_refuses_group_with_reward_member(client, db_session, seed, monkeypatch):
+    monkeypatch.setenv("ACCOUNTING_IMPORT_LOCKED", "true")
+    wallet = seed.account()
+    group = seed.group()
+    seed.entry(wallet, "-100", group_id=group.id)
+    reward = seed.entry(wallet, "3", kind="reward", group_id=group.id)
+    db_session.commit()
+    group_id, reward_id = group.id, reward.id
+
+    response = client.delete(f"/splits/{group_id}")
+
+    assert response.status_code == 422
+    assert [error["loc"] for error in response.json()["detail"]] == [["members"]]
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, reward_id) is not None
+    assert len(_members(db_session, group_id)) == 2
 
 
 def test_concurrent_split_updates_do_not_double_post(pg_engine, db_session, seed):
