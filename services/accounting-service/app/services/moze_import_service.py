@@ -215,21 +215,26 @@ def _insert_entries(
     return [parent for _, parent, _ in parents] + children_all
 
 
-def _removable(alias: str, table: str, keep: Mapping[str, Collection[str]] | None, params: dict) -> str:
-    """SQL condition: a row carrying a moze_id is backup-seeded and kept unless `keep` says it left the backup."""
-    if keep is None:
-        return f"{alias}.moze_id IS NULL"
+def _removable(alias: str, table: str, keep: Mapping[str, Collection[str]], params: dict) -> str:
+    """SQL condition: only a backup-seeded row (moze_id set) whose moze_id left the backup may be swept.
+
+    Rows without a moze_id (CSV-created, manual or created through the settings API) are never deleted by an
+    import: the owner may have created them in HomeHub, and an import must not destroy what the owner typed.
+    """
     params[f"keep_{table}"] = sorted(keep.get(table, ()))
-    return f"({alias}.moze_id IS NULL OR {alias}.moze_id <> ALL(:keep_{table}))"
+    return f"({alias}.moze_id IS NOT NULL AND {alias}.moze_id <> ALL(:keep_{table}))"
 
 
 def delete_unused_rows(session: Session, keep: Mapping[str, Collection[str]] | None = None) -> None:
-    """Delete categories, projects and counterparties nothing uses (design D6, extended for backup settings).
+    """Delete unused categories, projects and counterparties whose moze_id left the backup (design D6, as
+    narrowed by the final review: rows without a moze_id are never swept).
 
-    keep=None (CSV import): rows with a moze_id are always kept. Otherwise keep[table] holds the moze ids still
-    present in the backup; unused rows whose moze_id left the backup are deleted.
-    A main category is used while any sub-category is; a project is used by entries, category defaults and rules.
+    keep=None (CSV import): nothing is deleted; the CSV carries no moze ids. Otherwise keep[table] holds the moze
+    ids still present in the backup. A main category is used while any sub-category is; a project is used by
+    entries, category defaults and rules.
     """
+    if keep is None:
+        return
     statements = [
         "DELETE FROM category c WHERE c.parent_id IS NOT NULL "
         "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) AND {category}",
@@ -271,9 +276,14 @@ def _apply_renames(session: Session, renames: Mapping[str, str]) -> list[dict[st
 
 
 def _archive_disappeared_accounts(session: Session, named_in_file: set[str]) -> list[str]:
+    """Archive (and zero the opening balance of) entry-less accounts the file no longer names.
+
+    Accounts with settings_locally_edited (every POST /accounts row, and any account edited in Settings) are
+    skipped entirely: they are the owner's, not MOZE's.
+    """
     archived = []
     for account in session.scalars(select(Account).order_by(Account.id)):
-        if account.name in named_in_file:
+        if account.name in named_in_file or account.settings_locally_edited:
             continue
         has_entries = session.scalar(
             select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)

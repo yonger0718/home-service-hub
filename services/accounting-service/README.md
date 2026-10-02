@@ -37,7 +37,10 @@ The backup importer converts the archive with the Node tool (`MOZE_REALM_EXPORTE
 `moze_import` and `moze_backup` entry and MOZE group in one transaction under the same lock, upserts groups,
 accounts, categories, projects, counterparties, reward rules (by `moze_id`, never recreated) and the preference row,
 and stores future-dated rows, periods and installments in `moze_schedule`. Manual entries and their rule
-attachments are never touched. Accounts edited locally (`settings_locally_edited`) keep their settings.
+attachments are never touched. Accounts edited locally (`settings_locally_edited`) keep their settings and, when
+the backup no longer names them, are neither archived nor zeroed. Neither importer deletes a category, project or
+counterparty without a `moze_id` (CSV-created or created in Settings); the backup importer deletes only unused
+rows whose `moze_id` left the backup.
 The report lists per-type counts, skipped future rows, `needs_review` reasons and per-account `moze_part` /
 `previous_moze_part`; `balanceInfo` is not compared until a rule is confirmed, so the CLI warns
 `WARNING: 0 of N accounts compared` and the balances are checked by hand.

@@ -134,7 +134,7 @@ def test_reimport_reflects_edits_and_is_idempotent(db_session, moze):
     assert [e.amount for e in _entries(db_session, "錢包")] == [Decimal("-150.0000")]
 
 
-def test_category_cleanup_keeps_ancestors_and_removes_unused_branches(db_session, moze):
+def test_csv_reimport_never_deletes_rows_without_a_moze_id(db_session, moze):
     _import(
         db_session,
         moze.csv(
@@ -147,8 +147,9 @@ def test_category_cleanup_keeps_ancestors_and_removes_unused_branches(db_session
         db_session,
         moze.csv(moze.opening("錢包", "TWD", "0"), moze.row("錢包", "TWD", "支出", "-1", main="飲食", sub="午餐")),
     )
-    assert _category_paths(db_session) == {"expense:飲食", "expense:飲食/午餐"}
-    assert list(db_session.scalars(select(Project.name))) == []
+    # Unused rows are swept only when their moze_id left a backup; CSV-created rows have none, so they stay.
+    assert _category_paths(db_session) == {"expense:飲食", "expense:飲食/午餐", "expense:娛樂", "expense:娛樂/電影"}
+    assert list(db_session.scalars(select(Project.name))) == ["舊專案"]
 
 
 def test_entries_from_other_sources_are_untouched(db_session, moze):
@@ -236,7 +237,7 @@ def test_counterparty_text_becomes_rows_and_posted_date_defaults(db_session, moz
     assert {e.counterparty_id for e in entries} == {alan.id}
     assert all(e.posted_date == e.entry_date for e in entries)
     _import(db_session, moze.csv(moze.opening("錢包", "TWD", "0")))
-    assert db_session.scalars(select(Counterparty)).all() == []
+    assert [c.name for c in db_session.scalars(select(Counterparty))] == ["Alan"]  # no moze_id: never swept
 
 
 def test_backup_seeded_settings_are_kept_by_a_csv_import(db_session, moze, backup):

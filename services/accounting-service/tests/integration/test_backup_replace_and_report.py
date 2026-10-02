@@ -142,12 +142,41 @@ def test_csv_rows_are_replaced_and_accounts_not_in_the_backup_archived(db_sessio
     assert (old.is_archived, old.opening_balance) == (True, Decimal("0"))
 
 
-def test_unused_rows_without_moze_id_or_gone_from_the_backup_are_deleted(db_session, backup):
+def test_only_unused_rows_whose_moze_id_left_the_backup_are_deleted(db_session, backup):
     db_session.add_all([Project(name="舊專案"), Counterparty(name="Bob"), Project(name="已刪", moze_id="P-GONE")])
     db_session.commit()
     _import_backup(db_session, parse_backup_doc(_doc(backup)))
-    assert db_session.scalars(select(Project.name)).all() == ["日常"]
-    assert db_session.scalars(select(Counterparty.name)).all() == ["Alan"]
+    assert sorted(db_session.scalars(select(Project.name))) == ["日常", "舊專案"]
+    assert sorted(db_session.scalars(select(Counterparty.name))) == ["Alan", "Bob"]
+
+
+def test_reimport_keeps_a_locally_created_account_and_its_opening_balance(client, db_session, backup):
+    _import_backup(db_session, parse_backup_doc(_doc(backup)))
+    created = client.post("/accounts", json={"name": "新銀行", "currency": "TWD", "opening_balance": "50000"})
+    assert created.status_code == 201
+
+    summary = _import_backup(db_session, parse_backup_doc(_doc(backup)))
+
+    db_session.expire_all()
+    account = db_session.scalar(select(Account).where(Account.name == "新銀行"))
+    assert "新銀行" not in summary["accounts_archived"]
+    assert (account.is_archived, account.opening_balance, account.settings_locally_edited) == (
+        False, Decimal("50000.0000"), True
+    )
+
+
+def test_reimport_keeps_unused_settings_created_through_the_api(client, db_session, backup):
+    _import_backup(db_session, parse_backup_doc(_doc(backup)))
+    assert client.post("/counterparties", json={"name": "Bob"}).status_code == 201
+    assert client.post("/projects", json={"name": "2026 京都"}).status_code == 201
+    assert client.post("/categories", json={"kind": "expense", "name": "寵物"}).status_code == 201
+
+    _import_backup(db_session, parse_backup_doc(_doc(backup)))
+
+    db_session.expire_all()
+    assert sorted(db_session.scalars(select(Counterparty.name))) == ["Alan", "Bob"]
+    assert sorted(db_session.scalars(select(Project.name))) == ["2026 京都", "日常"]
+    assert db_session.scalar(select(Category.id).where(Category.name == "寵物", Category.kind == "expense")) is not None
 
 
 def test_schedule_is_replaced_on_each_import(db_session, backup):
