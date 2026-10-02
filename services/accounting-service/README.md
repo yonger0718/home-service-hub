@@ -53,7 +53,10 @@ Paths inside the service; the dev proxy and Caddy add the `/api/accounting` pref
 
 Reads
 
-- `GET /accounts?include_archived=false`, `GET /accounts/{id}`, `GET /accounts/{id}/summary?as_of=`, `GET /accounts/{id}/reward-rules`
+- `GET /accounts?include_archived=false&as_of=`, `GET /accounts/{id}?as_of=` (`as_of`, default today in Asia/Taipei:
+  balances count entries posted on or before it), `GET /accounts/{id}/summary?date_from=&date_to=` (spend with refunds,
+  income, rewards, net and count over entries posted in the range, plus the balance as of `date_to`),
+  `GET /accounts/{id}/reward-rules`
 - `GET /accounts/{id}/entries?limit=50&offset=0&kind=&date_from=&date_to=&q=`
 - `GET /entries?limit&offset&kind&date_from&date_to&q&account_id=(repeatable)&hide_rewards`, `GET /entries/summary?month=YYYY-MM`, `GET /entries/{id}`
 - `GET /account-groups`, `GET /categories?kind=`, `GET /projects`, `GET /counterparties` (with `open_amounts` per currency)
