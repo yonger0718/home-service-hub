@@ -1,0 +1,113 @@
+<div class="transfer-panel">
+  <div class="grid xfer-categories">
+    @for (cat of categories(); track cat.id) {
+      <button type="button" class="cat" [class.on]="categoryId() === cat.id" [disabled]="locked()" (click)="categoryId.set(cat.id)">
+        <span class="ico" [style.background]="cat.color ?? '#d4823b'">{{ cat.icon ?? '⇄' }}</span>{{ cat.name }}
+      </button>
+    }
+  </div>
+
+  <div class="xfer">
+    <label class="acc acc-from">
+      <span class="ico">{{ from()?.icon ?? '🏦' }}</span>
+      <select class="acc-select from-select" aria-label="轉出帳戶" [disabled]="locked()" (change)="setFrom($any($event.target).value)">
+        @for (account of activeAccounts(); track account.id) {
+          <option [value]="account.id" [selected]="account.id === fromId()">{{ account.name }}</option>
+        }
+      </select>
+      @if (from(); as f) {
+        <small class="acc-balance">{{ formatAmount(f.balance, f.currency) }}</small>
+      }
+    </label>
+    <button type="button" class="swap" aria-label="交換帳戶" [disabled]="locked()" (click)="swap()">⇄</button>
+    <label class="acc acc-to">
+      <span class="ico">{{ to()?.icon ?? '🏦' }}</span>
+      <select class="acc-select to-select" aria-label="轉入帳戶" [disabled]="locked()" (change)="setTo($any($event.target).value)">
+        @for (account of activeAccounts(); track account.id) {
+          <option [value]="account.id" [selected]="account.id === toId()">{{ account.name }}</option>
+        }
+      </select>
+      @if (to(); as t) {
+        <small class="acc-balance">{{ formatAmount(t.balance, t.currency) }}</small>
+      }
+    </label>
+  </div>
+
+  <div class="tiles">
+    <div class="tile amount-tile out-tile" [class.active]="activeSide() === 'out'" (click)="activeSide.set('out')">
+      <span class="cap">轉出金額</span>
+      <span class="amount-line neg">
+        <span class="cur">{{ from()?.currency }}</span>
+        <input
+          class="amount-input out-amount"
+          aria-label="轉出金額"
+          [attr.inputmode]="phone() ? 'none' : 'decimal'"
+          [readOnly]="locked()"
+          [value]="outText()"
+          (input)="setText('out', $any($event.target).value)"
+          (focus)="activeSide.set('out')"
+          (keydown)="onAmountKeydown('out', $event)"
+          (blur)="normalize('out')" />
+        <button type="button" class="plus" aria-label="轉出手續費與折扣" (click)="openSheet('out', $event)">+</button>
+      </span>
+    </div>
+    <div class="tile amount-tile in-tile" [class.active]="activeSide() === 'in'" (click)="sameCurrency() ? null : activeSide.set('in')">
+      <span class="cap">轉入金額</span>
+      <span class="amount-line pos">
+        <span class="cur">{{ to()?.currency }}</span>
+        <input
+          class="amount-input in-amount"
+          aria-label="轉入金額"
+          [attr.inputmode]="phone() ? 'none' : 'decimal'"
+          [readOnly]="locked() || sameCurrency()"
+          [value]="inDisplay()"
+          (input)="setText('in', $any($event.target).value)"
+          (focus)="sameCurrency() ? null : activeSide.set('in')"
+          (keydown)="onAmountKeydown('in', $event)"
+          (blur)="normalize('in')" />
+        <button type="button" class="plus" aria-label="轉入手續費與折扣" (click)="openSheet('in', $event)">+</button>
+      </span>
+    </div>
+    <div class="tile rate-tile wide">
+      <span class="cap">匯率</span>
+      <span class="rate-value">{{ rateLabel() }}</span>
+    </div>
+  </div>
+
+  @if (error()) {
+    <p class="transfer-error" role="alert">{{ error() }}</p>
+  }
+  <p class="foot">同幣別轉帳匯率固定 1.00；跨幣別記兩邊金額，匯率自動算</p>
+
+  @if (sheet(); as side) {
+    <div class="overlay" (click)="sheet.set(null)" (keydown)="onSheetKeydown($event)">
+      <div class="sheet" role="dialog" aria-modal="true" [attr.aria-label]="side === 'out' ? '轉出手續費與折扣' : '轉入手續費與折扣'" (click)="$event.stopPropagation()">
+        <div class="grab"></div>
+        <h3>{{ side === 'out' ? '轉出' : '轉入' }}</h3>
+        <div class="kv">
+          <div><span class="k">金額</span><span class="v ed">{{ sideLabel(side) }}</span></div>
+          <div>
+            <span class="k">手續費 ✎</span>
+            <input class="v fee-input" inputmode="decimal" aria-label="手續費" [value]="children()[side].fee" (input)="setChild(side, 'fee', $any($event.target).value)" />
+          </div>
+          <div>
+            <span class="k">折扣 ✎</span>
+            <input class="v discount-input" inputmode="decimal" aria-label="折扣" [value]="children()[side].discount" (input)="setChild(side, 'discount', $any($event.target).value)" />
+          </div>
+        </div>
+        <div class="btnrow"><button type="button" class="pri" (click)="sheet.set(null)">確定</button></div>
+      </div>
+    </div>
+  }
+
+  @if (showKeypad()) {
+    <app-amount-keypad
+      [layout]="keypadLayout()"
+      [quickAmounts]="[]"
+      [decimals]="activeDecimals()"
+      [value]="activeText()"
+      (valueChange)="setActiveText($event)"
+      (next)="nextSide()"
+      (save)="saveRequested.emit(false)" />
+  }
+</div>
