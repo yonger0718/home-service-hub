@@ -146,7 +146,8 @@ Confirmed by Task 11 on the real backup in a disposable database on 2026-10-02; 
 - **Counts:**
   - Kinds: expense 2534, reward 2338, receivable 618, transfer_in 509, transfer_out 509, fee 315, income 217, balance_adjustment 70, payable 42, interest 36, discount 12, refund 1.
   - Skipped future rows per type: 0 → 65, 2 → 70, 3 → 1, 6 → 204, 14 → 63, 15 → 204.
-  - needs_review 401: reward_source_missing 374, disabled_record 26, reward_rule_missing 2, refund_original_missing 1.
+  - needs_review 33 entries: disabled_record 26, reward_source_missing 6, reward_rule_missing 2, refund_original_missing 1 (reasons can overlap on one entry). Of the 6 missing reward sources, 3 rewards name deleted packages, 2 have no id and 1 names a future record.
+  - reward_source_from_package 368: these rewards name an `AHPackage` (a split purchase) and link to the split's primary member, the first by `entry_date`, `entry_time` NULLS FIRST, `seq`, with fee and discount members excluded. They were 368 of the previously flagged 374.
   - groups 716; transfers 509 of 544 (the 35 others are future pairs, 70 skipped type-2 rows); rules 95 of 100 (5 unsupported); attachments 2796; counterparties 10; accounts created 11.
   - FX outliers 0; transfer rate mismatches 1; FX-converted accounts 4 (the contract expected 9).
 - **Previous CSV ledger:** 22 accounts unchanged, 40 moved, 10 had no previous CSV balance. The per-cause split of the 40 (new MOZE records, MOZE FX amounts, skipped future rows) is pending the owner in Task 31.
