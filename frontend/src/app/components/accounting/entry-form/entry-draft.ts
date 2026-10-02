@@ -119,10 +119,8 @@ function pad(value: number): string {
   return String(value).padStart(2, '0');
 }
 
-/** Local calendar date `YYYY-MM-DD` (not UTC: entries are dated in the owner's time zone). */
-export function todayIso(now = new Date()): string {
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
+/** Local calendar date `YYYY-MM-DD`; owned by `dates.ts` (Task 25), re-exported for the form's callers. */
+export { todayIso } from '../dates';
 
 export function nowTime(now = new Date()): string {
   return `${pad(now.getHours())}:${pad(now.getMinutes())}`;

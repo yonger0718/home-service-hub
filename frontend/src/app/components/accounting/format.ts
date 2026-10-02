@@ -59,11 +59,21 @@ export function formatNumber(value: string | number | null | undefined, currency
   return amount < 0 && body !== '0' ? `${MINUS}${body}` : body;
 }
 
-/** `−$1,166`, `¥5,390`: symbol, grouping, `−` only for negatives. */
-export function formatMoney(value: string | number | null | undefined, currency: string): string {
+/**
+ * `−$1,166`, `¥5,390`, `US$12.5`, `USDT 3`: symbol, grouping, `−` only for negatives;
+ * `{ sign: true }` adds `+` to positive amounts (zero after display rounding never gets a sign).
+ */
+export function formatMoney(
+  value: string | number | null | undefined,
+  currency: string,
+  options: { sign?: boolean } = {},
+): string {
   const amount = toNumber(value);
   const body = numberFormat(currency).format(Math.abs(amount));
-  const sign = amount < 0 && body !== '0' ? MINUS : '';
+  if (body === '0') {
+    return `${currencySymbol(currency)}${body}`;
+  }
+  const sign = amount < 0 ? MINUS : options.sign ? '+' : '';
   return `${sign}${currencySymbol(currency)}${body}`;
 }
 
