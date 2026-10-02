@@ -223,10 +223,10 @@
         }
         @if (kind() !== 'transfer') {
           @if (fee(); as child) {
-            <span class="chip fee">{{ child.name || '手續費' }} −{{ child.amount }}</span>
+            <span class="chip fee">{{ child.name || '手續費' }} {{ feeText(child) }}</span>
           }
           @if (discount(); as child) {
-            <span class="chip">{{ child.name || '折扣' }} +{{ child.amount }}</span>
+            <span class="chip">{{ child.name || '折扣' }} {{ discountText(child) }}</span>
           }
         }
         <input class="chip-input" placeholder="#標籤 / 紅利回饋" aria-label="新增標籤" (keydown.enter)="onTagEnter($event)" (blur)="onTagBlur($event)" />

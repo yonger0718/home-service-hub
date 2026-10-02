@@ -5,8 +5,8 @@
     }
   </div>
 }
-@if (error()) {
-  <p class="keypad-error" role="alert">算式有誤：{{ error() }}</p>
+@if (errorText(); as message) {
+  <p class="keypad-error" role="alert">{{ message }}</p>
 }
 <div class="keypad" role="group" aria-label="數字鍵盤">
   @for (row of rows(); track $index) {

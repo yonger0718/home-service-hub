@@ -330,7 +330,13 @@ export class EntryFormComponent implements OnInit {
     const discount = this.discount();
     if (fee || discount) {
       const total = this.signedConverted() - Number(fee?.amount ?? 0) + Number(discount?.amount ?? 0);
-      parts.push(`手續費 −${fee?.amount ?? 0} · 折扣 +${discount?.amount ?? 0} · 總額 ${formatNumber(total, currency)}`);
+      if (fee) {
+        parts.push(`手續費 ${this.feeText(fee)}`);
+      }
+      if (discount) {
+        parts.push(`折扣 ${this.discountText(discount)}`);
+      }
+      parts.push(`總額 ${formatMoney(total, currency)}`);
     }
     if (parts.length) {
       return parts.join(' · ');
@@ -842,6 +848,16 @@ export class EntryFormComponent implements OnInit {
 
   focusName(): void {
     this.host.nativeElement.querySelector<HTMLInputElement>('.name-input')?.focus();
+  }
+
+  /** Fee chip / footer amount in the account currency: `−$30`. */
+  feeText(child: ChildInput): string {
+    return formatMoney(-Math.abs(Number(child.amount)), this.accountCurrency());
+  }
+
+  /** Discount chip / footer amount in the account currency: `+$1,000`. */
+  discountText(child: ChildInput): string {
+    return formatMoney(Math.abs(Number(child.amount)), this.accountCurrency(), { sign: true });
   }
 
   proposalText(proposal: FeeProposal): string {

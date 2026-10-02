@@ -1026,4 +1026,21 @@ describe('EntryFormComponent', () => {
     put.flush(makeEntryDetail({ id: 9 }));
     settle();
   });
+  it('shows fee and discount in the account currency on the chips and in the footer', async () => {
+    const { el } = await open('/accounting/entry');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    keys(el, '1', '1', '6', '6');
+    form.fee.set({ amount: '30', name: null });
+    form.discount.set({ amount: '1000', name: '折價券' });
+    settle();
+
+    const chips = Array.from(el.querySelectorAll('.chips .chip:not(.rule-chip)')).map(chip => text(chip));
+    expect(chips).toEqual(['手續費 −$30', '折價券 +$1,000']);
+    expect(text(el.querySelector('.foot'))).toBe('手續費 −$30 · 折扣 +$1,000 · 總額 −$196');
+  });
 });

@@ -339,3 +339,13 @@ export function applyKey(state: KeypadState, key: string): KeypadState {
       return state;
   }
 }
+
+/** Evaluator reasons in the owner's language (the evaluator itself reports in English for tests and logs). */
+const AMOUNT_ERROR_REASONS: Record<string, string> = {
+  'division by zero': '除以零',
+};
+
+/** `算式有誤：除以零`; any other evaluator error reads `算式有誤：無法解析`. */
+export function amountErrorText(error: string): string {
+  return `算式有誤：${AMOUNT_ERROR_REASONS[error] ?? '無法解析'}`;
+}

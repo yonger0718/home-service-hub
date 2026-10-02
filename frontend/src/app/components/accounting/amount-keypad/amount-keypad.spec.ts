@@ -61,7 +61,17 @@ describe('AmountKeypadComponent', () => {
     press('1', '÷', '0', '✓');
 
     expect(saved).toEqual([]);
-    expect(el.querySelector('.keypad-error')?.textContent).toContain('算式有誤');
+    expect(el.querySelector('.keypad-error')?.textContent?.trim()).toBe('算式有誤：除以零');
+  });
+
+  it('explains an unparsable expression in Chinese', () => {
+    const { component, el, fixture } = render();
+    component.value.set('1÷÷2');
+    fixture.detectChanges();
+    (el.querySelector('button[data-key="✓"]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+
+    expect(el.querySelector('.keypad-error')?.textContent?.trim()).toBe('算式有誤：無法解析');
   });
 
   it('replaces the value with a quick amount', () => {

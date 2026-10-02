@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input, model, output, signal } from '@angular/core';
 
 import { KeypadLayout } from '../../../models/accounting.model';
-import { KEYPAD_CALCULATOR, KEYPAD_PHONE, applyKey, keypadState } from '../amount-math';
+import { KEYPAD_CALCULATOR, KEYPAD_PHONE, amountErrorText, applyKey, keypadState } from '../amount-math';
 
 const KEY_LABELS: Record<string, string> = {
   '÷': '除',
@@ -36,6 +36,10 @@ export class AmountKeypadComponent {
   readonly save = output<number | null>();
 
   readonly error = signal<string | null>(null);
+  readonly errorText = computed(() => {
+    const error = this.error();
+    return error === null ? null : amountErrorText(error);
+  });
   readonly rows = computed(() => (this.layout() === 'phone' ? KEYPAD_PHONE : KEYPAD_CALCULATOR));
 
   press(key: string): void {
