@@ -1,13 +1,17 @@
-import { NgComponentOutlet } from '@angular/common';
+import { DOCUMENT, NgComponentOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
+  Injector,
   Type,
+  afterNextRender,
   computed,
   effect,
   inject,
   signal,
   untracked,
+  viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterLink, RouterOutlet } from '@angular/router';
@@ -55,10 +59,14 @@ const SWIPE_CLOSE_PX = 80;
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(document:keydown.escape)': 'onEscape($event)' },
 })
 export class AccountingLayoutComponent {
   private readonly router = inject(Router);
   private readonly layoutMode = inject(LayoutModeService);
+  private readonly document = inject(DOCUMENT);
+  private readonly injector = inject(Injector);
+  private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
 
   readonly mode = this.layoutMode.mode;
   private readonly url = signal(this.router.url);
@@ -74,10 +82,15 @@ export class AccountingLayoutComponent {
     return match ? Number(match[1]) : null;
   });
 
+  /** 760–1023 px with a page in the pane: the right-hand sheet is a modal dialog. */
+  readonly sheetOpen = computed(() => this.mode() === 'sheet' && this.paneOpen());
+
   readonly showFab = computed(() => this.mode() !== 'phone' && !FORM_URL.test(this.url()));
 
   private wasPhone: boolean | null = null;
   private swipeStartX: number | null = null;
+  /** Element focused before the sheet opened; focus returns there when it closes. */
+  private focusBeforeSheet: HTMLElement | null = null;
 
   constructor() {
     this.router.events
@@ -114,11 +127,41 @@ export class AccountingLayoutComponent {
         this.wasPhone = phone;
       });
     });
+
+    effect(() => {
+      const open = this.sheetOpen();
+      untracked(() => (open ? this.focusSheet() : this.restoreFocus()));
+    });
   }
 
   /** Close the pane / sheet: back to the list's own URL. */
   close(): void {
     void this.router.navigateByUrl(this.listKey() === 'accounts' ? '/accounting/accounts' : '/accounting');
+  }
+
+  /** Escape closes the sheet; marked handled so global shortcuts skip it. */
+  onEscape(event: Event): void {
+    if (!this.sheetOpen()) {
+      return;
+    }
+    event.preventDefault();
+    this.close();
+  }
+
+  private focusSheet(): void {
+    const active = this.document.activeElement;
+    if (!this.focusBeforeSheet && active instanceof HTMLElement && active !== this.document.body) {
+      this.focusBeforeSheet = active;
+    }
+    afterNextRender({ write: () => this.closeButton()?.nativeElement.focus() }, { injector: this.injector });
+  }
+
+  private restoreFocus(): void {
+    const previous = this.focusBeforeSheet;
+    this.focusBeforeSheet = null;
+    if (previous?.isConnected) {
+      previous.focus();
+    }
   }
 
   onPanePointerDown(event: PointerEvent): void {

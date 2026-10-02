@@ -36,8 +36,11 @@ function find(harness: RouterTestingHarness, selector: string): Promise<Element>
 
 const LIST = '.list-pane > *';
 const PANE_PAGE = '.detail-pane router-outlet + :not(.pane-empty)';
-/** A page in the layout's primary outlet (`:scope >`: jsdom 27 mis-caches a bare `router-outlet + *`). */
-const SCREEN = ':scope > router-outlet + *';
+/**
+ * A page in the layout's primary outlet, never the FAB that follows it before the page loads
+ * (`:scope >`: jsdom 27 mis-caches a bare `router-outlet + *`).
+ */
+const SCREEN = ':scope > router-outlet + :not(.fab)';
 
 describe('AccountingLayoutComponent', () => {
   it('keeps the list and updates the URL when a row is selected at 1280px', async () => {
@@ -83,6 +86,50 @@ describe('AccountingLayoutComponent', () => {
     (await find(harness, '.sheet-close') as HTMLButtonElement).click();
 
     await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+  });
+
+  it('closes the sheet on Escape and restores focus', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    const sheet = await find(harness, '.detail-pane.open');
+    expect(sheet.getAttribute('role')).toBe('dialog');
+    expect(sheet.getAttribute('aria-modal')).toBe('true');
+    expect(sheet.getAttribute('aria-label')).toBe('明細');
+    const closeButton = await find(harness, '.sheet-close');
+    await vi.waitFor(() => expect(document.activeElement).toBe(closeButton));
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.dispatchEvent(escape);
+
+    expect(escape.defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    const layout = harness.routeDebugElement!.componentInstance as AccountingLayoutComponent;
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(layout.paneOpen()).toBe(false);
+      expect(document.activeElement).toBe(opener);
+    });
+    opener.remove();
+  });
+
+  it('leaves Escape alone when no sheet is open, and has no dialog role in panes mode', async () => {
+    const harness = await start('panes', '/accounting/entries/5');
+    const pane = await find(harness, '.detail-pane');
+    await find(harness, PANE_PAGE);
+    expect(pane.getAttribute('role')).toBeNull();
+    expect(pane.getAttribute('aria-modal')).toBeNull();
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.dispatchEvent(escape);
+
+    expect(escape.defaultPrevented).toBe(false);
+    expect(TestBed.inject(Router).url).toBe('/accounting/entries/5');
   });
 
   it('shows the floating plus from 760px, pointing at the entry form', async () => {

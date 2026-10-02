@@ -8,19 +8,21 @@
       }
     </section>
 
-    @if (mode() === 'sheet' && paneOpen()) {
+    @if (sheetOpen()) {
       <div class="sheet-backdrop" aria-hidden="true" (click)="close()"></div>
     }
 
     <section
       class="pane detail-pane"
       aria-label="明細"
+      [attr.role]="sheetOpen() ? 'dialog' : null"
+      [attr.aria-modal]="sheetOpen() ? 'true' : null"
       [class.open]="paneOpen()"
       (pointerdown)="onPanePointerDown($event)"
       (pointerup)="onPanePointerUp($event)"
     >
-      @if (mode() === 'sheet' && paneOpen()) {
-        <button type="button" class="sheet-close" aria-label="關閉" (click)="close()">✕</button>
+      @if (sheetOpen()) {
+        <button #closeButton type="button" class="sheet-close" aria-label="關閉" (click)="close()">✕</button>
       }
       <router-outlet name="pane" />
       @if (!paneOpen()) {
