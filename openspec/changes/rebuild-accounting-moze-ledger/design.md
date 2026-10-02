@@ -117,7 +117,7 @@ MOZE categories are two-level for expenses, and the export also carries meaningf
 `entry_date DATE NOT NULL` and `entry_time TIME NULL` are stored separately. They are naive and interpreted as Asia/Taipei; MOZE exports local wall time with no zone.
 
 ### D11. Foreign-currency rows are converted at import, keeping the original
-The real export has 130 rows across 9 accounts whose 幣種 differs from the account currency. These are mostly JPY or USD spending on TWD credit cards. 金額 is in the row currency, and the export carries no converted amount. The owner chose option C (2026-10-02):
+The real export has 130 rows across 9 accounts whose 幣種 differs from the account currency (176 entries once their fee children are counted). These are mostly JPY or USD spending on TWD credit cards. 金額 is in the row currency, and the export carries no converted amount. The owner chose option C (2026-10-02):
 
 - Convert now with a daily historical rate, keeping `original_amount`, `original_currency`, `fx_rate` and `fx_source` on the entry.
 - Replace with MOZE's actual converted amounts (`fx_source = 'moze_backup'`) in phase 2, if the MOZE backup file turns out to be readable.

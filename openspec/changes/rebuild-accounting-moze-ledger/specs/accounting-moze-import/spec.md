@@ -360,4 +360,4 @@ The importer SHALL be invocable in two ways:
 - **WHEN** `MOZE_20261001_170037.csv` (6,976 rows) is imported against a fresh database
 - **THEN** the import SHALL succeed in under 30 seconds
 - **AND** the report SHALL show 61 accounts and entry counts per kind that match the file, with fee and discount children counted separately
-- **AND** exactly 130 entries across 9 accounts SHALL carry `fx_source = 'fx_api'`
+- **AND** exactly 130 parent entries across 9 accounts SHALL carry `fx_source = 'fx_api'`, plus their 46 converted fee/discount children (176 converted entries in total)

@@ -15,7 +15,7 @@ The shell SHALL highlight the active dock item and active mobile tab using `var(
 
 ### Requirement: Out-of-handoff routes remain reachable
 
-The shell SHALL keep `/portfolio/realized-pnl` reachable via its group sub-item. Its layout is NOT redesigned; it consumes tokens through inheritance only. The former accounting sub-routes (`/accounting/dashboard`, `/accounting/settings`, `/accounting/cards`, `/accounting/categories`, `/accounting/recurring`) are removed by `rebuild-accounting-moze-ledger`; navigating to any of them SHALL redirect to `/accounting/accounts`.
+The shell SHALL keep `/portfolio/realized-pnl` reachable via its group sub-item. Its layout is NOT redesigned; it consumes tokens through inheritance only. The former accounting sub-routes (`/accounting/dashboard`, `/accounting/transactions`, `/accounting/settings`, `/accounting/cards`, `/accounting/categories`, `/accounting/recurring`) are removed by `rebuild-accounting-moze-ledger`; navigating to any of them SHALL redirect to `/accounting/accounts`.
 
 #### Scenario: Realized PnL still navigable from Portfolio group
 - **WHEN** the user expands the Portfolio dock group
