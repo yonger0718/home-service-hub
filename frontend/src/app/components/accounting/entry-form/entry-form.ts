@@ -8,6 +8,7 @@ import {
   computed,
   inject,
   signal,
+  viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -51,7 +52,10 @@ import { CategoryPickerComponent } from '../category-picker/category-picker';
 import { FeeSheetComponent } from '../fee-sheet/fee-sheet';
 import { currencyDecimals, formatMoney, formatNumber } from '../format';
 import { FxSheetComponent, FxValue } from '../fx-sheet/fx-sheet';
+import { writeErrorMessage } from '../http-errors';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
+import { SplitLinesComponent } from '../split-lines/split-lines';
+import { TransferPanelComponent } from '../transfer-panel/transfer-panel';
 import {
   FORM_KINDS,
   FormKind,
@@ -64,14 +68,28 @@ import {
   parseTags,
   quickAmounts,
   readLastUse,
-  recordAmount,
   ruleLabel,
   rulesForDate,
-  saveErrorMessage,
   signFor,
   todayIso,
-  writeLastUse,
 } from './entry-draft';
+import {
+  NO_RELATED,
+  RelatedLoad,
+  SharedFields,
+  buildEntryInput,
+  entryInputFromDetail,
+  executeEntrySave,
+  fxFromDetail,
+  loadRelatedRows,
+  planEntrySave,
+  rememberEntryUse,
+  resolveCounterpartyId,
+} from './entry-save';
+import { TransferEdit, transferCommonFrom, transferEditFrom } from './transfer-math';
+
+export { NO_RELATED } from './entry-save';
+export type { RelatedLoad } from './entry-save';
 
 export const LONG_PRESS_MS = 600;
 
@@ -100,18 +118,6 @@ interface EntryLoad extends EntryTarget {
   loadId: number;
 }
 
-/**
- * Rows a record depends on, loaded in the same sequence as the record itself (plan-review round 2). Task 23 never
- * fills them; Task 24 extends `loadRelated()` to load split members (`group_members` details) and the transfer
- * counterpart.
- */
-export interface RelatedLoad {
-  members: EntryDetail[];
-  transfer: EntryDetail | null;
-}
-
-export const NO_RELATED: RelatedLoad = { members: [], transfer: null };
-
 interface LoadedEntry extends EntryLoad {
   detail: EntryDetail;
   related: RelatedLoad;
@@ -129,7 +135,15 @@ interface LoadedEntry extends EntryLoad {
 @Component({
   selector: 'app-entry-form',
   standalone: true,
-  imports: [LockBannerComponent, CategoryPickerComponent, AmountKeypadComponent, FxSheetComponent, FeeSheetComponent],
+  imports: [
+    LockBannerComponent,
+    CategoryPickerComponent,
+    AmountKeypadComponent,
+    FxSheetComponent,
+    FeeSheetComponent,
+    TransferPanelComponent,
+    SplitLinesComponent,
+  ],
   templateUrl: './entry-form.html',
   styleUrl: './entry-form.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -164,7 +178,7 @@ export class EntryFormComponent implements OnInit {
   readonly editing = signal(false);
   /** True from `load()` of an edit / copy / refetch until the record AND its related rows (`loadRelated`) are applied. */
   readonly loading = signal(false);
-  /** Related rows of the applied record (always `NO_RELATED` in Task 23; Task 24 reads members / counterpart here). */
+  /** Related rows of the applied record (split members, transfer counterpart). */
   readonly related = signal<RelatedLoad>(NO_RELATED);
   /** Account of the record being edited, kept selectable even when archived. */
   private readonly originalAccountId = signal<number | null>(null);
@@ -195,6 +209,12 @@ export class EntryFormComponent implements OnInit {
   readonly error = signal<string | null>(null);
   readonly savedFlash = signal(false);
   readonly feeProposal = signal<FeeProposal | null>(null);
+  /** Extra split lines; empty for a plain entry. */
+  readonly members = signal<EntryInput[]>([]);
+  /** The loaded entry's split group id, when editing a split member. */
+  readonly groupId = signal<number | null>(null);
+  readonly transferEdit = signal<TransferEdit | null>(null);
+  readonly transferPanel = viewChild(TransferPanelComponent);
 
   private rulesTouched = false;
   /** Bumped by every `load()`; a response carrying an older value is dropped. */
@@ -271,6 +291,9 @@ export class EntryFormComponent implements OnInit {
     return account ? formatMoney(account.balance, account.currency) : '—';
   });
   readonly footer = computed(() => {
+    if (this.kind() === 'transfer') {
+      return '';
+    }
     const parts: string[] = [];
     const fx = this.fx();
     const amount = this.amount();
@@ -441,6 +464,10 @@ export class EntryFormComponent implements OnInit {
     this.fee.set(null);
     this.discount.set(null);
     this.sheet.set(null);
+    this.members.set([]);
+    this.groupId.set(null);
+    this.transferEdit.set(null);
+    this.transferPanel()?.reset();
   }
 
   /** Stage 1 `getEntry`, stage 2 `loadRelated`; each stage's answer is dropped when a newer `load()` exists. */
@@ -468,13 +495,12 @@ export class EntryFormComponent implements OnInit {
   }
 
   /**
-   * Dependent rows of `detail`, loaded inside the same sequence before `loading()` turns false. Task 23 has none and
-   * answers at once; Task 24 replaces this body (split: `forkJoin` of the `group_members` details when
-   * `detail.group` is set; transfer: the counterpart leg). Must complete; its last value is applied on completion
-   * (an empty completion counts as `NO_RELATED`).
+   * Dependent rows of `detail`, loaded inside the same sequence before `loading()` turns false: the other members of
+   * a split and the transfer counterpart's detail. A newer navigation unsubscribes it (switchMap). Must complete; its
+   * last value is applied on completion (an empty completion counts as `NO_RELATED`).
    */
-  protected loadRelated(_detail: EntryDetail): Observable<RelatedLoad> {
-    return of(NO_RELATED);
+  protected loadRelated(detail: EntryDetail): Observable<RelatedLoad> {
+    return loadRelatedRows(this.accounting, detail);
   }
 
   /** Applies a loaded record only when it answers the latest `load()`; anything older is dropped. */
@@ -485,6 +511,13 @@ export class EntryFormComponent implements OnInit {
     this.entryId.set(loaded.copy ? null : loaded.detail.id);
     this.related.set(loaded.related);
     this.applyDetail(loaded.detail, loaded.copy);
+    // A transfer copy is prefilled from both legs but saves as a new transfer (saveTransfer sends no group id then).
+    this.transferEdit.set(transferEditFrom(loaded.detail, loaded.related.transfer));
+    if (!loaded.copy && loaded.detail.group?.kind === 'split') {
+      // Editing a split member: the other members become split lines and the save replaces the group's members.
+      this.groupId.set(loaded.detail.group.id);
+      this.members.set(loaded.related.members.map(entryInputFromDetail));
+    }
     this.loading.set(false);
   }
 
@@ -493,50 +526,43 @@ export class EntryFormComponent implements OnInit {
     if (!copy) {
       this.originalAccountId.set(detail.account_id);
     }
-    if (!isWritableKind(detail.kind)) {
+    const transfer = detail.kind === 'transfer_out' || detail.kind === 'transfer_in';
+    if (!transfer && !isWritableKind(detail.kind)) {
       this.unsupported.set(`${ENTRY_KIND_LABELS[detail.kind]}請在明細頁處理`);
       return;
     }
-    const abs = (value: string) => String(Math.abs(Number(value)));
+    this.name.set(detail.name ?? '');
+    this.merchant.set(detail.merchant ?? '');
+    this.description.set(detail.description ?? '');
+    this.tags.set([...detail.tags]);
+    this.entryDate.set(copy ? todayIso() : detail.entry_date);
+    this.entryTime.set(copy ? nowTime() : (detail.entry_time ?? '').slice(0, 5));
+    this.postedDate.set(copy || detail.posted_date === detail.entry_date ? '' : detail.posted_date);
+    this.projectId.set(detail.project_id ?? this.projects().find(project => project.name === detail.project)?.id ?? null);
+    if (transfer) {
+      // Both legs reach the transfer panel through loadRelated() → applyLoaded() → transferEdit.
+      this.kind.set('transfer');
+      return;
+    }
     this.rulesTouched = true;
-    this.kind.set(detail.kind);
+    this.kind.set(detail.kind as WritableEntryKind);
     const archived = this.accounts().find(account => account.id === detail.account_id)?.is_archived ?? false;
     // A copy is a new record: it never lands on an archived account.
     this.accountId.set(
       copy && archived ? (this.accounts().find(account => !account.is_archived)?.id ?? null) : detail.account_id,
     );
-    this.projectId.set(detail.project_id ?? this.projects().find(project => project.name === detail.project)?.id ?? null);
     this.pendingCategoryId = detail.category_id;
     this.resolvePendingCategory();
-    if (detail.original_currency && detail.original_amount !== null && detail.original_currency !== detail.currency) {
-      this.amountExpr.set(abs(detail.original_amount));
-      this.fx.set({
-        original_amount: abs(detail.original_amount),
-        original_currency: detail.original_currency,
-        fx_rate: detail.fx_rate === null ? null : String(Number(detail.fx_rate)),
-        amount: abs(detail.amount),
-        use_online: detail.fx_source === 'fx_api',
-        manual: detail.fx_source === 'fx_api' ? null : 'amount',
-        rate_date: null,
-      });
-    } else {
-      this.amountExpr.set(abs(detail.amount));
-    }
-    this.name.set(detail.name ?? '');
-    this.merchant.set(detail.merchant ?? '');
+    const input = entryInputFromDetail(detail);
+    const fx = fxFromDetail(detail);
+    this.fx.set(fx);
+    this.amountExpr.set((fx ? fx.original_amount : input.amount) ?? '');
     this.counterpartyName.set(detail.counterparty ?? '');
-    this.description.set(detail.description ?? '');
-    this.tags.set([...detail.tags]);
-    this.invoiceNumber.set(copy ? '' : (detail.invoice_number ?? ''));
-    this.invoiceRandom.set(copy ? '' : (detail.invoice_random ?? ''));
-    this.entryDate.set(copy ? todayIso() : detail.entry_date);
-    this.entryTime.set(copy ? nowTime() : (detail.entry_time ?? '').slice(0, 5));
-    this.postedDate.set(copy || detail.posted_date === detail.entry_date ? '' : detail.posted_date);
-    const fee = detail.children.find(child => child.kind === 'fee');
-    const discount = detail.children.find(child => child.kind === 'discount');
-    this.fee.set(fee ? { amount: abs(fee.amount), name: fee.name } : null);
-    this.discount.set(discount ? { amount: abs(discount.amount), name: discount.name } : null);
-    this.ruleIds.set(detail.rules.map(rule => rule.id));
+    this.invoiceNumber.set(copy ? '' : (input.invoice_number ?? ''));
+    this.invoiceRandom.set(copy ? '' : (input.invoice_random ?? ''));
+    this.fee.set(input.fee);
+    this.discount.set(input.discount);
+    this.ruleIds.set(input.reward_rule_ids);
   }
 
   private loadCategories(kind: string | null): Observable<CategoryNode[]> {
@@ -569,8 +595,9 @@ export class EntryFormComponent implements OnInit {
 
   // ---- field handlers -----------------------------------------------------
 
+  /** While editing, the record type cannot change into 系統 or between a transfer and a single entry. */
   tabDisabled(kind: FormKind): boolean {
-    return kind === 'transfer' || (this.editing() && kind === 'system');
+    return this.editing() && (kind === 'system' || (kind === 'transfer') !== (this.kind() === 'transfer'));
   }
 
   accountLabel(account: LedgerAccount): string {
@@ -796,7 +823,9 @@ export class EntryFormComponent implements OnInit {
       return this.unsupported();
     }
     if (this.kind() === 'transfer') {
-      return '轉帳尚未開放';
+      // The transfer panel validates its own accounts and amounts (buildInput). An edited leg without its
+      // counterpart has no group to PUT, and must never fall through to creating a second transfer.
+      return this.entryId() !== null && !this.transferEdit() ? '找不到轉帳的另一筆，請在明細頁處理' : null;
     }
     if (!this.account()) {
       return '請選擇帳戶';
@@ -841,128 +870,99 @@ export class EntryFormComponent implements OnInit {
     // Captured now: the id set when the matching response was applied, not whatever the route says later.
     const targetId = this.entryId();
     const keepGoing = continuous && targetId === null;
-    if (this.isSystem()) {
-      this.saveAdjustment(keepGoing);
+    if (this.kind() === 'transfer') {
+      const groupId = targetId === null ? null : (this.transferEdit()?.groupId ?? null);
+      // null: the panel shows its own validation message.
+      const request = this.transferPanel()?.submit(transferCommonFrom(this.sharedFields()), groupId) ?? null;
+      this.write(request, () => this.finish(keepGoing));
       return;
     }
-    this.resolveCounterparty()
-      .pipe(
-        map(counterpartyId => this.buildInput(counterpartyId)),
-        switchMap(input => {
-          const request =
-            targetId === null ? this.accounting.createEntry(input) : this.accounting.updateEntry(targetId, input);
-          return request.pipe(map(detail => ({ detail, input })));
-        }),
-        takeUntilDestroyed(this.destroyRef),
-      )
-      .subscribe({
-        next: ({ detail, input }) => {
-          this.saving.set(false);
-          this.rememberUse(input);
-          if (detail.proposed_fee && Number(detail.proposed_fee) > 0 && !input.fee) {
-            this.feeProposal.set({ entryId: detail.id, amount: detail.proposed_fee, input, continuous: keepGoing });
-            return;
-          }
-          this.finish(keepGoing);
-        },
-        error: (error: unknown) => {
-          this.saving.set(false);
-          this.error.set(saveErrorMessage(error));
-        },
-      });
-  }
-
-  private saveAdjustment(keepGoing: boolean): void {
-    this.accounting
-      .createBalanceAdjustment({
+    if (this.isSystem()) {
+      const request = this.accounting.createBalanceAdjustment({
         account_id: this.account()!.id,
         target_balance: String(this.target()),
         entry_date: this.entryDate(),
         entry_time: this.entryTime() || null,
         description: this.description().trim() || null,
-      })
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: () => {
-          this.saving.set(false);
-          this.finish(keepGoing);
-        },
-        error: (error: unknown) => {
-          this.saving.set(false);
-          this.error.set(saveErrorMessage(error));
-        },
       });
+      this.write(request, () => this.finish(keepGoing));
+      return;
+    }
+    const context = { entryId: targetId, groupId: this.groupId() };
+    const counterparty: Observable<number | null> = this.isParty()
+      ? resolveCounterpartyId(this.accounting, this.counterpartyName(), this.counterparties(), party =>
+          this.counterparties.update(list => [...list, party]),
+        )
+      : of(null);
+    const request = counterparty.pipe(
+      map(counterpartyId => planEntrySave(this.buildInput(counterpartyId), this.members(), context)),
+      switchMap(plan =>
+        executeEntrySave(this.accounting, plan).pipe(
+          // Only single-entry writes answer with an `EntryDetail` (and its `proposed_fee`).
+          map(result => ({ plan, detail: plan.kind === 'create' || plan.kind === 'update' ? (result as EntryDetail) : null })),
+        ),
+      ),
+    );
+    this.write(request, ({ plan, detail }) => {
+      const input = plan.kind === 'create' || plan.kind === 'update' ? plan.input : (plan.input.members[0] as EntryInput);
+      rememberEntryUse(input, this.amount());
+      if (detail?.proposed_fee && Number(detail.proposed_fee) > 0 && !input.fee) {
+        this.feeProposal.set({ entryId: detail.id, amount: detail.proposed_fee, input, continuous: keepGoing });
+        return;
+      }
+      this.finish(keepGoing);
+    });
   }
 
-  private resolveCounterparty(): Observable<number | null> {
-    if (!this.isParty()) {
-      return of(null);
+  /** Runs one write (null: refused before sending): `saving` until it answers, then `done` or the error line. */
+  private write<T>(request: Observable<T> | null, done: (result: T) => void): void {
+    if (!request) {
+      this.saving.set(false);
+      return;
     }
-    const name = this.counterpartyName().trim();
-    const existing = this.counterparties().find(party => party.name === name);
-    if (existing) {
-      return of(existing.id);
-    }
-    return this.accounting.createCounterparty({ name }).pipe(
-      tap(created => this.counterparties.update(list => [...list, created])),
-      map(created => created.id),
-    );
+    this.saving.set(true);
+    request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: result => {
+        this.saving.set(false);
+        done(result);
+      },
+      error: (error: unknown) => {
+        this.saving.set(false);
+        this.error.set(writeErrorMessage(error));
+      },
+    });
+  }
+
+  /** The 名稱 / 商家 / 日期 / 時間 / 專案 / 標籤 / 備註 tiles, which a transfer shares with a single entry. */
+  private sharedFields(): SharedFields {
+    return {
+      entryDate: this.entryDate(),
+      entryTime: this.entryTime(),
+      postedDate: this.postedDate(),
+      name: this.name(),
+      merchant: this.merchant(),
+      description: this.description(),
+      projectId: this.projectId(),
+      tags: this.tags(),
+    };
   }
 
   private buildInput(counterpartyId: number | null): EntryInput {
-    const kind = this.kind() as WritableEntryKind;
-    const account = this.account()!;
-    const amount = this.amount()!;
-    const fx = this.fx();
-    const party = this.isParty();
-    const text = (value: string) => value.trim() || null;
     const offered = new Set(this.offeredRules().map(rule => rule.id));
-    const posted = this.postedDate();
-    const base = {
-      account_id: account.id,
-      kind,
-      entry_date: this.entryDate(),
-      entry_time: this.entryTime() || null,
-      posted_date: posted && posted !== this.entryDate() ? posted : null,
-      category_id: this.category()?.id ?? null,
-      project_id: this.projectId(),
-      name: text(this.name()),
-      merchant: party ? null : text(this.merchant()),
-      counterparty_id: party ? counterpartyId : null,
-      description: text(this.description()),
-      tags: this.tags(),
-      invoice_number: text(this.invoiceNumber()),
-      invoice_random: text(this.invoiceRandom()),
+    return buildEntryInput({
+      ...this.sharedFields(),
+      kind: this.kind() as WritableEntryKind,
+      account: this.account()!,
+      amount: this.amount()!,
+      fx: this.fx(),
+      categoryId: this.category()?.id ?? null,
+      invoiceNumber: this.invoiceNumber(),
+      invoiceRandom: this.invoiceRandom(),
       fee: this.fee(),
       discount: this.discount(),
-      reward_rule_ids: this.accountDetail() ? this.ruleIds().filter(id => offered.has(id)) : this.ruleIds(),
-    };
-    if (fx) {
-      const manualAmount =
-        !fx.use_online && fx.manual === 'amount' && fx.amount
-          ? String(roundHalfAway(Number(fx.amount), currencyDecimals(account.currency)))
-          : null;
-      const manualRate = !fx.use_online && fx.manual === 'rate' ? fx.fx_rate : null;
-      return {
-        ...base,
-        amount: manualAmount,
-        original_amount: String(amount),
-        original_currency: fx.original_currency,
-        fx_rate: manualRate,
-      };
-    }
-    return { ...base, amount: String(amount), original_amount: null, original_currency: null, fx_rate: null };
-  }
-
-  private rememberUse(input: EntryInput): void {
-    if (input.category_id === null) {
-      return;
-    }
-    writeLastUse(input.category_id, { account_id: input.account_id, project_id: input.project_id });
-    const amount = this.amount();
-    if (amount !== null) {
-      recordAmount(input.category_id, amount);
-    }
+      ruleIds: this.accountDetail() ? this.ruleIds().filter(id => offered.has(id)) : this.ruleIds(),
+      counterpartyId,
+    });
   }
 
   addProposedFee(): void {
@@ -970,21 +970,14 @@ export class EntryFormComponent implements OnInit {
     if (!proposal) {
       return;
     }
-    this.saving.set(true);
-    this.accounting
-      .updateEntry(proposal.entryId, { ...proposal.input, fee: { amount: proposal.amount, name: FX_FEE_NAME } })
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: () => {
-          this.saving.set(false);
-          this.feeProposal.set(null);
-          this.finish(proposal.continuous);
-        },
-        error: (error: unknown) => {
-          this.saving.set(false);
-          this.error.set(saveErrorMessage(error));
-        },
-      });
+    const request = this.accounting.updateEntry(proposal.entryId, {
+      ...proposal.input,
+      fee: { amount: proposal.amount, name: FX_FEE_NAME },
+    });
+    this.write(request, () => {
+      this.feeProposal.set(null);
+      this.finish(proposal.continuous);
+    });
   }
 
   skipProposedFee(): void {

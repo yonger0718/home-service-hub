@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
+import { Counterparty, EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import {
   EntryValues,
@@ -13,8 +13,10 @@ import {
   emptyEntryInput,
   entryInputFromDetail,
   executeEntrySave,
+  fxFromDetail,
   loadRelatedRows,
   planEntrySave,
+  resolveCounterpartyId,
 } from './entry-save';
 
 const LUNCH = emptyEntryInput({
@@ -152,6 +154,18 @@ describe('entry save plan', () => {
     expect(done).toBe(true);
     expect(value).toEqual(NO_RELATED);
   });
+  it('resolves a typed counterparty to a known id or creates it once', () => {
+    const known = [{ id: 5, name: 'Alan', open_amounts: [] }] as Counterparty[];
+    const created: Counterparty[] = [];
+    const ids: number[] = [];
+    resolveCounterpartyId(service, ' Alan ', known, party => created.push(party)).subscribe(id => ids.push(id));
+    resolveCounterpartyId(service, 'Bob', known, party => created.push(party)).subscribe(id => ids.push(id));
+    const req = http.expectOne('/api/accounting/counterparties');
+    expect(req.request.body).toEqual({ name: 'Bob' });
+    req.flush({ id: 9, name: 'Bob', open_amounts: [] });
+    expect(ids).toEqual([5, 9]);
+    expect(created.map(party => party.id)).toEqual([9]);
+  });
 });
 
 describe('buildEntryInput', () => {
@@ -206,5 +220,22 @@ describe('buildEntryInput', () => {
       fx_rate: null,
     });
     expect(buildEntryInput({ ...VALUES, amount: 30, fx: { ...fx, manual: 'rate' } })).toMatchObject({ amount: null, fx_rate: '32.1' });
+  });
+});
+
+describe('fxFromDetail', () => {
+  it('rebuilds the FX sheet value of a foreign-currency entry and returns null otherwise', () => {
+    const base = { currency: 'TWD', amount: '-963.0000', original_amount: '-30.0000', original_currency: 'USD', fx_rate: '32.1000' };
+    expect(fxFromDetail({ ...base, fx_source: 'manual' } as unknown as EntryDetail)).toEqual({
+      original_amount: '30',
+      original_currency: 'USD',
+      fx_rate: '32.1',
+      amount: '963',
+      use_online: false,
+      manual: 'amount',
+      rate_date: null,
+    });
+    expect(fxFromDetail({ ...base, fx_source: 'fx_api' } as unknown as EntryDetail)).toMatchObject({ use_online: true, manual: null });
+    expect(fxFromDetail({ ...base, original_currency: 'TWD' } as unknown as EntryDetail)).toBeNull();
   });
 });

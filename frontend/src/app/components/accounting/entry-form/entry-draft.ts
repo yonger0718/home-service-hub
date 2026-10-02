@@ -1,5 +1,3 @@
-import { HttpErrorResponse } from '@angular/common/http';
-
 import { CategoryNode, RewardRule, WritableEntryKind } from '../../../models/accounting.model';
 import { evaluateAmount } from '../amount-math';
 
@@ -181,28 +179,4 @@ export function evalOrNull(expression: string, decimals: number): number | null 
   }
   const result = evaluateAmount(expression, decimals);
   return result.ok ? result.value : null;
-}
-
-/** Server error → one line for the form: the lock message, the 422 field message, or a generic failure. */
-export function saveErrorMessage(error: unknown): string {
-  if (error instanceof HttpErrorResponse) {
-    const body = error.error as { detail?: unknown; message?: unknown } | null;
-    const detail = body?.detail;
-    if (error.status === 409 && (detail === 'locked_until_cutover' || body?.message === 'locked_until_cutover')) {
-      return 'MOZE 匯入資料，切換後可編輯';
-    }
-    if (Array.isArray(detail) && detail.length) {
-      const first = detail[0] as { loc?: unknown[]; msg?: string };
-      const field = Array.isArray(first.loc) ? String(first.loc.at(-1) ?? '') : '';
-      return `${field} ${first.msg ?? ''}`.trim();
-    }
-    if (typeof detail === 'string') {
-      return detail;
-    }
-    // 404 / 409 bodies are rewritten by shared_lib to {"code", "message", "trace_id"}.
-    if (typeof body?.message === 'string' && body.message) {
-      return body.message;
-    }
-  }
-  return '儲存失敗，請稍後再試。';
 }

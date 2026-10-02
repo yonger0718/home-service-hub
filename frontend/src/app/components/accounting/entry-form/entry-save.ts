@@ -1,7 +1,8 @@
-import { Observable, forkJoin, map, of } from 'rxjs';
+import { Observable, forkJoin, map, of, tap } from 'rxjs';
 
 import {
   ChildInput,
+  Counterparty,
   EntryDetail,
   EntryInput,
   LedgerAccount,
@@ -13,6 +14,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { roundHalfAway } from '../amount-math';
 import { currencyDecimals } from '../format';
 import { FxValue } from '../fx-sheet/fx-sheet';
+import { recordAmount, writeLastUse } from './entry-draft';
 
 /**
  * Rows a record depends on, loaded in the same sequence as the record itself (plan-review round 2): the other members
@@ -204,6 +206,52 @@ function childFrom(children: LedgerEntry[], kind: 'fee' | 'discount'): ChildInpu
   }
   const total = matching.reduce((sum, child) => sum + Math.abs(Number(child.amount)), 0);
   return { amount: String(total), name: matching[0].name };
+}
+
+/** The FX sheet value of a loaded foreign-currency entry; null when it is in the account currency. */
+export function fxFromDetail(detail: EntryDetail): FxValue | null {
+  if (!detail.original_currency || detail.original_amount === null || detail.original_currency === detail.currency) {
+    return null;
+  }
+  const online = detail.fx_source === 'fx_api';
+  return {
+    original_amount: unsigned(detail.original_amount)!,
+    original_currency: detail.original_currency,
+    fx_rate: detail.fx_rate === null ? null : String(Number(detail.fx_rate)),
+    amount: unsigned(detail.amount),
+    use_online: online,
+    manual: online ? null : 'amount',
+    rate_date: null,
+  };
+}
+
+/** The id for a typed counterparty name: a known row, else one created now (handed to `created`). */
+export function resolveCounterpartyId(
+  service: AccountingService,
+  typed: string,
+  known: Counterparty[],
+  created: (party: Counterparty) => void,
+): Observable<number> {
+  const name = typed.trim();
+  const existing = known.find(party => party.name === name);
+  if (existing) {
+    return of(existing.id);
+  }
+  return service.createCounterparty({ name }).pipe(
+    tap(created),
+    map(party => party.id),
+  );
+}
+
+/** After a save: this device's last account / project and quick-amount history for the category. */
+export function rememberEntryUse(input: EntryInput, amount: number | null): void {
+  if (input.category_id === null) {
+    return;
+  }
+  writeLastUse(input.category_id, { account_id: input.account_id, project_id: input.project_id });
+  if (amount !== null) {
+    recordAmount(input.category_id, amount);
+  }
 }
 
 /** A loaded entry (detail shape) as an editable, unsigned `EntryInput`. */

@@ -219,4 +219,22 @@ describe('TransferPanelComponent', () => {
     fixture.detectChanges();
     expect(el.querySelector('.sheet')).toBeNull();
   });
+  it('clears amounts, fees and errors on reset but keeps the accounts and category', async () => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(2, '日幣現金', 'JPY', '53635')]);
+    const panel = fixture.componentInstance;
+    type(fixture, '.out-amount', '10000');
+    panel.setChild('out', 'fee', '15');
+    panel.categoryId.set(33);
+    panel.setTo('1');
+    expect(panel.submit(COMMON, null)).toBeNull();
+
+    panel.setTo('2');
+    panel.reset();
+    fixture.detectChanges();
+
+    expect(panel.outText()).toBe('');
+    expect(panel.children().out.fee).toBe('');
+    expect(panel.error()).toBeNull();
+    expect([panel.fromId(), panel.toId(), panel.categoryId()]).toEqual([1, 2, 33]);
+  });
 });

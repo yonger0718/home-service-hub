@@ -3,7 +3,7 @@ import { ChangeDetectionStrategy, Component, computed, inject, input, model, sig
 import { CategoryNode, Counterparty, EntryInput, LedgerAccount } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { amountString, parseAmountText } from '../amount-text';
-import { emptyEntryInput } from '../entry-form/entry-save';
+import { emptyEntryInput, resolveCounterpartyId } from '../entry-form/entry-save';
 import { formatAmount } from '../format';
 import { sheetKey } from '../transfer-panel/transfer-panel';
 
@@ -140,21 +140,13 @@ export class SplitLinesComponent {
       finish(null);
       return;
     }
-    const name = this.draftCounterparty().trim();
-    if (!name) {
+    if (!this.draftCounterparty().trim()) {
       this.error.set('應收／應付需要對象');
       return;
     }
-    const existing = this.counterparties().find(candidate => candidate.name === name);
-    if (existing) {
-      finish(existing.id);
-      return;
-    }
-    this.service.createCounterparty({ name }).subscribe({
-      next: created => {
-        this.counterparties.update(list => [...list, created]);
-        finish(created.id);
-      },
+    const created = (party: Counterparty) => this.counterparties.update(list => [...list, party]);
+    resolveCounterpartyId(this.service, this.draftCounterparty(), this.counterparties(), created).subscribe({
+      next: finish,
       error: () => this.error.set('無法新增對象'),
     });
   }

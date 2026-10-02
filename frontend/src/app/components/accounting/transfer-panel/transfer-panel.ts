@@ -250,6 +250,16 @@ export class TransferPanelComponent implements OnInit {
     return value === null ? null : { amount: amountString(value, account.currency), name };
   }
 
+  /** 連續記帳: a fresh transfer between the same accounts in the same category. */
+  reset(): void {
+    this.outText.set('');
+    this.inText.set('');
+    this.children.set({ out: EMPTY_CHILDREN, in: EMPTY_CHILDREN });
+    this.sheet.set(null);
+    this.activeSide.set(null);
+    this.error.set(null);
+  }
+
   /** The request body, or null (with `error` set) when the panel is incomplete. */
   buildInput(common: TransferCommon): TransferInput | null {
     const from = this.from();

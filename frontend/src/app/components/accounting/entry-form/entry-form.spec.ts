@@ -12,7 +12,7 @@ import { MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'v
 import { EntryDetail, Project } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
-import { makeAccount, makeAccountDetail, makeCategory, makeEntryDetail, makePreference } from '../testing/fixtures';
+import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetail, makePreference } from '../testing/fixtures';
 import { EntryFormComponent, NO_RELATED, RelatedLoad } from './entry-form';
 
 /** Stands in for the timeline so the form's real `navigateByUrl('/accounting')` (leave()) has somewhere to land. */
@@ -34,6 +34,17 @@ const LUNCH = makeCategory({ id: 12, parent_id: 1, name: '午餐', default_accou
 const FOOD = makeCategory({ id: 1, name: '飲食', icon: '🍜', color: '#f0cd92', children: [LUNCH] });
 const SALARY = makeCategory({ id: 30, kind: 'income', name: '薪水', icon: '💰', default_account_id: 2 });
 const OLD_CARD = makeAccount({ id: 3, name: '舊卡', is_archived: true });
+const SPLIT_GROUP = { id: 4, kind: 'split' as const, name: null, count: 2, total: '-300.0000', currency: 'TWD' };
+const SPLIT_SEVEN = makeEntryDetail({
+  id: 7,
+  account_id: 2,
+  category_id: 12,
+  name: '聚餐',
+  amount: '-200.0000',
+  group: SPLIT_GROUP,
+  group_members: [makeEntry({ id: 7 }), makeEntry({ id: 8 })],
+});
+const SPLIT_EIGHT = makeEntryDetail({ id: 8, account_id: 2, category_id: 12, name: '代墊', amount: '-100.0000', group: SPLIT_GROUP });
 
 describe('EntryFormComponent', () => {
   let httpMock: HttpTestingController;
@@ -531,5 +542,202 @@ describe('EntryFormComponent', () => {
 
     httpMock.expectNone(r => r.method === 'POST' || r.method === 'PUT');
     expect(text(el.querySelector('.form-error'))).toBe('記錄未載入，無法儲存');
+  });
+
+  it('does not save a split until its members have loaded', async () => {
+    const { el, left } = await open('/accounting/entries/7/edit');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    const save = el.querySelector('button.save') as HTMLButtonElement;
+    respond('/api/accounting/entries/7', SPLIT_SEVEN);
+
+    // The detail is in, its other member (entry 8) is not: the record is still loading.
+    expect(save.disabled).toBe(true);
+    form.save(false);
+    settle();
+    httpMock.expectNone(r => r.method === 'PUT' || r.method === 'POST');
+
+    respond('/api/accounting/entries/8', SPLIT_EIGHT);
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    expect(save.disabled).toBe(false);
+    expect(form.members().length).toBe(1);
+    expect(el.querySelectorAll('app-split-lines .member').length).toBe(1);
+    save.click();
+    settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT');
+    expect(put.request.url).toBe('/api/accounting/splits/4');
+    expect(put.request.body.members.length).toBe(2);
+    put.flush({});
+    settle();
+    expect(left()).toBe(true);
+  });
+
+  it('drops member responses that belong to a previous entry', async () => {
+    const { el } = await open('/accounting/entries/7/edit');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    httpMock.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/entries/7').flush(SPLIT_SEVEN);
+    settle();
+    const memberRequests = httpMock.match(r => r.method === 'GET' && r.url === '/api/accounting/entries/8');
+    expect(memberRequests.length).toBe(1);
+
+    await harness.navigateByUrl('/accounting/entries/9/edit');
+    settle();
+    respond(
+      '/api/accounting/entries/9',
+      makeEntryDetail({ id: 9, account_id: 2, category_id: 12, name: '晚餐', amount: '-250.0000' }),
+    );
+    // Entry 7's member answers last. switchMap has unsubscribed it; if it were still live, the loadId guard drops it.
+    memberRequests.filter(request => !request.cancelled).forEach(request => request.flush(SPLIT_EIGHT));
+    settle();
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('晚餐');
+    expect(form.members()).toEqual([]);
+    expect(form.groupId()).toBeNull();
+    expect(el.querySelector('app-split-lines .member')).toBeNull();
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT');
+    expect(put.request.url).toBe('/api/accounting/entries/9');
+    put.flush(makeEntryDetail({ id: 9 }));
+    settle();
+  });
+  /** The transfer panel's own category request carries `kind=transfer_out`; the form asks for the same tree. */
+  function respondTransferCategories(): void {
+    respond('/api/accounting/categories', [makeCategory({ id: 40, kind: 'transfer_out', name: '轉帳', icon: '⇄' })]);
+  }
+
+  function typeInto(el: HTMLElement, selector: string, value: string): void {
+    const input = el.querySelector(selector) as HTMLInputElement;
+    input.value = value;
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('blur'));
+    settle();
+  }
+
+  it('records a transfer from the 轉帳 tab with the shared name and date tiles', async () => {
+    const { el, left } = await open('/accounting/entry?kind=transfer');
+    respondTransferCategories();
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+
+    expect(el.querySelector('app-category-picker')).toBeNull();
+    expect(el.querySelector('.account-select')).toBeNull();
+    typeInto(el, 'app-transfer-panel .out-amount', '3000');
+    typeInto(el, '.name-input', ' 繳卡費 ');
+    expect((el.querySelector('app-transfer-panel .in-amount') as HTMLInputElement).value).toBe('3000');
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const req = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/transfers');
+    expect(req.request.body).toMatchObject({
+      from_account_id: 1,
+      to_account_id: 2,
+      out_amount: '3000',
+      in_amount: '3000',
+      category_id: 40,
+      name: '繳卡費',
+      entry_date: '2026-10-02',
+      entry_time: '14:42',
+      reward_rule_ids: [],
+    });
+    req.flush({ transfer_group_id: 'g-1', out_entry_id: 1, in_entry_id: 2 });
+    settle();
+    expect(left()).toBe(true);
+  });
+
+  it('saves once on ⏎ in the transfer amount and keeps the form on a panel validation error', async () => {
+    const { el } = await open('/accounting/entry?kind=transfer');
+    respondTransferCategories();
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+
+    const out = el.querySelector('app-transfer-panel .out-amount') as HTMLInputElement;
+    out.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    settle();
+    httpMock.expectNone(r => r.method === 'POST');
+    expect(el.querySelector('.transfer-error')?.textContent).toContain('請輸入轉出金額');
+    expect((el.querySelector('button.save') as HTMLButtonElement).disabled).toBe(false);
+
+    out.value = '500';
+    out.dispatchEvent(new Event('input'));
+    out.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    settle();
+    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/transfers').flush({});
+    settle();
+  });
+
+  it('starts the next transfer blank after ⇧⏎ (連續記帳)', async () => {
+    const { el, left } = await open('/accounting/entry?kind=transfer');
+    respondTransferCategories();
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    typeInto(el, 'app-transfer-panel .out-amount', '800');
+
+    const out = el.querySelector('app-transfer-panel .out-amount') as HTMLInputElement;
+    out.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+    settle();
+    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/transfers').flush({});
+    settle();
+
+    expect(left()).toBe(false);
+    expect(text(el.querySelector('.kind-tab.on'))).toBe('轉帳');
+    expect((el.querySelector('app-transfer-panel .out-amount') as HTMLInputElement).value).toBe('');
+  });
+
+  it('edits both legs of a loaded transfer and saves them with PUT', async () => {
+    const { el, left } = await open('/accounting/entries/8/edit');
+    const inLeg = makeEntryDetail({
+      id: 8,
+      kind: 'transfer_in',
+      account_id: 2,
+      amount: '5000.0000',
+      category_id: 40,
+      name: '繳卡費',
+      transfer_group_id: 'g-7',
+      transfer_counterpart: makeEntry({ id: 7, kind: 'transfer_out', account_id: 1 }),
+    });
+    respond('/api/accounting/entries/8', inLeg);
+    respond('/api/accounting/entries/7', { ...inLeg, id: 7, kind: 'transfer_out', account_id: 1, amount: '-5000.0000' });
+    respondTransferCategories();
+
+    expect(text(el.querySelector('.kind-tab.on'))).toBe('轉帳');
+    const tabs = Array.from(el.querySelectorAll<HTMLButtonElement>('.kind-tab'));
+    expect(tabs.filter(tab => tab.disabled).map(tab => text(tab))).toEqual(['支出', '收入', '應收款項', '應付款項', '系統']);
+    expect((el.querySelector('app-transfer-panel .from-select') as HTMLSelectElement).value).toBe('1');
+    expect((el.querySelector('app-transfer-panel .out-amount') as HTMLInputElement).value).toBe('5000');
+    expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('繳卡費');
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT');
+    expect(put.request.url).toBe('/api/accounting/transfers/g-7');
+    expect(put.request.body).toMatchObject({ from_account_id: 1, to_account_id: 2, out_amount: '5000', category_id: 40 });
+    put.flush({});
+    settle();
+    expect(left()).toBe(true);
+  });
+
+  it('refuses to save an edited transfer leg whose counterpart is missing', async () => {
+    const { el } = await open('/accounting/entries/8/edit');
+    respond(
+      '/api/accounting/entries/8',
+      makeEntryDetail({ id: 8, kind: 'transfer_in', account_id: 2, amount: '5000.0000', transfer_group_id: 'g-7' }),
+    );
+    respondTransferCategories();
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    httpMock.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+    expect(el.querySelector('.form-error')?.textContent).toContain('找不到轉帳的另一筆');
+  });
+
+  it('does not offer split lines when editing a single entry', async () => {
+    const { el } = await open('/accounting/entries/9/edit');
+    respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, category_id: 12, amount: '-250.0000' }));
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    expect((el.querySelector('app-split-lines .add') as HTMLButtonElement).disabled).toBe(true);
   });
 });
