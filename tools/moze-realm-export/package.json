@@ -1,0 +1,17 @@
+{
+  "name": "moze-realm-export",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Convert a MOZE backup zip (moze.realm) into one JSON document for the accounting importer",
+  "type": "commonjs",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "realm": "12.13.1"
+  }
+}
