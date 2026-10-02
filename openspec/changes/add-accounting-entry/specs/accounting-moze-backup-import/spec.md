@@ -33,9 +33,9 @@ Each `AHRecord` SHALL map to ledger entries by its `type`:
 | 1 | `income` | `price` |
 | 2 | `transfer_out` when `isTransferIn` is false, else `transfer_in` | `price` |
 | 3 | `receivable` | `price` |
-| 5 | `receivable` (a collection; `settles_entry_id` per "Links") | `price` |
+| 5 | `receivable` (a collection; `is_settlement = true`; `settles_entry_id` per "Links") | `price` |
 | 4 | `payable` | `price` |
-| 6 | `payable` (a repayment) | `price` |
+| 6 | `payable` (a repayment; `is_settlement = true`) | `price` |
 | 7 | `balance_adjustment` | `price` |
 | 12, 16 | `fee` | `price` |
 | 13 | `discount` | `price` |
