@@ -26,3 +26,8 @@ def test_health_routes_are_registered_once():
     ]
 
     assert len(health_routes) == 2
+
+
+def test_legacy_accounting_routes_are_removed(client: TestClient):
+    for path in ("/transactions/", "/categories/", "/cards/", "/payment-methods/", "/recurring/subscriptions"):
+        assert client.get(path).status_code == 404, path

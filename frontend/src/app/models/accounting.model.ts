@@ -1,199 +1,106 @@
-export type TransactionType = 'EXPENSE' | 'INCOME';
+export type EntryKind =
+  | 'expense'
+  | 'income'
+  | 'transfer_out'
+  | 'transfer_in'
+  | 'receivable'
+  | 'payable'
+  | 'balance_adjustment'
+  | 'fee'
+  | 'discount'
+  | 'reward'
+  | 'interest'
+  | 'refund';
 
-export interface Category {
+export interface LedgerAccount {
   id: number;
   name: string;
-  color: string;
+  currency: string;
+  opening_balance: string;
+  balance: string;
+  entry_count: number;
 }
 
-export interface PaymentMethod {
+export interface LedgerEntry {
   id: number;
-  name: string;
-  isActive: boolean;
+  kind: EntryKind;
+  amount: string;
+  currency: string;
+  original_amount: string | null;
+  original_currency: string | null;
+  fx_rate: string | null;
+  fx_source: 'fx_api' | 'moze_backup' | null;
+  entry_date: string;
+  entry_time: string | null;
+  category: string | null;
+  project: string | null;
+  name: string | null;
+  merchant: string | null;
+  counterparty: string | null;
+  description: string | null;
+  tags: string[];
+  parent_entry_id: number | null;
+  transfer_group_id: string | null;
+  needs_review: boolean;
+  running_balance: string;
 }
 
-export interface CreditCard {
-  id: number;
-  name: string;
-  billingDay: number;
-  rewardCycleType: string;
-  alertThreshold: number;
-  defaultPaymentMethod?: string;
-}
-
-export interface CreditCardCreate {
-  name: string;
-  billingDay: number;
-  rewardCycleType: string;
-  alertThreshold: number;
-  defaultPaymentMethod?: string;
-}
-
-export interface Transaction {
-  id: number;
-  date: string;
-  categoryId: number;
-  categoryName: string;
-  item: string;
-  paidAmount: number;
-  transactionAmount: number;
-  refundableAmount?: number;
-  transactionType: TransactionType;
-  paymentMethod: string;
-  cardId?: number;
-  cardName?: string;
-  note?: string;
-  relatedTransactionId?: number;
-  createdAt?: string;
-}
-
-export interface TransactionCreate {
-  date: string;
-  categoryId: number;
-  item: string;
-  paidAmount: number;
-  transactionAmount: number;
-  transactionType: TransactionType;
-  paymentMethod: string;
-  cardId?: number;
-  note?: string;
-}
-
-export interface CategorySummary {
-  category: string;
-  amount: number;
-  percentage: number;
-}
-
-export interface PaymentMethodSummary {
-  method: string;
-  amount: number;
-}
-
-export interface MonthlyReportSummary {
-  totalIncome: number;
-  totalExpense: number;
-  surplus: number;
-  savingsRate: number;
-}
-
-export interface CardUsageSummary {
-  cardName: string;
-  billingCycleStart: string;
-  billingCycleEnd: string;
-  currentUsage: number;
-  alertThreshold: number;
-  usagePercentage: number;
-  remainingToThreshold: number;
-  isNearLimit: boolean;
-  isOverLimit: boolean;
-}
-
-export interface MonthlyReport {
-  period: string;
-  summary: MonthlyReportSummary;
-  expenseBreakdown: CategorySummary[];
-  paymentBreakdown: PaymentMethodSummary[];
-  topExpenses: Transaction[];
-}
-
-export interface CategoryDeltaSummary {
-  category: string;
-  currentAmount: number;
-  previousAmount: number;
-  deltaAmount: number;
-  deltaPercent: number;
-  status: 'up' | 'down' | 'new' | 'gone' | 'flat';
-}
-
-export interface MonthlyCompareSummary {
-  totalExpenseDelta: number;
-  topIncreaseCategory?: string | null;
-  topDecreaseCategory?: string | null;
-}
-
-export interface MonthlyCompareReport {
-  period: string;
-  baselinePeriod: string;
-  categories: CategoryDeltaSummary[];
-  summary: MonthlyCompareSummary;
-}
-
-export interface AnnualTrendPoint {
-  month: string;
-  totalIncome: number;
-  totalExpense: number;
-  surplus: number;
-}
-
-export interface AnnualCategoryTrend {
-  category: string;
-  monthlyAmounts: number[];
+export interface EntryPage {
+  items: LedgerEntry[];
   total: number;
-  average: number;
+  limit: number;
+  offset: number;
 }
 
-export interface AnnualReportSummary {
-  totalIncome: number;
-  totalExpense: number;
-  surplus: number;
-  savingsRate: number;
-  highestExpenseMonth: string | null;
-  lowestExpenseMonth: string | null;
+export interface EntryQuery {
+  limit?: number;
+  offset?: number;
+  kind?: EntryKind | null;
+  date_from?: string | null;
+  date_to?: string | null;
 }
 
-export interface AnnualReport {
-  year: number;
-  monthlyTrend: AnnualTrendPoint[];
-  categoryTrend: AnnualCategoryTrend[];
-  summary: AnnualReportSummary;
+export interface UnpairedTransfer {
+  row: number;
+  account: string;
+  kind: EntryKind;
+  date: string;
+  time: string | null;
+  amount: string;
+  currency: string;
 }
 
-export interface Subscription {
-  id: number;
-  name: string;
-  amount: number;
-  categoryId: number;
-  categoryName: string;
-  subType: 'FIXED_EXPENSE' | 'SUBSCRIPTION';
-  paymentMethod?: string;
-  dayOfMonth: number;
-  cardId?: number;
-  cardName?: string;
-  active: boolean;
+export interface ImportSummary {
+  kind_counts?: Record<string, number>;
+  accounts_created?: string[];
+  accounts_archived?: string[];
+  accounts_renamed?: { from: string; to: string }[];
+  unpaired_transfers?: UnpairedTransfer[];
+  error?: string;
 }
 
-export interface SubscriptionCreate {
-  name: string;
-  amount: number;
-  categoryId: number;
-  subType: 'FIXED_EXPENSE' | 'SUBSCRIPTION';
-  paymentMethod?: string;
-  dayOfMonth: number;
-  cardId?: number;
-  active: boolean;
+export interface ImportRun {
+  id: number | null;
+  status: 'running' | 'succeeded' | 'failed' | 'dry_run';
+  started_at: string;
+  finished_at: string | null;
+  file_name: string;
+  file_sha256: string;
+  row_count: number | null;
+  summary: ImportSummary | null;
 }
 
-export interface Installment {
-  id: number;
-  name: string;
-  totalAmount: number;
-  monthlyAmount: number;
-  paymentMethod?: string;
-  totalPeriods: number;
-  remainingPeriods: number;
-  startDate: string;
-  cardId?: number;
-  cardName?: string;
-}
-
-export interface InstallmentCreate {
-  name: string;
-  totalAmount: number;
-  monthlyAmount: number;
-  paymentMethod?: string;
-  totalPeriods: number;
-  remainingPeriods: number;
-  startDate: string;
-  cardId?: number;
-}
+export const ENTRY_KIND_LABELS: Record<EntryKind, string> = {
+  expense: '支出',
+  income: '收入',
+  transfer_out: '轉出',
+  transfer_in: '轉入',
+  receivable: '應收款項',
+  payable: '應付款項',
+  balance_adjustment: '餘額調整',
+  fee: '手續費',
+  discount: '折扣',
+  reward: '紅利回饋',
+  interest: '利息',
+  refund: '退款',
+};

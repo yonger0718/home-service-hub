@@ -1,0 +1,80 @@
+.ledger-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.import-status {
+  color: var(--app-text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.import-status--failed,
+.load-error {
+  color: var(--app-danger);
+}
+
+.account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.account-row {
+  align-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: 0.75rem;
+  color: var(--app-text);
+  display: grid;
+  gap: 0.15rem 0.75rem;
+  grid-template-areas:
+    'name balance'
+    'meta balance';
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0.75rem 1rem;
+  text-decoration: none;
+}
+
+.account-name {
+  font-weight: 800;
+  grid-area: name;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-meta {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  grid-area: meta;
+}
+
+.account-balance {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  grid-area: balance;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.amount--negative {
+  color: var(--app-danger);
+}
+
+.empty-state {
+  color: var(--app-text-muted);
+  padding: 2rem 1rem;
+  text-align: center;
+
+  code {
+    overflow-wrap: anywhere;
+  }
+}

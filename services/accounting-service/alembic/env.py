@@ -6,15 +6,11 @@ from sqlalchemy import engine_from_config, pool
 from app.database import SQLALCHEMY_DATABASE_URL
 from app.database import Base
 
-# Import all models so Base.metadata knows about them
-import app.models.transaction  # noqa: F401
-import app.models.card  # noqa: F401
-import app.models.category  # noqa: F401
-import app.models.payment_method  # noqa: F401
-import app.models.recurring  # noqa: F401
+import app.models  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", SQLALCHEMY_DATABASE_URL)
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", SQLALCHEMY_DATABASE_URL)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

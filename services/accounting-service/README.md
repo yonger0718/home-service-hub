@@ -1,47 +1,42 @@
-# Agent Accounting Service
+Accounting Service
+==================
 
-This is a FastAPI-based service for AI agent bookkeeping.
+FastAPI service holding the MOZE-based personal ledger: accounts, categories, projects and ledger entries.
 
-## Setup
+Setup
+-----
 
-1. Create a virtual environment:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows use `.venv\Scripts\activate`
-   ```
+    uv venv --python 3.13 .venv
+    uv pip install --python .venv/bin/python -r requirements.txt
+    .venv/bin/alembic upgrade head
+    .venv/bin/uvicorn app.main:app --port 8000
 
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Configuration comes from the repository root `.env` (`POSTGRES_*`, `DB_HOST`, `ACCOUNTING_DB`, OpenTelemetry variables).
+Set `ACCOUNTING_IMPORT_LOCKED=true` after the cutover to refuse every further MOZE import.
+Imports with foreign-currency rows need outbound HTTPS to `cdn.jsdelivr.net` (fallback `currency-api.pages.dev`) for daily rates; fetched rates are cached in the `fx_rate` table and never cleared.
 
-3. Configure environment variables:
-   - Copy `.env.example` to `.env`
-   - Update `DATABASE_URL` with your PostgreSQL credentials.
+MOZE import
+-----------
 
-4. Run the application:
-   ```bash
-   uvicorn app.main:app --reload
-   ```
+    .venv/bin/python -m app.services.moze_import_service <export.csv> --dry-run
+    .venv/bin/python -m app.services.moze_import_service <export.csv> [--rename OLD=NEW ...]
 
-## Migrations
+An import replaces every `moze_import` entry in one transaction and records an `import_run`.
+Only one import runs at a time (PostgreSQL advisory lock); a second one is refused.
 
-- Empty databases are bootstrapped with `alembic upgrade head`.
-- Existing databases are handled conservatively by the baseline revision: it creates any missing accounting tables and only removes legacy columns when they are actually present, so running `alembic upgrade head` does not drop or recreate live tables.
-- Revision `8a4c4f9b2d1b` backfills `transactions.category_id` and `subscriptions.category_id`, drops the legacy string `category` columns, and keeps category display data derived from the `categories` table.
-- To inspect the current revision before upgrading, run:
-   ```bash
-   alembic current
-   ```
+API
+---
 
-## Category Contract
+Paths inside the service; the dev proxy and Caddy add the `/api/accounting` prefix.
 
-- Transaction and subscription create payloads must provide `categoryId`.
-- API responses expose `categoryId` and `categoryName`; they no longer expose a top-level `category` string field.
-- Category rename and merge flows update only foreign keys and read display names from the joined category relation.
+- `GET /accounts`
+- `GET /accounts/{id}/entries?limit=50&offset=0&kind=&date_from=&date_to=`
+- `POST /imports/moze` (multipart `file`, optional `renames` JSON object, `?dry_run=true`)
+- `GET /imports/latest`
 
-## API Documentation
+Tests
+-----
 
-Once the server is running, you can access:
-- Swagger UI: http://127.0.0.1:8000/docs
-- ReDoc: http://127.0.0.1:8000/redoc
+    .venv/bin/pytest
+
+Integration tests create a throw-away database `accounting_test_<random>` on the Postgres server named in the root `.env` and drop it afterwards.

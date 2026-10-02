@@ -1,7 +1,10 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { AccountingService } from './accounting.service';
-import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { ImportRun } from '../models/accounting.model';
+import { AccountingService } from './accounting.service';
 
 describe('AccountingService', () => {
   let service: AccountingService;
@@ -9,74 +12,51 @@ describe('AccountingService', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      imports: [HttpClientTestingModule],
-      providers: [AccountingService]
+      providers: [provideHttpClient(), provideHttpClientTesting()],
     });
     service = TestBed.inject(AccountingService);
     httpMock = TestBed.inject(HttpTestingController);
   });
 
-  it('應正確獲取月度報表', () => {
-    const mockReport = {
-      period: '2026-02',
-      summary: {
-        totalIncome: 10000,
-        totalExpense: 5000,
-        surplus: 5000,
-        savingsRate: 50
-      },
-      expenseBreakdown: [
-        { category: 'Food', amount: 3000, percentage: 60 },
-        { category: 'Transport', amount: 2000, percentage: 40 }
-      ],
-      topExpenses: []
-    };
+  afterEach(() => httpMock.verify());
 
-    service.getMonthlyReport(2026, 2).subscribe(report => {
-      expect(report.summary.totalIncome).toBe(10000);
-      expect(report.expenseBreakdown.length).toBe(2);
-      expect(report.expenseBreakdown[0].category).toBe('Food');
-    });
+  it('lists accounts', () => {
+    let names: string[] = [];
+    service.getAccounts().subscribe(accounts => (names = accounts.map(a => a.name)));
 
-    const req = httpMock.expectOne('/api/accounting/transactions/report/2026/2');
-    expect(req.request.method).toBe('GET');
-    req.flush(mockReport);
+    httpMock.expectOne('/api/accounting/accounts').flush([
+      { id: 1, name: '錢包', currency: 'TWD', opening_balance: '0', balance: '10', entry_count: 1 },
+    ]);
+
+    expect(names).toEqual(['錢包']);
   });
 
-  it('應正確獲取年度報表', () => {
-    const mockAnnualReport = {
-      year: 2026,
-      monthlyTrend: [
-        { month: '2026-01', totalIncome: 50000, totalExpense: 32000, surplus: 18000 },
-        { month: '2026-02', totalIncome: 48000, totalExpense: 30000, surplus: 18000 }
-      ],
-      categoryTrend: [
-        {
-          category: '餐飲',
-          monthlyAmounts: [3200, 2800, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-          total: 6000,
-          average: 500
-        }
-      ],
-      summary: {
-        totalIncome: 98000,
-        totalExpense: 62000,
-        surplus: 36000,
-        savingsRate: 36.7,
-        highestExpenseMonth: '2026-01',
-        lowestExpenseMonth: '2026-02'
-      }
-    };
+  it('sends only the set entry query parameters', () => {
+    service.getEntries(7, { limit: 50, offset: 100, kind: 'expense', date_from: null }).subscribe();
 
-    service.getAnnualReport(2026).subscribe(report => {
-      expect(report.year).toBe(2026);
-      expect(report.monthlyTrend[0].totalExpense).toBe(32000);
-      expect(report.categoryTrend[0].category).toBe('餐飲');
-      expect(report.summary.highestExpenseMonth).toBe('2026-01');
-    });
+    const req = httpMock.expectOne(r => r.url === '/api/accounting/accounts/7/entries');
+    expect(req.request.params.keys().sort()).toEqual(['kind', 'limit', 'offset']);
+    expect(req.request.params.get('offset')).toBe('100');
+    req.flush({ items: [], total: 0, limit: 50, offset: 100 });
+  });
 
-    const req = httpMock.expectOne('/api/accounting/transactions/report/annual/2026');
-    expect(req.request.method).toBe('GET');
-    req.flush(mockAnnualReport);
+  it('maps a 404 from imports/latest to null', () => {
+    let latest: ImportRun | null | undefined;
+    service.getLatestImport().subscribe(run => (latest = run));
+
+    httpMock
+      .expectOne('/api/accounting/imports/latest')
+      .flush({ code: 404, message: 'no import has run yet' }, { status: 404, statusText: 'Not Found' });
+
+    expect(latest).toBeNull();
+  });
+
+  it('propagates other errors from imports/latest', () => {
+    let failed = false;
+    service.getLatestImport().subscribe({ error: () => (failed = true) });
+
+    httpMock.expectOne('/api/accounting/imports/latest').flush('boom', { status: 500, statusText: 'Error' });
+
+    expect(failed).toBe(true);
   });
 });
