@@ -53,6 +53,7 @@ import { FeeSheetComponent } from '../fee-sheet/fee-sheet';
 import { currencyDecimals, formatMoney, formatNumber } from '../format';
 import { FxSheetComponent, FxValue } from '../fx-sheet/fx-sheet';
 import { writeErrorMessage } from '../http-errors';
+import { AccountingShortcutsService } from '../keyboard-shortcuts';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { SplitLinesComponent } from '../split-lines/split-lines';
 import { TransferPanelComponent } from '../transfer-panel/transfer-panel';
@@ -317,6 +318,10 @@ export class EntryFormComponent implements OnInit {
     }
     return this.category() ? '' : '先選類別，帳戶與專案會帶入上次使用的設定';
   });
+
+  private readonly shortcutCommands = inject(AccountingShortcutsService)
+    .entryCommands.pipe(takeUntilDestroyed())
+    .subscribe(command => (command === 'cancel' ? this.cancel() : this.save(command === 'save-continue')));
 
   constructor() {
     toObservable(this.categoryKind)

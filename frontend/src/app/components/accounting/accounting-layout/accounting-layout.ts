@@ -19,6 +19,7 @@ import { filter } from 'rxjs';
 
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
+import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
 export interface LayoutRouteState {
   /** `data.list` of the matched wide route: the page shown in the left pane. */
@@ -59,13 +60,15 @@ const SWIPE_CLOSE_PX = 80;
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '(document:keydown.escape)': 'onEscape($event)' },
+  host: { '(document:keydown.escape)': 'onEscape($event)', '(document:keydown)': 'onShortcutKey($event)' },
 })
 export class AccountingLayoutComponent {
   private readonly router = inject(Router);
   private readonly layoutMode = inject(LayoutModeService);
   private readonly document = inject(DOCUMENT);
   private readonly injector = inject(Injector);
+  private readonly shortcuts = inject(AccountingShortcutsService);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
 
   readonly mode = this.layoutMode.mode;
@@ -147,6 +150,39 @@ export class AccountingLayoutComponent {
     }
     event.preventDefault();
     this.close();
+  }
+
+  /** Global accounting shortcuts. Acts (and marks the event handled) only when no other handler has. */
+  onShortcutKey(event: KeyboardEvent): void {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    const target = event.target as HTMLElement | null;
+    const targetTag = target?.isContentEditable ? 'TEXTAREA' : (target?.tagName ?? null);
+    const action = resolveShortcut(event, { url: this.router.url, targetTag: targetTag === 'BODY' ? null : targetTag });
+    if (!action) {
+      return;
+    }
+    event.preventDefault();
+    if (action.type === 'navigate') {
+      void this.router.navigate(action.commands);
+    } else if (action.type === 'entry') {
+      this.shortcuts.entryCommands.next(action.command);
+    } else {
+      this.moveSelection(action.delta);
+    }
+  }
+
+  private moveSelection(delta: 1 | -1): void {
+    const rows = Array.from(this.host.nativeElement.querySelectorAll<HTMLElement>('[data-entry-id]'));
+    if (rows.length === 0) {
+      return;
+    }
+    const current = /^\/accounting\/entries\/(\d+)/.exec(this.router.url)?.[1];
+    const index = rows.findIndex(row => row.dataset['entryId'] === current);
+    const next = rows[index === -1 ? 0 : Math.min(rows.length - 1, Math.max(0, index + delta))];
+    next.scrollIntoView?.({ block: 'nearest' });
+    void this.router.navigate(['/accounting/entries', Number(next.dataset['entryId'])]);
   }
 
   private focusSheet(): void {
