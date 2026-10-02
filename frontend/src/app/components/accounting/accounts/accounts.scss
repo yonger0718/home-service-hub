@@ -46,6 +46,8 @@
   width: 100%;
 
   b { color: var(--app-text); font-variant-numeric: tabular-nums; }
+  .grp-total { align-items: baseline; display: flex; gap: 6px; min-width: 0; }
+  .partial-hint { font-size: 0.62rem; font-weight: 700; white-space: nowrap; }
 }
 
 .acc-row {

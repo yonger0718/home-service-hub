@@ -249,9 +249,64 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     service.deleteEntry(4).subscribe();
     http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/4').flush(null);
     fixture.detectChanges();
+    // The rows reload too (see the next test); this one is about the header.
+    expectEntries().flush(page(PERIOD.slice(0, 3)));
     expectSummary('2026-09-16', '2026-10-15').flush({ ...SUMMARY, spend: '-2989.0000', end_balance: '-4025.0000' });
     fixture.detectChanges();
 
     expect(headerValues(el)).toEqual(['−$2,989', '+$41', '−$4,025']);
+  });
+
+  it('reloads the rows of the current period and filters after an entry write, keeping the old rows meanwhile', () => {
+    const fixture = render(page(PERIOD));
+    const el = fixture.nativeElement as HTMLElement;
+    const kind = el.querySelector<HTMLSelectElement>('.filter-kind')!;
+    kind.value = 'expense';
+    kind.dispatchEvent(new Event('change'));
+    expectEntries().flush(page([entry(1), entry(4)]));
+    fixture.detectChanges();
+
+    const service = TestBed.inject(AccountingService);
+    service.deleteEntry(99).subscribe();
+    http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
+    fixture.detectChanges();
+
+    const req = expectEntries();
+    expect(req.request.params.get('offset')).toBe('0');
+    expect(req.request.params.get('kind')).toBe('expense');
+    expect(req.request.params.get('date_from')).toBe('2026-09-16');
+    expect(req.request.params.get('date_to')).toBe('2026-10-15');
+    expectSummary('2026-09-16', '2026-10-15').flush(SUMMARY);
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.entry').length).toBe(2);
+
+    req.flush(page([entry(50, { name: '新的一筆' }), entry(1), entry(4)]));
+    fixture.detectChanges();
+    const rows = el.querySelectorAll('.entry');
+    expect(rows.length).toBe(3);
+    expect(rows[0].getAttribute('data-entry-id')).toBe('50');
+  });
+
+  it('clears the custom date inputs when moving to another period', () => {
+    const fixture = render(page(PERIOD));
+    const el = fixture.nativeElement as HTMLElement;
+    const from = el.querySelector<HTMLInputElement>('.filter-from')!;
+    const to = el.querySelector<HTMLInputElement>('.filter-to')!;
+    from.value = '2026-01-01';
+    from.dispatchEvent(new Event('change'));
+    expectEntries().flush(page([]));
+    to.value = '2026-02-01';
+    to.dispatchEvent(new Event('change'));
+    expectEntries().flush(page([]));
+    fixture.detectChanges();
+
+    el.querySelector<HTMLButtonElement>('.period-next')!.click();
+    expectEntries().flush(page([]));
+    fixture.detectChanges();
+    expectSummary('2026-10-16', '2026-11-15').flush(SUMMARY);
+    fixture.detectChanges();
+
+    expect(from.value).toBe('');
+    expect(to.value).toBe('');
   });
 });

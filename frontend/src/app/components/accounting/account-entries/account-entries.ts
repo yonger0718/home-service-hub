@@ -76,10 +76,28 @@ export class AccountingAccountEntriesComponent implements OnInit {
       }
       untracked(() => this.loadSummary(accountId, period));
     });
+
+    // Rows: after an entry write (e.g. the FAB form saving beside this pane), reload page 1 of the current
+    // account / period / filters, keeping the old rows until the new page lands, as the timeline does.
+    let seenEntriesChange = this.accountingService.entriesChanged();
+    effect(() => {
+      const change = this.accountingService.entriesChanged();
+      if (change === seenEntriesChange) {
+        return;
+      }
+      seenEntriesChange = change;
+      untracked(() => {
+        if (this.account() && this.period()) {
+          this.load(true, true);
+        }
+      });
+    });
   }
 
   ngOnInit(): void {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
+      // Drop any page still in flight for the previous account.
+      this.requestId++;
       this.accountId.set(Number(params.get('id')));
       this.account.set(null);
       this.period.set(null);
@@ -132,9 +150,10 @@ export class AccountingAccountEntriesComponent implements OnInit {
     });
   }
 
-  load(reset: boolean): void {
+  /** `keepRows`: on a reset, leave the current rows on screen until the new first page lands. */
+  load(reset: boolean, keepRows = false): void {
     const id = ++this.requestId;
-    if (reset) {
+    if (reset && !keepRows) {
       this.entries.set([]);
       this.total.set(0);
     }

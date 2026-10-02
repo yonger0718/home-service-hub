@@ -36,11 +36,11 @@
     </label>
     <label>
       <span>起</span>
-      <input class="filter-from" type="date" (change)="setDateFrom($any($event.target).value)" />
+      <input class="filter-from" type="date" [value]="dateFrom() ?? ''" (change)="setDateFrom($any($event.target).value)" />
     </label>
     <label>
       <span>迄</span>
-      <input class="filter-to" type="date" (change)="setDateTo($any($event.target).value)" />
+      <input class="filter-to" type="date" [value]="dateTo() ?? ''" (change)="setDateTo($any($event.target).value)" />
     </label>
   </div>
 

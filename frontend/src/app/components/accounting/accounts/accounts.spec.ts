@@ -83,6 +83,7 @@ describe('AccountingAccountsComponent', () => {
       h => `${h.querySelector('span')?.textContent?.trim()} ${h.querySelector('b')?.textContent?.trim()}`,
     );
     expect(headers).toEqual(['現金 +$14,226', '信用卡 −$44,362', '紅利點數 +$2,500']);
+    expect(el.querySelector('.partial-hint')).toBeNull();
     expect(rows(el)[1].querySelector('.meta')?.textContent?.trim()).toBe('JPY · 約 $11,156');
     expect(rows(el)[1].querySelector('.bal')?.textContent?.trim()).toBe('¥53,635');
     expect(rows(el)[0].getAttribute('href')).toBe('/accounting/accounts/1');
@@ -214,5 +215,17 @@ describe('AccountingAccountsComponent', () => {
 
     expect(el.querySelector('.nw small')?.textContent?.trim()).toBe('總額 JPY');
     expect(el.querySelector('.total-amount')?.textContent?.trim()).toBe('¥14,000');
+  });
+
+  it('shows — for a group without any converted balance and flags groups with unconverted accounts', () => {
+    const el = render([
+      account({ id: 1, name: '錢包', balance: '3070', balance_main: '3070' }),
+      account({ id: 5, name: '美金', currency: 'USD', balance: '100', balance_main: null }),
+      account({ id: 6, name: 'USDT', currency: 'USDT', group_id: 9, group_name: '加密貨幣', balance: '50', balance_main: null }),
+    ], LATEST).nativeElement as HTMLElement;
+
+    const headers = Array.from(el.querySelectorAll<HTMLElement>('.grp:not(.archived-toggle)'));
+    expect(headers.map(h => h.querySelector('b')?.textContent?.trim())).toEqual(['+$3,070', '—']);
+    expect(headers.map(h => h.querySelector('.partial-hint')?.textContent?.trim() ?? null)).toEqual(['部分帳戶未換算', '部分帳戶未換算']);
   });
 });

@@ -45,7 +45,12 @@
     @for (group of groups(); track group.key) {
       <button type="button" class="grp" [attr.aria-expanded]="!isCollapsed(group.key)" (click)="toggleGroup(group.key)">
         <span>{{ group.name }}</span>
-        <b [class.neg]="group.subtotal < 0">{{ formatMoney(group.subtotal, mainCurrency(), { sign: true }) }}</b>
+        <span class="grp-total">
+          @if (group.partial) {
+            <small class="partial-hint">部分帳戶未換算</small>
+          }
+          <b [class.neg]="group.subtotal !== null && group.subtotal < 0">{{ group.subtotal === null ? '—' : formatMoney(group.subtotal, mainCurrency(), { sign: true }) }}</b>
+        </span>
       </button>
       @if (!isCollapsed(group.key)) {
         @for (node of group.nodes; track node.account.id) {

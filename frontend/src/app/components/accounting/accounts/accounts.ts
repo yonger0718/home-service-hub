@@ -26,7 +26,10 @@ export interface AccountNode {
 export interface AccountGroupView {
   key: string;
   name: string;
-  subtotal: number;
+  /** Σ `balance_main` of the group's converted accounts; null when no account in the group has a rate. */
+  subtotal: number | null;
+  /** True when at least one account in the group has no main-currency rate (`balance_main` null). */
+  partial: boolean;
   nodes: AccountNode[];
 }
 
@@ -67,7 +70,7 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
     const name = account.group_name ?? '未分組';
     let group = groups.get(name);
     if (!group) {
-      group = { key: name, name, subtotal: 0, nodes: [] };
+      group = { key: name, name, subtotal: null, partial: false, nodes: [] };
       groups.set(name, group);
     }
     const children = childrenOf.get(account.id) ?? [];
@@ -75,7 +78,13 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
     const sameCurrency = children.every(child => child.currency === account.currency);
     const total = family.reduce((sum, member) => sum + value(sameCurrency ? member.balance : member.balance_main), 0);
     group.nodes.push({ account, children, total, totalCurrency: sameCurrency ? account.currency : mainCurrency });
-    group.subtotal += family.reduce((sum, member) => sum + value(member.balance_main), 0);
+    for (const member of family) {
+      if (member.balance_main === null || member.balance_main === undefined) {
+        group.partial = true;
+      } else {
+        group.subtotal = (group.subtotal ?? 0) + value(member.balance_main);
+      }
+    }
   }
   const ungrouped = groups.get('未分組');
   if (ungrouped) {
