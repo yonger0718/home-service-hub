@@ -24,6 +24,7 @@ export const routes: Routes = [
   { path: 'accounting/categories', redirectTo: 'accounting/accounts' },
   { path: 'accounting/recurring', redirectTo: 'accounting/accounts' },
   { path: 'accounting/accounts', loadComponent: () => import('./components/accounting/accounts/accounts').then(m => m.AccountingAccountsComponent) },
+  { path: 'accounting/accounts/:id', loadComponent: () => import('./components/accounting/account-entries/account-entries').then(m => m.AccountingAccountEntriesComponent) },
 
   { path: '**', redirectTo: '' }
 ];

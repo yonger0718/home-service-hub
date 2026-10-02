@@ -1,0 +1,69 @@
+<section class="ledger-entries">
+  <header class="entries-header">
+    <a routerLink="/accounting/accounts" class="back-link"><i class="pi pi-arrow-left"></i> 帳戶</a>
+    <h2>{{ account()?.name ?? '帳戶 #' + accountId }}</h2>
+    @if (account(); as a) {
+      <p class="entries-balance" [class.amount--negative]="isNegative(a.balance)">
+        {{ formatAmount(a.balance, a.currency) }}
+      </p>
+    }
+  </header>
+
+  <div class="entries-filters">
+    <label>
+      <span>類型</span>
+      <select class="filter-kind" (change)="setKind($any($event.target).value)">
+        <option value="">全部</option>
+        @for (option of kindOptions; track option[0]) {
+          <option [value]="option[0]">{{ option[1] }}</option>
+        }
+      </select>
+    </label>
+    <label>
+      <span>起</span>
+      <input class="filter-from" type="date" (change)="setDateFrom($any($event.target).value)" />
+    </label>
+    <label>
+      <span>迄</span>
+      <input class="filter-to" type="date" (change)="setDateTo($any($event.target).value)" />
+    </label>
+  </div>
+
+  @if (loadError()) {
+    <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
+  }
+
+  <ul class="entry-list">
+    @for (entry of entries(); track entry.id) {
+      <li class="entry" [class.entry--review]="entry.needs_review">
+        <span class="entry-date">
+          {{ when(entry) }}
+          @if (entry.needs_review) {
+            <span class="review-marker" title="未配對的轉帳，請確認">待確認</span>
+          }
+        </span>
+        <span class="entry-kind">{{ kindLabels[entry.kind] }}</span>
+        <span class="entry-category">{{ entry.category ?? '—' }}</span>
+        <span class="entry-name">{{ title(entry) }}</span>
+        <span class="entry-project">{{ entry.project ?? '' }}</span>
+        <span
+          class="entry-amount"
+          [class.amount--negative]="isNegative(entry.amount)"
+          [attr.title]="originalTitle(entry)">
+          {{ formatAmount(entry.amount, entry.currency) }}
+        </span>
+        <span class="entry-running">{{ formatAmount(entry.running_balance, entry.currency) }}</span>
+      </li>
+    } @empty {
+      @if (!loading()) {
+        <li class="entries-empty">沒有符合條件的紀錄</li>
+      }
+    }
+  </ul>
+
+  @if (hasMore()) {
+    <button type="button" class="load-more" [disabled]="loading()" (click)="load(false)">
+      載入更多（{{ entries().length }} / {{ total() }}）
+    </button>
+  }
+</section>

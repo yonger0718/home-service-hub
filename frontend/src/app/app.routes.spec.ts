@@ -6,7 +6,8 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { describe, expect, it } from 'vitest';
 
 import { routes } from './app.routes';
-import { NAV_GROUPS, NAV_ITEMS } from './components/shell/navigation';
+import { DockComponent } from './components/dock/dock';
+import { NAV_GROUPS, NAV_ITEMS, navItemForUrl } from './components/shell/navigation';
 
 const REMOVED_ACCOUNTING_PAGES = ['dashboard', 'transactions', 'settings', 'cards', 'categories', 'recurring'];
 
@@ -45,5 +46,22 @@ describe('accounting routes', () => {
     await harness.navigateByUrl('/accounting/cards');
 
     expect(TestBed.inject(Router).url).toBe('/accounting/accounts');
+  });
+
+  it('serves the account entry history page', () => {
+    expect(paths).toContain('accounting/accounts/:id');
+  });
+
+  it('keeps the Accounting dock item highlighted on an account history page', () => {
+    TestBed.configureTestingModule({ imports: [DockComponent], providers: [provideRouter([])] });
+    const fixture = TestBed.createComponent(DockComponent);
+
+    fixture.componentRef.setInput('activeId', navItemForUrl('/accounting/accounts/5').id);
+    fixture.detectChanges();
+
+    const active = (fixture.nativeElement as HTMLElement).querySelector('.dock-item[aria-current="page"]');
+    expect(navItemForUrl('/accounting/accounts/5').id).toBe('accounting');
+    expect(active?.getAttribute('aria-label')).toBe('記帳帳戶');
+    expect(active?.classList).toContain('active');
   });
 });
