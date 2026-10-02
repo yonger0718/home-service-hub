@@ -132,3 +132,30 @@ def test_tag_delimiter_reports_the_most_common_separator():
     assert tag_delimiter(["a,b", "c,d", "#e #f", "single", ""]) == ","
     assert tag_delimiter(["#e #f", "#g #h", "a、b"]) == " #"
     assert tag_delimiter(["single", ""]) is None
+
+
+@pytest.mark.parametrize(
+    ("build", "field", "identifier", "limit"),
+    [
+        (lambda b, text: {"records": [b.record("R-LONG", name=text)]}, "name", "R-LONG", 128),
+        (lambda b, text: {"records": [b.record("R-LONG", store=text)]}, "store", "R-LONG", 128),
+        (lambda b, text: {"records": [b.record("R-LONG", invoiceNumber=text)]}, "invoiceNumber", "R-LONG", 16),
+        (lambda b, text: {"accounts": [b.account("A-LONG", text)]}, "name", "A-LONG", 64),
+        (lambda b, text: {"targets": [b.target("T-LONG", text)]}, "name", "T-LONG", 128),
+        (lambda b, text: {"classifications": [b.classification("K-LONG", text)]}, "name", "K-LONG", 64),
+    ],
+)
+def test_text_longer_than_its_column_is_refused_naming_the_identifier(backup, tmp_path, build, field, identifier, limit):
+    secret = "機密" * limit  # longer than the column; must never appear in the error
+    path = backup.write(tmp_path, backup.doc(**build(backup, secret)))
+
+    with pytest.raises(MozeImportError) as exc:
+        load_backup_json(path)
+
+    assert f"'{identifier}'" in str(exc.value) and f"'{field}'" in str(exc.value) and str(limit) in str(exc.value)
+    assert "機密" not in str(exc.value)
+
+
+def test_text_at_the_column_limit_is_accepted(backup, tmp_path):
+    doc = backup.doc(records=[backup.record("R-1", name="名" * 128, invoiceNumber="A" * 16)])
+    assert load_backup_json(backup.write(tmp_path, doc)).records[0]["name"] == "名" * 128

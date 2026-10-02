@@ -1,4 +1,5 @@
 import json
+import logging
 import sys
 import zipfile
 from pathlib import Path
@@ -7,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 
 from app.models import (
     Account,
@@ -304,6 +306,39 @@ def test_converter_runs_from_a_two_word_exporter_setting(tmp_path, backup, monke
     out = convert_backup(_zip(tmp_path), tmp_path)
 
     assert json.loads(out.read_text(encoding="utf-8"))["exported_at"] == "2026-10-01T17:00:37"
+
+
+def test_unexpected_failure_stores_only_the_error_type(pg_engine, db_session, backup, fake_exporter, tmp_path, monkeypatch, caplog):
+    def explode(*args, **kwargs):
+        raise RuntimeError("row 午餐 -120 leaked")
+
+    monkeypatch.setattr(service, "_backup_summary_run", explode)
+    # alembic's fileConfig (the session's in-process upgrade) disables loggers that already exist; the service
+    # runs migrations in a separate process, so re-enable the importer's logger here.
+    monkeypatch.setattr(logging.getLogger("app.services.moze_import_service"), "disabled", False)
+    with pytest.raises(RuntimeError):
+        run_backup_import(pg_engine, _zip(tmp_path), "MOZE_4.0.zip", exporter=fake_exporter(_doc(backup)))
+
+    [(_, status, _, summary)] = _runs(pg_engine)
+    assert (status, summary) == ("failed", {"error_type": "RuntimeError", "error": "import failed; see server log"})
+    assert "午餐 -120 leaked" in caplog.text  # the server log keeps the detail
+
+
+def test_moze_import_errors_keep_their_message(pg_engine, db_session, backup, fake_exporter, tmp_path):
+    with pytest.raises(MozeImportError):
+        run_backup_import(pg_engine, _zip(tmp_path), "MOZE_4.0.zip", exporter=fake_exporter(_doc(backup, price=-120)),
+                          renames={"不存在": "新"})
+    [(_, status, _, summary)] = _runs(pg_engine)
+    assert status == "failed" and summary == {"error": "rename 不存在=新: account '不存在' does not exist"}
+
+
+def test_database_errors_hide_their_parameters(pg_engine):
+    from app import database
+
+    assert database.engine.hide_parameters is True
+    with pytest.raises(DBAPIError) as exc, pg_engine.connect() as conn:
+        conn.execute(text("INSERT INTO project (name) VALUES (:name)"), {"name": "機密" * 100})
+    assert "機密" not in str(exc.value)
 
 
 def _runs(pg_engine):

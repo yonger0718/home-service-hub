@@ -14,6 +14,18 @@ from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
+from ..models import (
+    Account,
+    AccountGroup,
+    Category,
+    Counterparty,
+    EntryGroup,
+    LedgerEntry,
+    MozeSchedule,
+    Preference,
+    Project,
+    RewardRule,
+)
 from .moze_csv import MozeImportError
 
 TAIPEI = ZoneInfo("Asia/Taipei")
@@ -234,6 +246,36 @@ class BackupData:
     app_config: dict
 
 
+# MOZE text field -> the String(n) column it is stored in; load_backup_json refuses longer text up front, so the
+# import never reaches Postgres with it (a DataError would otherwise abort the import naming owner rows).
+TEXT_COLUMNS: dict[str, dict[str, Any]] = {
+    "AHAccount": {"identifier": Account.moze_id, "name": Account.name, "mainCurrency": Account.currency},
+    "AHAccountGroup": {"identifier": AccountGroup.moze_id, "name": AccountGroup.name},
+    "AHCategory": {"identifier": Category.moze_id, "name": Category.name},
+    "AHClassification": {"identifier": Category.moze_id, "name": Category.name},
+    "AHProject": {"identifier": Project.moze_id, "name": Project.name},
+    "AHTarget": {"identifier": Counterparty.moze_id, "name": Counterparty.name},
+    "AHRecord": {
+        "identifier": LedgerEntry.moze_id, "currency": LedgerEntry.currency, "name": LedgerEntry.name,
+        "store": LedgerEntry.merchant, "feeName": LedgerEntry.name, "bonusName": LedgerEntry.name,
+        "invoiceNumber": LedgerEntry.invoice_number,
+    },
+    "AHPackage": {"identifier": EntryGroup.moze_id, "name": EntryGroup.name, "store": EntryGroup.merchant},
+    "AHBonusReward": {"identifier": RewardRule.moze_id, "name": RewardRule.name},
+    "AHPeriod": {"identifier": MozeSchedule.moze_id},
+    "AHInstallment": {"identifier": MozeSchedule.moze_id},
+    "AHPreference": {"mainCurrency": Preference.main_currency},
+}
+
+
+def _check_lengths(name: str, row: dict, where: str) -> None:
+    """Refuse text longer than its column; the message names the row's identifier and field, never the text."""
+    for field, column in TEXT_COLUMNS.get(name, {}).items():
+        value = row.get(field)
+        if isinstance(value, str) and len(value.strip()) > column.type.length:
+            raise MozeImportError(f"{where}: field '{field}' is longer than {column.type.length} characters")
+
+
 def _datetime(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -284,6 +326,7 @@ def _rows(name: str, raw: Any) -> list[dict]:
         normalised = dict(row)
         for field, kind in fields.items():
             normalised[field] = _normalise(row[field], kind, where, field)
+        _check_lengths(name, normalised, where)
         if key in normalised:
             if normalised[key] in seen:
                 raise MozeImportError(f"{where}: duplicate {key}")

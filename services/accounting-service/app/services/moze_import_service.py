@@ -6,6 +6,7 @@ CLI: python -m app.services.moze_import_service <path> [--dry-run] [--rename OLD
 import argparse
 import hashlib
 import json
+import logging
 import sys
 from collections import Counter
 from contextlib import contextmanager
@@ -495,6 +496,21 @@ def _replace_from_csv(
     return parsed, replace_ledger(session, parsed, pairing, run_id, renames, rates)
 
 
+logger = logging.getLogger(__name__)
+GENERIC_FAILURE = "import failed; see server log"
+
+
+def failure_summary(exc: BaseException, kind: str) -> dict:
+    """The `import_run.summary` of a failed run. A MozeImportError message is written for the owner (ids, names
+    and counts, never rows) and is stored as is; any other exception (a database error carries the statement
+    and, unless the engine hides them, its parameters, i.e. owner rows) is stored only by type and logged here
+    on the server."""
+    if isinstance(exc, MozeImportError):
+        return {"error": str(exc)}
+    logger.error("%s import failed with %s", kind, type(exc).__name__, exc_info=exc)
+    return {"error_type": type(exc).__name__, "error": GENERIC_FAILURE}
+
+
 def _run_locked(
     conn: Connection,
     data: bytes,
@@ -542,7 +558,7 @@ def _run_locked(
             session.rollback()
             run = session.get(ImportRun, run_id)
             run.status = "failed"
-            run.summary = {"error": str(exc)}
+            run.summary = failure_summary(exc, "moze_csv")
             run.finished_at = _now()
             session.commit()
             raise

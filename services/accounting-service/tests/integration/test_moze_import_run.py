@@ -245,3 +245,17 @@ def test_dry_run_fetches_rates_without_caching_them(pg_engine, db_session, moze,
     assert report["summary"]["accounts"][0]["converted_entry_count"] == 1
     with pg_engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM fx_rate")).scalar_one() == 0
+
+
+def test_unexpected_csv_failure_stores_only_the_error_type(pg_engine, db_session, moze, monkeypatch):
+    from app.services import moze_import_service
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("row 午餐 -120 leaked")
+
+    monkeypatch.setattr(moze_import_service, "_replace_from_csv", explode)
+    with pytest.raises(RuntimeError):
+        run_import(pg_engine, _good(moze), "moze.csv")
+
+    [run] = _runs(pg_engine)
+    assert (run.status, run.summary) == ("failed", {"error_type": "RuntimeError", "error": "import failed; see server log"})

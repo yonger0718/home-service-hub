@@ -76,6 +76,7 @@ from .moze_import_service import (
     assert_currency_change_allowed,
     delete_moze_entries,
     delete_unused_rows,
+    failure_summary,
     import_lock,
     import_locked,
     mark_interrupted_runs,
@@ -1154,7 +1155,7 @@ def _run_backup_locked(conn, data, file_name, sha256, *, dry_run, renames, stric
         except Exception as exc:
             session.rollback()
             run = session.get(ImportRun, run_id)
-            run.status, run.summary, run.finished_at = "failed", {"error": str(exc)}, _now()
+            run.status, run.summary, run.finished_at = "failed", failure_summary(exc, "moze_backup"), _now()
             session.commit()
             raise
         return run_report(session.get(ImportRun, run_id))

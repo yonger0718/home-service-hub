@@ -18,6 +18,9 @@ engine = create_db_engine(SQLALCHEMY_DATABASE_URL, pool_config={
     "max_overflow": 20,
     "pool_timeout": 30,
     "pool_use_lifo": True,
+    # Error messages (stored in import_run.summary, logged, shown in tracebacks) never carry bound parameters,
+    # which for a bulk flush are owner rows.
+    "hide_parameters": True,
     "connect_args": {
         "keepalives": 1,
         "keepalives_idle": 30,

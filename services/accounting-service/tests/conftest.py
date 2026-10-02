@@ -126,7 +126,7 @@ def alembic_config():
 def pg_engine():
     with _disposable_database() as url:
         command.upgrade(_alembic_config(url), "head")
-        engine = create_engine(url)
+        engine = create_engine(url, hide_parameters=True)  # same as app.database.engine
         try:
             yield engine
         finally:
