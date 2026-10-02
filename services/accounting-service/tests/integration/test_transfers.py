@@ -262,3 +262,21 @@ def test_deleting_a_posted_transfer_leg_deletes_both(client, db_session, seed):
 
     db_session.expire_all()
     assert db_session.scalars(select(LedgerEntry)).all() == []
+
+
+def test_transfer_put_keeps_a_link_to_a_rule_disabled_after_it_was_attached(client, db_session, seed):
+    card, bank = seed.account("卡"), seed.account("銀行")
+    rule = seed.rule(card, "回饋")
+    db_session.commit()
+    created = client.post("/transfers", json=_body(card, bank, reward_rule_ids=[rule.id]))
+    assert created.status_code == 201, created.text
+    rule.is_enabled = False
+    db_session.commit()
+
+    response = client.put(
+        f"/transfers/{created.json()['transfer_group_id']}", json=_body(card, bank, name="改名", reward_rule_ids=[rule.id])
+    )
+
+    assert response.status_code == 200, response.text
+    out_leg, _ = _legs(db_session, created.json()["transfer_group_id"])
+    assert db_session.scalars(select(EntryRewardRule.rule_id).where(EntryRewardRule.entry_id == out_leg.id)).all() == [rule.id]

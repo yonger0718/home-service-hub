@@ -16,6 +16,7 @@ from ..schemas.writes import TransferIn
 from .entry_write_service import (
     RATE_QUANTUM,
     assert_entry_editable,
+    attached_rule_ids,
     check_project,
     check_rules,
     display_quantum,
@@ -63,8 +64,9 @@ def matching_in_category_id(db: Session, out_category: Category) -> int | None:
     )
 
 
-def _leg_values(db: Session, payload: TransferIn) -> tuple[dict, dict]:
-    """Validate the payload and return the column values of the out leg and the in leg."""
+def _leg_values(db: Session, payload: TransferIn, attached_rules: frozenset[int] = frozenset()) -> tuple[dict, dict]:
+    """Validate the payload and return the column values of the out leg and the in leg. `attached_rules`: the
+    rule ids the out leg already links (an update keeps them even when an import disabled the rule)."""
     if payload.from_account_id == payload.to_account_id:
         raise ValidationError("to_account_id", "must differ from from_account_id")
     source = _account(db, payload.from_account_id, "from_account_id")
@@ -76,7 +78,7 @@ def _leg_values(db: Session, payload: TransferIn) -> tuple[dict, dict]:
             raise ValidationError("category_id", "must be a transfer_out category")
         in_category_id = matching_in_category_id(db, category)
     check_project(db, payload.project_id)
-    check_rules(db, payload.reward_rule_ids, source.id, payload.entry_date)
+    check_rules(db, payload.reward_rule_ids, source.id, payload.entry_date, attached_rules)
 
     out_amount = payload.out_amount
     if source.currency == target.currency:
@@ -176,7 +178,7 @@ def update_transfer(db: Session, group_id: UUID, payload: TransferIn) -> None:
     out_leg, in_leg = _locked_legs(db, group_id)
     assert_entry_editable(db, out_leg)
     assert_entry_editable(db, in_leg)
-    out_values, in_values = _leg_values(db, payload)
+    out_values, in_values = _leg_values(db, payload, frozenset(attached_rule_ids(db, out_leg.id)))
     for leg, values in ((out_leg, out_values), (in_leg, in_values)):
         for column, value in values.items():
             setattr(leg, column, value)

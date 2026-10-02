@@ -632,3 +632,25 @@ def test_concurrent_deletes_of_both_transfer_legs_reach_the_lock_together(pg_eng
     db_session.expire_all()
     assert db_session.scalars(select(LedgerEntry)).all() == []
     assert (_balance(db_session, a_id), _balance(db_session, b_id)) == (Decimal("500"), Decimal("0"))
+
+
+def test_put_keeps_a_link_to_a_rule_disabled_after_it_was_attached(client, db_session, seed):
+    card, other = seed.account("卡"), seed.account("別張卡")
+    rule, expired, foreign = seed.rule(card, "一般回饋"), seed.rule(card, "已過期"), seed.rule(other, "別人的")
+    entry_id = ews.create_entry(db_session, _entry_in(card, reward_rule_ids=[rule.id, expired.id]))
+    rule.is_enabled = False  # an import disabled it
+    expired.ends_on = date(2026, 8, 31)
+    db_session.commit()
+    rule_id, expired_id, foreign_id, card_id = rule.id, expired.id, foreign.id, card.id
+
+    renamed = client.put(f"/entries/{entry_id}", json=_payload(card, name="改名", reward_rule_ids=[rule_id, expired_id]))
+    assert renamed.status_code == 200, renamed.text
+    db_session.expire_all()
+    linked = db_session.scalars(select(EntryRewardRule.rule_id).where(EntryRewardRule.entry_id == entry_id)).all()
+    assert sorted(linked) == sorted([rule_id, expired_id])
+
+    disabled_new = seed.rule(db_session.get(Account, card_id), "新停用", enabled=False)
+    db_session.commit()
+    for refused_id in (disabled_new.id, foreign_id):  # a new disabled rule and a foreign one are still refused
+        response = client.put(f"/entries/{entry_id}", json=_payload(card, reward_rule_ids=[rule_id, refused_id]))
+        assert response.status_code == 422, refused_id

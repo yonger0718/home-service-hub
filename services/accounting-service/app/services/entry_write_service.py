@@ -7,7 +7,7 @@ lookup before anything is written, so a multi-entry write (split) inserts all of
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
-from typing import Iterable, get_args
+from typing import Collection, Iterable, get_args
 
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
@@ -132,8 +132,17 @@ def check_project(db: Session, project_id: int | None) -> None:
         _require(db, Project, project_id, "project_id", "project")
 
 
-def check_rules(db: Session, rule_ids: Iterable[int], account_id: int, on: date) -> list[int]:
-    """Every rule must belong to the account and be enabled on `on`; returns the ids without duplicates."""
+def attached_rule_ids(db: Session, entry_id: int) -> set[int]:
+    """The rule ids the entry is linked to right now."""
+    return set(db.scalars(select(EntryRewardRule.rule_id).where(EntryRewardRule.entry_id == entry_id)))
+
+
+def check_rules(
+    db: Session, rule_ids: Iterable[int], account_id: int, on: date, attached: Collection[int] = ()
+) -> list[int]:
+    """Every rule must belong to the account; a rule not yet in `attached` (the entry's current links) must also
+    be enabled on `on`. An existing link survives an edit after an import disabled or expired its rule.
+    Returns the ids without duplicates."""
     unique = list(dict.fromkeys(rule_ids))
     if not unique:
         return []
@@ -142,6 +151,8 @@ def check_rules(db: Session, rule_ids: Iterable[int], account_id: int, on: date)
         rule = rules.get(rule_id)
         if rule is None or rule.account_id != account_id:
             raise ValidationError("reward_rule_ids", f"rule {rule_id} does not belong to account {account_id}")
+        if rule_id in attached:
+            continue
         active = (
             rule.is_enabled
             and (rule.starts_on is None or rule.starts_on <= on)
@@ -161,13 +172,16 @@ def _check_counterparty(db: Session, kind: str, counterparty_id: int | None) -> 
         raise ValidationError("counterparty_id", "only receivable and payable entries have a counterparty")
 
 
-def prepare_entry(db: Session, payload: EntryIn, *, http_get=None) -> PreparedEntry:
-    """Validate one entry payload and resolve its FX without writing anything."""
+def prepare_entry(
+    db: Session, payload: EntryIn, *, http_get=None, attached_rules: Collection[int] = ()
+) -> PreparedEntry:
+    """Validate one entry payload and resolve its FX without writing anything. `attached_rules`: the rule ids
+    the edited entry already links (check_rules)."""
     account = _require(db, Account, payload.account_id, "account_id", "account")
     _check_counterparty(db, payload.kind, payload.counterparty_id)
     check_category(db, payload.category_id, payload.kind)
     check_project(db, payload.project_id)
-    check_rules(db, payload.reward_rule_ids, account.id, payload.entry_date)
+    check_rules(db, payload.reward_rule_ids, account.id, payload.entry_date, attached_rules)
     fx = resolve_fx(
         db,
         account,
@@ -390,7 +404,7 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
     runs inside that lock: a concurrent settle / refund has either committed (has_settlements_or_refunds sees
     it) or waits until this transaction commits.
     """
-    prepared = prepare_entry(db, payload, http_get=http_get)
+    prepared = prepare_entry(db, payload, http_get=http_get, attached_rules=attached_rule_ids(db, entry_id))
     entry = locked_entry(db, entry_id)
     assert_entry_editable(db, entry)
     if entry.transfer_group_id is not None and (payload.kind != entry.kind or payload.account_id != entry.account_id):
