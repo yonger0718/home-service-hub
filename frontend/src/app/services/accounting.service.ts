@@ -60,6 +60,7 @@ export class AccountingService {
   private apiUrl = '/api/accounting';
   private readonly changeCount = signal(0);
   private readonly accountChangeCount = signal(0);
+  private readonly preferenceChangeCount = signal(0);
   private preference$: Observable<Preference> | null = null;
 
   /** Bumped after every successful write that adds, changes or removes entries; list pages reload on it. */
@@ -67,6 +68,9 @@ export class AccountingService {
 
   /** Bumped after every successful account / account-group write and a non-dry-run backup import; account lists reload on it. */
   readonly accountsChanged = this.accountChangeCount.asReadonly();
+
+  /** Bumped after every successful preference save; mounted pages re-read `getPreference()` on it. */
+  readonly preferenceChanged = this.preferenceChangeCount.asReadonly();
 
   private bump<T>(source: Observable<T>): Observable<T> {
     return source.pipe(tap(() => this.changeCount.update(count => count + 1)));
@@ -272,7 +276,10 @@ export class AccountingService {
 
   updatePreference(input: Preference): Observable<Preference> {
     return this.http.put<Preference>(`${this.apiUrl}/preference`, input).pipe(
-      tap(saved => (this.preference$ = of(saved))),
+      tap(saved => {
+        this.preference$ = of(saved);
+        this.preferenceChangeCount.update(count => count + 1);
+      }),
     );
   }
 

@@ -20,6 +20,9 @@
       <div><small>收入</small><b class="pos sum-income">{{ incomeText(s) }}</b></div>
       <div><small>結餘</small><b class="sum-net">{{ formatSigned(s.net, s.currency) }}</b></div>
     </div>
+    @if (s.missing_rates.length > 0) {
+      <p class="missing-rates">部分外幣未換算 ({{ s.missing_rates.join(', ') }})</p>
+    }
   }
 
   @if (!isPhone() || filtersOpen()) {
@@ -54,7 +57,9 @@
   @for (day of days(); track day.date) {
     <div class="day"><span>{{ day.label }}</span><b>{{ formatSigned(day.net, mainCurrency()) }}</b></div>
     @for (row of day.rows; track row.key) {
-      <button type="button" class="row" [class.sel]="row.entryId === selectedId()" (click)="open(row)">
+      <button type="button" class="row" [class.sel]="row.entryId === selectedId()"
+        [attr.aria-current]="row.entryId === selectedId() ? 'true' : null"
+        (click)="open(row)">
         <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
         <span class="name">{{ row.title }}@if (row.groupCount) {<span class="badge">{{ row.groupCount }}</span>}</span>
         <span class="sub">{{ row.sub }}</span>

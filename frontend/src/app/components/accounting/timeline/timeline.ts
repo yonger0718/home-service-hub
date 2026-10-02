@@ -320,6 +320,19 @@ export class LedgerTimelineComponent implements OnInit {
       untracked(() => this.loadSummary(month));
     });
 
+    // A saved preference (settings pane beside this list in the wide layout) is re-read; the effects above then reload.
+    let seenPreferenceChange = this.accounting.preferenceChanged();
+    effect(() => {
+      const change = this.accounting.preferenceChanged();
+      if (change === seenPreferenceChange) {
+        return;
+      }
+      seenPreferenceChange = change;
+      untracked(() =>
+        this.accounting.getPreference().subscribe({ next: preference => this.preference.set(preference), error: () => undefined }),
+      );
+    });
+
     effect(onCleanup => {
       const element = this.sentinel()?.nativeElement;
       if (!element || typeof IntersectionObserver === 'undefined') {
@@ -355,10 +368,7 @@ export class LedgerTimelineComponent implements OnInit {
     const id = ++this.requestId;
     const { from, to } = monthRange(this.month());
     const offset = reset ? 0 : this.entries().length;
-    if (reset) {
-      this.entries.set([]);
-      this.total.set(0);
-    }
+    // On a reset the old rows stay until the new page lands (no empty flash, scroll kept).
     this.loading.set(true);
     this.loadError.set(false);
     const account = this.accountFilter();

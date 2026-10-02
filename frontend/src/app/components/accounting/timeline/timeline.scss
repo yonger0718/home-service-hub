@@ -17,6 +17,15 @@
   color: var(--tone-in);
 }
 
+.missing-rates {
+  background: var(--app-state-warning-bg);
+  border-radius: var(--radius-sm);
+  color: var(--app-text);
+  font-size: 0.72rem;
+  margin: -6px 0 10px;
+  padding: 4px 10px;
+}
+
 .monthbar {
   align-items: center;
   display: flex;
@@ -210,11 +219,11 @@
 
 .pills {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   grid-area: pills;
   justify-content: flex-end;
   min-width: 0;
-  overflow: hidden;
 }
 
 .pill {
@@ -223,7 +232,10 @@
   color: var(--app-text-muted);
   font-size: 0.62rem;
   font-weight: 700;
+  max-width: 100%;
+  overflow: hidden;
   padding: 0 6px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 
   &.rw {

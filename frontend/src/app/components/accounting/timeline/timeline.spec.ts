@@ -6,6 +6,7 @@ import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LedgerEntry, MonthSummary, Preference } from '../../../models/accounting.model';
+import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { makeAccount, makeEntry, makePreference } from '../testing/fixtures';
@@ -176,6 +177,7 @@ describe('LedgerTimelineComponent', () => {
 
     const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.row'));
     expect(rows.map(row => row.classList.contains('sel'))).toEqual([false, true]);
+    expect(rows.map(row => row.getAttribute('aria-current'))).toEqual([null, 'true']);
     rows[0].click();
 
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1]);
@@ -211,5 +213,48 @@ describe('LedgerTimelineComponent', () => {
 
     const req = flushEntries([]);
     expect(req.request.params.getAll('account_id')).toEqual(['7']);
+  });
+  it('notes the currencies left out of the month totals', () => {
+    const { fixture, el } = render();
+    flushSummary('2026-10', { missing_rates: ['JPY', 'USD'] });
+    flushEntries([]);
+    fixture.detectChanges();
+    expect(text(el.querySelector('.missing-rates'))).toBe('部分外幣未換算 (JPY, USD)');
+
+    (el.querySelector('.month-prev') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    flushSummary('2026-09');
+    flushEntries([]);
+    fixture.detectChanges();
+    expect(el.querySelector('.missing-rates')).toBeNull();
+  });
+
+  it('re-reads the preference after it is saved and reloads with the new reward setting', () => {
+    const { fixture } = render();
+    flushSummary('2026-10');
+    expect(flushEntries([]).request.params.get('hide_rewards')).toBe('false');
+
+    TestBed.inject(AccountingService).updatePreference(makePreference({ hide_rewards_on_timeline: true })).subscribe();
+    httpMock!.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/preference').flush(makePreference({ hide_rewards_on_timeline: true }));
+    fixture.detectChanges();
+
+    flushSummary('2026-10');
+    expect(flushEntries([]).request.params.get('hide_rewards')).toBe('true');
+  });
+
+  it('keeps the current rows on screen while a refresh is in flight', () => {
+    const { fixture, el } = render();
+    flushSummary('2026-10');
+    flushEntries([makeEntry({ id: 1, name: '午餐' })]);
+    fixture.detectChanges();
+
+    (el.querySelector('.month-next') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['午餐']);
+
+    flushSummary('2026-11');
+    flushEntries([makeEntry({ id: 2, entry_date: '2026-11-01', name: '捷運' })]);
+    fixture.detectChanges();
+    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['捷運']);
   });
 });

@@ -325,6 +325,17 @@ describe('AccountingService', () => {
     expect(layout).toBe('phone');
   });
 
+  it('bumps preferenceChanged (not entriesChanged) after a preference save succeeds', () => {
+    const entries = service.entriesChanged();
+    const before = service.preferenceChanged();
+    service.updatePreference(makePreference()).subscribe();
+    expect(service.preferenceChanged()).toBe(before);
+
+    httpMock.expectOne('/api/accounting/preference').flush(makePreference());
+    expect(service.preferenceChanged()).toBe(before + 1);
+    expect(service.entriesChanged()).toBe(entries);
+  });
+
   it('bumps entriesChanged after an entry write succeeds, not before', () => {
     const before = service.entriesChanged();
     service.createEntry(ENTRY_INPUT).subscribe();
