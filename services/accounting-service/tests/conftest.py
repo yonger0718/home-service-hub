@@ -1,6 +1,7 @@
 import uuid
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from alembic import command
@@ -99,3 +100,46 @@ def client(pg_engine: Engine, db_session):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+MOZE_HEADER = "帳戶,幣種,記錄類型,主類別,子類別,金額,手續費,折扣,名稱,商家,日期,時間,專案,描述,標籤,對象"
+
+
+def _moze_row(
+    account: str,
+    currency: str,
+    record_type: str,
+    amount: str,
+    *,
+    main: str = "",
+    sub: str = "",
+    fee: str = "0",
+    discount: str = "0",
+    name: str = "",
+    merchant: str = "",
+    date: str = "2026/09/01",
+    time: str = "12:00",
+    project: str = "",
+    description: str = "",
+    tags: str = "",
+    counterparty: str = "",
+) -> str:
+    return ",".join(
+        [account, currency, record_type, main, sub, amount, fee, discount, name, merchant,
+         date, time, project, description, tags, counterparty]
+    )
+
+
+def _moze_opening(account: str, currency: str, amount: str) -> str:
+    return _moze_row(account, currency, "初始金額", amount, fee="", discount="", date="", time="")
+
+
+def _moze_csv(*rows: str, bom: bool = True, newline: str = "\n", header: str = MOZE_HEADER) -> bytes:
+    body = newline.join([header, *rows]) + newline
+    return (("\ufeff" if bom else "") + body).encode("utf-8")
+
+
+@pytest.fixture()
+def moze():
+    """Builders for small synthetic MOZE CSV files (never real data)."""
+    return SimpleNamespace(row=_moze_row, opening=_moze_opening, csv=_moze_csv, header=MOZE_HEADER)
