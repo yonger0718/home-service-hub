@@ -1,8 +1,10 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { Location } from '@angular/common';
+import { provideLocationMocks } from '@angular/common/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
+import { BehaviorSubject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
@@ -43,15 +45,18 @@ const RECEIVABLE = detail({
 
 describe('EntryDetailComponent', () => {
   let http: HttpTestingController;
+  let params: BehaviorSubject<ParamMap>;
 
   beforeEach(async () => {
+    params = new BehaviorSubject(convertToParamMap({ id: '42' }));
     await TestBed.configureTestingModule({
       imports: [EntryDetailComponent],
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
         provideRouter([]),
-        { provide: ActivatedRoute, useValue: { paramMap: of(convertToParamMap({ id: '42' })) } },
+        provideLocationMocks(),
+        { provide: ActivatedRoute, useValue: { paramMap: params } },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -124,7 +129,7 @@ describe('EntryDetailComponent', () => {
   });
 
   it('lists the other transfer leg in the delete confirmation and deletes', () => {
-    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
     const fixture = render(detail({
       id: 42, kind: 'transfer_out', amount: '-10000.0000', transfer_group_id: 'g-1', account_name: '國泰主帳戶',
       transfer_counterpart: entry({ id: 43, kind: 'transfer_in', amount: '46200.0000', currency: 'JPY', account_name: '日幣現金' }),
@@ -141,7 +146,8 @@ describe('EntryDetailComponent', () => {
     const req = http.expectOne('/api/accounting/entries/42');
     expect(req.request.method).toBe('DELETE');
     req.flush(null, { status: 204, statusText: 'No Content' });
-    expect(navigate).toHaveBeenCalledWith(['/accounting']);
+    // Opened directly (no in-app history): back to the timeline.
+    expect(navigate).toHaveBeenCalledWith('/accounting');
   });
 
   it('shows the FX line and the fee inside the total', () => {
@@ -188,5 +194,123 @@ describe('EntryDetailComponent', () => {
     fixture.detectChanges();
 
     expect(el(fixture).querySelector('.detail-name')?.textContent?.trim()).toBe('新的');
+  });
+  function openForm(fixture: ComponentFixture<EntryDetailComponent>, action: string, amount: string): void {
+    el(fixture).querySelector<HTMLButtonElement>(action)!.click();
+    fixture.detectChanges();
+    const input = el(fixture).querySelector<HTMLInputElement>('.form-amount')!;
+    input.value = amount;
+    input.dispatchEvent(new Event('input'));
+  }
+
+  it('drops a late settle response once another entry is shown', () => {
+    const fixture = render(RECEIVABLE);
+    openForm(fixture, '.action-settle', '220');
+    el(fixture).querySelector<HTMLButtonElement>('.form-submit')!.click();
+    const settle = http.expectOne('/api/accounting/entries/42/settle');
+
+    params.next(convertToParamMap({ id: '43' }));
+    http.expectOne('/api/accounting/entries/43').flush(detail({ id: 43, name: '午餐' }));
+    settle.flush({});
+    fixture.detectChanges();
+
+    http.expectNone('/api/accounting/entries/42');
+    expect(el(fixture).querySelector('.detail-name')?.textContent?.trim()).toBe('午餐');
+    expect(el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.disabled).toBe(false);
+  });
+
+  it('does not navigate after a delete when the owner has moved to another entry', () => {
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.delete-entry')!.click();
+    const remove = http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/42');
+
+    params.next(convertToParamMap({ id: '43' }));
+    http.expectOne('/api/accounting/entries/43').flush(detail({ id: 43 }));
+    remove.flush(null, { status: 204, statusText: 'No Content' });
+
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('returns to the passbook after a delete opened from it, and goes back when there is history', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    params.next(convertToParamMap({ id: '5', eid: '42' }));
+    const fixture = render(RECEIVABLE);
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.delete-entry')!.click();
+    http.expectOne(r => r.method === 'DELETE').flush(null, { status: 204, statusText: 'No Content' });
+    expect(navigate).toHaveBeenCalledWith('/accounting/accounts/5');
+    expect(back).not.toHaveBeenCalled();
+
+    // In-app history: the router has a previous navigation.
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the record when the reload after a successful write fails', () => {
+    const fixture = render(RECEIVABLE);
+    openForm(fixture, '.action-settle', '220');
+    el(fixture).querySelector<HTMLButtonElement>('.form-submit')!.click();
+    http.expectOne('/api/accounting/entries/42/settle').flush({});
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.detail-name')).toBeNull();
+  });
+
+  it('refunds an expense into a same-currency account', () => {
+    const fixture = render(detail({ id: 42, amount: '-500.0000', name: '外套', refunded_amount: '100.0000' }));
+    openForm(fixture, '.action-refund', '300');
+    expect(el(fixture).querySelector('.inline-form small')?.textContent).toContain('$400');
+    el(fixture).querySelector<HTMLButtonElement>('.form-submit')!.click();
+
+    const req = http.expectOne('/api/accounting/entries/42/refund');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body).toMatchObject({ account_id: 3, amount: '300' });
+    req.flush({});
+    http.expectOne('/api/accounting/entries/42').flush(detail({ id: 42, amount: '-500.0000', refunded_amount: '400.0000' }));
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.inline-form')).toBeNull();
+  });
+
+  it('records a 還款 on a payable', () => {
+    const fixture = render(detail({
+      id: 42, kind: 'payable', amount: '300.0000', counterparty: 'Ben', open_amount: '300.0000', is_settled: false,
+    }));
+    expect(el(fixture).querySelector('.action-settle')?.textContent).toContain('新增還款');
+    openForm(fixture, '.action-settle', '300');
+    el(fixture).querySelector<HTMLButtonElement>('.form-submit')!.click();
+
+    const req = http.expectOne('/api/accounting/entries/42/settle');
+    expect(req.request.body).toMatchObject({ account_id: 3, amount: '300' });
+    req.flush({});
+    http.expectOne('/api/accounting/entries/42').flush(detail({ id: 42, kind: 'payable', amount: '300.0000', open_amount: '0', is_settled: true }));
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.settled')?.textContent?.trim()).toBe('已結清');
+  });
+
+  it('deletes a whole split group', () => {
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(detail({
+      id: 42,
+      group: { id: 4, kind: 'split', name: '聚餐', merchant: null, description: null, count: 2, total: '-300.0000', currency: 'TWD' },
+      group_members: [entry({ id: 42 }), entry({ id: 43, name: '代墊', amount: '-100.0000' })],
+    }));
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.delete-confirm')?.textContent).toContain('整組「聚餐」共 2 筆');
+
+    el(fixture).querySelector<HTMLButtonElement>('.delete-group')!.click();
+    const req = http.expectOne('/api/accounting/splits/4');
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null, { status: 204, statusText: 'No Content' });
+    expect(navigate).toHaveBeenCalledWith('/accounting');
   });
 });

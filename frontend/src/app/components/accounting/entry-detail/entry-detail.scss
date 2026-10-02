@@ -29,7 +29,10 @@
   .close {
     align-items: center;
     background: rgba(255, 255, 255, 0.45);
+    border: 0;
     border-radius: 50%;
+    cursor: pointer;
+    font: inherit;
     color: inherit;
     display: flex;
     height: 30px;

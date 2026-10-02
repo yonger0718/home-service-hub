@@ -1,9 +1,13 @@
+import { Location } from '@angular/common';
 import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { Observable } from 'rxjs';
 
 import { ENTRY_KIND_LABELS, EntryDetail, EntryKind, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
+import { leavePage } from '../accounting-ui';
 import { amountString, parseAmountText } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
@@ -42,8 +46,16 @@ export class EntryDetailComponent implements OnInit {
   private service = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
+  private location = inject(Location);
   private destroyRef = inject(DestroyRef);
+  private layoutMode = inject(LayoutModeService);
 
+  /** Entry id of the route (`:eid` under a passbook, else `:id`). */
+  readonly routeEntryId = signal<number | null>(null);
+  /** The passbook the detail was opened from (`accounts/:id/entries/:eid`), else null. */
+  readonly passbookId = signal<number | null>(null);
+  /** In the layout's 760–1023 px sheet the sheet's own ✕ closes it: no second close control here. */
+  readonly inSheet = computed(() => this.layoutMode.mode() === 'sheet');
   readonly detail = signal<EntryDetail | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly loadError = signal(false);
@@ -190,16 +202,65 @@ export class EntryDetailComponent implements OnInit {
 
   ngOnInit(): void {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
+      const passbook = params.get('eid') !== null;
+      const id = Number(passbook ? params.get('eid') : params.get('id'));
       this.panel.set(null);
-      this.load(Number(params.get('id')));
+      this.busy.set(false);
+      this.routeEntryId.set(id);
+      this.passbookId.set(passbook ? Number(params.get('id')) : null);
+      this.load(id);
     });
-    this.service.getAccounts().subscribe(accounts => this.accounts.set(accounts));
+    this.service
+      .getAccounts()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({ next: accounts => this.accounts.set(accounts), error: () => undefined });
   }
 
   /** Bumped per `load()`; a response for an earlier load (fast navigation between entries) is dropped. */
   private loadSeq = 0;
 
-  load(id: number): void {
+  /** The list the detail belongs to: the passbook it was opened from, else the timeline. */
+  private parentUrl(): string {
+    const passbook = this.passbookId();
+    return passbook === null ? '/accounting' : `/accounting/accounts/${passbook}`;
+  }
+
+  /** ✕ and after a delete: back to where the owner came from (in-app history), else the parent list. */
+  close(): void {
+    leavePage(this.router, this.location, this.parentUrl());
+  }
+
+  /** True while `id` is still the entry shown and the one in the URL (a write's answer may arrive later). */
+  private stillShowing(id: number): boolean {
+    return this.detail()?.id === id && this.routeEntryId() === id;
+  }
+
+  /**
+   * Runs a settle / refund / delete for the entry shown now. The result is applied only while that entry is still
+   * shown; the request is dropped when the page is destroyed.
+   */
+  private runWrite(request: Observable<unknown>, id: number, done: () => void): void {
+    this.busy.set(true);
+    request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: () => {
+        if (!this.stillShowing(id)) {
+          return;
+        }
+        this.busy.set(false);
+        done();
+      },
+      error: err => {
+        if (!this.stillShowing(id)) {
+          return;
+        }
+        this.busy.set(false);
+        this.formError.set(writeErrorMessage(err));
+      },
+    });
+  }
+
+  /** `afterWrite`: a reload after a successful write; when it fails the stale record is cleared, not shown. */
+  load(id: number, afterWrite = false): void {
     const seq = ++this.loadSeq;
     this.loadError.set(false);
     this.service
@@ -213,7 +274,7 @@ export class EntryDetailComponent implements OnInit {
         },
         error: () => {
           if (seq === this.loadSeq) {
-            if (this.detail()?.id !== id) {
+            if (afterWrite || this.detail()?.id !== id) {
               this.detail.set(null);
             }
             this.loadError.set(true);
@@ -294,18 +355,11 @@ export class EntryDetailComponent implements OnInit {
       entry_time: null,
       description: this.formNote().trim() || null,
     };
-    const request = panel === 'settle' ? this.service.settleEntry(detail.id, body) : this.service.refundEntry(detail.id, body);
-    this.busy.set(true);
-    request.subscribe({
-      next: () => {
-        this.busy.set(false);
-        this.panel.set(null);
-        this.load(detail.id);
-      },
-      error: err => {
-        this.busy.set(false);
-        this.formError.set(writeErrorMessage(err));
-      },
+    const id = detail.id;
+    const request = panel === 'settle' ? this.service.settleEntry(id, body) : this.service.refundEntry(id, body);
+    this.runWrite(request, id, () => {
+      this.panel.set(null);
+      this.load(id, true);
     });
   }
 
@@ -314,17 +368,8 @@ export class EntryDetailComponent implements OnInit {
     if (!detail || this.locked()) {
       return;
     }
-    const request = scope === 'group' && detail.group ? this.service.deleteSplit(detail.group.id) : this.service.deleteEntry(detail.id);
-    this.busy.set(true);
-    request.subscribe({
-      next: () => {
-        this.busy.set(false);
-        this.router.navigate(['/accounting']);
-      },
-      error: err => {
-        this.busy.set(false);
-        this.formError.set(writeErrorMessage(err));
-      },
-    });
+    const id = detail.id;
+    const request = scope === 'group' && detail.group ? this.service.deleteSplit(detail.group.id) : this.service.deleteEntry(id);
+    this.runWrite(request, id, () => this.close());
   }
 }
