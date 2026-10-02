@@ -39,6 +39,7 @@ class FxResult:
     original_currency: str | None
     fx_rate: Decimal | None
     fx_source: str | None
+    rate_date: date | None = None  # fx_api only: the release the rate comes from (may precede entry_date)
 
 
 @dataclass(frozen=True)
@@ -102,10 +103,13 @@ def resolve_fx(
         result = FxResult(signed_amount, original_amount, original_currency, rate, "manual")
     else:
         try:
-            rate = fx_rate_service.get_rate(db, entry_date, original_currency, account.currency, http_get)
+            quote = fx_rate_service.get_rate(db, entry_date, original_currency, account.currency, http_get)
         except fx_rate_service.FxRateUnavailableError as exc:
             raise ValidationError("fx_rate", f"no rate for {original_currency}→{account.currency}: {exc}") from exc
-        result = FxResult(_round_amount(original_amount * rate), original_amount, original_currency, rate, "fx_api")
+        result = FxResult(
+            _round_amount(original_amount * quote.rate), original_amount, original_currency, quote.rate, "fx_api",
+            quote.rate_date,
+        )
     if result.amount == 0:
         raise ValidationError("amount", "the converted amount rounds to zero")
     return result

@@ -654,3 +654,23 @@ def test_put_keeps_a_link_to_a_rule_disabled_after_it_was_attached(client, db_se
     for refused_id in (disabled_new.id, foreign_id):  # a new disabled rule and a foreign one are still refused
         response = client.put(f"/entries/{entry_id}", json=_payload(card, reward_rule_ids=[rule_id, refused_id]))
         assert response.status_code == 422, refused_id
+
+
+def test_fx_for_today_uses_the_latest_release(db_session, seed, fake_http, monkeypatch):
+    monkeypatch.setattr(ledger_service, "_today", lambda: DAY)
+    card = seed.account("華航卡")
+    http = fake_http({"currency-api@latest/v1/currencies/jpy.json": (200, {"date": "2026-08-31", "jpy": {"twd": 0.2163}})})
+
+    result = ews.resolve_fx(
+        db_session, card, signed_amount=None, original_amount=Decimal("-1800"), original_currency="JPY",
+        fx_rate=None, entry_date=DAY, http_get=http,
+    )
+    assert (result.amount, result.fx_rate, result.fx_source, result.rate_date) == (
+        Decimal("-389.34"), Decimal("0.2163"), "fx_api", date(2026, 8, 31),
+    )
+
+    entry_id = ews.create_entry(
+        db_session, _entry_in(card, amount=None, original_amount="1800", original_currency="JPY"), http_get=http
+    )
+    entry = db_session.get(LedgerEntry, entry_id)
+    assert (entry.amount, entry.fx_rate, entry.fx_source) == (Decimal("-389.34"), Decimal("0.2163"), "fx_api")

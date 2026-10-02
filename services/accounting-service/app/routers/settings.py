@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models import FxRate
 from ..schemas.ledger import (
     AccountGroupOut,
     CategoryOut,
@@ -46,11 +45,13 @@ def get_fx_rate(
 ):
     base, quote = base.upper(), quote.upper()
     try:
-        rate = fx_rate_service.get_rate(db, day, base, quote)
+        found = fx_rate_service.get_rate(db, day, base, quote)
     except fx_rate_service.FxRateUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    source = "identity" if base == quote else db.get(FxRate, (day, base, quote)).source
-    return {"date": day, "base": base, "quote": quote, "rate": rate, "source": source}
+    return {
+        "date": day, "base": base, "quote": quote, "rate": found.rate, "source": found.source,
+        "rate_date": found.rate_date,
+    }
 
 
 # Task 16 adds /account-groups, /categories, /projects and /counterparties here.

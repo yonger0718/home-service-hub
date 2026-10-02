@@ -227,8 +227,9 @@ class PreferenceOut(BaseModel):
 
 
 class FxRateOut(BaseModel):
-    date: date
+    date: date  # the requested day
     base: str
     quote: str
     rate: Decimal
     source: str
+    rate_date: date  # the release the rate comes from; earlier than `date` for today / future days (latest release)

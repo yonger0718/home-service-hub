@@ -161,3 +161,86 @@ def test_payload_date_mismatch_on_both_sources_caches_nothing(db_session, fake_h
         ensure_rates(db_session, [(DAY, "JPY", "TWD")], persist=True, http_get=http)
 
     assert db_session.scalar(select(FxRate)) is None
+
+
+# --- get_rate: the latest release for today / future dates (final review finding 5) -------------------------
+
+from app.services import fx_rate_service, ledger_service  # noqa: E402
+
+LATEST_URL = "cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/jpy.json"
+
+
+def _latest(release: str, rate: float) -> tuple[int, dict]:
+    return 200, {"date": release, "jpy": {"twd": rate}}
+
+
+@pytest.fixture()
+def today_is(monkeypatch):
+    def pin(day: date) -> None:
+        monkeypatch.setattr(ledger_service, "_today", lambda: day)
+
+    return pin
+
+
+@pytest.mark.parametrize("day", [DAY, date(2026, 7, 20)], ids=["today", "future"])
+def test_today_or_a_future_date_uses_the_latest_release(db_session, fake_http, today_is, day):
+    today_is(DAY)
+    http = fake_http({LATEST_URL: _latest("2026-07-09", 0.21)})
+
+    quote = fx_rate_service.get_rate(db_session, day, "JPY", "TWD", http)
+
+    assert (quote.rate, quote.rate_date, quote.source) == (Decimal("0.21"), date(2026, 7, 9), "fawazahmed0-jsdelivr")
+    assert http.calls == ["https://" + LATEST_URL]  # the dated slot for today / the future is never asked for
+    cached = db_session.scalars(select(FxRate)).all()
+    assert [(row.date, row.rate) for row in cached] == [(date(2026, 7, 9), Decimal("0.2100000000"))]  # never under `day`
+
+
+def test_a_past_date_with_a_dated_release_is_unchanged(db_session, fake_http, today_is):
+    today_is(date(2026, 7, 11))
+    http = fake_http({"cdn.jsdelivr.net/npm/@fawazahmed0/" + JPY_DAY_URL: _jpy(0.2), LATEST_URL: _latest("2026-07-10", 0.3)})
+
+    quote = fx_rate_service.get_rate(db_session, DAY, "JPY", "TWD", http)
+
+    assert (quote.rate, quote.rate_date) == (Decimal("0.2"), DAY)
+    assert len(http.calls) == 1 and "latest" not in http.calls[0]
+
+
+def test_a_past_date_whose_release_is_missing_uses_the_latest(db_session, fake_http, today_is):
+    today_is(date(2026, 7, 11))
+    http = fake_http({"cdn.jsdelivr.net/npm/@fawazahmed0/" + JPY_DAY_URL: (404, None),
+                      "2026-07-10.currency-api.pages.dev": (404, None), LATEST_URL: _latest("2026-07-11", 0.3)})
+
+    quote = fx_rate_service.get_rate(db_session, DAY, "JPY", "TWD", http)
+
+    assert (quote.rate, quote.rate_date) == (Decimal("0.3"), date(2026, 7, 11))
+    assert db_session.get(FxRate, (DAY, "JPY", "TWD")) is None
+
+
+def test_today_reuses_a_cached_release_of_today_without_a_request(db_session, fake_http, today_is):
+    today_is(DAY)
+    db_session.add(FxRate(date=DAY, base="JPY", quote="TWD", rate=Decimal("0.2"), source="test"))
+    db_session.commit()
+    http = fake_http({})
+
+    quote = fx_rate_service.get_rate(db_session, DAY, "JPY", "TWD", http)
+
+    assert (quote.rate, quote.rate_date, http.calls) == (Decimal("0.2"), DAY, [])
+
+
+def test_latest_unreachable_falls_back_to_the_newest_cached_rate(db_session, fake_http, today_is):
+    today_is(DAY)
+    db_session.add_all([
+        FxRate(date=date(2026, 7, 1), base="JPY", quote="TWD", rate=Decimal("0.19"), source="test"),
+        FxRate(date=date(2026, 7, 8), base="JPY", quote="TWD", rate=Decimal("0.2"), source="test"),
+    ])
+    db_session.commit()
+
+    quote = fx_rate_service.get_rate(db_session, date(2026, 7, 12), "JPY", "TWD", fake_http({}))
+
+    assert (quote.rate, quote.rate_date) == (Decimal("0.2"), date(2026, 7, 8))
+
+
+def test_no_latest_and_no_cache_is_unavailable(db_session, fake_http, today_is):
+    today_is(DAY)
+    with pytest.raises(FxRateUnavailableError, match="no FX rate for JPY→TWD on 2026-07-10"):
+        fx_rate_service.get_rate(db_session, DAY, "JPY", "TWD", fake_http({}))
