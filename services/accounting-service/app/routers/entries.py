@@ -1,11 +1,13 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..schemas.ledger import EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
-from ..services import ledger_service
+from ..schemas.writes import EntryIn, EntryUpdateIn, EntryWriteOut
+from ..services import entry_write_service, ledger_service
+from .errors import service_errors
 
 router = APIRouter(prefix="/entries", tags=["Entries"])
 
@@ -43,4 +45,33 @@ def get_entry(entry_id: int, db: Session = Depends(get_db)):
     return detail
 
 
-# write endpoints are added in Task 12
+def _written(db: Session, entry_id: int) -> dict:
+    detail = ledger_service.get_entry_detail(db, entry_id)
+    return {**detail, "proposed_fee": entry_write_service.proposed_fee_for_entry(db, entry_id)}
+
+
+@router.post("", response_model=EntryWriteOut, status_code=201)
+def post_entry(payload: EntryIn, db: Session = Depends(get_db)):
+    with service_errors():
+        entry_id = entry_write_service.create_entry(db, payload)
+    db.commit()
+    return _written(db, entry_id)
+
+
+@router.put("/{entry_id}", response_model=EntryWriteOut)
+def put_entry(entry_id: int, payload: EntryUpdateIn, db: Session = Depends(get_db)):
+    with service_errors():
+        entry_write_service.update_entry(db, entry_id, payload)
+    db.commit()
+    return _written(db, entry_id)
+
+
+@router.delete("/{entry_id}", status_code=204)
+def remove_entry(entry_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        entry_write_service.delete_entry(db, entry_id)
+    db.commit()
+    return Response(status_code=204)
+
+
+# settle and refund endpoints are added in Task 15

@@ -1,9 +1,12 @@
+import queue
+import threading
 import time
 from datetime import date
 from datetime import time as dt_time
 from decimal import Decimal
 
 from sqlalchemy import select, text
+from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, LedgerEntry
 from app.services.moze_csv import parse_moze_csv
@@ -85,3 +88,39 @@ def _import_backup(session, data, renames=None, rates=None, *, strict=False, all
 
 def _by_moze_id(session, moze_id: str) -> LedgerEntry:
     return session.scalar(select(LedgerEntry).where(LedgerEntry.moze_id == moze_id))
+
+
+def race(engine, first, second, timeout: float = 5.0):
+    """Run first(session) and second(session) in two transactions on separate connections, as two overlapping
+    requests would, and return second's outcome ("committed" or the exception it raised).
+
+    `first` runs and keeps its transaction open (holding the row lock it took); `second` runs in a thread and
+    must block on that lock (still running after 0.5 s); `first` commits; `second` must then finish within
+    `timeout` seconds.
+    """
+    factory = sessionmaker(bind=engine, autoflush=False)
+    first_session, second_session = factory(), factory()
+    outcome: queue.Queue = queue.Queue()
+
+    def run_second():
+        try:
+            second(second_session)
+            second_session.commit()
+            outcome.put("committed")
+        except Exception as exc:  # noqa: BLE001  (the outcome is asserted by the caller)
+            second_session.rollback()
+            outcome.put(exc)
+
+    try:
+        first(first_session)
+        thread = threading.Thread(target=run_second, daemon=True)
+        thread.start()
+        thread.join(timeout=0.5)
+        assert thread.is_alive(), "the second write must wait for the first transaction's row lock"
+        first_session.commit()
+        thread.join(timeout=timeout)
+        assert not thread.is_alive(), f"the second write is still blocked {timeout} s after the first committed"
+        return outcome.get_nowait()
+    finally:
+        first_session.close()
+        second_session.close()

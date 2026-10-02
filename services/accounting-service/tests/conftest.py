@@ -2,6 +2,8 @@ import json
 import sys
 import uuid
 from contextlib import ExitStack, contextmanager
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,7 +19,9 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import SQLALCHEMY_DATABASE_URL, get_db, get_engine
 from app.main import app
+from app.models import Account, Category, Counterparty, EntryGroup, FxRate, LedgerEntry, Project, RewardRule
 from app.services import fx_rate_service
+from tests.helpers import make_account, make_entry
 from app.services.moze_backup_json import parse_backup_doc
 
 SERVICE_DIR = Path(__file__).resolve().parents[1]
@@ -344,3 +348,51 @@ def fake_exporter(tmp_path):
         return [sys.executable, str(FAKE_EXPORTER), str(prepared), str(exit_code), message]
 
     return build
+
+
+class Seed:
+    """Synthetic rows for the write tests (never owner data). Every builder flushes and returns the row."""
+
+    def __init__(self, session):
+        self.db = session
+
+    def _add(self, row):
+        self.db.add(row)
+        self.db.flush()
+        return row
+
+    def account(self, name="錢包", currency="TWD", opening="0", **extra) -> Account:
+        return make_account(self.db, name, currency, opening, **extra)
+
+    def category(self, name, kind="expense", parent=None, **extra) -> Category:
+        return self._add(Category(kind=kind, name=name, parent_id=parent.id if parent else None, **extra))
+
+    def project(self, name) -> Project:
+        return self._add(Project(name=name))
+
+    def counterparty(self, name) -> Counterparty:
+        return self._add(Counterparty(name=name))
+
+    def group(self, kind="split", **extra) -> EntryGroup:
+        return self._add(EntryGroup(kind=kind, **extra))
+
+    def rule(self, account, name="回饋", *, enabled=True, starts_on=date(2026, 1, 1), ends_on=date(2026, 12, 31), **extra) -> RewardRule:
+        return self._add(
+            RewardRule(
+                account_id=account.id, name=name, method="percent", rate=Decimal("1"), posting="after_window",
+                reward_account_id=account.id, is_enabled=enabled, starts_on=starts_on, ends_on=ends_on, **extra,
+            )
+        )
+
+    def entry(self, account, amount, *, kind="expense", day=date(2026, 9, 1), source="manual", **extra) -> LedgerEntry:
+        extra.setdefault("posted_date", day)
+        return make_entry(self.db, account, amount, kind=kind, entry_date=day, source=source, **extra)
+
+    def fx(self, day, base, quote, rate) -> FxRate:
+        return self._add(FxRate(date=day, base=base, quote=quote, rate=Decimal(rate), source="test"))
+
+
+@pytest.fixture()
+def seed(db_session):
+    """seed.account(...), seed.entry(account, "-100", kind=..., source=..., ...) and friends on db_session."""
+    return Seed(db_session)

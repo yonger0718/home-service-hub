@@ -6,7 +6,6 @@ CLI: python -m app.services.moze_import_service <path> [--dry-run] [--rename OLD
 import argparse
 import hashlib
 import json
-import os
 import sys
 from collections import Counter
 from contextlib import contextmanager
@@ -33,6 +32,7 @@ from ..models import (
     Project,
 )
 from . import fx_rate_service
+from .edit_lock import import_locked  # noqa: F401  (re-exported; CLI and REST importers use it)
 from .moze_csv import MozeImportError, MozeRow, ParsedFile, parse_moze_csv
 from .transfer_pairing import PairingResult, pair_transfers
 
@@ -418,10 +418,6 @@ class ImportLockedError(ImportRefusedError):
 
 class ImportAlreadyRunningError(ImportRefusedError):
     pass
-
-
-def import_locked() -> bool:
-    return os.getenv("ACCOUNTING_IMPORT_LOCKED", "").strip().lower() == "true"
 
 
 def _now() -> datetime:

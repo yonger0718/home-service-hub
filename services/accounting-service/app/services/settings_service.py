@@ -5,15 +5,12 @@ from sqlalchemy.orm import Session
 
 from ..models import Preference
 from ..schemas.writes import PreferenceIn
+from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
 
 PREFERENCE_FIELDS = (
     "expense_income_colors", "keypad_layout", "week_start", "main_currency", "hide_rewards_on_timeline",
     "abbreviate_totals",
 )
-
-
-class ConflictError(Exception):
-    """The write conflicts with existing data; routers map it to HTTP 409."""
 
 
 def _preference_row(db: Session) -> Preference:
