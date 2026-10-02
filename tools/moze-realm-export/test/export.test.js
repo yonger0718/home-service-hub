@@ -164,3 +164,42 @@ test("CLI exits 2 on bad usage", () => {
   assert.equal(result.status, 2);
   assert.match(result.stderr, /usage: node index\.js <zip> --out <json>/);
 });
+
+test("CLI refuses a moze.realm entry that is not a regular file", () => {
+  const dir = tempDir();
+  const src = path.join(dir, "src");
+  fs.mkdirSync(src);
+  fs.writeFileSync(path.join(src, "target.realm"), "elsewhere");
+  fs.symlinkSync("target.realm", path.join(src, "moze.realm"));
+  const zip = path.join(dir, "link.zip");
+  execFileSync("zip", ["-q", "-y", zip, "moze.realm"], { cwd: src }); // -y stores the symlink itself
+  const work = path.join(dir, "work");
+
+  const result = runCli([zip, "--out", path.join(dir, "a.json"), "--work", work]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /moze\.realm is not a regular file/);
+  assert.deepEqual(fs.readdirSync(work), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("CLI refuses an archive whose entries unpack beyond the size cap", () => {
+  const dir = tempDir();
+  const src = path.join(dir, "src");
+  fs.mkdirSync(src);
+  fs.writeFileSync(path.join(src, "moze.realm"), Buffer.alloc(2 * 1024 * 1024)); // compresses to a few KB
+  const zip = path.join(dir, "bomb.zip");
+  execFileSync("zip", ["-q", zip, "moze.realm"], { cwd: src });
+  const work = path.join(dir, "work");
+
+  const result = spawnSync(process.execPath, [INDEX, zip, "--out", path.join(dir, "a.json"), "--work", work], {
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, MOZE_EXPORT_MAX_UNZIPPED_BYTES: String(1024 * 1024) },
+  });
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /moze\.realm unpacks to 2097152 bytes, more than the 1048576-byte cap/);
+  assert.deepEqual(fs.readdirSync(work), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

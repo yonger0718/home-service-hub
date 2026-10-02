@@ -17,6 +17,9 @@ Usage
 
 - Unzips only `moze.realm` and `info` into the work directory (default: a new private directory under `$TMPDIR`)
   and opens that copy; Realm upgrades the copy's file format in place, the archive itself is never modified.
+  Refuses an archive over 200 MB, a `moze.realm` / `info` entry that is not a regular file (a symlink would make
+  Realm open its target), and an entry that unpacks to more than 2 GiB (`MOZE_EXPORT_MAX_UNZIPPED_BYTES` lowers
+  the cap in tests).
 - Writes `{"exported_at", "info", "classes"}` with mode 600: live rows (`isDeleted == false`) of the classes in
   `export.js` (`EXPORT_CLASSES`, a field whitelist per class), object links flattened to the linked row's primary
   key, lists of links to arrays of keys, dates as `YYYY-MM-DDTHH:MM:SS` in Asia/Taipei, dictionaries copied.
@@ -26,8 +29,8 @@ Usage
   `cannot open moze.realm: …`), 2 bad usage. The process exits explicitly because Realm keeps the event loop alive.
 
 The accounting importer runs this tool as a subprocess. `MOZE_REALM_EXPORTER` in the root `.env` may name another
-script (`.js`, run with `node` from `PATH`) or an executable; the default is
-`node <repo>/tools/moze-realm-export/index.js`.
+script (`.js`, run with `node` from `PATH`), an executable, or a whole command line such as
+`/usr/bin/node /path/to/index.js`; the default is `node <repo>/tools/moze-realm-export/index.js`.
 
 The backup holds private data: run the tool only into a private scratch directory (mode 700) and delete the JSON
 after use. Tests (`npm test`, which runs `node --test test/*.test.js`; Node 22 rejects `node --test test/`) use a

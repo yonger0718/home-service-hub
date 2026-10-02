@@ -12,6 +12,11 @@ const { exportRealm, taipeiIso } = require("./export");
 
 const USAGE = "usage: node index.js <zip> --out <json> [--work <dir>]";
 const MAX_ZIP_BYTES = 200 * 1024 * 1024;
+// Cap on the uncompressed size of each extracted entry (zip bombs); tests lower it through the environment.
+const MAX_UNZIPPED_BYTES = Number(process.env.MOZE_EXPORT_MAX_UNZIPPED_BYTES) || 2 * 1024 * 1024 * 1024;
+// One `unzip -Zl` line: permissions, version, OS, uncompressed size, text/binary, compressed size, method,
+// date, time, name (names may contain spaces, so the name is the rest of the line).
+const ZIPINFO_LINE = /^(\S+)\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s(.+)$/;
 
 class UsageError extends Error {}
 
@@ -37,12 +42,26 @@ function parseArgs(argv) {
 }
 
 function zipEntries(zip) {
+  let listing;
   try {
-    return execFileSync("unzip", ["-Z1", zip], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-      .split("\n")
-      .filter(Boolean);
+    listing = execFileSync("unzip", ["-Zl", zip], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   } catch (error) {
     throw new Error(`cannot read ${zip} as a zip archive`);
+  }
+  const entries = new Map();
+  for (const line of listing.split("\n")) {
+    const match = ZIPINFO_LINE.exec(line);
+    if (match) entries.set(match[3], { mode: match[1], size: Number(match[2]) });
+  }
+  return entries;
+}
+
+function checkEntry(name, entry) {
+  // A symlink (l), directory (d) or other special entry would be extracted as such; Realm would then open and
+  // upgrade whatever the link points at. Only regular files (a leading "-") are extracted.
+  if (!entry.mode.startsWith("-")) throw new Error(`${name} is not a regular file in the archive`);
+  if (entry.size > MAX_UNZIPPED_BYTES) {
+    throw new Error(`${name} unpacks to ${entry.size} bytes, more than the ${MAX_UNZIPPED_BYTES}-byte cap`);
   }
 }
 
@@ -50,8 +69,9 @@ function extract(zip, work) {
   const size = fs.statSync(zip).size;
   if (size > MAX_ZIP_BYTES) throw new Error(`archive is larger than 200 MB (${size} bytes)`);
   const entries = zipEntries(zip);
-  if (!entries.includes("moze.realm")) throw new Error("archive has no moze.realm");
-  const wanted = entries.includes("info") ? ["moze.realm", "info"] : ["moze.realm"];
+  if (!entries.has("moze.realm")) throw new Error("archive has no moze.realm");
+  const wanted = entries.has("info") ? ["moze.realm", "info"] : ["moze.realm"];
+  for (const name of wanted) checkEntry(name, entries.get(name));
   // TZ: zip entry times without a UTC extra field are local times of the phone that wrote them.
   execFileSync("unzip", ["-o", "-q", zip, ...wanted, "-d", work], {
     stdio: ["ignore", "ignore", "pipe"],
