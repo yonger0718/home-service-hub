@@ -19,12 +19,11 @@ from .edit_lock import assert_editable
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (ValidationError re-exported)
 from .moze_import_service import SYSTEM_CATEGORY_NAMES
 
-EDITABLE_KINDS: tuple[str, ...] = get_args(EditableKind)  # kinds a manual entry form can write
-
 AMOUNT_QUANTUM = Decimal("0.0001")
 RATE_QUANTUM = fx_rate_service.RATE_QUANTUM
 SIGN_BY_KIND = {"expense": -1, "receivable": -1, "income": 1, "payable": 1}
-EDITABLE_KINDS = tuple(SIGN_BY_KIND)
+EDITABLE_KINDS: tuple[str, ...] = get_args(EditableKind)  # kinds a manual entry form can write
+assert set(EDITABLE_KINDS) == set(SIGN_BY_KIND), "every editable kind needs a sign rule"
 COUNTERPARTY_KINDS = ("receivable", "payable")
 CHILD_DEFAULT_NAMES = {"fee": "手續費", "discount": "折扣"}
 FX_FEE_CHILD_NAME = "國外交易手續費"

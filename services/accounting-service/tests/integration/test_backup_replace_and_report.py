@@ -341,6 +341,23 @@ def test_database_errors_hide_their_parameters(pg_engine):
     assert "機密" not in str(exc.value)
 
 
+def test_keep_json_is_private_from_the_start_and_never_follows_a_symlink(pg_engine, db_session, backup, fake_exporter, tmp_path):
+    kept = tmp_path / "kept.json"
+    kept.write_text("old", encoding="utf-8")
+    kept.chmod(0o644)
+    run_backup_import(pg_engine, _zip(tmp_path), "MOZE_4.0.zip", dry_run=True, exporter=fake_exporter(_doc(backup)), keep_json=kept)
+    assert kept.stat().st_mode & 0o777 == 0o600
+    assert json.loads(kept.read_text(encoding="utf-8"))["exported_at"] == "2026-10-01T17:00:37"
+
+    target = tmp_path / "elsewhere.json"
+    target.write_text("untouched", encoding="utf-8")
+    link = tmp_path / "link.json"
+    link.symlink_to(target)
+    with pytest.raises(MozeImportError, match="--keep-json destination is a symbolic link"):
+        run_backup_import(pg_engine, _zip(tmp_path), "MOZE_4.0.zip", dry_run=True, exporter=fake_exporter(_doc(backup)), keep_json=link)
+    assert target.read_text(encoding="utf-8") == "untouched"
+
+
 def _runs(pg_engine):
     with pg_engine.connect() as conn:
         return conn.execute(text("SELECT kind, status, exported_at, summary FROM import_run ORDER BY id")).all()

@@ -58,7 +58,11 @@ def get_fx_rate(
 
 
 def _find(rows: list[dict], row_id: int) -> dict:
-    return next(row for row in rows if row["id"] == row_id)
+    """The written row from the re-read listing; 404 when a concurrent delete removed it after the commit."""
+    row = next((row for row in rows if row["id"] == row_id), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"{row_id} not found")
+    return row
 
 
 # --- account groups -------------------------------------------------------------

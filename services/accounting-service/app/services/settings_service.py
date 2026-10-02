@@ -218,8 +218,17 @@ def delete_account(db: Session, account_id: int) -> None:
     )
     if rule is not None:
         raise ConflictError("account is used by reward rules; set is_archived instead of deleting it")
-    db.execute(update(Account).where(Account.combined_account_id == account_id).values(combined_account_id=None))
-    db.execute(update(Account).where(Account.auto_pay_account_id == account_id).values(auto_pay_account_id=None))
+    # Accounts whose links are cleared changed settings, so a re-import must keep that (settings_locally_edited).
+    db.execute(
+        update(Account)
+        .where(Account.combined_account_id == account_id)
+        .values(combined_account_id=None, settings_locally_edited=True)
+    )
+    db.execute(
+        update(Account)
+        .where(Account.auto_pay_account_id == account_id)
+        .values(auto_pay_account_id=None, settings_locally_edited=True)
+    )
     db.execute(update(Category).where(Category.default_account_id == account_id).values(default_account_id=None))
     db.delete(account)
     db.flush()
@@ -311,7 +320,9 @@ def get_category(db: Session, category_id: int) -> dict:
         node["children"] = [
             _category_dict(child, category)
             for child in db.scalars(
-                select(Category).where(Category.parent_id == category.id).order_by(Category.sort_order, Category.name)
+                select(Category)
+                .where(Category.parent_id == category.id)
+                .order_by(Category.sort_order, Category.name, Category.id)
             )
         ]
     return node

@@ -1161,6 +1161,22 @@ def _run_backup_locked(conn, data, file_name, sha256, *, dry_run, renames, stric
         return run_report(session.get(ImportRun, run_id))
 
 
+def _keep_private_copy(source: Path, destination: Path) -> None:
+    """Copy the converter JSON (owner data) to `destination`, mode 0600 before any byte is written: created with
+    0600, or an existing file fchmod-ed before it is truncated and rewritten. A symlinked destination is refused
+    (O_NOFOLLOW), so the copy never lands where the link points."""
+    if destination.is_symlink():
+        raise MozeImportError(f"--keep-json destination is a symbolic link: {destination}")
+    try:
+        fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as exc:
+        raise MozeImportError(f"--keep-json destination cannot be written: {destination} ({exc.strerror})") from exc
+    with os.fdopen(fd, "wb") as target, source.open("rb") as handle:
+        os.fchmod(target.fileno(), 0o600)
+        target.truncate()
+        shutil.copyfileobj(handle, target)
+
+
 def run_backup_import(
     engine: Engine,
     zip_path: Path,
@@ -1187,8 +1203,7 @@ def run_backup_import(
     with tempfile.TemporaryDirectory(prefix="moze-backup-") as work:
         json_path = convert_backup(zip_path, Path(work), exporter)
         if keep_json is not None:
-            shutil.copyfile(json_path, keep_json)
-            os.chmod(keep_json, 0o600)
+            _keep_private_copy(json_path, Path(keep_json))
         data = load_backup_json(json_path)
     with import_lock(engine) as conn:
         return _run_backup_locked(

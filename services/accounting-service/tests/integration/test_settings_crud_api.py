@@ -430,3 +430,28 @@ def test_sort_order_and_ids_beyond_int32_are_422(client, db_session):
     assert client.post("/account-groups", json={"name": "大", "sort_order": -(2**31) - 1}).status_code == 422
     assert client.put("/projects/order", json={"ids": [2**31]}).status_code == 422
     assert client.post("/accounts", json=_account_body(group_id=2**31)).status_code == 422
+
+
+def test_deleting_an_account_flags_the_accounts_whose_links_it_clears(client, db_session, seed):
+    master = seed.account("主卡", is_credit=True)
+    sub = seed.account("副卡", is_credit=True, combined_account_id=master.id)
+    payer = seed.account("自動扣繳", is_credit=True, auto_pay_account_id=master.id)
+    bystander = seed.account("無關")
+    db_session.commit()
+    ids = (sub.id, payer.id, bystander.id)
+
+    assert client.delete(f"/accounts/{master.id}").status_code == 204
+
+    db_session.expire_all()
+    flags = [db_session.get(Account, account_id).settings_locally_edited for account_id in ids]
+    assert flags == [True, True, False]
+
+
+def test_a_row_missing_from_the_reread_listing_is_404_not_500(client, db_session, monkeypatch):
+    from app.services import settings_service
+
+    monkeypatch.setattr(settings_service, "list_groups", lambda db: [])  # e.g. deleted concurrently after the commit
+
+    response = client.post("/account-groups", json={"name": "銀行"})
+
+    assert response.status_code == 404
