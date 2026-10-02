@@ -1,4 +1,7 @@
 import time
+from datetime import date
+from datetime import time as dt_time
+from decimal import Decimal
 
 from sqlalchemy import select, text
 
@@ -39,3 +42,32 @@ def wait_until_unlocked(engine, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while advisory_locks(engine) and time.monotonic() < deadline:
         time.sleep(0.05)
+
+
+def make_account(session, name: str = "錢包", currency: str = "TWD", opening: str = "0", **columns) -> Account:
+    """Insert an account (flushed, not committed); `columns` sets any other Account column."""
+    account = Account(name=name, currency=currency, opening_balance=Decimal(opening), **columns)
+    session.add(account)
+    session.flush()
+    return account
+
+
+def make_entry(
+    session,
+    account: Account,
+    amount: str,
+    *,
+    kind: str = "expense",
+    entry_date: date = date(2026, 9, 1),
+    entry_time: dt_time | None = None,
+    source: str = "manual",
+    **columns,
+) -> LedgerEntry:
+    """Insert an entry in the account's currency (flushed, not committed); posted_date defaults to entry_date."""
+    entry = LedgerEntry(
+        account_id=account.id, kind=kind, amount=Decimal(amount), currency=account.currency,
+        entry_date=entry_date, entry_time=entry_time, source=source, **columns,
+    )
+    session.add(entry)
+    session.flush()
+    return entry
