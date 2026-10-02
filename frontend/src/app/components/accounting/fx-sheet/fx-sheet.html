@@ -1,0 +1,61 @@
+<div class="overlay" (click)="cancel()">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="fx-title" (click)="$event.stopPropagation()">
+    <div class="grab"></div>
+    <h3 id="fx-title">幣種</h3>
+    <div class="kv">
+      <div>
+        <span class="k">原幣金額</span>
+        <span class="v ed">
+          <select class="fx-currency" aria-label="原幣幣種" (change)="setCurrency($any($event.target).value)">
+            @for (code of currencies(); track code) {
+              <option [value]="code" [selected]="code === currency()">{{ code }}</option>
+            }
+          </select>
+          <input
+            class="fx-original"
+            inputmode="decimal"
+            aria-label="原幣金額"
+            [value]="original()"
+            (input)="setOriginal($any($event.target).value)"
+          />
+        </span>
+      </div>
+      @if (isForeign()) {
+        <div>
+          <span class="k">匯率<span class="sub2">{{ rateNote() }}</span></span>
+          <span class="v ed">
+            <input class="fx-rate" inputmode="decimal" aria-label="匯率" [value]="rate()" (input)="editRate($any($event.target).value)" />
+          </span>
+        </div>
+        <div>
+          <span class="k">轉換成 {{ account().currency }}<span class="sub2">可改成帳單上的實際金額</span></span>
+          <span class="v ed">
+            <input
+              class="fx-converted"
+              inputmode="decimal"
+              [attr.aria-label]="'轉換成 ' + account().currency"
+              [value]="convertedText()"
+              (input)="editConverted($any($event.target).value)"
+            />
+          </span>
+        </div>
+        <div>
+          <span class="k">採用線上匯率</span>
+          <button
+            type="button"
+            class="tog"
+            role="switch"
+            aria-label="採用線上匯率"
+            [class.on]="useOnline()"
+            [attr.aria-checked]="useOnline()"
+            (click)="toggleOnline()"
+          ></button>
+        </div>
+      }
+    </div>
+    <div class="btnrow">
+      <button type="button" class="fx-cancel" (click)="cancel()">取消</button>
+      <button type="button" class="pri fx-confirm" (click)="confirm()">確定</button>
+    </div>
+  </div>
+</div>
