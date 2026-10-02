@@ -1,8 +1,8 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting, TestRequest } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { ActivatedRoute, ParamMap, convertToParamMap, provideRouter } from '@angular/router';
+import { BehaviorSubject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountDetail, AccountPeriodSummary, EntryPage, LedgerEntry } from '../../../models/accounting.model';
@@ -39,8 +39,10 @@ const SUMMARY: AccountPeriodSummary = {
 
 describe('AccountingAccountEntriesComponent (passbook)', () => {
   let http: HttpTestingController;
+  let params: BehaviorSubject<ParamMap>;
 
   beforeEach(async () => {
+    params = new BehaviorSubject(convertToParamMap({ id: '7' }));
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 10, 0));
     await TestBed.configureTestingModule({
@@ -50,7 +52,7 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         // Pane components are reused across :id changes (Task 21), so the page reads `paramMap` as an observable.
-        { provide: ActivatedRoute, useValue: { paramMap: of(convertToParamMap({ id: '7' })) } },
+        { provide: ActivatedRoute, useValue: { paramMap: params } },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -218,6 +220,31 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     expect(req.request.params.get('date_from')).toBe('2026-01-01');
     expect(req.request.params.get('date_to')).toBe('2026-10-15');
     req.flush(page([]));
+  });
+
+  it('shows the reset filters after switching to another account', () => {
+    const fixture = render(page(PERIOD));
+    const el = fixture.nativeElement as HTMLElement;
+    const kind = el.querySelector<HTMLSelectElement>('.filter-kind')!;
+    kind.value = 'reward';
+    kind.dispatchEvent(new Event('change'));
+    expectEntries().flush(page([]));
+    const q = el.querySelector<HTMLInputElement>('.filter-q')!;
+    q.value = '午餐';
+    q.dispatchEvent(new Event('change'));
+    expectEntries().flush(page([]));
+    fixture.detectChanges();
+
+    params.next(convertToParamMap({ id: '8' }));
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/accounts/8').flush({ ...ACCOUNT, id: 8 });
+    http.expectOne(r => r.url === '/api/accounting/accounts/8/entries').flush(page([]));
+    fixture.detectChanges();
+    http.expectOne(r => r.url === '/api/accounting/accounts/8/summary').flush(SUMMARY);
+    fixture.detectChanges();
+
+    expect(el.querySelector<HTMLSelectElement>('.filter-kind')!.value).toBe('');
+    expect(el.querySelector<HTMLInputElement>('.filter-q')!.value).toBe('');
   });
 
   it('loads more with the next offset and ignores a stale page after a filter change', () => {
