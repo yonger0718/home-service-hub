@@ -1,0 +1,24 @@
+@if (quickAmounts().length) {
+  <div class="quick" aria-label="常用金額">
+    @for (amount of quickAmounts(); track amount) {
+      <button type="button" (click)="pickQuick(amount)">{{ quickLabel(amount) }}</button>
+    }
+  </div>
+}
+@if (error()) {
+  <p class="keypad-error" role="alert">算式有誤：{{ error() }}</p>
+}
+<div class="keypad" role="group" aria-label="數字鍵盤">
+  @for (row of rows(); track $index) {
+    @for (key of row; track key) {
+      <button
+        type="button"
+        [attr.data-key]="key"
+        [class.fn]="isFunction(key)"
+        [class.ok]="key === '✓'"
+        [attr.aria-label]="ariaLabel(key)"
+        (click)="press(key)"
+      >{{ key }}</button>
+    }
+  }
+</div>
