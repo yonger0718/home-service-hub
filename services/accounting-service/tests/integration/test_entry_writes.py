@@ -1,18 +1,21 @@
 """Manual entry writes: signs, children, FX, rules, category defaults, update, delete and the cutover lock."""
 
+import threading
 import uuid
 from datetime import date, time
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import sessionmaker
 
 from app.models import Account, Category, EntryRewardRule, LedgerEntry
 from app.schemas.writes import EntryIn, EntryUpdateIn
 from app.services import edit_lock, ledger_service, moze_import_service
 from app.services import entry_write_service as ews
 from app.services.edit_lock import EditLockedError, assert_editable
-from app.services.errors import NotFoundError, ValidationError
+from app.services.errors import ConflictError, NotFoundError, ValidationError
 from tests.helpers import make_entry, race
 
 DAY = date(2026, 9, 1)
@@ -572,6 +575,60 @@ def test_concurrent_deletes_of_both_transfer_legs_do_not_deadlock(pg_engine, db_
     result = race(pg_engine, lambda db: ews.delete_entry(db, out_id), lambda db: ews.delete_entry(db, in_id))
 
     assert result == "committed" or isinstance(result, NotFoundError), result
+    db_session.expire_all()
+    assert db_session.scalars(select(LedgerEntry)).all() == []
+    assert (_balance(db_session, a_id), _balance(db_session, b_id)) == (Decimal("500"), Decimal("0"))
+
+
+def test_concurrent_deletes_of_both_transfer_legs_reach_the_lock_together(pg_engine, db_session, seed, monkeypatch):
+    """Both deletes are held at a barrier right before the leg-lock statement, so they lock at the same time.
+
+    This deadlocked on the pre-fix ordering (each delete locked its own leg first, then the other leg in a second
+    statement: DeadlockDetected in every run). With one statement ordered by id, one delete waits for the other,
+    which then finds its leg gone.
+    """
+    a, b = seed.account("A", opening="500"), seed.account("B")
+    group = uuid.uuid4()
+    out_leg = seed.entry(a, "-100", kind="transfer_out", transfer_group_id=group)
+    seed.entry(a, "-15", kind="fee", parent_entry_id=out_leg.id)
+    in_leg = seed.entry(b, "100", kind="transfer_in", transfer_group_id=group)
+    db_session.commit()
+    a_id, b_id, out_id, in_id = a.id, b.id, out_leg.id, in_leg.id
+
+    barrier = threading.Barrier(2)
+    original = ews.locked_with_legs
+
+    def lock_together(db, entry_id, transfer_group_id):
+        barrier.wait(timeout=5)
+        return original(db, entry_id, transfer_group_id)
+
+    monkeypatch.setattr(ews, "locked_with_legs", lock_together)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    outcomes: dict[int, object] = {}
+
+    def delete(entry_id):
+        session = factory()
+        try:
+            ews.delete_entry(session, entry_id)
+            session.commit()
+            outcomes[entry_id] = "committed"
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            session.rollback()
+            outcomes[entry_id] = exc
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=delete, args=(entry_id,), daemon=True) for entry_id in (out_id, in_id)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert not any(thread.is_alive() for thread in threads), "a delete is still blocked after 5 s"
+
+    assert set(outcomes) == {out_id, in_id}
+    assert not any(isinstance(o, OperationalError) for o in outcomes.values()), outcomes
+    assert all(o == "committed" or isinstance(o, (NotFoundError, ConflictError)) for o in outcomes.values()), outcomes
+    assert "committed" in outcomes.values(), outcomes
     db_session.expire_all()
     assert db_session.scalars(select(LedgerEntry)).all() == []
     assert (_balance(db_session, a_id), _balance(db_session, b_id)) == (Decimal("500"), Decimal("0"))
