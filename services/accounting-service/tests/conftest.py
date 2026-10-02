@@ -1,3 +1,4 @@
+import json
 import uuid
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -16,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 from app.database import SQLALCHEMY_DATABASE_URL, get_db, get_engine
 from app.main import app
 from app.services import fx_rate_service
+from app.services.moze_backup_json import parse_backup_doc
 
 SERVICE_DIR = Path(__file__).resolve().parents[1]
 # Every ledger table, children first; TRUNCATE ... CASCADE also clears rows the list misses.
@@ -197,3 +199,131 @@ def _moze_csv(*rows: str, bom: bool = True, newline: str = "\n", header: str = M
 def moze():
     """Builders for small synthetic MOZE CSV files (never real data)."""
     return SimpleNamespace(row=_moze_row, opening=_moze_opening, csv=_moze_csv, header=MOZE_HEADER)
+
+
+BACKUP_EXPORTED_AT = "2026-10-01T17:00:37"
+
+
+def _bk_group(identifier="G-BANK", name="APP_GROUP_BANK", **fields) -> dict:
+    return {"identifier": identifier, "name": name, "sequence": 1, "type": 0, **fields}
+
+
+def _bk_account(identifier="A-WALLET", name="錢包", currency="TWD", **fields) -> dict:
+    return {
+        "identifier": identifier, "name": name, "mainCurrency": currency, "group": None, "originalAmount": 0,
+        "isArchived": False, "sequence": 0, "desc": "", "isBalanceIncluded": True, "isCreditAccount": False,
+        "startDay": 1, "paymentDeadlineType": 0, "paymentDeadline": 0, "creditLimit": 0, "combinedAccount": None,
+        "creditSharingID": None, "autoPaidAccount": None, "isCurrencyFeeEnabled": False, "feePercentage": 0,
+        "feeCalculation": 0, "isRefundWithCurrencyFee": False, "type": 0, "imageName": "",
+        "cacheDate": "2026-10-01T00:00:00", "balanceInfo": {}, **fields,
+    }
+
+
+def _bk_category(identifier="C-FOOD", name="CATEGORY_FOOD", type_=1, **fields) -> dict:
+    return {
+        "identifier": identifier, "name": name, "type": type_, "imageName": "Food", "colorHex": "#f0cd92",
+        "isHidden": False, "sequence": 0, **fields,
+    }
+
+
+def _bk_classification(identifier="K-LUNCH", name="午餐", category="C-FOOD", **fields) -> dict:
+    return {
+        "identifier": identifier, "name": name, "category": category, "defaultAccount": None,
+        "defaultProject": None, "isHidden": False, "sequence": 0, "imageName": "", **fields,
+    }
+
+
+def _bk_project(identifier="P-TRIP", name="PROJECT_TRAVEL", **fields) -> dict:
+    return {"identifier": identifier, "name": name, "isArchived": False, "sequence": 0, **fields}
+
+
+def _bk_target(identifier="T-ALAN", name="Alan", **fields) -> dict:
+    return {"identifier": identifier, "name": name, "type": 1, "isSettle": False, **fields}
+
+
+def _bk_record(identifier="R-1", account="A-WALLET", type_=0, price=-100, *, fee=0, bonus=0,
+               date="2026-09-01T12:00:00", currency="TWD", **fields) -> dict:
+    return {
+        "identifier": identifier, "type": type_, "price": price, "fee": fee, "bonus": bonus,
+        "total": price + fee + bonus, "currency": currency, "currencyConversion": None, "account": account,
+        "project": None, "classification": None, "target": None, "bonusRewards": [], "date": date,
+        "chargeDate": fields.pop("chargeDate", date), "name": "", "desc": "", "tags": "", "store": "",
+        "feeName": "", "bonusName": "", "transferID": None, "refundID": None, "rewardID": None,
+        "rewardRecordID": None, "packageID": None, "relatedID": None, "eventID": None, "feeID": None,
+        "isTransferIn": type_ == 2 and price > 0, "isRefund": False, "isEnabled": True, "invoiceNumber": None,
+        **fields,
+    }
+
+
+def _bk_transfer(identifier="X-1", out_record="R-OUT", in_record="R-IN", exchange_rate=1, **fields) -> dict:
+    return {"identifier": identifier, "outRecord": out_record, "inRecord": in_record, "exchangeRate": exchange_rate, **fields}
+
+
+def _bk_package(identifier="PK-1", records=("R-1",), type_=0, event_type=0, **fields) -> dict:
+    return {
+        "identifier": identifier, "type": type_, "eventType": event_type, "records": list(records), "name": "",
+        "store": "", "desc": "", **fields,
+    }
+
+
+def _bk_rule(identifier="B-1", account="A-CARD", **fields) -> dict:
+    return {
+        "identifier": identifier, "accountID": account, "name": "回饋", "desc": "", "type": 0,
+        "rewardPercentage": 1, "rewardAmount": 0, "rewardPeriodType": 0, "rewardTimeType": 2,
+        "rewardDelayDays": 0, "rewardMonth": 1, "rewardDay": 15, "rewardCalculation": 0,
+        "totalRewardCalculation": 1, "rewardLimit": 0, "totalRewardLimit": 0, "rewardSharingID": None,
+        "spendThreshold": 0, "totalSpendThreshold": 0, "minCountThreshold": 0, "isBasic": False,
+        "rewardAccountID": account, "rewardProjectID": None, "startDate": "2026-01-01T00:00:00",
+        "dueDate": "2026-12-31T23:59:59", "isEnabled": True, "sequence": 0, **fields,
+    }
+
+
+def _bk_conversion(record_id="R-1", rate=0.2163, base="JPY", target="TWD") -> dict:
+    return {"recordID": record_id, "exchangeRate": rate, "baseCurrencyCode": base, "targetCurrencyCode": target}
+
+
+def _bk_preference(**fields) -> dict:
+    return {
+        "identifier": "PREF", "expenseIncomeColor": 0, "numberPadType": 1, "firstWeekday": 1,
+        "mainCurrency": "TWD", "hideRewardsOnHome": False, "isTotalBalanceAbbreviate": True, **fields,
+    }
+
+
+def _bk_doc(*, exported_at=BACKUP_EXPORTED_AT, accounts=(), groups=(), categories=(), classifications=(),
+            projects=(), targets=(), records=(), transfers=(), packages=(), rules=(), conversions=(),
+            sharings=(), credit_sharings=(), periods=(), installments=(), preference=None) -> dict:
+    return {
+        "exported_at": exported_at,
+        "info": "version: 205",
+        "classes": {
+            "AHAccount": list(accounts), "AHAccountGroup": list(groups), "AHCategory": list(categories),
+            "AHClassification": list(classifications), "AHProject": list(projects), "AHTarget": list(targets),
+            "AHRecord": list(records), "AHTransfer": list(transfers), "AHPackage": list(packages),
+            "AHBonusReward": list(rules), "AHCurrencyConversion": list(conversions),
+            "AHBonusRewardSharing": list(sharings), "AHCreditSharing": list(credit_sharings),
+            "AHPeriod": list(periods), "AHInstallment": list(installments),
+            "AHPreference": [preference or _bk_preference()],
+            "AHAppConfig": [{"identifier": "CFG", "timeZoneName": "Asia/Taipei"}],
+        },
+    }
+
+
+def _bk_write(tmp_path: Path, doc: dict, name: str = "backup.json") -> Path:
+    path = tmp_path / name
+    path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def _bk_data(**kwargs):
+    return parse_backup_doc(_bk_doc(**kwargs))
+
+
+@pytest.fixture()
+def backup():
+    """Builders for synthetic converter JSON (never real data): backup.doc(...), backup.data(...), backup.write(...)."""
+    return SimpleNamespace(
+        group=_bk_group, account=_bk_account, category=_bk_category, classification=_bk_classification,
+        project=_bk_project, target=_bk_target, record=_bk_record, transfer=_bk_transfer, package=_bk_package,
+        rule=_bk_rule, conversion=_bk_conversion, preference=_bk_preference, doc=_bk_doc, write=_bk_write,
+        data=_bk_data, exported_at=BACKUP_EXPORTED_AT,
+    )
