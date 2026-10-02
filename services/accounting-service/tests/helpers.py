@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 
 from app.models import Account, LedgerEntry
 from app.services.moze_csv import parse_moze_csv
+from app.services.moze_backup_import_service import replace_ledger_from_backup
 from app.services.moze_import_service import IMPORT_LOCK_KEY, replace_ledger
 from app.services.transfer_pairing import pair_transfers
 
@@ -71,3 +72,16 @@ def make_entry(
     session.add(entry)
     session.flush()
     return entry
+
+
+def _import_backup(session, data, renames=None, rates=None, *, strict=False, allow_fx_outliers=False) -> dict:
+    """Run the backup full replace on `data` (a BackupData) in `session` and commit; returns the summary."""
+    summary = replace_ledger_from_backup(
+        session, data, None, renames or {}, rates or {}, strict=strict, allow_fx_outliers=allow_fx_outliers
+    )
+    session.commit()
+    return summary
+
+
+def _by_moze_id(session, moze_id: str) -> LedgerEntry:
+    return session.scalar(select(LedgerEntry).where(LedgerEntry.moze_id == moze_id))

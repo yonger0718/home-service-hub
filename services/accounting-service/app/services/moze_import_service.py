@@ -14,11 +14,22 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
-from ..models import SYSTEM_KINDS, Account, Category, Counterparty, ImportRun, LedgerEntry, Project
+from ..models import (
+    MOZE_SOURCES,
+    SYSTEM_KINDS,
+    Account,
+    Category,
+    Counterparty,
+    EntryGroup,
+    EntryRewardRule,
+    ImportRun,
+    LedgerEntry,
+    Project,
+)
 from . import fx_rate_service
 from .moze_csv import MozeImportError, MozeRow, ParsedFile, parse_moze_csv
 from .transfer_pairing import PairingResult, pair_transfers
@@ -253,6 +264,35 @@ def _archive_disappeared_accounts(session: Session, named_in_file: set[str]) -> 
         account.is_archived = True
     session.flush()
     return archived
+
+
+def delete_moze_entries(session: Session) -> None:
+    """Delete every entry of either MOZE source or with a moze_id, their rule attachments, and MOZE groups.
+
+    reward_rule rows are never touched here; manual, hermes and rule entries stay.
+    """
+    is_moze = or_(LedgerEntry.source.in_(MOZE_SOURCES), LedgerEntry.moze_id.is_not(None))
+    moze_ids = select(LedgerEntry.id).where(is_moze)
+    session.execute(
+        delete(EntryRewardRule).where(EntryRewardRule.entry_id.in_(moze_ids)).execution_options(synchronize_session=False)
+    )
+    session.execute(delete(LedgerEntry).where(is_moze).execution_options(synchronize_session=False))
+    session.execute(
+        delete(EntryGroup).where(EntryGroup.moze_id.is_not(None)).execution_options(synchronize_session=False)
+    )
+    session.flush()
+
+
+def assert_currency_change_allowed(session: Session, account: Account, currency: str) -> None:
+    """An import may change an account's currency only while no entry of any source remains on it."""
+    remaining = session.scalar(
+        select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)
+    )
+    if remaining:
+        raise MozeImportError(
+            f"account '{account.name}': currency {account.currency} → {currency} refused, "
+            f"the account still has {remaining} entries"
+        )
 
 
 def _account_report(account: Account, totals: Mapping[int, tuple[int, Decimal, int, Decimal]]) -> dict:
