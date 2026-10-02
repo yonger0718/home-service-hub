@@ -523,6 +523,7 @@ class EntryResult:
     attachments: int = 0
     transfer_rate_mismatches: int = 0
     fx_outliers: list[dict] = field(default_factory=list)
+    fx_backup_rate_missing: list[str] = field(default_factory=list)  # account name per record whose MOZE rate is <= 0
     refund_direction: str | None = None
     tag_delimiter: str | None = None
 
@@ -539,7 +540,7 @@ def required_backup_rates(data: BackupData) -> set[tuple[date, str, str]]:
     """(day, record currency, quote) for every foreign record: the MOZE-rate sanity check or the fx_api conversion."""
     main = data.preference["mainCurrency"] or "TWD"
     currencies = _account_currency(data, main)
-    conversions = {conversion["recordID"] for conversion in data.conversions}
+    conversions = {conversion["recordID"] for conversion in data.conversions if conversion["exchangeRate"] > 0}
     cutoff = data.exported_at.date()
     needed = set()
     for record in data.records:
@@ -568,6 +569,11 @@ def _record_fx(record, account, conversions, rates, main, result, allow_fx_outli
         return None
     day = record["date"].date()
     conversion = conversions.get(record["currencyConversion"])
+    if conversion is not None and not conversion["exchangeRate"] > 0:
+        # MOZE stored no usable rate: convert with the cached daily rate as if no conversion row existed
+        if account.currency == main:
+            result.fx_backup_rate_missing.append(account.name)
+        conversion = None
     if account.currency == main and conversion is not None:
         rate = conversion["exchangeRate"]
         cached = rates.get((day, currency, main))
@@ -1032,6 +1038,10 @@ def replace_ledger_from_backup(
         "compared_accounts": {"compared": len(compared), "total": len(accounts)},
         "not_compared": [report["name"] for report in accounts if not report["compared"]],
         "fx_outliers": entries.fx_outliers,
+        "fx_backup_rate_missing": {
+            "count": len(entries.fx_backup_rate_missing),
+            "accounts": sorted(set(entries.fx_backup_rate_missing)),
+        },
         "confirmed_maps": {
             "due_rule": {str(key): value for key, value in DUE_RULE_MAP.items()},
             "rounding": {str(key): value for key, value in ROUNDING_MAP.items()},
@@ -1205,6 +1215,8 @@ def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None, exp
     compared = report["summary"]["compared_accounts"]
     print(f"compared_accounts: {compared['compared']} of {compared['total']}", file=sys.stderr)
     print(f"not_compared: {compared['total'] - compared['compared']}", file=sys.stderr)
+    missing = report["summary"]["fx_backup_rate_missing"]
+    print(f"fx_backup_rate_missing: {missing['count']} ({', '.join(missing['accounts'])})", file=sys.stderr)
     if compared["compared"] == 0:
         print(
             f"WARNING: 0 of {compared['total']} accounts compared; check balances against MOZE by hand",

@@ -136,6 +136,20 @@ def test_record_without_moze_rate_uses_the_fx_cache(db_session, backup):
         Decimal("-1475.0000"), Decimal("-10.0000"), "USD", "fx_api")
 
 
+def test_zero_backup_rate_falls_back_to_the_cached_rate(db_session, backup):
+    data = backup.data(
+        accounts=[backup.account("A-CARD", "華航卡")],
+        records=[backup.record("R-ZERO", "A-CARD", price=-1000, currency="JPY", currencyConversion="R-ZERO")],
+        conversions=[backup.conversion("R-ZERO", 0)],
+    )
+    summary = _import_backup(db_session, data, rates={JPY_DAY: Decimal("0.2163")}, strict=True)
+    entry = _by_moze_id(db_session, "R-ZERO")
+    assert (entry.amount, entry.original_amount, entry.original_currency, entry.fx_rate, entry.fx_source) == (
+        Decimal("-216.3000"), Decimal("-1000.0000"), "JPY", Decimal("0.2163000000"), "fx_api")
+    assert summary["fx_outliers"] == []
+    assert summary["fx_backup_rate_missing"] == {"count": 1, "accounts": ["華航卡"]}
+
+
 def _outlier_data(backup):
     return backup.data(
         accounts=[backup.account("A-CARD", "華航卡")],
