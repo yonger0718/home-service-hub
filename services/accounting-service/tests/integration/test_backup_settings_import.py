@@ -256,3 +256,47 @@ def test_preference_seeded(db_session, backup):
     preference = db_session.get(Preference, 1)
     assert (preference.expense_income_colors, preference.keypad_layout, preference.week_start) == ("green_red", "phone", 1)
     assert (preference.main_currency, preference.hide_rewards_on_timeline, preference.abbreviate_totals) == ("TWD", True, False)
+
+
+def test_posting_fields_are_normalised_when_the_rule_does_not_post_after_the_window(db_session, backup):
+    _import_backup(db_session, _rules_backup(backup, backup.rule("B-1", rewardTimeType=0, rewardMonth=7, rewardDay=0)))
+    rule = db_session.scalar(select(RewardRule))
+    assert (rule.posting, rule.post_month_offset, rule.post_day) == ("after_transaction", 0, 1)
+
+
+def test_out_of_range_posting_day_fails_naming_the_rule(db_session, backup):
+    with pytest.raises(MozeImportError, match="AHBonusReward '回饋': rewardMonth/rewardDay out of range"):
+        _import_backup(db_session, _rules_backup(backup, backup.rule("B-1", rewardTimeType=2, rewardDay=0)))
+
+
+def test_account_names_swapped_within_one_backup(db_session, backup):
+    _import_backup(db_session, backup.data(accounts=[backup.account("A-1", "甲"), backup.account("A-2", "乙")]))
+    summary = _import_backup(db_session, backup.data(accounts=[backup.account("A-1", "乙"), backup.account("A-2", "甲")]))
+    names = {a.moze_id: a.name for a in db_session.scalars(select(Account))}
+    assert names == {"A-1": "乙", "A-2": "甲"}
+    assert summary["accounts_renamed"] == [{"from": "甲", "to": "乙"}, {"from": "乙", "to": "甲"}]
+
+
+def test_rename_to_the_name_a_later_new_account_takes(db_session, backup):
+    _import_backup(db_session, backup.data(accounts=[backup.account("A-1", "甲")]))
+    summary = _import_backup(db_session, backup.data(accounts=[backup.account("A-1", "乙"), backup.account("A-2", "甲")]))
+    names = {a.moze_id: a.name for a in db_session.scalars(select(Account))}
+    assert names == {"A-1": "乙", "A-2": "甲"}
+    assert summary["accounts_created"] == ["甲"]
+
+
+def test_deleted_and_recreated_account_renames_and_archives_the_stale_row(db_session, backup):
+    _import_backup(db_session, backup.data(accounts=[backup.account("A-OLD-123456", "錢包")]))
+    summary = _import_backup(db_session, backup.data(accounts=[backup.account("A-NEW", "錢包")]))
+    stale = db_session.scalar(select(Account).where(Account.moze_id == "A-OLD-123456"))
+    assert (stale.name, stale.is_archived) == ("錢包 (舊 A-OLD-12)", True)
+    assert _account(db_session, "錢包").moze_id == "A-NEW"
+    assert {"from": "錢包", "to": "錢包 (舊 A-OLD-12)"} in summary["accounts_renamed"]
+
+
+def test_two_backup_accounts_with_one_final_name_fail(db_session, backup):
+    data = backup.data(accounts=[
+        backup.account("A-3", "錢包 (A-2)"), backup.account("A-1", "錢包"), backup.account("A-2", "錢包"),
+    ])
+    with pytest.raises(MozeImportError, match="A-2.*A-3|A-3.*A-2"):
+        _import_backup(db_session, data)

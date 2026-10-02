@@ -133,11 +133,57 @@ def _find_account(session: Session, record: dict) -> Account | None:
     return account
 
 
-def _free_name(result: SettingsResult, record: dict) -> str:
-    """MOZE allows two accounts with one name; the second gets its identifier appended."""
-    taken = {account.name for account in result.accounts.values()}
-    name = record["name"]
-    return name if name not in taken else f"{name} ({record['identifier'][:8]})"
+def _plan_names(records: list[dict]) -> dict[str, str]:
+    """Backup identifier -> final account name; MOZE allows two accounts with one name, the second gets
+    ` (<first 8 chars of its identifier>)` appended. Two accounts resolving to one final name fail."""
+    final: dict[str, str] = {}
+    owner: dict[str, str] = {}
+    for record in records:
+        name = record["name"]
+        if name in owner:
+            name = f"{name} ({record['identifier'][:8]})"
+        if name in owner:
+            raise MozeImportError(
+                f"accounts {owner[name]} and {record['identifier']} both resolve to the name '{name}'"
+            )
+        owner[name] = record["identifier"]
+        final[record["identifier"]] = name
+    return final
+
+
+def _plan_accounts(
+    session: Session, data: BackupData, result: SettingsResult
+) -> tuple[dict[str, str], dict[str, Account | None]]:
+    """Resolve every final name and every match before writing, and clear names the import needs.
+
+    Matched accounts whose name changes first get a temporary unique name (so swaps work); a row that
+    holds a needed name but whose MOZE id is gone from the backup is renamed `<name> (舊 <id>)` and archived.
+    """
+    final = _plan_names(data.accounts)
+    matches: dict[str, Account | None] = {}
+    for record in data.accounts:
+        account = _find_account(session, record)
+        matches[record["identifier"]] = None if account is not None and account in matches.values() else account
+    matched = {id(account) for account in matches.values() if account is not None}
+
+    for identifier, name in final.items():
+        holder = session.scalar(select(Account).where(Account.name == name))
+        if holder is None or holder is matches[identifier] or id(holder) in matched:
+            continue
+        if holder.moze_id is None:
+            raise MozeImportError(
+                f"account '{name}' already exists and is not in the MOZE backup under that name; "
+                "pass --rename to resolve it"
+            )
+        stale_name = f"{name} (舊 {holder.moze_id[:8]})"
+        result.accounts_renamed.append({"from": holder.name, "to": stale_name})
+        holder.name, holder.is_archived = stale_name, True
+    for identifier, account in matches.items():
+        if account is not None and account.name != final[identifier]:
+            result.accounts_renamed.append({"from": account.name, "to": final[identifier]})
+            account.name = f"__tmp_{identifier}"
+    session.flush()
+    return final, matches
 
 
 def _upsert_groups(session: Session, data: BackupData, result: SettingsResult) -> None:
@@ -193,26 +239,17 @@ def _apply_account_settings(account: Account, values: dict, skipped: list[str]) 
 def _upsert_accounts(session: Session, data: BackupData, result: SettingsResult) -> None:
     group_keys = {group["identifier"]: group["name"] for group in data.groups}
     skipped: dict[str, list[str]] = {}
+    final, matches = _plan_accounts(session, data, result)
     for record in data.accounts:
         currency = record["mainCurrency"] or result.main_currency
-        name = _free_name(result, record)
-        account = _find_account(session, record)
-        if account is not None and account in result.accounts.values():
-            account = None
+        name = final[record["identifier"]]
+        account = matches[record["identifier"]]
         if account is None:
             account = Account(name=name, currency=currency, moze_id=record["identifier"])
             session.add(account)
             result.accounts_created.append(name)
         else:
-            if account.moze_id == record["identifier"] and account.name != name:
-                taken = session.scalar(select(Account).where(Account.name == name, Account.id != account.id))
-                if taken is not None:
-                    raise MozeImportError(
-                        f"account '{account.name}' is named '{name}' in MOZE, but '{name}' "
-                        "already exists; pass --rename to resolve it"
-                    )
-                result.accounts_renamed.append({"from": account.name, "to": name})
-                account.name = name
+            account.name = name
             if account.currency != currency:
                 assert_currency_change_allowed(session, account, currency)
                 account.currency = currency
@@ -342,6 +379,15 @@ def _upsert_rules(session: Session, data: BackupData, result: SettingsResult) ->
         if unsupported:
             result.unsupported_rules.append({"name": record["name"], "account": account.name, "reasons": unsupported})
         reward_account = result.accounts.get(record["rewardAccountID"])
+        posting = _mapped(POSTING_MAP, record["rewardTimeType"], "rewardTimeType", where)
+        post_month_offset, post_day = 0, 1  # unused unless the reward posts after the window
+        if posting == "after_window":
+            post_month_offset, post_day = record["rewardMonth"], record["rewardDay"]
+            if not (0 <= post_month_offset <= 2 and 1 <= post_day <= 31):
+                raise MozeImportError(
+                    f"{where}: rewardMonth/rewardDay out of range "
+                    f"(rewardMonth {post_month_offset}, expected 0-2; rewardDay {post_day}, expected 1-31)"
+                )
         values = {
             "account_id": account.id,
             "name": record["name"],
@@ -349,10 +395,10 @@ def _upsert_rules(session: Session, data: BackupData, result: SettingsResult) ->
             "rate": record["rewardPercentage"] if method == "percent" else None,
             "fixed_amount": _amount(record["rewardAmount"]) if method == "fixed" else None,
             "window": _mapped(REWARD_WINDOW_MAP, record["rewardPeriodType"], "rewardPeriodType", where),
-            "posting": _mapped(POSTING_MAP, record["rewardTimeType"], "rewardTimeType", where),
+            "posting": posting,
             "delay_days": record["rewardDelayDays"],
-            "post_month_offset": record["rewardMonth"],
-            "post_day": record["rewardDay"],
+            "post_month_offset": post_month_offset,
+            "post_day": post_day,
             "txn_rounding": _mapped(ROUNDING_MAP, record["rewardCalculation"], "rewardCalculation", where),
             "total_rounding": _mapped(ROUNDING_MAP, record["totalRewardCalculation"], "totalRewardCalculation", where),
             "total_cap": _amount(record["totalRewardLimit"]) if record["totalRewardLimit"] else None,
