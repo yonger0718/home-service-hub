@@ -5,9 +5,10 @@ listings use the canonical order (entry_date, entry_time NULLS FIRST, seq) or it
 """
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, aliased
@@ -28,6 +29,7 @@ from ..models import (
 )
 from .moze_import_service import import_locked
 
+LEDGER_TZ = ZoneInfo("Asia/Taipei")  # ledger dates are naive Taipei dates (D8)
 DEFAULT_MAIN_CURRENCY = "TWD"
 AMOUNT_QUANTUM = Decimal("0.0001")
 EXPENSE_KINDS = ("expense", "fee")
@@ -52,7 +54,8 @@ ACCOUNT_FIELDS = (
 
 
 def _today() -> date:
-    return date.today()
+    """Today in the ledger time zone (Asia/Taipei), not the server's local date."""
+    return datetime.now(LEDGER_TZ).date()
 
 
 def _plain(value: Decimal) -> str:
