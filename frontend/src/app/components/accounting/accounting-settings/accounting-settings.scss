@@ -31,6 +31,7 @@ summary.srow::-webkit-details-marker { display: none; }
   &.sub { padding-left: 1.5rem; }
   button { background: none; border: 0; color: var(--app-text-muted); cursor: pointer; font: inherit; padding: 4px 6px; }
   button:disabled { opacity: 0.3; }
+  button.danger { color: var(--app-danger); font-weight: 700; }
 }
 
 .row-name { background: none; border: 0; color: var(--app-text); flex: 1 1 8rem; font: inherit; min-width: 0; }

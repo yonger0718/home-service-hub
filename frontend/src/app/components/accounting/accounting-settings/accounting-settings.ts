@@ -49,6 +49,7 @@ function swap<T>(list: T[], index: number, delta: number): T[] | null {
   templateUrl: './accounting-settings.html',
   styleUrl: './accounting-settings.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(document:click)': 'onDocumentClick($event)' },
 })
 export class AccountingSettingsComponent implements OnInit {
   private service = inject(AccountingService);
@@ -63,6 +64,8 @@ export class AccountingSettingsComponent implements OnInit {
   readonly latest = signal<ImportRun | null>(null);
   readonly schedules = signal<ScheduleItem[]>([]);
   readonly dataMessage = signal<string | null>(null);
+  /** Row whose 刪除 was tapped once (`group:1`, `cat:11`, `project:4`, `cp:5`); one row at a time. */
+  readonly confirming = signal<string | null>(null);
 
   readonly newGroup = signal('');
   readonly newCategory = signal('');
@@ -144,6 +147,24 @@ export class AccountingSettingsComponent implements OnInit {
     }
     event.preventDefault();
     return true;
+  }
+
+  /** Two-tap delete: the first tap arms the row, a second tap on the same row returns true. */
+  confirmTap(key: string): boolean {
+    if (this.confirming() === key) {
+      this.confirming.set(null);
+      return true;
+    }
+    this.confirming.set(key);
+    return false;
+  }
+
+  /** A tap anywhere except a 刪除 button disarms the pending delete. */
+  onDocumentClick(event: Event): void {
+    const target = event.target as Element | null;
+    if (this.confirming() !== null && !target?.closest?.('.row-delete')) {
+      this.confirming.set(null);
+    }
   }
 
   // 帳戶分組

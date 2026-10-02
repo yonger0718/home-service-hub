@@ -14,7 +14,10 @@
         <input class="row-name group-name" aria-label="分組名稱" [value]="group.name" (change)="renameGroup(group, $any($event.target).value)" />
         <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveGroup(i, -1)">↑</button>
         <button type="button" class="move-down" aria-label="下移" [disabled]="i === groups().length - 1" (click)="moveGroup(i, 1)">↓</button>
-        <button type="button" class="row-delete" aria-label="刪除分組" (click)="deleteGroup(group)">🗑</button>
+        @if (confirming() === 'group:' + group.id) {
+          <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
+        }
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'group:' + group.id" [attr.aria-label]="confirming() === 'group:' + group.id ? '確定刪除' : '刪除分組'" (blur)="confirming() === 'group:' + group.id && confirming.set(null)" (click)="confirmTap('group:' + group.id) && deleteGroup(group)">{{ confirming() === 'group:' + group.id ? '確定刪除' : '🗑' }}</button>
       </div>
     }
     <div class="data-row add-row">
@@ -38,7 +41,10 @@
         <button type="button" class="cat-hide" [attr.aria-pressed]="main.is_hidden" (click)="saveCategory(main, { is_hidden: !main.is_hidden })">{{ main.is_hidden ? '顯示' : '隱藏' }}</button>
         <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveCategory(categories(), i, -1)">↑</button>
         <button type="button" class="move-down" aria-label="下移" [disabled]="i === categories().length - 1" (click)="moveCategory(categories(), i, 1)">↓</button>
-        <button type="button" class="row-delete" aria-label="刪除類別" (click)="deleteCategory(main)">🗑</button>
+        @if (confirming() === 'cat:' + main.id) {
+          <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
+        }
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'cat:' + main.id" [attr.aria-label]="confirming() === 'cat:' + main.id ? '確定刪除' : '刪除類別'" (blur)="confirming() === 'cat:' + main.id && confirming.set(null)" (click)="confirmTap('cat:' + main.id) && deleteCategory(main)">{{ confirming() === 'cat:' + main.id ? '確定刪除' : '🗑' }}</button>
       </div>
       @for (sub of main.children; track sub.id; let j = $index) {
         <div class="data-row cat-row sub" [class.hidden-cat]="sub.is_hidden">
@@ -48,7 +54,10 @@
           <button type="button" class="cat-hide" [attr.aria-pressed]="sub.is_hidden" (click)="saveCategory(sub, { is_hidden: !sub.is_hidden })">{{ sub.is_hidden ? '顯示' : '隱藏' }}</button>
           <button type="button" class="move-up" aria-label="上移" [disabled]="j === 0" (click)="moveCategory(main.children, j, -1)">↑</button>
           <button type="button" class="move-down" aria-label="下移" [disabled]="j === main.children.length - 1" (click)="moveCategory(main.children, j, 1)">↓</button>
-          <button type="button" class="row-delete" aria-label="刪除子類別" (click)="deleteCategory(sub)">🗑</button>
+          @if (confirming() === 'cat:' + sub.id) {
+          <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
+        }
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'cat:' + sub.id" [attr.aria-label]="confirming() === 'cat:' + sub.id ? '確定刪除' : '刪除子類別'" (blur)="confirming() === 'cat:' + sub.id && confirming.set(null)" (click)="confirmTap('cat:' + sub.id) && deleteCategory(sub)">{{ confirming() === 'cat:' + sub.id ? '確定刪除' : '🗑' }}</button>
         </div>
       }
       <div class="data-row add-row sub">
@@ -70,7 +79,10 @@
         <button type="button" class="project-archive" (click)="saveProject(project, { is_archived: !project.is_archived })">{{ project.is_archived ? '取消封存' : '封存' }}</button>
         <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveProject(i, -1)">↑</button>
         <button type="button" class="move-down" aria-label="下移" [disabled]="i === projects().length - 1" (click)="moveProject(i, 1)">↓</button>
-        <button type="button" class="row-delete" aria-label="刪除專案" (click)="deleteProject(project)">🗑</button>
+        @if (confirming() === 'project:' + project.id) {
+          <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
+        }
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'project:' + project.id" [attr.aria-label]="confirming() === 'project:' + project.id ? '確定刪除' : '刪除專案'" (blur)="confirming() === 'project:' + project.id && confirming.set(null)" (click)="confirmTap('project:' + project.id) && deleteProject(project)">{{ confirming() === 'project:' + project.id ? '確定刪除' : '🗑' }}</button>
       </div>
     }
     <div class="data-row add-row">
@@ -86,7 +98,10 @@
       <div class="data-row cp-row">
         <input class="row-name cp-name" aria-label="對象名稱" [value]="cp.name" (change)="renameCounterparty(cp, $any($event.target).value)" />
         <span class="cp-open">{{ openAmounts(cp) }}</span>
-        <button type="button" class="row-delete" aria-label="刪除對象" (click)="deleteCounterparty(cp)">🗑</button>
+        @if (confirming() === 'cp:' + cp.id) {
+          <button type="button" class="row-cancel" (click)="confirming.set(null)">取消</button>
+        }
+        <button type="button" class="row-delete" [class.danger]="confirming() === 'cp:' + cp.id" [attr.aria-label]="confirming() === 'cp:' + cp.id ? '確定刪除' : '刪除對象'" (blur)="confirming() === 'cp:' + cp.id && confirming.set(null)" (click)="confirmTap('cp:' + cp.id) && deleteCounterparty(cp)">{{ confirming() === 'cp:' + cp.id ? '確定刪除' : '🗑' }}</button>
       </div>
     }
     <div class="data-row add-row">

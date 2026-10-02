@@ -43,6 +43,18 @@ function kindCounts(value: unknown): [string, number][] {
   return [...merged.entries()];
 }
 
+/** Chinese labels for the importer's needs-review reason keys; unknown keys are shown as sent. */
+const REVIEW_REASON_LABELS: Record<string, string> = {
+  unpaired_transfer: '轉帳未配對',
+  fx_backup_rate_missing: '缺少備份匯率',
+  reward_source_from_package: '回饋來源推定',
+};
+
+function reviewReasons(value: unknown): [string, number][] {
+  const pairs = Array.isArray(value) ? value.map(reason => [String(reason), 1] as [string, number]) : counts(value);
+  return pairs.map(([key, count]) => [REVIEW_REASON_LABELS[key] ?? key, count]);
+}
+
 function names(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.map(item => (typeof item === 'string' ? item : String(record(item)['name'] ?? ''))).filter(Boolean);
@@ -77,9 +89,7 @@ export function summarizeReport(report: unknown): ReportView {
       })),
     settingsSkipped: names(summary['settings_skipped']),
     needsReview: typeof review === 'number' ? review : Number(reviewRecord['count']) || 0,
-    reviewReasons: Array.isArray(reviewRecord['reasons'])
-      ? (reviewRecord['reasons'] as unknown[]).map(reason => [String(reason), 1] as [string, number])
-      : counts(reviewRecord['reasons']),
+    reviewReasons: reviewReasons(reviewRecord['reasons']),
     fxOutliers: Array.isArray(outliers) ? outliers.length : Number(outliers) || 0,
   };
 }

@@ -31,7 +31,7 @@ describe('summarizeReport', () => {
     expect(view.changedAccounts).toEqual([{ name: '玉山 Only', currency: 'TWD', previous: '-4800.0000', current: '-4905.0000' }]);
     expect(view.settingsSkipped).toEqual(['玉山 Only']);
     expect(view.needsReview).toBe(3);
-    expect(view.reviewReasons).toEqual([['unpaired_transfer', 2], ['reward_rule_missing', 1]]);
+    expect(view.reviewReasons).toEqual([['轉帳未配對', 2], ['reward_rule_missing', 1]]);
     expect(view.fxOutliers).toBe(1);
   });
 
@@ -42,5 +42,16 @@ describe('summarizeReport', () => {
     expect(view.needsReview).toBe(2);
     expect(view.compared).toBeNull();
     expect(view.changedAccounts).toEqual([]);
+  });
+
+  it('labels the known review reasons in Chinese and keeps unknown keys', () => {
+    const view = summarizeReport({
+      needs_review: {
+        count: 5,
+        reasons: { unpaired_transfer: 1, fx_backup_rate_missing: 2, reward_source_from_package: 1, something_new: 1 },
+      },
+    });
+    expect(view.reviewReasons).toEqual([['轉帳未配對', 1], ['缺少備份匯率', 2], ['回饋來源推定', 1], ['something_new', 1]]);
+    expect(summarizeReport({ needs_review: { reasons: ['unpaired_transfer', 'x'] } }).reviewReasons).toEqual([['轉帳未配對', 1], ['x', 1]]);
   });
 });

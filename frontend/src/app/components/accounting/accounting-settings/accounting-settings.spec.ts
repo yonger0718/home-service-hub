@@ -200,6 +200,8 @@ describe('AccountingSettingsComponent', () => {
     fixture.detectChanges();
 
     el.querySelector<HTMLButtonElement>('.group-row .row-delete')!.click();
+    fixture.detectChanges();
+    el.querySelector<HTMLButtonElement>('.group-row .row-delete')!.click();
     http.expectOne('/api/accounting/account-groups/1').flush({ detail: 'in use' }, { status: 409, statusText: 'Conflict' });
     fixture.detectChanges();
     expect(el.querySelector('.data-message')?.textContent).toContain('仍有帳戶');
@@ -266,5 +268,40 @@ describe('AccountingSettingsComponent', () => {
     fixture.detectChanges();
     expect(el.querySelector('.import-error')?.textContent).toContain('匯入已鎖定');
     expect(el.querySelector<HTMLButtonElement>('.real-run')!.disabled).toBe(true);
+  });
+
+  it('asks for a second tap before deleting, one row at a time', () => {
+    const deleteButton = (row: number) => el.querySelectorAll('.cp-row')[row].querySelector<HTMLButtonElement>('.row-delete')!;
+
+    deleteButton(0).click();
+    fixture.detectChanges();
+    http.expectNone(r => r.method === 'DELETE');
+    expect(deleteButton(0).textContent?.trim()).toBe('確定刪除');
+    expect(deleteButton(0).classList).toContain('danger');
+
+    deleteButton(1).click();
+    fixture.detectChanges();
+    http.expectNone(r => r.method === 'DELETE');
+    expect(deleteButton(0).textContent?.trim()).not.toBe('確定刪除');
+    expect(deleteButton(1).textContent?.trim()).toBe('確定刪除');
+    expect(el.querySelectorAll('.row-delete.danger').length).toBe(1);
+
+    el.querySelector<HTMLButtonElement>('.cp-row .row-cancel')!.click();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.row-delete.danger').length).toBe(0);
+
+    deleteButton(0).click();
+    fixture.detectChanges();
+    el.querySelector<HTMLElement>('h2')!.click();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.row-delete.danger').length).toBe(0);
+
+    deleteButton(1).click();
+    fixture.detectChanges();
+    deleteButton(1).click();
+    const req = http.expectOne('/api/accounting/counterparties/6');
+    expect(req.request.method).toBe('DELETE');
+    req.flush(null);
+    http.expectOne('/api/accounting/counterparties').flush([COUNTERPARTIES[0]]);
   });
 });
