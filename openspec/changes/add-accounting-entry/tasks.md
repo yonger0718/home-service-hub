@@ -357,6 +357,7 @@ Execute in numeric order. Tasks 10 and 12 both edit `app/services/moze_import_se
 
 
 
+
 ## Contract additions (merged: sections A, C, D, E after reconciliation)
 
 These extend the backbone "Interface Contract". Where a section's earlier draft disagreed, the producer's definition below wins (backend over frontend).
@@ -9268,7 +9269,7 @@ def owner_checklist(session: Session, summary: dict) -> None:
     of the backup's cache/export date), which must equal the report's balance (moze_part == balance), else the
     account is not eligible; step 11.7a checks it against GET /accounts?as_of=<as_of> on this database.
     Writes initials, currency, kind and per-account totals only; prints initials and counts only. The label →
-    account id map for 11.7a goes to VERIFY_DIR/checklist_accounts.json (private, deleted in 11.9).
+    account id map for 11.7a and Task 31 goes to ~/reports/home-hub-2a-verify/checklist_accounts.json (private, mode 600, kept until Task 31).
     """
     reported = {a["name"]: a for a in summary["accounts"]}
     accounts = [
@@ -9332,7 +9333,7 @@ def owner_checklist(session: Session, summary: dict) -> None:
     lines += [line(a) for a in fx]
     CHECKLIST.write_text("\n".join(lines) + "\n", encoding="utf-8")
     CHECKLIST.chmod(0o600)
-    ids_file = VERIFY_DIR / "checklist_accounts.json"
+    ids_file = CHECKLIST.parent / "checklist_accounts.json"
     ids_file.write_text(json.dumps(ids), encoding="utf-8")
     ids_file.chmod(0o600)
     print(f"checklist written: {CHECKLIST} ({len(chosen)} acceptance + {len(fx)} FX-converted accounts)")
@@ -9464,7 +9465,7 @@ Delete the two candidates that did not match. In `tests/integration/test_backup_
 
 - [ ] 11.7 Note the printed `confirmed_maps` values `refund_direction` and `tag_delimiter` from `== backup import`. If `tag_delimiter` is `None` while tags exist in MOZE, or `needs_review` shows `refund_original_missing: 1`, inspect the aggregate cause (never print the row) and fix `split_tags` or `_link_refunds` test-first in the relevant test file before continuing.
 
-- [ ] 11.7a Verify the checklist against the API's as-of balance on the verify database. The checklist's HomeHub values are the report's `moze_part` (as of the backup's cache/export date), so the acceptance value is `balance` from `GET /accounts?as_of=<as_of>`, where `<as_of>` is the `- as_of:` date in the checklist header (the backup's `exported_at` date, Asia/Taipei). This step calls `ledger_service.list_accounts(db, include_archived=True, as_of=…)` directly (the same function the `GET /accounts?as_of=` route returns) against `accounting_backup_verify` in a one-off Python snippet; no server is started. It reads the as-of date and the per-label `moze_part` from the checklist, the label → account id map from `$VERIFY_DIR/checklist_accounts.json` (written by 11.3), and prints labels, the date and counts only (no amounts). Re-run it whenever 11.5, 11.6 or 11.7 re-ran 11.3.
+- [ ] 11.7a Verify the checklist against the API's as-of balance on the verify database. The checklist's HomeHub values are the report's `moze_part` (as of the backup's cache/export date), so the acceptance value is `balance` from `GET /accounts?as_of=<as_of>`, where `<as_of>` is the `- as_of:` date in the checklist header (the backup's `exported_at` date, Asia/Taipei). This step calls `ledger_service.list_accounts(db, include_archived=True, as_of=…)` directly (the same function the `GET /accounts?as_of=` route returns) against `accounting_backup_verify` in a one-off Python snippet; no server is started. It reads the as-of date and the per-label `moze_part` from the checklist, the label → account id map from `~/reports/home-hub-2a-verify/checklist_accounts.json` (written by 11.3), and prints labels, the date and counts only (no amounts). Re-run it whenever 11.5, 11.6 or 11.7 re-ran 11.3.
 
 ```bash
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && VERIFY_DIR="$VERIFY_DIR" PYTHONPATH=. .venv/bin/python - <<'PYEOF'
@@ -9485,7 +9486,7 @@ from app.services import ledger_service
 
 DATABASE = "accounting_backup_verify"
 checklist = (Path.home() / "reports" / "home-hub-2a-verify" / "checklist.md").read_text(encoding="utf-8")
-ids = json.loads((Path(os.environ["VERIFY_DIR"]) / "checklist_accounts.json").read_text(encoding="utf-8"))
+ids = json.loads((Path.home() / "reports" / "home-hub-2a-verify" / "checklist_accounts.json").read_text(encoding="utf-8"))
 as_of = date.fromisoformat(re.search(r"^- as_of: (\d{4}-\d{2}-\d{2})", checklist, re.M).group(1))
 rows = {}
 for line in checklist.splitlines():
@@ -9541,15 +9542,15 @@ For each account (initials from the acceptance run, chosen among accounts with n
 
 Copy the ten acceptance initials and the FX-converted initials from `== owner checklist (initials)` (3 cards, 1 JPY account, 6 others, by entry count among accounts with no `fx_api` row), and the comparison date from the checklist file's header. Task 11 only prepares the checklist; it is not ticked here. The owner completes `~/reports/home-hub-2a-verify/checklist.md` in Task 31 on the verify server and the result goes into the PR description.
 
-- [ ] 11.9 Delete the scratch directory (the converted JSON, the script and the log); keep the database `accounting_backup_verify` and the checklist:
+- [ ] 11.9 Delete the scratch directory (the converted JSON, the script and the log); keep the database `accounting_backup_verify` and the checklist and its account map:
 
 ```bash
 command rm -rf "$VERIFY_DIR" && ls -d /tmp/moze-verify.* /tmp/moze-backup-* /tmp/moze-realm-* 2>/dev/null | wc -l
-stat -c '%a %n' ~/reports/home-hub-2a-verify/checklist.md
+stat -c '%a %n' ~/reports/home-hub-2a-verify/checklist.md ~/reports/home-hub-2a-verify/checklist_accounts.json
 docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_backup_verify -At -c "SELECT count(*) FROM ledger_entry WHERE source = '"'"'moze_backup'"'"'"'
 ```
 
-Expected: `0`, `600 /home/opc/reports/home-hub-2a-verify/checklist.md`, and a non-zero entry count (a single number).
+Expected: `0`, `600` for both `/home/opc/reports/home-hub-2a-verify/checklist.md` and `checklist_accounts.json`, and a non-zero entry count (a single number). `~/reports/home-hub-2a-verify/` (checklist.md and checklist_accounts.json, mode 700, outside the repo) is left for Task 31, which deletes it.
 
 - [ ] 11.10 Commit. If 11.5, 11.6 or 11.7 changed code, first run `git add services/accounting-service/app/services/moze_backup_json.py services/accounting-service/app/services/moze_backup_import_service.py services/accounting-service/tests/unit/test_moze_backup_json.py services/accounting-service/tests/integration/test_backup_replace_and_report.py services/accounting-service/tests/integration/test_backup_entries_import.py` (only the files `git status` shows as modified).
 
@@ -9562,7 +9563,7 @@ git commit -m "docs(openspec): record MOZE backup import confirmations and owner
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
-- [ ] 11.11 Leave `accounting_backup_verify` in place for Task 31; drop it only in Task 31's cleanup. Task 31 runs its verify server on this database (same data as the checklist, so the `moze_part` values in `~/reports/home-hub-2a-verify/checklist.md` equal `GET /accounts?as_of=<as_of>` for the header's `as_of` date; the UI's today balance is informational only) and its cleanup drops it with `dropdb … --if-exists --force accounting_backup_verify` and deletes `~/reports/home-hub-2a-verify/` after the PR description has recorded the result.
+- [ ] 11.11 Leave `accounting_backup_verify` in place for Task 31; drop it only in Task 31's cleanup. Task 31 runs its verify server on this database (same data as the checklist, so the `moze_part` values in `~/reports/home-hub-2a-verify/checklist.md` equal `GET /accounts?as_of=<as_of>` for the header's `as_of` date; the UI's today balance is informational only) and its cleanup drops it with `dropdb … --if-exists --force accounting_backup_verify` and deletes `~/reports/home-hub-2a-verify/` after the PR description has recorded the result. `~/reports/home-hub-2a-verify/` (checklist.md and checklist_accounts.json, mode 700, outside the repo) is left for Task 31, which deletes it.
 
 
 
@@ -11855,8 +11856,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `services/accounting-service/tests/integration/test_splits.py`
 
 **Interfaces:**
-- Consumes: `SplitIn`, `SplitMemberIn`, `EntryIn`, `SplitOut` (Task 12); `entry_write_service.PreparedEntry`, `prepare_entry`, `insert_prepared`, `delete_entries_cascade`; `edit_lock.assert_editable`, `edit_lock.EditLockedError`; `errors.ValidationError`, `errors.NotFoundError`; `app.routers.errors.service_errors`; `ledger_service.account_balance`; conftest `seed`.
-- Produces: `split_service.create_split(db, payload, *, http_get=None) -> int`, `split_service.update_split(db, group_id, payload, *, http_get=None) -> None`, `split_service.delete_split(db, group_id) -> None`, plus `split_service.member_payloads(payload) -> list[EntryIn]` and `split_service.member_ids(db, group_id) -> list[int]`; routes `POST /splits` (201 `SplitOut`), `PUT /splits/{group_id}` (200 `SplitOut`), `DELETE /splits/{group_id}` (204). Member validation errors are reported as `members.<index>.<field>`.
+- Consumes: `SplitIn`, `SplitMemberIn`, `EntryIn`, `SplitOut` (Task 12); `entry_write_service.PreparedEntry`, `prepare_entry`, `insert_prepared`, `delete_entries_cascade`, `has_settlements_or_refunds`; `edit_lock.assert_editable`, `edit_lock.EditLockedError`; `errors.ValidationError`, `errors.NotFoundError`; `app.routers.errors.service_errors`; `ledger_service.account_balance`; conftest `seed`.
+- Produces: `split_service.create_split(db, payload, *, http_get=None) -> int`, `split_service.update_split(db, group_id, payload, *, http_get=None) -> None`, `split_service.delete_split(db, group_id) -> None`, plus `split_service.member_payloads(payload) -> list[EntryIn]` and `split_service.member_ids(db, group_id) -> list[int]`; routes `POST /splits` (201 `SplitOut`), `PUT /splits/{group_id}` (200 `SplitOut`), `DELETE /splits/{group_id}` (204). Member validation errors are reported as `members.<index>.<field>`. `update_split` refuses (422 `members`, "groups containing settlements or refunds are edited by deleting and re-settling") a group any of whose members has `is_settlement` true or kind `refund`, or is settled / refunded by another entry (`has_settlements_or_refunds`); it checks with the group's members locked `SELECT … FOR UPDATE`. The split endpoint never creates a settlement: `SplitMemberIn` (an `EntryIn`) has no `is_settlement` field and `insert_prepared` stores `is_settlement=False` (plan review round 3).
 
 - [ ] 14.1 Create `services/accounting-service/tests/integration/test_splits.py`:
 
@@ -12067,6 +12068,48 @@ def test_split_update_refuses_locked_group(client, db_session, seed, monkeypatch
     assert (member.amount, member.source, member.moze_id) == (Decimal("-10"), "manual", None)
 
 
+def test_update_split_refuses_group_with_settlement_member(client, db_session, seed, monkeypatch):
+    # Plan review round 3: rebuilding members would re-sign the +200 collection as a −200 receivable.
+    monkeypatch.setenv("ACCOUNTING_IMPORT_LOCKED", "true")  # the cutover lock is not what refuses here
+    wallet = seed.account()
+    alan = seed.counterparty("Alan")
+    group = seed.group()
+    seed.entry(wallet, "-200", group_id=group.id)
+    collection = seed.entry(
+        wallet, "200", kind="receivable", counterparty_id=alan.id, is_settlement=True, group_id=group.id
+    )
+    db_session.commit()
+    group_id, collection_id = group.id, collection.id
+
+    response = client.put(f"/splits/{group_id}", json=_split(_member(wallet, amount="10")))
+
+    assert response.status_code == 422
+    assert [error["loc"] for error in response.json()["detail"]] == [["members"]]
+    db_session.expire_all()
+    stored = db_session.get(LedgerEntry, collection_id)
+    assert (stored.amount, stored.is_settlement, stored.group_id) == (Decimal("200"), True, group_id)
+    assert len(_members(db_session, group_id)) == 2
+
+
+def test_update_split_refuses_group_with_settled_member(client, db_session, seed, monkeypatch):
+    monkeypatch.setenv("ACCOUNTING_IMPORT_LOCKED", "true")
+    wallet = seed.account()
+    alan = seed.counterparty("Alan")
+    group = seed.group()
+    lent = seed.entry(wallet, "-200", kind="receivable", counterparty_id=alan.id, group_id=group.id)
+    db_session.flush()
+    seed.entry(wallet, "200", kind="receivable", counterparty_id=alan.id, settles_entry_id=lent.id, is_settlement=True)
+    db_session.commit()
+    group_id, lent_id = group.id, lent.id
+
+    response = client.put(f"/splits/{group_id}", json=_split(_member(wallet, amount="10")))
+
+    assert response.status_code == 422
+    assert [error["loc"] for error in response.json()["detail"]] == [["members"]]
+    [member] = _members(db_session, group_id)
+    assert (member.id, member.amount) == (lent_id, Decimal("-200"))
+
+
 def test_member_payloads_keep_explicit_overrides():
     payload = SplitIn(**_split({"account_id": 1, "kind": "income", "amount": "1", "tags": []}, tags=["群組"]))
     [member] = ss.member_payloads(payload)
@@ -12104,7 +12147,13 @@ from sqlalchemy.orm import Session
 from ..models import EntryGroup, LedgerEntry
 from ..schemas.writes import EntryIn, SplitIn
 from .edit_lock import assert_editable
-from .entry_write_service import PreparedEntry, delete_entries_cascade, insert_prepared, prepare_entry
+from .entry_write_service import (
+    PreparedEntry,
+    delete_entries_cascade,
+    has_settlements_or_refunds,
+    insert_prepared,
+    prepare_entry,
+)
 from .errors import NotFoundError, ValidationError
 
 SHARED_FIELDS = ("entry_date", "entry_time", "posted_date", "project_id", "tags")
@@ -12149,6 +12198,29 @@ def member_ids(db: Session, group_id: int) -> list[int]:
     )
 
 
+def _locked_members(db: Session, group_id: int) -> list[LedgerEntry]:
+    """The group's members, SELECT … FOR UPDATE (the row lock settle / refund take via locked_entry)."""
+    return list(
+        db.scalars(
+            select(LedgerEntry)
+            .where(LedgerEntry.group_id == group_id, LedgerEntry.parent_entry_id.is_(None))
+            .order_by(LedgerEntry.seq)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+
+
+def _assert_no_settlements(db: Session, members: list[LedgerEntry]) -> None:
+    """Rebuilding members would re-sign a settlement (a +200 collection becomes a −200 receivable) and orphan
+    the entries that settle or refund a member, so such groups are never rebuilt."""
+    for member in members:
+        if member.is_settlement or member.kind == "refund" or has_settlements_or_refunds(db, member.id):
+            raise ValidationError(
+                "members", "groups containing settlements or refunds are edited by deleting and re-settling"
+            )
+
+
 def create_split(db: Session, payload: SplitIn, *, http_get=None) -> int:
     prepared = _prepare_all(db, payload, http_get)
     group = EntryGroup(kind="split", name=payload.name, merchant=payload.merchant, description=payload.description)
@@ -12160,11 +12232,18 @@ def create_split(db: Session, payload: SplitIn, *, http_get=None) -> int:
 
 
 def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None) -> None:
-    """Replace every member (and their children) and the group fields."""
+    """Replace every member (and their children) and the group fields.
+
+    `_prepare_all` runs first because FX resolution may commit the session, which would release the row
+    locks; the members are then locked FOR UPDATE and checked inside that lock, so no settle / refund can
+    commit between the check and the delete. Members are never created with is_settlement: SplitMemberIn
+    has no such field and insert_prepared stores False."""
     group = _get_split(db, group_id)
     assert_editable(group)
     prepared = _prepare_all(db, payload, http_get)
-    delete_entries_cascade(db, member_ids(db, group_id))
+    members = _locked_members(db, group_id)
+    _assert_no_settlements(db, members)
+    delete_entries_cascade(db, [member.id for member in members])
     group.name = payload.name
     group.merchant = payload.merchant
     group.description = payload.description
@@ -12234,7 +12313,7 @@ from .routers import accounts, entries, imports, settings, splits, transfers
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_splits.py
 ```
 
-Expected: `9 passed`.
+Expected: `11 passed` (9 + the 2 plan-review round 3 refusal tests).
 
 - [ ] 14.7 Commit:
 
@@ -13007,6 +13086,20 @@ def test_sharing_edit_marks_every_touched_account(client, db_session, seed):
     assert flags == [True, False, True, True]  # A edited, B unchanged, C removed, D added
 
 
+def test_account_detail_keeps_as_of_after_sharing_fields(client, db_session, seed):
+    # Plan review round 3: Task 4's router calls get_account(db, account_id, as_of=as_of) on every request.
+    shared = uuid.uuid4()
+    a = seed.account("A", is_credit=True, credit_sharing_id=shared)
+    b = seed.account("B", is_credit=True, credit_sharing_id=shared)
+    db_session.commit()
+    a_id, b_id = a.id, b.id
+
+    response = client.get(f"/accounts/{a_id}", params={"as_of": "2026-09-01"})
+
+    assert response.status_code == 200
+    assert response.json()["credit_sharing_members"] == [b_id]
+
+
 # --- account groups ------------------------------------------------------------
 
 
@@ -13170,7 +13263,7 @@ def test_counterparty_rename_shows_in_listings_and_delete_rule(client, db_sessio
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_settings_crud_api.py
 ```
 
-Expected: `20 failed` — the write routes are missing (`405 Method Not Allowed` / `404` instead of `201`).
+Expected: `21 failed` — the write routes are missing (`405 Method Not Allowed` / `404` instead of `201`); `test_account_detail_keeps_as_of_after_sharing_fields` fails on the missing `credit_sharing_members` key.
 
 - [ ] 16.3 Append to `services/accounting-service/app/services/settings_service.py`. Add to its import block (skip names already imported):
 
@@ -13642,16 +13735,16 @@ class AccountDetailOut(AccountOut):
 and in `services/accounting-service/app/services/ledger_service.py` (as Task 4 wrote it; add `Account` to its `..models` import and `select` to its `sqlalchemy` import if missing), old:
 
 ```python
-def get_account(db: Session, account_id: int) -> dict | None:
-    rows = _account_rows(db, include_archived=True, account_id=account_id)
+def get_account(db: Session, account_id: int, *, as_of: date | None = None) -> dict | None:
+    rows = _account_rows(db, include_archived=True, account_id=account_id, as_of=as_of)
     return rows[0] if rows else None
 ```
 
-new:
+new (keeps Task 4's signature and passes `as_of` through; the router calls `get_account(db, account_id, as_of=as_of)`):
 
 ```python
-def get_account(db: Session, account_id: int) -> dict | None:
-    rows = _account_rows(db, include_archived=True, account_id=account_id)
+def get_account(db: Session, account_id: int, *, as_of: date | None = None) -> dict | None:
+    rows = _account_rows(db, include_archived=True, account_id=account_id, as_of=as_of)
     if not rows:
         return None
     account = rows[0]
@@ -13887,7 +13980,7 @@ def post_reset_settings_flag(account_id: int, db: Session = Depends(get_db)):
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_settings_crud_api.py tests/integration/test_accounts_api.py
 ```
 
-Expected: `test_settings_crud_api.py` 20 passed, and every test in `test_accounts_api.py` passes (0 failed).
+Expected: `test_settings_crud_api.py` 21 passed, and every test in `test_accounts_api.py` passes (0 failed).
 
 - [ ] 16.9 Commit:
 
@@ -20601,6 +20694,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Location } from '@angular/common';
 import { provideLocationMocks } from '@angular/common/testing';
+import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, Routes, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
@@ -20612,7 +20706,12 @@ import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.ser
 import { makeAccount, makeAccountDetail, makeCategory, makeEntryDetail, makePreference } from '../testing/fixtures';
 import { EntryFormComponent, NO_RELATED, RelatedLoad } from './entry-form';
 
+/** Stands in for the timeline so the form's real `navigateByUrl('/accounting')` (leave()) has somewhere to land. */
+@Component({ template: '' })
+class AccountingStubComponent {}
+
 const ROUTES: Routes = [
+  { path: 'accounting', component: AccountingStubComponent },
   { path: 'accounting/entry', component: EntryFormComponent },
   { path: 'accounting/entries/:id/edit', component: EntryFormComponent },
 ];
@@ -20630,8 +20729,11 @@ const OLD_CARD = makeAccount({ id: 3, name: '舊卡', is_archived: true });
 describe('EntryFormComponent', () => {
   let httpMock: HttpTestingController;
   let harness: RouterTestingHarness;
+  /** Call-through spy on `Router.navigateByUrl`, installed by `open()`. */
+  let navigate: ReturnType<typeof vi.spyOn> | undefined;
 
   beforeEach(() => {
+    navigate = undefined;
     localStorage.clear();
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 14, 42));
@@ -20641,7 +20743,10 @@ describe('EntryFormComponent', () => {
     httpMock = TestBed.inject(HttpTestingController);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // leave()'s `void router.navigateByUrl('/accounting')` is real now: let it finish (and surface a rejection)
+    // before the module is torn down.
+    await Promise.all(navigate?.mock.results.map(result => result.value) ?? []);
     httpMock.verify();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -20692,10 +20797,16 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/projects', PROJECTS);
     respond('/api/accounting/counterparties', []);
     respond('/api/accounting/preference', makePreference());
-    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
-    const back = vi.spyOn(TestBed.inject(Location), 'back');
+    // The spy MUST call through: RouterTestingHarness.navigateByUrl() goes through Router.navigateByUrl() and then waits
+    // for the real NavigationEnd, so a stubbed (mockResolvedValue) router would hang every later harness navigation
+    // (entry 7 → entry 9, edit → new) and never reach the cancellation path. leave()'s '/accounting' lands on the stub.
+    const spy = vi.spyOn(TestBed.inject(Router), 'navigateByUrl');
+    navigate = spy;
+    // back() alone is stubbed: a real SpyLocation.back() would pop to the previous form URL and start a router
+    // navigation (and a fresh GET of that entry) after the test has finished asserting.
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
     const el = harness.routeNativeElement as HTMLElement;
-    const left = () => navigate.mock.calls.some(([target]) => target === '/accounting') || back.mock.calls.length > 0;
+    const left = () => spy.mock.calls.some(([target]) => target === '/accounting') || back.mock.calls.length > 0;
     return { el, left };
   }
 
@@ -20871,19 +20982,32 @@ describe('EntryFormComponent', () => {
   });
 
   it('ignores stale detail, related-stage and refetch responses after navigating to another entry', async () => {
+    // Request order under real routing:
+    //   open(): GET accounts → projects → counterparties → preference (categories 'expense' already pending) →
+    //           ready → GET entries/7.
+    //   entries/7 answers → loadRelated(7) held open (no account GET: entry 7 is never applied).
+    //   harness → /entries/9/edit: same route config, component reused; paramMap emits during activation → load()
+    //           switchMaps away from entry 7's related stage → GET entries/9 (issued before NavigationEnd).
+    //   entries/9 answers → loadRelated(9) held → released → applied → GET accounts/2.
+    //   categories (the open() one) and accounts/2 answered; reload() ×2 → GET entries/9 twice, first cancelled.
+    //   save → PUT entries/9 → leave(): second navigation, so navigationId 2 → location.back() (stubbed).
     const related = holdRelated();
     const { el, left } = await open('/accounting/entries/7/edit');
     // Entry 7's detail answers, so its load waits in the related stage when the owner moves on.
     respond('/api/accounting/entries/7', makeEntryDetail({ id: 7, account_id: 1, category_id: 12, name: '午餐', amount: '-120.0000' }));
     const sevenRelated = related.get(7);
     expect(sevenRelated).toBeDefined();
+    httpMock.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
 
+    // Real navigation (the navigateByUrl spy calls through), so this resolves on NavigationEnd.
     await harness.navigateByUrl('/accounting/entries/9/edit');
     settle();
+    expect(related.get(9)).toBeUndefined();
     respond(
       '/api/accounting/entries/9',
       makeEntryDetail({ id: 9, account_id: 2, category_id: 12, name: '晚餐', amount: '-250.0000' }),
     );
+    expect(related.get(9)).toBeDefined();
     release(related.get(9));
     // Entry 7's related answer arrives last. switchMap has unsubscribed it; if it were still live, the loadId guard drops it.
     release(sevenRelated);
@@ -20898,7 +21022,10 @@ describe('EntryFormComponent', () => {
     const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
     form.reload();
     const firstRefetch = httpMock.match(r => r.method === 'GET' && r.url === '/api/accounting/entries/9');
+    expect(firstRefetch.length).toBe(1);
     form.reload();
+    // The second load() switchMaps away from the first GET before it answers (an already-cancelled request cannot be flushed).
+    expect(firstRefetch[0].cancelled).toBe(true);
     settle();
     respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, category_id: 12, name: '晚餐', amount: '-250.0000' }));
     release(related.get(9));
@@ -20918,6 +21045,8 @@ describe('EntryFormComponent', () => {
   });
 
   it('keeps loading until related entries have loaded', async () => {
+    // Request order (no navigation after open()): open() as above → GET entries/9 → answered → loadRelated(9) held;
+    // ⏎ and save() issue nothing → release → applied → GET accounts/2 → categories and accounts/2 answered.
     const related = holdRelated();
     const { el } = await open('/accounting/entries/9/edit');
     respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, category_id: 12, amount: '-170.0000' }));
@@ -20970,6 +21099,8 @@ describe('EntryFormComponent', () => {
     expect(select.value).toBe('3');
 
     // A new record never offers the archived account (the preference is cached, so it is not requested again).
+    // Real navigation to a different route config: the edit form is destroyed and a fresh form issues accounts,
+    // projects, counterparties and categories; once ready, start(null) picks account 1 → GET accounts/1.
     await harness.navigateByUrl('/accounting/entry');
     settle();
     respond('/api/accounting/accounts', [...ACCOUNTS, OLD_CARD]);
@@ -30081,7 +30212,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Consumes: the routes of Task 29, the CLI and `MOZE_REALM_EXPORTER` of Task 10, the backend README of Task 17 (linked, not edited).
 - Produces: the deploy runbook used by Task 31 and by the operator (pre-deploy dump, restore-and-swap drill, restore-and-swap rollback); the exact `@hub_spa` matcher string for the PR description.
 
-Rollback rule (plan review): Task 3's downgrade guard stays strict — `alembic downgrade` refuses on purpose as soon as any 2a data exists (`manual` / `hermes` / `rule` entries, `moze_backup` entries, groups, rules, schedules, a `moze_backup` import run). The runbook's rollback is therefore **restore the pre-deploy dump into `accounting_db_restore` and swap database names** (plan review round 2: `pg_restore --clean` into the live database fails on the 2a foreign keys), never a downgrade and never `--clean`; the downgrade is documented only for a migration that failed before any import or entry.
+Rollback rule (plan review): Task 3's downgrade guard stays strict — `alembic downgrade` refuses on purpose as soon as any 2a data exists (`manual` / `hermes` / `rule` entries, `moze_backup` entries, groups, rules, schedules, a `moze_backup` import run). The runbook's rollback is therefore **restore the pre-deploy dump into `accounting_db_restore` and swap database names** (plan review round 2: `pg_restore --clean` into the live database fails on the 2a foreign keys), never a downgrade and never `--clean`; the downgrade is documented only for a migration that failed before any import or entry. Plan review round 3: the rollback is one `set -euo pipefail` script (`rollback-2a.sh`) in which every step is a precondition for the next — it refuses a leftover `accounting_db_restore`, stops on any `pg_restore` error, and verifies the restored copy (phase 1 head + the five row counts of the dump manifest written in step 0) before it stops the backend or renames anything; step 0b runs it against a truncated dump as a failure drill.
 
 - [ ] 30.1 Create `docs/deploy/accounting-phase-2a.md`:
 
@@ -30123,14 +30254,18 @@ The converter copies `moze.realm` into a scratch directory before opening it; it
    readlink /var/lib/home-hub-production/store/current
    docker exec stonk-postgres-1 sh -c 'pg_dump -U "$POSTGRES_USER" -Fc accounting_db' \
      > ~/backups/home-hub-2a/accounting_db-pre-2a-$TS.dump
+   printf 'account|ledger_entry|category|project|import_run\n' > ~/backups/home-hub-2a/accounting_db-pre-2a-$TS.counts
+   docker exec stonk-postgres-1 sh -c "psql -U \"\$POSTGRES_USER\" -d accounting_db -At -c 'SELECT (SELECT count(*) FROM account), (SELECT count(*) FROM ledger_entry), (SELECT count(*) FROM category), (SELECT count(*) FROM project), (SELECT count(*) FROM import_run)'" \
+     >> ~/backups/home-hub-2a/accounting_db-pre-2a-$TS.counts
+   cat ~/backups/home-hub-2a/accounting_db-pre-2a-$TS.counts
    chmod 600 ~/backups/home-hub-2a/*-$TS.*
    ls -l ~/backups/home-hub-2a/
    docker exec -i stonk-postgres-1 pg_restore -l < ~/backups/home-hub-2a/accounting_db-pre-2a-$TS.dump | grep -c ' TABLE DATA '
    ```
 
-   Expected: the `readlink` target ends in the id written to `spa-release-pre-2a-$TS.txt` (the active release in `/var/lib/home-hub-production/store`); a non-empty `.dump`, the two `.txt` files, mode `600`; a non-zero `TABLE DATA` count. Keep `$TS`: every rollback command below names these three files.
+   Expected: the `readlink` target ends in the id written to `spa-release-pre-2a-$TS.txt` (the active release in `/var/lib/home-hub-production/store`); the manifest prints its header and one line of five numbers (`account|ledger_entry|category|project|import_run` row counts of `accounting_db`, taken right after the dump; step 0b proves they match the dump, so a write that slipped in between is caught before the deploy — then redo step 0); a non-empty `.dump`, the `.counts` manifest and the two `.txt` files, mode `600`; a non-zero `TABLE DATA` count. Keep `$TS`: the rollback script names these four files by it.
 
-0b. **Restore drill** (same session, before step 1): rehearse the rollback of the "Rollback" section on disposable databases — a copy of the dump that has been upgraded to 2a and holds 2a data plays `accounting_db`, a second restore of the pre-2a dump plays `accounting_db_restore`, and their names are swapped exactly as the rollback does. `NEW_BACKEND` is the 2a commit being deployed (the PR's merge commit); the production checkout, its services and `accounting_db` are not touched.
+0b. **Restore drill** (same session, before step 1): rehearse the rollback of the "Rollback" section on disposable databases — a copy of the dump that has been upgraded to 2a and holds 2a data plays `accounting_db`, a second restore of the pre-2a dump plays `accounting_db_restore`, and their names are swapped exactly as the rollback does; then the **failure drill** runs the real rollback script against a truncated copy of the dump and must stop before any service stop or rename. First save the script block of the "Rollback" section verbatim as `~/backups/home-hub-2a/rollback-2a.sh` and `chmod 700` it. `NEW_BACKEND` is the 2a commit being deployed (the PR's merge commit); the production checkout, its services and the name and contents of `accounting_db` are not touched (the failure drill only creates and drops `accounting_db_restore`).
 
    ```bash
    NEW_BACKEND=<2a commit being deployed>
@@ -30146,7 +30281,7 @@ The converter copies `moze.realm` into a scratch directory before opening it; it
 
    # a. disposable copy of the dump, upgraded to 2a and holding 2a data (a real backup import, not a dry run)
    docker exec stonk-postgres-1 sh -c 'createdb -U "$POSTGRES_USER" accounting_drill_2a'
-   docker exec -i stonk-postgres-1 sh -c 'pg_restore -U "$POSTGRES_USER" --no-owner -d accounting_drill_2a' < "$DUMP"
+   docker exec -i stonk-postgres-1 sh -c 'pg_restore -U "$POSTGRES_USER" -Fc --exit-on-error --no-owner -d accounting_drill_2a' < "$DUMP"
    (cd "$DRILL/new/tools/moze-realm-export" && npm ci --silent)
    (cd "$DRILL/new/services/accounting-service" && "$VENV/alembic" upgrade head)
    (cd "$DRILL/new/services/accounting-service" && "$VENV/python" -m app.services.moze_backup_import_service ~/workspace/moze-backup/MOZE_4.0.zip > "$DRILL/import.json") && echo import-ok
@@ -30154,7 +30289,9 @@ The converter copies `moze.realm` into a scratch directory before opening it; it
 
    # b. second disposable database from the pre-2a dump, then the name swap of the rollback
    docker exec stonk-postgres-1 sh -c 'createdb -U "$POSTGRES_USER" accounting_drill_restore'
-   docker exec -i stonk-postgres-1 sh -c 'pg_restore -U "$POSTGRES_USER" --no-owner -d accounting_drill_restore' < "$DUMP"
+   docker exec -i stonk-postgres-1 sh -c 'pg_restore -U "$POSTGRES_USER" -Fc --exit-on-error --no-owner -d accounting_drill_restore' < "$DUMP"
+   docker exec stonk-postgres-1 sh -c "psql -U \"\$POSTGRES_USER\" -d accounting_drill_restore -At -c 'SELECT (SELECT count(*) FROM account), (SELECT count(*) FROM ledger_entry), (SELECT count(*) FROM category), (SELECT count(*) FROM project), (SELECT count(*) FROM import_run)'"
+   sed -n 2p ~/backups/home-hub-2a/accounting_db-pre-2a-$TS.counts
    docker exec stonk-postgres-1 sh -c "psql -U \"\$POSTGRES_USER\" -d postgres -At -c \"SELECT datname, count(*) FROM pg_stat_activity WHERE datname IN ('accounting_drill_2a', 'accounting_drill_restore') GROUP BY datname\""
    docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -c "ALTER DATABASE accounting_drill_2a RENAME TO accounting_drill_broken; ALTER DATABASE accounting_drill_restore RENAME TO accounting_drill_2a;"'
 
@@ -30165,14 +30302,23 @@ The converter copies `moze.realm` into a scratch directory before opening it; it
    done
    docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_drill_broken -At -c "SELECT version_num FROM alembic_version"'
 
-   # d. clean up
+   # d. failure drill: the real rollback script on a truncated dump stops before any pm2 stop or rename
+   head -c $(( $(stat -c %s "$DUMP") / 2 )) "$DUMP" > "$DRILL/truncated.dump"
+   bash ~/backups/home-hub-2a/rollback-2a.sh "$TS" "$DRILL/truncated.dump"; echo "exit=$?"
+   docker exec stonk-postgres-1 sh -c "psql -U \"\$POSTGRES_USER\" -d postgres -At -c \"SELECT datname FROM pg_database WHERE datname LIKE 'accounting_db%' ORDER BY 1\""
+   cd /home/opc/workspace/home-hub && npx pm2 describe accounting-service | grep -m1 ' status '
+   git -C /home/opc/workspace/home-hub rev-parse HEAD; cat ~/backups/home-hub-2a/backend-commit-pre-2a-$TS.txt
+   bash ~/backups/home-hub-2a/rollback-2a.sh "$TS"; echo "exit=$?"
+   docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" --force accounting_db_restore'
+
+   # e. clean up
    git -C /home/opc/workspace/home-hub worktree remove --force "$DRILL/new"
    git -C /home/opc/workspace/home-hub worktree remove --force "$DRILL/old" && rm -rf "$DRILL"
    docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" --force accounting_drill_2a'
    docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" --force accounting_drill_broken'
    ```
 
-   Expected: `1` twice (both `.env` copies point at the drill database); `alembic upgrade head` ends at `-> 7b1e4a2c9d05`; `import-ok`; `7b1e4a2c9d05|<n>` with `n > 0` (the copy holds 2a schema and 2a data, so its foreign keys are the ones a real rollback meets); the `pg_stat_activity` query prints nothing; `ALTER DATABASE` twice (both renames run in one session as one implicit transaction: either both apply or neither); `alembic current` on the swapped-in `accounting_drill_2a` prints `5d2e7c9a1b3f (head)` (the phase 1 head); the two count lines are identical (`accounting_db` still holds exactly the dumped state, since step 1 has not run); `accounting_drill_broken` reads `7b1e4a2c9d05`. Any difference or error: drop whichever drill databases exist (`accounting_drill_2a`, `accounting_drill_restore`, `accounting_drill_broken`), remove the worktrees, stop, do not deploy.
+   Expected: `1` twice (both `.env` copies point at the drill database); `alembic upgrade head` ends at `-> 7b1e4a2c9d05`; `import-ok`; `7b1e4a2c9d05|<n>` with `n > 0` (the copy holds 2a schema and 2a data, so its foreign keys are the ones a real rollback meets); the restored `accounting_drill_restore` counts line equals the manifest's second line (otherwise the manifest does not describe the dump: redo step 0); the `pg_stat_activity` query prints nothing; `ALTER DATABASE` twice (both renames run in one session as one implicit transaction: either both apply or neither); `alembic current` on the swapped-in `accounting_drill_2a` prints `5d2e7c9a1b3f (head)` (the phase 1 head); the two count lines are identical (`accounting_db` still holds exactly the dumped state, since step 1 has not run); `accounting_drill_broken` reads `7b1e4a2c9d05`. Failure drill: the first script run ends with a `pg_restore` error and `ROLLBACK STOPPED: pg_restore failed …`, then `exit=1`; it prints no `restore verified`, no pm2 output, no `ALTER DATABASE` and no `ROLLBACK-DB-OK`; the `pg_database` query lists exactly `accounting_db` and `accounting_db_restore` (no `accounting_db_broken_*`: the live name is untouched); pm2 shows `status │ online`; the two commit lines are identical (the checkout was not switched); the second run (leftover still present) prints the script's leftover refusal for `accounting_db_restore` and `exit=1` without restoring anything; `dropdb` removes the leftover. If the first run reaches `restore verified` or anything after it, the script is wrong: stop, do not deploy. Any difference or error: drop whichever drill databases exist (`accounting_drill_2a`, `accounting_drill_restore`, `accounting_drill_broken`, and `accounting_db_restore` left by the failure drill), remove the worktrees, stop, do not deploy.
 
 1. **Migration**
 
@@ -30251,39 +30397,77 @@ Rollback window: **3 days** after the deploy. A rollback returns `accounting_db`
 
 `pg_restore --clean` into the live `accounting_db` is **not** the rollback either and must not be used: it fails on the foreign keys of the 2a tables, which reference phase 1 tables the dump wants to drop (verified). The rollback restores into a new database and swaps the database names; the 2a database is renamed, never cleaned or modified.
 
-Rollback sequence (`$TS` from step 0; step 0b rehearsed exactly this):
+Rollback script. Save it as `~/backups/home-hub-2a/rollback-2a.sh` (mode `700`) in step 0b, whose failure drill runs it. Every step is a precondition for the next: nothing stops the backend or renames a database until the restored copy has proven itself, and any failure ends the script with a `ROLLBACK STOPPED:` line.
 
 ```bash
-DUMP=~/backups/home-hub-2a/accounting_db-pre-2a-$TS.dump
-PREV_BACKEND=$(cat ~/backups/home-hub-2a/backend-commit-pre-2a-$TS.txt)
-PREV_SPA=$(cat ~/backups/home-hub-2a/spa-release-pre-2a-$TS.txt)
+#!/usr/bin/env bash
+# Usage: rollback-2a.sh <TS from step 0> [dump path: failure drill only]
+set -euo pipefail
+TS=${1:?usage: rollback-2a.sh <TS> [dump]}
+REPO=/home/opc/workspace/home-hub
+B=$HOME/backups/home-hub-2a
+DUMP=${2:-$B/accounting_db-pre-2a-$TS.dump}
+MANIFEST=$B/accounting_db-pre-2a-$TS.counts
+PREV_BACKEND=$(cat "$B/backend-commit-pre-2a-$TS.txt")
+VENV=$REPO/services/accounting-service/.venv/bin
 RTS=$(date -u +%Y%m%d%H%M%S)   # digits only: an unquoted database name is folded to lower case
+COUNTS_SQL='SELECT (SELECT count(*) FROM account), (SELECT count(*) FROM ledger_entry), (SELECT count(*) FROM category), (SELECT count(*) FROM project), (SELECT count(*) FROM import_run)'
+pg() { docker exec -i stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -v ON_ERROR_STOP=1 -At -d "$0"' "$1"; }   # SQL on stdin
+fail() { echo "ROLLBACK STOPPED: $*" >&2; exit 1; }
 
-# 1. restore the dump into a new database (2a keeps running meanwhile)
+# a. preconditions: no leftover restore database, inputs present, clean checkout
+[ "$(pg postgres <<<"SELECT count(*) FROM pg_database WHERE datname = 'accounting_db_restore'")" = 0 ] \
+  || fail "accounting_db_restore exists (interrupted attempt?): inspect it, drop it explicitly with dropdb --force accounting_db_restore, then re-run"
+{ [ -s "$DUMP" ] && [ -s "$MANIFEST" ]; } || fail "dump or manifest missing"
+{ git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet; } || fail "production checkout has local changes"
+
+# b. restore into a new database; any pg_restore error stops here (2a keeps running, accounting_db untouched)
 docker exec stonk-postgres-1 sh -c 'createdb -U "$POSTGRES_USER" accounting_db_restore'
-docker exec -i stonk-postgres-1 sh -c 'pg_restore -U "$POSTGRES_USER" --no-owner -d accounting_db_restore' < "$DUMP"
-docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_db_restore -At -c "SELECT version_num FROM alembic_version"'
+docker exec -i stonk-postgres-1 sh -c 'pg_restore -U "$POSTGRES_USER" -Fc --exit-on-error --no-owner -d accounting_db_restore' < "$DUMP" \
+  || fail "pg_restore failed; accounting_db untouched, accounting_db_restore left for inspection"
 
-# 2. stop the backend: RENAME fails while any session is connected to either database
-cd /home/opc/workspace/home-hub && npx pm2 stop accounting-service
-docker exec stonk-postgres-1 sh -c "psql -U \"\$POSTGRES_USER\" -d postgres -At -c \"SELECT datname, pid, application_name, state FROM pg_stat_activity WHERE datname IN ('accounting_db', 'accounting_db_restore')\""
+# c. verify the restored copy BEFORE any service stop or rename: phase 1 head and the manifest's row counts
+WORK=$(mktemp -d) && chmod 700 "$WORK"
+trap 'git -C "$REPO" worktree remove --force "$WORK/old" >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
+git -C "$REPO" worktree add --quiet --detach "$WORK/old" "$PREV_BACKEND"
+sed -e 's/^ACCOUNTING_DB=.*/ACCOUNTING_DB=accounting_db_restore/' "$REPO/.env" > "$WORK/old/.env" && chmod 600 "$WORK/old/.env"
+HEAD_LINE=$(cd "$WORK/old/services/accounting-service" && { "$VENV/alembic" current 2>/dev/null || true; } | tail -1)
+[ "$HEAD_LINE" = "5d2e7c9a1b3f (head)" ] || fail "alembic current on accounting_db_restore printed '$HEAD_LINE'"
+GOT=$(pg accounting_db_restore <<<"$COUNTS_SQL")
+WANT=$(sed -n 2p "$MANIFEST")
+[ "$GOT" = "$WANT" ] || fail "restored row counts $GOT differ from the dump manifest $WANT"
+echo "restore verified: 5d2e7c9a1b3f (head), counts $GOT"
 
-# 3. swap the names in one psql session (one implicit transaction: both renames or neither)
+# d. only now: stop the backend, require no sessions, swap names in one psql session, previous backend, start
+cd "$REPO" && npx pm2 stop accounting-service
+SESSIONS=$(pg postgres <<<"SELECT datname, pid, application_name, state FROM pg_stat_activity WHERE datname IN ('accounting_db', 'accounting_db_restore')")
+if [ -n "$SESSIONS" ]; then
+  echo "$SESSIONS" >&2
+  npx pm2 start accounting-service
+  fail "sessions connected (listed above); backend restarted on 2a; close them, dropdb --force accounting_db_restore, re-run"
+fi
 docker exec stonk-postgres-1 sh -c "psql -U \"\$POSTGRES_USER\" -d postgres -v ON_ERROR_STOP=1 -c 'ALTER DATABASE accounting_db RENAME TO accounting_db_broken_$RTS; ALTER DATABASE accounting_db_restore RENAME TO accounting_db;'"
-docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_db -At -c "SELECT version_num FROM alembic_version"'
-
-# 4. previous backend commit, then start
-git -C /home/opc/workspace/home-hub switch --detach "$PREV_BACKEND"
-cd /home/opc/workspace/home-hub && npx pm2 start accounting-service
-curl -s http://localhost:8000/health
-echo "accounting_db_broken_$RTS"
+[ "$(pg accounting_db <<<'SELECT version_num FROM alembic_version')" = 5d2e7c9a1b3f ] \
+  || fail "accounting_db after the swap is not 5d2e7c9a1b3f; backend left stopped"
+git -C "$REPO" switch --detach "$PREV_BACKEND"
+npx pm2 start accounting-service
+for _ in $(seq 30); do [ "$(curl -s http://localhost:8000/health)" = '{"status":"ok"}' ] && break; sleep 1; done
+[ "$(curl -s http://localhost:8000/health)" = '{"status":"ok"}' ] || fail "health check failed after start on $PREV_BACKEND"
+echo "ROLLBACK-DB-OK accounting_db_broken_$RTS"
 ```
 
-Expected: step 1 prints `5d2e7c9a1b3f`; the `pg_stat_activity` query of step 2 prints nothing — if it lists a session (a `psql` left open, another client), close that client and run the query again before step 3 (do not rename while it prints anything); step 3 prints `ALTER DATABASE` twice and then `5d2e7c9a1b3f`; health `{"status":"ok"}`. Note the printed `accounting_db_broken_<ts>` name.
+Run it (`$TS` from step 0):
 
-5. **SPA**: republish release `$PREV_SPA` through the publisher used for phase 1 (the `publish_approved.py` of the phase 1 release workflow directory, `~/reports/home-hub-moze-release-*/`), following that workflow's own steps; then `readlink /var/lib/home-hub-production/store/current` must end in `$PREV_SPA`.
+```bash
+bash ~/backups/home-hub-2a/rollback-2a.sh "$TS"; echo "exit=$?"
+PREV_SPA=$(cat ~/backups/home-hub-2a/spa-release-pre-2a-$TS.txt)
+```
 
-6. **Caddy**: restore the phase 1 `@hub_spa` line from `Caddyfile.bak-accounting-2a` in place (keeps the inode of the bind-mounted file), validate and reload:
+Expected: `restore verified: 5d2e7c9a1b3f (head), counts <the manifest's line>`, the pm2 stop output, `ALTER DATABASE` twice (both renames in one `psql -c`, one implicit transaction: both or neither), the pm2 start output, `ROLLBACK-DB-OK accounting_db_broken_<ts>` and `exit=0`. Note the printed `accounting_db_broken_<ts>` name. A `ROLLBACK STOPPED:` line means nothing after it ran: up to and including step c, the backend still serves 2a on the untouched `accounting_db` and `accounting_db_restore` is left for inspection (drop it explicitly before a re-run, which the script otherwise refuses); a stop in step d says what it left. Run the steps below **only after `ROLLBACK-DB-OK`**.
+
+1. **SPA**: republish release `$PREV_SPA` through the publisher used for phase 1 (the `publish_approved.py` of the phase 1 release workflow directory, `~/reports/home-hub-moze-release-*/`), following that workflow's own steps; then `readlink /var/lib/home-hub-production/store/current` must end in `$PREV_SPA`.
+
+2. **Caddy**: restore the phase 1 `@hub_spa` line from `Caddyfile.bak-accounting-2a` in place (keeps the inode of the bind-mounted file), validate and reload:
 
    ```bash
    cd /home/opc/workspace/vaultwarden
@@ -30295,9 +30479,9 @@ Expected: step 1 prints `5d2e7c9a1b3f`; the `pg_stat_activity` query of step 2 p
 
    Expected: the phase 1 matcher (no `/accounting/entries`), `Valid configuration`.
 
-7. Keep `accounting_db_broken_<ts>` untouched until the 3-day window after the deploy has ended (it holds every 2a write, for re-entering what the owner recorded); then drop it: `docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" accounting_db_broken_<ts>'`.
+3. Keep `accounting_db_broken_<ts>` untouched until the 3-day window after the deploy has ended (it holds every 2a write, for re-entering what the owner recorded); then drop it: `docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" accounting_db_broken_<ts>'`.
 
-8. Return the checkout to its branch once 2a is fixed (`git -C /home/opc/workspace/home-hub switch <branch>`), and redeploy from step 0 with a new dump.
+4. Return the checkout to its branch once 2a is fixed (`git -C /home/opc/workspace/home-hub switch <branch>`), and redeploy from step 0 with a new dump and manifest.
 ````
 
 (`5d2e7c9a1b3f` is the phase 1 head, `alembic/versions/5d2e7c9a1b3f_moze_ledger_schema.py`, and the `down_revision` of Task 3's `7b1e4a2c9d05`. The restore drill in step 0b is mandatory before every production run of step 1. The runbook has no cleanup of leftover 2a objects: the rollback never restores over the 2a database, it renames it.)
@@ -30326,14 +30510,17 @@ cd /home/opc/workspace/home-hub-entry
 grep -c 'accounting/entries/\[0-9\]+/edit' docs/deploy/accounting-phase-2a.md
 grep -n 'pg_dump -U\|pg_restore -U\|RENAME TO\|Rollback window\|is \*\*not\*\* the rollback\|must not be used' docs/deploy/accounting-phase-2a.md
 grep -c -- '--clean' docs/deploy/accounting-phase-2a.md
+grep -c -- '-Fc --exit-on-error' docs/deploy/accounting-phase-2a.md
+grep -n 'pre-2a-\$TS\.counts\|"\$GOT" = "\$WANT"\|set -euo pipefail\|accounting_db_restore exists' docs/deploy/accounting-phase-2a.md
+awk '/^#!\/usr\/bin\/env bash/{f=1} f{print} f&&/ROLLBACK-DB-OK accounting_db_broken/{exit}' docs/deploy/accounting-phase-2a.md | bash -n && echo script-syntax-ok
 sed -n 1,4p docs/accounting-service-improvements.md
 grep -n '### 4. 記帳服務' README.md
 grep -n 'MOZE_REALM_EXPORTER' .env.example
 ```
 
-Expected: `2` (the matcher line and the Python `new` string); the dump line (step 0), the two drill and one rollback `pg_restore` lines, the drill and rollback `RENAME TO` lines, the `Rollback window` line, the downgrade warning and the `pg_restore --clean` warning; `1` (`--clean` appears only in that warning, in no command); the title, a blank line and the superseded note; one README line; `MOZE_REALM_EXPORTER=` in `.env.example` (added by Task 17; if it is missing, add `MOZE_REALM_EXPORTER=` below `ACCOUNTING_IMPORT_LOCKED=false` and include `.env.example` in the commit).
+Expected: `2` (the matcher line and the Python `new` string); the dump line (step 0), the two drill and one rollback `pg_restore` lines, the drill and rollback `RENAME TO` lines, the `Rollback window` line, the downgrade warning and the `pg_restore --clean` warning; `1` (`--clean` appears only in that warning, in no command); `3` (both drill restores and the rollback script's restore stop on the first error); 8 lines — step 0's manifest write, append and `cat`, the drill's manifest `sed -n 2p`, the script's `set -euo pipefail`, its leftover refusal (`accounting_db_restore exists`), its `MANIFEST=` line and its `[ "$GOT" = "$WANT" ]` comparison, the refusal and the comparison both before the `npx pm2 stop` line; `script-syntax-ok`; the title, a blank line and the superseded note; one README line; `MOZE_REALM_EXPORTER=` in `.env.example` (added by Task 17; if it is missing, add `MOZE_REALM_EXPORTER=` below `ACCOUNTING_IMPORT_LOCKED=false` and include `.env.example` in the commit).
 
-- [ ] 30.5 When opening the pull request, add an "Operator steps" section to its description containing the `@hub_spa` line from the runbook's "Caddy `@hub_spa` matcher" section verbatim, its `.env` lines, its deploy order (starting with step 0, the dump, and step 0b, the restore drill) and one line: "Rollback = within 3 days, restore the pre-deploy dump into `accounting_db_restore`, stop the backend and swap database names (`accounting_db` → `accounting_db_broken_<ts>`, kept until the window ends); never `pg_restore --clean` into the live database; `alembic downgrade` refuses once 2a data exists".
+- [ ] 30.5 When opening the pull request, add an "Operator steps" section to its description containing the `@hub_spa` line from the runbook's "Caddy `@hub_spa` matcher" section verbatim, its `.env` lines, its deploy order (starting with step 0, the dump, and step 0b, the restore drill) and one line: "Rollback = within 3 days, run the saved `rollback-2a.sh \"$TS\"` (`set -euo pipefail`, each step a precondition for the next): it refuses a leftover `accounting_db_restore`, restores the pre-deploy dump into it with `pg_restore -Fc --exit-on-error`, and verifies `alembic current` = `5d2e7c9a1b3f (head)` and the five row counts of the step 0 dump manifest before it stops the backend, checks `pg_stat_activity` is empty and swaps database names in one `psql` session (`accounting_db` → `accounting_db_broken_<ts>`, kept until the window ends); SPA and Caddy only after `ROLLBACK-DB-OK`; step 0b's failure drill proves a truncated dump stops it before the rename with the live database name untouched; never `pg_restore --clean` into the live database; `alembic downgrade` refuses once 2a data exists".
 
 - [ ] 30.6 Commit:
 
@@ -30349,11 +30536,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Model:** opus
 
-**Files:** none committed. The verify server lives in `/home/opc/workspace/moze-verify-2a/` (outside the repo); the owner checklist is Task 11's `~/reports/home-hub-2a-verify/checklist.md` (mode 600, outside the repo). Nothing is printed row by row; only aggregates are shown.
+**Files:** none committed. The verify server lives in `/home/opc/workspace/moze-verify-2a/` (outside the repo); the owner checklist is Task 11's `~/reports/home-hub-2a-verify/checklist.md` and its private label → account id map `checklist_accounts.json` next to it (both mode 600, outside the repo, deleted in 31.11). Nothing is printed row by row; only aggregates are shown.
 
 **Interfaces:**
-- Consumes: the converter (Task 6), the backup CLI (Task 10), the populated disposable database `accounting_backup_verify` and the owner checklist `~/reports/home-hub-2a-verify/checklist.md` left by Task 11, the API (Tasks 4–16), the SPA (Tasks 18–29), the runbook (Task 30). This task does **not** create or import a database: the verify API runs on Task 11's `accounting_backup_verify` (same data as the checklist), so the live `accounting_db` behind `:8000` is untouched.
-- Produces: the aggregates, the as-of check of the checklist against `GET /accounts?as_of=<exported_at date>` (31.10a, counts only), the owner's pass/fail list per checklist item and per balance-acceptance account (initials only) for the PR description; drops `accounting_backup_verify` at the end.
+- Consumes: the converter (Task 6), the backup CLI (Task 10), the populated disposable database `accounting_backup_verify` the owner checklist `~/reports/home-hub-2a-verify/checklist.md` and its label → account id map `~/reports/home-hub-2a-verify/checklist_accounts.json` (kept by Task 11 until 31.11) left by Task 11, the API (Tasks 4–16), the SPA (Tasks 18–29), the runbook (Task 30). This task does **not** create or import a database: the verify API runs on Task 11's `accounting_backup_verify` (same data as the checklist), so the live `accounting_db` behind `:8000` is untouched.
+- Produces: the aggregates, the per-account as-of check of the checklist against `GET /accounts?as_of=<exported_at date>` (31.10a, counts and mismatching labels only), the owner's pass/fail list per checklist item and per balance-acceptance account (initials only) for the PR description; drops `accounting_backup_verify` and deletes the checklist directory (including `checklist_accounts.json`) at the end.
 
 - [ ] 31.1 Run every suite.
 
@@ -30377,7 +30564,7 @@ Expected: `added … packages`; a `12.x` version.
 
 ```bash
 docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -At -c "SELECT count(*) FROM pg_database WHERE datname = '"'"'accounting_backup_verify'"'"'"'
-test -f ~/reports/home-hub-2a-verify/checklist.md && stat -c '%a %n' ~/reports/home-hub-2a-verify/checklist.md
+stat -c '%a %n' ~/reports/home-hub-2a-verify/checklist.md ~/reports/home-hub-2a-verify/checklist_accounts.json
 cd /home/opc/workspace/home-hub-entry
 rm -f .env
 sed -e 's/^ACCOUNTING_DB=.*/ACCOUNTING_DB=accounting_backup_verify/' \
@@ -30389,7 +30576,7 @@ mkdir -p /home/opc/workspace/moze-verify-2a
 cd services/accounting-service && .venv/bin/alembic current 2>&1 | tail -1
 ```
 
-Expected: `1`; `600 /home/opc/reports/home-hub-2a-verify/checklist.md`; `1`; `7b1e4a2c9d05 (head)`.
+Expected: `1`; `600 /home/opc/reports/home-hub-2a-verify/checklist.md` and `600 /home/opc/reports/home-hub-2a-verify/checklist_accounts.json` (either missing: stop and re-run Task 11); `1`; `7b1e4a2c9d05 (head)`.
 
 - [ ] 31.4 Confirm Task 11's import is in place (read-only).
 
@@ -30575,34 +30762,64 @@ and open `http://100.81.25.128:4300/hub/accounting` on the phone over Tailscale.
 
   Do item 10 before the balance acceptance below, so the verify database again holds only the imported data.
 
-- [ ] 31.10a Check the checklist against the API at the acceptance date (agent, after item 10 of 31.10 and before the owner starts 31.10b). The acceptance date is the `- as_of:` date in the checklist header (the backup's `exported_at` date, Asia/Taipei); the verify backend from 31.6 answers `GET /accounts?as_of=<that date>` with `balance` computed over `posted_date ≤ as_of`. Task 11's label → account id map was deleted in 11.9, so each checklist row (currency, `moze_part`) is matched one-to-one to a distinct account with the same currency and that `balance`; nothing but the date and counts is printed.
+- [ ] 31.10a Check the checklist against the API at the acceptance date, per account (agent, after item 10 of 31.10 and before the owner starts 31.10b). The acceptance date is the `- as_of:` date in the checklist header (the backup's `exported_at` date, Asia/Taipei); the verify backend from 31.6 answers `GET /accounts?as_of=<that date>&include_archived=true` with `balance` computed over `posted_date ≤ as_of`. Task 11's `checklist_accounts.json` maps each checklist label to its account id, so every checklist row is compared with **the API row of that id** — same currency and `balance == moze_part` — never matched by value. Only the date, the counts and the labels of mismatching rows are printed; the API output lives only in mode-600 files under `/home/opc/workspace/moze-verify-2a/` and is deleted at the end of the step.
 
-```bash
-AS_OF=$(sed -n 's/^- as_of: \([0-9-]\{10\}\).*/\1/p' ~/reports/home-hub-2a-verify/checklist.md)
-echo "as_of=$AS_OF"
-curl -s "http://localhost:8010/accounts?as_of=$AS_OF&include_archived=true" | python3 -c "
-import sys, json
+Create `/home/opc/workspace/moze-verify-2a/check_asof.py`:
+
+```python
+"""Compare the owner checklist with GET /accounts?as_of=… per account id (API JSON on stdin).
+
+Prints `checked=N mismatches=M` and the labels of mismatching rows only; exit 1 on any mismatch.
+"""
+import json
+import sys
 from decimal import Decimal
 from pathlib import Path
-accounts = json.load(sys.stdin)
-pool = [(a['currency'], Decimal(str(a['balance']))) for a in accounts]
+
+REPORT = Path.home() / 'reports/home-hub-2a-verify'
+ids = json.loads((REPORT / 'checklist_accounts.json').read_text(encoding='utf-8'))  # label -> account id
+if len(set(ids.values())) != len(ids):
+    sys.exit('checklist_accounts.json maps two labels to one account id')
+api = {account['id']: account for account in json.load(sys.stdin)}
 rows = []
-for line in (Path.home() / 'reports/home-hub-2a-verify/checklist.md').read_text(encoding='utf-8').splitlines():
+for line in (REPORT / 'checklist.md').read_text(encoding='utf-8').splitlines():
     if line.startswith('| [ ] |'):
         cells = [cell.strip() for cell in line.split('|')]
         rows.append((cells[2], cells[3], Decimal(cells[5])))  # label, currency, HomeHub (moze_part)
-missing = []
+mismatches = []
 for label, currency, moze_part in rows:
-    if (currency, moze_part) in pool:
-        pool.remove((currency, moze_part))
-    else:
-        missing.append(label)
-print(f'accounts={len(accounts)} checked={len(rows)} mismatches={len(missing)} {\" \".join(missing)}')
-sys.exit(1 if missing or not rows else 0)
-"
+    account = api.get(ids.get(label))
+    if account is None or account['currency'] != currency or Decimal(str(account['balance'])) != moze_part:
+        mismatches.append(label)
+print(f'checked={len(rows)} mismatches={len(mismatches)}' + ''.join(f' {label}' for label in mismatches))
+sys.exit(1 if mismatches or not rows else 0)
 ```
 
-Expected: `as_of=` the checklist header's date (non-empty); `accounts=<n> checked=<10 + FX-converted count> mismatches=0`, exit status 0. A mismatch names only the label: the API's as-of balance disagrees with the checklist's `moze_part` (11.7a passed on the same database, so look for a write since Task 11 or a difference between the `as_of` route and `ledger_service.list_accounts`); stop, debug with superpowers:systematic-debugging, and do not hand the checklist to the owner until it reads `mismatches=0`. Record `as_of=<date> checked=<n> mismatches=0` in the PR description.
+Run it on the API output, then the self-check: a copy of the same output with the balances of two mapped accounts swapped (same currency where possible, different balances) must give `mismatches=2` — a value-only match would still pass, because the set of (currency, balance) pairs is unchanged.
+
+```bash
+cd /home/opc/workspace/moze-verify-2a && umask 077
+AS_OF=$(sed -n 's/^- as_of: \([0-9-]\{10\}\).*/\1/p' ~/reports/home-hub-2a-verify/checklist.md)
+echo "as_of=$AS_OF"
+curl -sf "http://localhost:8010/accounts?as_of=$AS_OF&include_archived=true" > asof.json
+python3 check_asof.py < asof.json; echo "exit=$?"
+python3 - asof.json > asof-swapped.json <<'EOF'
+import json, sys
+from decimal import Decimal
+from pathlib import Path
+ids = set(json.loads((Path.home() / 'reports/home-hub-2a-verify/checklist_accounts.json').read_text(encoding='utf-8')).values())
+accounts = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+mapped = [a for a in accounts if a['id'] in ids]
+pairs = [(a, b) for i, a in enumerate(mapped) for b in mapped[i + 1:] if Decimal(str(a['balance'])) != Decimal(str(b['balance']))]
+first, second = sorted(pairs, key=lambda pair: pair[0]['currency'] != pair[1]['currency'])[0]
+first['balance'], second['balance'] = second['balance'], first['balance']
+json.dump(accounts, sys.stdout)
+EOF
+echo -n 'self-check '; python3 check_asof.py < asof-swapped.json; echo "exit=$?"
+rm -f asof.json asof-swapped.json
+```
+
+Expected: `as_of=` the checklist header's date (non-empty); `checked=<10 + FX-converted count> mismatches=0` and `exit=0`; then `self-check checked=<same n> mismatches=2 <label> <label>` and `exit=1` (if it prints anything but `mismatches=2`, the checker is not comparing per account — fix it before going on). A real mismatch names only the label: the API row of that account id has a different currency or its as-of balance disagrees with the checklist's `moze_part` (11.7a passed on the same database, so look for a write since Task 11, a stale `checklist_accounts.json`, or a difference between the `as_of` route and `ledger_service.list_accounts`); stop, debug with superpowers:systematic-debugging, and do not hand the checklist to the owner until it reads `mismatches=0`. Record `as_of=<date> checked=<n> mismatches=0 (per account id; swap self-check mismatches=2)` in the PR description.
 
 - [ ] 31.10b Owner balance acceptance (manual, on the verify server — same data as Task 11's checklist). The owner opens `~/reports/home-hub-2a-verify/checklist.md` (header: comparison date = the backup's export date, Asia/Taipei) and completes the **10-account checklist** against the MOZE app at that export date: for each of the 10 accounts (3 cards, 1 JPY account, 6 others), compare the MOZE account-list balance at the checklist's comparison date with the checklist's HomeHub value (`moze_part`, which 31.10a confirmed equals the API's `balance` at `as_of` = that date). **All 10 must match** (difference 0). The balance shown in the UI (`/hub/accounting/accounts` on the verify server) is today's balance and informational only: it may differ from the checklist when postponed entries have fallen due since the export date, and it is not the acceptance value. Then note the differences of the **9 FX-converted accounts** listed separately in the checklist (or the actual count Task 11 recorded); each passes only if the owner accepts its difference. Record the result in the PR description, initials only, no amounts and no names:
 
@@ -30618,7 +30835,7 @@ FX-converted (9): C.D. accepted · E.F. accepted · … (difference noted in the
 
 The task passes only when all 10 rows read `pass` and every FX-converted account is accepted; any `fail` blocks the merge — debug the account with superpowers:systematic-debugging and repeat from Task 11 on a fresh `accounting_backup_verify`.
 
-- [ ] 31.11 Clean up after the owner has finished and the PR description holds both results (31.10 and 31.10b): stop both servers, remove the temporary firewall rule if one was added, restore the `.env` symlink and `angular.json`, drop Task 11's verify database and delete the private checklist directory.
+- [ ] 31.11 Clean up after the owner has finished and the PR description holds both results (31.10 and 31.10b): stop both servers, remove the temporary firewall rule if one was added, restore the `.env` symlink and `angular.json`, drop Task 11's verify database and delete the private checklist directory, including Task 11's label → account id map `checklist_accounts.json`.
 
 ```bash
 pkill -f "[u]vicorn app.main:app --host 127.0.0.1 --port 8010"
@@ -30628,10 +30845,12 @@ cd /home/opc/workspace/home-hub-entry && rm -f .env && ln -s /home/opc/workspace
 git diff --quiet -- frontend/angular.json || git checkout -- frontend/angular.json
 docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" --if-exists --force accounting_backup_verify'
 docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -At -c "SELECT count(*) FROM pg_database WHERE datname = '"'"'accounting_backup_verify'"'"'"'
+rm -f ~/reports/home-hub-2a-verify/checklist_accounts.json ~/reports/home-hub-2a-verify/checklist.md
 rm -rf ~/reports/home-hub-2a-verify
+ls ~/reports/home-hub-2a-verify 2>&1 | tail -1
 git status --short
 ```
 
-Expected: the `query-port` line prints `no` when no rule was added (the remove is then skipped); `0` (the verify database is gone); `git status --short` prints nothing. The reports in `/home/opc/workspace/moze-verify-2a/` stay outside the repo; delete the directory once the PR description has the aggregates.
+Expected: the `query-port` line prints `no` when no rule was added (the remove is then skipped); `0` (the verify database is gone); `ls` reports `No such file or directory` (checklist and `checklist_accounts.json` are gone); `git status --short` prints nothing. The reports in `/home/opc/workspace/moze-verify-2a/` stay outside the repo; delete the directory once the PR description has the aggregates.
 
 
