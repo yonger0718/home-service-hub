@@ -1,12 +1,134 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+import { NgComponentOutlet } from '@angular/common';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  Type,
+  computed,
+  effect,
+  inject,
+  signal,
+  untracked,
+} from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterLink, RouterOutlet } from '@angular/router';
+import { filter } from 'rxjs';
 
-/** Host of every `/accounting` route. Passthrough until Task 21 adds panes, the sheet and the FAB. */
+import { LayoutModeService } from '../../../services/layout-mode.service';
+import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
+
+export interface LayoutRouteState {
+  /** `data.list` of the matched wide route: the page shown in the left pane. */
+  list: AccountingListKey | null;
+  /** True when a route is active in the `pane` outlet. */
+  pane: boolean;
+}
+
+export function readLayoutState(root: ActivatedRouteSnapshot): LayoutRouteState {
+  const state: LayoutRouteState = { list: null, pane: false };
+  const visit = (node: ActivatedRouteSnapshot) => {
+    const list = node.routeConfig?.data?.['list'] as AccountingListKey | undefined;
+    if (list) {
+      state.list = list;
+    }
+    if (node.outlet === 'pane') {
+      state.pane = true;
+    }
+    node.children.forEach(visit);
+  };
+  visit(root);
+  return state;
+}
+
+const ENTRY_URL = /^\/accounting\/entries\/(\d+)(?:\/|$)/;
+const FORM_URL = /^\/accounting\/(?:entry|entries\/\d+\/edit)(?:[/?#]|$)/;
+const SWIPE_CLOSE_PX = 80;
+
+/**
+ * Host of every `/accounting` route (design D22): one screen per route on phones; on wider screens the list
+ * on the left (rendered here, so it survives row selection) and the `pane` outlet on the right — a sheet
+ * sliding in from the right at 760–1023 px, a persistent pane at ≥ 1024 px. Shows the floating "+" from 760 px.
+ */
 @Component({
   selector: 'app-accounting-layout',
   standalone: true,
-  imports: [RouterOutlet],
-  template: `<router-outlet />`,
+  imports: [RouterOutlet, RouterLink, NgComponentOutlet],
+  templateUrl: './accounting-layout.html',
+  styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class AccountingLayoutComponent {}
+export class AccountingLayoutComponent {
+  private readonly router = inject(Router);
+  private readonly layoutMode = inject(LayoutModeService);
+
+  readonly mode = this.layoutMode.mode;
+  private readonly url = signal(this.router.url);
+  private readonly routeState = signal<LayoutRouteState>(readLayoutState(this.router.routerState.snapshot.root));
+
+  readonly listKey = computed(() => this.routeState().list);
+  readonly paneOpen = computed(() => this.routeState().pane);
+  readonly listComponent = signal<Type<unknown> | null>(null);
+
+  /** Entry shown in the pane (or full screen): lists highlight it. */
+  readonly selectedEntryId = computed(() => {
+    const match = ENTRY_URL.exec(this.url().split(/[?#]/)[0]);
+    return match ? Number(match[1]) : null;
+  });
+
+  readonly showFab = computed(() => this.mode() !== 'phone' && !FORM_URL.test(this.url()));
+
+  private wasPhone: boolean | null = null;
+  private swipeStartX: number | null = null;
+
+  constructor() {
+    this.router.events
+      .pipe(
+        filter((event): event is NavigationEnd => event instanceof NavigationEnd),
+        takeUntilDestroyed(),
+      )
+      .subscribe(event => {
+        this.url.set(event.urlAfterRedirects);
+        this.routeState.set(readLayoutState(this.router.routerState.snapshot.root));
+      });
+
+    effect(onCleanup => {
+      const key = this.listKey();
+      if (!key) {
+        this.listComponent.set(null);
+        return;
+      }
+      let active = true;
+      onCleanup(() => (active = false));
+      void ACCOUNTING_PAGES[key]().then(type => {
+        if (active) {
+          this.listComponent.set(type);
+        }
+      });
+    });
+
+    effect(() => {
+      const phone = this.mode() === 'phone';
+      untracked(() => {
+        if (this.wasPhone !== null && this.wasPhone !== phone) {
+          void this.router.navigateByUrl(this.router.url, { onSameUrlNavigation: 'reload' });
+        }
+        this.wasPhone = phone;
+      });
+    });
+  }
+
+  /** Close the pane / sheet: back to the list's own URL. */
+  close(): void {
+    void this.router.navigateByUrl(this.listKey() === 'accounts' ? '/accounting/accounts' : '/accounting');
+  }
+
+  onPanePointerDown(event: PointerEvent): void {
+    this.swipeStartX = this.mode() === 'sheet' ? event.clientX : null;
+  }
+
+  onPanePointerUp(event: PointerEvent): void {
+    if (this.swipeStartX !== null && event.clientX - this.swipeStartX > SWIPE_CLOSE_PX) {
+      this.close();
+    }
+    this.swipeStartX = null;
+  }
+}

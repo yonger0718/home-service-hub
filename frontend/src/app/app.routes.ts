@@ -1,8 +1,9 @@
 import { Routes } from '@angular/router';
-import { ACCOUNTING_PAGES } from './components/accounting/accounting-pages';
+import { ACCOUNTING_PAGES, AccountingPage } from './components/accounting/accounting-pages';
+import { phoneLayoutGuard, wideLayoutGuard } from './services/layout-mode.service';
 
-/** One screen per route. Task 21 keeps this table for phones and adds a two-pane table for wider screens. */
-const ACCOUNTING_ROUTES: Routes = [
+/** Below 760 px: one screen per route, in the layout's primary outlet. */
+const ACCOUNTING_PHONE_ROUTES: Routes = [
   { path: '', pathMatch: 'full', loadComponent: ACCOUNTING_PAGES.timeline },
   { path: 'accounts', loadComponent: ACCOUNTING_PAGES.accounts },
   { path: 'accounts/new', loadComponent: ACCOUNTING_PAGES.accountSettings },
@@ -12,6 +13,29 @@ const ACCOUNTING_ROUTES: Routes = [
   { path: 'entries/:id/edit', loadComponent: ACCOUNTING_PAGES.entryForm },
   { path: 'entries/:id', loadComponent: ACCOUNTING_PAGES.entryDetail },
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
+];
+
+/** The page shown in the layout's `pane` outlet; an empty-path named child keeps the URL free of `(pane:…)`. */
+function pane(page: AccountingPage): Routes {
+  return [{ path: '', outlet: 'pane', loadComponent: ACCOUNTING_PAGES[page] }];
+}
+
+/** 760 px and wider: the layout renders `data.list` on the left and the `pane` outlet on the right. */
+const ACCOUNTING_WIDE_ROUTES: Routes = [
+  { path: '', pathMatch: 'full', data: { list: 'timeline' }, children: [] },
+  { path: 'entry', data: { list: 'timeline' }, children: pane('entryForm') },
+  { path: 'entries/:id/edit', data: { list: 'timeline' }, children: pane('entryForm') },
+  { path: 'entries/:id', data: { list: 'timeline' }, children: pane('entryDetail') },
+  { path: 'accounts', pathMatch: 'full', data: { list: 'accounts' }, children: [] },
+  { path: 'accounts/new', data: { list: 'accounts' }, children: pane('accountSettings') },
+  { path: 'accounts/:id/settings', data: { list: 'accounts' }, children: pane('accountSettings') },
+  { path: 'accounts/:id', data: { list: 'accounts' }, children: pane('accountEntries') },
+  { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
+];
+
+const ACCOUNTING_ROUTES: Routes = [
+  { path: '', canMatch: [phoneLayoutGuard], children: ACCOUNTING_PHONE_ROUTES },
+  { path: '', canMatch: [wideLayoutGuard], children: ACCOUNTING_WIDE_ROUTES },
 ];
 
 export const routes: Routes = [
