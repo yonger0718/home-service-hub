@@ -529,6 +529,8 @@ class EntryResult:
     fx_backup_rate_missing: list[tuple[str, str]] = field(default_factory=list)
     refund_direction: str | None = None
     tag_delimiter: str | None = None
+    package_members: dict[str, list[LedgerEntry]] = field(default_factory=dict)  # AHPackage id -> grouped entries
+    reward_source_from_package: int = 0  # rewards whose rewardRecordID names an imported package
 
 
 def _account_currency(data: BackupData, main_currency: str) -> dict[str, str]:
@@ -757,6 +759,10 @@ def _link_rewards_and_attachments(session: Session, data: BackupData, settings: 
         if record["type"] == 14:
             entry.reward_rule_id = settings.rules.get(record["rewardID"])
             source = result.entries.get(record["rewardRecordID"])
+            if source is None and record["rewardRecordID"] in result.package_members:
+                source = _primary_member(result.package_members[record["rewardRecordID"]])
+                if source is not None:
+                    result.reward_source_from_package += 1
             entry.reward_source_entry_id = source.id if source is not None else None
             if entry.reward_rule_id is None:
                 _review(entry, "reward_rule_missing", result)
@@ -766,6 +772,16 @@ def _link_rewards_and_attachments(session: Session, data: BackupData, settings: 
             attachments.append(EntryRewardRule(entry_id=entry.id, rule_id=rule_id))
     session.add_all(attachments)
     result.attachments = len(attachments)
+
+
+def _primary_member(members: list[LedgerEntry]) -> LedgerEntry | None:
+    """The split's first member in canonical order (entry_date, entry_time NULLS FIRST, seq), fee/discount excluded."""
+    candidates = [member for member in members if member.kind not in ("fee", "discount")]
+    return min(
+        candidates,
+        key=lambda m: (m.entry_date, m.entry_time is not None, m.entry_time or datetime.min.time(), m.seq),
+        default=None,
+    )
 
 
 def _link_groups(session: Session, data: BackupData, result: EntryResult) -> None:
@@ -785,6 +801,7 @@ def _link_groups(session: Session, data: BackupData, result: EntryResult) -> Non
             description=_text(package["desc"]), moze_id=package["identifier"],
         )
         groups.append((group, members))
+        result.package_members[package["identifier"]] = members
     session.add_all([group for group, _ in groups])
     session.flush()
     for group, members in groups:
@@ -870,8 +887,8 @@ def insert_entries(
     _link_transfers(data, result)
     _link_refunds(data, result)
     _link_settlements(data, result)
+    _link_groups(session, data, result)  # before rewards: a reward may name a package as its source
     _link_rewards_and_attachments(session, data, settings, result)
-    _link_groups(session, data, result)
     session.flush()
 
     for _, entry, children in ordered:
@@ -1060,6 +1077,7 @@ def replace_ledger_from_backup(
         "compared_accounts": {"compared": len(compared), "total": len(accounts)},
         "not_compared": [report["name"] for report in accounts if not report["compared"]],
         "fx_outliers": entries.fx_outliers,
+        "reward_source_from_package": entries.reward_source_from_package,
         "fx_backup_rate_missing": {
             "count": len(entries.fx_backup_rate_missing),
             "accounts": sorted({name for name, _ in entries.fx_backup_rate_missing}),
@@ -1239,6 +1257,7 @@ def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None, exp
     print(f"compared_accounts: {compared['compared']} of {compared['total']}", file=sys.stderr)
     print(f"not_compared: {compared['total'] - compared['compared']}", file=sys.stderr)
     missing = report["summary"]["fx_backup_rate_missing"]
+    print(f"reward_source_from_package: {report['summary']['reward_source_from_package']}", file=sys.stderr)
     print(f"fx_backup_rate_missing: {missing['count']} {missing['reasons']} ({', '.join(missing['accounts'])})", file=sys.stderr)
     if compared["compared"] == 0:
         print(

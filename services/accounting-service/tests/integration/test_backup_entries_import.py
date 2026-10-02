@@ -343,6 +343,26 @@ def test_reward_with_missing_rule_or_source_needs_review(db_session, backup):
     reward = _by_moze_id(db_session, "R-REWARD")
     assert (reward.reward_rule_id, reward.reward_source_entry_id, reward.needs_review) == (None, None, True)
     assert summary["needs_review"]["reasons"] == {"reward_rule_missing": 1, "reward_source_missing": 1}
+    assert summary["reward_source_from_package"] == 0
+
+
+def test_reward_on_a_split_purchase_links_to_the_primary_member(db_session, backup):
+    data = backup.data(
+        accounts=[backup.account("A-CARD", "華航卡", isCreditAccount=True)],
+        rules=[backup.rule("B-1", "A-CARD")],
+        records=[
+            backup.record("R-LATE", "A-CARD", price=-300, date="2026-09-02T09:00:00"),
+            backup.record("R-EARLY", "A-CARD", price=-700, date="2026-09-01T18:00:00"),
+            backup.record("R-REWARD", "A-CARD", type_=14, price=10, rewardID="B-1", rewardRecordID="PK-SPLIT",
+                          date="2026-09-03T00:00:00"),
+        ],
+        packages=[backup.package("PK-SPLIT", ["R-LATE", "R-EARLY"])],
+    )
+    summary = _import_backup(db_session, data, strict=True)
+    reward, primary = _by_moze_id(db_session, "R-REWARD"), _by_moze_id(db_session, "R-EARLY")
+    assert (reward.reward_source_entry_id, reward.needs_review) == (primary.id, False)
+    assert summary["reward_source_from_package"] == 1
+    assert summary["needs_review"]["count"] == 0
 
 
 def test_record_on_an_unknown_account_fails(db_session, backup):
