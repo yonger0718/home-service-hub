@@ -1,17 +1,29 @@
-"""MOZE CSV import: transactional full replace of MOZE-sourced ledger data (design D6)."""
+"""MOZE CSV import: transactional full replace of MOZE-sourced ledger data (design D6).
 
+CLI: python -m app.services.moze_import_service <path> [--dry-run] [--rename OLD=NEW ...]
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import sys
 from collections import Counter
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 from typing import Mapping, Sequence
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
-from ..models import SYSTEM_KINDS, Account, Category, LedgerEntry, Project
-from .moze_csv import MozeImportError, MozeRow, ParsedFile
-from .transfer_pairing import PairingResult
+from ..models import SYSTEM_KINDS, Account, Category, ImportRun, LedgerEntry, Project
+from . import fx_rate_service
+from .moze_csv import MozeImportError, MozeRow, ParsedFile, parse_moze_csv
+from .transfer_pairing import PairingResult, pair_transfers
 
+IMPORT_LOCK_KEY = 0x4D4F5A45  # "MOZE"; one key shared by CLI, REST and dry runs
 SOURCE = "moze_import"
 
 SYSTEM_CATEGORY_NAMES = {
@@ -313,3 +325,179 @@ def replace_ledger(
         "unpaired_transfers": [_leg_report(rows_by_no[row_no]) for row_no in pairing.unpaired_rows],
         "pairing": dict(zip(("pass1", "pass2", "pass3"), pairing.pass_counts)),
     }
+
+
+class ImportRefusedError(Exception):
+    """The import was refused before anything was written."""
+
+
+class ImportLockedError(ImportRefusedError):
+    pass
+
+
+class ImportAlreadyRunningError(ImportRefusedError):
+    pass
+
+
+def import_locked() -> bool:
+    return os.getenv("ACCOUNTING_IMPORT_LOCKED", "").strip().lower() == "true"
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def run_report(run: ImportRun) -> dict:
+    return {
+        "id": run.id,
+        "status": run.status,
+        "started_at": run.started_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "file_name": run.file_name,
+        "file_sha256": run.file_sha256,
+        "row_count": run.row_count,
+        "summary": run.summary,
+    }
+
+
+def _replace_from_csv(
+    session: Session,
+    data: bytes,
+    run_id: int | None,
+    renames: Mapping[str, str],
+    http_get: fx_rate_service.HttpGet | None,
+    *,
+    persist_rates: bool,
+) -> tuple[ParsedFile, dict]:
+    """Parse, pair, resolve FX rates, then replace the ledger (uncommitted).
+
+    ensure_rates commits what it persists, so it runs before any ledger work on this session.
+    """
+    parsed = parse_moze_csv(data)
+    pairing = pair_transfers(parsed.rows)
+    rates = fx_rate_service.ensure_rates(session, required_rates(parsed), persist=persist_rates, http_get=http_get)
+    return parsed, replace_ledger(session, parsed, pairing, run_id, renames, rates)
+
+
+def _run_locked(
+    conn: Connection,
+    data: bytes,
+    file_name: str,
+    dry_run: bool,
+    renames: Mapping[str, str],
+    http_get: fx_rate_service.HttpGet | None,
+) -> dict:
+    sha256 = hashlib.sha256(data).hexdigest()
+    with Session(bind=conn, autoflush=False) as session:
+        if dry_run:
+            started = _now()
+            try:
+                parsed, summary = _replace_from_csv(session, data, None, renames, http_get, persist_rates=False)
+            finally:
+                session.rollback()
+            return {
+                "id": None,
+                "status": "dry_run",
+                "started_at": started.isoformat(),
+                "finished_at": _now().isoformat(),
+                "file_name": file_name,
+                "file_sha256": sha256,
+                "row_count": parsed.row_count,
+                "summary": summary,
+            }
+
+        session.execute(
+            update(ImportRun)
+            .where(ImportRun.status == "running")
+            .values(status="failed", finished_at=_now(), summary={"error": "interrupted"})
+        )
+        run = ImportRun(started_at=_now(), file_name=file_name, file_sha256=sha256, status="running")
+        session.add(run)
+        session.commit()
+        run_id = run.id
+
+        try:
+            parsed, summary = _replace_from_csv(session, data, run_id, renames, http_get, persist_rates=True)
+            run = session.get(ImportRun, run_id)
+            run.status = "succeeded"
+            run.row_count = parsed.row_count
+            run.summary = summary
+            run.finished_at = _now()
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            run = session.get(ImportRun, run_id)
+            run.status = "failed"
+            run.summary = {"error": str(exc)}
+            run.finished_at = _now()
+            session.commit()
+            raise
+        return run_report(session.get(ImportRun, run_id))
+
+
+def run_import(
+    engine: Engine,
+    data: bytes,
+    file_name: str,
+    *,
+    dry_run: bool = False,
+    renames: Mapping[str, str] | None = None,
+    http_get: fx_rate_service.HttpGet | None = None,
+) -> dict:
+    """Import a MOZE CSV. Raises ImportRefusedError (nothing written) or MozeImportError (rolled back).
+
+    `http_get` replaces requests.get for FX rate fetches (tests inject a fake).
+    """
+    if import_locked():
+        raise ImportLockedError("MOZE import is locked (ACCOUNTING_IMPORT_LOCKED=true)")
+    with engine.connect() as conn:
+        acquired = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY}).scalar_one()
+        conn.commit()
+        if not acquired:
+            raise ImportAlreadyRunningError("import already running")
+        try:
+            return _run_locked(conn, data, file_name, dry_run, renames or {}, http_get)
+        finally:
+            conn.rollback()
+            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": IMPORT_LOCK_KEY})
+            conn.commit()
+
+
+def _parse_rename(value: str) -> tuple[str, str]:
+    old_name, sep, new_name = value.partition("=")
+    if not sep or not old_name or not new_name:
+        raise argparse.ArgumentTypeError(f"expected OLD=NEW, got '{value}'")
+    return old_name, new_name
+
+
+def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m app.services.moze_import_service")
+    parser.add_argument("path", type=Path)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--rename", action="append", default=[], type=_parse_rename, metavar="OLD=NEW")
+    args = parser.parse_args(argv)
+
+    if engine is None:
+        from ..database import engine as default_engine
+
+        engine = default_engine
+    try:
+        report = run_import(
+            engine,
+            args.path.read_bytes(),
+            args.path.name,
+            dry_run=args.dry_run,
+            renames=dict(args.rename),
+        )
+    except ImportRefusedError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except MozeImportError as exc:
+        print(f"import failed: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

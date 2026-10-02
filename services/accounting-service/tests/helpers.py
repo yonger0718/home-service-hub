@@ -1,8 +1,10 @@
-from sqlalchemy import select
+import time
+
+from sqlalchemy import select, text
 
 from app.models import Account, LedgerEntry
 from app.services.moze_csv import parse_moze_csv
-from app.services.moze_import_service import replace_ledger
+from app.services.moze_import_service import IMPORT_LOCK_KEY, replace_ledger
 from app.services.transfer_pairing import pair_transfers
 
 
@@ -22,3 +24,18 @@ def _entries(session, account_name: str) -> list[LedgerEntry]:
             .order_by(LedgerEntry.seq)
         )
     )
+
+
+def advisory_locks(engine) -> int:
+    """Number of sessions currently holding the import advisory lock."""
+    with engine.connect() as conn:
+        return conn.execute(
+            text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = :key"),
+            {"key": IMPORT_LOCK_KEY},
+        ).scalar_one()
+
+
+def wait_until_unlocked(engine, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while advisory_locks(engine) and time.monotonic() < deadline:
+        time.sleep(0.05)
