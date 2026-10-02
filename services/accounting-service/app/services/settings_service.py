@@ -108,11 +108,14 @@ def _validate_account(db: Session, payload: AccountIn, account: Account | None) 
     _unique_name(db, Account, payload.name, self_id)
     if payload.group_id is not None and db.get(AccountGroup, payload.group_id) is None:
         raise ValidationError("group_id", f"account group {payload.group_id} not found")
-    if payload.combined_account_id is not None:
+    # The link targets are validated only when they change: an archived 主帳戶 or auto-pay account must not block
+    # every later edit (a rename) of the accounts already linked to it.
+    if payload.combined_account_id is not None and payload.combined_account_id != getattr(account, "combined_account_id", None):
         _check_combined(db, self_id, payload.combined_account_id)
-    if payload.auto_pay_account_id is not None:
-        if payload.auto_pay_account_id == self_id or db.get(Account, payload.auto_pay_account_id) is None:
-            raise ValidationError("auto_pay_account_id", "must be another existing account")
+    if payload.auto_pay_account_id is not None and payload.auto_pay_account_id != getattr(account, "auto_pay_account_id", None):
+        target = db.get(Account, payload.auto_pay_account_id)
+        if payload.auto_pay_account_id == self_id or target is None or target.is_archived:
+            raise ValidationError("auto_pay_account_id", "must be another existing, non-archived account")
     if account is not None and payload.currency != account.currency and _count(db, LedgerEntry.account_id == account.id):
         raise ValidationError("currency", "currency cannot change while the account has entries")
     _check_sharing_members(db, payload, self_id)

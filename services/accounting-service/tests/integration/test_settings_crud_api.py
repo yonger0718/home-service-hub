@@ -80,6 +80,38 @@ def test_combined_account_rules(client, db_session, seed):
     assert not_credit.status_code == 422 and _error_fields(not_credit) == {"combined_account_id"}
 
 
+def test_sub_card_under_an_archived_master_can_still_be_edited(client, db_session, seed):
+    master = seed.account("主卡", is_credit=True)
+    sub = seed.account("副卡", is_credit=True, combined_account_id=master.id)
+    bank = seed.account("銀行")
+    db_session.flush()
+    sub.auto_pay_account_id = bank.id
+    master.is_archived, bank.is_archived = True, True
+    db_session.commit()
+    sub_id, master_id, bank_id = sub.id, master.id, bank.id
+
+    renamed = client.put(
+        f"/accounts/{sub_id}",
+        json=_account_body(name="副卡 改名", is_credit=True, combined_account_id=master_id, auto_pay_account_id=bank_id),
+    )
+
+    assert renamed.status_code == 200, renamed.text
+    assert (renamed.json()["name"], renamed.json()["combined_account_id"]) == ("副卡 改名", master_id)
+
+
+def test_archived_auto_pay_account_is_refused(client, db_session, seed):
+    card = seed.account("信用卡", is_credit=True)
+    old_bank = seed.account("舊銀行", is_archived=True)
+    db_session.commit()
+    card_id, old_bank_id = card.id, old_bank.id
+
+    created = client.post("/accounts", json=_account_body(name="新卡", is_credit=True, auto_pay_account_id=old_bank_id))
+    updated = client.put(f"/accounts/{card_id}", json=_account_body(name="信用卡", is_credit=True, auto_pay_account_id=old_bank_id))
+
+    assert created.status_code == 422 and _error_fields(created) == {"auto_pay_account_id"}
+    assert updated.status_code == 422 and _error_fields(updated) == {"auto_pay_account_id"}
+
+
 def test_currency_frozen_once_entries_exist(client, db_session, seed):
     # Spec: "Currency frozen once entries exist".
     twd = seed.account("台幣帳戶")
