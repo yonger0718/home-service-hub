@@ -131,6 +131,64 @@ describe('AccountingAccountEntriesComponent', () => {
     req.flush(page([], 0));
   });
 
+  it('shows only the latest filter results when responses arrive out of order', () => {
+    const fixture = render(page([entry(1)], 1));
+    const el = fixture.nativeElement as HTMLElement;
+    const kind = el.querySelector<HTMLSelectElement>('.filter-kind')!;
+
+    kind.value = 'transfer_out';
+    kind.dispatchEvent(new Event('change'));
+    kind.value = 'income';
+    kind.dispatchEvent(new Event('change'));
+    const [first, second] = httpMock.match(r => r.url === '/api/accounting/accounts/7/entries');
+    expect(first.request.params.get('kind')).toBe('transfer_out');
+    expect(second.request.params.get('kind')).toBe('income');
+
+    second.flush(page([entry(20, { kind: 'income', name: '薪水' })], 1));
+    first.flush(page([entry(10, { kind: 'transfer_out', name: '轉帳' })], 1));
+    fixture.detectChanges();
+
+    const rows = el.querySelectorAll('.entry');
+    expect(rows.length).toBe(1);
+    expect(rows[0].querySelector('.entry-name')?.textContent).toContain('薪水');
+  });
+
+  it('does not append a stale load-more page after the filter changes', () => {
+    const fixture = render(page([entry(1)], 2));
+    const el = fixture.nativeElement as HTMLElement;
+
+    el.querySelector<HTMLButtonElement>('.load-more')!.click();
+    const more = expectEntries();
+    expect(more.request.params.get('offset')).toBe('1');
+
+    const kind = el.querySelector<HTMLSelectElement>('.filter-kind')!;
+    kind.value = 'income';
+    kind.dispatchEvent(new Event('change'));
+    const filtered = expectEntries();
+    expect(filtered.request.params.get('offset')).toBe('0');
+
+    more.flush(page([entry(2)], 2, 1));
+    filtered.flush(page([entry(30, { kind: 'income', name: '薪水' })], 1));
+    fixture.detectChanges();
+
+    const rows = el.querySelectorAll('.entry');
+    expect(rows.length).toBe(1);
+    expect(rows[0].querySelector('.entry-name')?.textContent).toContain('薪水');
+  });
+
+  it('clears the previous rows when a filter change fails to load', () => {
+    const fixture = render(page([entry(1)], 1));
+    const el = fixture.nativeElement as HTMLElement;
+    const kind = el.querySelector<HTMLSelectElement>('.filter-kind')!;
+
+    kind.value = 'income';
+    kind.dispatchEvent(new Event('change'));
+    expectEntries().flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+
+    expect(el.querySelectorAll('.entry').length).toBe(0);
+  });
+
   it('marks entries that need review', () => {
     const fixture = render(page([entry(1, { kind: 'transfer_out', needs_review: true }), entry(2)], 2));
     const rows = (fixture.nativeElement as HTMLElement).querySelectorAll('.entry');

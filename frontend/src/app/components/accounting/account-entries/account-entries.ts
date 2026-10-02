@@ -23,6 +23,7 @@ export const PAGE_SIZE = 50;
 export class AccountingAccountEntriesComponent implements OnInit {
   private accountingService = inject(AccountingService);
   private route = inject(ActivatedRoute);
+  private requestId = 0;
 
   readonly accountId = Number(this.route.snapshot.paramMap.get('id'));
   readonly account = signal<LedgerAccount | null>(null);
@@ -48,6 +49,11 @@ export class AccountingAccountEntriesComponent implements OnInit {
   }
 
   load(reset: boolean): void {
+    const id = ++this.requestId;
+    if (reset) {
+      this.entries.set([]);
+      this.total.set(0);
+    }
     this.loading.set(true);
     this.loadError.set(false);
     const offset = reset ? 0 : this.entries().length;
@@ -61,11 +67,17 @@ export class AccountingAccountEntriesComponent implements OnInit {
       })
       .subscribe({
         next: page => {
+          if (id !== this.requestId) {
+            return;
+          }
           this.entries.set(reset ? page.items : [...this.entries(), ...page.items]);
           this.total.set(page.total);
           this.loading.set(false);
         },
         error: () => {
+          if (id !== this.requestId) {
+            return;
+          }
           this.loadError.set(true);
           this.loading.set(false);
         },
