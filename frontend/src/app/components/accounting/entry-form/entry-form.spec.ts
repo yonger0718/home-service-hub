@@ -75,6 +75,8 @@ describe('EntryFormComponent', () => {
     httpMock.verify();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    // Saves write this device's last use / quick amounts; leave no state for other spec files.
+    localStorage.clear();
   });
 
   /** Holds the `loadRelated` stage open: each call gets a Subject (latest per entry id) the test answers itself. */

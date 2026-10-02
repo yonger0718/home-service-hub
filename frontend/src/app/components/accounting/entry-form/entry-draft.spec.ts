@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { makeCategory, makeRule } from '../testing/fixtures';
 import {
@@ -15,6 +15,8 @@ import {
   writeLastUse,
 } from './entry-draft';
 
+// Other spec files share this jsdom storage: start and end clean.
+beforeEach(() => localStorage.clear());
 afterEach(() => localStorage.clear());
 
 describe('entry draft helpers', () => {
