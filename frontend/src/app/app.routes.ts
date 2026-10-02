@@ -23,6 +23,7 @@ export const routes: Routes = [
   { path: 'accounting/cards', redirectTo: 'accounting/accounts' },
   { path: 'accounting/categories', redirectTo: 'accounting/accounts' },
   { path: 'accounting/recurring', redirectTo: 'accounting/accounts' },
+  { path: 'accounting/accounts', loadComponent: () => import('./components/accounting/accounts/accounts').then(m => m.AccountingAccountsComponent) },
 
   { path: '**', redirectTo: '' }
 ];

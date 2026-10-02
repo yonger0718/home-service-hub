@@ -1,0 +1,35 @@
+<section class="ledger-accounts">
+  @if (latestImport(); as run) {
+    <p class="import-status" [class.import-status--failed]="run.status === 'failed'">
+      最近匯入 {{ run.started_at | date: 'yyyy-MM-dd HH:mm' }} · {{ statusLabel(run) }}
+      · 待確認 {{ reviewCount() }} 筆
+    </p>
+  }
+
+  @if (loadError()) {
+    <p class="load-error">帳戶讀取失敗，請稍後再試。</p>
+  } @else if (loaded() && accounts().length === 0) {
+    <div class="empty-state">
+      <i class="pi pi-upload"></i>
+      <h4>尚未匯入 MOZE 資料</h4>
+      <p>
+        請先匯入 MOZE 匯出的 CSV：<code>python -m app.services.moze_import_service &lt;檔案&gt;</code>，
+        或上傳至 <code>POST /api/accounting/imports/moze</code>。
+      </p>
+    </div>
+  } @else {
+    <ul class="account-list">
+      @for (account of accounts(); track account.id) {
+        <li>
+          <a class="account-row" [routerLink]="['/accounting/accounts', account.id]">
+            <span class="account-name">{{ account.name }}</span>
+            <span class="account-meta">{{ account.currency }} · {{ account.entry_count }} 筆</span>
+            <span class="account-balance" [class.amount--negative]="isNegative(account.balance)">
+              {{ formatAmount(account.balance, account.currency) }}
+            </span>
+          </a>
+        </li>
+      }
+    </ul>
+  }
+</section>
