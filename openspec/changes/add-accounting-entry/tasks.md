@@ -350,7 +350,10 @@ Routes (children of `AccountingLayoutComponent` at path `accounting`): `''` time
 | 30 | Caddy route list, README, superseded docs | sonnet | 29 |
 | 31 | Verify run over Tailscale and owner checklist | opus | 11, 30 |
 
+**Test-count expectations.** Section A (Tasks 1–5) ends at `155 passed` backend tests after the plan-review additions. Sections B (Tasks 6–11) and C (Tasks 12–17) wrote their full-suite `N passed` expectations against the earlier `151` baseline, so every full-suite count in Tasks 6–17 is 4 lower than what the suite prints; per-file counts are exact. A reviewer treats "4 more passed than written, 0 failed" in those tasks as a pass.
+
 Execute in numeric order. Tasks 10 and 12 both edit `app/services/moze_import_service.py` (Task 10 adds `delete_moze_entries`, `assert_currency_change_allowed`, `delete_unused_rows`, `import_lock`; Task 12 moves `import_locked` to `edit_lock.py`), so Task 12's edit anchors assume Task 10's resulting text. Tasks 2 and 3 must be committed back to back: between them the Alembic-built test database lacks the new tables, so only Task 2's model and unit tests run until Task 3 lands. Frontend tasks 18–29 depend only on the API shapes in this contract plus the merged contract additions below and may start after Task 5; sections D (18–23) and E (24–31) run in numeric order.
+
 
 
 ## Contract additions (merged: sections A, C, D, E after reconciliation)
@@ -751,6 +754,18 @@ All decimals are strings with 4 dp.
   - `npm test` runs `node --test test/*.test.js`;
   - tests call `Realm.shutdown()` in an `after` hook;
   - `realm` is pinned to 12.13.1.
+
+## Plan-review additions (2026-10-02, after the owner's plan review)
+
+- **Account period summary** (Task 4 produces, Task 18 wraps, Task 26 consumes): `ledger_service.period_summary(db, account_id: int, date_from: date, date_to: date) -> dict` and `GET /accounts/{account_id}/summary?date_from=&date_to=` → `AccountPeriodSummaryOut {account_id, currency, date_from, date_to, spend (Σ negative amounts of kinds expense/fee, as a negative Decimal), income (Σ positive amounts of kinds income/interest/discount), rewards (Σ reward amounts), net (Σ all amounts in the period), end_balance (balance as of date_to, posted_date based), count}`. Dates filter on `posted_date`. Frontend: `AccountingService.getAccountSummary(accountId, dateFrom, dateTo): Observable<AccountPeriodSummary>` with the same keys as decimal strings. The passbook header uses this endpoint, never the loaded page.
+- **`AccountingService.accountsChanged: Signal<number>`** (Task 18): bumped after every successful `createAccount`, `updateAccount`, `deleteAccount`, `resetSettingsFlag`, account-group write and non-dry-run backup import. List pages (`AccountingAccountsComponent`) reload on change, as the timeline does on `entriesChanged`.
+- **Request sequencing in pane pages** (Tasks 23, 27): every load keeps a `requestId` (or `switchMap` on `paramMap`); a response whose id is not the latest is dropped; `saving` is disabled while `loading()` is true; tests flush responses in reverse order and assert the form shows the latest id's data and the save targets it.
+- **Settlement and refund entries are not editable through `PUT /entries/{id}`** (Task 12): an entry with `settles_entry_id` or of kind `refund` returns 422 `kind` on `PUT`; its amount, account and date change only by delete + re-settle / re-refund. The original of settlements or refunds cannot change `amount`, `account_id`, `kind` or `currency` while `settled_by` / `refunded_by` is non-empty (422 naming the field).
+- **Row locking for settle and refund** (Task 15): `settle` and `refund` run `SELECT … FOR UPDATE` on the target entry inside the request transaction before computing the open or refundable amount; a concurrency test with two engine connections proves the second request sees the first's write (422 over-settlement) rather than double-settling.
+- **Shared credit limit membership** (Task 27 + Task 16): the account settings form sends the full member list; the backend `update_account` with `credit_sharing_members: list[int] | None` in `AccountIn` (optional; when present, the set `{account} ∪ members` gets one `credit_sharing_id` and every other account that previously carried that id is cleared) applies the diff atomically. `AccountIn.credit_sharing_members` is added in Task 16 and documented in `AccountInput`.
+- **Rollback (Task 3 guard + Task 30 runbook)**: the downgrade guard stays strict (refuses when any row would be lost: `manual`/`hermes`/`rule` entries, `moze_backup` entries, groups, rules, schedules, `import_run.kind = 'moze_backup'`); the runbook's rollback is therefore **restore from the pre-deploy dump**: `pg_dump -Fc accounting_db` to `~/backups/home-hub-2a/<timestamp>.dump` before `alembic upgrade`, plus the previous backend commit and SPA release id; the runbook includes a restore drill against a disposable database before the production deploy and a 3-day window note.
+- **Owner balance acceptance** (Task 11 + Task 31): Task 11 runs on the disposable `accounting_backup_verify` database and produces the 10-account checklist; the owner completes it in Task 31 on the verify server (same data, date of the backup export), recording pass/fail per account (initials only) in the PR description; the task passes only when all 10 match and the 9 FX-converted accounts are within the owner's accepted differences.
+- **Edit mode keeps archived accounts** (Task 23): the form loads `getAccounts(true)`; the account select lists non-archived accounts plus the entry's current account when archived (labelled 已封存).
 
 ---
 
@@ -1605,11 +1620,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: the Task 2 models (the migration must produce exactly the schema `Base.metadata.create_all` produces), phase 1 revision `5d2e7c9a1b3f`.
-- Produces: Alembic head `7b1e4a2c9d05`; enum values `entry_source` + `moze_backup`, `rule`; `fx_source` + `manual`; new enum types `due_rule`, `rounding_mode`, `entry_group_kind`, `reward_method`, `reward_window`, `reward_posting`, `color_convention`, `keypad_layout`, `moze_schedule_kind`, `import_kind`; `counterparty` rows migrated from the phase 1 text column; `conftest.LEDGER_TABLES` covering every ledger table (including `preference`).
+- Produces: Alembic head `7b1e4a2c9d05`; enum values `entry_source` + `moze_backup`, `rule`; `fx_source` + `manual`; new enum types `due_rule`, `rounding_mode`, `entry_group_kind`, `reward_method`, `reward_window`, `reward_posting`, `color_convention`, `keypad_layout`, `moze_schedule_kind`, `import_kind`; `counterparty` rows migrated from the phase 1 text column; `conftest.LEDGER_TABLES` covering every ledger table (including `preference`); a strict downgrade guard whose single `RuntimeError` lists every blocker it found, with a count per label. Rollback after a successful 2a deploy is restore-from-dump (Task 30), not `alembic downgrade`.
 
 Notes for the implementer:
 - `ALTER TYPE … ADD VALUE IF NOT EXISTS` runs inside the migration transaction (allowed since PostgreSQL 12; the server is 16.13). A value added this way cannot be *used* before the transaction commits, and `upgrade()` never uses the new values, so no `autocommit_block()` is needed. If a later migration needs to insert `moze_backup` rows in the same run, it must wrap the `ADD VALUE` in `op.get_context().autocommit_block()`.
-- `downgrade()` refuses (raises `RuntimeError`, nothing changes because the migration is transactional) when phase 1 cannot hold the data: any `ledger_entry` whose `source` is not `moze_import`, any `fx_source = 'manual'`, any `posted_date <> entry_date`, any new link column set, any row in `account_group`, `entry_group`, `reward_rule`, `entry_reward_rule`, `moze_schedule`, any `moze_backup` import run, any account with `settings_locally_edited` or a `moze_id`, any category or project with a `moze_id`, any counterparty with a `moze_id` or without entries. Otherwise it restores `ledger_entry.counterparty` from `counterparty.name`, drops the new objects and recreates `entry_source` / `fx_source` with their phase 1 values. Display-only columns (account icons, category colours, `preference`) are dropped without a guard.
+- `downgrade()` refuses (raises `RuntimeError`, nothing changes because the migration is transactional) when phase 1 cannot hold the data: any `ledger_entry` whose `source` is `manual`, `hermes`, `rule` or `moze_backup` (one count per source), any `fx_source = 'manual'`, any `posted_date <> entry_date`, any new link column set, any row in `account_group`, `entry_group`, `reward_rule`, `entry_reward_rule`, `moze_schedule`, any `moze_backup` import run, any account with `settings_locally_edited` or a `moze_id`, any category or project with a `moze_id`, any counterparty with a `moze_id` or without entries. The guard runs every check before raising, so one `RuntimeError` names all blockers with their counts (for example `1 ledger_entry rows with source = moze_backup; 1 reward_rule rows`); it never stops at the first. Otherwise it restores `ledger_entry.counterparty` from `counterparty.name`, drops the new objects and recreates `entry_source` / `fx_source` with their phase 1 values. Display-only columns (account icons, category colours, `preference`) are dropped without a guard.
 
 - [ ] 3.1 Point the test fixture at every ledger table. In `services/accounting-service/tests/conftest.py`, old:
 
@@ -1762,9 +1777,45 @@ def test_downgrade_refuses_when_phase_2a_data_exists(database_factory, alembic_c
         command.downgrade(config, PHASE_1_HEAD)
 
     message = str(excinfo.value)
-    assert "1 ledger_entry rows whose source is not moze_import" in message
+    assert "1 ledger_entry rows with source = manual" in message
     assert "1 ledger_entry rows whose posted_date differs from entry_date" in message
     assert "1 account_group rows" in message
+    assert _version(url) == "7b1e4a2c9d05"
+
+
+def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config):
+    url = database_factory()
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        account_id = conn.execute(
+            text("INSERT INTO account (name, currency) VALUES ('錢包', 'TWD') RETURNING id")
+        ).scalar_one()
+        conn.execute(
+            text(
+                "INSERT INTO ledger_entry (account_id, kind, amount, currency, entry_date, source) "
+                "VALUES (:a, 'expense', -60, 'TWD', '2026-09-01', 'moze_backup')"
+            ),
+            {"a": account_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO reward_rule (account_id, name, method, rate, posting) "
+                "VALUES (:a, '國內 1%', 'percent', 1, 'after_window')"
+            ),
+            {"a": account_id},
+        )
+    engine.dispose()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        command.downgrade(config, PHASE_1_HEAD)
+
+    message = str(excinfo.value)
+    assert message.startswith("refusing to downgrade 7b1e4a2c9d05: phase 1 cannot hold ")
+    assert "1 ledger_entry rows with source = moze_backup" in message
+    assert "1 reward_rule rows" in message
+    assert "source = manual" not in message
     assert _version(url) == "7b1e4a2c9d05"
 ```
 
@@ -1796,7 +1847,7 @@ cd /home/opc/workspace/home-hub-entry
 services/accounting-service/.venv/bin/pytest -q -p no:warnings services/accounting-service/tests/integration/test_migration.py services/accounting-service/tests/integration/test_ledger_model.py
 ```
 
-Expected: `4 failed` in `test_migration.py` (`test_upgrade_replaces_legacy_tables_with_ledger_tables`, `test_head_schema_matches_the_models`, `test_upgrade_backfills_posted_date_and_links_counterparties`, `test_downgrade_refuses_when_phase_2a_data_exists`) and `6 errors` in `test_ledger_model.py` at setup with `relation "entry_reward_rule" does not exist` (the fixture truncates tables the phase 1 head does not have).
+Expected: `5 failed` in `test_migration.py` (`test_upgrade_replaces_legacy_tables_with_ledger_tables`, `test_head_schema_matches_the_models`, `test_upgrade_backfills_posted_date_and_links_counterparties`, `test_downgrade_refuses_when_phase_2a_data_exists`, `test_downgrade_refusal_names_every_blocker`) and `6 errors` in `test_ledger_model.py` at setup with `relation "entry_reward_rule" does not exist` (the fixture truncates tables the phase 1 head does not have).
 
 - [ ] 3.5 Create `services/accounting-service/alembic/versions/7b1e4a2c9d05_entry_settings_schema.py`:
 
@@ -1869,9 +1920,13 @@ NEW_ENTRY_COLUMNS = (
 )
 
 # Each check returns a count; any non-zero count blocks the downgrade because phase 1 cannot hold that data.
+# _assert_downgradable runs all of them and raises one RuntimeError listing every non-zero count.
 DOWNGRADE_GUARDS = {
-    "ledger_entry rows whose source is not moze_import":
-        "SELECT count(*) FROM ledger_entry WHERE source <> 'moze_import'",
+    # One label per source phase 1 must not receive, so the message says what kind of rows block it.
+    "ledger_entry rows with source = manual": "SELECT count(*) FROM ledger_entry WHERE source = 'manual'",
+    "ledger_entry rows with source = hermes": "SELECT count(*) FROM ledger_entry WHERE source = 'hermes'",
+    "ledger_entry rows with source = rule": "SELECT count(*) FROM ledger_entry WHERE source = 'rule'",
+    "ledger_entry rows with source = moze_backup": "SELECT count(*) FROM ledger_entry WHERE source = 'moze_backup'",
     "ledger_entry rows with fx_source = manual":
         "SELECT count(*) FROM ledger_entry WHERE fx_source = 'manual'",
     "ledger_entry rows whose posted_date differs from entry_date":
@@ -2161,7 +2216,7 @@ services/accounting-service/.venv/bin/pytest -q -p no:warnings services/accounti
   services/accounting-service/tests/integration/test_ledger_model.py services/accounting-service/tests/integration/test_models_schema.py
 ```
 
-Expected: `23 passed` (8 migration, 6 ledger model, 9 model schema). If `test_head_schema_matches_the_models` fails, the assertion diff names the table and column that differ between the migration and the models; fix the migration, not the test.
+Expected: `24 passed` (9 migration, 6 ledger model, 9 model schema). If `test_head_schema_matches_the_models` fails, the assertion diff names the table and column that differ between the migration and the models; fix the migration, not the test.
 
 - [ ] 3.7 Run the full backend suite.
 
@@ -2170,7 +2225,7 @@ cd /home/opc/workspace/home-hub-entry
 services/accounting-service/.venv/bin/pytest -q -p no:warnings services/accounting-service/tests
 ```
 
-Expected: `124 passed`.
+Expected: `125 passed`.
 
 - [ ] 3.8 Commit:
 
@@ -2183,14 +2238,14 @@ git commit -m "feat(accounting): migrate to the phase 2a schema with posted_date
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
-## 4. Read services and endpoints: balances by posted date, grouped accounts, account detail, cross-account listing, month summary, entry detail
+## 4. Read services and endpoints: balances by posted date, grouped accounts, account detail, account period summary, cross-account listing, month summary, entry detail
 
 **Model:** opus
 
 **Files:**
-- Modify: `services/accounting-service/app/schemas/ledger.py` (whole file: `RewardRuleOut`, extended `AccountOut`, `AccountDetailOut`, `EntryGroupSummaryOut`, extended `EntryOut`, `EntryPage`, `EntryDetailOut`, `MonthSummaryOut`, and the settings read shapes `AccountGroupOut`, `CategoryOut`, `ProjectOut`, `OpenAmountOut`, `CounterpartyOut` that Task 16 uses)
+- Modify: `services/accounting-service/app/schemas/ledger.py` (whole file: `RewardRuleOut`, extended `AccountOut`, `AccountDetailOut`, `EntryGroupSummaryOut`, extended `EntryOut`, `EntryPage`, `EntryDetailOut`, `MonthSummaryOut`, `AccountPeriodSummaryOut`, and the settings read shapes `AccountGroupOut`, `CategoryOut`, `ProjectOut`, `OpenAmountOut`, `CounterpartyOut` that Task 16 uses)
 - Modify: `services/accounting-service/app/services/ledger_service.py` (whole file)
-- Modify: `services/accounting-service/app/routers/accounts.py` (whole file: `include_archived`, `GET /accounts/{id}`, `GET /accounts/{id}/reward-rules`, `q`)
+- Modify: `services/accounting-service/app/routers/accounts.py` (whole file: `include_archived`, `GET /accounts/{id}`, `GET /accounts/{id}/reward-rules`, `GET /accounts/{id}/summary`, `q`)
 - Create: `services/accounting-service/app/routers/entries.py` (GET endpoints only)
 - Modify: `services/accounting-service/app/main.py` (register `entries.router`)
 - Modify: `services/accounting-service/tests/helpers.py` (`make_account`, `make_entry`)
@@ -2198,10 +2253,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 2 models; `moze_import_service.import_locked()` (Task 12 moves it to `edit_lock` and re-exports it, so this import keeps working); `FxRate` cache rows.
-- Produces (`app/services/ledger_service.py`): `account_balance(db, account_id, as_of=None) -> Decimal` (raises `LookupError` for an unknown account), `list_accounts(db, *, include_archived=False) -> list[dict]`, `get_account(db, account_id) -> dict | None`, `list_reward_rules(db, account_id) -> list[dict]`, `list_entries(db, account_id, *, limit, offset, kind=None, date_from=None, date_to=None, q=None) -> tuple[int, list[dict]]`, `list_all_entries(db, *, limit, offset, kind=None, date_from=None, date_to=None, q=None, account_ids=None, hide_rewards=False) -> tuple[int, list[dict]]`, `month_summary(db, month) -> dict`, `get_entry_detail(db, entry_id) -> dict | None`, plus helpers later tasks reuse: `main_currency(db) -> str` (preference value or `"TWD"`, never creates the row), `latest_rates(db, bases, quote) -> dict[str, Decimal]` (latest cached `base→quote`, falling back to `1 / (quote→base)`; `quote` itself maps to 1; missing currencies are absent), `rule_out(rule) -> dict` (a `RewardRuleOut` dict), `is_locked(source, moze_id) -> bool`, constants `CANONICAL_ORDER`, `NEWEST_FIRST`, `EXPENSE_KINDS = ("expense", "fee")`, `INCOME_KINDS = ("income", "reward", "interest", "discount")`.
-- Produces (schemas): `RewardRuleOut`, `AccountOut`, `AccountDetailOut`, `EntryGroupSummaryOut` (`id, kind, name, count, total, currency`), `EntryOut`, `EntryPage`, `EntryDetailOut`, `MonthSummaryOut` (`month, currency, expense, income, net, missing_rates`), `AccountGroupOut` (`id, name, sort_order, moze_id`), `CategoryOut` (`id, kind, parent_id, name, icon, color, sort_order, is_hidden, default_account_id, default_project_id, moze_id, children`), `ProjectOut` (`id, name, is_archived, sort_order, moze_id`), `OpenAmountOut` (`currency, amount`), `CounterpartyOut` (`id, name, moze_id, open_amounts: list[OpenAmountOut]`) — unused by Task 4's routers; Task 16's settings routers and tests pin them.
+- Produces (`app/services/ledger_service.py`): `account_balance(db, account_id, as_of=None) -> Decimal` (raises `LookupError` for an unknown account), `list_accounts(db, *, include_archived=False) -> list[dict]`, `get_account(db, account_id) -> dict | None`, `list_reward_rules(db, account_id) -> list[dict]`, `list_entries(db, account_id, *, limit, offset, kind=None, date_from=None, date_to=None, q=None) -> tuple[int, list[dict]]`, `list_all_entries(db, *, limit, offset, kind=None, date_from=None, date_to=None, q=None, account_ids=None, hide_rewards=False) -> tuple[int, list[dict]]`, `month_summary(db, month) -> dict`, `period_summary(db, account_id, date_from, date_to) -> dict` (an `AccountPeriodSummaryOut` dict; raises `LookupError` for an unknown account and `ValueError` when `date_from > date_to`), `get_entry_detail(db, entry_id) -> dict | None`, plus helpers later tasks reuse: `main_currency(db) -> str` (preference value or `"TWD"`, never creates the row), `latest_rates(db, bases, quote) -> dict[str, Decimal]` (latest cached `base→quote`, falling back to `1 / (quote→base)`; `quote` itself maps to 1; missing currencies are absent), `rule_out(rule) -> dict` (a `RewardRuleOut` dict), `is_locked(source, moze_id) -> bool`, constants `CANONICAL_ORDER`, `NEWEST_FIRST`, `EXPENSE_KINDS = ("expense", "fee")`, `INCOME_KINDS = ("income", "reward", "interest", "discount")`, `PERIOD_INCOME_KINDS = ("income", "interest", "discount")` (the period summary reports rewards separately).
+- Produces (schemas): `RewardRuleOut`, `AccountOut`, `AccountDetailOut`, `EntryGroupSummaryOut` (`id, kind, name, count, total, currency`), `EntryOut`, `EntryPage`, `EntryDetailOut`, `MonthSummaryOut` (`month, currency, expense, income, net, missing_rates`), `AccountPeriodSummaryOut` (exactly `account_id, currency, date_from, date_to, spend, income, rewards, net, end_balance, count`; Task 18 wraps it as `AccountPeriodSummary`, Task 26's passbook header consumes it), `AccountGroupOut` (`id, name, sort_order, moze_id`), `CategoryOut` (`id, kind, parent_id, name, icon, color, sort_order, is_hidden, default_account_id, default_project_id, moze_id, children`), `ProjectOut` (`id, name, is_archived, sort_order, moze_id`), `OpenAmountOut` (`currency, amount`), `CounterpartyOut` (`id, name, moze_id, open_amounts: list[OpenAmountOut]`) — unused by Task 4's routers; Task 16's settings routers and tests pin them.
 - Produces (tests): `tests.helpers.make_account(session, name="錢包", currency="TWD", opening="0", **columns) -> Account` and `make_entry(session, account, amount, *, kind="expense", entry_date=date(2026, 9, 1), entry_time=None, source="manual", **columns) -> LedgerEntry` (both flush, never commit).
-- Produces (HTTP): `GET /accounts?include_archived=`, `GET /accounts/{id}`, `GET /accounts/{id}/reward-rules`, `GET /accounts/{id}/entries?…&q=`, `GET /entries?limit&offset&kind&date_from&date_to&q&account_id(repeatable)&hide_rewards`, `GET /entries/summary?month=YYYY-MM`, `GET /entries/{id}`.
+- Produces (HTTP): `GET /accounts?include_archived=`, `GET /accounts/{id}`, `GET /accounts/{id}/reward-rules`, `GET /accounts/{id}/summary?date_from=&date_to=` (→ `AccountPeriodSummaryOut`; 404 for an unknown account, 422 when `date_from > date_to` or either date is missing), `GET /accounts/{id}/entries?…&q=`, `GET /entries?limit&offset&kind&date_from&date_to&q&account_id(repeatable)&hide_rewards`, `GET /entries/summary?month=YYYY-MM`, `GET /entries/{id}`.
 
 Behaviour this task pins:
 - Balances count only entries with `posted_date <= today`; `entry_count` counts all entries. The running balance is a window over the account's entries in canonical order that adds an amount only when it is posted, so a future-posted reward is listed in its canonical place without moving the running balance (Review Focus 1).
@@ -2210,6 +2265,7 @@ Behaviour this task pins:
 - `q` is a case-insensitive substring match on `name`, `merchant` or `description`; `%`, `_` and `\` in `q` match literally.
 - `category_icon` / `category_color` fall back to the parent category's values. `group` summarises all members of the entry's group: `count`, `total` (members converted to the first member's currency with the latest cached rate; `null` when a rate is missing) and that `currency`. `locked` is true for `moze_import` / `moze_backup` rows or rows with a `moze_id` while `ACCOUNTING_IMPORT_LOCKED` is not `true`.
 - `month_summary`: by `entry_date` within the month; `expense` is the (negative) sum of negative `expense`/`fee` amounts, `income` the sum of positive `income`/`reward`/`interest`/`discount` amounts, `net = income + expense` (the mockup shows 支出 −18,420 · 收入 +62,000 · 結餘 +43,580); transfers, receivables/payables, refunds and balance adjustments are excluded; each currency is converted with the latest cached rate; currencies without a rate are left out and listed in `missing_rates`.
+- `period_summary` (account period summary): entries of the one account whose `posted_date` is within [`date_from`, `date_to`], in the account's currency, computed in SQL over the whole period and therefore independent of any listing page (the passbook header reads it, never the loaded rows). `spend` is the (negative) sum of negative `expense`/`fee` amounts, `income` the sum of positive `income`/`interest`/`discount` amounts, `rewards` the sum of `reward` amounts, `net` the sum of all amounts in the period (transfers, receivables, refunds included), `count` the number of entries in the period, `end_balance = account_balance(db, account_id, as_of=date_to)`. Empty sums are `0`.
 - `get_entry_detail` returns `EntryDetailOut`: linked lists are in canonical order; `group_members` includes the entry itself; `open_amount` / `is_settled` are set only for `receivable` / `payable` entries that do not themselves settle another entry (`open_amount = |amount + Σ amounts of entries settling it|`); `refunded_amount` is the sum of refund amounts (0 when none).
 
 - [ ] 4.1 Add test factories. In `services/accounting-service/tests/helpers.py`, old:
@@ -2560,6 +2616,66 @@ def test_unknown_account_is_404_and_limit_is_capped(client, db_session):
     assert client.get(f"/accounts/{wallet.id}/entries").json()["limit"] == 50
 
 
+def test_account_summary_totals_entries_posted_in_the_period(client, db_session):
+    wallet = _account(db_session, opening="1000")
+    other = _account(db_session, "玉山 UNI", opening="0")
+    _entry(db_session, wallet, "-100", seq=1, day=1)  # posted before the period
+    _entry(db_session, wallet, "-5", seq=2, day=2, kind="fee")
+    _entry(db_session, wallet, "3000", seq=3, day=3, kind="income")
+    _entry(db_session, wallet, "2", seq=4, day=4, kind="interest")
+    _entry(db_session, wallet, "10", seq=5, day=5, kind="discount")
+    _entry(db_session, wallet, "30", seq=6, day=1, kind="reward", posted_date=date(2026, 9, 6))  # dated before, posted inside
+    _entry(db_session, wallet, "-500", seq=7, day=7, kind="transfer_out")
+    _entry(db_session, wallet, "20", seq=8, day=8, kind="refund")
+    _entry(db_session, wallet, "-200", seq=9, day=15)
+    _entry(db_session, wallet, "-40", seq=10, day=30, posted_date=date(2026, 10, 2))  # posted after the period
+    _entry(db_session, other, "-999", seq=11, day=10)
+    db_session.commit()
+
+    response = client.get(f"/accounts/{wallet.id}/summary", params={"date_from": "2026-09-02", "date_to": "2026-09-30"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "account_id": wallet.id, "currency": "TWD", "date_from": "2026-09-02", "date_to": "2026-09-30",
+        "spend": "-205.0000", "income": "3012.0000", "rewards": "30.0000", "net": "2357.0000",
+        "end_balance": "3257.0000", "count": 8,
+    }
+    summary = ledger_service.period_summary(db_session, wallet.id, date(2026, 9, 2), date(2026, 9, 30))
+    assert summary["end_balance"] == ledger_service.account_balance(db_session, wallet.id, as_of=date(2026, 9, 30))
+
+
+def test_account_summary_is_independent_of_pagination(client, db_session):
+    wallet = _account(db_session, opening="0")
+    _entry(db_session, wallet, "-100", seq=1, day=1)
+    _entry(db_session, wallet, "-50", seq=2, day=2)
+    _entry(db_session, wallet, "400", seq=3, day=3, kind="income")
+    db_session.commit()
+    period = {"date_from": "2026-09-01", "date_to": "2026-09-30"}
+
+    before = client.get(f"/accounts/{wallet.id}/summary", params=period).json()
+    page = client.get(f"/accounts/{wallet.id}/entries", params={**period, "limit": 1}).json()
+    after = client.get(f"/accounts/{wallet.id}/summary", params=period).json()
+
+    assert (len(page["items"]), page["total"]) == (1, 3)
+    assert after == before
+    assert (before["count"], before["spend"], before["income"], before["net"]) == (
+        3, "-150.0000", "400.0000", "250.0000",
+    )
+
+
+def test_account_summary_unknown_account_is_404_and_bad_range_is_422(client, db_session):
+    wallet = _account(db_session)
+    db_session.commit()
+
+    period = {"date_from": "2026-09-01", "date_to": "2026-09-30"}
+    assert client.get("/accounts/999/summary", params=period).status_code == 404
+    reversed_range = {"date_from": "2026-09-30", "date_to": "2026-09-01"}
+    assert client.get(f"/accounts/{wallet.id}/summary", params=reversed_range).status_code == 422
+    assert client.get(f"/accounts/{wallet.id}/summary", params={"date_from": "2026-09-01"}).status_code == 422
+    empty = client.get(f"/accounts/{wallet.id}/summary", params={"date_from": "2026-09-30", "date_to": "2026-09-30"}).json()
+    assert (empty["count"], empty["net"], empty["end_balance"]) == (0, "0", "2000.0000")
+
+
 def test_only_write_endpoint_is_the_import():
     writes = [
         (route.path, sorted(route.methods))
@@ -2780,7 +2896,7 @@ cd /home/opc/workspace/home-hub-entry
 services/accounting-service/.venv/bin/pytest -q -p no:warnings services/accounting-service/tests/integration/test_accounts_api.py services/accounting-service/tests/integration/test_entries_api.py
 ```
 
-Expected: `16 failed, 9 passed` — every new account test (including `test_future_posted_entry_excluded_from_balance_but_listed`) and every `test_entries_api.py` test except `test_unknown_entry_is_404` fail; the six unchanged phase 1 listing tests, `test_unknown_account_detail_and_rules_are_404`, `test_only_write_endpoint_is_the_import` and `test_unknown_entry_is_404` pass.
+Expected: `19 failed, 9 passed` — every new account test (including `test_future_posted_entry_excluded_from_balance_but_listed` and the three `test_account_summary_*` tests; the 404/422 one fails on the 422 assertion because the route does not exist yet) and every `test_entries_api.py` test except `test_unknown_entry_is_404` fail; the six unchanged phase 1 listing tests, `test_unknown_account_detail_and_rules_are_404`, `test_only_write_endpoint_is_the_import` and `test_unknown_entry_is_404` pass.
 
 - [ ] 4.5 Replace the whole content of `services/accounting-service/app/schemas/ledger.py` with:
 
@@ -2944,6 +3060,21 @@ class MonthSummaryOut(BaseModel):
     missing_rates: list[str]
 
 
+class AccountPeriodSummaryOut(BaseModel):
+    """One account over [date_from, date_to] by posted_date, in the account's currency."""
+
+    account_id: int
+    currency: str
+    date_from: date
+    date_to: date
+    spend: Decimal
+    income: Decimal
+    rewards: Decimal
+    net: Decimal
+    end_balance: Decimal
+    count: int
+
+
 # Settings read shapes; Task 16's settings routers use them as response models.
 class AccountGroupOut(BaseModel):
     id: int
@@ -3024,6 +3155,7 @@ DEFAULT_MAIN_CURRENCY = "TWD"
 AMOUNT_QUANTUM = Decimal("0.0001")
 EXPENSE_KINDS = ("expense", "fee")
 INCOME_KINDS = ("income", "reward", "interest", "discount")
+PERIOD_INCOME_KINDS = ("income", "interest", "discount")  # period_summary reports rewards separately
 
 CANONICAL_ORDER = (LedgerEntry.entry_date, LedgerEntry.entry_time.asc().nulls_first(), LedgerEntry.seq)
 NEWEST_FIRST = (LedgerEntry.entry_date.desc(), LedgerEntry.entry_time.desc().nulls_last(), LedgerEntry.seq.desc())
@@ -3451,6 +3583,42 @@ def month_summary(db: Session, month: str) -> dict:
     }
 
 
+def period_summary(db: Session, account_id: int, date_from: date, date_to: date) -> dict:
+    """Spend, income, rewards, net and count for one account's entries posted within [date_from, date_to],
+    plus the balance as of date_to. Computed over the whole period, never over a listing page."""
+    account = db.get(Account, account_id)
+    if account is None:
+        raise LookupError(f"account {account_id} not found")
+    if date_from > date_to:
+        raise ValueError("date_from is after date_to")
+    amount = LedgerEntry.amount
+    spend, income, rewards, net, count = db.execute(
+        select(
+            func.coalesce(func.sum(amount).filter(LedgerEntry.kind.in_(EXPENSE_KINDS), amount < 0), 0),
+            func.coalesce(func.sum(amount).filter(LedgerEntry.kind.in_(PERIOD_INCOME_KINDS), amount > 0), 0),
+            func.coalesce(func.sum(amount).filter(LedgerEntry.kind == "reward"), 0),
+            func.coalesce(func.sum(amount), 0),
+            func.count(LedgerEntry.id),
+        ).where(
+            LedgerEntry.account_id == account_id,
+            LedgerEntry.posted_date >= date_from,
+            LedgerEntry.posted_date <= date_to,
+        )
+    ).one()
+    return {
+        "account_id": account.id,
+        "currency": account.currency,
+        "date_from": date_from,
+        "date_to": date_to,
+        "spend": spend,
+        "income": income,
+        "rewards": rewards,
+        "net": net,
+        "end_balance": account_balance(db, account_id, as_of=date_to),
+        "count": count,
+    }
+
+
 def _open_amount(db: Session, entry: LedgerEntry) -> Decimal:
     settled = db.scalar(
         select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(LedgerEntry.settles_entry_id == entry.id)
@@ -3511,7 +3679,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Account
-from ..schemas.ledger import AccountDetailOut, AccountOut, EntryKind, EntryPage, RewardRuleOut
+from ..schemas.ledger import AccountDetailOut, AccountOut, AccountPeriodSummaryOut, EntryKind, EntryPage, RewardRuleOut
 from ..services import ledger_service
 
 router = APIRouter(prefix="/accounts", tags=["Accounts"])
@@ -3539,6 +3707,15 @@ def get_account(account_id: int, db: Session = Depends(get_db)):
 def list_reward_rules(account_id: int, db: Session = Depends(get_db)):
     _require_account(db, account_id)
     return ledger_service.list_reward_rules(db, account_id)
+
+
+@router.get("/{account_id}/summary", response_model=AccountPeriodSummaryOut)
+def account_summary(account_id: int, date_from: date, date_to: date, db: Session = Depends(get_db)):
+    """Period totals for the passbook header; independent of the entries page the client has loaded."""
+    _require_account(db, account_id)
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from must not be after date_to")
+    return ledger_service.period_summary(db, account_id, date_from, date_to)
 
 
 @router.get("/{account_id}/entries", response_model=EntryPage)
@@ -3641,7 +3818,7 @@ cd /home/opc/workspace/home-hub-entry
 services/accounting-service/.venv/bin/pytest -q -p no:warnings services/accounting-service/tests/integration/test_accounts_api.py services/accounting-service/tests/integration/test_entries_api.py
 ```
 
-Expected: `25 passed`.
+Expected: `28 passed`.
 
 - [ ] 4.11 Run the full backend suite.
 
@@ -3650,7 +3827,7 @@ cd /home/opc/workspace/home-hub-entry
 services/accounting-service/.venv/bin/pytest -q -p no:warnings services/accounting-service/tests
 ```
 
-Expected: `141 passed`.
+Expected: `145 passed`.
 
 - [ ] 4.12 Commit:
 
@@ -3660,7 +3837,7 @@ git add services/accounting-service/app/schemas/ledger.py services/accounting-se
   services/accounting-service/app/routers/accounts.py services/accounting-service/app/routers/entries.py services/accounting-service/app/main.py \
   services/accounting-service/tests/helpers.py services/accounting-service/tests/integration/test_accounts_api.py \
   services/accounting-service/tests/integration/test_entries_api.py
-git commit -m "feat(accounting): posted-date balances, grouped accounts, cross-account listing, month summary and entry detail
+git commit -m "feat(accounting): posted-date balances, grouped accounts, account period summary, cross-account listing, month summary and entry detail
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -4006,7 +4183,7 @@ services/accounting-service/.venv/bin/pytest -q -p no:warnings services/accounti
 services/accounting-service/.venv/bin/pytest -q -p no:warnings services/accounting-service/tests
 ```
 
-Expected: `11 passed`, then `151 passed`.
+Expected: `11 passed`, then `155 passed`.
 
 - [ ] 5.11 Commit:
 
@@ -8724,25 +8901,29 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Files:**
 - Modify: `openspec/changes/add-accounting-entry/design.md` (append "Implementation notes")
 - Modify (only if 11.6 or 11.7 finds evidence): `services/accounting-service/app/services/moze_backup_import_service.py` (`balance_info_key`), `services/accounting-service/app/services/moze_backup_json.py` (`ROUNDING_MAP`), `services/accounting-service/tests/unit/test_moze_backup_json.py`
-- Not committed: the acceptance script and its output, written to a private scratch directory that is deleted at the end.
+- Not committed: the acceptance script and its output, written to a private scratch directory that is deleted at the end; the owner checklist, written to `~/reports/home-hub-2a-verify/checklist.md` (outside the repo, mode 600).
+- Environment: the disposable database `accounting_backup_verify` on the shared Postgres container (`stonk-postgres-1`), created in 11.1 and **kept** at the end of the task for Task 31; the production `accounting_db` and the service's default URL are never connected to.
 
 **Interfaces:**
 - Consumes: the converter (Task 6), `convert_backup`, `run_backup_import`, `load_backup_json`, `SYSTEM_ACCOUNT_TYPES` (Tasks 7–10), `run_import` (CSV, phase 1), Alembic head (Task 3).
-- Produces: confirmed values for `confirmed_maps` (`due_rule`, `rounding`, `refund_direction`, `tag_delimiter`, `balance_info_key`) recorded in `design.md`; the owner checklist (initials) used by Task 31.
+- Produces: confirmed values for `confirmed_maps` (`due_rule`, `rounding`, `refund_direction`, `tag_delimiter`, `balance_info_key`) recorded in `design.md`; the owner checklist (`~/reports/home-hub-2a-verify/checklist.md`, initials only) and the populated `accounting_backup_verify` database, both used by Task 31 (the verify server runs on that database and the owner completes the checklist there).
 
-Owner data rule for this task: the backup and the CSV are read only by the script below, against the database `accounting_backup_verify`; the output is aggregates (counts, timings, evidence tables), account initials, and the names of accounts whose `moze_part` differs from `previous_moze_part` with the sign of the difference only. Never run `python -m app.services.moze_backup_import_service` here: the CLI uses `ACCOUNTING_DB` from `.env`, the live database. Never copy the JSON or the log into the repo.
+Owner data rule for this task: the backup and the CSV are read only by the script below, against the database `accounting_backup_verify`; the console output is aggregates (counts, timings, evidence tables), account initials, and the names of accounts whose `moze_part` differs from `previous_moze_part` with the sign of the difference only. No row-level data is ever printed or written: no entry dates, descriptions, notes or single amounts; account names are allowed, and amounts appear only as per-account totals (`moze_part`, `balance`) in the checklist file. Never copy the JSON, the log or the checklist into the repo.
 
-- [ ] 11.1 Prepare the converter, a private scratch directory and the disposable database:
+Database targeting rule: every database step of this task targets `accounting_backup_verify` and nothing else. The script takes the server, user and password from `app.database.SQLALCHEMY_DATABASE_URL` (built from `.env`) and replaces only the database name with an explicit `make_url(...).set(database="accounting_backup_verify")`; it passes that engine explicitly to `run_import` / `run_backup_import` and to Alembic, refuses to start unless the resulting URL's database is `accounting_backup_verify`, and prints only the database name, never the URL (`render_as_string(hide_password=False)` is used only inside the Alembic config and is never printed or logged). The `docker exec … createdb/dropdb/psql` commands name `accounting_backup_verify` explicitly. Do not run `python -m app.services.moze_backup_import_service` in this task: the CLI builds its engine from `ACCOUNTING_DB` in `.env`, the live database, and has no `--database-url` option; if a CLI run is ever needed against the verify database, it must get `ACCOUNTING_DB=accounting_backup_verify` the way Task 31 points the service at a disposable database (a filtered private `.env` whose `ACCOUNTING_DB` line names the verify database, checked with `grep -c '^ACCOUNTING_DB=accounting_backup_verify$' .env` before the run), never by editing the shared `.env`.
+
+- [ ] 11.1 Prepare the converter, a private scratch directory, the private report directory and the disposable database `accounting_backup_verify` (the only database this task touches):
 
 ```bash
 cd /home/opc/workspace/home-hub-entry
 export PATH=/home/opc/.nvm/versions/node/v22.22.2/bin:$PATH
 (cd tools/moze-realm-export && npm ci)
 export VERIFY_DIR=$(mktemp -d /tmp/moze-verify.XXXXXX) && chmod 700 "$VERIFY_DIR" && stat -c '%a %n' "$VERIFY_DIR"
+mkdir -p ~/reports/home-hub-2a-verify && chmod 700 ~/reports/home-hub-2a-verify && stat -c '%a %n' ~/reports/home-hub-2a-verify
 docker exec stonk-postgres-1 sh -c 'createdb -U "$POSTGRES_USER" accounting_backup_verify' && echo created
 ```
 
-Expected: `added … packages`, `700 /tmp/moze-verify.…`, `created`. Keep this shell open: later steps use `$VERIFY_DIR`.
+Expected: `added … packages`, `700 /tmp/moze-verify.…`, `700 /home/opc/reports/home-hub-2a-verify`, `created`. If `createdb` reports that `accounting_backup_verify` already exists (a leftover from an earlier attempt), drop it with the reset command in 11.3 and create it again; never reuse a half-imported database. Keep this shell open: later steps use `$VERIFY_DIR`.
 
 - [ ] 11.2 Write the acceptance script into the scratch directory (not the repo):
 
@@ -8751,7 +8932,9 @@ cat > "$VERIFY_DIR/verify_backup.py" <<'PYEOF'
 """Task 11 acceptance: import the real MOZE backup into a disposable database and print aggregates only.
 
 Run from services/accounting-service with VERIFY_DIR set to a private (mode 700) scratch directory.
-Never prints a row: only counts, sums of counts, rule names of the investigation and account initials.
+Connects only to the database accounting_backup_verify (refuses any other) and never prints the URL.
+Never prints a row: only counts, sums of counts, rule names of the investigation and account initials;
+per-account totals go only to the owner checklist file outside the repo.
 """
 
 import os
@@ -8779,6 +8962,7 @@ VERIFY_DIR = Path(os.environ["VERIFY_DIR"])
 ZIP = Path.home() / "workspace" / "moze-backup" / "MOZE_4.0.zip"
 CSV = Path.home() / "workspace" / "MOZE_20261001_170037.csv"
 DATABASE = "accounting_backup_verify"
+CHECKLIST = Path.home() / "reports" / "home-hub-2a-verify" / "checklist.md"
 CENT = Decimal("0.005")
 
 
@@ -8892,22 +9076,78 @@ def balance_info_evidence(data, summary: dict) -> None:
         print(f"{rule.__name__}: {matches} of {len(eligible)}")
 
 
-def owner_checklist(session: Session) -> None:
-    accounts = session.scalars(select(Account).where(Account.is_archived.is_(False))).all()
+def owner_checklist(session: Session, summary: dict) -> None:
+    """Prepare the Task 31 acceptance checklist: 10 accounts without FX-converted rows + the FX-converted ones.
+
+    FX-converted rows are entries with fx_source = 'fx_api' (HomeHub's cached rate, not MOZE's own amount),
+    so their accounts can legitimately differ from MOZE. The HomeHub value is the report's moze_part, which
+    must equal the balance shown on the verify server (moze_part == balance), else the account is not eligible.
+    Writes initials, currency, kind and per-account totals only; prints initials and counts only.
+    """
+    reported = {a["name"]: a for a in summary["accounts"]}
+    accounts = [
+        a for a in session.scalars(select(Account).where(Account.is_archived.is_(False))).all()
+        if a.name in reported
+    ]
     counts = dict(session.execute(select(LedgerEntry.account_id, func.count()).group_by(LedgerEntry.account_id)).all())
+    fx_accounts = set(session.scalars(select(LedgerEntry.account_id).where(LedgerEntry.fx_source == "fx_api").distinct()))
     busiest = sorted(accounts, key=lambda a: -counts.get(a.id, 0))
-    cards = [a for a in busiest if a.is_credit][:3]
-    jpy = [a for a in busiest if a.currency == "JPY" and a not in cards][:1]
-    rest = [a for a in busiest if a not in cards and a not in jpy][: 10 - len(cards) - len(jpy)]
+    fx = [a for a in busiest if a.id in fx_accounts]
+    eligible = [
+        a for a in busiest
+        if a.id not in fx_accounts and Decimal(reported[a.name]["moze_part"]) == Decimal(reported[a.name]["balance"])
+    ]
+    cards = [a for a in eligible if a.is_credit][:3]
+    jpy = [a for a in eligible if a.currency == "JPY" and a not in cards][:1]
+    rest = [a for a in eligible if a not in cards and a not in jpy][: 10 - len(cards) - len(jpy)]
+    chosen = cards + jpy + rest
+    print(f"eligible={len(eligible)} cards={len(cards)} jpy={len(jpy)} others={len(rest)} fx_converted_accounts={len(fx)}")
+    exported = datetime.fromisoformat(summary["exported_at"])
+    exported = exported.replace(tzinfo=TAIPEI) if exported.tzinfo is None else exported.astimezone(TAIPEI)
     taken: set[str] = set()
-    for account in cards + jpy + rest:
+
+    def line(account: Account) -> str:
         label = initials(account.name, taken)
         kind = "card" if account.is_credit else ("JPY" if account.currency == "JPY" else "account")
-        print(f"[ ] {label} ({account.currency}, {kind}, id {account.id}, {counts.get(account.id, 0)} entries)")
+        print(f"  {label} ({account.currency}, {kind})")
+        return f"| [ ] | {label} | {account.currency} | {kind} | {reported[account.name]['moze_part']} | | |"
+
+    lines = [
+        "# HomeHub 2a owner balance acceptance (prepared by Task 11, completed by the owner in Task 31)",
+        "",
+        f"- Database: {DATABASE} (verify server of Task 31). Comparison date: {exported.date().isoformat()}"
+        f" (backup exported_at {exported.isoformat(timespec='minutes')}, Asia/Taipei).",
+        "- HomeHub value: the report's moze_part (equals the account balance on the verify server).",
+        "- MOZE value: read by the owner from the MOZE app's account list (帳戶) for the comparison date.",
+        "- Pass rule: all 10 accounts below equal (difference 0). The FX-converted accounts are listed separately;",
+        "  the owner fills their MOZE value and difference and accepts or rejects each difference.",
+        "",
+        "## Acceptance accounts (must all match)",
+        "",
+        "| ok | account | currency | kind | HomeHub (moze_part) | MOZE | difference |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    print("acceptance accounts:")
+    lines += [line(a) for a in chosen]
+    lines += [
+        "",
+        "## FX-converted accounts (difference accepted by the owner)",
+        "",
+        "| accepted | account | currency | kind | HomeHub (moze_part) | MOZE | difference |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    print("FX-converted accounts:")
+    lines += [line(a) for a in fx]
+    CHECKLIST.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    CHECKLIST.chmod(0o600)
+    print(f"checklist written: {CHECKLIST} ({len(chosen)} acceptance + {len(fx)} FX-converted accounts)")
 
 
 def main() -> int:
     url = make_url(SQLALCHEMY_DATABASE_URL).set(database=DATABASE)
+    if url.database != DATABASE or url.database == "accounting_db":
+        sys.exit("refusing: the acceptance run only connects to accounting_backup_verify")
+    print(f"database={url.database}")  # the name only: never the URL, user or password
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url.render_as_string(hide_password=False).replace("%", "%%"))
     command.upgrade(config, "head")
@@ -8956,7 +9196,7 @@ def main() -> int:
             section("balanceInfo evidence")
             balance_info_evidence(data, again["summary"])
             section("owner checklist (initials)")
-            owner_checklist(session)
+            owner_checklist(session, again["summary"])
     finally:
         engine.dispose()
     return 0
@@ -8968,17 +9208,20 @@ if __name__ == "__main__":
 PYEOF
 ```
 
-- [ ] 11.3 Run it (it upgrades the disposable database to the Alembic head, converts the backup, imports the phase 1 CSV as the baseline, runs a backup dry run, the real backup import, a second import, then the evidence checks; `TMPDIR` keeps every temporary file, including the Realm work copy, inside the private directory):
+- [ ] 11.3 Run it against `accounting_backup_verify` only (it refuses any other database, prints `database=accounting_backup_verify` and never the URL; it upgrades the disposable database to the Alembic head, converts the backup, imports the phase 1 CSV as the baseline, runs a backup dry run, the real backup import, a second import, then the evidence checks; `TMPDIR` keeps every temporary file, including the Realm work copy, inside the private directory):
 
 ```bash
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && VERIFY_DIR="$VERIFY_DIR" TMPDIR="$VERIFY_DIR" PYTHONPATH=. .venv/bin/python "$VERIFY_DIR/verify_backup.py" 2>&1 | tee "$VERIFY_DIR/verify.log"
 ```
 
-Expected (acceptance criteria; stop and debug with superpowers:systematic-debugging if one fails, then drop and recreate the database with 11.9 and 11.1 before re-running):
+Expected (acceptance criteria; stop and debug with superpowers:systematic-debugging if one fails, then reset the verify database before re-running with `docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" --if-exists --force accounting_backup_verify && createdb -U "$POSTGRES_USER" accounting_backup_verify' && echo reset`):
+- First line after `started`: `database=accounting_backup_verify`.
 - `== converter`: `seconds` below 180 and `spec counts match: True` (7,553 records, 72 accounts, 544 transfers, 100 rules).
 - `== phase 1 CSV baseline`: `status=succeeded`.
 - `== backup dry run` and `== backup import`: `status=dry_run` / `status=succeeded`; import `seconds` below 300 (includes conversion); `transfers: 544`; `rules: 100`; `attachments:` at least 1900; `compared_accounts: {'compared': 0, 'total': 72}` (unless 11.6 adopts a rule); `moze_import entries left: 0`.
 - `== second backup import (idempotency)`: `identical entries, ids and groups: True`.
+- `== owner checklist (initials)`: `cards=3 jpy=1 others=6`, `fx_converted_accounts=` the count recorded in the contract (9; if it differs, record the actual count in 11.8 and in the PR description), the ten acceptance initials and the FX-converted initials (initials, currency and kind only; no amounts on the console), then `checklist written: /home/opc/reports/home-hub-2a-verify/checklist.md (10 acceptance + <n> FX-converted accounts)`. If fewer than 3 cards, 1 JPY account or 6 others are eligible (no `fx_api` row and `moze_part` equal to `balance`), stop and report the shortfall to the owner instead of relaxing the filter.
+- Nothing in the log is row-level: each line is a count, a timing, an evidence table, a map value, an account name with `+`/`-`, or initials. Check with `grep -cE '[0-9]{4}-[0-9]{2}-[0-9]{2}' "$VERIFY_DIR/verify.log"` that the only dates are the `started` timestamp and `exported_at` (expect `2`).
 - `moze_part == previous_moze_part:` prints how many accounts kept their phase 1 balance; each `differs:` line names an account and `+`/`-` only. Every differing account must be explainable by the design's three causes (records added in MOZE after the CSV export, MOZE's own FX amounts replacing `fx_api` conversions, skipped future rows); note the count per cause from the owner's knowledge in 11.8, not the names.
 
 - [ ] 11.4 Confirm the due-rule map. MOZE's account settings page (`https://doc.moze.app/prepare/account/settings.md`, section 繳款期限) offers "每月第 N 天" (fixed day) first and "結帳日後第 N 天" (days after closing) second, matching `paymentDeadlineType` 0 → `fixed_day`, 1 → `days_after_closing`. The owner confirms it on the three cards of the checklist (11.8) in Task 31. No code change unless the owner reports a mismatch.
@@ -9040,9 +9283,11 @@ Confirmed by Task 11 on the real backup in a disposable database on <date>; the 
 - **Previous CSV ledger:** <same> accounts unchanged, <differ> moved (new MOZE records <a>, MOZE FX amounts <b>, skipped future rows <c>).
 - **Timing:** conversion <s> s; import including conversion <s> s.
 
-### Owner checklist (Task 31, on the live database after the real backup import)
+### Owner balance acceptance (prepared in Task 11, completed by the owner in Task 31)
 
-For each account (initials from the acceptance run), compare HomeHub with the MOZE app on the same day:
+Environment: the verify server of Task 31, running on the database `accounting_backup_verify` populated by Task 11 (never the live `accounting_db`). Comparison date: <exported_at date> (the backup's `exported_at`, Asia/Taipei). HomeHub value: the import report's `moze_part`, equal to the account balance on the verify server. MOZE value: the balance in the MOZE app's account list. Pass rule: all 10 accounts below equal (difference 0); the <n> FX-converted accounts (<initials>) are listed separately in the checklist with their differences and pass only if the owner accepts each difference. The owner records pass/fail per account (initials only) in the PR description. Amounts stay in `~/reports/home-hub-2a-verify/checklist.md` (outside the repo), never here.
+
+For each account (initials from the acceptance run, chosen among accounts with no FX-converted rows):
 
 - [ ] <card 1 initials> (TWD, card): balance; closing day, due rule and value, credit limit, 主帳戶; one reward entry shows its rule and source.
 - [ ] <card 2 initials> (TWD, card): same checks.
@@ -9051,16 +9296,17 @@ For each account (initials from the acceptance run), compare HomeHub with the MO
 - [ ] <initials 5> … <initials 10> (6 accounts, as printed): balance equals MOZE's; the latest five entries match by date, amount and category.
 ```
 
-Copy the ten checklist lines from `== owner checklist (initials)` (3 cards, 1 JPY account, 6 others, by entry count).
+Copy the ten acceptance initials and the FX-converted initials from `== owner checklist (initials)` (3 cards, 1 JPY account, 6 others, by entry count among accounts with no `fx_api` row), and the comparison date from the checklist file's header. Task 11 only prepares the checklist; it is not ticked here. The owner completes `~/reports/home-hub-2a-verify/checklist.md` in Task 31 on the verify server and the result goes into the PR description.
 
-- [ ] 11.9 Drop the disposable database and delete the scratch directory (the converted JSON, the script and the log):
+- [ ] 11.9 Delete the scratch directory (the converted JSON, the script and the log); keep the database `accounting_backup_verify` and the checklist:
 
 ```bash
-docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" --if-exists --force accounting_backup_verify' && echo dropped
 command rm -rf "$VERIFY_DIR" && ls -d /tmp/moze-verify.* /tmp/moze-backup-* /tmp/moze-realm-* 2>/dev/null | wc -l
+stat -c '%a %n' ~/reports/home-hub-2a-verify/checklist.md
+docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_backup_verify -At -c "SELECT count(*) FROM ledger_entry WHERE source = '"'"'moze_backup'"'"'"'
 ```
 
-Expected: `dropped`, then `0`.
+Expected: `0`, `600 /home/opc/reports/home-hub-2a-verify/checklist.md`, and a non-zero entry count (a single number).
 
 - [ ] 11.10 Commit. If 11.5, 11.6 or 11.7 changed code, first run `git add services/accounting-service/app/services/moze_backup_json.py services/accounting-service/app/services/moze_backup_import_service.py services/accounting-service/tests/unit/test_moze_backup_json.py services/accounting-service/tests/integration/test_backup_replace_and_report.py services/accounting-service/tests/integration/test_backup_entries_import.py` (only the files `git status` shows as modified).
 
@@ -9072,6 +9318,8 @@ git commit -m "docs(openspec): record MOZE backup import confirmations and owner
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
+
+- [ ] 11.11 Leave `accounting_backup_verify` in place for Task 31; drop it only in Task 31's cleanup. Task 31 runs its verify server on this database (same data as the checklist, so the `moze_part` values in `~/reports/home-hub-2a-verify/checklist.md` are the balances the owner sees) and its cleanup drops it with `dropdb … --if-exists --force accounting_backup_verify` and deletes `~/reports/home-hub-2a-verify/` after the PR description has recorded the result.
 
 
 
@@ -9094,7 +9342,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: models `Account`, `Category`, `Counterparty`, `EntryGroup`, `EntryRewardRule`, `FxRate`, `LedgerEntry`, `Project`, `RewardRule` (Task 2, exported from `app.models`); `ledger_service.account_balance`, `ledger_service.get_entry_detail`, `EntryDetailOut`, `EntryKind` (Task 4); `fx_rate_service.get_rate`, `fx_rate_service.FxRateUnavailableError`, `fx_rate_service.RATE_QUANTUM`; `settings_service.ConflictError` (Task 5); `moze_import_service.SYSTEM_CATEGORY_NAMES`; the `entries` router (`APIRouter(prefix="/entries")`) from Task 4.
-- Produces: `edit_lock.EditLockedError`, `edit_lock.import_locked`, `edit_lock.assert_editable`, `edit_lock.is_moze_sourced`, `edit_lock.MOZE_SOURCES`; `errors.ValidationError(field, message)`, `errors.ConflictError`, `errors.NotFoundError`; `entry_write_service.FxResult`, `resolve_fx`, `proposed_fx_fee`, `signed`, `create_entry`, `update_entry`, `delete_entry`, `create_balance_adjustment`, `remember_defaults`, `ValidationError` (re-export), plus the helpers later tasks call: `PreparedEntry`, `prepare_entry`, `insert_prepared`, `get_entry`, `assert_entry_editable`, `check_category`, `check_project`, `check_rules`, `write_children`, `write_rule_links`, `delete_entries_cascade`, `system_category_id`, `display_quantum`, `proposed_fee_for_entry`, `FX_FEE_CHILD_NAME`; `app.routers.errors.service_errors`; every class in `app/schemas/writes.py`; conftest fixture `seed`.
+- Produces: `edit_lock.EditLockedError`, `edit_lock.import_locked`, `edit_lock.assert_editable`, `edit_lock.is_moze_sourced`, `edit_lock.MOZE_SOURCES`; `errors.ValidationError(field, message)`, `errors.ConflictError`, `errors.NotFoundError`; `entry_write_service.FxResult`, `resolve_fx`, `proposed_fx_fee`, `signed`, `create_entry`, `update_entry`, `delete_entry`, `create_balance_adjustment`, `remember_defaults`, `ValidationError` (re-export), plus the helpers later tasks call: `PreparedEntry`, `prepare_entry`, `insert_prepared`, `get_entry`, `assert_entry_editable`, `check_category`, `check_project`, `check_rules`, `write_children`, `write_rule_links`, `delete_entries_cascade`, `system_category_id`, `display_quantum`, `proposed_fee_for_entry`, `has_settlements_or_refunds`, `FX_FEE_CHILD_NAME`; `app.routers.errors.service_errors`; every class in `app/schemas/writes.py`; conftest fixture `seed`.
 
 - [ ] 12.1 Extend `services/accounting-service/tests/conftest.py` (as Task 3 step 3.1 and Task 7 step 7.2 / Task 10 step 10.1 left it: the import block then reads `import json` / `import sys` / `import uuid` / `from contextlib import ExitStack, contextmanager`, and `from app.services.moze_backup_json import parse_backup_doc` follows `from app.services import fx_rate_service`; the anchors below are unique substrings of that text). Its `LEDGER_TABLES` is already the superset this section needs (every ledger table, including `preference`); leave it exactly as Task 3 wrote it:
 
@@ -9531,6 +9779,91 @@ def test_transfer_leg_cannot_change_kind_or_account(client, db_session, seed):
     response = client.put(f"/entries/{out_leg.id}", json=_payload(a))
 
     assert response.status_code == 422 and _error_fields(response) == {"kind"}
+
+
+def _loan_with_collection(seed):
+    """A −420 receivable to Alan with a +200 collection settling it (open amount 220)."""
+    wallet = seed.account()
+    alan = seed.counterparty("Alan")
+    loan = seed.entry(wallet, "-420", kind="receivable", counterparty_id=alan.id, name="借款")
+    collection = seed.entry(wallet, "200", kind="receivable", counterparty_id=alan.id, settles_entry_id=loan.id)
+    return wallet, alan, loan, collection
+
+
+def test_update_refuses_settlement_entry(client, db_session, seed):
+    # Plan review P1: re-applying signed() would turn the +200 collection into −200 (open amount 620).
+    wallet, alan, loan, collection = _loan_with_collection(seed)
+    db_session.commit()
+    loan_id, collection_id = loan.id, collection.id
+
+    response = client.put(
+        f"/entries/{collection_id}",
+        json=_payload(wallet, kind="receivable", amount="200", counterparty_id=alan.id, name="改名"),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        {"loc": ["kind"], "msg": "settlement entries are edited by deleting and re-settling", "type": "value_error"}
+    ]
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, collection_id).amount == Decimal("200")
+    assert client.get(f"/entries/{loan_id}").json()["open_amount"] == "220.0000"
+
+
+def test_update_refuses_refund_entry(client, db_session, seed):
+    wallet = seed.account()
+    expense = seed.entry(wallet, "-1200")
+    refund = seed.entry(wallet, "570", kind="refund", refunds_entry_id=expense.id)
+    db_session.commit()
+    refund_id = refund.id
+
+    response = client.put(f"/entries/{refund_id}", json=_payload(wallet, amount="570"))
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == [
+        {"loc": ["kind"], "msg": "refund entries are edited by deleting and re-refunding", "type": "value_error"}
+    ]
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, refund_id).amount == Decimal("570")
+
+
+def test_update_refuses_amount_change_on_settled_original(client, db_session, seed):
+    wallet, alan, loan, _ = _loan_with_collection(seed)
+    other = seed.account("別的錢包")
+    expense = seed.entry(wallet, "-1200")
+    seed.entry(wallet, "570", kind="refund", refunds_entry_id=expense.id)
+    db_session.commit()
+    loan_id, expense_id = loan.id, expense.id
+
+    amount = client.put(
+        f"/entries/{loan_id}", json=_payload(wallet, kind="receivable", amount="500", counterparty_id=alan.id)
+    )
+    kind = client.put(f"/entries/{loan_id}", json=_payload(wallet, kind="expense", amount="420"))
+    account = client.put(f"/entries/{expense_id}", json=_payload(other, amount="1200"))
+
+    assert amount.status_code == 422 and _error_fields(amount) == {"amount"}
+    assert kind.status_code == 422 and _error_fields(kind) == {"kind"}
+    assert account.status_code == 422 and _error_fields(account) == {"account_id"}
+    db_session.expire_all()
+    assert (db_session.get(LedgerEntry, loan_id).amount, db_session.get(LedgerEntry, expense_id).account_id) == (
+        Decimal("-420"), wallet.id,
+    )
+
+
+def test_open_amount_unchanged_after_editing_original_name(client, db_session, seed):
+    wallet, alan, loan, _ = _loan_with_collection(seed)
+    db_session.commit()
+    loan_id = loan.id
+
+    response = client.put(
+        f"/entries/{loan_id}",
+        json=_payload(wallet, kind="receivable", amount="420", counterparty_id=alan.id, name="午餐代墊", tags=["朋友"]),
+    )
+
+    assert response.status_code == 200
+    assert (response.json()["name"], response.json()["amount"]) == ("午餐代墊", "-420.0000")
+    detail = client.get(f"/entries/{loan_id}").json()
+    assert (detail["open_amount"], detail["is_settled"]) == ("220.0000", False)
 
 
 def test_delete_removes_children_and_the_other_transfer_leg(client, db_session, seed):
@@ -10280,15 +10613,49 @@ def assert_entry_editable(db: Session, entry: LedgerEntry) -> None:
             assert_editable(group)
 
 
+def has_settlements_or_refunds(db: Session, entry_id: int) -> bool:
+    """True while another entry settles or refunds this one (its settled_by / refunded_by is non-empty)."""
+    dependant = db.scalar(
+        select(LedgerEntry.id)
+        .where((LedgerEntry.settles_entry_id == entry_id) | (LedgerEntry.refunds_entry_id == entry_id))
+        .limit(1)
+    )
+    return dependant is not None
+
+
+def _check_linked_original(db: Session, entry: LedgerEntry, prepared: PreparedEntry) -> None:
+    """A settled or refunded original keeps kind, account, currency and amount; other fields stay editable."""
+    if not has_settlements_or_refunds(db, entry.id):
+        return
+    changes = (
+        ("kind", entry.kind, prepared.payload.kind),
+        ("account_id", entry.account_id, prepared.account.id),
+        ("currency", entry.currency, prepared.account.currency),
+        ("amount", Decimal(entry.amount), prepared.fx.amount),
+    )
+    for field, old, new in changes:
+        if old != new:
+            raise ValidationError(
+                field, f"{field} cannot change while settlements or refunds point at this entry; delete them first"
+            )
+
+
 def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get=None) -> None:
+    """Settlement and refund entries are never re-signed here: `signed(kind, amount)` would flip a +200 collection
+    to −200 while it still settles its original. They are edited by deleting and re-settling / re-refunding."""
     entry = get_entry(db, entry_id)
     assert_entry_editable(db, entry)
     if entry.transfer_group_id is not None and (payload.kind != entry.kind or payload.account_id != entry.account_id):
         field = "kind" if payload.kind != entry.kind else "account_id"
         raise ValidationError(field, "transfer legs keep kind and account; edit them with PUT /transfers/{transfer_group_id}")
+    if entry.kind == "refund":
+        raise ValidationError("kind", "refund entries are edited by deleting and re-refunding")
+    if entry.settles_entry_id is not None:
+        raise ValidationError("kind", "settlement entries are edited by deleting and re-settling")
     if entry.kind not in EDITABLE_KINDS or entry.parent_entry_id is not None:
         raise ValidationError("kind", f"{entry.kind} entries are not edited through this endpoint")
     prepared = prepare_entry(db, payload, http_get=http_get)
+    _check_linked_original(db, entry, prepared)
     _apply(entry, prepared)
     db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id == entry.id))
     db.flush()
@@ -10468,7 +10835,7 @@ def remove_entry(entry_id: int, db: Session = Depends(get_db)):
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/unit/test_entry_write_rules.py tests/integration/test_entry_writes.py
 ```
 
-Expected: `51 passed` (unit 22, integration 29).
+Expected: `55 passed` (unit 22, integration 33).
 
 - [ ] 12.13 Run the whole service suite (the CSV importer's lock test now reads `import_locked` through the re-export).
 
@@ -11022,7 +11389,7 @@ new:
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_transfers.py tests/integration/test_entry_writes.py
 ```
 
-Expected: `42 passed` (transfers 13, entry writes 29).
+Expected: `46 passed` (transfers 13, entry writes 33).
 
 - [ ] 13.7 Commit:
 
@@ -11448,7 +11815,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `services/accounting-service/tests/integration/test_settlements.py`
 
 **Interfaces:**
-- Consumes: `SettleIn`, `RefundIn`, `BalanceAdjustmentIn`, `SplitIn` (Task 12/14); `entry_write_service.get_entry`, `assert_entry_editable`, `create_balance_adjustment`; `split_service.create_split`, `split_service.member_ids` (Task 14); `errors.ValidationError`; `edit_lock.EditLockedError`; `ledger_service.account_balance`, `ledger_service.get_entry_detail`, `EntryDetailOut` (Task 4; its `open_amount`, `is_settled` and `refunded_amount` fields); `app.routers.errors.service_errors`; conftest `seed`.
+- Consumes: `SettleIn`, `RefundIn`, `BalanceAdjustmentIn`, `SplitIn` (Task 12/14); `entry_write_service.assert_entry_editable`, `create_balance_adjustment`; `split_service.create_split`, `split_service.member_ids` (Task 14); `errors.ValidationError`, `errors.NotFoundError`; `edit_lock.EditLockedError`; `ledger_service.account_balance`, `ledger_service.get_entry_detail`, `EntryDetailOut` (Task 4; its `open_amount`, `is_settled` and `refunded_amount` fields); `app.routers.errors.service_errors`; conftest `seed` and `pg_engine` (Task 3).
 - Produces: `settlement_service.open_amount(db, entry) -> Decimal`, `settlement_service.settle(db, entry_id, payload) -> int`, `settlement_service.refunded_amount(db, entry) -> Decimal`, `settlement_service.refund(db, entry_id, payload) -> int`, constants `SETTLE_NAMES = {"receivable": "收款", "payable": "還款"}`; routes `POST /entries/{entry_id}/settle` (201 `EntryDetailOut`), `POST /entries/{entry_id}/refund` (201 `EntryDetailOut`), `POST /balance-adjustments` (201 `EntryDetailOut`).
 
 - [ ] 15.1 Create `services/accounting-service/tests/integration/test_settlements.py`:
@@ -11456,11 +11823,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```python
 """Settle (收款 / 還款), refund and balance adjustment; all respect the cutover lock on their target."""
 
+import queue
+import threading
 from datetime import date
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.orm import sessionmaker
 
 from app.main import app
 from app.models import LedgerEntry
@@ -11704,6 +12074,75 @@ def test_settle_and_refund_refuse_locked_target(client, db_session, seed, monkey
     assert client.post(f"/entries/{ids['receivable']}/settle", json=settle_body).status_code == 201
     assert client.post(f"/entries/{ids['expense']}/refund", json=refund_body).status_code == 201
     assert client.post(f"/entries/{ids['member']}/refund", json=refund_body).status_code == 201
+
+
+def _race(pg_engine, write):
+    """Run write(session) in two transactions on separate connections, as two concurrent requests would.
+
+    The first runs and keeps its transaction open (holding the row lock taken by settle / refund); the second
+    runs in a thread and must block on that lock; the first commits; the second's outcome is returned
+    ("committed" or the exception it raised).
+    """
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    first, second = factory(), factory()
+    outcome: queue.Queue = queue.Queue()
+
+    def run_second():
+        try:
+            write(second)
+            second.commit()
+            outcome.put("committed")
+        except Exception as exc:  # noqa: BLE001  (the outcome is asserted by the caller)
+            second.rollback()
+            outcome.put(exc)
+
+    try:
+        write(first)
+        thread = threading.Thread(target=run_second, daemon=True)
+        thread.start()
+        thread.join(timeout=0.5)
+        assert thread.is_alive(), "the second write must wait for the first transaction's row lock"
+        first.commit()
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "the second write is still blocked 5 s after the first committed"
+        return outcome.get_nowait()
+    finally:
+        first.close()
+        second.close()
+
+
+def test_concurrent_refunds_cannot_exceed_original(pg_engine, db_session, seed):
+    # Plan review P1: both requests read refundable 100 without the row lock and both refunded 80.
+    expense = seed.entry(seed.account("C"), "-100")
+    db_session.commit()
+    expense_id = expense.id
+
+    result = _race(pg_engine, lambda db: st.refund(db, expense_id, RefundIn(amount="80", entry_date=DAY)))
+
+    assert isinstance(result, ValidationError) and result.field == "amount"
+    db_session.expire_all()
+    assert st.refunded_amount(db_session, db_session.get(LedgerEntry, expense_id)) == Decimal("80")
+    refunds = db_session.scalars(select(LedgerEntry).where(LedgerEntry.refunds_entry_id == expense_id)).all()
+    assert len(refunds) == 1
+
+
+def test_concurrent_settlements_cannot_exceed_open_amount(pg_engine, db_session, seed):
+    wallet = seed.account("W")
+    alan = seed.counterparty("Alan")
+    receivable = seed.entry(wallet, "-100", kind="receivable", counterparty_id=alan.id)
+    db_session.commit()
+    receivable_id, wallet_id = receivable.id, wallet.id
+
+    result = _race(
+        pg_engine,
+        lambda db: st.settle(db, receivable_id, SettleIn(account_id=wallet_id, amount="80", entry_date=DAY)),
+    )
+
+    assert isinstance(result, ValidationError) and result.field == "amount"
+    db_session.expire_all()
+    assert st.open_amount(db_session, db_session.get(LedgerEntry, receivable_id)) == Decimal("20")
+    settlements = db_session.scalars(select(LedgerEntry).where(LedgerEntry.settles_entry_id == receivable_id)).all()
+    assert len(settlements) == 1
 ```
 
 - [ ] 15.2 Run it.
@@ -11729,8 +12168,8 @@ from sqlalchemy.orm import Session
 
 from ..models import Account, LedgerEntry
 from ..schemas.writes import RefundIn, SettleIn
-from .entry_write_service import assert_entry_editable, get_entry
-from .errors import ValidationError
+from .entry_write_service import assert_entry_editable
+from .errors import NotFoundError, ValidationError
 
 SETTLE_NAMES = {"receivable": "收款", "payable": "還款"}
 SETTLE_SIGNS = {"receivable": 1, "payable": -1}
@@ -11754,6 +12193,21 @@ def refunded_amount(db: Session, entry: LedgerEntry) -> Decimal:
     return Decimal(refunded)
 
 
+def _locked_entry(db: Session, entry_id: int) -> LedgerEntry:
+    """Load the target with SELECT … FOR UPDATE inside the request transaction.
+
+    A concurrent settle / refund of the same entry blocks here until the first transaction commits, then reads
+    the committed settlement or refund (READ COMMITTED takes a fresh snapshot per statement), so two requests
+    can never both pass the open-amount / refundable-amount check.
+    """
+    entry = db.execute(
+        select(LedgerEntry).where(LedgerEntry.id == entry_id).with_for_update().execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if entry is None:
+        raise NotFoundError(f"entry {entry_id} not found")
+    return entry
+
+
 def _same_currency_account(db: Session, account_id: int, currency: str) -> Account:
     account = db.get(Account, account_id)
     if account is None:
@@ -11765,7 +12219,7 @@ def _same_currency_account(db: Session, account_id: int, currency: str) -> Accou
 
 def settle(db: Session, entry_id: int, payload: SettleIn) -> int:
     """收款 (+amount, kind receivable) or 還款 (−amount, kind payable) pointing at the target."""
-    target = get_entry(db, entry_id)
+    target = _locked_entry(db, entry_id)
     assert_entry_editable(db, target)
     if target.kind not in SETTLE_SIGNS or target.settles_entry_id is not None:
         raise ValidationError("kind", "only receivable and payable entries can be settled")
@@ -11797,7 +12251,7 @@ def refund(db: Session, entry_id: int, payload: RefundIn) -> int:
 
     A group member is an ordinary entry and may be refunded; a group has no entry id, so it cannot be targeted.
     """
-    original = get_entry(db, entry_id)
+    original = _locked_entry(db, entry_id)
     assert_entry_editable(db, original)
     if original.kind not in REFUNDABLE_KINDS or original.parent_entry_id is not None:
         raise ValidationError("kind", "only expense entries can be refunded")
@@ -11824,6 +12278,8 @@ def refund(db: Session, entry_id: int, payload: RefundIn) -> int:
     db.flush()
     return entry.id
 ```
+
+Row locking (plan review): each router request already runs in one session and one transaction (`get_db` yields a fresh session; the route calls the service, then `db.commit()` once, and the session closes — rolling back — on any error), so the `FOR UPDATE` lock `_locked_entry` takes is held from the open-amount / refundable-amount check until the new settlement or refund is committed. No router change is needed for it; the two concurrency tests drive the service with two `sessionmaker` sessions on `pg_engine`, exactly as two overlapping requests would.
 
 - [ ] 15.4 In `services/accounting-service/app/routers/entries.py` add to the import block:
 
@@ -11894,7 +12350,7 @@ from .routers import accounts, balance_adjustments, entries, imports, settings, 
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_settlements.py
 ```
 
-Expected: `12 passed`.
+Expected: `14 passed` (12 behaviour tests, 2 concurrency tests).
 
 - [ ] 15.8 Commit:
 
@@ -11915,18 +12371,24 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `services/accounting-service/app/services/settings_service.py` (append account, group, category, project and counterparty functions below Task 5's preference functions)
 - Modify: `services/accounting-service/app/routers/settings.py` (append the settings endpoints below Task 5's `/preference` and `/fx-rate`)
 - Modify: `services/accounting-service/app/routers/accounts.py` (append `POST`, `PUT`, `DELETE`, `reset-settings-flag`)
+- Modify: `services/accounting-service/app/schemas/writes.py` (`AccountIn.credit_sharing_members`, Task 12's file)
+- Modify: `services/accounting-service/app/schemas/ledger.py` (`AccountDetailOut.credit_sharing_members`, Task 4's file)
+- Modify: `services/accounting-service/app/services/ledger_service.py` (`get_account` fills `credit_sharing_members`, Task 4's file)
 - Test: `services/accounting-service/tests/integration/test_settings_crud_api.py`
 
 **Interfaces:**
 - Consumes: `AccountIn`, `AccountGroupIn`, `CategoryIn`, `ProjectIn`, `CounterpartyIn`, `OrderIn` (Task 12); `errors.ValidationError`, `ConflictError`, `NotFoundError` (re-exported by `settings_service` since Task 12); `app.routers.errors.service_errors`; models `Account`, `AccountGroup`, `Category`, `Counterparty`, `LedgerEntry`, `Project`, `RewardRule`, `SYSTEM_KINDS`; `ledger_service.get_account`, `AccountDetailOut`, `AccountGroupOut` (`id, name, sort_order, moze_id`), `CategoryOut` (`id, kind, parent_id, name, icon, color, sort_order, is_hidden, default_account_id, default_project_id, moze_id, children`), `ProjectOut` (`id, name, is_archived, sort_order, moze_id`), `CounterpartyOut` (`id, name, moze_id, open_amounts: [{currency, amount: Decimal}]`), `EntryKind` (Task 4); conftest `seed`.
-- Produces: `settings_service.create_account`, `update_account`, `delete_account`, `reset_settings_flag`, `list_groups`, `create_group`, `update_group`, `delete_group`, `reorder_groups`, `list_categories`, `get_category`, `create_category`, `update_category`, `delete_category`, `reorder_categories`, `list_projects`, `create_project`, `update_project`, `delete_project`, `list_counterparties`, `create_counterparty`, `update_counterparty`, `delete_counterparty`, `CREDIT_ONLY_FIELDS`; the settings routes of the contract table.
+- Produces: `settings_service.create_account`, `update_account`, `delete_account`, `reset_settings_flag`, `list_groups`, `create_group`, `update_group`, `delete_group`, `reorder_groups`, `list_categories`, `get_category`, `create_category`, `update_category`, `delete_category`, `reorder_categories`, `list_projects`, `create_project`, `update_project`, `delete_project`, `list_counterparties`, `create_counterparty`, `update_counterparty`, `delete_counterparty`, `CREDIT_ONLY_FIELDS`; `AccountIn.credit_sharing_members: list[int] | None = None` (when present, `{account} ∪ members` gets one `credit_sharing_id` and every other account that carried it is cleared; `[]` makes the account leave its set); `AccountDetailOut.credit_sharing_members: list[int]` (ids of the other accounts with the same `credit_sharing_id`, ascending; `[]` when none); the settings routes of the contract table.
 
 - [ ] 16.1 Create `services/accounting-service/tests/integration/test_settings_crud_api.py`:
 
 ```python
-"""Settings CRUD: account validation and flags, groups, category tree, projects, counterparties."""
+"""Settings CRUD: account validation and flags, shared credit limits, groups, category tree, projects, counterparties."""
 
+import uuid
 from decimal import Decimal
+
+from app.models import Account
 
 
 def _account_body(**fields) -> dict:
@@ -12056,6 +12518,74 @@ def test_account_with_entries_cannot_be_deleted(client, db_session, seed):
     assert refused.status_code == 409 and "is_archived" in refused.json()["message"]
     assert client.delete(f"/accounts/{unused_id}").status_code == 204
     assert client.get(f"/accounts/{unused_id}").status_code == 404
+
+
+# --- shared credit limit (額度共用) -----------------------------------------------
+
+
+def _card_body(name, **fields) -> dict:
+    return _account_body(name=name, is_credit=True, **fields)
+
+
+def _sharing_ids(db_session, *account_ids) -> list:
+    db_session.expire_all()
+    return [db_session.get(Account, account_id).credit_sharing_id for account_id in account_ids]
+
+
+def test_sharing_members_add_an_account_to_the_set(client, db_session, seed):
+    shared = uuid.uuid4()
+    a = seed.account("A", is_credit=True, credit_sharing_id=shared)
+    b = seed.account("B", is_credit=True, credit_sharing_id=shared)
+    c = seed.account("C", is_credit=True)
+    cash = seed.account("現金")
+    db_session.commit()
+    a_id, b_id, c_id, cash_id = a.id, b.id, c.id, cash.id
+
+    added = client.put(f"/accounts/{a_id}", json=_card_body("A", credit_sharing_members=[b_id, c_id]))
+    refused = [
+        client.put(f"/accounts/{a_id}", json=_card_body("A", credit_sharing_members=[a_id])),
+        client.put(f"/accounts/{a_id}", json=_card_body("A", credit_sharing_members=[cash_id])),
+        client.put(f"/accounts/{a_id}", json=_card_body("A", credit_sharing_members=[999999])),
+        client.put(f"/accounts/{cash_id}", json=_account_body(name="現金", credit_sharing_members=[a_id])),
+    ]
+
+    assert added.status_code == 200
+    assert (added.json()["credit_sharing_id"], added.json()["credit_sharing_members"]) == (str(shared), [b_id, c_id])
+    assert _sharing_ids(db_session, a_id, b_id, c_id, cash_id) == [shared, shared, shared, None]
+    assert client.get(f"/accounts/{c_id}").json()["credit_sharing_members"] == [a_id, b_id]
+    for response in refused:
+        assert response.status_code == 422 and _error_fields(response) == {"credit_sharing_members"}
+
+
+def test_sharing_members_remove_an_account_from_the_set(client, db_session, seed):
+    a, b, c = (seed.account(name, is_credit=True) for name in ("A", "B", "C"))
+    db_session.commit()
+    a_id, b_id, c_id = a.id, b.id, c.id
+
+    created = client.put(f"/accounts/{a_id}", json=_card_body("A", credit_sharing_members=[b_id, c_id]))
+    removed = client.put(f"/accounts/{a_id}", json=_card_body("A", credit_sharing_members=[b_id]))
+
+    assert created.status_code == 200 and created.json()["credit_sharing_id"] is not None
+    shared = uuid.UUID(created.json()["credit_sharing_id"])
+    assert removed.status_code == 200 and removed.json()["credit_sharing_members"] == [b_id]
+    assert _sharing_ids(db_session, a_id, b_id, c_id) == [shared, shared, None]
+    assert client.get(f"/accounts/{c_id}").json()["credit_sharing_members"] == []
+    assert client.get(f"/accounts/{b_id}").json()["credit_sharing_members"] == [a_id]
+
+
+def test_empty_sharing_members_leave_the_set(client, db_session, seed):
+    shared = uuid.uuid4()
+    a, b, c = (seed.account(name, is_credit=True, credit_sharing_id=shared) for name in ("A", "B", "C"))
+    db_session.commit()
+    a_id, b_id, c_id = a.id, b.id, c.id
+
+    left = client.put(f"/accounts/{a_id}", json=_card_body("A", credit_sharing_members=[]))
+    untouched = client.put(f"/accounts/{b_id}", json=_card_body("B", credit_sharing_id=str(shared)))
+
+    assert left.status_code == 200
+    assert (left.json()["credit_sharing_id"], left.json()["credit_sharing_members"]) == (None, [])
+    assert untouched.status_code == 200 and untouched.json()["credit_sharing_members"] == [c_id]
+    assert _sharing_ids(db_session, a_id, b_id, c_id) == [None, shared, shared]
 
 
 # --- account groups ------------------------------------------------------------
@@ -12221,11 +12751,13 @@ def test_counterparty_rename_shows_in_listings_and_delete_rule(client, db_sessio
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_settings_crud_api.py
 ```
 
-Expected: `16 failed` — the write routes are missing (`405 Method Not Allowed` / `404` instead of `201`).
+Expected: `19 failed` — the write routes are missing (`405 Method Not Allowed` / `404` instead of `201`).
 
 - [ ] 16.3 Append to `services/accounting-service/app/services/settings_service.py`. Add to its import block (skip names already imported):
 
 ```python
+from uuid import UUID, uuid4
+
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
@@ -12306,24 +12838,79 @@ def _validate_account(db: Session, payload: AccountIn, account: Account | None) 
             raise ValidationError("auto_pay_account_id", "must be another existing account")
     if account is not None and payload.currency != account.currency and _count(db, LedgerEntry.account_id == account.id):
         raise ValidationError("currency", "currency cannot change while the account has entries")
+    _check_sharing_members(db, payload, self_id)
+
+
+ACCOUNT_COLUMNS_EXCLUDE = {"credit_sharing_members"}  # request-only field, not a column
+
+
+def _check_sharing_members(db: Session, payload: AccountIn, self_id: int | None) -> None:
+    members = payload.credit_sharing_members
+    if not members:
+        return
+    if not payload.is_credit:
+        raise ValidationError("credit_sharing_members", "only allowed when is_credit is true")
+    for member_id in members:
+        if member_id == self_id:
+            raise ValidationError("credit_sharing_members", "an account cannot share a limit with itself")
+        member = db.get(Account, member_id)
+        if member is None or not member.is_credit:
+            raise ValidationError("credit_sharing_members", f"account {member_id} is not an existing credit account")
+
+
+def _apply_sharing(db: Session, account: Account, previous: UUID | None, members: list[int]) -> None:
+    """Give `{account} ∪ members` one credit_sharing_id and clear it from accounts that left the set.
+
+    `members == []`: only this account leaves its set; the others keep sharing among themselves.
+    Runs inside the request transaction, so the whole diff commits or none of it does.
+    """
+    if not members:
+        account.credit_sharing_id = None
+        db.flush()
+        return
+    sharing_id = previous or uuid4()
+    keep = {account.id, *members}
+    db.execute(
+        update(Account)
+        .where(Account.credit_sharing_id == sharing_id, Account.id.not_in(keep))
+        .values(credit_sharing_id=None)
+        .execution_options(synchronize_session=False)
+    )
+    db.execute(
+        update(Account)
+        .where(Account.id.in_(keep))
+        .values(credit_sharing_id=sharing_id)
+        .execution_options(synchronize_session=False)
+    )
+    db.flush()
+    db.expire_all()
 
 
 def create_account(db: Session, payload: AccountIn) -> int:
     _validate_account(db, payload, None)
-    account = Account(**payload.model_dump(), settings_locally_edited=True)
+    account = Account(**payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE), settings_locally_edited=True)
     db.add(account)
     db.flush()
+    if payload.credit_sharing_members is not None:
+        _apply_sharing(db, account, account.credit_sharing_id, payload.credit_sharing_members)
     return account.id
 
 
 def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
-    """Every column except moze_id; marks the settings as locally edited so a re-import keeps them (D19)."""
+    """Every column except moze_id; marks the settings as locally edited so a re-import keeps them (D19).
+
+    With `credit_sharing_members` present, the sharing set is rebuilt from it (the sent `credit_sharing_id` is
+    ignored); without it, `credit_sharing_id` is written as sent, as before.
+    """
     account = _get(db, Account, account_id, "account")
     _validate_account(db, payload, account)
-    for field, value in payload.model_dump().items():
+    previous_sharing_id = account.credit_sharing_id
+    for field, value in payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE).items():
         setattr(account, field, value)
     account.settings_locally_edited = True
     db.flush()
+    if payload.credit_sharing_members is not None:
+        _apply_sharing(db, account, previous_sharing_id, payload.credit_sharing_members)
 
 
 def delete_account(db: Session, account_id: int) -> None:
@@ -12586,7 +13173,72 @@ def delete_counterparty(db: Session, counterparty_id: int) -> None:
     db.flush()
 ```
 
-- [ ] 16.4 Append to `services/accounting-service/app/routers/settings.py`. Add to its import block (skip names already imported):
+- [ ] 16.4 In `services/accounting-service/app/schemas/writes.py` (as Task 12 step 12.6 wrote it) add the request-only member list to `AccountIn`. Old:
+
+```python
+    credit_sharing_id: UUID | None = None
+    auto_pay_account_id: int | None = None
+```
+
+new:
+
+```python
+    credit_sharing_id: UUID | None = None
+    # 額度共用: the full list of the OTHER accounts sharing this account's limit. Omitted (None) keeps the old
+    # behaviour (credit_sharing_id written as sent); present, the service rebuilds the set from it atomically.
+    credit_sharing_members: list[int] | None = None
+    auto_pay_account_id: int | None = None
+```
+
+- [ ] 16.5 Expose the members on the account detail. In `services/accounting-service/app/schemas/ledger.py` (as Task 4 wrote it), old:
+
+```python
+class AccountDetailOut(AccountOut):
+    note: str | None
+    reward_rules: list[RewardRuleOut]
+```
+
+new:
+
+```python
+class AccountDetailOut(AccountOut):
+    note: str | None
+    reward_rules: list[RewardRuleOut]
+    credit_sharing_members: list[int] = []
+```
+
+and in `services/accounting-service/app/services/ledger_service.py` (as Task 4 wrote it; add `Account` to its `..models` import and `select` to its `sqlalchemy` import if missing), old:
+
+```python
+def get_account(db: Session, account_id: int) -> dict | None:
+    rows = _account_rows(db, include_archived=True, account_id=account_id)
+    return rows[0] if rows else None
+```
+
+new:
+
+```python
+def get_account(db: Session, account_id: int) -> dict | None:
+    rows = _account_rows(db, include_archived=True, account_id=account_id)
+    if not rows:
+        return None
+    account = rows[0]
+    sharing_id = account["credit_sharing_id"]
+    account["credit_sharing_members"] = (
+        []
+        if sharing_id is None
+        else list(
+            db.scalars(
+                select(Account.id)
+                .where(Account.credit_sharing_id == sharing_id, Account.id != account_id)
+                .order_by(Account.id)
+            )
+        )
+    )
+    return account
+```
+
+- [ ] 16.6 Append to `services/accounting-service/app/routers/settings.py`. Add to its import block (skip names already imported):
 
 ```python
 from fastapi import Depends, Query, Response
@@ -12750,7 +13402,7 @@ def remove_counterparty(counterparty_id: int, db: Session = Depends(get_db)):
     return Response(status_code=204)
 ```
 
-- [ ] 16.5 Append to `services/accounting-service/app/routers/accounts.py`. Add to its import block (skip names already imported):
+- [ ] 16.7 Append to `services/accounting-service/app/routers/accounts.py`. Add to its import block (skip names already imported):
 
 ```python
 from fastapi import Response
@@ -12797,19 +13449,21 @@ def post_reset_settings_flag(account_id: int, db: Session = Depends(get_db)):
     return ledger_service.get_account(db, account_id)
 ```
 
-- [ ] 16.6 Run the tests.
+- [ ] 16.8 Run the tests.
 
 ```bash
 cd /home/opc/workspace/home-hub-entry/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_settings_crud_api.py tests/integration/test_accounts_api.py
 ```
 
-Expected: `test_settings_crud_api.py` 16 passed, and every test in `test_accounts_api.py` passes (0 failed).
+Expected: `test_settings_crud_api.py` 19 passed, and every test in `test_accounts_api.py` passes (0 failed).
 
-- [ ] 16.7 Commit:
+- [ ] 16.9 Commit:
 
 ```bash
 git add services/accounting-service/app/services/settings_service.py services/accounting-service/app/routers/settings.py \
-  services/accounting-service/app/routers/accounts.py services/accounting-service/tests/integration/test_settings_crud_api.py
+  services/accounting-service/app/routers/accounts.py services/accounting-service/app/schemas/writes.py \
+  services/accounting-service/app/schemas/ledger.py services/accounting-service/app/services/ledger_service.py \
+  services/accounting-service/tests/integration/test_settings_crud_api.py
 git commit -m "feat(accounting): settings CRUD for accounts, groups, categories, projects and counterparties
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
@@ -13078,7 +13732,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `frontend/src/app/models/accounting.model.ts` (full rewrite: every DTO and input type of the frontend contract)
-- Modify: `frontend/src/app/services/accounting.service.ts` (full rewrite: every method of the contract, `entriesChanged`, cached preference)
+- Modify: `frontend/src/app/services/accounting.service.ts` (full rewrite: every method of the contract, `entriesChanged`, `accountsChanged`, `getAccountSummary`, cached preference)
 - Create: `frontend/src/app/components/accounting/testing/fixtures.ts` (test factories used by every accounting spec)
 - Create: `frontend/src/app/components/accounting/accounting-pages.ts` (lazy page loaders; later tasks swap one placeholder line each)
 - Create: `frontend/src/app/components/accounting/accounting-placeholder/accounting-placeholder.ts` (temporary page for routes whose component lands in a later task)
@@ -13091,7 +13745,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: API shapes of the Interface Contract (`AccountOut`, `AccountDetailOut`, `EntryOut`, `EntryDetailOut`, `MonthSummaryOut`, `RewardRuleOut`, `CounterpartyOut`, `PreferenceOut`, write schemas, router table); phase 1 `AccountingAccountsComponent`, `AccountingAccountEntriesComponent`, `DockComponent`, `MobileNavComponent`, `navItemForUrl`.
-- Produces: every name of the "Frontend contract" model list and `AccountingService` method list; `AccountingService.entriesChanged: Signal<number>`; `AllEntriesQuery`, `AccountGroupInput`, `CategoryInput`, `ProjectInput`, `CounterpartyInput`, `BackupImportOptions`, `BackupAccountReport`, `WritableEntryKind`, `DEFAULT_PREFERENCE`, `defaultCategoryIcon()`; `ACCOUNTING_PAGES`, `AccountingPage`, `AccountingListKey`; `AccountingPlaceholderComponent`; `AccountingLayoutComponent` (selector `app-accounting-layout`, passthrough until Task 21); fixtures `makeAccount`, `makeAccountDetail`, `makeEntry`, `makeEntryDetail`, `makeCategory`, `makeRule`, `makePreference`; nav ids `accounting-timeline`, `accounting`, `accounting-settings`, group `settings`.
+- Produces: every name of the "Frontend contract" model list and `AccountingService` method list; `AccountingService.entriesChanged: Signal<number>`; `AccountingService.accountsChanged: Signal<number>` (bumped after every successful account / account-group write and a non-dry-run backup import; list pages such as `AccountingAccountsComponent` reload on it); `AccountingService.getAccountSummary(accountId, dateFrom, dateTo)` and `AccountPeriodSummary` (plan-review addition, wraps Task 4's `GET /accounts/{id}/summary`); `AccountInput.credit_sharing_members?: number[]`, `AccountDetail.credit_sharing_members: number[]`; `AllEntriesQuery`, `AccountGroupInput`, `CategoryInput`, `ProjectInput`, `CounterpartyInput`, `BackupImportOptions`, `BackupAccountReport`, `WritableEntryKind`, `DEFAULT_PREFERENCE`, `defaultCategoryIcon()`; `ACCOUNTING_PAGES`, `AccountingPage`, `AccountingListKey`; `AccountingPlaceholderComponent`; `AccountingLayoutComponent` (selector `app-accounting-layout`, passthrough until Task 21); fixtures `makeAccount`, `makeAccountDetail`, `makeEntry`, `makeEntryDetail`, `makeCategory`, `makeRule`, `makePreference`; nav ids `accounting-timeline`, `accounting`, `accounting-settings`, group `settings`.
 
 Decision recorded here: the accounting group's 設定 now points at `/accounting/settings`, so the global `/settings` page (appearance, gain/loss colours) gets its own fourth nav group `settings` (label 設定, cog). On phones this is the fourth tab of the mockup's tab bar (物資 · 投資 · ＋ · 財務 · 設定); on the dock it is one cog after the accounting group. The accounting 設定 item uses `pi-sliders-h` so the two cogs are not confused.
 
@@ -13293,6 +13947,13 @@ const CASES: Case[] = [
     params: { date: '2026-10-02', base: 'JPY', quote: 'TWD' },
   },
   { name: 'getSchedules', call: s => s.getSchedules('installment'), method: 'GET', url: `${API}/imports/schedules`, params: { kind: 'installment' } },
+  {
+    name: 'getAccountSummary',
+    call: s => s.getAccountSummary(3, '2026-09-16', '2026-10-15'),
+    method: 'GET',
+    url: `${API}/accounts/3/summary`,
+    params: { date_from: '2026-09-16', date_to: '2026-10-15' },
+  },
 ];
 
 describe('AccountingService', () => {
@@ -13396,6 +14057,27 @@ describe('AccountingService', () => {
     httpMock.expectOne('/api/accounting/entries').flush({ id: 1 });
 
     expect(service.entriesChanged()).toBe(before + 1);
+  });
+
+  it('bumps accountsChanged after an account write', () => {
+    const before = service.accountsChanged();
+    service.updateAccount(3, ACCOUNT_INPUT).subscribe();
+    expect(service.accountsChanged()).toBe(before);
+
+    httpMock.expectOne('/api/accounting/accounts/3').flush({ id: 3 });
+    expect(service.accountsChanged()).toBe(before + 1);
+
+    service.deleteAccountGroup(2).subscribe();
+    httpMock.expectOne('/api/accounting/account-groups/2').flush(null);
+    expect(service.accountsChanged()).toBe(before + 2);
+
+    service.importBackup(new File(['zip'], 'b.zip'), { dryRun: true }).subscribe();
+    httpMock.expectOne(r => r.url === '/api/accounting/imports/moze-backup').flush({ id: null, status: 'dry_run' });
+    expect(service.accountsChanged()).toBe(before + 2);
+
+    service.importBackup(new File(['zip'], 'b.zip'), { dryRun: false }).subscribe();
+    httpMock.expectOne(r => r.url === '/api/accounting/imports/moze-backup').flush({ id: 4, status: 'succeeded' });
+    expect(service.accountsChanged()).toBe(before + 3);
   });
 
   it('maps a 404 from imports/latest to null', () => {
@@ -13524,6 +14206,27 @@ export interface LedgerAccount {
 export interface AccountDetail extends LedgerAccount {
   note: string | null;
   reward_rules: RewardRule[];
+  /** Other accounts sharing this account's credit limit (same `credit_sharing_id`); empty when none. */
+  credit_sharing_members: number[];
+}
+
+/** `GET /accounts/{id}/summary?date_from=&date_to=` (`AccountPeriodSummaryOut`, Task 4); dates filter on `posted_date`. */
+export interface AccountPeriodSummary {
+  account_id: number;
+  currency: string;
+  date_from: string;
+  date_to: string;
+  /** Σ negative expense / fee amounts (negative). */
+  spend: string;
+  /** Σ positive income / interest / discount amounts. */
+  income: string;
+  /** Σ reward amounts. */
+  rewards: string;
+  /** Σ all amounts in the period. */
+  net: string;
+  /** Balance as of `date_to` (posted-date based). */
+  end_balance: string;
+  count: number;
 }
 
 export interface EntryGroupSummary {
@@ -13740,6 +14443,11 @@ export interface AccountInput {
   fx_fee_pct: string | null;
   fx_fee_rounding: RoundingMode | null;
   fx_fee_refundable: boolean;
+  /**
+   * Full member list of the shared credit limit (other account ids). When present, the server gives
+   * `{this account} ∪ members` one `credit_sharing_id` and clears it from accounts that left the set.
+   */
+  credit_sharing_members?: number[];
 }
 
 export interface AccountGroup {
@@ -14050,7 +14758,7 @@ export function makeRule(overrides: Partial<RewardRule> = {}): RewardRule {
 }
 
 export function makeAccountDetail(overrides: Partial<AccountDetail> = {}): AccountDetail {
-  return { ...makeAccount(), note: null, reward_rules: [], ...overrides };
+  return { ...makeAccount(), note: null, reward_rules: [], credit_sharing_members: [], ...overrides };
 }
 
 export function makeEntry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
@@ -14149,6 +14857,7 @@ import {
   AccountGroup,
   AccountGroupInput,
   AccountInput,
+  AccountPeriodSummary,
   AllEntriesQuery,
   BackupImportOptions,
   BalanceAdjustmentInput,
@@ -14200,13 +14909,21 @@ export class AccountingService {
   private http = inject(HttpClient);
   private apiUrl = '/api/accounting';
   private readonly changeCount = signal(0);
+  private readonly accountChangeCount = signal(0);
   private preference$: Observable<Preference> | null = null;
 
   /** Bumped after every successful write that adds, changes or removes entries; list pages reload on it. */
   readonly entriesChanged = this.changeCount.asReadonly();
 
+  /** Bumped after every successful account / account-group write and a non-dry-run backup import; account lists reload on it. */
+  readonly accountsChanged = this.accountChangeCount.asReadonly();
+
   private bump<T>(source: Observable<T>): Observable<T> {
     return source.pipe(tap(() => this.changeCount.update(count => count + 1)));
+  }
+
+  private bumpAccounts<T>(source: Observable<T>): Observable<T> {
+    return source.pipe(tap(() => this.accountChangeCount.update(count => count + 1)));
   }
 
   // ---- accounts ----------------------------------------------------------
@@ -14224,20 +14941,27 @@ export class AccountingService {
     return this.http.get<EntryPage>(`${this.apiUrl}/accounts/${accountId}/entries`, { params: toParams(query) });
   }
 
+  /** Period totals for the passbook header (`spend`, `income`, `rewards`, `net`, `end_balance`), filtered on `posted_date`. */
+  getAccountSummary(accountId: number, dateFrom: string, dateTo: string): Observable<AccountPeriodSummary> {
+    return this.http.get<AccountPeriodSummary>(`${this.apiUrl}/accounts/${accountId}/summary`, {
+      params: { date_from: dateFrom, date_to: dateTo },
+    });
+  }
+
   createAccount(input: AccountInput): Observable<AccountDetail> {
-    return this.http.post<AccountDetail>(`${this.apiUrl}/accounts`, input);
+    return this.bumpAccounts(this.http.post<AccountDetail>(`${this.apiUrl}/accounts`, input));
   }
 
   updateAccount(id: number, input: AccountInput): Observable<AccountDetail> {
-    return this.http.put<AccountDetail>(`${this.apiUrl}/accounts/${id}`, input);
+    return this.bumpAccounts(this.http.put<AccountDetail>(`${this.apiUrl}/accounts/${id}`, input));
   }
 
   deleteAccount(id: number): Observable<void> {
-    return this.http.delete<void>(`${this.apiUrl}/accounts/${id}`);
+    return this.bumpAccounts(this.http.delete<void>(`${this.apiUrl}/accounts/${id}`));
   }
 
   resetSettingsFlag(id: number): Observable<AccountDetail> {
-    return this.http.post<AccountDetail>(`${this.apiUrl}/accounts/${id}/reset-settings-flag`, {});
+    return this.bumpAccounts(this.http.post<AccountDetail>(`${this.apiUrl}/accounts/${id}/reset-settings-flag`, {}));
   }
 
   // ---- entries -----------------------------------------------------------
@@ -14307,19 +15031,19 @@ export class AccountingService {
   }
 
   createAccountGroup(input: AccountGroupInput): Observable<AccountGroup> {
-    return this.http.post<AccountGroup>(`${this.apiUrl}/account-groups`, input);
+    return this.bumpAccounts(this.http.post<AccountGroup>(`${this.apiUrl}/account-groups`, input));
   }
 
   updateAccountGroup(id: number, input: AccountGroupInput): Observable<AccountGroup> {
-    return this.http.put<AccountGroup>(`${this.apiUrl}/account-groups/${id}`, input);
+    return this.bumpAccounts(this.http.put<AccountGroup>(`${this.apiUrl}/account-groups/${id}`, input));
   }
 
   deleteAccountGroup(id: number): Observable<void> {
-    return this.http.delete<void>(`${this.apiUrl}/account-groups/${id}`);
+    return this.bumpAccounts(this.http.delete<void>(`${this.apiUrl}/account-groups/${id}`));
   }
 
   reorderAccountGroups(ids: number[]): Observable<unknown> {
-    return this.http.put<unknown>(`${this.apiUrl}/account-groups/order`, { ids });
+    return this.bumpAccounts(this.http.put<unknown>(`${this.apiUrl}/account-groups/order`, { ids }));
   }
 
   getCategories(kind: string): Observable<CategoryNode[]> {
@@ -14415,6 +15139,7 @@ export class AccountingService {
       tap(run => {
         if (run.status === 'succeeded') {
           this.changeCount.update(count => count + 1);
+          this.accountChangeCount.update(count => count + 1);
         }
       }),
     );
@@ -14523,7 +15248,7 @@ function entry(id: number, overrides: Partial<LedgerEntry> = {}): LedgerEntry {
 cd /home/opc/workspace/home-hub-entry/frontend && npx ng test --watch=false --include='src/app/services/accounting.service.spec.ts' --include='src/app/components/accounting/**/*.spec.ts'
 ```
 
-Expected: PASS. `accounting.service.spec.ts` reports 50 tests (3 + 41 table cases + 6), and the phase 1 accounts / account-entries / format specs pass unchanged.
+Expected: PASS. `accounting.service.spec.ts` reports 52 tests (3 + 42 table cases + 7), and the phase 1 accounts / account-entries / format specs pass unchanged.
 
 - [ ] 18.8 Replace `frontend/src/app/app.routes.spec.ts` with the failing route spec:
 
@@ -18370,9 +19095,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `AccountingService` (`getAccounts`, `getProjects`, `getCounterparties`, `getPreference`, `getCategories`, `getAccount`, `getEntry`, `createEntry`, `updateEntry`, `createBalanceAdjustment`, `createCounterparty`, `getFxRate`), DTOs and `DEFAULT_PREFERENCE` (Task 18); `evaluateAmount`, `prettyExpression`, `roundHalfAway`, `AmountKeypadComponent` (Task 19); `CategoryPickerComponent` (Task 20); `LayoutModeService`, `LockBannerComponent`, `currencyDecimals`, `formatMoney`, `formatNumber` (Task 21).
 - Produces: `EntryFormComponent` (`app-entry-form`) for `/accounting/entry` (`?kind=`, `?copy=<id>`) and `/accounting/entries/:id/edit`; `FxSheetComponent` (`app-fx-sheet`: inputs `account`, `entryDate`, `originalAmount`; model `value: FxValue | null`; output `closed`), `FxValue`, `FX_CURRENCIES`; `FeeSheetComponent` (`app-fee-sheet`: inputs `amount` (signed, account currency), `currency`, `kind`; models `fee`, `discount: ChildInput | null`; output `closed`); from `entry-draft.ts`: `FormKind`, `FORM_KINDS`, `isFormKind`, `isWritableKind`, `categoryKindFor`, `signFor`, `LAST_USE_PREFIX` (`hh.accounting.lastUse.`), `AMOUNT_HISTORY_PREFIX` (`hh.accounting.amounts.`), `LastUse`, `readLastUse`, `writeLastUse`, `quickAmounts`, `recordAmount`, `todayIso`, `nowTime`, `findCategory`, `rulesForDate`, `ruleLabel`, `parseTags`, `evalOrNull`, `saveErrorMessage`; `LONG_PRESS_MS = 600`.
+- Plan-review additions: `EntryFormComponent.loading` (signal), `editing` (signal, route has `:id`), `accountLabel(account)`; private `loadId`, `fetchEntry`, `applyLoaded`.
 - Hooks left for Task 24 (transfer and split): `EntryFormComponent.tabDisabled(kind)` returns true for `transfer`; the picker is bound with `[splittable]="false"`; `validate()` refuses `transfer`; `save()` returns early for `transfer`.
 
-Form rules. Tabs 支出 / 收入 / 轉帳 / 應收款項 / 應付款項 / 系統 (系統 = 餘額調整: 帳戶, 當前餘額, 調整後餘額, 日期, 備註 → `createBalanceAdjustment`). Picking a category (new entries only) sets account and project from the device's last use for that category (`localStorage['hh.accounting.lastUse.<categoryId>'] = {account_id, project_id}`), else from the category's `default_account_id` / `default_project_id`. Quick amounts are the six most frequent amounts saved for that category on this device (`hh.accounting.amounts.<categoryId>`). Phone: keypad docked at the bottom, the form is a full-screen layer above the tab bar (mockup `s-entry`); ≥ 760 px: a text field evaluated with `evaluateAmount` on blur and ⏎, red and blocking save when invalid. ⏎ saves, ⇧⏎ or a ✓ long-press (600 ms) saves and starts a new record keeping kind, account and date (連續記帳), Esc cancels; ⏎ inside the note, the tag input or while IME composition is active does not save. The amount tile's currency pill opens the FX sheet: with 採用線上匯率 on, the request carries only `original_amount` / `original_currency` (server converts, `fx_source = fx_api`); editing the rate sends `fx_rate`, editing the converted amount sends `amount` (both `manual`). When a create / update response carries `proposed_fee` and no fee was sent, the form stays with a chip `＋ 國外交易手續費 −$N` that re-saves the entry with that fee child, or 略過. Edit loads `GET /entries/{id}`; a locked entry shows `app-lock-banner`, every control sits in a disabled `<fieldset>`, ✓ is disabled and the keypad is hidden. Copy (`?copy=`) pre-fills from the entry with today's date and time and no invoice. Save returns to the previous page (`Location.back()` when the router has navigated before, else `/accounting`).
+Form rules. Tabs 支出 / 收入 / 轉帳 / 應收款項 / 應付款項 / 系統 (系統 = 餘額調整: 帳戶, 當前餘額, 調整後餘額, 日期, 備註 → `createBalanceAdjustment`). Picking a category (new entries only) sets account and project from the device's last use for that category (`localStorage['hh.accounting.lastUse.<categoryId>'] = {account_id, project_id}`), else from the category's `default_account_id` / `default_project_id`. Quick amounts are the six most frequent amounts saved for that category on this device (`hh.accounting.amounts.<categoryId>`). Phone: keypad docked at the bottom, the form is a full-screen layer above the tab bar (mockup `s-entry`); ≥ 760 px: a text field evaluated with `evaluateAmount` on blur and ⏎, red and blocking save when invalid. ⏎ saves, ⇧⏎ or a ✓ long-press (600 ms) saves and starts a new record keeping kind, account and date (連續記帳), Esc cancels; ⏎ inside the note, the tag input or while IME composition is active does not save. The amount tile's currency pill opens the FX sheet: with 採用線上匯率 on, the request carries only `original_amount` / `original_currency` (server converts, `fx_source = fx_api`); editing the rate sends `fx_rate`, editing the converted amount sends `amount` (both `manual`). When a create / update response carries `proposed_fee` and no fee was sent, the form stays with a chip `＋ 國外交易手續費 −$N` that re-saves the entry with that fee child, or 略過. Edit loads `GET /entries/{id}` through the route observables with `switchMap` (the previous record's request is unsubscribed) and a monotonically increasing `loadId`: a response is applied only when it answers the latest load, `loading()` is true from navigation until then, and while it is true the ✓ button is disabled, the `<fieldset>` is disabled and `save()` is a no-op; the update target is the `entryId()` set when the matching response is applied. The form loads `getAccounts(true)`: the account select lists non-archived accounts plus, in edit mode, the entry's own account when it is archived (labelled `（已封存）`); new entries and copies never offer archived accounts (a copy of an entry on an archived account falls back to the first open account). A locked entry shows `app-lock-banner`, every control sits in a disabled `<fieldset>`, ✓ is disabled and the keypad is hidden. Copy (`?copy=`) pre-fills from the entry with today's date and time and no invoice. Save returns to the previous page (`Location.back()` when the router has navigated before, else `/accounting`).
 
 - [ ] 23.1 Create `frontend/src/app/components/accounting/entry-form/entry-draft.spec.ts`:
 
@@ -19435,6 +20161,7 @@ const PROJECTS: Project[] = [{ id: 5, name: '生活', is_archived: false, sort_o
 const LUNCH = makeCategory({ id: 12, parent_id: 1, name: '午餐', default_account_id: 2, default_project_id: 5 });
 const FOOD = makeCategory({ id: 1, name: '飲食', icon: '🍜', color: '#f0cd92', children: [LUNCH] });
 const SALARY = makeCategory({ id: 30, kind: 'income', name: '薪水', icon: '💰', default_account_id: 2 });
+const OLD_CARD = makeAccount({ id: 3, name: '舊卡', is_archived: true });
 
 describe('EntryFormComponent', () => {
   let httpMock: HttpTestingController;
@@ -19470,12 +20197,15 @@ describe('EntryFormComponent', () => {
     settle();
   }
 
-  async function open(url: string, mode: LayoutMode = 'phone') {
+  async function open(url: string, mode: LayoutMode = 'phone', accounts = ACCOUNTS) {
     TestBed.inject(LayoutModeService).set(mode);
     harness = await RouterTestingHarness.create();
     await harness.navigateByUrl(url);
     settle();
-    respond('/api/accounting/accounts', ACCOUNTS);
+    const accountList = httpMock.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts');
+    expect(accountList.request.params.get('include_archived')).toBe('true');
+    accountList.flush(accounts);
+    settle();
     respond('/api/accounting/projects', PROJECTS);
     respond('/api/accounting/counterparties', []);
     respond('/api/accounting/preference', makePreference());
@@ -19656,6 +20386,85 @@ describe('EntryFormComponent', () => {
 
     expect(left()).toBe(true);
   });
+
+  it('ignores a stale detail response after navigating to another entry', async () => {
+    const { el, left } = await open('/accounting/entries/7/edit');
+    const seven = httpMock.match(r => r.method === 'GET' && r.url === '/api/accounting/entries/7');
+    expect(seven.length).toBe(1);
+
+    await harness.navigateByUrl('/accounting/entries/9/edit');
+    settle();
+    respond(
+      '/api/accounting/entries/9',
+      makeEntryDetail({ id: 9, account_id: 2, category_id: 12, name: '晚餐', amount: '-250.0000' }),
+    );
+    // Entry 7's answer arrives last. switchMap has unsubscribed it; if it were still live, the loadId guard drops it.
+    seven
+      .filter(request => !request.cancelled)
+      .forEach(request => request.flush(makeEntryDetail({ id: 7, account_id: 1, category_id: 12, name: '午餐', amount: '-120.0000' })));
+    settle();
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('晚餐');
+    expect(text(el.querySelector('.amount-value'))).toBe('250');
+    expect((el.querySelector('.account-select') as HTMLSelectElement).value).toBe('2');
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT');
+    expect(put.request.url).toBe('/api/accounting/entries/9');
+    expect(put.request.body).toMatchObject({ account_id: 2, name: '晚餐', amount: '250' });
+    put.flush(makeEntryDetail({ id: 9 }));
+    settle();
+
+    expect(left()).toBe(true);
+  });
+
+  it('does not save while the entry is loading', async () => {
+    const { el } = await open('/accounting/entries/9/edit');
+    const save = el.querySelector('button.save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect((el.querySelector('fieldset.content') as HTMLFieldSetElement).disabled).toBe(true);
+
+    el.querySelector('.entry-form')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    settle();
+    keys(el, '✓');
+
+    httpMock.expectNone(r => r.method === 'PUT' || r.method === 'POST');
+    expect(el.querySelector('.form-error')).toBeNull();
+
+    respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, category_id: 12, amount: '-170.0000' }));
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    expect(save.disabled).toBe(false);
+    expect((el.querySelector('fieldset.content') as HTMLFieldSetElement).disabled).toBe(false);
+  });
+
+  it('keeps an archived account selectable when editing its entry', async () => {
+    const { el } = await open('/accounting/entries/9/edit', 'phone', [...ACCOUNTS, OLD_CARD]);
+    respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 3, account_name: '舊卡', category_id: 12, amount: '-80.0000' }));
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/3', makeAccountDetail({ id: 3, name: '舊卡', is_archived: true }));
+
+    const select = el.querySelector('.account-select') as HTMLSelectElement;
+    expect(Array.from(select.options).map(option => option.textContent?.trim())).toEqual(['錢包', '玉山 UNI', '舊卡（已封存）']);
+    expect(select.value).toBe('3');
+
+    // A new record never offers the archived account (the preference is cached, so it is not requested again).
+    await harness.navigateByUrl('/accounting/entry');
+    settle();
+    respond('/api/accounting/accounts', [...ACCOUNTS, OLD_CARD]);
+    respond('/api/accounting/projects', PROJECTS);
+    respond('/api/accounting/counterparties', []);
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+
+    const fresh = harness.routeNativeElement as HTMLElement;
+    const options = Array.from((fresh.querySelector('.account-select') as HTMLSelectElement).options);
+    expect(options.map(option => option.textContent?.trim())).toEqual(['錢包', '玉山 UNI']);
+  });
 });
 ```
 
@@ -19740,6 +20549,17 @@ interface FeeProposal {
   continuous: boolean;
 }
 
+/** One edit / copy load; `loadId` identifies the navigation that started it. */
+interface EntryLoad {
+  loadId: number;
+  entryId: number;
+  copy: boolean;
+}
+
+interface LoadedEntry extends EntryLoad {
+  detail: EntryDetail;
+}
+
 /** `/accounting/entry` and `/accounting/entries/:id/edit` (spec "Entry page", mockups `s-entry`, `d-entry`). */
 @Component({
   selector: 'app-entry-form',
@@ -19773,7 +20593,14 @@ export class EntryFormComponent implements OnInit {
 
   // Form state
   readonly kind = signal<FormKind>('expense');
+  /** Update target; set only when the matching `GET /entries/{id}` response is applied (null for new records and copies). */
   readonly entryId = signal<number | null>(null);
+  /** The route has `:id` (edit mode), known from navigation before the record arrives. */
+  readonly editing = signal(false);
+  /** True from navigation to an edit / copy URL until the response for that navigation is applied. */
+  readonly loading = signal(false);
+  /** Account of the record being edited, kept selectable even when archived. */
+  private readonly originalAccountId = signal<number | null>(null);
   readonly locked = signal(false);
   readonly unsupported = signal<string | null>(null);
   readonly category = signal<CategoryNode | null>(null);
@@ -19803,6 +20630,8 @@ export class EntryFormComponent implements OnInit {
   readonly feeProposal = signal<FeeProposal | null>(null);
 
   private rulesTouched = false;
+  /** Bumped by every `start()`; a response carrying an older value is dropped. */
+  private loadId = 0;
   private pendingCategoryId: number | null = null;
   private readonly categoryCache = new Map<string, CategoryNode[]>();
   private pressTimer: ReturnType<typeof setTimeout> | null = null;
@@ -19814,10 +20643,13 @@ export class EntryFormComponent implements OnInit {
   readonly isSystem = computed(() => this.kind() === 'system');
   readonly isParty = computed(() => this.kind() === 'receivable' || this.kind() === 'payable');
   readonly categoryKind = computed(() => categoryKindFor(this.kind()));
-  readonly title = computed(() => (this.entryId() === null ? '新增記錄' : '編輯記錄'));
+  readonly title = computed(() => (this.editing() ? '編輯記錄' : '新增記錄'));
   readonly account = computed(() => this.accounts().find(account => account.id === this.accountId()) ?? null);
+  /** Open accounts; in edit mode also the record's own account when it is archived. New records never offer archived ones. */
   readonly accountOptions = computed(() =>
-    this.accounts().filter(account => !account.is_archived || account.id === this.accountId()),
+    this.accounts().filter(
+      account => !account.is_archived || (this.editing() && account.id === this.originalAccountId()),
+    ),
   );
   readonly projectOptions = computed(() =>
     this.projects().filter(project => !project.is_archived || project.id === this.projectId()),
@@ -19918,8 +20750,17 @@ export class EntryFormComponent implements OnInit {
       });
 
     combineLatest([this.route.paramMap, this.route.queryParamMap, toObservable(this.ready).pipe(filter(Boolean))])
-      .pipe(takeUntilDestroyed())
-      .subscribe(([params, query]) => this.start(params.get('id'), query.get('kind'), query.get('copy')));
+      .pipe(
+        map(([params, query]) => this.start(params.get('id'), query.get('kind'), query.get('copy'))),
+        // Edit A → edit B: switchMap unsubscribes A's request; applyLoaded() also drops any answer for an older loadId.
+        switchMap(request => (request === null ? of(null) : this.fetchEntry(request))),
+        takeUntilDestroyed(),
+      )
+      .subscribe(loaded => {
+        if (loaded !== null) {
+          this.applyLoaded(loaded);
+        }
+      });
 
     this.destroyRef.onDestroy(() => {
       this.clearPress();
@@ -19931,7 +20772,8 @@ export class EntryFormComponent implements OnInit {
 
   ngOnInit(): void {
     forkJoin({
-      accounts: this.accounting.getAccounts(),
+      // Archived accounts too, so an edited record on an archived account still shows (and keeps) it.
+      accounts: this.accounting.getAccounts(true),
       projects: this.accounting.getProjects(),
       counterparties: this.accounting.getCounterparties(),
       preference: this.accounting.getPreference(),
@@ -19949,7 +20791,9 @@ export class EntryFormComponent implements OnInit {
 
   // ---- lifecycle of one record --------------------------------------------
 
-  private start(id: string | null, kindParam: string | null, copyParam: string | null): void {
+  /** Resets the form for a navigation; returns the record to load (edit or copy), or null for a blank record. */
+  private start(id: string | null, kindParam: string | null, copyParam: string | null): EntryLoad | null {
+    const loadId = ++this.loadId;
     this.resetFields();
     this.feeProposal.set(null);
     this.locked.set(false);
@@ -19957,18 +20801,22 @@ export class EntryFormComponent implements OnInit {
     this.error.set(null);
     this.entryDate.set(todayIso());
     this.entryTime.set(nowTime());
-    if (id !== null) {
-      this.entryId.set(Number(id));
-      this.loadEntry(Number(id), false);
-      return;
-    }
     this.entryId.set(null);
+    this.originalAccountId.set(null);
+    this.accountId.set(null);
+    this.editing.set(id !== null);
+    if (id !== null) {
+      this.loading.set(true);
+      return { loadId, entryId: Number(id), copy: false };
+    }
     this.kind.set(isFormKind(kindParam) ? kindParam : 'expense');
     if (copyParam !== null) {
-      this.loadEntry(Number(copyParam), true);
-      return;
+      this.loading.set(true);
+      return { loadId, entryId: Number(copyParam), copy: true };
     }
+    this.loading.set(false);
     this.accountId.set(this.accounts().find(account => !account.is_archived)?.id ?? null);
+    return null;
   }
 
   private resetFields(): void {
@@ -19994,18 +20842,34 @@ export class EntryFormComponent implements OnInit {
     this.sheet.set(null);
   }
 
-  private loadEntry(id: number, copy: boolean): void {
-    this.accounting
-      .getEntry(id)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: detail => this.applyDetail(detail, copy),
-        error: () => this.error.set('記錄讀取失敗，請稍後再試。'),
-      });
+  private fetchEntry(request: EntryLoad): Observable<LoadedEntry | null> {
+    return this.accounting.getEntry(request.entryId).pipe(
+      map(detail => ({ ...request, detail })),
+      catchError(() => {
+        if (request.loadId === this.loadId) {
+          this.loading.set(false);
+          this.error.set('記錄讀取失敗，請稍後再試。');
+        }
+        return of(null);
+      }),
+    );
+  }
+
+  /** Applies a loaded record only when it answers the latest navigation; anything older is dropped. */
+  private applyLoaded(loaded: LoadedEntry): void {
+    if (loaded.loadId !== this.loadId || loaded.detail.id !== loaded.entryId) {
+      return;
+    }
+    this.entryId.set(loaded.copy ? null : loaded.detail.id);
+    this.applyDetail(loaded.detail, loaded.copy);
+    this.loading.set(false);
   }
 
   private applyDetail(detail: EntryDetail, copy: boolean): void {
     this.locked.set(!copy && detail.locked);
+    if (!copy) {
+      this.originalAccountId.set(detail.account_id);
+    }
     if (!isWritableKind(detail.kind)) {
       this.unsupported.set(`${ENTRY_KIND_LABELS[detail.kind]}請在明細頁處理`);
       return;
@@ -20013,7 +20877,11 @@ export class EntryFormComponent implements OnInit {
     const abs = (value: string) => String(Math.abs(Number(value)));
     this.rulesTouched = true;
     this.kind.set(detail.kind);
-    this.accountId.set(detail.account_id);
+    const archived = this.accounts().find(account => account.id === detail.account_id)?.is_archived ?? false;
+    // A copy is a new record: it never lands on an archived account.
+    this.accountId.set(
+      copy && archived ? (this.accounts().find(account => !account.is_archived)?.id ?? null) : detail.account_id,
+    );
     this.projectId.set(detail.project_id ?? this.projects().find(project => project.name === detail.project)?.id ?? null);
     this.pendingCategoryId = detail.category_id;
     this.resolvePendingCategory();
@@ -20079,7 +20947,11 @@ export class EntryFormComponent implements OnInit {
   // ---- field handlers -----------------------------------------------------
 
   tabDisabled(kind: FormKind): boolean {
-    return kind === 'transfer' || (this.entryId() !== null && kind === 'system');
+    return kind === 'transfer' || (this.editing() && kind === 'system');
+  }
+
+  accountLabel(account: LedgerAccount): string {
+    return account.is_archived ? `${account.name}（已封存）` : account.name;
   }
 
   selectKind(kind: FormKind): void {
@@ -20314,7 +21186,8 @@ export class EntryFormComponent implements OnInit {
   }
 
   save(continuous: boolean): void {
-    if (this.saving() || this.feeProposal()) {
+    // No save until the record of the current navigation has arrived (a stale form must never be written).
+    if (this.loading() || this.saving() || this.feeProposal()) {
       return;
     }
     const problem = this.validate();
@@ -20324,7 +21197,9 @@ export class EntryFormComponent implements OnInit {
     }
     this.error.set(null);
     this.saving.set(true);
-    const keepGoing = continuous && this.entryId() === null;
+    // Captured now: the id set when the matching response was applied, not whatever the route says later.
+    const targetId = this.entryId();
+    const keepGoing = continuous && targetId === null;
     if (this.isSystem()) {
       this.saveAdjustment(keepGoing);
       return;
@@ -20333,8 +21208,8 @@ export class EntryFormComponent implements OnInit {
       .pipe(
         map(counterpartyId => this.buildInput(counterpartyId)),
         switchMap(input => {
-          const id = this.entryId();
-          const request = id === null ? this.accounting.createEntry(input) : this.accounting.updateEntry(id, input);
+          const request =
+            targetId === null ? this.accounting.createEntry(input) : this.accounting.updateEntry(targetId, input);
           return request.pipe(map(detail => ({ detail, input })));
         }),
       )
@@ -20528,7 +21403,7 @@ export class EntryFormComponent implements OnInit {
       class="ib ok save"
       aria-label="儲存"
       title="長按或 ⇧⏎：儲存並續記"
-      [disabled]="locked() || saving()"
+      [disabled]="locked() || saving() || loading()"
       (pointerdown)="onSavePointerDown()"
       (pointerup)="onSavePointerUp()"
       (pointerleave)="onSavePointerUp()"
@@ -20552,7 +21427,7 @@ export class EntryFormComponent implements OnInit {
     </div>
   }
 
-  <fieldset class="content" [disabled]="locked()">
+  <fieldset class="content" [disabled]="locked() || loading()">
     <div class="kinds" role="tablist" aria-label="記錄類型">
       @for (tab of kinds; track tab.kind) {
         <button
@@ -20574,7 +21449,7 @@ export class EntryFormComponent implements OnInit {
           <span class="cap">帳戶</span>
           <select class="account-select" (change)="setAccount($any($event.target).value)">
             @for (option of accountOptions(); track option.id) {
-              <option [value]="option.id" [selected]="option.id === accountId()">{{ option.name }}</option>
+              <option [value]="option.id" [selected]="option.id === accountId()">{{ accountLabel(option) }}</option>
             }
           </select>
         </label>
@@ -20643,7 +21518,7 @@ export class EntryFormComponent implements OnInit {
           <span class="sr-only">帳戶</span>
           <select class="account-select" (change)="setAccount($any($event.target).value)">
             @for (option of accountOptions(); track option.id) {
-              <option [value]="option.id" [selected]="option.id === accountId()">{{ option.name }}</option>
+              <option [value]="option.id" [selected]="option.id === accountId()">{{ accountLabel(option) }}</option>
             }
           </select>
         </label>
@@ -21163,7 +22038,7 @@ cd /home/opc/workspace/home-hub-entry/frontend && npx ng test --watch=false --in
 cd /home/opc/workspace/home-hub-entry/frontend && npx ng test --watch=false --include='src/app/components/accounting/**/*.spec.ts' --include='src/app/app.routes.spec.ts' --include='src/app/services/**/*.spec.ts'
 ```
 
-Expected: first command PASS, 6 tests. Second command PASS (entry-draft 4, fx-sheet 4, fee-sheet 2, entry-form 6, plus every earlier spec unchanged).
+Expected: first command PASS, 9 tests. Second command PASS (entry-draft 4, fx-sheet 4, fee-sheet 2, entry-form 9, plus every earlier spec unchanged).
 
 - [ ] 23.21 Commit:
 
@@ -24353,8 +25228,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `frontend/src/app/components/accounting/account-entries/account-entries.ts`, `account-entries.html`, `account-entries.scss`, `account-entries.spec.ts` (full rewrite)
 
 **Interfaces:**
-- Consumes: `AccountingService.getAccounts(includeArchived)`, `getAccount`, `getEntries` (with `q`), `getLatestImport`, `getPreference` (Task 18); `LedgerAccount`, `AccountDetail`, `LedgerEntry`, `EntryKind`, `ImportRun`, `Preference`, `ENTRY_KIND_LABELS` (Task 18); `formatMoney`, `todayIso`, `shortDate`, `addDays` (Task 25).
+- Consumes: `AccountingService.getAccounts(includeArchived)`, `getAccount`, `getEntries` (with `q`), `getLatestImport`, `getPreference`, `getAccountSummary(accountId, dateFrom, dateTo)`, `accountsChanged`, `entriesChanged` (Task 18); `LedgerAccount`, `AccountDetail`, `AccountPeriodSummary`, `AccountInput`, `LedgerEntry`, `EntryKind`, `ImportRun`, `Preference`, `ENTRY_KIND_LABELS` (Task 18); `formatMoney`, `todayIso`, `shortDate`, `addDays` (Task 25).
 - Produces: `Period`, `DueRule`, `statementPeriod(closingDay, today)`, `shiftPeriod(closingDay, period, delta)`, `periodLabel(period)` (`MM/DD – MM/DD`), `dueDate(closingDate, rule, value)` (`cycle.ts`, used by Task 27); `buildAccountGroups(accounts, mainCurrency): AccountGroupView[]`, `AccountNode`, `AccountGroupView` (`accounts.ts`); passbook rows carry `data-entry-id` (used by Task 29's ↑/↓).
+
+Refresh rule (plan review): the two-pane accounts list reloads whenever `accountsChanged` or `entriesChanged` changes (one `effect` reading both, as the timeline does for `entriesChanged`); the passbook header (新增花費 / 紅利回饋 / 餘額) comes only from `getAccountSummary(accountId, period.start, period.end)` (`spend`, `rewards`, `end_balance`), requested on every period change and on `entriesChanged`, never summed from the loaded page, so 載入更多 and the kind/text filters leave it unchanged.
 
 Cycle rule: with closing day D the current cycle ends on the next D on or after today (D clamped to the month's last day) and starts the day after the previous D; NULL means the calendar month. Due date: `days_after_closing` N = closing date + N days; `fixed_day` V = the first day V strictly after the closing date. Group order is the order the API returns (it sorts by group `sort_order`); accounts without a group go under 未分組. An account nests under its 主帳戶 only when that master is in the list and has no master of its own; otherwise it is shown as a top-level row.
 
@@ -24501,7 +25378,8 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ImportRun, LedgerAccount } from '../../../models/accounting.model';
+import { AccountInput, ImportRun, LedgerAccount } from '../../../models/accounting.model';
+import { AccountingService } from '../../../services/accounting.service';
 import { AccountingAccountsComponent } from './accounts';
 
 function account(fields: Record<string, unknown>): LedgerAccount {
@@ -24655,6 +25533,28 @@ describe('AccountingAccountsComponent', () => {
     expect(el.querySelector('.empty-state')?.textContent).toContain('尚未匯入 MOZE 資料');
     expect(el.querySelector('.empty-state a')?.getAttribute('href')).toBe('/accounting/settings');
   });
+
+  it('reloads the account list when accountsChanged bumps', () => {
+    const fixture = render(ACCOUNTS, LATEST);
+    const el = fixture.nativeElement as HTMLElement;
+    const service = TestBed.inject(AccountingService);
+    const before = service.accountsChanged();
+
+    // Any successful account write bumps the signal (Task 18); here a rename from another pane.
+    service.updateAccount(1, { name: '零錢包' } as AccountInput).subscribe();
+    http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/1').flush({});
+    expect(service.accountsChanged()).toBe(before + 1);
+    fixture.detectChanges();
+
+    // getPreference() is cached per session, so only the list and the latest import are fetched again.
+    http
+      .expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts' && !r.urlWithParams.includes('include_archived=true'))
+      .flush([account({ id: 1, name: '零錢包', balance: '3070', balance_main: '3070' }), ...ACCOUNTS.slice(1)]);
+    http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+    fixture.detectChanges();
+
+    expect(rows(el)[0].querySelector('.name')?.textContent?.trim()).toBe('零錢包');
+  });
 });
 ```
 
@@ -24669,7 +25569,7 @@ Expected: FAIL — e.g. `expected [] to deeply equal [ '現金 +$14,226', … ]`
 - [ ] 26.7 Replace `frontend/src/app/components/accounting/accounts/accounts.ts` with:
 
 ```typescript
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { RouterLink } from '@angular/router';
 import { catchError, forkJoin, of } from 'rxjs';
@@ -24763,8 +25663,9 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
   styleUrl: './accounts.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class AccountingAccountsComponent implements OnInit {
+export class AccountingAccountsComponent {
   private accountingService = inject(AccountingService);
+  private requestId = 0;
 
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly latestImport = signal<ImportRun | null>(null);
@@ -24794,22 +25695,53 @@ export class AccountingAccountsComponent implements OnInit {
   });
   readonly formatMoney = formatMoney;
 
-  ngOnInit(): void {
+  constructor() {
+    // The list stays beside the detail pane at ≥ 760 px, so it reloads after any account or entry write
+    // (balances, names, groups, archive state), the same way the timeline reloads on `entriesChanged`.
+    effect(() => {
+      this.accountingService.accountsChanged();
+      this.accountingService.entriesChanged();
+      untracked(() => this.load());
+    });
+  }
+
+  private load(): void {
+    const id = ++this.requestId;
     forkJoin({
       accounts: this.accountingService.getAccounts(),
       latest: this.accountingService.getLatestImport(),
       preference: this.accountingService.getPreference().pipe(catchError(() => of(null))),
     }).subscribe({
       next: ({ accounts, latest, preference }) => {
+        if (id !== this.requestId) {
+          return;
+        }
         this.accounts.set(accounts);
         this.latestImport.set(latest);
         this.mainCurrency.set(preference?.main_currency ?? 'TWD');
+        this.loadError.set(false);
         this.loaded.set(true);
+        if (this.archived() !== null) {
+          this.archived.set(null);
+          if (this.archivedOpen()) {
+            this.loadArchived();
+          }
+        }
       },
       error: () => {
+        if (id !== this.requestId) {
+          return;
+        }
         this.loadError.set(true);
         this.loaded.set(true);
       },
+    });
+  }
+
+  private loadArchived(): void {
+    this.accountingService.getAccounts(true).subscribe({
+      next: all => this.archived.set(all.filter(account => account.is_archived)),
+      error: () => this.archived.set([]),
     });
   }
 
@@ -24834,10 +25766,7 @@ export class AccountingAccountsComponent implements OnInit {
   toggleArchived(): void {
     this.archivedOpen.set(!this.archivedOpen());
     if (this.archivedOpen() && this.archived() === null) {
-      this.accountingService.getAccounts(true).subscribe({
-        next: all => this.archived.set(all.filter(account => account.is_archived)),
-        error: () => this.archived.set([]),
-      });
+      this.loadArchived();
     }
   }
 
@@ -25062,7 +25991,7 @@ export class AccountingAccountsComponent implements OnInit {
 
 - [ ] 26.10 Run 26.6 again.
 
-Expected: `8 passed`.
+Expected: `9 passed`.
 
 - [ ] 26.11 Replace `frontend/src/app/components/accounting/account-entries/account-entries.spec.ts` with:
 
@@ -25074,7 +26003,7 @@ import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/route
 import { of } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AccountDetail, EntryPage, LedgerEntry } from '../../../models/accounting.model';
+import { AccountDetail, AccountPeriodSummary, EntryPage, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingAccountEntriesComponent, PAGE_SIZE } from './account-entries';
 
 const ACCOUNT = {
@@ -25098,6 +26027,12 @@ function entry(id: number, fields: Record<string, unknown> = {}): LedgerEntry {
 function page(items: LedgerEntry[], total = items.length, offset = 0): EntryPage {
   return { items, total, limit: PAGE_SIZE, offset };
 }
+
+/** `GET /accounts/7/summary` for the 09/16 – 10/15 cycle (Task 4); the header shows only these values. */
+const SUMMARY: AccountPeriodSummary = {
+  account_id: 7, currency: 'TWD', date_from: '2026-09-16', date_to: '2026-10-15',
+  spend: '-3869.0000', income: '0.0000', rewards: '41.0000', net: '-3828.0000', end_balance: '-4905.0000', count: 4,
+};
 
 describe('AccountingAccountEntriesComponent (passbook)', () => {
   let http: HttpTestingController;
@@ -25127,7 +26062,14 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     return http.expectOne(r => r.url === '/api/accounting/accounts/7/entries');
   }
 
-  function render(first: EntryPage): ComponentFixture<AccountingAccountEntriesComponent> {
+  function expectSummary(from: string, to: string): TestRequest {
+    const req = http.expectOne(r => r.url === '/api/accounting/accounts/7/summary');
+    expect(req.request.params.get('date_from')).toBe(from);
+    expect(req.request.params.get('date_to')).toBe(to);
+    return req;
+  }
+
+  function render(first: EntryPage, summary: AccountPeriodSummary = SUMMARY): ComponentFixture<AccountingAccountEntriesComponent> {
     const fixture = TestBed.createComponent(AccountingAccountEntriesComponent);
     fixture.detectChanges();
     http.expectOne('/api/accounting/accounts/7').flush(ACCOUNT);
@@ -25138,7 +26080,14 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     expect(req.request.params.get('limit')).toBe(String(PAGE_SIZE));
     req.flush(first);
     fixture.detectChanges();
+    // The period effect runs on change detection and asks for the period totals exactly once.
+    expectSummary('2026-09-16', '2026-10-15').flush(summary);
+    fixture.detectChanges();
     return fixture;
+  }
+
+  function headerValues(el: HTMLElement): (string | undefined)[] {
+    return Array.from(el.querySelectorAll('.sum b')).map(b => b.textContent?.trim());
   }
 
   const PERIOD = [
@@ -25159,14 +26108,38 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     expect(req.request.params.get('date_to')).toBe('2026-09-15');
     req.flush(page([]));
     fixture.detectChanges();
+    expectSummary('2026-08-16', '2026-09-15').flush({
+      ...SUMMARY, date_from: '2026-08-16', date_to: '2026-09-15', spend: '-1200.0000', rewards: '12.0000', end_balance: '-1036.0000', count: 2,
+    });
+    fixture.detectChanges();
     expect(el.querySelector('.period-label')?.textContent?.trim()).toBe('08/16 – 09/15');
+    expect(headerValues(el)).toEqual(['−$1,200', '+$12', '−$1,036']);
   });
 
-  it('summarises new spend, rewards and the period-end balance', () => {
+  it('summarises new spend, rewards and the period-end balance from the summary endpoint', () => {
     const el = render(page(PERIOD)).nativeElement as HTMLElement;
-    const values = Array.from(el.querySelectorAll('.sum b')).map(b => b.textContent?.trim());
     expect(Array.from(el.querySelectorAll('.sum small')).map(s => s.textContent?.trim())).toEqual(['新增花費', '紅利回饋', '餘額']);
-    expect(values).toEqual(['−$3,869', '+$41', '−$4,905']);
+    expect(headerValues(el)).toEqual(['−$3,869', '+$41', '−$4,905']);
+  });
+
+  it('period totals come from the summary endpoint and do not change after loading more', () => {
+    const fixture = render(page([entry(1)], 2), {
+      ...SUMMARY, spend: '-12000.0000', rewards: '120.0000', end_balance: '-9000.0000', count: 2,
+    });
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelectorAll('.entry').length).toBe(1);
+    expect(headerValues(el)).toEqual(['−$12,000', '+$120', '−$9,000']);
+
+    el.querySelector<HTMLButtonElement>('.load-more')!.click();
+    const more = expectEntries();
+    expect(more.request.params.get('offset')).toBe('1');
+    more.flush(page([entry(2, { amount: '-500.0000', running_balance: '-8500.0000' })], 2, 1));
+    fixture.detectChanges();
+
+    expect(el.querySelectorAll('.entry').length).toBe(2);
+    expect(headerValues(el)).toEqual(['−$12,000', '+$120', '−$9,000']);
+    // One summary request per period: render() consumed it, loading more asks for none.
+    http.expectNone(r => r.url === '/api/accounting/accounts/7/summary');
   });
 
   it('shows the running balance above the amount on every row', () => {
@@ -25267,7 +26240,7 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
 });
 ```
 
-(Summary check: new spend = −2,569 − 420 − 880 = −3,869; rewards = +41; balance = the newest row's running balance −4,905.)
+(The header values come only from the summary response — `SUMMARY` is shaped like the page for readability, but the third test gives a summary that differs from the loaded rows on purpose and asserts the header ignores the rows and 載入更多. Filters change no period, so they issue no summary request; `http.verify()` in `afterEach` proves it.)
 
 - [ ] 26.12 Run it.
 
@@ -25280,11 +26253,11 @@ Expected: FAIL — `Expected one matching request for criteria "Match URL: /api/
 - [ ] 26.13 Replace `frontend/src/app/components/accounting/account-entries/account-entries.ts` with:
 
 ```typescript
-import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 
-import { AccountDetail, ENTRY_KIND_LABELS, EntryKind, LedgerEntry } from '../../../models/accounting.model';
+import { AccountDetail, AccountPeriodSummary, ENTRY_KIND_LABELS, EntryKind, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { Period, periodLabel, shiftPeriod, statementPeriod } from '../cycle';
 import { todayIso } from '../dates';
@@ -25314,12 +26287,16 @@ export class AccountingAccountEntriesComponent implements OnInit {
   private route = inject(ActivatedRoute);
   private destroyRef = inject(DestroyRef);
   private requestId = 0;
+  private summaryRequestId = 0;
 
   /** From `paramMap` (observable): at ≥ 760 px the pane reuses this component when only `:id` changes (Task 21). */
   readonly accountId = signal(0);
   readonly today = todayIso();
   readonly account = signal<AccountDetail | null>(null);
   readonly period = signal<Period | null>(null);
+  /** Header totals of the whole period from `GET /accounts/{id}/summary`; never derived from the loaded page. */
+  readonly periodSummary = signal<AccountPeriodSummary | null>(null);
+  readonly currency = computed(() => this.periodSummary()?.currency ?? this.account()?.currency ?? 'TWD');
   readonly entries = signal<LedgerEntry[]>([]);
   readonly total = signal(0);
   readonly loading = signal(false);
@@ -25339,23 +26316,29 @@ export class AccountingAccountEntriesComponent implements OnInit {
     return period ? periodLabel(period) : '';
   });
   readonly periodYear = computed(() => this.period()?.end.slice(0, 4) ?? '');
-  readonly summary = computed(() => {
-    const items = this.entries();
-    const spend = items.filter(item => Number(item.amount) < 0).reduce((sum, item) => sum + Number(item.amount), 0);
-    const rewards = items.filter(item => item.kind === 'reward').reduce((sum, item) => sum + Number(item.amount), 0);
-    const filtered = this.kind() !== null || this.q() !== null;
-    const end = !filtered && items.length > 0 ? items[0].running_balance : null;
-    return { spend, rewards, end };
-  });
 
   readonly kindOptions = Object.entries(ENTRY_KIND_LABELS) as [EntryKind, string][];
   readonly formatMoney = formatMoney;
+
+  constructor() {
+    // Period totals: on every period change (account switch, ‹ ›) and after any entry write.
+    effect(() => {
+      const period = this.period();
+      const accountId = this.accountId();
+      this.accountingService.entriesChanged();
+      if (!period || !accountId) {
+        return;
+      }
+      untracked(() => this.loadSummary(accountId, period));
+    });
+  }
 
   ngOnInit(): void {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
       this.accountId.set(Number(params.get('id')));
       this.account.set(null);
       this.period.set(null);
+      this.periodSummary.set(null);
       this.kind.set(null);
       this.q.set(null);
       this.dateFrom.set(null);
@@ -25372,6 +26355,23 @@ export class AccountingAccountEntriesComponent implements OnInit {
         this.load(true);
       },
       error: () => this.loadError.set(true),
+    });
+  }
+
+  private loadSummary(accountId: number, period: Period): void {
+    const id = ++this.summaryRequestId;
+    this.periodSummary.set(null);
+    this.accountingService.getAccountSummary(accountId, period.start, period.end).subscribe({
+      next: summary => {
+        if (id === this.summaryRequestId) {
+          this.periodSummary.set(summary);
+        }
+      },
+      error: () => {
+        if (id === this.summaryRequestId) {
+          this.periodSummary.set(null);
+        }
+      },
     });
   }
 
@@ -25482,11 +26482,11 @@ export class AccountingAccountEntriesComponent implements OnInit {
   </div>
 
   <div class="sum">
-    <div><small>新增花費</small><b class="neg">{{ formatMoney(summary().spend, account()?.currency ?? 'TWD') }}</b></div>
-    <div><small>紅利回饋</small><b class="pos">{{ formatMoney(summary().rewards, account()?.currency ?? 'TWD', { sign: true }) }}</b></div>
+    <div><small>新增花費</small><b class="neg">{{ periodSummary() ? formatMoney(periodSummary()!.spend, currency()) : '—' }}</b></div>
+    <div><small>紅利回饋</small><b class="pos">{{ periodSummary() ? formatMoney(periodSummary()!.rewards, currency(), { sign: true }) : '—' }}</b></div>
     <div>
       <small>餘額</small>
-      <b [class.neg]="+(summary().end ?? 0) < 0">{{ summary().end !== null ? formatMoney(summary().end, account()?.currency ?? 'TWD') : '—' }}</b>
+      <b [class.neg]="+(periodSummary()?.end_balance ?? 0) < 0">{{ periodSummary() ? formatMoney(periodSummary()!.end_balance, currency()) : '—' }}</b>
     </div>
   </div>
 
@@ -25667,7 +26667,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
 cd /home/opc/workspace/home-hub-entry/frontend && npx ng test --watch=false --include='src/app/components/accounting/**/*.spec.ts'
 ```
 
-Expected: `account-entries.spec.ts` `8 passed`, `accounts.spec.ts` `8 passed`, `cycle.spec.ts` `6 passed`; all other files pass.
+Expected: `account-entries.spec.ts` `9 passed`, `accounts.spec.ts` `9 passed`, `cycle.spec.ts` `6 passed`; all other files pass.
 
 - [ ] 26.17 Commit:
 
@@ -25689,10 +26689,12 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `frontend/src/app/components/accounting/accounting-pages.ts` (`accountSettings` loader → `AccountSettingsComponent`; serves `accounts/new` and `accounts/:id/settings` in both route tables)
 
 **Interfaces:**
-- Consumes: `AccountingService.getAccount`, `getAccounts`, `getAccountGroups`, `createAccount`, `updateAccount`, `deleteAccount`, `resetSettingsFlag` (Task 18); `AccountDetail`, `AccountInput`, `AccountGroup`, `LedgerAccount`, `RewardRule` (Task 18); `statementPeriod`, `periodLabel`, `dueDate`, `DueRule` (Task 26); `shortDate`, `todayIso`, `formatMoney` (Task 25); `fieldErrors`, `writeErrorMessage` (Task 24).
+- Consumes: `AccountingService.getAccount`, `getAccounts`, `getAccountGroups`, `createAccount`, `updateAccount`, `deleteAccount`, `resetSettingsFlag` (Task 18); `AccountDetail` (incl. `credit_sharing_members: number[]`), `AccountInput` (incl. `credit_sharing_members?: number[]`), `AccountGroup`, `LedgerAccount`, `RewardRule` (Task 18); backend `update_account` applying `credit_sharing_members` atomically (Task 16); `statementPeriod`, `periodLabel`, `dueDate`, `DueRule` (Task 26); `shortDate`, `todayIso`, `formatMoney` (Task 25); `fieldErrors`, `writeErrorMessage` (Task 24).
 - Produces: `AccountSettingsComponent` (`app-account-settings`) for `accounting/accounts/new` and `accounting/accounts/:id/settings`; `accountToInput(account: AccountDetail): AccountInput`; `ROUNDING_LABELS`.
 
-額度共用 semantics: the multi-select lists the other non-archived credit accounts; the chosen set plus this account share one `credit_sharing_id`. The id is kept when every chosen account already carries this account's id, otherwise a new `crypto.randomUUID()` is assigned and each chosen account whose id differs is re-saved with `PUT /accounts/{id}` (its full settings, read first with `GET /accounts/{id}`). An empty selection clears this account's id only. After a successful save the page returns to the account's passbook (`/accounting/accounts/{id}`); a new account opens its passbook.
+額度共用 semantics (plan review): the multi-select lists the other non-archived credit accounts plus any current member (even an archived one, so it can be removed); it starts from `AccountDetail.credit_sharing_members` (minus this account) and the row shows the current members (`與 A、B 共用額度`). Save sends the **full** member list as `credit_sharing_members` (ids of the other cards, ascending) in the one `POST`/`PUT` of this account, `[]` when 信用帳戶 is off or nothing is chosen; the backend (Task 16) gives `{account} ∪ members` one `credit_sharing_id` and clears it on every account that left the set, in one transaction. The form never re-saves other accounts and never generates a sharing id; `credit_sharing_id` is sent back unchanged (or null for a non-credit account). After a successful save the page returns to the account's passbook (`/accounting/accounts/{id}`); a new account opens its passbook.
+
+Load sequencing (plan review, same fix as the entry form in Task 23): the detail is loaded through `paramMap` + `switchMap`, every load takes a new `loadId`, and only the response of the latest `loadId` is applied; `loading()` is true from the param change until that response, the ✓ button is disabled while `saving() || loading()`, and `save()` / `remove()` / `resetFlag()` target `loadedId()` — the id captured when the applied response arrived — never the param of a still-pending load.
 
 - [ ] 27.1 Write the failing test `frontend/src/app/components/accounting/account-settings/account-settings.spec.ts`:
 
@@ -25700,8 +26702,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
+import { BehaviorSubject } from 'rxjs';
 import { MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountDetail, LedgerAccount } from '../../../models/accounting.model';
@@ -25735,6 +26737,7 @@ const DETAIL = {
     auto_pay_account_id: 2, fx_fee_pct: '1.500', fx_fee_rounding: 'floor', moze_id: 'A-11', settings_locally_edited: true,
   }),
   note: '主要餐飲卡',
+  credit_sharing_members: [],
   reward_rules: [
     { id: 1, name: '一般', method: 'percent', rate: '1.0000', fixed_amount: null, is_enabled: true },
     { id: 2, name: '餐飲', method: 'percent', rate: '5.2000', fixed_amount: null, is_enabled: false },
@@ -25746,8 +26749,10 @@ const GROUPS = [{ id: 1, name: '現金', sort_order: 0 }, { id: 3, name: '信用
 describe('AccountSettingsComponent', () => {
   let http: HttpTestingController;
   let navigate: MockInstance<Router['navigate']>;
+  let params: BehaviorSubject<ParamMap>;
 
   async function setup(id: string | null): Promise<void> {
+    params = new BehaviorSubject(convertToParamMap(id ? { id } : {}));
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 10, 0));
     await TestBed.configureTestingModule({
@@ -25757,11 +26762,16 @@ describe('AccountSettingsComponent', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         // Pane components are reused across :id changes (Task 21), so the page reads `paramMap` as an observable.
-        { provide: ActivatedRoute, useValue: { paramMap: of(convertToParamMap(id ? { id } : {})) } },
+        { provide: ActivatedRoute, useValue: { paramMap: params.asObservable() } },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
     navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+  }
+
+  /** The pane reuses the component when only `:id` changes (Task 21). */
+  function navigateTo(id: string): void {
+    params.next(convertToParamMap({ id }));
   }
 
   afterEach(() => {
@@ -25852,7 +26862,8 @@ describe('AccountSettingsComponent', () => {
       name: '玉山 Only', currency: 'TWD', opening_balance: '-3693', is_archived: false, group_id: 3, icon: '💳',
       color: null, note: '主要餐飲卡', sort_order: 0, include_in_total: true, is_credit: true, closing_day: 15,
       due_rule: 'days_after_closing', due_value: 20, credit_limit: '350000', combined_account_id: 10,
-      credit_sharing_id: null, auto_pay_account_id: 2, fx_fee_pct: '1.5', fx_fee_rounding: 'floor', fx_fee_refundable: false,
+      credit_sharing_id: null, credit_sharing_members: [], auto_pay_account_id: 2, fx_fee_pct: '1.5', fx_fee_rounding: 'floor',
+      fx_fee_refundable: false,
     });
     req.flush(DETAIL);
     expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 11]);
@@ -25866,28 +26877,80 @@ describe('AccountSettingsComponent', () => {
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
 
     const req = http.expectOne('/api/accounting/accounts/11');
-    expect(req.request.body).toMatchObject({ is_credit: false, due_rule: null, due_value: null, credit_limit: null, combined_account_id: null, auto_pay_account_id: null, credit_sharing_id: null });
+    expect(req.request.body).toMatchObject({ is_credit: false, due_rule: null, due_value: null, credit_limit: null, combined_account_id: null, auto_pay_account_id: null, credit_sharing_id: null, credit_sharing_members: [] });
     expect(req.request.body.closing_day).toBe(15);
     req.flush(DETAIL);
   });
 
-  it('shares the limit with the chosen cards under one new id', async () => {
+  it('adds a chosen card to credit_sharing_members in the one PUT of this account', async () => {
     await setup('11');
-    vi.spyOn(crypto, 'randomUUID').mockReturnValue('00000000-0000-4000-8000-000000000001');
     const fixture = render(DETAIL);
+    expect(el(fixture).querySelector('.sharing-current')).toBeNull();
     const uni = el(fixture).querySelector<HTMLInputElement>('.sharing-option input[data-account-id="12"]')!;
     uni.checked = true;
     uni.dispatchEvent(new Event('change'));
     el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
 
     const own = http.expectOne('/api/accounting/accounts/11');
-    expect(own.request.body.credit_sharing_id).toBe('00000000-0000-4000-8000-000000000001');
-    own.flush(DETAIL);
-    http.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts/12').flush({ ...LIST[3], note: 'UNI', reward_rules: [] });
-    const other = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/accounts/12');
-    expect(other.request.body).toMatchObject({ name: '玉山 UNI', note: 'UNI', credit_sharing_id: '00000000-0000-4000-8000-000000000001' });
-    other.flush({});
+    expect(own.request.method).toBe('PUT');
+    expect(own.request.body).toMatchObject({ credit_sharing_id: null, credit_sharing_members: [12] });
+    own.flush({ ...DETAIL, credit_sharing_id: 'srv-1', credit_sharing_members: [12] });
+    // No GET/PUT of account 12: the backend applies the membership (http.verify() in afterEach).
     expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 11]);
+  });
+
+  it('sends the full credit_sharing_members list on save', async () => {
+    await setup('11');
+    // Account A (11) shares its limit with B (12) and C (13).
+    const fixture = render({ ...DETAIL, credit_sharing_id: 'share-1', credit_sharing_members: [11, 12, 13] } as AccountDetail);
+    expect(el(fixture).querySelector('.sharing-current')?.textContent?.trim()).toBe('與 玉山 UNI、玉山 U Bear 共用額度');
+    const checked = Array.from(el(fixture).querySelectorAll<HTMLInputElement>('.sharing-option input'))
+      .filter(input => input.checked)
+      .map(input => input.dataset['accountId']);
+    expect(checked).toEqual(['12', '13']);
+
+    const bear = el(fixture).querySelector<HTMLInputElement>('.sharing-option input[data-account-id="13"]')!;
+    bear.checked = false;
+    bear.dispatchEvent(new Event('change'));
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body.credit_sharing_members).toEqual([12]);
+    expect(req.request.body.credit_sharing_id).toBe('share-1');
+    req.flush({ ...DETAIL, credit_sharing_id: 'share-1', credit_sharing_members: [11, 12] });
+    expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 11]);
+  });
+
+  it('ignores a stale account response after switching accounts', async () => {
+    await setup('3');
+    const fixture = TestBed.createComponent(AccountSettingsComponent);
+    fixture.detectChanges();
+    const first = http.expectOne('/api/accounting/accounts/3');
+    http.expectOne(r => r.url === '/api/accounting/accounts').flush(LIST);
+    http.expectOne('/api/accounting/account-groups').flush(GROUPS);
+    fixture.detectChanges();
+    expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(true);
+
+    navigateTo('5');
+    fixture.detectChanges();
+    const second = http.expectOne('/api/accounting/accounts/5');
+    second.flush({ ...DETAIL, id: 5, name: '帳戶五', moze_id: null });
+    // switchMap cancels the request for 3; if it were still live (e.g. the switchMap is dropped), its late
+    // response must still be ignored because its loadId is no longer the latest.
+    if (!first.cancelled) {
+      first.flush({ ...DETAIL, id: 3, name: '帳戶三', moze_id: null });
+    }
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector<HTMLInputElement>('.name-input')!.value).toBe('帳戶五');
+    expect(el(fixture).querySelector<HTMLButtonElement>('.save')!.disabled).toBe(false);
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const put = http.expectOne(r => r.method === 'PUT');
+    expect(put.request.url).toBe('/api/accounting/accounts/5');
+    expect(put.request.body.name).toBe('帳戶五');
+    put.flush({ ...DETAIL, id: 5, name: '帳戶五' });
+    expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 5]);
   });
 
   it('shows validation errors beside the field', async () => {
@@ -25963,7 +27026,7 @@ Expected: build fails with `TS2307: Cannot find module './account-settings'`.
 import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { Observable, forkJoin, map, of, switchMap } from 'rxjs';
+import { EMPTY, Observable, catchError, map, of, switchMap, tap } from 'rxjs';
 
 import { AccountDetail, AccountGroup, AccountInput, LedgerAccount, RewardRule } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -26029,7 +27092,7 @@ function textOrNull(value: string): string | null {
   return value.trim() ? value.trim() : null;
 }
 
-/** Full `AccountInput` of a loaded account (used to re-save another account unchanged except one field). */
+/** Full `AccountInput` of a loaded account; omits `credit_sharing_members`, so saving it leaves the membership alone. */
 export function accountToInput(account: AccountDetail): AccountInput {
   return {
     name: account.name,
@@ -26083,7 +27146,8 @@ function formFrom(account: AccountDetail): AccountForm {
   };
 }
 
-function formToInput(form: AccountForm, sharingId: string | null): AccountInput {
+/** `members`: the other cards sharing this account's limit; sent in full, the backend applies the diff (Task 16). */
+function formToInput(form: AccountForm, members: number[]): AccountInput {
   const credit = form.is_credit;
   return {
     name: form.name.trim(),
@@ -26102,12 +27166,19 @@ function formToInput(form: AccountForm, sharingId: string | null): AccountInput 
     due_value: credit && form.due_rule ? intOrNull(form.due_value) : null,
     credit_limit: credit ? textOrNull(form.credit_limit) : null,
     combined_account_id: credit ? form.combined_account_id : null,
-    credit_sharing_id: credit ? sharingId : null,
+    credit_sharing_id: credit ? form.credit_sharing_id : null,
+    credit_sharing_members: credit ? [...members].sort((a, b) => a - b) : [],
     auto_pay_account_id: credit ? form.auto_pay_account_id : null,
     fx_fee_pct: form.fx_fee_on ? textOrNull(form.fx_fee_pct) : null,
     fx_fee_rounding: form.fx_fee_on ? form.fx_fee_rounding : null,
     fx_fee_refundable: form.fx_fee_on && form.fx_fee_refundable,
   };
+}
+
+interface LoadedAccount {
+  loadId: number;
+  id: number | null;
+  detail: AccountDetail | null;
 }
 
 @Component({
@@ -26124,9 +27195,13 @@ export class AccountSettingsComponent implements OnInit {
   private router = inject(Router);
 
   private destroyRef = inject(DestroyRef);
+  private loadId = 0;
 
   /** From `paramMap` (observable): at ≥ 760 px the pane reuses this component when only `:id` changes (Task 21). */
   readonly accountId = signal<number | null>(null);
+  /** Id of the account whose response is applied to the form; writes target this id only. */
+  readonly loadedId = signal<number | null>(null);
+  readonly loading = signal(false);
   readonly today = todayIso();
 
   readonly detail = signal<AccountDetail | null>(null);
@@ -26160,46 +27235,82 @@ export class AccountSettingsComponent implements OnInit {
     this.accounts().filter(account => account.id !== this.accountId() && !account.is_archived),
   );
   readonly creditOthers = computed(() => this.others().filter(account => account.is_credit));
+  /** 額度共用 options: other non-archived credit accounts plus any current member (so an archived one can be removed). */
+  readonly sharingOptions = computed(() =>
+    this.accounts().filter(
+      account =>
+        account.id !== this.accountId() &&
+        account.is_credit &&
+        (!account.is_archived || this.sharing().includes(account.id)),
+    ),
+  );
+  /** Current members from `AccountDetail.credit_sharing_members` (the saved state, not the pending selection). */
+  readonly sharingCurrent = computed(() => {
+    const self = this.loadedId();
+    const names = (this.detail()?.credit_sharing_members ?? [])
+      .filter(id => id !== self)
+      .map(id => this.accounts().find(account => account.id === id)?.name ?? `#${id}`);
+    return names.length ? `與 ${names.join('、')} 共用額度` : null;
+  });
   readonly rules = computed<RewardRule[]>(() => this.detail()?.reward_rules ?? []);
 
   ngOnInit(): void {
-    this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
-      const idParam = params.get('id');
-      const id = idParam === null ? null : Number(idParam);
-      this.accountId.set(id);
-      this.detail.set(null);
-      this.form.set(EMPTY_FORM);
-      this.errors.set({});
-      this.message.set(null);
-      this.confirmDelete.set(false);
-      if (id !== null) {
-        this.loadDetail(id);
-      }
-      this.syncSharingSelection();
-    });
-    this.service.getAccounts().subscribe(accounts => {
-      this.accounts.set(accounts);
-      this.syncSharingSelection();
-    });
+    this.route.paramMap
+      .pipe(
+        map(params => {
+          const idParam = params.get('id');
+          return idParam === null ? null : Number(idParam);
+        }),
+        tap(id => {
+          this.accountId.set(id);
+          this.loadedId.set(null);
+          this.detail.set(null);
+          this.form.set(EMPTY_FORM);
+          this.sharing.set([]);
+          this.errors.set({});
+          this.message.set(null);
+          this.confirmDelete.set(false);
+        }),
+        // switchMap drops the previous account's request; the loadId check in apply() covers any response
+        // that still arrives (e.g. the reload after resetFlag()).
+        switchMap(id => this.fetch(id)),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe(loaded => this.apply(loaded));
+    this.service.getAccounts().subscribe(accounts => this.accounts.set(accounts));
     this.service.getAccountGroups().subscribe(groups => this.groups.set(groups));
   }
 
-  private loadDetail(id: number): void {
-    this.service.getAccount(id).subscribe({
-      next: detail => {
-        this.detail.set(detail);
-        this.form.set(formFrom(detail));
-        this.syncSharingSelection();
-      },
-      error: err => this.message.set(writeErrorMessage(err)),
-    });
+  /** Starts a load with a new loadId; a new account (`id === null`) completes at once with no detail. */
+  private fetch(id: number | null): Observable<LoadedAccount> {
+    const loadId = ++this.loadId;
+    if (id === null) {
+      this.loading.set(false);
+      return of({ loadId, id, detail: null });
+    }
+    this.loading.set(true);
+    return this.service.getAccount(id).pipe(
+      map(detail => ({ loadId, id, detail })),
+      catchError(err => {
+        if (loadId === this.loadId) {
+          this.loading.set(false);
+          this.message.set(writeErrorMessage(err));
+        }
+        return EMPTY;
+      }),
+    );
   }
 
-  private syncSharingSelection(): void {
-    const sharingId = this.detail()?.credit_sharing_id ?? null;
-    this.sharing.set(
-      sharingId ? this.accounts().filter(a => a.id !== this.accountId() && a.credit_sharing_id === sharingId).map(a => a.id) : [],
-    );
+  /** Applies only the latest load; captures the id that save/remove/resetFlag will target. */
+  private apply(loaded: LoadedAccount): void {
+    if (loaded.loadId !== this.loadId) {
+      return;
+    }
+    this.loading.set(false);
+    this.loadedId.set(loaded.id);
+    this.detail.set(loaded.detail);
+    this.form.set(loaded.detail ? formFrom(loaded.detail) : EMPTY_FORM);
+    this.sharing.set((loaded.detail?.credit_sharing_members ?? []).filter(id => id !== loaded.id));
   }
 
   set<K extends keyof AccountForm>(key: K, value: AccountForm[K]): void {
@@ -26227,33 +27338,15 @@ export class AccountSettingsComponent implements OnInit {
     return `${rule.name} ${value}${rule.is_enabled ? '' : '（停用）'}`;
   }
 
-  private sharingPlan(): { id: string | null; others: number[] } {
-    const form = this.form();
-    const chosen = this.sharing()
-      .map(id => this.accounts().find(account => account.id === id))
-      .filter((account): account is LedgerAccount => !!account);
-    if (!form.is_credit || chosen.length === 0) {
-      return { id: null, others: [] };
-    }
-    const current = form.credit_sharing_id;
-    const id = current && chosen.every(account => account.credit_sharing_id === current) ? current : crypto.randomUUID();
-    return { id, others: chosen.filter(account => account.credit_sharing_id !== id).map(account => account.id) };
-  }
-
-  private syncSharing(plan: { id: string | null; others: number[] }): Observable<unknown> {
-    if (!plan.id || plan.others.length === 0) {
-      return of(null);
-    }
-    return forkJoin(
-      plan.others.map(otherId =>
-        this.service
-          .getAccount(otherId)
-          .pipe(switchMap(other => this.service.updateAccount(otherId, { ...accountToInput(other), credit_sharing_id: plan.id }))),
-      ),
-    );
-  }
-
   save(): void {
+    if (this.loading() || this.saving()) {
+      return;
+    }
+    const routeId = this.accountId();
+    const editingId = this.loadedId();
+    if (routeId !== null && editingId !== routeId) {
+      return; // the shown form does not belong to the account in the URL (load failed or pending)
+    }
     this.errors.set({});
     this.message.set(null);
     const form = this.form();
@@ -26261,19 +27354,12 @@ export class AccountSettingsComponent implements OnInit {
       this.errors.set({ name: '請輸入名稱' });
       return;
     }
-    const plan = this.sharingPlan();
-    const input = formToInput(form, plan.id);
-    const editingId = this.accountId();
+    const input = formToInput(form, this.sharing());
     const request: Observable<AccountDetail> =
       editingId === null ? this.service.createAccount(input) : this.service.updateAccount(editingId, input);
     this.saving.set(true);
     request
-      .pipe(
-        switchMap(saved => {
-          const id = editingId ?? saved.id;
-          return this.syncSharing(plan).pipe(map(() => id));
-        }),
-      )
+      .pipe(map(saved => editingId ?? saved.id))
       .subscribe({
         next: id => {
           this.saving.set(false);
@@ -26291,8 +27377,8 @@ export class AccountSettingsComponent implements OnInit {
   }
 
   remove(): void {
-    const id = this.accountId();
-    if (id === null) {
+    const id = this.loadedId();
+    if (id === null || this.loading()) {
       return;
     }
     if (!this.confirmDelete()) {
@@ -26312,14 +27398,17 @@ export class AccountSettingsComponent implements OnInit {
   }
 
   resetFlag(): void {
-    const id = this.accountId();
-    if (id === null) {
+    const id = this.loadedId();
+    if (id === null || this.loading()) {
       return;
     }
-    this.service.resetSettingsFlag(id).subscribe({
-      next: () => this.loadDetail(id),
-      error: err => this.message.set(writeErrorMessage(err)),
-    });
+    this.service
+      .resetSettingsFlag(id)
+      .pipe(switchMap(() => this.fetch(id)))
+      .subscribe({
+        next: loaded => this.apply(loaded),
+        error: err => this.message.set(writeErrorMessage(err)),
+      });
   }
 }
 ```
@@ -26331,7 +27420,7 @@ export class AccountSettingsComponent implements OnInit {
   <header class="topbar">
     <a class="ib" [routerLink]="accountId() === null ? '/accounting/accounts' : ['/accounting/accounts', accountId()]" aria-label="取消">✕</a>
     <h2>{{ accountId() === null ? '新增帳戶' : '帳戶資訊' }}</h2>
-    <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving()" (click)="save()">✓</button>
+    <button type="button" class="ib ok save" aria-label="儲存" [disabled]="saving() || loading()" (click)="save()">✓</button>
   </header>
 
   <div class="bigicon">
@@ -26427,7 +27516,10 @@ export class AccountSettingsComponent implements OnInit {
     <div class="rw child">
       <span class="k">額度共用</span>
       <span class="v sharing-list">
-        @for (other of creditOthers(); track other.id) {
+        @if (sharingCurrent(); as current) {
+          <small class="sharing-current">{{ current }}</small>
+        }
+        @for (other of sharingOptions(); track other.id) {
           <label class="sharing-option">
             <input type="checkbox" [attr.data-account-id]="other.id" [checked]="sharing().includes(other.id)" (change)="toggleSharing(other.id, $any($event.target).checked)" />
             {{ other.name }}
@@ -26438,6 +27530,7 @@ export class AccountSettingsComponent implements OnInit {
       </span>
     </div>
     @if (error('credit_sharing_id'); as e) { <small class="field-error" data-field="credit_sharing_id">{{ e }}</small> }
+    @if (error('credit_sharing_members'); as e) { <small class="field-error" data-field="credit_sharing_members">{{ e }}</small> }
 
     <label class="rw child">
       <span class="k">主帳戶</span>
@@ -26593,6 +27686,7 @@ export class AccountSettingsComponent implements OnInit {
 .icon-input { text-align: center; width: 3rem; }
 .cycle-preview, .due-preview { color: var(--app-text-muted); display: block; }
 .sharing-list { display: flex; flex-direction: column; gap: 2px; }
+.sharing-current { color: var(--app-text-muted); font-size: 0.75rem; }
 .rule-list { color: var(--app-text-muted); font-size: 0.8rem; list-style: none; margin: 0; padding: 0; }
 .rule-item.disabled { text-decoration: line-through; }
 
@@ -26638,7 +27732,7 @@ with
 cd /home/opc/workspace/home-hub-entry/frontend && npx ng test --watch=false --include='src/app/components/accounting/**/*.spec.ts' --include='src/app/app.routes.spec.ts'
 ```
 
-Expected: `account-settings.spec.ts` `11 passed`; all other files pass.
+Expected: `account-settings.spec.ts` `13 passed`; all other files pass.
 
 - [ ] 27.8 Commit:
 
@@ -28214,7 +29308,9 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: the routes of Task 29, the CLI and `MOZE_REALM_EXPORTER` of Task 10, the backend README of Task 17 (linked, not edited).
-- Produces: the deploy runbook used by Task 31 and by the operator; the exact `@hub_spa` matcher string for the PR description.
+- Produces: the deploy runbook used by Task 31 and by the operator (pre-deploy dump, restore drill, restore-from-dump rollback); the exact `@hub_spa` matcher string for the PR description.
+
+Rollback rule (plan review): Task 3's downgrade guard stays strict — `alembic downgrade` refuses on purpose as soon as any 2a data exists (`manual` / `hermes` / `rule` entries, `moze_backup` entries, groups, rules, schedules, a `moze_backup` import run). The runbook's rollback is therefore **restore from the pre-deploy dump**, never a downgrade; the downgrade is documented only for a migration that failed before any import or entry.
 
 - [ ] 30.1 Create `docs/deploy/accounting-phase-2a.md`:
 
@@ -28245,6 +29341,44 @@ The converter copies `moze.realm` into a scratch directory before opening it; it
 
 ## Deploy order
 
+0. **Pre-deploy record and dump** (before `alembic upgrade`; nothing below prints credentials — `pg_dump` / `pg_restore` read `POSTGRES_USER` inside the container)
+
+   ```bash
+   TS=$(date -u +%Y%m%dT%H%M%SZ)
+   mkdir -p ~/backups/home-hub-2a && chmod 700 ~/backups/home-hub-2a
+   git -C /home/opc/workspace/home-hub rev-parse HEAD > ~/backups/home-hub-2a/backend-commit-pre-2a-$TS.txt
+   python3 -c "import json; print(json.load(open('/var/lib/home-hub-production/store/state.json'))['active'])" \
+     > ~/backups/home-hub-2a/spa-release-pre-2a-$TS.txt
+   readlink /var/lib/home-hub-production/store/current
+   docker exec stonk-postgres-1 sh -c 'pg_dump -U "$POSTGRES_USER" -Fc accounting_db' \
+     > ~/backups/home-hub-2a/accounting_db-pre-2a-$TS.dump
+   chmod 600 ~/backups/home-hub-2a/*-$TS.*
+   ls -l ~/backups/home-hub-2a/
+   docker exec -i stonk-postgres-1 pg_restore -l < ~/backups/home-hub-2a/accounting_db-pre-2a-$TS.dump | grep -c ' TABLE DATA '
+   ```
+
+   Expected: the `readlink` target ends in the id written to `spa-release-pre-2a-$TS.txt` (the active release in `/var/lib/home-hub-production/store`); a non-empty `.dump`, the two `.txt` files, mode `600`; a non-zero `TABLE DATA` count. Keep `$TS`: every rollback command below names these three files.
+
+0b. **Restore drill** (same session, before step 1): restore the dump into a disposable database and check it, so the rollback path is proven before production changes.
+
+   ```bash
+   docker exec stonk-postgres-1 sh -c 'createdb -U "$POSTGRES_USER" accounting_restore_drill'
+   docker exec -i stonk-postgres-1 sh -c 'pg_restore -U "$POSTGRES_USER" --no-owner -d accounting_restore_drill' \
+     < ~/backups/home-hub-2a/accounting_db-pre-2a-$TS.dump
+   DRILL=$(mktemp -d) && chmod 700 "$DRILL"
+   git -C /home/opc/workspace/home-hub worktree add --detach "$DRILL/src" "$(cat ~/backups/home-hub-2a/backend-commit-pre-2a-$TS.txt)"
+   sed -e 's/^ACCOUNTING_DB=.*/ACCOUNTING_DB=accounting_restore_drill/' /home/opc/workspace/home-hub/.env > "$DRILL/src/.env"
+   chmod 600 "$DRILL/src/.env" && grep -c '^ACCOUNTING_DB=accounting_restore_drill$' "$DRILL/src/.env"
+   (cd "$DRILL/src/services/accounting-service" && /home/opc/workspace/home-hub/services/accounting-service/.venv/bin/alembic current)
+   for db in accounting_db accounting_restore_drill; do
+     docker exec stonk-postgres-1 sh -c "psql -U \"\$POSTGRES_USER\" -d $db -At -c 'SELECT (SELECT count(*) FROM account), (SELECT count(*) FROM ledger_entry), (SELECT count(*) FROM import_run)'"
+   done
+   git -C /home/opc/workspace/home-hub worktree remove --force "$DRILL/src" && rm -rf "$DRILL"
+   docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" --force accounting_restore_drill'
+   ```
+
+   Expected: `1`; `alembic current` prints `5d2e7c9a1b3f (head)` (the phase 1 head, since the dump predates 2a); the two count lines are identical. Any difference or error: stop, do not deploy.
+
 1. **Migration**
 
    ```bash
@@ -28263,7 +29397,7 @@ The converter copies `moze.realm` into a scratch directory before opening it; it
 
    Expected: `{"status":"ok"}` and the preference row (defaults on first read).
 
-3. **Frontend publish**: `cd /home/opc/workspace/home-hub/frontend && npm run build`, then publish `frontend/dist/inventory-ui/browser` with the existing production publisher (the procedure that fills `/srv/home-hub-production/store/current/web`).
+3. **Frontend publish**: `cd /home/opc/workspace/home-hub/frontend && npm run build`, then publish `frontend/dist/inventory-ui/browser` with the existing production publisher (the procedure that fills `/var/lib/home-hub-production/store/current/web`).
 
 4. **Caddy**: replace the `@hub_spa` matcher (see "Caddy `@hub_spa` matcher" below) and reload.
 
@@ -28314,12 +29448,57 @@ done
 
 Expected: the `grep` line equals the matcher above, `Valid configuration`, and `200` for every path.
 
-## Rollback
+## Rollback (restore from the pre-deploy dump)
 
-`cd services/accounting-service && .venv/bin/alembic downgrade 5d2e7c9a1b3f` (refused while any `manual` row exists), republish the previous SPA build, restore `Caddyfile.bak-accounting-2a` with the same in-place write, and re-run the phase 1 CSV import if needed.
+Rollback window: **3 days** after the deploy. A restore returns `accounting_db` to the moment of the step 0 dump and discards every write since then (entries recorded in the SPA, backup imports, account and display settings). Inside the window, note what the owner recorded since the deploy before restoring; after 3 days, fix forward instead of restoring. Keep the files in `~/backups/home-hub-2a/` at least until the window has passed.
+
+`alembic downgrade` is **not** the rollback: Task 3's guard refuses on purpose as soon as any 2a data exists (`manual` / `hermes` / `rule` entries, `moze_backup` entries, account groups, rules, schedules, a `moze_backup` import run). `.venv/bin/alembic downgrade 5d2e7c9a1b3f` is only for a migration that failed in step 1, before any import or entry.
+
+Restore sequence (`$TS` from step 0):
+
+```bash
+DUMP=~/backups/home-hub-2a/accounting_db-pre-2a-$TS.dump
+PREV_BACKEND=$(cat ~/backups/home-hub-2a/backend-commit-pre-2a-$TS.txt)
+PREV_SPA=$(cat ~/backups/home-hub-2a/spa-release-pre-2a-$TS.txt)
+
+# 1. stop the backend so nothing writes during the restore
+cd /home/opc/workspace/home-hub && npx pm2 stop accounting-service
+
+# 2. restore the dump over accounting_db
+docker exec -i stonk-postgres-1 sh -c 'pg_restore -U "$POSTGRES_USER" --clean --if-exists --no-owner -d accounting_db' < "$DUMP"
+
+# 3. --clean drops only objects that are in the dump: list tables and types that 2a created
+docker exec -i stonk-postgres-1 pg_restore -l < "$DUMP" | awk '($4 == "TABLE" || $4 == "TYPE") && $5 == "public" {print $4, $6}' | sort > /tmp/pre-2a-objects.txt
+docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_db -At -F " " -c "SELECT '"'"'TABLE'"'"', tablename FROM pg_tables WHERE schemaname = '"'"'public'"'"' UNION ALL SELECT '"'"'TYPE'"'"', t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = '"'"'public'"'"' AND t.typtype = '"'"'e'"'"'"' | sort > /tmp/now-objects.txt
+comm -13 /tmp/pre-2a-objects.txt /tmp/now-objects.txt
+docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_db -At -c "SELECT version_num FROM alembic_version"'
+
+# 4. previous backend commit, then restart
+git -C /home/opc/workspace/home-hub switch --detach "$PREV_BACKEND"
+cd /home/opc/workspace/home-hub && npx pm2 start accounting-service
+curl -s http://localhost:8000/health
+```
+
+Expected: `comm` prints only objects created by 2a (tables / enum types of the Task 3 migration); drop each one (`DROP TABLE <name> CASCADE;`, then `DROP TYPE <name>;`) with the same `psql` form, run `comm` again and expect no output; `alembic_version` reads `5d2e7c9a1b3f`; health `{"status":"ok"}`.
+
+5. **SPA**: republish release `$PREV_SPA` through the publisher used for phase 1 (the `publish_approved.py` of the phase 1 release workflow directory, `~/reports/home-hub-moze-release-*/`), following that workflow's own steps; then `readlink /var/lib/home-hub-production/store/current` must end in `$PREV_SPA`.
+
+6. **Caddy**: restore the phase 1 `@hub_spa` line from `Caddyfile.bak-accounting-2a` in place (keeps the inode of the bind-mounted file), validate and reload:
+
+   ```bash
+   cd /home/opc/workspace/vaultwarden
+   cat Caddyfile.bak-accounting-2a > Caddyfile
+   grep -n '@hub_spa path_regexp' Caddyfile
+   docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+   docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+   ```
+
+   Expected: the phase 1 matcher (no `/accounting/entries`), `Valid configuration`.
+
+7. Return the checkout to its branch once 2a is fixed (`git -C /home/opc/workspace/home-hub switch <branch>`), and redeploy from step 0 with a new dump.
 ````
 
-(`5d2e7c9a1b3f` is the phase 1 head, `alembic/versions/5d2e7c9a1b3f_moze_ledger_schema.py`, and the `down_revision` of Task 3's `7b1e4a2c9d05`.)
+(`5d2e7c9a1b3f` is the phase 1 head, `alembic/versions/5d2e7c9a1b3f_moze_ledger_schema.py`, and the `down_revision` of Task 3's `7b1e4a2c9d05`. The restore drill in step 0b is mandatory before every production run of step 1.)
 
 - [ ] 30.2 In `docs/accounting-service-improvements.md`, insert directly after the first line `# Accounting Service 改善與功能規劃` (keep one blank line before and after):
 
@@ -28343,14 +29522,15 @@ Expected: the `grep` line equals the matcher above, `Valid configuration`, and `
 ```bash
 cd /home/opc/workspace/home-hub-entry
 grep -c 'accounting/entries/\[0-9\]+/edit' docs/deploy/accounting-phase-2a.md
+grep -n 'pg_dump -U\|pg_restore -U\|accounting_restore_drill\|Rollback window\|is \*\*not\*\* the rollback' docs/deploy/accounting-phase-2a.md
 sed -n 1,4p docs/accounting-service-improvements.md
 grep -n '### 4. 記帳服務' README.md
 grep -n 'MOZE_REALM_EXPORTER' .env.example
 ```
 
-Expected: `2` (the matcher line and the Python `new` string); the title, a blank line and the superseded note; one README line; `MOZE_REALM_EXPORTER=` in `.env.example` (added by Task 17; if it is missing, add `MOZE_REALM_EXPORTER=` below `ACCOUNTING_IMPORT_LOCKED=false` and include `.env.example` in the commit).
+Expected: `2` (the matcher line and the Python `new` string); the dump line (step 0), the drill and rollback `pg_restore` lines, the drill database lines, the `Rollback window` line and the downgrade warning; the title, a blank line and the superseded note; one README line; `MOZE_REALM_EXPORTER=` in `.env.example` (added by Task 17; if it is missing, add `MOZE_REALM_EXPORTER=` below `ACCOUNTING_IMPORT_LOCKED=false` and include `.env.example` in the commit).
 
-- [ ] 30.5 When opening the pull request, add an "Operator steps" section to its description containing the `@hub_spa` line from the runbook's "Caddy `@hub_spa` matcher" section verbatim, its `.env` lines and its deploy order.
+- [ ] 30.5 When opening the pull request, add an "Operator steps" section to its description containing the `@hub_spa` line from the runbook's "Caddy `@hub_spa` matcher" section verbatim, its `.env` lines, its deploy order (starting with step 0, the dump, and step 0b, the restore drill) and one line: "Rollback = restore from the pre-deploy dump within 3 days; `alembic downgrade` refuses once 2a data exists".
 
 - [ ] 30.6 Commit:
 
@@ -28366,11 +29546,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Model:** opus
 
-**Files:** none committed. Reports and the verify server live in `/home/opc/workspace/moze-verify-2a/` (outside the repo). The backup is read in place and never printed row by row; only aggregates are shown.
+**Files:** none committed. The verify server lives in `/home/opc/workspace/moze-verify-2a/` (outside the repo); the owner checklist is Task 11's `~/reports/home-hub-2a-verify/checklist.md` (mode 600, outside the repo). Nothing is printed row by row; only aggregates are shown.
 
 **Interfaces:**
-- Consumes: the converter (Task 6), the backup CLI (Task 10), the API (Tasks 4–16), the SPA (Tasks 18–29), the runbook (Task 30). Uses the disposable database `accounting_verify_2a`, so the live `accounting_db` behind `:8000` is untouched.
-- Produces: the aggregates and the owner's pass/fail list for the PR description.
+- Consumes: the converter (Task 6), the backup CLI (Task 10), the populated disposable database `accounting_backup_verify` and the owner checklist `~/reports/home-hub-2a-verify/checklist.md` left by Task 11, the API (Tasks 4–16), the SPA (Tasks 18–29), the runbook (Task 30). This task does **not** create or import a database: the verify API runs on Task 11's `accounting_backup_verify` (same data as the checklist), so the live `accounting_db` behind `:8000` is untouched.
+- Produces: the aggregates, the owner's pass/fail list per checklist item and per balance-acceptance account (initials only) for the PR description; drops `accounting_backup_verify` at the end.
 
 - [ ] 31.1 Run every suite.
 
@@ -28390,60 +29570,49 @@ cd /home/opc/workspace/home-hub-entry/tools/moze-realm-export && npm ci && node 
 
 Expected: `added … packages`; a `12.x` version.
 
-- [ ] 31.3 Create the disposable database and point the worktree `.env` at it (the symlink becomes a filtered private copy; nothing is printed).
+- [ ] 31.3 Point the worktree `.env` at Task 11's verify database (the symlink becomes a filtered private copy; nothing is printed). No `createdb`, no `alembic upgrade`: Task 11 created `accounting_backup_verify`, upgraded it to head and imported the backup. If the database is missing, stop and re-run Task 11 — never create or import it here.
 
 ```bash
-docker exec stonk-postgres-1 sh -c 'createdb -U "$POSTGRES_USER" accounting_verify_2a'
+docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -At -c "SELECT count(*) FROM pg_database WHERE datname = '"'"'accounting_backup_verify'"'"'"'
+test -f ~/reports/home-hub-2a-verify/checklist.md && stat -c '%a %n' ~/reports/home-hub-2a-verify/checklist.md
 cd /home/opc/workspace/home-hub-entry
 rm -f .env
-sed -e 's/^ACCOUNTING_DB=.*/ACCOUNTING_DB=accounting_verify_2a/' \
+sed -e 's/^ACCOUNTING_DB=.*/ACCOUNTING_DB=accounting_backup_verify/' \
     -e 's/^ACCOUNTING_IMPORT_LOCKED=.*/ACCOUNTING_IMPORT_LOCKED=false/' \
     /home/opc/workspace/home-hub/.env > .env
 chmod 600 .env
-grep -c '^ACCOUNTING_DB=accounting_verify_2a$' .env
+grep -c '^ACCOUNTING_DB=accounting_backup_verify$' .env
 mkdir -p /home/opc/workspace/moze-verify-2a
-cd services/accounting-service && .venv/bin/alembic upgrade head 2>&1 | tail -2
+cd services/accounting-service && .venv/bin/alembic current 2>&1 | tail -1
 ```
 
-Expected: `1`; Alembic ends with `Running upgrade 5d2e7c9a1b3f -> 7b1e4a2c9d05`.
+Expected: `1`; `600 /home/opc/reports/home-hub-2a-verify/checklist.md`; `1`; `7b1e4a2c9d05 (head)`.
 
-- [ ] 31.4 Dry run, then check that nothing was written.
+- [ ] 31.4 Confirm Task 11's import is in place (read-only).
 
 ```bash
-cd /home/opc/workspace/home-hub-entry/services/accounting-service
-.venv/bin/python -m app.services.moze_backup_import_service /home/opc/workspace/moze-backup/MOZE_4.0.zip --dry-run \
-  > /home/opc/workspace/moze-verify-2a/dry-run.json; echo "exit=$?"
-docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_verify_2a -At -c "SELECT (SELECT count(*) FROM account), (SELECT count(*) FROM ledger_entry), (SELECT count(*) FROM import_run), (SELECT count(*) FROM reward_rule)"'
+docker exec -i stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_backup_verify -At' <<'SQL'
+SELECT (SELECT count(*) FROM account), (SELECT count(*) FROM ledger_entry WHERE source = 'moze_backup'),
+       (SELECT count(*) FROM entry_reward_rule), (SELECT count(*) FROM moze_schedule),
+       (SELECT kind || ':' || status FROM import_run ORDER BY id DESC LIMIT 1);
+SQL
 ```
 
-Expected: `exit=0`; `0|0|0|0`.
+Expected: non-zero counts and a last run of `moze_backup:succeeded` (Task 11 ran a second import last); the entry count equals the one printed in 11.9.
 
-- [ ] 31.5 Real import, timed, and its aggregates.
+- [ ] 31.5 Aggregates for the PR description, read from the stored report of Task 11's last import (skipped: the CLI dry run and the real import — Task 11 already ran both on this database; running the CLI again would add another import run and change what the owner compares).
 
 ```bash
-cd /home/opc/workspace/home-hub-entry/services/accounting-service
-/usr/bin/time -f "elapsed=%e s" .venv/bin/python -m app.services.moze_backup_import_service /home/opc/workspace/moze-backup/MOZE_4.0.zip \
-  > /home/opc/workspace/moze-verify-2a/import.json; echo "exit=$?"
-.venv/bin/python - <<'EOF'
-import json
-report = json.load(open("/home/opc/workspace/moze-verify-2a/import.json"))
-s = report.get("summary", report)
-print("status", report.get("status"))
-print("kind_counts", dict(sorted(s["kind_counts"].items())))
-print("skipped_future", sum(s["skipped_future"].values()))
-print("transfers", s["transfers"], "rules", s["rules"], "attachments", s["attachments"], "groups", s["groups"], "counterparties", s["counterparties"])
-print("compared_accounts", s["compared_accounts"])
-needs = s["needs_review"]
-print("needs_review", needs["count"] if isinstance(needs, dict) else needs)
-print("fx_outliers", len(s["fx_outliers"]) if isinstance(s["fx_outliers"], list) else s["fx_outliers"])
-print("settings_skipped", len(s["settings_skipped"]))
-moved = [a for a in s["accounts"] if a.get("previous_moze_part") is not None and float(a["previous_moze_part"]) != float(a["moze_part"])]
-print("accounts", len(s["accounts"]), "moved_vs_previous", len(moved))
-EOF
-docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_verify_2a -At -c "SELECT (SELECT count(*) FROM account), (SELECT count(*) FROM ledger_entry), (SELECT count(*) FROM entry_reward_rule), (SELECT count(*) FROM moze_schedule), (SELECT kind || '"'"':'"'"' || status FROM import_run ORDER BY id DESC LIMIT 1)"'
+docker exec -i stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_backup_verify -At' <<'SQL'
+SELECT jsonb_build_object(
+  'kind_counts', s->'kind_counts', 'transfers', s->'transfers', 'rules', s->'rules', 'attachments', s->'attachments',
+  'groups', s->'groups', 'counterparties', s->'counterparties', 'compared_accounts', s->'compared_accounts',
+  'needs_review', COALESCE(s->'needs_review'->'count', s->'needs_review'), 'accounts', jsonb_array_length(s->'accounts'))
+FROM (SELECT summary::jsonb AS s FROM import_run WHERE kind = 'moze_backup' AND status = 'succeeded' ORDER BY id DESC LIMIT 1) last;
+SQL
 ```
 
-Expected: `elapsed=` under 300 s; `exit=0`; `status succeeded`; `transfers 544 rules 100 attachments` ≥ 1900; the remaining numbers equal the ones Task 11 recorded for the same zip (`compared_accounts` included; `moved_vs_previous` is 0 on a fresh database because nothing existed before); the psql line ends in `moze_backup:succeeded`. Keep this output for the PR description (counts only).
+Expected: one JSON line of counts only, with `transfers` 544, `rules` 100, `attachments` ≥ 1900 and the other numbers equal to Task 11's 11.3 output for the same zip. Keep it for the PR description.
 
 - [ ] 31.6 Start the API on :8010 against the verify database as a long-running background process (e.g. `run_in_background`).
 
@@ -28458,7 +29627,7 @@ curl -s 'http://127.0.0.1:8010/accounts' | python3 -c "import json,sys; print(le
 curl -s "http://127.0.0.1:8010/entries/summary?month=$(date +%Y-%m)" | python3 -c "import json,sys; print(sorted(json.load(sys.stdin)))"
 ```
 
-Expected: the non-archived account count from the report; `['currency', 'expense', 'income', 'month', 'net']`.
+Expected: the non-archived account count from Task 11's report; `['currency', 'expense', 'income', 'month', 'net']`.
 
 - [ ] 31.7 Production build.
 
@@ -28601,7 +29770,23 @@ and open `http://100.81.25.128:4300/hub/accounting` on the phone over Tailscale.
   9. Desktop only: at ≥ 1024 px tapping a timeline row keeps the list and shows the detail on the right with the URL `/accounting/entries/<id>`; `N` opens the entry form, `↑` / `↓` move the selection, `Esc` closes the form.
   10. Delete the manual records created in items 2–6 from their detail pages (transfer: one delete removes both legs; split: 刪除整組).
 
-- [ ] 31.11 Clean up after the owner has finished: stop both servers, remove the temporary firewall rule if one was added, restore the `.env` symlink and `angular.json`, drop the database.
+  Do item 10 before the balance acceptance below, so the verify database again holds only the imported data.
+
+- [ ] 31.10b Owner balance acceptance (manual, on the verify server — same data as Task 11's checklist). The owner opens `~/reports/home-hub-2a-verify/checklist.md` (header: comparison date = the backup's export date, Asia/Taipei) and completes the **10-account checklist** against the MOZE app at that export date: for each of the 10 accounts (3 cards, 1 JPY account, 6 others), compare the MOZE account-list balance with the HomeHub balance (`/hub/accounting/accounts` on the verify server, equal to the checklist's `moze_part`). **All 10 must match** (difference 0). Then note the differences of the **9 FX-converted accounts** listed separately in the checklist (or the actual count Task 11 recorded); each passes only if the owner accepts its difference. Record the result in the PR description, initials only, no amounts and no names:
+
+```markdown
+### Owner balance acceptance (comparison date YYYY-MM-DD)
+| Account | Result |
+|---|---|
+| A.B. | pass |
+| … (10 rows) | pass / fail |
+
+FX-converted (9): C.D. accepted · E.F. accepted · … (difference noted in the private checklist only)
+```
+
+The task passes only when all 10 rows read `pass` and every FX-converted account is accepted; any `fail` blocks the merge — debug the account with superpowers:systematic-debugging and repeat from Task 11 on a fresh `accounting_backup_verify`.
+
+- [ ] 31.11 Clean up after the owner has finished and the PR description holds both results (31.10 and 31.10b): stop both servers, remove the temporary firewall rule if one was added, restore the `.env` symlink and `angular.json`, drop Task 11's verify database and delete the private checklist directory.
 
 ```bash
 pkill -f "[u]vicorn app.main:app --host 127.0.0.1 --port 8010"
@@ -28609,10 +29794,12 @@ pkill -f "[v]erify_server.py"
 sudo firewall-cmd --zone=public --query-port=4300/tcp && sudo firewall-cmd --zone=public --remove-port=4300/tcp
 cd /home/opc/workspace/home-hub-entry && rm -f .env && ln -s /home/opc/workspace/home-hub/.env .env
 git diff --quiet -- frontend/angular.json || git checkout -- frontend/angular.json
-docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" accounting_verify_2a'
+docker exec stonk-postgres-1 sh -c 'dropdb -U "$POSTGRES_USER" --if-exists --force accounting_backup_verify'
+docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -At -c "SELECT count(*) FROM pg_database WHERE datname = '"'"'accounting_backup_verify'"'"'"'
+rm -rf ~/reports/home-hub-2a-verify
 git status --short
 ```
 
-Expected: the `query-port` line prints `no` when no rule was added (the remove is then skipped); `git status --short` prints nothing. The reports in `/home/opc/workspace/moze-verify-2a/` stay outside the repo; delete the directory once the PR description has the aggregates.
+Expected: the `query-port` line prints `no` when no rule was added (the remove is then skipped); `0` (the verify database is gone); `git status --short` prints nothing. The reports in `/home/opc/workspace/moze-verify-2a/` stay outside the repo; delete the directory once the PR description has the aggregates.
 
 
