@@ -419,3 +419,33 @@ def test_unknown_split_is_404(client, db_session, seed):
     assert client.put("/splits/999999", json=_split(_member(wallet))).status_code == 404
     with pytest.raises(ValidationError):
         ss.create_split(db_session, SplitIn(**_split(_member(wallet, account_id=999999))))
+
+
+def test_split_category_defaults_are_written_in_category_id_order(db_session, seed):
+    """Two concurrent splits touching the same categories in opposite member order must not deadlock on the
+    category rows, so the default updates run in ascending category id order, after every member is written."""
+    from sqlalchemy import event
+
+    wallet, card = seed.account("錢包"), seed.account("卡")
+    first, second = seed.category("A"), seed.category("B")
+    db_session.commit()
+    updated: list[int] = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("UPDATE category"):
+            rows = parameters if executemany else [parameters]
+            updated.extend(row["category_id"] if "category_id" in row else row["id_1"] for row in rows)
+
+    event.listen(db_session.bind, "before_cursor_execute", capture)
+    try:
+        ss.create_split(db_session, SplitIn(**_split(
+            _member(card, category_id=second.id), _member(wallet, category_id=first.id),
+            _member(wallet, category_id=second.id),
+        )))
+        db_session.flush()
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", capture)
+
+    assert updated == [first.id, second.id]
+    db_session.expire_all()
+    assert (first.default_account_id, second.default_account_id) == (wallet.id, wallet.id)  # last member wins

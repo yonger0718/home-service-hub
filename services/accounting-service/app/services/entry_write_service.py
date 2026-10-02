@@ -282,14 +282,30 @@ def remember_defaults(db: Session, category_id: int | None, account_id: int, pro
         category.default_project_id = project_id
 
 
-def insert_prepared(db: Session, prepared: PreparedEntry, *, group_id: int | None = None) -> int:
+def remember_all_defaults(db: Session, prepared: Iterable[PreparedEntry]) -> None:
+    """remember_defaults for several entries (a split), the last entry per category winning, applied and flushed
+    in ascending category id order: two concurrent splits whose members use the same categories in opposite
+    order then take the category row locks in the same order instead of deadlocking (final review finding 12)."""
+    latest: dict[int, tuple[int, int | None]] = {}
+    for item in prepared:
+        if item.payload.category_id is not None:
+            latest[item.payload.category_id] = (item.account.id, item.payload.project_id)
+    for category_id in sorted(latest):
+        remember_defaults(db, category_id, *latest[category_id])
+        db.flush()
+
+
+def insert_prepared(db: Session, prepared: PreparedEntry, *, group_id: int | None = None, remember: bool = True) -> int:
+    """Insert one prepared entry with its children and rule links; `remember=False` leaves the category defaults
+    to the caller (remember_all_defaults for a split)."""
     entry = LedgerEntry(group_id=group_id)
     _apply(entry, prepared)
     db.add(entry)
     db.flush()
     write_children(db, entry, prepared.payload.fee, prepared.payload.discount)
     write_rule_links(db, entry.id, prepared.payload.reward_rule_ids)
-    remember_defaults(db, prepared.payload.category_id, prepared.account.id, prepared.payload.project_id)
+    if remember:
+        remember_defaults(db, prepared.payload.category_id, prepared.account.id, prepared.payload.project_id)
     return entry.id
 
 

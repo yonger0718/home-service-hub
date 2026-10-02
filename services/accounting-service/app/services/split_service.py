@@ -18,6 +18,7 @@ from .entry_write_service import (
     insert_prepared,
     lock_group,
     prepare_entry,
+    remember_all_defaults,
 )
 from .errors import NotFoundError, ValidationError
 
@@ -68,12 +69,19 @@ def member_ids(db: Session, group_id: int) -> list[int]:
     )
 
 
-# Lock order for every write that touches a group member (shared with entry_write_service.delete_entry): the
-# entry_group row (entry_write_service.lock_group) → the entry / the group's members → their transfer legs →
-# nothing else. The group row is the one stable row two writes to a group share (members are deleted and
-# re-inserted), so it is what makes a second PUT / DELETE wait for the first and then see the first's members
-# instead of the ones it replaced; a single DELETE /entries/{id} of a member takes the same group lock first, so
-# it never deadlocks against a split PUT (plan review round 5).
+# Lock order for every write that locks a group row (shared with entry_write_service.delete_entry): the
+# entry_group row(s) (entry_write_service.lock_group, ascending id) → the entry / the group's members (one
+# SELECT … FOR UPDATE by ascending id; delete_entry adds the transfer legs to that same statement) → no further
+# row lock except the category rows of the defaults, written last in ascending id (remember_all_defaults). The
+# group row is the one stable row two writes to a group share (members are deleted and re-inserted), so it is
+# what makes a second PUT / DELETE wait for the first and then see the first's members instead of the ones it
+# replaced; a single DELETE /entries/{id} of a member takes the same group lock first, so it never deadlocks
+# against a split PUT (plan review round 5).
+#
+# Exception: PUT /entries/{id}, settle and refund on a member do NOT take the group lock. They lock only the
+# target entry row (locked_entry) and lock nothing else in the group afterwards, which is why they cannot
+# invert the order above. Adding a group-row or second-member write to any of them would break this; such a
+# change must take the group lock first like delete_entry.
 
 
 def _locked_split(db: Session, group_id: int) -> EntryGroup:
@@ -124,7 +132,8 @@ def create_split(db: Session, payload: SplitIn, *, http_get=None) -> int:
     db.add(group)
     db.flush()
     for item in prepared:
-        insert_prepared(db, item, group_id=group.id)
+        insert_prepared(db, item, group_id=group.id, remember=False)
+    remember_all_defaults(db, prepared)
     return group.id
 
 
@@ -149,7 +158,8 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
     group.description = payload.description
     db.flush()
     for item in prepared:
-        insert_prepared(db, item, group_id=group_id)
+        insert_prepared(db, item, group_id=group_id, remember=False)
+    remember_all_defaults(db, prepared)
 
 
 def delete_split(db: Session, group_id: int) -> None:
