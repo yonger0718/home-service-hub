@@ -217,6 +217,25 @@ export class AccountSettingsComponent implements OnInit {
     this.accounts().filter(account => account.id !== this.accountId() && !account.is_archived),
   );
   readonly creditOthers = computed(() => this.others().filter(account => account.is_credit));
+  /** The saved value of an id field, when it points at an archived account (edit mode): kept selectable, labelled. */
+  private archivedCurrent(id: number | null): LedgerAccount[] {
+    if (this.accountId() === null || id === null) {
+      return [];
+    }
+    const current = this.accounts().find(account => account.id === id && account.is_archived);
+    return current ? [current] : [];
+  }
+  /** 主帳戶: other open credit accounts, plus the saved one when it is archived (as the entry form does). */
+  readonly masterOptions = computed(() => [...this.creditOthers(), ...this.archivedCurrent(this.form().combined_account_id)]);
+  /** 自動扣繳: other open non-credit accounts, plus the saved one when it is archived. */
+  readonly autopayOptions = computed(() => [
+    ...this.others().filter(account => !account.is_credit),
+    ...this.archivedCurrent(this.form().auto_pay_account_id),
+  ]);
+
+  accountLabel(account: LedgerAccount): string {
+    return account.is_archived ? `${account.name}（已封存）` : account.name;
+  }
   /**
    * 額度共用 options: other non-archived credit accounts plus any saved member (an archived one too, so it can be
    * removed; it stays listed after being unchecked). New members can only be non-archived credit accounts.

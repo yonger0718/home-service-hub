@@ -118,8 +118,8 @@
       <span class="k">主帳戶</span>
       <select class="v master-select" (change)="setIdField('combined_account_id', $any($event.target).value)">
         <option value="" [selected]="form().combined_account_id === null">無</option>
-        @for (other of creditOthers(); track other.id) {
-          <option [value]="other.id" [selected]="other.id === form().combined_account_id">{{ other.name }}</option>
+        @for (other of masterOptions(); track other.id) {
+          <option [value]="other.id" [selected]="other.id === form().combined_account_id">{{ accountLabel(other) }}</option>
         }
       </select>
     </label>
@@ -129,10 +129,8 @@
       <span class="k">自動扣繳</span>
       <select class="v autopay-select" (change)="setIdField('auto_pay_account_id', $any($event.target).value)">
         <option value="" [selected]="form().auto_pay_account_id === null">無</option>
-        @for (other of accounts(); track other.id) {
-          @if (other.id !== accountId() && !other.is_archived && !other.is_credit) {
-            <option [value]="other.id" [selected]="other.id === form().auto_pay_account_id">{{ other.name }}</option>
-          }
+        @for (other of autopayOptions(); track other.id) {
+          <option [value]="other.id" [selected]="other.id === form().auto_pay_account_id">{{ accountLabel(other) }}</option>
         }
       </select>
     </label>

@@ -26,6 +26,7 @@ const LIST = [
   account({ id: 12, name: '玉山 UNI', is_credit: true }),
   account({ id: 13, name: '玉山 U Bear', is_credit: true }),
   account({ id: 30, name: '舊卡', is_credit: true, is_archived: true }),
+  account({ id: 31, name: '舊帳戶', is_archived: true }),
 ];
 
 const DETAIL = {
@@ -148,6 +149,23 @@ describe('AccountSettingsComponent', () => {
     expect(el(fixture).querySelector<HTMLSelectElement>('.master-select')!.value).toBe('10');
     const rules = Array.from(el(fixture).querySelectorAll('.rule-item')).map(r => r.textContent?.replace(/\s+/g, ' ').trim());
     expect(rules).toEqual(['一般 1%', '餐飲 5.2%（停用）']);
+  });
+
+  it('keeps an archived 主帳戶 and 自動扣繳 selectable, labelled （已封存）, and saves them unchanged', async () => {
+    await setup('11');
+    const fixture = render({ ...DETAIL, combined_account_id: 30, auto_pay_account_id: 31 } as AccountDetail);
+
+    const master = el(fixture).querySelector<HTMLSelectElement>('.master-select')!;
+    const autopay = el(fixture).querySelector<HTMLSelectElement>('.autopay-select')!;
+    expect(master.value).toBe('30');
+    expect(master.selectedOptions[0].textContent?.trim()).toBe('舊卡（已封存）');
+    expect(autopay.value).toBe('31');
+    expect(autopay.selectedOptions[0].textContent?.trim()).toBe('舊帳戶（已封存）');
+
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body).toMatchObject({ combined_account_id: 30, auto_pay_account_id: 31 });
+    req.flush(DETAIL);
   });
 
   it('saves every field with PUT and returns to the passbook', async () => {
