@@ -9,7 +9,7 @@ from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Iterable
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..models import Account, Category, Counterparty, EntryGroup, EntryRewardRule, LedgerEntry, Project, RewardRule
@@ -299,9 +299,32 @@ def locked_entry(db: Session, entry_id: int) -> LedgerEntry:
 
 
 # Lock order for every write that touches a group member (delete_entry here, split_service.update_split /
-# delete_split in Task 14): the entry_group row (lock_group) → the entry / the group's members → their transfer
-# legs → nothing else. Taking the group last (after a member) deadlocks against a split PUT that holds the group
-# and waits for that member (plan review round 5).
+# delete_split in Task 14): the entry_group row(s) (lock_group, ascending id) → the target entry / the group's
+# members together with their transfer legs, in ONE statement ordered by ascending id (locked_with_legs) →
+# nothing else. Taking the group last (after a member) deadlocks against a split PUT that holds the group and
+# waits for that member (plan review round 5); locking the target first and its other leg in a second statement
+# deadlocks two concurrent deletes of a transfer's two legs (Task 12 review).
+
+
+def locked_with_legs(db: Session, entry_id: int, transfer_group_id) -> list[LedgerEntry]:
+    """The entry plus, when transfer_group_id is set, every top-level leg of that transfer, locked with one
+    SELECT … FOR UPDATE ordered by ascending id, so two writers on different legs of one transfer take the row
+    locks in the same order. Rows deleted by a transaction this one waited on are skipped (READ COMMITTED)."""
+    condition = LedgerEntry.id == entry_id
+    if transfer_group_id is not None:
+        condition = or_(
+            condition,
+            and_(LedgerEntry.transfer_group_id == transfer_group_id, LedgerEntry.parent_entry_id.is_(None)),
+        )
+    return list(
+        db.scalars(
+            select(LedgerEntry)
+            .where(condition)
+            .order_by(LedgerEntry.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
 
 
 def lock_group(db: Session, group_id: int) -> EntryGroup | None:
@@ -406,7 +429,7 @@ def delete_entries_cascade(db: Session, entry_ids: Iterable[int]) -> None:
     db.expire_all()
 
 
-def _group_ids_to_lock(db: Session, entry_id: int) -> list[int]:
+def _group_ids_to_lock(db: Session, entry_id: int) -> tuple[list[int], object]:
     """The entry_group ids of the entry (and of its transfer legs), read without a lock so the group rows can be
     locked before the entries. group_id never changes on an existing row; a member a split PUT replaced is a
     new row, so locked_entry then raises NotFoundError."""
@@ -421,33 +444,31 @@ def _group_ids_to_lock(db: Session, entry_id: int) -> list[int]:
                 )
             )
         )
-    return sorted(group_id for group_id in ids if group_id is not None)
+    return sorted(group_id for group_id in ids if group_id is not None), entry.transfer_group_id
 
 
 def delete_entry(db: Session, entry_id: int) -> None:
-    """Deleting needs no FX, so the locks are taken straight away, in the shared lock order: the entry_group row
-    first (lock_group; skipped when group_id is NULL), then the target (locked_entry) and the other transfer leg,
-    then nothing else (plan review round 5: locking the member first and the group only when deleting the last
-    member deadlocked against a concurrent split PUT, which locks group → members). A concurrent settle / refund
+    """Deleting needs no FX, so the locks are taken straight away, in the shared lock order: the entry_group rows
+    first (lock_group, ascending id; skipped when group_id is NULL), then the target and its other transfer leg in
+    one statement ordered by id (locked_with_legs), then nothing else. Two concurrent deletes of a transfer's two
+    legs therefore queue instead of deadlocking; the second then finds its leg gone (404). Plan review round 5:
+    locking the member first and the group only when deleting the last member deadlocked against a concurrent
+    split PUT, which locks group → members. A concurrent settle / refund
     of the target has either committed before (its link is cleared below) or waits for this delete and then
     finds no target (404); a concurrent split PUT / DELETE has either replaced the member (404 here) or waits on
     the group lock and then sees the member gone."""
-    group_ids = _group_ids_to_lock(db, entry_id)
+    group_ids, transfer_group_id = _group_ids_to_lock(db, entry_id)
     for group_id in group_ids:
         lock_group(db, group_id)
-    entry = locked_entry(db, entry_id)
+    locked = locked_with_legs(db, entry_id, transfer_group_id)
+    entry = next((row for row in locked if row.id == entry_id), None)
+    if entry is None:
+        raise NotFoundError(f"entry {entry_id} not found")
+    if entry.transfer_group_id != transfer_group_id:
+        raise ConflictError(f"entry {entry_id} changed concurrently; retry the delete")
     if entry.kind == "reward":
         raise ConflictError("reward entries cannot be deleted in phase 2a")
-    targets = [entry]
-    if entry.transfer_group_id is not None:
-        targets = list(
-            db.scalars(
-                select(LedgerEntry)
-                .where(LedgerEntry.transfer_group_id == entry.transfer_group_id, LedgerEntry.parent_entry_id.is_(None))
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        )
+    targets = locked if entry.transfer_group_id is not None else [entry]
     for target in targets:
         assert_entry_editable(db, target)
     if not {target.group_id for target in targets if target.group_id is not None} <= set(group_ids):

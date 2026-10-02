@@ -12,7 +12,7 @@ from app.schemas.writes import EntryIn, EntryUpdateIn
 from app.services import edit_lock, ledger_service, moze_import_service
 from app.services import entry_write_service as ews
 from app.services.edit_lock import EditLockedError, assert_editable
-from app.services.errors import ValidationError
+from app.services.errors import NotFoundError, ValidationError
 from tests.helpers import make_entry, race
 
 DAY = date(2026, 9, 1)
@@ -556,3 +556,22 @@ def test_assert_editable_checks_groups_through_their_members(db_session, seed, m
 
 def test_import_locked_is_shared_with_the_csv_importer():
     assert moze_import_service.import_locked is edit_lock.import_locked
+
+
+def test_concurrent_deletes_of_both_transfer_legs_do_not_deadlock(pg_engine, db_session, seed):
+    # Task 12 review: locking the target first and the other leg in a second statement deadlocked two concurrent
+    # deletes of the two legs. Both now lock the legs in one statement by ascending id, so the second waits.
+    a, b = seed.account("A", opening="500"), seed.account("B")
+    group = uuid.uuid4()
+    out_leg = seed.entry(a, "-100", kind="transfer_out", transfer_group_id=group)
+    seed.entry(a, "-15", kind="fee", parent_entry_id=out_leg.id)
+    in_leg = seed.entry(b, "100", kind="transfer_in", transfer_group_id=group)
+    db_session.commit()
+    a_id, b_id, out_id, in_id = a.id, b.id, out_leg.id, in_leg.id
+
+    result = race(pg_engine, lambda db: ews.delete_entry(db, out_id), lambda db: ews.delete_entry(db, in_id))
+
+    assert result == "committed" or isinstance(result, NotFoundError), result
+    db_session.expire_all()
+    assert db_session.scalars(select(LedgerEntry)).all() == []
+    assert (_balance(db_session, a_id), _balance(db_session, b_id)) == (Decimal("500"), Decimal("0"))
