@@ -129,3 +129,42 @@ A single-row `preference` table: `expense_income_colors` (`red_green` | `green_r
 ## Open Questions
 
 None blocking. The exact tag delimiter in `AHRecord.tags` and the meaning of `AHAccount.balanceInfo` keys are confirmed in the first implementation task by inspecting aggregate values, never by printing rows.
+
+## Implementation notes
+
+Confirmed by Task 11 on the real backup in a disposable database on 2026-10-02; the importer reports the same values in `confirmed_maps`.
+
+- **Due rule:** `paymentDeadlineType` 0 → `fixed_day`, 1 → `days_after_closing` (MOZE docs, 帳戶設定 › 繳款期限); owner check on three cards in Task 31.
+- **Rounding:** `rewardCalculation` 0 → keep 1434/1456 (matches `ROUNDING_MAP`); 1 → round 283/286 (floor 108/286), which contradicts `ROUNDING_MAP` 1 → floor; 4 not observed per transaction. `ROUNDING_MAP` is unchanged pending a decision, because the same map also serves `feeCalculation` and `totalRewardCalculation`. The evidence treats `rewardPercentage` as a fraction (0.01 = 1 %); the plan's evidence script divided it by 100 a second time and matched nothing. `totalRewardCalculation` 0 → keep, 1 → floor, 2 → ceil per docs, unverified until 2b.
+- **Refund direction:** `None`. The backup has one `isRefund` record; it carries no `refundID` and no record points to it, so it is imported with `needs_review` `refund_original_missing` and no direction is observable.
+- **Tag delimiter:** `None`. No record in the backup has tags.
+- **balanceInfo:** not comparable. The best rules, `max_key` and `last_key_before_cache_date`, each matched 14 of 60 accounts (`first_key_after_cache_date` 0); `compared_accounts` 0 of 72.
+- **FX conversions:** MOZE's `exchangeRate` is units of `baseCurrencyCode` per 1 `targetCurrencyCode`. The importer uses the rate for base = account currency and target = record currency, and 1/rate for the reverse pair. A rate not > 0, or any other pair, falls back to the cached `fx_api` rate and is reported in `fx_backup_rate_missing` with a reason.
+  - On the real backup, 1 record's conversion was stored in the reverse orientation (JPY→TWD) and is read inverted, keeping MOZE's own rate.
+  - 1 record had a zero MOZE rate (`fx_backup_rate_missing` 1, reason `zero_rate`). It is `fx_api`-converted, so its account is excluded from the exact-match list and joins the FX-converted accounts.
+- **Counts:**
+  - Kinds: expense 2534, reward 2338, receivable 618, transfer_in 509, transfer_out 509, fee 315, income 217, balance_adjustment 70, payable 42, interest 36, discount 12, refund 1.
+  - Skipped future rows per type: 0 → 65, 2 → 70, 3 → 1, 6 → 204, 14 → 63, 15 → 204.
+  - needs_review 401: reward_source_missing 374, disabled_record 26, reward_rule_missing 2, refund_original_missing 1.
+  - groups 716; transfers 509 of 544 (the 35 others are future pairs, 70 skipped type-2 rows); rules 95 of 100 (5 unsupported); attachments 2796; counterparties 10; accounts created 11.
+  - FX outliers 0; transfer rate mismatches 1; FX-converted accounts 4 (the contract expected 9).
+- **Previous CSV ledger:** 22 accounts unchanged, 40 moved, 10 had no previous CSV balance. The per-cause split of the 40 (new MOZE records, MOZE FX amounts, skipped future rows) is pending the owner in Task 31.
+- **Timing:** conversion 2 s; import including conversion 15 s (dry run 12 s, idempotent re-import 17 s, identical entries, ids and groups).
+
+### Owner balance acceptance (prepared in Task 11, completed by the owner in Task 31)
+
+Environment: the verify server of Task 31, running on the database `accounting_backup_verify` populated by Task 11 (never the live `accounting_db`).
+
+- **Comparison date (`as_of`):** 2026-10-01, the backup's `exported_at` date in Asia/Taipei, written in the checklist header.
+- **HomeHub value:** the import report's `moze_part`, equal to `balance` from `GET /accounts?as_of=2026-10-01` on the verify database (checked in 11.7a: 14 checked, 0 mismatches). The UI's balance (today) may differ when postponed entries fall due between Task 11 and Task 31, and it is not the acceptance value.
+- **MOZE value:** the balance in the MOZE app's account list.
+- **Pass rule:** all 10 accounts below equal (difference 0). The 4 FX-converted accounts (LB, 匯, 華, 去) are listed separately in the checklist with their differences and pass only if the owner accepts each difference. 匯 is there because of the zero-rate record above.
+- **Recording:** the owner records pass/fail per account (initials only) in the PR description. Amounts stay in `~/reports/home-hub-2a-verify/checklist.md` (outside the repo), never here.
+
+For each account (initials from the acceptance run, chosen among accounts with no FX-converted rows):
+
+- [ ] C (TWD, card): balance; closing day, due rule and value, credit limit, 主帳戶; one reward entry shows its rule and source.
+- [ ] M (TWD, card): same checks.
+- [ ] M#2 (TWD, card): same checks; one foreign-currency charge shows MOZE's TWD amount (e.g. ¥5,390 → 1,166).
+- [ ] 出 (JPY): balance in JPY; one transfer from a TWD account shows both amounts.
+- [ ] 錢, 國, S, L, 旅, 小 (6 accounts, as printed): balance equals MOZE's; the latest five entries match by date, amount and category.
