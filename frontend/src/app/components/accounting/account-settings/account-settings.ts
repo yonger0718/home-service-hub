@@ -12,6 +12,7 @@ import {
   RoundingMode,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { accountLabel } from '../accounting-ui';
 import { DueRule, dueDate, periodLabel, statementPeriod } from '../cycle';
 import { shortDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
@@ -233,9 +234,7 @@ export class AccountSettingsComponent implements OnInit {
     ...this.archivedCurrent(this.form().auto_pay_account_id),
   ]);
 
-  accountLabel(account: LedgerAccount): string {
-    return account.is_archived ? `${account.name}（已封存）` : account.name;
-  }
+  readonly accountLabel = accountLabel;
   /**
    * 額度共用 options: other non-archived credit accounts plus any saved member (an archived one too, so it can be
    * removed; it stays listed after being unchecked). New members can only be non-archived credit accounts.

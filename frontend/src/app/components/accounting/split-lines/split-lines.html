@@ -1,7 +1,7 @@
 <div class="split-lines">
   @for (line of members(); track $index) {
     <div class="sel member">
-      <span class="ico" [style.background]="icon(line)?.color ?? '#84dccf'">{{ icon(line)?.icon ?? '🧾' }}</span>
+      <span class="ico" [style.background]="color(line)">{{ icon(line) }}</span>
       <span class="member-text">
         <b>{{ label(line) }}</b>
         <small>{{ amountLabel(line) }} · {{ accountName(line) }}</small>

@@ -4,20 +4,12 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { AccountDetail, AccountPeriodSummary, ENTRY_KIND_LABELS, EntryKind, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf } from '../accounting-ui';
 import { Period, periodLabel, shiftPeriod, statementPeriod } from '../cycle';
 import { todayIso } from '../dates';
 import { formatMoney } from '../format';
 
 export const PAGE_SIZE = 200;
-
-const KIND_PILLS: Partial<Record<EntryKind, { label: string; tone: 'rv' | 'rw' | '' }>> = {
-  receivable: { label: '應收', tone: 'rv' },
-  payable: { label: '應付', tone: 'rv' },
-  reward: { label: '回饋', tone: 'rw' },
-  transfer_out: { label: '轉帳', tone: '' },
-  transfer_in: { label: '轉帳', tone: '' },
-  refund: { label: '退款', tone: 'rw' },
-};
 
 @Component({
   selector: 'app-accounting-account-entries',
@@ -64,6 +56,8 @@ export class AccountingAccountEntriesComponent implements OnInit {
 
   readonly kindOptions = Object.entries(ENTRY_KIND_LABELS) as [EntryKind, string][];
   readonly formatMoney = formatMoney;
+  readonly iconOf = iconOf;
+  readonly colorOf = colorOf;
 
   constructor() {
     // Period totals: on every period change (account switch, ‹ ›) and after any entry write.
@@ -229,13 +223,10 @@ export class AccountingAccountEntriesComponent implements OnInit {
   }
 
   originalLine(entry: LedgerEntry): string | null {
-    if (entry.original_amount === null || entry.original_currency === null) {
-      return null;
-    }
-    return `${formatMoney(Math.abs(Number(entry.original_amount)), entry.original_currency)} · ${Number(entry.fx_rate)}`;
+    return fxLine(entry);
   }
 
-  kindPill(entry: LedgerEntry): { label: string; tone: 'rv' | 'rw' | '' } | null {
+  kindPill(entry: LedgerEntry): KindPill | null {
     return KIND_PILLS[entry.kind] ?? null;
   }
 }

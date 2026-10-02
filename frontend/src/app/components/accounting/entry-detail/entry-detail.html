@@ -6,11 +6,11 @@
   @if (detail(); as d) {
     <app-lock-banner [locked]="d.locked" />
 
-    <div class="dhead" [style.background]="d.category_color ?? '#c7c7cc'">
+    <div class="dhead" [style.background]="colorOf(d)">
       @if (!inSheet()) {
         <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
       }
-      <span class="ico">{{ d.category_icon ?? '🧾' }}</span>
+      <span class="ico">{{ iconOf(d) }}</span>
       <span class="cat">{{ categoryPath() }}</span>
     </div>
 

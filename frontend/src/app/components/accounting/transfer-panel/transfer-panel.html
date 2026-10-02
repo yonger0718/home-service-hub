@@ -16,7 +16,7 @@
         }
       </select>
       @if (from(); as f) {
-        <small class="acc-balance">{{ formatAmount(f.balance, f.currency) }}</small>
+        <small class="acc-balance">{{ formatMoney(f.balance, f.currency) }}</small>
       }
     </label>
     <button type="button" class="swap" aria-label="交換帳戶" [disabled]="locked()" (click)="swap()">⇄</button>
@@ -28,7 +28,7 @@
         }
       </select>
       @if (to(); as t) {
-        <small class="acc-balance">{{ formatAmount(t.balance, t.currency) }}</small>
+        <small class="acc-balance">{{ formatMoney(t.balance, t.currency) }}</small>
       }
     </label>
   </div>

@@ -46,6 +46,7 @@ import {
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { accountLabel, isHandledKey } from '../accounting-ui';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { evaluateAmount, prettyExpression, roundHalfAway } from '../amount-math';
 import { CategoryPickerComponent } from '../category-picker/category-picker';
@@ -95,10 +96,6 @@ export type { RelatedLoad } from './entry-save';
 
 export const LONG_PRESS_MS = 600;
 
-/** ⏎ that commits an IME candidate (Zhuyin, …): Safari sends it after compositionend with keyCode 229. */
-function isImeEnter(event: KeyboardEvent): boolean {
-  return event.isComposing || event.keyCode === 229;
-}
 const FX_FEE_NAME = '國外交易手續費';
 const FLASH_MS = 1500;
 
@@ -654,9 +651,7 @@ export class EntryFormComponent implements OnInit {
     return this.editing() && (kind === 'system' || (kind === 'transfer') !== (this.kind() === 'transfer'));
   }
 
-  accountLabel(account: LedgerAccount): string {
-    return account.is_archived ? `${account.name}（已封存）` : account.name;
-  }
+  readonly accountLabel = accountLabel;
 
   selectKind(kind: FormKind): void {
     if (kind === this.kind() || this.tabDisabled(kind)) {
@@ -735,7 +730,7 @@ export class EntryFormComponent implements OnInit {
   }
 
   onTagEnter(event: Event): void {
-    if (isImeEnter(event as KeyboardEvent)) {
+    if (isHandledKey(event as KeyboardEvent)) {
       return;
     }
     event.preventDefault();
@@ -886,7 +881,7 @@ export class EntryFormComponent implements OnInit {
 
   onKeydown(event: KeyboardEvent): void {
     // Handled already (a nested control, the tag input), or an IME candidate being committed: not ours.
-    if (event.defaultPrevented || isImeEnter(event)) {
+    if (isHandledKey(event)) {
       return;
     }
     if (event.key === 'Escape') {

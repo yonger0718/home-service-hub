@@ -15,8 +15,8 @@ import { CategoryNode, Counterparty, EntryInput, LedgerAccount } from '../../../
 import { AccountingService } from '../../../services/accounting.service';
 import { amountString, parseAmountText } from '../amount-text';
 import { emptyEntryInput, resolveCounterpartyId } from '../entry-form/entry-save';
-import { formatAmount } from '../format';
-import { focusSheetField, sheetKeyAction } from '../transfer-panel/transfer-panel';
+import { CategoryIconSource, colorOf, focusSheetField, iconOf, sheetKeyAction } from '../accounting-ui';
+import { formatMoney } from '../format';
 
 export type SplitKind = 'expense' | 'income' | 'receivable' | 'payable';
 
@@ -27,19 +27,24 @@ export const SPLIT_KIND_LABELS: Record<SplitKind, string> = {
   payable: '應付',
 };
 
-interface CategoryOption {
+interface CategoryOption extends CategoryIconSource {
   id: number;
   label: string;
-  icon: string | null;
-  color: string | null;
 }
 
-function flatten(tree: CategoryNode[]): CategoryOption[] {
+function flatten(tree: CategoryNode[], kind: SplitKind): CategoryOption[] {
   const options: CategoryOption[] = [];
   for (const main of tree.filter(node => !node.is_hidden)) {
-    options.push({ id: main.id, label: main.name, icon: main.icon, color: main.color });
+    options.push({ id: main.id, label: main.name, icon: main.icon, color: main.color, mainName: main.name, kind });
     for (const sub of (main.children ?? []).filter(node => !node.is_hidden)) {
-      options.push({ id: sub.id, label: sub.name, icon: sub.icon ?? main.icon, color: sub.color ?? main.color });
+      options.push({
+        id: sub.id,
+        label: sub.name,
+        icon: sub.icon ?? main.icon,
+        color: sub.color ?? main.color,
+        mainName: main.name,
+        kind,
+      });
     }
   }
   return options;
@@ -91,8 +96,8 @@ export class SplitLinesComponent {
   readonly kindLabels = SPLIT_KIND_LABELS;
   readonly activeAccounts = computed(() => this.accounts().filter(account => !account.is_archived));
   readonly needsCounterparty = computed(() => this.draftKind() === 'receivable' || this.draftKind() === 'payable');
-  readonly categoryOptions = computed(() => flatten(this.treeFor(this.draftKind())));
-  private readonly allOptions = computed(() => this.kinds.flatMap(kind => flatten(this.treeFor(kind))));
+  readonly categoryOptions = computed(() => flatten(this.treeFor(this.draftKind()), this.draftKind()));
+  private readonly allOptions = computed(() => this.kinds.flatMap(kind => flatten(this.treeFor(kind), kind)));
 
   private treeFor(kind: SplitKind): CategoryNode[] {
     return this.categories()[kind] ?? this.loaded()[kind] ?? [];
@@ -219,13 +224,24 @@ export class SplitLinesComponent {
     return counterparty ? `${category} · ${counterparty}` : category;
   }
 
-  icon(line: EntryInput): CategoryOption | undefined {
-    return this.allOptions().find(option => option.id === line.category_id);
+  /** The line's category icon source; an uncategorised line falls back to the default icon of its kind. */
+  private iconSource(line: EntryInput): CategoryIconSource {
+    return (
+      this.allOptions().find(option => option.id === line.category_id) ?? { icon: null, color: null, mainName: null, kind: line.kind }
+    );
+  }
+
+  icon(line: EntryInput): string {
+    return iconOf(this.iconSource(line));
+  }
+
+  color(line: EntryInput): string {
+    return colorOf(this.iconSource(line));
   }
 
   amountLabel(line: EntryInput): string {
     const account = this.accounts().find(candidate => candidate.id === line.account_id);
-    return formatAmount(line.amount ?? 0, account?.currency ?? 'TWD');
+    return formatMoney(line.amount ?? 0, account?.currency ?? 'TWD');
   }
 
   accountName(line: EntryInput): string {

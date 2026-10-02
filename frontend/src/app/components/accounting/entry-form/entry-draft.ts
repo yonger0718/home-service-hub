@@ -1,4 +1,5 @@
 import { CategoryNode, RewardRule, WritableEntryKind } from '../../../models/accounting.model';
+import { pad } from '../accounting-ui';
 import { evaluateAmount } from '../amount-math';
 
 /** Tabs of the entry page; `transfer` is wired by Task 24, `system` is 餘額調整. */
@@ -113,10 +114,6 @@ export function recordAmount(categoryId: number, amount: number): void {
   } catch {
     // Quick amounts are a convenience only.
   }
-}
-
-function pad(value: number): string {
-  return String(value).padStart(2, '0');
 }
 
 /** Local calendar date `YYYY-MM-DD`; owned by `dates.ts` (Task 25), re-exported for the form's callers. */

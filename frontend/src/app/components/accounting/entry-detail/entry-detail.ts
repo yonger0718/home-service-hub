@@ -7,7 +7,7 @@ import { Observable } from 'rxjs';
 import { ENTRY_KIND_LABELS, EntryDetail, EntryKind, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
-import { leavePage } from '../accounting-ui';
+import { colorOf, fxConversionLine, iconOf, leavePage } from '../accounting-ui';
 import { amountString, parseAmountText } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
@@ -97,13 +97,15 @@ export class EntryDetailComponent implements OnInit {
   });
   readonly fxLine = computed(() => {
     const detail = this.detail();
-    if (!detail || detail.original_amount === null || detail.original_currency === null) {
+    const converted = detail ? fxConversionLine(detail) : null;
+    if (!detail || converted === null) {
       return null;
     }
     const source = FX_SOURCE_LABELS[detail.fx_source ?? ''] ?? '';
-    const converted = `${formatMoney(Math.abs(Number(detail.original_amount)), detail.original_currency)} × ${Number(detail.fx_rate)} = ${formatMoney(Math.abs(Number(detail.amount)), detail.currency)}`;
     return source ? `${converted}（${source}）` : converted;
   });
+  readonly iconOf = iconOf;
+  readonly colorOf = colorOf;
   /** 應收 / 應付 kind, including the 收款 / 還款 rows that settle one (the grid shows 對象 for all of them). */
   readonly debtKind = computed(() => {
     const kind = this.detail()?.kind;

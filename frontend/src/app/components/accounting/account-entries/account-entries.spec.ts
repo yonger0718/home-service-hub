@@ -180,7 +180,7 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     const el = render(page([
       entry(1, { amount: '-360.0000', original_amount: '-1800.0000', original_currency: 'JPY', fx_rate: '0.2000000000', fx_source: 'fx_api' }),
     ])).nativeElement as HTMLElement;
-    expect(el.querySelector('.entry .orig')?.textContent?.trim()).toBe('¥1,800 · 0.2');
+    expect(el.querySelector('.entry .orig')?.textContent?.trim()).toBe('¥1,800 @ 0.2');
   });
 
   it('marks entries that need review', () => {

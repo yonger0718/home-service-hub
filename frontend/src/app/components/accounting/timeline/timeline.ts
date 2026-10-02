@@ -26,6 +26,7 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
+import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
 
 export const TIMELINE_PAGE_SIZE = 50;
@@ -50,7 +51,7 @@ export const TIMELINE_FILTER_KINDS: EntryKind[] = [
 
 export interface TimelinePill {
   label: string;
-  tone: '' | 'rw' | 'rv' | 'review';
+  tone: KindPill['tone'] | 'review';
 }
 
 export interface TimelineRow {
@@ -74,29 +75,14 @@ export interface TimelineDay {
   rows: TimelineRow[];
 }
 
-// The 應收 / 應付 pill follows `kind` only (no separate 收款 / 還款 pill, no sign test), so `is_settlement` rows
-// (round 2) need no change here: a settlement is a receivable / payable row and gets the same pill.
-const KIND_PILLS: Partial<Record<EntryKind, TimelinePill>> = {
-  reward: { label: '回饋', tone: 'rw' },
-  receivable: { label: '應收', tone: 'rv' },
-  payable: { label: '應付', tone: 'rv' },
-  transfer_out: { label: '轉帳', tone: '' },
-  transfer_in: { label: '轉帳', tone: '' },
-  refund: { label: '退款', tone: '' },
-};
-
-function pad(value: number): string {
-  return String(value).padStart(2, '0');
-}
-
 export function currentMonth(today = new Date()): string {
   return `${today.getFullYear()}-${pad(today.getMonth() + 1)}`;
 }
 
 export function shiftMonth(month: string, delta: number): string {
   const [year, monthNumber] = month.split('-').map(Number);
-  const shifted = new Date(year, monthNumber - 1 + delta, 1);
-  return `${shifted.getFullYear()}-${pad(shifted.getMonth() + 1)}`;
+  const [nextYear, nextMonth] = shiftYearMonth(year, monthNumber, delta);
+  return `${nextYear}-${pad(nextMonth)}`;
 }
 
 export function monthRange(month: string): { from: string; to: string } {
@@ -122,25 +108,9 @@ function toneOf(amount: number, kind: EntryKind): TimelineRow['tone'] {
   return amount < 0 ? 'out' : 'in';
 }
 
-function fxLine(entry: LedgerEntry): string | null {
-  if (!entry.original_currency || entry.original_amount === null || entry.original_currency === entry.currency) {
-    return null;
-  }
-  const original = formatMoney(Math.abs(Number(entry.original_amount)), entry.original_currency);
-  return entry.fx_rate === null ? original : `${original} @ ${Number(entry.fx_rate)}`;
-}
-
 function subLine(entry: LedgerEntry): string {
   const lead = entry.kind === 'receivable' || entry.kind === 'payable' ? entry.counterparty : entry.merchant;
   return [lead, ...entry.tags.map(tag => `#${tag}`)].filter(Boolean).join(' · ');
-}
-
-function iconOf(entry: LedgerEntry): string {
-  return entry.category_icon ?? defaultCategoryIcon(entry.category?.split('/')[0], entry.kind);
-}
-
-function colorOf(entry: LedgerEntry): string {
-  return entry.category_color ?? 'var(--app-surface-soft)';
 }
 
 function pillsOf(entry: LedgerEntry): TimelinePill[] {

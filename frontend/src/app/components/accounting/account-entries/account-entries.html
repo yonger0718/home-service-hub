@@ -52,7 +52,7 @@
   <div class="entry-list">
     @for (entry of entries(); track entry.id) {
       <a class="row entry" [class.entry--review]="entry.needs_review" [routerLink]="['/accounting/accounts', accountId(), 'entries', entry.id]" [attr.data-entry-id]="entry.id">
-        <span class="ico" [style.background]="entry.category_color ?? '#c7c7cc'">{{ entry.category_icon ?? '🧾' }}</span>
+        <span class="ico" [style.background]="colorOf(entry)">{{ iconOf(entry) }}</span>
         <span class="name">{{ title(entry) }}</span>
         <span class="sub">{{ subtitle(entry) }}</span>
         <span class="amt" [class.neg]="+entry.amount < 0" [class.pos]="+entry.amount > 0">

@@ -14,6 +14,7 @@ import {
   ScheduleItem,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { isHandledKey } from '../accounting-ui';
 import { slashDate } from '../dates';
 import { formatMoney } from '../format';
 import { writeErrorMessage } from '../http-errors';
@@ -142,7 +143,7 @@ export class AccountingSettingsComponent implements OnInit {
 
   /** ⏎ in an add field; skips handled events and ⏎ that commits an IME candidate (Zhuyin: `isComposing` / keyCode 229). */
   enterPressed(event: KeyboardEvent): boolean {
-    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) {
+    if (isHandledKey(event)) {
       return false;
     }
     event.preventDefault();

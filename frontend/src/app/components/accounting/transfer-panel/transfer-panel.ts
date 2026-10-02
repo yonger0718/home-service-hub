@@ -4,7 +4,6 @@ import {
   ElementRef,
   Injector,
   OnInit,
-  afterNextRender,
   computed,
   effect,
   inject,
@@ -21,7 +20,8 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { amountString, parseAmountText } from '../amount-text';
 import { TransferCommon, TransferEdit, buildTransferInput, transferRateLabel } from '../entry-form/transfer-math';
-import { currencyDecimals, formatAmount } from '../format';
+import { accountLabel, focusSheetField, isHandledKey, sheetKeyAction } from '../accounting-ui';
+import { currencyDecimals, formatMoney } from '../format';
 
 export type TransferSide = 'out' | 'in';
 
@@ -34,36 +34,6 @@ interface SideChildren {
 
 const EMPTY_CHILDREN: SideChildren = { fee: '', discount: '' };
 const CATEGORIES_FAILED = '轉帳類別讀取失敗，請重新整理';
-
-/**
- * ⏎ / Esc on the host of a component whose bottom sheet (`sheet`) is open. Handled at the host, so a key from anywhere
- * in the component (the trigger button included) never reaches the entry form, which would save or leave.
- * Esc → 'close'. ⏎ in a sheet field → 'confirm'. ⏎ on a sheet button is left to its native click. ⏎ outside the sheet
- * is only marked handled. IME commits and keys already handled are left alone.
- */
-export function sheetKeyAction(event: KeyboardEvent, sheet: Element | null): 'close' | 'confirm' | null {
-  if (!sheet || event.defaultPrevented || event.isComposing || event.keyCode === 229) {
-    return null;
-  }
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    return 'close';
-  }
-  if (event.key !== 'Enter') {
-    return null;
-  }
-  const target = event.target as HTMLElement | null;
-  if (target && sheet.contains(target) && target.tagName === 'BUTTON') {
-    return null;
-  }
-  event.preventDefault();
-  return target && sheet.contains(target) ? 'confirm' : null;
-}
-
-/** Moves focus into a sheet once it has rendered (its first field), so keys start inside it. */
-export function focusSheetField(host: HTMLElement, selector: string, injector: Injector): void {
-  afterNextRender(() => host.querySelector<HTMLElement>(selector)?.focus(), { injector });
-}
 
 function childrenFrom(children: LedgerEntry[] | undefined): SideChildren {
   const sum = (kind: string) =>
@@ -154,7 +124,8 @@ export class TransferPanelComponent implements OnInit {
     return account ? currencyDecimals(account.currency) : 0;
   });
 
-  readonly formatAmount = formatAmount;
+  readonly formatMoney = formatMoney;
+  readonly accountLabel = accountLabel;
 
   constructor() {
     effect(() => {
@@ -190,10 +161,6 @@ export class TransferPanelComponent implements OnInit {
         this.error.set(CATEGORIES_FAILED);
       },
     });
-  }
-
-  accountLabel(account: LedgerAccount): string {
-    return account.is_archived ? `${account.name}（已封存）` : account.name;
   }
 
   setFrom(value: string): void {
@@ -234,7 +201,7 @@ export class TransferPanelComponent implements OnInit {
    */
   onAmountKeydown(side: TransferSide, event: KeyboardEvent): void {
     // Plain `keydown`, not `keydown.enter`: Angular's `enter` filter would skip ⇧⏎. With a sheet open, the host decides.
-    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || this.sheet()) {
+    if (event.key !== 'Enter' || isHandledKey(event) || this.sheet()) {
       return;
     }
     event.preventDefault();
@@ -281,7 +248,7 @@ export class TransferPanelComponent implements OnInit {
   sideLabel(side: TransferSide): string {
     const account = side === 'out' ? this.from() : this.to();
     const value = side === 'out' ? this.outAmount() : this.inAmount();
-    return account ? formatAmount(value ?? 0, account.currency) : '—';
+    return account ? formatMoney(value ?? 0, account.currency) : '—';
   }
 
   private child(side: TransferSide, field: keyof SideChildren, name: string): ChildInput | null {

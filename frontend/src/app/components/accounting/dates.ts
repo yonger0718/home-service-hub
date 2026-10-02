@@ -1,6 +1,4 @@
-function pad(value: number): string {
-  return String(value).padStart(2, '0');
-}
+import { pad } from './accounting-ui';
 
 /** The local calendar date as `YYYY-MM-DD`. */
 export function todayIso(now: Date = new Date()): string {

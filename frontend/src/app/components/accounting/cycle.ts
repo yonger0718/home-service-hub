@@ -1,4 +1,5 @@
 import { DueRule } from '../../models/accounting.model';
+import { pad, shiftMonth } from './accounting-ui';
 import { addDays, shortDate } from './dates';
 
 /** Re-exported so callers of the cycle helpers need one import; the model owns the type. */
@@ -9,17 +10,8 @@ export interface Period {
   end: string;
 }
 
-function pad(value: number): string {
-  return String(value).padStart(2, '0');
-}
-
 function lastDay(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
-}
-
-function shiftMonth(year: number, month: number, delta: number): [number, number] {
-  const index = year * 12 + (month - 1) + delta;
-  return [Math.floor(index / 12), (index % 12) + 1];
 }
 
 function dayIn(year: number, month: number, day: number): string {
