@@ -246,6 +246,16 @@ def test_collections_and_repayments_are_flagged_as_settlements(db_session, backu
     assert _by_moze_id(db_session, "R-LEND").is_settlement is False
 
 
+def test_refund_of_a_settling_type_is_not_a_settlement(db_session, backup):
+    data = backup.data(
+        accounts=[_wallet(backup)], targets=[backup.target("T-1", "Alan")],
+        records=[backup.record("R-BACK", type_=5, price=150, target="T-1", isRefund=True)],
+    )
+    _import_backup(db_session, data)
+    refund = _by_moze_id(db_session, "R-BACK")
+    assert (refund.kind, refund.is_settlement) == ("refund", False)
+
+
 def test_packages_become_groups(db_session, backup):
     data = backup.data(
         accounts=[_wallet(backup)],

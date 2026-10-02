@@ -1,4 +1,5 @@
 import json
+import sys
 import uuid
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -327,3 +328,18 @@ def backup():
         rule=_bk_rule, conversion=_bk_conversion, preference=_bk_preference, doc=_bk_doc, write=_bk_write,
         data=_bk_data, exported_at=BACKUP_EXPORTED_AT,
     )
+
+
+FAKE_EXPORTER = Path(__file__).resolve().parent / "fake_exporter.py"
+
+
+@pytest.fixture()
+def fake_exporter(tmp_path):
+    """Command that stands in for the Node converter: fake_exporter(doc) copies `doc` to --out; exit_code fails."""
+
+    def build(doc: dict | None = None, *, exit_code: int = 0, message: str = "") -> list[str]:
+        prepared = tmp_path / f"prepared-{uuid.uuid4().hex[:8]}.json"
+        prepared.write_text(json.dumps(doc or {}, ensure_ascii=False), encoding="utf-8")
+        return [sys.executable, str(FAKE_EXPORTER), str(prepared), str(exit_code), message]
+
+    return build

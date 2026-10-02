@@ -9,12 +9,14 @@ import json
 import os
 import sys
 from collections import Counter
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Collection, Iterator, Mapping, Sequence
 
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import String, bindparam, delete, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
@@ -165,6 +167,7 @@ def _insert_entries(
             **_fx_columns(row.amount, row.currency, rate),
             entry_date=row.entry_date,
             entry_time=row.entry_time,
+            posted_date=row.entry_date,
             category_id=lookup.category_id(row.kind, row.main_category, row.sub_category),
             project_id=lookup.project_id(row.project),
             name=row.name,
@@ -191,6 +194,7 @@ def _insert_entries(
                         **_fx_columns(amount, row.currency, rate),
                         entry_date=row.entry_date,
                         entry_time=row.entry_time,
+                        posted_date=row.entry_date,
                         category_id=lookup.category_id(kind, "", ""),
                         source=SOURCE,
                         import_run_id=import_run_id,
@@ -211,26 +215,44 @@ def _insert_entries(
     return [parent for _, parent, _ in parents] + children_all
 
 
-def _delete_unused_categories_and_projects(session: Session) -> None:
-    session.execute(
-        text(
-            "DELETE FROM category c WHERE c.parent_id IS NOT NULL "
-            "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id)"
-        )
-    )
-    session.execute(
-        text(
-            "DELETE FROM category c WHERE c.parent_id IS NULL "
-            "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) "
-            "AND NOT EXISTS (SELECT 1 FROM category child WHERE child.parent_id = c.id)"
-        )
-    )
-    session.execute(
-        text(
-            "DELETE FROM project p "
-            "WHERE NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.project_id = p.id)"
-        )
-    )
+def _removable(alias: str, table: str, keep: Mapping[str, Collection[str]] | None, params: dict) -> str:
+    """SQL condition: a row carrying a moze_id is backup-seeded and kept unless `keep` says it left the backup."""
+    if keep is None:
+        return f"{alias}.moze_id IS NULL"
+    params[f"keep_{table}"] = sorted(keep.get(table, ()))
+    return f"({alias}.moze_id IS NULL OR {alias}.moze_id <> ALL(:keep_{table}))"
+
+
+def delete_unused_rows(session: Session, keep: Mapping[str, Collection[str]] | None = None) -> None:
+    """Delete categories, projects and counterparties nothing uses (design D6, extended for backup settings).
+
+    keep=None (CSV import): rows with a moze_id are always kept. Otherwise keep[table] holds the moze ids still
+    present in the backup; unused rows whose moze_id left the backup are deleted.
+    A main category is used while any sub-category is; a project is used by entries, category defaults and rules.
+    """
+    statements = [
+        "DELETE FROM category c WHERE c.parent_id IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) AND {category}",
+        "DELETE FROM category c WHERE c.parent_id IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) "
+        "AND NOT EXISTS (SELECT 1 FROM category child WHERE child.parent_id = c.id) AND {category}",
+        "DELETE FROM project p WHERE NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.project_id = p.id) "
+        "AND NOT EXISTS (SELECT 1 FROM category c WHERE c.default_project_id = p.id) "
+        "AND NOT EXISTS (SELECT 1 FROM reward_rule r WHERE r.reward_project_id = p.id) AND {project}",
+        "DELETE FROM counterparty cp WHERE NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.counterparty_id = cp.id) "
+        "AND {counterparty}",
+    ]
+    for statement in statements:
+        params: dict = {}
+        clauses = {
+            "category": _removable("c", "category", keep, params),
+            "project": _removable("p", "project", keep, params),
+            "counterparty": _removable("cp", "counterparty", keep, params),
+        }
+        sql = statement.format(**clauses)
+        used = {name: value for name, value in params.items() if f":{name}" in sql}
+        query = text(sql).bindparams(*(bindparam(name, type_=ARRAY(String)) for name in used))
+        session.execute(query, used)
 
 
 def _apply_renames(session: Session, renames: Mapping[str, str]) -> list[dict[str, str]]:
@@ -334,7 +356,7 @@ def replace_ledger(
     """
     renamed = _apply_renames(session, renames or {})
 
-    session.execute(delete(LedgerEntry).where(LedgerEntry.source == SOURCE))
+    delete_moze_entries(session)
 
     existing = {a.name: a for a in session.scalars(select(Account))}
     accounts: dict[str, Account] = {}
@@ -346,7 +368,9 @@ def replace_ledger(
             session.add(account)
             created.append(name)
         else:
-            account.currency = spec.currency
+            if account.currency != spec.currency:
+                assert_currency_change_allowed(session, account, spec.currency)
+                account.currency = spec.currency
             account.opening_balance = spec.opening_balance
             account.is_archived = False
         accounts[name] = account
@@ -356,7 +380,7 @@ def replace_ledger(
 
     inserted = _insert_entries(session, parsed.rows, accounts, pairing, import_run_id, rates or {})
 
-    _delete_unused_categories_and_projects(session)
+    delete_unused_rows(session)
     session.flush()
 
     is_converted = LedgerEntry.fx_source.is_not(None)
@@ -404,15 +428,44 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+@contextmanager
+def import_lock(engine: Engine) -> Iterator[Connection]:
+    """Hold the shared advisory lock for one import (CSV or backup, real or dry run) on a dedicated connection."""
+    if import_locked():
+        raise ImportLockedError("MOZE import is locked (ACCOUNTING_IMPORT_LOCKED=true)")
+    with engine.connect() as conn:
+        acquired = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY}).scalar_one()
+        conn.commit()
+        if not acquired:
+            raise ImportAlreadyRunningError("import already running")
+        try:
+            yield conn
+        finally:
+            conn.rollback()
+            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": IMPORT_LOCK_KEY})
+            conn.commit()
+
+
+def mark_interrupted_runs(session: Session) -> None:
+    """A run still 'running' while we hold the lock belongs to a process that died."""
+    session.execute(
+        update(ImportRun)
+        .where(ImportRun.status == "running")
+        .values(status="failed", finished_at=_now(), summary={"error": "interrupted"})
+    )
+
+
 def run_report(run: ImportRun) -> dict:
     return {
         "id": run.id,
+        "kind": run.kind,
         "status": run.status,
         "started_at": run.started_at.isoformat(),
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "file_name": run.file_name,
         "file_sha256": run.file_sha256,
         "row_count": run.row_count,
+        "exported_at": run.exported_at.isoformat() if run.exported_at else None,
         "summary": run.summary,
     }
 
@@ -454,21 +507,19 @@ def _run_locked(
                 session.rollback()
             return {
                 "id": None,
+                "kind": "moze_csv",
                 "status": "dry_run",
                 "started_at": started.isoformat(),
                 "finished_at": _now().isoformat(),
                 "file_name": file_name,
                 "file_sha256": sha256,
                 "row_count": parsed.row_count,
+                "exported_at": None,
                 "summary": summary,
             }
 
-        session.execute(
-            update(ImportRun)
-            .where(ImportRun.status == "running")
-            .values(status="failed", finished_at=_now(), summary={"error": "interrupted"})
-        )
-        run = ImportRun(started_at=_now(), file_name=file_name, file_sha256=sha256, status="running")
+        mark_interrupted_runs(session)
+        run = ImportRun(kind="moze_csv", started_at=_now(), file_name=file_name, file_sha256=sha256, status="running")
         session.add(run)
         session.commit()
         run_id = run.id
@@ -505,19 +556,8 @@ def run_import(
 
     `http_get` replaces requests.get for FX rate fetches (tests inject a fake).
     """
-    if import_locked():
-        raise ImportLockedError("MOZE import is locked (ACCOUNTING_IMPORT_LOCKED=true)")
-    with engine.connect() as conn:
-        acquired = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY}).scalar_one()
-        conn.commit()
-        if not acquired:
-            raise ImportAlreadyRunningError("import already running")
-        try:
-            return _run_locked(conn, data, file_name, dry_run, renames or {}, http_get)
-        finally:
-            conn.rollback()
-            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": IMPORT_LOCK_KEY})
-            conn.commit()
+    with import_lock(engine) as conn:
+        return _run_locked(conn, data, file_name, dry_run, renames or {}, http_get)
 
 
 def _parse_rename(value: str) -> tuple[str, str]:

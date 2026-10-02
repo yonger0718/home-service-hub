@@ -1,31 +1,45 @@
-"""MOZE backup import: settings upsert, entries and links, full replace (design D12-D19).
+"""MOZE backup import: converter subprocess, settings upsert, entries and links, full replace (design D12-D19).
 
 CLI: python -m app.services.moze_backup_import_service <zip> [--dry-run] [--rename OLD=NEW ...]
      [--allow-fx-outliers] [--no-strict] [--keep-json PATH]
 """
 
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Mapping
+from pathlib import Path
+from typing import Callable, Mapping, Sequence
 
-from sqlalchemy import exists, or_, select, text
+from sqlalchemy import delete, exists, func, or_, select, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from ..models import (
+    MOZE_SOURCES,
     Account,
     AccountGroup,
     Category,
     Counterparty,
     EntryGroup,
     EntryRewardRule,
+    ImportRun,
     LedgerEntry,
+    MozeSchedule,
     Preference,
     Project,
     RewardRule,
 )
+from . import fx_rate_service, ledger_service
 from .moze_backup_json import (
     ARCHIVE_GROUP,
     CATEGORY_NAMES,
@@ -43,6 +57,7 @@ from .moze_backup_json import (
     ROUNDING_MAP,
     SKIPPED_PROJECT,
     BackupData,
+    load_backup_json,
     record_kind,
     split_tags,
     tag_delimiter,
@@ -50,9 +65,20 @@ from .moze_backup_json import (
 from .moze_csv import MozeImportError
 from .moze_import_service import (
     SYSTEM_CATEGORY_NAMES,
+    ImportLockedError,
+    ImportRefusedError,
     _apply_renames,
+    _archive_disappeared_accounts,
+    _money,
+    _now,
+    _parse_rename,
     assert_currency_change_allowed,
     delete_moze_entries,
+    delete_unused_rows,
+    import_lock,
+    import_locked,
+    mark_interrupted_runs,
+    run_report,
 )
 
 SOURCE = "moze_backup"
@@ -590,7 +616,8 @@ def _entry_for(record, kind, account, fx, settings, session, import_run_id) -> L
         description=_text(record["desc"]),
         tags=split_tags(record["tags"]),
         invoice_number=_text(record["invoiceNumber"]),
-        is_settlement=record["type"] in SETTLING_TYPES,  # required by ck_ledger_entry_settlement_sign for +receivable / -payable
+        # required by ck_ledger_entry_settlement_sign for +receivable / -payable; a fee child or refund never settles
+        is_settlement=record["type"] in SETTLING_TYPES and kind in ("receivable", "payable"),
         needs_review=False,
         source=SOURCE,
         moze_id=record["identifier"],
@@ -827,6 +854,134 @@ def insert_entries(
     return result
 
 
+MAX_BACKUP_BYTES = 200 * 1024 * 1024
+CONVERTER_TIMEOUT_SEC = 600
+REPO_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_EXPORTER_SCRIPT = REPO_ROOT / "tools" / "moze-realm-export" / "index.js"
+
+# Rule that names the balanceInfo key holding the balance MOZE showed at export time, or None while
+# no rule is confirmed (design: balanceInfo is not comparable by default). Signature: (AHAccount row) -> key | None.
+balance_info_key: Callable[[dict], str | None] | None = None
+
+
+class ConverterError(MozeImportError):
+    """The Realm converter could not produce the JSON document; nothing was locked or written."""
+
+
+def exporter_command() -> list[str]:
+    """`MOZE_REALM_EXPORTER` (a .js script run with node, or an executable), default the repo tool."""
+    configured = os.getenv("MOZE_REALM_EXPORTER", "").strip()
+    script = Path(configured).expanduser() if configured else DEFAULT_EXPORTER_SCRIPT
+    if not script.is_file():
+        raise ConverterError(f"MOZE realm exporter not found: {script}")
+    if script.suffix == ".js":
+        return [shutil.which("node") or "node", str(script)]
+    return [str(script)]
+
+
+def convert_backup(zip_path: Path, work_dir: Path, exporter: Sequence[str] | None = None, timeout: int = CONVERTER_TIMEOUT_SEC) -> Path:
+    """Run the converter on `zip_path`; returns the JSON path inside `work_dir`. Raises ConverterError."""
+    command = list(exporter) if exporter is not None else exporter_command()
+    out = Path(work_dir) / "backup.json"
+    args = [*command, str(zip_path), "--out", str(out), "--work", str(Path(work_dir) / "realm")]
+    try:
+        completed = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+    except FileNotFoundError as exc:
+        raise ConverterError(f"MOZE realm exporter not found: {command[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ConverterError(f"MOZE realm exporter timed out after {timeout} s") from exc
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout).strip()[-500:]
+        raise ConverterError(f"MOZE realm exporter failed (exit {completed.returncode}): {message}")
+    if not out.is_file():
+        raise ConverterError("MOZE realm exporter wrote no JSON document")
+    return out
+
+
+def _jsonable(row: dict) -> dict:
+    def default(value):
+        if isinstance(value, Decimal):
+            return str(value)
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        raise TypeError(type(value).__name__)
+
+    return json.loads(json.dumps(row, default=default, ensure_ascii=False))
+
+
+def _replace_schedule(session: Session, data: BackupData, skipped: list[dict], import_run_id: int | None) -> dict:
+    session.execute(delete(MozeSchedule))
+    rows = [
+        *(("period", row) for row in data.periods),
+        *(("installment", row) for row in data.installments),
+        *(("skipped_record", row) for row in skipped),
+    ]
+    session.add_all(
+        MozeSchedule(kind=kind, moze_id=row.get("identifier"), payload=_jsonable(row), import_run_id=import_run_id)
+        for kind, row in rows
+    )
+    session.flush()
+    return dict(Counter(kind for kind, _ in rows))
+
+
+def _cache_date(account: dict, data: BackupData) -> date:
+    return (account["cacheDate"] or data.exported_at.replace(tzinfo=None)).date()
+
+
+def _moze_part(session: Session, account: Account, cutoff: date, *, sources: Sequence[str], any_moze_id: bool) -> Decimal:
+    condition = LedgerEntry.source.in_(sources)
+    if any_moze_id:
+        condition = or_(condition, LedgerEntry.moze_id.is_not(None))
+    total = session.scalar(
+        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
+            LedgerEntry.account_id == account.id, LedgerEntry.posted_date <= cutoff, condition
+        )
+    )
+    return _amount(account.opening_balance + total)
+
+
+def _previous_moze_parts(session: Session, data: BackupData) -> dict[str, Decimal]:
+    """Per backup account: the moze_part of the ledger as it is before this import (any MOZE source)."""
+    previous = {}
+    for record in data.accounts:
+        account = _find_account(session, record)
+        if account is not None:
+            previous[record["identifier"]] = _moze_part(
+                session, account, _cache_date(record, data), sources=MOZE_SOURCES, any_moze_id=True
+            )
+    return previous
+
+
+def _moze_balance(record: dict) -> Decimal | None:
+    if balance_info_key is None or record["type"] in SYSTEM_ACCOUNT_TYPES:
+        return None
+    key = balance_info_key(record)
+    if key is None or key not in record["balanceInfo"]:
+        return None
+    return _amount(Decimal(str(record["balanceInfo"][key])))
+
+
+def _account_reports(session, data, settings, previous) -> list[dict]:
+    reports = []
+    for record in data.accounts:
+        account = settings.accounts[record["identifier"]]
+        moze_part = _moze_part(session, account, _cache_date(record, data), sources=(SOURCE,), any_moze_id=False)
+        moze_balance = _moze_balance(record)
+        reports.append(
+            {
+                "name": account.name,
+                "currency": account.currency,
+                "balance": _money(ledger_service.account_balance(session, account.id)),
+                "moze_part": _money(moze_part),
+                "previous_moze_part": _money(previous[record["identifier"]]) if record["identifier"] in previous else None,
+                "moze_balance": _money(moze_balance) if moze_balance is not None else None,
+                "difference": _money(moze_part - moze_balance) if moze_balance is not None else None,
+                "compared": moze_balance is not None,
+            }
+        )
+    return reports
+
+
 def replace_ledger_from_backup(
     session: Session,
     data: BackupData,
@@ -837,17 +992,29 @@ def replace_ledger_from_backup(
     strict: bool,
     allow_fx_outliers: bool,
 ) -> dict:
-    """Full replace in the caller's transaction; returns the report summary (Task 9: settings and entries)."""
+    """Full replace in the caller's transaction; returns the report summary. Raises MozeImportError."""
     renamed = _apply_renames(session, renames or {})
+    previous = _previous_moze_parts(session, data)
     delete_moze_entries(session)
     settings = upsert_settings(session, data)
+    archived = _archive_disappeared_accounts(session, {account.name for account in settings.accounts.values()})
     entries = insert_entries(session, data, settings, import_run_id, rates or {}, allow_fx_outliers=allow_fx_outliers)
+    delete_unused_rows(session, keep=settings.kept_moze_ids)
+    schedules = _replace_schedule(session, data, entries.skipped_records, import_run_id)
     session.flush()
+
+    accounts = _account_reports(session, data, settings, previous)
+    compared = [report for report in accounts if report["compared"]]
+    mismatched = [report for report in compared if Decimal(report["difference"]) != 0]
+    if strict and mismatched:
+        listed = ", ".join(f"{report['name']} ({report['difference']})" for report in mismatched)
+        raise MozeImportError(f"strict mode: {len(mismatched)} compared account(s) differ from MOZE: {listed}")
     return {
         "kind": "moze_backup",
         "exported_at": data.exported_at.isoformat(),
         "kind_counts": dict(sorted(entries.kind_counts.items())),
         "skipped_future": {str(key): value for key, value in sorted(entries.skipped_future.items())},
+        "schedules": schedules,
         "groups": entries.groups,
         "transfers": entries.transfers,
         "transfer_rate_mismatches": entries.transfer_rate_mismatches,
@@ -861,14 +1028,191 @@ def replace_ledger_from_backup(
         "unsupported_rules": settings.unsupported_rules,
         "orphaned_rules": settings.orphaned_rules,
         "settings_skipped": settings.settings_skipped,
+        "accounts": accounts,
+        "compared_accounts": {"compared": len(compared), "total": len(accounts)},
+        "not_compared": [report["name"] for report in accounts if not report["compared"]],
         "fx_outliers": entries.fx_outliers,
         "confirmed_maps": {
             "due_rule": {str(key): value for key, value in DUE_RULE_MAP.items()},
             "rounding": {str(key): value for key, value in ROUNDING_MAP.items()},
             "refund_direction": entries.refund_direction,
             "tag_delimiter": entries.tag_delimiter,
-            "balance_info_key": None,
+            "balance_info_key": getattr(balance_info_key, "__name__", None),
         },
         "accounts_created": settings.accounts_created,
+        "accounts_archived": archived,
         "accounts_renamed": renamed + settings.accounts_renamed,
     }
+
+
+def _backup_summary_run(session, data, run_id, renames, http_get, *, strict, allow_fx_outliers, persist_rates) -> dict:
+    """Resolve FX rates (ensure_rates commits what it persists, so it runs first), then replace (uncommitted)."""
+    rates = fx_rate_service.ensure_rates(session, required_backup_rates(data), persist=persist_rates, http_get=http_get)
+    return replace_ledger_from_backup(
+        session, data, run_id, renames, rates, strict=strict, allow_fx_outliers=allow_fx_outliers
+    )
+
+
+def _run_backup_locked(conn, data, file_name, sha256, *, dry_run, renames, strict, allow_fx_outliers, http_get) -> dict:
+    with Session(bind=conn, autoflush=False) as session:
+        if dry_run:
+            started = _now()
+            try:
+                summary = _backup_summary_run(
+                    session, data, None, renames, http_get,
+                    strict=strict, allow_fx_outliers=allow_fx_outliers, persist_rates=False,
+                )
+            finally:
+                session.rollback()
+            return {
+                "id": None, "kind": "moze_backup", "status": "dry_run", "started_at": started.isoformat(),
+                "finished_at": _now().isoformat(), "file_name": file_name, "file_sha256": sha256,
+                "row_count": len(data.records), "exported_at": data.exported_at.isoformat(), "summary": summary,
+            }
+
+        mark_interrupted_runs(session)
+        run = ImportRun(
+            kind="moze_backup", started_at=_now(), file_name=file_name, file_sha256=sha256,
+            status="running", exported_at=data.exported_at,
+        )
+        session.add(run)
+        session.commit()
+        run_id = run.id
+        try:
+            summary = _backup_summary_run(
+                session, data, run_id, renames, http_get,
+                strict=strict, allow_fx_outliers=allow_fx_outliers, persist_rates=True,
+            )
+            run = session.get(ImportRun, run_id)
+            run.status, run.row_count, run.summary, run.finished_at = "succeeded", len(data.records), summary, _now()
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            run = session.get(ImportRun, run_id)
+            run.status, run.summary, run.finished_at = "failed", {"error": str(exc)}, _now()
+            session.commit()
+            raise
+        return run_report(session.get(ImportRun, run_id))
+
+
+def run_backup_import(
+    engine: Engine,
+    zip_path: Path,
+    file_name: str,
+    *,
+    dry_run: bool = False,
+    renames: Mapping[str, str] | None = None,
+    strict: bool = True,
+    allow_fx_outliers: bool = False,
+    http_get: fx_rate_service.HttpGet | None = None,
+    exporter: Sequence[str] | None = None,
+    keep_json: Path | None = None,
+) -> dict:
+    """Convert, then import under the shared lock. Raises ImportRefusedError, ConverterError or MozeImportError."""
+    if import_locked():
+        raise ImportLockedError("MOZE import is locked (ACCOUNTING_IMPORT_LOCKED=true)")
+    zip_path = Path(zip_path)
+    if not zip_path.is_file():
+        raise MozeImportError(f"backup archive not found: {zip_path}")
+    if zip_path.stat().st_size > MAX_BACKUP_BYTES:
+        raise MozeImportError("backup archive is larger than 200 MB")
+    with zip_path.open("rb") as handle:
+        sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+    with tempfile.TemporaryDirectory(prefix="moze-backup-") as work:
+        json_path = convert_backup(zip_path, Path(work), exporter)
+        if keep_json is not None:
+            shutil.copyfile(json_path, keep_json)
+            os.chmod(keep_json, 0o600)
+        data = load_backup_json(json_path)
+    with import_lock(engine) as conn:
+        return _run_backup_locked(
+            conn, data, file_name, sha256, dry_run=dry_run, renames=renames or {}, strict=strict,
+            allow_fx_outliers=allow_fx_outliers, http_get=http_get,
+        )
+
+
+def _schedule_due(kind: str, payload: dict) -> date | None:
+    def day(value) -> date | None:
+        return date.fromisoformat(value[:10]) if isinstance(value, str) and len(value) >= 10 else None
+
+    if kind == "skipped_record":
+        return day(payload.get("date"))
+    if kind == "installment":
+        upcoming = sorted(d for d in (day(v) for v in (payload.get("dateInfo") or {}).values()) if d and d >= ledger_service._today())
+        if upcoming:
+            return upcoming[0]
+    return day(payload.get("startDate"))
+
+
+def list_schedules(db: Session, kind: str | None = None) -> list[dict]:
+    """ScheduleItemOut rows: name, next_date, amount and currency are derived from the stored payload.
+
+    currency: the payload's own `currency`, else the currency of the payload's `account` (by moze_id),
+    else the preference's main currency. The payload itself stays in the table and is not returned.
+    """
+    query = select(MozeSchedule).order_by(MozeSchedule.id)
+    if kind is not None:
+        query = query.where(MozeSchedule.kind == kind)
+    account_currency = dict(db.execute(select(Account.moze_id, Account.currency).where(Account.moze_id.is_not(None))).all())
+    main = ledger_service.main_currency(db)
+    items = []
+    for row in db.scalars(query):
+        payload = row.payload or {}
+        amount = payload.get("total") if row.kind == "skipped_record" else payload.get("installment")
+        currency = payload.get("currency")
+        if not isinstance(currency, str) or not currency:
+            currency = account_currency.get(payload.get("account")) or main
+        items.append(
+            {
+                "id": row.id,
+                "kind": row.kind,
+                "moze_id": row.moze_id,
+                "name": payload.get("name") or None,
+                "next_date": _schedule_due(row.kind, payload),
+                "amount": Decimal(str(amount)) if amount is not None else None,
+                "currency": currency,
+            }
+        )
+    return sorted(items, key=lambda item: (item["next_date"] is None, item["next_date"] or date.min, item["id"]))
+
+
+def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None, exporter: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="python -m app.services.moze_backup_import_service")
+    parser.add_argument("path", type=Path)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--rename", action="append", default=[], type=_parse_rename, metavar="OLD=NEW")
+    parser.add_argument("--allow-fx-outliers", action="store_true")
+    parser.add_argument("--no-strict", action="store_true")
+    parser.add_argument("--keep-json", type=Path, metavar="PATH")
+    args = parser.parse_args(argv)
+
+    if engine is None:
+        from ..database import engine as default_engine
+
+        engine = default_engine
+    try:
+        report = run_backup_import(
+            engine, args.path, args.path.name, dry_run=args.dry_run, renames=dict(args.rename),
+            strict=not args.no_strict, allow_fx_outliers=args.allow_fx_outliers, exporter=exporter,
+            keep_json=args.keep_json,
+        )
+    except ImportRefusedError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except MozeImportError as exc:
+        print(f"import failed: {exc}", file=sys.stderr)
+        return 1
+    compared = report["summary"]["compared_accounts"]
+    print(f"compared_accounts: {compared['compared']} of {compared['total']}", file=sys.stderr)
+    print(f"not_compared: {compared['total'] - compared['compared']}", file=sys.stderr)
+    if compared["compared"] == 0:
+        print(
+            f"WARNING: 0 of {compared['total']} accounts compared; check balances against MOZE by hand",
+            file=sys.stderr,
+        )
+    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
