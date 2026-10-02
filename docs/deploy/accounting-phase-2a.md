@@ -138,10 +138,10 @@ The converter copies `moze.realm` into a scratch directory before opening it; it
 Exact new line (inside `handle /hub/*`, after `uri strip_prefix /hub`):
 
 ```caddyfile
-            @hub_spa path_regexp hub_spa "^(/|/shopping-list|/settings|/portfolio|/portfolio/(transactions|dividends|realized-pnl|accounts|import|import-broker)|/portfolio/accounts/[0-9]+|/accounting|/accounting/(accounts|dashboard|transactions|settings|cards|categories|recurring|entry)|/accounting/accounts/new|/accounting/accounts/[0-9]+|/accounting/accounts/[0-9]+/settings|/accounting/entries/[0-9]+|/accounting/entries/[0-9]+/edit)$"
+            @hub_spa path_regexp hub_spa "^(/|/shopping-list|/settings|/portfolio|/portfolio/(transactions|dividends|realized-pnl|accounts|import|import-broker)|/portfolio/accounts/[0-9]+|/accounting|/accounting/(accounts|dashboard|transactions|settings|cards|categories|recurring|entry)|/accounting/accounts/new|/accounting/accounts/[0-9]+|/accounting/accounts/[0-9]+/settings|/accounting/accounts/[0-9]+/entries/[0-9]+|/accounting/entries/[0-9]+|/accounting/entries/[0-9]+/edit)$"
 ```
 
-New SPA paths: `/accounting` (timeline), `/accounting/entry`, `/accounting/settings` (now a page), `/accounting/accounts/new`, `/accounting/accounts/<n>/settings`, `/accounting/entries/<n>`, `/accounting/entries/<n>/edit`. The phase 1 paths (`dashboard`, `transactions`, `cards`, `categories`, `recurring`) stay so bookmarks reach the SPA, which redirects them to `/accounting`. Query strings (`?kind=`, `?copy=`) are not part of the path.
+New SPA paths: `/accounting` (timeline), `/accounting/entry`, `/accounting/settings` (now a page), `/accounting/accounts/new`, `/accounting/accounts/<n>/settings`, `/accounting/accounts/<n>/entries/<m>` (an entry opened from a passbook; its edit form stays at `/accounting/entries/<m>/edit`), `/accounting/entries/<n>`, `/accounting/entries/<n>/edit`. The phase 1 paths (`dashboard`, `transactions`, `cards`, `categories`, `recurring`) stay so bookmarks reach the SPA, which redirects them to `/accounting`. Query strings (`?kind=`, `?copy=`) are not part of the path.
 
 Edit in place (the container bind-mounts the file, so keep the inode; no `sed -i`):
 
@@ -154,6 +154,7 @@ text = open(path, encoding="utf-8").read()
 old = '|/accounting|/accounting/(accounts|dashboard|transactions|settings|cards|categories|recurring)|/accounting/accounts/[0-9]+)$"'
 new = ('|/accounting|/accounting/(accounts|dashboard|transactions|settings|cards|categories|recurring|entry)'
        '|/accounting/accounts/new|/accounting/accounts/[0-9]+|/accounting/accounts/[0-9]+/settings'
+       '|/accounting/accounts/[0-9]+/entries/[0-9]+'
        '|/accounting/entries/[0-9]+|/accounting/entries/[0-9]+/edit)$"')
 assert text.count(old) == 1, "unexpected @hub_spa line"
 with open(path, "r+", encoding="utf-8") as handle:
@@ -163,7 +164,7 @@ EOF
 grep -n '@hub_spa path_regexp' Caddyfile
 docker exec caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 docker exec caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
-for p in accounting accounting/entry accounting/settings accounting/accounts/new accounting/accounts/12/settings accounting/entries/34 accounting/entries/34/edit accounting/cards; do
+for p in accounting accounting/entry accounting/settings accounting/accounts/new accounting/accounts/12/settings accounting/accounts/12/entries/34 accounting/entries/34 accounting/entries/34/edit accounting/cards; do
   printf '%s %s\n' "$(curl -s -o /dev/null -w '%{http_code}' "https://oracle.saola-mamba.ts.net/hub/$p")" "$p"
 done
 ```

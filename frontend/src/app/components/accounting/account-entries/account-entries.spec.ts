@@ -166,7 +166,7 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
 
     expect(rows[0].querySelector('.ico')?.textContent?.trim()).toBe('🏠');
     expect(rows[0].querySelector('.sub')?.textContent?.trim()).toBe('台灣電力');
-    expect(rows[0].getAttribute('href')).toBe('/accounting/entries/1');
+    expect(rows[0].getAttribute('href')).toBe('/accounting/accounts/7/entries/1');
     expect(rows[0].getAttribute('data-entry-id')).toBe('1');
     expect(rows[0].querySelector('.pills')?.textContent).toContain('家居');
     expect(rows[1].querySelector('.sub')?.textContent?.trim()).toBe('Alan');

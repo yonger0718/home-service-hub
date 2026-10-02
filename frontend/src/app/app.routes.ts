@@ -8,6 +8,8 @@ const ACCOUNTING_PHONE_ROUTES: Routes = [
   { path: 'accounts', loadComponent: ACCOUNTING_PAGES.accounts },
   { path: 'accounts/new', loadComponent: ACCOUNTING_PAGES.accountSettings },
   { path: 'accounts/:id/settings', loadComponent: ACCOUNTING_PAGES.accountSettings },
+  // An entry opened from a passbook keeps the passbook in its URL (✕ / delete return there; ↑ ↓ stay in it).
+  { path: 'accounts/:id/entries/:eid', loadComponent: ACCOUNTING_PAGES.entryDetail },
   { path: 'accounts/:id', loadComponent: ACCOUNTING_PAGES.accountEntries },
   { path: 'entry', loadComponent: ACCOUNTING_PAGES.entryForm },
   { path: 'entries/:id/edit', loadComponent: ACCOUNTING_PAGES.entryForm },
@@ -29,6 +31,7 @@ const ACCOUNTING_WIDE_ROUTES: Routes = [
   { path: 'accounts', pathMatch: 'full', data: { list: 'accounts' }, children: [] },
   { path: 'accounts/new', data: { list: 'accounts' }, children: pane('accountSettings') },
   { path: 'accounts/:id/settings', data: { list: 'accounts' }, children: pane('accountSettings') },
+  { path: 'accounts/:id/entries/:eid', data: { list: 'accounts' }, children: pane('entryDetail') },
   { path: 'accounts/:id', data: { list: 'accounts' }, children: pane('accountEntries') },
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
 ];

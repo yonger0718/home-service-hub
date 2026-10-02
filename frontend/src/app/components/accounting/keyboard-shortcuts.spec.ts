@@ -20,11 +20,19 @@ describe('resolveShortcut', () => {
       commands: ['/accounting/entries', 9, 'edit'],
     });
     expect(resolveShortcut(key('e'), { url: '/accounting', targetTag: null })).toBeNull();
+    // An entry opened from a passbook edits the same way.
+    expect(resolveShortcut(key('e'), { url: '/accounting/accounts/5/entries/9', targetTag: null })).toEqual({
+      type: 'navigate',
+      commands: ['/accounting/entries', 9, 'edit'],
+    });
+    expect(resolveShortcut(key('e'), { url: '/accounting/accounts/5', targetTag: null })).toBeNull();
   });
 
   it('moves the selection with the arrow keys', () => {
     expect(resolveShortcut(key('ArrowDown'), { url: '/accounting', targetTag: null })).toEqual({ type: 'move', delta: 1 });
     expect(resolveShortcut(key('ArrowUp'), { url: '/accounting/entries/9', targetTag: null })).toEqual({ type: 'move', delta: -1 });
+    expect(resolveShortcut(key('ArrowDown'), { url: '/accounting/accounts/5', targetTag: null })).toEqual({ type: 'move', delta: 1 });
+    expect(resolveShortcut(key('ArrowDown'), { url: '/accounting/accounts/5/entries/9', targetTag: null })).toEqual({ type: 'move', delta: 1 });
   });
 
   it('ignores list keys while typing, with modifiers, and outside list pages', () => {

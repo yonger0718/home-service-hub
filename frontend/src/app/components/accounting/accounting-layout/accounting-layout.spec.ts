@@ -201,4 +201,61 @@ describe('AccountingLayoutComponent', () => {
       expect(layoutHost.classList).not.toContain('green-red');
     });
   });
+  it('shows a passbook entry beside the accounts list at 1280px', async () => {
+    const harness = await start('panes', '/accounting/accounts/5/entries/9');
+
+    expect((await find(harness, LIST)).tagName.toLowerCase()).toBe('app-accounting-accounts');
+    expect((await find(harness, PANE_PAGE)).tagName.toLowerCase()).toBe('app-entry-detail');
+    expect(TestBed.inject(Router).url).toBe('/accounting/accounts/5/entries/9');
+  });
+
+  /** Rows as the list pages render them; the layout moves through `[data-entry-id]` in its host. */
+  function addRows(harness: RouterTestingHarness, ids: number[]): HTMLElement {
+    const box = document.createElement('div');
+    for (const id of ids) {
+      const row = document.createElement('a');
+      row.dataset['entryId'] = String(id);
+      box.appendChild(row);
+    }
+    harness.routeNativeElement!.appendChild(box);
+    return box;
+  }
+
+  function press(key: string, init: KeyboardEventInit = {}): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
+    document.body.dispatchEvent(event);
+    return event;
+  }
+
+  it('moves through passbook rows with ↓ / ↑ and stays in the passbook', async () => {
+    const harness = await start('phone', '/accounting/accounts/5');
+    const router = TestBed.inject(Router);
+    addRows(harness, [7, 8, 9]);
+
+    expect(press('ArrowDown').defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/accounts/5/entries/7'));
+    addRows(harness, [7, 8, 9]);
+    press('ArrowDown');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/accounts/5/entries/8'));
+    press('ArrowUp');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/accounts/5/entries/7'));
+  });
+
+  it('leaves keys already handled, IME commits and arrows without rows to the page', async () => {
+    const harness = await start('phone', '/accounting');
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigate');
+
+    const handled = new KeyboardEvent('keydown', { key: 'n', bubbles: true, cancelable: true });
+    handled.preventDefault();
+    document.body.dispatchEvent(handled);
+    expect(press('n', { isComposing: true }).defaultPrevented).toBe(false);
+    expect(press('n', { keyCode: 229 } as KeyboardEventInit).defaultPrevented).toBe(false);
+    // No rows on screen: ↓ is not taken from the page (it may scroll).
+    expect(harness.routeNativeElement!.querySelector('[data-entry-id]')).toBeNull();
+    expect(press('ArrowDown').defaultPrevented).toBe(false);
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(router.url).toBe('/accounting');
+  });
 });

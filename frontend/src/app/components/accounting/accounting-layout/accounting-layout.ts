@@ -20,6 +20,7 @@ import { filter } from 'rxjs';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
+import { isHandledKey } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
 export interface LayoutRouteState {
@@ -45,7 +46,10 @@ export function readLayoutState(root: ActivatedRouteSnapshot): LayoutRouteState 
   return state;
 }
 
-const ENTRY_URL = /^\/accounting\/entries\/(\d+)(?:\/|$)/;
+/** `/accounting/entries/:id…` or, opened from a passbook, `/accounting/accounts/:id/entries/:eid`. */
+const ENTRY_URL = /^\/accounting(?:\/accounts\/\d+)?\/entries\/(\d+)(?:\/|$)/;
+/** A passbook (`/accounting/accounts/:id`) or an entry opened from it: ↓ / ↑ stay inside that passbook. */
+const PASSBOOK_URL = /^\/accounting\/accounts\/(\d+)(?:\/entries\/\d+)?$/;
 const FORM_URL = /^\/accounting\/(?:entry|entries\/\d+\/edit)(?:[/?#]|$)/;
 const SWIPE_CLOSE_PX = 80;
 
@@ -159,6 +163,11 @@ export class AccountingLayoutComponent {
 
   /** Close the pane / sheet: back to the list's own URL. */
   close(): void {
+    const passbook = PASSBOOK_URL.exec(this.url().split(/[?#]/)[0]);
+    if (passbook && this.selectedEntryId() !== null) {
+      void this.router.navigateByUrl(`/accounting/accounts/${passbook[1]}`);
+      return;
+    }
     void this.router.navigateByUrl(this.listKey() === 'accounts' ? '/accounting/accounts' : '/accounting');
   }
 
@@ -174,13 +183,14 @@ export class AccountingLayoutComponent {
 
   /** Global accounting shortcuts. Acts (and marks the event handled) only when no other handler has. */
   onShortcutKey(event: KeyboardEvent): void {
-    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) {
+    if (isHandledKey(event)) {
       return;
     }
     const target = event.target as HTMLElement | null;
     const targetTag = target?.isContentEditable ? 'TEXTAREA' : (target?.tagName ?? null);
     const action = resolveShortcut(event, { url: this.router.url, targetTag: targetTag === 'BODY' ? null : targetTag });
-    if (!action) {
+    // ↓ / ↑ with no rows on screen stay the page's own keys (scrolling).
+    if (!action || (action.type === 'move' && this.rows().length === 0)) {
       return;
     }
     event.preventDefault();
@@ -193,16 +203,23 @@ export class AccountingLayoutComponent {
     }
   }
 
+  private rows(): HTMLElement[] {
+    return Array.from(this.host.nativeElement.querySelectorAll<HTMLElement>('[data-entry-id]'));
+  }
+
   private moveSelection(delta: 1 | -1): void {
-    const rows = Array.from(this.host.nativeElement.querySelectorAll<HTMLElement>('[data-entry-id]'));
+    const rows = this.rows();
     if (rows.length === 0) {
       return;
     }
-    const current = /^\/accounting\/entries\/(\d+)/.exec(this.router.url)?.[1];
+    const path = this.router.url.split(/[?#]/)[0];
+    const current = ENTRY_URL.exec(path)?.[1];
     const index = rows.findIndex(row => row.dataset['entryId'] === current);
     const next = rows[index === -1 ? 0 : Math.min(rows.length - 1, Math.max(0, index + delta))];
     next.scrollIntoView?.({ block: 'nearest' });
-    void this.router.navigate(['/accounting/entries', Number(next.dataset['entryId'])]);
+    const id = Number(next.dataset['entryId']);
+    const passbook = PASSBOOK_URL.exec(path);
+    void this.router.navigate(passbook ? ['/accounting/accounts', Number(passbook[1]), 'entries', id] : ['/accounting/entries', id]);
   }
 
   private focusSheet(): void {

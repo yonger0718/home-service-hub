@@ -1,6 +1,8 @@
 import { Injectable } from '@angular/core';
 import { Subject } from 'rxjs';
 
+import { NO_ENTER_SAVE_TAGS } from './accounting-ui';
+
 export type EntryCommand = 'save' | 'save-continue' | 'cancel';
 
 export type ShortcutAction =
@@ -17,10 +19,10 @@ export interface ShortcutKey {
 }
 
 const ENTRY_FORM = /^\/accounting\/(entry|entries\/\d+\/edit)$/;
-const LIST_PAGE = /^\/accounting(\/entries\/\d+|\/accounts\/\d+)?$/;
-const SELECTED = /^\/accounting\/entries\/(\d+)$/;
+const LIST_PAGE = /^\/accounting(\/entries\/\d+|\/accounts\/\d+(\/entries\/\d+)?)?$/;
+/** The selected entry: `/accounting/entries/:id` or, opened from a passbook, `/accounting/accounts/:id/entries/:eid`. */
+const SELECTED = /^\/accounting(?:\/accounts\/\d+)?\/entries\/(\d+)$/;
 const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
-const NO_ENTER_SAVE_TAGS = new Set(['TEXTAREA', 'BUTTON', 'A', 'SELECT']);
 
 /**
  * Maps a key press to an accounting action. `targetTag` is the focused element's tag name

@@ -17,6 +17,7 @@ const PAGES: [string, string][] = [
   ['/accounting/accounts/new', 'app-account-settings'],
   ['/accounting/accounts/5', 'app-accounting-account-entries'],
   ['/accounting/accounts/5/settings', 'app-account-settings'],
+  ['/accounting/accounts/5/entries/9', 'app-entry-detail'],
   ['/accounting/entry', 'app-entry-form'],
   ['/accounting/entries/9', 'app-entry-detail'],
   ['/accounting/entries/9/edit', 'app-entry-form'],
@@ -124,6 +125,7 @@ describe('accounting navigation', () => {
     ['/accounting/accounts', '帳戶'],
     ['/accounting/accounts/5', '帳戶'],
     ['/accounting/accounts/5/settings', '帳戶'],
+    ['/accounting/accounts/5/entries/9', '帳戶'],
     ['/accounting/settings', '設定'],
   ];
 
