@@ -1,0 +1,217 @@
+<section class="accounting-settings">
+  <h2>記帳設定</h2>
+
+  @if (dataMessage()) {
+    <p class="data-message" role="alert">{{ dataMessage() }}</p>
+  }
+
+  <div class="lbl">資料</div>
+
+  <details class="data-section groups-section">
+    <summary class="srow"><span>🗂</span><span class="t">帳戶分組</span><span class="r">{{ groups().length }} 組</span></summary>
+    @for (group of groups(); track group.id; let i = $index) {
+      <div class="data-row group-row">
+        <input class="row-name group-name" aria-label="分組名稱" [value]="group.name" (change)="renameGroup(group, $any($event.target).value)" />
+        <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveGroup(i, -1)">↑</button>
+        <button type="button" class="move-down" aria-label="下移" [disabled]="i === groups().length - 1" (click)="moveGroup(i, 1)">↓</button>
+        <button type="button" class="row-delete" aria-label="刪除分組" (click)="deleteGroup(group)">🗑</button>
+      </div>
+    }
+    <div class="data-row add-row">
+      <input class="new-group" placeholder="新增分組" [value]="newGroup()" (input)="newGroup.set($any($event.target).value)" (keydown.enter)="enterPressed($any($event)) && addGroup()" />
+      <button type="button" class="add-group" (click)="addGroup()">新增</button>
+    </div>
+  </details>
+
+  <details class="data-section categories-section">
+    <summary class="srow"><span>🏷</span><span class="t">類別</span><span class="r">{{ categories().length }} 主 · {{ subCount() }} 子</span></summary>
+    <div class="kind-tabs" role="tablist">
+      @for (tab of categoryTabs; track tab[0]) {
+        <button type="button" role="tab" class="kind-tab" [class.on]="categoryKind() === tab[0]" [attr.aria-selected]="categoryKind() === tab[0]" (click)="setCategoryKind(tab[0])">{{ tab[1] }}</button>
+      }
+    </div>
+    @for (main of categories(); track main.id; let i = $index) {
+      <div class="data-row cat-row" [class.hidden-cat]="main.is_hidden">
+        <input class="cat-icon" maxlength="16" aria-label="圖示" [value]="main.icon ?? ''" (change)="saveCategory(main, { icon: $any($event.target).value || null })" />
+        <input class="cat-color" type="color" aria-label="顏色" [value]="main.color ?? '#8e8e93'" (change)="saveCategory(main, { color: $any($event.target).value })" />
+        <input class="row-name cat-name" aria-label="類別名稱" [value]="main.name" (change)="saveCategory(main, { name: $any($event.target).value })" />
+        <button type="button" class="cat-hide" [attr.aria-pressed]="main.is_hidden" (click)="saveCategory(main, { is_hidden: !main.is_hidden })">{{ main.is_hidden ? '顯示' : '隱藏' }}</button>
+        <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveCategory(categories(), i, -1)">↑</button>
+        <button type="button" class="move-down" aria-label="下移" [disabled]="i === categories().length - 1" (click)="moveCategory(categories(), i, 1)">↓</button>
+        <button type="button" class="row-delete" aria-label="刪除類別" (click)="deleteCategory(main)">🗑</button>
+      </div>
+      @for (sub of main.children; track sub.id; let j = $index) {
+        <div class="data-row cat-row sub" [class.hidden-cat]="sub.is_hidden">
+          <input class="cat-icon" maxlength="16" aria-label="圖示" [value]="sub.icon ?? ''" (change)="saveCategory(sub, { icon: $any($event.target).value || null })" />
+          <input class="cat-color" type="color" aria-label="顏色" [value]="sub.color ?? '#8e8e93'" (change)="saveCategory(sub, { color: $any($event.target).value })" />
+          <input class="row-name cat-name" aria-label="子類別名稱" [value]="sub.name" (change)="saveCategory(sub, { name: $any($event.target).value })" />
+          <button type="button" class="cat-hide" [attr.aria-pressed]="sub.is_hidden" (click)="saveCategory(sub, { is_hidden: !sub.is_hidden })">{{ sub.is_hidden ? '顯示' : '隱藏' }}</button>
+          <button type="button" class="move-up" aria-label="上移" [disabled]="j === 0" (click)="moveCategory(main.children, j, -1)">↑</button>
+          <button type="button" class="move-down" aria-label="下移" [disabled]="j === main.children.length - 1" (click)="moveCategory(main.children, j, 1)">↓</button>
+          <button type="button" class="row-delete" aria-label="刪除子類別" (click)="deleteCategory(sub)">🗑</button>
+        </div>
+      }
+      <div class="data-row add-row sub">
+        <input class="new-sub" placeholder="新增子類別" [value]="newSub()[main.id] ?? ''" (input)="setNewSub(main.id, $any($event.target).value)" (keydown.enter)="enterPressed($any($event)) && addCategory(main)" />
+        <button type="button" (click)="addCategory(main)">新增</button>
+      </div>
+    }
+    <div class="data-row add-row">
+      <input class="new-category" placeholder="新增主類別" [value]="newCategory()" (input)="newCategory.set($any($event.target).value)" (keydown.enter)="enterPressed($any($event)) && addCategory(null)" />
+      <button type="button" (click)="addCategory(null)">新增</button>
+    </div>
+  </details>
+
+  <details class="data-section projects-section">
+    <summary class="srow"><span>📁</span><span class="t">專案</span><span class="r">{{ projects().length }}</span></summary>
+    @for (project of projects(); track project.id; let i = $index) {
+      <div class="data-row project-row" [class.hidden-cat]="project.is_archived">
+        <input class="row-name project-name" aria-label="專案名稱" [value]="project.name" (change)="saveProject(project, { name: $any($event.target).value })" />
+        <button type="button" class="project-archive" (click)="saveProject(project, { is_archived: !project.is_archived })">{{ project.is_archived ? '取消封存' : '封存' }}</button>
+        <button type="button" class="move-up" aria-label="上移" [disabled]="i === 0" (click)="moveProject(i, -1)">↑</button>
+        <button type="button" class="move-down" aria-label="下移" [disabled]="i === projects().length - 1" (click)="moveProject(i, 1)">↓</button>
+        <button type="button" class="row-delete" aria-label="刪除專案" (click)="deleteProject(project)">🗑</button>
+      </div>
+    }
+    <div class="data-row add-row">
+      <input class="new-project" placeholder="新增專案" [value]="newProject()" (input)="newProject.set($any($event.target).value)" (keydown.enter)="enterPressed($any($event)) && addProject()" />
+      <button type="button" (click)="addProject()">新增</button>
+    </div>
+  </details>
+
+  <details class="data-section counterparties-section">
+    <summary class="srow"><span>👥</span><span class="t">對象</span><span class="r">{{ counterparties().length }}</span></summary>
+    <input class="cp-filter" type="search" placeholder="搜尋對象" [value]="cpFilter()" (input)="cpFilter.set($any($event.target).value)" />
+    @for (cp of visibleCounterparties(); track cp.id) {
+      <div class="data-row cp-row">
+        <input class="row-name cp-name" aria-label="對象名稱" [value]="cp.name" (change)="renameCounterparty(cp, $any($event.target).value)" />
+        <span class="cp-open">{{ openAmounts(cp) }}</span>
+        <button type="button" class="row-delete" aria-label="刪除對象" (click)="deleteCounterparty(cp)">🗑</button>
+      </div>
+    }
+    <div class="data-row add-row">
+      <input class="new-counterparty" placeholder="新增對象" [value]="newCounterparty()" (input)="newCounterparty.set($any($event.target).value)" (keydown.enter)="enterPressed($any($event)) && addCounterparty()" />
+      <button type="button" (click)="addCounterparty()">新增</button>
+    </div>
+  </details>
+
+  <div class="lbl">顯示</div>
+  @if (preference(); as pref) {
+    <label class="srow">
+      <span>🎨</span><span class="t">支出收入顏色</span>
+      <select class="r pref-colors" (change)="setPreference('expense_income_colors', $any($event.target).value)">
+        <option value="red_green" [selected]="pref.expense_income_colors === 'red_green'">紅 / 綠</option>
+        <option value="green_red" [selected]="pref.expense_income_colors === 'green_red'">綠 / 紅</option>
+      </select>
+    </label>
+    <label class="srow">
+      <span>🔢</span><span class="t">數字鍵盤順序</span>
+      <select class="r pref-keypad" (change)="setPreference('keypad_layout', $any($event.target).value)">
+        <option value="calculator" [selected]="pref.keypad_layout === 'calculator'">計算機</option>
+        <option value="phone" [selected]="pref.keypad_layout === 'phone'">電話</option>
+      </select>
+    </label>
+    <label class="srow">
+      <span>📅</span><span class="t">月曆起始星期</span>
+      <select class="r pref-week" (change)="setPreference('week_start', +$any($event.target).value)">
+        @for (day of weekdays; track $index) {
+          <option [value]="$index" [selected]="pref.week_start === $index">{{ day }}</option>
+        }
+      </select>
+    </label>
+    <div class="srow">
+      <span>🙈</span><span class="t">首頁隱藏紅利回饋</span>
+      <button type="button" class="tog pref-hide-rewards" role="switch" aria-label="首頁隱藏紅利回饋" [attr.aria-checked]="pref.hide_rewards_on_timeline" [class.on]="pref.hide_rewards_on_timeline" (click)="setPreference('hide_rewards_on_timeline', !pref.hide_rewards_on_timeline)"></button>
+    </div>
+    <div class="srow">
+      <span>🔤</span><span class="t">總額縮寫</span>
+      <button type="button" class="tog pref-abbreviate" role="switch" aria-label="總額縮寫" [attr.aria-checked]="pref.abbreviate_totals" [class.on]="pref.abbreviate_totals" (click)="setPreference('abbreviate_totals', !pref.abbreviate_totals)"></button>
+    </div>
+    <div class="srow"><span>💱</span><span class="t">主幣種</span><span class="r">{{ pref.main_currency }}</span></div>
+  }
+
+  <div class="lbl">匯入</div>
+  <div class="import-box">
+    <p class="srow latest-import">
+      <span>📦</span><span class="t">匯入 MOZE 備份 (.zip)</span>
+      <span class="r">
+        @if (latest(); as run) {
+          上次 {{ run.started_at | date: 'MM/dd HH:mm' }}{{ run.row_count !== null ? ' · ' + (run.row_count | number) + ' 筆' : '' }}
+        } @else {
+          尚未匯入
+        }
+      </span>
+    </p>
+    <input class="backup-file" type="file" accept=".zip,application/zip" aria-label="選擇 MOZE 備份" (change)="onFile($event)" />
+    <div class="btnrow">
+      <button type="button" class="dry-run" [disabled]="!file() || importing()" (click)="dryRun()">試算</button>
+      <button type="button" class="pri real-run" [disabled]="!canImport()" (click)="realRun()">匯入</button>
+    </div>
+    @if (importing()) {
+      <p class="muted">處理中，備份轉換可能需要數分鐘…</p>
+    }
+    @if (importError()) {
+      <p class="import-error" role="alert">{{ importError() }}</p>
+    }
+
+    @if (report(); as r) {
+      <div class="import-report">
+        <h4>{{ reportMode() === 'dry' ? '試算結果（尚未寫入）' : '匯入完成' }}</h4>
+        @if (r.kindCounts.length) {
+          <p><b>各類型筆數：</b>
+            @for (pair of r.kindCounts; track pair[0]; let last = $last) {
+              <span>{{ kindLabel(pair[0]) }} {{ pair[1] | number }}{{ last ? '' : '、' }}</span>
+            }
+          </p>
+        }
+        @if (r.skippedFuture.length) {
+          <p><b>未來記錄（略過）：</b>
+            @for (pair of r.skippedFuture; track pair[0]; let last = $last) {
+              <span>{{ kindLabel(pair[0]) }} {{ pair[1] | number }}{{ last ? '' : '、' }}</span>
+            }
+          </p>
+        }
+        @if (r.compared; as c) {
+          <p class="compared">已比對 {{ c.compared }} / {{ c.total }} 個帳戶{{ c.compared === 0 ? '（無可比對帳戶，請人工核對餘額）' : '' }}</p>
+        }
+        @if (r.changedAccounts.length) {
+          <p><b>與上次匯入不同的帳戶：</b></p>
+          <ul>
+            @for (account of r.changedAccounts; track account.name) {
+              <li>{{ account.name }}：{{ formatMoney(account.previous, account.currency) }} → {{ formatMoney(account.current, account.currency) }}</li>
+            }
+          </ul>
+        }
+        @if (r.settingsSkipped.length) {
+          <p><b>已自訂、未覆寫設定：</b>{{ r.settingsSkipped.join('、') }}</p>
+        }
+        <p>待確認 {{ r.needsReview }} 筆
+          @for (reason of r.reviewReasons; track reason[0]) {
+            <span class="muted">（{{ reason[0] }} {{ reason[1] }}）</span>
+          }
+        </p>
+        @if (r.fxOutliers > 0) {
+          <p class="import-error">匯率異常 {{ r.fxOutliers }} 筆</p>
+        }
+      </div>
+    }
+
+    <div class="srow lock-row">
+      <span>🔒</span><span class="t">匯入鎖定</span><span class="r">未鎖定（切換後鎖定）</span>
+    </div>
+    <p class="lock-note muted">此狀態由伺服器環境變數 ACCOUNTING_IMPORT_LOCKED 控制，頁面無法讀取；切換後設為 true，之後的匯入會被拒絕，所有記錄都可編輯。</p>
+  </div>
+
+  <div class="lbl">分期 / 週期</div>
+  <p class="muted">MOZE 的分期與週期記錄，第 4 階段起自動產生；目前僅供參考，到期時請手動記帳。</p>
+  @for (item of schedules(); track item.id) {
+    <div class="data-row schedule-row">
+      <span class="pill">{{ scheduleLabels[item.kind] ?? item.kind }}</span>
+      <span class="row-name">{{ item.name ?? item.moze_id }}</span>
+      <span class="muted">{{ item.next_date ? slashDate(item.next_date) : '—' }}</span>
+      <span class="amount">{{ item.amount !== null ? formatMoney(item.amount, item.currency ?? 'TWD') : '—' }}</span>
+    </div>
+  } @empty {
+    <p class="muted">沒有預定項目</p>
+  }
+</section>
