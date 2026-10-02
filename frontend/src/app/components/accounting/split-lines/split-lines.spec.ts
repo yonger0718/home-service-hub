@@ -205,4 +205,22 @@ describe('SplitLinesComponent', () => {
     http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/counterparties').flush({ id: 11, name: 'Cara', open_amounts: [] });
     expect(created.map(party => party.id)).toEqual([11]);
   });
+  it('says 無法讀取分類 when the category tree fails to load, and retries on the next open', () => {
+    el.querySelector<HTMLButtonElement>('.add')!.click();
+    fixture.detectChanges();
+    http
+      .expectOne(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=expense'))
+      .flush('boom', { status: 500, statusText: 'Server Error' });
+    http.expectOne('/api/accounting/counterparties').flush([]);
+    fixture.detectChanges();
+    expect(el.querySelector('.line-error')?.textContent?.trim()).toBe('無法讀取分類');
+
+    el.querySelector<HTMLButtonElement>('.btnrow button')!.click();
+    fixture.detectChanges();
+    el.querySelector<HTMLButtonElement>('.add')!.click();
+    fixture.detectChanges();
+    http.expectOne(r => r.url.startsWith('/api/accounting/categories') && r.urlWithParams.includes('kind=expense')).flush(RECEIVABLE_TREE);
+    fixture.detectChanges();
+    expect(el.querySelector('.line-error')).toBeNull();
+  });
 });

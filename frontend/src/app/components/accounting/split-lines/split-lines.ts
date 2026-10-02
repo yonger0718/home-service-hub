@@ -148,7 +148,17 @@ export class SplitLinesComponent {
       return;
     }
     this.loaded.update(current => ({ ...current, [kind]: [] }));
-    this.service.getCategories(kind).subscribe(tree => this.loaded.update(current => ({ ...current, [kind]: tree })));
+    this.service.getCategories(kind).subscribe({
+      next: tree => this.loaded.update(current => ({ ...current, [kind]: tree })),
+      error: () => {
+        // Retried on the next open or kind switch.
+        this.loaded.update(current => {
+          const { [kind]: _failed, ...rest } = current;
+          return rest;
+        });
+        this.error.set('無法讀取分類');
+      },
+    });
   }
 
   add(): void {
