@@ -13,7 +13,7 @@ from sqlalchemy.engine import URL, Engine, make_url
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
-from app.database import SQLALCHEMY_DATABASE_URL, get_db
+from app.database import SQLALCHEMY_DATABASE_URL, get_db, get_engine
 from app.main import app
 from app.services import fx_rate_service
 
@@ -139,6 +139,7 @@ def client(pg_engine: Engine, db_session):
             db.close()
 
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_engine] = lambda: pg_engine
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()

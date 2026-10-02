@@ -31,3 +31,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
     yield from _get_db(SessionLocal)
+
+
+def get_engine():
+    return engine

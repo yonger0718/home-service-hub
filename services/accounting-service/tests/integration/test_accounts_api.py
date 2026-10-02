@@ -138,10 +138,10 @@ def test_unknown_account_is_404_and_limit_is_capped(client, db_session):
     assert client.get(f"/accounts/{wallet.id}/entries").json()["limit"] == 50
 
 
-def test_no_write_endpoints_for_accounts_or_entries():
+def test_only_write_endpoint_is_the_import():
     writes = [
         (route.path, sorted(route.methods))
         for route in app.routes
         if getattr(route, "methods", None) and route.methods & {"POST", "PUT", "PATCH", "DELETE"}
     ]
-    assert writes == []
+    assert writes == [("/imports/moze", ["POST"])]
