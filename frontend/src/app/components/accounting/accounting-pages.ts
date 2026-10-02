@@ -27,6 +27,6 @@ export const ACCOUNTING_PAGES: Record<AccountingPage, PageLoader> = {
   accountEntries: () => import('./account-entries/account-entries').then(m => m.AccountingAccountEntriesComponent),
   accountSettings: placeholder,
   entryForm: () => import('./entry-form/entry-form').then(m => m.EntryFormComponent),
-  entryDetail: placeholder,
+  entryDetail: () => import('./entry-detail/entry-detail').then(m => m.EntryDetailComponent),
   settings: placeholder,
 };
