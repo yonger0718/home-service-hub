@@ -1,6 +1,7 @@
 import pytest
 from alembic import command
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 LEGACY_TABLES = (
     "categories",
@@ -10,7 +11,11 @@ LEGACY_TABLES = (
     "subscriptions",
     "transactions",
 )
-LEDGER_TABLES = ("account", "category", "fx_rate", "import_run", "ledger_entry", "project")
+LEDGER_TABLES = (
+    "account", "account_group", "category", "counterparty", "entry_group", "entry_reward_rule", "fx_rate",
+    "import_run", "ledger_entry", "moze_schedule", "preference", "project", "reward_rule",
+)
+PHASE_1_HEAD = "5d2e7c9a1b3f"
 
 
 def _schema(url) -> dict:
@@ -138,3 +143,202 @@ def test_upgrade_holds_legacy_table_locks_before_the_emptiness_check(database_fa
     finally:
         engine.dispose()
         writer_engine.dispose()
+
+
+def _models_schema(url) -> dict:
+    """Schema built by Base.metadata.create_all (plus the sequence the models reference)."""
+    from app.database import Base
+
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE SEQUENCE ledger_entry_seq_seq AS BIGINT"))
+        Base.metadata.create_all(engine)
+    finally:
+        engine.dispose()
+    schema = _schema(url)
+    schema["tables"] = [t for t in schema["tables"] if t != "alembic_version"]
+    return schema
+
+
+def _phase_1_rows(url) -> None:
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        account_id = conn.execute(
+            text("INSERT INTO account (name, currency) VALUES ('錢包', 'TWD') RETURNING id")
+        ).scalar_one()
+        for day, counterparty in ((1, "Alan"), (2, "Alan"), (3, "Alan"), (4, "Bob"), (5, None)):
+            conn.execute(
+                text(
+                    "INSERT INTO ledger_entry (account_id, kind, amount, currency, entry_date, counterparty, source) "
+                    "VALUES (:a, 'receivable', -100, 'TWD', :d, :c, 'moze_import')"
+                ),
+                {"a": account_id, "d": f"2026-09-0{day}", "c": counterparty},
+            )
+    engine.dispose()
+
+
+def test_head_schema_matches_the_models(database_factory, alembic_config):
+    migrated = database_factory()
+    command.upgrade(alembic_config(migrated), "head")
+    schema = _schema(migrated)
+    schema["tables"] = [t for t in schema["tables"] if t != "alembic_version"]
+
+    assert schema == _models_schema(database_factory())
+
+
+def test_upgrade_backfills_posted_date_and_links_counterparties(database_factory, alembic_config):
+    url = database_factory()
+    config = alembic_config(url)
+    command.upgrade(config, PHASE_1_HEAD)
+    _phase_1_rows(url)
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        counterparties = dict(conn.execute(text("SELECT name, id FROM counterparty")).all())
+        links = conn.execute(
+            text("SELECT counterparty_id, count(*) FROM ledger_entry GROUP BY counterparty_id")
+        ).all()
+        mismatched = conn.execute(text("SELECT count(*) FROM ledger_entry WHERE posted_date <> entry_date")).scalar_one()
+    engine.dispose()
+    assert sorted(counterparties) == ["Alan", "Bob"]
+    assert sorted(links, key=lambda row: (row[0] is None, row[0])) == sorted(
+        [(counterparties["Alan"], 3), (counterparties["Bob"], 1), (None, 1)],
+        key=lambda row: (row[0] is None, row[0]),
+    )
+    assert mismatched == 0
+
+
+def test_upgrade_backfills_is_settlement_for_phase_1_collections(database_factory, alembic_config):
+    url = database_factory()
+    config = alembic_config(url)
+    command.upgrade(config, PHASE_1_HEAD)
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        account_id = conn.execute(
+            text("INSERT INTO account (name, currency) VALUES ('錢包', 'TWD') RETURNING id")
+        ).scalar_one()
+        # Phase 1 CSV rows: 借出 (-420), 收款 (+200), 借入 (+300), 還款 (-100), an expense.
+        for kind, amount in (("receivable", -420), ("receivable", 200), ("payable", 300), ("payable", -100), ("expense", -60)):
+            conn.execute(
+                text(
+                    "INSERT INTO ledger_entry (account_id, kind, amount, currency, entry_date, source) "
+                    "VALUES (:a, :k, :m, 'TWD', '2026-09-01', 'moze_import')"
+                ),
+                {"a": account_id, "k": kind, "m": amount},
+            )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        flags = conn.execute(
+            text("SELECT kind::text, amount::int, is_settlement FROM ledger_entry ORDER BY id")
+        ).all()
+    with pytest.raises(IntegrityError, match="ck_ledger_entry_settlement_sign"), engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO ledger_entry (account_id, kind, amount, currency, entry_date, source) "
+                "VALUES (:a, 'receivable', 50, 'TWD', '2026-09-02', 'manual')"
+            ),
+            {"a": account_id},
+        )
+    engine.dispose()
+    assert flags == [
+        ("receivable", -420, False), ("receivable", 200, True), ("payable", 300, False),
+        ("payable", -100, True), ("expense", -60, False),
+    ]
+
+
+def test_downgrade_restores_phase_1_schema_and_counterparty_text(database_factory, alembic_config):
+    reference = database_factory()
+    command.upgrade(alembic_config(reference), PHASE_1_HEAD)
+
+    url = database_factory()
+    config = alembic_config(url)
+    command.upgrade(config, PHASE_1_HEAD)
+    _phase_1_rows(url)
+    command.upgrade(config, "head")
+    command.downgrade(config, PHASE_1_HEAD)
+
+    assert _version(url) == PHASE_1_HEAD
+    assert _schema(url) == _schema(reference)
+    engine = create_engine(url)
+    with engine.connect() as conn:
+        restored = conn.execute(
+            text("SELECT counterparty, count(*) FROM ledger_entry GROUP BY counterparty ORDER BY counterparty")
+        ).all()
+        sources = conn.execute(
+            text("SELECT enum_range(NULL::entry_source)::text, enum_range(NULL::fx_source)::text")
+        ).one()
+    engine.dispose()
+    assert restored == [("Alan", 3), ("Bob", 1), (None, 1)]
+    assert sources == ("{moze_import,manual,hermes}", "{fx_api,moze_backup}")
+
+
+def test_downgrade_refuses_when_phase_2a_data_exists(database_factory, alembic_config):
+    url = database_factory()
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        account_id = conn.execute(
+            text("INSERT INTO account (name, currency) VALUES ('錢包', 'TWD') RETURNING id")
+        ).scalar_one()
+        conn.execute(
+            text(
+                "INSERT INTO ledger_entry (account_id, kind, amount, currency, entry_date, posted_date, source) "
+                "VALUES (:a, 'reward', 30, 'TWD', '2026-10-01', '2026-11-05', 'manual')"
+            ),
+            {"a": account_id},
+        )
+        conn.execute(text("INSERT INTO account_group (name) VALUES ('信用卡')"))
+    engine.dispose()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        command.downgrade(config, PHASE_1_HEAD)
+
+    message = str(excinfo.value)
+    assert "1 ledger_entry rows with source = manual" in message
+    assert "1 ledger_entry rows whose posted_date differs from entry_date" in message
+    assert "1 account_group rows" in message
+    assert _version(url) == "7b1e4a2c9d05"
+
+
+def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config):
+    url = database_factory()
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        account_id = conn.execute(
+            text("INSERT INTO account (name, currency) VALUES ('錢包', 'TWD') RETURNING id")
+        ).scalar_one()
+        conn.execute(
+            text(
+                "INSERT INTO ledger_entry (account_id, kind, amount, currency, entry_date, source) "
+                "VALUES (:a, 'expense', -60, 'TWD', '2026-09-01', 'moze_backup')"
+            ),
+            {"a": account_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO reward_rule (account_id, name, method, rate, posting) "
+                "VALUES (:a, '國內 1%', 'percent', 1, 'after_window')"
+            ),
+            {"a": account_id},
+        )
+    engine.dispose()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        command.downgrade(config, PHASE_1_HEAD)
+
+    message = str(excinfo.value)
+    assert message.startswith("refusing to downgrade 7b1e4a2c9d05: phase 1 cannot hold ")
+    assert "1 ledger_entry rows with source = moze_backup" in message
+    assert "1 reward_rule rows" in message
+    assert "source = manual" not in message
+    assert _version(url) == "7b1e4a2c9d05"

@@ -82,3 +82,21 @@ def test_converted_entry_keeps_original_amount_currency_and_rate(db_session):
 
     assert (entry.amount, entry.original_amount, entry.original_currency) == (Decimal("-360.0000"), Decimal("-1800.0000"), "JPY")
     assert (entry.fx_rate, entry.fx_source) == (Decimal("0.1987662123"), "fx_api")
+
+
+def test_migrated_posted_date_follows_entry_date_unless_given(db_session):
+    # The migration installs the same trigger as the models (D14).
+    wallet = Account(name="錢包", currency="TWD")
+    db_session.add(wallet)
+    db_session.flush()
+    plain = LedgerEntry(account_id=wallet.id, kind="expense", amount=Decimal("-1"), currency="TWD",
+                        entry_date=date(2026, 9, 30), source="manual")
+    later = LedgerEntry(account_id=wallet.id, kind="reward", amount=Decimal("5"), currency="TWD",
+                        entry_date=date(2026, 9, 30), posted_date=date(2026, 11, 5), source="manual")
+    db_session.add_all([plain, later])
+    db_session.commit()
+
+    assert (plain.posted_date, later.posted_date) == (date(2026, 9, 30), date(2026, 11, 5))
+    plain.posted_date = None
+    db_session.commit()
+    assert plain.posted_date == date(2026, 9, 30)
