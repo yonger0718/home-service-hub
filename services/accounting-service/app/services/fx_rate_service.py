@@ -142,3 +142,15 @@ def ensure_rates(
     if failures:
         raise FxRateUnavailableError("; ".join(failures))
     return rates
+
+
+def get_rate(session: Session, day: date, base: str, quote: str, http_get: HttpGet | None = None) -> Decimal:
+    """One daily rate (1 `base` = rate `quote`): 1 for the same currency, else the cache, else fetched and stored.
+
+    Fetching commits the session (ensure_rates with persist=True). Raises FxRateUnavailableError.
+    """
+    base, quote = base.upper(), quote.upper()
+    if base == quote:
+        return Decimal(1)
+    key = (day, base, quote)
+    return ensure_rates(session, [key], persist=True, http_get=http_get)[key]

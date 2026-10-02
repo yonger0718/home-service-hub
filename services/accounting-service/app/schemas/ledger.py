@@ -214,3 +214,20 @@ class CounterpartyOut(BaseModel):
     name: str
     moze_id: str | None
     open_amounts: list[OpenAmountOut]
+
+
+class PreferenceOut(BaseModel):
+    expense_income_colors: Literal["red_green", "green_red"]
+    keypad_layout: Literal["calculator", "phone"]
+    week_start: int
+    main_currency: str
+    hide_rewards_on_timeline: bool
+    abbreviate_totals: bool
+
+
+class FxRateOut(BaseModel):
+    date: date
+    base: str
+    quote: str
+    rate: Decimal
+    source: str

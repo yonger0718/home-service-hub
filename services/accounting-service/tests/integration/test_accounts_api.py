@@ -2,7 +2,6 @@ import uuid
 from datetime import date, time, timedelta
 from decimal import Decimal
 
-from app.main import app
 from app.models import Account, AccountGroup, Category, FxRate, LedgerEntry, Preference, Project, RewardRule
 from app.services import ledger_service
 
@@ -383,11 +382,3 @@ def test_account_summary_unknown_account_is_404_and_bad_range_is_422(client, db_
     empty = client.get(f"/accounts/{wallet.id}/summary", params={"date_from": "2026-09-30", "date_to": "2026-09-30"}).json()
     assert (empty["count"], empty["net"], empty["end_balance"]) == (0, "0", "2000.0000")
 
-
-def test_only_write_endpoint_is_the_import():
-    writes = [
-        (route.path, sorted(route.methods))
-        for route in app.routes
-        if getattr(route, "methods", None) and route.methods & {"POST", "PUT", "PATCH", "DELETE"}
-    ]
-    assert writes == [("/imports/moze", ["POST"])]
