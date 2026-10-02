@@ -1,7 +1,8 @@
 """MOZE CSV import: transactional full replace of MOZE-sourced ledger data (design D6)."""
 
 from collections import Counter
-from decimal import Decimal
+from datetime import date
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Mapping, Sequence
 
 from sqlalchemy import delete, func, select, text
@@ -64,12 +65,37 @@ class _Lookup:
         return self.projects[name]
 
 
+AMOUNT_QUANTUM = Decimal("0.0001")  # amount is NUMERIC(20,4)
+
+
+def required_rates(parsed: ParsedFile) -> set[tuple[date, str, str]]:
+    """(day, row currency, account currency) for every row not recorded in its account's currency."""
+    return {
+        (row.entry_date, row.currency, parsed.accounts[row.account].currency)
+        for row in parsed.rows
+        if row.currency != parsed.accounts[row.account].currency
+    }
+
+
+def _converted(amount: Decimal, rate: Decimal | None) -> Decimal:
+    if rate is None:
+        return amount
+    return (amount * rate).quantize(AMOUNT_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def _fx_columns(amount: Decimal, currency: str, rate: Decimal | None) -> dict:
+    if rate is None:
+        return {}
+    return {"original_amount": amount, "original_currency": currency, "fx_rate": rate, "fx_source": "fx_api"}
+
+
 def _insert_entries(
     session: Session,
     rows: Sequence[MozeRow],
     accounts: Mapping[str, Account],
     pairing: PairingResult,
     import_run_id: int | None,
+    rates: Mapping[tuple[date, str, str], Decimal],
 ) -> list[LedgerEntry]:
     lookup = _Lookup(session)
     total = len(rows) + sum(1 for r in rows if r.fee != 0) + sum(1 for r in rows if r.discount != 0)
@@ -84,11 +110,20 @@ def _insert_entries(
     parents: list[tuple[MozeRow, LedgerEntry, list[LedgerEntry]]] = []
     for row in rows:
         account = accounts[row.account]
+        rate = None
+        if row.currency != account.currency:
+            key = (row.entry_date, row.currency, account.currency)
+            if key not in rates:
+                raise MozeImportError(
+                    f"row {row.row_no}: no FX rate for {row.currency}→{account.currency} on {row.entry_date.isoformat()}"
+                )
+            rate = rates[key]
         parent = LedgerEntry(
             account_id=account.id,
             kind=row.kind,
-            amount=row.amount,
+            amount=_converted(row.amount, rate),
             currency=account.currency,
+            **_fx_columns(row.amount, row.currency, rate),
             entry_date=row.entry_date,
             entry_time=row.entry_time,
             category_id=lookup.category_id(row.kind, row.main_category, row.sub_category),
@@ -111,8 +146,9 @@ def _insert_entries(
                     LedgerEntry(
                         account_id=account.id,
                         kind=kind,
-                        amount=amount,
+                        amount=_converted(amount, rate),
                         currency=account.currency,
+                        **_fx_columns(amount, row.currency, rate),
                         entry_date=row.entry_date,
                         entry_time=row.entry_time,
                         category_id=lookup.category_id(kind, "", ""),
@@ -221,8 +257,12 @@ def replace_ledger(
     pairing: PairingResult,
     import_run_id: int | None,
     renames: Mapping[str, str] | None = None,
+    rates: Mapping[tuple[date, str, str], Decimal] | None = None,
 ) -> dict:
-    """Run full-replace steps 1-6 in the caller's transaction and return the report summary."""
+    """Run full-replace steps 1-6 in the caller's transaction and return the report summary.
+
+    `rates` maps (day, row currency, account currency) to the rate for every foreign-currency row.
+    """
     renamed = _apply_renames(session, renames or {})
 
     session.execute(delete(LedgerEntry).where(LedgerEntry.source == SOURCE))
@@ -245,7 +285,7 @@ def replace_ledger(
 
     archived = _archive_disappeared_accounts(session, set(parsed.accounts))
 
-    inserted = _insert_entries(session, parsed.rows, accounts, pairing, import_run_id)
+    inserted = _insert_entries(session, parsed.rows, accounts, pairing, import_run_id, rates or {})
 
     _delete_unused_categories_and_projects(session)
     session.flush()

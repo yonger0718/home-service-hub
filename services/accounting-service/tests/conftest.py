@@ -7,6 +7,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from requests.exceptions import ConnectionError as RequestsConnectionError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, Engine, make_url
 from sqlalchemy.exc import OperationalError
@@ -14,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import SQLALCHEMY_DATABASE_URL, get_db
 from app.main import app
+from app.services import fx_rate_service
 
 SERVICE_DIR = Path(__file__).resolve().parents[1]
 LEDGER_TABLES = "ledger_entry, import_run, category, project, account, fx_rate"
@@ -48,6 +50,46 @@ def _alembic_config(url: URL) -> Config:
         "sqlalchemy.url", url.render_as_string(hide_password=False).replace("%", "%%")
     )
     return config
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Tests never reach the real FX API; pass a fake http_get instead."""
+
+    def _blocked(url, *args, **kwargs):
+        raise AssertionError(f"unexpected network call in tests: {url}")
+
+    monkeypatch.setattr(fx_rate_service.requests, "get", _blocked)
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, payload: dict | None = None):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict | None:
+        return self._payload
+
+
+class FakeHttp:
+    """Fake requests.get: answers URLs containing a known fragment, records every call."""
+
+    def __init__(self, responses: dict[str, tuple[int, dict | None]]):
+        self.responses = responses
+        self.calls: list[str] = []
+
+    def __call__(self, url: str, timeout: int) -> FakeResponse:
+        self.calls.append(url)
+        for fragment, (status, payload) in self.responses.items():
+            if fragment in url:
+                return FakeResponse(status, payload)
+        raise RequestsConnectionError(f"unreachable: {url}")
+
+
+@pytest.fixture()
+def fake_http():
+    """Build a fake FX source: fake_http({"currency-api@2026-07-10/v1/currencies/jpy.json": (200, payload)})."""
+    return FakeHttp
 
 
 @pytest.fixture()

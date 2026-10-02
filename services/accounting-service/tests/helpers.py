@@ -6,9 +6,9 @@ from app.services.moze_import_service import replace_ledger
 from app.services.transfer_pairing import pair_transfers
 
 
-def _import(session, data: bytes, renames=None) -> dict:
+def _import(session, data: bytes, renames=None, rates=None) -> dict:
     parsed = parse_moze_csv(data)
-    summary = replace_ledger(session, parsed, pair_transfers(parsed.rows), None, renames)
+    summary = replace_ledger(session, parsed, pair_transfers(parsed.rows), None, renames, rates)
     session.commit()
     return summary
 
