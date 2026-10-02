@@ -740,4 +740,48 @@ describe('EntryFormComponent', () => {
 
     expect((el.querySelector('app-split-lines .add') as HTMLButtonElement).disabled).toBe(true);
   });
+  it('closes the split sheet on Esc from its + button without leaving the form', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    const add = el.querySelector('app-split-lines .add') as HTMLButtonElement;
+    add.click();
+    settle();
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/counterparties', []);
+    expect(el.querySelector('app-split-lines .sheet')).not.toBeNull();
+
+    add.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    settle();
+    expect(el.querySelector('app-split-lines .sheet')).toBeNull();
+    expect(left()).toBe(false);
+    expect(harness.routeNativeElement?.querySelector('.entry-form')).not.toBeNull();
+  });
+
+  it('forgets the split group when a reload finds the entry no longer in one', async () => {
+    const { el } = await open('/accounting/entries/7/edit');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    respond('/api/accounting/entries/7', SPLIT_SEVEN);
+    respond('/api/accounting/entries/8', SPLIT_EIGHT);
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect(form.groupId()).toBe(4);
+
+    form.reload();
+    settle();
+    respond('/api/accounting/entries/7', { ...SPLIT_SEVEN, group: null, group_members: [] });
+    expect(form.groupId()).toBeNull();
+    expect(form.members()).toEqual([]);
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT');
+    expect(put.request.url).toBe('/api/accounting/entries/7');
+    put.flush(makeEntryDetail({ id: 7 }));
+    settle();
+  });
 });

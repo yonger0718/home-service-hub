@@ -11,8 +11,8 @@
     <label class="acc acc-from">
       <span class="ico">{{ from()?.icon ?? '🏦' }}</span>
       <select class="acc-select from-select" aria-label="轉出帳戶" [disabled]="locked()" (change)="setFrom($any($event.target).value)">
-        @for (account of activeAccounts(); track account.id) {
-          <option [value]="account.id" [selected]="account.id === fromId()">{{ account.name }}</option>
+        @for (account of legOptions(); track account.id) {
+          <option [value]="account.id" [selected]="account.id === fromId()">{{ accountLabel(account) }}</option>
         }
       </select>
       @if (from(); as f) {
@@ -23,8 +23,8 @@
     <label class="acc acc-to">
       <span class="ico">{{ to()?.icon ?? '🏦' }}</span>
       <select class="acc-select to-select" aria-label="轉入帳戶" [disabled]="locked()" (change)="setTo($any($event.target).value)">
-        @for (account of activeAccounts(); track account.id) {
-          <option [value]="account.id" [selected]="account.id === toId()">{{ account.name }}</option>
+        @for (account of legOptions(); track account.id) {
+          <option [value]="account.id" [selected]="account.id === toId()">{{ accountLabel(account) }}</option>
         }
       </select>
       @if (to(); as t) {
@@ -80,7 +80,7 @@
   <p class="foot">同幣別轉帳匯率固定 1.00；跨幣別記兩邊金額，匯率自動算</p>
 
   @if (sheet(); as side) {
-    <div class="overlay" (click)="sheet.set(null)" (keydown)="onSheetKeydown($event)">
+    <div class="overlay" (click)="sheet.set(null)">
       <div class="sheet" role="dialog" aria-modal="true" [attr.aria-label]="side === 'out' ? '轉出手續費與折扣' : '轉入手續費與折扣'" (click)="$event.stopPropagation()">
         <div class="grab"></div>
         <h3>{{ side === 'out' ? '轉出' : '轉入' }}</h3>

@@ -1,7 +1,10 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
+  Injector,
   OnInit,
+  afterNextRender,
   computed,
   effect,
   inject,
@@ -30,19 +33,36 @@ interface SideChildren {
 }
 
 const EMPTY_CHILDREN: SideChildren = { fee: '', discount: '' };
+const CATEGORIES_FAILED = '轉帳類別讀取失敗，請重新整理';
 
 /**
- * A ⏎ or Esc a bottom sheet handles itself (and marks handled, so the entry form neither saves nor leaves); null for
- * IME commits, other keys, and ⏎ on a button (left to its native click).
+ * ⏎ / Esc on the host of a component whose bottom sheet (`sheet`) is open. Handled at the host, so a key from anywhere
+ * in the component (the trigger button included) never reaches the entry form, which would save or leave.
+ * Esc → 'close'. ⏎ in a sheet field → 'confirm'. ⏎ on a sheet button is left to its native click. ⏎ outside the sheet
+ * is only marked handled. IME commits and keys already handled are left alone.
  */
-export function sheetKey(event: KeyboardEvent): 'Enter' | 'Escape' | null {
-  if (event.isComposing || event.keyCode === 229) {
+export function sheetKeyAction(event: KeyboardEvent, sheet: Element | null): 'close' | 'confirm' | null {
+  if (!sheet || event.defaultPrevented || event.isComposing || event.keyCode === 229) {
     return null;
   }
   if (event.key === 'Escape') {
-    return 'Escape';
+    event.preventDefault();
+    return 'close';
   }
-  return event.key === 'Enter' && (event.target as HTMLElement | null)?.tagName !== 'BUTTON' ? 'Enter' : null;
+  if (event.key !== 'Enter') {
+    return null;
+  }
+  const target = event.target as HTMLElement | null;
+  if (target && sheet.contains(target) && target.tagName === 'BUTTON') {
+    return null;
+  }
+  event.preventDefault();
+  return target && sheet.contains(target) ? 'confirm' : null;
+}
+
+/** Moves focus into a sheet once it has rendered (its first field), so keys start inside it. */
+export function focusSheetField(host: HTMLElement, selector: string, injector: Injector): void {
+  afterNextRender(() => host.querySelector<HTMLElement>(selector)?.focus(), { injector });
 }
 
 function childrenFrom(children: LedgerEntry[] | undefined): SideChildren {
@@ -60,15 +80,20 @@ function childrenFrom(children: LedgerEntry[] | undefined): SideChildren {
   templateUrl: './transfer-panel.html',
   styleUrls: ['../sheet.scss', './transfer-panel.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(keydown)': 'onHostKeydown($event)' },
 })
 export class TransferPanelComponent implements OnInit {
   private service = inject(AccountingService);
   private layout = inject(LayoutModeService);
+  private host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private injector = inject(Injector);
 
   readonly accounts = input<LedgerAccount[]>([]);
   readonly locked = input(false);
   readonly keypadLayout = input<'calculator' | 'phone'>('calculator');
   readonly edit = input<TransferEdit | null>(null);
+  /** Editing a saved transfer: an archived leg stays selectable (labelled). A copy moves it to an open account. */
+  readonly keepArchived = input(false);
   readonly saveRequested = output<boolean>();
 
   readonly categories = signal<CategoryNode[]>([]);
@@ -81,8 +106,16 @@ export class TransferPanelComponent implements OnInit {
   readonly sheet = signal<TransferSide | null>(null);
   readonly activeSide = signal<TransferSide | null>(null);
   readonly error = signal<string | null>(null);
+  private readonly categoriesFailed = signal(false);
 
   readonly activeAccounts = computed(() => this.accounts().filter(account => !account.is_archived));
+  /** Select options: open accounts, plus an archived leg of the transfer being edited. */
+  readonly legOptions = computed(() =>
+    this.accounts().filter(
+      account =>
+        !account.is_archived || (this.keepArchived() && (account.id === this.fromId() || account.id === this.toId())),
+    ),
+  );
   readonly from = computed(() => this.accounts().find(account => account.id === this.fromId()) ?? null);
   readonly to = computed(() => this.accounts().find(account => account.id === this.toId()) ?? null);
   readonly sameCurrency = computed(() => {
@@ -144,13 +177,23 @@ export class TransferPanelComponent implements OnInit {
   }
 
   ngOnInit(): void {
-    this.service.getCategories('transfer_out').subscribe(tree => {
-      const visible = tree.filter(node => !node.is_hidden);
-      this.categories.set(visible);
-      if (this.categoryId() === null && visible.length > 0) {
-        this.categoryId.set(visible[0].id);
-      }
+    this.service.getCategories('transfer_out').subscribe({
+      next: tree => {
+        const visible = tree.filter(node => !node.is_hidden);
+        this.categories.set(visible);
+        if (this.categoryId() === null && visible.length > 0) {
+          this.categoryId.set(visible[0].id);
+        }
+      },
+      error: () => {
+        this.categoriesFailed.set(true);
+        this.error.set(CATEGORIES_FAILED);
+      },
     });
+  }
+
+  accountLabel(account: LedgerAccount): string {
+    return account.is_archived ? `${account.name}（已封存）` : account.name;
   }
 
   setFrom(value: string): void {
@@ -190,8 +233,8 @@ export class TransferPanelComponent implements OnInit {
    * does. Marked handled either way, so the entry form's ⏎ handler neither saves nor reads this input as its amount.
    */
   onAmountKeydown(side: TransferSide, event: KeyboardEvent): void {
-    // Plain `keydown`, not `keydown.enter`: Angular's `enter` filter would skip ⇧⏎.
-    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) {
+    // Plain `keydown`, not `keydown.enter`: Angular's `enter` filter would skip ⇧⏎. With a sheet open, the host decides.
+    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || this.sheet()) {
       return;
     }
     event.preventDefault();
@@ -201,10 +244,9 @@ export class TransferPanelComponent implements OnInit {
     }
   }
 
-  /** ⏎ / Esc inside the fee sheet close the sheet only; the form must not save or leave. ⏎ on a button clicks it. */
-  onSheetKeydown(event: KeyboardEvent): void {
-    if (sheetKey(event)) {
-      event.preventDefault();
+  /** While the fee sheet is open, ⏎ / Esc anywhere in the panel close it (see `sheetKeyAction`); the form never sees them. */
+  onHostKeydown(event: KeyboardEvent): void {
+    if (this.sheet() && sheetKeyAction(event, this.host.nativeElement.querySelector('.sheet'))) {
       this.sheet.set(null);
     }
   }
@@ -228,6 +270,7 @@ export class TransferPanelComponent implements OnInit {
     event.stopPropagation();
     if (!this.locked()) {
       this.sheet.set(side);
+      focusSheetField(this.host.nativeElement, '.fee-input', this.injector);
     }
   }
 
@@ -266,6 +309,10 @@ export class TransferPanelComponent implements OnInit {
     const to = this.to();
     const outAmount = this.outAmount();
     const inAmount = this.inAmount();
+    if (this.categoryId() === null && this.categoriesFailed()) {
+      this.error.set(CATEGORIES_FAILED);
+      return null;
+    }
     if (!from || !to) {
       this.error.set('請選擇轉出與轉入帳戶');
       return null;
@@ -309,8 +356,14 @@ export class TransferPanelComponent implements OnInit {
   }
 
   private applyEdit(edit: TransferEdit): void {
-    this.fromId.set(edit.out.account_id);
-    this.toId.set(edit.in.account_id);
+    // A copy is a new transfer: it never lands on an archived account (as the entry form's copy).
+    const usable = (id: number, other: number | null) =>
+      this.keepArchived() || this.activeAccounts().some(account => account.id === id)
+        ? id
+        : (this.activeAccounts().find(account => account.id !== other)?.id ?? null);
+    const fromId = usable(edit.out.account_id, edit.in.account_id);
+    this.fromId.set(fromId);
+    this.toId.set(usable(edit.in.account_id, fromId));
     this.categoryId.set(edit.out.category_id ?? this.categoryId());
     this.outText.set(String(Math.abs(Number(edit.out.amount))));
     this.inText.set(String(Math.abs(Number(edit.in.amount))));

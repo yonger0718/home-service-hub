@@ -237,4 +237,73 @@ describe('TransferPanelComponent', () => {
     expect(panel.error()).toBeNull();
     expect([panel.fromId(), panel.toId(), panel.categoryId()]).toEqual([1, 2, 33]);
   });
+  it('focuses the fee sheet on open and closes it on Esc pressed from the trigger, marking ⏎ there handled too', async () => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    const el = fixture.nativeElement as HTMLElement;
+    const plus = el.querySelector<HTMLButtonElement>('.out-tile .plus')!;
+    plus.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(document.activeElement).toBe(el.querySelector('.fee-input'));
+
+    const enter = key(plus, 'Enter');
+    expect(enter.defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    expect(el.querySelector('.sheet')).not.toBeNull();
+
+    const escape = key(plus, 'Escape');
+    fixture.detectChanges();
+    expect(escape.defaultPrevented).toBe(true);
+    expect(el.querySelector('.sheet')).toBeNull();
+  });
+
+  it('keeps an archived leg selectable, labelled, only when editing', async () => {
+    const archived = { ...account(4, '舊帳戶', 'TWD', '0'), is_archived: true } as LedgerAccount;
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730'), archived]);
+    const out = { id: 7, kind: 'transfer_out', account_id: 4, amount: '-500.0000', category_id: 30, children: [] } as unknown as EntryDetail;
+    const inn = { id: 8, kind: 'transfer_in', account_id: 3, amount: '500.0000', category_id: 30, children: [] } as unknown as EntryDetail;
+    fixture.componentRef.setInput('keepArchived', true);
+    fixture.componentRef.setInput('edit', { groupId: 'g-4', out, in: inn });
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    const from = el.querySelector<HTMLSelectElement>('.from-select')!;
+    expect(from.value).toBe('4');
+    expect(from.selectedOptions[0].textContent).toContain('舊帳戶（已封存）');
+    expect(Array.from(el.querySelector<HTMLSelectElement>('.to-select')!.options).map(o => o.value)).toEqual(['1', '3', '4']);
+  });
+
+  it('moves a copied archived leg to an open account', async () => {
+    const archived = { ...account(4, '舊帳戶', 'TWD', '0'), is_archived: true } as LedgerAccount;
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730'), archived]);
+    const out = { id: 7, kind: 'transfer_out', account_id: 4, amount: '-500.0000', category_id: 30, children: [] } as unknown as EntryDetail;
+    const inn = { id: 8, kind: 'transfer_in', account_id: 3, amount: '500.0000', category_id: 30, children: [] } as unknown as EntryDetail;
+    fixture.componentRef.setInput('edit', { groupId: 'g-4', out, in: inn });
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector<HTMLSelectElement>('.from-select')!.value).toBe('1');
+    expect(el.querySelectorAll('.from-select option').length).toBe(2);
+  });
+});
+
+describe('TransferPanelComponent without categories', () => {
+  it('shows an error and refuses to save when the transfer categories fail to load', async () => {
+    await TestBed.configureTestingModule({
+      imports: [TransferPanelComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting(), { provide: LayoutModeService, useValue: { mode: signal('panes') } }],
+    }).compileComponents();
+    const http = TestBed.inject(HttpTestingController);
+    const fixture = TestBed.createComponent(TransferPanelComponent);
+    fixture.componentRef.setInput('accounts', [account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730')]);
+    fixture.detectChanges();
+    http.expectOne(r => r.url.startsWith('/api/accounting/categories')).flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.transfer-error')?.textContent).toContain('轉帳類別讀取失敗');
+
+    fixture.componentInstance.setText('out', '100');
+    expect(fixture.componentInstance.submit(COMMON, null)).toBeNull();
+    fixture.detectChanges();
+    expect(el.querySelector('.transfer-error')?.textContent).toContain('轉帳類別讀取失敗');
+    http.verify();
+  });
 });

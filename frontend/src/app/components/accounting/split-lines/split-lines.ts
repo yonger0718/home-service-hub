@@ -1,11 +1,22 @@
-import { ChangeDetectionStrategy, Component, computed, inject, input, model, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  Injector,
+  computed,
+  inject,
+  input,
+  model,
+  output,
+  signal,
+} from '@angular/core';
 
 import { CategoryNode, Counterparty, EntryInput, LedgerAccount } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { amountString, parseAmountText } from '../amount-text';
 import { emptyEntryInput, resolveCounterpartyId } from '../entry-form/entry-save';
 import { formatAmount } from '../format';
-import { sheetKey } from '../transfer-panel/transfer-panel';
+import { focusSheetField, sheetKeyAction } from '../transfer-panel/transfer-panel';
 
 export type SplitKind = 'expense' | 'income' | 'receivable' | 'payable';
 
@@ -40,15 +51,22 @@ function flatten(tree: CategoryNode[]): CategoryOption[] {
   templateUrl: './split-lines.html',
   styleUrls: ['../sheet.scss', './split-lines.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(keydown)': 'onHostKeydown($event)' },
 })
 export class SplitLinesComponent {
   private service = inject(AccountingService);
+  private host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private injector = inject(Injector);
 
   readonly members = model<EntryInput[]>([]);
   readonly accounts = input<LedgerAccount[]>([]);
   readonly categories = input<Partial<Record<SplitKind, CategoryNode[]>>>({});
   readonly defaultAccountId = input<number | null>(null);
   readonly disabled = input(false);
+  /** The entry form's counterparties; the component fetches its own only when this is empty. */
+  readonly knownCounterparties = input<Counterparty[]>([]);
+  /** A counterparty created here (typed 對象 not yet known), for the form's list. */
+  readonly counterpartyCreated = output<Counterparty>();
 
   readonly open = signal(false);
   readonly draftKind = signal<SplitKind>('expense');
@@ -58,8 +76,16 @@ export class SplitLinesComponent {
   readonly draftCounterparty = signal('');
   readonly error = signal<string | null>(null);
   readonly loaded = signal<Partial<Record<SplitKind, CategoryNode[]>>>({});
-  readonly counterparties = signal<Counterparty[]>([]);
+  /** Counterparties fetched or created here, on top of `knownCounterparties`. */
+  private readonly ownCounterparties = signal<Counterparty[]>([]);
+  readonly counterparties = computed(() => {
+    const known = this.knownCounterparties();
+    const ids = new Set(known.map(party => party.id));
+    return [...known, ...this.ownCounterparties().filter(party => !ids.has(party.id))];
+  });
   private counterpartiesRequested = false;
+  /** A line is being added (its counterparty POST in flight): a second ⏎ / 加入 does nothing. */
+  readonly adding = signal(false);
 
   readonly kinds = Object.keys(SPLIT_KIND_LABELS) as SplitKind[];
   readonly kindLabels = SPLIT_KIND_LABELS;
@@ -83,11 +109,19 @@ export class SplitLinesComponent {
     this.error.set(null);
     this.draftAccountId.set(this.defaultAccountId() ?? this.activeAccounts()[0]?.id ?? null);
     this.ensureCategories('expense');
-    if (!this.counterpartiesRequested) {
+    if (!this.counterpartiesRequested && this.knownCounterparties().length === 0) {
       this.counterpartiesRequested = true;
-      this.service.getCounterparties().subscribe(list => this.counterparties.set(list));
+      this.service.getCounterparties().subscribe({
+        next: list => this.ownCounterparties.set(list),
+        error: () => {
+          // Retried on the next open.
+          this.counterpartiesRequested = false;
+          this.error.set('無法讀取對象');
+        },
+      });
     }
     this.open.set(true);
+    focusSheetField(this.host.nativeElement, '.line-amount', this.injector);
   }
 
   setKind(kind: SplitKind): void {
@@ -113,6 +147,9 @@ export class SplitLinesComponent {
   }
 
   add(): void {
+    if (this.adding()) {
+      return;
+    }
     const kind = this.draftKind();
     const account = this.activeAccounts().find(candidate => candidate.id === this.draftAccountId());
     if (!account) {
@@ -133,6 +170,7 @@ export class SplitLinesComponent {
         counterparty_id: counterpartyId,
       });
       this.members.update(list => [...list, line]);
+      this.adding.set(false);
       this.error.set(null);
       this.open.set(false);
     };
@@ -144,23 +182,29 @@ export class SplitLinesComponent {
       this.error.set('應收／應付需要對象');
       return;
     }
-    const created = (party: Counterparty) => this.counterparties.update(list => [...list, party]);
+    const created = (party: Counterparty) => {
+      this.ownCounterparties.update(list => [...list, party]);
+      this.counterpartyCreated.emit(party);
+    };
+    this.adding.set(true);
     resolveCounterpartyId(this.service, this.draftCounterparty(), this.counterparties(), created).subscribe({
       next: finish,
-      error: () => this.error.set('無法新增對象'),
+      error: () => {
+        this.adding.set(false);
+        this.error.set('無法新增對象');
+      },
     });
   }
 
-  /** ⏎ in the sheet adds the line, Esc closes it; both are marked handled so the entry form ignores them. */
-  onSheetKeydown(event: KeyboardEvent): void {
-    const key = sheetKey(event);
-    if (!key) {
+  /** While the sheet is open: ⏎ in a sheet field adds the line, Esc anywhere closes it (see `sheetKeyAction`). */
+  onHostKeydown(event: KeyboardEvent): void {
+    if (!this.open()) {
       return;
     }
-    event.preventDefault();
-    if (key === 'Enter') {
+    const action = sheetKeyAction(event, this.host.nativeElement.querySelector('.sheet'));
+    if (action === 'confirm') {
       this.add();
-    } else {
+    } else if (action === 'close') {
       this.open.set(false);
     }
   }

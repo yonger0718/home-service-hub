@@ -3,7 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { CategoryNode, LedgerAccount } from '../../../models/accounting.model';
+import { CategoryNode, Counterparty, LedgerAccount } from '../../../models/accounting.model';
 import { emptyEntryInput } from '../entry-form/entry-save';
 import { SplitLinesComponent } from './split-lines';
 
@@ -134,5 +134,75 @@ describe('SplitLinesComponent', () => {
     expect(escape.defaultPrevented).toBe(true);
     expect(el.querySelector('.sheet')).toBeNull();
     expect(fixture.componentInstance.members().length).toBe(1);
+  });
+  it('focuses the sheet on open and closes it on Esc pressed from the + trigger, marking ⏎ there handled', async () => {
+    openSheet();
+    await fixture.whenStable();
+    expect(document.activeElement).toBe(el.querySelector('.line-amount'));
+
+    const add = el.querySelector<HTMLButtonElement>('.add')!;
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    add.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    expect(el.querySelector('.sheet')).not.toBeNull();
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    add.dispatchEvent(escape);
+    fixture.detectChanges();
+    expect(escape.defaultPrevented).toBe(true);
+    expect(el.querySelector('.sheet')).toBeNull();
+  });
+
+  it('shows a counterparty load failure and retries on the next open', () => {
+    el.querySelector<HTMLButtonElement>('.add')!.click();
+    fixture.detectChanges();
+    http.expectOne(r => r.urlWithParams.includes('kind=expense')).flush([]);
+    http.expectOne('/api/accounting/counterparties').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelector('.line-error')?.textContent).toContain('無法讀取對象');
+
+    fixture.componentInstance.open.set(false);
+    fixture.detectChanges();
+    el.querySelector<HTMLButtonElement>('.add')!.click();
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/counterparties').flush([]);
+  });
+
+  it('adds one line when ⏎ is pressed again while the new counterparty is being created', () => {
+    openSheet();
+    el.querySelectorAll<HTMLButtonElement>('.line-kind button')[2].click();
+    fixture.detectChanges();
+    http.expectOne(r => r.urlWithParams.includes('kind=receivable')).flush(RECEIVABLE_TREE);
+    setValue('.line-amount', '100');
+    setValue('.line-counterparty', 'Bob');
+    el.querySelector<HTMLButtonElement>('.line-add')!.click();
+    el.querySelector<HTMLButtonElement>('.line-add')!.click();
+
+    http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/counterparties').flush({ id: 9, name: 'Bob', open_amounts: [] });
+    fixture.detectChanges();
+    expect(fixture.componentInstance.members().length).toBe(1);
+  });
+
+  it("uses the form's counterparties for labels and skips its own fetch", () => {
+    const created: Counterparty[] = [];
+    fixture.componentInstance.counterpartyCreated.subscribe(party => created.push(party));
+    fixture.componentRef.setInput('knownCounterparties', [{ id: 5, name: 'Alan', open_amounts: [] }]);
+    fixture.componentInstance.members.set([emptyEntryInput({ account_id: 1, kind: 'receivable', amount: '180', counterparty_id: 5 })]);
+    fixture.detectChanges();
+    expect(el.querySelector('.member')?.textContent).toContain('應收 · Alan');
+
+    el.querySelector<HTMLButtonElement>('.add')!.click();
+    fixture.detectChanges();
+    http.expectOne(r => r.urlWithParams.includes('kind=expense')).flush([]);
+    http.expectNone('/api/accounting/counterparties');
+    el.querySelectorAll<HTMLButtonElement>('.line-kind button')[3].click();
+    fixture.detectChanges();
+    http.expectOne(r => r.urlWithParams.includes('kind=payable')).flush([]);
+    setValue('.line-amount', '40');
+    setValue('.line-counterparty', 'Cara');
+    el.querySelector<HTMLButtonElement>('.line-add')!.click();
+    http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/counterparties').flush({ id: 11, name: 'Cara', open_amounts: [] });
+    expect(created.map(party => party.id)).toEqual([11]);
   });
 });

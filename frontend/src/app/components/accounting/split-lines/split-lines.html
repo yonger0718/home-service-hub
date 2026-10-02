@@ -16,7 +16,7 @@
 </div>
 
 @if (open()) {
-  <div class="overlay" (click)="open.set(false)" (keydown)="onSheetKeydown($event)">
+  <div class="overlay" (click)="open.set(false)">
     <div class="sheet" role="dialog" aria-modal="true" aria-label="新增拆帳行" (click)="$event.stopPropagation()">
       <div class="grab"></div>
       <h3>新增拆帳行</h3>
@@ -67,7 +67,7 @@
       }
       <div class="btnrow">
         <button type="button" (click)="open.set(false)">取消</button>
-        <button type="button" class="pri line-add" (click)="add()">加入</button>
+        <button type="button" class="pri line-add" [disabled]="adding()" (click)="add()">加入</button>
       </div>
     </div>
   </div>

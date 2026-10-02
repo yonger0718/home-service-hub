@@ -52,6 +52,7 @@
         [locked]="locked()"
         [keypadLayout]="preference().keypad_layout"
         [edit]="transferEdit()"
+        [keepArchived]="entryId() !== null"
         (saveRequested)="save($event)"
       />
     }
@@ -110,6 +111,8 @@
             [accounts]="accounts()"
             [defaultAccountId]="accountId()"
             [disabled]="locked() || (entryId() !== null && groupId() === null)"
+            [knownCounterparties]="counterparties()"
+            (counterpartyCreated)="counterparties.set(counterparties().concat([$event]))"
           />
         }
       }

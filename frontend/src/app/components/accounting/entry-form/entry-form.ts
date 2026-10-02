@@ -517,6 +517,10 @@ export class EntryFormComponent implements OnInit {
       // Editing a split member: the other members become split lines and the save replaces the group's members.
       this.groupId.set(loaded.detail.group.id);
       this.members.set(loaded.related.members.map(entryInputFromDetail));
+    } else {
+      // Not (or no longer) a split member, e.g. a reload after the group was dissolved: the next save is a plain write.
+      this.groupId.set(null);
+      this.members.set([]);
     }
     this.loading.set(false);
   }
