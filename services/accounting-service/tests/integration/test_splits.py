@@ -449,3 +449,17 @@ def test_split_category_defaults_are_written_in_category_id_order(db_session, se
     assert updated == [first.id, second.id]
     db_session.expire_all()
     assert (first.default_account_id, second.default_account_id) == (wallet.id, wallet.id)  # last member wins
+
+
+def test_split_group_merchant_and_description_round_trip_through_entry_detail(client, db_session, seed):
+    wallet = seed.account()
+    db_session.commit()
+    created = client.post("/splits", json=_split(
+        _member(wallet), _member(wallet, amount="50"), name="聚餐", merchant="鼎泰豐", description="生日",
+    ))
+    assert created.status_code == 201, created.text
+    member_id = created.json()["member_ids"][0]
+
+    group = client.get(f"/entries/{member_id}").json()["group"]
+
+    assert (group["name"], group["merchant"], group["description"], group["count"]) == ("聚餐", "鼎泰豐", "生日", 2)

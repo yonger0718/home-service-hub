@@ -53,7 +53,7 @@ def test_list_rows_carry_icons_counterparty_group_rules_and_lock(client, db_sess
     lunch = Category(kind="expense", parent_id=food.id, name="午餐")
     snack = Category(kind="expense", parent_id=food.id, name="點心", icon="🍰")
     alan = Counterparty(name="Alan")
-    group = EntryGroup(kind="split", name="聚餐")
+    group = EntryGroup(kind="split", name="聚餐", merchant="鼎泰豐", description="生日")
     db_session.add_all([lunch, snack, alan, group])
     db_session.flush()
     rule = RewardRule(account_id=wallet.id, name="國內 1%", method="percent", rate=Decimal("1"), posting="after_window")
@@ -74,7 +74,8 @@ def test_list_rows_carry_icons_counterparty_group_rules_and_lock(client, db_sess
     assert (items[cake.id]["category_icon"], items[cake.id]["category_color"]) == ("🍰", "#f0cd92")
     assert (items[share.id]["counterparty"], items[share.id]["counterparty_id"]) == ("Alan", alan.id)
     assert items[meal.id]["group"] == {
-        "id": group.id, "kind": "split", "name": "聚餐", "count": 2, "total": "-410.0000", "currency": "TWD",
+        "id": group.id, "kind": "split", "name": "聚餐", "merchant": "鼎泰豐", "description": "生日", "count": 2,
+        "total": "-410.0000", "currency": "TWD",
     }
     assert items[meal.id]["rule_names"] == ["國內 1%"]
     assert (items[meal.id]["locked"], items[meal.id]["source"]) == (False, "manual")
@@ -123,7 +124,7 @@ def test_entry_detail_links_transfer_settlement_refund_and_group(client, db_sess
     wallet = make_account(db_session, "錢包", opening="1000")
     card = make_account(db_session, "玉山 UNI")
     alan = Counterparty(name="Alan")
-    group = EntryGroup(kind="split", name="聚餐")
+    group = EntryGroup(kind="split", name="聚餐", merchant="鼎泰豐", description="生日")
     db_session.add_all([alan, group])
     db_session.flush()
     pair = uuid.uuid4()

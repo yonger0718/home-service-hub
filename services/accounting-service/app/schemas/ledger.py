@@ -83,6 +83,8 @@ class EntryGroupSummaryOut(BaseModel):
     id: int
     kind: Literal["split", "reward_claim", "installment"]
     name: str | None
+    merchant: str | None  # the entry_group row's own fields, so a client can rebuild PUT /splits from them
+    description: str | None
     count: int
     total: Decimal | None
     currency: str

@@ -304,8 +304,8 @@ def _group_summaries(db: Session, group_ids: set[int]) -> dict[int, dict]:
         converted = [_convert(amount, rates.get(c)) if c != currency else amount for amount, c in rows]
         total = None if any(value is None for value in converted) else sum(converted, Decimal(0))
         summaries[group_id] = {
-            "id": group.id, "kind": group.kind, "name": group.name, "count": len(rows), "total": total,
-            "currency": currency,
+            "id": group.id, "kind": group.kind, "name": group.name, "merchant": group.merchant,
+            "description": group.description, "count": len(rows), "total": total, "currency": currency,
         }
     return summaries
 
