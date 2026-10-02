@@ -46,9 +46,11 @@ def _fetch_json(http_get: HttpGet, url: str) -> tuple[dict[str, Any] | None, str
 
 
 def _rates_object(payload: Any, day: date, base_lc: str) -> tuple[dict[str, Any] | None, str | None]:
-    """Return the `base` rates object when the payload is well-formed, else (None, reason)."""
+    """Return the `base` rates object when the payload is well-formed and dated `day`, else (None, reason)."""
     if not isinstance(payload, dict):
         return None, "payload is not a JSON object"
+    if payload.get("date") != day.isoformat():
+        return None, f"payload dated {payload.get('date')!r}, expected {day.isoformat()}"
     rates = payload.get(base_lc)
     if not isinstance(rates, dict):
         return None, f"payload missing rates object for {base_lc}"

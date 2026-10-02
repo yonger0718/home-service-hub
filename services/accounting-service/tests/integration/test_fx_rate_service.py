@@ -141,3 +141,23 @@ def test_mixed_quotes_keep_primary_rate_and_fill_the_rest_from_fallback(db_sessi
 
     assert rates == {(DAY, "JPY", "TWD"): Decimal("0.2"), (DAY, "JPY", "USD"): Decimal("0.0068")}
     assert _sources(db_session) == {"TWD": "fawazahmed0-jsdelivr", "USD": "fawazahmed0-pages"}
+
+
+def test_payload_dated_for_another_day_falls_back_to_correct_source(db_session, fake_http):
+    http = fake_http({PRIMARY: _payload("2026-07-09", twd=0.2), FALLBACK: _payload(twd=0.21)})
+
+    rates = ensure_rates(db_session, [(DAY, "JPY", "TWD")], persist=True, http_get=http)
+
+    assert rates == {(DAY, "JPY", "TWD"): Decimal("0.21")}
+    assert _sources(db_session) == {"TWD": "fawazahmed0-pages"}
+
+
+@pytest.mark.parametrize("bad_date", ["2026-07-09", None, 20260710])
+def test_payload_date_mismatch_on_both_sources_caches_nothing(db_session, fake_http, bad_date):
+    bad = (200, {"date": bad_date, "jpy": {"twd": 0.2}})
+    http = fake_http({PRIMARY: bad, FALLBACK: bad})
+
+    with pytest.raises(FxRateUnavailableError, match="no FX rate for JPY→TWD on 2026-07-10"):
+        ensure_rates(db_session, [(DAY, "JPY", "TWD")], persist=True, http_get=http)
+
+    assert db_session.scalar(select(FxRate)) is None
