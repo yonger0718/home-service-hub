@@ -313,6 +313,24 @@
   font-weight: 700;
   padding: 7px 14px;
   text-align: center;
+
+  .fx-fixed {
+    background: var(--app-state-warning-bg);
+    border-radius: var(--radius-sm);
+    color: var(--app-text);
+    margin-left: 6px;
+    padding: 1px 6px;
+  }
+
+  .fx-recompute {
+    background: none;
+    border: 0;
+    color: var(--app-primary);
+    cursor: pointer;
+    font: inherit;
+    padding: 0 0 0 6px;
+    text-decoration: underline;
+  }
 }
 
 .form-error,

@@ -298,6 +298,17 @@ export class EntryFormComponent implements OnInit {
     const account = this.account();
     return account ? formatMoney(account.balance, account.currency) : '—';
   });
+  /**
+   * The owner fixed the converted amount (轉換成) and the original amount has changed since: the saved rate is the
+   * effective one (converted / original), shown with 固定 and a one-tap 重新換算.
+   */
+  readonly fxFixed = computed(() => {
+    const fx = this.fx();
+    const amount = this.amount();
+    return (
+      !!fx && !fx.use_online && fx.manual === 'amount' && !!fx.amount && amount !== null && Number(fx.original_amount) !== amount
+    );
+  });
   readonly footer = computed(() => {
     if (this.kind() === 'transfer') {
       return '';
@@ -305,17 +316,24 @@ export class EntryFormComponent implements OnInit {
     const parts: string[] = [];
     const fx = this.fx();
     const amount = this.amount();
+    const currency = this.accountCurrency();
     if (fx && amount !== null) {
       const converted = this.convertedAmount();
-      const rate = fx.fx_rate ? String(Number(fx.fx_rate)) : '?';
-      const result = converted === null ? '?' : formatMoney(converted, this.accountCurrency());
+      // A fixed converted amount saves the effective rate, so that is the rate shown.
+      const rate =
+        !fx.use_online && fx.manual === 'amount' && converted !== null && amount > 0
+          ? (converted / amount).toFixed(4)
+          : fx.fx_rate
+            ? String(Number(fx.fx_rate))
+            : '?';
+      const result = converted === null ? '?' : formatMoney(converted, currency);
       parts.push(`${formatMoney(amount, fx.original_currency)} × ${rate} = ${result}`);
     }
     const fee = this.fee();
     const discount = this.discount();
     if (fee || discount) {
       const total = this.signedConverted() - Number(fee?.amount ?? 0) + Number(discount?.amount ?? 0);
-      parts.push(`手續費 −${fee?.amount ?? 0} · 折扣 +${discount?.amount ?? 0} · 總額 ${formatNumber(total, this.accountCurrency())}`);
+      parts.push(`手續費 −${fee?.amount ?? 0} · 折扣 +${discount?.amount ?? 0} · 總額 ${formatNumber(total, currency)}`);
     }
     if (parts.length) {
       return parts.join(' · ');
@@ -801,6 +819,30 @@ export class EntryFormComponent implements OnInit {
     if (fx?.original_amount) {
       this.amountExpr.set(fx.original_amount);
     }
+  }
+
+  /** 重新換算: drop the fixed converted amount; the server converts with the online rate (shown once fetched). */
+  recomputeFx(): void {
+    const fx = this.fx();
+    const amount = this.amount();
+    if (!fx || amount === null || this.locked()) {
+      return;
+    }
+    const online: FxValue = { ...fx, original_amount: String(amount), use_online: true, manual: null, amount: null, fx_rate: null, rate_date: null };
+    this.fx.set(online);
+    this.accounting
+      .getFxRate(this.entryDate(), online.original_currency, online.account_currency)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: result => {
+          const current = this.fx();
+          // Only while this online conversion is still the one shown.
+          if (current?.use_online && current.original_currency === online.original_currency && current.account_currency === online.account_currency) {
+            this.fx.set({ ...current, fx_rate: String(Number(result.rate)), rate_date: result.date });
+          }
+        },
+        error: () => undefined,
+      });
   }
 
   focusName(): void {

@@ -967,4 +967,43 @@ describe('EntryFormComponent', () => {
     put.flush({ group_id: 4, member_ids: [21, 22] });
     settle();
   });
+  it('shows the effective rate and 固定 for a fixed converted amount, and 重新換算 goes back online', async () => {
+    const { el } = await open('/accounting/entries/9/edit');
+    respond(
+      '/api/accounting/entries/9',
+      makeEntryDetail({
+        id: 9,
+        account_id: 2,
+        category_id: 12,
+        amount: '-1166.0000',
+        original_amount: '-5390.0000',
+        original_currency: 'JPY',
+        fx_rate: '0.2163265306',
+        fx_source: 'manual',
+      }),
+    );
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect(text(el.querySelector('.foot'))).toBe('¥5,390 × 0.2163 = $1,166');
+    expect(el.querySelector('.fx-fixed')).toBeNull();
+
+    keys(el, 'C', '6', '0', '0', '0');
+    expect(text(el.querySelector('.foot'))).toBe('¥6,000 × 0.1943 = $1,166 固定重新換算');
+    expect(text(el.querySelector('.fx-fixed'))).toBe('固定');
+
+    (el.querySelector('.fx-recompute') as HTMLButtonElement).click();
+    settle();
+    const rate = httpMock.expectOne(r => r.url === '/api/accounting/fx-rate');
+    expect(rate.request.params.get('base')).toBe('JPY');
+    rate.flush({ date: '2026-10-02', base: 'JPY', quote: 'TWD', rate: '0.2163000000', source: 'cache' });
+    settle();
+    expect(text(el.querySelector('.foot'))).toBe('¥6,000 × 0.2163 = $1,298');
+
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/9');
+    expect(put.request.body).toMatchObject({ amount: null, original_amount: '6000', original_currency: 'JPY', fx_rate: null });
+    put.flush(makeEntryDetail({ id: 9 }));
+    settle();
+  });
 });

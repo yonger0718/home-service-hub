@@ -246,7 +246,15 @@
 
   <div class="entrybottom">
     @if (footer()) {
-      <div class="foot">{{ footer() }}</div>
+      <div class="foot">
+        {{ footer() }}
+        @if (fxFixed()) {
+          <span class="fx-fixed">固定</span>
+          @if (!locked()) {
+            <button type="button" class="fx-recompute" (click)="recomputeFx()">重新換算</button>
+          }
+        }
+      </div>
     }
     @if (isPhone() && !locked() && kind() !== 'transfer') {
       @if (isSystem()) {
