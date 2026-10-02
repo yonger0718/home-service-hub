@@ -138,10 +138,7 @@
       <span>🙈</span><span class="t">首頁隱藏紅利回饋</span>
       <button type="button" class="tog pref-hide-rewards" role="switch" aria-label="首頁隱藏紅利回饋" [attr.aria-checked]="pref.hide_rewards_on_timeline" [class.on]="pref.hide_rewards_on_timeline" (click)="setPreference('hide_rewards_on_timeline', !pref.hide_rewards_on_timeline)"></button>
     </div>
-    <div class="srow">
-      <span>🔤</span><span class="t">總額縮寫</span>
-      <button type="button" class="tog pref-abbreviate" role="switch" aria-label="總額縮寫" [attr.aria-checked]="pref.abbreviate_totals" [class.on]="pref.abbreviate_totals" (click)="setPreference('abbreviate_totals', !pref.abbreviate_totals)"></button>
-    </div>
+    <!-- 總額縮寫 (abbreviate_totals) stays in the preference model; its toggle returns in 2b, with the page that reads it. -->
     <div class="srow"><span>💱</span><span class="t">主幣種</span><span class="r">{{ pref.main_currency }}</span></div>
   }
 

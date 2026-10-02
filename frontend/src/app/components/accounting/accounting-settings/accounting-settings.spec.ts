@@ -158,6 +158,40 @@ describe('AccountingSettingsComponent', () => {
     toggle.flush({ ...PREFERENCE, keypad_layout: 'phone', hide_rewards_on_timeline: true });
   });
 
+  it('keeps both of two quick preference toggles: one PUT at a time, each from the latest state', () => {
+    el.querySelector<HTMLButtonElement>('.pref-hide-rewards')!.click();
+    fixture.detectChanges();
+    change('.pref-colors', 'green_red');
+    // Applied at once, before any answer.
+    expect(el.querySelector('.pref-hide-rewards')?.getAttribute('aria-checked')).toBe('true');
+
+    const first = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/preference');
+    expect(first.request.body).toEqual({ ...PREFERENCE, hide_rewards_on_timeline: true });
+    first.flush({ ...PREFERENCE, hide_rewards_on_timeline: true });
+    const second = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/preference');
+    expect(second.request.body).toEqual({ ...PREFERENCE, hide_rewards_on_timeline: true, expense_income_colors: 'green_red' });
+    second.flush({ ...PREFERENCE, hide_rewards_on_timeline: true, expense_income_colors: 'green_red' });
+    fixture.detectChanges();
+
+    expect(el.querySelector('.pref-hide-rewards')?.getAttribute('aria-checked')).toBe('true');
+    expect(el.querySelector<HTMLSelectElement>('.pref-colors')!.value).toBe('green_red');
+  });
+
+  it('reverts a preference toggle whose save fails and says why', () => {
+    el.querySelector<HTMLButtonElement>('.pref-hide-rewards')!.click();
+    fixture.detectChanges();
+    http.expectOne(r => r.method === 'PUT').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+
+    expect(el.querySelector('.pref-hide-rewards')?.getAttribute('aria-checked')).toBe('false');
+    expect(el.querySelector('.data-message')).not.toBeNull();
+  });
+
+  it('has no 總額縮寫 toggle until a page uses it (2b)', () => {
+    expect(el.querySelector('.pref-abbreviate')).toBeNull();
+    expect(el.textContent).not.toContain('總額縮寫');
+  });
+
   it('shows the two-level category tree per kind and reorders siblings', () => {
     const names = Array.from(el.querySelectorAll<HTMLInputElement>('.cat-row .cat-name')).map(input => input.value);
     expect(names).toEqual(['飲食', '午餐', '晚餐', '交通']);

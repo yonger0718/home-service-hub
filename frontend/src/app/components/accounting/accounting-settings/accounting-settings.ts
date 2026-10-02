@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
-import { Observable, forkJoin } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { Observable, Subject, catchError, concatMap, forkJoin, map, of } from 'rxjs';
 
 import {
   AccountGroup,
@@ -94,8 +95,43 @@ export class AccountingSettingsComponent implements OnInit {
   readonly subCount = computed(() => this.categories().reduce((sum, node) => sum + (node.children?.length ?? 0), 0));
   readonly canImport = computed(() => !!this.file() && this.file() === this.dryRunFile() && !this.importing());
 
+  /** The preference as last confirmed by the server; a failed save reverts to it. */
+  private savedPreference: Preference | null = null;
+  /** Saves not answered yet; the server's answer is applied only once none is left (no flicker between toggles). */
+  private pendingPreferenceSaves = 0;
+  private readonly preferenceSaves = new Subject<Preference>();
+
+  constructor() {
+    // One PUT at a time, in order: each body is the optimistic state at its toggle, so quick toggles all persist.
+    this.preferenceSaves
+      .pipe(
+        concatMap(next =>
+          this.service.updatePreference(next).pipe(
+            map(saved => ({ saved, error: null as unknown })),
+            catchError((error: unknown) => of({ saved: null, error })),
+          ),
+        ),
+        takeUntilDestroyed(),
+      )
+      .subscribe(({ saved, error }) => {
+        this.pendingPreferenceSaves--;
+        if (saved) {
+          this.savedPreference = saved;
+          if (this.pendingPreferenceSaves === 0) {
+            this.preference.set(saved);
+          }
+          return;
+        }
+        this.preference.set(this.savedPreference);
+        this.dataMessage.set(writeErrorMessage(error));
+      });
+  }
+
   ngOnInit(): void {
-    this.service.getPreference().subscribe(preference => this.preference.set(preference));
+    this.service.getPreference().subscribe(preference => {
+      this.savedPreference = preference;
+      this.preference.set(preference);
+    });
     this.loadGroups();
     this.loadCategories();
     this.loadProjects();
@@ -320,15 +356,17 @@ export class AccountingSettingsComponent implements OnInit {
   }
 
   // 顯示
+  /** Applied at once (optimistic) and queued; a failed save reverts to the last confirmed preference. */
   setPreference<K extends keyof Preference>(key: K, value: Preference[K]): void {
     const current = this.preference();
     if (!current) {
       return;
     }
-    this.service.updatePreference({ ...current, [key]: value }).subscribe({
-      next: saved => this.preference.set(saved),
-      error: err => this.dataMessage.set(writeErrorMessage(err)),
-    });
+    const next = { ...current, [key]: value };
+    this.dataMessage.set(null);
+    this.preference.set(next);
+    this.pendingPreferenceSaves++;
+    this.preferenceSaves.next(next);
   }
 
   // 匯入
