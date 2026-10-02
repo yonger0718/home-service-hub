@@ -263,7 +263,6 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
   templateUrl: './timeline.html',
   styleUrl: './timeline.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '[class.green-red]': "colors() === 'green_red'" },
 })
 export class LedgerTimelineComponent implements OnInit {
   private readonly accounting = inject(AccountingService);
@@ -288,7 +287,6 @@ export class LedgerTimelineComponent implements OnInit {
   readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
 
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
-  readonly colors = computed(() => this.preference()?.expense_income_colors ?? 'red_green');
   readonly mainCurrency = computed(() => this.preference()?.main_currency ?? DEFAULT_PREFERENCE.main_currency);
   readonly hideRewards = computed(() => this.preference()?.hide_rewards_on_timeline ?? false);
   readonly days = computed(() => buildDays(this.entries(), this.mainCurrency(), this.hideRewards()));

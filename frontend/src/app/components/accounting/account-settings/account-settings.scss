@@ -83,4 +83,4 @@
 .delete-account:disabled { cursor: default; opacity: 0.5; }
 .field-error, .form-message { color: var(--app-danger); font-size: 0.8rem; }
 .currency-note { color: var(--app-text-muted); font-size: 0.75rem; }
-.neg { color: var(--c-red, var(--app-danger)); }
+.neg { color: var(--tone-neg, var(--c-red)); }

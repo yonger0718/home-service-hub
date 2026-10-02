@@ -1,6 +1,14 @@
 :host {
+  /* 支出收入顏色 (preference): every accounting page colours negative / positive amounts with these. */
+  --tone-neg: var(--c-red);
+  --tone-pos: var(--c-green);
   display: block;
   position: relative;
+}
+
+:host(.green-red) {
+  --tone-neg: var(--c-green);
+  --tone-pos: var(--c-red);
 }
 
 .dbody {

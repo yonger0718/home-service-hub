@@ -94,7 +94,7 @@
 
 .pill { border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-muted); font-size: 0.62rem; font-weight: 700; padding: 0 6px; white-space: nowrap; }
 .pill.rv { background: var(--app-primary-soft); border-color: transparent; color: var(--app-primary); }
-.neg { color: var(--c-red, var(--app-danger)); }
+.neg { color: var(--tone-neg, var(--c-red)); }
 .muted { color: var(--app-text-muted); font-size: 0.85rem; }
 
 .empty-state {

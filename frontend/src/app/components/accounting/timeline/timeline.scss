@@ -1,20 +1,14 @@
 :host {
-  --tone-out: var(--c-red);
-  --tone-in: var(--c-green);
   display: block;
 }
 
-:host(.green-red) {
-  --tone-out: var(--c-green);
-  --tone-in: var(--c-red);
-}
-
+/* --tone-neg / --tone-pos come from the accounting layout (支出收入顏色 preference). */
 .neg {
-  color: var(--tone-out);
+  color: var(--tone-neg, var(--c-red));
 }
 
 .pos {
-  color: var(--tone-in);
+  color: var(--tone-pos, var(--c-green));
 }
 
 .missing-rates {

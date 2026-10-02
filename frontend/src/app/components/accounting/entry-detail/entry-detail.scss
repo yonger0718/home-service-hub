@@ -116,8 +116,8 @@
 }
 
 .note { color: var(--app-text-muted); }
-.neg { color: var(--c-red, var(--app-danger)); }
-.pos { color: var(--c-green, #1f9d6b); }
+.neg { color: var(--tone-neg, var(--c-red)); }
+.pos { color: var(--tone-pos, var(--c-green)); }
 
 .inline-form,
 .delete-confirm {

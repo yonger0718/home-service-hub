@@ -17,6 +17,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRouteSnapshot, NavigationEnd, Router, RouterLink, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs';
 
+import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
@@ -60,7 +61,12 @@ const SWIPE_CLOSE_PX = 80;
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '(document:keydown.escape)': 'onEscape($event)', '(document:keydown)': 'onShortcutKey($event)' },
+  host: {
+    '(document:keydown.escape)': 'onEscape($event)',
+    '(document:keydown)': 'onShortcutKey($event)',
+    // 支出收入顏色: one class for every accounting page; pages colour `.neg` / `.pos` with `--tone-neg` / `--tone-pos`.
+    '[class.green-red]': "colors() === 'green_red'",
+  },
 })
 export class AccountingLayoutComponent {
   private readonly router = inject(Router);
@@ -70,6 +76,10 @@ export class AccountingLayoutComponent {
   private readonly shortcuts = inject(AccountingShortcutsService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
+  private readonly accounting = inject(AccountingService);
+
+  /** `Preference.expense_income_colors`, read once and again after every preference save. */
+  readonly colors = signal<'red_green' | 'green_red'>('red_green');
 
   readonly mode = this.layoutMode.mode;
   private readonly url = signal(this.router.url);
@@ -129,6 +139,16 @@ export class AccountingLayoutComponent {
         }
         this.wasPhone = phone;
       });
+    });
+
+    // Initial read (no change seen yet) and a re-read after each preference save.
+    effect(() => {
+      this.accounting.preferenceChanged();
+      untracked(() =>
+        this.accounting
+          .getPreference()
+          .subscribe({ next: preference => this.colors.set(preference.expense_income_colors), error: () => undefined }),
+      );
     });
 
     effect(() => {

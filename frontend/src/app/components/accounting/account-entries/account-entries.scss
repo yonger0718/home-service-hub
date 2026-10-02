@@ -91,7 +91,7 @@
 .pill.rv { background: var(--app-primary-soft); border-color: transparent; color: var(--app-primary); }
 .review-marker { border-color: var(--app-danger); color: var(--app-danger); }
 .entry--review { background: color-mix(in srgb, var(--app-danger) 8%, transparent); }
-.neg { color: var(--c-red, var(--app-danger)); }
-.pos { color: var(--c-green, #1f9d6b); }
+.neg { color: var(--tone-neg, var(--c-red)); }
+.pos { color: var(--tone-pos, var(--c-green)); }
 .load-error { color: var(--app-danger); }
 .entries-empty { color: var(--app-text-muted); padding: 1rem 0; text-align: center; }

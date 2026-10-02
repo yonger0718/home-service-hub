@@ -1,12 +1,14 @@
 import { provideHttpClient } from '@angular/common/http';
-import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { describe, expect, it, vi } from 'vitest';
 
 import { routes } from '../../../app.routes';
+import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
+import { makeEntryDetail, makePreference } from '../testing/fixtures';
 import { AccountingLayoutComponent } from './accounting-layout';
 
 async function start(mode: LayoutMode, url: string): Promise<RouterTestingHarness> {
@@ -174,5 +176,29 @@ describe('AccountingLayoutComponent', () => {
 
     await find(harness, SCREEN);
     expect(harness.routeNativeElement!.querySelector('.dbody')).toBeNull();
+  });
+  it('colours every page from the 支出收入顏色 preference through one layout class', async () => {
+    const harness = await start('panes', '/accounting/entries/42');
+    const http = TestBed.inject(HttpTestingController);
+    const layoutHost = harness.routeNativeElement!;
+    http.expectOne('/api/accounting/preference').flush(makePreference({ expense_income_colors: 'green_red' }));
+    const total = await vi.waitFor(() => {
+      http.match('/api/accounting/entries/42').forEach(req => req.flush(makeEntryDetail({ id: 42, amount: '-170.0000' })));
+      return find(harness, '.detail-total');
+    });
+
+    expect(layoutHost.classList).toContain('green-red');
+    expect(total.classList).toContain('neg');
+    // The detail's `.neg` reads --tone-neg, which the layout sets to the green token under `.green-red`.
+    expect(getComputedStyle(layoutHost).getPropertyValue('--tone-neg').trim()).toBe('var(--c-green)');
+
+    // A preference saved elsewhere is re-read.
+    TestBed.inject(AccountingService).updatePreference(makePreference()).subscribe();
+    http.expectOne(r => r.method === 'PUT').flush(makePreference());
+    harness.detectChanges();
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(layoutHost.classList).not.toContain('green-red');
+    });
   });
 });
