@@ -112,7 +112,9 @@ describe('AccountingAccountsComponent', () => {
     expect(master.querySelector('.meta')?.textContent?.trim()).toBe('可用額度 $251,678');
     expect(master.querySelector('.due .pill')?.textContent?.trim()).toBe('結帳 10/15 · 繳款 11/04');
     expect(only.querySelector('.meta')?.textContent?.trim()).toBe('一般 3.2% · 餐飲/國外 5.2%');
-    expect(all.find(r => r.textContent?.includes('Pi 拍錢包'))!.querySelector('.meta')?.textContent?.trim()).toBe('TWD · 不納入總餘額');
+    // The currency appears only when it is not the main currency.
+    expect(all.find(r => r.textContent?.includes('Pi 拍錢包'))!.querySelector('.meta')?.textContent?.trim()).toBe('不納入總餘額');
+    expect(rows(el)[0].querySelector('.meta')?.textContent?.trim()).toBe('');
   });
 
   it('shows the total, assets and liabilities of accounts included in the total', () => {

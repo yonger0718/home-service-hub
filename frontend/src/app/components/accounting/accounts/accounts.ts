@@ -212,7 +212,7 @@ export class AccountingAccountsComponent {
     }
   }
 
-  /** Second line: currency (with the main-currency value when foreign) or available credit, rules, exclusion. */
+  /** Second line: a foreign currency (with its main-currency value) or available credit, rules, exclusion. */
   meta(account: LedgerAccount): string {
     const parts: string[] = [];
     if (account.is_credit) {
@@ -223,14 +223,13 @@ export class AccountingAccountsComponent {
       // No cached rate to the main currency: the server sends null, shown as — (and left out of every sum).
       const approx = account.balance_main === null ? '—' : formatMoney(account.balance_main, this.mainCurrency());
       parts.push(`${account.currency} · 約 ${approx}`);
-    } else {
-      parts.push(account.currency);
     }
+    // A main-currency account shows no currency code (spec: the currency appears when not the main currency).
     parts.push(...(account.rule_summaries ?? []));
     if (!account.include_in_total) {
       parts.push('不納入總餘額');
     }
-    return parts.length > 0 ? parts.join(' · ') : account.currency;
+    return parts.join(' · ');
   }
 
   duePill(account: LedgerAccount): string | null {
