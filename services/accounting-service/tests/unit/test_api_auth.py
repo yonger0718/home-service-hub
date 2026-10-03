@@ -148,8 +148,6 @@ def _assert_unauthorized(response):
         {"Authorization": TOKEN},
         {"Authorization": "Bearer "},
         {"Authorization": f"Bearer spa:{TOKEN}"},
-        {"Authorization": f"bearer {TOKEN}"},
-        {"Authorization": f"BEARER {TOKEN}"},
         {"Authorization": f"Bearer  {TOKEN}"},
         {"Authorization": f"Bearer {TOKEN} "},
         {"Authorization": f"Bearer\t{TOKEN}"},
@@ -161,6 +159,18 @@ def test_enabled_refuses_missing_or_wrong_tokens(enabled, probe_app, headers):
     client = TestClient(probe_app)
     _assert_unauthorized(client.get("/whoami", headers=headers))
     _assert_unauthorized(client.post("/entries", headers=headers))
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "bearer", "BEARER", "bEaReR"])
+def test_enabled_bearer_scheme_is_case_insensitive(enabled, probe_app, scheme):
+    response = TestClient(probe_app).get("/whoami", headers={"Authorization": f"{scheme} {TOKEN}"})
+    assert response.status_code == 200
+    assert response.json() == {"label": "spa"}
+
+
+@pytest.mark.parametrize("value", [f"bearer  {TOKEN}", f"Bearer  {TOKEN}", f"Bearer {TOKEN} ", f"bearer {TOKEN} ", f" Bearer {TOKEN}"])
+def test_enabled_whitespace_stays_strict_whatever_the_scheme_case(enabled, probe_app, value):
+    _assert_unauthorized(TestClient(probe_app).get("/whoami", headers={"Authorization": value}))
 
 
 def test_enabled_accepts_a_valid_token_and_labels_the_request(enabled, probe_app):

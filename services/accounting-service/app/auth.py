@@ -77,12 +77,12 @@ def api_auth_status() -> str:
 
 
 def _bearer(scope: Scope) -> bytes | None:
-    """The token from exactly `Bearer <token>` (one space, no other whitespace); anything else is None."""
+    """The token from exactly `<scheme> <token>`: scheme `Bearer` in any case (RFC 7235), one space, no other whitespace."""
     for name, value in scope.get("headers") or ():
         if name == b"authorization":
-            if not value.startswith(b"Bearer "):
+            if value[:7].lower() != b"bearer ":
                 return None
-            token = value[len(b"Bearer "):]
+            token = value[7:]
             if not token or any(ch in token for ch in b" \t\r\n"):
                 return None
             return token
