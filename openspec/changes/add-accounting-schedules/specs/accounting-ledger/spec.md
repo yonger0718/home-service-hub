@@ -65,8 +65,8 @@ The free-text `counterparty` column of phase 1 SHALL be removed; the migration S
 - **THEN** one `counterparty` row named `Alan` SHALL exist and the 3 entries SHALL reference it
 
 #### Scenario: Loan interest names the lender
-- **WHEN** a schedule posts the interest of a loan from 玉山銀行
-- **THEN** the `interest` entry SHALL have `counterparty_id` = 玉山銀行
+- **WHEN** a schedule posts the interest of a loan from 範例銀行
+- **THEN** the `interest` entry SHALL have `counterparty_id` = 範例銀行
 
 ## ADDED Requirements
 

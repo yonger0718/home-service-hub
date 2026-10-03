@@ -30,7 +30,7 @@ Saving with 週期 or 分期 SHALL call `POST /api/accounting/schedules/definiti
 
 #### Scenario: Monthly Netflix
 - **GIVEN** today 2026-10-03
-- **WHEN** the owner enters 支出 娛樂/Netflix `390` on 玉山 UNI, picks 週期 每 1 月, 起始日 2026-10-22, 無限期, 自動入帳, and saves
+- **WHEN** the owner enters 支出 娛樂/Netflix `390` on 範例卡, picks 週期 每 1 月, 起始日 2026-10-22, 無限期, 自動入帳, and saves
 - **THEN** a `recurring` definition SHALL be created with one `expense` line of `390`, no entry SHALL be created, and `catch-up` SHALL NOT be called
 
 #### Scenario: Recurring transfer from the form
@@ -42,7 +42,7 @@ Saving with 週期 or 分期 SHALL call `POST /api/accounting/schedules/definiti
 - **THEN** 每期金額 SHALL show `3,333` and the footer SHALL read `分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）`
 
 #### Scenario: New loan with interest
-- **WHEN** the owner enters 應付款項 信貸 `300000` from 玉山銀行 into 薪轉, picks 分期 36 期, 首次還款日 2026-11-09, keeps 每期金額 `8,333`, enters 利息 `620`, 還款帳戶 薪轉, and saves
+- **WHEN** the owner enters 應付款項 信貸 `300000` from 範例銀行 into 薪轉, picks 分期 36 期, 首次還款日 2026-11-09, keeps 每期金額 `8,333`, enters 利息 `620`, 還款帳戶 薪轉, and saves
 - **THEN** one request SHALL create the payable and an `installment` definition with `total_amount = 300000`, a `repayment` line of `8333` and an `interest` line of `620`
 
 ### Requirement: Scheduled entry edit scope
