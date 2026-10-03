@@ -14,8 +14,16 @@ const SEPT: BillingEvent = {
   kind: 'due',
   date: '2026-10-05',
   period: { start: '2026-08-16', end: '2026-09-15' },
+  nextClosing: '2026-10-15',
 };
-const OCT: BillingEvent = { ...SEPT, date: '2026-11-04', period: { start: '2026-09-16', end: '2026-10-15' } };
+const OCT: BillingEvent = {
+  ...SEPT,
+  date: '2026-11-04',
+  period: { start: '2026-09-16', end: '2026-10-15' },
+  nextClosing: '2026-11-15',
+};
+/** Today in these specs. */
+const TODAY = '2026-10-03';
 
 describe('BillingService', () => {
   let http: HttpTestingController;
@@ -31,7 +39,7 @@ describe('BillingService', () => {
 
   afterEach(() => http.verify());
 
-  function requests(event = SEPT): { summary: TestRequest; payments: TestRequest } {
+  function requests(event = SEPT, paidTo = TODAY): { summary: TestRequest; payments: TestRequest } {
     const summary = http.expectOne(
       r => r.url === `/api/accounting/accounts/${event.accountId}/summary` && r.params.get('date_to') === event.period.end,
     );
@@ -40,7 +48,7 @@ describe('BillingService', () => {
       r => r.url === `/api/accounting/accounts/${event.accountId}/entries` && r.params.get('date_from') === event.period.end,
     );
     expect(payments.request.params.get('kind')).toBe('transfer_in');
-    expect(payments.request.params.get('date_to')).toBe(event.date);
+    expect(payments.request.params.get('date_to')).toBe(paidTo);
     expect(payments.request.params.get('limit')).toBe(String(BILL_PAYMENT_LIMIT));
     return { summary, payments };
   }
@@ -64,7 +72,7 @@ describe('BillingService', () => {
   }
 
   it('resolves a statement into amount, paid and remaining once both reads land', () => {
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     const reqs = requests();
     reqs.summary.flush({
       account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-12345.0000', income: '0', rewards: '0',
@@ -86,23 +94,23 @@ describe('BillingService', () => {
   });
 
   it('asks once per statement and change round, however many consumers ask', () => {
-    billing.ensure([SEPT, OCT]);
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT, OCT], TODAY);
+    billing.ensure([SEPT], TODAY);
     answer(requests(SEPT), '-100.0000');
-    answer(requests(OCT), '-200.0000');
-    billing.ensure([OCT, SEPT]);
+    answer(requests(OCT, '2026-10-15'), '-200.0000');
+    billing.ensure([OCT, SEPT], TODAY);
     http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
     expect(billing.bill(OCT)?.remaining).toBe(200);
   });
 
   it('re-reads after an entry write and after an account write, keeping the old figures until the new ones land', () => {
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     answer(requests(), '-100.0000');
     const before = billing.generation();
 
     writeEntry();
     expect(billing.generation()).toBeGreaterThan(before);
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     const reqs = requests();
     expect(billing.bill(SEPT)?.remaining).toBe(100);
     reqs.summary.flush({
@@ -116,16 +124,16 @@ describe('BillingService', () => {
 
     accounting.updateAccount(9, {} as never).subscribe();
     http.expectOne(r => r.method === 'PUT').flush({});
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     answer(requests(), '-300.0000');
     expect(billing.bill(SEPT)?.remaining).toBe(300);
   });
 
   it("drops a superseded round's answers: the state keeps the latest round's result, never an earlier one", () => {
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     const first = requests();
     writeEntry();
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     const second = requests();
 
     answer(first, '-111.0000');
@@ -136,10 +144,10 @@ describe('BillingService', () => {
   });
 
   it('drops a superseded answer that lands after the latest one', () => {
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     const first = requests();
     writeEntry();
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     const second = requests();
 
     answer(second, '-222.0000');
@@ -147,8 +155,22 @@ describe('BillingService', () => {
     expect(billing.bill(SEPT)?.statement).toBe(222);
   });
 
+  it('counts a payment made after the due date until the next closing', () => {
+    // 10/09: four days past the 10/05 due date, before the 10/15 closing.
+    billing.ensure([SEPT], '2026-10-09');
+    answer(requests(SEPT, '2026-10-09'), '-100.0000', ['100.0000']);
+    expect(billing.bill(SEPT)?.remaining).toBe(0);
+  });
+
+  it('stops counting payments the day before the next closing', () => {
+    // A payment dated on/after 10/15 belongs to the next statement: the window ends on 10/14.
+    billing.ensure([SEPT], '2026-10-20');
+    answer(requests(SEPT, '2026-10-14'), '-100.0000');
+    expect(billing.bill(SEPT)?.remaining).toBe(100);
+  });
+
   it('leaves a statement unresolved when either read fails', () => {
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     const reqs = requests();
     reqs.summary.flush('boom', { status: 500, statusText: 'Server Error' });
     expect(billing.isSettled(SEPT)).toBe(false);
@@ -160,11 +182,11 @@ describe('BillingService', () => {
   });
 
   it('keys a statement by its due date too, so a changed due rule is a different statement', () => {
-    billing.ensure([SEPT]);
+    billing.ensure([SEPT], TODAY);
     answer(requests(), '-100.0000');
     const moved = { ...SEPT, date: '2026-10-07' };
     expect(billing.bill(moved)).toBeNull();
-    billing.ensure([moved]);
+    billing.ensure([moved], TODAY);
     answer(requests(moved), '-100.0000');
     expect(billing.bill(moved)?.due).toBe('2026-10-07');
   });

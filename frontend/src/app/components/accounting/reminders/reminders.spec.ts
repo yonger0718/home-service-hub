@@ -67,8 +67,8 @@ describe('AccountingRemindersComponent', () => {
     req.flush({ items: open, total: open.length, limit: 500, offset: 0 });
   }
 
-  function flushBill(accountId: number, spend: string, payments: string[] = []): void {
-    const { end, due } = CLOSINGS[accountId];
+  function flushBill(accountId: number, spend: string, payments: string[] = [], paidTo = '2026-10-03'): void {
+    const { end } = CLOSINGS[accountId];
     http
       .expectOne(r => r.url === `/api/accounting/accounts/${accountId}/summary` && r.params.get('date_to') === end)
       .flush({
@@ -78,7 +78,8 @@ describe('AccountingRemindersComponent', () => {
     const paymentsReq = http.expectOne(
       r => r.url === `/api/accounting/accounts/${accountId}/entries` && r.params.get('date_from') === end,
     );
-    expect(paymentsReq.request.params.get('date_to')).toBe(due);
+    // Payments count up to today (before every card's next closing here), past the due date too.
+    expect(paymentsReq.request.params.get('date_to')).toBe(paidTo);
     paymentsReq.flush({
       items: payments.map((amount, index) => makeEntry({ id: 90 + index, kind: 'transfer_in', amount })),
       total: payments.length,
@@ -117,6 +118,24 @@ describe('AccountingRemindersComponent', () => {
     expect(rows[2].querySelector('.countdown')!.classList).not.toContain('soon');
     expect(Array.from(rows[2].querySelectorAll('.figs .fig')).map(text)).toEqual(['應繳 $12,345', '已繳 $5,000', '剩餘 $7,345']);
     expect(text(rows[2].querySelector('.due-date'))).toBe('10/05 截止');
+  });
+
+  it('clears an overdue bill paid late, before the next closing', () => {
+    vi.setSystemTime(new Date(2026, 9, 9, 12, 0, 0));
+    const { fixture, el } = render([SOON]);
+    // 10/05 was the due date; the payment window runs to today (10/09), the next closing being 10/15.
+    flushBill(9, '-100.0000', ['100.0000'], '2026-10-09');
+    fixture.detectChanges();
+    expect(el.querySelector('.card-row')).toBeNull();
+    expect(text(el.querySelector('.empty'))).toBe('目前沒有待處理項目');
+  });
+
+  it('keeps an unpaid bill overdue until the next closing', () => {
+    vi.setSystemTime(new Date(2026, 9, 14, 12, 0, 0));
+    const { fixture, el } = render([SOON]);
+    flushBill(9, '-100.0000', [], '2026-10-14');
+    fixture.detectChanges();
+    expect(text(el.querySelector('.card-row .countdown'))).toBe('已逾期 9 天');
   });
 
   it('says 今天 on the due day', () => {

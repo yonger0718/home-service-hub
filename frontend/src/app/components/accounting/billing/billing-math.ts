@@ -15,6 +15,8 @@ export interface BillingEvent {
   kind: 'closing' | 'due';
   date: string;
   period: Period;
+  /** Closing date of the cycle after `period`: payments from then on belong to the next statement. */
+  nextClosing: string;
 }
 
 /**
@@ -41,7 +43,8 @@ export function billingEvents(cards: BillingCard[], month: string): BillingEvent
     const anchor = statementPeriod(closingDay, `${month}-01`);
     for (let delta = -CYCLES_BEFORE; delta <= 0; delta++) {
       const period = shiftPeriod(closingDay, anchor, delta);
-      const base = { accountId: card.id, name: card.name, period };
+      const nextClosing = shiftPeriod(closingDay, period, 1).end;
+      const base = { accountId: card.id, name: card.name, period, nextClosing };
       if (period.end.slice(0, 7) === month) {
         events.push({ ...base, kind: 'closing', date: period.end });
       }
@@ -86,7 +89,8 @@ export function currentDues(cards: BillingCard[], today: string): BillingEvent[]
     const period = shiftPeriod(closingDay, statementPeriod(closingDay, today), -1);
     const due = dueDate(period.end, card.due_rule, card.due_value);
     if (due !== null) {
-      events.push({ accountId: card.id, name: card.name, kind: 'due', date: due, period });
+      const nextClosing = shiftPeriod(closingDay, period, 1).end;
+      events.push({ accountId: card.id, name: card.name, kind: 'due', date: due, period, nextClosing });
     }
   }
   return events;
@@ -115,11 +119,23 @@ export function duePillText(due: string, today: string): string {
   return days === 0 ? '今天繳費截止' : days === 1 ? '明天繳費截止' : `${shortDate(due)} 繳費截止`;
 }
 
+/**
+ * Last day whose card payments count toward `event`'s statement: the day before the next closing (or the due date,
+ * when a `days_after_closing` rule puts it later), capped at `today` and never before the closing date. A payment
+ * made after the due date still clears the bill until the next statement closes.
+ */
+export function paymentWindowEnd(event: Pick<BillingEvent, 'date' | 'period' | 'nextClosing'>, today: string): string {
+  const dayBeforeNext = addDays(event.nextClosing, -1);
+  const last = event.date > dayBeforeNext ? event.date : dayBeforeNext;
+  const capped = today < last ? today : last;
+  return capped < event.period.end ? event.period.end : capped;
+}
+
 /** A statement's figures: `remaining > 0` is the only case the billing hints show. */
 export interface BillBalance {
   /** −spend of the cycle: positive for a bill, ≤ 0 for a zero or refund-heavy statement. */
   statement: number;
-  /** Σ `transfer_in` to the card between the closing date and the due date (inclusive). */
+  /** Σ `transfer_in` to the card from the closing date through `paymentWindowEnd` (inclusive). */
   paid: number;
   remaining: number;
 }

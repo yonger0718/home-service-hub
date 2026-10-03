@@ -619,10 +619,11 @@ describe('LedgerTimelineComponent', () => {
       due_rule: 'days_after_closing',
       due_value: 20,
     });
-    const SEPT = { start: '2026-08-16', end: '2026-09-15', due: '2026-10-05' };
-    const OCT_CYCLE = { start: '2026-09-16', end: '2026-10-15', due: '2026-11-04' };
+    // `paidTo`: payments count from the closing through the day before the next closing, capped at today (10/02).
+    const SEPT = { start: '2026-08-16', end: '2026-09-15', due: '2026-10-05', paidTo: '2026-10-02' };
+    const OCT_CYCLE = { start: '2026-09-16', end: '2026-10-15', due: '2026-11-04', paidTo: '2026-10-15' };
 
-    function billRequests(cycle = SEPT): { summary: TestRequest; payments: TestRequest } {
+    function billRequests(cycle = SEPT, paidTo = cycle.paidTo): { summary: TestRequest; payments: TestRequest } {
       const summary = httpMock!.expectOne(
         r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === cycle.end,
       );
@@ -631,7 +632,7 @@ describe('LedgerTimelineComponent', () => {
         r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === cycle.end,
       );
       expect(payments.request.params.get('kind')).toBe('transfer_in');
-      expect(payments.request.params.get('date_to')).toBe(cycle.due);
+      expect(payments.request.params.get('date_to')).toBe(paidTo);
       return { summary, payments };
     }
 
@@ -656,8 +657,8 @@ describe('LedgerTimelineComponent', () => {
       });
     }
 
-    function flushBill(spend: string, payments: string[] = [], cycle = SEPT): void {
-      answerBill(billRequests(cycle), spend, payments);
+    function flushBill(spend: string, payments: string[] = [], cycle = SEPT, paidTo = cycle.paidTo): void {
+      answerBill(billRequests(cycle, paidTo), spend, payments);
     }
 
     function expectNoBillRequest(): void {
@@ -828,8 +829,8 @@ describe('LedgerTimelineComponent', () => {
     it("resolves next month's statement for the banner and moves there on tap", () => {
       vi.setSystemTime(new Date(2026, 9, 30, 12, 0, 0));
       const { fixture, el } = renderListWith();
-      flushBill('-100.0000', ['100.0000']);
-      flushBill('-200.0000', [], OCT_CYCLE);
+      flushBill('-100.0000', ['100.0000'], SEPT, '2026-10-14');
+      flushBill('-200.0000', [], OCT_CYCLE, '2026-10-30');
       fixture.detectChanges();
       expect(text(el.querySelector('.bill-banner'))).toBe('近 7 天有 1 筆繳費到期');
 

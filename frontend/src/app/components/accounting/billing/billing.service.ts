@@ -2,11 +2,11 @@ import { Injectable, Signal, computed, inject, signal, untracked } from '@angula
 
 import { AccountingService } from '../../../services/accounting.service';
 import { Period } from '../cycle';
-import { BillingEvent, billBalance } from './billing-math';
+import { BillingEvent, billBalance, paymentWindowEnd } from './billing-math';
 
 /**
- * Payments to a card read per closing → due window (one page, no paging). Far more than happen in practice; a window
- * with more than this many `transfer_in` rows would understate `paid` (and overstate `remaining`).
+ * Payments to a card read per payment window (closing → `paymentWindowEnd`), one page, no paging. Far more than happen
+ * in practice; a window with more than this many `transfer_in` rows would understate `paid` (and overstate `remaining`).
  */
 export const BILL_PAYMENT_LIMIT = 100;
 
@@ -20,7 +20,10 @@ export interface BillState {
   currency: string;
   /** −spend of the cycle: positive for a bill, ≤ 0 for a zero or refund-heavy statement. */
   statement: number;
-  /** Σ `transfer_in` to the card between the closing date and the due date (inclusive). */
+  /**
+   * Σ `transfer_in` to the card from the closing date through `paymentWindowEnd` (the day before the next closing,
+   * capped at the day of the read): a late payment still clears the bill.
+   */
   paid: number;
   remaining: number;
 }
@@ -57,8 +60,12 @@ export class BillingService {
    */
   readonly generation: Signal<number> = computed(() => this.accounting.entriesChanged() + this.accounting.accountsChanged());
 
-  /** Requests the statements of `dues` not yet asked for in the current change round. */
-  ensure(dues: readonly BillingEvent[]): void {
+  /**
+   * Requests the statements of `dues` not yet asked for in the current change round. The payment window is capped at
+   * `today` when read; a day rollover alone does not re-read (a payment only appears through an entry write, which
+   * starts a new round), so a future-dated payment is picked up on the next change round.
+   */
+  ensure(dues: readonly BillingEvent[], today: string): void {
     const generation = untracked(this.generation);
     for (const event of dues) {
       const key = billKey(event);
@@ -85,7 +92,7 @@ export class BillingService {
         .getEntries(event.accountId, {
           kind: 'transfer_in',
           date_from: event.period.end,
-          date_to: event.date,
+          date_to: paymentWindowEnd(event, today),
           limit: BILL_PAYMENT_LIMIT,
         })
         .subscribe({

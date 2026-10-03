@@ -181,7 +181,7 @@ export class AccountingRemindersComponent {
     effect(() => {
       const dues = this.dues();
       this.bills.generation();
-      untracked(() => this.bills.ensure(dues));
+      untracked(() => this.bills.ensure(dues, this.today()));
     });
   }
 

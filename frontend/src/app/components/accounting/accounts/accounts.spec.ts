@@ -56,7 +56,7 @@ describe('AccountingAccountsComponent', () => {
 
   /**
    * Answers every open statement read (`BillingService`): summary spend per card id (default 0, i.e. nothing to pay)
-   * and the payments made in the closing → due window.
+   * and the payments made in its payment window (closing → day before the next closing, capped at today).
    */
   function flushBills(bills: Record<number, { spend: string; payments?: string[] }> = {}): void {
     for (const req of http.match(r => /^\/api\/accounting\/accounts\/\d+\/summary$/.test(r.url))) {

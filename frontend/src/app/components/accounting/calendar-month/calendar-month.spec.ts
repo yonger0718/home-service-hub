@@ -93,10 +93,10 @@ describe('CalendarMonthComponent', () => {
   describe('billing hints', () => {
     const period = { start: '2026-08-16', end: '2026-09-15' };
     const BILLING: BillingEvent[] = [
-      { accountId: 1, name: '玉山 UNI', kind: 'due', date: '2026-10-05', period },
-      { accountId: 7, name: '富邦 J卡', kind: 'due', date: '2026-10-05', period },
-      { accountId: 3, name: '國泰 CUBE', kind: 'due', date: '2026-10-12', period },
-      { accountId: 1, name: '玉山 UNI', kind: 'closing', date: '2026-10-15', period: { start: '2026-09-16', end: '2026-10-15' } },
+      { accountId: 1, name: '玉山 UNI', kind: 'due', date: '2026-10-05', period, nextClosing: '2026-10-15' },
+      { accountId: 7, name: '富邦 J卡', kind: 'due', date: '2026-10-05', period, nextClosing: '2026-10-15' },
+      { accountId: 3, name: '國泰 CUBE', kind: 'due', date: '2026-10-12', period, nextClosing: '2026-10-15' },
+      { accountId: 1, name: '玉山 UNI', kind: 'closing', date: '2026-10-15', period: { start: '2026-09-16', end: '2026-10-15' }, nextClosing: '2026-11-15' },
     ];
 
     it('badges due days with the card count and says so in the aria label', () => {

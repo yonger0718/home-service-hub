@@ -124,7 +124,8 @@ export class AccountingAccountsComponent {
   readonly collapsed = signal<ReadonlySet<string>>(new Set());
   readonly archivedOpen = signal(false);
   readonly archived = signal<LedgerAccount[] | null>(null);
-  readonly today = todayIso();
+  /** Refreshed on every load, so a list left open past midnight moves its pills on the next reload. */
+  readonly today = signal(todayIso());
 
   readonly groups = computed(() => buildAccountGroups(this.accounts(), this.mainCurrency()));
   private readonly included = computed(() => this.accounts().filter(account => account.include_in_total));
@@ -144,7 +145,7 @@ export class AccountingAccountsComponent {
   });
   readonly formatMoney = formatMoney;
   /** Each card's current statement (the same resolution as the calendar and the reminder centre). */
-  private readonly dues = computed(() => currentDues(this.accounts(), this.today));
+  private readonly dues = computed(() => currentDues(this.accounts(), this.today()));
   /** Per card id: the current statement when something is left to pay. */
   private readonly owed = computed(() => {
     const owed = new Map<number, BillState>();
@@ -172,12 +173,13 @@ export class AccountingAccountsComponent {
     effect(() => {
       const dues = this.dues();
       this.bills.generation();
-      untracked(() => this.bills.ensure(dues));
+      untracked(() => this.bills.ensure(dues, this.today()));
     });
   }
 
   private load(): void {
     const id = ++this.requestId;
+    this.today.set(todayIso());
     forkJoin({
       accounts: this.accountingService.getAccounts(),
       latest: this.accountingService.getLatestImport(),
@@ -281,8 +283,8 @@ export class AccountingAccountsComponent {
     }
     return {
       owedText: `待繳帳款 ${formatMoney(bill.remaining, bill.currency)}`,
-      pill: duePillText(bill.due, this.today),
-      overdue: daysBetween(this.today, bill.due) < 0,
+      pill: duePillText(bill.due, this.today()),
+      overdue: daysBetween(this.today(), bill.due) < 0,
     };
   }
 
@@ -291,7 +293,7 @@ export class AccountingAccountsComponent {
     if (!account.is_credit || account.closing_day === null || account.closing_day === undefined) {
       return null;
     }
-    const period = statementPeriod(account.closing_day, this.today);
+    const period = statementPeriod(account.closing_day, this.today());
     const due = dueDate(period.end, account.due_rule ?? null, account.due_value ?? null);
     return due ? `結帳 ${shortDate(period.end)} · 繳款 ${shortDate(due)}` : `結帳 ${shortDate(period.end)}`;
   }

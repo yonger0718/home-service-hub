@@ -8,6 +8,7 @@ import {
   currentDues,
   reminderDues,
   dueCountdown,
+  paymentWindowEnd,
   duePillText,
   upcomingDues,
 } from './billing-math';
@@ -19,8 +20,8 @@ describe('billingEvents', () => {
   it('puts the 15th closing and the due day 20 days later in their months', () => {
     const uni = card({ id: 1, name: '玉山 UNI', closing_day: 15, due_rule: 'days_after_closing', due_value: 20 });
     expect(billingEvents([uni], '2026-10')).toEqual([
-      { accountId: 1, name: '玉山 UNI', kind: 'due', date: '2026-10-05', period: { start: '2026-08-16', end: '2026-09-15' } },
-      { accountId: 1, name: '玉山 UNI', kind: 'closing', date: '2026-10-15', period: { start: '2026-09-16', end: '2026-10-15' } },
+      { accountId: 1, name: '玉山 UNI', kind: 'due', date: '2026-10-05', period: { start: '2026-08-16', end: '2026-09-15' }, nextClosing: '2026-10-15' },
+      { accountId: 1, name: '玉山 UNI', kind: 'closing', date: '2026-10-15', period: { start: '2026-09-16', end: '2026-10-15' }, nextClosing: '2026-11-15' },
     ]);
     // The October statement falls due in November.
     expect(billingEvents([uni], '2026-11')[0]).toEqual({
@@ -29,6 +30,7 @@ describe('billingEvents', () => {
       kind: 'due',
       date: '2026-11-04',
       period: { start: '2026-09-16', end: '2026-10-15' },
+      nextClosing: '2026-11-15',
     });
   });
 
@@ -43,8 +45,8 @@ describe('billingEvents', () => {
   it('carries a days_after_closing due date from December into January', () => {
     const dec = card({ id: 4, closing_day: 20, due_rule: 'days_after_closing', due_value: 15 });
     expect(billingEvents([dec], '2027-01')).toEqual([
-      { accountId: 4, name: '錢包', kind: 'due', date: '2027-01-04', period: { start: '2026-11-21', end: '2026-12-20' } },
-      { accountId: 4, name: '錢包', kind: 'closing', date: '2027-01-20', period: { start: '2026-12-21', end: '2027-01-20' } },
+      { accountId: 4, name: '錢包', kind: 'due', date: '2027-01-04', period: { start: '2026-11-21', end: '2026-12-20' }, nextClosing: '2027-01-20' },
+      { accountId: 4, name: '錢包', kind: 'closing', date: '2027-01-20', period: { start: '2026-12-21', end: '2027-01-20' }, nextClosing: '2027-02-20' },
     ]);
   });
 
@@ -59,7 +61,7 @@ describe('billingEvents', () => {
   it('clamps a 31st closing day to the end of February', () => {
     const late = card({ id: 2, closing_day: 31 });
     expect(billingEvents([late], '2026-02')).toEqual([
-      { accountId: 2, name: '錢包', kind: 'closing', date: '2026-02-28', period: { start: '2026-02-01', end: '2026-02-28' } },
+      { accountId: 2, name: '錢包', kind: 'closing', date: '2026-02-28', period: { start: '2026-02-01', end: '2026-02-28' }, nextClosing: '2026-03-31' },
     ]);
   });
 
@@ -125,7 +127,7 @@ describe('currentDues', () => {
 
   it("is the last closed statement's due event, overdue or not", () => {
     expect(currentDues([uni], '2026-10-03')).toEqual([
-      { accountId: 1, name: '玉山 UNI', kind: 'due', date: '2026-10-05', period: { start: '2026-08-16', end: '2026-09-15' } },
+      { accountId: 1, name: '玉山 UNI', kind: 'due', date: '2026-10-05', period: { start: '2026-08-16', end: '2026-09-15' }, nextClosing: '2026-10-15' },
     ]);
     expect(currentDues([uni], '2026-10-09')[0].date).toBe('2026-10-05');
     // On the closing day the cycle is still open; the day after, the new statement is the current one.
@@ -169,5 +171,29 @@ describe('due wording', () => {
     expect(duePillText('2026-10-04', '2026-10-03')).toBe('明天繳費截止');
     expect(duePillText('2026-10-03', '2026-10-03')).toBe('今天繳費截止');
     expect(duePillText('2026-10-02', '2026-10-03')).toBe('已逾期');
+  });
+});
+
+describe('paymentWindowEnd', () => {
+  const event = {
+    accountId: 1, name: '玉山 UNI', kind: 'due' as const, date: '2026-10-05',
+    period: { start: '2026-08-16', end: '2026-09-15' }, nextClosing: '2026-10-15',
+  };
+
+  it('runs to the day before the next closing, capped at today', () => {
+    expect(paymentWindowEnd(event, '2026-10-03')).toBe('2026-10-03');
+    // Past the due date a late payment still counts, until the next statement closes.
+    expect(paymentWindowEnd(event, '2026-10-09')).toBe('2026-10-09');
+    expect(paymentWindowEnd(event, '2026-10-20')).toBe('2026-10-14');
+  });
+
+  it('reaches the due date when it falls after the next closing', () => {
+    const slow = { ...event, date: '2026-11-10' };
+    expect(paymentWindowEnd(slow, '2026-12-01')).toBe('2026-11-10');
+    expect(paymentWindowEnd(slow, '2026-10-20')).toBe('2026-10-20');
+  });
+
+  it('never ends before the closing date (a statement not yet closed)', () => {
+    expect(paymentWindowEnd(event, '2026-09-01')).toBe('2026-09-15');
   });
 });

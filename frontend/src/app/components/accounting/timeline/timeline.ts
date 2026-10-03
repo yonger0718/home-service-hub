@@ -465,7 +465,7 @@ export class LedgerTimelineComponent implements OnInit {
       }
       const events = this.trackedDues();
       this.bills.generation();
-      untracked(() => this.bills.ensure(events));
+      untracked(() => this.bills.ensure(events, this.today()));
     });
 
     // The 🔔's counterparties: open amounts move with entry writes; a backup import (accountsChanged) replaces them.
