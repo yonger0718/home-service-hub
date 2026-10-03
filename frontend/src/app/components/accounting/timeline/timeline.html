@@ -25,6 +25,9 @@
       <div><small>結餘</small><b class="sum-net">{{ formatSigned(s.net, s.currency) }}</b></div>
     </div>
   }
+  @if (view() === 'list' && upcomingBills().length > 0) {
+    <button type="button" class="bill-banner" (click)="openUpcoming()">近 7 天有 {{ upcomingBills().length }} 筆繳費到期</button>
+  }
   @if (missingRates().length > 0) {
     <p class="missing-rates">部分外幣未換算 ({{ missingRates().join(', ') }})</p>
   }
@@ -82,6 +85,7 @@
       [currency]="daily()?.currency ?? mainCurrency()"
       [weekStart]="weekStart()"
       [selected]="selectedDay()"
+      [billing]="billing()"
       [today]="today()"
       (daySelected)="selectDay($event)"
     />
@@ -93,6 +97,18 @@
             <b [class.neg]="d.net < 0" [class.pos]="d.net > 0">{{ d.text }}</b>
           }
         </div>
+        @if (billLines().length > 0) {
+          <div class="bills" role="group" aria-label="繳費提醒">
+            @for (bill of billLines(); track bill.key) {
+              <button type="button" class="bill" [class.paid]="bill.paid" (click)="openCard(bill.accountId)">
+                💳 {{ bill.name }} 帳單 {{ bill.amountText }} · 到期
+                @if (bill.paid) {
+                  <span class="paid-mark">已繳 ✓</span>
+                }
+              </button>
+            }
+          </div>
+        }
         @if (dayError()) {
           <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
         }

@@ -30,6 +30,7 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
+import { BillingEvent, billingEvents, upcomingDues } from '../billing/billing-math';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
@@ -39,6 +40,8 @@ export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
 export const CALENDAR_DAY_LIMIT = 500;
 export const TIMELINE_VIEW_KEY = 'hh.accounting.timelineView';
+/** A due line only asks whether any payment reached the card, so a few rows suffice. */
+export const BILL_PAYMENT_LIMIT = 10;
 
 export type TimelineView = 'list' | 'calendar';
 
@@ -98,6 +101,26 @@ export interface TimelineRow {
   fx: string | null;
   pills: TimelinePill[];
   groupCount: number | null;
+}
+
+/** One 繳費提醒 line in the 日曆 day panel. */
+export interface BillLine {
+  key: string;
+  accountId: number;
+  name: string;
+  /** The statement's spend as a positive figure; `—` while loading or when it cannot be read. */
+  amountText: string;
+  /** A `transfer_in` reached the card between the closing date and the due date (inclusive). */
+  paid: boolean;
+}
+
+interface BillState {
+  amountText?: string;
+  paid?: boolean;
+}
+
+function billKey(event: BillingEvent): string {
+  return `${event.accountId}:${event.period.end}`;
 }
 
 export interface TimelineDay {
@@ -277,6 +300,7 @@ export class LedgerTimelineComponent implements OnInit {
   private summaryRequestId = 0;
   private dailyRequestId = 0;
   private dayRequestId = 0;
+  private billRequestId = 0;
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -296,6 +320,7 @@ export class LedgerTimelineComponent implements OnInit {
   readonly dayEntries = signal<LedgerEntry[]>([]);
   readonly dayLoading = signal(false);
   readonly dayError = signal(false);
+  private readonly bills = signal<ReadonlyMap<string, BillState>>(new Map());
   readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
 
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
@@ -322,6 +347,26 @@ export class LedgerTimelineComponent implements OnInit {
     const date = this.selectedDay();
     return date ? dayLabel(date) : '';
   });
+  /** Credit-card closing / due days of the shown month (empty without cards that have a closing day). */
+  readonly billing = computed(() => billingEvents(this.accounts(), this.month()));
+  /** Cards due on the selected 日曆 day. */
+  private readonly dueEvents = computed(() => {
+    const day = this.selectedDay();
+    if (this.view() !== 'calendar' || !day) {
+      return [];
+    }
+    return this.billing().filter(event => event.kind === 'due' && event.date === day);
+  });
+  readonly billLines = computed(() => {
+    const states = this.bills();
+    return this.dueEvents().map((event): BillLine => {
+      const key = billKey(event);
+      const state = states.get(key);
+      return { key, accountId: event.accountId, name: event.name, amountText: state?.amountText ?? '—', paid: state?.paid ?? false };
+    });
+  });
+  /** Due days from today through today + 6 (may reach into next month): the list view's 近 7 天 banner. */
+  readonly upcomingBills = computed(() => upcomingDues(this.accounts(), this.today()));
   readonly missingRates = computed(() =>
     (this.view() === 'calendar' ? this.daily()?.missing_rates : this.summary()?.missing_rates) ?? [],
   );
@@ -385,6 +430,13 @@ export class LedgerTimelineComponent implements OnInit {
       const month = this.month();
       this.accounting.entriesChanged();
       untracked(() => this.loadSummary(month));
+    });
+
+    // 日曆: the statement amount and payment state of each card due on the tapped day.
+    effect(() => {
+      const events = this.dueEvents();
+      this.accounting.entriesChanged();
+      untracked(() => this.loadBills(events));
     });
 
     // A saved preference (settings pane beside this list in the wide layout) is re-read; the effects above then reload.
@@ -578,6 +630,35 @@ export class LedgerTimelineComponent implements OnInit {
     this.dayError.set(false);
   }
 
+  private loadBills(events: BillingEvent[]): void {
+    const id = ++this.billRequestId;
+    this.bills.set(new Map());
+    const patch = (key: string, change: BillState) => {
+      if (id === this.billRequestId) {
+        this.bills.update(states => new Map(states).set(key, { ...states.get(key), ...change }));
+      }
+    };
+    for (const event of events) {
+      const key = billKey(event);
+      // Errors leave the line at `—` / unpaid.
+      this.accounting.getAccountSummary(event.accountId, event.period.start, event.period.end).subscribe({
+        next: summary => patch(key, { amountText: formatMoney(Math.abs(Number(summary.spend)), summary.currency) }),
+        error: () => undefined,
+      });
+      this.accounting
+        .getEntries(event.accountId, {
+          kind: 'transfer_in',
+          date_from: event.period.end,
+          date_to: event.date,
+          limit: BILL_PAYMENT_LIMIT,
+        })
+        .subscribe({
+          next: page => patch(key, { paid: page.items.length > 0 }),
+          error: () => undefined,
+        });
+    }
+  }
+
   setView(view: TimelineView): void {
     if (view !== this.view()) {
       this.view.set(view);
@@ -588,6 +669,21 @@ export class LedgerTimelineComponent implements OnInit {
   /** Tapping the selected day again closes it. */
   selectDay(date: string): void {
     this.selectedDay.update(current => (current === date ? null : date));
+  }
+
+  /** The 近 7 天 banner: 日曆 on the first upcoming due day (next month's when it falls there). */
+  openUpcoming(): void {
+    const first = this.upcomingBills()[0];
+    if (!first) {
+      return;
+    }
+    this.setView('calendar');
+    this.month.set(first.date.slice(0, 7));
+    this.selectedDay.set(first.date);
+  }
+
+  openCard(accountId: number): void {
+    void this.router.navigate(['/accounting/accounts', accountId]);
   }
 
   moveMonth(delta: number): void {
