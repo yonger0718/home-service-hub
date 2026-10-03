@@ -70,18 +70,64 @@ describe('billingEvents', () => {
     expect(billingEvents([plain], '2026-10').map(event => event.kind)).toEqual(['closing']);
   });
 
-  it('ignores archived cards, non-credit accounts and cards without a closing day', () => {
+  it('ignores archived cards and non-credit accounts, with or without a closing day', () => {
     const rule = { closing_day: 15, due_rule: 'days_after_closing' as const, due_value: 20 };
     expect(
       billingEvents(
         [
           card({ id: 1, ...rule, is_archived: true }),
           makeAccount({ id: 2, ...rule, is_credit: false }),
-          card({ id: 3, closing_day: null, due_rule: 'fixed_day', due_value: 5 }),
+          makeAccount({ id: 3, closing_day: null, due_rule: 'fixed_day', due_value: 5 }),
+          card({ id: 4, closing_day: null, due_rule: 'fixed_day', due_value: 5, is_archived: true }),
         ],
         '2026-10',
       ),
     ).toEqual([]);
+  });
+
+  describe('a card whose statement is the calendar month (closing_day null)', () => {
+    it('closes on the month end and falls due by a fixed day in the next month', () => {
+      const monthly = card({ id: 3, name: '月結卡', closing_day: null, due_rule: 'fixed_day', due_value: 5 });
+      expect(billingEvents([monthly], '2026-10')).toEqual([
+        {
+          accountId: 3, name: '月結卡', kind: 'due', date: '2026-10-05',
+          period: { start: '2026-09-01', end: '2026-09-30' }, nextClosing: '2026-10-31',
+        },
+        {
+          accountId: 3, name: '月結卡', kind: 'closing', date: '2026-10-31',
+          period: { start: '2026-10-01', end: '2026-10-31' }, nextClosing: '2026-11-30',
+        },
+      ]);
+      // A fixed day past the shorter month's end is still strictly after its closing.
+      const late = card({ id: 5, closing_day: null, due_rule: 'fixed_day', due_value: 31 });
+      expect(billingEvents([late], '2026-03').filter(event => event.kind === 'due').map(event => event.date)).toEqual([
+        '2026-03-31',
+      ]);
+      expect(billingEvents([late], '2026-03').find(event => event.kind === 'due')!.period.end).toBe('2026-02-28');
+    });
+
+    it('counts days_after_closing from the month end', () => {
+      const monthly = card({ id: 3, closing_day: null, due_rule: 'days_after_closing', due_value: 15 });
+      expect(billingEvents([monthly], '2026-10').map(event => [event.kind, event.date])).toEqual([
+        ['due', '2026-10-15'],
+        ['closing', '2026-10-31'],
+      ]);
+    });
+
+    it('is a current statement and a reminder, with a payment window to the next month end', () => {
+      const monthly = card({ id: 3, closing_day: null, due_rule: 'fixed_day', due_value: 5 });
+      const [due] = currentDues([monthly], '2026-10-03');
+      expect(due).toEqual({
+        accountId: 3, name: '錢包', kind: 'due', date: '2026-10-05',
+        period: { start: '2026-09-01', end: '2026-09-30' }, nextClosing: '2026-10-31',
+      });
+      expect(reminderDues([monthly], '2026-10-03')).toEqual([due]);
+      expect(paymentWindowEnd(due, '2026-10-03')).toBe('2026-10-03');
+      expect(paymentWindowEnd(due, '2026-11-02')).toBe('2026-10-30');
+      // The month's last day still belongs to the open cycle.
+      expect(currentDues([monthly], '2026-10-31')[0].period.end).toBe('2026-09-30');
+      expect(currentDues([monthly], '2026-11-01')[0].period.end).toBe('2026-10-31');
+    });
   });
 
   it('lists two cards due on the same day as two events', () => {

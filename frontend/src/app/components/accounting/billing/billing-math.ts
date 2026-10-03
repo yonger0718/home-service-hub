@@ -27,9 +27,12 @@ const CYCLES_BEFORE = 3;
 /** The 近 7 天 window: today and the six days after it. */
 export const UPCOMING_DAYS = 7;
 
-/** Non-archived credit accounts with a closing day: the only ones with billing events. */
+/**
+ * Non-archived credit accounts: the only ones with billing events. A null `closing_day` means the statement is the
+ * calendar month (closing on its last day), as `cycle.ts` treats it.
+ */
 export function billingCards<T extends BillingCard>(accounts: T[]): T[] {
-  return accounts.filter(account => account.is_credit && !account.is_archived && account.closing_day !== null);
+  return accounts.filter(account => account.is_credit && !account.is_archived);
 }
 
 /**
@@ -39,7 +42,7 @@ export function billingCards<T extends BillingCard>(accounts: T[]): T[] {
 export function billingEvents(cards: BillingCard[], month: string): BillingEvent[] {
   const events: BillingEvent[] = [];
   for (const card of billingCards(cards)) {
-    const closingDay = card.closing_day as number;
+    const closingDay = card.closing_day ?? null;
     const anchor = statementPeriod(closingDay, `${month}-01`);
     for (let delta = -CYCLES_BEFORE; delta <= 0; delta++) {
       const period = shiftPeriod(closingDay, anchor, delta);
@@ -85,7 +88,7 @@ export const REMINDER_HORIZON_DAYS = 45;
 export function currentDues(cards: BillingCard[], today: string): BillingEvent[] {
   const events: BillingEvent[] = [];
   for (const card of billingCards(cards)) {
-    const closingDay = card.closing_day as number;
+    const closingDay = card.closing_day ?? null;
     const period = shiftPeriod(closingDay, statementPeriod(closingDay, today), -1);
     const due = dueDate(period.end, card.due_rule, card.due_value);
     if (due !== null) {

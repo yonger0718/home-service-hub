@@ -138,6 +138,24 @@ describe('AccountingRemindersComponent', () => {
     expect(text(el.querySelector('.card-row .countdown'))).toBe('已逾期 9 天');
   });
 
+  it('lists a card whose statement is the calendar month', () => {
+    const monthly = credit({ id: 15, name: '月結卡', closing_day: null, due_rule: 'fixed_day', due_value: 5 });
+    const { fixture, el } = render([monthly]);
+    const summary = http.expectOne(r => r.url === '/api/accounting/accounts/15/summary');
+    expect([summary.request.params.get('date_from'), summary.request.params.get('date_to')]).toEqual(['2026-09-01', '2026-09-30']);
+    summary.flush({
+      account_id: 15, currency: 'TWD', date_from: '', date_to: '', spend: '-900.0000', income: '0', rewards: '0', net: '0',
+      end_balance: '0', count: 1,
+    });
+    const payments = http.expectOne(r => r.url === '/api/accounting/accounts/15/entries');
+    expect([payments.request.params.get('date_from'), payments.request.params.get('date_to')]).toEqual(['2026-09-30', '2026-10-03']);
+    payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
+    fixture.detectChanges();
+
+    expect(text(el.querySelector('.card-row .name'))).toBe('月結卡');
+    expect(text(el.querySelector('.card-row .countdown'))).toBe('還有 2 天');
+  });
+
   it('says 今天 on the due day', () => {
     const { fixture, el } = render([TODAY]);
     flushBill(13, '-100.0000');

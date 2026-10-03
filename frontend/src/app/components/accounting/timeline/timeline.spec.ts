@@ -902,6 +902,15 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelector('.bell-count')).toBeNull();
     });
 
+    it('badges the due day of a card whose statement is the calendar month', () => {
+      const monthly = makeAccount({ id: 9, name: '月結卡', is_credit: true, closing_day: null, due_rule: 'fixed_day', due_value: 5 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, monthly]);
+      flushBill('-500.0000', [], { start: '2026-09-01', end: '2026-09-30', due: '2026-10-05', paidTo: '2026-10-02' });
+      fixture.detectChanges();
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(cell(el, '2026-10-31').classList).toContain('closing');
+    });
+
     it('renders nothing and asks for no statement without credit cards', () => {
       const { fixture, el } = renderListWith(ACCOUNTS);
       httpMock!.expectNone(r => r.url.includes('/accounts/') && r.url.includes('/summary'));

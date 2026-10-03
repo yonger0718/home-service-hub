@@ -158,7 +158,7 @@ describe('AccountingAccountsComponent', () => {
       expect(master(el).querySelector('.due .pill')?.classList).toContain('warn');
       // 可用額度 keeps its line.
       expect(master(el).querySelector('.meta')?.textContent?.trim()).toBe('可用額度 $251,678');
-      // Cards without a closing day (the 主帳戶's children) ask for nothing and show nothing.
+      // The 主帳戶's children (calendar-month statements here) have nothing left to pay: no 待繳帳款.
       expect(rows(el).find(r => r.querySelector('.name')?.textContent?.trim() === '玉山 Only')!.querySelector('.owed')).toBeNull();
     });
 
@@ -188,6 +188,22 @@ describe('AccountingAccountsComponent', () => {
       const pill = master(el).querySelector('.due .pill')!;
       expect(pill.textContent?.trim()).toBe('已逾期');
       expect(pill.classList).toContain('overdue');
+    });
+
+    it('shows 待繳帳款 and the pills of a card whose statement is the calendar month', () => {
+      const monthly = account({ ...CARD, id: 30, name: '月結卡', closing_day: null, due_rule: 'fixed_day', due_value: 5, balance: '-900' });
+      const wallet = account({ id: 31, name: '現金袋', closing_day: null, due_rule: 'fixed_day', due_value: 5 });
+      const el = render([wallet, monthly], LATEST, { 30: { spend: '-900.0000' } }).nativeElement as HTMLElement;
+      const row = rows(el).find(r => r.querySelector('.name')?.textContent?.trim() === '月結卡')!;
+      expect(row.querySelector('.owed')?.textContent?.trim()).toBe('待繳帳款 $900');
+      expect(row.querySelector('.due .pill')?.textContent?.trim()).toBe('10/05 繳費截止');
+      expect(rows(el).find(r => r.querySelector('.name')?.textContent?.trim() === '現金袋')!.querySelector('.due')).toBeNull();
+    });
+
+    it('shows the cycle pill of a paid card whose statement is the calendar month', () => {
+      const monthly = account({ ...CARD, id: 30, name: '月結卡', closing_day: null, due_rule: 'fixed_day', due_value: 5 });
+      const el = render([monthly], LATEST).nativeElement as HTMLElement;
+      expect(rows(el)[0].querySelector('.due .pill')?.textContent?.trim()).toBe('結帳 10/31 · 繳款 11/05');
     });
 
     it('keeps the cycle pill and no 待繳帳款 for a paid statement', () => {

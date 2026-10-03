@@ -290,10 +290,11 @@ export class AccountingAccountsComponent {
 
   /** The cycle pill (next closing and its due day), shown while nothing is left to pay on the current statement. */
   duePill(account: LedgerAccount): string | null {
-    if (!account.is_credit || account.closing_day === null || account.closing_day === undefined) {
+    if (!account.is_credit) {
       return null;
     }
-    const period = statementPeriod(account.closing_day, this.today());
+    // A null closing day: the statement is the calendar month, closing on its last day.
+    const period = statementPeriod(account.closing_day ?? null, this.today());
     const due = dueDate(period.end, account.due_rule ?? null, account.due_value ?? null);
     return due ? `結帳 ${shortDate(period.end)} · 繳款 ${shortDate(due)}` : `結帳 ${shortDate(period.end)}`;
   }
