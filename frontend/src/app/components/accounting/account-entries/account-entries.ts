@@ -16,7 +16,7 @@ export const PAGE_SIZE = 200;
   standalone: true,
   imports: [RouterLink],
   templateUrl: './account-entries.html',
-  styleUrl: './account-entries.scss',
+  styleUrls: ['../filters.scss', './account-entries.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class AccountingAccountEntriesComponent implements OnInit {

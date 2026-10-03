@@ -231,7 +231,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
   selector: 'app-ledger-timeline',
   standalone: true,
   templateUrl: './timeline.html',
-  styleUrl: './timeline.scss',
+  styleUrls: ['../filters.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LedgerTimelineComponent implements OnInit {

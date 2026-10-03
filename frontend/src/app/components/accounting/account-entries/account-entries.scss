@@ -34,15 +34,6 @@
   b { font-size: 0.95rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 }
 
-.entries-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-
-  label { display: flex; flex: 1 1 7rem; flex-direction: column; font-size: 0.8rem; gap: 0.15rem; min-width: 0; }
-  select, input { max-width: 100%; min-width: 0; }
-}
-
 .lbl { color: var(--app-text-muted); font-size: 0.7rem; font-weight: 800; letter-spacing: 0.06em; }
 .entry-list { display: flex; flex-direction: column; min-width: 0; }
 

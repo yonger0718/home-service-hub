@@ -20,28 +20,16 @@
     </div>
   </div>
 
-  <div class="entries-filters">
-    <label>
-      <span>類型</span>
-      <select class="filter-kind" (change)="setKind($any($event.target).value)">
-        <option value="" [selected]="kind() === null">全部</option>
-        @for (option of kindOptions; track option[0]) {
-          <option [value]="option[0]" [selected]="kind() === option[0]">{{ option[1] }}</option>
-        }
-      </select>
-    </label>
-    <label class="filter-q-label">
-      <span>搜尋</span>
-      <input class="filter-q" type="search" placeholder="名稱、商家、備註" [value]="q() ?? ''" (change)="setQuery($any($event.target).value)" />
-    </label>
-    <label>
-      <span>起</span>
-      <input class="filter-from" type="date" [value]="dateFrom() ?? ''" (change)="setDateFrom($any($event.target).value)" />
-    </label>
-    <label>
-      <span>迄</span>
-      <input class="filter-to" type="date" [value]="dateTo() ?? ''" (change)="setDateTo($any($event.target).value)" />
-    </label>
+  <div class="chips filters entries-filters">
+    <select class="chip tag filter-kind" aria-label="類型" (change)="setKind($any($event.target).value)">
+      <option value="" [selected]="kind() === null">全部類型</option>
+      @for (option of kindOptions; track option[0]) {
+        <option [value]="option[0]" [selected]="kind() === option[0]">{{ option[1] }}</option>
+      }
+    </select>
+    <input class="chip tag filter-q" type="search" placeholder="搜尋" aria-label="搜尋" [value]="q() ?? ''" (change)="setQuery($any($event.target).value)" />
+    <input class="chip tag filter-date filter-from" type="date" placeholder="起" aria-label="起" [value]="dateFrom() ?? ''" (change)="setDateFrom($any($event.target).value)" />
+    <input class="chip tag filter-date filter-to" type="date" placeholder="迄" aria-label="迄" [value]="dateTo() ?? ''" (change)="setDateTo($any($event.target).value)" />
   </div>
 
   @if (loadError()) {
