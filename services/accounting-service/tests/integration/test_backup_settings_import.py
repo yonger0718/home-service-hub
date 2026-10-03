@@ -303,3 +303,23 @@ def test_two_backup_accounts_with_one_final_name_fail(db_session, backup):
     ])
     with pytest.raises(MozeImportError, match="A-2.*A-3|A-3.*A-2"):
         _import_backup(db_session, data)
+
+
+def test_builtin_subcategory_keys_import_with_chinese_names_and_unmapped_keys_are_reported(db_session, backup):
+    data = backup.data(
+        categories=[backup.category("C-FOOD", "CATEGORY_FOOD", 1)],
+        classifications=[
+            backup.classification("K-BF", "CATEGORY_BREAKFAST", "C-FOOD"),
+            backup.classification("K-NEW", "CATEGORY_NEW_THING", "C-FOOD"),
+            backup.classification("K-PLAIN", "自訂", "C-FOOD"),
+        ],
+    )
+    summary = _import_backup(db_session, data)
+    names = {c.moze_id: c.name for c in db_session.scalars(select(Category))}
+    assert (names["K-BF"], names["K-NEW"], names["K-PLAIN"]) == ("早餐", "New Thing", "自訂")
+    assert summary["unmapped_category_keys"] == ["CATEGORY_NEW_THING"]
+
+
+def test_unmapped_category_keys_is_empty_list_when_all_mapped(db_session, backup):
+    summary = _import_backup(db_session, backup.data(categories=[backup.category("C-FOOD", "CATEGORY_FOOD", 1)]))
+    assert summary["unmapped_category_keys"] == []

@@ -4,7 +4,9 @@ from decimal import Decimal
 import pytest
 
 from app.services.moze_backup_json import (
+    CATEGORY_NAMES,
     CATEGORY_TYPE_TO_KIND,
+    category_name,
     DUE_RULE_MAP,
     POSTING_MAP,
     RECORD_TYPE_TO_KIND,
@@ -168,3 +170,135 @@ def test_surrounding_whitespace_counts_toward_the_limit_because_the_raw_value_is
         load_backup_json(path)
 
     assert "'R-PAD'" in str(exc.value) and "'name'" in str(exc.value) and "名" not in str(exc.value)
+
+
+EXPECTED_SUBCATEGORY_NAMES = {
+    # 飲食
+    "CATEGORY_BREAKFAST": "早餐",
+    "CATEGORY_LUNCH": "午餐",
+    "CATEGORY_DINNER": "晚餐",
+    "CATEGORY_SNACKS": "點心",
+    "CATEGORY_DRINKS": "飲料",
+    "CATEGORY_ALCOHOL": "酒類",
+    "CATEGORY_FRUITS": "水果",
+    # 交通
+    "CATEGORY_GAS": "加油",
+    "CATEGORY_PARKING": "停車",
+    "CATEGORY_TRAIN": "火車",
+    "CATEGORY_SUBWAY": "捷運",
+    "CATEGORY_CAR": "汽車",
+    "CATEGORY_TAXI": "計程車",
+    "CATEGORY_BUS": "公車",
+    "CATEGORY_MOTO": "機車",
+    "CATEGORY_BIKE": "腳踏車",
+    "CATEGORY_AIRPLANE": "飛機",
+    "CATEGORY_SHIP": "船",
+    # 娛樂
+    "CATEGORY_MOVIE": "電影",
+    "CATEGORY_PLAYGROUND": "遊樂園",
+    "CATEGORY_EXHIBITION": "展覽",
+    "CATEGORY_VIDEO": "影片",
+    "CATEGORY_MUSIC": "音樂",
+    "CATEGORY_GAME": "遊戲",
+    "CATEGORY_SPORT": "運動",
+    "CATEGORY_GAMBLING": "博弈",
+    "CATEGORY_RECREATION": "休閒",
+    "CATEGORY_FITNESS": "健身",
+    "CATEGORY_PUB": "酒吧",
+    # 購物
+    "CATEGORY_SUPERMARKET": "超市",
+    "CATEGORY_CLOTHING": "服飾",
+    "CATEGORY_SHOES": "鞋子",
+    "CATEGORY_ACCESSORY": "配件",
+    "CATEGORY_BAG": "包包",
+    "CATEGORY_COSMETICS": "美妝",
+    "CATEGORY_BOUTIQUE": "精品",
+    "CATEGORY_GIFT": "禮物",
+    "CATEGORY_APP": "App",
+    # 個人
+    "CATEGORY_SOCIAL": "社交",
+    "CATEGORY_MOBILE": "手機",
+    "CATEGORY_LOAN": "貸款",
+    "CATEGORY_INVESTMENT": "投資",
+    "CATEGORY_TAX": "稅金",
+    "CATEGORY_INSURANCE": "保險",
+    "CATEGORY_DONATION": "捐款",
+    "CATEGORY_PETS": "寵物",
+    "CATEGORY_LOTTERY": "彩券",
+    # 醫療
+    "CATEGORY_HOSPITAL": "醫院",
+    "CATEGORY_TOOTH_CARE": "牙齒保健",
+    "CATEGORY_MEDICINE": "藥品",
+    "CATEGORY_SUPPLIES": "用品",
+    "CATEGORY_INJECTION": "針劑",
+    "CATEGORY_WARD": "病房",
+    "CATEGORY_SURGERY": "手術",
+    "CATEGORY_EXAMINATION": "檢查",
+    # 家居
+    "CATEGORY_GROCERIES": "日用品",
+    "CATEGORY_WATER": "水費",
+    "CATEGORY_ELECTRICITY": "電費",
+    "CATEGORY_FUEL": "瓦斯",
+    "CATEGORY_PHONE": "電話",
+    "CATEGORY_INTERNET": "網路",
+    "CATEGORY_RENT": "房租",
+    "CATEGORY_LAUNDRY": "洗衣",
+    "CATEGORY_REPAIR": "維修",
+    "CATEGORY_FURNITURE": "家具",
+    "CATEGORY_SUBSCRIPTION": "訂閱",
+    "CATEGORY_APPLIANCE": "家電",
+    # 家庭
+    "CATEGORY_ALLOWANCE": "零用錢",
+    "CATEGORY_EDUCATION": "教育",
+    "CATEGORY_NURSING": "照護",
+    "CATEGORY_TOY": "玩具",
+    "CATEGORY_TALENT": "才藝",
+    # 生活
+    "CATEGORY_SALON": "美髮",
+    "CATEGORY_SPA": "SPA",
+    "CATEGORY_MASSAGE": "按摩",
+    "CATEGORY_ACCOMMODATION": "住宿",
+    "CATEGORY_TRAVEL": "旅遊",
+    "CATEGORY_PARTY": "聚會",
+    # 學習
+    "CATEGORY_BOOK": "書籍",
+    "CATEGORY_COURSE": "課程",
+    "CATEGORY_MATERIAL": "教材",
+    "CATEGORY_CERTIFICATION": "證照",
+    "CATEGORY_OUTDOORS": "戶外",
+    "CATEGORY_STATIONERY": "文具",
+    # 收入
+    "CATEGORY_SALARY": "薪水",
+    "CATEGORY_BONUS": "獎金",
+    "CATEGORY_REPAYMENT": "收款",
+    "CATEGORY_INTEREST": "利息",
+    # 轉帳
+    "CATEGORY_WITHDRAW": "提款",
+    "CATEGORY_DEPOSIT": "存款",
+    "CATEGORY_REFUND": "退款",
+    "CATEGORY_EXCHANGE": "兌換",
+    # 應收
+    "CATEGORY_LEND": "借出",
+    "CATEGORY_PAY_FOR": "代付",
+    "CATEGORY_REIMBURSE": "報帳",
+    # 應付
+    "CATEGORY_BORROW": "借入",
+    "CATEGORY_CREDIT": "信貸",
+    "CATEGORY_CAR_LOAN": "車貸",
+    "CATEGORY_MORTGAGE": "房貸",
+}
+
+
+def test_every_builtin_subcategory_key_maps_to_its_chinese_name():
+    for key, value in EXPECTED_SUBCATEGORY_NAMES.items():
+        assert CATEGORY_NAMES[key] == value, key
+        assert category_name(key) == value
+
+
+def test_unknown_category_key_is_title_cased_and_collected():
+    unmapped: set[str] = set()
+    assert category_name("CATEGORY_FOO_BAR", unmapped) == "Foo Bar"
+    assert category_name("CATEGORY_LUNCH", unmapped) == "午餐"
+    assert category_name("Category_foo", unmapped) == "Category_foo"
+    assert category_name("午餐", unmapped) == "午餐"
+    assert unmapped == {"CATEGORY_FOO_BAR"}

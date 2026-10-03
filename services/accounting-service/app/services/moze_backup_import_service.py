@@ -43,7 +43,7 @@ from ..models import (
 from . import fx_rate_service, ledger_service
 from .moze_backup_json import (
     ARCHIVE_GROUP,
-    CATEGORY_NAMES,
+    category_name,
     CATEGORY_TYPE_TO_KIND,
     COLOR_MAP,
     DUE_RULE_MAP,
@@ -137,6 +137,7 @@ class SettingsResult:
     settings_skipped: list[dict] = field(default_factory=list)
     unsupported_rules: list[dict] = field(default_factory=list)
     orphaned_rules: list[dict] = field(default_factory=list)
+    unmapped_category_keys: set[str] = field(default_factory=set)
     kept_moze_ids: dict[str, set[str]] = field(default_factory=dict)  # table -> moze ids present in the backup
 
 
@@ -331,7 +332,7 @@ def _upsert_categories(session: Session, data: BackupData, result: SettingsResul
         kind = CATEGORY_TYPE_TO_KIND.get(record["type"])
         if kind is None:
             continue
-        name = SYSTEM_CATEGORY_NAMES.get(kind) or CATEGORY_NAMES.get(record["name"], record["name"])
+        name = SYSTEM_CATEGORY_NAMES.get(kind) or category_name(record["name"], result.unmapped_category_keys)
         row, owned = _upsert_named(
             session, Category, record["identifier"],
             Category.kind == kind, Category.parent_id.is_(None), Category.name == name,
@@ -353,7 +354,7 @@ def _upsert_categories(session: Session, data: BackupData, result: SettingsResul
         if parent not in main_kind:
             continue
         kind, parent_id = main_kind[parent], result.categories[parent]
-        name = CATEGORY_NAMES.get(record["name"], record["name"])
+        name = category_name(record["name"], result.unmapped_category_keys)
         if kind in SYSTEM_CATEGORY_NAMES or name == main_name[parent]:
             result.categories[record["identifier"]] = parent_id
             continue
@@ -1087,6 +1088,7 @@ def replace_ledger_from_backup(
         },
         "unsupported_rules": settings.unsupported_rules,
         "orphaned_rules": settings.orphaned_rules,
+        "unmapped_category_keys": sorted(settings.unmapped_category_keys),
         "settings_skipped": settings.settings_skipped,
         "accounts": accounts,
         "compared_accounts": {"compared": len(compared), "total": len(accounts)},
