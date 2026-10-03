@@ -41,6 +41,27 @@
       </div>
     }
 
+    @if (showDebtFilters() && debtCounterparties().length > 0) {
+      <div class="filters debt-filters">
+        <select class="chip tag filter-counterparty" aria-label="對象" (change)="setDebtCounterparty($any($event.target).value)">
+          <option value="" [selected]="debtCounterparty() === null">全部對象</option>
+          @for (option of debtCounterparties(); track option.id) {
+            <option [value]="option.id" [selected]="debtCounterparty() === option.id">{{ option.name }}</option>
+          }
+        </select>
+        <select class="chip tag filter-kind" aria-label="借／還" (change)="setDebtKind($any($event.target).value)">
+          <option value="" [selected]="debtKind() === null">全部</option>
+          @for (option of debtKindOptions; track option.kind) {
+            <option [value]="option.kind" [selected]="debtKind() === option.kind">{{ option.label }}</option>
+          }
+        </select>
+      </div>
+    }
+
+    @if (debtFilteredOut()) {
+      <p class="muted filtered-out">沒有符合篩選的項目</p>
+    }
+
     @if (showDebts() && debtRows().length > 0) {
       @if (tab() === 'all') {
         <h3 class="section">借還款追蹤</h3>
@@ -49,9 +70,6 @@
         <button type="button" class="debt-row" [attr.aria-expanded]="expanded() === debt.id" (click)="toggleDebt(debt.id)">
           <span class="ico">🤝</span>
           <span class="name">{{ debt.name }}</span>
-          @if (debt.last) {
-            <span class="last">{{ slashDate(debt.last) }}</span>
-          }
           <span class="sides">
             @for (side of debt.sides; track side.kind) {
               <span class="side">
@@ -76,9 +94,7 @@
                 @if (row.remaining; as remaining) {
                   <span class="amt" [class.neg]="remaining.tone === 'out'" [class.pos]="remaining.tone === 'in'" [class.muted]="remaining.tone === 'muted'">
                     {{ remaining.text }}
-                    @if (remaining.detail) {
-                      <small class="fx remaining-detail">{{ remaining.detail }}</small>
-                    }
+                    <small class="fx remaining-detail">{{ remaining.detail }}</small>
                   </span>
                 } @else {
                   <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">

@@ -128,7 +128,7 @@
 }
 
 .debt-row {
-  grid-template-areas: 'ico name last' 'ico sides sides';
+  grid-template-areas: 'ico name name' 'ico sides sides';
 }
 
 .countdown {
@@ -170,8 +170,7 @@
   }
 }
 
-.due-date,
-.last {
+.due-date {
   color: var(--app-text-muted);
   font-size: 0.72rem;
   min-width: 0;
@@ -181,10 +180,12 @@
   grid-area: due;
 }
 
-.last {
-  grid-area: last;
-  text-align: right;
-  white-space: nowrap;
+.debt-filters {
+  padding-top: 4px;
+}
+
+.filtered-out {
+  margin: 1.5rem 0;
 }
 
 /* 應收 / 應付, one line each; at 390 px the count wraps under its total. */
