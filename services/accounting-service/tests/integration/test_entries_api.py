@@ -272,3 +272,56 @@ def test_daily_summary_of_an_empty_month_and_invalid_month(client, db_session):
     assert body == {"month": "2026-07", "currency": "TWD", "days": [], "missing_rates": []}
     assert client.get("/entries/summary/daily", params={"month": "2026-13"}).status_code == 422
     assert client.get("/entries/summary/daily", params={"month": "2026-1"}).status_code == 422
+
+
+def test_month_of_only_excluded_kinds_keeps_zeros_at_four_places(client, db_session):
+    wallet = make_account(db_session, "錢包")
+    card = make_account(db_session, "玉山 UNI")
+    make_entry(db_session, wallet, "-3000", kind="transfer_out", entry_date=date(2026, 8, 4))
+    make_entry(db_session, card, "3000", kind="transfer_in", entry_date=date(2026, 8, 4))
+    db_session.commit()
+
+    month = client.get("/entries/summary", params={"month": "2026-08"}).json()
+    daily = client.get("/entries/summary/daily", params={"month": "2026-08"}).json()
+
+    assert (month["expense"], month["income"], month["net"]) == ("0.0000", "0.0000", "0.0000")
+    assert daily["days"] == []
+
+
+def test_daily_summary_converts_at_the_cached_rate(client, db_session):
+    db_session.add_all([
+        Preference(main_currency="TWD"),
+        FxRate(date=date(2026, 9, 30), base="JPY", quote="TWD", rate=Decimal("0.2134"), source="test"),
+    ])
+    jpy = make_account(db_session, "去日本的錢", currency="JPY")
+    make_entry(db_session, jpy, "-1234", entry_date=date(2026, 10, 3))
+    make_entry(db_session, jpy, "-777", entry_date=date(2026, 10, 3))
+    make_entry(db_session, jpy, "5000", kind="income", entry_date=date(2026, 10, 4))
+    db_session.commit()
+
+    days = client.get("/entries/summary/daily", params={"month": "2026-10"}).json()["days"]
+    month = client.get("/entries/summary", params={"month": "2026-10"}).json()
+
+    assert days == [
+        {"date": "2026-10-03", "expense": "-429.1474", "income": "0.0000", "count": 2},
+        {"date": "2026-10-04", "expense": "0.0000", "income": "1067.0000", "count": 1},
+    ]
+    assert sum(Decimal(d["expense"]) for d in days) == Decimal(month["expense"])
+    assert sum(Decimal(d["income"]) for d in days) == Decimal(month["income"])
+
+
+def test_daily_summary_counts_rated_currencies_and_lists_unrated_ones(client, db_session):
+    db_session.add_all([
+        Preference(main_currency="TWD"),
+        FxRate(date=date(2026, 12, 1), base="USD", quote="TWD", rate=Decimal("31.5"), source="test"),
+    ])
+    usd = make_account(db_session, "美金", currency="USD")
+    jpy = make_account(db_session, "去日本的錢", currency="JPY")
+    make_entry(db_session, usd, "-12.5", entry_date=date(2026, 12, 3))
+    make_entry(db_session, jpy, "-5000", entry_date=date(2026, 12, 3))
+    db_session.commit()
+
+    body = client.get("/entries/summary/daily", params={"month": "2026-12"}).json()
+
+    assert body["missing_rates"] == ["JPY"]
+    assert body["days"] == [{"date": "2026-12-03", "expense": "-393.7500", "income": "0.0000", "count": 1}]

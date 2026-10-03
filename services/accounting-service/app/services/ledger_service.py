@@ -493,11 +493,13 @@ def _converted_totals(db: Session, month: str, *, by_day: bool, hide_rewards: bo
         if rate is None:
             missing.add(currency)
             continue
-        if count:
-            bucket = totals[key]
-            bucket["expense"] += _convert(expense, rate)
-            bucket["income"] += _convert(income, rate)
-            bucket["count"] += count
+        # Every rated bucket is created (even with count 0) so its figures stay quantized to 4 dp. Each
+        # (bucket, currency) sum is converted and rounded on its own, so at a non-unit rate the Σ of the daily
+        # figures can differ from the month figure by rounding (at most 0.00005 per day and currency).
+        bucket = totals[key]
+        bucket["expense"] += _convert(expense, rate)
+        bucket["income"] += _convert(income, rate)
+        bucket["count"] += count
     return main, totals, sorted(missing)
 
 
@@ -524,7 +526,7 @@ def daily_summary(db: Session, month: str) -> dict:
     return {
         "month": month,
         "currency": main,
-        "days": [{"date": day, **totals[day]} for day in sorted(totals)],
+        "days": [{"date": day, **totals[day]} for day in sorted(totals) if totals[day]["count"]],
         "missing_rates": missing,
     }
 
