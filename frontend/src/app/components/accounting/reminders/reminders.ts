@@ -199,6 +199,9 @@ export class AccountingRemindersComponent {
     ),
   );
   readonly debtRows = computed(() => debtReminders(this.counterparties(), this.openEntries()));
+  /** Cards whose statement read failed: shown as 帳單讀取失敗 with 重試, never as "nothing to pay". */
+  private readonly failedDues = computed(() => this.dues().filter(event => this.bills.failed(event)));
+  readonly billsFailed = computed(() => this.failedDues().length > 0);
   /** Every statement read at least once: the empty state waits for them. */
   private readonly billsSettled = computed(() => this.dues().every((event: BillingEvent) => this.bills.isSettled(event)));
   readonly showCards = computed(() => this.tab() !== 'debts');
@@ -209,7 +212,8 @@ export class AccountingRemindersComponent {
     }
     const cards = this.showCards() ? this.cardRows().length : 0;
     const debts = this.showDebts() ? this.debtRows().length : 0;
-    return cards === 0 && debts === 0 && (!this.showCards() || this.billsSettled());
+    const failed = this.showCards() && this.billsFailed();
+    return cards === 0 && debts === 0 && !failed && (!this.showCards() || this.billsSettled());
   });
   /**
    * The expanded counterparty's open entries as timeline rows, one per entry (a split group's debt line is its own
@@ -292,6 +296,14 @@ export class AccountingRemindersComponent {
           }
         },
       });
+  }
+
+  /** 重試: reads every failed statement again in a new round. */
+  retryBills(): void {
+    const today = this.today();
+    for (const event of this.failedDues()) {
+      this.bills.retry(event, today);
+    }
   }
 
   setTab(tab: ReminderTab): void {

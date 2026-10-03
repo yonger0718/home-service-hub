@@ -245,3 +245,38 @@
 .load-error {
   color: var(--app-danger);
 }
+
+/* A card statement that could not be read: never shown as "nothing to pay". */
+.bill-error {
+  align-items: center;
+  background: var(--app-state-warning-bg);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  justify-content: space-between;
+  margin: 8px 0;
+  padding: 6px 10px;
+
+  .msg {
+    font-size: var(--fs-sm, 0.85rem);
+    font-weight: 700;
+  }
+
+  .retry {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-pill);
+    color: var(--app-primary);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-label, 0.75rem);
+    font-weight: 700;
+    padding: 2px 12px;
+
+    &:focus-visible {
+      outline: 2px solid var(--app-primary);
+      outline-offset: 1px;
+    }
+  }
+}

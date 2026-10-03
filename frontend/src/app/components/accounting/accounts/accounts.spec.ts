@@ -217,6 +217,28 @@ describe('AccountingAccountsComponent', () => {
       http.expectNone(r => /\/accounts\/1[123]\/entries$/.test(r.url));
     });
 
+    it('falls back to the cycle pill when the statement cannot be read', () => {
+      const fixture = TestBed.createComponent(AccountingAccountsComponent);
+      fixture.detectChanges();
+      http.expectOne(r => r.url === '/api/accounting/accounts' && !r.urlWithParams.includes('include_archived=true')).flush(ACCOUNTS);
+      http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+      http.expectOne('/api/accounting/preference').flush({
+        expense_income_colors: 'red_green', keypad_layout: 'calculator', week_start: 0, main_currency: 'TWD',
+        hide_rewards_on_timeline: false, abbreviate_totals: true,
+      });
+      fixture.detectChanges();
+      for (const req of http.match(r => r.url.endsWith('/summary'))) {
+        req.flush('boom', { status: 500, statusText: 'Server Error' });
+      }
+      for (const req of http.match(r => r.url.endsWith('/entries'))) {
+        req.flush({ items: [], total: 0, limit: 100, offset: 0 });
+      }
+      fixture.detectChanges();
+      const el = fixture.nativeElement as HTMLElement;
+      expect(master(el).querySelector('.owed')).toBeNull();
+      expect(master(el).querySelector('.due .pill')?.textContent?.trim()).toBe('結帳 10/15 · 繳款 11/04');
+    });
+
     it('keeps the cycle pill and no 待繳帳款 for a paid statement', () => {
       const el = render(ACCOUNTS, LATEST, { 10: { spend: '-800.0000', payments: ['800.0000'] } }).nativeElement as HTMLElement;
       expect(master(el).querySelector('.owed')).toBeNull();

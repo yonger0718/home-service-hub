@@ -34,6 +34,8 @@ export interface BillState {
  */
 interface Pending {
   generation: number;
+  /** The round's inputs beyond its key (combined cards, period start): a change starts a new round at once. */
+  fingerprint: string;
   id: number;
   /** Per account id: its period spend and currency. */
   spends: Map<number, { spend: string; currency: string } | null>;
@@ -45,6 +47,11 @@ export function billKey(event: Pick<BillingEvent, 'accountId' | 'period' | 'date
   return `${event.accountId}:${event.period.end}:${event.date}`;
 }
 
+/** A round's inputs beyond its key: the combined cards (sorted) and the period start. */
+function fingerprint(event: BillingEvent): string {
+  return `${[...(event.childIds ?? [])].sort((a, b) => a - b).join(',')}|${event.period.start}`;
+}
+
 /**
  * The single source of statement figures: one summary read + one payments read per due event and change round,
  * shared by every consumer. A round ends on `entriesChanged` or `accountsChanged`; the previous figures stay shown until
@@ -54,6 +61,8 @@ export function billKey(event: Pick<BillingEvent, 'accountId' | 'period' | 'date
 export class BillingService {
   private readonly accounting = inject(AccountingService);
   private readonly states = signal<ReadonlyMap<string, BillState | null>>(new Map());
+  /** Keys whose latest round had a failed read (summary or payments). */
+  private readonly failures = signal<ReadonlySet<string>>(new Set());
   private readonly rounds = new Map<string, Pending>();
   private requestId = 0;
 
@@ -71,60 +80,84 @@ export class BillingService {
   ensure(dues: readonly BillingEvent[], today: string): void {
     const generation = untracked(this.generation);
     for (const event of dues) {
-      const key = billKey(event);
-      if (this.rounds.get(key)?.generation === generation) {
-        continue;
+      const round = this.rounds.get(billKey(event));
+      if (round?.generation !== generation || round.fingerprint !== fingerprint(event)) {
+        this.start(event, today, generation);
       }
-      const round: Pending = { generation, id: ++this.requestId, spends: new Map() };
-      this.rounds.set(key, round);
-      const cards = [event.accountId, ...(event.childIds ?? [])];
-      const commit = () => {
-        if (round.payments === undefined || cards.some(id => !round.spends.has(id))) {
-          return;
-        }
-        this.states.update(states => new Map(states).set(key, this.resolve(event, round, cards)));
-      };
-      const current = () => this.rounds.get(key)?.id === round.id;
-      // Combined cards (副卡) are read with the master, over the same period, as part of the same round.
-      for (const accountId of cards) {
-        this.accounting.getAccountSummary(accountId, event.period.start, event.period.end).subscribe({
-          next: summary => {
-            if (current()) {
-              round.spends.set(accountId, { spend: summary.spend, currency: summary.currency });
-              commit();
-            }
-          },
-          error: () => {
-            if (current()) {
-              round.spends.set(accountId, null);
-              commit();
-            }
-          },
-        });
-      }
-      const patch = (payments: string[] | null) => {
-        if (current()) {
-          round.payments = payments;
-          commit();
-        }
-      };
-      this.accounting
-        .getEntries(event.accountId, {
-          kind: 'transfer_in',
-          date_from: event.period.end,
-          date_to: paymentWindowEnd(event, today),
-          limit: BILL_PAYMENT_LIMIT,
-        })
-        .subscribe({
-          next: page => patch(page.items.map(entry => entry.amount)),
-          error: () => patch(null),
-        });
     }
+  }
+
+  /** Reads the statement again in a new round (the reminder centre's 重試 after a failed read). */
+  retry(event: BillingEvent, today: string): void {
+    this.start(event, today, untracked(this.generation));
+  }
+
+  private start(event: BillingEvent, today: string, generation: number): void {
+    const key = billKey(event);
+    const round: Pending = { generation, fingerprint: fingerprint(event), id: ++this.requestId, spends: new Map() };
+    this.rounds.set(key, round);
+    const cards = [event.accountId, ...(event.childIds ?? [])];
+    const commit = () => {
+      if (round.payments === undefined || cards.some(id => !round.spends.has(id))) {
+        return;
+      }
+      const failed = round.payments === null || cards.some(id => round.spends.get(id) === null);
+      this.failures.update(keys => {
+        const next = new Set(keys);
+        if (failed) {
+          next.add(key);
+        } else {
+          next.delete(key);
+        }
+        return next;
+      });
+      this.states.update(states => new Map(states).set(key, this.resolve(event, round, cards)));
+    };
+    const current = () => this.rounds.get(key)?.id === round.id;
+    // Combined cards (副卡) are read with the master, over the same period, as part of the same round.
+    for (const accountId of cards) {
+      this.accounting.getAccountSummary(accountId, event.period.start, event.period.end).subscribe({
+        next: summary => {
+          if (current()) {
+            round.spends.set(accountId, { spend: summary.spend, currency: summary.currency });
+            commit();
+          }
+        },
+        error: () => {
+          if (current()) {
+            round.spends.set(accountId, null);
+            commit();
+          }
+        },
+      });
+    }
+    const patch = (payments: string[] | null) => {
+      if (current()) {
+        round.payments = payments;
+        commit();
+      }
+    };
+    this.accounting
+      .getEntries(event.accountId, {
+        kind: 'transfer_in',
+        date_from: event.period.end,
+        date_to: paymentWindowEnd(event, today),
+        limit: BILL_PAYMENT_LIMIT,
+      })
+      .subscribe({
+        next: page => patch(page.items.map(entry => entry.amount)),
+        error: () => patch(null),
+      });
   }
 
   /** The due event's statement once resolved (reactive); null while unresolved or when a read failed. */
   bill(event: BillingEvent): BillState | null {
     return this.states().get(billKey(event)) ?? null;
+  }
+
+  /** True when the due event's latest round had a failed read (it then has no figures: never "all clear"). */
+  failed(event: BillingEvent): boolean {
+    return this.failures().has(billKey(event));
   }
 
   /** True once the due event's statement has landed or failed (at least once); false while it is first being read. */

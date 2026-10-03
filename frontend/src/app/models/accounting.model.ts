@@ -433,6 +433,11 @@ export interface Counterparty {
   moze_id?: string | null;
   /** Non-zero currencies only; `amount = −Σ amount` of that counterparty's receivable / payable entries. */
   open_amounts: { currency: string; amount: string }[];
+  /**
+   * `CounterpartyOut.open_count`: open (unsettled, not closed) receivable / payable originals; unlike `open_amounts`
+   * it never nets the two sides. Optional so hand-written test literals may omit it (counts as 0).
+   */
+  open_count?: number;
 }
 
 export interface CounterpartyInput {

@@ -34,6 +34,13 @@
       }
     }
 
+    @if (showCards() && billsFailed()) {
+      <div class="bill-error" role="alert">
+        <span class="msg">帳單讀取失敗</span>
+        <button type="button" class="retry" (click)="retryBills()">重試</button>
+      </div>
+    }
+
     @if (showDebts() && debtRows().length > 0) {
       @if (tab() === 'all') {
         <h3 class="section">借還款追蹤</h3>

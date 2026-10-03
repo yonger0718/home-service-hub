@@ -385,11 +385,14 @@ export class LedgerTimelineComponent implements OnInit {
     }
     return lines;
   });
-  /** 🔔 count: cards with something left to pay (as the reminder centre lists them) + counterparties with an open amount. */
+  /**
+   * 🔔 count: cards with something left to pay (as the reminder centre lists them; a card whose statement failed to
+   * read is not counted) + counterparties with open debt rows (`open_count`, which never nets 應收 against 應付).
+   */
   readonly reminderCount = computed(
     () =>
       this.reminderEvents().filter(event => this.openBill(event) !== null).length +
-      this.counterparties().filter(counterparty => counterparty.open_amounts.some(open => Number(open.amount) !== 0)).length,
+      this.counterparties().filter(counterparty => (counterparty.open_count ?? 0) > 0).length,
   );
   /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
   readonly upcomingBills = computed(() => this.upcomingEvents().filter(event => this.openBill(event) !== null));

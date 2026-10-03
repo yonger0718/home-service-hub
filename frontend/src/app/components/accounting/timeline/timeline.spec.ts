@@ -847,8 +847,8 @@ describe('LedgerTimelineComponent', () => {
       expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $200 · 到期');
     });
 
-    const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }] };
-    const SETTLED: Counterparty = { id: 2, name: 'Bea', open_amounts: [] };
+    const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }], open_count: 2 };
+    const SETTLED: Counterparty = { id: 2, name: 'Bea', open_amounts: [], open_count: 0 };
     const bell = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.bell')!;
 
     it('shows the 🔔 without a count when nothing is pending, in both views', () => {
@@ -893,6 +893,30 @@ describe('LedgerTimelineComponent', () => {
       flushCounterparties([ALAN]);
       fixture.detectChanges();
       expect(text(el.querySelector('.bell-count'))).toBe('1');
+    });
+
+    it('counts a counterparty whose receivable and payable net to zero, by its open rows', () => {
+      const { fixture, el } = renderListWith(ACCOUNTS);
+      TestBed.inject(AccountingService).deleteEntry(3).subscribe();
+      httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+      flushSummary('2026-10');
+      flushEntries([]);
+      flushCounterparties([{ id: 4, name: 'Dee', open_amounts: [], open_count: 2 }, SETTLED]);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.bell-count'))).toBe('1');
+    });
+
+    it('leaves a card whose statement cannot be read out of the count', () => {
+      const { fixture, el } = renderListWith();
+      const requests = billRequests();
+      requests.summary.flush({
+        account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-100.0000', income: '0', rewards: '0',
+        net: '0', end_balance: '0', count: 1,
+      });
+      requests.payments.flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(el.querySelector('.bell-count')).toBeNull();
     });
 
     it('leaves a paid card out of the count', () => {

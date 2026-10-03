@@ -177,6 +177,38 @@ describe('AccountingRemindersComponent', () => {
     expect(text(rows[0].querySelector('.fig'))).toBe('應繳 $1,345');
   });
 
+  it('shows 帳單讀取失敗 with 重試 instead of the empty state when a statement cannot be read', () => {
+    const { fixture, el } = render([SOON]);
+    http
+      .expectOne(r => r.url === '/api/accounting/accounts/9/summary')
+      .flush({
+        account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-100.0000', income: '0', rewards: '0',
+        net: '0', end_balance: '0', count: 1,
+      });
+    http.expectOne(r => r.url === '/api/accounting/accounts/9/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+
+    expect(el.querySelector('.empty')).toBeNull();
+    expect(el.querySelector('.card-row')).toBeNull();
+    expect(text(el.querySelector('.bill-error .msg'))).toBe('帳單讀取失敗');
+    tab(el, '信用卡帳單').click();
+    fixture.detectChanges();
+    expect(el.querySelector('.bill-error')).not.toBeNull();
+    tab(el, '借還款追蹤').click();
+    fixture.detectChanges();
+    expect(el.querySelector('.bill-error')).toBeNull();
+    expect(text(el.querySelector('.empty'))).toBe('目前沒有待處理項目');
+
+    tab(el, '全部').click();
+    fixture.detectChanges();
+    el.querySelector<HTMLButtonElement>('.bill-error .retry')!.click();
+    fixture.detectChanges();
+    flushBill(9, '-100.0000');
+    fixture.detectChanges();
+    expect(el.querySelector('.bill-error')).toBeNull();
+    expect(text(el.querySelector('.card-row .name'))).toBe('玉山 UNI');
+  });
+
   it('says 今天 on the due day', () => {
     const { fixture, el } = render([TODAY]);
     flushBill(13, '-100.0000');

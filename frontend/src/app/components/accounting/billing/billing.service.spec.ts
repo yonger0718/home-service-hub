@@ -225,6 +225,44 @@ describe('BillingService', () => {
     expect(billing.bill(combined)).toBeNull();
   });
 
+  it('starts a new round in the same change round when a combined card is attached to the master', () => {
+    billing.ensure([SEPT], TODAY);
+    answer(requests(), '-1000.0000');
+    expect(billing.bill(SEPT)?.statement).toBe(1000);
+
+    // A refreshed account list now has a 副卡 under the same master: same key, new inputs.
+    const combined: BillingEvent = { ...SEPT, childIds: [11] };
+    billing.ensure([combined], TODAY);
+    const master = requests(combined);
+    const child = summaryFor(11);
+    expect(billing.bill(combined)?.statement).toBe(1000);
+    answer(master, '-1000.0000');
+    child.flush(spendBody(11, '-200.0000'));
+    expect(billing.bill(combined)?.statement).toBe(1200);
+
+    billing.ensure([combined], TODAY);
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
+  });
+
+  it('marks a statement failed when a read fails, and retries it in a new round', () => {
+    billing.ensure([SEPT], TODAY);
+    const first = requests();
+    first.summary.flush(spendBody(9, '-100.0000'));
+    expect(billing.failed(SEPT)).toBe(false);
+    first.payments.flush('boom', { status: 500, statusText: 'Server Error' });
+    expect(billing.failed(SEPT)).toBe(true);
+    expect(billing.bill(SEPT)).toBeNull();
+
+    // The same round is not asked for again on its own…
+    billing.ensure([SEPT], TODAY);
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
+    // …but a retry starts a new one.
+    billing.retry(SEPT, TODAY);
+    answer(requests(), '-100.0000');
+    expect(billing.failed(SEPT)).toBe(false);
+    expect(billing.bill(SEPT)?.remaining).toBe(100);
+  });
+
   it('leaves a statement unresolved when either read fails', () => {
     billing.ensure([SEPT], TODAY);
     const reqs = requests();
