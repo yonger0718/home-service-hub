@@ -235,6 +235,40 @@ describe('EntryDetailComponent', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it('clears the previous entry while the next one loads, so no write targets it', () => {
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(RECEIVABLE);
+    const component = fixture.componentInstance;
+
+    params.next(convertToParamMap({ id: '43' }));
+    const next = http.expectOne('/api/accounting/entries/43');
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.detail-name')).toBeNull();
+    expect(el(fixture).querySelector('.action-delete')).toBeNull();
+    component.openPanel('delete');
+    component.confirmDelete('entry');
+    component.submitForm();
+    http.expectNone(r => r.method !== 'GET');
+
+    next.flush(detail({ id: 43, name: '午餐' }));
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.detail-name')?.textContent?.trim()).toBe('午餐');
+    component.confirmDelete('entry');
+    http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/43')
+      .flush(null, { status: 204, statusText: 'No Content' });
+    expect(navigate).toHaveBeenCalledWith('/accounting');
+  });
+
+  it('keeps the shown record when a reload of the same entry fails', () => {
+    const fixture = render(RECEIVABLE);
+    params.next(convertToParamMap({ id: '42' }));
+    http.expectOne('/api/accounting/entries/42').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+
+    expect(el(fixture).querySelector('.load-error')).not.toBeNull();
+    expect(el(fixture).querySelector('.detail-name')?.textContent?.trim()).toBe('代付 晚餐');
+  });
+
   it('returns to the passbook after a delete opened from it, and goes back when there is history', () => {
     const router = TestBed.inject(Router);
     const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);

@@ -231,6 +231,11 @@ export class EntryDetailComponent implements OnInit {
       this.passbookId.set(passbook ? Number(params.get('id')) : null);
       const state = this.router.currentNavigation()?.extras.state ?? (this.location.getState() as Record<string, unknown> | null);
       this.closeToList = state?.['closeTo'] === 'list';
+      // Another entry: drop the shown one at once, so nothing acts on it while the new one loads. A reload of the
+      // same entry keeps it (and keeps it when that reload fails).
+      if (this.detail()?.id !== id) {
+        this.detail.set(null);
+      }
       this.load(id);
     });
     this.service
@@ -258,6 +263,12 @@ export class EntryDetailComponent implements OnInit {
       return;
     }
     leavePage(this.router, this.location, this.parentUrl());
+  }
+
+  /** The entry shown, only while it is also the one in the URL; writes act on nothing else. */
+  private routedDetail(): EntryDetail | null {
+    const detail = this.detail();
+    return detail && detail.id === this.routeEntryId() ? detail : null;
   }
 
   /** True while `id` is still the entry shown and the one in the URL (a write's answer may arrive later). */
@@ -336,7 +347,7 @@ export class EntryDetailComponent implements OnInit {
   }
 
   openPanel(panel: Exclude<DetailPanel, null>): void {
-    const detail = this.detail();
+    const detail = this.routedDetail();
     if (!detail || this.locked()) {
       return;
     }
@@ -392,7 +403,7 @@ export class EntryDetailComponent implements OnInit {
   }
 
   submitForm(): void {
-    const detail = this.detail();
+    const detail = this.routedDetail();
     const panel = this.panel();
     if (!detail || (panel !== 'settle' && panel !== 'refund')) {
       return;
@@ -428,7 +439,7 @@ export class EntryDetailComponent implements OnInit {
   }
 
   confirmDelete(scope: 'entry' | 'group'): void {
-    const detail = this.detail();
+    const detail = this.routedDetail();
     if (!detail || this.locked()) {
       return;
     }
