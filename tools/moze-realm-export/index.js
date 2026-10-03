@@ -18,6 +18,9 @@ const MAX_UNZIPPED_BYTES = Number(process.env.MOZE_EXPORT_MAX_UNZIPPED_BYTES) ||
 // date, time, name (names may contain spaces, so the name is the rest of the line).
 const ZIPINFO_LINE = /^(\S+)\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\d+\s+\S+\s+\S+\s+\S+\s(.+)$/;
 
+// Archive members the converter extracts.
+const WANTED = ["moze.realm", "info"];
+
 class UsageError extends Error {}
 
 function parseArgs(argv) {
@@ -48,10 +51,15 @@ function zipEntries(zip) {
   } catch (error) {
     throw new Error(`cannot read ${zip} as a zip archive`);
   }
+  // `unzip` extracts every member with a wanted name, so each wanted name must appear once: a map keeps only the
+  // last of duplicated names, and an earlier oversized or non-regular member would escape checkEntry.
   const entries = new Map();
   for (const line of listing.split("\n")) {
     const match = ZIPINFO_LINE.exec(line);
-    if (match) entries.set(match[3], { mode: match[1], size: Number(match[2]) });
+    if (!match) continue;
+    const name = match[3];
+    if (entries.has(name) && WANTED.includes(name)) throw new Error(`archive has more than one ${name}`);
+    entries.set(name, { mode: match[1], size: Number(match[2]) });
   }
   return entries;
 }
@@ -70,7 +78,7 @@ function extract(zip, work) {
   if (size > MAX_ZIP_BYTES) throw new Error(`archive is larger than 200 MB (${size} bytes)`);
   const entries = zipEntries(zip);
   if (!entries.has("moze.realm")) throw new Error("archive has no moze.realm");
-  const wanted = entries.has("info") ? ["moze.realm", "info"] : ["moze.realm"];
+  const wanted = WANTED.filter((name) => entries.has(name));
   for (const name of wanted) checkEntry(name, entries.get(name));
   // TZ: zip entry times without a UTC extra field are local times of the phone that wrote them.
   execFileSync("unzip", ["-o", "-q", zip, ...wanted, "-d", work], {

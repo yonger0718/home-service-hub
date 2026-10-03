@@ -203,3 +203,55 @@ test("CLI refuses an archive whose entries unpack beyond the size cap", () => {
   assert.deepEqual(fs.readdirSync(work), []);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// zip will not store two members with one name, so the second is added as "moze.realX" and the name bytes are
+// patched afterwards (names are not covered by the CRC).
+function duplicateRealmZip(dir, addFirst) {
+  const src = path.join(dir, "src");
+  fs.mkdirSync(src);
+  addFirst(src);
+  fs.writeFileSync(path.join(src, "moze.realm"), "x");
+  const zip = path.join(dir, "dup.zip");
+  execFileSync("zip", ["-q", "-y", zip, "moze.realX", "moze.realm"], { cwd: src });
+  const bytes = fs.readFileSync(zip);
+  fs.writeFileSync(zip, Buffer.from(bytes.toString("latin1").replaceAll("moze.realX", "moze.realm"), "latin1"));
+  assert.equal(execFileSync("unzip", ["-Z1", zip], { encoding: "utf8" }), "moze.realm\nmoze.realm\n");
+  return zip;
+}
+
+function runCliWithCap(zip, dir, work) {
+  return spawnSync(process.execPath, [INDEX, zip, "--out", path.join(dir, "a.json"), "--work", work], {
+    encoding: "utf8",
+    timeout: 60000,
+    env: { ...process.env, MOZE_EXPORT_MAX_UNZIPPED_BYTES: "1024" },
+  });
+}
+
+test("CLI refuses an archive with two moze.realm members when the first is oversized", () => {
+  const dir = tempDir();
+  const zip = duplicateRealmZip(dir, (src) => fs.writeFileSync(path.join(src, "moze.realX"), Buffer.alloc(10000)));
+  const work = path.join(dir, "work");
+
+  const result = runCliWithCap(zip, dir, work);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /archive has more than one moze\.realm/);
+  assert.deepEqual(fs.readdirSync(work), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("CLI refuses an archive with a symlink moze.realm followed by a regular one", () => {
+  const dir = tempDir();
+  const zip = duplicateRealmZip(dir, (src) => {
+    fs.writeFileSync(path.join(src, "target.realm"), "elsewhere");
+    fs.symlinkSync("target.realm", path.join(src, "moze.realX"));
+  });
+  const work = path.join(dir, "work");
+
+  const result = runCliWithCap(zip, dir, work);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /archive has more than one moze\.realm/);
+  assert.deepEqual(fs.readdirSync(work), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
