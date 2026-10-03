@@ -244,23 +244,22 @@ describe('AccountingRemindersComponent', () => {
     expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 9]);
   });
 
-  it('lists counterparties with open rows, most recent first, with 應收 and 應付 totals, counts and last date', () => {
+  it('lists counterparties with open rows, by name, with 應收 and 應付 totals and counts but no last date', () => {
     const { el } = render([], [ALAN, SETTLED, BEA], OPEN_ENTRIES);
 
     const rows = Array.from(el.querySelectorAll('.debt-row'));
-    expect(rows.map(row => text(row.querySelector('.name')))).toEqual(['Bea', 'Alan']);
-    const beaSides = Array.from(rows[0].querySelectorAll('.side'));
+    expect(rows.map(row => text(row.querySelector('.name')))).toEqual(['Alan', 'Bea']);
+    expect(el.querySelector('.debt-row .last')).toBeNull();
+    const beaSides = Array.from(rows[1].querySelectorAll('.side'));
     expect(beaSides.map(side => text(side.querySelector('.side-total')))).toEqual(['應收 +¥5,000', '應付 −$100']);
     expect(beaSides.map(side => text(side.querySelector('.side-count')))).toEqual(['1 筆應收款項', '1 筆應付款項']);
     expect(beaSides[0].querySelector('.side-total')!.classList).toContain('pos');
     expect(beaSides[1].querySelector('.side-total')!.classList).toContain('neg');
-    expect(text(rows[0].querySelector('.last'))).toBe('2026/09/25');
     // Remaining amounts, not the originals: 50 + (420 − 250).
-    const alanSides = Array.from(rows[1].querySelectorAll('.side'));
+    const alanSides = Array.from(rows[0].querySelectorAll('.side'));
     expect(alanSides.map(side => [text(side.querySelector('.side-total')), text(side.querySelector('.side-count'))])).toEqual([
       ['應收 +$220', '2 筆應收款項'],
     ]);
-    expect(text(rows[1].querySelector('.last'))).toBe('2026/09/20');
   });
 
   it('keeps both sides of a counterparty whose receivables and payables net to zero', () => {
@@ -288,12 +287,12 @@ describe('AccountingRemindersComponent', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.debt-entries .row'));
     expect(rows.map(row => row.dataset['entryId'])).toEqual(['72', '74']);
-    // The signed remaining, with the original and what came back once something was collected.
-    expect(text(rows[0].querySelector('.amt'))).toBe('+$50');
+    // The signed remaining under the row's own date, with the original and what came back once something was collected.
+    expect(text(rows[0].querySelector('.amt'))).toBe('+$50 2026/09/20');
     expect(rows[0].querySelector('.amt')!.classList).toContain('pos');
-    expect(rows[0].querySelector('.amt .remaining-detail')).toBeNull();
-    expect(text(rows[1].querySelector('.amt'))).toBe('+$170 原始 $420 · 已收 $250');
-    expect(text(rows[1].querySelector('.amt .remaining-detail'))).toBe('原始 $420 · 已收 $250');
+    expect(text(rows[0].querySelector('.amt .remaining-detail'))).toBe('2026/09/20');
+    expect(text(rows[1].querySelector('.amt'))).toBe('+$170 2026/09/01 · 原始 $420 · 已收 $250');
+    expect(text(rows[1].querySelector('.amt .remaining-detail'))).toBe('2026/09/01 · 原始 $420 · 已收 $250');
     rows[1].click();
     // ✕ on the detail comes back here.
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 74], { state: { closeTo: 'reminders' } });
@@ -304,7 +303,7 @@ describe('AccountingRemindersComponent', () => {
   });
 
   it('shows a payable as −remaining with what was repaid, and a closed original as 已結清', () => {
-    const { fixture, el } = render([], [BEA], OPEN_ENTRIES);
+    const { fixture, el } = render([], [BEA], OPEN_ENTRIES.filter(entry => entry.counterparty_id === 2));
     el.querySelector<HTMLButtonElement>('.debt-row')!.click();
     fixture.detectChanges();
     const closed = makeEntry({
@@ -316,9 +315,9 @@ describe('AccountingRemindersComponent', () => {
     fixture.detectChanges();
 
     const rows = Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .row'));
-    expect(text(rows[0].querySelector('.amt'))).toBe('−$100 原始 $300 · 已還 $200');
+    expect(text(rows[0].querySelector('.amt'))).toBe('−$100 2026/09/25 · 原始 $300 · 已還 $200');
     expect(rows[0].querySelector('.amt')!.classList).toContain('neg');
-    expect(text(rows[1].querySelector('.amt'))).toBe('已結清');
+    expect(text(rows[1].querySelector('.amt'))).toBe('已結清 2026/09/05');
     expect(rows[1].querySelector('.amt')!.classList).toContain('muted');
     expect(rows[1].querySelector('.amt')!.classList).not.toContain('neg');
     expect(rows[1].dataset['entryId']).toBe('75');
@@ -344,6 +343,106 @@ describe('AccountingRemindersComponent', () => {
     fixture.detectChanges();
     expect(el.querySelector('.card-row')).toBeNull();
     expect(el.querySelectorAll('.debt-row').length).toBe(1);
+  });
+
+  describe('借還款追蹤 filters', () => {
+    function select(el: HTMLElement, label: string): HTMLSelectElement {
+      return el.querySelector<HTMLSelectElement>(`.debt-filters select[aria-label="${label}"]`)!;
+    }
+
+    function choose(fixture: { detectChanges(): void }, control: HTMLSelectElement, value: string): void {
+      control.value = value;
+      control.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+    }
+
+    function renderDebts() {
+      const view = render([], [ALAN, SETTLED, BEA], OPEN_ENTRIES);
+      tab(view.el, '借還款追蹤').click();
+      view.fixture.detectChanges();
+      return view;
+    }
+
+    const names = (el: HTMLElement) => Array.from(el.querySelectorAll('.debt-row .name')).map(text);
+
+    it('shows only on 借還款追蹤, with every 對象 that has open rows and 全部 / 應收 / 應付', () => {
+      const { fixture, el } = render([], [ALAN, SETTLED, BEA], OPEN_ENTRIES);
+      expect(el.querySelector('.debt-filters')).toBeNull();
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+
+      const filters = el.querySelector('.debt-filters')!;
+      expect(filters.classList).toContain('filters');
+      expect(Array.from(filters.querySelectorAll('select')).map(control => control.getAttribute('aria-label'))).toEqual(['對象', '借／還']);
+      expect(filters.querySelector('input')).toBeNull();
+      expect(Array.from(select(el, '對象').options).map(text)).toEqual(['全部對象', 'Alan', 'Bea']);
+      expect(Array.from(select(el, '借／還').options).map(text)).toEqual(['全部', '應收', '應付']);
+    });
+
+    it('借／還 = 應付 hides receivable-only 對象 and keeps only the payable side', () => {
+      const { fixture, el } = renderDebts();
+      choose(fixture, select(el, '借／還'), 'payable');
+
+      expect(names(el)).toEqual(['Bea']);
+      expect(Array.from(el.querySelectorAll('.debt-row .side-total')).map(text)).toEqual(['應付 −$100']);
+      expect(Array.from(el.querySelectorAll('.debt-row .side-count')).map(text)).toEqual(['1 筆應付款項']);
+      // The 對象 select still offers every 對象 with open rows.
+      expect(Array.from(select(el, '對象').options).map(text)).toEqual(['全部對象', 'Alan', 'Bea']);
+
+      choose(fixture, select(el, '借／還'), 'receivable');
+      expect(names(el)).toEqual(['Alan', 'Bea']);
+      expect(Array.from(el.querySelectorAll('.debt-row .side-total')).map(text)).toEqual(['應收 +$220', '應收 +¥5,000']);
+    });
+
+    it('對象 narrows the list to one, and a mismatch says so instead of the empty state', () => {
+      const { fixture, el } = renderDebts();
+      choose(fixture, select(el, '對象'), '2');
+      expect(names(el)).toEqual(['Bea']);
+
+      choose(fixture, select(el, '借／還'), 'receivable');
+      expect(names(el)).toEqual(['Bea']);
+      choose(fixture, select(el, '對象'), '1');
+      choose(fixture, select(el, '借／還'), 'payable');
+      expect(names(el)).toEqual([]);
+      expect(el.querySelector('.empty')).toBeNull();
+      expect(text(el.querySelector('.filtered-out'))).toBe('沒有符合篩選的項目');
+
+      choose(fixture, select(el, '對象'), '');
+      expect(names(el)).toEqual(['Bea']);
+    });
+
+    it('shows only matching rows under an expanded 對象', () => {
+      const { fixture, el } = renderDebts();
+      el.querySelectorAll<HTMLButtonElement>('.debt-row')[1].click();
+      fixture.detectChanges();
+      http
+        .expectOne(r => r.params.get('counterparty_id') === '2')
+        .flush({ items: OPEN_ENTRIES.filter(entry => entry.counterparty_id === 2), total: 2, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      const ids = () => Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .row')).map(row => row.dataset['entryId']);
+      expect(ids()).toEqual(['71', '73']);
+
+      choose(fixture, select(el, '借／還'), 'receivable');
+      expect(ids()).toEqual(['73']);
+    });
+
+    it('filters client-side, keep their value across tabs, and leave the 全部 tab (and its count source) alone', () => {
+      const { fixture, el } = renderDebts();
+      choose(fixture, select(el, '借／還'), 'payable');
+      // No new read: the bell's open rows are untouched.
+      http.expectNone(r => r.url === '/api/accounting/entries');
+      expect(fixture.componentInstance.openEntries().length).toBe(4);
+
+      tab(el, '全部').click();
+      fixture.detectChanges();
+      expect(el.querySelector('.debt-filters')).toBeNull();
+      expect(names(el)).toEqual(['Alan', 'Bea']);
+
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      expect(select(el, '借／還').value).toBe('payable');
+      expect(names(el)).toEqual(['Bea']);
+    });
   });
 
   it('shows the empty state once nothing is pending, not while a statement is still being read', () => {
