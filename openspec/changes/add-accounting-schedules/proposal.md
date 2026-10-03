@@ -53,6 +53,6 @@ MOZE generates the owner's loan repayments, recurring transfers and subscription
 18. **During an import** (a few seconds) schedule actions are refused with `匯入進行中，請稍後再試`.
 19. **編輯整個排程** drops the future periods you edited one by one and regenerates them from the new rule; overdue, posted and skipped periods stay.
 20. **Interest names the lender**: a loan's interest record carries the loan's counterparty.
-21. **立即執行 (run-now)** has no extra password; it is protected by the same Tailscale-only access as the rest of the app.
+21. **立即執行 (run-now)** has no extra password; it is protected like the rest of the app: Tailscale-only access plus, when `ACCOUNTING_API_TOKENS` is set, the bearer-token auth of #42 that covers every `/schedules/*` endpoint.
 22. **The settings page's 分期 / 週期 list** becomes a link to 提醒中心 › 借還款追蹤 › 週期／分期.
 23. **Switching mode never posts a backlog** (see 2); only 補入帳至今天 does.
