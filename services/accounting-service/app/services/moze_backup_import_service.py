@@ -242,9 +242,9 @@ def _account_settings(account: dict, result: SettingsResult) -> dict:
     where = f"AHAccount '{account['name']}'"
     credit = account["isCreditAccount"]
     system = account["type"] in SYSTEM_ACCOUNT_TYPES
-    closing_day = account["startDay"] if 1 <= account["startDay"] <= 31 else None
-    if not credit and closing_day == 1:
-        closing_day = None
+    # startDay is the FIRST day of MOZE's statement period (16 → 16th to 15th, closing on the 15th), so the closing
+    # day is the day before; startDay 1 is the calendar month, closing on its last day, which None represents.
+    closing_day = account["startDay"] - 1 if 2 <= account["startDay"] <= 31 else None
     fee_enabled = account["isCurrencyFeeEnabled"]
     return {
         "group_id": result.groups.get(account["group"]),

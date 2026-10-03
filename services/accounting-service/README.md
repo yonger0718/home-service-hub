@@ -41,7 +41,8 @@ and stores future-dated rows, periods and installments in `moze_schedule`. Manua
 attachments are never touched. Accounts edited locally (`settings_locally_edited`) keep their settings and, when
 the backup no longer names them, are neither archived nor zeroed. Neither importer deletes a category, project or
 counterparty without a `moze_id` (CSV-created or created in Settings); the backup importer deletes only unused
-rows whose `moze_id` left the backup.
+rows whose `moze_id` left the backup. MOZE's `startDay` is the first day of the statement period, so an account's
+`closing_day` is `startDay − 1`; `startDay` 1 (the calendar month) imports as no closing day, for every account.
 The report lists per-type counts, skipped future rows, `needs_review` reasons and per-account `moze_part` /
 `previous_moze_part`; `balanceInfo` is not compared until a rule is confirmed, so the CLI warns
 `WARNING: 0 of N accounts compared` and the balances are checked by hand.
