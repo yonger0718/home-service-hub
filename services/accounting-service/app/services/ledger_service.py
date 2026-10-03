@@ -263,16 +263,25 @@ def _text_filter(q: str):
     )
 
 
-def _open_debt_filter():
-    """Unsettled receivable/payable originals: not a settlement, not closed (MOZE isSettle), and
-    amount + Σ linked settlements != 0."""
+def _settled_sum():
+    """Σ amount of the settlements linked to the outer `LedgerEntry` row (correlated scalar subquery)."""
     settlement = aliased(LedgerEntry)
-    settled = (
+    return (
         select(func.coalesce(func.sum(settlement.amount), 0))
         .where(settlement.settles_entry_id == LedgerEntry.id)
         .correlate(LedgerEntry)
         .scalar_subquery()
     )
+
+
+def _is_debt_original(entry: LedgerEntry) -> bool:
+    return entry.kind in ("receivable", "payable") and not entry.is_settlement and entry.settles_entry_id is None
+
+
+def _open_debt_filter():
+    """Unsettled receivable/payable originals: not a settlement, not closed (MOZE isSettle), and
+    amount + Σ linked settlements != 0."""
+    settled = _settled_sum()
     return and_(
         LedgerEntry.kind.in_(("receivable", "payable")),
         LedgerEntry.is_settlement.is_(False),
@@ -362,6 +371,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
             func.coalesce(Category.color, parent_category.color).label("category_color"),
             Project.name.label("project_name"),
             Counterparty.name.label("counterparty_name"),
+            _settled_sum().label("settled_sum"),
         )
         .join(running, running.c.entry_id == LedgerEntry.id)
         .join(Account, Account.id == LedgerEntry.account_id)
@@ -428,6 +438,11 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
                 "moze_id": entry.moze_id,
                 "locked": is_locked(entry.source, entry.moze_id),
                 "running_balance": row.running_balance,
+                "open_amount": (
+                    (Decimal("0.0000") if entry.is_closed else abs(entry.amount + row.settled_sum))
+                    if _is_debt_original(entry)
+                    else None
+                ),
             }
         )
     return page
@@ -594,13 +609,6 @@ def period_summary(db: Session, account_id: int, date_from: date, date_to: date)
     }
 
 
-def _open_amount(db: Session, entry: LedgerEntry) -> Decimal:
-    settled = db.scalar(
-        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(LedgerEntry.settles_entry_id == entry.id)
-    )
-    return abs(entry.amount + settled)
-
-
 def get_entry_detail(db: Session, entry_id: int) -> dict | None:
     entry = db.get(LedgerEntry, entry_id)
     if entry is None:
@@ -636,10 +644,8 @@ def get_entry_detail(db: Session, entry_id: int) -> dict | None:
         )
     ]
     detail["rewards"] = rows(LedgerEntry.reward_source_entry_id == entry.id)
-    if entry.kind in ("receivable", "payable") and not entry.is_settlement and entry.settles_entry_id is None:
-        open_amount = Decimal("0.0000") if entry.is_closed else _open_amount(db, entry)
-        detail["open_amount"], detail["is_settled"] = open_amount, open_amount == 0
-    else:
-        detail["open_amount"], detail["is_settled"] = None, None
+    # `open_amount` comes with the row (`_entry_rows`); `is_settled` follows from it.
+    open_amount = detail["open_amount"]
+    detail["is_settled"] = None if open_amount is None else open_amount == 0
     detail["refunded_amount"] = sum((item["amount"] for item in detail["refunded_by"]), Decimal(0))
     return detail

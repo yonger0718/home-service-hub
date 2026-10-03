@@ -116,6 +116,34 @@ def test_listing_open_excludes_closed_originals(client, db_session):
     assert closed.id in all_ids
 
 
+def test_list_rows_carry_the_open_amount_of_debt_originals(client, db_session):
+    wallet = make_account(db_session, "錢包", opening="1000")
+    alan = Counterparty(name="Alan")
+    db_session.add(alan)
+    db_session.flush()
+    lent = make_entry(db_session, wallet, "-420", kind="receivable", counterparty_id=alan.id)
+    collected = make_entry(db_session, wallet, "200", kind="receivable", counterparty_id=alan.id,
+                           settles_entry_id=lent.id, is_settlement=True, entry_date=date(2026, 9, 2))
+    borrowed = make_entry(db_session, wallet, "300", kind="payable", counterparty_id=alan.id)
+    closed = make_entry(db_session, wallet, "-500", kind="receivable", counterparty_id=alan.id, is_closed=True)
+    make_entry(db_session, wallet, "100", kind="receivable", counterparty_id=alan.id, settles_entry_id=closed.id,
+               is_settlement=True, entry_date=date(2026, 9, 3))
+    meal = make_entry(db_session, wallet, "-80")
+    db_session.commit()
+
+    rows = {e["id"]: e for e in client.get("/entries").json()["items"]}
+
+    assert rows[lent.id]["open_amount"] == "220.0000"
+    assert rows[borrowed.id]["open_amount"] == "300.0000"
+    assert rows[closed.id]["open_amount"] == "0.0000"
+    assert rows[collected.id]["open_amount"] is None
+    assert rows[meal.id]["open_amount"] is None
+    # The detail reports the same figure, and its nested rows carry theirs.
+    detail = client.get(f"/entries/{lent.id}").json()
+    assert detail["open_amount"] == "220.0000"
+    assert [s["open_amount"] for s in detail["settled_by"]] == [None]
+
+
 def test_listing_rejects_a_non_integer_counterparty(client, db_session):
     assert client.get("/entries", params={"counterparty_id": "alan"}).status_code == 422
 
