@@ -289,10 +289,10 @@ describe('AccountingRemindersComponent', () => {
     const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.debt-entries .row'));
     expect(rows.map(row => row.dataset['entryId'])).toEqual(['72', '74']);
     // The signed remaining, with the original and what came back once something was collected.
-    expect(text(rows[0].querySelector('.amt'))).toBe('+$50 待收');
+    expect(text(rows[0].querySelector('.amt'))).toBe('+$50');
     expect(rows[0].querySelector('.amt')!.classList).toContain('pos');
     expect(rows[0].querySelector('.amt .remaining-detail')).toBeNull();
-    expect(text(rows[1].querySelector('.amt'))).toBe('+$170 待收 原始 $420 · 已收 $250');
+    expect(text(rows[1].querySelector('.amt'))).toBe('+$170 原始 $420 · 已收 $250');
     expect(text(rows[1].querySelector('.amt .remaining-detail'))).toBe('原始 $420 · 已收 $250');
     rows[1].click();
     // ✕ on the detail comes back here.
@@ -303,7 +303,7 @@ describe('AccountingRemindersComponent', () => {
     expect(el.querySelector('.debt-entries')).toBeNull();
   });
 
-  it('shows a payable as −remaining 待還 with what was repaid, and a closed original as 已結清', () => {
+  it('shows a payable as −remaining with what was repaid, and a closed original as 已結清', () => {
     const { fixture, el } = render([], [BEA], OPEN_ENTRIES);
     el.querySelector<HTMLButtonElement>('.debt-row')!.click();
     fixture.detectChanges();
@@ -316,7 +316,7 @@ describe('AccountingRemindersComponent', () => {
     fixture.detectChanges();
 
     const rows = Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .row'));
-    expect(text(rows[0].querySelector('.amt'))).toBe('−$100 待還 原始 $300 · 已還 $200');
+    expect(text(rows[0].querySelector('.amt'))).toBe('−$100 原始 $300 · 已還 $200');
     expect(rows[0].querySelector('.amt')!.classList).toContain('neg');
     expect(text(rows[1].querySelector('.amt'))).toBe('已結清');
     expect(rows[1].querySelector('.amt')!.classList).toContain('muted');
