@@ -51,7 +51,7 @@ Posting an instance writes its lines through the existing services in ONE transa
 - A scheduler inside the accounting service: at 00:05 Asia/Taipei daily and once at startup (catch-up), post every `pending` instance of an `active`, `posting_mode = auto` definition with `due_date <= today`. Each post is its own transaction; failures are logged (no owner data) and the instance stays `pending` with `last_error` text for the UI.
 - `confirm` definitions never auto-post; their due instances show in 待完成交易.
 - Generation: definitions roll their instances forward to `today + 13 months` on the same job; editing a definition regenerates only `pending` instances after today.
-- Endpoints: `GET /schedules/definitions`, `POST/PUT/DELETE /schedules/definitions/{id}` (+ `/pause`, `/resume`, `/end`), `GET /schedules/instances?from=&until=&status=`, `POST /schedules/instances/{id}/post|skip|reopen`, `POST /schedules/definitions/{id}/catch-up` (posts all pending ≤ today; the 補入帳至今天 button), `POST /schedules/run-now` (manual trigger of the daily job, token-protected like everything else).
+- Endpoints: `GET /schedules/definitions`, `POST/PUT/DELETE /schedules/definitions/{id}` (+ `/pause`, `/resume`, `/end`), `GET /schedules/instances?from=&until=&status=`, `POST /schedules/instances/{id}/post|skip|reopen`, `POST /schedules/definitions/{id}/catch-up` (posts all pending ≤ today; the 補入帳至今天 button), `POST /schedules/run-now` (manual trigger of the daily job, token-protected like everything else: behind the optional `ACCOUNTING_API_TOKENS` bearer auth of #42 when it is set).
 
 ## 5. UI
 ### 5.1 Entry form 進階 tab (single / recurring / installment)
@@ -73,7 +73,7 @@ Posting an instance writes its lines through the existing services in ONE transa
 Holiday shifting (`dayAdjustmentPolicy`), interest-rate maths, reward lines from schedules (63 MOZE rows ignored; rules engine covers rewards), push notifications, editing MOZE-generated amounts in bulk, CSV importer support.
 
 ## 7. Acceptance (preview data + synthetic tests)
-- After import: 11 + 14 definitions, 597 − 63 instances; 待完成交易 empty for auto definitions before the catch-up; after one catch-up run every instance due ≤ today is posted (backlog from 10/1), loans' 剩餘 match MOZE's remaining principal (`remainder`) within the posted periods.
+- After import: 11 + 14 definitions, 597 − 63 instances. No silent backlog (proposal decisions 2 and 23): the job posts auto definitions' periods dated on or after the import day (`auto_post_from`) by itself; periods dated before it (MOZE's records between the backup's export and the import, backlog from 10/1) wait in 待完成交易 even for auto definitions, and owner amendment 4 (自動 catch up) is the 補入帳至今天 tap. After that tap (one catch-up per definition) every instance due ≤ today is posted, and loans' 剩餘 match MOZE's remaining principal (`remainder`) within the posted periods.
 - Creating a 週期 in the form generates 13 months of instances; the job posts today's; pausing stops posting; ending removes pending instances.
 - Re-import keeps posted statuses and local definitions.
 - Suites green; per-task reviews; owner checklist on the preview.

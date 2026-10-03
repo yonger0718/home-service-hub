@@ -21,7 +21,7 @@
 - **Occurrence k** of a rule: `day` → `anchor + k·n` days; `week` → `anchor + 7·k·n` days; `month` → the month `k·n` after the anchor's, day `min(day_of_month or anchor.day, month length)`; `year` → the anchor's month `k·n` years later, clamped the same way. Always from the anchor, never from the previous occurrence.
 - **`rule_date` / `due_date`.** `rule_date` is the occurrence the rule produced (set at generation or import, never changed by an instance edit); `due_date` equals it unless the owner moved the period. Generation continues strictly after the latest instance's `rule_date`; adoption matches `rule_date` first, then `due_date`. No holiday shifting.
 - **`auto_post_from`.** The Taipei date a definition was created locally or first imported; `PUT …/mode` to `auto` (from `confirm`) moves it to today. The job never posts an instance due before it, never posts a reopened instance (`reopened_at` set), never posts `confirm`, `paused` or `ended` definitions. Only 補入帳至今天 (`catch-up`), `resume` with `backlog = post`, `post` and `repost` post past periods, all with `acted_by = owner`.
-- **Lock order (D32), every path:** `pg_try_advisory_xact_lock_shared(IMPORT_LOCK_KEY)` (409 `import_running` when an import holds it) → `schedule_definition` row (`FOR SHARE` when posting or acting on one instance, `FOR UPDATE` when editing, pausing, resuming, ending, changing mode or deleting) → `schedule_instance` row(s) (`FOR UPDATE`, ascending id; the job adds `SKIP LOCKED`) → the ledger's order (`entry_group` rows ascending → target entries with their transfer legs in one statement → nothing else). No path that holds an entry or group lock ever locks a schedule row. The entry-delete path reads the instance unlocked, then takes the key, the definition (`FOR SHARE`) and the instance (`FOR UPDATE`), re-checks containment, then continues with group → entries. The backup importer holds the key exclusively (retrying `pg_try_advisory_lock` for up to 30 s while shared holders finish) and locks every definition, then every instance, ascending id, before deleting any entry.
+- **Lock order (D32), every path:** `pg_try_advisory_xact_lock_shared(IMPORT_LOCK_KEY)` (409 `import_running` when an import holds it) → `schedule_definition` row (`FOR SHARE` when posting or acting on one instance, `FOR UPDATE` when editing, pausing, resuming, ending, changing mode or deleting; a post or repost of a template with a loan line takes `FOR UPDATE` too, because it may end the definition — two `FOR SHARE` holders that both upgrade deadlock) → `schedule_instance` row(s) (`FOR UPDATE`, ascending id; the job adds `SKIP LOCKED`; a post of a loan template also locks the definition's later pending instances, `seq > k`, before any entry lock) → the ledger's order (`entry_group` rows ascending → target entries with their transfer legs in one statement, the loan entry included in that statement for a repost → nothing else). No path that holds an entry or group lock ever locks a schedule row. The entry-delete path reads the instance unlocked, then takes the key, the definition (`FOR SHARE`, `FOR UPDATE` when the definition is `ended`, since the hook may revive it) and the instance (`FOR UPDATE`), re-checks containment, then continues with group → entries. The backup importer holds the key exclusively (retrying `pg_try_advisory_lock` for up to 30 s while shared holders finish) and locks every definition, then every instance, ascending id, before deleting any entry.
 - **Import shared lock on every schedule write path:** create, update, delete, pause, resume, end, mode, catch-up, instance edit, post, skip, reopen, repost, accept-partial, generation, run-now and the entry-delete path that touches an instance. The refusal is `schedule_locks.ImportRunningError` (a `ConflictError`, message `import_running`), answered as HTTP 409 with body `{"code": …, "message": "import_running", …}`.
 - **Posting.** One database transaction per instance; idempotent by row lock + `status` + the partial unique index `ux_schedule_instance_posted_day`; entries dated `entry_date = posted_date = due_date`, `entry_time = NULL`, `source = 'schedule'`, `moze_id = NULL`, `import_run_id = NULL`, category defaults never remembered. On any error the transaction rolls back and a second short transaction writes `last_error` (`"<field>: <message>"`, never an amount, name or counterparty) and `last_error_at`; the instance stays `pending`. Multi-instance operations commit status changes first, then post one transaction each in `seq` order, stopping at the first failure.
 - **Amounts.** Template and override amounts are unsigned decimal strings with at most 4 decimals (`"8333"`, `"0.5"`); the server applies signs. A line's amount for a period is `amount_override[i]` when the instance has an override, else the template's; `"0"` means the line is not written. Overrides are aligned with the template's lines on every write (422 naming `amounts`). Re-imports never overwrite `edited_by_owner` instances.
@@ -45,7 +45,11 @@
 
 ## Known Spec Conflicts
 
-None open. Implementation-time confirmations recorded by Task 28 in `design.md` "Implementation notes": the MOZE weekday numbering of `AHPeriod.days` for weekly periods (assumed 1 = Sunday … 7 = Saturday, Apple `Calendar`; a wrong assumption shows as `interval_mismatch` on every weekly period, never as wrong dates) and whether a MOZE posting-mode field exists (none is assumed; every imported definition is `auto`).
+- Owner amendment 4 (自動 catch up) is implemented as 補入帳至今天 on tap, per proposal decision 2 — owner to confirm.
+- Lock strength (plan review): `specs/accounting-schedules/spec.md` ("Posting an instance", entry-delete requirement) says the definition is locked `FOR SHARE`. The plan takes `FOR UPDATE` where the path may write the definition — a post / repost of a template with a loan line (close-out ends it) and the entry-delete path on an `ended` definition (it revives it) — because two `FOR SHARE` holders that both upgrade deadlock. This is stricter, never weaker; `design.md` D31/D32 record it. Align the spec wording when the change is archived.
+- Test data (owner data rule): the spec scenarios name a real bank (`玉山銀行`, `玉山 UNI`). The plan's tests and fixtures use the synthetic names `範例銀行` and `範例卡` with the scenarios' arithmetic unchanged; the spec text is left as written.
+
+Implementation-time confirmations recorded by Task 28 in `design.md` "Implementation notes": the MOZE weekday numbering of `AHPeriod.days` for weekly periods (assumed 1 = Sunday … 7 = Saturday, Apple `Calendar`; a wrong assumption shows as `interval_mismatch` on every weekly period, never as wrong dates) and whether a MOZE posting-mode field exists (none is assumed; every imported definition is `auto`).
 
 ## File Structure
 
@@ -168,6 +172,7 @@ def occurrence(anchor: date, unit: str, n: int, k: int, day_of_month: int | None
 def occurrence_index(anchor: date, unit: str, n: int, day_of_month: int | None, day: date) -> int | None
 def first_index_after(anchor: date, unit: str, n: int, day_of_month: int | None, after: date) -> int
 def first_index_on_or_after(anchor: date, unit: str, n: int, day_of_month: int | None, on: date) -> int
+def normalize_anchor(anchor: date, unit: str, n: int, day_of_month: int | None) -> date     # first occurrence ≥ anchor
 def horizon(today: date) -> date
 def last_period_amount(total: Decimal, per_period: Decimal, times: int) -> Decimal      # ValueError when ≤ 0
 def plain(value: Decimal | str | int) -> str                                             # "8333", "0.5"
@@ -204,11 +209,13 @@ def generate_locked(db: Session, definition_id: int, today: date) -> int        
 # app/services/schedule_posting.py
 @dataclass(frozen=True) class PostResult: instance_id: int; outcome: str; entry_ids: tuple[int, ...] = ()   # posted | loan_closed | skipped_locked | not_due
 def auto_eligible(definition: ScheduleDefinition, instance: ScheduleInstance, today: date) -> bool
+def lock_definition_for_post(db: Session, definition_id: int) -> ScheduleDefinition       # FOR SHARE; FOR UPDATE with a loan line
+def lock_later_pending(db: Session, definition: ScheduleDefinition, instance: ScheduleInstance) -> list[ScheduleInstance]   # seq > instance.seq, ascending id
 def post_instance(db: Session, instance_id: int, *, actor: str, job: bool = False, today: date | None = None) -> PostResult
-def post_locked(db: Session, definition: ScheduleDefinition, instance: ScheduleInstance, actor: str) -> PostResult
+def post_locked(db: Session, definition: ScheduleDefinition, instance: ScheduleInstance, actor: str, *, locked_loan: LedgerEntry | None = None) -> PostResult
 def failure_message(exc: Exception) -> str
 def record_failure(db: Session, instance_id: int, message: str) -> None                  # rolls back, writes, commits
-def delete_period_entries(db: Session, entry_ids: list[int]) -> None                      # ledger lock order; cutover lock applies
+def delete_period_entries(db: Session, entry_ids: list[int], *, also_lock: int | None = None) -> LedgerEntry | None   # ledger lock order; one entry statement; cutover lock applies
 
 # app/services/schedule_read.py
 def signed_line_amount(kind: str, amount: Decimal) -> Decimal
@@ -300,8 +307,8 @@ class LoanIn(BaseModel): account_id: Int32; counterparty_id: Int32; category_id:
 class DefinitionUpdateIn(BaseModel):
     name: ShortText (min 1); template: TemplateIn; interval_unit: Literal["day","week","month","year"]; interval_n: int (1..999) = 1
     anchor_date: date; day_of_month: int (1..31) | None = None; times: int (≥ 1) | None = None; end_date: date | None = None
-    total_amount: Money | None = None; posting_mode: Literal["auto","confirm"] = "auto"
-class DefinitionIn(DefinitionUpdateIn): kind: Literal["recurring","installment"]; loan: LoanIn | None = None
+    total_amount: Money | None = None; posting_mode: Literal["auto","confirm"] | None = None   # None keeps the stored mode
+class DefinitionIn(DefinitionUpdateIn): kind: Literal["recurring","installment"]; loan: LoanIn | None = None; posting_mode: Literal["auto","confirm"] = "auto"
 class ResumeIn(BaseModel): backlog: Literal["skip","post"] = "skip"
 class ModeIn(BaseModel): posting_mode: Literal["auto","confirm"]
 class InstanceUpdateIn(BaseModel): due_date: date | None = None; amounts: list[NonNegativeMoney] | None = None
@@ -372,7 +379,7 @@ Components: `app-accounting-toast` (`AccountingToastService.show(text, ms = 3000
 | # | Task | Model | Depends on |
 |---|---|---|---|
 | 1 | Rebase onto `main` after PRs #40–#44 and record baselines | sonnet | — |
-| 2 | Schedule models and enums; `moze_schedule` model removed | opus | 1 |
+| 2 | Schedule models and enums; `moze_schedule` model removed | sonnet | 1 |
 | 3 | Alembic revision `c4e8b2f1a7d3` with guarded downgrade | opus | 2 |
 | 4 | `schedule_rules`: occurrences, horizon, installment split | sonnet | 1 |
 | 5 | `schedule_locks`, `schedule_templates`, request schemas | opus | 3 |
@@ -483,6 +490,17 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 
 Expected: `N passed` with no failures, N at least the count printed when #44 merged. Write N down as `B_back`; later tasks state their full-suite expectation as "`B_back` + the tests added so far".
 
+Then record the three per-file baselines that Tasks 3, 7 and 13 compare against (none of these files is edited before the task that reruns it, except `test_migration.py`, which Task 3 extends by exactly 3 tests):
+
+```bash
+cd /home/opc/workspace/home-hub-schedules/services/accounting-service
+.venv/bin/pytest -q -p no:warnings tests/integration/test_migration.py 2>&1 | tail -1
+.venv/bin/pytest -q -p no:warnings tests/integration/test_entry_writes.py tests/integration/test_transfers.py tests/integration/test_splits.py tests/integration/test_settlements.py tests/integration/test_edit_lock.py 2>&1 | tail -1
+.venv/bin/pytest -q -p no:warnings tests/integration/test_entry_writes.py tests/integration/test_splits.py tests/integration/test_settings_crud_api.py tests/integration/test_settings_api.py 2>&1 | tail -1
+```
+
+Expected: three `N passed` lines, 0 failed. Write them down as `B_mig`, `B_ledger7` and `B_ledger13` (in the task notes, not in a committed file).
+
 - [ ] 1.7 Install frontend dependencies, generate `environment.ts` (restoring `angular.json`, which `set-env.js` rewrites) and record `B_front`.
 
 ```bash
@@ -510,7 +528,7 @@ Expected: one file committed (skip the commit when `git status --short` printed 
 
 ## 2. Schedule models and enums; `moze_schedule` model removed
 
-**Model:** opus
+**Model:** sonnet
 
 **Files:**
 - Create: `services/accounting-service/app/models/schedule.py`
@@ -1288,7 +1306,7 @@ def downgrade() -> None:
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_migration.py
 ```
 
-Expected: every test passes (3 more than in Task 1's run of this file).
+Expected: `B_mig + 3 passed` (the baseline recorded in 1.6, plus the 3 tests of 3.1), 0 failed.
 
 - [ ] 3.5 Confirm the revision chain.
 
@@ -1327,7 +1345,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: nothing (pure module).
-- Produces: `days_in_month`, `add_months`, `occurrence`, `occurrence_index`, `first_index_after`, `first_index_on_or_after`, `horizon`, `last_period_amount`, `plain`, `HORIZON_MONTHS = 13` exactly as in the Interface Contract.
+- Produces: `days_in_month`, `add_months`, `occurrence`, `occurrence_index`, `first_index_after`, `first_index_on_or_after`, `normalize_anchor`, `horizon`, `last_period_amount`, `plain`, `HORIZON_MONTHS = 13` exactly as in the Interface Contract.
 
 Rules: occurrence k is always computed from the anchor (D30), so a 31st clamps to the 28th in February and returns to the 31st in March; `day_of_month = None` means the anchor's day; for `month` / `year`, occurrence 0 is the anchor's month on `day_of_month` (an anchor of 09-01 with `day_of_month = 15` starts on 09-15, as the edit scenario of Task 10 needs).
 
@@ -1366,6 +1384,19 @@ def test_day_of_month_overrides_the_anchor_day():
     assert rules.occurrence(anchor, "month", 1, 0, 15) == date(2026, 9, 15)
     assert rules.occurrence(anchor, "month", 1, 1, 15) == date(2026, 10, 15)
     assert rules.occurrence(date(2027, 1, 31), "month", 1, 1, 31) == date(2027, 2, 28)
+
+
+def test_occurrence_zero_before_the_anchor_day_is_indexed_and_normalized():
+    # day_of_month earlier than the anchor's day: occurrence 0 falls before the anchor. occurrence_index still finds
+    # it, and normalize_anchor (used on create / edit) moves the stored anchor to the first occurrence on or after it.
+    anchor = date(2026, 9, 20)
+    assert rules.occurrence(anchor, "month", 1, 0, 15) == date(2026, 9, 15)
+    assert rules.occurrence_index(anchor, "month", 1, 15, date(2026, 9, 15)) == 0
+    assert rules.occurrence_index(anchor, "month", 1, 15, date(2026, 9, 14)) is None
+    assert rules.normalize_anchor(anchor, "month", 1, 15) == date(2026, 10, 15)
+    assert rules.normalize_anchor(date(2026, 9, 1), "month", 1, 15) == date(2026, 9, 15)
+    assert rules.normalize_anchor(date(2026, 10, 22), "month", 1, None) == date(2026, 10, 22)
+    assert rules.normalize_anchor(date(2026, 9, 21), "week", 1, None) == date(2026, 9, 21)
 
 
 def test_occurrence_index_and_first_indexes():
@@ -1483,9 +1514,16 @@ def first_index_after(anchor: date, unit: str, n: int, day_of_month: int | None,
     return first_index_on_or_after(anchor, unit, n, day_of_month, after + timedelta(days=1))
 
 
+def normalize_anchor(anchor: date, unit: str, n: int, day_of_month: int | None) -> date:
+    """The rule's first occurrence on or after `anchor`: the stored anchor_date is occurrence 0 (spec), so a
+    day_of_month earlier than the anchor's day (anchor 09-20, day 15) starts on 10-15, never on 09-15."""
+    return occurrence(anchor, unit, n, first_index_on_or_after(anchor, unit, n, day_of_month, anchor), day_of_month)
+
+
 def occurrence_index(anchor: date, unit: str, n: int, day_of_month: int | None, day: date) -> int | None:
-    """k when `day` is occurrence k of the rule, else None."""
-    if day < anchor:
+    """k when `day` is occurrence k of the rule, else None. Compared with occurrence 0, not the anchor: with a
+    day_of_month earlier than the anchor's day, occurrence 0 precedes the anchor."""
+    if day < occurrence(anchor, unit, n, 0, day_of_month):
         return None
     k = first_index_on_or_after(anchor, unit, n, day_of_month, day)
     return k if occurrence(anchor, unit, n, k, day_of_month) == day else None
@@ -1512,7 +1550,7 @@ def plain(value: Decimal | str | int) -> str:
 
 - [ ] 4.4 Run 4.2 again.
 
-Expected: `8 passed`.
+Expected: `9 passed`.
 
 - [ ] 4.5 Commit.
 
@@ -1658,9 +1696,9 @@ def _field(exc_info) -> str:
 @pytest.fixture()
 def loan(seed):
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id, name="信貸")
-    return bank, esun, payable
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id, name="信貸")
+    return bank, lender, payable
 
 
 def test_loan_repayment_template_is_accepted(db_session, seed, loan):
@@ -1724,9 +1762,9 @@ def test_receivable_and_payable_lines_need_a_counterparty(db_session, seed):
 
 
 def test_repayment_needs_a_payable_original_in_its_currency(db_session, seed, loan):
-    bank, esun, payable = loan
-    receivable = seed.entry(bank, "-500", kind="receivable", counterparty_id=esun.id)
-    repayment = seed.entry(bank, "-100", kind="payable", counterparty_id=esun.id, settles_entry_id=payable.id, is_settlement=True)
+    bank, lender, payable = loan
+    receivable = seed.entry(bank, "-500", kind="receivable", counterparty_id=lender.id)
+    repayment = seed.entry(bank, "-100", kind="payable", counterparty_id=lender.id, settles_entry_id=payable.id, is_settlement=True)
     yen = seed.account("日幣", currency="JPY")
     for line in (
         seed.line("repayment", bank, "8333"),
@@ -2193,12 +2231,13 @@ class DefinitionUpdateIn(BaseModel):
     times: Annotated[int, Field(ge=1, le=9999)] | None = None
     end_date: date | None = None
     total_amount: Money | None = None
-    posting_mode: PostingMode = "auto"
+    posting_mode: PostingMode | None = None  # None (left out) keeps the stored mode; a PUT never switches it silently
 
 
 class DefinitionIn(DefinitionUpdateIn):
     kind: DefinitionKind
     loan: LoanIn | None = None
+    posting_mode: PostingMode = "auto"
 
 
 class ResumeIn(BaseModel):
@@ -2417,7 +2456,7 @@ def _dues(db, definition) -> list[date]:
 
 @pytest.fixture()
 def netflix(seed):
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     return seed.definition([seed.line("expense", card, "390")], anchor=date(2026, 10, 22))
 
 
@@ -2518,7 +2557,7 @@ def test_paused_definitions_generate_and_ended_ones_do_not(db_session, seed):
 
 def test_installment_last_period_gets_the_remainder(db_session, seed):
     # Spec "Card installment remainder on the last period" (override set at generation, whenever seq == times).
-    card, bank = seed.account("玉山 UNI"), seed.account("薪轉")
+    card, bank = seed.account("範例卡"), seed.account("薪轉")
     phone = seed.definition(
         [seed.line("expense", card, "3333")], kind="installment", anchor=date(2026, 10, 15), times=3,
         total_amount=Decimal("10000"),
@@ -2766,7 +2805,7 @@ from app.services.edit_lock import EditLockedError
 
 
 def test_insert_prepared_with_schedule_source_does_not_remember_defaults(db_session, seed):
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     streaming = seed.category("串流")
     prepared = ews.prepare_entry(
         db_session,
@@ -2805,8 +2844,8 @@ def test_create_transfer_with_schedule_source(db_session, seed):
 
 def test_settle_bypasses_the_cutover_lock_only_when_asked(db_session, seed):
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    loan = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id, source="moze_backup", moze_id="R-LOAN")
+    lender = seed.counterparty("範例銀行")
+    loan = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id, source="moze_backup", moze_id="R-LOAN")
     body = SettleIn(account_id=bank.id, amount=Decimal("8333"), entry_date=date(2026, 11, 9))
     with pytest.raises(EditLockedError):
         settlement_service.settle(db_session, loan.id, body)
@@ -2815,13 +2854,13 @@ def test_settle_bypasses_the_cutover_lock_only_when_asked(db_session, seed):
     )
     entry = db_session.get(LedgerEntry, entry_id)
     assert (entry.source, entry.name, entry.amount, entry.settles_entry_id, entry.counterparty_id) == (
-        "schedule", "信貸 每月還款", Decimal("-8333"), loan.id, esun.id,
+        "schedule", "信貸 每月還款", Decimal("-8333"), loan.id, lender.id,
     )
 
 
 def test_schedule_entry_editable_before_cutover_and_keeps_its_source(client, db_session, seed):
     # Spec "Schedule entry editable before cutover".
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     entry = seed.entry(card, "-390", source="schedule", day=date(2026, 10, 22))
     db_session.commit()
     response = client.put(
@@ -2939,7 +2978,7 @@ def insert_prepared(
 ```
 
 - [ ] 7.5 Edit `services/accounting-service/app/services/transfer_service.py`:
-  - change `def _leg_values(db: Session, payload: TransferIn, attached_rules: frozenset[int] = frozenset()) -> tuple[dict, dict]:` to `def _leg_values(db: Session, payload: TransferIn, attached_rules: frozenset[int] = frozenset(), source: str = "manual") -> tuple[dict, dict]:` and, inside it, `"source": "manual",` to `"source": source,`;
+  - change `def _leg_values(db: Session, payload: TransferIn, attached_rules: frozenset[int] = frozenset()) -> tuple[dict, dict]:` to `def _leg_values(db: Session, payload: TransferIn, attached_rules: frozenset[int] = frozenset(), entry_source: str = "manual") -> tuple[dict, dict]:` and, inside it, `"source": "manual",` to `"source": entry_source,`. **Do not name this parameter `source`:** `_leg_values` already has a local `source = _account(db, payload.from_account_id, "from_account_id")` (the from-account, used by `source.id`, `source.currency` and `check_rules(..., source.id, ...)`), which would overwrite the parameter and write an `Account` object into the leg's `source` column. Leave that local and its uses unchanged;
   - replace `_write_leg_extras` and `create_transfer` with
 
 ```python
@@ -2956,7 +2995,7 @@ def _write_leg_extras(
 
 
 def create_transfer(db: Session, payload: TransferIn, *, source: str = "manual", remember: bool = True) -> UUID:
-    out_values, in_values = _leg_values(db, payload, source=source)
+    out_values, in_values = _leg_values(db, payload, entry_source=source)
     group_id = uuid4()
     out_leg = LedgerEntry(transfer_group_id=group_id, **out_values)
     in_leg = LedgerEntry(transfer_group_id=group_id, **in_values)
@@ -2976,7 +3015,9 @@ def create_transfer(db: Session, payload: TransferIn, *, source: str = "manual",
 
 ```python
     source = "schedule" if out_leg.source == "schedule" else "manual"
-    out_values, in_values = _leg_values(db, payload, frozenset(attached_rule_ids(db, out_leg.id)), source)
+    out_values, in_values = _leg_values(
+        db, payload, frozenset(attached_rule_ids(db, out_leg.id)), entry_source=source
+    )
 ```
 
   and its last line `_write_leg_extras(db, out_leg, in_leg, payload)` with `_write_leg_extras(db, out_leg, in_leg, payload, source=source)`.
@@ -3022,7 +3063,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests/integration/test_entry_writes.py tests/integration/test_transfers.py tests/integration/test_splits.py tests/integration/test_settlements.py tests/integration/test_edit_lock.py 2>&1 | tail -1
 ```
 
-Expected: `5 passed`; then the second run reports the same pass count as before the edit and 0 failed.
+Expected: `5 passed`; then the second run reports exactly `B_ledger7 passed` (recorded in 1.6; this task adds no test to those files), 0 failed.
 
 - [ ] 7.8 Commit.
 
@@ -3046,11 +3087,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 5 (`take_import_key_shared`, `get_instance`, `lock_definition`, `lock_instance`, `validate_template`, `resolved_amounts`, `loan_line`, `LOAN_LINE_KINDS`); Task 7 (`insert_prepared(..., source=)`, `create_transfer(..., source=, remember=)`, `settle(..., source=, check_cutover_lock=, name=)`); `entry_write_service.prepare_entry`, `locked_entry`, `lock_group`, `assert_entry_editable`, `delete_entries_cascade`, `system_category_id`; `transfer_service.transfer_legs`; `settlement_service.open_amount`; `ledger_service._today`.
-- Produces: `PostResult`, `auto_eligible`, `post_instance`, `post_locked`, `failure_message`, `record_failure`, `delete_period_entries`, constants `SOURCE = "schedule"`, `LOAN_CLOSED_NOTE = "貸款已結清"`.
+- Produces: `PostResult`, `auto_eligible`, `lock_definition_for_post`, `lock_later_pending`, `post_instance`, `post_locked`, `failure_message`, `record_failure`, `delete_period_entries`, constants `SOURCE = "schedule"`, `LOAN_CLOSED_NOTE = "貸款已結清"`.
 
 Rules (D31, spec "Posting an instance"):
-- `post_instance` = shared import key → definition `FOR SHARE` → instance `FOR UPDATE` (`SKIP LOCKED` when `job=True`; a locked row gives `skipped_locked`) → 409 `already_posted` / `skipped` unless `pending` → for the job, the eligibility of D34 is re-checked under the lock (`not_due`) → `post_locked`.
-- `post_locked`: re-validate the template; resolve amounts; for a loan line lock the loan entry (`locked_entry`, the ledger's "target entries" step) — closed or open 0 → this and every later pending instance `skipped` (`acted_by` = actor, note `貸款已結清`), definition `ended`, nothing written; otherwise clamp the repayment to the open amount (interest never). Lines with amount 0 are not written. Each line goes through the ledger services with `entry_date = posted_date = due_date`, `entry_time = NULL`, `source = 'schedule'`, `remember = False`, name `line.name or definition.name`, the template's description and tags. Two or more non-transfer entries share a new `entry_group` (`installment` for an installment definition, else `split`) named `<name> #k/N` (`#k` without `times`). The instance becomes `posted` with every top-level id written.
+- `post_instance` = shared import key → definition via `lock_definition_for_post` (`FOR SHARE`, but `FOR UPDATE` when the template has a loan line, because that post may end the definition in `_close_out`; two `FOR SHARE` holders that both upgrade would deadlock) → instance `FOR UPDATE` (`SKIP LOCKED` when `job=True`; a locked row gives `skipped_locked`) → 409 `already_posted` / `skipped` unless `pending` → for the job, the eligibility of D34 is re-checked under the lock (`not_due`) → `post_locked`.
+- `post_locked`: re-validate the template; resolve amounts; for a loan line first lock the definition's later pending instances (`lock_later_pending`: `seq > instance.seq`, ascending id) — **before** the loan entry, because no path that holds an entry lock may lock a schedule row (D32) — then lock the loan entry (`locked_entry`, the ledger's "target entries" step; a caller that already locked it in its single entry statement passes it as `locked_loan`) — closed or open 0 → this and every later pending instance `skipped` (`acted_by` = actor, note `貸款已結清`), definition `ended`, nothing written; otherwise clamp the repayment to the open amount (interest never). Lines with amount 0 are not written. Each line goes through the ledger services with `entry_date = posted_date = due_date`, `entry_time = NULL`, `source = 'schedule'`, `remember = False`, name `line.name or definition.name`, the template's description and tags. Two or more non-transfer entries share a new `entry_group` (`installment` for an installment definition, else `split`) named `<name> #k/N` (`#k` without `times`). The instance becomes `posted` with every top-level id written.
 - A `ValidationError` raised by a ledger service while writing line i is re-raised as `lines[i].<field>` with the message `無法入帳` (service messages may contain amounts; `last_error` never does).
 - Callers own the transaction. `record_failure` rolls back, writes `last_error` / `last_error_at` on a still-pending instance and commits (the "second short transaction").
 
@@ -3064,7 +3105,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app.models import EntryGroup, LedgerEntry, ScheduleInstance
@@ -3079,13 +3121,13 @@ from app.services.errors import ConflictError, ValidationError
 @pytest.fixture()
 def loan(seed):
     bank = seed.account("薪轉", opening="50000")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id, name="信貸", day=date(2026, 10, 3))
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id, name="信貸", day=date(2026, 10, 3))
     definition = seed.definition(
         [seed.line("repayment", bank, "8333", loan_entry_id=payable.id), seed.line("interest", bank, "620")],
         kind="installment", name="信貸 每月還款", anchor=date(2026, 11, 9), times=36, total_amount=Decimal("300000"),
     )
-    return SimpleNamespace(bank=bank, esun=esun, payable=payable, definition=definition)
+    return SimpleNamespace(bank=bank, lender=lender, payable=payable, definition=definition)
 
 
 def _balance(db, account) -> Decimal:
@@ -3118,7 +3160,7 @@ def test_repayment_with_interest(db_session, seed, loan, today):
         "payable", Decimal("-8333"), loan.payable.id, True,
     )
     assert (repayment.entry_date, repayment.posted_date, repayment.entry_time) == (date(2026, 11, 9), date(2026, 11, 9), None)
-    assert (interest.kind, interest.amount, interest.counterparty_id) == ("interest", Decimal("-620"), loan.esun.id)
+    assert (interest.kind, interest.amount, interest.counterparty_id) == ("interest", Decimal("-620"), loan.lender.id)
     assert interest.category_id == ews.system_category_id(db_session, "interest")
     assert (repayment.source, interest.source) == ("schedule", "schedule")
     group = db_session.get(EntryGroup, repayment.group_id)
@@ -3134,7 +3176,7 @@ def test_last_repayment_clamped_to_the_open_amount(db_session, seed, loan, today
     # Spec "Last repayment clamped to the open amount".
     for amount in ("-291655", "-100"):
         seed.entry(
-            loan.bank, amount, kind="payable", counterparty_id=loan.esun.id, settles_entry_id=loan.payable.id,
+            loan.bank, amount, kind="payable", counterparty_id=loan.lender.id, settles_entry_id=loan.payable.id,
             is_settlement=True,
         )
     assert _open(db_session, loan.payable) == Decimal("8245")
@@ -3183,7 +3225,7 @@ def test_closed_loan_ends_the_schedule(db_session, seed, loan, today):
 def test_loan_settled_by_hand_while_pending_skips_the_rest_and_ends(db_session, seed, loan, today):
     # Review Focus 4: the owner repaid the rest by hand while the next period waited.
     seed.entry(
-        loan.bank, "-300000", kind="payable", counterparty_id=loan.esun.id, settles_entry_id=loan.payable.id,
+        loan.bank, "-300000", kind="payable", counterparty_id=loan.lender.id, settles_entry_id=loan.payable.id,
         is_settlement=True,
     )
     first = seed.instance(loan.definition, 1, date(2026, 11, 9))
@@ -3203,7 +3245,7 @@ def test_loan_settled_by_hand_while_pending_skips_the_rest_and_ends(db_session, 
 
 def test_archived_account_found_at_posting_time_names_the_line(db_session, seed, today):
     # Spec "Archived account found at posting time" (the reopen half is in Task 12).
-    card, old = seed.account("玉山 UNI"), seed.account("舊帳戶")
+    card, old = seed.account("範例卡"), seed.account("舊帳戶")
     definition = seed.definition([seed.line("expense", card, "390"), seed.line("expense", old, "620")])
     instance = seed.instance(definition, 1, date(2026, 10, 22))
     old.is_archived = True
@@ -3254,7 +3296,7 @@ def test_recurring_transfer(db_session, seed, today):
 
 
 def test_expense_line_takes_the_definition_name_and_never_moves_category_defaults(db_session, seed, today):
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     streaming = seed.category("串流")
     definition = seed.definition(
         [seed.line("expense", card, "390", category_id=streaming.id)], description="家庭方案", tags=["訂閱"]
@@ -3276,8 +3318,8 @@ def test_imported_period_posts_against_an_imported_loan(db_session, seed, today,
     # Spec "Imported period posts against an imported loan".
     monkeypatch.setenv("ACCOUNTING_IMPORT_LOCKED", "false")
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id, source="moze_backup", moze_id="R-LOAN")
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id, source="moze_backup", moze_id="R-LOAN")
     definition = seed.definition(
         [seed.line("repayment", bank, "8333", loan_entry_id=payable.id)], kind="installment", name="信貸",
         anchor=date(2026, 2, 9), times=36, created_locally=False, moze_id="I-1",
@@ -3292,7 +3334,7 @@ def test_imported_period_posts_against_an_imported_loan(db_session, seed, today,
 
 
 def test_the_job_leaves_an_instance_the_owner_is_acting_on(db_session, seed, pg_engine):
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     definition = seed.definition([seed.line("expense", card, "390")])
     instance = seed.instance(definition, 1, date(2026, 10, 22))
     db_session.commit()
@@ -3310,7 +3352,7 @@ def test_the_job_leaves_an_instance_the_owner_is_acting_on(db_session, seed, pg_
 
 
 def test_the_job_rechecks_eligibility_under_the_lock(db_session, seed):
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     auto = seed.definition([seed.line("expense", card, "390")], auto_post_from=date(2026, 10, 3))
     confirm = seed.definition([seed.line("expense", card, "390")], name="房租", posting_mode="confirm")
     backlog = seed.instance(auto, 1, date(2026, 10, 1))
@@ -3334,6 +3376,48 @@ def test_delete_period_entries_takes_both_legs_empties_the_group_and_respects_th
     imported = seed.entry(loan.bank, "-390", source="moze_backup", moze_id="R-X")
     with pytest.raises(EditLockedError):
         posting.delete_period_entries(db_session, [imported.id])
+
+
+def test_delete_period_entries_locks_the_loan_in_the_same_statement_and_keeps_it(db_session, seed, loan, today):
+    # Repost: the loan joins the period's single entry-lock statement and is handed back, never deleted.
+    today(date(2026, 11, 9))
+    instance = seed.instance(loan.definition, 1, date(2026, 11, 9))
+    result = posting.post_instance(db_session, instance.id, actor="owner")
+
+    kept = posting.delete_period_entries(db_session, list(result.entry_ids), also_lock=loan.payable.id)
+
+    assert kept is not None and kept.id == loan.payable.id
+    assert _schedule_entries(db_session) == 0
+    assert db_session.get(LedgerEntry, loan.payable.id) is not None
+    assert _open(db_session, loan.payable) == Decimal("300000")
+
+
+def test_posting_a_loan_period_holds_the_definition_for_update_and_locks_later_periods(db_session, seed, loan, pg_engine):
+    # D32: a loan post may end the definition, so it takes FOR UPDATE (not FOR SHARE), and it locks the later
+    # pending periods before the loan entry.
+    first = seed.instance(loan.definition, 1, date(2026, 11, 9))
+    second = seed.instance(loan.definition, 2, date(2026, 12, 9))
+    db_session.commit()
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    owner, probe = factory(), factory()
+    try:
+        definition = posting.lock_definition_for_post(owner, loan.definition.id)
+        instance = locks.lock_instance(owner, first.id)
+        posting.post_locked(owner, definition, instance, "owner")
+        probe.execute(text("SET LOCAL lock_timeout = '200ms'"))
+        with pytest.raises(OperationalError):
+            probe.execute(
+                text("SELECT id FROM schedule_definition WHERE id = :id FOR SHARE"), {"id": loan.definition.id}
+            )
+        probe.rollback()
+        probe.execute(text("SET LOCAL lock_timeout = '200ms'"))
+        with pytest.raises(OperationalError):
+            probe.execute(text("SELECT id FROM schedule_instance WHERE id = :id FOR UPDATE"), {"id": second.id})
+    finally:
+        owner.rollback()
+        probe.rollback()
+        owner.close()
+        probe.close()
 
 
 def locks_now():
@@ -3403,11 +3487,44 @@ def auto_eligible(definition: ScheduleDefinition, instance: ScheduleInstance, to
     )
 
 
+def lock_definition_for_post(db: Session, definition_id: int) -> ScheduleDefinition:
+    """FOR SHARE, or FOR UPDATE when the template has a loan line: such a post may end the definition
+    (_close_out), and two FOR SHARE holders that both upgrade deadlock (D32)."""
+    peek = db.get(ScheduleDefinition, definition_id)
+    if peek is None:
+        raise NotFoundError(f"schedule definition {definition_id} not found")
+    share = loan_line(peek.template) is None
+    definition = lock_definition(db, definition_id, share=share)
+    if share and loan_line(definition.template) is not None:
+        raise ConflictError("definition_changed")  # the template gained a loan line meanwhile; the caller retries
+    return definition
+
+
+def lock_later_pending(
+    db: Session, definition: ScheduleDefinition, instance: ScheduleInstance
+) -> list[ScheduleInstance]:
+    """Lock the definition's pending instances after this one (ascending id). Called before any entry lock, so a
+    loan close-out never locks a schedule row while it holds the loan entry (D32)."""
+    return list(
+        db.scalars(
+            select(ScheduleInstance)
+            .where(
+                ScheduleInstance.definition_id == definition.id,
+                ScheduleInstance.status == "pending",
+                ScheduleInstance.seq > instance.seq,
+            )
+            .order_by(ScheduleInstance.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    )
+
+
 def post_instance(
     db: Session, instance_id: int, *, actor: str, job: bool = False, today: date | None = None
 ) -> PostResult:
     take_import_key_shared(db)
-    definition = lock_definition(db, get_instance(db, instance_id).definition_id, share=True)
+    definition = lock_definition_for_post(db, get_instance(db, instance_id).definition_id)
     instance = lock_instance(db, instance_id, skip_locked=job)
     if instance is None:
         if job:
@@ -3420,21 +3537,18 @@ def post_instance(
     return post_locked(db, definition, instance, actor)
 
 
-def _close_out(db: Session, definition: ScheduleDefinition, instance: ScheduleInstance, actor: str) -> None:
-    """The loan is closed or fully repaid: this and every later pending period are skipped; the definition ends."""
+def _close_out(
+    db: Session,
+    definition: ScheduleDefinition,
+    instance: ScheduleInstance,
+    later: list[ScheduleInstance],
+    actor: str,
+) -> None:
+    """The loan is closed or fully repaid: this and every later pending period are skipped; the definition ends.
+    `later` was locked by lock_later_pending before the loan entry; the definition is held FOR UPDATE
+    (lock_definition_for_post). No schedule row is locked here."""
     now = _now()
-    later = db.scalars(
-        select(ScheduleInstance)
-        .where(
-            ScheduleInstance.definition_id == definition.id,
-            ScheduleInstance.status == "pending",
-            ScheduleInstance.seq >= instance.seq,
-        )
-        .order_by(ScheduleInstance.id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    for item in later:
+    for item in [instance, *later]:
         item.status, item.acted_at, item.acted_by = "skipped", now, actor
         item.note, item.last_error, item.last_error_at = LOAN_CLOSED_NOTE, None, None
     definition.status = "ended"
@@ -3517,8 +3631,17 @@ def _group(db: Session, definition: ScheduleDefinition, instance: ScheduleInstan
     db.flush()
 
 
-def post_locked(db: Session, definition: ScheduleDefinition, instance: ScheduleInstance, actor: str) -> PostResult:
-    """Write the period; the caller holds the definition and instance locks and owns the transaction."""
+def post_locked(
+    db: Session,
+    definition: ScheduleDefinition,
+    instance: ScheduleInstance,
+    actor: str,
+    *,
+    locked_loan: LedgerEntry | None = None,
+) -> PostResult:
+    """Write the period; the caller holds the definition (lock_definition_for_post) and instance locks and owns the
+    transaction. `locked_loan`: the loan entry the caller already locked in its single entry statement (repost);
+    such a caller has called lock_later_pending before taking any entry lock."""
     template = definition.template
     validate_template(db, template)
     amounts = resolved_amounts(definition, instance)
@@ -3526,13 +3649,28 @@ def post_locked(db: Session, definition: ScheduleDefinition, instance: ScheduleI
     reference = loan_line(template)
     if reference is not None:
         index, line = reference
-        try:
-            loan = entry_write_service.locked_entry(db, line["loan_entry_id"])
-        except NotFoundError as exc:
-            raise ValidationError(f"lines[{index}].loan_entry_id", "貸款記錄不存在") from exc
+        if locked_loan is not None and locked_loan.id == line["loan_entry_id"]:
+            later = list(
+                db.scalars(  # already locked by the caller (lock_later_pending); plain read, no schedule lock here
+                    select(ScheduleInstance)
+                    .where(
+                        ScheduleInstance.definition_id == definition.id,
+                        ScheduleInstance.status == "pending",
+                        ScheduleInstance.seq > instance.seq,
+                    )
+                    .order_by(ScheduleInstance.id)
+                )
+            )
+            loan = locked_loan
+        else:
+            later = lock_later_pending(db, definition, instance)  # schedule rows first, then the loan entry (D32)
+            try:
+                loan = entry_write_service.locked_entry(db, line["loan_entry_id"])
+            except NotFoundError as exc:
+                raise ValidationError(f"lines[{index}].loan_entry_id", "貸款記錄不存在") from exc
         open_amount = Decimal(0) if loan.is_closed else settlement_service.open_amount(db, loan)
         if open_amount == 0:
-            _close_out(db, definition, instance, actor)
+            _close_out(db, definition, instance, later, actor)
             return PostResult(instance.id, "loan_closed")
 
     written: list[int] = []
@@ -3580,13 +3718,17 @@ def record_failure(db: Session, instance_id: int, message: str) -> None:
     db.commit()
 
 
-def delete_period_entries(db: Session, entry_ids: list[int]) -> None:
+def delete_period_entries(
+    db: Session, entry_ids: list[int], *, also_lock: int | None = None
+) -> LedgerEntry | None:
     """Delete a period's entries (reopen, repost) in the ledger's lock order: their entry_group rows ascending →
     the entries with their transfer legs in one statement. The cutover lock applies to every row (a MOZE-booked
-    period's entries are MOZE rows until cutover)."""
+    period's entries are MOZE rows until cutover). `also_lock`: an entry (the loan of a repost) locked in that same
+    single statement and not deleted; it is returned so post_locked reuses the row instead of a second entry-lock
+    statement."""
     ids = sorted(set(entry_ids))
-    if not ids:
-        return
+    if not ids and also_lock is None:
+        return None
     transfer_groups = {
         row for row in db.scalars(select(LedgerEntry.transfer_group_id).where(LedgerEntry.id.in_(ids))) if row is not None
     }
@@ -3601,28 +3743,33 @@ def delete_period_entries(db: Session, entry_ids: list[int]) -> None:
     )
     for group_id in group_ids:
         entry_write_service.lock_group(db, group_id)
+    lock_condition = condition if also_lock is None else or_(condition, LedgerEntry.id == also_lock)
     locked = list(
         db.scalars(
             select(LedgerEntry)
-            .where(condition)
+            .where(lock_condition)
             .order_by(LedgerEntry.id)
             .with_for_update()
             .execution_options(populate_existing=True)
         )
     )
-    for entry in locked:
+    extra = next((entry for entry in locked if entry.id == also_lock), None)
+    doomed = [entry for entry in locked if entry.id != also_lock]
+    for entry in doomed:
         entry_write_service.assert_entry_editable(db, entry)
-    entry_write_service.delete_entries_cascade(db, [entry.id for entry in locked])
+    if doomed:
+        entry_write_service.delete_entries_cascade(db, [entry.id for entry in doomed])
     for group_id in group_ids:
         remaining = db.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.group_id == group_id))
         if remaining == 0:
             db.execute(delete(EntryGroup).where(EntryGroup.id == group_id))
     db.flush()
+    return extra
 ```
 
 - [ ] 8.4 Run 8.2 again.
 
-Expected: `13 passed`.
+Expected: `15 passed`.
 
 - [ ] 8.5 Commit.
 
@@ -3675,7 +3822,7 @@ def _ids(items) -> list[int]:
 
 @pytest.fixture()
 def card(seed):
-    return seed.account("玉山 UNI")
+    return seed.account("範例卡")
 
 
 def test_queue_lists_confirm_failing_and_overdue_items(db_session, seed, card, today):
@@ -3696,7 +3843,7 @@ def test_queue_lists_confirm_failing_and_overdue_items(db_session, seed, card, t
     assert [item["overdue_days"] for item in items] == [3, 2, 0]
     first = items[0]
     assert (first["definition_name"], first["seq"], first["times"], first["posting_mode"]) == ("房租", 4, 12, "confirm")
-    assert [(line["account_name"], line["amount"]) for line in first["lines"]] == [("玉山 UNI", Decimal("-18000"))]
+    assert [(line["account_name"], line["amount"]) for line in first["lines"]] == [("範例卡", Decimal("-18000"))]
     assert first["totals"] == [{"currency": "TWD", "amount": Decimal("-18000")}]
 
 
@@ -3745,15 +3892,15 @@ def test_loan_detail_after_three_periods(db_session, seed, today):
     # Spec "Loan detail after three periods" (shape; the entry endpoint is wired in Task 14).
     today(date(2027, 1, 20))
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id)
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id)
     loan = seed.definition(
         [seed.line("repayment", bank, "8333", loan_entry_id=payable.id), seed.line("interest", bank, "620")],
         kind="installment", name="信貸 每月還款", anchor=date(2026, 11, 9), times=36, total_amount=Decimal("300000"),
     )
     for seq, day in enumerate((date(2026, 11, 9), date(2026, 12, 9), date(2027, 1, 9)), start=1):
         repayment = seed.entry(
-            bank, "-8333", kind="payable", counterparty_id=esun.id, settles_entry_id=payable.id, is_settlement=True,
+            bank, "-8333", kind="payable", counterparty_id=lender.id, settles_entry_id=payable.id, is_settlement=True,
             day=day, source="schedule",
         )
         seed.instance(loan, seq, day, status="posted", entries=[repayment])
@@ -3790,8 +3937,8 @@ def test_card_installment_remaining_from_posted_entries(db_session, seed, card, 
 def test_needs_check_and_failing(db_session, seed, today):
     today(date(2026, 10, 3))
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "8333", kind="payable", counterparty_id=esun.id)
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "8333", kind="payable", counterparty_id=lender.id)
     ended = seed.definition(
         [seed.line("repayment", bank, "8333", loan_entry_id=payable.id)], kind="installment", name="舊貸款",
         times=2, status="ended",
@@ -4210,8 +4357,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Rules:
 - Create (spec "Definition endpoints"): shared import key; rule checks (installment → `interval_unit = month`, else 422 `interval_unit`; `times ≥ 2`, else 422 `times`; `day_of_month` only for month / year; `end_date ≥ anchor_date`; `total_amount` only on installments); `loan` (installments only) creates a `payable` of `+amount` (`source = 'manual'`, `remember=False`) in the same transaction, sets `total_amount = loan.amount` and fills `loan_entry_id` on repayment lines that have none; template validation; for an installment with a total, `amount × (times − 1) ≥ total_amount` → 422 `total_amount`; `auto_post_from` = today; generation (Task 6 puts the last-period override on `seq == times`); nothing posts.
-- Update (編輯整個排程, D35): shared key → definition `FOR UPDATE` → every instance `FOR UPDATE`; imported definitions before cutover → 409 `locked_until_cutover`; delete pending instances due on or after tomorrow (a period due **today** stays — Review Focus 5); realign the remaining pending overrides; `times` below the remaining maximum seq → 422 `times`; the first new instance is the new rule's first occurrence on or after tomorrow and strictly after the latest remaining `due_date`, with `seq` = remaining maximum + 1, and `anchor_date` / `first_seq` are rebased to it (only while that seq fits `times` and the date fits `end_date`; otherwise the sent anchor is stored and nothing regenerates); `posting_mode` follows `_set_mode` (a switch to `auto` moves `auto_post_from` to today); a missing `total_amount` on an installment keeps the stored one; regenerate.
+- Update (編輯整個排程, D35): shared key → definition `FOR UPDATE` → every instance `FOR UPDATE`; imported definitions before cutover → 409 `locked_until_cutover`; delete pending instances due on or after tomorrow (a period due **today** stays — Review Focus 5); realign the remaining pending overrides; `times` below the remaining maximum seq → 422 `times`; the first new instance is the new rule's first occurrence on or after tomorrow and strictly after the latest remaining `max(rule_date, due_date)` (the bound `generate` uses is the latest `rule_date`; a moved period can make either one later), with `seq` = remaining maximum + 1, and `anchor_date` / `first_seq` are rebased to it (only while that seq fits `times` and the date fits `end_date`; otherwise the sent anchor is stored and nothing regenerates); `posting_mode` follows `_set_mode` (a switch to `auto` moves `auto_post_from` to today); a missing `total_amount` on an installment keeps the stored one; regenerate.
 - Delete: shared key → definition `FOR UPDATE`; imported before cutover → 409 `locked_until_cutover`; any posted instance → 409 with a message pointing to 結束; otherwise the definition and (by cascade) its instances go.
+- `anchor_date` is stored as occurrence 0 of the rule (`rules.normalize_anchor`): a `day_of_month` earlier than the sent day starts the next period (起始日 09-20 with day 15 → 10-15). `DefinitionUpdateIn.posting_mode` is optional: left out (`None`), a `PUT` keeps the stored mode and `auto_post_from`; `DefinitionIn` keeps the `"auto"` default.
+- The token auth of #42 (`ApiTokenMiddleware`, `ACCOUNTING_API_TOKENS`) is app-wide, so the new routes need no auth code; one test pins the 401 without a bearer token.
+- `test_loan_and_schedule_in_one_call` fixes today at 2026-10-09 on purpose: the spec scenario's 13 instances assume the horizon reaches 2027-11-09, i.e. a creation day on or after 2026-10-09 (created on 2026-10-03 the horizon holds 12 periods). The date is test setup, not a spec change.
 
 - [ ] 10.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_definitions_api.py`:
 
@@ -4255,7 +4405,7 @@ def _instances(db, definition_id) -> list[ScheduleInstance]:
 def test_local_recurring_definition(client, db_session, seed, today):
     # Spec "Local recurring definition".
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     db_session.commit()
 
     response = client.post("/schedules/definitions", json=_body([_line("expense", card, "390")]))
@@ -4272,13 +4422,13 @@ def test_local_recurring_definition(client, db_session, seed, today):
     rows = _instances(db_session, body["id"])
     assert len(rows) == 13 and {row.status for row in rows} == {"pending"}
     assert db_session.scalar(select(func.count()).select_from(LedgerEntry)) == 0
-    assert body["template"]["lines"][0]["account_name"] == "玉山 UNI"
+    assert body["template"]["lines"][0]["account_name"] == "範例卡"
 
 
 def test_installment_must_be_monthly_and_have_two_periods(client, db_session, seed, today):
     # Spec "Installment must be monthly" and "Installment needs two periods".
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     db_session.commit()
     weekly = client.post(
         "/schedules/definitions", json=_body([_line("expense", card, "3333")], kind="installment", interval_unit="week", times=3)
@@ -4302,7 +4452,7 @@ def test_template_errors_name_the_line(client, db_session, seed, today):
 def test_card_installment_remainder_on_the_last_period(client, db_session, seed, today):
     # Spec "Card installment remainder on the last period".
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     db_session.commit()
     response = client.post(
         "/schedules/definitions",
@@ -4325,7 +4475,7 @@ def test_loan_and_schedule_in_one_call(client, db_session, seed, today):
     # today ≥ 2026-10-09 (on 2026-10-03 the horizon 2027-11-03 holds 12 periods from 2026-11-09).
     today(date(2026, 10, 9))
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
+    lender = seed.counterparty("範例銀行")
     db_session.commit()
     before = ledger_service.account_balance(db_session, bank.id)
 
@@ -4334,7 +4484,7 @@ def test_loan_and_schedule_in_one_call(client, db_session, seed, today):
         json=_body(
             [_line("repayment", bank, "8333"), _line("interest", bank, "620")],
             kind="installment", name="信貸 每月還款", times=36, anchor_date="2026-11-09",
-            loan={"account_id": bank.id, "counterparty_id": esun.id, "amount": "300000", "entry_date": "2026-10-03", "name": "信貸"},
+            loan={"account_id": bank.id, "counterparty_id": lender.id, "amount": "300000", "entry_date": "2026-10-03", "name": "信貸"},
         ),
     )
 
@@ -4343,7 +4493,7 @@ def test_loan_and_schedule_in_one_call(client, db_session, seed, today):
     db_session.expire_all()
     assert ledger_service.account_balance(db_session, bank.id) - before == Decimal("300000")
     payable = db_session.scalar(select(LedgerEntry).where(LedgerEntry.kind == "payable"))
-    assert (payable.amount, payable.source, payable.counterparty_id, payable.name) == (Decimal("300000"), "manual", esun.id, "信貸")
+    assert (payable.amount, payable.source, payable.counterparty_id, payable.name) == (Decimal("300000"), "manual", lender.id, "信貸")
     assert Decimal(body["total_amount"]) == Decimal("300000")
     assert body["template"]["lines"][0]["loan_entry_id"] == payable.id == body["loan_entry_id"]
     rows = _instances(db_session, body["id"])
@@ -4353,7 +4503,7 @@ def test_loan_and_schedule_in_one_call(client, db_session, seed, today):
 def test_edit_regenerates_only_future_pending_periods_then_rolls_forward(client, db_session, seed, today):
     # Spec "Edit regenerates only future pending periods, then rolls forward".
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     definition = seed.definition([seed.line("expense", card, "1000")], name="訂閱", anchor=date(2026, 9, 1))
     entry = seed.entry(card, "-1000", day=date(2026, 9, 1), source="schedule")
     seed.instance(definition, 1, date(2026, 9, 1), status="posted", entries=[entry])
@@ -4378,16 +4528,18 @@ def test_edit_regenerates_only_future_pending_periods_then_rolls_forward(client,
     assert (definition.anchor_date, definition.first_seq, definition.template["lines"][0]["amount"]) == (
         date(2026, 10, 15), 3, "1200",
     )
-    created = generation.generate_locked(db_session, definition.id, date(2026, 11, 15))
+    # Rolling forward one month later (horizon 2027-11-15) adds exactly the next period after 2027-10-15.
+    created = generation.generate_locked(db_session, definition.id, date(2026, 10, 15))
     db_session.commit()
     last = _instances(db_session, definition.id)[-1]
+    assert rows[-1].due_date == date(2027, 10, 15)
     assert (created, last.due_date, last.seq) == (1, date(2027, 11, 15), rows[-1].seq + 1)
 
 
 def test_edit_keeps_the_instance_due_today_and_regenerates_from_tomorrow(client, db_session, seed, today):
     # Review Focus 5.
     today(date(2026, 10, 3))
-    card, wallet = seed.account("玉山 UNI"), seed.account("錢包")
+    card, wallet = seed.account("範例卡"), seed.account("錢包")
     definition = seed.definition([seed.line("expense", card, "1000")], name="訂閱", anchor=date(2026, 9, 3))
     entry = seed.entry(card, "-1000", day=date(2026, 9, 3), source="schedule")
     seed.instance(definition, 1, date(2026, 9, 3), status="posted", entries=[entry])
@@ -4413,7 +4565,7 @@ def test_edit_keeps_the_instance_due_today_and_regenerates_from_tomorrow(client,
 def test_delete_refused_after_posting(client, db_session, seed, today):
     # Spec "Delete refused after posting".
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     posted = seed.definition([seed.line("expense", card, "390")])
     entry = seed.entry(card, "-390", day=date(2026, 9, 22), source="schedule")
     seed.instance(posted, 1, date(2026, 9, 22), status="posted", entries=[entry])
@@ -4448,7 +4600,7 @@ def test_template_edit_refused_during_the_mirror_period(client, db_session, seed
 
 def test_writes_are_refused_while_an_import_runs(client, db_session, seed, today, pg_engine):
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     db_session.commit()
     with pg_engine.connect() as holder:
         holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY})
@@ -4462,7 +4614,7 @@ def test_writes_are_refused_while_an_import_runs(client, db_session, seed, today
 
 def test_get_definition_lists_its_instances_and_unknown_ids_are_404(client, db_session, seed, today):
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     db_session.commit()
     created = client.post("/schedules/definitions", json=_body([_line("expense", card, "390")])).json()
     detail = client.get(f"/schedules/definitions/{created['id']}").json()
@@ -4470,6 +4622,58 @@ def test_get_definition_lists_its_instances_and_unknown_ids_are_404(client, db_s
     assert client.get("/schedules/definitions").json()[0]["id"] == created["id"]
     for response in (client.get("/schedules/definitions/9999"), client.delete("/schedules/definitions/9999")):
         assert response.status_code == 404
+
+
+def test_put_without_posting_mode_keeps_the_stored_mode(client, db_session, seed, today):
+    # DefinitionUpdateIn.posting_mode = None keeps the mode: a PUT never switches 提醒入帳 to 自動入帳 silently.
+    today(date(2026, 10, 3))
+    card = seed.account("範例卡")
+    rent = seed.definition(
+        [seed.line("expense", card, "18000")], name="房租", posting_mode="confirm", anchor=date(2026, 10, 25),
+        auto_post_from=date(2026, 9, 1),
+    )
+    db_session.commit()
+
+    response = client.put(
+        f"/schedules/definitions/{rent.id}",
+        json={"name": "房租", "template": {"lines": [_line("expense", card, "18500")]}, "interval_unit": "month",
+              "anchor_date": "2026-10-25"},
+    )
+
+    assert response.status_code == 200
+    assert (response.json()["posting_mode"], response.json()["auto_post_from"]) == ("confirm", "2026-09-01")
+
+
+def test_day_of_month_before_the_start_day_starts_next_month(client, db_session, seed, today):
+    # Spec "anchor_date … occurrence 0 of the rule": 起始日 09-20 with day 15 stores 10-15 as the anchor.
+    today(date(2026, 9, 18))
+    card = seed.account("範例卡")
+    db_session.commit()
+
+    response = client.post(
+        "/schedules/definitions", json=_body([_line("expense", card, "390")], anchor_date="2026-09-20", day_of_month=15)
+    )
+
+    assert response.status_code == 201
+    assert response.json()["anchor_date"] == "2026-10-15"
+    assert _instances(db_session, response.json()["id"])[0].due_date == date(2026, 10, 15)
+
+
+def test_schedule_writes_need_the_bearer_token_when_api_tokens_are_set(client, db_session, seed, today, monkeypatch):
+    # #42: ApiTokenMiddleware covers the new routes with no extra code (design D42).
+    today(date(2026, 10, 3))
+    card = seed.account("範例卡")
+    db_session.commit()
+    monkeypatch.setenv("ACCOUNTING_API_TOKENS", "test:synthetic-token-1")
+
+    refused = client.post("/schedules/definitions", json=_body([_line("expense", card, "390")]))
+    allowed = client.post(
+        "/schedules/definitions", json=_body([_line("expense", card, "390")]),
+        headers={"Authorization": "Bearer synthetic-token-1"},
+    )
+
+    assert refused.status_code == 401
+    assert allowed.status_code == 201
 ```
 
 - [ ] 10.2 Run it.
@@ -4478,7 +4682,7 @@ def test_get_definition_lists_its_instances_and_unknown_ids_are_404(client, db_s
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_definitions_api.py
 ```
 
-Expected: 11 failures with `404 Not Found` (no `/schedules` routes yet); `test_edit_…` tests fail the same way.
+Expected: 14 failures with `404 Not Found` (no `/schedules` routes yet; with the token set, the unauthenticated call is already 401, so `test_schedule_writes_need_the_bearer_token…` fails on the `201` assertion); `test_edit_…` tests fail the same way.
 
 - [ ] 10.3 Create `services/accounting-service/app/services/schedule_service.py`:
 
@@ -4513,7 +4717,7 @@ from .schedule_locks import (
     lock_instances,
     take_import_key_shared,
 )
-from .schedule_templates import check_amounts, normalize_template, realign_override, validate_template
+from .schedule_templates import check_amounts, loan_line, normalize_template, realign_override, validate_template
 
 
 def _today() -> date:
@@ -4579,9 +4783,13 @@ def create_definition(db: Session, payload: DefinitionIn) -> int:
         total_amount = loan.amount
     validate_template(db, template)
     _check_total(payload.kind, template, payload.times, total_amount)
+    # anchor_date is occurrence 0: a day_of_month earlier than the sent day starts next month (rules.normalize_anchor)
+    anchor = rules.normalize_anchor(payload.anchor_date, payload.interval_unit, payload.interval_n, payload.day_of_month)
+    if payload.end_date is not None and payload.end_date < anchor:
+        raise ValidationError("end_date", "結束日期不可早於第一期")
     definition = ScheduleDefinition(
         kind=payload.kind, name=payload.name, template=template, interval_unit=payload.interval_unit,
-        interval_n=payload.interval_n, anchor_date=payload.anchor_date, day_of_month=payload.day_of_month,
+        interval_n=payload.interval_n, anchor_date=anchor, day_of_month=payload.day_of_month,
         times=payload.times, end_date=payload.end_date, total_amount=total_amount, posting_mode=payload.posting_mode,
         status="active", auto_post_from=today, created_locally=True,
     )
@@ -4625,20 +4833,23 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
     definition.interval_unit, definition.interval_n = payload.interval_unit, payload.interval_n
     definition.day_of_month, definition.times, definition.end_date = payload.day_of_month, payload.times, payload.end_date
     definition.total_amount = total
-    _set_mode(definition, payload.posting_mode, today)
+    if payload.posting_mode is not None:
+        _set_mode(definition, payload.posting_mode, today)
 
     unit, n, day_of_month, anchor = payload.interval_unit, payload.interval_n, payload.day_of_month, payload.anchor_date
     k = rules.first_index_on_or_after(anchor, unit, n, day_of_month, tomorrow)
-    latest_due = max((row.due_date for row in remaining), default=None)
-    if latest_due is not None:
-        k = max(k, rules.first_index_after(anchor, unit, n, day_of_month, latest_due))
+    # The same bound generation uses: generate() continues strictly after the latest rule_date, and an owner may
+    # have moved a period (due_date ≠ rule_date) either way — start after the later of the two.
+    latest = max((max(row.rule_date, row.due_date) for row in remaining), default=None)
+    if latest is not None:
+        k = max(k, rules.first_index_after(anchor, unit, n, day_of_month, latest))
     first = rules.occurrence(anchor, unit, n, k, day_of_month)
     next_seq = max_seq + 1
     fits = (payload.times is None or next_seq <= payload.times) and (payload.end_date is None or first <= payload.end_date)
     if fits:
         definition.anchor_date, definition.first_seq = first, next_seq
     else:
-        definition.anchor_date = anchor
+        definition.anchor_date = rules.normalize_anchor(anchor, unit, n, day_of_month)
         definition.first_seq = min(definition.first_seq, max(max_seq, 1))
     db.flush()
     generation.generate(db, definition, today)
@@ -4766,7 +4977,7 @@ def delete_definition(definition_id: int, db: Session = Depends(get_db)):
 
 - [ ] 10.6 Run 10.2 again.
 
-Expected: `11 passed`.
+Expected: `14 passed`.
 
 - [ ] 10.7 Commit.
 
@@ -4792,7 +5003,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Consumes: Task 10 helpers (`_today`, `_now`, `_set_mode`, `_definition_out`); `posting.post_instance`, `failure_message`, `record_failure`, `auto_eligible` (Task 8); `schedule_read.list_instances` (Task 9).
 - Produces: `pause(db, definition_id)`, `resume(db, definition_id, backlog) -> list[int]`, `end(db, definition_id)`, `set_mode(db, definition_id, posting_mode)`, `catch_up_ids(db, definition_id) -> list[int]`, `post_sequence(db, instance_ids) -> tuple[list[int], dict | None]`; routes `POST /definitions/{id}/pause`, `/resume` (optional body `{"backlog"}`), `/end`, `PUT /definitions/{id}/mode`, `POST /definitions/{id}/catch-up` → `CatchUpOut`.
 
-Rules (spec "Definition state endpoints", D35): every action shares the import key, then locks the definition `FOR UPDATE` before its instances (`catch_up_ids` takes `FOR SHARE`: it only reads, then each post locks as usual). `pause` 409 unless `active`; `resume` 409 unless `paused`, default `backlog = skip` skips pending instances due ≤ today (`acted_by = owner`), `post` posts them after the status change commits; `end` 409 when already `ended`, deletes every pending instance; `catch-up` 409 while paused, posts every pending instance due ≤ today in seq order (whatever the mode, `auto_post_from` or `reopened_at`), `acted_by = owner`, one transaction each, stopping at the first failure, answering 200 with `failed` set. `post_sequence` treats a `ConflictError` other than `import_running` (someone posted or skipped it meanwhile) as "not mine" and moves on; `import_running` stops it with `failed = {"instance_id", "error": "import_running"}`. All state actions are allowed on imported definitions before cutover (spec "Imported definitions before cutover").
+Rules (spec "Definition state endpoints", D35): every action shares the import key, then locks the definition `FOR UPDATE` before its instances (`catch_up_ids` takes `FOR SHARE`: it only reads, then each post locks as usual). `pause` 409 unless `active`; `resume` 409 unless `paused`, default `backlog = skip` skips pending instances due ≤ today (`acted_by = owner`), `post` posts them after the status change commits; `end` 409 when already `ended`, deletes every pending instance; `catch-up` 409 while paused, posts every pending instance due ≤ today in seq order (whatever the mode, `auto_post_from` or `reopened_at`), `acted_by = owner`, one transaction each, stopping at the first failure, answering 200 with `failed` set. `post_sequence` treats a `ConflictError` other than `import_running` (someone posted or skipped it meanwhile) as "not mine" and moves on; `import_running` stops it with `failed = {"instance_id", "error": "import_running"}`; any other exception (a `ValidationError`, an `IntegrityError`, a deadlock's `OperationalError`, `EditLockedError`) is stored by `record_failure(failure_message(exc))` — the class name for non-validation errors — and stops it with `failed` set. All state actions are allowed on imported definitions before cutover (spec "Imported definitions before cutover").
 
 - [ ] 11.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_state_api.py`:
 
@@ -4820,7 +5031,7 @@ def _rows(db, definition) -> list[ScheduleInstance]:
 
 @pytest.fixture()
 def card(seed):
-    return seed.account("玉山 UNI")
+    return seed.account("範例卡")
 
 
 def test_resume_skips_the_paused_months_by_default(client, db_session, seed, card, today):
@@ -4937,6 +5148,26 @@ def test_catch_up_stops_at_the_first_failure_and_still_answers_200(client, db_se
     assert (rows[1].id, rows[1].status, rows[1].last_error) == (waiting.id, "pending", None)
 
 
+def test_catch_up_records_any_error_by_class_and_stops(client, db_session, seed, card, today, monkeypatch):
+    # Spec "On any error … a separate transaction SHALL store the error": not only ValidationError.
+    today(date(2026, 10, 3))
+    rent = seed.definition([seed.line("expense", card, "18000")], name="房租", posting_mode="confirm")
+    first = seed.instance(rent, 1, date(2026, 9, 22))
+    seed.instance(rent, 2, date(2026, 10, 1))
+    db_session.commit()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(posting, "post_locked", boom)
+    response = client.post(f"/schedules/definitions/{rent.id}/catch-up")
+
+    assert response.status_code == 200
+    assert response.json()["failed"] == {"instance_id": first.id, "error": "RuntimeError"}
+    rows = _rows(db_session, rent)
+    assert [(row.status, row.last_error) for row in rows] == [("pending", "RuntimeError"), ("pending", None)]
+
+
 def test_switching_to_automatic_posting(client, db_session, seed, card, today):
     # Spec "Switching to automatic posting" (the job half runs in Task 15).
     today(date(2026, 10, 3))
@@ -4993,7 +5224,7 @@ def test_state_actions_work_on_imported_definitions_before_cutover(client, db_se
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_state_api.py
 ```
 
-Expected: 11 failures (404 or 405 on the new paths).
+Expected: 12 failures (404 or 405 on the new paths).
 
 - [ ] 11.3 Append to `services/accounting-service/app/services/schedule_service.py`:
 
@@ -5079,6 +5310,11 @@ def post_sequence(db: Session, instance_ids: list[int]) -> tuple[list[int], dict
         except (ConflictError, NotFoundError):
             db.rollback()  # posted, skipped or deleted by someone else meanwhile
             continue
+        except Exception as exc:  # noqa: BLE001 — IntegrityError, a deadlock's OperationalError, EditLockedError …
+            # Spec: on any error a second transaction stores last_error; failure_message keeps only the class name.
+            message = posting.failure_message(exc)
+            posting.record_failure(db, instance_id, message)
+            return posted, {"instance_id": instance_id, "error": message}
         if result.outcome == "posted":
             posted.append(instance_id)
         elif result.outcome == "loan_closed":
@@ -5134,7 +5370,7 @@ def catch_up(definition_id: int, db: Session = Depends(get_db)):
 
 - [ ] 11.5 Run 11.2 again.
 
-Expected: `11 passed`.
+Expected: `12 passed`.
 
 - [ ] 11.6 Commit.
 
@@ -5157,10 +5393,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `services/accounting-service/tests/integration/test_schedule_instances_api.py`
 
 **Interfaces:**
-- Consumes: Task 8 (`post_instance`, `post_locked`, `record_failure`, `failure_message`, `delete_period_entries`); Task 9 (`list_instances`, `instance_out`); Task 10 helpers (`_instance_out`).
+- Consumes: Task 8 (`post_instance`, `post_locked(locked_loan=)`, `lock_definition_for_post`, `lock_later_pending`, `record_failure`, `failure_message`, `delete_period_entries(also_lock=)`); Task 9 (`list_instances`, `instance_out`); Task 10 helpers (`_instance_out`).
 - Produces: `update_instance`, `post_one`, `skip_instance`, `reopen_instance`, `repost_instance`, `accept_partial` and the private `_instance_locked(db, instance_id, *, share=True) -> (definition, instance)`; routes `GET /instances`, `PUT /instances/{id}`, `POST /instances/{id}/post|skip|reopen|repost|accept-partial`.
 
-Rules (spec "Instance endpoints", D33, D35): shared key → definition (`FOR SHARE`; `reopen` takes `FOR UPDATE` because it may revive the definition) → instance `FOR UPDATE`. `PUT` only on pending (409), `amounts` aligned (422 `amounts`), a `due_date` equal to a posted instance's date of the same definition → 422 `due_date`, `rule_date` never changes, `edited_by_owner = true`. `post`: `acted_by = owner`; a validation failure is stored in `last_error` (second transaction) and answered 422 with the field. `skip`: pending only, writes nothing. `reopen`: 409 when already pending; posted → its entries are deleted (ledger lock order, cutover lock applies) with note `入帳記錄已於 YYYY-MM-DD 刪除`; skipped → pending; both set `reopened_at`; an ended definition becomes active; allowed even when the template references an archived row. `repost`: posted only (409), refused with 409 `locked_until_cutover` before cutover for `acted_by = import`; deletes the period's entries and posts again with the new override in one transaction. `accept-partial`: posted and partial only (409); `is_partial = false`, note kept. `GET /instances?from=&until=&status=&definition_id=&queue=` with `status` `pending | posted | skipped | all` (default `pending`).
+Rules (spec "Instance endpoints", D33, D35): shared key → definition (`FOR SHARE`; `reopen` takes `FOR UPDATE` because it may revive the definition) → instance `FOR UPDATE`. `PUT` only on pending (409), `amounts` aligned (422 `amounts`), a `due_date` equal to the date of another non-skipped (posted or pending) instance of the same definition → 422 `due_date` (two pending periods on one day would collide on `ux_schedule_instance_posted_day`), `rule_date` never changes, `edited_by_owner = true`. `post`: `acted_by = owner`; any failure is stored in `last_error` (second transaction): a validation failure is answered 422 with the field, `ConflictError` / `NotFoundError` / `EditLockedError` pass through unrecorded, any other exception is recorded by class name and answered 409. `skip`: pending only, writes nothing. `reopen`: 409 when already pending; posted → its entries are deleted (ledger lock order, cutover lock applies) with note `入帳記錄已於 YYYY-MM-DD 刪除`; skipped → pending; both set `reopened_at`; an ended definition becomes active; allowed even when the template references an archived row. `repost`: posted only (409), refused with 409 `locked_until_cutover` before cutover for `acted_by = import`; deletes the period's entries and posts again with the new override in one transaction; the definition is locked through `posting.lock_definition_for_post` (`FOR UPDATE` with a loan line, since the repost may end it), the later pending instances through `posting.lock_later_pending` before any entry lock, and the loan entry joins the period's single entry-lock statement (`delete_period_entries(also_lock=loan_id)`), which `post_locked(locked_loan=…)` reuses. `accept-partial`: posted and partial only (409); `is_partial = false`, note kept. `GET /instances?from=&until=&status=&definition_id=&queue=` with `status` `pending | posted | skipped | all` (default `pending`).
 
 - [ ] 12.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_instances_api.py`:
 
@@ -5197,19 +5433,19 @@ def _open(db, entry_id) -> Decimal:
 @pytest.fixture()
 def loan(seed):
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id, name="信貸", day=date(2026, 10, 3))
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id, name="信貸", day=date(2026, 10, 3))
     definition = seed.definition(
         [seed.line("repayment", bank, "8333", loan_entry_id=payable.id), seed.line("interest", bank, "620")],
         kind="installment", name="信貸 每月還款", anchor=date(2026, 11, 9), times=36, total_amount=Decimal("300000"),
     )
-    return SimpleNamespace(bank=bank, esun=esun, payable=payable, definition=definition)
+    return SimpleNamespace(bank=bank, lender=lender, payable=payable, definition=definition)
 
 
 def test_queue_endpoint(client, db_session, seed, today):
     # Spec "待完成交易 queue" through HTTP.
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     rent = seed.definition([seed.line("expense", card, "18000")], name="房租", posting_mode="confirm", times=12)
     overdue = seed.instance(rent, 4, date(2026, 9, 30))
     later = seed.instance(rent, 5, date(2026, 10, 20))
@@ -5244,7 +5480,7 @@ def test_instance_edit_moves_the_date_and_marks_the_owner(client, db_session, se
 def test_date_edit_onto_a_posted_day_refused(client, db_session, seed, today):
     # Spec "Date edit onto a posted day refused".
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     weekly = seed.definition([seed.line("expense", card, "100")], interval_unit="week", anchor=date(2026, 10, 5))
     entry = seed.entry(card, "-100", day=date(2026, 10, 5), source="schedule")
     seed.instance(weekly, 1, date(2026, 10, 5), status="posted", entries=[entry])
@@ -5270,7 +5506,7 @@ def test_post_endpoint_posts_and_a_second_post_is_409(client, db_session, seed, 
 def test_skip_leaves_the_loan_open(client, db_session, seed, loan, today):
     # Spec "Skip leaves the loan open".
     today(date(2026, 12, 1))
-    seed.entry(loan.bank, "-8333", kind="payable", counterparty_id=loan.esun.id, settles_entry_id=loan.payable.id,
+    seed.entry(loan.bank, "-8333", kind="payable", counterparty_id=loan.lender.id, settles_entry_id=loan.payable.id,
                is_settlement=True)
     instance = seed.instance(loan.definition, 2, date(2026, 12, 9))
     db_session.commit()
@@ -5284,7 +5520,7 @@ def test_skip_leaves_the_loan_open(client, db_session, seed, loan, today):
 def test_reopen_revives_an_ended_definition(client, db_session, seed, today):
     # Spec "Reopen revives an ended definition".
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     ended = seed.definition([seed.line("expense", card, "390")], status="ended", times=1)
     last = seed.instance(ended, 1, date(2026, 9, 22), status="skipped", acted_by="owner")
     db_session.commit()
@@ -5298,7 +5534,7 @@ def test_reopen_revives_an_ended_definition(client, db_session, seed, today):
 def test_archived_account_found_at_posting_time(client, db_session, seed, today):
     # Spec "Archived account found at posting time".
     today(date(2026, 10, 3))
-    card, old = seed.account("玉山 UNI"), seed.account("舊帳戶")
+    card, old = seed.account("範例卡"), seed.account("舊帳戶")
     ended = seed.definition([seed.line("expense", card, "390"), seed.line("expense", old, "20")], status="ended")
     skipped = seed.instance(ended, 1, date(2026, 9, 22), status="skipped", acted_by="owner")
     old.is_archived = True
@@ -5350,7 +5586,7 @@ def test_repost_of_a_moze_booked_period_refused_before_cutover(client, db_sessio
     # Spec "Repost of a MOZE-booked period refused before cutover".
     today(date(2026, 10, 3))
     monkeypatch.setenv("ACCOUNTING_IMPORT_LOCKED", "false")
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     imported = seed.definition([seed.line("expense", card, "390")], created_locally=False, moze_id="P-1")
     entry = seed.entry(card, "-390", day=date(2026, 9, 22), source="moze_backup", moze_id="R-9")
     booked = seed.instance(imported, 1, date(2026, 9, 22), status="posted", entries=[entry], acted_by="import", moze_id="R-9")
@@ -5362,7 +5598,7 @@ def test_repost_of_a_moze_booked_period_refused_before_cutover(client, db_sessio
 def test_accept_a_partial_period(client, db_session, seed, loan, today):
     # Spec "Accept a partial period".
     today(date(2026, 11, 10))
-    repayment = seed.entry(loan.bank, "-8333", kind="payable", counterparty_id=loan.esun.id,
+    repayment = seed.entry(loan.bank, "-8333", kind="payable", counterparty_id=loan.lender.id,
                            settles_entry_id=loan.payable.id, is_settlement=True, day=date(2026, 11, 9), source="schedule")
     partial = seed.instance(loan.definition, 1, date(2026, 11, 9), status="posted", entries=[repayment],
                             is_partial=True, note="部分入帳記錄已於 2026-11-10 刪除")
@@ -5392,6 +5628,38 @@ def test_instance_writes_are_refused_while_an_import_runs(client, db_session, se
             holder.commit()
     assert [(response.status_code, response.json()["message"]) for response in responses] == [(409, "import_running")] * 2
     assert _row(db_session, instance.id).status == "pending"
+
+
+def test_date_edit_onto_another_pending_period_refused(client, db_session, seed, today):
+    # Two pending periods on one day would collide on ux_schedule_instance_posted_day when the second posts.
+    today(date(2026, 10, 3))
+    card = seed.account("範例卡")
+    weekly = seed.definition([seed.line("expense", card, "100")], interval_unit="week", anchor=date(2026, 10, 5))
+    seed.instance(weekly, 1, date(2026, 10, 5))
+    second = seed.instance(weekly, 2, date(2026, 10, 12))
+    db_session.commit()
+    response = client.put(f"/schedules/instances/{second.id}", json={"due_date": "2026-10-05"})
+    assert response.status_code == 422 and _fields(response) == {"due_date"}
+    assert _row(db_session, second.id).due_date == date(2026, 10, 12)
+
+
+def test_post_records_any_error_and_answers_409(client, db_session, seed, today, monkeypatch):
+    # Spec "On any error … a separate transaction SHALL store the error": a non-validation error is stored by class.
+    today(date(2026, 10, 3))
+    card = seed.account("範例卡")
+    netflix = seed.definition([seed.line("expense", card, "390")])
+    instance = seed.instance(netflix, 1, date(2026, 10, 3))
+    db_session.commit()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(posting, "post_locked", boom)
+    response = client.post(f"/schedules/instances/{instance.id}/post")
+
+    assert (response.status_code, response.json()["message"]) == (409, "RuntimeError")
+    row = _row(db_session, instance.id)
+    assert (row.status, row.last_error) == ("pending", "RuntimeError")
 ```
 
 - [ ] 12.2 Run it.
@@ -5400,7 +5668,7 @@ def test_instance_writes_are_refused_while_an_import_runs(client, db_session, se
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_instances_api.py
 ```
 
-Expected: 14 failures (404 / 405 on `/schedules/instances…`).
+Expected: 15 failures (404 / 405 on `/schedules/instances…`).
 
 - [ ] 12.3 Append to `services/accounting-service/app/services/schedule_service.py`:
 
@@ -5424,28 +5692,42 @@ def update_instance(db: Session, instance_id: int, payload: InstanceUpdateIn) ->
         instance.amount_override = check_amounts(definition.template, payload.amounts)
     if payload.due_date is not None:
         taken = db.scalar(
-            select(ScheduleInstance.id)
+            select(ScheduleInstance.status)
             .where(
                 ScheduleInstance.definition_id == definition.id,
-                ScheduleInstance.status == "posted",
+                ScheduleInstance.id != instance.id,
+                ScheduleInstance.status != "skipped",
                 ScheduleInstance.due_date == payload.due_date,
             )
+            .order_by(ScheduleInstance.status.desc())  # 'posted' first
             .limit(1)
         )
-        if taken is not None:
+        if taken == "posted":
             raise ValidationError("due_date", "這一天已有入帳的期別")
+        if taken is not None:
+            # two pending periods on one day would collide on ux_schedule_instance_posted_day when both post
+            raise ValidationError("due_date", "這一天已有另一期待入帳")
         instance.due_date = payload.due_date
     instance.edited_by_owner = True
     db.flush()
 
 
 def post_one(db: Session, instance_id: int) -> None:
-    """[入帳]: acted_by owner. A validation failure is stored as last_error (own transaction) and re-raised (422)."""
+    """[入帳]: acted_by owner. Any failure is stored as last_error (own transaction): a validation failure is
+    re-raised (422); conflicts, a missing row and the cutover lock pass through unrecorded; any other error
+    (IntegrityError, a deadlock's OperationalError) is recorded by class name and answered 409."""
     try:
         posting.post_instance(db, instance_id, actor="owner")
     except ValidationError as exc:
         posting.record_failure(db, instance_id, posting.failure_message(exc))
         raise
+    except (ConflictError, NotFoundError, EditLockedError):
+        db.rollback()
+        raise
+    except Exception as exc:  # noqa: BLE001 — spec: on any error a separate transaction stores last_error
+        message = posting.failure_message(exc)
+        posting.record_failure(db, instance_id, message)
+        raise ConflictError(message) from exc
 
 
 def skip_instance(db: Session, instance_id: int) -> None:
@@ -5472,19 +5754,33 @@ def reopen_instance(db: Session, instance_id: int) -> None:
 
 
 def repost_instance(db: Session, instance_id: int, amounts: list) -> None:
-    """編輯這一筆 on a posted (or partial) period: delete its entries and post again with new amounts, atomically."""
-    definition, instance = _instance_locked(db, instance_id)
+    """編輯這一筆 on a posted (or partial) period: delete its entries and post again with new amounts, atomically.
+
+    Lock order (D32): key → definition (lock_definition_for_post: FOR UPDATE with a loan line, since the repost may
+    end it) → instance → the later pending instances (loan templates) → groups → the period's entries **and the
+    loan** in one statement (delete_period_entries(also_lock=…)); post_locked reuses that loan row, so no second
+    entry-lock statement runs."""
+    take_import_key_shared(db)
+    definition = posting.lock_definition_for_post(db, get_instance(db, instance_id).definition_id)
+    instance = lock_instance(db, instance_id)
+    if instance is None:
+        raise NotFoundError(f"schedule instance {instance_id} not found")
     if instance.status != "posted":
         raise ConflictError("只有已入帳的期別可以重新入帳")
     if instance.acted_by == "import" and not import_locked():
         raise EditLockedError()
     override = check_amounts(definition.template, amounts)
-    posting.delete_period_entries(db, list(instance.posted_entry_ids))
+    reference = loan_line(definition.template)
+    loan_id = None
+    if reference is not None:
+        posting.lock_later_pending(db, definition, instance)  # schedule rows before any entry lock
+        loan_id = reference[1]["loan_entry_id"]
+    loan = posting.delete_period_entries(db, list(instance.posted_entry_ids), also_lock=loan_id)
     instance.status, instance.posted_entry_ids, instance.is_partial = "pending", [], False
     instance.acted_at, instance.acted_by = None, None
     instance.amount_override, instance.edited_by_owner = override, True
     db.flush()
-    posting.post_locked(db, definition, instance, "owner")
+    posting.post_locked(db, definition, instance, "owner", locked_loan=loan)
 
 
 def accept_partial(db: Session, instance_id: int) -> None:
@@ -5570,7 +5866,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_definitions_api.py tests/integration/test_schedule_state_api.py tests/integration/test_schedule_read.py 2>&1 | tail -1
 ```
 
-Expected: `14 passed`; then `31 passed`.
+Expected: `15 passed`; then `35 passed` (14 definitions + 12 state + 9 read).
 
 - [ ] 12.6 Commit.
 
@@ -5625,13 +5921,13 @@ from app.services.moze_import_service import IMPORT_LOCK_KEY
 @pytest.fixture()
 def loan(seed):
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id, name="信貸", day=date(2026, 10, 3))
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id, name="信貸", day=date(2026, 10, 3))
     definition = seed.definition(
         [seed.line("repayment", bank, "8333", loan_entry_id=payable.id), seed.line("interest", bank, "620")],
         kind="installment", name="信貸 每月還款", anchor=date(2026, 11, 9), times=36, total_amount=Decimal("300000"),
     )
-    return SimpleNamespace(bank=bank, esun=esun, payable=payable, definition=definition)
+    return SimpleNamespace(bank=bank, lender=lender, payable=payable, definition=definition)
 
 
 def _posted_period(db, seed, loan, today) -> tuple[ScheduleInstance, int, int]:
@@ -5705,7 +6001,7 @@ def test_deleting_a_moze_booked_period(client, db_session, seed, today, monkeypa
 def test_deleting_from_an_ended_definition_revives_it(client, db_session, seed, today):
     # Spec "Deleting from an ended definition revives it".
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     ended = seed.definition([seed.line("expense", card, "390")], status="ended", times=1)
     expense = seed.entry(card, "-390", day=date(2026, 9, 22), source="schedule")
     last = seed.instance(ended, 1, date(2026, 9, 22), status="posted", entries=[expense])
@@ -5753,7 +6049,7 @@ def test_deleting_a_loan_with_an_active_schedule_is_refused(client, db_session, 
 
 def test_categories_projects_and_counterparties_are_protected_until_the_schedule_ends(client, db_session, seed, today):
     today(date(2026, 10, 3))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     streaming = seed.category("串流")
     life = seed.project("生活")
     alan = seed.counterparty("Alan")
@@ -5776,10 +6072,24 @@ def test_categories_projects_and_counterparties_are_protected_until_the_schedule
     assert client.delete(f"/counterparties/{alan.id}").status_code == 204
 
 
+def test_split_edit_on_a_scheduled_installment_group_refused(client, db_session, seed, loan, today):
+    # Ledger spec "Split edit on a scheduled group refused", as written: the installment group 信貸 每月還款 #1/36.
+    instance, repayment_id, _ = _posted_period(db_session, seed, loan, today)
+    group_id = db_session.get(LedgerEntry, repayment_id).group_id
+
+    response = client.put(
+        f"/splits/{group_id}",
+        json={"entry_date": "2026-11-09", "members": [{"account_id": loan.bank.id, "kind": "expense", "amount": "100"}]},
+    )
+
+    assert response.status_code == 409 and str(instance.id) in response.json()["message"]
+    assert db_session.get(LedgerEntry, repayment_id) is not None
+
+
 def test_split_edit_on_a_scheduled_group_refused(client, db_session, seed, today):
-    # Ledger spec "Split edit on a scheduled group refused" (a split-kind schedule group: two plain lines).
+    # The same rule for a split-kind schedule group (two plain lines).
     today(date(2026, 10, 22))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     bundle = seed.definition([seed.line("expense", card, "390"), seed.line("expense", card, "149")], name="串流組合")
     instance = seed.instance(bundle, 1, date(2026, 10, 22))
     first_id, _ = posting.post_instance(db_session, instance.id, actor="auto").entry_ids
@@ -5796,7 +6106,7 @@ def test_split_edit_on_a_scheduled_group_refused(client, db_session, seed, today
 
 def test_deleting_a_scheduled_split_reopens_the_period(client, db_session, seed, today):
     today(date(2026, 10, 22))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     bundle = seed.definition([seed.line("expense", card, "390"), seed.line("expense", card, "149")], name="串流組合")
     instance = seed.instance(bundle, 1, date(2026, 10, 22))
     first_id, _ = posting.post_instance(db_session, instance.id, actor="auto").entry_ids
@@ -5863,14 +6173,20 @@ def _instance_listing(db: Session, entry_ids: list[int]) -> ScheduleInstance | N
 
 
 def lock_for_entry_delete(db: Session, entry_ids: list[int]) -> ScheduleInstance | None:
-    """D32 for the entry-delete path: read without a lock, then the shared import key → definition FOR SHARE →
-    instance FOR UPDATE, and re-check that it still lists one of the entries. Call before any group / entry lock."""
+    """D32 for the entry-delete path: read without a lock, then the shared import key → definition FOR SHARE
+    (FOR UPDATE when it is ended: after_entries_deleted may revive it, and two FOR SHARE holders that both upgrade
+    deadlock) → instance FOR UPDATE, and re-check that it still lists one of the entries. Call before any group /
+    entry lock."""
     ids = sorted(set(entry_ids))
     found = _instance_listing(db, ids)
     if found is None:
         return None
     take_import_key_shared(db)
-    lock_definition(db, found.definition_id, share=True)
+    peek = db.get(ScheduleDefinition, found.definition_id)
+    share = peek is None or peek.status != "ended"
+    definition = lock_definition(db, found.definition_id, share=share)
+    if share and definition.status == "ended":
+        raise ConflictError("definition_changed")  # ended meanwhile (loan close-out); the owner retries the delete
     instance = lock_instance(db, found.id)
     if instance is None or instance.status != "posted" or not set(ids) & set(instance.posted_entry_ids):
         return None
@@ -6034,7 +6350,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests/integration/test_entry_writes.py tests/integration/test_splits.py tests/integration/test_settings_crud_api.py tests/integration/test_settings_api.py 2>&1 | tail -1
 ```
 
-Expected: `11 passed`; then the second run's pass count unchanged from before, 0 failed.
+Expected: `12 passed`; then the second run reports exactly `B_ledger13 passed` (recorded in 1.6; Task 13 adds no test to those files), 0 failed.
 
 - [ ] 13.8 Commit.
 
@@ -6076,13 +6392,13 @@ def test_entry_rows_carry_the_schedule_link(client, db_session, seed, today):
     # Spec "Pill data on a posted entry".
     today(date(2027, 3, 1))
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id)
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id)
     loan = seed.definition(
         [seed.line("repayment", bank, "8333", loan_entry_id=payable.id)], kind="installment", name="信貸 每月還款",
         times=36,
     )
-    repayment = seed.entry(bank, "-8333", kind="payable", counterparty_id=esun.id, settles_entry_id=payable.id,
+    repayment = seed.entry(bank, "-8333", kind="payable", counterparty_id=lender.id, settles_entry_id=payable.id,
                            is_settlement=True, day=date(2027, 2, 9), source="schedule")
     fifth = seed.instance(loan, 5, date(2027, 2, 9), status="posted", entries=[repayment])
     db_session.commit()
@@ -6099,7 +6415,7 @@ def test_entry_rows_carry_the_schedule_link(client, db_session, seed, today):
 def test_passbook_and_detail_carry_the_link(client, db_session, seed, today):
     # Spec "Unlimited recurring pill" data: times null.
     today(date(2026, 10, 30))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     netflix = seed.definition([seed.line("expense", card, "390")])
     expense = seed.entry(card, "-390", day=date(2026, 10, 22), source="schedule")
     seed.instance(netflix, 25, date(2026, 10, 22), status="posted", entries=[expense])
@@ -6116,14 +6432,14 @@ def test_loan_detail_after_three_periods(client, db_session, seed, today):
     # Spec "Loan detail after three periods".
     today(date(2027, 1, 20))
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id)
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id)
     loan = seed.definition(
         [seed.line("repayment", bank, "8333", loan_entry_id=payable.id)], kind="installment", name="信貸 每月還款",
         anchor=date(2026, 11, 9), times=36, total_amount=Decimal("300000"),
     )
     for seq, day in enumerate((date(2026, 11, 9), date(2026, 12, 9), date(2027, 1, 9)), start=1):
-        repayment = seed.entry(bank, "-8333", kind="payable", counterparty_id=esun.id, settles_entry_id=payable.id,
+        repayment = seed.entry(bank, "-8333", kind="payable", counterparty_id=lender.id, settles_entry_id=payable.id,
                                is_settlement=True, day=day, source="schedule")
         seed.instance(loan, seq, day, status="posted", entries=[repayment])
     seed.instance(loan, 4, date(2027, 2, 9))
@@ -6403,7 +6719,7 @@ class Held:
 
 @pytest.fixture()
 def card(seed):
-    return seed.account("玉山 UNI")
+    return seed.account("範例卡")
 
 
 def test_no_silent_backlog_after_an_import(db_session, seed, card, pg_engine, today):
@@ -6564,6 +6880,14 @@ def test_run_now_refused_while_an_import_runs(client, db_session, pg_engine):
     with Held(pg_engine, IMPORT_LOCK_KEY):
         response = client.post("/schedules/run-now")
     assert (response.status_code, response.json()["message"]) == (409, "import_running")
+
+
+def test_run_now_needs_the_bearer_token_when_api_tokens_are_set(client, db_session, monkeypatch):
+    # #42 / design D42: run-now sits behind ApiTokenMiddleware like every other route.
+    monkeypatch.setenv("ACCOUNTING_API_TOKENS", "test:synthetic-token-1")
+    assert client.post("/schedules/run-now").status_code == 401
+    allowed = client.post("/schedules/run-now", headers={"Authorization": "Bearer synthetic-token-1"})
+    assert allowed.status_code == 200
 
 
 def test_import_starts_mid_run(client, db_session, seed, card, pg_engine, today, monkeypatch):
@@ -6944,7 +7268,7 @@ def run_now(engine: Engine = Depends(get_engine)):
 
 - [ ] 15.9 Run 15.5 again.
 
-Expected: `5 passed` (unit) and `13 passed` (integration), 18 in all.
+Expected: `5 passed` (unit) and `14 passed` (integration), 19 in all.
 
 - [ ] 15.10 Confirm the CLI parses (no database call with `--help`).
 
@@ -7746,7 +8070,7 @@ def test_installment_lines_resolve_the_loan(db_session, backup, today):
     today(date(2026, 10, 3))
     dates = [f"{rules.add_months(date(2026, 10, 9), k).isoformat()}T00:00:00" for k in range(3)]
     data = backup.data(
-        accounts=_accounts(backup), targets=[backup.target("T-BANK", "玉山銀行")],
+        accounts=_accounts(backup), targets=[backup.target("T-BANK", "範例銀行")],
         installments=[backup.installment("INS-1", dates=dates, times=3, total=25000, remainder=16667)],
         records=[
             _rec(backup, "R-LOAN", "2026-09-01", type_=4, price=25000, target="T-BANK"),
@@ -7917,7 +8241,7 @@ def test_reimport_keeps_owner_decisions_and_local_definitions(db_session, seed, 
     skipped = _instances(db_session, definition)[2]
     skipped.status, skipped.acted_at, skipped.acted_by = "skipped", datetime(2026, 10, 3, tzinfo=timezone.utc), "owner"
     definition.posting_mode = "confirm"
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     local = seed.definition([seed.line("expense", card, "390")], name="本地")
     for seq in (1, 2, 3):
         entry = seed.entry(card, "-390", day=date(2026, 6 + seq, 22), source="schedule")
@@ -8587,7 +8911,7 @@ def _loan_data(backup, *, exported_at="2026-10-01T17:00:37", first_total=-8333, 
         records.append(_rec(backup, "R-LOAN", "2026-09-01", type_=4, price=25000, target="T-BANK"))
     return backup.data(
         exported_at=exported_at, accounts=[backup.account("A-WALLET", "錢包", cacheDate="2026-10-12T00:00:00")],
-        targets=[backup.target("T-BANK", "玉山銀行")],
+        targets=[backup.target("T-BANK", "範例銀行")],
         installments=[backup.installment("INS-1", dates=dates, times=3, total=25000, remainder=16667)],
         records=records,
     )
@@ -8765,7 +9089,7 @@ def test_template_reference_keeps_a_category_and_an_account(db_session, seed, ba
 def test_schedule_entry_survives_a_backup_import(db_session, seed, backup, today):
     # Ledger spec "Schedule entry survives a backup import".
     today(date(2026, 10, 30))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     entry = seed.entry(card, "-390", day=date(2026, 10, 22), source="schedule")
     db_session.commit()
     _import_backup(db_session, backup.data(accounts=[backup.account("A-WALLET", "錢包")]))
@@ -9055,7 +9379,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests 2>&1 | tail -2
 ```
 
-Expected: `14 passed`; the full suite `N passed`, 0 failed, with N = Task 3's count + 8 + 13 + 12 + 5 + 13 + 9 + 11 + 11 + 14 + 11 + 4 + 18 + 12 + 13 + 14 (= Task 3's count + 168).
+Expected: `14 passed`; the full suite `N passed`, 0 failed, with N = Task 3's count + 9 + 13 + 12 + 5 + 15 + 9 + 14 + 12 + 15 + 12 + 4 + 19 + 12 + 13 + 14 (Tasks 4–18 in order; = Task 3's count + 178).
 
 - [ ] 18.6 Commit.
 
@@ -9078,7 +9402,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `tests.helpers.race(engine, first, second)` (phase 2a); `entry_write_service.delete_entry`; `schedule_service.update_definition`, `repost_instance`; `schedule_posting.post_instance`; `moze_import_service.import_lock`.
-- Produces: four race tests pinning D32 (post vs delete of its entry, edit vs post, import vs post, two deletes of one period) and the README section "Schedules".
+- Produces: eight race tests pinning D32 (post vs delete of its entry, edit vs post, import key vs post, two deletes of one period, loan posts of neighbouring periods, two deletes reviving an ended definition, loan close-out vs a reviving delete, repost vs a loan delete on an ended definition) and the README section "Schedules".
 
 Rules: each test runs `first` in an open transaction holding its locks, then `second` in a thread that must block (still running after 0.5 s) and finish after `first` commits — never a deadlock, never a lost update.
 
@@ -9093,7 +9417,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from app.models import LedgerEntry, ScheduleInstance
+from app.models import LedgerEntry, ScheduleDefinition, ScheduleInstance
 from app.schemas.schedules import DefinitionUpdateIn
 from app.services import entry_write_service as ews
 from app.services import schedule_posting as posting
@@ -9107,8 +9431,8 @@ def period(seed, db_session, today):
     """A posted loan period (repayment + interest) on 2026-11-09; today is 2026-11-10."""
     today(date(2026, 11, 10))
     bank = seed.account("薪轉")
-    esun = seed.counterparty("玉山銀行")
-    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=esun.id)
+    lender = seed.counterparty("範例銀行")
+    payable = seed.entry(bank, "300000", kind="payable", counterparty_id=lender.id)
     definition = seed.definition(
         [seed.line("repayment", bank, "8333", loan_entry_id=payable.id), seed.line("interest", bank, "620")],
         kind="installment", name="信貸 每月還款", anchor=date(2026, 11, 9), times=36,
@@ -9116,7 +9440,10 @@ def period(seed, db_session, today):
     instance = seed.instance(definition, 1, date(2026, 11, 9))
     repayment_id, interest_id = posting.post_instance(db_session, instance.id, actor="auto").entry_ids
     db_session.commit()
-    return {"bank": bank, "definition": definition, "instance": instance, "repayment": repayment_id, "interest": interest_id}
+    return {
+        "bank": bank, "definition": definition, "instance": instance, "payable": payable, "repayment": repayment_id,
+        "interest": interest_id,
+    }
 
 
 def _row(db, instance_id) -> ScheduleInstance:
@@ -9139,7 +9466,7 @@ def test_repost_waits_for_a_delete_of_its_entry(pg_engine, db_session, period):
 
 def test_definition_edit_waits_for_a_post(pg_engine, db_session, seed, today):
     today(date(2026, 10, 22))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     definition = seed.definition([seed.line("expense", card, "390")])
     instance = seed.instance(definition, 1, date(2026, 10, 22))
     db_session.commit()
@@ -9160,7 +9487,7 @@ def test_definition_edit_waits_for_a_post(pg_engine, db_session, seed, today):
 
 def test_import_waits_for_a_post(pg_engine, db_session, seed, today):
     today(date(2026, 10, 22))
-    card = seed.account("玉山 UNI")
+    card = seed.account("範例卡")
     definition = seed.definition([seed.line("expense", card, "390")])
     instance = seed.instance(definition, 1, date(2026, 10, 22))
     db_session.commit()
@@ -9183,6 +9510,84 @@ def test_two_deletes_of_one_period_queue(pg_engine, db_session, period):
     assert outcome == "committed"
     row = _row(db_session, period["instance"].id)
     assert (row.status, row.posted_entry_ids, row.reopened_at is not None) == ("pending", [], True)
+
+
+def _definition(db, definition_id) -> ScheduleDefinition:
+    db.expire_all()
+    return db.get(ScheduleDefinition, definition_id)
+
+
+def test_loan_posts_of_neighbouring_periods_queue_without_deadlock(pg_engine, db_session, seed, period):
+    # Loan post of k locks k+1… before the loan; a post of k+1 waits on the definition (FOR UPDATE) instead of
+    # holding k+1 while it waits for the loan.
+    second = seed.instance(period["definition"], 2, date(2026, 12, 9))
+    third = seed.instance(period["definition"], 3, date(2027, 1, 9))
+    db_session.commit()
+    outcome = race(
+        pg_engine,
+        lambda db: posting.post_instance(db, second.id, actor="owner"),
+        lambda db: posting.post_instance(db, third.id, actor="owner"),
+    )
+    assert outcome == "committed"
+    assert [_row(db_session, row.id).status for row in (second, third)] == ["posted", "posted"]
+
+
+def test_two_deletes_reviving_an_ended_definition_queue(pg_engine, db_session, period):
+    # Both deletes may revive the definition, so both take it FOR UPDATE; two FOR SHARE upgrades would deadlock.
+    definition = db_session.get(ScheduleDefinition, period["definition"].id)
+    definition.status = "ended"
+    db_session.commit()
+    outcome = race(
+        pg_engine,
+        lambda db: ews.delete_entry(db, period["interest"]),
+        lambda db: ews.delete_entry(db, period["repayment"]),
+    )
+    assert outcome == "committed"
+    assert _row(db_session, period["instance"].id).status == "pending"
+    assert _definition(db_session, period["definition"].id).status == "active"
+
+
+def test_loan_close_out_waits_for_a_delete_that_revives_the_definition(pg_engine, db_session, seed, period):
+    # A loan post that closes out (open amount 0) and an entry delete that revives an ended definition both write
+    # the definition; each holds it FOR UPDATE, so one waits for the other.
+    seed.entry(
+        period["bank"], "-291667", kind="payable", counterparty_id=period["payable"].counterparty_id,
+        settles_entry_id=period["payable"].id, is_settlement=True,
+    )
+    pending = seed.instance(period["definition"], 2, date(2026, 12, 9))
+    definition = db_session.get(ScheduleDefinition, period["definition"].id)
+    definition.status = "ended"
+    db_session.commit()
+    outcome = race(
+        pg_engine,
+        lambda db: ews.delete_entry(db, period["interest"]),
+        lambda db: posting.post_instance(db, pending.id, actor="owner"),
+    )
+    assert outcome == "committed"
+    assert (_row(db_session, pending.id).status, _row(db_session, pending.id).note) == ("skipped", "貸款已結清")
+    assert _definition(db_session, period["definition"].id).status == "ended"
+
+
+def test_loan_delete_waits_for_a_repost_on_an_ended_definition(pg_engine, db_session, period):
+    # The repost locks the loan in the same statement as the period's entries, so a DELETE of the loan (allowed once
+    # the definition ended) waits for it instead of holding the loan while the repost waits for the repayment.
+    definition = db_session.get(ScheduleDefinition, period["definition"].id)
+    definition.status = "ended"
+    db_session.commit()
+    outcome = race(
+        pg_engine,
+        lambda db: schedule_service.repost_instance(db, period["instance"].id, ["8000", "620"]),
+        lambda db: ews.delete_entry(db, period["payable"].id),
+    )
+    assert outcome == "committed"
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, period["payable"].id) is None
+    row = _row(db_session, period["instance"].id)
+    repayment = next(
+        db_session.get(LedgerEntry, entry_id) for entry_id in row.posted_entry_ids
+        if db_session.get(LedgerEntry, entry_id).kind == "payable"
+    )
+    assert (repayment.amount, repayment.settles_entry_id) == (Decimal("-8000"), None)
 ```
 
 - [ ] 19.2 Run it.
@@ -9191,7 +9596,7 @@ def test_two_deletes_of_one_period_queue(pg_engine, db_session, period):
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_lock_order.py
 ```
 
-Expected: `4 passed` (the order is implemented by Tasks 8–18; a failure here is a lock-order bug to fix in the path it names, not in the test).
+Expected: `8 passed` (the order is implemented by Tasks 8–18; a failure here is a lock-order bug to fix in the path it names, not in the test).
 
 - [ ] 19.3 Edit `services/accounting-service/README.md`: in the "MOZE backup import" section replace `and stores future-dated rows, periods and installments in `moze_schedule`.` with `and maps future-dated rows, periods and installments to schedule definitions and periods (see Schedules).`; append
 
@@ -9235,7 +9640,7 @@ catch-up and per-period actions work. A re-import never duplicates a period Home
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests 2>&1 | tail -2
 ```
 
-Expected: Task 18's count + 4, 0 failed.
+Expected: Task 18's count + 8, 0 failed.
 
 - [ ] 19.5 Commit.
 
@@ -10115,7 +10520,7 @@ export function makeDefinition(overrides: Partial<ScheduleDefinition> = {}): Sch
         {
           kind: 'expense', account_id: 2, to_account_id: null, to_amount: null, counterparty_id: null, category_id: 41,
           project_id: null, amount: '390', currency: 'TWD', loan_entry_id: null, name: null, merchant: null,
-          account_name: '玉山 UNI', to_account_name: null, category: '娛樂/Netflix', counterparty: null,
+          account_name: '範例卡', to_account_name: null, category: '娛樂/Netflix', counterparty: null,
         },
       ],
       description: null,
@@ -10158,7 +10563,7 @@ export function makeInstance(overrides: Partial<ScheduleInstance> = {}): Schedul
     overdue_days: 0,
     lines: [
       {
-        kind: 'expense', account_id: 2, account_name: '玉山 UNI', to_account_id: null, to_account_name: null,
+        kind: 'expense', account_id: 2, account_name: '範例卡', to_account_id: null, to_account_name: null,
         category: '娛樂/Netflix', counterparty: null, amount: '-390.0000', currency: 'TWD',
       },
     ],
@@ -10237,7 +10642,7 @@ import { makeAccount } from '../testing/fixtures';
 import { ScheduleDraft, defaultDraft } from './schedule-draft';
 import { ScheduleTabsComponent } from './schedule-tabs';
 
-const ACCOUNTS = [makeAccount({ id: 1, name: '薪轉' }), makeAccount({ id: 2, name: '玉山 UNI' })];
+const ACCOUNTS = [makeAccount({ id: 1, name: '薪轉' }), makeAccount({ id: 2, name: '範例卡' })];
 
 interface Setup {
   kind?: string;
@@ -10955,7 +11360,7 @@ import {
 } from './schedule-save';
 
 const PAY = makeAccount({ id: 1, name: '薪轉' });
-const CARD = makeAccount({ id: 2, name: '玉山 UNI' });
+const CARD = makeAccount({ id: 2, name: '範例卡' });
 const BROKER = makeAccount({ id: 3, name: '交割' });
 const YEN = makeAccount({ id: 4, name: '日幣', currency: 'JPY' });
 
@@ -11093,7 +11498,7 @@ const ROUTES: Routes = [
 
 const ACCOUNTS = [
   makeAccount({ id: 1, name: '薪轉' }),
-  makeAccount({ id: 2, name: '玉山 UNI', is_credit: true }),
+  makeAccount({ id: 2, name: '範例卡', is_credit: true }),
   makeAccount({ id: 3, name: '交割' }),
 ];
 const PROJECTS: Project[] = [];
@@ -11101,7 +11506,7 @@ const NETFLIX = makeCategory({ id: 41, parent_id: 40, name: 'Netflix' });
 const STREAMING = makeCategory({ id: 40, name: '娛樂', icon: '🎬', children: [NETFLIX] });
 const LOANS = makeCategory({ id: 50, kind: 'payable', name: '借款' });
 const MOVE = makeCategory({ id: 60, kind: 'transfer_out', name: '轉帳' });
-const ESUN: Counterparty = { id: 7, name: '玉山銀行', open_amounts: [] };
+const LENDER: Counterparty = { id: 7, name: '範例銀行', open_amounts: [] };
 
 describe('EntryFormComponent schedules', () => {
   let httpMock: HttpTestingController;
@@ -11196,7 +11601,7 @@ describe('EntryFormComponent schedules', () => {
     tap(el, '.cat', '娛樂');
     tap(el, '.cat', 'Netflix');
     set(el, '.account-select', '2', 'change');
-    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2, name: '玉山 UNI' }));
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2, name: '範例卡' }));
     keys(el, '3', '9', '0');
     tap(el, '.schedule-tab', '週期');
     if (start) {
@@ -11289,12 +11694,12 @@ describe('EntryFormComponent schedules', () => {
 
   it('creates a new loan with interest in one request', async () => {
     // Spec "New loan with interest".
-    const { el } = await open('/accounting/entry?kind=payable', [ESUN]);
+    const { el } = await open('/accounting/entry?kind=payable', [LENDER]);
     respond('/api/accounting/categories', [LOANS]);
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     tap(el, '.cat', '借款');
     set(el, '.name-input', '信貸');
-    set(el, '.counterparty-input', '玉山銀行');
+    set(el, '.counterparty-input', '範例銀行');
     keys(el, '3', '0', '0', '0', '0', '0');
     tap(el, '.schedule-tab', '分期');
     set(el, '.sched-periods', '36');
@@ -15460,7 +15865,7 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Requirement / Scenario | Task — test |
 |---|---|
 | **Schedule definition model** | 2 (`test_definition_defaults`, `test_definition_checks`), 3 (migration tests), 5 (schemas) |
-| Local recurring definition | 10 — `test_local_recurring_definition`; 2 — `test_definition_defaults` |
+| Local recurring definition | 10 — `test_local_recurring_definition`, `test_day_of_month_before_the_start_day_starts_next_month` (anchor = occurrence 0); 4 — `test_occurrence_zero_before_the_anchor_day_is_indexed_and_normalized`; 2 — `test_definition_defaults` |
 | Installment must be monthly | 10 — `test_installment_must_be_monthly_and_have_two_periods` |
 | Installment needs two periods | 10 — `test_installment_must_be_monthly_and_have_two_periods` |
 | **Schedule instance model** | 2 (`test_instance_defaults`, `test_instance_status_checks`, `test_a_day_is_posted_once`, `test_instances_cascade_with_their_definition`), 3 |
@@ -15481,10 +15886,10 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | A period moved later does not shift the series | 6 |
 | A period moved earlier does not repeat the series | 6 |
 | **Posting an instance** | 7 (ledger `source=`, bypass), 8 (`schedule_posting`) |
-| Repayment with interest | 8 — `test_repayment_with_interest` |
+| Repayment with interest | 8 — `test_repayment_with_interest`; lock order of a loan post: 8 — `test_posting_a_loan_period_holds_the_definition_for_update_and_locks_later_periods`, 19 — `test_loan_posts_of_neighbouring_periods_queue_without_deadlock` |
 | Last repayment clamped to the open amount | 8 |
 | Posting twice is refused | 8 — `test_posting_twice_is_refused`; 12 (409 on `post`) |
-| Closed loan ends the schedule | 8 — `test_loan_settled_by_hand_while_pending_skips_the_rest_and_ends` (Review Focus 4) |
+| Closed loan ends the schedule | 8 — `test_closed_loan_ends_the_schedule`, `test_loan_settled_by_hand_while_pending_skips_the_rest_and_ends` (Review Focus 4); 19 — `test_loan_close_out_waits_for_a_delete_that_revives_the_definition` |
 | Archived account found at posting time | 8 — `test_archived_account_found_at_posting_time_names_the_line`; 12 — `test_archived_account_found_at_posting_time` |
 | Zero override leaves a line out | 8 |
 | Recurring transfer | 8; 7 — `test_create_transfer_with_schedule_source` |
@@ -15499,13 +15904,13 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | **Definition endpoints** | 5 (schemas), 9 (read shapes), 10 (CRUD, 409 / 422 cases) |
 | Card installment remainder on the last period | 6 (split), 10 |
 | Loan and schedule in one call | 10 (today 2026-10-09, so the 13-month horizon holds all 13 instances the scenario counts) |
-| Edit regenerates only future pending periods, then rolls forward | 10 — `test_edit_keeps_the_instance_due_today_and_regenerates_from_tomorrow` (Review Focus 5) and the scenario test |
+| Edit regenerates only future pending periods, then rolls forward | 10 — `test_edit_regenerates_only_future_pending_periods_then_rolls_forward`, `test_edit_keeps_the_instance_due_today_and_regenerates_from_tomorrow` (Review Focus 5), `test_put_without_posting_mode_keeps_the_stored_mode` |
 | Delete refused after posting | 10 |
 | **Definition state endpoints** | 11 (pause, resume, end, mode, catch-up; 409 / 422 cases) |
 | Resume skips the paused months by default | 11 |
 | End removes pending periods | 11 |
 | Ending an ended definition | 11 |
-| Catch-up posts the backlog in order | 11 |
+| Catch-up posts the backlog in order | 11 (and `test_catch_up_stops_at_the_first_failure_and_still_answers_200`, `test_catch_up_records_any_error_by_class_and_stops`: any error is stored in `last_error`) |
 | Catch-up refused while paused | 11 |
 | Switching to automatic posting | 11; 15 — `test_mode_switch_then_the_job_posts_only_today` |
 | Write during an import | 11 (409 `import_running` on every state action); 5 (`ImportRunningError`); 19 (race tests) |
@@ -15513,17 +15918,17 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | 待完成交易 queue | 9, 12 |
 | Skip leaves the loan open | 12 |
 | Reopen revives an ended definition | 12 (`test_reopen_of_a_posted_period_deletes_its_entries` and the scenario test) |
-| Repost a repayment with a corrected amount | 12 |
+| Repost a repayment with a corrected amount | 12; 8 — `test_delete_period_entries_locks_the_loan_in_the_same_statement_and_keeps_it`; 19 — `test_repost_waits_for_a_delete_of_its_entry`, `test_loan_delete_waits_for_a_repost_on_an_ended_definition` |
 | Accept a partial period | 12 |
-| Date edit onto a posted day refused | 12 |
-| **Run-now endpoint** | 15 |
+| Date edit onto a posted day refused | 12 — `test_date_edit_onto_a_posted_day_refused`, `test_date_edit_onto_another_pending_period_refused`; posting failures of any class: `test_post_records_any_error_and_answers_409` |
+| **Run-now endpoint** | 15 (and `test_run_now_needs_the_bearer_token_when_api_tokens_are_set`: #42 token auth, design D42); 10 — `test_schedule_writes_need_the_bearer_token_when_api_tokens_are_set` |
 | Manual run while the job runs | 15 — `test_run_now_refused_while_the_job_runs` |
 | Import starts mid-run | 15 — `test_import_starts_mid_run`, `test_run_now_refused_while_an_import_runs` |
 | **Deleting entries of a posted period** | 8 (`delete_period_entries`), 13 (entry hooks), 19 (race: two deletes of one period) |
 | Deleting the interest leaves a partial period | 13 — `test_deleting_the_interest_leaves_a_partial_period` |
 | Deleting the last entry reopens the period | 13 — `test_deleting_the_last_entry_reopens_the_period` |
 | Deleting a MOZE-booked period | 13 — `test_deleting_a_moze_booked_period` |
-| Deleting from an ended definition revives it | 13 — `test_deleting_from_an_ended_definition_revives_it` |
+| Deleting from an ended definition revives it | 13 — `test_deleting_from_an_ended_definition_revives_it`; 19 — `test_two_deletes_reviving_an_ended_definition_queue` |
 | **Imported definitions before cutover** | 10, 11, 12 (409 `locked_until_cutover`), 8 (bypass for the loan target) |
 | Template edit refused during the mirror period | 10 |
 | Repost of a MOZE-booked period refused before cutover | 12 |
@@ -15544,12 +15949,12 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | A paired transfer shares a group id | unchanged — 2a suite; 7 — `test_create_transfer_with_schedule_source` |
 | Posting date defaults to the entry date | unchanged — 2a suite; 8 (`entry_date = posted_date = due_date`) |
 | Migration links existing counterparties | unchanged — 2a migration tests (run in 3.6) |
-| Loan interest names the lender | 8 — `test_repayment_with_interest` (`interest.counterparty_id == loan.esun.id`) |
+| Loan interest names the lender | 8 — `test_repayment_with_interest` (`interest.counterparty_id == loan.lender.id`) |
 | **Schedule-sourced entries** | 7, 13 |
 | Schedule entry survives a backup import | 18 — `test_schedule_entry_survives_a_backup_import` |
 | Schedule entry editable before cutover | 7 — `test_schedule_entry_editable_before_cutover_and_keeps_its_source`, `test_scheduled_transfer_update_keeps_its_source` |
 | Deleting one leg of a scheduled transfer | 13 — `test_deleting_one_leg_of_a_scheduled_transfer` |
-| Split edit on a scheduled group refused | 13 — `test_split_edit_on_a_scheduled_group_refused` |
+| Split edit on a scheduled group refused | 13 — `test_split_edit_on_a_scheduled_installment_group_refused` (the scenario's installment group), `test_split_edit_on_a_scheduled_group_refused` (split kind) |
 
 ### `specs/accounting-moze-backup-import/spec.md`
 
