@@ -13,6 +13,8 @@
           [class.outside]="cell.outside"
           [class.today]="cell.date === today()"
           [class.sel]="cell.date === selected()"
+          [class.due]="cell.dueCount > 0"
+          [class.closing]="cell.closing"
           [attr.data-date]="cell.date"
           [attr.aria-label]="cell.label"
           [attr.aria-pressed]="cell.outside ? null : cell.date === selected()"
@@ -21,6 +23,9 @@
           (click)="pick(cell)"
         >
           <span class="d">{{ cell.day }}</span>
+          @if (cell.dueCount > 0) {
+            <span class="due-badge" aria-hidden="true">💳{{ cell.dueCount > 1 ? cell.dueCount : '' }}</span>
+          }
           @if (cell.expenseText !== null) {
             <span class="fig exp neg">{{ cell.expenseText }}</span>
           }
