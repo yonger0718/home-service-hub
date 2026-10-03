@@ -45,6 +45,61 @@ def test_cross_account_listing_filters_by_accounts_kind_dates_and_hides_rewards(
     assert running == [("去日本的錢", "-1800.0000"), ("玉山 UNI", "-15.0000"), ("玉山 UNI", "-20.0000"), ("錢包", "90.0000")]
 
 
+def _debts(db_session):
+    wallet = make_account(db_session, "錢包", opening="1000")
+    alan, bea = Counterparty(name="Alan"), Counterparty(name="Bea")
+    db_session.add_all([alan, bea])
+    db_session.flush()
+    lent = make_entry(db_session, wallet, "-420", kind="receivable", counterparty_id=alan.id, entry_date=date(2026, 9, 1))
+    make_entry(db_session, wallet, "200", kind="receivable", counterparty_id=alan.id, settles_entry_id=lent.id,
+               is_settlement=True, entry_date=date(2026, 9, 5))
+    repaid = make_entry(db_session, wallet, "-100", kind="receivable", counterparty_id=alan.id, entry_date=date(2026, 9, 2))
+    make_entry(db_session, wallet, "100", kind="receivable", counterparty_id=alan.id, settles_entry_id=repaid.id,
+               is_settlement=True, entry_date=date(2026, 9, 6))
+    borrowed = make_entry(db_session, wallet, "300", kind="payable", counterparty_id=alan.id, entry_date=date(2026, 9, 3))
+    meal = make_entry(db_session, wallet, "-80", counterparty_id=alan.id, entry_date=date(2026, 9, 4))
+    bea_loan = make_entry(db_session, wallet, "-50", kind="receivable", counterparty_id=bea.id, entry_date=date(2026, 9, 7))
+    db_session.commit()
+    return alan, bea, lent, borrowed, meal, bea_loan
+
+
+def test_listing_filters_by_counterparty(client, db_session):
+    alan, bea, lent, borrowed, meal, bea_loan = _debts(db_session)
+
+    body = client.get("/entries", params={"counterparty_id": bea.id}).json()
+    alan_ids = [e["id"] for e in client.get("/entries", params={"counterparty_id": alan.id}).json()["items"]]
+
+    assert (body["total"], [e["id"] for e in body["items"]]) == (1, [bea_loan.id])
+    assert len(alan_ids) == 6 and meal.id in alan_ids and bea_loan.id not in alan_ids
+
+
+def test_listing_open_keeps_unsettled_receivables_and_payables_only(client, db_session):
+    alan, bea, lent, borrowed, meal, bea_loan = _debts(db_session)
+
+    body = client.get("/entries", params={"open": "true"}).json()
+
+    # Settlements, fully settled originals and non-debt kinds are excluded; newest first.
+    assert (body["total"], [e["id"] for e in body["items"]]) == (3, [bea_loan.id, borrowed.id, lent.id])
+    assert client.get("/entries", params={"open": "false"}).json()["total"] == 7
+
+
+def test_listing_open_composes_with_counterparty_kind_and_pagination(client, db_session):
+    alan, bea, lent, borrowed, meal, bea_loan = _debts(db_session)
+
+    def ids(**params):
+        return [e["id"] for e in client.get("/entries", params={"open": "true", **params}).json()["items"]]
+
+    assert ids(counterparty_id=alan.id) == [borrowed.id, lent.id]
+    assert ids(counterparty_id=alan.id, kind="receivable") == [lent.id]
+    assert ids(counterparty_id=alan.id, limit=1, offset=1) == [lent.id]
+    assert ids(counterparty_id=alan.id, date_from="2026-09-02") == [borrowed.id]
+    assert client.get("/entries", params={"open": "true", "counterparty_id": alan.id}).json()["total"] == 2
+
+
+def test_listing_rejects_a_non_integer_counterparty(client, db_session):
+    assert client.get("/entries", params={"counterparty_id": "alan"}).status_code == 422
+
+
 def test_list_rows_carry_icons_counterparty_group_rules_and_lock(client, db_session):
     wallet = make_account(db_session, "錢包")
     food = Category(kind="expense", name="飲食", icon="🍜", color="#f0cd92")

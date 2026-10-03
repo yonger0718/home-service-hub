@@ -22,11 +22,14 @@ def list_entries(
     q: str | None = Query(default=None, max_length=100),
     account_id: list[int] | None = Query(default=None),
     hide_rewards: bool = False,
+    counterparty_id: int | None = None,
+    open: bool = Query(default=False, description="Only unsettled receivables/payables (settlements excluded)"),
     db: Session = Depends(get_db),
 ):
     total, items = ledger_service.list_all_entries(
         db, limit=limit, offset=offset, kind=kind, date_from=date_from, date_to=date_to, q=q,
         account_ids=account_id or None, hide_rewards=hide_rewards,
+        counterparty_id=counterparty_id, open_only=open,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 

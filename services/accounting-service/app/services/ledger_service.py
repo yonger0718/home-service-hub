@@ -263,8 +263,29 @@ def _text_filter(q: str):
     )
 
 
-def _filters(kind, date_from, date_to, q, account_ids, hide_rewards) -> list:
+def _open_debt_filter():
+    """Unsettled receivable/payable originals: not a settlement, and amount + Σ linked settlements != 0."""
+    settlement = aliased(LedgerEntry)
+    settled = (
+        select(func.coalesce(func.sum(settlement.amount), 0))
+        .where(settlement.settles_entry_id == LedgerEntry.id)
+        .correlate(LedgerEntry)
+        .scalar_subquery()
+    )
+    return and_(
+        LedgerEntry.kind.in_(("receivable", "payable")),
+        LedgerEntry.is_settlement.is_(False),
+        LedgerEntry.settles_entry_id.is_(None),
+        LedgerEntry.amount + settled != 0,
+    )
+
+
+def _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id=None, open_only=False) -> list:
     filters = []
+    if counterparty_id is not None:
+        filters.append(LedgerEntry.counterparty_id == counterparty_id)
+    if open_only:
+        filters.append(_open_debt_filter())
     if account_ids is not None:
         filters.append(LedgerEntry.account_id.in_(account_ids))
     if kind is not None:
@@ -437,8 +458,10 @@ def list_all_entries(
     q: str | None = None,
     account_ids: list[int] | None = None,
     hide_rewards: bool = False,
+    counterparty_id: int | None = None,
+    open_only: bool = False,
 ) -> tuple[int, list[dict]]:
-    filters = _filters(kind, date_from, date_to, q, account_ids, hide_rewards)
+    filters = _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id, open_only)
     total = db.scalar(select(func.count()).select_from(LedgerEntry).where(*filters))
     return total, _entry_rows(db, filters, running_accounts=account_ids, limit=limit, offset=offset)
 
