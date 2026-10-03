@@ -333,6 +333,25 @@ describe('EntryDetailComponent', () => {
     expect(navigate).toHaveBeenCalledWith('/accounting/accounts/5');
   });
 
+  it('closes to the reminder centre when opened from it, after ✕ and after a delete', () => {
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    TestBed.inject(Location).go('/accounting/entries/42', '', { closeTo: 'reminders' });
+    const fixture = render(RECEIVABLE);
+
+    el(fixture).querySelector<HTMLButtonElement>('.close')!.click();
+    expect(navigate).toHaveBeenLastCalledWith('/accounting/reminders');
+
+    el(fixture).querySelector<HTMLButtonElement>('.action-delete')!.click();
+    fixture.detectChanges();
+    el(fixture).querySelector<HTMLButtonElement>('.delete-entry')!.click();
+    http.expectOne(r => r.method === 'DELETE').flush(null, { status: 204, statusText: 'No Content' });
+    expect(navigate).toHaveBeenLastCalledWith('/accounting/reminders');
+    expect(back).not.toHaveBeenCalled();
+  });
+
   it('clears the record when the reload after a successful write fails', () => {
     const fixture = render(RECEIVABLE);
     openForm(fixture, '.action-settle', '220');

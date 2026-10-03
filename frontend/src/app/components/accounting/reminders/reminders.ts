@@ -253,8 +253,9 @@ export class AccountingRemindersComponent {
     void this.router.navigate(['/accounting/accounts', accountId]);
   }
 
+  /** The entry's detail; its ✕ (and a delete) comes back to the reminder centre. */
   open(row: TimelineRow): void {
-    void this.router.navigate(['/accounting/entries', row.entryId]);
+    void this.router.navigate(['/accounting/entries', row.entryId], { state: { closeTo: 'reminders' } });
   }
 
   readonly slashDate = slashDate;

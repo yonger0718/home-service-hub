@@ -190,7 +190,8 @@ describe('AccountingRemindersComponent', () => {
     expect(rows.map(row => row.dataset['entryId'])).toEqual(['72', '74']);
     expect(text(rows[0].querySelector('.amt'))).toBe('−$50');
     rows[1].click();
-    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 74]);
+    // ✕ on the detail comes back here.
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 74], { state: { closeTo: 'reminders' } });
 
     toggle.click();
     fixture.detectChanges();

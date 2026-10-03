@@ -1,6 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { Location } from '@angular/common';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { describe, expect, it, vi } from 'vitest';
@@ -257,6 +258,36 @@ describe('AccountingLayoutComponent', () => {
     addRows(harness, [72, 74]);
     expect(press('ArrowDown').defaultPrevented).toBe(true);
     await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/72'));
+    // ✕ on that detail returns to the reminder centre.
+    expect((TestBed.inject(Location).getState() as Record<string, unknown>)['closeTo']).toBe('reminders');
+  });
+
+  it('keeps ↓ inside the reminder centre pane at 1280px, past the timeline rows on the left', async () => {
+    const harness = await start('panes', '/accounting/reminders');
+    const list = await find(harness, LIST);
+    const pane = await find(harness, PANE_PAGE);
+    const router = TestBed.inject(Router);
+    const timelineRows = document.createElement('div');
+    for (const id of [5, 6]) {
+      const row = document.createElement('button');
+      row.dataset['entryId'] = String(id);
+      timelineRows.appendChild(row);
+    }
+    list.appendChild(timelineRows);
+    // No expanded counterparty yet: ↓ is left to the page, never taken by the timeline's rows.
+    expect(press('ArrowDown').defaultPrevented).toBe(false);
+    expect(router.url).toBe('/accounting/reminders');
+
+    const expanded = document.createElement('div');
+    for (const id of [72, 74]) {
+      const row = document.createElement('button');
+      row.dataset['entryId'] = String(id);
+      expanded.appendChild(row);
+    }
+    pane.appendChild(expanded);
+    expect(press('ArrowDown').defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/72'));
+    expect((TestBed.inject(Location).getState() as Record<string, unknown>)['closeTo']).toBe('reminders');
   });
 
   /** Rows as the list pages render them; the layout moves through `[data-entry-id]` in its host. */

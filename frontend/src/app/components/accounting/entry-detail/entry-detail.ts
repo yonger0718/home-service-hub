@@ -74,10 +74,11 @@ export class EntryDetailComponent implements OnInit {
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly loadError = signal(false);
   /**
-   * Set when the navigation that opened this entry asked ✕ to go to the parent list (`state.closeTo === 'list'`):
-   * after a split member edit the previous history entry is the member's old, deleted id.
+   * Set when the navigation that opened this entry asked ✕ to go to a fixed page: `state.closeTo === 'list'` (the
+   * parent list; after a split member edit the previous history entry is the member's old, deleted id) or
+   * `'reminders'` (opened from the reminder centre).
    */
-  private closeToList = false;
+  private closeTo: 'list' | 'reminders' | null = null;
   readonly panel = signal<DetailPanel>(null);
   readonly formAccountId = signal<number | null>(null);
   readonly formAmount = signal('');
@@ -230,7 +231,8 @@ export class EntryDetailComponent implements OnInit {
       this.routeEntryId.set(id);
       this.passbookId.set(passbook ? Number(params.get('id')) : null);
       const state = this.router.currentNavigation()?.extras.state ?? (this.location.getState() as Record<string, unknown> | null);
-      this.closeToList = state?.['closeTo'] === 'list';
+      const closeTo = state?.['closeTo'];
+      this.closeTo = closeTo === 'list' || closeTo === 'reminders' ? closeTo : null;
       // Another entry: drop the shown one at once, so nothing acts on it while the new one loads. A reload of the
       // same entry keeps it (and keeps it when that reload fails).
       if (this.detail()?.id !== id) {
@@ -247,18 +249,21 @@ export class EntryDetailComponent implements OnInit {
   /** Bumped per `load()`; a response for an earlier load (fast navigation between entries) is dropped. */
   private loadSeq = 0;
 
-  /** The list the detail belongs to: the passbook it was opened from, else the timeline. */
+  /** The list the detail belongs to: the reminder centre or the passbook it was opened from, else the timeline. */
   private parentUrl(): string {
+    if (this.closeTo === 'reminders') {
+      return '/accounting/reminders';
+    }
     const passbook = this.passbookId();
     return passbook === null ? '/accounting' : `/accounting/accounts/${passbook}`;
   }
 
   /**
    * ✕ and after a delete: back to where the owner came from (in-app history), else the parent list. Opened with
-   * `closeTo: 'list'` it always goes to the parent list.
+   * `closeTo` it always goes to that page.
    */
   close(): void {
-    if (this.closeToList) {
+    if (this.closeTo !== null) {
       void this.router.navigateByUrl(this.parentUrl());
       return;
     }
