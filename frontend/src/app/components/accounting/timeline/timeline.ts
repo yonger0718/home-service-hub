@@ -30,7 +30,8 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
-import { BillBalance, BillingEvent, billBalance, billingEvents, upcomingDues } from '../billing/billing-math';
+import { BillingEvent, billingEvents, upcomingDues } from '../billing/billing-math';
+import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
@@ -40,8 +41,6 @@ export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
 export const CALENDAR_DAY_LIMIT = 500;
 export const TIMELINE_VIEW_KEY = 'hh.accounting.timelineView';
-/** Payments to a card within one closing → due window: far fewer than this in practice. */
-export const BILL_PAYMENT_LIMIT = 100;
 
 export type TimelineView = 'list' | 'calendar';
 
@@ -111,28 +110,6 @@ export interface BillLine {
   amountText: string;
   /** `已繳 $X · 剩餘 $Y` for a partly paid statement; null when nothing was paid yet. */
   paidText: string | null;
-}
-
-/** A due event's statement: the halves fill in as their responses land; `null` = that request failed. */
-interface BillState {
-  spend?: string | null;
-  currency?: string;
-  payments?: string[] | null;
-}
-
-interface ResolvedBill extends BillBalance {
-  currency: string;
-}
-
-function resolved(state: BillState | undefined): ResolvedBill | null {
-  if (!state || typeof state.spend !== 'string' || !Array.isArray(state.payments)) {
-    return null;
-  }
-  return { ...billBalance(state.spend, state.payments), currency: state.currency ?? 'TWD' };
-}
-
-function billKey(event: BillingEvent): string {
-  return `${event.accountId}:${event.period.end}`;
 }
 
 export interface TimelineDay {
@@ -312,9 +289,7 @@ export class LedgerTimelineComponent implements OnInit {
   private summaryRequestId = 0;
   private dailyRequestId = 0;
   private dayRequestId = 0;
-  private billRequestId = 0;
-  /** Per due event (`billKey`): the `entriesChanged` count it was last requested at, and that request's id. */
-  private readonly billRequests = new Map<string, { change: number; id: number }>();
+  private readonly bills = inject(BillingService);
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -334,8 +309,6 @@ export class LedgerTimelineComponent implements OnInit {
   readonly dayEntries = signal<LedgerEntry[]>([]);
   readonly dayLoading = signal(false);
   readonly dayError = signal(false);
-  /** Statements of due events, cached for the session (re-read on `entriesChanged`, kept shown until then). */
-  private readonly bills = signal<ReadonlyMap<string, BillState>>(new Map());
   readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
 
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
@@ -377,8 +350,8 @@ export class LedgerTimelineComponent implements OnInit {
     return [...events.values()];
   });
   /** A due event's resolved statement when something is left to pay; null otherwise (also while unresolved). */
-  private openBill(event: BillingEvent): ResolvedBill | null {
-    const bill = resolved(this.bills().get(billKey(event)));
+  private openBill(event: BillingEvent): BillState | null {
+    const bill = this.bills.bill(event);
     return bill && bill.remaining > 0 ? bill : null;
   }
   /** What the grid marks: every closing day, and the due days of statements with a remaining balance. */
@@ -473,14 +446,14 @@ export class LedgerTimelineComponent implements OnInit {
       untracked(() => this.loadSummary(month));
     });
 
-    // Statements of the due events the grid and the banner need; each once, again after an entry write.
+    // Statements of the due events the grid and the banner need (`BillingService` reads each once per change round).
     effect(() => {
       if (!this.preference()) {
         return;
       }
       const events = this.trackedDues();
-      const change = this.accounting.entriesChanged();
-      untracked(() => this.resolveBills(events, change));
+      this.bills.generation();
+      untracked(() => this.bills.ensure(events));
     });
 
     // A saved preference (settings pane beside this list in the wide layout) is re-read; the effects above then reload.
@@ -672,41 +645,6 @@ export class LedgerTimelineComponent implements OnInit {
     this.dayEntries.set([]);
     this.dayLoading.set(false);
     this.dayError.set(false);
-  }
-
-  /**
-   * One statement summary + one payments read per due event and `entriesChanged` count. The previous figures stay
-   * until the new ones land; a response for a superseded request is dropped.
-   */
-  private resolveBills(events: BillingEvent[], change: number): void {
-    for (const event of events) {
-      const key = billKey(event);
-      if (this.billRequests.get(key)?.change === change) {
-        continue;
-      }
-      const id = ++this.billRequestId;
-      this.billRequests.set(key, { change, id });
-      const patch = (update: BillState) => {
-        if (this.billRequests.get(key)?.id === id) {
-          this.bills.update(states => new Map(states).set(key, { ...states.get(key), ...update }));
-        }
-      };
-      this.accounting.getAccountSummary(event.accountId, event.period.start, event.period.end).subscribe({
-        next: summary => patch({ spend: summary.spend, currency: summary.currency }),
-        error: () => patch({ spend: null }),
-      });
-      this.accounting
-        .getEntries(event.accountId, {
-          kind: 'transfer_in',
-          date_from: event.period.end,
-          date_to: event.date,
-          limit: BILL_PAYMENT_LIMIT,
-        })
-        .subscribe({
-          next: page => patch({ payments: page.items.map(entry => entry.amount) }),
-          error: () => patch({ payments: null }),
-        });
-    }
   }
 
   setView(view: TimelineView): void {
