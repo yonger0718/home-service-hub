@@ -524,6 +524,7 @@ class EntryResult:
     entries: dict[str, LedgerEntry] = field(default_factory=dict)  # AHRecord identifier -> entry
     kind_counts: Counter = field(default_factory=Counter)
     skipped_future: Counter = field(default_factory=Counter)  # record type -> count
+    disabled_skipped: Counter = field(default_factory=Counter)  # record type -> count
     skipped_records: list[dict] = field(default_factory=list)
     needs_review: Counter = field(default_factory=Counter)  # reason -> count
     groups: int = 0
@@ -821,6 +822,36 @@ def _link_groups(session: Session, data: BackupData, result: EntryResult) -> Non
     result.groups = len(groups)
 
 
+def _disabled_ids(records: list[dict], transfers: list[dict], result: EntryResult) -> set[str]:
+    """Records MOZE leaves out of balances: disabled rows, the other leg of their transfers, and their children.
+
+    Disabled rows and both legs of a transfer with a disabled leg are counted per type in `disabled_skipped`;
+    a feeID fee record or a reward whose source is skipped goes with it without being counted.
+    """
+    by_id = {record["identifier"]: record for record in records}
+    counted = {record["identifier"] for record in records if not record["isEnabled"]}
+    for transfer in transfers:
+        legs = {transfer["outRecord"], transfer["inRecord"]}
+        if legs & counted:
+            counted |= legs & by_id.keys()
+    for identifier in counted:
+        result.disabled_skipped[by_id[identifier]["type"]] += 1
+    children: dict[str, list[str]] = {}
+    for record in records:
+        if record["feeID"] and record["feeID"] != record["identifier"]:
+            children.setdefault(record["identifier"], []).append(record["feeID"])
+        if record["type"] == 14 and record["rewardRecordID"]:
+            children.setdefault(record["rewardRecordID"], []).append(record["identifier"])
+    skipped, pending = set(), list(counted)
+    while pending:
+        identifier = pending.pop()
+        if identifier in skipped or identifier not in by_id:
+            continue
+        skipped.add(identifier)
+        pending.extend(children.get(identifier, ()))
+    return skipped
+
+
 def insert_entries(
     session: Session,
     data: BackupData,
@@ -836,13 +867,15 @@ def insert_entries(
     conversions = {conversion["recordID"]: conversion for conversion in data.conversions}
     kinds = {record["identifier"]: record_kind(record) for record in data.records}  # fails on unknown types first
 
-    live = []
+    current = []
     for record in data.records:
         if _is_future(record, cutoff):
             result.skipped_future[record["type"]] += 1
             result.skipped_records.append(record)
         else:
-            live.append(record)
+            current.append(record)
+    disabled = _disabled_ids(current, data.transfers, result)
+    live = [record for record in current if record["identifier"] not in disabled]
     live_ids = {record["identifier"] for record in live}
     fee_parent = {
         record["feeID"]: record["identifier"]
@@ -863,8 +896,6 @@ def insert_entries(
         fx = _record_fx(record, account, conversions, rates, settings.main_currency, result, allow_fx_outliers)
         kind = "fee" if record["identifier"] in fee_parent else kinds[record["identifier"]]
         entry = _entry_for(record, kind, account, fx, settings, session, import_run_id)
-        if not record["isEnabled"]:
-            _review(entry, "disabled_record", result)
         ordered.append((record, entry, _column_children(record, entry, fx, settings, session, import_run_id)))
         result.entries[record["identifier"]] = entry
         for child_record in fee_records.get(record["identifier"], []):
@@ -1083,6 +1114,7 @@ def replace_ledger_from_backup(
         "exported_at": data.exported_at.isoformat(),
         "kind_counts": dict(sorted(entries.kind_counts.items())),
         "skipped_future": {str(key): value for key, value in sorted(entries.skipped_future.items())},
+        "disabled_skipped": {str(key): value for key, value in sorted(entries.disabled_skipped.items())},
         "schedules": schedules,
         "groups": entries.groups,
         "transfers": entries.transfers,

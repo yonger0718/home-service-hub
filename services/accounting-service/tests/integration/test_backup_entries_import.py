@@ -109,10 +109,47 @@ def test_future_rows_are_skipped_and_counted_per_type(db_session, backup):
     assert summary["skipped_future"] == {"6": 1, "15": 1}
 
 
-def test_disabled_record_is_imported_for_review(db_session, backup):
-    summary = _import_backup(db_session, backup.data(accounts=[_wallet(backup)], records=[backup.record("R-1", isEnabled=False)]))
-    assert _by_moze_id(db_session, "R-1").needs_review is True
-    assert summary["needs_review"] == {"count": 1, "reasons": {"disabled_record": 1}}
+def test_disabled_record_is_skipped_and_counted_per_type(db_session, backup):
+    data = backup.data(
+        accounts=[_wallet(backup, originalAmount=100)],
+        records=[backup.record("R-1", price=-30, isEnabled=False), backup.record("R-2", price=-10)],
+    )
+    summary = _import_backup(db_session, data)
+    assert [e.moze_id for e in _entries(db_session, "錢包")] == ["R-2"]
+    assert summary["disabled_skipped"] == {"0": 1}
+    assert summary["needs_review"] == {"count": 0, "reasons": {}}
+    assert _balance(db_session, "錢包") == Decimal("90.0000")
+
+
+def test_disabled_transfer_leg_skips_the_pair(db_session, backup):
+    data = backup.data(
+        accounts=[_wallet(backup), backup.account("A-BANK", "銀行")],
+        records=[
+            backup.record("R-OUT", "A-WALLET", type_=2, price=-500, isEnabled=False),
+            backup.record("R-IN", "A-BANK", type_=2, price=500),
+        ],
+        transfers=[backup.transfer("X-1", "R-OUT", "R-IN")],
+    )
+    summary = _import_backup(db_session, data)
+    assert _entries(db_session, "錢包") == [] and _entries(db_session, "銀行") == []
+    assert summary["disabled_skipped"] == {"2": 2}
+    assert summary["transfers"] == 0
+    assert summary["needs_review"]["reasons"] == {}
+
+
+def test_children_of_a_disabled_record_are_skipped_with_it(db_session, backup):
+    data = backup.data(
+        accounts=[_wallet(backup)],
+        records=[
+            backup.record("R-1", price=-100, fee=-3, feeID="R-FEE", isEnabled=False),
+            backup.record("R-FEE", type_=12, price=-5),
+            backup.record("R-RW", type_=14, price=2, rewardRecordID="R-1"),
+        ],
+    )
+    summary = _import_backup(db_session, data)
+    assert _entries(db_session, "錢包") == []
+    assert summary["disabled_skipped"] == {"0": 1}
+    assert summary["kind_counts"] == {}
 
 
 def test_jpy_charge_on_a_twd_card_uses_moze_amount(db_session, backup):

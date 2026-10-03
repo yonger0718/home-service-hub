@@ -48,7 +48,7 @@ Fields: `name` → `name` (NULL when empty); `store` → `merchant`; `desc` → 
 
 `fee` ≠ 0 SHALL become a `fee` child (`amount = fee`, `name = feeName` or `手續費`) and `bonus` ≠ 0 a `discount` child (`amount = bonus`, `name = bonusName` or `折扣`), with `parent_entry_id` set and the parent's date, time and posting date. The parent's `amount` is `price` alone, so the row's balance effect equals `total`.
 
-Rows whose `entry_date` is after the archive's export date SHALL be skipped and counted per type in the report. Rows with `isEnabled == false` SHALL be imported with `needs_review = true`.
+Rows whose `entry_date` is after the archive's export date SHALL be skipped and counted per type in the report. Rows with `isEnabled == false` SHALL be skipped and counted per type in the report under `disabled_skipped`, since MOZE excludes them from balances.
 
 #### Scenario: Expense with fee
 - **GIVEN** an `AHRecord` with `type = 0`, `price = -266`, `fee = -3`, `total = -269`
