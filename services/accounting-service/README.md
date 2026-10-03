@@ -104,6 +104,48 @@ Writes (every write sets `source = 'manual'`; amounts are unsigned with at most 
 - `POST /imports/moze` (multipart `file`, optional `renames` JSON object, `?dry_run=true`)
 - `POST /imports/moze-backup` (multipart `file` <= 200 MB, optional `renames` JSON object, `?dry_run=&strict=&allow_fx_outliers=`)
 
+API access for agents
+---------------------
+
+The API has no auth unless `ACCOUNTING_API_TOKENS` is set in the root `.env`: a comma-separated list of
+`label:token` (or bare `token`) values, e.g. `ACCOUNTING_API_TOKENS=spa:<token1>,agent-x:<token2>`. Generate tokens
+with `openssl rand -hex 32`; a token containing `:` needs a label. Unset or empty, nothing changes (startup logs
+`API auth: disabled`); an item with an empty token stops the service at startup. Set, every request except `GET`/`HEAD`
+on `/health` and `/health/ready` needs exactly `Authorization: Bearer <token>` (scheme in any case, one space, no other whitespace) matching
+one configured token (SHA-256 digests compared in constant time), otherwise 401 `{"detail": "unauthorized"}` with
+`WWW-Authenticate: Bearer`. `/docs`, `/redoc`, `/docs/oauth2-redirect` and `/openapi.json` are open only with
+`ACCOUNTING_DOCS_PUBLIC=true`. The matching label is on `request.state.client_label` (None for a bare token); tokens
+are never logged. Restart the service after changing either variable. The SPA sends its own token
+(`ACCOUNTING_SPA_TOKEN`, see `docs/deploy/accounting-phase-2a.md`).
+
+Amounts are unsigned decimal strings (at most 4 decimals; the `kind` or the endpoint gives the direction) and dates
+are Asia/Taipei local `YYYY-MM-DD`. Through Caddy the paths carry the `/api/accounting` prefix:
+
+    export HUB=https://<hub tailscale hostname>/api/accounting
+    export AUTH="Authorization: Bearer $ACCOUNTING_AGENT_TOKEN"
+
+    # list accounts (balances as of today)
+    curl -sf -H "$AUTH" "$HUB/accounts"
+
+    # create an expense
+    curl -sf -H "$AUTH" -H 'Content-Type: application/json' -X POST "$HUB/entries" \
+      -d '{"account_id": 3, "kind": "expense", "amount": "120.50", "entry_date": "2026-10-03",
+           "category_id": 12, "name": "Lunch"}'
+
+    # create a transfer (same currency; a cross-currency transfer also needs "in_amount")
+    curl -sf -H "$AUTH" -H 'Content-Type: application/json' -X POST "$HUB/transfers" \
+      -d '{"from_account_id": 3, "to_account_id": 5, "out_amount": "5000", "entry_date": "2026-10-03"}'
+
+    # settle a receivable (entry 42, kind receivable): money arrives in account 3, at most the open amount
+    curl -sf -H "$AUTH" -H 'Content-Type: application/json' -X POST "$HUB/entries/42/settle" \
+      -d '{"account_id": 3, "amount": "300", "entry_date": "2026-10-03"}'
+
+    # month summary
+    curl -sf -H "$AUTH" "$HUB/entries/summary?month=2026-10"
+
+    # daily summary (from the calendar PR; 404 until that lands)
+    curl -sf -H "$AUTH" "$HUB/entries/summary/daily?month=2026-10"
+
 Tests
 -----
 

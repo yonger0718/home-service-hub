@@ -7,6 +7,7 @@ import Aura from '@primeuix/themes/aura';
 import { MessageService } from 'primeng/api';
 
 import { routes } from './app.routes';
+import { accountingTokenInterceptor } from './interceptors/accounting-token.interceptor';
 import { errorLoggingInterceptor } from './interceptors/error-logging.interceptor';
 import { AppearanceService } from './services/appearance.service';
 
@@ -14,7 +15,7 @@ export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideHttpClient(
-      withInterceptors([errorLoggingInterceptor])
+      withInterceptors([accountingTokenInterceptor, errorLoggingInterceptor])
     ),
     provideRouter(routes, withViewTransitions()),
     provideAnimationsAsync(),

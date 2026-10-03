@@ -80,6 +80,13 @@ def no_import_lock_from_env(monkeypatch):
     monkeypatch.delenv("ACCOUNTING_IMPORT_LOCKED", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_api_auth_from_env(monkeypatch):
+    """Tokens in a production .env must never break the suite; auth tests set the variables themselves."""
+    monkeypatch.delenv("ACCOUNTING_API_TOKENS", raising=False)
+    monkeypatch.delenv("ACCOUNTING_DOCS_PUBLIC", raising=False)
+
+
 class FakeResponse:
     def __init__(self, status_code: int, payload: dict | None = None):
         self.status_code = status_code
