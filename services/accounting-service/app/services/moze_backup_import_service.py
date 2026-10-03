@@ -516,6 +516,7 @@ FX_OUTLIER_TOLERANCE = Decimal("0.25")
 TRANSFER_RATE_TOLERANCE = Decimal("0.01")
 SETTLED_TYPES = (3, 4)
 SETTLING_TYPES = (5, 6)
+BALANCE_ADJUSTMENT_TYPE = 7  # price is the account balance after the adjustment; total is the delta
 
 
 @dataclass
@@ -630,6 +631,11 @@ def _money_columns(amount: Decimal, fx: _Fx | None) -> dict:
     return {"amount": _amount(amount * fx.rate), **fx.columns(_amount(amount))}
 
 
+def _record_amount(record) -> Decimal:
+    """The entry amount: MOZE's price, except a balance adjustment posts its delta (total), not the new balance."""
+    return record["total"] if record["type"] == BALANCE_ADJUSTMENT_TYPE else record["price"]
+
+
 def _entry_for(record, kind, account, fx, settings, session, import_run_id) -> LedgerEntry:
     if kind in SYSTEM_CATEGORY_NAMES:
         category_id = _system_category(session, settings, kind)
@@ -639,7 +645,7 @@ def _entry_for(record, kind, account, fx, settings, session, import_run_id) -> L
         account_id=account.id,
         kind=kind,
         currency=account.currency,
-        **_money_columns(record["price"], fx),
+        **_money_columns(_record_amount(record), fx),
         entry_date=record["date"].date(),
         entry_time=record["date"].time(),
         posted_date=record["chargeDate"].date(),

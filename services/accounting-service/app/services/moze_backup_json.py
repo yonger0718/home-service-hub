@@ -297,6 +297,8 @@ CLASS_FIELDS: dict[str, dict[str, str]] = {
     },
     "AHProject": {"identifier": S, "name": S, "isArchived": BOOL, "sequence": INT},
     "AHTarget": {"identifier": S, "name": S, "type": INT, "isSettle": BOOL},
+    # total = price + fee + bonus, except type 7 (balance adjustment): price is the balance after the
+    # adjustment and total is the delta, which the importer posts as the entry amount
     "AHRecord": {
         "identifier": S, "type": INT, "price": NUM, "fee": NUM, "bonus": NUM, "total": NUM, "currency": SN,
         "currencyConversion": SN, "account": SN, "project": SN, "classification": SN, "target": SN,

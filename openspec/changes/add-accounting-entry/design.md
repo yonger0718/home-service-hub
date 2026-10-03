@@ -150,6 +150,7 @@ Confirmed by Task 11 on the real backup in a disposable database on 2026-10-02; 
   - reward_source_from_package 368: these rewards name an `AHPackage` (a split purchase) and link to the split's primary member, the first by `entry_date`, `entry_time` NULLS FIRST, `seq`, with fee and discount members excluded. They were 368 of the previously flagged 374.
   - groups 716; transfers 509 of 544 (the 35 others are future pairs, 70 skipped type-2 rows); rules 95 of 100 (5 unsupported); attachments 2796; counterparties 10; accounts created 11.
   - FX outliers 0; transfer rate mismatches 1; FX-converted accounts 4 (the contract expected 9).
+- **Balance adjustments:** for `AHRecord.type` 7, `price` is the account balance after the adjustment and `total` is the delta (fee and bonus are 0), so the importer posts `total` as the `balance_adjustment` amount. Verified on the real backup: 7 of 7 adjustments on one account.
 - **Previous CSV ledger:** 22 accounts unchanged, 40 moved, 10 had no previous CSV balance. The per-cause split of the 40 (new MOZE records, MOZE FX amounts, skipped future rows) is pending the owner in Task 31.
 - **Timing:** conversion 2 s; import including conversion 15 s (dry run 12 s, idempotent re-import 17 s, identical entries, ids and groups).
 

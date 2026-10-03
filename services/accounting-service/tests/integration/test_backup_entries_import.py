@@ -75,6 +75,21 @@ def test_record_types_become_kinds(db_session, backup, record_type, price, field
     assert (entry.kind, entry.amount) == (kind, Decimal(price).quantize(Decimal("0.0001")))
 
 
+def test_balance_adjustment_imports_the_delta_not_the_resulting_balance(db_session, backup):
+    # MOZE type 7 stores price = the balance after the adjustment and total = the delta
+    data = backup.data(
+        accounts=[_wallet(backup, originalAmount=100)],
+        records=[
+            backup.record("R-1", price=-30, date="2026-09-01T12:00:00"),
+            backup.record("R-ADJ", type_=7, price=90, total=20, date="2026-09-02T12:00:00"),
+        ],
+    )
+    _import_backup(db_session, data)
+    adjustment = _by_moze_id(db_session, "R-ADJ")
+    assert (adjustment.kind, adjustment.amount) == ("balance_adjustment", Decimal("20.0000"))
+    assert _balance(db_session, "錢包") == Decimal("90.0000")
+
+
 def test_unknown_record_type_fails_naming_type_and_identifier(db_session, backup):
     with pytest.raises(MozeImportError, match="AHRecord 'R-8': unknown record type 8"):
         _import_backup(db_session, backup.data(accounts=[_wallet(backup)], records=[backup.record("R-8", type_=8)]))
