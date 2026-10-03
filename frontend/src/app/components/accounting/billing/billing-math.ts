@@ -17,9 +17,11 @@ export interface BillingEvent {
   period: Period;
 }
 
-/** Cycles walked around a month: a due day can follow its closing by up to ~3 months (`days_after_closing` ≤ 90). */
+/**
+ * Cycles walked back from the one containing the month's 1st: a due day can follow its closing by up to ~3 months
+ * (`days_after_closing` ≤ 90). That anchor cycle always closes inside the month, so no later cycle can contribute.
+ */
 const CYCLES_BEFORE = 3;
-const CYCLES_AFTER = 1;
 /** The 近 7 天 window: today and the six days after it. */
 export const UPCOMING_DAYS = 7;
 
@@ -37,7 +39,7 @@ export function billingEvents(cards: BillingCard[], month: string): BillingEvent
   for (const card of billingCards(cards)) {
     const closingDay = card.closing_day as number;
     const anchor = statementPeriod(closingDay, `${month}-01`);
-    for (let delta = -CYCLES_BEFORE; delta <= CYCLES_AFTER; delta++) {
+    for (let delta = -CYCLES_BEFORE; delta <= 0; delta++) {
       const period = shiftPeriod(closingDay, anchor, delta);
       const base = { accountId: card.id, name: card.name, period };
       if (period.end.slice(0, 7) === month) {

@@ -31,6 +31,22 @@ describe('billingEvents', () => {
     ]);
   });
 
+  it('carries a days_after_closing due date from December into January', () => {
+    const dec = card({ id: 4, closing_day: 20, due_rule: 'days_after_closing', due_value: 15 });
+    expect(billingEvents([dec], '2027-01')).toEqual([
+      { accountId: 4, name: '錢包', kind: 'due', date: '2027-01-04', period: { start: '2026-11-21', end: '2026-12-20' } },
+      { accountId: 4, name: '錢包', kind: 'closing', date: '2027-01-20', period: { start: '2026-12-21', end: '2027-01-20' } },
+    ]);
+  });
+
+  it('puts a fixed due day equal to the closing day in the next month', () => {
+    const same = card({ id: 5, closing_day: 10, due_rule: 'fixed_day', due_value: 10 });
+    expect(billingEvents([same], '2026-10').map(event => [event.kind, event.date, event.period.end])).toEqual([
+      ['due', '2026-10-10', '2026-09-10'],
+      ['closing', '2026-10-10', '2026-10-10'],
+    ]);
+  });
+
   it('clamps a 31st closing day to the end of February', () => {
     const late = card({ id: 2, closing_day: 31 });
     expect(billingEvents([late], '2026-02')).toEqual([

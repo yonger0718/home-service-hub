@@ -301,6 +301,8 @@ export class LedgerTimelineComponent implements OnInit {
   private dailyRequestId = 0;
   private dayRequestId = 0;
   private billRequestId = 0;
+  /** Keys of the due lines last loaded: a re-read of the same lines keeps their figures until the new ones land. */
+  private billKeys = '';
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -632,7 +634,11 @@ export class LedgerTimelineComponent implements OnInit {
 
   private loadBills(events: BillingEvent[]): void {
     const id = ++this.billRequestId;
-    this.bills.set(new Map());
+    const keys = events.map(billKey).join(',');
+    if (keys !== this.billKeys) {
+      this.billKeys = keys;
+      this.bills.set(new Map());
+    }
     const patch = (key: string, change: BillState) => {
       if (id === this.billRequestId) {
         this.bills.update(states => new Map(states).set(key, { ...states.get(key), ...change }));
@@ -640,10 +646,10 @@ export class LedgerTimelineComponent implements OnInit {
     };
     for (const event of events) {
       const key = billKey(event);
-      // Errors leave the line at `—` / unpaid.
+      // Errors put the line back to `—` / unpaid. `spend` is negative for a bill; refunds can make it a credit (−).
       this.accounting.getAccountSummary(event.accountId, event.period.start, event.period.end).subscribe({
-        next: summary => patch(key, { amountText: formatMoney(Math.abs(Number(summary.spend)), summary.currency) }),
-        error: () => undefined,
+        next: summary => patch(key, { amountText: formatMoney(-Number(summary.spend), summary.currency) }),
+        error: () => patch(key, { amountText: undefined }),
       });
       this.accounting
         .getEntries(event.accountId, {
@@ -654,7 +660,7 @@ export class LedgerTimelineComponent implements OnInit {
         })
         .subscribe({
           next: page => patch(key, { paid: page.items.length > 0 }),
-          error: () => undefined,
+          error: () => patch(key, { paid: undefined }),
         });
     }
   }

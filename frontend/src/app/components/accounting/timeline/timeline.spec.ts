@@ -694,6 +694,39 @@ describe('LedgerTimelineComponent', () => {
       expect(line.classList).toContain('paid');
     });
 
+    it('shows a statement where refunds outweigh spend as a signed credit', () => {
+      const { fixture, el } = renderCalendarWith();
+      selectDueDay(fixture, el);
+      flushStatement('300.0000');
+      flushTransfers([]);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 −$300 · 到期');
+    });
+
+    it('keeps the shown amount through an entry write until the new one lands', () => {
+      const { fixture, el } = renderCalendarWith();
+      selectDueDay(fixture, el);
+      flushStatement('-12345.0000');
+      flushTransfers([]);
+      fixture.detectChanges();
+
+      TestBed.inject(AccountingService).deleteEntry(3).subscribe();
+      httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
+      const summary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary');
+      const transfers = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries');
+      fixture.detectChanges();
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
+
+      summary.flush({ account_id: 9, currency: 'TWD', date_from: '2026-08-16', date_to: '2026-09-15', spend: '-12000.0000', income: '0', rewards: '0', net: '-12000', end_balance: '-12000', count: 3 });
+      transfers.flush({ items: [makeEntry({ id: 41, kind: 'transfer_in', account_id: 9 })], total: 1, limit: 10, offset: 0 });
+      fixture.detectChanges();
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $12,000 · 到期 已繳 ✓');
+    });
+
     it('shows a dash when the statement cannot be read', () => {
       const { fixture, el } = renderCalendarWith();
       selectDueDay(fixture, el);

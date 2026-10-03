@@ -68,9 +68,11 @@
     background: var(--app-primary-soft);
   }
 
-  /* A statement closes: a thin inset rule along the top (keeps today's / the selected outline intact). */
-  &.closing {
-    box-shadow: inset 0 2px 0 var(--app-primary-soft);
+  /* A statement closes: a thin inset rule along the top in a toned-down primary, distinct from the
+     --app-primary-soft selected fill and today's outline, so it stays visible on a selected day. */
+  &.closing,
+  &.closing.sel {
+    box-shadow: inset 0 2px 0 color-mix(in srgb, var(--app-primary) 55%, transparent);
   }
 
   &.outside {
