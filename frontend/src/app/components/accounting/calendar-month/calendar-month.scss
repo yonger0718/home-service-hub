@@ -1,0 +1,88 @@
+:host {
+  display: block;
+}
+
+/* --tone-neg / --tone-pos come from the accounting layout (支出收入顏色 preference). */
+.neg {
+  color: var(--tone-neg, var(--c-red));
+}
+
+.pos {
+  color: var(--tone-pos, var(--c-green));
+}
+
+.cal {
+  display: grid;
+  gap: 2px;
+  margin: 4px 0 10px;
+}
+
+.weekdays,
+.week {
+  display: grid;
+  gap: 2px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.weekdays span {
+  color: var(--app-text-muted);
+  font-size: var(--fs-micro, 0.7rem);
+  font-weight: 700;
+  padding: 2px 0;
+  text-align: center;
+}
+
+.cell {
+  align-items: stretch;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: 1px;
+  min-height: 52px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 3px 4px;
+  text-align: left;
+
+  &:hover:not(:disabled) {
+    background: var(--app-surface-soft);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+
+  &.today {
+    border-color: var(--app-primary);
+  }
+
+  &.sel,
+  &.sel:hover {
+    background: var(--app-primary-soft);
+  }
+
+  &.outside {
+    cursor: default;
+    opacity: 0.4;
+  }
+}
+
+.d {
+  font-size: var(--fs-label, 0.75rem);
+  font-weight: 700;
+}
+
+.fig {
+  font-size: var(--fs-micro, 0.7rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

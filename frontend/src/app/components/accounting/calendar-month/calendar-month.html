@@ -1,0 +1,34 @@
+<div class="cal" role="group" aria-label="月曆">
+  <div class="weekdays" aria-hidden="true">
+    @for (name of weekdays(); track $index) {
+      <span>{{ name }}</span>
+    }
+  </div>
+  @for (row of rows(); track row[0].date) {
+    <div class="week">
+      @for (cell of row; track cell.date) {
+        <button
+          type="button"
+          class="cell"
+          [class.outside]="cell.outside"
+          [class.today]="cell.date === today()"
+          [class.sel]="cell.date === selected()"
+          [attr.data-date]="cell.date"
+          [attr.aria-label]="cell.label"
+          [attr.aria-pressed]="cell.outside ? null : cell.date === selected()"
+          [attr.aria-current]="cell.date === today() ? 'date' : null"
+          [disabled]="cell.outside"
+          (click)="pick(cell)"
+        >
+          <span class="d">{{ cell.day }}</span>
+          @if (cell.expenseText !== null) {
+            <span class="fig exp neg">{{ cell.expenseText }}</span>
+          }
+          @if (cell.incomeText !== null) {
+            <span class="fig inc pos">{{ cell.incomeText }}</span>
+          }
+        </button>
+      }
+    </div>
+  }
+</div>
