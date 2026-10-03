@@ -264,7 +264,8 @@ def _text_filter(q: str):
 
 
 def _open_debt_filter():
-    """Unsettled receivable/payable originals: not a settlement, and amount + Σ linked settlements != 0."""
+    """Unsettled receivable/payable originals: not a settlement, not closed (MOZE isSettle), and
+    amount + Σ linked settlements != 0."""
     settlement = aliased(LedgerEntry)
     settled = (
         select(func.coalesce(func.sum(settlement.amount), 0))
@@ -276,6 +277,7 @@ def _open_debt_filter():
         LedgerEntry.kind.in_(("receivable", "payable")),
         LedgerEntry.is_settlement.is_(False),
         LedgerEntry.settles_entry_id.is_(None),
+        LedgerEntry.is_closed.is_(False),
         LedgerEntry.amount + settled != 0,
     )
 

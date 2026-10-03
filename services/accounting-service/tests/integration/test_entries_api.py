@@ -96,6 +96,26 @@ def test_listing_open_composes_with_counterparty_kind_and_pagination(client, db_
     assert client.get("/entries", params={"open": "true", "counterparty_id": alan.id}).json()["total"] == 2
 
 
+def test_listing_open_excludes_closed_originals(client, db_session):
+    wallet = make_account(db_session, "錢包", opening="1000")
+    alan = Counterparty(name="Alan")
+    db_session.add(alan)
+    db_session.flush()
+    closed = make_entry(db_session, wallet, "-500", kind="receivable", counterparty_id=alan.id, is_closed=True)
+    # A partial settlement: amount + settlements != 0, yet MOZE marked the debt settled.
+    make_entry(db_session, wallet, "300", kind="receivable", counterparty_id=alan.id, settles_entry_id=closed.id,
+               is_settlement=True, entry_date=date(2026, 9, 2))
+    still_open = make_entry(db_session, wallet, "-80", kind="receivable", counterparty_id=alan.id,
+                            entry_date=date(2026, 9, 3))
+    db_session.commit()
+
+    open_ids = [e["id"] for e in client.get("/entries", params={"open": "true"}).json()["items"]]
+    all_ids = [e["id"] for e in client.get("/entries", params={"counterparty_id": alan.id}).json()["items"]]
+
+    assert open_ids == [still_open.id]
+    assert closed.id in all_ids
+
+
 def test_listing_rejects_a_non_integer_counterparty(client, db_session):
     assert client.get("/entries", params={"counterparty_id": "alan"}).status_code == 422
 

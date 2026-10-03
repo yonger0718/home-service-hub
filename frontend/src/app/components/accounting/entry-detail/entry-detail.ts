@@ -143,7 +143,7 @@ export class EntryDetailComponent implements OnInit {
   });
   readonly canSettle = computed(() => {
     const detail = this.detail();
-    return this.isDebt() && !this.locked() && !detail?.is_settled && Number(detail?.open_amount ?? 0) > 0;
+    return this.isDebt() && !this.locked() && !detail?.is_settled && !detail?.is_closed && Number(detail?.open_amount ?? 0) > 0;
   });
   readonly refundable = computed(() => {
     const detail = this.detail();

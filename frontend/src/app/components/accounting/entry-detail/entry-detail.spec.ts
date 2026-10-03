@@ -90,6 +90,16 @@ describe('EntryDetailComponent', () => {
     expect(el(fixture).querySelector('.dgrid')?.textContent).toContain('Alan');
   });
 
+  it('shows 已結清 and no 新增收款 on a debt MOZE closed with a partial settlement', () => {
+    const fixture = render({ ...RECEIVABLE, is_closed: true, open_amount: '220.0000', is_settled: false });
+
+    expect(el(fixture).querySelector('.settled')?.textContent?.trim()).toBe('已結清');
+    expect(el(fixture).querySelector('.open-amount')).toBeNull();
+    expect(el(fixture).querySelector('.action-settle')).toBeNull();
+    // The collection already made stays listed.
+    expect(el(fixture).querySelector('.related')?.textContent).toContain('收款');
+  });
+
   it('settles from the detail and then shows 已結清', () => {
     const fixture = render(RECEIVABLE);
     el(fixture).querySelector<HTMLButtonElement>('.action-settle')!.click();

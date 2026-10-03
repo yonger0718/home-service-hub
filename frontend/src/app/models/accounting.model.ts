@@ -168,6 +168,11 @@ export interface LedgerEntry {
    * MOZE types 5 / 6, with or without a `settles_entry_id` link. Such rows cannot be edited (`PUT` answers 422 `kind`).
    */
   is_settlement: boolean;
+  /**
+   * `EntryOut.is_closed`: a receivable / payable original MOZE marked settled (target isSettle), even when its
+   * settlements do not net it to zero. The server then reports `open_amount` 0 and `is_settled` true.
+   */
+  is_closed: boolean;
   /** Running balance in canonical order (`EntryOut.running_balance`, Task 4); typed nullable so older payloads still parse. */
   running_balance: string | null;
   source: EntrySource;

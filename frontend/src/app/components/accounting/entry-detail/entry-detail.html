@@ -58,7 +58,7 @@
 
     @if (isDebt()) {
       <div class="open-state">
-        @if (d.is_settled) {
+        @if (d.is_settled || d.is_closed) {
           <span class="settled">已結清</span>
         } @else {
           <span class="open-amount">剩餘 {{ formatMoney(d.open_amount, d.currency) }}</span>
@@ -166,7 +166,7 @@
       @if (refundKind()) {
         <button type="button" class="action-refund" [disabled]="!canRefund()" (click)="openPanel('refund')"><span class="ico">↺</span>退款</button>
       }
-      @if (isDebt()) {
+      @if (isDebt() && !d.is_closed) {
         <button type="button" class="action-settle" [disabled]="!canSettle()" (click)="openPanel('settle')"><span class="ico">🤝</span>{{ settleLabel() }}</button>
       }
       <button type="button" class="danger action-delete" [disabled]="locked()" (click)="openPanel('delete')"><span class="ico">🗑</span>刪除</button>
