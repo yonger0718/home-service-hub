@@ -27,9 +27,15 @@
         <option [value]="option[0]" [selected]="kind() === option[0]">{{ option[1] }}</option>
       }
     </select>
-    <input class="chip tag filter-q" type="search" placeholder="搜尋" aria-label="搜尋" [value]="q() ?? ''" (change)="setQuery($any($event.target).value)" />
-    <input class="chip tag filter-date filter-from" type="date" placeholder="起" aria-label="起" [value]="dateFrom() ?? ''" (change)="setDateFrom($any($event.target).value)" />
-    <input class="chip tag filter-date filter-to" type="date" placeholder="迄" aria-label="迄" [value]="dateTo() ?? ''" (change)="setDateTo($any($event.target).value)" />
+    <input class="chip tag filter-q" type="search" placeholder="搜尋名稱、商家、備註" aria-label="搜尋" [value]="q() ?? ''" (change)="setQuery($any($event.target).value)" />
+    <span class="chip tag filter-date">
+      <span class="prefix" aria-hidden="true">起</span>
+      <input class="filter-from" type="date" aria-label="起" [value]="dateFrom() ?? ''" (change)="setDateFrom($any($event.target).value)" />
+    </span>
+    <span class="chip tag filter-date">
+      <span class="prefix" aria-hidden="true">迄</span>
+      <input class="filter-to" type="date" aria-label="迄" [value]="dateTo() ?? ''" (change)="setDateTo($any($event.target).value)" />
+    </span>
   </div>
 
   @if (loadError()) {

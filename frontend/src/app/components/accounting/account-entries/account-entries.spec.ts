@@ -340,7 +340,7 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
   it('renders the four filter controls with aria-labels and keeps their bindings', () => {
     const fixture = render(page(PERIOD));
     const el = fixture.nativeElement as HTMLElement;
-    const labels = Array.from(el.querySelectorAll('.entries-filters > select, .entries-filters > input')).map(c => c.getAttribute('aria-label'));
+    const labels = Array.from(el.querySelectorAll('.entries-filters select, .entries-filters input')).map(c => c.getAttribute('aria-label'));
     expect(labels).toEqual(['類型', '搜尋', '起', '迄']);
     expect(el.querySelector('.entries-filters label')).toBeNull();
 

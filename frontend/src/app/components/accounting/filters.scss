@@ -24,7 +24,27 @@
   }
 
   .filter-date {
-    flex: 1 1 120px;
+    align-items: center;
+    display: flex;
+    flex: 1 1 130px;
+    gap: 6px;
     min-width: 0;
+
+    .prefix {
+      color: var(--app-text-muted);
+      flex: none;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+
+    input {
+      background: none;
+      border: 0;
+      color: inherit;
+      flex: 1 1 auto;
+      font: inherit;
+      min-width: 0;
+      padding: 0;
+    }
   }
 }
