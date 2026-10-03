@@ -72,7 +72,7 @@ Constraints: `UNIQUE (definition_id, seq)`; a partial unique index on `(definiti
 Lines SHALL carry no FX, fee or discount children, split members, reward rules, photos or invoice fields. Violations SHALL be refused with HTTP 422 naming `lines[i].<key>`.
 
 #### Scenario: Loan repayment template
-- **GIVEN** a payable entry 4021 of `+300000` TWD (信貸, counterparty 玉山銀行)
+- **GIVEN** a payable entry 4021 of `+300000` TWD (信貸, counterparty 範例銀行)
 - **WHEN** a template `{"lines": [{"kind": "repayment", "account_id": 3, "amount": "8333", "currency": "TWD", "loan_entry_id": 4021, …}, {"kind": "interest", "account_id": 3, "amount": "620", "currency": "TWD", …}]}` is saved
 - **THEN** it SHALL be accepted
 
@@ -137,7 +137,7 @@ For every `active` or `paused` definition, generation SHALL repeatedly insert th
 
 ### Requirement: Posting an instance
 
-Posting an instance SHALL, in one database transaction: take the shared import lock (HTTP 409 `import_running` when an import holds it); lock its definition (`FOR SHARE`) and the instance (`FOR UPDATE`); refuse with HTTP 409 (`already_posted` or `skipped`) unless the instance is `pending`; re-validate every line as in "Template lines" (a failure names `lines[i].<key>`); resolve each line's amount — the owner's instance edit, else the imported `amount_override`, else the template's `amount` — and leave out lines whose amount is `"0"`; and write each line through the ledger services with `entry_date = posted_date = due_date`, `entry_time = NULL`, `source = 'schedule'`, name `line.name` or the definition's `name`, the template's `description` and `tags`, without updating category defaults:
+Posting an instance SHALL, in one database transaction: take the shared import lock (HTTP 409 `import_running` when an import holds it); lock its definition (`FOR SHARE`; `FOR UPDATE` when the template has a loan line, since the post may end the definition) and the instance (`FOR UPDATE`); refuse with HTTP 409 (`already_posted` or `skipped`) unless the instance is `pending`; re-validate every line as in "Template lines" (a failure names `lines[i].<key>`); resolve each line's amount — the owner's instance edit, else the imported `amount_override`, else the template's `amount` — and leave out lines whose amount is `"0"`; and write each line through the ledger services with `entry_date = posted_date = due_date`, `entry_time = NULL`, `source = 'schedule'`, name `line.name` or the definition's `name`, the template's `description` and `tags`, without updating category defaults:
 
 - `expense`, `income`, `receivable`, `payable` → one entry of that kind, signed as in "Entry write endpoints";
 - `transfer` → a transfer pair (`out_amount = amount`, `in_amount = to_amount or amount`);
@@ -153,7 +153,7 @@ Lock order: the shared import lock → `schedule_definition` → `schedule_insta
 #### Scenario: Repayment with interest
 - **GIVEN** a definition `信貸 每月還款` (`installment`, `times = 36`) with the template of "Loan repayment template", the loan's open amount `300000`, and its `seq = 1` instance due 2026-11-09
 - **WHEN** the instance is posted
-- **THEN** account 3 SHALL change by `−8953`, a repayment of `−8333` dated 2026-11-09 SHALL settle entry 4021, an `interest` entry of `−620` with counterparty 玉山銀行 SHALL exist, both SHALL share an `installment` group named `信貸 每月還款 #1/36`, both SHALL have `source = 'schedule'`, and the loan's open amount SHALL be `291667`
+- **THEN** account 3 SHALL change by `−8953`, a repayment of `−8333` dated 2026-11-09 SHALL settle entry 4021, an `interest` entry of `−620` with counterparty 範例銀行 SHALL exist, both SHALL share an `installment` group named `信貸 每月還款 #1/36`, both SHALL have `source = 'schedule'`, and the loan's open amount SHALL be `291667`
 
 #### Scenario: Last repayment clamped to the open amount
 - **GIVEN** the same loan, whose open amount is `8245` because the owner once settled `100` by hand, and its `seq = 36` instance with `amount_override = ["8345", "620"]`
@@ -366,7 +366,7 @@ Every write SHALL first take the shared import lock (HTTP 409 `import_running`),
 
 ### Requirement: Deleting entries of a posted period
 
-When an entry listed in a `posted` instance's `posted_entry_ids` is deleted (through `DELETE /api/accounting/entries/{id}`, the transfer or split delete), the server SHALL first read the instance without a lock, then take the shared import lock, lock its definition (`FOR SHARE`) and the instance (`FOR UPDATE`), re-check that it still lists the entry, delete only that entry (with its children and its transfer pair, in the ledger's lock order), and remove it from `posted_entry_ids`. When entries remain, the instance SHALL stay `posted` with `is_partial = true` and `note = "部分入帳記錄已於 YYYY-MM-DD 刪除"`. When a pending or partial instance results and its definition is `ended`, the definition SHALL become `active` again. When none remain, an instance with `acted_by = import` SHALL become `skipped` with `note = 入帳記錄已刪除`, and any other instance SHALL become `pending` with `acted_at` and `acted_by` cleared, `is_partial = false`, `reopened_at = now()` and `note = "入帳記錄已於 YYYY-MM-DD 刪除"`. A reopened instance SHALL never be posted by the job; it stays in the 待完成交易 queue until posted or skipped. The backup importer's full-replace delete SHALL NOT apply this requirement.
+When an entry listed in a `posted` instance's `posted_entry_ids` is deleted (through `DELETE /api/accounting/entries/{id}`, the transfer or split delete), the server SHALL first read the instance without a lock, then take the shared import lock, lock its definition (`FOR SHARE`; `FOR UPDATE` when the definition is `ended`, since the delete may revive it) and the instance (`FOR UPDATE`), re-check that it still lists the entry, delete only that entry (with its children and its transfer pair, in the ledger's lock order), and remove it from `posted_entry_ids`. When entries remain, the instance SHALL stay `posted` with `is_partial = true` and `note = "部分入帳記錄已於 YYYY-MM-DD 刪除"`. When a pending or partial instance results and its definition is `ended`, the definition SHALL become `active` again. When none remain, an instance with `acted_by = import` SHALL become `skipped` with `note = 入帳記錄已刪除`, and any other instance SHALL become `pending` with `acted_at` and `acted_by` cleared, `is_partial = false`, `reopened_at = now()` and `note = "入帳記錄已於 YYYY-MM-DD 刪除"`. A reopened instance SHALL never be posted by the job; it stays in the 待完成交易 queue until posted or skipped. The backup importer's full-replace delete SHALL NOT apply this requirement.
 
 #### Scenario: Deleting the interest leaves a partial period
 - **GIVEN** the posted instance of "Repayment with interest" on 2026-11-09
