@@ -199,3 +199,76 @@ def test_month_summary_reports_currencies_without_a_rate(client, db_session):
 
     assert (body["expense"], body["missing_rates"]) == ("0", ["USD"])
     assert client.get("/entries/summary", params={"month": "2026-13"}).status_code == 422
+
+
+def _calendar_month(db_session, *, hide_rewards: bool):
+    db_session.add(Preference(main_currency="TWD", hide_rewards_on_timeline=hide_rewards))
+    wallet = make_account(db_session, "錢包")
+    card = make_account(db_session, "玉山 UNI")
+    alan = Counterparty(name="Alan")
+    db_session.add(alan)
+    db_session.flush()
+    day1, day2, day3 = date(2026, 10, 2), date(2026, 10, 5), date(2026, 10, 9)
+    make_entry(db_session, wallet, "-1000", entry_date=day1)
+    make_entry(db_session, wallet, "-15", kind="fee", entry_date=day1)
+    make_entry(db_session, wallet, "200", kind="refund", entry_date=day1)
+    make_entry(db_session, wallet, "50000", kind="income", entry_date=day2)
+    make_entry(db_session, wallet, "12", kind="interest", entry_date=day2)
+    make_entry(db_session, card, "30", kind="reward", entry_date=day2)
+    make_entry(db_session, wallet, "-3000", kind="transfer_out", entry_date=day3)
+    make_entry(db_session, card, "3000", kind="transfer_in", entry_date=day3)
+    lent = make_entry(db_session, wallet, "-420", kind="receivable", counterparty_id=alan.id, entry_date=day3)
+    make_entry(db_session, wallet, "420", kind="receivable", counterparty_id=alan.id, settles_entry_id=lent.id,
+               is_settlement=True, entry_date=day3)
+    make_entry(db_session, wallet, "-999", entry_date=date(2026, 11, 1))
+    db_session.commit()
+
+
+def test_daily_summary_buckets_counted_rows_by_entry_date(client, db_session):
+    _calendar_month(db_session, hide_rewards=False)
+
+    response = client.get("/entries/summary/daily", params={"month": "2026-10"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "month": "2026-10", "currency": "TWD", "missing_rates": [],
+        "days": [
+            {"date": "2026-10-02", "expense": "-815.0000", "income": "0.0000", "count": 3},
+            {"date": "2026-10-05", "expense": "0.0000", "income": "50042.0000", "count": 3},
+        ],
+    }
+    month = client.get("/entries/summary", params={"month": "2026-10"}).json()
+    assert sum(Decimal(d["expense"]) for d in body["days"]) == Decimal(month["expense"])
+    assert sum(Decimal(d["income"]) for d in body["days"]) == Decimal(month["income"])
+
+
+def test_daily_summary_hides_rewards_per_preference(client, db_session):
+    _calendar_month(db_session, hide_rewards=True)
+
+    days = client.get("/entries/summary/daily", params={"month": "2026-10"}).json()["days"]
+
+    assert days[1] == {"date": "2026-10-05", "expense": "0.0000", "income": "50012.0000", "count": 2}
+
+
+def test_daily_summary_skips_currencies_without_a_rate(client, db_session):
+    db_session.add(Preference(main_currency="TWD"))
+    wallet = make_account(db_session, "錢包")
+    jpy = make_account(db_session, "去日本的錢", currency="JPY")
+    make_entry(db_session, wallet, "-100", entry_date=date(2026, 12, 3))
+    make_entry(db_session, jpy, "-5000", entry_date=date(2026, 12, 3))
+    make_entry(db_session, jpy, "-800", entry_date=date(2026, 12, 4))
+    db_session.commit()
+
+    body = client.get("/entries/summary/daily", params={"month": "2026-12"}).json()
+
+    assert body["missing_rates"] == ["JPY"]
+    assert body["days"] == [{"date": "2026-12-03", "expense": "-100.0000", "income": "0.0000", "count": 1}]
+
+
+def test_daily_summary_of_an_empty_month_and_invalid_month(client, db_session):
+    body = client.get("/entries/summary/daily", params={"month": "2026-07"}).json()
+
+    assert body == {"month": "2026-07", "currency": "TWD", "days": [], "missing_rates": []}
+    assert client.get("/entries/summary/daily", params={"month": "2026-13"}).status_code == 422
+    assert client.get("/entries/summary/daily", params={"month": "2026-1"}).status_code == 422

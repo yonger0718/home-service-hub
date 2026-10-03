@@ -58,7 +58,10 @@ Reads
   income, rewards, net and count over entries posted in the range, plus the balance as of `date_to`),
   `GET /accounts/{id}/reward-rules`
 - `GET /accounts/{id}/entries?limit=50&offset=0&kind=&date_from=&date_to=&q=`
-- `GET /entries?limit&offset&kind&date_from&date_to&q&account_id=(repeatable)&hide_rewards`, `GET /entries/summary?month=YYYY-MM`, `GET /entries/{id}`
+- `GET /entries?limit&offset&kind&date_from&date_to&q&account_id=(repeatable)&hide_rewards`, `GET /entries/summary?month=YYYY-MM`,
+  `GET /entries/summary/daily?month=YYYY-MM` (calendar view: the month summary's expense/income rules per `entry_date`,
+  with a `count` of counted rows; days without entries omitted; rewards left out when the preference hides them on
+  the timeline; `missing_rates` as in the month summary), `GET /entries/{id}`
 - `GET /account-groups`, `GET /categories?kind=`, `GET /projects`, `GET /counterparties` (with `open_amounts` per currency)
 - `GET /preference`, `GET /fx-rate?date=&base=&quote=` (for today or a future date, or a date whose release is
   missing, the latest available release; `rate_date` names the release the rate comes from)

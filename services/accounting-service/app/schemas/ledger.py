@@ -161,6 +161,22 @@ class MonthSummaryOut(BaseModel):
     missing_rates: list[str]
 
 
+class DaySummaryOut(BaseModel):
+    date: date
+    expense: Decimal
+    income: Decimal
+    count: int
+
+
+class DailySummaryOut(BaseModel):
+    """The month summary's figures per entry_date, for the calendar view; days without counted rows are omitted."""
+
+    month: str
+    currency: str
+    days: list[DaySummaryOut]
+    missing_rates: list[str]
+
+
 class AccountPeriodSummaryOut(BaseModel):
     """One account over [date_from, date_to] by posted_date, in the account's currency."""
 

@@ -452,41 +452,80 @@ def _spend_filter():
     )
 
 
-def month_summary(db: Session, month: str) -> dict:
-    """Expense (Σ negative expense/fee amounts + Σ refund amounts, so a refund reduces the month's expense, as in
-    MOZE's statistics), income (Σ positive income/reward/interest/discount amounts) and net (income + expense)
-    for entries dated in `month` (YYYY-MM), converted to the main currency with the latest cached rate.
-    Transfers, receivables/payables and balance adjustments are excluded."""
+def _month_bounds(month: str) -> tuple[date, date]:
+    """[first day, first day of the next month) for a YYYY-MM month."""
     year, month_no = (int(part) for part in month.split("-"))
-    start = date(year, month_no, 1)
-    end = date(year + (month_no == 12), month_no % 12 + 1, 1)
-    in_month = (LedgerEntry.entry_date >= start, LedgerEntry.entry_date < end)
-    expense = func.coalesce(func.sum(LedgerEntry.amount).filter(_spend_filter()), 0)
-    income = func.coalesce(
-        func.sum(LedgerEntry.amount).filter(LedgerEntry.kind.in_(INCOME_KINDS), LedgerEntry.amount > 0), 0
-    )
-    per_currency = db.execute(
-        select(LedgerEntry.currency, expense, income).where(*in_month).group_by(LedgerEntry.currency)
+    return date(year, month_no, 1), date(year + (month_no == 12), month_no % 12 + 1, 1)
+
+
+def _converted_totals(db: Session, month: str, *, by_day: bool, hide_rewards: bool) -> tuple[str, dict, list[str]]:
+    """The month/calendar summary rules in one place: expense (Σ negative expense/fee amounts + Σ refunds), income
+    (Σ positive income/reward/interest/discount amounts, rewards dropped when `hide_rewards`) and the count of those
+    rows, for entries dated in `month`, converted to the main currency with the latest cached rate. Transfers,
+    receivables/payables (settlements included) and balance adjustments are excluded. Returns (main currency,
+    totals keyed by entry_date — or by None when not `by_day` — and the sorted currencies that have rows in the month
+    but no rate; those rows are left out of the totals)."""
+    start, end = _month_bounds(month)
+    income_kinds = tuple(kind for kind in INCOME_KINDS if not (hide_rewards and kind == "reward"))
+    spend_rows = _spend_filter()
+    income_rows = and_(LedgerEntry.kind.in_(income_kinds), LedgerEntry.amount > 0)
+    keys = (LedgerEntry.entry_date,) if by_day else ()
+    rows = db.execute(
+        select(
+            *keys,
+            LedgerEntry.currency,
+            func.coalesce(func.sum(LedgerEntry.amount).filter(spend_rows), 0),
+            func.coalesce(func.sum(LedgerEntry.amount).filter(income_rows), 0),
+            func.count(LedgerEntry.id).filter(or_(spend_rows, income_rows)),
+        )
+        .where(LedgerEntry.entry_date >= start, LedgerEntry.entry_date < end)
+        .group_by(*keys, LedgerEntry.currency)
     ).all()
 
     main = main_currency(db)
-    rates = latest_rates(db, {currency for currency, _, _ in per_currency}, main)
-    totals = {"expense": Decimal(0), "income": Decimal(0)}
-    missing = []
-    for currency, currency_expense, currency_income in per_currency:
+    rates = latest_rates(db, {row[-4] for row in rows}, main)
+    totals: dict = defaultdict(lambda: {"expense": Decimal(0), "income": Decimal(0), "count": 0})
+    missing = set()
+    for row in rows:
+        key = row[0] if by_day else None
+        currency, expense, income, count = row[-4:]
         rate = rates.get(currency)
         if rate is None:
-            missing.append(currency)
+            missing.add(currency)
             continue
-        totals["expense"] += _convert(currency_expense, rate)
-        totals["income"] += _convert(currency_income, rate)
+        if count:
+            bucket = totals[key]
+            bucket["expense"] += _convert(expense, rate)
+            bucket["income"] += _convert(income, rate)
+            bucket["count"] += count
+    return main, totals, sorted(missing)
+
+
+def month_summary(db: Session, month: str) -> dict:
+    """Expense (refunds reduce it, as in MOZE's statistics), income and net (income + expense) for entries dated
+    in `month` (YYYY-MM) in the main currency; see `_converted_totals` for the inclusion rules."""
+    main, totals, missing = _converted_totals(db, month, by_day=False, hide_rewards=False)
+    month_totals = totals.get(None, {"expense": Decimal(0), "income": Decimal(0)})
     return {
         "month": month,
         "currency": main,
-        "expense": totals["expense"],
-        "income": totals["income"],
-        "net": totals["income"] + totals["expense"],
-        "missing_rates": sorted(missing),
+        "expense": month_totals["expense"],
+        "income": month_totals["income"],
+        "net": month_totals["income"] + month_totals["expense"],
+        "missing_rates": missing,
+    }
+
+
+def daily_summary(db: Session, month: str) -> dict:
+    """Per-day expense, income and count for the calendar view: the month summary's rules bucketed by entry_date,
+    rewards left out when the preference hides them on the timeline. Days without counted rows are omitted."""
+    hide_rewards = bool(db.scalar(select(Preference.hide_rewards_on_timeline).where(Preference.id == 1)))
+    main, totals, missing = _converted_totals(db, month, by_day=True, hide_rewards=hide_rewards)
+    return {
+        "month": month,
+        "currency": main,
+        "days": [{"date": day, **totals[day]} for day in sorted(totals)],
+        "missing_rates": missing,
     }
 
 
