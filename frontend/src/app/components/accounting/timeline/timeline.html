@@ -82,6 +82,7 @@
       [currency]="daily()?.currency ?? mainCurrency()"
       [weekStart]="weekStart()"
       [selected]="selectedDay()"
+      [today]="today()"
       (daySelected)="selectDay($event)"
     />
     @if (selectedDay()) {

@@ -464,6 +464,69 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelectorAll('app-calendar-month .fig').length).toBe(0);
     });
 
+    it('nets the selected day from the rows shown when a filter is active', () => {
+      const { fixture, el } = renderCalendar();
+      fixture.componentInstance.setKind('expense');
+      fixture.detectChanges();
+      (el.querySelector('button.cell[data-date="2026-10-02"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const req = flushEntries([
+        makeEntry({ id: 11, name: '午餐', amount: '-200.0000' }),
+        makeEntry({ id: 12, name: '咖啡', amount: '-80.0000' }),
+        makeEntry({ id: 13, name: '車票', amount: '-900.0000', currency: 'JPY' }),
+      ]);
+      fixture.detectChanges();
+
+      expect(req.request.params.get('kind')).toBe('expense');
+      // The summary says −1,234 / +500 for the day; the filtered TWD rows sum to −280.
+      expect(text(el.querySelector('.day-net b'))).toBe('−$280');
+      expect(el.querySelector('.day-net b')!.classList).toContain('neg');
+    });
+
+    it('drops a late response for a previously tapped day', () => {
+      const { fixture, el } = renderCalendar();
+      (el.querySelector('button.cell[data-date="2026-10-02"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const first = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const second = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+      expect(second.request.params.get('date_from')).toBe('2026-10-05');
+
+      second.flush({ items: [makeEntry({ id: 5, entry_date: '2026-10-05', name: '薪水' })], total: 1, limit: 500, offset: 0 });
+      first.flush({ items: [makeEntry({ id: 2, entry_date: '2026-10-02', name: '午餐' })], total: 1, limit: 500, offset: 0 });
+      fixture.detectChanges();
+      expect(Array.from(el.querySelectorAll('.day-entries .row .name')).map(text)).toEqual(['薪水']);
+    });
+
+    it('re-requests the daily summary after a preference save', () => {
+      const { fixture } = renderCalendar();
+      TestBed.inject(AccountingService).updatePreference(makePreference({ hide_rewards_on_timeline: true })).subscribe();
+      httpMock!.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/preference').flush(makePreference({ hide_rewards_on_timeline: true }));
+      fixture.detectChanges();
+
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      expectNoEntryPage();
+    });
+
+    it("moves today's outline when the date changes and the tab becomes visible again", () => {
+      const { fixture, el } = renderCalendar();
+      const current = () => el.querySelector('button.cell[aria-current="date"]')?.getAttribute('data-date');
+      expect(current()).toBe('2026-10-02');
+
+      fixture.componentInstance.today.set('2026-10-05');
+      fixture.detectChanges();
+      expect(current()).toBe('2026-10-05');
+
+      vi.setSystemTime(new Date(2026, 9, 3, 0, 5, 0));
+      const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+      document.dispatchEvent(new Event('visibilitychange'));
+      fixture.detectChanges();
+      visibility.mockRestore();
+      expect(current()).toBe('2026-10-03');
+    });
+
     it('loads page 1 of the list when switching back to 清單', () => {
       const { fixture, el } = renderCalendar();
       viewButton(el, '清單').click();

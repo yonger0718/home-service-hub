@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   OnInit,
   computed,
@@ -10,9 +11,10 @@ import {
   untracked,
   viewChild,
 } from '@angular/core';
-import { NgTemplateOutlet } from '@angular/common';
+import { DOCUMENT, NgTemplateOutlet } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
-import { forkJoin } from 'rxjs';
+import { filter, forkJoin, fromEvent } from 'rxjs';
 
 import {
   DailySummary,
@@ -29,6 +31,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { todayIso } from '../dates';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
 
@@ -264,6 +267,7 @@ export class LedgerTimelineComponent implements OnInit {
   private readonly router = inject(Router);
   private readonly layoutMode = inject(LayoutModeService);
   private readonly layout = inject(AccountingLayoutComponent, { optional: true });
+  private readonly document = inject(DOCUMENT);
   private requestId = 0;
   private summaryRequestId = 0;
   private dailyRequestId = 0;
@@ -297,17 +301,17 @@ export class LedgerTimelineComponent implements OnInit {
   readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
   readonly monthText = computed(() => monthLabel(this.month()));
   readonly weekStart = computed(() => this.preference()?.week_start ?? DEFAULT_PREFERENCE.week_start);
-  readonly dayRows = computed(() => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards()).flatMap(day => day.rows));
-  /** The selected day's net from the daily summary (converted to the main currency, like the grid figures). */
+  /** Outlined in the 日曆 grid; refreshed on a month change and when the tab becomes visible (past midnight). */
+  readonly today = signal(todayIso());
+  /** The selected day's rows as the list groups them (`buildDays`), so filters apply to rows and net alike. */
+  private readonly dayGroup = computed(
+    () => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards())[0] ?? null,
+  );
+  readonly dayRows = computed(() => this.dayGroup()?.rows ?? []);
+  /** Net of the rows shown (main-currency rows only, the list's per-day rule); the grid keeps the summary figures. */
   readonly dayNet = computed(() => {
-    const daily = this.daily();
-    const date = this.selectedDay();
-    if (!daily || !date) {
-      return null;
-    }
-    const day = daily.days.find(item => item.date === date);
-    const net = day ? Number(day.income) + Number(day.expense) : 0;
-    return { net, text: formatMoney(net, daily.currency, { sign: true }) };
+    const group = this.dayGroup();
+    return group ? { net: group.net, text: formatSigned(group.net, this.mainCurrency()) } : null;
   });
   readonly selectedDayText = computed(() => {
     const date = this.selectedDay();
@@ -320,6 +324,13 @@ export class LedgerTimelineComponent implements OnInit {
   readonly formatSigned = formatSigned;
 
   constructor() {
+    fromEvent(this.document, 'visibilitychange')
+      .pipe(
+        filter(() => this.document.visibilityState === 'visible'),
+        takeUntilDestroyed(inject(DestroyRef)),
+      )
+      .subscribe(() => this.today.set(todayIso()));
+
     effect(() => {
       if (!this.preference()) {
         return;
@@ -576,6 +587,7 @@ export class LedgerTimelineComponent implements OnInit {
 
   moveMonth(delta: number): void {
     this.selectedDay.set(null);
+    this.today.set(todayIso());
     this.month.update(month => shiftMonth(month, delta));
   }
 

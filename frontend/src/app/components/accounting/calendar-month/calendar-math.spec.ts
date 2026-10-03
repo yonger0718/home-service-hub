@@ -46,4 +46,10 @@ describe('buildCalendar', () => {
     expect(cells.find(cell => cell.date === '2026-10-03')).toMatchObject({ expense: 0, income: 0, count: 0 });
     expect(cells.find(cell => cell.date === '2026-09-30')).toMatchObject({ outside: true, expense: 0, income: 0, count: 0 });
   });
+
+  it('crosses the year boundary for December 2026 Monday-first', () => {
+    const cells = buildCalendar('2026-12', [], 1).flat();
+    expect(cells[0]).toMatchObject({ date: '2026-11-30', outside: true });
+    expect(cells[41]).toMatchObject({ date: '2027-01-10', outside: true });
+  });
 });
