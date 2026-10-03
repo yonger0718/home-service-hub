@@ -206,6 +206,7 @@ EXPECTED_SUBCATEGORY_NAMES = {
     "CATEGORY_FITNESS": "健身",
     "CATEGORY_PUB": "酒吧",
     # 購物
+    "CATEGORY_3C": "3C",
     "CATEGORY_SUPERMARKET": "超市",
     "CATEGORY_CLOTHING": "服飾",
     "CATEGORY_SHOES": "鞋子",
@@ -302,3 +303,10 @@ def test_unknown_category_key_is_title_cased_and_collected():
     assert category_name("Category_foo", unmapped) == "Category_foo"
     assert category_name("午餐", unmapped) == "午餐"
     assert unmapped == {"CATEGORY_FOO_BAR"}
+
+
+def test_digit_bearing_keys_map_or_fall_back_and_are_collected():
+    unmapped: set[str] = set()
+    assert category_name("CATEGORY_3C", unmapped) == "3C"
+    assert category_name("CATEGORY_4K_TV", unmapped) == "4K Tv"
+    assert unmapped == {"CATEGORY_4K_TV"}

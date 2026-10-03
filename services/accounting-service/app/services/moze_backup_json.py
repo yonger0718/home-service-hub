@@ -114,6 +114,7 @@ CATEGORY_NAMES: dict[str, str] = {
     "CATEGORY_FITNESS": "健身",
     "CATEGORY_PUB": "酒吧",
     # 購物
+    "CATEGORY_3C": "3C",
     "CATEGORY_SUPERMARKET": "超市",
     "CATEGORY_CLOTHING": "服飾",
     "CATEGORY_SHOES": "鞋子",
@@ -196,7 +197,7 @@ CATEGORY_NAMES: dict[str, str] = {
     "CATEGORY_MORTGAGE": "房貸",
 }
 
-_CATEGORY_KEY = re.compile(r"^CATEGORY_[A-Z_]+$")
+_CATEGORY_KEY = re.compile(r"^CATEGORY_[A-Z0-9_]+$")
 
 
 def category_name(raw: str, unmapped: set[str] | None = None) -> str:
