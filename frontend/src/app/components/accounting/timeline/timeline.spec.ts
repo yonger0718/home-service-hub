@@ -5,12 +5,14 @@ import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { LedgerEntry, MonthSummary, Preference } from '../../../models/accounting.model';
+import { DailySummary, LedgerEntry, MonthSummary, Preference } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { makeAccount, makeEntry, makePreference } from '../testing/fixtures';
 import { LedgerTimelineComponent, buildDays } from './timeline';
+
+const VIEW_KEY = 'hh.accounting.timelineView';
 
 const ACCOUNTS = [makeAccount({ id: 1, name: '玉山 UNI' }), makeAccount({ id: 7, name: '富邦 J卡' })];
 
@@ -23,6 +25,7 @@ describe('LedgerTimelineComponent', () => {
   });
 
   afterEach(() => {
+    localStorage.removeItem(VIEW_KEY);
     httpMock?.verify();
     httpMock = null;
     vi.useRealTimers();
@@ -53,6 +56,21 @@ describe('LedgerTimelineComponent', () => {
     const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
     req.flush({ items, total, limit: 50, offset: Number(req.request.params.get('offset')) });
     return req;
+  }
+
+  function flushDaily(month: string, body?: Partial<DailySummary>): TestRequest {
+    const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary/daily');
+    expect(req.request.params.get('month')).toBe(month);
+    req.flush({ month, currency: 'TWD', days: [], missing_rates: [], ...body });
+    return req;
+  }
+
+  function expectNoEntryPage(): void {
+    httpMock!.expectNone(r => r.url === '/api/accounting/entries');
+  }
+
+  function viewButton(el: HTMLElement, label: string): HTMLButtonElement {
+    return Array.from(el.querySelectorAll<HTMLButtonElement>('.view-toggle button')).find(button => text(button) === label)!;
   }
 
   function text(node: Element | null | undefined): string {
@@ -272,6 +290,193 @@ describe('LedgerTimelineComponent', () => {
 
     expect(el.querySelectorAll('.row').length).toBe(0);
     expect(el.querySelector('.load-error')).not.toBeNull();
+  });
+
+  describe('calendar view', () => {
+    const OCT: Partial<DailySummary> = {
+      days: [
+        { date: '2026-10-02', expense: '-1234.0000', income: '500.0000', count: 3 },
+        { date: '2026-10-05', expense: '0.0000', income: '50042.0000', count: 2 },
+      ],
+    };
+
+    function renderCalendar(preference: Preference = makePreference()) {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const rendered = render('phone', preference);
+      flushSummary('2026-10');
+      flushDaily('2026-10', OCT);
+      expectNoEntryPage();
+      rendered.fixture.detectChanges();
+      return rendered;
+    }
+
+    it('switches to 日曆 from the radio toggle and remembers it', () => {
+      const { fixture, el } = render();
+      flushSummary('2026-10');
+      flushEntries([makeEntry({ id: 1, name: '午餐' })]);
+      fixture.detectChanges();
+      const group = el.querySelector('.view-toggle')!;
+      expect(group.getAttribute('role')).toBe('radiogroup');
+      expect(group.getAttribute('aria-label')).toBe('檢視模式');
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('true');
+
+      viewButton(el, '日曆').click();
+      fixture.detectChanges();
+      flushDaily('2026-10', OCT);
+      fixture.detectChanges();
+
+      expect(localStorage.getItem(VIEW_KEY)).toBe('calendar');
+      expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('false');
+      expect(el.querySelector('app-calendar-month')).not.toBeNull();
+      expect(el.querySelectorAll('.row').length).toBe(0);
+      expect(el.querySelector('.day')).toBeNull();
+    });
+
+    it('restores 日曆 on init and loads the daily summary instead of an entry page', () => {
+      const { el } = renderCalendar();
+      expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
+      expect(el.querySelectorAll('app-calendar-month button.cell').length).toBe(42);
+      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
+      expect(el.querySelector('.sentinel')).toBeNull();
+      expect(el.querySelector('button.more')).toBeNull();
+    });
+
+    it('falls back to the list for an unknown stored view', () => {
+      localStorage.setItem(VIEW_KEY, 'agenda');
+      const { fixture, el } = render();
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('true');
+    });
+
+    it("loads a tapped day's entries under the grid with the list's row markup", () => {
+      const { fixture, el } = renderCalendar(makePreference({ hide_rewards_on_timeline: true }));
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+
+      (el.querySelector('button.cell[data-date="2026-10-02"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const req = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+      expect(req.request.params.get('date_from')).toBe('2026-10-02');
+      expect(req.request.params.get('date_to')).toBe('2026-10-02');
+      expect(req.request.params.get('limit')).toBe('500');
+      expect(req.request.params.get('offset')).toBe('0');
+      expect(req.request.params.get('hide_rewards')).toBe('true');
+      req.flush({
+        items: [
+          makeEntry({ id: 11, name: '午餐', amount: '-1234.0000' }),
+          makeEntry({ id: 12, kind: 'income', name: '退款', amount: '500.0000' }),
+        ],
+        total: 2,
+        limit: 500,
+        offset: 0,
+      });
+      fixture.detectChanges();
+
+      expect(el.querySelector('button.cell[data-date="2026-10-02"]')!.getAttribute('aria-pressed')).toBe('true');
+      const net = el.querySelector('.day-net b')!;
+      expect(text(net)).toBe('−$734');
+      expect(net.classList).toContain('neg');
+      const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.day-entries .row'));
+      expect(rows.map(row => row.getAttribute('data-entry-id'))).toEqual(['11', '12']);
+      expect(text(rows[0].querySelector('.amt'))).toBe('−$1,234');
+      expect(rows[0].querySelector('.amt')!.classList).toContain('neg');
+      rows[1].click();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 12]);
+
+      (el.querySelector('button.cell[data-date="2026-10-02"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      expect(el.querySelector('.day-entries')).toBeNull();
+      expect(el.querySelector('button.cell[data-date="2026-10-02"]')!.getAttribute('aria-pressed')).toBe('false');
+    });
+
+    it('applies the account filter to the day entries', () => {
+      const { fixture, el } = renderCalendar();
+      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushEntries([]);
+
+      fixture.componentInstance.setAccount('7');
+      fixture.detectChanges();
+      const req = flushEntries([]);
+      expect(req.request.params.getAll('account_id')).toEqual(['7']);
+      expect(req.request.params.get('date_from')).toBe('2026-10-05');
+    });
+
+    it('clears the selected day when the month changes', () => {
+      const { fixture, el } = renderCalendar();
+      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushEntries([makeEntry({ id: 1, entry_date: '2026-10-05' })]);
+      fixture.detectChanges();
+
+      (el.querySelector('.month-next') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushSummary('2026-11');
+      flushDaily('2026-11');
+      expectNoEntryPage();
+      fixture.detectChanges();
+      expect(el.querySelector('.day-entries')).toBeNull();
+      expect(el.querySelector('button.cell.sel')).toBeNull();
+    });
+
+    it('re-reads the daily summary and the open day after an entry write', () => {
+      const { fixture, el } = renderCalendar();
+      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushEntries([]);
+
+      TestBed.inject(AccountingService).deleteEntry(3).subscribe();
+      httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      const req = flushEntries([]);
+      expect(req.request.params.get('date_from')).toBe('2026-10-05');
+    });
+
+    it('notes the currencies the daily figures leave out', () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture, el } = render();
+      flushSummary('2026-10');
+      flushDaily('2026-10', { missing_rates: ['JPY'] });
+      fixture.detectChanges();
+      expect(text(el.querySelector('.missing-rates'))).toBe('部分外幣未換算 (JPY)');
+    });
+
+    it('drops a late daily summary for the previous month', () => {
+      const { fixture, el } = render();
+      flushSummary('2026-10');
+      flushEntries([]);
+      viewButton(el, '日曆').click();
+      fixture.detectChanges();
+      const late = httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary/daily');
+
+      (el.querySelector('.month-next') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushSummary('2026-11');
+      flushDaily('2026-11');
+      late.flush({ month: '2026-10', currency: 'TWD', days: OCT.days, missing_rates: [] });
+      fixture.detectChanges();
+      expect(el.querySelector('button.cell[data-date="2026-10-02"]')).toBeNull();
+      expect(el.querySelectorAll('app-calendar-month .fig').length).toBe(0);
+    });
+
+    it('loads page 1 of the list when switching back to 清單', () => {
+      const { fixture, el } = renderCalendar();
+      viewButton(el, '清單').click();
+      fixture.detectChanges();
+
+      const req = flushEntries([makeEntry({ id: 1, name: '午餐' })]);
+      fixture.detectChanges();
+      expect(req.request.params.get('offset')).toBe('0');
+      expect(req.request.params.get('limit')).toBe('50');
+      expect(localStorage.getItem(VIEW_KEY)).toBe('list');
+      expect(el.querySelector('app-calendar-month')).toBeNull();
+      expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['午餐']);
+    });
   });
 
   it('reloads the account filter options after an account write', () => {
