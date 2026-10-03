@@ -58,6 +58,13 @@ hand) or, with no original, `settlement_original_missing`. Future-dated and disa
 whose original is future-dated or disabled links by target to another imported original if one exists; otherwise it is
 reviewed as `settlement_original_missing`.
 
+MOZE's own "debt closed" flag, `AHTarget.isSettle`, is the authority: every imported receivable / payable original
+whose target has `isSettle = true` is imported with `is_closed = true` (counted in `debts_closed_from_target`), even
+where its settlements do not net (one collection covering several originals, another currency, rounding). A closed
+debt reads `open_amount` 0 and `is_settled` true, leaves the counterparty's `open_amounts` together with the
+settlements linked to it, and refuses `POST /entries/{id}/settle` (422 on `is_closed`). Links and review flags are
+kept as they are; each full replace sets the flag again from the backup.
+
 API
 ---
 

@@ -430,10 +430,19 @@ def delete_project(db: Session, project_id: int) -> None:
 
 
 def _open_amounts(db: Session) -> dict[int, list[dict]]:
-    """Per counterparty and currency: −Σ amount over its receivable and payable entries (settlements included)."""
+    """Per counterparty and currency: −Σ amount over its receivable and payable entries (settlements included).
+
+    Closed debts (`is_closed`) and the settlements linked to them are left out: MOZE counts them as settled.
+    """
+    closed = select(LedgerEntry.id).where(LedgerEntry.is_closed).scalar_subquery()
     rows = db.execute(
         select(LedgerEntry.counterparty_id, LedgerEntry.currency, func.sum(LedgerEntry.amount))
-        .where(LedgerEntry.counterparty_id.is_not(None), LedgerEntry.kind.in_(("receivable", "payable")))
+        .where(
+            LedgerEntry.counterparty_id.is_not(None),
+            LedgerEntry.kind.in_(("receivable", "payable")),
+            ~LedgerEntry.is_closed,
+            or_(LedgerEntry.settles_entry_id.is_(None), LedgerEntry.settles_entry_id.not_in(closed)),
+        )
         .group_by(LedgerEntry.counterparty_id, LedgerEntry.currency)
         .order_by(LedgerEntry.currency)
     )

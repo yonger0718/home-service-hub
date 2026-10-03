@@ -539,6 +539,7 @@ class EntryResult:
     package_members: dict[str, list[LedgerEntry]] = field(default_factory=dict)  # AHPackage id -> grouped entries
     reward_source_from_package: int = 0  # rewards whose rewardRecordID names an imported package
     settlements_linked: Counter = field(default_factory=lambda: Counter(by_related_id=0, by_target=0))
+    debts_closed_from_target: int = 0
 
 
 def _account_currency(data: BackupData, main_currency: str) -> dict[str, str]:
@@ -826,6 +827,23 @@ def _link_settlements(data: BackupData, result: EntryResult) -> None:
             _review(entry, "settlement_overflow", result)
 
 
+def _close_settled_debts(data: BackupData, result: EntryResult) -> None:
+    """Close every imported receivable / payable original whose `AHTarget` MOZE marks settled (`isSettle`).
+
+    MOZE's flag is the authority: it closes debts whose settlements do not net (one collection covering several
+    originals, another currency, rounding). Links and review flags are left as they are.
+    """
+    settled_targets = {target["identifier"] for target in data.targets if target["isSettle"]}
+    for record in data.records:
+        entry = result.entries.get(record["identifier"])
+        if (
+            entry is not None and record["target"] in settled_targets and record["type"] in SETTLED_TYPES
+            and entry.kind in ("receivable", "payable") and not entry.is_settlement
+        ):
+            entry.is_closed = True
+            result.debts_closed_from_target += 1
+
+
 def _link_rewards_and_attachments(session: Session, data: BackupData, settings: SettingsResult, result: EntryResult) -> None:
     attachments = []
     for record in data.records:
@@ -993,6 +1011,7 @@ def insert_entries(
     _link_transfers(data, result)
     _link_refunds(data, result)
     _link_settlements(data, result)
+    _close_settled_debts(data, result)
     _link_groups(session, data, result)  # before rewards: a reward may name a package as its source
     _link_rewards_and_attachments(session, data, settings, result)
     session.flush()
@@ -1187,6 +1206,7 @@ def replace_ledger_from_backup(
         "attachments": entries.attachments,
         "counterparties": len(set(settings.counterparties.values())),
         "settlements_linked": dict(entries.settlements_linked),
+        "debts_closed_from_target": entries.debts_closed_from_target,
         "needs_review": {
             "count": sum(1 for entry in entries.entries.values() if entry.needs_review),
             "reasons": dict(sorted(entries.needs_review.items())),

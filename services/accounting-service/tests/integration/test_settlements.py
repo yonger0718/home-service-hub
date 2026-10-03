@@ -56,6 +56,22 @@ def test_partial_collection(client, db_session, seed):
     assert (detail["open_amount"], detail["is_settled"]) == ("220.0000", False)
 
 
+def test_settling_a_closed_debt_is_refused(client, db_session, seed):
+    card, wallet = seed.account("C"), seed.account("W")
+    receivable = seed.entry(card, "-420", kind="receivable", counterparty_id=seed.counterparty("Alan").id)
+    receivable.is_closed = True
+    db_session.commit()
+
+    response = client.post(
+        f"/entries/{receivable.id}/settle", json={"account_id": wallet.id, "amount": "100", "entry_date": LATER}
+    )
+
+    assert response.status_code == 422 and _error_fields(response) == {"is_closed"}
+    assert "已結清" in response.json()["detail"][0]["msg"]
+    detail = client.get(f"/entries/{receivable.id}").json()
+    assert (detail["is_closed"], detail["open_amount"], detail["is_settled"]) == (True, "0.0000", True)
+
+
 def test_repayment_of_a_payable_is_negative_and_settles_it_fully(db_session, seed):
     bank = seed.account("銀行", opening="5000")
     alan = seed.counterparty("Alan")

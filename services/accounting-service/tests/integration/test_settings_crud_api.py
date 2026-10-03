@@ -405,6 +405,18 @@ def test_counterparty_open_amounts_per_currency(client, db_session, seed):
     ]
 
 
+def test_counterparty_open_amounts_leave_out_closed_debts_and_their_settlements(client, db_session, seed):
+    wallet, alan = seed.account("錢包"), seed.counterparty("Alan")
+    closed = seed.entry(wallet, "-420", kind="receivable", counterparty_id=alan.id)
+    closed.is_closed = True
+    seed.entry(wallet, "400", kind="receivable", counterparty_id=alan.id, settles_entry_id=closed.id, is_settlement=True)
+    seed.entry(wallet, "-100", kind="receivable", counterparty_id=alan.id)
+    db_session.commit()
+
+    rows = {row["name"]: row for row in client.get("/counterparties").json()}
+    assert rows["Alan"]["open_amounts"] == [{"currency": "TWD", "amount": "100.0000"}]
+
+
 def test_counterparty_rename_shows_in_listings_and_delete_rule(client, db_session, seed):
     wallet = seed.account()
     alan, spare = seed.counterparty("Alan"), seed.counterparty("Spare")

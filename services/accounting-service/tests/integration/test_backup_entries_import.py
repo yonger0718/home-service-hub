@@ -437,6 +437,31 @@ def test_settlement_without_an_original_is_flagged(db_session, backup, related):
     assert summary["settlements_linked"] == {"by_related_id": 0, "by_target": 0}
 
 
+def test_originals_of_a_target_moze_marks_settled_are_closed(db_session, backup):
+    # isSettle is MOZE's own "debt closed": it closes the originals even where the amounts do not net.
+    summary = _import_backup(db_session, backup.data(
+        accounts=[_wallet(backup)],
+        targets=[backup.target("T-DONE", "Alan", isSettle=True), backup.target("T-OPEN", "Bob", isSettle=False)],
+        records=[
+            backup.record("R-LEND", type_=3, price=-420, target="T-DONE"),
+            backup.record("R-BACK", type_=5, price=400, target="T-DONE", date="2026-09-05T12:00:00"),
+            backup.record("R-BORROW", type_=4, price=1000, target="T-DONE"),
+            backup.record("R-OPEN", type_=3, price=-300, target="T-OPEN"),
+            backup.record("R-OPEN-BACK", type_=5, price=100, target="T-OPEN", date="2026-09-05T12:00:00"),
+        ],
+    ))
+    closed = {moze_id: _by_moze_id(db_session, moze_id).is_closed for moze_id in ("R-LEND", "R-BACK", "R-BORROW", "R-OPEN", "R-OPEN-BACK")}
+    assert closed == {"R-LEND": True, "R-BACK": False, "R-BORROW": True, "R-OPEN": False, "R-OPEN-BACK": False}
+    assert summary["debts_closed_from_target"] == 2
+
+    lend = ledger_service.get_entry_detail(db_session, _by_moze_id(db_session, "R-LEND").id)
+    assert (lend["is_closed"], lend["open_amount"], lend["is_settled"]) == (True, Decimal("0.0000"), True)
+    still_open = ledger_service.get_entry_detail(db_session, _by_moze_id(db_session, "R-OPEN").id)
+    assert (still_open["is_closed"], still_open["open_amount"], still_open["is_settled"]) == (False, Decimal("200.0000"), False)
+    amounts = {row["name"]: row["open_amounts"] for row in settings_service.list_counterparties(db_session)}
+    assert amounts == {"Alan": [], "Bob": [{"currency": "TWD", "amount": Decimal("200.0000")}]}
+
+
 def test_collections_and_repayments_are_flagged_as_settlements(db_session, backup):
     data = backup.data(
         accounts=[_wallet(backup)], targets=[backup.target("T-1", "Alan")],

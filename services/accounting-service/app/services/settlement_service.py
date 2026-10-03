@@ -54,6 +54,8 @@ def settle(db: Session, entry_id: int, payload: SettleIn) -> int:
     assert_entry_editable(db, target)
     if target.kind not in SETTLE_SIGNS or target.is_settlement:
         raise ValidationError("kind", "only receivable and payable entries can be settled")
+    if target.is_closed:
+        raise ValidationError("is_closed", "已結清: the debt is closed")
     account = _same_currency_account(db, payload.account_id, target.currency)
     remaining = open_amount(db, target)
     if payload.amount > remaining:
