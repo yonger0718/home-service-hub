@@ -213,7 +213,7 @@ A leg still unpaired after all three passes SHALL be imported with `transfer_gro
 
 ### Requirement: Transactional full replace
 
-Every import entry point (CLI and REST) SHALL first acquire one shared PostgreSQL advisory lock (a fixed key), held until the import finishes.
+Every import entry point (CLI and REST) SHALL first acquire one shared PostgreSQL advisory lock (a fixed key, shared with the backup importer), held until the import finishes.
 
 If the lock is already held, the second import SHALL be refused immediately:
 
@@ -225,15 +225,15 @@ A refused import SHALL write nothing, not even an `import_run` row. Dry runs SHA
 An import SHALL write the ledger in a single database transaction (the *ledger transaction*) that performs these steps in order:
 
 1. Apply any account renames supplied with the import (see "Account renames and disappearing accounts").
-2. Delete every `ledger_entry` with `source = 'moze_import'`.
+2. Delete every `ledger_entry` and `entry_group` whose `source` is `moze_import` or `moze_backup`, or whose `moze_id` is set, together with their `entry_reward_rule` rows. `reward_rule` rows SHALL NOT be touched by the CSV importer.
 3. For every account named in the file:
-   - if it exists, update its `opening_balance` and `currency` and set `is_archived = false`;
+   - if it exists, update its `opening_balance` and set `is_archived = false`; its settings columns SHALL be preserved; `currency` SHALL be updated only when the account has no remaining entries of any `source` after step 2, and a differing currency on an account that still has entries SHALL fail the import naming the account;
    - otherwise, create it.
 4. For every account **not** named in the file that has no remaining entries: set `opening_balance = 0` and `is_archived = true`.
-5. Insert all entries parsed from the file.
-6. Delete categories and projects that are no longer used. A category counts as used if any remaining entry references it **or any of its descendants**. A main category is therefore kept while any of its sub-categories is used.
+5. Insert all entries parsed from the file with `source = 'moze_import'`, `posted_date = entry_date`, and the row's 對象 resolved to a `counterparty` row (created when missing).
+6. Delete categories, projects and counterparties that are no longer used. A category counts as used if any remaining entry references it **or any of its descendants**. A main category is therefore kept while any of its sub-categories is used.
 
-Accounts SHALL NOT be deleted by an import. Entries whose `source` is not `moze_import` SHALL NOT be touched. Any error SHALL roll back the entire ledger transaction.
+Accounts SHALL NOT be deleted by an import. Entries whose `source` is `manual`, `hermes` or `rule` SHALL NOT be touched. Any error SHALL roll back the entire ledger transaction.
 
 When the configuration flag `ACCOUNTING_IMPORT_LOCKED = true` is set, the importer SHALL refuse to run.
 
@@ -267,6 +267,16 @@ When the configuration flag `ACCOUNTING_IMPORT_LOCKED = true` is set, the import
 - **GIVEN** `ACCOUNTING_IMPORT_LOCKED = true`
 - **WHEN** an import is requested by any path (CLI or REST)
 - **THEN** it SHALL be refused with a message that import is locked, and nothing SHALL change
+
+#### Scenario: CSV import replaces a backup import
+- **GIVEN** the ledger was last filled by a backup import, plus 2 manual entries, one attached to an imported rule
+- **WHEN** a CSV import runs
+- **THEN** every `moze_backup` entry and group SHALL be gone, the CSV entries SHALL be present, the 2 manual entries SHALL be unchanged, and the rule and its attachment SHALL still exist
+
+#### Scenario: Account settings survive a CSV re-import
+- **GIVEN** an account with `is_credit = true` and `closing_day = 15`
+- **WHEN** a CSV import updates that account's opening balance
+- **THEN** `is_credit` and `closing_day` SHALL be unchanged
 
 ### Requirement: Account renames and disappearing accounts
 
