@@ -221,6 +221,27 @@ export class EntryDetailComponent implements OnInit {
     this.panel() === 'settle' ? Number(this.detail()?.open_amount ?? 0) : this.refundable(),
   );
   readonly settleLabel = computed(() => (this.detail()?.kind === 'payable' ? '新增還款' : '新增收款'));
+  /**
+   * A debt original once something came back (or MOZE closed it): `原始 $420 · 已收 $200 · 剩餘 $220` (已還 for a
+   * payable; 已結清 in place of 剩餘 when closed). 已收 / 已還 is Σ of the linked settlements.
+   */
+  readonly breakdown = computed(() => {
+    const detail = this.detail();
+    if (!detail || detail.open_amount === null || (detail.kind !== 'receivable' && detail.kind !== 'payable')) {
+      return null;
+    }
+    const back = Math.abs(detail.settled_by.reduce((sum, settlement) => sum + Number(settlement.amount), 0));
+    if (back === 0 && !detail.is_closed) {
+      return null;
+    }
+    const currency = detail.currency;
+    const parts = [
+      `原始 ${formatMoney(Math.abs(Number(detail.amount)), currency)}`,
+      `${detail.kind === 'payable' ? '已還' : '已收'} ${formatMoney(back, currency)}`,
+      detail.is_closed ? '已結清' : `剩餘 ${formatMoney(detail.open_amount, currency)}`,
+    ];
+    return parts.join(' · ');
+  });
 
   ngOnInit(): void {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {

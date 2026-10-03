@@ -90,12 +90,36 @@ describe('EntryDetailComponent', () => {
     expect(el(fixture).querySelector('.dgrid')?.textContent).toContain('Alan');
   });
 
+  it('breaks a partly collected receivable down into 原始 · 已收 · 剩餘', () => {
+    const fixture = render(RECEIVABLE);
+    expect(el(fixture).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 $420 · 已收 $200 · 剩餘 $220');
+    // Above the settlements list.
+    const related = el(fixture).querySelector('.related')!;
+    expect(el(fixture).querySelector('.breakdown')!.compareDocumentPosition(related) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('breaks a partly repaid payable down into 原始 · 已還 · 剩餘', () => {
+    const payable = render({
+      ...RECEIVABLE, kind: 'payable', amount: '300.0000', open_amount: '100.0000',
+      settled_by: [entry({ id: 51, kind: 'payable', amount: '-200.0000', name: '還款' })],
+    });
+    expect(el(payable).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 $300 · 已還 $200 · 剩餘 $100');
+  });
+
+  it('shows no breakdown before anything was collected', () => {
+    const fixture = render({ ...RECEIVABLE, open_amount: '420.0000', settled_by: [] });
+    expect(el(fixture).querySelector('.breakdown')).toBeNull();
+    expect(el(fixture).querySelector('.open-amount')?.textContent?.trim()).toBe('剩餘 $420');
+  });
+
   it('shows 已結清 and no 新增收款 on a debt MOZE closed with a partial settlement', () => {
     const fixture = render({ ...RECEIVABLE, is_closed: true, open_amount: '220.0000', is_settled: false });
 
     expect(el(fixture).querySelector('.settled')?.textContent?.trim()).toBe('已結清');
     expect(el(fixture).querySelector('.open-amount')).toBeNull();
     expect(el(fixture).querySelector('.action-settle')).toBeNull();
+    // What was actually collected (the settlements), then 已結清 for the rest MOZE wrote off.
+    expect(el(fixture).querySelector('.breakdown')?.textContent?.trim()).toBe('原始 $420 · 已收 $200 · 已結清');
     // The collection already made stays listed.
     expect(el(fixture).querySelector('.related')?.textContent).toContain('收款');
   });

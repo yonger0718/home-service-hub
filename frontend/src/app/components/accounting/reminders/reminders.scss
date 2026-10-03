@@ -128,7 +128,7 @@
 }
 
 .debt-row {
-  grid-template-areas: 'ico name totals' 'ico count last';
+  grid-template-areas: 'ico name last' 'ico sides sides';
 }
 
 .countdown {
@@ -171,7 +171,6 @@
 }
 
 .due-date,
-.count,
 .last {
   color: var(--app-text-muted);
   font-size: 0.72rem;
@@ -182,25 +181,47 @@
   grid-area: due;
 }
 
-.count {
-  grid-area: count;
-  overflow-wrap: anywhere;
-}
-
 .last {
   grid-area: last;
   text-align: right;
   white-space: nowrap;
 }
 
-.totals {
+/* 應收 / 應付, one line each; at 390 px the count wraps under its total. */
+.sides {
   display: flex;
   flex-direction: column;
+  gap: 1px;
+  grid-area: sides;
+  min-width: 0;
+}
+
+.side {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  min-width: 0;
+}
+
+.side-total {
+  font-size: 0.85rem;
   font-variant-numeric: tabular-nums;
   font-weight: 800;
-  grid-area: totals;
+  overflow-wrap: anywhere;
+}
+
+.side-count {
+  color: var(--app-text-muted);
+  font-size: 0.72rem;
+}
+
+/* An expanded closed original: 已結清 instead of a remaining. */
+.amt.muted {
+  color: var(--app-text-muted);
+  font-size: inherit;
+  font-weight: 700;
   text-align: right;
-  white-space: nowrap;
 }
 
 .debt-entries {

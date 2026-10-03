@@ -114,6 +114,7 @@ export function makeEntry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
     needs_review: false,
     is_settlement: false,
     is_closed: false,
+    open_amount: null,
     running_balance: null,
     source: 'manual',
     moze_id: null,

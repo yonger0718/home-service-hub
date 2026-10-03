@@ -30,12 +30,15 @@ const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TW
 const BEA: Counterparty = { id: 2, name: 'Bea', open_amounts: [{ currency: 'TWD', amount: '-300.0000' }, { currency: 'JPY', amount: '5000.0000' }] };
 const SETTLED: Counterparty = { id: 3, name: 'Cy', open_amounts: [] };
 
+// `open_amount` is what is left on each original (74 had 250 collected, 71 had 200 repaid).
 const OPEN_ENTRIES = [
-  makeEntry({ id: 71, kind: 'payable', amount: '300.0000', counterparty_id: 2, counterparty: 'Bea', entry_date: '2026-09-25' }),
-  makeEntry({ id: 72, kind: 'receivable', amount: '-50.0000', counterparty_id: 1, counterparty: 'Alan', entry_date: '2026-09-20' }),
-  makeEntry({ id: 73, kind: 'receivable', amount: '-5000.0000', currency: 'JPY', counterparty_id: 2, counterparty: 'Bea', entry_date: '2026-09-10' }),
-  makeEntry({ id: 74, kind: 'receivable', amount: '-420.0000', counterparty_id: 1, counterparty: 'Alan', entry_date: '2026-09-01' }),
+  makeEntry({ id: 71, kind: 'payable', amount: '300.0000', open_amount: '100.0000', counterparty_id: 2, counterparty: 'Bea', entry_date: '2026-09-25' }),
+  makeEntry({ id: 72, kind: 'receivable', amount: '-50.0000', open_amount: '50.0000', counterparty_id: 1, counterparty: 'Alan', entry_date: '2026-09-20' }),
+  makeEntry({ id: 73, kind: 'receivable', amount: '-5000.0000', open_amount: '5000.0000', currency: 'JPY', counterparty_id: 2, counterparty: 'Bea', entry_date: '2026-09-10' }),
+  makeEntry({ id: 74, kind: 'receivable', amount: '-420.0000', open_amount: '170.0000', counterparty_id: 1, counterparty: 'Alan', entry_date: '2026-09-01' }),
 ];
+
+const ALAN_OPEN = OPEN_ENTRIES.filter(entry => entry.counterparty_id === 1);
 
 describe('AccountingRemindersComponent', () => {
   let http: HttpTestingController;
@@ -192,24 +195,36 @@ describe('AccountingRemindersComponent', () => {
     expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 9]);
   });
 
-  it('lists counterparties with an open amount, most recent first, with totals, counts and last date', () => {
+  it('lists counterparties with open rows, most recent first, with 應收 and 應付 totals, counts and last date', () => {
     const { el } = render([], [ALAN, SETTLED, BEA], OPEN_ENTRIES);
 
     const rows = Array.from(el.querySelectorAll('.debt-row'));
     expect(rows.map(row => text(row.querySelector('.name')))).toEqual(['Bea', 'Alan']);
-    const beaTotals = Array.from(rows[0].querySelectorAll('.total'));
-    expect(beaTotals.map(text)).toEqual(['−$300', '+¥5,000']);
-    expect(beaTotals[0].classList).toContain('neg');
-    expect(beaTotals[1].classList).toContain('pos');
-    expect(text(rows[0].querySelector('.count'))).toBe('1 筆應收款項 · 1 筆應付款項');
+    const beaSides = Array.from(rows[0].querySelectorAll('.side'));
+    expect(beaSides.map(side => text(side.querySelector('.side-total')))).toEqual(['應收 +¥5,000', '應付 −$100']);
+    expect(beaSides.map(side => text(side.querySelector('.side-count')))).toEqual(['1 筆應收款項', '1 筆應付款項']);
+    expect(beaSides[0].querySelector('.side-total')!.classList).toContain('pos');
+    expect(beaSides[1].querySelector('.side-total')!.classList).toContain('neg');
     expect(text(rows[0].querySelector('.last'))).toBe('2026/09/25');
-    expect(text(rows[1].querySelector('.total'))).toBe('+$220');
-    expect(text(rows[1].querySelector('.count'))).toBe('2 筆應收款項');
+    // Remaining amounts, not the originals: 50 + (420 − 250).
+    const alanSides = Array.from(rows[1].querySelectorAll('.side'));
+    expect(alanSides.map(side => [text(side.querySelector('.side-total')), text(side.querySelector('.side-count'))])).toEqual([
+      ['應收 +$220', '2 筆應收款項'],
+    ]);
     expect(text(rows[1].querySelector('.last'))).toBe('2026/09/20');
   });
 
+  it('keeps both sides of a counterparty whose receivables and payables net to zero', () => {
+    const dee: Counterparty = { id: 4, name: 'Dee', open_amounts: [] };
+    const { el } = render([], [dee], [
+      makeEntry({ id: 81, kind: 'receivable', amount: '-100.0000', open_amount: '100.0000', counterparty_id: 4, entry_date: '2026-09-02' }),
+      makeEntry({ id: 82, kind: 'payable', amount: '100.0000', open_amount: '100.0000', counterparty_id: 4, entry_date: '2026-09-03' }),
+    ]);
+    expect(Array.from(el.querySelectorAll('.debt-row .side-total')).map(text)).toEqual(['應收 +$100', '應付 −$100']);
+  });
+
   it("expands a counterparty's open entries as timeline rows that open the detail", () => {
-    const { fixture, el } = render([], [ALAN], OPEN_ENTRIES);
+    const { fixture, el } = render([], [ALAN], ALAN_OPEN);
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
     const toggle = el.querySelector<HTMLButtonElement>('.debt-row')!;
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
@@ -224,7 +239,12 @@ describe('AccountingRemindersComponent', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.debt-entries .row'));
     expect(rows.map(row => row.dataset['entryId'])).toEqual(['72', '74']);
-    expect(text(rows[0].querySelector('.amt'))).toBe('−$50');
+    // The signed remaining, with the original and what came back once something was collected.
+    expect(text(rows[0].querySelector('.amt'))).toBe('+$50 待收');
+    expect(rows[0].querySelector('.amt')!.classList).toContain('pos');
+    expect(rows[0].querySelector('.amt .remaining-detail')).toBeNull();
+    expect(text(rows[1].querySelector('.amt'))).toBe('+$170 待收 原始 $420 · 已收 $250');
+    expect(text(rows[1].querySelector('.amt .remaining-detail'))).toBe('原始 $420 · 已收 $250');
     rows[1].click();
     // ✕ on the detail comes back here.
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 74], { state: { closeTo: 'reminders' } });
@@ -234,8 +254,29 @@ describe('AccountingRemindersComponent', () => {
     expect(el.querySelector('.debt-entries')).toBeNull();
   });
 
+  it('shows a payable as −remaining 待還 with what was repaid, and a closed original as 已結清', () => {
+    const { fixture, el } = render([], [BEA], OPEN_ENTRIES);
+    el.querySelector<HTMLButtonElement>('.debt-row')!.click();
+    fixture.detectChanges();
+    const closed = makeEntry({
+      id: 75, kind: 'payable', amount: '80.0000', open_amount: '0.0000', is_closed: true, counterparty_id: 2, entry_date: '2026-09-05',
+    });
+    http
+      .expectOne(r => r.params.get('counterparty_id') === '2')
+      .flush({ items: [OPEN_ENTRIES[0], closed], total: 2, limit: 500, offset: 0 });
+    fixture.detectChanges();
+
+    const rows = Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .row'));
+    expect(text(rows[0].querySelector('.amt'))).toBe('−$100 待還 原始 $300 · 已還 $200');
+    expect(rows[0].querySelector('.amt')!.classList).toContain('neg');
+    expect(text(rows[1].querySelector('.amt'))).toBe('已結清');
+    expect(rows[1].querySelector('.amt')!.classList).toContain('muted');
+    expect(rows[1].querySelector('.amt')!.classList).not.toContain('neg');
+    expect(rows[1].dataset['entryId']).toBe('75');
+  });
+
   it('switches between 全部, 信用卡帳單 and 借還款追蹤, cards first in 全部', () => {
-    const { fixture, el } = render([SOON], [ALAN], OPEN_ENTRIES);
+    const { fixture, el } = render([SOON], [ALAN], ALAN_OPEN);
     flushBill(9, '-100.0000');
     fixture.detectChanges();
 
@@ -270,7 +311,7 @@ describe('AccountingRemindersComponent', () => {
   });
 
   it('reloads after an entry write and keeps an expanded counterparty open with fresh rows', () => {
-    const { fixture, el } = render([SOON], [ALAN], OPEN_ENTRIES);
+    const { fixture, el } = render([SOON], [ALAN], ALAN_OPEN);
     flushBill(9, '-100.0000');
     el.querySelector<HTMLButtonElement>('.debt-row')!.click();
     fixture.detectChanges();
@@ -287,7 +328,7 @@ describe('AccountingRemindersComponent', () => {
     fixture.detectChanges();
 
     expect(el.querySelector('.card-row')).toBeNull();
-    expect(text(el.querySelector('.debt-row .count'))).toBe('1 筆應收款項');
+    expect(text(el.querySelector('.debt-row .side-count'))).toBe('1 筆應收款項');
     expect(Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .row')).map(row => row.dataset['entryId'])).toEqual(['74']);
   });
 
@@ -330,7 +371,7 @@ describe('AccountingRemindersComponent', () => {
     TestBed.inject(AccountingService).deleteEntry(1).subscribe();
     http.expectOne(r => r.method === 'DELETE').flush(null);
     fixture.detectChanges();
-    flushLoad([], [ALAN], OPEN_ENTRIES);
+    flushLoad([], [ALAN], ALAN_OPEN);
     first.accounts.flush([]);
     first.counterparties.flush([]);
     first.open.flush({ items: [], total: 0, limit: 500, offset: 0 });

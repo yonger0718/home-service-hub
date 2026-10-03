@@ -14,6 +14,9 @@ import { TimelineRow, buildDays } from '../timeline/timeline';
 /** Open receivables / payables read for the counts and dates, and per expanded counterparty. */
 export const REMINDER_ENTRY_LIMIT = 500;
 
+/** A timeline row with the reminder centre's optional remaining slot. */
+export type ReminderEntryRow = TimelineRow & { remaining: DebtRemaining | null };
+
 export type ReminderTab = 'all' | 'cards' | 'debts';
 
 export const REMINDER_TABS: { key: ReminderTab; label: string }[] = [
@@ -35,13 +38,56 @@ export interface CardReminder {
   soon: boolean;
 }
 
+/** One side of a counterparty: what it owes the owner (應收) or what the owner owes it (應付). */
+export interface DebtSide {
+  kind: 'receivable' | 'payable';
+  /** `應收 +$220 · +¥5,000` / `應付 −$100`, per currency. */
+  totalText: string;
+  countText: string;
+}
+
 export interface DebtReminder {
   id: number;
   name: string;
-  totals: { key: string; text: string; tone: 'in' | 'out' }[];
-  countText: string;
-  /** Latest entry date among the open entries; null when none was read (e.g. beyond the read limit). */
-  last: string | null;
+  /** 應收 then 應付; a side with nothing open is left out. */
+  sides: DebtSide[];
+  /** Latest entry date among the open entries. */
+  last: string;
+}
+
+/** A debt original's remaining in the expanded rows (replaces the entry amount). */
+export interface DebtRemaining {
+  /** `+$170 待收` / `−$100 待還` / `已結清`. */
+  text: string;
+  tone: 'in' | 'out' | 'muted';
+  /** `原始 $420 · 已收 $250` once something came back; null otherwise. */
+  detail: string | null;
+}
+
+/** What is left on an open receivable / payable original; `open_amount` falls back to the whole amount. */
+function openOf(entry: LedgerEntry): number {
+  return Number(entry.open_amount ?? Math.abs(Number(entry.amount)));
+}
+
+export function debtRemaining(entry: LedgerEntry): DebtRemaining | null {
+  if (entry.kind !== 'receivable' && entry.kind !== 'payable') {
+    return null;
+  }
+  if (entry.is_closed) {
+    return { text: '已結清', tone: 'muted', detail: null };
+  }
+  const receivable = entry.kind === 'receivable';
+  const open = openOf(entry);
+  const original = Math.abs(Number(entry.amount));
+  const back = Math.round((original - open) * 1e4) / 1e4;
+  return {
+    text: `${formatSigned(receivable ? open : -open, entry.currency)} ${receivable ? '待收' : '待還'}`,
+    tone: receivable ? 'in' : 'out',
+    detail:
+      back > 0
+        ? `原始 ${formatMoney(original, entry.currency)} · ${receivable ? '已收' : '已還'} ${formatMoney(back, entry.currency)}`
+        : null,
+  };
 }
 
 /** Cards with something left to pay on their current statement, soonest due first. */
@@ -75,36 +121,41 @@ export function cardReminders(
 }
 
 /**
- * Counterparties with a non-zero open amount, most recent open entry first. Totals are `open_amounts` (receivable
- * positive, payable negative); counts and the date come from the open entries.
+ * Counterparties with open receivable / payable rows (`GET /entries?open=true`), most recent first: 應收 and 應付 each
+ * summed from the rows' `open_amount` per currency, so the two sides never net each other out.
  */
 export function debtReminders(counterparties: Counterparty[], openEntries: LedgerEntry[]): DebtReminder[] {
-  const rows = counterparties
-    .filter(counterparty => counterparty.open_amounts.some(open => Number(open.amount) !== 0))
-    .map(counterparty => {
-      const entries = openEntries.filter(entry => entry.counterparty_id === counterparty.id);
-      const receivable = entries.filter(entry => entry.kind === 'receivable').length;
-      const payable = entries.filter(entry => entry.kind === 'payable').length;
-      const counts = [
-        receivable ? `${receivable} 筆應收款項` : null,
-        payable ? `${payable} 筆應付款項` : null,
-      ].filter(Boolean);
-      const last = entries.reduce<string | null>((latest, entry) => (!latest || entry.entry_date > latest ? entry.entry_date : latest), null);
-      return {
-        id: counterparty.id,
-        name: counterparty.name,
-        totals: counterparty.open_amounts
-          .filter(open => Number(open.amount) !== 0)
-          .map(open => ({
-            key: open.currency,
-            text: formatSigned(open.amount, open.currency),
-            tone: Number(open.amount) > 0 ? ('in' as const) : ('out' as const),
-          })),
-        countText: counts.join(' · '),
-        last,
-      };
-    });
-  return rows.sort((a, b) => (b.last ?? '').localeCompare(a.last ?? '') || a.name.localeCompare(b.name));
+  const names = new Map(counterparties.map(counterparty => [counterparty.id, counterparty.name]));
+  const byCounterparty = new Map<number, LedgerEntry[]>();
+  for (const entry of openEntries) {
+    if (entry.counterparty_id !== null && (entry.kind === 'receivable' || entry.kind === 'payable')) {
+      byCounterparty.set(entry.counterparty_id, [...(byCounterparty.get(entry.counterparty_id) ?? []), entry]);
+    }
+  }
+  const rows: DebtReminder[] = [];
+  for (const [id, entries] of byCounterparty) {
+    const sides: DebtSide[] = [];
+    for (const kind of ['receivable', 'payable'] as const) {
+      const ofKind = entries.filter(entry => entry.kind === kind);
+      if (ofKind.length === 0) {
+        continue;
+      }
+      const totals = new Map<string, number>();
+      for (const entry of ofKind) {
+        totals.set(entry.currency, (totals.get(entry.currency) ?? 0) + openOf(entry));
+      }
+      const sign = kind === 'receivable' ? 1 : -1;
+      const texts = [...totals].map(([currency, total]) => formatSigned(sign * total, currency));
+      sides.push({
+        kind,
+        totalText: `${kind === 'receivable' ? '應收' : '應付'} ${texts.join(' · ')}`,
+        countText: `${ofKind.length} 筆${kind === 'receivable' ? '應收' : '應付'}款項`,
+      });
+    }
+    const last = entries.reduce((latest, entry) => (entry.entry_date > latest ? entry.entry_date : latest), '');
+    rows.push({ id, name: names.get(id) ?? entries[0].counterparty ?? '', sides, last });
+  }
+  return rows.sort((a, b) => b.last.localeCompare(a.last) || a.name.localeCompare(b.name));
 }
 
 /** `/accounting/reminders` (提醒中心): unpaid card statements and open receivables / payables. */
@@ -160,9 +211,20 @@ export class AccountingRemindersComponent {
     const debts = this.showDebts() ? this.debtRows().length : 0;
     return cards === 0 && debts === 0 && (!this.showCards() || this.billsSettled());
   });
-  readonly expandedRows = computed<TimelineRow[]>(() =>
-    buildDays(this.expandedEntries() ?? [], 'TWD', false).flatMap(day => day.rows),
-  );
+  /**
+   * The expanded counterparty's open entries as timeline rows, one per entry (a split group's debt line is its own
+   * row here), each with its signed remaining in the row's optional `remaining` slot.
+   */
+  readonly expandedRows = computed<ReminderEntryRow[]>(() => {
+    const entries = this.expandedEntries() ?? [];
+    const byId = new Map(entries.map(entry => [entry.id, entry]));
+    return buildDays(entries.map(entry => ({ ...entry, group: null })), 'TWD', false)
+      .flatMap(day => day.rows)
+      .map(row => {
+        const entry = byId.get(row.entryId);
+        return { ...row, remaining: entry ? debtRemaining(entry) : null };
+      });
+  });
 
   constructor() {
     effect(() => {
@@ -254,7 +316,7 @@ export class AccountingRemindersComponent {
   }
 
   /** The entry's detail; its ✕ (and a delete) comes back to the reminder centre. */
-  open(row: TimelineRow): void {
+  open(row: Pick<TimelineRow, 'entryId'>): void {
     void this.router.navigate(['/accounting/entries', row.entryId], { state: { closeTo: 'reminders' } });
   }
 

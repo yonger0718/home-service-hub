@@ -63,6 +63,9 @@
         } @else {
           <span class="open-amount">剩餘 {{ formatMoney(d.open_amount, d.currency) }}</span>
         }
+        @if (breakdown(); as line) {
+          <p class="breakdown">{{ line }}</p>
+        }
       </div>
     }
 

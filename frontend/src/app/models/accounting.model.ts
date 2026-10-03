@@ -173,6 +173,11 @@ export interface LedgerEntry {
    * settlements do not net it to zero. The server then reports `open_amount` 0 and `is_settled` true.
    */
   is_closed: boolean;
+  /**
+   * `EntryOut.open_amount`: what is left on a receivable / payable original (|amount + Σ linked settlements|, 0 when
+   * closed); null for every other row (settlements included).
+   */
+  open_amount: string | null;
   /** Running balance in canonical order (`EntryOut.running_balance`, Task 4); typed nullable so older payloads still parse. */
   running_balance: string | null;
   source: EntrySource;
@@ -192,7 +197,6 @@ export interface EntryDetail extends LedgerEntry {
   refunded_by: LedgerEntry[];
   rules: RewardRule[];
   rewards: LedgerEntry[];
-  open_amount: string | null;
   is_settled: boolean | null;
   refunded_amount: string;
   /** Write responses only: the foreign-transaction fee the account proposes, for the client to add. */

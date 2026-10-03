@@ -42,15 +42,17 @@
         <button type="button" class="debt-row" [attr.aria-expanded]="expanded() === debt.id" (click)="toggleDebt(debt.id)">
           <span class="ico">🤝</span>
           <span class="name">{{ debt.name }}</span>
-          <span class="totals">
-            @for (total of debt.totals; track total.key) {
-              <span class="total" [class.pos]="total.tone === 'in'" [class.neg]="total.tone === 'out'">{{ total.text }}</span>
-            }
-          </span>
-          <span class="count">{{ debt.countText }}</span>
           @if (debt.last) {
             <span class="last">{{ slashDate(debt.last) }}</span>
           }
+          <span class="sides">
+            @for (side of debt.sides; track side.kind) {
+              <span class="side">
+                <span class="side-total" [class.pos]="side.kind === 'receivable'" [class.neg]="side.kind === 'payable'">{{ side.totalText }}</span>
+                <small class="side-count">{{ side.countText }}</small>
+              </span>
+            }
+          </span>
         </button>
         @if (expanded() === debt.id) {
           <div class="debt-entries">
@@ -64,12 +66,21 @@
                 <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
                 <span class="name">{{ row.title }}@if (row.groupCount) {<span class="badge">{{ row.groupCount }}</span>}</span>
                 <span class="sub">{{ row.sub }}</span>
-                <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">
-                  {{ row.amountText }}
-                  @if (row.fx) {
-                    <small class="fx">{{ row.fx }}</small>
-                  }
-                </span>
+                @if (row.remaining; as remaining) {
+                  <span class="amt" [class.neg]="remaining.tone === 'out'" [class.pos]="remaining.tone === 'in'" [class.muted]="remaining.tone === 'muted'">
+                    {{ remaining.text }}
+                    @if (remaining.detail) {
+                      <small class="fx remaining-detail">{{ remaining.detail }}</small>
+                    }
+                  </span>
+                } @else {
+                  <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">
+                    {{ row.amountText }}
+                    @if (row.fx) {
+                      <small class="fx">{{ row.fx }}</small>
+                    }
+                  </span>
+                }
                 <span class="pills">
                   @for (pill of row.pills; track $index) {
                     <span class="pill" [class.rw]="pill.tone === 'rw'" [class.rv]="pill.tone === 'rv'" [class.review]="pill.tone === 'review'">{{ pill.label }}</span>
