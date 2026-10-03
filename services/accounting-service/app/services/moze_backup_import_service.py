@@ -192,7 +192,9 @@ def _plan_accounts(
     """Resolve every final name and every match before writing, and clear names the import needs.
 
     Matched accounts whose name changes first get a temporary unique name (so swaps work); a row that
-    holds a needed name but whose MOZE id is gone from the backup is renamed `<name> (舊 <id>)` and archived.
+    holds a needed name but whose MOZE id is gone from the backup is renamed `<name> (舊 <id>)`. Whether it is
+    archived is left to `_archive_disappeared_accounts` (after the settings step), so a locally edited row or one
+    that still has entries keeps its state and opening balance.
     """
     final = _plan_names(data.accounts)
     matches: dict[str, Account | None] = {}
@@ -212,7 +214,7 @@ def _plan_accounts(
             )
         stale_name = f"{name} (舊 {holder.moze_id[:8]})"
         result.accounts_renamed.append({"from": holder.name, "to": stale_name})
-        holder.name, holder.is_archived = stale_name, True
+        holder.name = stale_name
     for identifier, account in matches.items():
         if account is not None and account.name != final[identifier]:
             result.accounts_renamed.append({"from": account.name, "to": final[identifier]})

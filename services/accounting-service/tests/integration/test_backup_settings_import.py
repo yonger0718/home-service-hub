@@ -295,6 +295,20 @@ def test_deleted_and_recreated_account_renames_and_archives_the_stale_row(db_ses
     assert (stale.name, stale.is_archived) == ("錢包 (舊 A-OLD-12)", True)
     assert _account(db_session, "錢包").moze_id == "A-NEW"
     assert {"from": "錢包", "to": "錢包 (舊 A-OLD-12)"} in summary["accounts_renamed"]
+    assert "錢包 (舊 A-OLD-12)" in summary["accounts_archived"]
+
+
+def test_stale_locally_edited_holder_is_renamed_but_not_archived(db_session, backup):
+    _import_backup(db_session, backup.data(accounts=[backup.account("A-OLD-123456", "錢包")]))
+    old = db_session.scalar(select(Account).where(Account.moze_id == "A-OLD-123456"))
+    old.opening_balance, old.settings_locally_edited = Decimal("50"), True
+    db_session.flush()
+    summary = _import_backup(db_session, backup.data(accounts=[backup.account("A-NEW", "錢包")]))
+    stale = db_session.scalar(select(Account).where(Account.moze_id == "A-OLD-123456"))
+    assert (stale.name, stale.is_archived, stale.opening_balance) == ("錢包 (舊 A-OLD-12)", False, Decimal("50"))
+    assert _account(db_session, "錢包").moze_id == "A-NEW"
+    assert {"from": "錢包", "to": "錢包 (舊 A-OLD-12)"} in summary["accounts_renamed"]
+    assert "錢包 (舊 A-OLD-12)" not in summary["accounts_archived"]
 
 
 def test_two_backup_accounts_with_one_final_name_fail(db_session, backup):
