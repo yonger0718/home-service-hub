@@ -156,6 +156,24 @@ describe('AccountingRemindersComponent', () => {
     expect(text(el.querySelector('.card-row .countdown'))).toBe('還有 2 天');
   });
 
+  it("lists a master card once, with its combined card's spend, and never the combined card", () => {
+    const child = credit({ id: 16, name: '玉山 UNI 副卡', closing_day: 15, due_rule: 'days_after_closing', due_value: 20, combined_account_id: 9 });
+    const { fixture, el } = render([SOON, child]);
+    http
+      .expectOne(r => r.url === '/api/accounting/accounts/16/summary')
+      .flush({
+        account_id: 16, currency: 'TWD', date_from: '', date_to: '', spend: '-345.0000', income: '0', rewards: '0',
+        net: '0', end_balance: '0', count: 1,
+      });
+    http.expectNone(r => r.url === '/api/accounting/accounts/16/entries');
+    flushBill(9, '-1000.0000');
+    fixture.detectChanges();
+
+    const rows = Array.from(el.querySelectorAll('.card-row'));
+    expect(rows.map(row => text(row.querySelector('.name')))).toEqual(['玉山 UNI']);
+    expect(text(rows[0].querySelector('.fig'))).toBe('應繳 $1,345');
+  });
+
   it('says 今天 on the due day', () => {
     const { fixture, el } = render([TODAY]);
     flushBill(13, '-100.0000');

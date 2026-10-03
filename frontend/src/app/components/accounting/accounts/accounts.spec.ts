@@ -206,6 +206,17 @@ describe('AccountingAccountsComponent', () => {
       expect(rows(el)[0].querySelector('.due .pill')?.textContent?.trim()).toBe('結帳 10/31 · 繳款 11/05');
     });
 
+    it("adds the combined cards' spend to the master's 待繳帳款 and gives them no due pill", () => {
+      const el = render(ACCOUNTS, LATEST, { 10: { spend: '-12345.0000', payments: ['5000.0000'] }, 12: { spend: '-1000.0000' } })
+        .nativeElement as HTMLElement;
+      expect(master(el).querySelector('.owed')?.textContent?.trim()).toBe('待繳帳款 $8,345');
+      const uni = rows(el).find(r => r.querySelector('.name')?.textContent?.trim() === '玉山 UNI')!;
+      expect(uni.querySelector('.owed')).toBeNull();
+      expect(uni.querySelector('.due .pill')?.textContent).not.toContain('繳費截止');
+      // Payments are read on the master card only.
+      http.expectNone(r => /\/accounts\/1[123]\/entries$/.test(r.url));
+    });
+
     it('keeps the cycle pill and no 待繳帳款 for a paid statement', () => {
       const el = render(ACCOUNTS, LATEST, { 10: { spend: '-800.0000', payments: ['800.0000'] } }).nativeElement as HTMLElement;
       expect(master(el).querySelector('.owed')).toBeNull();

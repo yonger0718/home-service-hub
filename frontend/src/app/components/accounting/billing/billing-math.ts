@@ -5,7 +5,7 @@ import { addDays, daysBetween, shortDate } from '../dates';
 
 export type BillingCard = Pick<
   LedgerAccount,
-  'id' | 'name' | 'is_credit' | 'is_archived' | 'closing_day' | 'due_rule' | 'due_value'
+  'id' | 'name' | 'is_credit' | 'is_archived' | 'closing_day' | 'due_rule' | 'due_value' | 'combined_account_id'
 >;
 
 /** A card's statement closing day or payment due day; `period` is the statement cycle it belongs to. */
@@ -17,6 +17,11 @@ export interface BillingEvent {
   period: Period;
   /** Closing date of the cycle after `period`: payments from then on belong to the next statement. */
   nextClosing: string;
+  /**
+   * Non-archived combined cards (副卡, `combined_account_id` = this card) whose period spend rolls into this
+   * statement; omitted when there are none.
+   */
+  childIds?: number[];
 }
 
 /**
@@ -27,12 +32,37 @@ const CYCLES_BEFORE = 3;
 /** The 近 7 天 window: today and the six days after it. */
 export const UPCOMING_DAYS = 7;
 
+/** A 副卡: combined into another card's statement (a self-reference counts as none). */
+function isCombinedChild(account: BillingCard): boolean {
+  const master = account.combined_account_id;
+  return master !== null && master !== undefined && master !== account.id;
+}
+
 /**
- * Non-archived credit accounts: the only ones with billing events. A null `closing_day` means the statement is the
+ * Non-archived credit accounts that bill on their own: the only ones with billing events. A combined card (副卡)
+ * has none of its own; its spend rolls into its master's statement. A null `closing_day` means the statement is the
  * calendar month (closing on its last day), as `cycle.ts` treats it.
  */
 export function billingCards<T extends BillingCard>(accounts: T[]): T[] {
-  return accounts.filter(account => account.is_credit && !account.is_archived);
+  return accounts.filter(account => account.is_credit && !account.is_archived && !isCombinedChild(account));
+}
+
+/** Per master card id: its non-archived combined cards' ids, in list order. */
+function childrenByMaster(accounts: BillingCard[]): Map<number, number[]> {
+  const children = new Map<number, number[]>();
+  for (const account of accounts) {
+    if (isCombinedChild(account) && !account.is_archived) {
+      const master = account.combined_account_id as number;
+      children.set(master, [...(children.get(master) ?? []), account.id]);
+    }
+  }
+  return children;
+}
+
+/** The `childIds` field of a master's events: present only when it has combined cards. */
+function childField(children: Map<number, number[]>, id: number): { childIds?: number[] } {
+  const ids = children.get(id);
+  return ids ? { childIds: ids } : {};
 }
 
 /**
@@ -41,13 +71,14 @@ export function billingCards<T extends BillingCard>(accounts: T[]): T[] {
  */
 export function billingEvents(cards: BillingCard[], month: string): BillingEvent[] {
   const events: BillingEvent[] = [];
+  const children = childrenByMaster(cards);
   for (const card of billingCards(cards)) {
     const closingDay = card.closing_day ?? null;
     const anchor = statementPeriod(closingDay, `${month}-01`);
     for (let delta = -CYCLES_BEFORE; delta <= 0; delta++) {
       const period = shiftPeriod(closingDay, anchor, delta);
       const nextClosing = shiftPeriod(closingDay, period, 1).end;
-      const base = { accountId: card.id, name: card.name, period, nextClosing };
+      const base = { accountId: card.id, name: card.name, period, nextClosing, ...childField(children, card.id) };
       if (period.end.slice(0, 7) === month) {
         events.push({ ...base, kind: 'closing', date: period.end });
       }
@@ -87,13 +118,14 @@ export const REMINDER_HORIZON_DAYS = 45;
  */
 export function currentDues(cards: BillingCard[], today: string): BillingEvent[] {
   const events: BillingEvent[] = [];
+  const children = childrenByMaster(cards);
   for (const card of billingCards(cards)) {
     const closingDay = card.closing_day ?? null;
     const period = shiftPeriod(closingDay, statementPeriod(closingDay, today), -1);
     const due = dueDate(period.end, card.due_rule, card.due_value);
     if (due !== null) {
       const nextClosing = shiftPeriod(closingDay, period, 1).end;
-      events.push({ accountId: card.id, name: card.name, kind: 'due', date: due, period, nextClosing });
+      events.push({ accountId: card.id, name: card.name, kind: 'due', date: due, period, nextClosing, ...childField(children, card.id) });
     }
   }
   return events;

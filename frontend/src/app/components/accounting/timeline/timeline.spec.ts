@@ -911,6 +911,26 @@ describe('LedgerTimelineComponent', () => {
       expect(cell(el, '2026-10-31').classList).toContain('closing');
     });
 
+    it("badges only the master card, with its combined cards' spend in the statement", () => {
+      const child = makeAccount({ id: 21, name: '玉山 UNI 副卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20, combined_account_id: 9 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD, child]);
+      const requests = billRequests();
+      const childSummary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/21/summary');
+      expect(childSummary.request.params.get('date_to')).toBe(SEPT.end);
+      httpMock!.expectNone(r => r.url === '/api/accounting/accounts/21/entries');
+      answerBill(requests, '-1000.0000');
+      childSummary.flush({
+        account_id: 21, currency: 'TWD', date_from: '', date_to: '', spend: '-234.0000', income: '0', rewards: '0',
+        net: '0', end_balance: '0', count: 1,
+      });
+      fixture.detectChanges();
+
+      expect(el.querySelectorAll('.due-badge').length).toBe(1);
+      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
+      selectDay(fixture, el, '2026-10-05');
+      expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['💳 玉山 UNI 帳單 $1,234 · 到期']);
+    });
+
     it('renders nothing and asks for no statement without credit cards', () => {
       const { fixture, el } = renderListWith(ACCOUNTS);
       httpMock!.expectNone(r => r.url.includes('/accounts/') && r.url.includes('/summary'));

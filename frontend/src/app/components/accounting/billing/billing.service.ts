@@ -28,12 +28,15 @@ export interface BillState {
   remaining: number;
 }
 
-/** One round's halves; the state is committed once both have landed (`null` = that read failed). */
+/**
+ * One round's reads: a summary per card of the statement (the master and its combined cards) and the master's
+ * payments. The state is committed once all have landed; `null` = that read failed.
+ */
 interface Pending {
   generation: number;
   id: number;
-  spend?: string | null;
-  currency?: string;
+  /** Per account id: its period spend and currency. */
+  spends: Map<number, { spend: string; currency: string } | null>;
   payments?: string[] | null;
 }
 
@@ -72,22 +75,39 @@ export class BillingService {
       if (this.rounds.get(key)?.generation === generation) {
         continue;
       }
-      const round: Pending = { generation, id: ++this.requestId };
+      const round: Pending = { generation, id: ++this.requestId, spends: new Map() };
       this.rounds.set(key, round);
-      const patch = (update: Partial<Pending>) => {
-        if (this.rounds.get(key)?.id !== round.id) {
+      const cards = [event.accountId, ...(event.childIds ?? [])];
+      const commit = () => {
+        if (round.payments === undefined || cards.some(id => !round.spends.has(id))) {
           return;
         }
-        Object.assign(round, update);
-        if (round.spend === undefined || round.payments === undefined) {
-          return;
-        }
-        this.states.update(states => new Map(states).set(key, this.resolve(event, round)));
+        this.states.update(states => new Map(states).set(key, this.resolve(event, round, cards)));
       };
-      this.accounting.getAccountSummary(event.accountId, event.period.start, event.period.end).subscribe({
-        next: summary => patch({ spend: summary.spend, currency: summary.currency }),
-        error: () => patch({ spend: null }),
-      });
+      const current = () => this.rounds.get(key)?.id === round.id;
+      // Combined cards (副卡) are read with the master, over the same period, as part of the same round.
+      for (const accountId of cards) {
+        this.accounting.getAccountSummary(accountId, event.period.start, event.period.end).subscribe({
+          next: summary => {
+            if (current()) {
+              round.spends.set(accountId, { spend: summary.spend, currency: summary.currency });
+              commit();
+            }
+          },
+          error: () => {
+            if (current()) {
+              round.spends.set(accountId, null);
+              commit();
+            }
+          },
+        });
+      }
+      const patch = (payments: string[] | null) => {
+        if (current()) {
+          round.payments = payments;
+          commit();
+        }
+      };
       this.accounting
         .getEntries(event.accountId, {
           kind: 'transfer_in',
@@ -96,8 +116,8 @@ export class BillingService {
           limit: BILL_PAYMENT_LIMIT,
         })
         .subscribe({
-          next: page => patch({ payments: page.items.map(entry => entry.amount) }),
-          error: () => patch({ payments: null }),
+          next: page => patch(page.items.map(entry => entry.amount)),
+          error: () => patch(null),
         });
     }
   }
@@ -112,17 +132,24 @@ export class BillingService {
     return this.states().has(billKey(event));
   }
 
-  private resolve(event: BillingEvent, round: Pending): BillState | null {
-    if (typeof round.spend !== 'string' || !Array.isArray(round.payments)) {
+  /**
+   * The statement: Σ period spend of the master and its combined cards, less the master's payments. Unresolved when
+   * any read failed or a combined card's currency differs from the master's (no conversion here).
+   */
+  private resolve(event: BillingEvent, round: Pending, cards: number[]): BillState | null {
+    const spends = cards.map(id => round.spends.get(id));
+    const master = spends[0];
+    if (!master || !Array.isArray(round.payments) || spends.some(spend => !spend || spend.currency !== master.currency)) {
       return null;
     }
+    const total = spends.reduce((sum, spend) => sum + Number(spend!.spend), 0);
     return {
       accountId: event.accountId,
       name: event.name,
       period: event.period,
       due: event.date,
-      currency: round.currency ?? 'TWD',
-      ...billBalance(round.spend, round.payments),
+      currency: master.currency,
+      ...billBalance(String(total), round.payments),
     };
   }
 }

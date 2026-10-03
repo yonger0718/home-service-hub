@@ -85,6 +85,31 @@ describe('billingEvents', () => {
     ).toEqual([]);
   });
 
+  describe('combined cards (副卡 with combined_account_id)', () => {
+    const rule = { closing_day: 15, due_rule: 'days_after_closing' as const, due_value: 20 };
+    const master = card({ id: 10, name: '玉山信用卡', ...rule });
+    const child = card({ id: 11, name: '玉山 UNI', ...rule, combined_account_id: 10 });
+    const archivedChild = card({ id: 12, ...rule, combined_account_id: 10, is_archived: true });
+    const orphan = card({ id: 13, ...rule, combined_account_id: 99 });
+
+    it("roll into the master's events and produce none of their own", () => {
+      const events = billingEvents([master, child, archivedChild, orphan], '2026-10');
+      expect(events.map(event => [event.accountId, event.kind, event.childIds])).toEqual([
+        [10, 'due', [11]],
+        [10, 'closing', [11]],
+      ]);
+      expect(currentDues([master, child, orphan], '2026-10-03').map(event => [event.accountId, event.childIds])).toEqual([
+        [10, [11]],
+      ]);
+      expect(reminderDues([child, orphan], '2026-10-03')).toEqual([]);
+    });
+
+    it('treat a self-referencing combined_account_id as a plain card', () => {
+      const self = card({ id: 20, ...rule, combined_account_id: 20 });
+      expect(currentDues([self], '2026-10-03').map(event => event.accountId)).toEqual([20]);
+    });
+  });
+
   describe('a card whose statement is the calendar month (closing_day null)', () => {
     it('closes on the month end and falls due by a fixed day in the next month', () => {
       const monthly = card({ id: 3, name: '月結卡', closing_day: null, due_rule: 'fixed_day', due_value: 5 });

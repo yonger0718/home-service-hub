@@ -169,6 +169,62 @@ describe('BillingService', () => {
     expect(billing.bill(SEPT)?.remaining).toBe(100);
   });
 
+  function summaryFor(accountId: number, event = SEPT): TestRequest {
+    const req = http.expectOne(
+      r => r.url === `/api/accounting/accounts/${accountId}/summary` && r.params.get('date_to') === event.period.end,
+    );
+    expect(req.request.params.get('date_from')).toBe(event.period.start);
+    return req;
+  }
+
+  const spendBody = (accountId: number, spend: string, currency = 'TWD') => ({
+    account_id: accountId, currency, date_from: '', date_to: '', spend, income: '0', rewards: '0', net: spend,
+    end_balance: spend, count: 1,
+  });
+
+  it("adds the combined cards' spend to the master's statement, reading payments on the master only", () => {
+    const combined: BillingEvent = { ...SEPT, childIds: [11, 12] };
+    billing.ensure([combined], TODAY);
+    const master = requests(combined);
+    const first = summaryFor(11);
+    const second = summaryFor(12);
+    http.expectNone(r => r.url.endsWith('/11/entries') || r.url.endsWith('/12/entries'));
+
+    master.summary.flush(spendBody(9, '-1000.0000'));
+    first.flush(spendBody(11, '-200.0000'));
+    master.payments.flush({ items: [makeEntry({ kind: 'transfer_in', amount: '300.0000' })], total: 1, limit: 100, offset: 0 });
+    // Not committed until every card of the statement has landed.
+    expect(billing.bill(combined)).toBeNull();
+    second.flush(spendBody(12, '-50.0000'));
+
+    expect(billing.bill(combined)).toMatchObject({ accountId: 9, statement: 1250, paid: 300, remaining: 950 });
+    billing.ensure([combined], TODAY);
+    http.expectNone(r => r.url.startsWith('/api/accounting/accounts/'));
+  });
+
+  it("leaves the master's statement unresolved when a combined card's read fails", () => {
+    const combined: BillingEvent = { ...SEPT, childIds: [11] };
+    billing.ensure([combined], TODAY);
+    const master = requests(combined);
+    const child = summaryFor(11);
+    answer(master, '-1000.0000');
+    child.flush('boom', { status: 500, statusText: 'Server Error' });
+
+    expect(billing.bill(combined)).toBeNull();
+    expect(billing.isSettled(combined)).toBe(true);
+  });
+
+  it("leaves it unresolved when a combined card's currency differs from the master's", () => {
+    const combined: BillingEvent = { ...SEPT, childIds: [11] };
+    billing.ensure([combined], TODAY);
+    const master = requests(combined);
+    const child = summaryFor(11);
+    answer(master, '-1000.0000');
+    child.flush(spendBody(11, '-50.0000', 'USD'));
+
+    expect(billing.bill(combined)).toBeNull();
+  });
+
   it('leaves a statement unresolved when either read fails', () => {
     billing.ensure([SEPT], TODAY);
     const reqs = requests();
