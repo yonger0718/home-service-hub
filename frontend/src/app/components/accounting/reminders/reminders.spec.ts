@@ -255,6 +255,34 @@ describe('AccountingRemindersComponent', () => {
     expect(Array.from(el.querySelectorAll<HTMLElement>('.debt-entries .row')).map(row => row.dataset['entryId'])).toEqual(['74']);
   });
 
+  it('reloads after an account write, re-reading the statement with the new due rule', () => {
+    const { fixture, el } = render([SOON]);
+    flushBill(9, '-100.0000');
+    fixture.detectChanges();
+    expect(text(el.querySelector('.card-row .countdown'))).toBe('還有 2 天');
+
+    TestBed.inject(AccountingService).updateAccount(9, {} as never).subscribe();
+    http.expectOne(r => r.method === 'PUT').flush({});
+    fixture.detectChanges();
+    // Due day moved from 10/05 (20 days after closing) to 10/04 (19 days).
+    flushLoad([{ ...SOON, due_value: 19 }], [], []);
+    fixture.detectChanges();
+    // The write starts a new round at once (the old 10/05 statement is re-read) and the reloaded card adds 10/04's.
+    const summaries = http.match(r => r.url === '/api/accounting/accounts/9/summary');
+    const payments = http.match(r => r.url === '/api/accounting/accounts/9/entries');
+    expect(payments.map(req => req.request.params.get('date_from'))).toEqual(['2026-09-15', '2026-09-15']);
+    for (const summary of summaries) {
+      summary.flush({
+        account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-100.0000', income: '0', rewards: '0',
+        net: '0', end_balance: '0', count: 1,
+      });
+    }
+    payments.forEach(req => req.flush({ items: [], total: 0, limit: 100, offset: 0 }));
+    fixture.detectChanges();
+
+    expect(text(el.querySelector('.card-row .countdown'))).toBe('明天');
+  });
+
   it('drops a superseded load', () => {
     const fixture = TestBed.createComponent(AccountingRemindersComponent);
     fixture.detectChanges();

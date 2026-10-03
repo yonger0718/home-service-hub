@@ -674,6 +674,8 @@ export class LedgerTimelineComponent implements OnInit {
           this.counterparties.set(counterparties);
         }
       },
+      // Intentionally swallowed: the 🔔 count is a hint. On failure it keeps the last known counterparties (none on
+      // first load), and the reminder centre itself reports its own load errors.
       error: () => undefined,
     });
   }
