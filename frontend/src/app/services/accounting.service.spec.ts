@@ -131,6 +131,13 @@ const CASES: Case[] = [
     params: { limit: '50', offset: '0', account_id: ['1', '2'], hide_rewards: 'true', date_from: '2026-10-01' },
   },
   { name: 'getMonthSummary', call: s => s.getMonthSummary('2026-09'), method: 'GET', url: `${API}/entries/summary`, params: { month: '2026-09' } },
+  {
+    name: 'getDailySummary',
+    call: s => s.getDailySummary('2026-10'),
+    method: 'GET',
+    url: `${API}/entries/summary/daily`,
+    params: { month: '2026-10' },
+  },
   { name: 'getEntry', call: s => s.getEntry(9), method: 'GET', url: `${API}/entries/9` },
   { name: 'createEntry', call: s => s.createEntry(ENTRY_INPUT), method: 'POST', url: `${API}/entries`, body: ENTRY_INPUT },
   { name: 'updateEntry', call: s => s.updateEntry(9, ENTRY_INPUT), method: 'PUT', url: `${API}/entries/9`, body: ENTRY_INPUT },

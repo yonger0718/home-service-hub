@@ -15,6 +15,7 @@ import {
   CategoryNode,
   Counterparty,
   CounterpartyInput,
+  DailySummary,
   EntryDetail,
   EntryInput,
   EntryPage,
@@ -134,6 +135,10 @@ export class AccountingService {
 
   getMonthSummary(month: string): Observable<MonthSummary> {
     return this.http.get<MonthSummary>(`${this.apiUrl}/entries/summary`, { params: { month } });
+  }
+
+  getDailySummary(month: string): Observable<DailySummary> {
+    return this.http.get<DailySummary>(`${this.apiUrl}/entries/summary/daily`, { params: { month } });
   }
 
   getEntry(id: number): Observable<EntryDetail> {
