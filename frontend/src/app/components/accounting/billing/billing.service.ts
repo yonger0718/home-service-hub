@@ -47,6 +47,16 @@ export function billKey(event: Pick<BillingEvent, 'accountId' | 'period' | 'date
   return `${event.accountId}:${event.period.end}:${event.date}`;
 }
 
+/** A completed round's failure: undefined when none, null for a failed read, `幣別不同` for a currency mismatch. */
+function failureOf(round: Pending, cards: number[]): string | null | undefined {
+  const spends = cards.map(id => round.spends.get(id));
+  if (round.payments === null || spends.some(spend => spend === null)) {
+    return null;
+  }
+  const currency = spends[0]?.currency;
+  return spends.some(spend => spend?.currency !== currency) ? '幣別不同' : undefined;
+}
+
 /** A round's inputs beyond its key: the combined cards (sorted) and the period start. */
 function fingerprint(event: BillingEvent): string {
   return `${[...(event.childIds ?? [])].sort((a, b) => a - b).join(',')}|${event.period.start}`;
@@ -61,8 +71,11 @@ function fingerprint(event: BillingEvent): string {
 export class BillingService {
   private readonly accounting = inject(AccountingService);
   private readonly states = signal<ReadonlyMap<string, BillState | null>>(new Map());
-  /** Keys whose latest round had a failed read (summary or payments). */
-  private readonly failures = signal<ReadonlySet<string>>(new Set());
+  /**
+   * Keys whose latest round failed: a failed read (reason null) or a combined card in another currency than the
+   * master's (`幣別不同`; the spends cannot be added without a conversion).
+   */
+  private readonly failures = signal<ReadonlyMap<string, string | null>>(new Map());
   private readonly rounds = new Map<string, Pending>();
   private requestId = 0;
 
@@ -101,13 +114,13 @@ export class BillingService {
       if (round.payments === undefined || cards.some(id => !round.spends.has(id))) {
         return;
       }
-      const failed = round.payments === null || cards.some(id => round.spends.get(id) === null);
-      this.failures.update(keys => {
-        const next = new Set(keys);
-        if (failed) {
-          next.add(key);
-        } else {
+      const failure = failureOf(round, cards);
+      this.failures.update(failures => {
+        const next = new Map(failures);
+        if (failure === undefined) {
           next.delete(key);
+        } else {
+          next.set(key, failure);
         }
         return next;
       });
@@ -155,9 +168,14 @@ export class BillingService {
     return this.states().get(billKey(event)) ?? null;
   }
 
-  /** True when the due event's latest round had a failed read (it then has no figures: never "all clear"). */
+  /** True when the due event's latest round failed (it then has no figures: never "all clear"). */
   failed(event: BillingEvent): boolean {
     return this.failures().has(billKey(event));
+  }
+
+  /** Why the latest round failed beyond a failed read (`幣別不同`); null for a read error or when it did not fail. */
+  failureReason(event: BillingEvent): string | null {
+    return this.failures().get(billKey(event)) ?? null;
   }
 
   /** True once the due event's statement has landed or failed (at least once); false while it is first being read. */
@@ -166,8 +184,8 @@ export class BillingService {
   }
 
   /**
-   * The statement: Σ period spend of the master and its combined cards, less the master's payments. Unresolved when
-   * any read failed or a combined card's currency differs from the master's (no conversion here).
+   * The statement: Σ period spend of the master and its combined cards, less the master's payments. Unresolved (and
+   * failed, see `failureOf`) when any read failed or a combined card's currency differs from the master's.
    */
   private resolve(event: BillingEvent, round: Pending, cards: number[]): BillState | null {
     const spends = cards.map(id => round.spends.get(id));

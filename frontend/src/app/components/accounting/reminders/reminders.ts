@@ -202,6 +202,13 @@ export class AccountingRemindersComponent {
   /** Cards whose statement read failed: shown as 帳單讀取失敗 with 重試, never as "nothing to pay". */
   private readonly failedDues = computed(() => this.dues().filter(event => this.bills.failed(event)));
   readonly billsFailed = computed(() => this.failedDues().length > 0);
+  /** `帳單讀取失敗`, with the distinct reasons appended (`（幣別不同）`). */
+  readonly billErrorText = computed(() => {
+    const reasons = [
+      ...new Set(this.failedDues().map(event => this.bills.failureReason(event)).filter((reason): reason is string => !!reason)),
+    ];
+    return reasons.length > 0 ? `帳單讀取失敗（${reasons.join('、')}）` : '帳單讀取失敗';
+  });
   /** Every statement read at least once: the empty state waits for them. */
   private readonly billsSettled = computed(() => this.dues().every((event: BillingEvent) => this.bills.isSettled(event)));
   readonly showCards = computed(() => this.tab() !== 'debts');

@@ -36,7 +36,7 @@
 
     @if (showCards() && billsFailed()) {
       <div class="bill-error" role="alert">
-        <span class="msg">帳單讀取失敗</span>
+        <span class="msg">{{ billErrorText() }}</span>
         <button type="button" class="retry" (click)="retryBills()">重試</button>
       </div>
     }

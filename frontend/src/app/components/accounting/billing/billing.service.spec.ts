@@ -223,6 +223,9 @@ describe('BillingService', () => {
     child.flush(spendBody(11, '-50.0000', 'USD'));
 
     expect(billing.bill(combined)).toBeNull();
+    // Not silently unresolved: failed, with the reason.
+    expect(billing.failed(combined)).toBe(true);
+    expect(billing.failureReason(combined)).toBe('幣別不同');
   });
 
   it('starts a new round in the same change round when a combined card is attached to the master', () => {
@@ -251,6 +254,7 @@ describe('BillingService', () => {
     expect(billing.failed(SEPT)).toBe(false);
     first.payments.flush('boom', { status: 500, statusText: 'Server Error' });
     expect(billing.failed(SEPT)).toBe(true);
+    expect(billing.failureReason(SEPT)).toBeNull();
     expect(billing.bill(SEPT)).toBeNull();
 
     // The same round is not asked for again on its own…

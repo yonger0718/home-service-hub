@@ -209,6 +209,23 @@ describe('AccountingRemindersComponent', () => {
     expect(text(el.querySelector('.card-row .name'))).toBe('玉山 UNI');
   });
 
+  it("shows the reason when a combined card's currency differs from the master's", () => {
+    const child = credit({ id: 16, name: '美金副卡', currency: 'USD', closing_day: 15, due_rule: 'days_after_closing', due_value: 20, combined_account_id: 9 });
+    const { fixture, el } = render([SOON, child]);
+    http
+      .expectOne(r => r.url === '/api/accounting/accounts/16/summary')
+      .flush({
+        account_id: 16, currency: 'USD', date_from: '', date_to: '', spend: '-30.0000', income: '0', rewards: '0',
+        net: '0', end_balance: '0', count: 1,
+      });
+    flushBill(9, '-1000.0000');
+    fixture.detectChanges();
+
+    expect(el.querySelector('.card-row')).toBeNull();
+    expect(el.querySelector('.empty')).toBeNull();
+    expect(text(el.querySelector('.bill-error .msg'))).toBe('帳單讀取失敗（幣別不同）');
+  });
+
   it('says 今天 on the due day', () => {
     const { fixture, el } = render([TODAY]);
     flushBill(13, '-100.0000');
