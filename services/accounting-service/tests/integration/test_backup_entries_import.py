@@ -375,6 +375,38 @@ def test_settlements_of_a_target_with_several_originals_are_allocated_fifo_by_da
     }
     assert summary["needs_review"]["reasons"] == {"settlement_overflow": 2}
     assert summary["settlements_linked"] == {"by_related_id": 0, "by_target": 4}
+    opened = {moze_id: ledger_service.get_entry_detail(db_session, entry_id) for moze_id, entry_id in (("R-LEND-1", first), ("R-LEND-2", second))}
+    assert {moze_id: (detail["open_amount"], detail["is_settled"]) for moze_id, detail in opened.items()} == {
+        "R-LEND-1": (Decimal(0), True), "R-LEND-2": (Decimal("20.0000"), False),  # over-settled by 20
+    }
+
+
+def test_settlements_beyond_a_single_original_are_flagged_as_overflow(db_session, backup):
+    summary = _import_backup(db_session, _settlement_backup(
+        backup,
+        backup.record("R-LEND", type_=3, price=-100, target="T-1"),
+        backup.record("R-S1", type_=5, price=80, target="T-1", date="2026-09-02T12:00:00"),
+        backup.record("R-S2", type_=5, price=50, target="T-1", date="2026-09-03T12:00:00"),
+    ))
+    original = _by_moze_id(db_session, "R-LEND")
+    first, second = _by_moze_id(db_session, "R-S1"), _by_moze_id(db_session, "R-S2")
+    assert (first.settles_entry_id, first.needs_review) == (original.id, False)
+    assert (second.settles_entry_id, second.needs_review) == (original.id, True)
+    assert summary["needs_review"]["reasons"] == {"settlement_overflow": 1}
+    detail = ledger_service.get_entry_detail(db_session, original.id)
+    assert (detail["open_amount"], detail["is_settled"]) == (Decimal("30.0000"), False)  # |−100 + 130|
+
+
+def test_related_id_naming_an_original_of_the_other_side_falls_back_to_the_target(db_session, backup):
+    # A repayment settles a payable; its relatedID naming a receivable is ignored.
+    summary = _import_backup(db_session, _settlement_backup(
+        backup,
+        backup.record("R-LEND", type_=3, price=-420, target="T-1"),
+        backup.record("R-BORROW", type_=4, price=1000, target="T-1"),
+        backup.record("R-PAY", type_=6, price=-300, target="T-1", relatedID="R-LEND", date="2026-09-05T12:00:00"),
+    ))
+    assert _by_moze_id(db_session, "R-PAY").settles_entry_id == _by_moze_id(db_session, "R-BORROW").id
+    assert summary["settlements_linked"] == {"by_related_id": 0, "by_target": 1}
 
 
 def test_settlement_in_another_currency_is_linked_and_flagged(db_session, backup):

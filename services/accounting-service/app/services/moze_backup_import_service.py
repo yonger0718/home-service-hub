@@ -755,20 +755,20 @@ def _link_refunds(data: BackupData, result: EntryResult) -> None:
 def _link_settlements(data: BackupData, result: EntryResult) -> None:
     """Link each collection / repayment (`SETTLING_TYPES`) to the receivable / payable it settles.
 
-    `relatedID` wins when it names an imported original. Otherwise (MOZE leaves `relatedID` empty on collections)
-    the settlement goes to an imported original of the matching type with the same `target`: with several, the
-    settlements of that target are allocated FIFO by date to the earliest original still open in their currency,
-    and one exceeding what is left (or finding nothing open, then linked to the last original) is reviewed as
-    `settlement_overflow`. A link across currencies is kept and reviewed as `cross_currency_settlement`; a
+    `relatedID` wins when it names an imported original of the matching type (a receivable for a collection, a
+    payable for a repayment). Otherwise (MOZE leaves `relatedID` empty on collections) the settlements of a `target`
+    are allocated FIFO by date to its imported originals of the matching type: each goes to the earliest original
+    with an open amount left (same-currency settlements only), and one exceeding what is left (or finding nothing
+    open, then linked to the last original) is reviewed as `settlement_overflow`. A link across currencies is kept and reviewed as `cross_currency_settlement`; a
     settlement with no original is reviewed as `settlement_original_missing`.
     """
     types = {record["identifier"]: record["type"] for record in data.records}
     original_type = dict(zip(SETTLING_TYPES, SETTLED_TYPES))
 
-    def is_original(identifier: str | None) -> bool:
+    def is_original(identifier: str | None, record_type: int) -> bool:
         entry = result.entries.get(identifier)
         return (
-            entry is not None and types.get(identifier) in SETTLED_TYPES
+            entry is not None and types.get(identifier) == record_type
             and entry.kind in ("receivable", "payable") and not entry.is_settlement
         )
 
@@ -782,7 +782,7 @@ def _link_settlements(data: BackupData, result: EntryResult) -> None:
 
     originals: dict[tuple[str, int], list[dict]] = {}  # (target, original type) -> imported originals
     for record in sorted(data.records, key=order):
-        if record["target"] and is_original(record["identifier"]):
+        if record["target"] and record["type"] in SETTLED_TYPES and is_original(record["identifier"], record["type"]):
             originals.setdefault((record["target"], record["type"]), []).append(record)
 
     settled: Counter = Counter()  # original identifier -> sum of same-currency settlements linked to it
@@ -792,7 +792,7 @@ def _link_settlements(data: BackupData, result: EntryResult) -> None:
         if entry is None or record["type"] not in SETTLING_TYPES or not entry.is_settlement:
             continue
         related = record["relatedID"]
-        if is_original(related):
+        if is_original(related, original_type[record["type"]]):
             original = result.entries[related]
             link(entry, original)
             if entry.currency == original.currency:
@@ -808,9 +808,6 @@ def _link_settlements(data: BackupData, result: EntryResult) -> None:
             _review(entry, "settlement_original_missing", result)
             continue
         result.settlements_linked["by_target"] += 1
-        if len(candidates) == 1:
-            link(entry, result.entries[candidates[0]["identifier"]])
-            continue
 
         def remaining(candidate: dict) -> Decimal:
             original = result.entries[candidate["identifier"]]

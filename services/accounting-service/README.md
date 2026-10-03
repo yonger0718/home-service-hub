@@ -47,13 +47,15 @@ The report lists per-type counts, skipped future rows, `needs_review` reasons an
 `WARNING: 0 of N accounts compared` and the balances are checked by hand.
 
 Collections and repayments (MOZE types 5 / 6) settle the receivable / payable their `relatedID` names. MOZE leaves
-`relatedID` empty on collections, so a settlement whose `relatedID` is empty or names no imported original is linked
-to the imported original of the matching type that shares its `target` (counterparty); with several, the target's
-settlements are allocated FIFO by date to the earliest original still open in their currency. The report counts both
-in `settlements_linked` (`by_related_id`, `by_target`). Links are reviewed as `settlement_overflow` (more than the
+`relatedID` empty on collections, so a settlement whose `relatedID` is empty or names no imported original of the
+matching type (a receivable for a collection, a payable for a repayment) is linked to the imported original of the
+matching type that shares its `target` (counterparty); with several, the target's settlements are allocated FIFO by
+date to the earliest original with an open amount left (same-currency settlements only). The report counts both in
+`settlements_linked` (`by_related_id`, `by_target`). Links are reviewed as `settlement_overflow` (more than the
 originals left open), `cross_currency_settlement` (the settlement's currency differs from the original's; resolved by
-hand) or, with no original, `settlement_original_missing`. Future-dated and disabled rows stay skipped, so a
-settlement of one is flagged missing and an original whose settlement is skipped stays open.
+hand) or, with no original, `settlement_original_missing`. Future-dated and disabled rows stay skipped: a settlement
+whose original is future-dated or disabled links by target to another imported original if one exists; otherwise it is
+reviewed as `settlement_original_missing`.
 
 API
 ---
