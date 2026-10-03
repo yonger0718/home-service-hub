@@ -5,7 +5,7 @@ import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DailySummary, LedgerAccount, LedgerEntry, MonthSummary, Preference } from '../../../models/accounting.model';
+import { Counterparty, DailySummary, LedgerAccount, LedgerEntry, MonthSummary, Preference } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
@@ -36,6 +36,7 @@ describe('LedgerTimelineComponent', () => {
     preference: Preference = makePreference(),
     providers: Provider[] = [],
     accounts: LedgerAccount[] = ACCOUNTS,
+    counterparties: Counterparty[] = [],
   ) {
     TestBed.configureTestingModule({
       imports: [LedgerTimelineComponent],
@@ -47,8 +48,14 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     httpMock.expectOne('/api/accounting/preference').flush(preference);
     httpMock.expectOne('/api/accounting/accounts').flush(accounts);
+    flushCounterparties(counterparties);
     fixture.detectChanges();
     return { fixture, el: fixture.nativeElement as HTMLElement };
+  }
+
+  /** The 🔔 count's counterparties: read on init and again after every entry or account write. */
+  function flushCounterparties(body: Counterparty[] = []): void {
+    httpMock!.expectOne('/api/accounting/counterparties').flush(body);
   }
 
   function flushSummary(month: string, body?: Partial<MonthSummary>): void {
@@ -471,6 +478,7 @@ describe('LedgerTimelineComponent', () => {
       TestBed.inject(AccountingService).deleteEntry(3).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
       fixture.detectChanges();
+      flushCounterparties();
 
       flushSummary('2026-10');
       flushDaily('2026-10');
@@ -594,6 +602,7 @@ describe('LedgerTimelineComponent', () => {
     httpMock!.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/accounts').flush(makeAccount({ id: 9, name: '新卡' }));
     fixture.detectChanges();
     httpMock!.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts').flush([...ACCOUNTS, makeAccount({ id: 9, name: '新卡' })]);
+    flushCounterparties();
     fixture.detectChanges();
 
     const options = Array.from(el.querySelectorAll('.filter-account option')).map(text);
@@ -762,6 +771,7 @@ describe('LedgerTimelineComponent', () => {
       TestBed.inject(AccountingService).deleteEntry(3).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
       fixture.detectChanges();
+      flushCounterparties();
       flushSummary('2026-10');
       flushDaily('2026-10');
       const requests = billRequests();
@@ -834,6 +844,61 @@ describe('LedgerTimelineComponent', () => {
       expect(text(el.querySelector('.month-label'))).toBe('2026 年 11 月');
       expect(cell(el, '2026-11-04').getAttribute('aria-pressed')).toBe('true');
       expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $200 · 到期');
+    });
+
+    const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }] };
+    const SETTLED: Counterparty = { id: 2, name: 'Bea', open_amounts: [] };
+    const bell = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.bell')!;
+
+    it('shows the 🔔 without a count when nothing is pending, in both views', () => {
+      const { fixture, el } = renderListWith(ACCOUNTS);
+      expect(text(bell(el))).toBe('🔔');
+      expect(bell(el).getAttribute('aria-label')).toBe('提醒中心，0 項');
+      expect(el.querySelector('.bell-count')).toBeNull();
+
+      viewButton(el, '日曆').click();
+      fixture.detectChanges();
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      expect(bell(el)).not.toBeNull();
+    });
+
+    it('counts unpaid cards and counterparties with an open amount, and opens the reminder centre', () => {
+      const rendered = render('phone', makePreference(), [], [...ACCOUNTS, CARD], [ALAN, SETTLED]);
+      flushSummary('2026-10');
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      const { fixture, el } = rendered;
+      // Before the statement lands only the counterparty counts.
+      expect(text(el.querySelector('.bell-count'))).toBe('1');
+
+      flushBill('-12345.0000');
+      fixture.detectChanges();
+      expect(text(el.querySelector('.bell-count'))).toBe('2');
+      expect(bell(el).getAttribute('aria-label')).toBe('提醒中心，2 項');
+
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+      bell(el).click();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/reminders']);
+    });
+
+    it('re-reads the counterparties after an entry write', () => {
+      const { fixture, el } = renderListWith(ACCOUNTS);
+      TestBed.inject(AccountingService).deleteEntry(3).subscribe();
+      httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+      flushSummary('2026-10');
+      flushEntries([]);
+      flushCounterparties([ALAN]);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.bell-count'))).toBe('1');
+    });
+
+    it('leaves a paid card out of the count', () => {
+      const { fixture, el } = renderListWith();
+      flushBill('-800.0000', ['800.0000']);
+      fixture.detectChanges();
+      expect(el.querySelector('.bell-count')).toBeNull();
     });
 
     it('renders nothing and asks for no statement without credit cards', () => {

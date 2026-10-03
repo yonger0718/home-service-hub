@@ -22,6 +22,7 @@ const PAGES: [string, string][] = [
   ['/accounting/entries/9', 'app-entry-detail'],
   ['/accounting/entries/9/edit', 'app-entry-form'],
   ['/accounting/settings', 'app-accounting-settings'],
+  ['/accounting/reminders', 'app-accounting-reminders'],
 ];
 
 const REDIRECTED = ['dashboard', 'transactions', 'cards', 'categories', 'recurring'];

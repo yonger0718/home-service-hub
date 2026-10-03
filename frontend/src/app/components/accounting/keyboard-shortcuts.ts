@@ -19,7 +19,8 @@ export interface ShortcutKey {
 }
 
 const ENTRY_FORM = /^\/accounting\/(entry|entries\/\d+\/edit)$/;
-const LIST_PAGE = /^\/accounting(\/entries\/\d+|\/accounts\/\d+(\/entries\/\d+)?)?$/;
+/** Pages listing entry rows (`[data-entry-id]`); the reminder centre has them under an expanded counterparty. */
+const LIST_PAGE = /^\/accounting(\/entries\/\d+|\/accounts\/\d+(\/entries\/\d+)?|\/reminders)?$/;
 /** The selected entry: `/accounting/entries/:id` or, opened from a passbook, `/accounting/accounts/:id/entries/:eid`. */
 const SELECTED = /^\/accounting(?:\/accounts\/\d+)?\/entries\/(\d+)$/;
 const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);

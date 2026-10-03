@@ -17,6 +17,7 @@ import { Router } from '@angular/router';
 import { filter, forkJoin, fromEvent } from 'rxjs';
 
 import {
+  Counterparty,
   DailySummary,
   DEFAULT_PREFERENCE,
   ENTRY_KIND_LABELS,
@@ -30,7 +31,7 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
-import { BillingEvent, billingEvents, upcomingDues } from '../billing/billing-math';
+import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../billing/billing-math';
 import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
@@ -276,7 +277,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
   standalone: true,
   imports: [CalendarMonthComponent, NgTemplateOutlet],
   templateUrl: './timeline.html',
-  styleUrls: ['../filters.scss', './timeline.scss'],
+  styleUrls: ['../filters.scss', '../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LedgerTimelineComponent implements OnInit {
@@ -293,6 +294,9 @@ export class LedgerTimelineComponent implements OnInit {
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
+  /** For the 🔔 count only (counterparties with an open amount). */
+  private readonly counterparties = signal<Counterparty[]>([]);
+  private counterpartyRequestId = 0;
   readonly month = signal(currentMonth());
   readonly summary = signal<MonthSummary | null>(null);
   readonly entries = signal<LedgerEntry[]>([]);
@@ -339,10 +343,12 @@ export class LedgerTimelineComponent implements OnInit {
   private readonly monthBilling = computed(() => billingEvents(this.accounts(), this.month()));
   /** Due days from today through today + 6 (may reach into next month). */
   private readonly upcomingEvents = computed(() => upcomingDues(this.accounts(), this.today()));
-  /** Due events whose statement is needed: the shown month's and the 近 7 天 window's (deduplicated). */
+  /** Each card's current statement as the reminder centre lists it (for the 🔔 count). */
+  private readonly reminderEvents = computed(() => reminderDues(this.accounts(), this.today()));
+  /** Due events whose statement is needed: the shown month's, the 近 7 天 window's and the 🔔's (deduplicated). */
   private readonly trackedDues = computed(() => {
     const events = new Map<string, BillingEvent>();
-    for (const event of [...this.monthBilling(), ...this.upcomingEvents()]) {
+    for (const event of [...this.monthBilling(), ...this.upcomingEvents(), ...this.reminderEvents()]) {
       if (event.kind === 'due') {
         events.set(billKey(event), event);
       }
@@ -379,6 +385,12 @@ export class LedgerTimelineComponent implements OnInit {
     }
     return lines;
   });
+  /** 🔔 count: cards with something left to pay (as the reminder centre lists them) + counterparties with an open amount. */
+  readonly reminderCount = computed(
+    () =>
+      this.reminderEvents().filter(event => this.openBill(event) !== null).length +
+      this.counterparties().filter(counterparty => counterparty.open_amounts.some(open => Number(open.amount) !== 0)).length,
+  );
   /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
   readonly upcomingBills = computed(() => this.upcomingEvents().filter(event => this.openBill(event) !== null));
   readonly missingRates = computed(() =>
@@ -454,6 +466,13 @@ export class LedgerTimelineComponent implements OnInit {
       const events = this.trackedDues();
       this.bills.generation();
       untracked(() => this.bills.ensure(events));
+    });
+
+    // The 🔔's counterparties: open amounts move with entry writes; a backup import (accountsChanged) replaces them.
+    effect(() => {
+      this.accounting.entriesChanged();
+      this.accounting.accountsChanged();
+      untracked(() => this.loadCounterparties());
     });
 
     // A saved preference (settings pane beside this list in the wide layout) is re-read; the effects above then reload.
@@ -645,6 +664,22 @@ export class LedgerTimelineComponent implements OnInit {
     this.dayEntries.set([]);
     this.dayLoading.set(false);
     this.dayError.set(false);
+  }
+
+  private loadCounterparties(): void {
+    const id = ++this.counterpartyRequestId;
+    this.accounting.getCounterparties().subscribe({
+      next: counterparties => {
+        if (id === this.counterpartyRequestId) {
+          this.counterparties.set(counterparties);
+        }
+      },
+      error: () => undefined,
+    });
+  }
+
+  openReminders(): void {
+    void this.router.navigate(['/accounting/reminders']);
   }
 
   setView(view: TimelineView): void {

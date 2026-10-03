@@ -213,6 +213,9 @@ export interface EntryQuery {
 export interface AllEntriesQuery extends EntryQuery {
   account_id?: number[];
   hide_rewards?: boolean;
+  counterparty_id?: number;
+  /** Only unsettled receivable / payable originals (settlements excluded). */
+  open?: boolean;
 }
 
 export interface MonthSummary {

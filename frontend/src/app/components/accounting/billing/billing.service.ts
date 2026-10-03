@@ -100,6 +100,11 @@ export class BillingService {
     return this.states().get(billKey(event)) ?? null;
   }
 
+  /** True once the due event's statement has landed or failed (at least once); false while it is first being read. */
+  isSettled(event: BillingEvent): boolean {
+    return this.states().has(billKey(event));
+  }
+
   private resolve(event: BillingEvent, round: Pending): BillState | null {
     if (typeof round.spend !== 'string' || !Array.isArray(round.payments)) {
       return null;

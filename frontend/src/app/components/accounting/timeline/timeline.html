@@ -12,6 +12,7 @@
         (click)="toggleFilters()"
       >⌕</button>
     }
+    <button type="button" class="bell" [attr.aria-label]="'提醒中心，' + reminderCount() + ' 項'" (click)="openReminders()">🔔@if (reminderCount() > 0) {<span class="bell-count" aria-hidden="true">{{ reminderCount() }}</span>}</button>
     <div class="view-toggle" role="radiogroup" aria-label="檢視模式">
       <button type="button" role="radio" [attr.aria-checked]="view() === 'list'" (click)="setView('list')">清單</button>
       <button type="button" role="radio" [attr.aria-checked]="view() === 'calendar'" (click)="setView('calendar')">日曆</button>

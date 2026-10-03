@@ -21,3 +21,12 @@ export function addDays(iso: string, days: number): string {
   const date = new Date(Date.UTC(year, month - 1, day + days));
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
 }
+
+/** Calendar days from `from` to `to` (negative when `to` is earlier); UTC, so no DST effects. */
+export function daysBetween(from: string, to: string): number {
+  const utc = (iso: string) => {
+    const [year, month, day] = iso.split('-').map(Number);
+    return Date.UTC(year, month - 1, day);
+  };
+  return Math.round((utc(to) - utc(from)) / 86_400_000);
+}

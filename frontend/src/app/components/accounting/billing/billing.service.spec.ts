@@ -151,8 +151,12 @@ describe('BillingService', () => {
     billing.ensure([SEPT]);
     const reqs = requests();
     reqs.summary.flush('boom', { status: 500, statusText: 'Server Error' });
+    expect(billing.isSettled(SEPT)).toBe(false);
     reqs.payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
     expect(billing.bill(SEPT)).toBeNull();
+    // Settled (nothing more is coming this round), unlike a statement still being read.
+    expect(billing.isSettled(SEPT)).toBe(true);
+    expect(billing.isSettled(OCT)).toBe(false);
   });
 
   it('keys a statement by its due date too, so a changed due rule is a different statement', () => {

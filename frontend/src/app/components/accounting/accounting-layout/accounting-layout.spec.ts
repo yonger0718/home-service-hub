@@ -233,6 +233,32 @@ describe('AccountingLayoutComponent', () => {
     expect(TestBed.inject(Router).url).toBe('/accounting/accounts/5/entries/9');
   });
 
+  it('shows the reminder centre beside the timeline at 1280px and as its own screen on a phone', async () => {
+    const harness = await start('panes', '/accounting/reminders');
+    expect((await find(harness, LIST)).tagName.toLowerCase()).toBe('app-ledger-timeline');
+    expect((await find(harness, PANE_PAGE)).tagName.toLowerCase()).toBe('app-accounting-reminders');
+    expect(TestBed.inject(Router).url).toBe('/accounting/reminders');
+  });
+
+  it('renders the reminder centre as a full page on a phone', async () => {
+    const harness = await start('phone', '/accounting/reminders');
+    expect((await find(harness, SCREEN)).tagName.toLowerCase()).toBe('app-accounting-reminders');
+    expect(harness.routeNativeElement!.querySelector('.dbody')).toBeNull();
+  });
+
+  it('moves into expanded reminder rows with ↓ and leaves ↓ alone without them', async () => {
+    const harness = await start('phone', '/accounting/reminders');
+    await find(harness, SCREEN);
+    const router = TestBed.inject(Router);
+    expect(harness.routeNativeElement!.querySelector('[data-entry-id]')).toBeNull();
+    expect(press('ArrowDown').defaultPrevented).toBe(false);
+    expect(router.url).toBe('/accounting/reminders');
+
+    addRows(harness, [72, 74]);
+    expect(press('ArrowDown').defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/72'));
+  });
+
   /** Rows as the list pages render them; the layout moves through `[data-entry-id]` in its host. */
   function addRows(harness: RouterTestingHarness, ids: number[]): HTMLElement {
     const box = document.createElement('div');

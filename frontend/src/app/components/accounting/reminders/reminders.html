@@ -1,0 +1,89 @@
+<section class="reminders">
+  <header class="rem-header">
+    @if (isPhone()) {
+      <a routerLink="/accounting" class="back-link" aria-label="返回紀錄">‹</a>
+    }
+    <h2>提醒中心</h2>
+  </header>
+
+  <div class="tabs" role="radiogroup" aria-label="提醒類型">
+    @for (option of tabs; track option.key) {
+      <button type="button" role="radio" [attr.aria-checked]="tab() === option.key" (click)="setTab(option.key)">{{ option.label }}</button>
+    }
+  </div>
+
+  @if (loadError()) {
+    <p class="load-error">提醒讀取失敗，請稍後再試。</p>
+  } @else {
+    @if (showCards() && cardRows().length > 0) {
+      @if (tab() === 'all') {
+        <h3 class="section">信用卡帳單</h3>
+      }
+      @for (card of cardRows(); track card.accountId) {
+        <button type="button" class="card-row" (click)="openCard(card.accountId)">
+          <span class="ico">{{ card.icon }}</span>
+          <span class="name">{{ card.name }}</span>
+          <span class="countdown" [class.overdue]="card.overdue" [class.soon]="card.soon">{{ card.countdown }}</span>
+          <span class="figs">
+            @for (figure of card.figures; track figure.label) {
+              <span class="fig"><small>{{ figure.label }}</small> {{ figure.text }}</span>
+            }
+          </span>
+          <span class="due-date">{{ card.dueText }}</span>
+        </button>
+      }
+    }
+
+    @if (showDebts() && debtRows().length > 0) {
+      @if (tab() === 'all') {
+        <h3 class="section">借還款追蹤</h3>
+      }
+      @for (debt of debtRows(); track debt.id) {
+        <button type="button" class="debt-row" [attr.aria-expanded]="expanded() === debt.id" (click)="toggleDebt(debt.id)">
+          <span class="ico">🤝</span>
+          <span class="name">{{ debt.name }}</span>
+          <span class="totals">
+            @for (total of debt.totals; track total.key) {
+              <span class="total" [class.pos]="total.tone === 'in'" [class.neg]="total.tone === 'out'">{{ total.text }}</span>
+            }
+          </span>
+          <span class="count">{{ debt.countText }}</span>
+          @if (debt.last) {
+            <span class="last">{{ slashDate(debt.last) }}</span>
+          }
+        </button>
+        @if (expanded() === debt.id) {
+          <div class="debt-entries">
+            @if (expandError()) {
+              <p class="load-error">讀取失敗，請稍後再試。</p>
+            } @else if (expandedEntries() === null) {
+              <p class="muted">讀取中…</p>
+            }
+            @for (row of expandedRows(); track row.key) {
+              <button type="button" class="row" [attr.data-entry-id]="row.entryId" (click)="open(row)">
+                <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
+                <span class="name">{{ row.title }}@if (row.groupCount) {<span class="badge">{{ row.groupCount }}</span>}</span>
+                <span class="sub">{{ row.sub }}</span>
+                <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">
+                  {{ row.amountText }}
+                  @if (row.fx) {
+                    <small class="fx">{{ row.fx }}</small>
+                  }
+                </span>
+                <span class="pills">
+                  @for (pill of row.pills; track $index) {
+                    <span class="pill" [class.rw]="pill.tone === 'rw'" [class.rv]="pill.tone === 'rv'" [class.review]="pill.tone === 'review'">{{ pill.label }}</span>
+                  }
+                </span>
+              </button>
+            }
+          </div>
+        }
+      }
+    }
+
+    @if (empty()) {
+      <p class="empty">目前沒有待處理項目</p>
+    }
+  }
+</section>
