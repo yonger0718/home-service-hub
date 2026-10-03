@@ -28,13 +28,11 @@
       }
     </select>
     <input class="chip tag filter-q" type="search" placeholder="搜尋名稱、商家、備註" aria-label="搜尋" [value]="q() ?? ''" (change)="setQuery($any($event.target).value)" />
-    <span class="chip tag filter-date">
-      <span class="prefix" aria-hidden="true">起</span>
-      <input class="filter-from" type="date" aria-label="起" [value]="dateFrom() ?? ''" (change)="setDateFrom($any($event.target).value)" />
-    </span>
-    <span class="chip tag filter-date">
-      <span class="prefix" aria-hidden="true">迄</span>
-      <input class="filter-to" type="date" aria-label="迄" [value]="dateTo() ?? ''" (change)="setDateTo($any($event.target).value)" />
+    <span class="chip tag filter-range">
+      <span class="range-label"><span aria-hidden="true">📅</span> 日期</span>
+      <input class="filter-from" type="date" aria-label="起始日期" [value]="dateFrom() ?? ''" (change)="setDateFrom($any($event.target).value)" />
+      <span class="sep" aria-hidden="true">–</span>
+      <input class="filter-to" type="date" aria-label="結束日期" [value]="dateTo() ?? ''" (change)="setDateTo($any($event.target).value)" />
     </span>
   </div>
 

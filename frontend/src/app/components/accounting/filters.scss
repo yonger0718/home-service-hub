@@ -23,14 +23,15 @@
     min-width: 0;
   }
 
-  .filter-date {
+  .filter-range {
     align-items: center;
     display: flex;
-    flex: 1 1 130px;
+    flex: 0 1 auto;
     gap: 6px;
     min-width: 0;
 
-    .prefix {
+    .range-label,
+    .sep {
       color: var(--app-text-muted);
       flex: none;
       font-size: 0.75rem;
@@ -41,10 +42,14 @@
       background: none;
       border: 0;
       color: inherit;
-      flex: 1 1 auto;
+      flex: 1 1 100px;
       font: inherit;
       min-width: 0;
       padding: 0;
+    }
+
+    @media (max-width: 759px) {
+      flex: 1 1 100%;
     }
   }
 }

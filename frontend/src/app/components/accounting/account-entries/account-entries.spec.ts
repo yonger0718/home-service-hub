@@ -341,7 +341,7 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     const fixture = render(page(PERIOD));
     const el = fixture.nativeElement as HTMLElement;
     const labels = Array.from(el.querySelectorAll('.entries-filters select, .entries-filters input')).map(c => c.getAttribute('aria-label'));
-    expect(labels).toEqual(['類型', '搜尋', '起', '迄']);
+    expect(labels).toEqual(['類型', '搜尋', '起始日期', '結束日期']);
     expect(el.querySelector('.entries-filters label')).toBeNull();
 
     const kind = el.querySelector<HTMLSelectElement>('select[aria-label="類型"]')!;
@@ -352,8 +352,8 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     req.flush(page([]));
     fixture.detectChanges();
 
-    const from = el.querySelector<HTMLInputElement>('input[aria-label="起"]')!;
-    const to = el.querySelector<HTMLInputElement>('input[aria-label="迄"]')!;
+    const from = el.querySelector<HTMLInputElement>('.filter-range .filter-from')!;
+    const to = el.querySelector<HTMLInputElement>('.filter-range .filter-to')!;
     from.value = '2026-01-01';
     from.dispatchEvent(new Event('change'));
     expectEntries().flush(page([]));
