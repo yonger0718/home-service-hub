@@ -1,0 +1,175 @@
+<section class="entry-detail">
+  @if (loadError()) {
+    @if (!detail() && !inSheet()) {
+      <div class="error-head">
+        <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
+      </div>
+    }
+    <p class="load-error">記錄讀取失敗，請稍後再試。</p>
+  }
+
+  @if (detail(); as d) {
+    <app-lock-banner [locked]="d.locked" />
+
+    <div class="dhead" [style.background]="colorOf(d)">
+      @if (!inSheet()) {
+        <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
+      }
+      <span class="ico">{{ iconOf(d) }}</span>
+      <span class="cat">{{ categoryPath() }}</span>
+    </div>
+
+    <div class="dtitle">
+      <b class="detail-name">{{ d.name || categoryLeaf() }}</b>
+      <span class="amt detail-total" [class.neg]="total() < 0" [class.pos]="total() > 0">
+        {{ formatMoney(total(), d.currency, { sign: true }) }}
+      </span>
+    </div>
+    @if (fxLine() || feeTotal() > 0) {
+      <div class="dfx">
+        @if (fxLine(); as fx) {
+          <span class="fx-line">{{ fx }}</span>
+        }
+        @if (feeTotal() > 0) {
+          <span class="fee-note">內含手續費 {{ formatMoney(feeTotal(), d.currency) }}</span>
+        }
+      </div>
+    }
+
+    <div class="dgrid">
+      <div><small>帳戶</small><b>{{ d.account_name }}</b></div>
+      <div><small>{{ debtKind() ? '對象' : '商家' }}</small><b>{{ (debtKind() ? d.counterparty : d.merchant) || '—' }}</b></div>
+      <div><small>日期</small><b>{{ slashDate(d.entry_date) }}</b></div>
+      <div><small>專案</small><b>{{ d.project || '—' }}</b></div>
+      <div><small>類型</small><b>{{ kindLabel(d.kind) }}</b></div>
+      <div><small>時間</small><b>{{ d.entry_time ? d.entry_time.slice(0, 5) : '—' }}</b></div>
+    </div>
+    @if (d.posted_date && d.posted_date !== d.entry_date) {
+      <p class="posted">入帳日 {{ slashDate(d.posted_date) }}</p>
+    }
+
+    @if (chips().length) {
+      <div class="chips">
+        @for (chip of chips(); track chip.label) {
+          <span class="chip" [class.tag]="chip.tag">{{ chip.label }}</span>
+        }
+      </div>
+    }
+
+    @if (isDebt()) {
+      <div class="open-state">
+        @if (d.is_settled) {
+          <span class="settled">已結清</span>
+        } @else {
+          <span class="open-amount">剩餘 {{ formatMoney(d.open_amount, d.currency) }}</span>
+        }
+      </div>
+    }
+
+    @if (d.rewards.length) {
+      <div class="dsec">紅利回饋</div>
+      @for (reward of d.rewards; track reward.id) {
+        <a class="dline reward-line" [routerLink]="['/accounting/entries', reward.id]">
+          <span>◉ {{ reward.name || '紅利回饋' }} · {{ rewardWhen(reward) }}</span>
+          <span class="pos">{{ formatMoney(reward.amount, reward.currency, { sign: true }) }}</span>
+        </a>
+      }
+    }
+
+    @if (related().length) {
+      <div class="dsec">關聯記錄</div>
+      <div class="related">
+        @for (line of related(); track line.id) {
+          <a class="dline" [routerLink]="['/accounting/entries', line.id]">
+            <span>{{ line.label }}</span>
+            <span [class.neg]="+line.amount < 0" [class.pos]="+line.amount > 0">{{ formatMoney(line.amount, line.currency, { sign: true }) }}</span>
+          </a>
+        }
+      </div>
+    }
+
+    <div class="dsec">備註</div>
+    <p class="dline note">{{ d.description || '—' }}</p>
+
+    @if (panel() === 'settle' || panel() === 'refund') {
+      <div class="inline-form" role="group" [attr.aria-label]="panel() === 'settle' ? settleLabel() : '退款'">
+        <h4>{{ panel() === 'settle' ? settleLabel() : '退款' }}</h4>
+        <label>
+          <span>帳戶</span>
+          <select class="form-account" (change)="setFormAccount($any($event.target).value)">
+            @for (account of sameCurrencyAccounts(); track account.id) {
+              <option [value]="account.id" [selected]="account.id === formAccountId()">{{ account.name }}</option>
+            }
+          </select>
+        </label>
+        <label>
+          <span>金額</span>
+          <input class="form-amount" inputmode="decimal" [value]="formAmount()" (input)="formAmount.set($any($event.target).value)" />
+          <small>上限 {{ formatMoney(formMax(), d.currency) }}</small>
+        </label>
+        <label>
+          <span>日期</span>
+          <input class="form-date" type="date" [value]="formDate()" (change)="formDate.set($any($event.target).value)" />
+        </label>
+        <label>
+          <span>備註</span>
+          <input class="form-note" [value]="formNote()" (input)="formNote.set($any($event.target).value)" />
+        </label>
+        @if (formError()) {
+          <p class="form-error" role="alert">{{ formError() }}</p>
+        }
+        <div class="btnrow">
+          <button type="button" (click)="panel.set(null)">取消</button>
+          <button type="button" class="pri form-submit" [disabled]="busy()" (click)="submitForm()">儲存</button>
+        </div>
+      </div>
+    }
+
+    @if (panel() === 'delete') {
+      <div class="delete-confirm" role="alertdialog" aria-label="刪除記錄">
+        <p><b>確定刪除這筆記錄？</b></p>
+        @if (deleteNotes().length) {
+          <p>將一併刪除：</p>
+          <ul>
+            @for (note of deleteNotes(); track note) {
+              <li>{{ note }}</li>
+            }
+          </ul>
+        }
+        @if (d.group) {
+          <p>整組「{{ d.group.name || '拆帳' }}」共 {{ d.group.count }} 筆：</p>
+          <ul>
+            @for (sibling of siblings(); track sibling.id) {
+              <li>{{ sibling.name || kindLabel(sibling.kind) }} · {{ sibling.account_name }} {{ formatMoney(sibling.amount, sibling.currency) }}</li>
+            }
+          </ul>
+        }
+        @if (d.settled_by.length || d.refunded_by.length) {
+          <p class="muted">收款與退款記錄會保留，只解除連結。</p>
+        }
+        @if (formError()) {
+          <p class="form-error" role="alert">{{ formError() }}</p>
+        }
+        <div class="btnrow">
+          <button type="button" (click)="panel.set(null)">取消</button>
+          @if (d.group) {
+            <button type="button" class="danger delete-group" [disabled]="busy()" (click)="confirmDelete('group')">刪除整組</button>
+          }
+          <button type="button" class="danger delete-entry" [disabled]="busy()" (click)="confirmDelete('entry')">刪除</button>
+        </div>
+      </div>
+    }
+
+    <nav class="actions" aria-label="記錄動作">
+      <button type="button" class="action-edit" [disabled]="!canEdit()" (click)="edit()"><span class="ico">✎</span>編輯</button>
+      <button type="button" class="action-copy" (click)="copy()"><span class="ico">⧉</span>複製</button>
+      @if (refundKind()) {
+        <button type="button" class="action-refund" [disabled]="!canRefund()" (click)="openPanel('refund')"><span class="ico">↺</span>退款</button>
+      }
+      @if (isDebt()) {
+        <button type="button" class="action-settle" [disabled]="!canSettle()" (click)="openPanel('settle')"><span class="ico">🤝</span>{{ settleLabel() }}</button>
+      }
+      <button type="button" class="danger action-delete" [disabled]="locked()" (click)="openPanel('delete')"><span class="ico">🗑</span>刪除</button>
+    </nav>
+  }
+</section>

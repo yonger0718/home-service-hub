@@ -12,5 +12,20 @@
       "sizes": "any",
       "type": "image/svg+xml"
     }
+  ],
+  "shortcuts": [
+    {
+      "name": "記一筆",
+      "short_name": "記一筆",
+      "description": "新增一筆記帳",
+      "url": "accounting/entry",
+      "icons": [
+        {
+          "src": "favicon.svg",
+          "sizes": "any",
+          "type": "image/svg+xml"
+        }
+      ]
+    }
   ]
 }

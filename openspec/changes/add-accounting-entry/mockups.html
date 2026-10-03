@@ -1,0 +1,930 @@
+<title>HomeHub 記帳 Mockups</title>
+<style>
+/* Layout: a 390px phone frame centered on wide screens, full-bleed under ~480px; a screen switcher strip above it. Tokens mirror frontend/src/styles.scss. */
+:root{
+  --app-bg:#f1f3f6; --app-surface:#fafcff; --app-surface-soft:#edf1f6; --app-border:#d8dee7;
+  --app-text:#151821; --app-text-muted:#6b7280;
+  --app-primary:#533afd; --app-primary-soft:rgba(83,58,253,.10);
+  --c-red:#e5484d; --c-green:#1f9d6b; --c-red-soft:rgba(229,72,77,.12); --c-green-soft:rgba(31,157,107,.12);
+  --app-card-shadow:0 10px 30px rgba(18,26,40,.045);
+  --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-sheet:24px; --radius-pill:999px;
+  --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang TC","Noto Sans TC",Helvetica,Arial,sans-serif;
+  --key-bg:#fff; --key-fn:#e3e7ee; --overlay:rgba(18,26,40,.45);
+}
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+  --app-bg:#111419; --app-surface:#1a1e26; --app-surface-soft:#222733; --app-border:#2c3340;
+  --app-text:#eef1f6; --app-text-muted:#9aa3b2; --app-primary:#8b7bff; --app-primary-soft:rgba(139,123,255,.16);
+  --c-red:#ff6b6e; --c-green:#3ec48f; --c-red-soft:rgba(255,107,110,.16); --c-green-soft:rgba(62,196,143,.16);
+  --app-card-shadow:0 10px 30px rgba(0,0,0,.4); --key-bg:#262b36; --key-fn:#323947; --overlay:rgba(0,0,0,.6); color-scheme:dark } }
+:root[data-theme="dark"]{
+  --app-bg:#111419; --app-surface:#1a1e26; --app-surface-soft:#222733; --app-border:#2c3340;
+  --app-text:#eef1f6; --app-text-muted:#9aa3b2; --app-primary:#8b7bff; --app-primary-soft:rgba(139,123,255,.16);
+  --c-red:#ff6b6e; --c-green:#3ec48f; --c-red-soft:rgba(255,107,110,.16); --c-green-soft:rgba(62,196,143,.16);
+  --app-card-shadow:0 10px 30px rgba(0,0,0,.4); --key-bg:#262b36; --key-fn:#323947; --overlay:rgba(0,0,0,.6); color-scheme:dark }
+
+*{box-sizing:border-box}
+body{background:var(--app-bg);color:var(--app-text);font-family:var(--font-sans);font-size:15px;line-height:1.45;margin:0;padding-block:12px;padding-inline:16px}
+.wrap{max-width:960px;margin:0 auto}
+.intro{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}
+.intro h1{font-size:1.15rem;font-weight:800;letter-spacing:-.02em;margin:0;text-wrap:balance}
+.intro p{color:var(--app-text-muted);font-size:.85rem;margin:0}
+.switcher{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
+.switcher button{background:var(--app-surface);border:1px solid var(--app-border);border-radius:var(--radius-pill);color:var(--app-text);cursor:pointer;font:inherit;font-size:.8rem;font-weight:600;padding:5px 11px}
+.switcher button.active{background:var(--app-primary);border-color:var(--app-primary);color:#fff}
+.switcher button:focus-visible,.frame button:focus-visible{outline:2px solid var(--app-primary);outline-offset:2px}
+
+.frame{background:var(--app-surface);border:1px solid var(--app-border);border-radius:28px;box-shadow:var(--app-card-shadow);height:800px;margin:0 auto;max-width:390px;overflow:hidden;position:relative;width:100%}
+@media (max-width:480px){.frame{border-radius:var(--radius-lg);height:calc(100vh - 150px);min-height:560px}}
+.screen{display:none;flex-direction:column;height:100%;position:absolute;inset:0}
+.screen.active{display:flex}
+.topbar{align-items:center;display:grid;grid-template-columns:44px 1fr 44px;min-height:52px;padding:6px 8px 0}
+.topbar h2{font-size:1rem;font-weight:800;margin:0;text-align:center;letter-spacing:-.01em}
+.topbar .ib{background:none;border:0;color:var(--app-text);cursor:pointer;font-size:1.25rem;height:40px;width:40px;border-radius:50%}
+.topbar .ib.ok{color:var(--app-primary);font-weight:800}
+.content{flex:1;min-height:0;overflow-y:auto;padding:4px 14px 90px}
+.content.nopad{padding-bottom:12px}
+
+.subnav{display:flex;gap:6px;padding:4px 14px 8px}
+.subnav span{border-radius:var(--radius-pill);color:var(--app-text-muted);font-size:.8rem;font-weight:700;padding:4px 10px}
+.subnav span.on{background:var(--app-primary-soft);color:var(--app-primary)}
+
+.tabbar{align-items:end;background:var(--app-surface);border-top:1px solid var(--app-border);bottom:0;display:grid;grid-template-columns:1fr 1fr 72px 1fr 1fr;height:64px;left:0;padding:0 4px 6px;position:absolute;right:0}
+.tabbar a{align-items:center;color:var(--app-text-muted);display:flex;flex-direction:column;font-size:.65rem;font-weight:700;gap:2px;justify-content:center;padding-bottom:4px;text-decoration:none}
+.tabbar a .ico{font-size:1.15rem}
+.tabbar a.on{color:var(--app-primary)}
+.tabbar .plus{align-items:center;background:var(--app-primary);border:0;border-radius:50%;box-shadow:0 8px 20px rgba(83,58,253,.35);color:#fff;cursor:pointer;display:flex;font-size:1.9rem;font-weight:300;height:56px;justify-content:center;margin:0 auto 8px;width:56px}
+
+/* timeline */
+.monthbar{align-items:center;display:flex;justify-content:space-between;padding:4px 0}
+.monthbar b{font-size:1.05rem;letter-spacing:-.01em}
+.monthbar button{background:none;border:0;color:var(--app-text-muted);cursor:pointer;font-size:1.1rem;padding:4px 10px}
+.sum{background:var(--app-surface-soft);border-radius:var(--radius-md);display:grid;gap:4px;grid-template-columns:repeat(3,1fr);margin:4px 0 10px;padding:10px 12px}
+.sum div{display:flex;flex-direction:column;gap:1px;min-width:0}
+.sum small{color:var(--app-text-muted);font-size:.7rem;font-weight:700;letter-spacing:.04em}
+.sum b{font-size:.95rem;font-variant-numeric:tabular-nums}
+.day{align-items:baseline;color:var(--app-text-muted);display:flex;font-size:.75rem;font-weight:700;justify-content:space-between;margin:12px 0 4px}
+.day b{font-variant-numeric:tabular-nums}
+.row{align-items:center;border:0;background:none;color:inherit;cursor:pointer;display:grid;font:inherit;gap:2px 10px;grid-template-areas:'ico name amt' 'ico sub pills';grid-template-columns:40px minmax(0,1fr) auto;padding:7px 0;text-align:left;width:100%}
+.row+.row{border-top:1px solid var(--app-border)}
+.ico{align-items:center;border-radius:50%;display:flex;font-size:1.15rem;grid-area:ico;height:38px;justify-content:center;width:38px}
+.name{font-weight:700;grid-area:name;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sub{color:var(--app-text-muted);font-size:.75rem;grid-area:sub;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.amt{font-variant-numeric:tabular-nums;font-weight:800;grid-area:amt;text-align:right;white-space:nowrap}
+.amt small{color:var(--app-text-muted);display:block;font-size:.68rem;font-weight:600}
+.pills{display:flex;gap:4px;grid-area:pills;justify-content:flex-end}
+.pill{border:1px solid var(--app-border);border-radius:var(--radius-pill);color:var(--app-text-muted);font-size:.62rem;font-weight:700;padding:0 6px;white-space:nowrap}
+.pill.rw{background:var(--c-green-soft);border-color:transparent;color:var(--c-green)}
+.pill.rv{background:var(--app-primary-soft);border-color:transparent;color:var(--app-primary)}
+.neg{color:var(--c-red)} .pos{color:var(--c-green)}
+
+/* entry */
+.kinds{display:flex;gap:2px;overflow-x:auto;padding:0 0 6px;scrollbar-width:none}
+.kinds span{border-bottom:2px solid transparent;color:var(--app-text-muted);flex:0 0 auto;font-size:.85rem;font-weight:700;padding:6px 9px}
+.kinds span.on{border-color:var(--app-primary);color:var(--app-text)}
+.grid{display:grid;gap:10px 4px;grid-template-columns:repeat(5,1fr);padding:6px 0 8px}
+.cat{align-items:center;background:none;border:0;color:var(--app-text-muted);cursor:pointer;display:flex;flex-direction:column;font:inherit;font-size:.68rem;font-weight:700;gap:4px;padding:0}
+.cat .ico{height:42px;width:42px;font-size:1.25rem}
+.cat.on{color:var(--app-text)} .cat.on .ico{outline:3px solid var(--app-primary);outline-offset:2px}
+.strip{align-items:center;display:flex;gap:10px;padding:4px 0 10px}
+.strip .sel{align-items:center;display:flex;gap:8px}
+.strip .sel .ico{height:42px;width:42px}
+.strip .sel b{display:block;font-size:.85rem}
+.strip .sel small{color:var(--c-red);font-weight:800;font-variant-numeric:tabular-nums}
+.strip .add{align-items:center;background:var(--app-surface-soft);border:1px dashed var(--app-border);border-radius:50%;color:var(--app-text-muted);display:flex;font-size:1.2rem;height:42px;justify-content:center;width:42px}
+.strip .hint{color:var(--app-text-muted);font-size:.7rem}
+.tiles{display:grid;gap:8px;grid-template-columns:1fr 1fr}
+.tile{align-items:center;background:var(--app-surface-soft);border:1px solid transparent;border-radius:var(--radius-md);display:flex;font-size:.9rem;font-weight:600;gap:6px;justify-content:center;min-height:46px;padding:8px 10px;text-align:center}
+.tile.empty{color:var(--app-text-muted);font-weight:500}
+.tile.wide{grid-column:1/-1;justify-content:space-between}
+.tile.amount{font-size:1.4rem;font-weight:800;font-variant-numeric:tabular-nums;justify-content:space-between;outline:2px solid var(--app-primary)}
+.tile.amount .cur{background:var(--app-surface);border:1px solid var(--app-border);border-radius:var(--radius-sm);font-size:.75rem;font-weight:800;padding:2px 7px}
+.tile.amount .plus{border:1px solid var(--app-border);border-radius:50%;color:var(--app-text-muted);font-size:1rem;font-weight:500;height:26px;line-height:24px;text-align:center;width:26px}
+.tile .cap{color:var(--app-text-muted);font-size:.7rem;font-weight:700}
+.chips{align-items:center;display:flex;flex-wrap:wrap;gap:6px;padding:10px 0 4px}
+.chip{background:var(--app-primary-soft);border-radius:var(--radius-pill);color:var(--app-primary);font-size:.75rem;font-weight:700;padding:3px 9px}
+.chip.tag{background:var(--app-surface-soft);color:var(--app-text-muted)}
+.chip.fee{background:var(--c-red-soft);color:var(--c-red)}
+.chips .ph{color:var(--app-text-muted);font-size:.8rem}
+.note{background:var(--app-surface-soft);border-radius:var(--radius-md);color:var(--app-text-muted);min-height:54px;padding:10px 12px;font-size:.85rem;margin-top:8px}
+.foot{background:var(--app-surface-soft);border-top:1px solid var(--app-border);color:var(--app-text-muted);font-size:.78rem;font-weight:700;padding:7px 14px;text-align:center}
+.foot b{color:var(--c-green);font-variant-numeric:tabular-nums}
+.quick{display:flex;gap:6px;overflow-x:auto;padding:6px 10px;scrollbar-width:none;border-top:1px solid var(--app-border)}
+.quick span{background:var(--app-surface-soft);border-radius:var(--radius-pill);flex:0 0 auto;font-size:.8rem;font-weight:700;padding:3px 11px;font-variant-numeric:tabular-nums}
+.keypad{background:var(--app-surface-soft);display:grid;gap:6px;grid-template-columns:repeat(4,1fr);padding:6px 10px calc(10px + env(safe-area-inset-bottom,0px))}
+.keypad span{align-items:center;background:var(--key-bg);border-radius:var(--radius-sm);display:flex;font-size:1.15rem;font-weight:600;height:40px;justify-content:center;font-variant-numeric:tabular-nums}
+.keypad .fn{background:var(--key-fn);font-size:1rem}
+.keypad .ok{background:var(--app-primary);color:#fff}
+.entrybottom{background:var(--app-surface);bottom:0;left:0;position:absolute;right:0}
+.xfer{align-items:center;display:grid;gap:6px;grid-template-columns:1fr 36px 1fr;padding:6px 0 10px}
+.xfer .acc{align-items:center;display:flex;flex-direction:column;gap:4px;text-align:center}
+.xfer .acc .ico{font-size:1.4rem;height:50px;width:50px}
+.xfer .acc b{font-size:.85rem} .xfer .acc small{color:var(--app-text-muted);font-size:.7rem;font-variant-numeric:tabular-nums}
+.xfer .swap{color:var(--app-text-muted);font-size:1.3rem;text-align:center}
+.lbl{color:var(--app-text-muted);font-size:.7rem;font-weight:800;letter-spacing:.06em;margin:6px 0 4px;text-transform:uppercase}
+
+/* sheets */
+.overlay{background:var(--overlay);display:none;inset:0;position:absolute;z-index:5;align-items:flex-end}
+.overlay.open{display:flex}
+.sheet{background:var(--app-surface);border-radius:var(--radius-sheet) var(--radius-sheet) 0 0;max-height:92%;overflow-y:auto;padding:8px 16px calc(16px + env(safe-area-inset-bottom,0px));width:100%}
+.sheet .grab{background:var(--app-border);border-radius:2px;height:4px;margin:2px auto 10px;width:36px}
+.sheet h3{font-size:1rem;font-weight:800;margin:0 0 8px;text-align:center}
+.kv{display:flex;flex-direction:column}
+.kv div{align-items:center;border-bottom:1px solid var(--app-border);display:flex;justify-content:space-between;min-height:46px;padding:6px 0}
+.kv div:last-child{border-bottom:0}
+.kv .k{color:var(--app-text);font-weight:600}
+.kv .sub2{color:var(--app-text-muted);font-size:.72rem;font-weight:500;display:block}
+.kv .v{color:var(--app-text-muted);font-variant-numeric:tabular-nums;text-align:right}
+.kv .v.ed{color:var(--app-text);font-weight:700}
+.kv .child{padding-left:14px} .kv .child .k::before{content:'– ';color:var(--app-text-muted)}
+.kv .total{font-weight:800} .kv .total .v{color:var(--app-text);font-weight:800;font-size:1.05rem}
+.tog{background:var(--app-border);border-radius:var(--radius-pill);height:24px;position:relative;width:42px;flex:0 0 auto}
+.tog::after{background:#fff;border-radius:50%;content:'';height:20px;left:2px;position:absolute;top:2px;width:20px}
+.tog.on{background:var(--c-green)} .tog.on::after{left:20px}
+.btnrow{display:flex;gap:8px;margin-top:12px}
+.btnrow button{background:var(--app-surface-soft);border:0;border-radius:var(--radius-md);color:var(--app-text);cursor:pointer;flex:1;font:inherit;font-weight:700;padding:11px}
+.btnrow button.pri{background:var(--app-primary);color:#fff}
+
+/* detail */
+.dhead{border-radius:var(--radius-lg);color:#151821;display:flex;flex-direction:column;align-items:center;gap:4px;padding:18px 14px 14px;margin:4px 0 12px;position:relative}
+.dhead .ico{background:rgba(255,255,255,.55);font-size:1.8rem;height:56px;width:56px}
+.dhead .cat{color:inherit;font-size:.8rem;opacity:.85}
+.dhead .close{background:rgba(255,255,255,.45);border:0;border-radius:50%;cursor:pointer;font-size:1rem;height:30px;position:absolute;right:10px;top:10px;width:30px}
+.dtitle{align-items:baseline;display:flex;justify-content:space-between;gap:8px}
+.dtitle b{font-size:1.1rem}
+.dtitle .amt{font-size:1.35rem}
+.dfx{color:var(--app-text-muted);font-size:.78rem;margin:2px 0 8px;font-variant-numeric:tabular-nums}
+.dgrid{border:1px solid var(--app-border);border-radius:var(--radius-md);display:grid;grid-template-columns:1fr 1fr 1fr;margin:8px 0}
+.dgrid div{border-bottom:1px solid var(--app-border);border-right:1px solid var(--app-border);display:flex;flex-direction:column;gap:1px;min-width:0;padding:8px 10px}
+.dgrid div:nth-child(3n){border-right:0} .dgrid div:nth-last-child(-n+3){border-bottom:0}
+.dgrid small{color:var(--app-text-muted);font-size:.65rem;font-weight:700;letter-spacing:.04em}
+.dgrid b{font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsec{margin:12px 0 4px;font-size:.78rem;font-weight:800;color:var(--app-text-muted);letter-spacing:.04em}
+.dline{align-items:center;display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--app-border);font-size:.88rem}
+.dline:last-child{border-bottom:0}
+.dline .pos{font-weight:800;font-variant-numeric:tabular-nums}
+.actions{bottom:0;background:var(--app-surface);border-top:1px solid var(--app-border);display:grid;grid-template-columns:repeat(5,1fr);left:0;padding:8px 6px calc(10px + env(safe-area-inset-bottom,0px));position:absolute;right:0}
+.actions button{background:none;border:0;color:var(--app-text);cursor:pointer;display:flex;flex-direction:column;font:inherit;font-size:.68rem;font-weight:700;gap:2px;align-items:center;padding:4px 0}
+.actions button .ico{font-size:1.1rem;height:auto;width:auto}
+.actions button.danger{color:var(--c-red)}
+
+/* accounts */
+.grp{align-items:baseline;color:var(--app-text-muted);display:flex;font-size:.8rem;font-weight:800;justify-content:space-between;margin:14px 0 4px}
+.grp b{font-variant-numeric:tabular-nums;color:var(--app-text)}
+.acc-row{align-items:center;background:none;border:0;border-top:1px solid var(--app-border);color:inherit;cursor:pointer;display:grid;font:inherit;gap:1px 10px;grid-template-areas:'ico name bal' 'ico meta bal' 'ico due due';grid-template-columns:40px minmax(0,1fr) auto;padding:8px 0;text-align:left;width:100%}
+.acc-row:first-of-type{border-top:0}
+.acc-row.sub{padding-left:22px}
+.acc-row .ico{background:var(--app-surface-soft);font-size:1.1rem}
+.acc-row .name{font-weight:800}
+.acc-row .meta{color:var(--app-text-muted);font-size:.72rem;grid-area:meta}
+.acc-row .bal{font-weight:800;font-variant-numeric:tabular-nums;grid-area:bal;text-align:right}
+.acc-row .due{grid-area:due;display:flex;justify-content:flex-end;padding-top:2px}
+.acc-row .badge{background:var(--app-primary-soft);border-radius:4px;color:var(--app-primary);font-size:.6rem;font-weight:800;padding:0 4px;margin-left:4px;vertical-align:middle}
+.nw{background:var(--app-surface-soft);border-radius:var(--radius-md);padding:10px 12px;margin:4px 0}
+.nw small{color:var(--app-text-muted);font-size:.7rem;font-weight:700}
+.nw b{display:block;font-size:1.5rem;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.nw .ph{color:var(--app-text-muted);font-size:.72rem}
+
+/* settings list */
+.srow{align-items:center;background:none;border:0;border-bottom:1px solid var(--app-border);color:inherit;cursor:pointer;display:flex;font:inherit;gap:10px;min-height:50px;padding:6px 0;text-align:left;width:100%}
+.srow .t{flex:1;font-weight:600} .srow .r{color:var(--app-text-muted);font-size:.85rem}
+.srow .chev{color:var(--app-text-muted)}
+.bigicon{align-items:center;display:flex;flex-direction:column;gap:4px;padding:6px 0 10px}
+.bigicon .ico{background:var(--app-surface-soft);font-size:1.8rem;height:64px;width:64px}
+.bigicon b{font-size:1.2rem;font-variant-numeric:tabular-nums}
+.bigicon small{color:var(--app-text-muted);font-size:.75rem}
+.sec{margin-top:14px}
+.rw{align-items:center;border-bottom:1px solid var(--app-border);display:flex;gap:10px;min-height:46px;padding:5px 0;justify-content:space-between}
+.rw .k{font-weight:600} .rw .v{color:var(--app-text-muted);text-align:right;font-variant-numeric:tabular-nums;font-size:.9rem}
+.rw .v.set{color:var(--app-text)}
+.rw.child{padding-left:14px} .rw.child .k{font-weight:500;color:var(--app-text)} .rw.child .k::before{content:'– ';color:var(--app-text-muted)}
+.passbook{color:var(--app-text-muted);font-size:.68rem;font-variant-numeric:tabular-nums;text-align:right}
+.notes{background:var(--app-surface);border:1px solid var(--app-border);border-radius:var(--radius-lg);margin:16px auto 0;max-width:720px;padding:14px 16px}
+.notes h2{font-size:.95rem;margin:0 0 6px}
+.notes ul{margin:0;padding-left:18px;font-size:.85rem;color:var(--app-text-muted)}
+.notes li{margin:3px 0}
+/* mode toggle + desktop frame */
+.modes{display:flex;gap:4px;margin-bottom:10px}
+.modes button{background:var(--app-surface-soft);border:1px solid var(--app-border);border-radius:var(--radius-sm);color:var(--app-text-muted);cursor:pointer;font:inherit;font-size:.8rem;font-weight:800;padding:6px 14px}
+.modes button.active{background:var(--app-text);border-color:var(--app-text);color:var(--app-bg)}
+.dwrap{overflow-x:auto;padding-bottom:6px}
+.dframe{background:var(--app-bg);border:1px solid var(--app-border);border-radius:var(--radius-lg);box-shadow:var(--app-card-shadow);display:none;grid-template-columns:72px 1fr;height:680px;min-width:880px;overflow:hidden;width:100%}
+.dframe.show{display:grid}
+.dock{background:var(--app-surface);border-right:1px solid var(--app-border);display:flex;flex-direction:column;align-items:center;gap:8px;padding:14px 0}
+.dock .logo{background:var(--app-primary);border-radius:10px;height:36px;width:36px;margin-bottom:8px}
+.dock .di{align-items:center;border-radius:10px;color:var(--app-text-muted);display:flex;font-size:1rem;height:36px;justify-content:center;width:36px}
+.dock .di.sub{font-size:.85rem;height:30px;width:30px;opacity:.85}
+.dock .di.on{background:var(--app-primary-soft);color:var(--app-primary)}
+.dock .dv{background:var(--app-border);height:1px;margin:4px 0;width:28px}
+.dmain{display:flex;flex-direction:column;min-width:0}
+.dhdr{align-items:center;border-bottom:1px solid var(--app-border);display:grid;grid-template-columns:1fr auto 1fr;padding:10px 18px}
+.dhdr .lg{font-weight:900;letter-spacing:-.03em;color:var(--app-text-muted);font-size:.85rem}
+.dhdr h2{font-size:1rem;font-weight:800;margin:0;text-align:center}
+.dhdr .tabs{display:flex;gap:4px;justify-content:flex-end}
+.dhdr .tabs span{border-radius:var(--radius-pill);color:var(--app-text-muted);font-size:.78rem;font-weight:700;padding:3px 10px}
+.dhdr .tabs span.on{background:var(--app-primary-soft);color:var(--app-primary)}
+.dbody{display:grid;flex:1;gap:16px;grid-template-columns:minmax(0,5fr) minmax(0,6fr);min-height:0;padding:14px 18px 18px;position:relative}
+.pane{background:var(--app-surface);border:1px solid var(--app-border);border-radius:var(--radius-lg);display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden}
+.pane .ph2{align-items:center;border-bottom:1px solid var(--app-border);display:flex;gap:8px;justify-content:space-between;padding:10px 14px}
+.pane .ph2 b{font-size:.9rem}
+.pane .pb{flex:1;min-height:0;overflow-y:auto;padding:8px 14px 14px}
+.pane .row{padding:6px 0} .pane .row.sel{background:var(--app-primary-soft);border-radius:var(--radius-sm);margin:0 -8px;padding-inline:8px}
+.pane .row.sel+.row{border-top:0}
+.fab{align-items:center;background:var(--app-primary);border:0;border-radius:50%;bottom:30px;box-shadow:0 8px 20px rgba(83,58,253,.35);color:#fff;cursor:pointer;display:flex;font-size:1.7rem;height:52px;justify-content:center;position:absolute;right:30px;width:52px}
+.dscreen{display:none;height:100%} .dscreen.active{display:contents}
+.dform{display:grid;gap:10px;grid-template-columns:1fr 1fr}
+.dform .f{display:flex;flex-direction:column;gap:3px}
+.dform .f.w{grid-column:1/-1}
+.dform label{color:var(--app-text-muted);font-size:.68rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase}
+.dform .in{background:var(--app-surface-soft);border:1px solid var(--app-border);border-radius:var(--radius-sm);font-size:.9rem;min-height:36px;padding:7px 10px;display:flex;align-items:center;justify-content:space-between}
+.dform .in.focus{border-color:var(--app-primary);box-shadow:0 0 0 3px var(--app-primary-soft)}
+.dform .in.big{font-size:1.25rem;font-weight:800;font-variant-numeric:tabular-nums}
+.dform .in .hint{color:var(--app-text-muted);font-size:.72rem;font-weight:600}
+.dform .in.mut{color:var(--app-text-muted)}
+.catbar{display:flex;flex-wrap:wrap;gap:6px}
+.catbar span{align-items:center;background:var(--app-surface-soft);border-radius:var(--radius-pill);display:flex;font-size:.78rem;font-weight:700;gap:4px;padding:3px 9px 3px 4px}
+.catbar span .dot{border-radius:50%;display:inline-block;height:18px;width:18px;text-align:center;font-size:.7rem;line-height:18px}
+.catbar span.on{outline:2px solid var(--app-primary)}
+.kbd{color:var(--app-text-muted);font-size:.72rem;display:flex;gap:10px;flex-wrap:wrap;padding:8px 0 0}
+.kbd kbd{background:var(--app-surface-soft);border:1px solid var(--app-border);border-radius:4px;font-family:inherit;font-size:.68rem;padding:0 5px}
+@media (prefers-reduced-motion:no-preference){.screen.active{animation:fade .15s ease}}
+@keyframes fade{from{opacity:.4}to{opacity:1}}
+</style>
+
+<div class="wrap">
+  <div class="intro">
+    <h1>HomeHub 記帳 phase 2a mockups</h1>
+    <p>Clickable prototype, sample data only. Phone: tab-bar「+」, record rows, ✕ / ✓, 帳戶 rows, category icons, TWD pill, amount「+」, 拆帳「+」all work. 桌面 / iPad mode shows the two-pane layout (scroll sideways on a phone).</p>
+  </div>
+  <div class="modes" id="modes"><button data-m="phone" class="active">手機</button><button data-m="desktop">桌面 / iPad</button></div>
+  <div class="switcher" id="dswitcher" hidden>
+    <button data-d="d-timeline" class="active">紀錄 + 明細</button>
+    <button data-d="d-entry">紀錄 + 新增</button>
+    <button data-d="d-accounts">帳戶 + 明細</button>
+    <button data-d="d-settings">帳戶 + 設定</button>
+  </div>
+  <div class="switcher" id="switcher">
+    <button data-s="timeline" class="active">紀錄 (home)</button>
+    <button data-s="entry">新增記錄</button>
+    <button data-s="entry-strip">已選類別 + 拆帳</button>
+    <button data-s="transfer">轉帳</button>
+    <button data-s="detail">記錄明細</button>
+    <button data-s="accounts">帳戶</button>
+    <button data-s="account-detail">帳戶明細</button>
+    <button data-s="account-settings">帳戶設定</button>
+    <button data-s="settings">設定</button>
+  </div>
+
+  <div class="frame" id="frame">
+
+    <!-- ============ TIMELINE ============ -->
+    <section class="screen active" id="s-timeline">
+      <div class="topbar"><span></span><h2>紀錄</h2><button class="ib" aria-label="搜尋">⌕</button></div>
+      <div class="subnav"><span class="on">紀錄</span><span>帳戶</span><span>設定</span></div>
+      <div class="content">
+        <div class="monthbar"><button aria-label="上個月">‹</button><b>2026 年 10 月</b><button aria-label="下個月">›</button></div>
+        <div class="sum">
+          <div><small>支出</small><b class="neg">−$18,420</b></div>
+          <div><small>收入</small><b class="pos">+$62,000</b></div>
+          <div><small>結餘</small><b>+$43,580</b></div>
+        </div>
+
+        <div class="day"><span>10/02 週五</span><b>−$1,536</b></div>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#f0cd92">🍜</span>
+          <span class="name">午餐</span>
+          <span class="sub">麥當勞 · #LinePay</span>
+          <span class="amt neg">−$170</span>
+          <span class="pills"><span class="pill">生活</span><span class="pill">玉山 UNI</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#cc7676">🛍️</span>
+          <span class="name">Uniqlo 外套</span>
+          <span class="sub">Uniqlo 心齋橋 · 內含手續費 $17</span>
+          <span class="amt neg">−$1,166<small>¥5,390 @ 0.2163</small></span>
+          <span class="pills"><span class="pill">2026 大阪</span><span class="pill">富邦 J卡</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#4a90e2">🚌</span>
+          <span class="name">捷運</span>
+          <span class="sub">悠遊卡</span>
+          <span class="amt neg">−$200</span>
+          <span class="pills"><span class="pill">生活</span><span class="pill">悠遊卡</span></span>
+        </button>
+
+        <div class="day"><span>10/01 週四</span><b>+$61,580</b></div>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#b4945e">💰</span>
+          <span class="name">薪水</span>
+          <span class="sub">公司</span>
+          <span class="amt pos">+$62,000</span>
+          <span class="pills"><span class="pill">每月統計</span><span class="pill">國泰主帳戶</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#d4823b">⇄</span>
+          <span class="name">轉帳</span>
+          <span class="sub">國泰主帳戶 → Line Bank</span>
+          <span class="amt">$10,000</span>
+          <span class="pills"><span class="pill">轉帳</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#84dccf">🤝</span>
+          <span class="name">代付 晚餐</span>
+          <span class="sub">Alan · 尚未收款</span>
+          <span class="amt neg">−$420</span>
+          <span class="pills"><span class="pill rv">應收</span><span class="pill">玉山 Only</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#778c63">🧾</span>
+          <span class="name">紅利回饋 · 網購 3%</span>
+          <span class="sub">來源：9/28 PChome $4,130</span>
+          <span class="amt pos">+$124</span>
+          <span class="pills"><span class="pill rw">回饋</span><span class="pill">玉山 U Bear</span></span>
+        </button>
+
+        <div class="day"><span>09/30 週三</span><b>−$2,569</b></div>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#425e7f">🏠</span>
+          <span class="name">電費</span>
+          <span class="sub">台灣電力 · #9月</span>
+          <span class="amt neg">−$2,569</span>
+          <span class="pills"><span class="pill">家居</span><span class="pill">玉山 Only</span></span>
+        </button>
+      </div>
+      <nav class="tabbar">
+        <a href="#timeline"><span class="ico">▦</span>物資</a>
+        <a href="#timeline"><span class="ico">📈</span>投資</a>
+        <button class="plus" data-go="entry" aria-label="新增記錄">+</button>
+        <a href="#timeline" class="on"><span class="ico">👛</span>財務</a>
+        <a href="#timeline" data-go="settings"><span class="ico">⚙</span>設定</a>
+      </nav>
+    </section>
+
+    <!-- ============ ENTRY (grid state) ============ -->
+    <section class="screen" id="s-entry">
+      <div class="topbar"><button class="ib" data-go="timeline" aria-label="取消">✕</button><h2>新增記錄</h2><button class="ib ok" data-go="timeline" aria-label="儲存">✓</button></div>
+      <div class="content nopad" style="padding-bottom:300px">
+        <div class="kinds"><span class="on">支出</span><span>收入</span><span>轉帳</span><span>應收款項</span><span>應付款項</span><span>系統</span></div>
+        <div class="grid">
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#f0cd92">🍜</span>飲食</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#4a90e2">🚌</span>交通</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#986bc0">🎮</span>娛樂</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#cc7676">🛍️</span>購物</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#acaa98">💇</span>個人</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#ec5353">🩺</span>醫療</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#425e7f">🏠</span>家居</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#e4b5db">👨‍👩‍👧</span>家庭</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#778c63">🧾</span>生活</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#f5a623">📚</span>學習</button>
+          <button class="cat" data-go="entry-strip"><span class="ico" style="background:#6c6092">📦</span>其他</button>
+        </div>
+        <div class="tiles">
+          <div class="tile amount wide"><span class="cur" data-sheet="fx">TWD</span><span>0</span><span class="plus" data-sheet="fee">+</span></div>
+          <div class="tile wide empty">名稱 <span class="cap">☆</span></div>
+          <div class="tile">玉山 UNI</div><div class="tile">生活</div>
+          <div class="tile empty">商家</div><div class="tile">今天 (週五)</div>
+          <div class="tile">14:42</div><div class="tile empty">發票號碼</div>
+        </div>
+        <div class="chips"><span class="chip">一般 (1%)</span><span class="ph">#標籤 / 紅利回饋</span></div>
+        <div class="note">備註</div>
+      </div>
+      <div class="entrybottom">
+        <div class="foot">先選類別，帳戶與專案會帶入上次使用的設定</div>
+        <div class="quick"><span>120</span><span>165</span><span>240</span><span>85</span><span>310</span><span>1,500</span></div>
+        <div class="keypad">
+          <span class="fn">÷</span><span class="fn">×</span><span class="fn">−</span><span class="fn">+</span>
+          <span>7</span><span>8</span><span>9</span><span class="fn">⌫</span>
+          <span>4</span><span>5</span><span>6</span><span class="fn">C</span>
+          <span>1</span><span>2</span><span>3</span><span class="fn">↵</span>
+          <span>.</span><span>0</span><span>00</span><span class="ok">✓</span>
+        </div>
+      </div>
+      <div class="overlay" id="ov-fx"><div class="sheet">
+        <div class="grab"></div><h3>幣種</h3>
+        <div class="kv">
+          <div><span class="k">原幣金額</span><span class="v ed">JPY 5,390</span></div>
+          <div><span class="k">匯率<span class="sub2">2026/10/02 線上匯率</span></span><span class="v ed">0.21630000</span></div>
+          <div><span class="k">轉換成 TWD<span class="sub2">可改成帳單上的實際金額</span></span><span class="v ed">1,166</span></div>
+          <div><span class="k">採用線上匯率</span><span class="tog on"></span></div>
+        </div>
+        <div class="btnrow"><button data-close="fx">取消</button><button class="pri" data-close="fx">確定</button></div>
+      </div></div>
+      <div class="overlay" id="ov-fee"><div class="sheet">
+        <div class="grab"></div><h3>支出</h3>
+        <div class="kv">
+          <div><span class="k">金額</span><span class="v ed">−1,166</span></div>
+          <div><span class="k">手續費 ✎<span class="sub2">國外交易手續費 1.5%，依卡片設定自動帶入</span></span><span class="v ed">−17</span></div>
+          <div><span class="k">折扣 ✎</span><span class="v">+0</span></div>
+          <div class="total"><span class="k">總額</span><span class="v">−1,183</span></div>
+        </div>
+        <div class="btnrow"><button data-close="fee">取消</button><button class="pri" data-close="fee">確定</button></div>
+      </div></div>
+    </section>
+
+    <!-- ============ ENTRY (category selected, split) ============ -->
+    <section class="screen" id="s-entry-strip">
+      <div class="topbar"><button class="ib" data-go="timeline" aria-label="取消">✕</button><h2>新增記錄</h2><button class="ib ok" data-go="timeline" aria-label="儲存">✓</button></div>
+      <div class="content nopad" style="padding-bottom:300px">
+        <div class="kinds"><span class="on">支出</span><span>收入</span><span>轉帳</span><span>應收款項</span><span>應付款項</span><span>系統</span></div>
+        <div class="strip">
+          <div class="sel"><span class="ico" style="background:#f0cd92">🍜</span><span><b>午餐</b><small>$170</small></span></div>
+          <div class="sel"><span class="ico" style="background:#84dccf">🤝</span><span><b>代付 · Alan</b><small>$420</small></span></div>
+          <span class="add" data-sheet="split">+</span>
+          <span class="hint">拆帳：每行可用不同類別、帳戶</span>
+        </div>
+        <div class="tiles">
+          <div class="tile amount wide"><span class="cur" data-sheet="fx2">TWD</span><span>170</span><span class="plus" data-sheet="fee2">+</span></div>
+          <div class="tile wide">午餐 <span class="cap">☆</span></div>
+          <div class="tile">玉山 UNI</div><div class="tile">生活</div>
+          <div class="tile">麥當勞</div><div class="tile">今天 (週五)</div>
+          <div class="tile">12:31</div><div class="tile empty">發票號碼</div>
+        </div>
+        <div class="chips"><span class="chip">一般 (1%)</span><span class="chip">Up選 (3.5%)</span><span class="chip tag">#LinePay</span><span class="ph">#標籤 / 紅利回饋</span></div>
+        <div class="note">備註</div>
+      </div>
+      <div class="entrybottom">
+        <div class="foot">預計可獲得回饋：<b>$2 / $6</b>（2b 啟用）</div>
+        <div class="quick"><span>120</span><span>165</span><span>240</span><span>85</span><span>310</span><span>1,500</span></div>
+        <div class="keypad">
+          <span class="fn">÷</span><span class="fn">×</span><span class="fn">−</span><span class="fn">+</span>
+          <span>7</span><span>8</span><span>9</span><span class="fn">⌫</span>
+          <span>4</span><span>5</span><span>6</span><span class="fn">C</span>
+          <span>1</span><span>2</span><span>3</span><span class="fn">↵</span>
+          <span>.</span><span>0</span><span>00</span><span class="ok">✓</span>
+        </div>
+      </div>
+      <div class="overlay" id="ov-split"><div class="sheet">
+        <div class="grab"></div><h3>新增拆帳行</h3>
+        <div class="kv">
+          <div><span class="k">類型</span><span class="v ed">支出 · 收入 · 應收 · 應付</span></div>
+          <div><span class="k">類別</span><span class="v">選擇</span></div>
+          <div><span class="k">金額</span><span class="v">0</span></div>
+          <div><span class="k">帳戶<span class="sub2">預設同主記錄，可改</span></span><span class="v ed">玉山 UNI</span></div>
+          <div><span class="k">對象（應收/應付）</span><span class="v">—</span></div>
+        </div>
+        <div class="btnrow"><button data-close="split">取消</button><button class="pri" data-close="split">加入</button></div>
+      </div></div>
+      <div class="overlay" id="ov-fx2"><div class="sheet"><div class="grab"></div><h3>幣種</h3><div class="kv"><div><span class="k">原幣金額</span><span class="v ed">TWD 170</span></div><div><span class="k">匯率</span><span class="v">1.00</span></div></div><div class="btnrow"><button class="pri" data-close="fx2">確定</button></div></div></div>
+      <div class="overlay" id="ov-fee2"><div class="sheet"><div class="grab"></div><h3>支出</h3><div class="kv"><div><span class="k">金額</span><span class="v ed">−170</span></div><div><span class="k">手續費 ✎</span><span class="v">−0</span></div><div><span class="k">折扣 ✎</span><span class="v">+0</span></div><div class="total"><span class="k">總額</span><span class="v">−170</span></div></div><div class="btnrow"><button data-close="fee2">取消</button><button class="pri" data-close="fee2">確定</button></div></div></div>
+    </section>
+
+    <!-- ============ TRANSFER ============ -->
+    <section class="screen" id="s-transfer">
+      <div class="topbar"><button class="ib" data-go="timeline" aria-label="取消">✕</button><h2>新增記錄</h2><button class="ib ok" data-go="timeline" aria-label="儲存">✓</button></div>
+      <div class="content nopad" style="padding-bottom:300px">
+        <div class="kinds"><span>支出</span><span>收入</span><span class="on">轉帳</span><span>應收款項</span><span>應付款項</span><span>系統</span></div>
+        <div class="grid" style="grid-template-columns:repeat(6,1fr)">
+          <button class="cat on"><span class="ico" style="background:#d4823b">⇄</span>轉帳</button>
+          <button class="cat"><span class="ico" style="background:#d4823b">🏧</span>提款</button>
+          <button class="cat"><span class="ico" style="background:#d4823b">🏦</span>存款</button>
+          <button class="cat"><span class="ico" style="background:#d4823b">💱</span>兌換</button>
+          <button class="cat"><span class="ico" style="background:#d4823b">🔋</span>儲值</button>
+          <button class="cat"><span class="ico" style="background:#d4823b">💳</span>繳卡費</button>
+        </div>
+        <div class="xfer">
+          <div class="acc"><span class="ico">🏦</span><b>國泰主帳戶</b><small>+$398,071</small></div>
+          <div class="swap">⇄</div>
+          <div class="acc"><span class="ico">💴</span><b>日幣現金</b><small>¥53,635</small></div>
+        </div>
+        <div class="tiles">
+          <div class="tile" style="flex-direction:column;align-items:stretch;gap:2px"><span class="cap">轉出金額</span><span class="neg" style="font-size:1.2rem;font-weight:800">TWD 10,000 <span class="plus" style="display:inline-block">+</span></span></div>
+          <div class="tile" style="flex-direction:column;align-items:stretch;gap:2px"><span class="cap">轉入金額</span><span class="pos" style="font-size:1.2rem;font-weight:800">JPY 46,200 <span class="plus" style="display:inline-block">+</span></span></div>
+          <div class="tile"><span class="cap">匯率</span> 0.216450</div>
+          <div class="tile empty">名稱 <span class="cap">☆</span></div>
+          <div class="tile empty">商家</div><div class="tile">今天 (週五)</div>
+          <div class="tile">09:05</div><div class="tile empty">專案</div>
+        </div>
+        <div class="chips"><span class="ph">#標籤 / 紅利回饋</span></div>
+        <div class="note">備註</div>
+      </div>
+      <div class="entrybottom">
+        <div class="foot">同幣別轉帳匯率固定 1.00；跨幣別記兩邊金額，匯率自動算</div>
+        <div class="keypad">
+          <span class="fn">÷</span><span class="fn">×</span><span class="fn">−</span><span class="fn">+</span>
+          <span>7</span><span>8</span><span>9</span><span class="fn">⌫</span>
+          <span>4</span><span>5</span><span>6</span><span class="fn">C</span>
+          <span>1</span><span>2</span><span>3</span><span class="fn">↵</span>
+          <span>.</span><span>0</span><span>00</span><span class="ok">✓</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ DETAIL ============ -->
+    <section class="screen" id="s-detail">
+      <div class="content">
+        <div class="dhead" style="background:#cc7676">
+          <button class="close" data-go="timeline" aria-label="關閉">✕</button>
+          <span class="ico">🛍️</span><span class="cat">購物 › 衣物</span>
+        </div>
+        <div class="dtitle"><b>Uniqlo 外套</b><span class="amt neg">−$1,183</span></div>
+        <div class="dfx">¥5,390 × 0.2163 = $1,166（線上匯率）· 內含國外交易手續費 $17</div>
+        <div class="dgrid">
+          <div><small>帳戶</small><b>富邦 J卡</b></div>
+          <div><small>商家</small><b>Uniqlo 心齋橋</b></div>
+          <div><small>日期</small><b>2026/10/02</b></div>
+          <div><small>專案</small><b>2026 大阪</b></div>
+          <div><small>類型</small><b>單次</b></div>
+          <div><small>時間</small><b>15:20</b></div>
+        </div>
+        <div class="chips" style="padding-top:4px"><span class="chip tag">#旅行</span><span class="chip">海外 2.5%</span></div>
+        <div class="dsec">紅利回饋</div>
+        <div class="dline"><span>◉ 海外 2.5% · 將於 11/15 入帳</span><span class="pos">+$29</span></div>
+        <div class="dsec">關聯記錄</div>
+        <div class="dline"><span>手續費 · 國外交易手續費 1.5%</span><span class="neg">−$17</span></div>
+        <div class="dline"><span>帳單 · 富邦 J卡 10/16 – 11/15</span><span style="color:var(--app-text-muted)">›</span></div>
+        <div class="dsec">備註</div>
+        <div class="dline" style="color:var(--app-text-muted)">—</div>
+      </div>
+      <div class="actions">
+        <button><span class="ico">✎</span>編輯</button>
+        <button><span class="ico">⧉</span>複製</button>
+        <button><span class="ico">↺</span>退款</button>
+        <button><span class="ico">🧾</span>發票</button>
+        <button class="danger"><span class="ico">🗑</span>刪除</button>
+      </div>
+    </section>
+
+    <!-- ============ ACCOUNTS ============ -->
+    <section class="screen" id="s-accounts">
+      <div class="topbar"><button class="ib" aria-label="隱藏金額">👁</button><h2>帳戶</h2><button class="ib" data-go="account-settings" aria-label="新增帳戶">+</button></div>
+      <div class="subnav"><span data-go="timeline">紀錄</span><span class="on">帳戶</span><span>設定</span></div>
+      <div class="content">
+        <div class="nw"><small>總額 TWD</small><b>$1,284,560</b><span class="ph">總資產 $1,347,583 · 總負債 $63,023 ·（淨值含券商連結：phase 3）</span></div>
+
+        <div class="grp"><span>現金</span><b>+$14,226</b></div>
+        <button class="acc-row" data-go="account-detail"><span class="ico">👛</span><span class="name">錢包</span><span class="meta">TWD</span><span class="bal">$3,070</span></button>
+        <button class="acc-row" data-go="account-detail"><span class="ico">💴</span><span class="name">日幣現金</span><span class="meta">JPY · 約 $11,156</span><span class="bal">¥53,635</span></button>
+
+        <div class="grp"><span>銀行</span><b>+$1,112,071</b></div>
+        <button class="acc-row" data-go="account-detail"><span class="ico">🏦</span><span class="name">國泰主帳戶</span><span class="meta">TWD · 連結券商：國泰證券（phase 3）</span><span class="bal">$398,071</span></button>
+        <button class="acc-row" data-go="account-detail"><span class="ico">🏦</span><span class="name">玉山銀行</span><span class="meta">TWD · 自動扣繳 3 張卡</span><span class="bal">$702,730</span></button>
+        <button class="acc-row" data-go="account-detail"><span class="ico">🟢</span><span class="name">Line Bank</span><span class="meta">TWD · 快點過週末 3%</span><span class="bal">$11,270</span></button>
+
+        <div class="grp"><span>信用卡</span><b class="neg">−$63,023</b></div>
+        <button class="acc-row" data-go="account-detail"><span class="ico">🏔</span><span class="name">玉山信用卡<span class="badge">主帳戶 3</span></span><span class="meta">可用額度 $251,678 · 待繳 $46,937</span><span class="bal neg">−$44,362</span><span class="due"><span class="pill rv">10/15 繳費截止</span></span></button>
+        <button class="acc-row sub" data-go="account-detail"><span class="ico">💳</span><span class="name">玉山 Only</span><span class="meta">一般 3.2% · 餐飲/國外 5.2%</span><span class="bal neg">−$4,905</span></button>
+        <button class="acc-row sub" data-go="account-detail"><span class="ico">💳</span><span class="name">玉山 UNI</span><span class="meta">回饋刷卡上限 $57,141</span><span class="bal neg">−$27,218</span></button>
+        <button class="acc-row sub" data-go="account-detail"><span class="ico">💳</span><span class="name">玉山 U Bear</span><span class="meta">網購 3% · 已達上限</span><span class="bal neg">−$6,726</span></button>
+        <button class="acc-row" data-go="account-detail"><span class="ico">💳</span><span class="name">富邦 J卡</span><span class="meta">可用額度 $148,817 · 國外手續費 1.5%</span><span class="bal neg">−$18,661</span><span class="due"><span class="pill">結帳 10/15 · 繳款 11/05</span></span></button>
+
+        <div class="grp"><span>電子票證</span><b>+$1,286</b></div>
+        <button class="acc-row" data-go="account-detail"><span class="ico">🚌</span><span class="name">悠遊卡</span><span class="meta">TWD</span><span class="bal">$1,286</span></button>
+
+        <div class="grp"><span>紅利點數</span><b>+$2,500</b></div>
+        <button class="acc-row" data-go="account-detail"><span class="ico">⭐</span><span class="name">Pi 拍錢包 P幣</span><span class="meta">TWD · 不納入總餘額</span><span class="bal">$2,500</span></button>
+
+        <div class="grp"><span>封存 (5) ›</span><b>$0</b></div>
+      </div>
+      <nav class="tabbar">
+        <a href="#timeline"><span class="ico">▦</span>物資</a>
+        <a href="#timeline"><span class="ico">📈</span>投資</a>
+        <button class="plus" data-go="entry" aria-label="新增記錄">+</button>
+        <a href="#timeline" class="on"><span class="ico">👛</span>財務</a>
+        <a href="#timeline" data-go="settings"><span class="ico">⚙</span>設定</a>
+      </nav>
+    </section>
+
+    <!-- ============ ACCOUNT DETAIL (passbook) ============ -->
+    <section class="screen" id="s-account-detail">
+      <div class="topbar"><button class="ib" data-go="accounts" aria-label="返回">‹</button><h2>玉山 Only</h2><button class="ib" data-go="account-settings" aria-label="設定">⚙</button></div>
+      <div class="subnav"><span class="on">交易明細</span><span data-go="account-settings">帳戶資訊</span></div>
+      <div class="content">
+        <div class="monthbar"><button aria-label="上期">‹</button><b>2026/09/16 – 2026/10/15</b><button aria-label="下期">›</button></div>
+        <div class="sum">
+          <div><small>新增花費</small><b class="neg">−$4,905</b></div>
+          <div><small>紅利回饋</small><b class="pos">+$124</b></div>
+          <div><small>餘額</small><b class="neg">−$4,905</b></div>
+        </div>
+        <div class="lbl">本期記錄 (6)</div>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#425e7f">🏠</span><span class="name">電費</span><span class="sub">台灣電力</span>
+          <span class="amt neg"><span class="passbook">−$4,905</span>−$2,569</span>
+          <span class="pills"><span class="pill">家居</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#84dccf">🤝</span><span class="name">代付 晚餐</span><span class="sub">Alan</span>
+          <span class="amt neg"><span class="passbook">−$2,336</span>−$420</span>
+          <span class="pills"><span class="pill rv">應收</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#f0cd92">🍜</span><span class="name">午餐</span><span class="sub">藏壽司</span>
+          <span class="amt neg"><span class="passbook">−$1,916</span>−$880</span>
+          <span class="pills"><span class="pill">生活</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#986bc0">🎮</span><span class="name">Netflix</span><span class="sub">週期 #49 / 無限期</span>
+          <span class="amt neg"><span class="passbook">−$1,036</span>−$468</span>
+          <span class="pills"><span class="pill">玩樂</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#778c63">🧾</span><span class="name">紅利回饋 · 一般 1%</span><span class="sub">9/28 PChome</span>
+          <span class="amt pos"><span class="passbook">−$568</span>+$41</span>
+          <span class="pills"><span class="pill rw">回饋</span></span>
+        </button>
+        <button class="row" data-go="detail">
+          <span class="ico" style="background:#cc7676">🛍️</span><span class="name">PChome</span><span class="sub">鍵盤</span>
+          <span class="amt neg"><span class="passbook">−$609</span>−$609</span>
+          <span class="pills"><span class="pill">額外必要開銷</span></span>
+        </button>
+        <div class="lbl" style="margin-top:14px">上期 2026/08/16 – 09/15</div>
+        <div class="dline"><span>繳款 · 玉山銀行 → 玉山 Only（2b：帳單與繳款）</span><span class="pos">+$12,340</span></div>
+      </div>
+    </section>
+
+    <!-- ============ ACCOUNT SETTINGS ============ -->
+    <section class="screen" id="s-account-settings">
+      <div class="topbar"><button class="ib" data-go="accounts" aria-label="取消">✕</button><h2>帳戶資訊</h2><button class="ib ok" data-go="accounts" aria-label="儲存">✓</button></div>
+      <div class="content">
+        <div class="bigicon"><span class="ico">💳</span><b class="neg">−$4,905</b><small>玉山 Only · 備註：主要餐飲卡</small></div>
+        <div class="rw"><span class="k">名稱</span><span class="v set">玉山 Only</span></div>
+        <div class="rw"><span class="k">主幣種</span><span class="v set">TWD</span></div>
+        <div class="rw"><span class="k">帳戶分組</span><span class="v set">信用卡</span></div>
+        <div class="rw"><span class="k">圖示</span><span class="v set">💳</span></div>
+        <div class="rw"><span class="k">初始金額</span><span class="v set">−3,693</span></div>
+        <div class="rw"><span class="k">帳單週期</span><span class="v set">每月 16 日 – 次月 15 日<br><small>結帳日：15</small></span></div>
+        <div class="rw"><span class="k">信用帳戶</span><span class="tog on"></span></div>
+        <div class="rw child"><span class="k">繳款期限</span><span class="v set">結帳日後 20 天 → 11/04</span></div>
+        <div class="rw child"><span class="k">信用額度</span><span class="v set">300,000</span></div>
+        <div class="rw child"><span class="k">額度共用</span><span class="v set">玉山 UNI, 玉山 U Bear</span></div>
+        <div class="rw child"><span class="k">主帳戶</span><span class="v set">玉山信用卡</span></div>
+        <div class="rw child"><span class="k">自動扣繳</span><span class="v set">玉山銀行</span></div>
+        <div class="rw"><span class="k">紅利回饋</span><span class="v set">3 組回饋條件 ›<br><small>一般 1% · 餐飲 5.2% · 海外 2.5%</small></span></div>
+        <div class="rw"><span class="k">國外交易手續費</span><span class="tog on"></span></div>
+        <div class="rw child"><span class="k">手續費 %</span><span class="v set">1.5%</span></div>
+        <div class="rw child"><span class="k">計算方式</span><span class="v set">無條件捨去</span></div>
+        <div class="rw child"><span class="k">退款時退回手續費</span><span class="tog"></span></div>
+        <div class="rw"><span class="k">納入總餘額</span><span class="tog on"></span></div>
+        <div class="rw"><span class="k">連結券商帳戶<br><small style="color:var(--app-text-muted)">phase 3</small></span><span class="v">無</span></div>
+        <div class="rw"><span class="k">封存帳戶</span><span class="tog"></span></div>
+        <div class="rw"><span class="k" style="color:var(--c-red)">刪除帳戶</span><span class="v">只能刪除沒有記錄的帳戶</span></div>
+      </div>
+    </section>
+
+    <!-- ============ SETTINGS ============ -->
+    <section class="screen" id="s-settings">
+      <div class="topbar"><span></span><h2>記帳設定</h2><span></span></div>
+      <div class="subnav"><span data-go="timeline">紀錄</span><span data-go="accounts">帳戶</span><span class="on">設定</span></div>
+      <div class="content">
+        <div class="lbl">資料</div>
+        <button class="srow"><span>🗂</span><span class="t">帳戶分組</span><span class="r">9 組</span><span class="chev">›</span></button>
+        <button class="srow"><span>🏷</span><span class="t">類別</span><span class="r">11 主 · 68 子</span><span class="chev">›</span></button>
+        <button class="srow"><span>📁</span><span class="t">專案</span><span class="r">4</span><span class="chev">›</span></button>
+        <button class="srow"><span>👥</span><span class="t">對象</span><span class="r">306</span><span class="chev">›</span></button>
+        <div class="lbl">顯示</div>
+        <button class="srow"><span>🎨</span><span class="t">支出收入顏色</span><span class="r">紅 / 綠</span><span class="chev">›</span></button>
+        <button class="srow"><span>🔢</span><span class="t">數字鍵盤順序</span><span class="r">計算機</span><span class="chev">›</span></button>
+        <button class="srow"><span>📅</span><span class="t">月曆起始星期</span><span class="r">星期日</span><span class="chev">›</span></button>
+        <button class="srow"><span>🙈</span><span class="t">首頁隱藏紅利回饋</span><span class="tog"></span></button>
+        <div class="lbl">匯入</div>
+        <button class="srow"><span>📦</span><span class="t">匯入 MOZE 備份 (.zip)</span><span class="r">上次 10/02 03:33 · 7,553 筆</span><span class="chev">›</span></button>
+        <button class="srow"><span>🔒</span><span class="t">匯入鎖定</span><span class="r">未鎖定（切換後鎖定）</span><span class="chev">›</span></button>
+      </div>
+      <nav class="tabbar">
+        <a href="#timeline"><span class="ico">▦</span>物資</a>
+        <a href="#timeline"><span class="ico">📈</span>投資</a>
+        <button class="plus" data-go="entry" aria-label="新增記錄">+</button>
+        <a href="#timeline" data-go="timeline"><span class="ico">👛</span>財務</a>
+        <a href="#timeline" class="on"><span class="ico">⚙</span>設定</a>
+      </nav>
+    </section>
+  </div>
+
+  <div class="dwrap"><div class="dframe" id="dframe">
+    <aside class="dock">
+      <div class="logo"></div>
+      <span class="di">▦</span><span class="di sub">🛒</span>
+      <div class="dv"></div>
+      <span class="di">📈</span><span class="di sub">≡</span><span class="di sub">%</span><span class="di sub">⇪</span><span class="di sub">$</span><span class="di sub">👛</span>
+      <div class="dv"></div>
+      <span class="di on">👛</span><span class="di sub on">≡</span><span class="di sub">🏦</span><span class="di sub">⚙</span>
+    </aside>
+    <div class="dmain">
+
+      <!-- D1 timeline + detail -->
+      <section class="dscreen active" id="d-timeline">
+        <div class="dhdr"><span class="lg">HOME HUB</span><h2>記帳 · 紀錄</h2><div class="tabs"><span class="on">紀錄</span><span>帳戶</span><span>設定</span></div></div>
+        <div class="dbody">
+          <div class="pane">
+            <div class="ph2"><b>2026 年 10 月</b><span style="font-size:.78rem;color:var(--app-text-muted)">支出 <span class="neg">−$18,420</span> · 收入 <span class="pos">+$62,000</span> · 結餘 +$43,580</span></div>
+            <div class="pb">
+              <div class="chips" style="padding:0 0 6px"><span class="chip tag">全部帳戶 ▾</span><span class="chip tag">全部類型 ▾</span><span class="chip tag">⌕ 搜尋名稱 / 商家 / 備註</span></div>
+              <div class="day"><span>10/02 週五</span><b>−$1,536</b></div>
+              <button class="row"><span class="ico" style="background:#f0cd92">🍜</span><span class="name">午餐</span><span class="sub">麥當勞 · #LinePay</span><span class="amt neg">−$170</span><span class="pills"><span class="pill">生活</span><span class="pill">玉山 UNI</span></span></button>
+              <button class="row sel"><span class="ico" style="background:#cc7676">🛍️</span><span class="name">Uniqlo 外套</span><span class="sub">Uniqlo 心齋橋 · 內含手續費 $17</span><span class="amt neg">−$1,166<small>¥5,390 @ 0.2163</small></span><span class="pills"><span class="pill">2026 大阪</span><span class="pill">富邦 J卡</span></span></button>
+              <button class="row"><span class="ico" style="background:#4a90e2">🚌</span><span class="name">捷運</span><span class="sub">悠遊卡</span><span class="amt neg">−$200</span><span class="pills"><span class="pill">生活</span><span class="pill">悠遊卡</span></span></button>
+              <div class="day"><span>10/01 週四</span><b>+$61,580</b></div>
+              <button class="row"><span class="ico" style="background:#b4945e">💰</span><span class="name">薪水</span><span class="sub">公司</span><span class="amt pos">+$62,000</span><span class="pills"><span class="pill">每月統計</span><span class="pill">國泰主帳戶</span></span></button>
+              <button class="row"><span class="ico" style="background:#d4823b">⇄</span><span class="name">轉帳</span><span class="sub">國泰主帳戶 → Line Bank</span><span class="amt">$10,000</span><span class="pills"><span class="pill">轉帳</span></span></button>
+              <button class="row"><span class="ico" style="background:#84dccf">🤝</span><span class="name">代付 晚餐</span><span class="sub">Alan · 尚未收款</span><span class="amt neg">−$420</span><span class="pills"><span class="pill rv">應收</span><span class="pill">玉山 Only</span></span></button>
+              <button class="row"><span class="ico" style="background:#778c63">🧾</span><span class="name">紅利回饋 · 網購 3%</span><span class="sub">來源：9/28 PChome $4,130</span><span class="amt pos">+$124</span><span class="pills"><span class="pill rw">回饋</span><span class="pill">玉山 U Bear</span></span></button>
+              <div class="day"><span>09/30 週三</span><b>−$2,569</b></div>
+              <button class="row"><span class="ico" style="background:#425e7f">🏠</span><span class="name">電費</span><span class="sub">台灣電力 · #9月</span><span class="amt neg">−$2,569</span><span class="pills"><span class="pill">家居</span><span class="pill">玉山 Only</span></span></button>
+            </div>
+          </div>
+          <div class="pane">
+            <div class="ph2"><b>記錄明細</b><span style="display:flex;gap:10px;font-size:.8rem"><span>✎ 編輯</span><span>⧉ 複製</span><span>↺ 退款</span><span class="neg">🗑 刪除</span></span></div>
+            <div class="pb">
+              <div class="dhead" style="background:#cc7676;margin-top:4px"><span class="ico">🛍️</span><span class="cat">購物 › 衣物</span></div>
+              <div class="dtitle"><b>Uniqlo 外套</b><span class="amt neg">−$1,183</span></div>
+              <div class="dfx">¥5,390 × 0.2163 = $1,166（線上匯率）· 內含國外交易手續費 $17</div>
+              <div class="dgrid">
+                <div><small>帳戶</small><b>富邦 J卡</b></div><div><small>商家</small><b>Uniqlo 心齋橋</b></div><div><small>日期</small><b>2026/10/02</b></div>
+                <div><small>專案</small><b>2026 大阪</b></div><div><small>類型</small><b>單次</b></div><div><small>時間</small><b>15:20</b></div>
+              </div>
+              <div class="chips" style="padding-top:4px"><span class="chip tag">#旅行</span><span class="chip">海外 2.5%</span></div>
+              <div class="dsec">紅利回饋</div>
+              <div class="dline"><span>◉ 海外 2.5% · 將於 11/15 入帳</span><span class="pos">+$29</span></div>
+              <div class="dsec">關聯記錄</div>
+              <div class="dline"><span>手續費 · 國外交易手續費 1.5%</span><span class="neg">−$17</span></div>
+              <div class="dline"><span>帳單 · 富邦 J卡 10/16 – 11/15</span><span style="color:var(--app-text-muted)">›</span></div>
+              <div class="kbd"><span><kbd>N</kbd> 新增</span><span><kbd>E</kbd> 編輯</span><span><kbd>↑</kbd><kbd>↓</kbd> 切換記錄</span><span><kbd>Esc</kbd> 關閉</span></div>
+            </div>
+          </div>
+          <button class="fab" aria-label="新增記錄">+</button>
+        </div>
+      </section>
+
+      <!-- D2 timeline + entry -->
+      <section class="dscreen" id="d-entry">
+        <div class="dhdr"><span class="lg">HOME HUB</span><h2>記帳 · 紀錄</h2><div class="tabs"><span class="on">紀錄</span><span>帳戶</span><span>設定</span></div></div>
+        <div class="dbody">
+          <div class="pane">
+            <div class="ph2"><b>2026 年 10 月</b><span style="font-size:.78rem;color:var(--app-text-muted)">支出 <span class="neg">−$18,420</span> · 收入 <span class="pos">+$62,000</span></span></div>
+            <div class="pb">
+              <div class="day"><span>10/02 週五</span><b>−$1,536</b></div>
+              <button class="row"><span class="ico" style="background:#f0cd92">🍜</span><span class="name">午餐</span><span class="sub">麥當勞 · #LinePay</span><span class="amt neg">−$170</span><span class="pills"><span class="pill">生活</span><span class="pill">玉山 UNI</span></span></button>
+              <button class="row"><span class="ico" style="background:#cc7676">🛍️</span><span class="name">Uniqlo 外套</span><span class="sub">Uniqlo 心齋橋</span><span class="amt neg">−$1,166<small>¥5,390</small></span><span class="pills"><span class="pill">2026 大阪</span><span class="pill">富邦 J卡</span></span></button>
+              <button class="row"><span class="ico" style="background:#4a90e2">🚌</span><span class="name">捷運</span><span class="sub">悠遊卡</span><span class="amt neg">−$200</span><span class="pills"><span class="pill">生活</span><span class="pill">悠遊卡</span></span></button>
+              <div class="day"><span>10/01 週四</span><b>+$61,580</b></div>
+              <button class="row"><span class="ico" style="background:#b4945e">💰</span><span class="name">薪水</span><span class="sub">公司</span><span class="amt pos">+$62,000</span><span class="pills"><span class="pill">每月統計</span><span class="pill">國泰主帳戶</span></span></button>
+              <button class="row"><span class="ico" style="background:#84dccf">🤝</span><span class="name">代付 晚餐</span><span class="sub">Alan · 尚未收款</span><span class="amt neg">−$420</span><span class="pills"><span class="pill rv">應收</span><span class="pill">玉山 Only</span></span></button>
+            </div>
+          </div>
+          <div class="pane">
+            <div class="ph2"><b>新增記錄</b><span style="display:flex;gap:8px;font-size:.8rem"><span style="color:var(--app-text-muted)">取消</span><span style="background:var(--app-primary);color:#fff;border-radius:var(--radius-sm);padding:2px 12px;font-weight:800">儲存 ⏎</span></span></div>
+            <div class="pb">
+              <div class="kinds" style="padding-top:2px"><span class="on">支出</span><span>收入</span><span>轉帳</span><span>應收款項</span><span>應付款項</span><span>系統</span></div>
+              <div class="lbl">類別</div>
+              <div class="catbar">
+                <span><i class="dot" style="background:#f0cd92">🍜</i>飲食</span><span><i class="dot" style="background:#4a90e2">🚌</i>交通</span><span><i class="dot" style="background:#986bc0">🎮</i>娛樂</span><span class="on"><i class="dot" style="background:#cc7676">🛍️</i>購物 › 衣物 ▾</span><span><i class="dot" style="background:#acaa98">💇</i>個人</span><span><i class="dot" style="background:#ec5353">🩺</i>醫療</span><span><i class="dot" style="background:#425e7f">🏠</i>家居</span><span><i class="dot" style="background:#e4b5db">👨‍👩‍👧</i>家庭</span><span><i class="dot" style="background:#778c63">🧾</i>生活</span><span><i class="dot" style="background:#f5a623">📚</i>學習</span><span><i class="dot" style="background:#6c6092">📦</i>其他</span>
+              </div>
+              <div class="dform" style="margin-top:10px">
+                <div class="f"><label>金額</label><div class="in big focus"><span>1200+35</span><span class="hint">= 1,235 · TWD ▾</span></div></div>
+                <div class="f"><label>手續費 / 折扣</label><div class="in mut"><span>−17 / +0</span><span class="hint">總額 −1,252</span></div></div>
+                <div class="f w"><label>名稱</label><div class="in"><span>Uniqlo 外套</span><span class="hint">★ 存為範本</span></div></div>
+                <div class="f"><label>帳戶</label><div class="in"><span>富邦 J卡</span><span class="hint">▾</span></div></div>
+                <div class="f"><label>專案</label><div class="in"><span>2026 大阪</span><span class="hint">▾</span></div></div>
+                <div class="f"><label>商家</label><div class="in"><span>Uniqlo 心齋橋</span></div></div>
+                <div class="f"><label>日期 · 時間</label><div class="in"><span>2026/10/02</span><span>15:20</span></div></div>
+                <div class="f"><label>發票號碼</label><div class="in mut"><span>AB-12345678</span></div></div>
+                <div class="f"><label>隨機碼</label><div class="in mut"><span>—</span></div></div>
+                <div class="f w"><label>#標籤 / 紅利回饋</label><div class="in"><span class="chips" style="padding:0"><span class="chip">海外 2.5%</span><span class="chip tag">#旅行</span></span><span class="hint">輸入 # 加標籤</span></div></div>
+                <div class="f w"><label>備註</label><div class="in mut" style="min-height:56px;align-items:flex-start">備註</div></div>
+              </div>
+              <div class="kbd"><span><kbd>Tab</kbd> 下一欄</span><span><kbd>⏎</kbd> 儲存</span><span><kbd>⇧⏎</kbd> 儲存並續記</span><span><kbd>Esc</kbd> 取消</span><span>金額欄可打算式</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- D3 accounts + passbook -->
+      <section class="dscreen" id="d-accounts">
+        <div class="dhdr"><span class="lg">HOME HUB</span><h2>記帳 · 帳戶</h2><div class="tabs"><span>紀錄</span><span class="on">帳戶</span><span>設定</span></div></div>
+        <div class="dbody">
+          <div class="pane">
+            <div class="ph2"><b>總額 $1,284,560</b><span style="font-size:.78rem;color:var(--app-text-muted)">資產 $1,347,583 · 負債 <span class="neg">$63,023</span></span></div>
+            <div class="pb">
+              <div class="grp" style="margin-top:4px"><span>現金</span><b>+$14,226</b></div>
+              <button class="acc-row"><span class="ico">👛</span><span class="name">錢包</span><span class="meta">TWD</span><span class="bal">$3,070</span></button>
+              <button class="acc-row"><span class="ico">💴</span><span class="name">日幣現金</span><span class="meta">JPY · 約 $11,156</span><span class="bal">¥53,635</span></button>
+              <div class="grp"><span>銀行</span><b>+$1,112,071</b></div>
+              <button class="acc-row"><span class="ico">🏦</span><span class="name">國泰主帳戶</span><span class="meta">TWD</span><span class="bal">$398,071</span></button>
+              <button class="acc-row"><span class="ico">🏦</span><span class="name">玉山銀行</span><span class="meta">自動扣繳 3 張卡</span><span class="bal">$702,730</span></button>
+              <button class="acc-row"><span class="ico">🟢</span><span class="name">Line Bank</span><span class="meta">快點過週末 3%</span><span class="bal">$11,270</span></button>
+              <div class="grp"><span>信用卡</span><b class="neg">−$63,023</b></div>
+              <button class="acc-row"><span class="ico">🏔</span><span class="name">玉山信用卡<span class="badge">主帳戶 3</span></span><span class="meta">可用額度 $251,678 · 待繳 $46,937</span><span class="bal neg">−$44,362</span><span class="due"><span class="pill rv">10/15 繳費截止</span></span></button>
+              <button class="acc-row sub" style="background:var(--app-primary-soft);border-radius:var(--radius-sm)"><span class="ico">💳</span><span class="name">玉山 Only</span><span class="meta">一般 3.2% · 餐飲/國外 5.2%</span><span class="bal neg">−$4,905</span></button>
+              <button class="acc-row sub"><span class="ico">💳</span><span class="name">玉山 UNI</span><span class="meta">回饋刷卡上限 $57,141</span><span class="bal neg">−$27,218</span></button>
+              <button class="acc-row sub"><span class="ico">💳</span><span class="name">玉山 U Bear</span><span class="meta">網購 3% · 已達上限</span><span class="bal neg">−$6,726</span></button>
+              <button class="acc-row"><span class="ico">💳</span><span class="name">富邦 J卡</span><span class="meta">國外手續費 1.5%</span><span class="bal neg">−$18,661</span></button>
+              <div class="grp"><span>封存 (5) ›</span><b>$0</b></div>
+            </div>
+          </div>
+          <div class="pane">
+            <div class="ph2"><b>玉山 Only</b><span class="subnav" style="padding:0"><span class="on">交易明細</span><span>帳戶資訊</span><span>紅利回饋</span></span></div>
+            <div class="pb">
+              <div class="monthbar"><button aria-label="上期">‹</button><b>2026/09/16 – 2026/10/15</b><button aria-label="下期">›</button></div>
+              <div class="sum"><div><small>新增花費</small><b class="neg">−$4,905</b></div><div><small>紅利回饋</small><b class="pos">+$124</b></div><div><small>餘額</small><b class="neg">−$4,905</b></div></div>
+              <button class="row"><span class="ico" style="background:#425e7f">🏠</span><span class="name">電費</span><span class="sub">台灣電力</span><span class="amt neg"><span class="passbook">−$4,905</span>−$2,569</span><span class="pills"><span class="pill">家居</span></span></button>
+              <button class="row"><span class="ico" style="background:#84dccf">🤝</span><span class="name">代付 晚餐</span><span class="sub">Alan</span><span class="amt neg"><span class="passbook">−$2,336</span>−$420</span><span class="pills"><span class="pill rv">應收</span></span></button>
+              <button class="row"><span class="ico" style="background:#f0cd92">🍜</span><span class="name">午餐</span><span class="sub">藏壽司</span><span class="amt neg"><span class="passbook">−$1,916</span>−$880</span><span class="pills"><span class="pill">生活</span></span></button>
+              <button class="row"><span class="ico" style="background:#986bc0">🎮</span><span class="name">Netflix</span><span class="sub">週期 #49 / 無限期</span><span class="amt neg"><span class="passbook">−$1,036</span>−$468</span><span class="pills"><span class="pill">玩樂</span></span></button>
+              <button class="row"><span class="ico" style="background:#778c63">🧾</span><span class="name">紅利回饋 · 一般 1%</span><span class="sub">9/28 PChome</span><span class="amt pos"><span class="passbook">−$568</span>+$41</span><span class="pills"><span class="pill rw">回饋</span></span></button>
+              <button class="row"><span class="ico" style="background:#cc7676">🛍️</span><span class="name">PChome</span><span class="sub">鍵盤</span><span class="amt neg"><span class="passbook">−$609</span>−$609</span><span class="pills"><span class="pill">額外必要開銷</span></span></button>
+            </div>
+          </div>
+          <button class="fab" aria-label="新增記錄">+</button>
+        </div>
+      </section>
+
+      <!-- D4 accounts + settings -->
+      <section class="dscreen" id="d-settings">
+        <div class="dhdr"><span class="lg">HOME HUB</span><h2>記帳 · 帳戶</h2><div class="tabs"><span>紀錄</span><span class="on">帳戶</span><span>設定</span></div></div>
+        <div class="dbody">
+          <div class="pane">
+            <div class="ph2"><b>總額 $1,284,560</b><span style="font-size:.78rem;color:var(--app-text-muted)">資產 $1,347,583 · 負債 <span class="neg">$63,023</span></span></div>
+            <div class="pb">
+              <div class="grp" style="margin-top:4px"><span>信用卡</span><b class="neg">−$63,023</b></div>
+              <button class="acc-row"><span class="ico">🏔</span><span class="name">玉山信用卡<span class="badge">主帳戶 3</span></span><span class="meta">可用額度 $251,678 · 待繳 $46,937</span><span class="bal neg">−$44,362</span></button>
+              <button class="acc-row sub" style="background:var(--app-primary-soft);border-radius:var(--radius-sm)"><span class="ico">💳</span><span class="name">玉山 Only</span><span class="meta">一般 3.2% · 餐飲/國外 5.2%</span><span class="bal neg">−$4,905</span></button>
+              <button class="acc-row sub"><span class="ico">💳</span><span class="name">玉山 UNI</span><span class="meta">回饋刷卡上限 $57,141</span><span class="bal neg">−$27,218</span></button>
+              <button class="acc-row sub"><span class="ico">💳</span><span class="name">玉山 U Bear</span><span class="meta">網購 3% · 已達上限</span><span class="bal neg">−$6,726</span></button>
+              <button class="acc-row"><span class="ico">💳</span><span class="name">富邦 J卡</span><span class="meta">國外手續費 1.5%</span><span class="bal neg">−$18,661</span></button>
+              <div class="grp"><span>電子票證</span><b>+$1,286</b></div>
+              <button class="acc-row"><span class="ico">🚌</span><span class="name">悠遊卡</span><span class="meta">TWD</span><span class="bal">$1,286</span></button>
+            </div>
+          </div>
+          <div class="pane">
+            <div class="ph2"><b>玉山 Only</b><span class="subnav" style="padding:0"><span>交易明細</span><span class="on">帳戶資訊</span><span>紅利回饋</span></span></div>
+            <div class="pb">
+              <div class="dform">
+                <div class="f"><label>名稱</label><div class="in"><span>玉山 Only</span></div></div>
+                <div class="f"><label>圖示 · 分組</label><div class="in"><span>💳 信用卡</span><span class="hint">▾</span></div></div>
+                <div class="f"><label>主幣種</label><div class="in"><span>TWD</span><span class="hint">▾</span></div></div>
+                <div class="f"><label>初始金額</label><div class="in"><span class="neg">−3,693</span></div></div>
+                <div class="f w"><label>帳單週期</label><div class="in"><span>結帳日 每月 15 日 → 本期 09/16 – 10/15</span><span class="hint">結帳日遇假日：依原日期 ▾</span></div></div>
+                <div class="f w"><label>信用帳戶</label><div class="in"><span>開啟</span><span class="tog on"></span></div></div>
+                <div class="f"><label>– 繳款期限</label><div class="in"><span>結帳日後 20 天</span><span class="hint">→ 11/04</span></div></div>
+                <div class="f"><label>– 信用額度</label><div class="in"><span>300,000</span></div></div>
+                <div class="f"><label>– 額度共用</label><div class="in"><span>玉山 UNI, 玉山 U Bear</span><span class="hint">▾</span></div></div>
+                <div class="f"><label>– 主帳戶</label><div class="in"><span>玉山信用卡</span><span class="hint">▾</span></div></div>
+                <div class="f"><label>– 自動扣繳</label><div class="in"><span>玉山銀行</span><span class="hint">▾</span></div></div>
+                <div class="f"><label>紅利回饋</label><div class="in"><span>3 組回饋條件</span><span class="hint">›</span></div></div>
+                <div class="f w"><label>國外交易手續費</label><div class="in"><span>1.5% · 無條件捨去 · 退款不退手續費</span><span class="tog on"></span></div></div>
+                <div class="f"><label>納入總餘額</label><div class="in"><span>是</span><span class="tog on"></span></div></div>
+                <div class="f"><label>連結券商帳戶 (phase 3)</label><div class="in mut"><span>無</span></div></div>
+                <div class="f"><label>封存帳戶</label><div class="in"><span>否</span><span class="tog"></span></div></div>
+                <div class="f"><label>&nbsp;</label><div class="in" style="justify-content:center;background:var(--app-primary);color:#fff;font-weight:800">儲存</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div></div>
+
+  <div class="notes">
+    <h2>Notes for review</h2>
+    <p style="margin:0 0 8px;font-size:.85rem;color:var(--app-text-muted)"><b>桌面 / iPad:</b> ≥1024px = persistent two panes (list left, detail / entry / settings right), existing 72px dock, floating "+", keyboard shortcuts, amount field accepts expressions, no keypad. iPad portrait (760–1023px) = one pane; detail and entry slide in from the right as a sheet. Below 760px = the phone layout.</p>
+    <ul>
+      <li>紀錄 (home): month summary, day groups, foreign amounts inline (no tooltip), reward rows tagged 回饋, receivable rows tagged 應收 with 尚未收款 state.</li>
+      <li>新增記錄: MOZE flow (kind tabs → category grid → amount + tiles → chips → note). Phone shows the calculator keypad with quick amounts; desktop gets a plain input with expression eval. Fee/discount and FX are bottom sheets.</li>
+      <li>拆帳: the "+" after the selected category adds a line with its own kind, category, amount, account, counterparty.</li>
+      <li>帳戶明細: passbook-style running balance above each amount (fixes the phone gap from phase 1). Period navigator follows the account's 帳單週期.</li>
+      <li>帳戶設定: fields seeded from the MOZE backup. Credit toggle reveals card rows. Reward rules link opens the 2b rule list.</li>
+      <li>Tab bar: center "+" on phone, per decision Q3. Desktop keeps the dock plus a floating "+".</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+(function(){
+  var frame=document.getElementById('frame');
+  var switcher=document.getElementById('switcher');
+  function show(id){
+    frame.querySelectorAll('.screen').forEach(function(s){s.classList.toggle('active',s.id==='s-'+id);});
+    switcher.querySelectorAll('button').forEach(function(b){b.classList.toggle('active',b.dataset.s===id);});
+    frame.querySelectorAll('.overlay.open').forEach(function(o){o.classList.remove('open');});
+    var c=frame.querySelector('.screen.active .content'); if(c) c.scrollTop=0;
+    try{localStorage.setItem('hh-mock-screen',id);}catch(e){}
+  }
+  switcher.addEventListener('click',function(e){var b=e.target.closest('button[data-s]');if(b)show(b.dataset.s);});
+  frame.addEventListener('click',function(e){
+    var t=e.target.closest('[data-go],[data-sheet],[data-close]'); if(!t) return;
+    e.preventDefault();
+    if(t.dataset.go){show(t.dataset.go);return;}
+    if(t.dataset.sheet){var o=document.getElementById('ov-'+t.dataset.sheet); if(o) o.classList.add('open'); return;}
+    if(t.dataset.close){var o2=document.getElementById('ov-'+t.dataset.close); if(o2) o2.classList.remove('open');}
+  });
+  frame.querySelectorAll('.overlay').forEach(function(o){o.addEventListener('click',function(e){if(e.target===o)o.classList.remove('open');});});
+  var modes=document.getElementById('modes'), dsw=document.getElementById('dswitcher'), dframe=document.getElementById('dframe');
+  function mode(m){
+    modes.querySelectorAll('button').forEach(function(b){b.classList.toggle('active',b.dataset.m===m);});
+    var phone=m==='phone';
+    frame.hidden=!phone; switcher.hidden=!phone; dsw.hidden=phone; dframe.classList.toggle('show',!phone);
+    try{localStorage.setItem('hh-mock-mode',m);}catch(e){}
+  }
+  function dshow(id){
+    dframe.querySelectorAll('.dscreen').forEach(function(s){s.classList.toggle('active',s.id===id);});
+    dsw.querySelectorAll('button').forEach(function(b){b.classList.toggle('active',b.dataset.d===id);});
+  }
+  modes.addEventListener('click',function(e){var b=e.target.closest('button[data-m]');if(b)mode(b.dataset.m);});
+  dsw.addEventListener('click',function(e){var b=e.target.closest('button[data-d]');if(b)dshow(b.dataset.d);});
+  var m0='phone'; try{m0=localStorage.getItem('hh-mock-mode')||'phone';}catch(e){}
+  if(location.hash==='#desktop') m0='desktop';
+  mode(m0);
+  var initial=null; try{initial=localStorage.getItem('hh-mock-screen');}catch(e){}
+  var h=(location.hash||'').replace('#','');
+  if(h && document.getElementById('s-'+h)) show(h); else if(initial && document.getElementById('s-'+initial)) show(initial);
+})();
+</script>

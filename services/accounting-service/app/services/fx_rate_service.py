@@ -5,6 +5,7 @@ fawazahmed0 currency API that stock-portfolio-service uses (jsDelivr, then pages
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Callable, Iterable
@@ -31,8 +32,27 @@ HttpGet = Callable[..., Response]
 RateKey = tuple[date, str, str]  # (day, base = row currency, quote = account currency)
 
 
+LATEST_SLOT = "latest"
+NOT_FOUND_PREFIX = "404 from "
+
+
 class FxRateUnavailableError(MozeImportError):
-    """A needed rate could not be read from the cache or fetched from either source."""
+    """A needed rate could not be read from the cache or fetched from either source.
+
+    `release_missing`: every source answered 404 for every failing dated slot (the release is not published)."""
+
+    def __init__(self, message: str, *, release_missing: bool = False):
+        super().__init__(message)
+        self.release_missing = release_missing
+
+
+@dataclass(frozen=True)
+class RateQuote:
+    """A rate (1 base = rate quote), the date of the release it comes from, and its source label."""
+
+    rate: Decimal
+    rate_date: date
+    source: str
 
 
 def _fetch_json(http_get: HttpGet, url: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -59,10 +79,10 @@ def _rates_object(payload: Any, day: date, base_lc: str) -> tuple[dict[str, Any]
 
 def _resolve_day(
     http_get: HttpGet, day: date, base: str, quotes: list[str]
-) -> tuple[dict[str, tuple[Decimal, str]], dict[str, str]]:
+) -> tuple[dict[str, tuple[Decimal, str]], dict[str, list[str]]]:
     """Resolve each quote for one (day, base): primary first, then the fallback for whatever is still unusable.
 
-    Returns ({quote: (rate, source label)}, {quote: reason it was unavailable from every source}).
+    Returns ({quote: (rate, source label)}, {quote: [why it was unavailable, one reason per source]}).
     """
     slot, base_lc = day.isoformat(), base.lower()
     resolved: dict[str, tuple[Decimal, str]] = {}
@@ -79,7 +99,7 @@ def _resolve_day(
                 resolved[quote] = (rate, label)
             else:
                 reasons[quote].append(error or f"no usable {quote} rate in the {label} payload")
-    return resolved, {quote: "; ".join(reasons[quote]) for quote in quotes if quote not in resolved}
+    return resolved, {quote: reasons[quote] for quote in quotes if quote not in resolved}
 
 
 def _parse_rate(raw) -> Decimal | None:
@@ -125,11 +145,12 @@ def ensure_rates(
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL_FETCHES) as pool:
         resolved = dict(zip(days, pool.map(lambda key: _resolve_day(http_get, *key, quotes_by_day[key]), days)))
 
-    new_rows, failures = [], []
+    new_rows, failures, release_missing = [], [], True
     for day, base, quote in missing:
         found, reasons = resolved[(day, base)]
         if quote not in found:
-            failures.append(f"no FX rate for {base}→{quote} on {day.isoformat()}: {reasons[quote]}")
+            failures.append(f"no FX rate for {base}→{quote} on {day.isoformat()}: {'; '.join(reasons[quote])}")
+            release_missing = release_missing and all(r.startswith(NOT_FOUND_PREFIX) for r in reasons[quote])
             continue
         rate, source = found[quote]
         rates[(day, base, quote)] = rate
@@ -140,5 +161,81 @@ def ensure_rates(
         session.execute(pg_insert(FxRate).values(new_rows).on_conflict_do_nothing())
         session.commit()
     if failures:
-        raise FxRateUnavailableError("; ".join(failures))
+        raise FxRateUnavailableError("; ".join(failures), release_missing=release_missing)
     return rates
+
+
+def _fetch_latest(http_get: HttpGet, base: str, quote: str) -> tuple[RateQuote | None, list[str]]:
+    """The `latest` release (primary, then fallback): the rate and the release date the payload states."""
+    base_lc, reasons = base.lower(), []
+    for template, label in ((PRIMARY_URL_TEMPLATE, PRIMARY_SOURCE_LABEL), (FALLBACK_URL_TEMPLATE, FALLBACK_SOURCE_LABEL)):
+        payload, error = _fetch_json(http_get, template.format(slot=LATEST_SLOT, base_lc=base_lc))
+        if error is None:
+            try:
+                release = date.fromisoformat(payload.get("date")) if isinstance(payload, dict) else None
+            except (TypeError, ValueError):
+                release = None
+            rates = payload.get(base_lc) if isinstance(payload, dict) else None
+            rate = _parse_rate(rates.get(quote.lower())) if isinstance(rates, dict) else None
+            if release is not None and rate is not None:
+                return RateQuote(rate, release, label), reasons
+            error = f"no usable dated {quote} rate in the {label} latest payload"
+        reasons.append(error)
+    return None, reasons
+
+
+def _latest_rate(
+    session: Session, day: date, base: str, quote: str, http_get: HttpGet | None, floor: date, why: str
+) -> RateQuote:
+    """The newest available rate for a day without its own release (today, the future, or a 404 release).
+
+    A cached release dated `floor` or later is the newest there can be, so it is used without a request.
+    Otherwise the API's `latest` slot is fetched and cached under its own release date (never under `day`),
+    and the session committed; when that fails, the newest cached rate for the pair is used.
+    """
+    newest = session.scalar(
+        select(FxRate).where(FxRate.base == base, FxRate.quote == quote).order_by(FxRate.date.desc()).limit(1)
+    )
+    if newest is not None and newest.date >= floor:
+        return RateQuote(newest.rate, newest.date, newest.source)
+    fetched, reasons = _fetch_latest(http_get or requests.get, base, quote)
+    if fetched is not None:
+        session.execute(
+            pg_insert(FxRate)
+            .values(date=fetched.rate_date, base=base, quote=quote, rate=fetched.rate, source=fetched.source)
+            .on_conflict_do_nothing()
+        )
+        session.commit()
+        return fetched
+    if newest is not None:
+        return RateQuote(newest.rate, newest.date, newest.source)
+    raise FxRateUnavailableError(
+        f"no FX rate for {base}→{quote} on {day.isoformat()}: {why}; latest: {'; '.join(reasons)}"
+    )
+
+
+def get_rate(session: Session, day: date, base: str, quote: str, http_get: HttpGet | None = None) -> RateQuote:
+    """One rate (1 `base` = rate `quote`) for `day`, with the date of the release it comes from.
+
+    Same currency: 1. A past day (before the Taipei today): the cache, else the dated release, fetched and
+    cached. Today or a future day, whose release is not published yet, or a past day whose release is 404:
+    the latest available release (`_latest_rate`), returned with its own `rate_date`.
+    Fetching commits the session. Raises FxRateUnavailableError.
+    """
+    from . import ledger_service  # lazy: ledger_service → moze_import_service → this module
+
+    base, quote = base.upper(), quote.upper()
+    if base == quote:
+        return RateQuote(Decimal(1), day, "identity")
+    today = ledger_service._today()
+    if day >= today:
+        return _latest_rate(session, day, base, quote, http_get, today, "the release is not published yet")
+    key = (day, base, quote)
+    try:
+        rate = ensure_rates(session, [key], persist=True, http_get=http_get)[key]
+    except FxRateUnavailableError as exc:
+        if not exc.release_missing:
+            raise
+        return _latest_rate(session, day, base, quote, http_get, day, str(exc))
+    cached = session.get(FxRate, key)
+    return RateQuote(rate, day, cached.source if cached is not None else PRIMARY_SOURCE_LABEL)

@@ -6,20 +6,34 @@ CLI: python -m app.services.moze_import_service <path> [--dry-run] [--rename OLD
 import argparse
 import hashlib
 import json
-import os
+import logging
 import sys
 from collections import Counter
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Collection, Iterator, Mapping, Sequence
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import String, bindparam, delete, func, or_, select, text, update
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
-from ..models import SYSTEM_KINDS, Account, Category, ImportRun, LedgerEntry, Project
+from ..models import (
+    MOZE_SOURCES,
+    SYSTEM_KINDS,
+    Account,
+    Category,
+    Counterparty,
+    EntryGroup,
+    EntryRewardRule,
+    ImportRun,
+    LedgerEntry,
+    Project,
+)
 from . import fx_rate_service
+from .edit_lock import import_locked  # noqa: F401  (re-exported; CLI and REST importers use it)
 from .moze_csv import MozeImportError, MozeRow, ParsedFile, parse_moze_csv
 from .transfer_pairing import PairingResult, pair_transfers
 
@@ -40,12 +54,13 @@ def _money(value: Decimal) -> str:
 
 
 class _Lookup:
-    """Get-or-create cache for categories and projects inside the ledger transaction."""
+    """Get-or-create cache for categories, projects and counterparties inside the ledger transaction."""
 
     def __init__(self, session: Session):
         self.session = session
         self.categories = {(c.kind, c.parent_id, c.name): c.id for c in session.scalars(select(Category))}
         self.projects = {p.name: p.id for p in session.scalars(select(Project))}
+        self.counterparties = {c.name: c.id for c in session.scalars(select(Counterparty))}
 
     def category_id(self, kind: str, main: str, sub: str) -> int | None:
         if kind in SYSTEM_KINDS:
@@ -75,6 +90,21 @@ class _Lookup:
             self.session.flush()
             self.projects[name] = project.id
         return self.projects[name]
+
+    def counterparty_id(self, name: str | None) -> int | None:
+        if name is None:
+            return None
+        if name not in self.counterparties:
+            counterparty = Counterparty(name=name)
+            self.session.add(counterparty)
+            self.session.flush()
+            self.counterparties[name] = counterparty.id
+        return self.counterparties[name]
+
+
+def _is_settlement(kind: str, amount: Decimal) -> bool:
+    """Mirror of ck_ledger_entry_settlement_sign: 收款 (receivable > 0) and 還款 (payable < 0)."""
+    return (kind == "receivable" and amount > 0) or (kind == "payable" and amount < 0)
 
 
 AMOUNT_QUANTUM = Decimal("0.0001")  # amount is NUMERIC(20,4)
@@ -138,11 +168,13 @@ def _insert_entries(
             **_fx_columns(row.amount, row.currency, rate),
             entry_date=row.entry_date,
             entry_time=row.entry_time,
+            posted_date=row.entry_date,
             category_id=lookup.category_id(row.kind, row.main_category, row.sub_category),
             project_id=lookup.project_id(row.project),
             name=row.name,
             merchant=row.merchant,
-            counterparty=row.counterparty,
+            counterparty_id=lookup.counterparty_id(row.counterparty),
+            is_settlement=_is_settlement(row.kind, row.amount),
             description=row.description,
             tags=list(row.tags),
             transfer_group_id=pairing.group_by_row.get(row.row_no),
@@ -163,6 +195,7 @@ def _insert_entries(
                         **_fx_columns(amount, row.currency, rate),
                         entry_date=row.entry_date,
                         entry_time=row.entry_time,
+                        posted_date=row.entry_date,
                         category_id=lookup.category_id(kind, "", ""),
                         source=SOURCE,
                         import_run_id=import_run_id,
@@ -183,26 +216,49 @@ def _insert_entries(
     return [parent for _, parent, _ in parents] + children_all
 
 
-def _delete_unused_categories_and_projects(session: Session) -> None:
-    session.execute(
-        text(
-            "DELETE FROM category c WHERE c.parent_id IS NOT NULL "
-            "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id)"
-        )
-    )
-    session.execute(
-        text(
-            "DELETE FROM category c WHERE c.parent_id IS NULL "
-            "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) "
-            "AND NOT EXISTS (SELECT 1 FROM category child WHERE child.parent_id = c.id)"
-        )
-    )
-    session.execute(
-        text(
-            "DELETE FROM project p "
-            "WHERE NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.project_id = p.id)"
-        )
-    )
+def _removable(alias: str, table: str, keep: Mapping[str, Collection[str]], params: dict) -> str:
+    """SQL condition: only a backup-seeded row (moze_id set) whose moze_id left the backup may be swept.
+
+    Rows without a moze_id (CSV-created, manual or created through the settings API) are never deleted by an
+    import: the owner may have created them in HomeHub, and an import must not destroy what the owner typed.
+    """
+    params[f"keep_{table}"] = sorted(keep.get(table, ()))
+    return f"({alias}.moze_id IS NOT NULL AND {alias}.moze_id <> ALL(:keep_{table}))"
+
+
+def delete_unused_rows(session: Session, keep: Mapping[str, Collection[str]] | None = None) -> None:
+    """Delete unused categories, projects and counterparties whose moze_id left the backup (design D6, as
+    narrowed by the final review: rows without a moze_id are never swept).
+
+    keep=None (CSV import): nothing is deleted; the CSV carries no moze ids. Otherwise keep[table] holds the moze
+    ids still present in the backup. A main category is used while any sub-category is; a project is used by
+    entries, category defaults and rules.
+    """
+    if keep is None:
+        return
+    statements = [
+        "DELETE FROM category c WHERE c.parent_id IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) AND {category}",
+        "DELETE FROM category c WHERE c.parent_id IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) "
+        "AND NOT EXISTS (SELECT 1 FROM category child WHERE child.parent_id = c.id) AND {category}",
+        "DELETE FROM project p WHERE NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.project_id = p.id) "
+        "AND NOT EXISTS (SELECT 1 FROM category c WHERE c.default_project_id = p.id) "
+        "AND NOT EXISTS (SELECT 1 FROM reward_rule r WHERE r.reward_project_id = p.id) AND {project}",
+        "DELETE FROM counterparty cp WHERE NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.counterparty_id = cp.id) "
+        "AND {counterparty}",
+    ]
+    for statement in statements:
+        params: dict = {}
+        clauses = {
+            "category": _removable("c", "category", keep, params),
+            "project": _removable("p", "project", keep, params),
+            "counterparty": _removable("cp", "counterparty", keep, params),
+        }
+        sql = statement.format(**clauses)
+        used = {name: value for name, value in params.items() if f":{name}" in sql}
+        query = text(sql).bindparams(*(bindparam(name, type_=ARRAY(String)) for name in used))
+        session.execute(query, used)
 
 
 def _apply_renames(session: Session, renames: Mapping[str, str]) -> list[dict[str, str]]:
@@ -221,9 +277,14 @@ def _apply_renames(session: Session, renames: Mapping[str, str]) -> list[dict[st
 
 
 def _archive_disappeared_accounts(session: Session, named_in_file: set[str]) -> list[str]:
+    """Archive (and zero the opening balance of) entry-less accounts the file no longer names.
+
+    Accounts with settings_locally_edited (every POST /accounts row, and any account edited in Settings) are
+    skipped entirely: they are the owner's, not MOZE's.
+    """
     archived = []
     for account in session.scalars(select(Account).order_by(Account.id)):
-        if account.name in named_in_file:
+        if account.name in named_in_file or account.settings_locally_edited:
             continue
         has_entries = session.scalar(
             select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)
@@ -236,6 +297,35 @@ def _archive_disappeared_accounts(session: Session, named_in_file: set[str]) -> 
         account.is_archived = True
     session.flush()
     return archived
+
+
+def delete_moze_entries(session: Session) -> None:
+    """Delete every entry of either MOZE source or with a moze_id, their rule attachments, and MOZE groups.
+
+    reward_rule rows are never touched here; manual, hermes and rule entries stay.
+    """
+    is_moze = or_(LedgerEntry.source.in_(MOZE_SOURCES), LedgerEntry.moze_id.is_not(None))
+    moze_ids = select(LedgerEntry.id).where(is_moze)
+    session.execute(
+        delete(EntryRewardRule).where(EntryRewardRule.entry_id.in_(moze_ids)).execution_options(synchronize_session=False)
+    )
+    session.execute(delete(LedgerEntry).where(is_moze).execution_options(synchronize_session=False))
+    session.execute(
+        delete(EntryGroup).where(EntryGroup.moze_id.is_not(None)).execution_options(synchronize_session=False)
+    )
+    session.flush()
+
+
+def assert_currency_change_allowed(session: Session, account: Account, currency: str) -> None:
+    """An import may change an account's currency only while no entry of any source remains on it."""
+    remaining = session.scalar(
+        select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)
+    )
+    if remaining:
+        raise MozeImportError(
+            f"account '{account.name}': currency {account.currency} → {currency} refused, "
+            f"the account still has {remaining} entries"
+        )
 
 
 def _account_report(account: Account, totals: Mapping[int, tuple[int, Decimal, int, Decimal]]) -> dict:
@@ -277,7 +367,7 @@ def replace_ledger(
     """
     renamed = _apply_renames(session, renames or {})
 
-    session.execute(delete(LedgerEntry).where(LedgerEntry.source == SOURCE))
+    delete_moze_entries(session)
 
     existing = {a.name: a for a in session.scalars(select(Account))}
     accounts: dict[str, Account] = {}
@@ -289,7 +379,9 @@ def replace_ledger(
             session.add(account)
             created.append(name)
         else:
-            account.currency = spec.currency
+            if account.currency != spec.currency:
+                assert_currency_change_allowed(session, account, spec.currency)
+                account.currency = spec.currency
             account.opening_balance = spec.opening_balance
             account.is_archived = False
         accounts[name] = account
@@ -299,7 +391,7 @@ def replace_ledger(
 
     inserted = _insert_entries(session, parsed.rows, accounts, pairing, import_run_id, rates or {})
 
-    _delete_unused_categories_and_projects(session)
+    delete_unused_rows(session)
     session.flush()
 
     is_converted = LedgerEntry.fx_source.is_not(None)
@@ -339,23 +431,48 @@ class ImportAlreadyRunningError(ImportRefusedError):
     pass
 
 
-def import_locked() -> bool:
-    return os.getenv("ACCOUNTING_IMPORT_LOCKED", "").strip().lower() == "true"
-
-
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@contextmanager
+def import_lock(engine: Engine) -> Iterator[Connection]:
+    """Hold the shared advisory lock for one import (CSV or backup, real or dry run) on a dedicated connection."""
+    if import_locked():
+        raise ImportLockedError("MOZE import is locked (ACCOUNTING_IMPORT_LOCKED=true)")
+    with engine.connect() as conn:
+        acquired = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY}).scalar_one()
+        conn.commit()
+        if not acquired:
+            raise ImportAlreadyRunningError("import already running")
+        try:
+            yield conn
+        finally:
+            conn.rollback()
+            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": IMPORT_LOCK_KEY})
+            conn.commit()
+
+
+def mark_interrupted_runs(session: Session) -> None:
+    """A run still 'running' while we hold the lock belongs to a process that died."""
+    session.execute(
+        update(ImportRun)
+        .where(ImportRun.status == "running")
+        .values(status="failed", finished_at=_now(), summary={"error": "interrupted"})
+    )
 
 
 def run_report(run: ImportRun) -> dict:
     return {
         "id": run.id,
+        "kind": run.kind,
         "status": run.status,
         "started_at": run.started_at.isoformat(),
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "file_name": run.file_name,
         "file_sha256": run.file_sha256,
         "row_count": run.row_count,
+        "exported_at": run.exported_at.isoformat() if run.exported_at else None,
         "summary": run.summary,
     }
 
@@ -379,6 +496,21 @@ def _replace_from_csv(
     return parsed, replace_ledger(session, parsed, pairing, run_id, renames, rates)
 
 
+logger = logging.getLogger(__name__)
+GENERIC_FAILURE = "import failed; see server log"
+
+
+def failure_summary(exc: BaseException, kind: str) -> dict:
+    """The `import_run.summary` of a failed run. A MozeImportError message is written for the owner (ids, names
+    and counts, never rows) and is stored as is; any other exception (a database error carries the statement
+    and, unless the engine hides them, its parameters, i.e. owner rows) is stored only by type and logged here
+    on the server."""
+    if isinstance(exc, MozeImportError):
+        return {"error": str(exc)}
+    logger.error("%s import failed with %s", kind, type(exc).__name__, exc_info=exc)
+    return {"error_type": type(exc).__name__, "error": GENERIC_FAILURE}
+
+
 def _run_locked(
     conn: Connection,
     data: bytes,
@@ -397,21 +529,19 @@ def _run_locked(
                 session.rollback()
             return {
                 "id": None,
+                "kind": "moze_csv",
                 "status": "dry_run",
                 "started_at": started.isoformat(),
                 "finished_at": _now().isoformat(),
                 "file_name": file_name,
                 "file_sha256": sha256,
                 "row_count": parsed.row_count,
+                "exported_at": None,
                 "summary": summary,
             }
 
-        session.execute(
-            update(ImportRun)
-            .where(ImportRun.status == "running")
-            .values(status="failed", finished_at=_now(), summary={"error": "interrupted"})
-        )
-        run = ImportRun(started_at=_now(), file_name=file_name, file_sha256=sha256, status="running")
+        mark_interrupted_runs(session)
+        run = ImportRun(kind="moze_csv", started_at=_now(), file_name=file_name, file_sha256=sha256, status="running")
         session.add(run)
         session.commit()
         run_id = run.id
@@ -428,7 +558,7 @@ def _run_locked(
             session.rollback()
             run = session.get(ImportRun, run_id)
             run.status = "failed"
-            run.summary = {"error": str(exc)}
+            run.summary = failure_summary(exc, "moze_csv")
             run.finished_at = _now()
             session.commit()
             raise
@@ -448,19 +578,8 @@ def run_import(
 
     `http_get` replaces requests.get for FX rate fetches (tests inject a fake).
     """
-    if import_locked():
-        raise ImportLockedError("MOZE import is locked (ACCOUNTING_IMPORT_LOCKED=true)")
-    with engine.connect() as conn:
-        acquired = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY}).scalar_one()
-        conn.commit()
-        if not acquired:
-            raise ImportAlreadyRunningError("import already running")
-        try:
-            return _run_locked(conn, data, file_name, dry_run, renames or {}, http_get)
-        finally:
-            conn.rollback()
-            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": IMPORT_LOCK_KEY})
-            conn.commit()
+    with import_lock(engine) as conn:
+        return _run_locked(conn, data, file_name, dry_run, renames or {}, http_get)
 
 
 def _parse_rename(value: str) -> tuple[str, str]:

@@ -1,19 +1,50 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import Account
-from ..schemas.ledger import AccountOut, EntryKind, EntryPage
-from ..services import ledger_service
+from ..schemas.ledger import AccountDetailOut, AccountOut, AccountPeriodSummaryOut, EntryKind, EntryPage, RewardRuleOut
+from ..schemas.writes import AccountIn
+from ..services import ledger_service, settings_service
+from .errors import service_errors
 
 router = APIRouter(prefix="/accounts", tags=["Accounts"])
 
 
+def _require_account(db: Session, account_id: int) -> None:
+    if db.get(Account, account_id) is None:
+        raise HTTPException(status_code=404, detail="account not found")
+
+
 @router.get("", response_model=list[AccountOut])
-def list_accounts(db: Session = Depends(get_db)):
-    return ledger_service.list_accounts(db)
+def list_accounts(include_archived: bool = False, as_of: date | None = None, db: Session = Depends(get_db)):
+    """`as_of` (YYYY-MM-DD, default today): balances count entries posted on or before it."""
+    return ledger_service.list_accounts(db, include_archived=include_archived, as_of=as_of)
+
+
+@router.get("/{account_id}", response_model=AccountDetailOut)
+def get_account(account_id: int, as_of: date | None = None, db: Session = Depends(get_db)):
+    account = ledger_service.get_account(db, account_id, as_of=as_of)
+    if account is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    return account
+
+
+@router.get("/{account_id}/reward-rules", response_model=list[RewardRuleOut])
+def list_reward_rules(account_id: int, db: Session = Depends(get_db)):
+    _require_account(db, account_id)
+    return ledger_service.list_reward_rules(db, account_id)
+
+
+@router.get("/{account_id}/summary", response_model=AccountPeriodSummaryOut)
+def account_summary(account_id: int, date_from: date, date_to: date, db: Session = Depends(get_db)):
+    """Period totals for the passbook header; independent of the entries page the client has loaded."""
+    _require_account(db, account_id)
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="date_from must not be after date_to")
+    return ledger_service.period_summary(db, account_id, date_from, date_to)
 
 
 @router.get("/{account_id}/entries", response_model=EntryPage)
@@ -24,11 +55,44 @@ def list_entries(
     kind: EntryKind | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    q: str | None = Query(default=None, max_length=100),
     db: Session = Depends(get_db),
 ):
-    if db.get(Account, account_id) is None:
-        raise HTTPException(status_code=404, detail="account not found")
+    _require_account(db, account_id)
     total, items = ledger_service.list_entries(
-        db, account_id, limit=limit, offset=offset, kind=kind, date_from=date_from, date_to=date_to
+        db, account_id, limit=limit, offset=offset, kind=kind, date_from=date_from, date_to=date_to, q=q
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+
+@router.post("", response_model=AccountDetailOut, status_code=201)
+def post_account(payload: AccountIn, db: Session = Depends(get_db)):
+    with service_errors():
+        account_id = settings_service.create_account(db, payload)
+    db.commit()
+    return ledger_service.get_account(db, account_id)
+
+
+@router.put("/{account_id}", response_model=AccountDetailOut)
+def put_account(account_id: int, payload: AccountIn, db: Session = Depends(get_db)):
+    """Settings writes are allowed on imported accounts at any time (D19); they set settings_locally_edited."""
+    with service_errors():
+        settings_service.update_account(db, account_id, payload)
+    db.commit()
+    return ledger_service.get_account(db, account_id)
+
+
+@router.delete("/{account_id}", status_code=204)
+def remove_account(account_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        settings_service.delete_account(db, account_id)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/{account_id}/reset-settings-flag", response_model=AccountDetailOut)
+def post_reset_settings_flag(account_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        settings_service.reset_settings_flag(db, account_id)
+    db.commit()
+    return ledger_service.get_account(db, account_id)

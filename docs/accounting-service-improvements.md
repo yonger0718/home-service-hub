@@ -1,5 +1,7 @@
 # Accounting Service 改善與功能規劃
 
+> **Superseded by `openspec/changes/add-accounting-entry`.** 本文件記錄的是已移除的舊記帳服務（transactions / subscriptions / categories 報表）的檢討與規劃，僅供歷史參考。現行記帳以 MOZE 帳本為基礎：phase 1 見 `openspec/changes/archive/2026-10-02-rebuild-accounting-moze-ledger/`，phase 2a（記帳頁、時間軸、帳戶設定、MOZE 備份匯入）見 `openspec/changes/add-accounting-entry/`，部署步驟見 `docs/deploy/accounting-phase-2a.md`。
+
 整理 2026-04-30 review、Opus 4.7 分析與目前 owner 決策，作為後續 OpenSpec changes 與實作依據。
 
 ## 2026-05-04 已完成實作

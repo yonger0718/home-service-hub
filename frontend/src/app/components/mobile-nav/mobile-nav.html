@@ -15,6 +15,9 @@
 
   <nav class="m-tabbar" aria-label="Primary mobile tabs">
     @for (group of groups; track group.id) {
+      @if ($index === 2) {
+        <a class="m-plus" routerLink="/accounting/entry" aria-label="新增記錄"><span aria-hidden="true">+</span></a>
+      }
       <a
         class="m-tab"
         [class.active]="activeGroupId() === group.id"

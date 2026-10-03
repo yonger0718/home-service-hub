@@ -1,0 +1,42 @@
+<div class="overlay" (click)="cancel()">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="fee-title" (click)="$event.stopPropagation()">
+    <div class="grab"></div>
+    <h3 id="fee-title">{{ title() }}</h3>
+    <div class="kv">
+      <div>
+        <span class="k">金額</span>
+        <span class="v ed fee-base">{{ formatNumber(amount(), currency()) }}</span>
+      </div>
+      <div>
+        <span class="k">
+          @if (editingFeeName()) {
+            <input class="fee-name" placeholder="手續費" aria-label="手續費名稱" [value]="feeName()" (input)="feeName.set($any($event.target).value)" />
+          } @else {
+            {{ feeName() || '手續費' }}
+            <button type="button" class="rename fee-rename" aria-label="修改手續費名稱" (click)="editingFeeName.set(true)">✎</button>
+          }
+        </span>
+        <span class="v ed">−<input class="fee-amount" inputmode="decimal" placeholder="0" aria-label="手續費金額" [value]="feeText()" (input)="feeText.set($any($event.target).value)" /></span>
+      </div>
+      <div>
+        <span class="k">
+          @if (editingDiscountName()) {
+            <input class="discount-name" placeholder="折扣" aria-label="折扣名稱" [value]="discountName()" (input)="discountName.set($any($event.target).value)" />
+          } @else {
+            {{ discountName() || '折扣' }}
+            <button type="button" class="rename discount-rename" aria-label="修改折扣名稱" (click)="editingDiscountName.set(true)">✎</button>
+          }
+        </span>
+        <span class="v ed">+<input class="discount-amount" inputmode="decimal" placeholder="0" aria-label="折扣金額" [value]="discountText()" (input)="discountText.set($any($event.target).value)" /></span>
+      </div>
+      <div class="total">
+        <span class="k">總額</span>
+        <span class="v fee-total">{{ formatNumber(total(), currency()) }}</span>
+      </div>
+    </div>
+    <div class="btnrow">
+      <button type="button" class="sheet-cancel" (click)="cancel()">取消</button>
+      <button type="button" class="pri sheet-confirm" (click)="confirm()">確定</button>
+    </div>
+  </div>
+</div>

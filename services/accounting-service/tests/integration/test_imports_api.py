@@ -118,3 +118,10 @@ def test_rest_import_during_cli_import_gets_409_and_cli_data_wins(client, db_ses
     with pg_engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM import_run")).scalar_one() == 1
     assert advisory_locks(pg_engine) == 0
+
+
+def test_a_long_upload_filename_is_stored_truncated(client, db_session, moze):
+    response = client.post("/imports/moze", files={"file": ("a" * 300 + ".csv", _file(moze), "text/csv")})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["file_name"] == "a" * 255

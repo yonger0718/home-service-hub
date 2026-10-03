@@ -1,0 +1,74 @@
+<div class="split-lines">
+  @for (line of members(); track $index) {
+    <div class="sel member">
+      <span class="ico" [style.background]="color(line)">{{ icon(line) }}</span>
+      <span class="member-text">
+        <b>{{ label(line) }}</b>
+        <small>{{ amountLabel(line) }} · {{ accountName(line) }}</small>
+      </span>
+      <button type="button" class="member-remove" aria-label="移除拆帳行" [disabled]="disabled()" (click)="remove($index)">✕</button>
+    </div>
+  }
+  <button type="button" class="add" aria-label="新增拆帳行" [disabled]="disabled()" (click)="openSheet()">+</button>
+  @if (members().length === 0) {
+    <span class="hint">拆帳：每行可用不同類別、帳戶</span>
+  }
+</div>
+
+@if (open()) {
+  <div class="overlay" (click)="open.set(false)">
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="新增拆帳行" (click)="$event.stopPropagation()">
+      <div class="grab"></div>
+      <h3>新增拆帳行</h3>
+      <div class="kv">
+        <div>
+          <span class="k">類型</span>
+          <span class="v line-kind">
+            @for (kind of kinds; track kind) {
+              <button type="button" [class.on]="draftKind() === kind" (click)="setKind(kind)">{{ kindLabels[kind] }}</button>
+            }
+          </span>
+        </div>
+        <div>
+          <span class="k">類別</span>
+          <select class="v line-category" aria-label="類別" (change)="setCategory($any($event.target).value)">
+            <option value="">選擇</option>
+            @for (option of categoryOptions(); track option.id) {
+              <option [value]="option.id" [selected]="option.id === draftCategoryId()">{{ option.label }}</option>
+            }
+          </select>
+        </div>
+        <div>
+          <span class="k">金額</span>
+          <input class="v line-amount" inputmode="decimal" aria-label="金額" [value]="draftAmount()" (input)="draftAmount.set($any($event.target).value)" />
+        </div>
+        <div>
+          <span class="k">帳戶<span class="sub2">預設同主記錄，可改</span></span>
+          <select class="v line-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
+            @for (account of activeAccounts(); track account.id) {
+              <option [value]="account.id" [selected]="account.id === draftAccountId()">{{ account.name }}</option>
+            }
+          </select>
+        </div>
+        @if (needsCounterparty()) {
+          <div>
+            <span class="k">對象（應收/應付）</span>
+            <input class="v line-counterparty" list="split-counterparties" aria-label="對象" [value]="draftCounterparty()" (input)="draftCounterparty.set($any($event.target).value)" />
+            <datalist id="split-counterparties">
+              @for (cp of counterparties(); track cp.id) {
+                <option [value]="cp.name"></option>
+              }
+            </datalist>
+          </div>
+        }
+      </div>
+      @if (error()) {
+        <p class="line-error" role="alert">{{ error() }}</p>
+      }
+      <div class="btnrow">
+        <button type="button" (click)="open.set(false)">取消</button>
+        <button type="button" class="pri line-add" [disabled]="adding()" (click)="add()">加入</button>
+      </div>
+    </div>
+  </div>
+}

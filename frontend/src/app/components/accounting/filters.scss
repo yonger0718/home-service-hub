@@ -1,0 +1,55 @@
+/* Shared pill-style filter row (timeline + passbook). */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 6px;
+
+  .chip {
+    background: var(--app-surface-soft);
+    border: 1px solid transparent;
+    border-radius: var(--radius-pill);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 700;
+    max-width: 100%;
+    min-height: 30px;
+    padding: 3px 9px;
+  }
+
+  .filter-q {
+    flex: 1 1 160px;
+    min-width: 0;
+  }
+
+  .filter-range {
+    align-items: center;
+    display: flex;
+    flex: 0 1 auto;
+    gap: 6px;
+    min-width: 0;
+
+    .range-label,
+    .sep {
+      color: var(--app-text-muted);
+      flex: none;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+
+    input {
+      background: none;
+      border: 0;
+      color: inherit;
+      flex: 1 1 100px;
+      font: inherit;
+      min-width: 0;
+      padding: 0;
+    }
+
+    @media (max-width: 759px) {
+      flex: 1 1 100%;
+    }
+  }
+}

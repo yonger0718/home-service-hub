@@ -1,0 +1,37 @@
+@if (mode() === 'phone' || !listKey()) {
+  <router-outlet />
+} @else {
+  <div class="dbody" [class.dbody--sheet]="mode() === 'sheet'">
+    <section class="pane list-pane" aria-label="列表">
+      @if (listComponent(); as list) {
+        <ng-container *ngComponentOutlet="list" />
+      }
+    </section>
+
+    @if (sheetOpen()) {
+      <div class="sheet-backdrop" aria-hidden="true" (click)="close()"></div>
+    }
+
+    <section
+      class="pane detail-pane"
+      aria-label="明細"
+      [attr.role]="sheetOpen() ? 'dialog' : null"
+      [attr.aria-modal]="sheetOpen() ? 'true' : null"
+      [class.open]="paneOpen()"
+      (pointerdown)="onPanePointerDown($event)"
+      (pointerup)="onPanePointerUp($event)"
+    >
+      @if (sheetOpen()) {
+        <button #closeButton type="button" class="sheet-close" aria-label="關閉" (click)="close()">✕</button>
+      }
+      <router-outlet name="pane" />
+      @if (!paneOpen()) {
+        <p class="pane-empty">選擇一筆記錄查看明細，或按 ＋ 新增</p>
+      }
+    </section>
+  </div>
+}
+
+@if (showFab()) {
+  <a class="fab" routerLink="/accounting/entry" aria-label="新增記錄">+</a>
+}

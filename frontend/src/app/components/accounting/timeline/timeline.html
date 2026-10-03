@@ -1,0 +1,89 @@
+<section class="timeline">
+  <div class="monthbar">
+    <button type="button" class="month-prev" aria-label="上個月" (click)="moveMonth(-1)">‹</button>
+    <b class="month-label">{{ monthText() }}</b>
+    <button type="button" class="month-next" aria-label="下個月" (click)="moveMonth(1)">›</button>
+    @if (isPhone()) {
+      <button
+        type="button"
+        class="search-toggle"
+        aria-label="搜尋"
+        [attr.aria-expanded]="filtersOpen()"
+        (click)="toggleFilters()"
+      >⌕</button>
+    }
+  </div>
+
+  @if (summary(); as s) {
+    <div class="sum">
+      <div><small>支出</small><b class="neg sum-expense">{{ expenseText(s) }}</b></div>
+      <div><small>收入</small><b class="pos sum-income">{{ incomeText(s) }}</b></div>
+      <div><small>結餘</small><b class="sum-net">{{ formatSigned(s.net, s.currency) }}</b></div>
+    </div>
+    @if (s.missing_rates.length > 0) {
+      <p class="missing-rates">部分外幣未換算 ({{ s.missing_rates.join(', ') }})</p>
+    }
+  }
+
+  @if (!isPhone() || filtersOpen()) {
+    <div class="chips filters">
+      <select class="chip tag filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
+        <option value="">全部帳戶</option>
+        @for (account of accounts(); track account.id) {
+          <option [value]="account.id" [selected]="accountFilter() === account.id">{{ account.name }}</option>
+        }
+      </select>
+      <select class="chip tag filter-kind" aria-label="類型" (change)="setKind($any($event.target).value)">
+        <option value="">全部類型</option>
+        @for (option of kindOptions; track option.kind) {
+          <option [value]="option.kind" [selected]="kindFilter() === option.kind">{{ option.label }}</option>
+        }
+      </select>
+      <input
+        class="chip tag filter-q"
+        type="search"
+        placeholder="⌕ 搜尋名稱 / 商家 / 備註"
+        aria-label="搜尋名稱、商家或備註"
+        [value]="query()"
+        (change)="setQuery($any($event.target).value)"
+      />
+    </div>
+  }
+
+  @if (loadError()) {
+    <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
+  }
+
+  @for (day of days(); track day.date) {
+    <div class="day"><span>{{ day.label }}</span><b>{{ formatSigned(day.net, mainCurrency()) }}</b></div>
+    @for (row of day.rows; track row.key) {
+      <button type="button" class="row" [class.sel]="row.entryId === selectedId()" [attr.data-entry-id]="row.entryId"
+        [attr.aria-current]="row.entryId === selectedId() ? 'true' : null"
+        (click)="open(row)">
+        <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
+        <span class="name">{{ row.title }}@if (row.groupCount) {<span class="badge">{{ row.groupCount }}</span>}</span>
+        <span class="sub">{{ row.sub }}</span>
+        <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">
+          {{ row.amountText }}
+          @if (row.fx) {
+            <small class="fx">{{ row.fx }}</small>
+          }
+        </span>
+        <span class="pills">
+          @for (pill of row.pills; track $index) {
+            <span class="pill" [class.rw]="pill.tone === 'rw'" [class.rv]="pill.tone === 'rv'" [class.review]="pill.tone === 'review'">{{ pill.label }}</span>
+          }
+        </span>
+      </button>
+    }
+  } @empty {
+    @if (!loading() && !loadError()) {
+      <p class="empty">這個月沒有紀錄</p>
+    }
+  }
+
+  @if (hasMore()) {
+    <div #sentinel class="sentinel" aria-hidden="true"></div>
+    <button type="button" class="more" [disabled]="loading()" (click)="loadMore()">載入更多</button>
+  }
+</section>

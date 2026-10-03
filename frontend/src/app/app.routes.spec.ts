@@ -3,65 +3,157 @@ import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { routes } from './app.routes';
+import { AccountingShortcutsService, EntryCommand } from './components/accounting/keyboard-shortcuts';
 import { DockComponent } from './components/dock/dock';
-import { NAV_GROUPS, NAV_ITEMS, navItemForUrl } from './components/shell/navigation';
+import { MobileNavComponent } from './components/mobile-nav/mobile-nav';
+import { NAV_GROUPS, navItemForUrl } from './components/shell/navigation';
 
-const REMOVED_ACCOUNTING_PAGES = ['dashboard', 'transactions', 'settings', 'cards', 'categories', 'recurring'];
+const PAGES: [string, string][] = [
+  ['/accounting', 'app-ledger-timeline'],
+  ['/accounting/accounts', 'app-accounting-accounts'],
+  ['/accounting/accounts/new', 'app-account-settings'],
+  ['/accounting/accounts/5', 'app-accounting-account-entries'],
+  ['/accounting/accounts/5/settings', 'app-account-settings'],
+  ['/accounting/accounts/5/entries/9', 'app-entry-detail'],
+  ['/accounting/entry', 'app-entry-form'],
+  ['/accounting/entries/9', 'app-entry-detail'],
+  ['/accounting/entries/9/edit', 'app-entry-form'],
+  ['/accounting/settings', 'app-accounting-settings'],
+];
+
+const REDIRECTED = ['dashboard', 'transactions', 'cards', 'categories', 'recurring'];
+
+function stubMatchMedia(): void {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }),
+  });
+}
 
 describe('accounting routes', () => {
-  const paths = routes.map(route => route.path);
-
-  it('redirects the removed accounting pages to the accounts page', () => {
-    for (const removed of REMOVED_ACCOUNTING_PAGES) {
-      const route = routes.find(r => r.path === `accounting/${removed}`);
-      expect(route?.redirectTo).toBe('accounting/accounts');
-      expect(route?.loadComponent).toBeUndefined();
-    }
-  });
-
-  it('redirects /accounting to the accounts page', () => {
-    expect(routes.find(route => route.path === 'accounting')?.redirectTo).toBe('accounting/accounts');
-  });
-
-  it('points the accounting navigation only at the ledger pages and settings', () => {
-    const accounting = NAV_GROUPS.find(group => group.id === 'accounting')!;
-    expect(accounting.defaultPath).toBe('/accounting/accounts');
-    expect(accounting.items.map(item => item.path)).toEqual(['/accounting/accounts', '/settings']);
-    expect(NAV_ITEMS.map(item => item.id)).not.toContain('accounting-dash');
-  });
-
-  it('serves the accounts list page', () => {
-    expect(paths).toContain('accounting/accounts');
-  });
-
-  it('lands a bookmarked /accounting/cards on the accounts page', async () => {
+  beforeEach(() => {
+    stubMatchMedia();
     TestBed.configureTestingModule({
       providers: [provideRouter(routes), provideHttpClient(), provideHttpClientTesting()],
     });
+  });
+
+  for (const [url, selector] of PAGES) {
+    it(`renders ${selector} inside the accounting layout for ${url}`, async () => {
+      const harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl(url);
+      // At 760 px and wider the layout loads its left-hand list asynchronously (Task 21's NgComponentOutlet).
+      await harness.fixture.whenStable();
+      const root = harness.fixture.nativeElement as HTMLElement;
+      // The dynamic import() behind the list pane is not tracked by whenStable: poll until it has rendered.
+      await vi.waitFor(() => {
+        harness.fixture.detectChanges();
+        expect(root.querySelector(selector)).not.toBeNull();
+      });
+
+      expect(TestBed.inject(Router).url).toBe(url);
+      expect(root.querySelector('app-accounting-layout')).not.toBeNull();
+      expect(root.querySelector(selector)).not.toBeNull();
+    });
+  }
+
+  for (const removed of REDIRECTED) {
+    it(`lands a bookmarked /accounting/${removed} on the timeline`, async () => {
+      const harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl(`/accounting/${removed}`);
+      expect(TestBed.inject(Router).url).toBe('/accounting');
+    });
+  }
+
+  it('opens the entry form with N from the timeline', async () => {
     const harness = await RouterTestingHarness.create();
+    await harness.navigateByUrl('/accounting');
 
-    await harness.navigateByUrl('/accounting/cards');
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true }));
+    // The entry form is lazy (loadComponent + import()), which whenStable does not track: poll until the
+    // navigation has settled and the form has rendered so the module is not torn down mid-navigation.
+    const root = harness.fixture.nativeElement as HTMLElement;
+    await vi.waitFor(() => {
+      harness.fixture.detectChanges();
+      expect(TestBed.inject(Router).url).toBe('/accounting/entry');
+      expect(root.querySelector('app-entry-form')).not.toBeNull();
+    });
 
-    expect(TestBed.inject(Router).url).toBe('/accounting/accounts');
+    expect(TestBed.inject(Router).url).toBe('/accounting/entry');
   });
 
-  it('serves the account entry history page', () => {
-    expect(paths).toContain('accounting/accounts/:id');
+  it('turns ⇧⏎ on the entry form into a save-and-continue command', async () => {
+    const harness = await RouterTestingHarness.create();
+    await harness.navigateByUrl('/accounting/entry');
+    const received: EntryCommand[] = [];
+    const subscription = TestBed.inject(AccountingShortcutsService).entryCommands.subscribe(command => received.push(command));
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }));
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    subscription.unsubscribe();
+
+    expect(received).toEqual(['save-continue', 'cancel']);
+  });
+});
+
+describe('accounting navigation', () => {
+  it('points the accounting sub-nav at 紀錄, 帳戶 and 設定', () => {
+    const accounting = NAV_GROUPS.find(group => group.id === 'accounting')!;
+    expect(accounting.defaultPath).toBe('/accounting');
+    expect(accounting.items.map(item => [item.label, item.path])).toEqual([
+      ['紀錄', '/accounting'],
+      ['帳戶', '/accounting/accounts'],
+      ['設定', '/accounting/settings'],
+    ]);
   });
 
-  it('keeps the Accounting dock item highlighted on an account history page', () => {
-    TestBed.configureTestingModule({ imports: [DockComponent], providers: [provideRouter([])] });
-    const fixture = TestBed.createComponent(DockComponent);
-
-    fixture.componentRef.setInput('activeId', navItemForUrl('/accounting/accounts/5').id);
-    fixture.detectChanges();
-
-    const active = (fixture.nativeElement as HTMLElement).querySelector('.dock-item[aria-current="page"]');
-    expect(navItemForUrl('/accounting/accounts/5').id).toBe('accounting');
-    expect(active?.getAttribute('aria-label')).toBe('記帳帳戶');
-    expect(active?.classList).toContain('active');
+  it('keeps the global settings page reachable as its own group', () => {
+    expect(NAV_GROUPS.map(group => group.id)).toEqual(['supplies', 'portfolio', 'accounting', 'settings']);
+    expect(navItemForUrl('/settings').group).toBe('settings');
   });
+
+  const HIGHLIGHT: [string, string][] = [
+    ['/accounting', '紀錄'],
+    ['/accounting/entry', '紀錄'],
+    ['/accounting/entries/9', '紀錄'],
+    ['/accounting/accounts', '帳戶'],
+    ['/accounting/accounts/5', '帳戶'],
+    ['/accounting/accounts/5/settings', '帳戶'],
+    ['/accounting/accounts/5/entries/9', '帳戶'],
+    ['/accounting/settings', '設定'],
+  ];
+
+  for (const [url, label] of HIGHLIGHT) {
+    it(`highlights ${label} in the dock and the mobile sub-nav on ${url}`, () => {
+      const item = navItemForUrl(url);
+      expect(item.group).toBe('accounting');
+      expect(item.label).toBe(label);
+
+      TestBed.configureTestingModule({ imports: [DockComponent, MobileNavComponent], providers: [provideRouter([])] });
+      const dock = TestBed.createComponent(DockComponent);
+      dock.componentRef.setInput('activeId', item.id);
+      dock.detectChanges();
+      const active = (dock.nativeElement as HTMLElement).querySelector('.dock-item[aria-current="page"]');
+      expect(active?.getAttribute('aria-label')).toBe(item.title);
+
+      const mobile = TestBed.createComponent(MobileNavComponent);
+      mobile.componentRef.setInput('activeId', item.id);
+      mobile.componentRef.setInput('activeGroupId', 'accounting');
+      mobile.detectChanges();
+      expect((mobile.nativeElement as HTMLElement).querySelector('.seg-control a.active')?.textContent?.trim()).toBe(label);
+    });
+  }
 });

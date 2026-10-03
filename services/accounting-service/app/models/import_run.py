@@ -1,9 +1,10 @@
-from sqlalchemy import Column, DateTime, Enum, Integer, String
+from sqlalchemy import Column, DateTime, Enum, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from ..database import Base
 
 IMPORT_STATUSES = ("running", "succeeded", "failed")
+IMPORT_KINDS = ("moze_csv", "moze_backup")
 
 
 class ImportRun(Base):
@@ -17,3 +18,5 @@ class ImportRun(Base):
     status = Column(Enum(*IMPORT_STATUSES, name="import_status"), nullable=False)
     row_count = Column(Integer, nullable=True)
     summary = Column(JSONB, nullable=True)
+    kind = Column(Enum(*IMPORT_KINDS, name="import_kind"), nullable=False, server_default=text("'moze_csv'"))
+    exported_at = Column(DateTime(timezone=True), nullable=True)
