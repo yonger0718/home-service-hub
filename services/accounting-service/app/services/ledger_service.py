@@ -264,11 +264,12 @@ def _text_filter(q: str):
 
 
 def _settled_sum():
-    """Σ amount of the settlements linked to the outer `LedgerEntry` row (correlated scalar subquery)."""
+    """Σ amount of the settlements linked to the outer `LedgerEntry` row in its own currency (correlated scalar
+    subquery); a settlement in another currency stays linked but never nets."""
     settlement = aliased(LedgerEntry)
     return (
         select(func.coalesce(func.sum(settlement.amount), 0))
-        .where(settlement.settles_entry_id == LedgerEntry.id)
+        .where(settlement.settles_entry_id == LedgerEntry.id, settlement.currency == LedgerEntry.currency)
         .correlate(LedgerEntry)
         .scalar_subquery()
     )

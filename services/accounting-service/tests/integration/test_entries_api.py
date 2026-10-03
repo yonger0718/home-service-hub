@@ -144,6 +144,25 @@ def test_list_rows_carry_the_open_amount_of_debt_originals(client, db_session):
     assert [s["open_amount"] for s in detail["settled_by"]] == [None]
 
 
+def test_a_settlement_in_another_currency_leaves_the_list_row_open(client, db_session):
+    wallet = make_account(db_session, "錢包", opening="1000")
+    yen = make_account(db_session, "日幣", currency="JPY")
+    alan = Counterparty(name="Alan")
+    db_session.add(alan)
+    db_session.flush()
+    lent = make_entry(db_session, wallet, "-100", kind="receivable", counterparty_id=alan.id)
+    make_entry(db_session, yen, "100", kind="receivable", counterparty_id=alan.id, settles_entry_id=lent.id,
+               is_settlement=True, entry_date=date(2026, 9, 2))
+    db_session.commit()
+
+    open_rows = client.get("/entries", params={"open": "true"}).json()["items"]
+    counterparties = {row["name"]: row for row in client.get("/counterparties").json()}
+
+    assert [(e["id"], e["open_amount"]) for e in open_rows] == [(lent.id, "100.0000")]
+    assert client.get(f"/entries/{lent.id}").json()["open_amount"] == "100.0000"
+    assert counterparties["Alan"]["open_count"] == 1
+
+
 def test_listing_rejects_a_non_integer_counterparty(client, db_session):
     assert client.get("/entries", params={"counterparty_id": "alan"}).status_code == 422
 
