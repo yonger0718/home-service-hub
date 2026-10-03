@@ -57,7 +57,7 @@ export interface DebtReminder {
 
 /** A debt original's remaining in the expanded rows (replaces the entry amount). */
 export interface DebtRemaining {
-  /** `+$170 待收` / `−$100 待還` / `已結清`. */
+  /** `+$170` / `−$100` (signed remaining) / `已結清`. */
   text: string;
   tone: 'in' | 'out' | 'muted';
   /** `原始 $420 · 已收 $250` once something came back; null otherwise. */
@@ -81,7 +81,7 @@ export function debtRemaining(entry: LedgerEntry): DebtRemaining | null {
   const original = Math.abs(Number(entry.amount));
   const back = Math.round((original - open) * 1e4) / 1e4;
   return {
-    text: `${formatSigned(receivable ? open : -open, entry.currency)} ${receivable ? '待收' : '待還'}`,
+    text: formatSigned(receivable ? open : -open, entry.currency),
     tone: receivable ? 'in' : 'out',
     detail:
       back > 0
