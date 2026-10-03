@@ -47,6 +47,8 @@
 
 - Owner amendment 4 (自動 catch up) is implemented as 補入帳至今天 on tap, per proposal decision 2 — owner to confirm.
 - Lock strength (plan review): `specs/accounting-schedules/spec.md` ("Posting an instance", entry-delete requirement) says the definition is locked `FOR SHARE`. The plan takes `FOR UPDATE` where the path may write the definition — a post / repost of a template with a loan line (close-out ends it) and the entry-delete path on an `ended` definition (it revives it) — because two `FOR SHARE` holders that both upgrade deadlock. This is stricter, never weaker; `design.md` D31/D32 record it. Align the spec wording when the change is archived.
+- Importer refinements beyond the spec text (plan review of Tasks 16–17; each keeps the spec's outcome or makes it stricter): an `AHInstallment` with `times < 2` becomes `kind = recurring` (the spec says every installment becomes `installment`, but `ck_schedule_definition_installment` needs `times ≥ 2`); a future record whose `eventID` names no period or installment becomes a single definition with review reason `event_missing`; template lines are the first group's lines plus any record kind a later group carries (so a later package's interest is never dropped); a "live" `AHPeriod` is one with at least one enabled future record — a period without one imports `ended`; a finite period's `times` is capped at its highest mapped seq (Task 28.5 checks MOZE pre-generates every finite series).
+- Owner choice (not changed): a HomeHub-generated period of an imported unlimited period posts the template amount taken from MOZE's earliest record (D37, "lines from the first generated record"); the latest record's amount (a price change) may be what the owner expects. Owner to confirm before cutover.
 - Test data (owner data rule): the spec scenarios name a real bank (`玉山銀行`, `玉山 UNI`). The plan's tests and fixtures use the synthetic names `範例銀行` and `範例卡` with the scenarios' arithmetic unchanged; the spec text is left as written.
 
 Implementation-time confirmations recorded by Task 28 in `design.md` "Implementation notes": the MOZE weekday numbering of `AHPeriod.days` for weekly periods (assumed 1 = Sunday … 7 = Saturday, Apple `Calendar`; a wrong assumption shows as `interval_mismatch` on every weekly period, never as wrong dates) and whether a MOZE posting-mode field exists (none is assumed; every imported definition is `auto`).
@@ -269,18 +271,22 @@ def moze_weekday(day: date) -> int                                              
 @dataclass class MappedLine: kind; account; to_account; to_amount; target; classification; project; amount; related; name; store
 @dataclass class MappedInstance: moze_id; record_ids; day; seq; amounts; past; enabled; records
 @dataclass class MappedDefinition: moze_id; kind; source; name; interval_unit; interval_n; anchor_date; day_of_month; times; total_amount; remainder; lines; review_reason; payload; instances
-@dataclass class MapResult: definitions; records_mapped; rewards_ignored; unsupported_types; review
+@dataclass class MapResult: definitions; records_mapped; rewards_ignored; unsupported_types; review; past_singles   # past_singles: past no-definition records as `record:<id>` singles
+def record_groups(records: list[dict], data: BackupData) -> list[list[dict]]
 def map_schedules(data: BackupData) -> MapResult
 
 # app/services/schedule_import.py
 @dataclass class CapturedLinks: template_links: list[tuple[int, int, str]]; settlement_links: list[tuple[int, str]]
-@dataclass class Covered: instance_id: int; status: str
+@dataclass class Covered: instance_id: int; status: str; moze_total: Decimal
+def new_report(mapped: MapResult) -> dict
 def lock_schedule_rows(session: Session) -> None
+def merge_known_past_singles(session: Session, mapped: MapResult) -> None                  # past singles whose record:<id> definition exists join mapped.definitions
 def capture_links(session: Session) -> CapturedLinks
 def covered_records(session: Session, mapped: MapResult) -> dict[str, Covered]
 def template_usage(session: Session) -> dict[str, set[int]]
 def apply_schedules(session, data, mapped, settings, entries, covered, *, started_at: datetime, today: date) -> dict
 def restore_links(session: Session, captured: CapturedLinks, report: dict) -> None
+def loan_check(session: Session, mapped: MapResult, report: dict) -> None                 # after restore_links: fills loan_remainder_check
 def stand_in_entry_ids(session: Session, covered: dict[str, Covered]) -> set[int]
 
 # changed ledger signatures
@@ -326,6 +332,7 @@ class InstanceOut: id, definition_id, definition_name, kind, posting_mode, seq, 
 class CatchUpOut: posted: list[int]; failed: {instance_id, error} | None; definition: DefinitionOut
 class RunReportOut: trigger, today, status, generated, posted: list[int], failed: list[int], stopped_definitions: list[int]
 class EntryScheduleOut: definition_id, instance_id, kind, seq, times, name, is_partial, acted_by, posted_entry_ids   # (app/schemas/ledger.py)
+class CurrencyAmountOut: currency, amount   # one model for every {currency, amount}: defined in schedules.py by Task 5, moved to app/schemas/ledger.py by Task 14 (schedules.py imports it)
 class LoanScheduleOut: definition_id, name, status, posting_mode, posted_count, times, next_due_date, next_amount, remaining, repaid, needs_check
 ```
 
@@ -349,7 +356,7 @@ class LoanScheduleOut: definition_id, name, status, posting_mode, posted_count, 
 | `PUT /schedules/instances/{id}` | `InstanceUpdateIn` | `InstanceOut` |
 | `POST /schedules/instances/{id}/post` · `/skip` · `/reopen` · `/accept-partial` | — | `InstanceOut` |
 | `POST /schedules/instances/{id}/repost` | `RepostIn` | `InstanceOut` |
-| `POST /schedules/run-now` | — | `RunReportOut` (409 when the job or an import holds its lock) |
+| `POST /schedules/run-now` | — | `RunReportOut` (409 `import_running` when an import holds its key; 409 with message `schedule job already running` when the job lock is held — the SPA matches only `import_running`) |
 
 ### Import report (`summary["schedules"]`)
 
@@ -911,7 +918,7 @@ from .fx_rate import FxRate
 
 - [ ] 2.5 Remove the `moze_schedule` users.
   - `app/services/moze_backup_json.py`: in the `from ..models import (...)` block replace `MozeSchedule,` with `ScheduleDefinition,`; in `TEXT_COLUMNS` replace the two lines `"AHPeriod": {"identifier": MozeSchedule.moze_id},` and `"AHInstallment": {"identifier": MozeSchedule.moze_id},` with `"AHPeriod": {"identifier": ScheduleDefinition.moze_id},` and `"AHInstallment": {"identifier": ScheduleDefinition.moze_id},`.
-  - `app/services/moze_backup_import_service.py`: delete `MozeSchedule,` from the `from ..models import (...)` block; delete the functions `_replace_schedule`, `_schedule_due` and `list_schedules` (their whole bodies); in `replace_ledger_from_backup` delete the line `schedules = _replace_schedule(session, data, entries.skipped_records, import_run_id)` and the dict entry `"schedules": schedules,` (Task 18 adds the new `schedules` block). `_jsonable` stays (Task 17 uses it).
+  - `app/services/moze_backup_import_service.py`: delete `MozeSchedule,` from the `from ..models import (...)` block; delete the functions `_replace_schedule`, `_schedule_due` and `list_schedules` (their whole bodies); in `replace_ledger_from_backup` delete the line `schedules = _replace_schedule(session, data, entries.skipped_records, import_run_id)` and the dict entry `"schedules": schedules,` (Task 17 adds the new `schedules` block). `_jsonable` stays (Task 17 uses it).
   - `app/routers/imports.py`: replace `from ..schemas.imports import ImportReport, ScheduleItemOut` with `from ..schemas.imports import ImportReport`; replace `from ..services.moze_backup_import_service import list_schedules, run_backup_import` with `from ..services.moze_backup_import_service import run_backup_import`; delete `from typing import Literal`; delete the whole `@router.get("/schedules", ...)` endpoint `import_schedules`.
   - `app/schemas/imports.py`: replace the file with
 
@@ -2422,7 +2429,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Consumes: `schedule_rules` (Task 4); `take_import_key_shared`, `lock_definition` (Task 5); `template_amounts` (Task 5); conftest `seed`, `today`, `pg_engine`; helper `POSTED_AT`.
 - Produces: `last_period_override(definition) -> list[str] | None`, `generate(db, definition, today) -> int`, `series_complete(db, definition) -> bool`, `end_if_complete(db, definition) -> bool`, `generate_locked(db, definition_id, today) -> int`.
 
-Rules (D30): generation finds the latest instance by `rule_date` (any status) and inserts the next occurrences strictly after it (occurrence 0 when none), `seq` = previous maximum + 1 (`first_seq` for the first), while `seq ≤ times`, `date ≤ end_date`, `date ≤ horizon(today)`; an occurrence equal to a **posted** instance's `due_date` is passed over without consuming a seq; nothing existing is deleted, moved or re-dated; `generated_until = horizon`. `active` and `paused` definitions generate, `ended` ones do not. A local installment with `total_amount` gets `amount_override = last_period_override(...)` on the instance whose `seq == times`, whenever it is generated (a 36-month loan reaches it after two years). A definition ends when its series is complete and no instance is pending **or partial** (a partial period on an ended definition revives it, D33, so the job must not end it again). Callers hold the definition lock; `generate_locked` takes the shared import key and `FOR UPDATE` itself.
+Rules (D30): generation finds the latest instance by `rule_date` (any status) and inserts the next occurrences strictly after it (occurrence 0 when none), `seq` = previous maximum + 1 (`first_seq` for the first), while `seq ≤ times`, `date ≤ end_date`, `date ≤ horizon(today)`; an occurrence equal to a **posted** instance's `due_date` is passed over without consuming a seq; nothing existing is deleted, moved or re-dated; `generated_until = horizon`. `active` and `paused` definitions generate, `ended` ones do not, and neither does a definition with `review_reason = interval_mismatch` (an imported period whose rule did not match MOZE's dates carries an invented rule; resuming it must not post invented dates). A local installment with `total_amount` gets `amount_override = last_period_override(...)` on the instance whose `seq == times`, whenever it is generated (a 36-month loan reaches it after two years). A definition ends when its series is complete and no instance is pending **or partial** (a partial period on an ended definition revives it, D33, so the job must not end it again). Callers hold the definition lock; `generate_locked` takes the shared import key and `FOR UPDATE` itself.
 
 - [ ] 6.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_generation.py`:
 
@@ -2678,8 +2685,8 @@ def _rule(definition: ScheduleDefinition) -> tuple:
 
 def generate(db: Session, definition: ScheduleDefinition, today: date) -> int:
     """Insert the next occurrences up to horizon(today); returns how many instances were created."""
-    if definition.status == "ended":
-        return 0
+    if definition.status == "ended" or definition.review_reason == "interval_mismatch":
+        return 0  # an interval_mismatch import carries an invented rule (seqs by position): never roll it forward
     limit = rules.horizon(today)
     anchor, unit, n, day_of_month = _rule(definition)
     latest = _latest(db, definition.id)
@@ -6369,7 +6376,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Model:** sonnet
 
 **Files:**
-- Modify: `services/accounting-service/app/schemas/ledger.py` (`EntryScheduleOut`, `ScheduleAmountOut`, `LoanScheduleOut`; `EntryOut.schedule`; `EntryDetailOut.loan_schedule`)
+- Modify: `services/accounting-service/app/schemas/ledger.py` (`EntryScheduleOut`, `CurrencyAmountOut` moved here from `schedules.py`, `LoanScheduleOut`; `EntryOut.schedule`; `EntryDetailOut.loan_schedule`)
+- Modify: `services/accounting-service/app/schemas/schedules.py` (imports `CurrencyAmountOut` from `.ledger` instead of defining it)
 - Modify: `services/accounting-service/app/services/ledger_service.py` (`_entry_rows`, `get_entry_detail`)
 - Test: `services/accounting-service/tests/integration/test_schedule_links.py`
 
@@ -6377,7 +6385,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Consumes: `schedule_read.schedule_links`, `schedule_read.loan_schedule_for` (Task 9).
 - Produces: every `EntryOut` (lists, passbook, detail, write responses) carries `schedule` (`EntryScheduleOut | None`); `EntryDetailOut.loan_schedule` (`LoanScheduleOut | None`) for receivable / payable originals (rows with `open_amount` not null).
 
-Rules: `schedule_read` imports `ledger_service`, so `ledger_service` imports it inside the two functions (no module-level cycle). One `@>` query per page (D40).
+Rules: `schedule_read` imports `ledger_service`, so `ledger_service` imports it inside the two functions (no module-level cycle). One `@>` query per `_entry_rows` call (D40). `get_entry_detail` calls `_entry_rows` for the entry itself and for each nested list (children, group members, settles, settled_by, refunds, rewards …), so one detail issues about nine small `schedule_links` lookups, each an indexed `posted_entry_ids @> …` probe on the GIN index; this is accepted (a detail is one entry, not a page) rather than threading one combined lookup through every nested call. One amount model: `CurrencyAmountOut` lives in `schemas/ledger.py` (`schemas/writes.py` imports `ledger.py` and `schedules.py` imports `writes.py`, so `ledger.py` cannot import `schedules.py`) and `schedules.py` imports it; no second `{currency, amount}` model.
 
 - [ ] 14.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_links.py`:
 
@@ -6486,7 +6494,7 @@ class EntryScheduleOut(BaseModel):
     posted_entry_ids: list[int]
 
 
-class ScheduleAmountOut(BaseModel):
+class CurrencyAmountOut(BaseModel):
     currency: str
     amount: Decimal
 
@@ -6499,11 +6507,13 @@ class LoanScheduleOut(BaseModel):
     posted_count: int
     times: int | None
     next_due_date: date | None
-    next_amount: list[ScheduleAmountOut]
+    next_amount: list[CurrencyAmountOut]
     remaining: Decimal | None
     repaid: Decimal | None
     needs_check: bool
 ```
+
+  In `services/accounting-service/app/schemas/schedules.py` delete the `class CurrencyAmountOut(BaseModel): …` block (Task 5) and add `from .ledger import CurrencyAmountOut` below `from .writes import …` (the name and fields are unchanged, so `DefinitionOut.next_amount` and `InstanceOut.totals` keep their shape).
 
   add as the last field of `EntryOut`: `schedule: EntryScheduleOut | None = None`; add as the last field of `EntryDetailOut`: `loan_schedule: LoanScheduleOut | None = None`.
 
@@ -6543,7 +6553,7 @@ Expected: `4 passed`; then the same pass count as before, 0 failed.
 
 ```bash
 cd /home/opc/workspace/home-hub-schedules
-git add services/accounting-service/app/schemas/ledger.py services/accounting-service/app/services/ledger_service.py \
+git add services/accounting-service/app/schemas/ledger.py services/accounting-service/app/schemas/schedules.py services/accounting-service/app/services/ledger_service.py \
   services/accounting-service/tests/integration/test_schedule_links.py
 git commit -m "feat(accounting): entries carry their schedule period; loans carry their schedule summary
 
@@ -6567,7 +6577,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Produces: `schedule_job.TRIGGERS`, `due_instances`, `run`, `is_enabled`, `build_scheduler`, `start`, `stop`, `trigger_after_import`, `main`, `_after_run(engine, report, scheduler=None)`, `_retry(engine, day)`, job ids `schedule_daily`, `schedule_startup`, `schedule_retry`, `schedule_import`; route `POST /schedules/run-now` → `RunReportOut`.
 
 Rules (D34, spec "Daily schedule job", "Run-now endpoint"):
-- `run(engine, trigger, *, today=None, dry_run=False)`: `pg_try_advisory_lock(SCHEDULE_JOB_LOCK_KEY)` on a dedicated connection (held → `status = "busy"`, nothing done; released in `finally`); generation, one transaction per non-ended definition (each takes the shared import key; refused → stop with `import_running`); then post `due_instances` (pending, `due_date ≤ today`, `due_date ≥ auto_post_from`, `reopened_at IS NULL`, definition `active` and `auto`, ordered `due_date, definition_id, seq`), each in its own transaction with `actor = "auto"`, `job=True` (SKIP LOCKED and eligibility re-checked under the lock); `import_running` stops the run; a `ValidationError` (or any unexpected error, logged by class) records `last_error` and stops that definition's later instances for this run; a `ConflictError` (someone else posted / skipped it) moves on. Report `{trigger, today (ISO), status (completed | busy | import_running | dry_run), generated, posted [ids], failed [ids], stopped_definitions [ids]}` — logged as counts and ids.
+- `run(engine, trigger, *, today=None, dry_run=False)`: `pg_try_advisory_lock(SCHEDULE_JOB_LOCK_KEY)` on a dedicated connection (held → `status = "busy"`, nothing done; released in `finally`); generation, one transaction per non-ended definition (each takes the shared import key; refused → stop with `import_running`); then post `due_instances` (pending, `due_date ≤ today`, `due_date ≥ auto_post_from`, `reopened_at IS NULL`, definition `active` and `auto`, ordered `due_date, definition_id, seq`), each in its own transaction with `actor = "auto"`, `job=True` (SKIP LOCKED and eligibility re-checked under the lock); `import_running` stops the run; a `ValidationError` (or any unexpected error, logged by class) records `last_error` and stops that definition's later instances for this run; a `ConflictError` (someone else posted / skipped it) or a `NotFoundError` (the period was deleted by `end` or a definition `PUT` after `due_instances` read it) moves on without recording anything; `EditLockedError` is treated as a failure (recorded, stops the definition). Report `{trigger, today (ISO), status (completed | busy | import_running | dry_run), generated, posted [ids], failed [ids], stopped_definitions [ids]}` — logged as counts and ids.
 - `--dry-run`: one session, generation and posting inside savepoints, everything rolled back; status `dry_run`; prints the report.
 - Scheduler: `BackgroundScheduler(timezone="Asia/Taipei")`, `CronTrigger(hour=0, minute=5)` with `coalesce=True`, `max_instances=1`, `misfire_grace_time=3600`; a one-off run 10 s after start; after a run ending `busy` / `import_running` (or crashing), an `IntervalTrigger(minutes=10)` retry job that removes itself once a run completes or the Taipei day changes; `trigger_after_import` adds a one-off run now (the importer calls it after releasing its lock, Task 18). Started from `app.main` on startup when `is_enabled()`, stopped on shutdown.
 - `run-now`: 409 `import_running` when an import holds the key, 409 when the job lock is held (`busy`); otherwise HTTP 200 with the report (an import that starts mid-run ends it with `status = import_running` and the partial counts).
@@ -6687,6 +6697,7 @@ from app.models import LedgerEntry, ScheduleDefinition, ScheduleInstance
 from app.schemas.schedules import DefinitionIn
 from app.services import schedule_job, schedule_read, schedule_service
 from app.services import schedule_posting as posting
+from app.services.errors import NotFoundError
 from app.services.moze_import_service import IMPORT_LOCK_KEY
 from app.services.schedule_locks import SCHEDULE_JOB_LOCK_KEY
 
@@ -6882,6 +6893,22 @@ def test_run_now_refused_while_an_import_runs(client, db_session, pg_engine):
     assert (response.status_code, response.json()["message"]) == (409, "import_running")
 
 
+def test_a_period_deleted_mid_run_is_passed_over(db_session, seed, card, pg_engine, monkeypatch):
+    # end / a definition PUT may delete a period between due_instances and its post: not a failure.
+    netflix = seed.definition([seed.line("expense", card, "390")])
+    gone = seed.instance(netflix, 1, date(2026, 10, 22))
+    db_session.commit()
+
+    def deleted_meanwhile(db, instance_id, **kwargs):
+        raise NotFoundError(f"schedule instance {instance_id} not found")
+
+    monkeypatch.setattr(posting, "post_instance", deleted_meanwhile)
+    report = schedule_job.run(pg_engine, "cron", today=date(2026, 10, 22))
+
+    assert (report["failed"], report["stopped_definitions"]) == ([], [])
+    assert _row(db_session, gone.id).last_error is None
+
+
 def test_run_now_needs_the_bearer_token_when_api_tokens_are_set(client, db_session, monkeypatch):
     # #42 / design D42: run-now sits behind ApiTokenMiddleware like every other route.
     monkeypatch.setenv("ACCOUNTING_API_TOKENS", "test:synthetic-token-1")
@@ -7054,10 +7081,12 @@ def _post_due(factory, today: date, report: dict) -> None:
                 report["failed"].append(instance_id)
                 stopped.add(definition_id)
                 continue
-            except ConflictError:
-                db.rollback()  # the owner posted or skipped it meanwhile
+            except (ConflictError, NotFoundError):
+                db.rollback()  # the owner posted or skipped it meanwhile, or end / a definition PUT deleted it
                 continue
             except Exception as exc:  # noqa: BLE001 — one broken period must not stop the other schedules
+                # EditLockedError lands here on purpose: the job posts with check_cutover_lock=False, so a cutover
+                # refusal means a period entry is a MOZE row — recorded as a failure that stops the definition.
                 db.rollback()
                 logger.exception(
                     "schedule_job.post_error", extra={"instance_id": instance_id, "error_class": exc.__class__.__name__}
@@ -7268,7 +7297,7 @@ def run_now(engine: Engine = Depends(get_engine)):
 
 - [ ] 15.9 Run 15.5 again.
 
-Expected: `5 passed` (unit) and `14 passed` (integration), 19 in all.
+Expected: `5 passed` (unit) and `15 passed` (integration), 20 in all.
 
 - [ ] 15.10 Confirm the CLI parses (no database call with `--help`).
 
@@ -7309,8 +7338,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 Rules (D37, spec "Schedule definitions and instances from the backup"; this module touches no database):
 - Records of type 0–6 and 15 whose `eventID` names an `AHPeriod` / `AHInstallment` belong to it (past and future). An **enabled future** record of those types without a known `eventID` becomes a single definition (`moze_id = "record:" + identifier`, `times = 1`); an unknown `eventID` is also listed under `review` as `event_missing`. Enabled future type-14 records count as `rewards_ignored`; enabled future records of any other type count under `unsupported_types` (by type, as a string) and are ignored. `records_mapped` counts every enabled future record assigned to a definition (both legs of a transfer, repayment and interest), so `records_mapped + rewards_ignored + Σ unsupported_types` = the enabled future records.
 - `record_groups`: a transfer's in-leg joins its out-leg (by `AHTransfer`), a type-15 record joins the type-5/6 record of the same `packageID` on the same date; the group's first record is the primary (`moze_id` of the instance).
-- `AHPeriod`: `anchor_date` = the earliest group's date, `first_seq` 1; `unit` 1 → `week` (`days` must equal `moze_weekday(anchor)`, 1 = Sunday … 7 = Saturday), `unit` 2 → `month` with `day_of_month = days` (the anchor's day must equal `days` clamped to its month); `times` 0 → `None`; `startDate` must be an occurrence; any other unit or failed check → `review_reason = interval_mismatch` (and the definition goes under `review`). Seq = 1 + occurrence index from the anchor; for a mismatched definition every instance takes its position (1, 2, …) instead.
+- `AHPeriod`: `anchor_date` = the earliest group's date, `first_seq` 1; `unit` 1 → `week` (`days` must equal `moze_weekday(anchor)`, 1 = Sunday … 7 = Saturday), `unit` 2 → `month` with `day_of_month = days` (the anchor's day must equal `days` clamped to its month); `times` 0 → `None`; `startDate` must be an occurrence; `type` 1 must come with a transfer primary record and `type` 0 with a non-transfer one; any other unit or failed check → `review_reason = interval_mismatch` (and the definition goes under `review`). Seq = 1 + occurrence index from the anchor; for a mismatched definition every instance takes its position (1, 2, …) instead (Task 6 never generates for an `interval_mismatch` definition, so that invented rule never rolls forward). A finite period's `times` is capped at its highest mapped seq: MOZE pre-generates a finite series, and when MOZE deleted early records the seqs (counted from the earliest record left) end below `times`, so HomeHub must not generate periods past MOZE's last record (Task 28.5 confirms the record counts).
 - `AHInstallment`: `kind = installment` (`recurring` when `times < 2`), `interval_unit = month`, `day_of_month = dayOfMonth`, `anchor_date = dateInfo[0]`, `times`, `total_amount = |total|` (None when 0), `remainder = |remainder|`; `dateInfo[k]` must equal `add_months(anchor, k, dayOfMonth)`, else `interval_mismatch`; lines from the earliest group whose primary is type 6 or 0; seq = 1-based position of the date in `dateInfo` (a date outside it → `review` `interval_mismatch`, not mapped).
+- Template lines come from the first group, plus one line for each record kind a later group carries more often (`_union_lines`; a first package without its interest record still yields an interest line, and that period's interest amount is `"0"`); amounts stay per instance, so no later amount is dropped. (The template's per-line amount stays the first group's, as D37 says; the owner may prefer the latest price — listed in Known Spec Conflicts.)
+- `past_singles`: every past record of a supported type without a known definition is also returned as a `record:<id>` single (past instance); it is an ordinary entry unless an earlier import created that `record:<id>` definition, which the importer checks (Task 17 `merge_known_past_singles`).
 - Lines: transfer group → one `transfer` line (out-leg account and `|total|`, in-leg account and `|total|` as `to_account` / `to_amount`); otherwise one line per record (`MOZE_LINE_KINDS`), `related` = `relatedID` on repayment / collection lines. Instance amounts: `|total|` per line matched by kind, `"0"` for a missing member. Name: the primary's `name`, else its classification's (or category's) name, else `週期` / `分期` / `單筆`. Two groups of one definition on the same date → the second is listed under `review` as `same_date` and not mapped.
 
 - [ ] 16.1 Add the builders. In `services/accounting-service/tests/conftest.py`, below `_bk_package`, add
@@ -7529,6 +7560,54 @@ def test_counts_add_up_to_the_enabled_future_records(backup):
     assert (result.records_mapped, result.rewards_ignored, dict(result.unsupported_types)) == (1, 1, {"7": 1})
     assert [definition.moze_id for definition in result.definitions] == ["record:R-GONE"]
     assert {"moze_id": "R-GONE", "reason": "event_missing"} in result.review
+    # The past record stays an ordinary entry, but is offered as a past single (the importer keeps it only when an
+    # earlier import made it a record:R-PAST definition); the disabled future one is neither.
+    assert [(definition.moze_id, definition.instances[0].past) for definition in result.past_singles] == [
+        ("record:R-PAST", True),
+    ]
+
+
+def test_a_later_package_kind_joins_the_template(backup):
+    # The first package lacks its interest record: the template still gets an interest line, so the later
+    # interest amounts are posted, and the first period's interest is "0".
+    dates = [f"{rules.add_months(date(2026, 10, 9), k).isoformat()}T00:00:00" for k in range(3)]
+    data = backup.data(
+        accounts=_accounts(backup),
+        installments=[backup.installment("INS-1", dates=dates, times=3, total=25000)],
+        records=[
+            _rec(backup, "R-REP1", "2026-11-09", type_=6, price=-8333, eventID="INS-1", packageID="PK-1", relatedID="R-LOAN"),
+            _rec(backup, "R-REP2", "2026-12-09", type_=6, price=-8333, eventID="INS-1", packageID="PK-2", relatedID="R-LOAN"),
+            _rec(backup, "R-INT2", "2026-12-09", type_=15, price=-612, eventID="INS-1", packageID="PK-2"),
+        ],
+    )
+    [definition] = map_schedules(data).definitions
+    assert [line.kind for line in definition.lines] == ["repayment", "interest"]
+    assert [item.amounts for item in definition.instances] == [["8333", "0"], ["8333", "612"]]
+
+
+def test_period_type_must_match_its_records(backup):
+    # Spec: an AHPeriod of type 1 generates transfers, type 0 ordinary records; a disagreement is reviewed.
+    data = backup.data(
+        accounts=_accounts(backup),
+        periods=[backup.period("PER-X", unit=2, days=3, type_=1, start="2026-11-03T00:00:00")],
+        records=[_rec(backup, "R-NOV", "2026-11-03", eventID="PER-X")],
+    )
+    result = map_schedules(data)
+    assert result.definitions[0].review_reason == "interval_mismatch"
+    assert {"moze_id": "PER-X", "reason": "interval_mismatch"} in result.review
+
+
+def test_finite_period_never_runs_past_its_last_record(backup):
+    # MOZE deleted the first three records of a 12-time series: the 9 left are seqs 1–9, so times becomes 9 and
+    # HomeHub never generates the three phantom periods after MOZE's real end.
+    days = [rules.add_months(date(2026, 11, 3), k) for k in range(9)]
+    data = backup.data(
+        accounts=_accounts(backup),
+        periods=[backup.period("PER-F", unit=2, days=3, times=12, start="2026-11-03T00:00:00")],
+        records=[_rec(backup, f"R-{k}", day.isoformat(), eventID="PER-F") for k, day in enumerate(days)],
+    )
+    [definition] = map_schedules(data).definitions
+    assert (definition.times, [item.seq for item in definition.instances][-1]) == (9, 9)
 
 
 def test_same_date_records_are_reviewed(backup):
@@ -7684,6 +7763,10 @@ class MapResult:
     rewards_ignored: int = 0
     unsupported_types: Counter = field(default_factory=Counter)
     review: list[dict] = field(default_factory=list)
+    # Past records without a definition, as `record:<id>` singles. Ordinary entries — unless HomeHub already holds
+    # that record:<id> definition (a single future record of an earlier import that has turned past); the importer
+    # keeps only those (schedule_import.merge_known_past_singles).
+    past_singles: list[MappedDefinition] = field(default_factory=list)
 
 
 def _abs(value) -> str:
@@ -7754,6 +7837,26 @@ def _lines(group: list[dict]) -> list[MappedLine]:
         )
         for record in group
     ]
+
+
+def _union_lines(groups: list[list[dict]]) -> list[MappedLine]:
+    """Template lines of the first group, plus a line for each record kind a later group carries more often than the
+    template (a first package without its interest record): no later amount is dropped by _amounts. A first transfer
+    without its in-leg takes the in-leg account of a later group."""
+    lines = _lines(groups[0])
+    for group in groups[1:]:
+        candidates = _lines(group)
+        for candidate in candidates:
+            if candidate.kind == "transfer":
+                first = next(line for line in lines if line.kind == "transfer")
+                if first.to_account is None and candidate.to_account is not None:
+                    first.to_account, first.to_amount = candidate.to_account, candidate.to_amount
+                continue
+            have = sum(1 for line in lines if line.kind == candidate.kind)
+            need = sum(1 for line in candidates if line.kind == candidate.kind)
+            if have < need:
+                lines.append(candidate)
+    return lines
 
 
 def _amounts(lines: list[MappedLine], group: list[dict]) -> list[str]:
@@ -7834,7 +7937,10 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
     start = period["startDate"].date() if period["startDate"] else None
     if start is not None and rules.occurrence_index(anchor, unit, 1, day_of_month, start) is None:
         review = "interval_mismatch"
-    lines = _lines(groups[0])
+    primary_is_transfer = groups[0][0]["type"] == TRANSFER_TYPE
+    if period["type"] in (0, 1) and (period["type"] == 1) != primary_is_transfer:
+        review = "interval_mismatch"  # spec: type 1 periods generate transfers, type 0 ordinary records
+    lines = _union_lines(groups)
     definition = MappedDefinition(
         moze_id=period["identifier"], kind="recurring", source="period", name=_name(groups[0], data, "週期"),
         interval_unit=unit, interval_n=1, anchor_date=anchor, day_of_month=day_of_month,
@@ -7847,6 +7953,11 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
         return None if index is None else index + 1
 
     _add_instances(definition, groups, seq_of, cutoff, result)
+    if definition.times is not None and definition.instances and definition.review_reason is None:
+        # MOZE pre-generates a finite series. Seqs count from the earliest record still in the backup, so when MOZE
+        # deleted early records the rebased seqs end below `times`: never let HomeHub generate past MOZE's last
+        # record (Task 28.5 checks every finite period's record count against its `times`).
+        definition.times = min(definition.times, max(item.seq for item in definition.instances))
     if definition.review_reason is not None:
         result.review.append({"moze_id": definition.moze_id, "reason": definition.review_reason})
     return definition
@@ -7873,7 +7984,8 @@ def _map_installment(
         source="installment", name=_name(first, data, "分期"), interval_unit="month", interval_n=1,
         anchor_date=anchor, day_of_month=day_of_month, times=installment["times"],
         total_amount=total if total > 0 else None, remainder=abs(Decimal(str(installment["remainder"]))),
-        lines=_lines(first), review_reason=review, payload=installment,
+        lines=_union_lines([first, *(group for group in groups if group is not first)]), review_reason=review,
+        payload=installment,
     )
     positions = {day: index + 1 for index, day in reversed(list(enumerate(dates)))}
     _add_instances(definition, groups, positions.get, cutoff, result)
@@ -7901,6 +8013,7 @@ def map_schedules(data: BackupData) -> MapResult:
     installments = {row["identifier"]: row for row in data.installments}
     by_event: dict[str, list[dict]] = defaultdict(list)
     singles: list[dict] = []
+    past_singles: list[dict] = []
     for record in data.records:
         enabled_future = _day(record) > cutoff and record["isEnabled"]
         if record["type"] == REWARD_TYPE:
@@ -7916,7 +8029,9 @@ def map_schedules(data: BackupData) -> MapResult:
             result.records_mapped += enabled_future
             continue
         if not enabled_future:
-            continue  # a past record without a definition is an ordinary entry
+            if _day(record) <= cutoff:
+                past_singles.append(record)  # an ordinary entry, unless HomeHub holds its record:<id> definition
+            continue
         if event:
             result.review.append({"moze_id": record["identifier"], "reason": "event_missing"})
         singles.append(record)
@@ -7931,6 +8046,7 @@ def map_schedules(data: BackupData) -> MapResult:
             result.definitions.append(mapped)
     for group in record_groups(singles, data):
         result.definitions.append(_map_single(group, data, cutoff))
+    result.past_singles = [_map_single(group, data, cutoff) for group in record_groups(past_singles, data)]
     return result
 ```
 
@@ -7942,7 +8058,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests/unit/test_moze_backup_json.py tests/integration/test_backup_replace_and_report.py tests/integration/test_backup_entries_import.py 2>&1 | tail -1
 ```
 
-Expected: `12 passed`; then the same pass counts as before this task, 0 failed.
+Expected: `15 passed`; then the same pass counts as before this task, 0 failed.
 
 - [ ] 16.7 Commit.
 
@@ -7967,12 +8083,12 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `map_schedules`, `MapResult`, `MappedDefinition`, `MappedInstance` (Task 16); `SettingsResult`, `EntryResult` (phase 2a importer); `LINE_KEYS`, `LEDGER_KINDS`, `LOAN_LINE_KINDS`, `loan_line`, `referenced_ids` (Task 5); `settlement_service.open_amount`; `generation.generate` (tests).
-- Produces: everything listed for `schedule_import.py` in the Interface Contract (`CapturedLinks`, `Covered`, `lock_schedule_rows`, `capture_links`, `covered_records`, `template_usage`, `apply_schedules`, `restore_links`, `stand_in_entry_ids`) plus `new_report(mapped) -> dict`; the summary key `schedules` of the backup import (shape in the contract). Task 18 wires `capture_links`, `covered_records`, `template_usage`, `restore_links` and `stand_in_entry_ids`; this task calls `lock_schedule_rows` and `apply_schedules` with no covered records.
+- Produces: everything listed for `schedule_import.py` in the Interface Contract (`CapturedLinks`, `Covered`, `lock_schedule_rows`, `capture_links`, `covered_records`, `template_usage`, `apply_schedules`, `restore_links`, `stand_in_entry_ids`, `new_report(mapped) -> dict`, `merge_known_past_singles`, `loan_check`); the summary key `schedules` of the backup import (shape in the contract). Task 18 wires `capture_links`, `covered_records`, `template_usage`, `restore_links` and `stand_in_entry_ids` and moves `loan_check` after `restore_links`; this task calls `lock_schedule_rows`, `merge_known_past_singles`, `apply_schedules` with no covered records, then `loan_check`.
 
 Rules (D37, spec "Schedule definitions and instances from the backup", "Transactional full replace and report"):
 - New imported definitions: `created_locally = false`, `status = active` (`paused` with a `review_reason`), `posting_mode = auto`, `auto_post_from` = the import's Taipei date (`ledger_service._today()`), `first_seq = 1`, `moze_payload` = the raw row. Lines resolve MOZE ids through `SettingsResult` (accounts, categories — kept only when of the line's ledger kind —, projects, counterparties) and the inserted entries (`loan_entry_id` from the repayment's `relatedID`; missing → `review_reason = loan_missing`, listed under `review`); `to_amount` only for cross-currency transfers; an unknown account → `account_missing` under `review`, definition not written.
 - Re-import: upsert by `moze_id`; rule, template, name, times, total and payload refreshed; `posting_mode`, `auto_post_from`, `first_seq` kept; a review reason new in this import pauses (unless ended), a resolved one is cleared without touching `status`.
-- Instances: matched by `moze_id`, then by any of `moze_record_ids`, then adopted (no `moze_id`, `rule_date` = the record date, else `due_date`): an adopted row gets `moze_id` and `moze_record_ids`, and its override when pending and not owner-edited. New rows: disabled → `skipped` (`acted_by = import`, `acted_at` = import start); past with imported entries → `posted` (`acted_by = import`); past without entries → `skipped`; future → `pending` (not created for an `ended` definition); a seq already used → `review` `seq_conflict`, record not mapped. Existing pending rows: owner-edited → kept (`kept_owner_edited`); record now past or disabled → recomputed as above; else the override is refreshed (`updated` when it changed, else `kept`) and the dates are left alone (a moved period keeps its `due_date`). `acted_by = import` rows are recomputed from the new entries. Rows posted by `auto` / `owner` and rows skipped by anyone but `import` are kept. Imported pending rows absent from the backup are deleted unless owner-edited; rows without `moze_id` are never deleted. An imported definition absent from the backup ends (pending rows deleted) when it has history, else it is deleted. Local definitions are never touched here.
+- Instances: matched by `moze_id`, then by any of `moze_record_ids`, then adopted (no `moze_id`, `rule_date` = the record date, else `due_date`): an adopted row gets `moze_id` and `moze_record_ids`, and its override when pending and not owner-edited. New rows: disabled → `skipped` (`acted_by = import`, `acted_at` = import start); past with imported entries → `posted` (`acted_by = import`); past without entries → `skipped`; future → `pending` (not created for an `ended` definition); a seq already used → `review` `seq_conflict`, record not mapped. Existing pending rows: owner-edited → kept (`kept_owner_edited`); record now past or disabled → recomputed as above; else the override is refreshed and, for a row matched by its `moze_id` (not adopted in this import), `rule_date` / `due_date` follow MOZE's date unless another posted instance already holds that day (`updated` when anything changed, else `kept`); a row adopted in this import keeps its dates (spec "Moved period adopted"; an owner-moved row is owner-edited anyway). A status leaving `pending` clears `last_error`, `last_error_at`, `reopened_at` and `note`. `acted_by = import` rows are recomputed from the new entries — also those whose record left the backup (no entries left → `skipped`, `acted_by = import`), in a present definition and in an absent one. When the template changes, every instance's `amount_override` is realigned with `realign_override` (owner-edited and posted rows included). A definition whose lines cannot resolve (`account_missing`) keeps its template untouched but its instances are still recomputed. A MOZE period with no enabled future record left (not live: cancelled or finished in MOZE) is `ended` and its pending rows deleted, so HomeHub never generates or auto-posts after MOZE stopped. Rows posted by `auto` / `owner` and rows skipped by anyone but `import` are kept. Imported pending rows absent from the backup are deleted unless owner-edited; rows without `moze_id` are never deleted. An imported definition absent from the backup ends (pending rows deleted) when it has history, else it is deleted. Local definitions are never touched here.
 - `skipped_future` counts only enabled future records; disabled future records are counted under `disabled_skipped` (so `Σ skipped_future = records_mapped + rewards_ignored + Σ unsupported_types`).
 
 - [ ] 17.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_import_apply.py`:
@@ -8036,7 +8152,8 @@ def test_imported_definitions_start_active_and_automatic(db_session, backup, tod
         accounts=_accounts(backup),
         periods=[backup.period("PER-W", unit=1, days=2, start="2026-09-21T00:00:00")],
         installments=[backup.installment("INS-1", dates=dates, times=3, total=300)],
-        records=[_rec(backup, "R-1", "2026-09-21", eventID="PER-W"), _rec(backup, "R-2", "2026-11-09", eventID="INS-1")],
+        records=[_rec(backup, "R-1", "2026-09-21", eventID="PER-W"), _rec(backup, "R-3", "2026-10-05", eventID="PER-W"),
+                 _rec(backup, "R-2", "2026-11-09", eventID="INS-1")],
     )
     summary = _import_backup(db_session, data)
     for moze_id in ("PER-W", "INS-1"):
@@ -8206,7 +8323,9 @@ def test_new_review_reason_pauses_and_a_resolved_one_clears(db_session, seed, ba
         accounts=_accounts(backup),
         periods=[backup.period("PER-A", unit=1, days=3, start="2026-09-21T00:00:00"),
                  backup.period("PER-B", unit=1, days=2, start="2026-09-21T00:00:00")],
-        records=[_rec(backup, "A-1", "2026-09-21", eventID="PER-A"), _rec(backup, "B-1", "2026-09-21", eventID="PER-B")],
+        records=[_rec(backup, "A-1", "2026-09-21", eventID="PER-A"), _rec(backup, "B-1", "2026-09-21", eventID="PER-B"),
+                 # one enabled future record each: both periods are live (a period without one imports ended)
+                 _rec(backup, "A-2", "2026-10-05", eventID="PER-A"), _rec(backup, "B-2", "2026-10-05", eventID="PER-B")],
     )
 
     _import_backup(db_session, data)
@@ -8272,10 +8391,105 @@ def test_imported_definition_absent_from_the_backup_ends_or_is_deleted(db_sessio
 
     with_history = _definition(db_session, "PER-H")
     assert with_history.status == "ended"
-    assert [row.status for row in _instances(db_session, with_history)] == ["posted"]
+    # H-1 was posted by the import; its record left the backup with the period, so it is recomputed: skipped.
+    assert [(row.status, row.acted_by, row.posted_entry_ids) for row in _instances(db_session, with_history)] == [
+        ("skipped", "import", []),
+    ]
     assert _definition(db_session, "PER-F") is None
     assert summary["schedules"]["definitions"]["recurring"]["ended"] == 1
     assert summary["schedules"]["definitions"]["recurring"]["deleted"] == 1
+
+
+def test_import_row_whose_record_left_the_backup_becomes_skipped(db_session, backup, today):
+    # Spec: acted_by = import instances are recomputed from the newly imported entries; none left → skipped / import.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _weekly(backup))
+    first = _instances(db_session, _definition(db_session, "PER-W"))[0]
+    assert (first.status, first.acted_by) == ("posted", "import")
+
+    _import_backup(db_session, _weekly(backup, days=WEEKLY[1:]))
+
+    db_session.expire_all()
+    row = db_session.get(ScheduleInstance, first.id)
+    assert (row.status, row.acted_by, row.posted_entry_ids) == ("skipped", "import", [])
+    assert _by_moze_id(db_session, "R-2026-09-21") is None
+
+
+def test_template_change_realigns_kept_overrides(db_session, backup, today):
+    # Global constraint: overrides stay aligned with the template's lines — an owner-edited row included.
+    today(date(2026, 10, 3))
+    dates = [f"{rules.add_months(date(2026, 10, 9), k).isoformat()}T00:00:00" for k in range(3)]
+
+    def data(with_interest):
+        records = [
+            _rec(backup, "R-LOAN", "2026-09-01", type_=4, price=25000, target="T-BANK"),
+            _rec(backup, "R-REP1", "2026-11-09", type_=6, price=-8333, eventID="INS-1", packageID="PK-1",
+                 relatedID="R-LOAN", target="T-BANK"),
+            _rec(backup, "R-REP2", "2026-12-09", type_=6, price=-8333, eventID="INS-1", packageID="PK-2",
+                 relatedID="R-LOAN", target="T-BANK"),
+        ]
+        if with_interest:
+            records.append(_rec(backup, "R-INT1", "2026-11-09", type_=15, price=-612, eventID="INS-1", packageID="PK-1"))
+        return backup.data(
+            accounts=_accounts(backup), targets=[backup.target("T-BANK", "範例銀行")],
+            installments=[backup.installment("INS-1", dates=dates, times=3, total=25000)], records=records,
+        )
+
+    _import_backup(db_session, data(False))
+    edited = _instances(db_session, _definition(db_session, "INS-1"))[1]
+    edited.amount_override, edited.edited_by_owner = ["9000"], True
+    db_session.commit()
+
+    _import_backup(db_session, data(True))
+
+    db_session.expire_all()
+    assert [line["kind"] for line in _definition(db_session, "INS-1").template["lines"]] == ["repayment", "interest"]
+    row = db_session.get(ScheduleInstance, edited.id)
+    assert (row.amount_override, row.edited_by_owner, row.status) == (["9000", "612"], True, "pending")
+
+
+def test_pending_imported_row_follows_moze_and_clears_failure_marks(db_session, backup, today):
+    # Spec: pending imported instances are refreshed unless owner-edited — MOZE's new date included; a period MOZE
+    # now marks disabled is skipped and no longer shows the failure it had while pending.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _weekly(backup))
+    rows = _instances(db_session, _definition(db_session, "PER-W"))
+    waiting, failing = rows[2], rows[3]
+    failing.last_error, failing.last_error_at = "lines[0].account_id: 帳戶已封存", datetime(2026, 10, 3, tzinfo=timezone.utc)
+    db_session.commit()
+    extra = [
+        _rec(backup, "R-2026-10-05", "2026-10-06", eventID="PER-W"),  # MOZE moved this period by a day
+        _rec(backup, "R-2026-10-12", "2026-10-12", eventID="PER-W", isEnabled=False),
+    ]
+
+    _import_backup(db_session, _weekly(backup, days=WEEKLY[:2], extra=extra))
+
+    db_session.expire_all()
+    moved = db_session.get(ScheduleInstance, waiting.id)
+    assert (moved.rule_date, moved.due_date, moved.status) == (date(2026, 10, 6), date(2026, 10, 6), "pending")
+    dropped = db_session.get(ScheduleInstance, failing.id)
+    assert (dropped.status, dropped.acted_by, dropped.last_error, dropped.last_error_at) == ("skipped", "import", None, None)
+
+
+def test_interval_mismatch_definition_never_generates(db_session, backup, today):
+    # An off-rule import is paused with seqs by position; generation must not roll that invented rule forward.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _weekly(backup, weekday=3))  # MOZE says Tuesday, the records fall on Mondays
+    definition = _definition(db_session, "PER-W")
+    assert (definition.status, definition.review_reason) == ("paused", "interval_mismatch")
+    assert generation.generate(db_session, definition, date(2026, 10, 3)) == 0
+    assert len(_instances(db_session, definition)) == 4
+
+
+def test_period_without_future_records_imports_ended(db_session, backup, today):
+    # Spec maps each live AHPeriod: one with no enabled future record (cancelled or finished in MOZE) ends.
+    today(date(2026, 10, 3))
+    summary = _import_backup(db_session, _weekly(backup, days=WEEKLY[:2]))
+    definition = _definition(db_session, "PER-W")
+    assert definition.status == "ended"
+    assert [row.status for row in _instances(db_session, definition)] == ["posted", "posted"]
+    assert generation.generate(db_session, definition, date(2026, 10, 3)) == 0
+    assert summary["schedules"]["definitions"]["recurring"]["ended"] == 1
 ```
 
 - [ ] 17.2 Run it.
@@ -8284,7 +8498,7 @@ def test_imported_definition_absent_from_the_backup_ends_or_is_deleted(db_sessio
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_import_apply.py
 ```
 
-Expected: 13 failures (`KeyError: 'schedules'` / `AttributeError: 'NoneType' object has no attribute …`).
+Expected: 18 failures (`KeyError: 'schedules'` / `AttributeError: 'NoneType' object has no attribute …`).
 
 - [ ] 17.3 Create `services/accounting-service/app/services/schedule_import.py`:
 
@@ -8309,7 +8523,7 @@ from ..models import Category, LedgerEntry, ScheduleDefinition, ScheduleInstance
 from . import settlement_service
 from .schedule_import_map import MapResult, MappedDefinition, MappedInstance
 from .schedule_rules import plain
-from .schedule_templates import LEDGER_KINDS, LINE_KEYS, LOAN_LINE_KINDS, loan_line, referenced_ids
+from .schedule_templates import LEDGER_KINDS, LINE_KEYS, LOAN_LINE_KINDS, loan_line, realign_override, referenced_ids
 
 BUCKETS = {"period": "recurring", "installment": "installment", "single": "single"}
 INSTANCE_COUNTERS = (
@@ -8364,6 +8578,19 @@ def lock_schedule_rows(session: Session) -> None:
     """D32: before any entry is deleted, every definition, then every instance, FOR UPDATE by ascending id."""
     session.execute(select(ScheduleDefinition.id).order_by(ScheduleDefinition.id).with_for_update()).all()
     session.execute(select(ScheduleInstance.id).order_by(ScheduleInstance.id).with_for_update()).all()
+
+
+def merge_known_past_singles(session: Session, mapped: MapResult) -> None:
+    """A past record without a definition is an ordinary entry — unless HomeHub holds its `record:<id>` definition
+    (a single future record mapped by an earlier import, posted or skipped by HomeHub since). Those join
+    mapped.definitions, so covered_records keeps HomeHub's booking (the record is not imported twice) and
+    apply_schedules neither ends the definition nor loses the period (spec "Record mapping")."""
+    if mapped.past_singles:
+        known = set(
+            session.scalars(select(ScheduleDefinition.moze_id).where(ScheduleDefinition.moze_id.like("record:%")))
+        )
+        mapped.definitions.extend(item for item in mapped.past_singles if item.moze_id in known)
+    mapped.past_singles = []
 
 
 def capture_links(session: Session) -> CapturedLinks:
@@ -8491,6 +8718,28 @@ def _resolve_lines(
     return lines, reason
 
 
+def _clear_pending_marks(row: ScheduleInstance) -> None:
+    """A period MOZE booked or dropped no longer shows a failure, a reopen or a delete note from its pending days."""
+    row.last_error, row.last_error_at, row.reopened_at, row.note = None, None, None, None
+
+
+def _recompute_import_row(row: ScheduleInstance, entries, started_at: datetime) -> bool:
+    """Spec: an `acted_by = import` instance is recomputed from the newly imported entries; with none left it becomes
+    `skipped` (acted_by import). Used for rows whose record left the backup (no mapped item). True when changed."""
+    entry_ids = [entries.entries[record_id].id for record_id in row.moze_record_ids or [] if record_id in entries.entries]
+    if entry_ids:
+        if row.status == "posted" and row.posted_entry_ids == entry_ids:
+            return False
+        row.status, row.posted_entry_ids, row.is_partial = "posted", entry_ids, False
+    else:
+        if row.status == "skipped" and not row.posted_entry_ids:
+            return False
+        row.status, row.posted_entry_ids, row.is_partial = "skipped", [], False
+    row.acted_at = started_at
+    _clear_pending_marks(row)
+    return True
+
+
 def _moze_status(row: ScheduleInstance, mapped: MappedInstance, entries, started_at: datetime) -> str:
     """Set the status MOZE gives the period: skipped (disabled, or past without an imported entry), posted (past,
     imported), pending (future)."""
@@ -8498,10 +8747,12 @@ def _moze_status(row: ScheduleInstance, mapped: MappedInstance, entries, started
     if not mapped.enabled or (mapped.past and not entry_ids):
         row.status, row.posted_entry_ids, row.is_partial = "skipped", [], False
         row.acted_at, row.acted_by = started_at, "import"
+        _clear_pending_marks(row)
         return "skipped"
     if mapped.past:
         row.status, row.posted_entry_ids, row.is_partial = "posted", entry_ids, False
         row.acted_at, row.acted_by = started_at, "import"
+        _clear_pending_marks(row)
         return "posted"
     row.status, row.posted_entry_ids, row.is_partial, row.acted_at, row.acted_by = "pending", [], False, None, None
     return "pending"
@@ -8526,6 +8777,7 @@ def _upsert_definition(session: Session, mapped: MappedDefinition, template: dic
         bucket["created"] += 1
         return definition
     changed = False
+    old_template = existing.template
     for key, value in values.items():
         current = getattr(existing, key)
         if key == "total_amount" and current is not None and value is not None:
@@ -8535,6 +8787,11 @@ def _upsert_definition(session: Session, mapped: MappedDefinition, template: dic
         if not same:
             setattr(existing, key, value)
             changed = True
+    if existing.template != old_template:
+        # Global constraint: overrides stay aligned with the template's lines on every write — owner-edited and
+        # posted rows included (their override is kept per line where the kind still matches, D35).
+        for row in session.scalars(select(ScheduleInstance).where(ScheduleInstance.definition_id == existing.id)):
+            row.amount_override = realign_override(old_template, existing.template, row.amount_override)
     if review_reason is not None and review_reason != existing.review_reason and existing.status != "ended":
         existing.status = "paused"  # a reason new in this import pauses; the owner's own status stays otherwise
     if existing.review_reason != review_reason:
@@ -8590,9 +8847,17 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
                 _moze_status(row, item, entries, started_at)
                 counters["updated"] += 1
             else:
-                # Amounts are refreshed; dates are not (a moved period keeps the owner's date, spec "Moved period adopted").
+                # Spec: pending imported instances are refreshed unless owner-edited — amounts, and for a row matched
+                # by its moze_id also the dates MOZE moved. A row adopted in this import keeps its dates (spec "Moved
+                # period adopted": the HomeHub row's rule_date matched). A new date already posted is refused.
                 changed = row.amount_override != list(item.amounts)
                 row.amount_override = list(item.amounts)
+                if not adopted and (row.rule_date, row.due_date) != (item.day, item.day):
+                    taken = any(
+                        other.id != row.id and other.status == "posted" and other.due_date == item.day for other in rows
+                    )
+                    if not taken:
+                        row.rule_date, row.due_date, changed = item.day, item.day, True
                 counters["updated" if changed else "kept"] += 1
         elif row.acted_by == "import":
             _moze_status(row, item, entries, started_at)
@@ -8604,10 +8869,28 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
         if row.moze_id is not None and row.moze_id not in mapped_ids and row.status == "pending" and not row.edited_by_owner:
             session.delete(row)
             counters["deleted"] += 1
+        elif row.moze_id not in mapped_ids and row.acted_by == "import" and _recompute_import_row(row, entries, started_at):
+            counters["updated"] += 1  # its record left the backup: recomputed from the entries now imported
     session.flush()
 
 
-def _end_absent(session: Session, seen: set[int], report: dict) -> None:
+def _end_not_live(session: Session, definition: ScheduleDefinition, mapped: MappedDefinition, report: dict) -> None:
+    """Spec maps each *live* AHPeriod: a period with no enabled future record left in the backup (cancelled or
+    finished in MOZE) is imported `ended`, so HomeHub never generates and auto-posts periods MOZE stopped."""
+    if mapped.source != "period" or any(item.enabled and not item.past for item in mapped.instances):
+        return
+    for row in session.scalars(
+        select(ScheduleInstance).where(ScheduleInstance.definition_id == definition.id, ScheduleInstance.status == "pending")
+    ):
+        session.delete(row)
+        report["instances"]["deleted"] += 1
+    if definition.status != "ended":
+        definition.status = "ended"
+        report["definitions"][BUCKETS[mapped.source]]["ended"] += 1
+    session.flush()
+
+
+def _end_absent(session: Session, seen: set[int], entries, started_at: datetime, report: dict) -> None:
     absent = session.scalars(
         select(ScheduleDefinition)
         .where(ScheduleDefinition.moze_id.is_not(None), ScheduleDefinition.created_locally.is_(False))
@@ -8620,6 +8903,13 @@ def _end_absent(session: Session, seen: set[int], report: dict) -> None:
             "single" if definition.moze_id.startswith("record:") else
             "installment" if definition.kind == "installment" else "recurring"
         ]
+        for row in session.scalars(
+            select(ScheduleInstance).where(
+                ScheduleInstance.definition_id == definition.id, ScheduleInstance.acted_by == "import"
+            )
+        ):
+            if _recompute_import_row(row, entries, started_at):
+                report["instances"]["updated"] += 1  # its records left the backup with the definition
         history = session.scalar(
             select(
                 exists().where(
@@ -8662,7 +8952,9 @@ def _amount_differs(session: Session, covered: dict[str, Covered], report: dict)
     report["past_records_amount_differs"] = {"count": len(differs), "instance_ids": differs}
 
 
-def _loan_check(session: Session, mapped: MapResult, report: dict) -> None:
+def loan_check(session: Session, mapped: MapResult, report: dict) -> None:
+    """loan_remainder_check. Runs after restore_links: until then the schedule settlements of the loans point
+    nowhere (ON DELETE SET NULL), and open_amount would ignore every repayment HomeHub posted."""
     for item in mapped.definitions:
         if item.source != "installment" or item.remainder is None:
             continue
@@ -8705,8 +8997,10 @@ def apply_schedules(
         current = existing.get(item.moze_id)
         if lines is None:
             report["review"].append({"moze_id": item.moze_id, "reason": reason})
-            if current is not None:
-                seen.add(current.id)  # keep it untouched rather than ending it
+            if current is not None and not current.created_locally:
+                seen.add(current.id)  # keep its definition and template rather than ending it …
+                # … but its instances still follow the new entries (import-posted rows, records now past)
+                _apply_instances(session, current, item, entries, started_at, report)
             continue
         if current is not None and current.created_locally:
             continue
@@ -8717,12 +9011,12 @@ def apply_schedules(
         definition = _upsert_definition(session, item, template, review_reason, current, today, report)
         seen.add(definition.id)
         _apply_instances(session, definition, item, entries, started_at, report)
-    _end_absent(session, seen, report)
+        _end_not_live(session, definition, item, report)
+    _end_absent(session, seen, entries, started_at, report)
     report["past_records_already_posted"] = sum(1 for item in covered.values() if item.status == "posted")
     report["past_records_already_skipped"] = sum(1 for item in covered.values() if item.status == "skipped")
     _amount_differs(session, covered, report)
-    _loan_check(session, mapped, report)
-    return report
+    return report  # loan_check runs after restore_links (Task 18 wiring)
 
 
 def _pause_loan_missing(definition: ScheduleDefinition, report: dict) -> None:
@@ -8807,6 +9101,7 @@ def restore_links(session: Session, captured: CapturedLinks, report: dict) -> No
     previous = _previous_moze_parts(session, data)
     mapped = map_schedules(data)
     schedule_import.lock_schedule_rows(session)  # D32: schedule rows before any entry is deleted
+    schedule_import.merge_known_past_singles(session, mapped)
     started_at = _now()
     delete_moze_entries(session)
 ```
@@ -8825,6 +9120,7 @@ def restore_links(session: Session, captured: CapturedLinks, report: dict) -> No
     schedules = schedule_import.apply_schedules(
         session, data, mapped, settings, entries, {}, started_at=started_at, today=ledger_service._today()
     )
+    schedule_import.loan_check(session, mapped, schedules)  # Task 18 moves it after restore_links
     session.flush()
 ```
 
@@ -8838,7 +9134,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests/integration/test_backup_entries_import.py tests/integration/test_backup_replace_and_report.py tests/integration/test_backup_settings_import.py tests/integration/test_backup_imports_api.py 2>&1 | tail -1
 ```
 
-Expected: `13 passed`; then the same pass counts as after Task 16, 0 failed.
+Expected: `18 passed`; then the same pass counts as after Task 16, 0 failed.
 
 - [ ] 17.6 Commit.
 
@@ -8865,8 +9161,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Produces: `moze_import_service.IMPORT_LOCK_WAIT_SEC = 30`, `IMPORT_LOCK_POLL_SEC = 0.2`, `import_lock(engine, *, wait_seconds=IMPORT_LOCK_WAIT_SEC)`; `_archive_disappeared_accounts(session, named_in_file, keep_ids=frozenset())`; `insert_entries(..., skip_ids=frozenset())`.
 
 Rules (spec "Record mapping", "Transactional full replace and report", D32, D37):
-- Order inside the ledger transaction: renames → previous parts → map → **lock schedule rows** → capture links → covered records → delete MOZE entries → settings → template usage → archive (template accounts kept) → insert entries **skipping covered records** (and their fee / reward dependants) → delete unused rows (template references count as usage) → apply schedules → restore links → stand-in ids → balance report (`moze_part` adds the schedule entries of covered posted periods on the account, posted by the cache date).
-- `import_lock`: `pg_try_advisory_lock` retried every 0.2 s for up to 30 s while only shared holders (schedule writers) hold the key; an exclusive holder (another import) is refused at once (`ImportAlreadyRunningError`) as before; still refused after 30 s.
+- Order inside the ledger transaction: renames → previous parts → map → **lock schedule rows** → merge known past singles → capture links → covered records → delete MOZE entries → settings → template usage → archive (template accounts kept) → insert entries **skipping covered records** (and their fee / reward dependants) → delete unused rows (template references count as usage) → apply schedules → restore links → **loan check** (after re-pointing, so HomeHub's repayments count in `open_amount`) → stand-in ids → balance report (`moze_part` adds the schedule entries of covered posted periods on the account, posted by the cache date).
+- `import_lock`: `pg_try_advisory_lock` retried every 0.2 s for up to 30 s while only shared holders (schedule writers) hold the key; an exclusive holder (another import) is refused at once (`ImportAlreadyRunningError`) as before; still refused after 30 s. Operator note: the daily job re-takes the shared key once per posting transaction with sub-millisecond gaps, so an import started during a long job posting loop can find the key shared on every poll and is refused after 30 s; that is accepted — run the import again once the job finishes (the README and runbook say so).
 - After a real (non-dry-run) import that succeeded, once `import_lock` has been released, `schedule_job.trigger_after_import(engine)`; a dry run never triggers it.
 
 - [ ] 18.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_import_replace.py`:
@@ -8950,6 +9246,38 @@ def test_reimport_after_local_post_keeps_schedule_entries_and_skips_the_record(d
     block = summary["schedules"]
     assert (block["past_records_already_posted"], block["past_records_amount_differs"]) == (2, {"count": 0, "instance_ids": []})
     assert Decimal(summary["accounts"][0]["moze_part"]) == Decimal("25000") - Decimal("8953")
+    # loan_check runs after restore_links: HomeHub's repayment counts, so MOZE's remainder matches (no false alarm).
+    assert [(row["moze_remainder"], row["open_amount"], row["difference"]) for row in block["loan_remainder_check"]] == [
+        ("16667", "16667", "0"),
+    ]
+
+
+def test_single_record_homehub_posted_is_not_imported_once_it_is_past(db_session, backup, today):
+    # Spec "Record mapping": a record in the moze_record_ids of an instance HomeHub posted is not imported — also
+    # for a single future record (record:<id>) that the next backup holds as a past record without an eventID.
+    today(date(2026, 10, 3))
+
+    def data(exported_at):
+        return backup.data(
+            exported_at=exported_at, accounts=[backup.account("A-WALLET", "錢包")],
+            records=[_rec(backup, "X1", "2026-10-09", name="年費")],
+        )
+
+    _import_backup(db_session, data("2026-10-01T17:00:37"))
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "X1"))
+    assert posting.post_instance(db_session, instance.id, actor="auto", job=True, today=date(2026, 10, 9)).outcome == "posted"
+    db_session.commit()
+    today(date(2026, 10, 12))
+
+    summary = _import_backup(db_session, data("2026-10-12T17:00:00"))
+
+    assert _by_moze_id(db_session, "X1") is None
+    assert len(_schedule_entries(db_session)) == 1
+    assert summary["schedules"]["past_records_already_posted"] == 1
+    definition = db_session.scalar(select(ScheduleDefinition).where(ScheduleDefinition.moze_id == "record:X1"))
+    db_session.expire_all()
+    assert (definition is not None, db_session.get(ScheduleInstance, instance.id).status) == (True, "posted")
+    assert summary["schedules"]["definitions"]["single"]["ended"] == 0
 
 
 def test_different_amount_reported(db_session, backup, today):
@@ -9168,7 +9496,7 @@ def test_the_old_schedule_listing_is_gone(client):
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_import_replace.py
 ```
 
-Expected: failures — the covered record is imported again (`_by_moze_id(db_session, "R-REP1")` is not None), the local loan link is not re-pointed, the lock test is refused at once, the trigger is never called; `test_the_old_schedule_listing_is_gone` and `test_schedule_entry_survives_a_backup_import` already pass.
+Expected: failures — the covered record is imported again (`_by_moze_id(db_session, "R-REP1")` / `"X1"` is not None), the local loan link is not re-pointed, the lock-wait test is refused at once, the trigger is never called; `test_the_old_schedule_listing_is_gone`, `test_schedule_entry_survives_a_backup_import`, `test_skipped_future_adds_up` (Task 17 already reports the counts) and `test_import_is_refused_at_once_while_another_import_runs` (an exclusive holder was already refused at once) already pass.
 
 - [ ] 18.3 Edit `services/accounting-service/app/services/moze_import_service.py`:
   - add `import time` to the imports and, below `IMPORT_LOCK_KEY = 0x4D4F5A45 …`, add
@@ -9182,12 +9510,14 @@ IMPORT_LOCK_POLL_SEC = 0.2
 
 ```python
 def _held_exclusively(conn: Connection) -> bool:
-    """Another import holds the key (exclusive); shared holders are schedule writers that finish in milliseconds."""
+    """Another import holds the key (exclusive); shared holders are schedule writers that finish in milliseconds.
+    A one-bigint advisory key shows as classid = high 32 bits (0 here), objid = low 32 bits, objsubid = 1; a two-int
+    key with the same low word has objsubid = 2 and must not be mistaken for an import."""
     return bool(
         conn.execute(
             text(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = :key "
-                "AND mode = 'ExclusiveLock' AND granted"
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 AND objid = :key "
+                "AND objsubid = 1 AND mode = 'ExclusiveLock' AND granted"
             ),
             {"key": IMPORT_LOCK_KEY},
         ).scalar_one()
@@ -9324,6 +9654,7 @@ def _moze_part(
 ```python
     mapped = map_schedules(data)
     schedule_import.lock_schedule_rows(session)  # D32: schedule rows before any entry is deleted
+    schedule_import.merge_known_past_singles(session, mapped)
     captured = schedule_import.capture_links(session)
     covered = schedule_import.covered_records(session, mapped)
     started_at = _now()
@@ -9342,6 +9673,7 @@ def _moze_part(
         session, data, mapped, settings, entries, covered, started_at=started_at, today=ledger_service._today()
     )
     schedule_import.restore_links(session, captured, schedules)
+    schedule_import.loan_check(session, mapped, schedules)  # after re-pointing: HomeHub's repayments count
     stand_ins = schedule_import.stand_in_entry_ids(session, covered)
     session.flush()
 
@@ -9379,7 +9711,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests 2>&1 | tail -2
 ```
 
-Expected: `14 passed`; the full suite `N passed`, 0 failed, with N = Task 3's count + 9 + 13 + 12 + 5 + 15 + 9 + 14 + 12 + 15 + 12 + 4 + 19 + 12 + 13 + 14 (Tasks 4–18 in order; = Task 3's count + 178).
+Expected: `15 passed`; the full suite `N passed`, 0 failed, with N = Task 3's count + 9 + 13 + 12 + 5 + 15 + 9 + 14 + 12 + 15 + 12 + 4 + 20 + 15 + 18 + 15 (Tasks 4–18 in order; = Task 3's count + 188).
 
 - [ ] 18.6 Commit.
 
@@ -9628,7 +9960,8 @@ ahead and posts due periods of `active`, `auto` definitions dated on or after th
     .venv/bin/python -m app.services.schedule_job               # run now (same as POST /schedules/run-now)
 
 Every schedule write shares the import advisory key; during a backup import (a few seconds) schedule writes answer
-HTTP 409 `import_running`. Before cutover (`ACCOUNTING_IMPORT_LOCKED` not `true`) imported definitions cannot be
+HTTP 409 `import_running`. An import waits up to 30 s for schedule writers to finish; one started during a long job
+posting loop may still be refused (`import already running`) — run it again once the job is done. Before cutover (`ACCOUNTING_IMPORT_LOCKED` not `true`) imported definitions cannot be
 edited or deleted and MOZE-booked periods cannot be reposted (409 `locked_until_cutover`); pause, resume, end, mode,
 catch-up and per-period actions work. A re-import never duplicates a period HomeHub posted or skipped
 (`schedules.past_records_already_posted` / `…_skipped` in the report) and never touches local definitions.
@@ -15618,10 +15951,36 @@ periods = doc["classes"].get("AHPeriod", [])
 print("unit", dict(Counter(row.get("unit") for row in periods)))
 print("weekly days", dict(Counter(row.get("days") for row in periods if row.get("unit") == 1)))
 print("type", dict(Counter(row.get("type") for row in periods)))
+# Live periods and finite series (Task 16 caps a finite period's times at its last record; Task 17 ends a period
+# with no enabled future record). Counts only.
+records = doc["classes"].get("AHRecord", [])
+cutoff = str(doc["exported_at"])[:10]
+future = Counter(row.get("eventID") for row in records if str(row.get("date"))[:10] > cutoff and row.get("isEnabled", True))
+dates = {}
+for row in records:
+    if row.get("eventID") and row.get("type") != 15 and not row.get("isTransferIn"):
+        dates.setdefault(row["eventID"], set()).add(str(row.get("date"))[:10])
+print("periods without an enabled future record", sum(1 for row in periods if future[row["identifier"]] == 0))
+finite = [row for row in periods if row.get("times")]
+print("finite periods", len(finite),
+      "with dates == times", sum(1 for row in finite if len(dates.get(row["identifier"], ())) == row["times"]),
+      "with dates < times", sum(1 for row in finite if len(dates.get(row["identifier"], ())) < row["times"]))
+# What AHInstallment.remainder means (D37 assumes the remaining principal) before loan_remainder_check is trusted.
+installments = doc["classes"].get("AHInstallment", [])
+print("installments total == installment*times + remainder",
+      sum(1 for row in installments
+          if abs(float(row.get("total") or 0)) == round(abs(float(row.get("installment") or 0)) * int(row.get("times") or 0)
+                                                       + abs(float(row.get("remainder") or 0)), 4)))
+# Interest on money lent (D29 writes interest negative): type-15 records packaged with a type-5 collection.
+collection_packages = {row.get("packageID") for row in records if row.get("type") == 5 and row.get("packageID")}
+print("interest records on collection packages",
+      sum(1 for row in records if row.get("type") == 15 and row.get("packageID") in collection_packages))
 PY
 ```
 
 Expected: `AHPeriod 11 [...]` and `AHInstallment 14 [...]` key lists. Weekday numbering: confirmed when 28.4 showed no `interval_mismatch` and every weekly period's `days` is in 1–7 (with no weekly period, write "no weekly period in the backup; numbering unconfirmed, a mismatch would surface as `interval_mismatch`"). Posting mode: look for a key beyond `identifier, unit, days, times, type, startDate` (periods) and `identifier, dayOfMonth, dateInfo, times, total, remainder` (installments) whose name suggests reminding or confirming (`remind`, `confirm`, `notify`, `auto`); none → "no MOZE posting-mode field; every imported definition is `auto`". If one exists, stop and report its name and value histogram — the spec then needs a decision (Known Spec Conflicts).
+
+The four added lines must read: `periods without an enabled future record 0` (every one of the 11 periods is live; a non-zero count means that many periods import `ended` — report the count to the owner before 28.7); `finite periods F with dates == times F with dates < times 0` (MOZE pre-generates every finite series, so Task 16's cap on `times` never shortens a real series; a non-zero `dates < times` count: stop and report — the cap would end those series early); `installments total == installment*times + remainder` either 0 (then `remainder` is the remaining principal, as D37 assumes, and `loan_remainder_check` is meaningful) or a count — any non-zero count means `remainder` may be MOZE's 分期餘額 (rounding), so stop and report before trusting `loan_remainder_check`; `interest records on collection packages 0` (a non-zero count means a lent-money package carries interest, which D29's negative interest line would map with the wrong sign — report it to the owner). Write the four lines to `notes.txt`.
 
 - [ ] 28.6 Delete the kept JSON and write the first notes.
 
@@ -15898,7 +16257,7 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Back-dated local definition | 15 — `test_back_dated_local_definition` |
 | Only one runner | 15 — `test_only_one_runner`, `test_job_run_twice_in_one_day_posts_each_instance_once` (Review Focus 2) |
 | Retry after an import | 15 — `test_retry_after_an_import`, `test_after_run_adds_and_clears_the_retry`, `test_retry_stops_on_a_new_taipei_day` |
-| Failure stops the loan, not the others | 15 — `test_failure_stops_the_loan_not_the_others` |
+| Failure stops the loan, not the others | 15 — `test_failure_stops_the_loan_not_the_others`, `test_a_period_deleted_mid_run_is_passed_over` |
 | Paused definition | 15 — `test_paused_definition` |
 | Dry run | 15 — `test_dry_run`; 28.8 on real data |
 | **Definition endpoints** | 5 (schemas), 9 (read shapes), 10 (CRUD, 409 / 422 cases) |
@@ -15963,21 +16322,21 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | **Record mapping** (MODIFIED: future rows → instances; HomeHub-posted / skipped past records not imported) | 16, 17, 18 |
 | Expense with fee | unchanged — 2a suite |
 | Future installment skipped | 16 — `test_installment_anchored_on_its_first_period`; 17 — `test_weekly_period_past_records_post_and_future_ones_wait`, `test_installment_lines_resolve_the_loan`; 18 — `test_skipped_future_adds_up` |
-| Period already posted by HomeHub | 18 — `test_period_already_posted_by_homehub`, `test_a_period_homehub_skipped_is_not_imported` |
+| Period already posted by HomeHub | 18 — `test_period_already_posted_by_homehub`, `test_a_period_homehub_skipped_is_not_imported`, `test_single_record_homehub_posted_is_not_imported_once_it_is_past` (a `record:<id>` single turned past) |
 | **Transactional full replace and report** (MODIFIED: schedule row locks, lock wait, template usage, re-pointing, `schedules` block, job trigger) | 17, 18, 19 |
 | Balances equal MOZE | 2a suite; 18 — stand-in schedule entries in `moze_part` (`test_reimport_after_local_post_keeps_schedule_entries_and_skips_the_record`, Review Focus 3); 28.4 on the real backup |
 | Manual entries do not break strict mode | unchanged — 2a suite |
 | Re-import is idempotent | 17 — `test_reimport_is_idempotent_for_schedules`; 28.7 on the real backup |
 | Manual rows survive | 2a suite; 17 — `test_reimport_keeps_owner_decisions_and_local_definitions`; 18 — `test_schedule_entry_survives_a_backup_import` |
-| (lock wait and job trigger, requirement text) | 18 — `test_import_waits_for_schedule_writers_then_runs`, `test_import_is_refused_at_once_while_another_import_runs`, `test_real_import_triggers_a_job_run_and_a_dry_run_does_not`; 19 — import vs post race |
+| (lock wait and job trigger, requirement text) | 18 — `test_import_waits_for_schedule_writers_then_runs`, `test_import_is_refused_at_once_while_another_import_runs`, `test_real_import_triggers_a_job_run_and_a_dry_run_does_not`; 19 — `test_import_waits_for_a_post` (proves only that `import_lock` waits for a shared holder; the importer transaction's `lock_schedule_rows` against a post is excluded by the key itself, not raced) |
 | **Schedule definitions and instances from the backup** | 16 (`schedule_import_map`), 17 (`schedule_import`), 18 (wiring) |
 | Real backup schedule counts | 28.4 (11 + 14 definitions, 534 mapped, 63 rewards); 16 — `test_counts_add_up_to_the_enabled_future_records` |
 | Weekly period keyed by weekday | 16 — `test_weekly_period_keyed_by_weekday`, `test_moze_weekday_numbering`; 17; 28.5 (numbering on real data) |
-| Monthly period keyed by day of month | 16 — `test_monthly_transfer_period_keyed_by_day_of_month` |
+| Monthly period keyed by day of month | 16 — `test_monthly_transfer_period_keyed_by_day_of_month`, `test_finite_period_never_runs_past_its_last_record`; 17 — `test_period_without_future_records_imports_ended` (only live periods run) |
 | Day of month clamped | 16 — `test_day_of_month_clamped` |
-| Weekday mismatch flagged | 16 — `test_weekday_mismatch_flagged` |
+| Weekday mismatch flagged | 16 — `test_weekday_mismatch_flagged`, `test_period_type_must_match_its_records`; 17 — `test_interval_mismatch_definition_never_generates` |
 | Installment anchored on its first period | 16 — `test_installment_anchored_on_its_first_period` |
-| Repayment and interest are one period | 16, 17 — `test_repayment_and_interest_are_one_period`, `test_installment_lines_resolve_the_loan` |
+| Repayment and interest are one period | 16, 17 — `test_repayment_and_interest_are_one_period`, `test_installment_lines_resolve_the_loan`; 16 — `test_a_later_package_kind_joins_the_template`; 17 — `test_template_change_realigns_kept_overrides` |
 | Disabled future period | 16 — `test_disabled_future_period`; 17 — `test_disabled_future_period_is_skipped` |
 | Single record keyed apart from definitions | 16 — `test_single_record_keyed_apart_from_definitions`; 17 — `test_single_record_becomes_its_own_definition` |
 | HomeHub-generated period adopted | 17 — `test_homehub_generated_period_adopted` |
@@ -15987,9 +16346,9 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | New review reason pauses, resolved one clears | 17 — `test_new_review_reason_pauses_and_a_resolved_one_clears` |
 | Re-pointing finds no loan | 18 — `test_re_pointing_finds_no_loan` |
 | Owner-edited pending period kept | 17 — `test_owner_edited_pending_period_kept` |
-| Re-import keeps owner decisions and local definitions | 17 — `test_reimport_keeps_owner_decisions_and_local_definitions` |
+| Re-import keeps owner decisions and local definitions | 17 — `test_reimport_keeps_owner_decisions_and_local_definitions`, `test_import_row_whose_record_left_the_backup_becomes_skipped`, `test_pending_imported_row_follows_moze_and_clears_failure_marks` |
 | Different amount reported | 18 — `test_different_amount_reported` |
-| Loan link survives the full replace | 18 — `test_loan_link_survives_the_full_replace` |
+| Loan link survives the full replace | 18 — `test_loan_link_survives_the_full_replace`; `loan_remainder_check` after re-pointing: `test_reimport_after_local_post_keeps_schedule_entries_and_skips_the_record` |
 | Template reference keeps a category | 18 — `test_template_reference_keeps_a_category_and_an_account` |
 | **REMOVED: Scheduled data preserved for phase 4** | 2 (`MozeSchedule` and `GET /imports/schedules` removed), 3 (drops `moze_schedule`; `test_downgrade_recreates_an_empty_moze_schedule`), 18 — `test_the_old_schedule_listing_is_gone`, 27 (SPA no longer calls it), 29 (runbook) |
 
