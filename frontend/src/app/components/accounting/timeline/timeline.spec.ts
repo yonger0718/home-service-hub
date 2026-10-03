@@ -187,6 +187,7 @@ describe('LedgerTimelineComponent', () => {
 
   it('opens the entry detail on tap and highlights the selected entry', () => {
     const layout = { selectedEntryId: signal<number | null>(2) };
+    localStorage.setItem(VIEW_KEY, 'list');
     const { fixture, el } = render('panes', makePreference(), [{ provide: AccountingLayoutComponent, useValue: layout }]);
     flushSummary('2026-10');
     flushEntries([makeEntry({ id: 1, name: '午餐' }), makeEntry({ id: 2, name: '捷運' })]);
@@ -340,6 +341,41 @@ describe('LedgerTimelineComponent', () => {
       expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
       expect(el.querySelector('.sentinel')).toBeNull();
       expect(el.querySelector('button.more')).toBeNull();
+    });
+
+    it('defaults to 日曆 in the two-pane layout when nothing is stored', () => {
+      const { fixture, el } = render('panes');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      expectNoEntryPage();
+      fixture.detectChanges();
+      expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
+      expect(el.querySelector('app-calendar-month')).not.toBeNull();
+      expect(localStorage.getItem(VIEW_KEY)).toBeNull();
+    });
+
+    it('defaults to 清單 on a phone when nothing is stored', () => {
+      const { fixture, el } = render('phone');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('true');
+      expect(el.querySelector('app-calendar-month')).toBeNull();
+    });
+
+    it('keeps a stored 清單 in the two-pane layout and ignores later resizes', () => {
+      localStorage.setItem(VIEW_KEY, 'list');
+      const { fixture, el } = render('panes');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('true');
+
+      TestBed.inject(LayoutModeService).set('phone');
+      fixture.detectChanges();
+      TestBed.inject(LayoutModeService).set('panes');
+      fixture.detectChanges();
+      expect(viewButton(el, '清單').getAttribute('aria-checked')).toBe('true');
     });
 
     it('falls back to the list for an unknown stored view', () => {
@@ -543,6 +579,7 @@ describe('LedgerTimelineComponent', () => {
   });
 
   it('reloads the account filter options after an account write', () => {
+    localStorage.setItem(VIEW_KEY, 'list');
     const { fixture, el } = render('panes');
     flushSummary('2026-10');
     flushEntries([]);

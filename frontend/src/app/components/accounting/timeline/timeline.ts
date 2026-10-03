@@ -42,12 +42,17 @@ export const TIMELINE_VIEW_KEY = 'hh.accounting.timelineView';
 
 export type TimelineView = 'list' | 'calendar';
 
-function readStoredView(): TimelineView {
+/** The remembered view; otherwise 日曆 in the two-pane layout and 清單 elsewhere (read once, resizes keep the view). */
+function initialView(wide: boolean): TimelineView {
   try {
-    return localStorage.getItem(TIMELINE_VIEW_KEY) === 'calendar' ? 'calendar' : 'list';
+    const stored = localStorage.getItem(TIMELINE_VIEW_KEY);
+    if (stored === 'calendar' || stored === 'list') {
+      return stored;
+    }
   } catch {
-    return 'list';
+    // Storage blocked: fall through to the layout default.
   }
+  return wide ? 'calendar' : 'list';
 }
 
 function storeView(view: TimelineView): void {
@@ -285,7 +290,7 @@ export class LedgerTimelineComponent implements OnInit {
   readonly kindFilter = signal<EntryKind | null>(null);
   readonly query = signal('');
   readonly filtersOpen = signal(false);
-  readonly view = signal<TimelineView>(readStoredView());
+  readonly view = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
   readonly daily = signal<DailySummary | null>(null);
   readonly selectedDay = signal<string | null>(null);
   readonly dayEntries = signal<LedgerEntry[]>([]);
