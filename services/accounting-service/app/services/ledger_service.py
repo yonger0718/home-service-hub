@@ -530,8 +530,10 @@ def period_summary(db: Session, account_id: int, date_from: date, date_to: date)
 
 def _open_amount(db: Session, entry: LedgerEntry) -> Decimal:
     settled = db.scalar(
-        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(LedgerEntry.settles_entry_id == entry.id)
-    )
+        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
+            LedgerEntry.settles_entry_id == entry.id, LedgerEntry.currency == entry.currency
+        )
+    )  # a settlement in another currency stays linked but never nets
     return abs(entry.amount + settled)
 
 

@@ -72,6 +72,24 @@ def test_settling_a_closed_debt_is_refused(client, db_session, seed):
     assert (detail["is_closed"], detail["open_amount"], detail["is_settled"]) == (True, "0.0000", True)
 
 
+def test_a_settlement_in_another_currency_never_reduces_the_open_amount(client, db_session, seed):
+    card, yen = seed.account("C"), seed.account("日幣", currency="JPY")
+    alan = seed.counterparty("Alan")
+    receivable = seed.entry(card, "-100", kind="receivable", counterparty_id=alan.id)
+    seed.entry(yen, "100", kind="receivable", counterparty_id=alan.id, settles_entry_id=receivable.id, is_settlement=True)
+    same = seed.entry(card, "-50", kind="receivable", counterparty_id=alan.id)
+    seed.entry(card, "50", kind="receivable", counterparty_id=alan.id, settles_entry_id=same.id, is_settlement=True)
+    db_session.commit()
+
+    detail = client.get(f"/entries/{receivable.id}").json()
+    assert (detail["open_amount"], detail["is_settled"]) == ("100.0000", False)
+    assert st.open_amount(db_session, receivable) == Decimal("100")
+    settled = client.get(f"/entries/{same.id}").json()
+    assert (settled["open_amount"], settled["is_settled"]) == ("0.0000", True)
+    rows = {row["name"]: row for row in client.get("/counterparties").json()}
+    assert rows["Alan"]["open_amounts"] == [{"currency": "TWD", "amount": "100.0000"}]
+
+
 def test_repayment_of_a_payable_is_negative_and_settles_it_fully(db_session, seed):
     bank = seed.account("銀行", opening="5000")
     alan = seed.counterparty("Alan")

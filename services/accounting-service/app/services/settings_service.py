@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..models import (
     SYSTEM_KINDS,
@@ -432,9 +432,16 @@ def delete_project(db: Session, project_id: int) -> None:
 def _open_amounts(db: Session) -> dict[int, list[dict]]:
     """Per counterparty and currency: −Σ amount over its receivable and payable entries (settlements included).
 
-    Closed debts (`is_closed`) and the settlements linked to them are left out: MOZE counts them as settled.
+    Closed debts (`is_closed`) and the settlements linked to them are left out: MOZE counts them as settled. A
+    settlement linked to an original in another currency is left out too: it never nets against that original.
     """
     closed = select(LedgerEntry.id).where(LedgerEntry.is_closed).scalar_subquery()
+    original = aliased(LedgerEntry)
+    cross_currency = (
+        select(original.id)
+        .where(original.id == LedgerEntry.settles_entry_id, original.currency != LedgerEntry.currency)
+        .exists()
+    )
     rows = db.execute(
         select(LedgerEntry.counterparty_id, LedgerEntry.currency, func.sum(LedgerEntry.amount))
         .where(
@@ -442,6 +449,7 @@ def _open_amounts(db: Session) -> dict[int, list[dict]]:
             LedgerEntry.kind.in_(("receivable", "payable")),
             ~LedgerEntry.is_closed,
             or_(LedgerEntry.settles_entry_id.is_(None), LedgerEntry.settles_entry_id.not_in(closed)),
+            ~cross_currency,
         )
         .group_by(LedgerEntry.counterparty_id, LedgerEntry.currency)
         .order_by(LedgerEntry.currency)

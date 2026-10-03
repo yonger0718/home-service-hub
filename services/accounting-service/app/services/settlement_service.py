@@ -19,9 +19,11 @@ REFUNDABLE_KINDS = ("expense",)
 
 
 def open_amount(db: Session, entry: LedgerEntry) -> Decimal:
-    """|amount + Σ amounts of entries settling it|, in the entry's currency."""
+    """|amount + Σ amounts of the entries settling it in its own currency| (another currency never nets)."""
     settled = db.scalar(
-        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(LedgerEntry.settles_entry_id == entry.id)
+        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
+            LedgerEntry.settles_entry_id == entry.id, LedgerEntry.currency == entry.currency
+        )
     )
     return abs(Decimal(entry.amount) + Decimal(settled))
 
