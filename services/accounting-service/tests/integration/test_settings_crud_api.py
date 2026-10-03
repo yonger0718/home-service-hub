@@ -428,7 +428,10 @@ def test_counterparty_rename_shows_in_listings_and_delete_rule(client, db_sessio
 def test_sort_order_and_ids_beyond_int32_are_422(client, db_session):
     assert client.post("/projects", json={"name": "大", "sort_order": 2**31}).status_code == 422
     assert client.post("/account-groups", json={"name": "大", "sort_order": -(2**31) - 1}).status_code == 422
-    assert client.put("/projects/order", json={"ids": [2**31]}).status_code == 422
+    for route in ("/categories/order", "/account-groups/order"):
+        reorder = client.put(route, json={"ids": [2**31]})
+        assert reorder.status_code == 422, route
+        assert any(error["loc"][:2] == ["body", "ids"] for error in reorder.json()["detail"]), route
     assert client.post("/accounts", json=_account_body(group_id=2**31)).status_code == 422
 
 
