@@ -101,11 +101,13 @@ Frontend — `frontend/src/app/`:
 | Path | Action | Responsibility |
 |---|---|---|
 | `models/accounting.model.ts` | Modify | Schedule DTOs; `schedule` / `loan_schedule` on entries; `ScheduleItem` removed |
-| `services/accounting.service.ts` (+ spec) | Modify | Schedule calls (writes bump `entriesChanged`); `getSchedules` removed |
+| `services/accounting.service.ts` | Modify | Schedule calls (writes bump `entriesChanged`); `getSchedules` removed |
+| `services/accounting-schedules.service.spec.ts` | Create | The schedule calls' paths, verbs, bodies and `entriesChanged` bumps |
 | `components/accounting/schedule-math.ts` (+ spec) | Create | Occurrences, labels, MOZE footers, installment split, pills, `isImportRunning` |
 | `components/accounting/accounting-toast.ts` (+ spec) | Create | `AccountingToastService`, `app-accounting-toast` |
 | `components/accounting/accounting-layout/accounting-layout.{ts,html}` | Modify | Hosts the toast |
 | `components/accounting/schedule-tabs/schedule-tabs.{ts,html,scss,spec.ts}` | Create | 進階 單次 / 週期 / 分期 block |
+| `components/accounting/schedule-tabs/schedule-draft.ts` | Create | `ScheduleDraft`, `SCHEDULE_TABS`, `tabsFor`, `defaultDraft` |
 | `components/accounting/entry-form/schedule-save.ts` (+ spec) | Create | Form state → definition input; definition → form state |
 | `components/accounting/entry-form/entry-form.{ts,html,scss}` | Modify | Tabs, hidden fields, save as definition, definition mode |
 | `components/accounting/entry-form/entry-form-schedule.spec.ts` | Create | Form scenarios |
@@ -379,7 +381,7 @@ Review reasons: `interval_mismatch`, `loan_missing`, `same_date`, `seq_conflict`
 
 `schedule-math.ts`: `IMPORT_RUNNING_TOAST`, `isImportRunning(err)`, `addMonthsIso(iso, months, dayOfMonth?)`, `occurrenceDate(rule, k)`, `nextOccurrences(rule, count, after?)`, `intervalLabel(unit, n)`, `ruleDayLabel(rule)`, `recurringFooter(rule, times)`, `splitInstallment(total, times, currency)`, `installmentFooter(total, times, firstDate, currency)`, `ruleSummary(definition)`, `scheduleProgress(definition)`, `schedulePill(link)`, interface `ScheduleRule { interval_unit; interval_n; anchor_date; day_of_month }`.
 
-Components: `app-accounting-toast` (`AccountingToastService.show(text, ms = 3000)`, `message` signal); `app-schedule-tabs` (`kind` input `FormKind`, `entryDate`, `amount` (number | null), `currency`, `accounts`, `locked`, `definitionMode`; `draft` model `ScheduleDraft`; `<ng-content>` is the 單次 panel); `app-schedule-sheet` (`definitionId` input; `(closed)` output). Routes: no new route; definition mode is `/accounting/entry?schedule=<id>`; the reminder centre reads `?tab=all|cards|debts|pending`, `?schedule=<id>` (opens the sheet) and the fragment `schedules`.
+Components: `app-accounting-toast` (`AccountingToastService.show(text, ms = 3000)`, `message` signal); `app-schedule-tabs` (inputs `kind` (`FormKind`, required), `entryDate` (required), `amount` (number | null), `currency`, `accounts`, `accountId` (the form's account, the 還款帳戶 default), `disabled` (the form's locked / saving state), `definitionMode`, `errors` (field → message, for the 每期金額 / 利息 slots); `draft` model `ScheduleDraft` (required, from `schedule-tabs/schedule-draft.ts`); `<ng-content>` is the 單次 panel); `app-schedule-sheet` (`definitionId` input; `(closed)` output). Routes: no new route; definition mode is `/accounting/entry?schedule=<id>`; the reminder centre reads `?tab=all|cards|debts|pending`, `?schedule=<id>` (opens the sheet) and the fragment `schedules`.
 
 ## Task Index
 
@@ -413,7 +415,7 @@ Components: `app-accounting-toast` (`AccountingToastService.show(text, ms = 3000
 | 26 | Entry detail: loan line, pill, edit scope, repost, partial, delete wording | opus | 22, 24 |
 | 27 | Settings link and import report `schedules` block | sonnet | 20 |
 | 28 | Verify on preview data (disposable database) and owner checklist | opus | 19, 27 |
-| 29 | Deploy runbook, design notes, superseded text | sonnet | 28 |
+| 29 | Deploy runbook, design notes, superseded text | opus | 28 |
 
 Execute in numeric order. Tasks 2 and 3 are committed back to back (between them the Alembic-built test database lacks the new tables). Frontend tasks 20–27 depend only on the API shapes of this contract and may start once Task 12 is committed. Full-suite counts are written as "N more than the previous task's count, 0 failed"; per-file counts are exact.
 
@@ -11041,8 +11043,12 @@ describe('ScheduleTabsComponent', () => {
     fixture.componentRef.setInput('kind', 'system');
     fixture.detectChanges();
     expect(labels(el)).toEqual(['單次']);
-    const definition = render({ definitionMode: true, draft: { ...defaultDraft('2026-10-22'), tab: 'recurring' } });
-    expect(labels(definition.el)).toEqual(['週期', '分期']);
+  });
+
+  it('drops 單次 in definition mode', () => {
+    // A separate test: render() configures TestBed, which cannot be configured again once a component exists.
+    const { el } = render({ definitionMode: true, draft: { ...defaultDraft('2026-10-22'), tab: 'recurring' } });
+    expect(labels(el)).toEqual(['週期', '分期']);
   });
 
   it('starts 週期 at 每 1 月 from the entry date, 無限期, 自動入帳, with the MOZE footer', () => {
@@ -11643,7 +11649,7 @@ export class ScheduleTabsComponent {
 
 - [ ] 21.7 Run 21.2 again.
 
-Expected: `7 passed`.
+Expected: `8 passed`.
 
 - [ ] 21.8 Commit.
 
@@ -11671,8 +11677,8 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Rules (spec "Entry form schedule tabs", "Scheduled entry edit scope" for 編輯整個排程, D43):
 - With 週期 or 分期 selected the form calls `POST /schedules/definitions` instead of the entry endpoint: one template line from the form (kind, account, category, project, counterparty, amount, name, merchant; for 轉帳 the to-account and, across currencies, the in-amount); 分期 on 支出 → one `expense` line of 每期金額 (+ an `interest` line with 利息) and `total_amount` = 總額; 分期 on 應付款項 → a `repayment` line from 還款帳戶 (+ `interest`), and `loan` = the payable's account, counterparty, category, 總額, 日期 and name. The definition name is the entry's 名稱, else the category name, else the kind's label. After a create whose `posting_mode` is `auto` and whose `anchor_date` is today, `catch-up` is called; never otherwise.
-- On 週期 / 分期 the currency (FX) pill, the split "+" (split lines), the fee / discount "+" and chips, the reward chips and the invoice fields are hidden and `排程不支援` is shown (the entry form has no photo tile in phase 2a; nothing else to hide); a form that still holds an FX conversion is refused with `排程不支援外幣，請先移除匯率`.
-- Errors: a `ScheduleFormError` names its field; a 422 fills `fieldErrors` (shown beside the field by `app-schedule-tabs`) and the error line; a 409 `import_running` shows the toast and changes nothing else.
+- On 週期 / 分期 the currency (FX) pill, the split "+" (split lines), the fee / discount "+" and chips, the reward chips and the invoice fields are hidden and `排程不支援` is shown (the entry form has no photo tile in phase 2a; nothing else to hide); a form that still holds an FX conversion is refused with `排程不支援外幣，請先移除匯率`, and while it holds one the currency pill stays a button on 週期 / 分期 too, so the owner can open the FX sheet and remove the rate without going back to 單次.
+- Errors: a `ScheduleFormError` names its field; a 422 fills `fieldErrors` (shown beside the field by `app-schedule-tabs`) and the error line; a 409 `import_running` shows the toast and changes nothing else. `fieldErrors()` keys by the last string of `loc`, so a Pydantic request error on `template.lines.1.amount` arrives as `amount` (shown in the error line, not in a 每期金額 / 利息 slot); only the service-level `ValidationError("lines[i].amount")` reaches those slots. Accepted: the form validates amounts before sending, so a Pydantic amount error means a client bug.
 - 連續記帳 resets the tab to 單次 for the next record.
 - Definition mode (`?schedule=<id>`): `GET /schedules/definitions/{id}` (request-id guarded), the form pre-filled by `draftFromDefinition`, the record-type tabs locked to the definition's, 單次 not offered, title `編輯排程`, save with `PUT /schedules/definitions/{id}` (no `kind`, no `loan`), and for an imported definition before cutover (`locked`) the lock banner, a disabled form and ✓.
 
@@ -11818,6 +11824,7 @@ import { MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'v
 
 import { Counterparty, Project } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { FxValue } from '../fx-sheet/fx-sheet';
 import { makeAccount, makeAccountDetail, makeCategory, makeDefinition, makePreference } from '../testing/fixtures';
 import { EntryFormComponent } from './entry-form';
 
@@ -12003,6 +12010,23 @@ describe('EntryFormComponent schedules', () => {
     expect(el.querySelector('.invoice-tile')).toBeNull();
     expect(el.querySelector('app-split-lines')).toBeNull();
     expect(text(el.querySelector('.schedule-unsupported'))).toBe('排程不支援');
+  });
+
+  it('keeps the currency pill while a rate is set, so the owner can remove it on 週期', async () => {
+    // Otherwise 排程不支援外幣，請先移除匯率 would be a dead end: the pill that removes the rate would be hidden.
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [STREAMING]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '娛樂');
+    tap(el, '.cat', 'Netflix');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.fx.set({ original_currency: 'JPY' } as unknown as FxValue);
+    settle();
+    tap(el, '.schedule-tab', '週期');
+    expect(text(el.querySelector('button.cur'))).toBe('JPY');
+    form.fx.set(null);
+    settle();
+    expect(el.querySelector('button.cur')).toBeNull();
   });
 
   it('saves a recurring transfer and offers no 分期 for 轉帳', async () => {
@@ -12452,9 +12476,10 @@ export function draftFromDefinition(definition: ScheduleDefinition): ScheduleFor
   - replace `            <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx')">{{ entryCurrency() }}</button>` with
 
 ```html
-            @if (scheduling()) {
+            @if (scheduling() && !fx()) {
               <span class="cur">{{ accountCurrency() }}</span>
             } @else {
+              <!-- also on 週期 / 分期 while a rate is set: the FX sheet is where the owner removes it -->
               <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx')">{{ entryCurrency() }}</button>
             }
 ```
@@ -12778,7 +12803,7 @@ npx ng test --watch=false --include='src/app/components/accounting/entry-form/sc
 npx ng test --watch=false --include='src/app/components/accounting/entry-form/**/*.spec.ts' --include='src/app/components/accounting/transfer-panel/*.spec.ts' 2>&1 | tail -4
 ```
 
-Expected: `17 passed` (7 + 10); then every entry-form and transfer-panel spec passes (the existing ones see the 進階 block as a tab block whose 單次 panel still holds 入帳日).
+Expected: `18 passed` (7 + 11); then every entry-form and transfer-panel spec passes (the existing ones see the 進階 block as a tab block whose 單次 panel still holds 入帳日).
 
 - [ ] 22.9 Commit.
 
@@ -13075,6 +13100,24 @@ Expected: `4 passed`.
       flushLoad([], [], [], []);
     });
 
+    it('shows the error of a failing period with 重試 instead of 入帳, and 重試 posts it again', () => {
+      // Spec "待完成交易 tab": the last_error text with 重試 when set.
+      const failing = makeInstance({
+        id: 32, definition_id: 10, due_date: '2026-10-01', overdue_days: 2, last_error: 'lines[0].account_id: 帳戶已封存',
+      });
+      const { fixture, el } = render([], [], [], [failing]);
+      tab(el, '待完成交易').click();
+      fixture.detectChanges();
+      const row = item(el, 32);
+      expect(text(row.querySelector('.queue-error'))).toBe('lines[0].account_id: 帳戶已封存');
+      expect(button(row, '入帳')).toBeUndefined();
+      button(row, '重試').click();
+      http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/instances/32/post')
+        .flush(makeInstance({ id: 32, status: 'posted' }));
+      fixture.detectChanges();
+      flushLoad([], [], [], []);
+    });
+
     it('closes the skip prompt on Esc', () => {
       const { fixture, el } = render([], [], [], [RENT]);
       tab(el, '待完成交易').click();
@@ -13168,35 +13211,58 @@ Expected: `4 passed`.
 cd /home/opc/workspace/home-hub-schedules/frontend && npx ng test --watch=false --include='src/app/components/accounting/reminders/reminders.spec.ts'
 ```
 
-Expected: the old tests fail on `Expected one matching request for criteria "Match by function: …/schedules/instances"` and the new ones fail; nothing else.
+Expected: the old tests (the `借還款追蹤 filters` specs among them) fail only on `Expected one matching request for criteria "Match by function: …/schedules/instances"`, and the new ones fail; nothing else.
 
-- [ ] 23.7 Replace `frontend/src/app/components/accounting/reminders/reminders.ts` with:
+- [ ] 23.7 Edit `frontend/src/app/components/accounting/reminders/reminders.ts` **in place** (targeted edits, the way Task 22 edits the entry form). Main's file already carries the 借還款追蹤 filters and the signed-remaining wording of #43 / #44 (`DebtFilter`, `DebtKind`, `DEBT_KIND_OPTIONS`, `filterDebtEntries`, `debtCounterparty` / `debtKind`, `debtCounterparties`, `showDebtFilters`, `debtFilter`, `debtFilteredOut`, `setDebtCounterparty` / `setDebtKind`, `'../filters.scss'` in `styleUrls`, `debtRemaining` with `detail: '2026/09/01 · 原始 … · 已收 …'`, `debtReminders` sorted by name, `filterDebtEntries` inside `expandedRows`); every one of them stays exactly as it is, and `reminders.html` keeps binding them. Make only these edits:
+
+  - imports: replace
 
 ```typescript
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { Router, RouterLink } from '@angular/router';
+import { forkJoin } from 'rxjs';
+
+import { Counterparty, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
+```
+
+  with
+
+```typescript
 import { NgTemplateOutlet } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Observable, catchError, forkJoin, of } from 'rxjs';
 
 import { Counterparty, LedgerAccount, LedgerEntry, ScheduleInstance } from '../../../models/accounting.model';
-import { AccountingService } from '../../../services/accounting.service';
-import { LayoutModeService } from '../../../services/layout-mode.service';
+```
+
+  and add, after `import { LayoutModeService } from '../../../services/layout-mode.service';`,
+
+```typescript
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
 import { isHandledKey } from '../accounting-ui';
-import { BillingEvent, dueCountdown, reminderDues } from '../billing/billing-math';
-import { BillState, BillingService } from '../billing/billing.service';
-import { daysBetween, shortDate, slashDate, todayIso } from '../dates';
-import { formatMoney, formatSigned } from '../format';
-import { TimelineRow, buildDays } from '../timeline/timeline';
+```
+
+  and, after `import { TimelineRow, buildDays } from '../timeline/timeline';`,
+
+```typescript
 import { QueueRow, queueRows } from './schedule-queue';
+```
 
-/** Open receivables / payables read for the counts and dates, and per expanded counterparty. */
-export const REMINDER_ENTRY_LIMIT = 500;
+  - replace
 
-/** A timeline row with the reminder centre's optional remaining slot. */
-export type ReminderEntryRow = TimelineRow & { remaining: DebtRemaining | null };
+```typescript
+export type ReminderTab = 'all' | 'cards' | 'debts';
 
+export const REMINDER_TABS: { key: ReminderTab; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'cards', label: '信用卡帳單' },
+  { key: 'debts', label: '借還款追蹤' },
+];
+```
+
+  with
+
+```typescript
 export type ReminderTab = 'all' | 'cards' | 'debts' | 'pending';
 
 export const REMINDER_TABS: { key: ReminderTab; label: string }[] = [
@@ -13209,203 +13275,91 @@ export const REMINDER_TABS: { key: ReminderTab; label: string }[] = [
 export function isReminderTab(value: string | null): value is ReminderTab {
   return REMINDER_TABS.some(option => option.key === value);
 }
+```
 
-export interface CardReminder {
-  accountId: number;
-  name: string;
-  icon: string;
-  due: string;
-  dueText: string;
-  figures: { label: string; text: string }[];
-  countdown: string;
-  /** Past the due date (negative tone) / due today or tomorrow (warning tone). */
-  overdue: boolean;
-  soon: boolean;
-}
+  - in the `@Component({...})` decorator: replace `imports: [RouterLink],` with `imports: [RouterLink, NgTemplateOutlet],`, keep `styleUrls: ['../filters.scss', '../entry-row.scss', './reminders.scss'],` unchanged, and add `host: { '(keydown)': 'onKeydown($event)' },` after `changeDetection: ChangeDetectionStrategy.OnPush,`; replace the class comment `/** \`/accounting/reminders\` (提醒中心): unpaid card statements and open receivables / payables. */` with `/** \`/accounting/reminders\` (提醒中心): card statements, open debts, 待完成交易 and (Task 24) 週期／分期. */`;
+  - replace
 
-/** One side of a counterparty: what it owes the owner (應收) or what the owner owes it (應付). */
-export interface DebtSide {
-  kind: 'receivable' | 'payable';
-  /** `應收 +$220 · +¥5,000` / `應付 −$100`, per currency. */
-  totalText: string;
-  countText: string;
-}
+```typescript
+  private readonly router = inject(Router);
+  private readonly layoutMode = inject(LayoutModeService);
+```
 
-export interface DebtReminder {
-  id: number;
-  name: string;
-  /** 應收 then 應付; a side with nothing open is left out. */
-  sides: DebtSide[];
-  /** Latest entry date among the open entries. */
-  last: string;
-}
+  with
 
-/** A debt original's remaining in the expanded rows (replaces the entry amount). */
-export interface DebtRemaining {
-  /** `+$170 待收` / `−$100 待還` / `已結清`. */
-  text: string;
-  tone: 'in' | 'out' | 'muted';
-  /** `原始 $420 · 已收 $250` once something came back; null otherwise. */
-  detail: string | null;
-}
-
-/** What is left on an open receivable / payable original; `open_amount` falls back to the whole amount. */
-function openOf(entry: LedgerEntry): number {
-  return Number(entry.open_amount ?? Math.abs(Number(entry.amount)));
-}
-
-export function debtRemaining(entry: LedgerEntry): DebtRemaining | null {
-  if (entry.kind !== 'receivable' && entry.kind !== 'payable') {
-    return null;
-  }
-  if (entry.is_closed) {
-    return { text: '已結清', tone: 'muted', detail: null };
-  }
-  const receivable = entry.kind === 'receivable';
-  const open = openOf(entry);
-  const original = Math.abs(Number(entry.amount));
-  const back = Math.round((original - open) * 1e4) / 1e4;
-  return {
-    text: `${formatSigned(receivable ? open : -open, entry.currency)} ${receivable ? '待收' : '待還'}`,
-    tone: receivable ? 'in' : 'out',
-    detail:
-      back > 0
-        ? `原始 ${formatMoney(original, entry.currency)} · ${receivable ? '已收' : '已還'} ${formatMoney(back, entry.currency)}`
-        : null,
-  };
-}
-
-/** Cards with something left to pay on their current statement, soonest due first. */
-export function cardReminders(
-  bills: BillState[],
-  accounts: Pick<LedgerAccount, 'id' | 'icon'>[],
-  today: string,
-): CardReminder[] {
-  const icons = new Map(accounts.map(account => [account.id, account.icon]));
-  return bills
-    .filter(bill => bill.remaining > 0)
-    .sort((a, b) => a.due.localeCompare(b.due) || a.accountId - b.accountId)
-    .map(bill => {
-      const days = daysBetween(today, bill.due);
-      return {
-        accountId: bill.accountId,
-        name: bill.name,
-        icon: icons.get(bill.accountId) ?? '💳',
-        due: bill.due,
-        dueText: `${shortDate(bill.due)} 截止`,
-        figures: [
-          { label: '應繳', text: formatMoney(bill.statement, bill.currency) },
-          { label: '已繳', text: formatMoney(bill.paid, bill.currency) },
-          { label: '剩餘', text: formatMoney(bill.remaining, bill.currency) },
-        ],
-        countdown: dueCountdown(bill.due, today),
-        overdue: days < 0,
-        soon: days === 0 || days === 1,
-      };
-    });
-}
-
-/**
- * Counterparties with open receivable / payable rows (`GET /entries?open=true`), most recent first: 應收 and 應付 each
- * summed from the rows' `open_amount` per currency, so the two sides never net each other out.
- */
-export function debtReminders(counterparties: Counterparty[], openEntries: LedgerEntry[]): DebtReminder[] {
-  const names = new Map(counterparties.map(counterparty => [counterparty.id, counterparty.name]));
-  const byCounterparty = new Map<number, LedgerEntry[]>();
-  for (const entry of openEntries) {
-    if (entry.counterparty_id !== null && (entry.kind === 'receivable' || entry.kind === 'payable')) {
-      byCounterparty.set(entry.counterparty_id, [...(byCounterparty.get(entry.counterparty_id) ?? []), entry]);
-    }
-  }
-  const rows: DebtReminder[] = [];
-  for (const [id, entries] of byCounterparty) {
-    const sides: DebtSide[] = [];
-    for (const kind of ['receivable', 'payable'] as const) {
-      const ofKind = entries.filter(entry => entry.kind === kind);
-      if (ofKind.length === 0) {
-        continue;
-      }
-      const totals = new Map<string, number>();
-      for (const entry of ofKind) {
-        totals.set(entry.currency, (totals.get(entry.currency) ?? 0) + openOf(entry));
-      }
-      const sign = kind === 'receivable' ? 1 : -1;
-      const texts = [...totals].map(([currency, total]) => formatSigned(sign * total, currency));
-      sides.push({
-        kind,
-        totalText: `${kind === 'receivable' ? '應收' : '應付'} ${texts.join(' · ')}`,
-        countText: `${ofKind.length} 筆${kind === 'receivable' ? '應收' : '應付'}款項`,
-      });
-    }
-    const last = entries.reduce((latest, entry) => (entry.entry_date > latest ? entry.entry_date : latest), '');
-    rows.push({ id, name: names.get(id) ?? entries[0].counterparty ?? '', sides, last });
-  }
-  return rows.sort((a, b) => b.last.localeCompare(a.last) || a.name.localeCompare(b.name));
-}
-
-/** `/accounting/reminders` (提醒中心): card statements, open debts, 待完成交易 and (Task 24) 週期／分期. */
-@Component({
-  selector: 'app-accounting-reminders',
-  standalone: true,
-  imports: [RouterLink, NgTemplateOutlet],
-  templateUrl: './reminders.html',
-  styleUrls: ['../entry-row.scss', './reminders.scss'],
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { '(keydown)': 'onKeydown($event)' },
-})
-export class AccountingRemindersComponent {
-  private readonly accounting = inject(AccountingService);
-  private readonly bills = inject(BillingService);
+```typescript
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly layoutMode = inject(LayoutModeService);
   private readonly toast = inject(AccountingToastService);
-  private requestId = 0;
-  private expandRequestId = 0;
+```
 
-  readonly tabs = REMINDER_TABS;
-  readonly tab = signal<ReminderTab>('all');
-  readonly accounts = signal<LedgerAccount[]>([]);
-  readonly counterparties = signal<Counterparty[]>([]);
+  - replace
+
+```typescript
+  readonly openEntries = signal<LedgerEntry[]>([]);
+  readonly loaded = signal(false);
+```
+
+  with
+
+```typescript
   readonly openEntries = signal<LedgerEntry[]>([]);
   readonly queue = signal<ScheduleInstance[]>([]);
   readonly queueFailed = signal(false);
   readonly loaded = signal(false);
-  readonly loadError = signal(false);
-  readonly today = signal(todayIso());
-  readonly expanded = signal<number | null>(null);
-  readonly expandedEntries = signal<LedgerEntry[] | null>(null);
+```
+
+  - replace
+
+```typescript
+  readonly expandError = signal(false);
+  /** 借還款追蹤 filters: kept while the page is open, applied on that tab only. */
+```
+
+  with
+
+```typescript
   readonly expandError = signal(false);
   /** The 待完成交易 item whose inline 略過這一期？剩餘不變 prompt is open. */
   readonly confirmingSkip = signal<number | null>(null);
   readonly busyInstance = signal<number | null>(null);
   readonly actionError = signal<string | null>(null);
+  /** 借還款追蹤 filters: kept while the page is open, applied on that tab only. */
+```
 
-  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
-  private readonly dues = computed(() => reminderDues(this.accounts(), this.today()));
-  readonly cardRows = computed(() =>
-    cardReminders(
-      this.dues()
-        .map(event => this.bills.bill(event))
-        .filter((bill): bill is BillState => bill !== null),
-      this.accounts(),
-      this.today(),
-    ),
-  );
-  readonly debtRows = computed(() => debtReminders(this.counterparties(), this.openEntries()));
+  - replace
+
+```typescript
+  /** Cards whose statement read failed: shown as 帳單讀取失敗 with 重試, never as "nothing to pay". */
+```
+
+  with
+
+```typescript
   readonly queueGroups = computed(() => queueRows(this.queue(), this.today()));
   /** Cards whose statement read failed: shown as 帳單讀取失敗 with 重試, never as "nothing to pay". */
-  private readonly failedDues = computed(() => this.dues().filter(event => this.bills.failed(event)));
-  readonly billsFailed = computed(() => this.failedDues().length > 0);
-  /** `帳單讀取失敗`, with the distinct reasons appended (`（幣別不同）`). */
-  readonly billErrorText = computed(() => {
-    const reasons = [
-      ...new Set(this.failedDues().map(event => this.bills.failureReason(event)).filter((reason): reason is string => !!reason)),
-    ];
-    return reasons.length > 0 ? `帳單讀取失敗（${reasons.join('、')}）` : '帳單讀取失敗';
+```
+
+  - replace
+
+```typescript
+  readonly showCards = computed(() => this.tab() !== 'debts');
+  readonly showDebts = computed(() => this.tab() !== 'cards');
+  readonly empty = computed(() => {
+    if (!this.loaded() || this.loadError()) {
+      return false;
+    }
+    const cards = this.showCards() ? this.cardRows().length : 0;
+    const debts = this.showDebts() ? this.debtCounterparties().length : 0;
+    const failed = this.showCards() && this.billsFailed();
+    return cards === 0 && debts === 0 && !failed && (!this.showCards() || this.billsSettled());
   });
-  /** Every statement read at least once: the empty state waits for them. */
-  private readonly billsSettled = computed(() => this.dues().every((event: BillingEvent) => this.bills.isSettled(event)));
+```
+
+  with (the debt count keeps main's `debtCounterparties()`, so a filter that hides every row still shows `沒有符合篩選的項目`, not the empty state)
+
+```typescript
   readonly showCards = computed(() => this.tab() === 'all' || this.tab() === 'cards');
   readonly showDebts = computed(() => this.tab() === 'all' || this.tab() === 'debts');
   readonly showQueue = computed(() => this.tab() === 'all' || this.tab() === 'pending');
@@ -13415,27 +13369,16 @@ export class AccountingRemindersComponent {
     }
     const groups = this.queueGroups();
     const cards = this.showCards() ? this.cardRows().length : 0;
-    const debts = this.showDebts() ? this.debtRows().length : 0;
+    const debts = this.showDebts() ? this.debtCounterparties().length : 0;
     const queue = this.tab() === 'pending' ? groups.due.length + groups.upcoming.length : this.tab() === 'all' ? groups.due.length : 0;
     const failed = (this.showCards() && this.billsFailed()) || (this.showQueue() && this.queueFailed());
     return cards === 0 && debts === 0 && queue === 0 && !failed && (!this.showCards() || this.billsSettled());
   });
-  /**
-   * The expanded counterparty's open entries as timeline rows, one per entry (a split group's debt line is its own
-   * row here), each with its signed remaining in the row's optional `remaining` slot.
-   */
-  readonly expandedRows = computed<ReminderEntryRow[]>(() => {
-    const entries = this.expandedEntries() ?? [];
-    const byId = new Map(entries.map(entry => [entry.id, entry]));
-    return buildDays(entries.map(entry => ({ ...entry, group: null })), 'TWD', false)
-      .flatMap(day => day.rows)
-      .map(row => {
-        const entry = byId.get(row.entryId);
-        return { ...row, remaining: entry ? debtRemaining(entry) : null };
-      });
-  });
+```
 
-  constructor() {
+  - at the top of the constructor, before the first `effect(() => {`, add
+
+```typescript
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe(params => {
       const tab = params.get('tab');
       if (isReminderTab(tab)) {
@@ -13443,109 +13386,36 @@ export class AccountingRemindersComponent {
       }
     });
 
-    effect(() => {
-      this.accounting.entriesChanged();
-      this.accounting.accountsChanged();
-      untracked(() => {
-        this.today.set(todayIso());
-        this.load();
-        const open = this.expanded();
-        if (open !== null) {
-          this.loadExpanded(open);
-        }
-      });
-    });
+```
 
-    effect(() => {
-      const dues = this.dues();
-      this.bills.generation();
-      untracked(() => this.bills.ensure(dues, this.today()));
-    });
-  }
+  - in `load()`, replace
 
-  private load(): void {
-    const id = ++this.requestId;
-    forkJoin({
-      accounts: this.accounting.getAccounts(),
-      counterparties: this.accounting.getCounterparties(),
+```typescript
+      open: this.accounting.getAllEntries({ open: true, limit: REMINDER_ENTRY_LIMIT, offset: 0 }),
+    }).subscribe({
+      next: ({ accounts, counterparties, open }) => {
+```
+
+  with
+
+```typescript
       open: this.accounting.getAllEntries({ open: true, limit: REMINDER_ENTRY_LIMIT, offset: 0 }),
       queue: this.accounting.getScheduleInstances({ queue: true }).pipe(catchError(() => of(null))),
     }).subscribe({
       next: ({ accounts, counterparties, open, queue }) => {
-        if (id !== this.requestId) {
-          return;
-        }
-        this.accounts.set(accounts);
-        this.counterparties.set(counterparties);
+```
+
+  and replace `        this.openEntries.set(open.items);` with
+
+```typescript
         this.openEntries.set(open.items);
         this.queue.set(queue ?? []);
         this.queueFailed.set(queue === null);
-        this.loadError.set(false);
-        this.loaded.set(true);
-      },
-      error: () => {
-        if (id !== this.requestId) {
-          return;
-        }
-        this.loadError.set(true);
-        this.loaded.set(true);
-      },
-    });
-  }
+```
 
-  private loadExpanded(counterpartyId: number): void {
-    const id = ++this.expandRequestId;
-    this.expandError.set(false);
-    this.accounting
-      .getAllEntries({ counterparty_id: counterpartyId, open: true, limit: REMINDER_ENTRY_LIMIT, offset: 0 })
-      .subscribe({
-        next: page => {
-          if (id === this.expandRequestId) {
-            this.expandedEntries.set(page.items);
-          }
-        },
-        error: () => {
-          if (id === this.expandRequestId) {
-            this.expandedEntries.set([]);
-            this.expandError.set(true);
-          }
-        },
-      });
-  }
+  - append at the end of the class, after `open(row: Pick<TimelineRow, 'entryId'>): void { … }`:
 
-  /** 重試: reads every failed statement again in a new round. */
-  retryBills(): void {
-    const today = this.today();
-    for (const event of this.failedDues()) {
-      this.bills.retry(event, today);
-    }
-  }
-
-  setTab(tab: ReminderTab): void {
-    this.tab.set(tab);
-  }
-
-  /** Tapping a counterparty shows its open entries under it; tapping it again (or another) closes it. */
-  toggleDebt(counterpartyId: number): void {
-    if (this.expanded() === counterpartyId) {
-      ++this.expandRequestId;
-      this.expanded.set(null);
-      this.expandedEntries.set(null);
-      return;
-    }
-    this.expanded.set(counterpartyId);
-    this.expandedEntries.set(null);
-    this.loadExpanded(counterpartyId);
-  }
-
-  openCard(accountId: number): void {
-    void this.router.navigate(['/accounting/accounts', accountId]);
-  }
-
-  /** The entry's detail; its ✕ (and a delete) comes back to the reminder centre. */
-  open(row: Pick<TimelineRow, 'entryId'>): void {
-    void this.router.navigate(['/accounting/entries', row.entryId], { state: { closeTo: 'reminders' } });
-  }
+```typescript
 
   // ---- 待完成交易 -------------------------------------------------------------------------------------------
 
@@ -13599,10 +13469,9 @@ export class AccountingRemindersComponent {
       this.confirmingSkip.set(null);
     }
   }
-
-  readonly slashDate = slashDate;
-}
 ```
+
+  Check after the edits: `grep -c 'filterDebtEntries\|debtCounterparties\|showDebtFilters\|debtFilteredOut\|setDebtCounterparty\|setDebtKind\|filters.scss' frontend/src/app/components/accounting/reminders/reminders.ts` prints the same number as before them, and `grep -c '待收\|待還' frontend/src/app/components/accounting/reminders/reminders.ts` prints `0`.
 
 - [ ] 23.8 In `frontend/src/app/components/accounting/reminders/reminders.html`, insert before the line `    @if (empty()) {`:
 
@@ -13817,7 +13686,7 @@ export class AccountingRemindersComponent {
 
 - [ ] 23.10 Run 23.6 again.
 
-Expected: every reminder test passes (the previous count + 9).
+Expected: every reminder test passes (the previous count + 10), the existing `借還款追蹤 filters` specs included.
 
 - [ ] 23.11 Commit.
 
@@ -14094,6 +13963,15 @@ describe('ScheduleSheetComponent', () => {
       flushLoad([], [], [], [], [{ ...LOAN, status: 'paused' }]);
       fixture.detectChanges();
       expect(text(row(el, 12).querySelector('.badge.paused'))).toBe('已暫停');
+    });
+
+    it('does not say 目前沒有待處理項目 on 借還款追蹤 while schedules are listed', () => {
+      // No open counterparty, one live schedule: the 週期／分期 section is the page's content.
+      const { fixture, el } = render([], [], [], [], [LOAN]);
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      expect(row(el, 12)).not.toBeNull();
+      expect(el.querySelector('.empty')).toBeNull();
     });
 
     it('opens the sheet from ?schedule= on 借還款追蹤', async () => {
@@ -14545,6 +14423,18 @@ export class ScheduleSheetComponent {
         }
 ```
 
+  - in `empty()`, replace `    return cards === 0 && debts === 0 && queue === 0 && !failed && (!this.showCards() || this.billsSettled());` with
+
+```typescript
+    // 借還款追蹤 also lists 週期／分期: live or ended definitions (or their failed load) are not "nothing pending".
+    const schedules = this.tab() === 'debts' ? this.scheduleRows().active.length + this.scheduleRows().ended.length : 0;
+    const schedulesFailed = this.tab() === 'debts' && this.definitionsFailed();
+    return (
+      cards === 0 && debts === 0 && queue === 0 && schedules === 0 && !failed && !schedulesFailed &&
+      (!this.showCards() || this.billsSettled())
+    );
+```
+
   - add methods below `acceptPartial`:
 
 ```typescript
@@ -14753,7 +14643,7 @@ export class ScheduleSheetComponent {
 
 - [ ] 24.10 Run 24.2 again.
 
-Expected: every spec under `reminders/` passes (schedule-queue 5, schedule-sheet 7, reminders the Task 23 count + 5).
+Expected: every spec under `reminders/` passes (schedule-queue 5, schedule-sheet 7, reminders the Task 23 count + 6).
 
 - [ ] 24.11 Commit.
 
@@ -15011,9 +14901,9 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Produces: `DetailPanel` gains `'scope' | 'repost'`; signals `scheduleDefinition`, `repostAmounts`; computed `scheduleLink`, `schedulePillText`, `loanLine`, `loanLinkText`, `formEditable`, `repostLines`, `scheduleDeleteNote`; methods `openSchedule(definitionId)`, `editOne()`, `editSchedule()`, `setRepostAmount(index, value)`, `submitRepost()`, `repostPartial()`, `acceptPartial()`.
 
 Rules (spec "Scheduled entry edit scope", "Loan breakdown in entry detail", "Schedule pills", "Import-running feedback"):
-- A payable / receivable original with `loan_schedule` shows `剩餘 −$275,001 · 已還 $24,999 · 下期 02/09` (下期 left out when nothing is pending) and a link `信貸 每月還款 · 已入帳 3 / 36` to `/accounting/reminders?tab=debts&schedule=<id>` (the manage sheet), instead of the 原始 · 已還 breakdown.
+- A payable / receivable original with `loan_schedule` shows `剩餘 −$275,001 · 已還 $24,999 · 下期 02/09` (下期 left out when nothing is pending) and a link `信貸 每月還款 · 已入帳 3 / 36` to `/accounting/reminders?tab=debts&schedule=<id>` (the manage sheet), instead of the 原始 · 已還 breakdown and instead of main's plain `剩餘 …` span (剩餘 appears once, signed); a receivable original (a `collection` loan, money lent) reads `已收` instead of `已還`.
 - An entry with `schedule` shows its pill (`分期 #5/36`, `週期 #25`) linking to the same sheet; a partial period adds the badge `部分` and the actions 重新入帳 (the repost panel) and 保留部分 (`accept-partial`).
-- 編輯 on a scheduled entry (enabled also for its settlement rows) opens the scope choice 編輯這一筆 / 編輯整個排程 after reading the definition (request-id guarded). 編輯這一筆: the normal edit for kinds the entry form edits (expense, income, receivable, payable that is not a settlement, transfer legs), else the repost panel with the period's line amounts → `repost`, then the page follows the entry that replaced this one (same position in `posted_entry_ids`). 編輯整個排程: `/accounting/entry?schedule=<id>`; for a locked (imported, before cutover) definition the panel shows `MOZE 匯入資料，切換後可編輯` instead.
+- 編輯 on a scheduled entry (enabled also for its settlement rows) opens the scope choice 編輯這一筆 / 編輯整個排程 after reading the definition (request-id guarded). 編輯這一筆: the normal edit for kinds the entry form edits (expense, income, receivable, payable that is not a settlement, transfer legs) unless the entry is a member of the period's `entry_group` (the form would save it through `PUT /splits/{id}`, which the scheduled-group guard refuses with 409), else the repost panel with the period's line amounts → `repost`, then the page follows the entry that replaced this one (same position in `posted_entry_ids`). 編輯整個排程: `/accounting/entry?schedule=<id>`; for a locked (imported, before cutover) definition the panel shows `MOZE 匯入資料，切換後可編輯` instead.
 - 刪除 on a scheduled entry: the confirmation names the period's other entries that stay (`同期的 利息 −$620 會保留，此期標示為部分入帳`), or, for the period's last entry, `此期將回到待完成交易` (HomeHub posted it) / `此期將標示為略過` (`acted_by = import`); the 刪除整組 choice is not offered for a period's group.
 - Every write's error goes through `scheduleActionError`: `import_running` → the toast, the page unchanged. Esc closes any panel; ⏎ in the repost panel's fields submits it.
 
@@ -15118,8 +15008,39 @@ describe('EntryDetailComponent schedules', () => {
     expect(text(el.querySelector('.loan-line'))).toBe('剩餘 −$275,001 · 已還 $24,999 · 下期 02/09');
     expect(text(el.querySelector('.loan-link'))).toBe('信貸 每月還款 · 已入帳 3 / 36');
     expect(el.querySelector('.breakdown')).toBeNull();
+    expect(el.querySelector('.open-amount')).toBeNull(); // 剩餘 once, signed, in the loan line
     click(fixture, '.loan-link');
     expect(navigate).toHaveBeenCalledWith(['/accounting/reminders'], { queryParams: { tab: 'debts', schedule: 12 } });
+  });
+
+  it('words a lent-money loan with 已收', () => {
+    const lent = makeEntryDetail({
+      id: 42, kind: 'receivable', amount: '-50000.0000', open_amount: '30000.0000', is_settled: false, name: '借款',
+      loan_schedule: {
+        definition_id: 13, name: '借款 每月收回', status: 'active', posting_mode: 'auto', posted_count: 4, times: 10,
+        next_due_date: null, next_amount: [], remaining: '30000.0000', repaid: '20000.0000', needs_check: false,
+      },
+    });
+    const { el } = render(lent);
+    expect(text(el.querySelector('.loan-line'))).toBe('剩餘 $30,000 · 已收 $20,000');
+  });
+
+  it('sends a member of a scheduled split group to the repost panel, never to the entry form', () => {
+    // Two plain lines post an entry_group of kind split; the entry form would save a member with PUT /splits/{id},
+    // which assert_group_not_scheduled refuses (409, D29), so 編輯這一筆 goes to the repost panel.
+    const member = makeEntryDetail({
+      id: 42, kind: 'expense', amount: '-390.0000', name: '串流組合', account_id: 1, account_name: '薪轉',
+      schedule: link({ kind: 'recurring', times: null, name: '串流組合', posted_entry_ids: [42, 44] }),
+      group: { id: 6, kind: 'split', name: '串流組合 #1', merchant: null, description: null, count: 2, total: '-539.0000', currency: 'TWD' },
+      group_members: [makeEntry({ id: 42, amount: '-390.0000' }), makeEntry({ id: 44, amount: '-149.0000' })],
+    });
+    const { fixture, el } = render(member);
+    click(fixture, '.action-edit');
+    http.expectOne('/api/accounting/schedules/definitions/12').flush({ ...DEFINITION, kind: 'recurring' });
+    fixture.detectChanges();
+    click(fixture, '.scope-one');
+    expect(navigate).not.toHaveBeenCalledWith(['/accounting/entries', 42, 'edit']);
+    expect(el.querySelectorAll('.repost-amount').length).toBe(2);
   });
 
   it('shows the 分期 pill and opens its schedule', () => {
@@ -15250,7 +15171,8 @@ const FORM_KINDS: ReadonlySet<string> = new Set(['expense', 'income', 'receivabl
     if (!detail || !loan || loan.remaining === null) {
       return null;
     }
-    const parts = [`剩餘 ${formatMoney(loan.remaining, detail.currency)}`, `已還 ${formatMoney(loan.repaid ?? 0, detail.currency)}`];
+    const back = detail.kind === 'receivable' ? '已收' : '已還'; // a collection loan (money lent) comes back
+    const parts = [`剩餘 ${formatMoney(loan.remaining, detail.currency)}`, `${back} ${formatMoney(loan.repaid ?? 0, detail.currency)}`];
     if (loan.next_due_date) {
       parts.push(`下期 ${shortDate(loan.next_due_date)}`);
     }
@@ -15267,6 +15189,10 @@ const FORM_KINDS: ReadonlySet<string> = new Set(['expense', 'income', 'receivabl
   readonly formEditable = computed(() => {
     const detail = this.detail();
     if (!detail) {
+      return false;
+    }
+    if (detail.schedule && detail.group) {
+      // A period's group member: the form saves it with PUT /splits/{id}, which a scheduled group refuses (409, D29).
       return false;
     }
     return (FORM_KINDS.has(detail.kind) && !detail.is_settlement) || detail.kind === 'transfer_out' || detail.kind === 'transfer_in';
@@ -15483,6 +15409,22 @@ const FORM_KINDS: ReadonlySet<string> = new Set(['expense', 'income', 'receivabl
   - replace
 
 ```html
+        } @else {
+          <span class="open-amount">剩餘 {{ formatMoney(d.open_amount, d.currency) }}</span>
+        }
+```
+
+  with (the loan line below carries 剩餘, signed; showing both would print 剩餘 twice)
+
+```html
+        } @else if (!loanLine()) {
+          <span class="open-amount">剩餘 {{ formatMoney(d.open_amount, d.currency) }}</span>
+        }
+```
+
+  - replace
+
+```html
         @if (breakdown(); as line) {
           <p class="breakdown">{{ line }}</p>
         }
@@ -15626,7 +15568,7 @@ npx ng test --watch=false --include='src/app/components/accounting/entry-detail/
 npx ng test --watch=false --include='src/app/components/accounting/entry-detail/entry-detail.spec.ts' 2>&1 | tail -3
 ```
 
-Expected: `7 passed`; the existing entry-detail tests all pass.
+Expected: `9 passed`; the existing entry-detail tests all pass.
 
 - [ ] 26.7 Commit.
 
@@ -15830,7 +15772,7 @@ npx ng build 2>&1 | tail -3
 git checkout -- angular.json 2>/dev/null; git status --short | grep -v '^ M frontend/src\|^?? ' || true
 ```
 
-Expected: the settings specs pass; the full suite `B_front + 79` passed (Tasks 20–27: 15 + 7 + 17 + 13 + 13 + 6 + 7 + 1), no failed files; the build ends with `Application bundle generation complete.`
+Expected: the settings specs pass; the full suite `B_front + 85` passed (Tasks 20–27: 15 + 8 + 18 + 14 + 14 + 6 + 9 + 1), no failed files; the build ends with `Application bundle generation complete.`
 
 - [ ] 27.7 Commit.
 
@@ -15853,7 +15795,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Consumes: the migration (Task 3), the backup CLI with schedules (Tasks 16–18), the job CLI (Task 15), the API (Tasks 9–15), the SPA (Tasks 20–27), the converter `tools/moze-realm-export`.
 - Produces: the aggregates for the PR description and `design.md` "Implementation notes" (definitions per kind, `records_mapped`, `rewards_ignored`, `skipped_future` total, review reasons, loan remainder differences as a count, instance statuses, import timing); the confirmed MOZE weekday numbering and posting-mode field; the owner's pass/fail list (one loan, one recurring transfer, one 提醒入帳 item, 390 px). Drops `accounting_schedules_verify` at the end. Never touches `accounting_db`.
 
-Rules: nothing from the backup is printed row by row: the script prints counts, key names and reason codes only (the loan remainder check is reduced to the number of loans whose difference is not 0). The verify API runs with `ACCOUNTING_SCHEDULER_ENABLED=false` so that only the owner's actions and the importer's trigger post anything; the preview binds to the Tailscale address only.
+Rules: nothing from the backup is printed row by row: the script prints counts, key names and reason codes only (the loan remainder check is reduced to the number of loans whose difference is not 0). The verify API runs with `ACCOUNTING_SCHEDULER_ENABLED=false` so that only the owner's actions and the importer's trigger post anything; the preview binds to the Tailscale address only, and opening its port (and any firewall rule) is an owner-approved action (28.10a), closed again in 28.12.
 
 - [ ] 28.1 Run every suite and the production build.
 
@@ -15863,7 +15805,7 @@ cd /home/opc/workspace/home-hub-schedules/frontend && npx ng test --watch=false 
 cd /home/opc/workspace/home-hub-schedules/frontend && npm run build 2>&1 | tail -3 && ls dist/inventory-ui/browser/index.html
 ```
 
-Expected: pytest `… passed` with no failures (the Task 19 count); Vitest no failed files (`B_front + 79`); `Application bundle generation complete` and the `index.html` path.
+Expected: pytest `… passed` with no failures (the Task 19 count); Vitest no failed files (`B_front + 85`); `Application bundle generation complete` and the `index.html` path.
 
 - [ ] 28.2 Create the disposable database and point the worktree `.env` at it (a filtered private copy; nothing is printed).
 
@@ -15875,15 +15817,18 @@ rm -f .env
 sed -e 's/^ACCOUNTING_DB=.*/ACCOUNTING_DB=accounting_schedules_verify/' \
     -e 's/^ACCOUNTING_IMPORT_LOCKED=.*/ACCOUNTING_IMPORT_LOCKED=false/' \
     -e 's/^ACCOUNTING_SCHEDULER_ENABLED=.*//' \
+    -e 's/^ACCOUNTING_API_TOKENS=.*/ACCOUNTING_API_TOKENS=/' \
     /home/opc/workspace/home-hub/.env > .env
 echo 'ACCOUNTING_SCHEDULER_ENABLED=false' >> .env
 chmod 600 .env
 grep -c '^ACCOUNTING_DB=accounting_schedules_verify$' .env
+grep -qx 'ACCOUNTING_DB=accounting_schedules_verify' .env || { echo "verify .env not pointed at the verify DB"; exit 1; }
 mkdir -p /home/opc/workspace/moze-verify-schedules && chmod 700 /home/opc/workspace/moze-verify-schedules
-cd services/accounting-service && .venv/bin/alembic upgrade head 2>&1 | tail -1 && .venv/bin/alembic current 2>&1 | tail -1
+cd services/accounting-service && .venv/bin/alembic current 2>&1 | tail -1
+.venv/bin/alembic upgrade head 2>&1 | tail -1 && .venv/bin/alembic current 2>&1 | tail -1
 ```
 
-Expected: `0` (no leftover; a `1` means an earlier run did not clean up — drop it with the 28.12 `dropdb` line first); `1`; `Running upgrade 7b1e4a2c9d05 -> c4e8b2f1a7d3, …`; `c4e8b2f1a7d3 (head)`.
+Expected: `0` (no leftover; a `1` means an earlier run did not clean up — drop it with the 28.12 `dropdb` line first); `1`; then nothing from the guard (if it prints `verify .env not pointed at the verify DB`, the block stopped before Alembic: fix the `sed`, never run `alembic upgrade` against the production `accounting_db`); an `alembic current` line with no revision id (only Alembic's `INFO … Will assume transactional DDL.` line: the new verify database has no `alembic_version` yet — a revision id such as `7b1e4a2c9d05` printed here means the `.env` does not point at the empty verify database: stop); `Running upgrade 7b1e4a2c9d05 -> c4e8b2f1a7d3, …`; `c4e8b2f1a7d3 (head)`. The verify `.env` blanks `ACCOUNTING_API_TOKENS`, so the verify API on 127.0.0.1 runs without the #42 token auth and the `curl`s below need no header; the production build of 28.1 may carry `ACCOUNTING_SPA_TOKEN`, whose header the verify API then ignores, and the verify server of 28.10 forwards `Authorization` anyway, so the preview also works against a verify API that keeps a token.
 
 - [ ] 28.3 Install the converter and create the aggregate script `/home/opc/workspace/moze-verify-schedules/aggregates.py`.
 
@@ -16001,7 +15946,7 @@ time .venv/bin/python -m app.services.moze_backup_import_service ~/workspace/moz
   | python3 /home/opc/workspace/moze-verify-schedules/aggregates.py
 docker exec -i stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_schedules_verify -At' <<'SQL'
 SELECT kind || ':' || status || ':' || posting_mode || ':' || count(*) FROM schedule_definition GROUP BY 1 ORDER BY 1;
-SELECT status || ':' || coalesce(acted_by, '-') || ':' || count(*) FROM schedule_instance GROUP BY 1 ORDER BY 1;
+SELECT status || ':' || coalesce(acted_by::text, '-') || ':' || count(*) FROM schedule_instance GROUP BY 1 ORDER BY 1;
 SELECT 'schedule_entries:' || count(*) FROM ledger_entry WHERE source = 'schedule';
 SELECT md5(string_agg(id || ':' || status || ':' || seq || ':' || due_date || ':' || coalesce(amount_override::text, ''), ',' ORDER BY id)) FROM schedule_instance;
 SQL
@@ -16039,7 +15984,9 @@ curl -s http://127.0.0.1:8011/imports/schedules -o /dev/null -w '%{http_code}\n'
 
 Expected: `25 ['installment', 'recurring'] 25` (every imported definition is locked before cutover); the number of periods waiting in 待完成交易; `404`.
 
-- [ ] 28.10 Serve the production build over Tailscale: create `/home/opc/workspace/moze-verify-schedules/verify_server.py` from the phase 2a verify server (the code block of step 31.8 in `openspec/changes/archive/2026-10-03-add-accounting-entry/tasks.md`) with the build path, API port and listen port of this worktree, and start it in the background.
+- [ ] 28.10a **Owner-approved action: ask before opening the port.** Precedent: the phase 2a preview served the build on `100.81.25.128:4300` (archived 2a tasks 31.8–31.9). Ask the owner, in one message, to approve serving this preview on `100.81.25.128:4301`; the preview binds the Tailscale IP only (never `0.0.0.0` or a public interface), and the verify API stays on `127.0.0.1:8011`. firewalld's public zone blocks 4301, so the default access is an SSH tunnel (`ssh -N -L 4301:100.81.25.128:4301 opc@<this host>`, then `http://localhost:4301/hub/accounting`). For the phone, which cannot use the tunnel, a firewall change is a second owner-approved action: only with the owner's explicit yes run the runtime-only rule (no `--permanent`) `sudo firewall-cmd --zone=public --add-port=4301/tcp`, note in `notes.txt` that it was added, and remove it in 28.12. No tailnet ACL is changed. Without the owner's yes, do not start 28.10; stop and report.
+
+- [ ] 28.10 Serve the production build over Tailscale (after the owner approved 28.10a): create `/home/opc/workspace/moze-verify-schedules/verify_server.py` from the phase 2a verify server (the code block of step 31.8 in `openspec/changes/archive/2026-10-03-add-accounting-entry/tasks.md`) with the build path, API port and listen port of this worktree, and start it in the background.
 
 ```bash
 python3 - <<'PY'
@@ -16051,8 +15998,10 @@ code = re.search(r"```python\n(.*?)```", plan[start:], re.S).group(1)
 code = (code.replace("home-hub-entry/frontend", "home-hub-schedules/frontend")
             .replace("http://127.0.0.1:8010", "http://127.0.0.1:8011")
             .replace("('100.81.25.128', 4300)", "('100.81.25.128', 4301)")
+            .replace("FORWARDED_HEADERS = ('Content-Type', 'Accept')",
+                     "FORWARDED_HEADERS = ('Content-Type', 'Accept', 'Authorization')")  # #42 bearer token
             .replace("phase 2a verify server", "schedules verify server"))
-assert "8011" in code and "4301" in code and "home-hub-schedules" in code
+assert "8011" in code and "4301" in code and "home-hub-schedules" in code and "'Authorization'" in code
 Path("/home/opc/workspace/moze-verify-schedules/verify_server.py").write_text(code, encoding="utf-8")
 print("written")
 PY
@@ -16079,11 +16028,20 @@ git checkout -- frontend/angular.json 2>/dev/null; git status --short
 docker exec stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d postgres -At -c "SELECT count(*) FROM pg_database WHERE datname = '"'"'accounting_schedules_verify'"'"'"'
 ```
 
-Expected: `/home/opc/workspace/home-hub/.env`; `git status --short` prints nothing (the build output is ignored); `0`. `notes.txt` stays for Task 29. Nothing is committed in this task.
+Then confirm the preview is torn down (the port of 28.10a is closed again):
+
+```bash
+ss -ltn | grep -c ':4301 ' || true
+sudo firewall-cmd --zone=public --list-ports | grep -c '4301/tcp' || true
+```
+
+Run `sudo firewall-cmd --zone=public --remove-port=4301/tcp` first if 28.10a added the rule (notes.txt says so).
+
+Expected: `/home/opc/workspace/home-hub/.env`; `git status --short` prints nothing (the build output is ignored); `0`; then `0` and `0` (nothing listens on 4301 any more and no firewall rule for it remains). Tell the owner the preview is down. `notes.txt` stays for Task 29. Nothing is committed in this task.
 
 ## 29. Deploy runbook, design notes, superseded text
 
-**Model:** sonnet
+**Model:** opus
 
 **Files:**
 - Create: `docs/deploy/accounting-schedules.md`
@@ -16095,7 +16053,7 @@ Expected: `/home/opc/workspace/home-hub/.env`; `git status --short` prints nothi
 - Consumes: `notes.txt` of Task 28; the phase 2a runbook `docs/deploy/accounting-phase-2a.md` (its dump, drill and restore-and-swap rollback are reused by reference, with this release's names).
 - Produces: the runbook; the filled "Implementation notes"; no stale statement that the migration moves `moze_schedule` rows or that downgrade refills them.
 
-Rules: the runbook states, in order, that (1) the migration drops `moze_schedule` and its rows are not migrated (they are reproducible from the backup), (2) backend and SPA deploy together (the old SPA calls the removed `/imports/schedules`; the new backend needs `apscheduler`), (3) the post-upgrade step is a backup import, dry run first, and that the import ends with a job run, (4) `ACCOUNTING_SCHEDULER_ENABLED` and the job's 00:05 / startup / retry / after-import runs, and (5) rollback is the phase 2a restore-and-swap, since `alembic downgrade` refuses as soon as HomeHub has posted or acted on a period.
+Rules: the runbook states, in order, that (1) the migration drops `moze_schedule` and its rows are not migrated (they are reproducible from the backup), (2) backend and SPA deploy together (the old SPA calls the removed `/imports/schedules`; the new backend needs `apscheduler`), (3) the post-upgrade step is a backup import, dry run first, and that the import ends with a job run, (4) `ACCOUNTING_SCHEDULER_ENABLED` and the job's 00:05 / startup / retry / after-import runs, (5) operator `curl`s pass `Authorization: Bearer $TOKEN` when `ACCOUNTING_API_TOKENS` is set (#42), (6) no Caddy change, but the live `@hub_spa` matcher must serve `/accounting/reminders` and `/accounting/entry`, and (7) rollback is the phase 2a restore-and-swap with this release's own script (phase 2a head `7b1e4a2c9d05` in all its head checks, written out in full in the runbook), since `alembic downgrade` refuses as soon as HomeHub has posted or acted on a period.
 
 - [ ] 29.1 Create `docs/deploy/accounting-schedules.md`:
 
@@ -16120,11 +16078,18 @@ Revision `c4e8b2f1a7d3`:
 
 - adds `schedule` to `entry_source` (in an autocommit block, before the transaction of the rest);
 - creates `schedule_definition` and `schedule_instance` with their enums and indexes;
-- **drops `moze_schedule`.** Its rows are not migrated: they were a raw copy of the backup's future records, periods and installments, and the backup import after the upgrade (step 5) recreates them as definitions and periods. Between the upgrade and that import, 提醒中心 shows no 週期／分期 and nothing is posted.
+- **drops `moze_schedule`.** Its rows are not migrated: they were a raw copy of the backup's future records, periods and installments, and the backup import after the upgrade (step 3) recreates them as definitions and periods. Between the upgrade and that import, 提醒中心 shows no 週期／分期 and nothing is posted.
 
 ## Deploy order
 
-0. **Pre-deploy record, dump and restore drill**: steps 0 and 0b of [`accounting-phase-2a.md`](accounting-phase-2a.md) with `~/backups/home-hub-schedules/`, file names `*-pre-schedules-$TS.*`, the rollback script saved as `~/backups/home-hub-schedules/rollback-schedules.sh` (the 2a script with `home-hub-2a` → `home-hub-schedules` and `pre-2a` → `pre-schedules`), drill databases `accounting_drill_schedules` / `accounting_drill_restore` / `accounting_drill_broken`, and the expected head after the drill's upgrade `c4e8b2f1a7d3` (phase 2a head on the restored copy: `7b1e4a2c9d05`). Any difference: stop, do not deploy.
+0. **Pre-deploy record, dump and restore drill**: steps 0 and 0b of [`accounting-phase-2a.md`](accounting-phase-2a.md) with `~/backups/home-hub-schedules/`, file names `*-pre-schedules-$TS.*`, drill databases `accounting_drill_schedules` / `accounting_drill_restore` / `accounting_drill_broken`, and the expected head after the drill's upgrade `c4e8b2f1a7d3`. The rollback script is **not** the 2a file with names swapped: the 2a script checks the phase 1 head `5d2e7c9a1b3f`, which would stop a real rollback of this release at its step c. Save the script of the "Rollback" section below (phase 2a head `7b1e4a2c9d05` in its step c check, its `restore verified` line and its post-swap check) as `~/backups/home-hub-schedules/rollback-schedules.sh` and `chmod 700` it, then confirm it before the drill:
+
+   ```bash
+   grep -c '7b1e4a2c9d05' ~/backups/home-hub-schedules/rollback-schedules.sh
+   grep -c '5d2e7c9a1b3f\|home-hub-2a\|pre-2a' ~/backups/home-hub-schedules/rollback-schedules.sh
+   ```
+
+   Expected: `4` and `0`. In the drill (2a step 0b with this release's names), step c's `alembic current` on the swapped-in database must print exactly `7b1e4a2c9d05 (head)` — the very string the script's step c compares against, so the drill proves the script's head check on a good restore; the failure drill (step d) runs `rollback-schedules.sh` on the truncated dump. Any difference: stop, do not deploy.
 
 1. **Dependencies and migration**
 
@@ -16142,24 +16107,35 @@ Revision `c4e8b2f1a7d3`:
    ```bash
    cd /home/opc/workspace/home-hub && npx pm2 restart accounting-service
    curl -s http://localhost:8000/health
-   curl -s http://localhost:8000/schedules/definitions
+   curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8000/schedules/definitions
    sleep 15; npx pm2 logs accounting-service --lines 50 --nostream | grep -c 'schedule_job.run'
    ```
 
-   Expected: `{"status":"ok"}`; `[]`; at least `1` (the start-up run, which finds no definitions). Then build and publish the SPA as in step 3 of the phase 2a runbook (`cd frontend && npm run build`, publish `frontend/dist/inventory-ui/browser` with the production publisher).
+   Expected: `{"status":"ok"}`; `[]`; at least `1` (the start-up run, which finds no definitions). As in phase 2a step 2: with `ACCOUNTING_API_TOKENS` unset the header is ignored; when it is set (#42), export `TOKEN` to one of its tokens first — every `/schedules/*` route, `run-now` included, answers 401 without it (`/health` needs none). Then build and publish the SPA as in step 3 of the phase 2a runbook (`cd frontend && npm run build`, publish `frontend/dist/inventory-ui/browser` with the production publisher).
 
 3. **Post-upgrade backup import**: dry run first, read the `schedules` block, then the real run.
 
    ```bash
    cd /home/opc/workspace/home-hub/services/accounting-service
-   .venv/bin/python -m app.services.moze_backup_import_service ~/workspace/moze-backup/MOZE_4.0.zip --dry-run > /tmp/moze-schedules-dry-run.json
-   .venv/bin/python -m app.services.moze_backup_import_service ~/workspace/moze-backup/MOZE_4.0.zip > /tmp/moze-schedules-import.json
-   chmod 600 /tmp/moze-schedules-*.json
+   umask 077   # the reports hold loan_remainder_check names and amounts: never world-readable, not even briefly
+   .venv/bin/python -m app.services.moze_backup_import_service ~/workspace/moze-backup/MOZE_4.0.zip --dry-run > ~/backups/home-hub-schedules/moze-schedules-dry-run.json
+   .venv/bin/python -m app.services.moze_backup_import_service ~/workspace/moze-backup/MOZE_4.0.zip > ~/backups/home-hub-schedules/moze-schedules-import.json
+   ls -l ~/backups/home-hub-schedules/moze-schedules-*.json
    ```
 
-   Or from the SPA: 記帳設定 → 匯入 → 試算 → 匯入 (the report shows 週期／分期 counts). Check: definitions `recurring` 11 and `installment` 14 created, `records_mapped` 534, `rewards_ignored` 63, `unsupported_types` empty, `review` without `interval_mismatch`, every `loan_remainder_check` difference 0, and the balance comparison as in phase 2a. The real import ends with a job run: periods due today post, periods due earlier wait in 提醒中心 › 待完成交易 for 補入帳至今天 (nothing is posted silently for the past). Delete both JSON files after reading.
+   Or from the SPA: 記帳設定 → 匯入 → 試算 → 匯入 (the report shows 週期／分期 counts). Check: definitions `recurring` 11 and `installment` 14 created, `records_mapped` 534, `rewards_ignored` 63, `unsupported_types` empty, `review` without `interval_mismatch`, every `loan_remainder_check` difference 0, and the balance comparison as in phase 2a. The real import ends with a job run: periods due today post, periods due earlier wait in 提醒中心 › 待完成交易 for 補入帳至今天 (nothing is posted silently for the past). Delete both JSON files after reading (`rm -f ~/backups/home-hub-schedules/moze-schedules-*.json`).
 
-4. **Owner check**: one loan (剩餘 equals MOZE after the posted periods), one recurring transfer, one 提醒入帳 item, as in the verify checklist; the bell counts due 提醒入帳 periods.
+4. **Caddy**: no Caddy change in this release (no new SPA path), but its deep links `/accounting/reminders?tab=debts&schedule=<id>` (entry detail, settings) and `/accounting/entry?schedule=<id>` need `/accounting/reminders` and `/accounting/entry` in the live `@hub_spa` matcher (the 2a matcher lists `entry`; `reminders` came with the reminder centre). Confirm:
+
+   ```bash
+   for p in accounting/reminders accounting/entry; do
+     printf '%s %s\n' "$(curl -s -o /dev/null -w '%{http_code}' "https://oracle.saola-mamba.ts.net/hub/$p")" "$p"
+   done
+   ```
+
+   Expected: `200` for both. A `404`: add the missing path to the matcher exactly as in the 2a "Caddy `@hub_spa` matcher" procedure (edit in place to keep the bind-mounted inode, backup `command cp -p Caddyfile Caddyfile.bak-accounting-schedules` first, `caddy validate`, `caddy reload`, re-run the loop); its rollback is `cat Caddyfile.bak-accounting-schedules > Caddyfile` followed by the same validate and reload.
+
+5. **Owner check**: one loan (剩餘 equals MOZE after the posted periods), one recurring transfer, one 提醒入帳 item, as in the verify checklist; the bell counts due 提醒入帳 periods.
 
 ## During the mirror period (before `ACCOUNTING_IMPORT_LOCKED=true`)
 
@@ -16169,7 +16145,70 @@ Revision `c4e8b2f1a7d3`:
 
 ## Rollback
 
-Window: **3 days**, as in phase 2a. `alembic downgrade 7b1e4a2c9d05` is **not** the rollback: it refuses (`refusing to downgrade c4e8b2f1a7d3: …`) as soon as any `schedule` entry exists or any period was posted or skipped by HomeHub (`acted_by` `auto` / `owner`), and when it runs it recreates `moze_schedule` empty. Use it only for a migration that failed in step 1. The rollback is the restore-and-swap of the phase 2a runbook with `rollback-schedules.sh` and the `*-pre-schedules-$TS.*` files, followed by checking out the pre-deploy backend commit, `pm2 restart accounting-service`, and republishing the previous SPA release. After a rollback, a backup import with the old code refills `moze_schedule`.
+Window: **3 days**, as in phase 2a. `alembic downgrade 7b1e4a2c9d05` is **not** the rollback: it refuses (`refusing to downgrade c4e8b2f1a7d3: …`) as soon as any `schedule` entry exists or any period was posted or skipped by HomeHub (`acted_by` `auto` / `owner`), and when it runs it recreates `moze_schedule` empty (only then does a backup import with the old code refill it). Use it only for a migration that failed in step 1.
+
+The rollback is the restore-and-swap of the phase 2a runbook with this script and the `*-pre-schedules-$TS.*` files. The script itself verifies the restored copy (phase 2a head `7b1e4a2c9d05` and the manifest counts), stops the backend, swaps the database names, checks out the pre-deploy backend commit and starts the backend; the restored dump already holds the pre-deploy `moze_schedule` rows, so no re-import is needed. After `ROLLBACK-DB-OK`, republish the previous SPA release (`spa-release-pre-schedules-$TS.txt`) as in the 2a rollback's step 1; Caddy needs nothing unless step 4 changed it (then restore `Caddyfile.bak-accounting-schedules` as written there). Keep `accounting_db_broken_<ts>` until the window ends, as in phase 2a.
+
+Save as `~/backups/home-hub-schedules/rollback-schedules.sh` (mode `700`) in step 0:
+
+```bash
+#!/usr/bin/env bash
+# Usage: rollback-schedules.sh <TS from step 0> [dump path: failure drill only]
+set -euo pipefail
+TS=${1:?usage: rollback-schedules.sh <TS> [dump]}
+REPO=/home/opc/workspace/home-hub
+B=$HOME/backups/home-hub-schedules
+DUMP=${2:-$B/accounting_db-pre-schedules-$TS.dump}
+MANIFEST=$B/accounting_db-pre-schedules-$TS.counts
+PREV_BACKEND=$(cat "$B/backend-commit-pre-schedules-$TS.txt")
+VENV=$REPO/services/accounting-service/.venv/bin
+RTS=$(date -u +%Y%m%d%H%M%S)   # digits only: an unquoted database name is folded to lower case
+COUNTS_SQL='SELECT (SELECT count(*) FROM account), (SELECT count(*) FROM ledger_entry), (SELECT count(*) FROM category), (SELECT count(*) FROM project), (SELECT count(*) FROM import_run)'
+pg() { docker exec -i stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -v ON_ERROR_STOP=1 -At -d "$0"' "$1"; }   # SQL on stdin
+fail() { echo "ROLLBACK STOPPED: $*" >&2; exit 1; }
+
+# a. preconditions: no leftover restore database, inputs present, clean checkout
+[ "$(pg postgres <<<"SELECT count(*) FROM pg_database WHERE datname = 'accounting_db_restore'")" = 0 ] \
+  || fail "accounting_db_restore exists (interrupted attempt?): inspect it, drop it explicitly with dropdb --force accounting_db_restore, then re-run"
+{ [ -s "$DUMP" ] && [ -s "$MANIFEST" ]; } || fail "dump or manifest missing"
+{ git -C "$REPO" diff --quiet && git -C "$REPO" diff --cached --quiet; } || fail "production checkout has local changes"
+
+# b. restore into a new database; any pg_restore error stops here (the schedules release keeps running, accounting_db untouched)
+docker exec stonk-postgres-1 sh -c 'createdb -U "$POSTGRES_USER" accounting_db_restore'
+docker exec -i stonk-postgres-1 sh -c 'pg_restore -U "$POSTGRES_USER" -Fc --exit-on-error --no-owner -d accounting_db_restore' < "$DUMP" \
+  || fail "pg_restore failed; accounting_db untouched, accounting_db_restore left for inspection"
+
+# c. verify the restored copy BEFORE any service stop or rename: phase 2a head and the manifest's row counts
+WORK=$(mktemp -d) && chmod 700 "$WORK"
+trap 'git -C "$REPO" worktree remove --force "$WORK/old" >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
+git -C "$REPO" worktree add --quiet --detach "$WORK/old" "$PREV_BACKEND"
+sed -e 's/^ACCOUNTING_DB=.*/ACCOUNTING_DB=accounting_db_restore/' "$REPO/.env" > "$WORK/old/.env" && chmod 600 "$WORK/old/.env"
+HEAD_LINE=$(cd "$WORK/old/services/accounting-service" && { "$VENV/alembic" current 2>/dev/null || true; } | tail -1)
+[ "$HEAD_LINE" = "7b1e4a2c9d05 (head)" ] || fail "alembic current on accounting_db_restore printed '$HEAD_LINE'"
+GOT=$(pg accounting_db_restore <<<"$COUNTS_SQL")
+WANT=$(sed -n 2p "$MANIFEST")
+[ "$GOT" = "$WANT" ] || fail "restored row counts $GOT differ from the dump manifest $WANT"
+echo "restore verified: 7b1e4a2c9d05 (head), counts $GOT"
+
+# d. only now: stop the backend, require no sessions, swap names in one psql session, previous backend, start
+cd "$REPO" && npx pm2 stop accounting-service
+SESSIONS=$(pg postgres <<<"SELECT datname, pid, application_name, state FROM pg_stat_activity WHERE datname IN ('accounting_db', 'accounting_db_restore')")
+if [ -n "$SESSIONS" ]; then
+  echo "$SESSIONS" >&2
+  npx pm2 start accounting-service
+  fail "sessions connected (listed above); backend restarted on the schedules release; close them, dropdb --force accounting_db_restore, re-run"
+fi
+docker exec stonk-postgres-1 sh -c "psql -U \"\$POSTGRES_USER\" -d postgres -v ON_ERROR_STOP=1 -c 'ALTER DATABASE accounting_db RENAME TO accounting_db_broken_$RTS; ALTER DATABASE accounting_db_restore RENAME TO accounting_db;'"
+[ "$(pg accounting_db <<<'SELECT version_num FROM alembic_version')" = 7b1e4a2c9d05 ] \
+  || fail "accounting_db after the swap is not 7b1e4a2c9d05; backend left stopped"
+git -C "$REPO" switch --detach "$PREV_BACKEND"
+npx pm2 start accounting-service
+for _ in $(seq 30); do [ "$(curl -s http://localhost:8000/health)" = '{"status":"ok"}' ] && break; sleep 1; done
+[ "$(curl -s http://localhost:8000/health)" = '{"status":"ok"}' ] || fail "health check failed after start on $PREV_BACKEND"
+echo "ROLLBACK-DB-OK accounting_db_broken_$RTS"
+```
+
+Run it (`$TS` from step 0): `bash ~/backups/home-hub-schedules/rollback-schedules.sh "$TS"; echo "exit=$?"`. Expected: `restore verified: 7b1e4a2c9d05 (head), counts <the manifest's line>`, the pm2 stop output, `ALTER DATABASE` twice, the pm2 start output, `ROLLBACK-DB-OK accounting_db_broken_<ts>` and `exit=0`; a `ROLLBACK STOPPED:` line means what the 2a runbook says it means.
 ````
 
 - [ ] 29.2 Add `ACCOUNTING_SCHEDULER_ENABLED` to `.env.example` right after the `ACCOUNTING_IMPORT_LOCKED` line:
@@ -16366,17 +16405,17 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Card installment split | 20 — `splits an installment with the remainder on the last period`; 21 |
 | New loan with interest | 22 |
 | **Scheduled entry edit scope** | 26 |
-| Correct one period's interest | 26 — `corrects one period's interest with 編輯這一筆` |
+| Correct one period's interest | 26 — `corrects one period's interest with 編輯這一筆`, `sends a member of a scheduled split group to the repost panel, never to the entry form` |
 | Deleting a MOZE-booked period's last entry | 26 — `words what deleting does to the entry's period` |
-| **待完成交易 tab** | 23 |
+| **待完成交易 tab** | 23 (the `last_error` text with 重試: `shows the error of a failing period with 重試 instead of 入帳, and 重試 posts it again`) |
 | Overdue confirm item | 23 |
 | Skip prompt keeps the remaining | 23 |
 | Back-dated start waits for the owner | 22 (catch-up only for `auto` anchored today); 23 |
-| Unsupported fields hidden | 22 |
+| Unsupported fields hidden | 22 — `hides the fields a schedule cannot carry`, `keeps the currency pill while a rate is set, so the owner can remove it on 週期` |
 | Post from the queue | 23 |
 | Catch-up offered for a backlog | 23 |
 | **週期／分期 section** | 24 |
-| Loan row | 24 |
+| Loan row | 24 (and `does not say 目前沒有待處理項目 on 借還款追蹤 while schedules are listed`) |
 | Ended loan still open needs a check | 24 |
 | Pause from the sheet | 24 |
 | **Reminder bell count** | 25 |
@@ -16384,7 +16423,7 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Partial period counted until accepted | 25 — `counts a partial period until it is accepted` |
 | Paused definition not counted | 25 — `stops counting the item of a definition the owner paused` |
 | **Loan breakdown in entry detail** | 26 |
-| Loan detail line | 26 — `shows the loan line and links to its schedule` |
+| Loan detail line | 26 — `shows the loan line and links to its schedule` (剩餘 once), `words a lent-money loan with 已收` |
 | **Import-running feedback** | 20 (`AccountingToastService`, `scheduleActionError`), 23, 24, 26 |
 | Posting during an import | 23; 26 — `shows the toast when an import holds the period`; 20 — `turns import_running into the toast and anything else into an error line` |
 | **Schedule pills** | 20 (`schedulePill`), 25, 26 |
