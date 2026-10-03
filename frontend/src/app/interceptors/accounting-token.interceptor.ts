@@ -5,14 +5,24 @@ import { environment } from '../../environments/environment';
 
 const ACCOUNTING_PREFIX = '/api/accounting';
 
+/** The part of the generated environment this interceptor reads; a token so specs inject a fake instead. */
+export interface AccountingTokenEnvironment {
+  accountingToken?: string;
+}
+
+export const ACCOUNTING_ENVIRONMENT = new InjectionToken<AccountingTokenEnvironment>('ACCOUNTING_ENVIRONMENT', {
+  providedIn: 'root',
+  factory: () => environment as AccountingTokenEnvironment,
+});
+
 /**
  * Bearer token for the accounting API (`ACCOUNTING_SPA_TOKEN` in the root `.env`, written by `set-env.js`).
- * Empty means the backend runs without auth and no header is sent. Read defensively so an environment.ts
- * generated before this field existed still compiles and simply sends nothing.
+ * Empty means the backend runs without auth and no header is sent. The field is optional so an environment.ts
+ * generated before it existed still compiles and simply sends nothing.
  */
 export const ACCOUNTING_API_TOKEN = new InjectionToken<string>('ACCOUNTING_API_TOKEN', {
   providedIn: 'root',
-  factory: () => (environment as { accountingToken?: string }).accountingToken ?? '',
+  factory: () => inject(ACCOUNTING_ENVIRONMENT).accountingToken ?? '',
 });
 
 function isAccountingUrl(url: string): boolean {

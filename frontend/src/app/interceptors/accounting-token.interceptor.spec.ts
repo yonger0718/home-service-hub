@@ -4,13 +4,23 @@ import { TestBed } from '@angular/core/testing';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { AccountingService } from '../services/accounting.service';
-import { ACCOUNTING_API_TOKEN, accountingTokenInterceptor } from './accounting-token.interceptor';
+import {
+  ACCOUNTING_API_TOKEN,
+  ACCOUNTING_ENVIRONMENT,
+  AccountingTokenEnvironment,
+  accountingTokenInterceptor,
+} from './accounting-token.interceptor';
 
-function setup(token: string | null) {
+// vi.mock is not supported by Angular's unit-test builder, so the environment is replaced through TestBed:
+// no spec reads the generated environment.ts (it may hold a real token).
+const FAKE_ENVIRONMENT: AccountingTokenEnvironment = {};
+
+function setup(token: string | null, env: AccountingTokenEnvironment = FAKE_ENVIRONMENT) {
   TestBed.configureTestingModule({
     providers: [
       provideHttpClient(withInterceptors([accountingTokenInterceptor])),
       provideHttpClientTesting(),
+      { provide: ACCOUNTING_ENVIRONMENT, useValue: env },
       ...(token === null ? [] : [{ provide: ACCOUNTING_API_TOKEN, useValue: token }]),
     ],
   });
@@ -53,21 +63,29 @@ describe('accountingTokenInterceptor', () => {
     }
   });
 
-  it('sends no header when the token is empty', () => {
-    const { service, httpMock } = setup('');
+  it('sends no header when environment.accountingToken is empty', () => {
+    const { service, httpMock } = setup(null, { accountingToken: '' });
     service.getAccounts().subscribe();
     const req = httpMock.expectOne(r => r.url === '/api/accounting/accounts');
     expect(req.request.headers.has('Authorization')).toBe(false);
     req.flush([]);
   });
 
-  it('defaults to the environment token, which is empty unless ACCOUNTING_SPA_TOKEN is set', () => {
-    const { service, httpMock } = setup(null);
-    const configured = TestBed.inject(ACCOUNTING_API_TOKEN);
-    expect(typeof configured).toBe('string');
+  it('defaults to environment.accountingToken when it is set', () => {
+    const { service, httpMock } = setup(null, { accountingToken: 'env-token' });
+    expect(TestBed.inject(ACCOUNTING_API_TOKEN)).toBe('env-token');
     service.getAccounts().subscribe();
     const req = httpMock.expectOne(r => r.url === '/api/accounting/accounts');
-    expect(req.request.headers.get('Authorization')).toBe(configured ? `Bearer ${configured}` : null);
+    expect(req.request.headers.get('Authorization')).toBe('Bearer env-token');
+    req.flush([]);
+  });
+
+  it('sends no header when environment.accountingToken is absent (an older generated environment.ts)', () => {
+    const { service, httpMock } = setup(null, {});
+    expect(TestBed.inject(ACCOUNTING_API_TOKEN)).toBe('');
+    service.getAccounts().subscribe();
+    const req = httpMock.expectOne(r => r.url === '/api/accounting/accounts');
+    expect(req.request.headers.has('Authorization')).toBe(false);
     req.flush([]);
   });
 

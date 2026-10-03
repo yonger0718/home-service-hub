@@ -6,6 +6,19 @@ const targetPath = path.resolve(__dirname, './src/environments/environment.ts');
 
 let envConfig = {};
 
+// KEY="v" 或 KEY='v' 去掉成對引號；未加引號時去掉行尾 ` # 註解`
+function parseEnvValue(raw) {
+  const value = raw.trim();
+  const quote = value.charAt(0);
+  if (quote === '"' || quote === "'") {
+    const end = value.indexOf(quote, 1);
+    if (end > 0) {
+      return value.substring(1, end);
+    }
+  }
+  return value.replace(/\s+#.*$/, '').trim();
+}
+
 if (fs.existsSync(envPath)) {
   const envFile = fs.readFileSync(envPath, 'utf8');
   const lines = envFile.split(/\r?\n/);
@@ -13,11 +26,7 @@ if (fs.existsSync(envPath)) {
     const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
     if (match) {
       const key = match[1];
-      let value = match[2] || '';
-      if (value.length > 0 && value.charAt(0) === '"' && value.charAt(value.length - 1) === '"') {
-        value = value.substring(1, value.length - 1);
-      }
-      envConfig[key] = value;
+      envConfig[key] = parseEnvValue(match[2] || '');
     }
   });
 }

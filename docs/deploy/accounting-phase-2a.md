@@ -21,7 +21,7 @@ ACCOUNTING_SPA_TOKEN=<token1>
 ACCOUNTING_DOCS_PUBLIC=false
 ```
 
-Both unset (the default) means no auth, exactly as before. To turn it on, set both in the same edit, rebuild the SPA (`npm run build`, which runs `set-env.js` and bakes `ACCOUNTING_SPA_TOKEN` into the bundle), then restart the accounting service; the startup log reads `API auth: enabled (2 tokens: spa, agent-x)`. Rebuild before the restart (the new bundle's header is ignored while auth is off), otherwise the old bundle's requests get 401 until it is rebuilt. Rotation = change the agent token only (edit its entry, restart the service). The SPA token is baked into the bundle and readable by anyone who can load the SPA on the tailnet, so it is not a secret from them; changing it needs a rebuild plus restart. Never log or commit a token.
+Both unset (the default) means no auth, exactly as before. Tokens are unquoted hex only (`openssl rand -hex 32`). To turn it on, set both in the same edit, rebuild and publish the SPA (`npm run build`, which runs `set-env.js` and bakes `ACCOUNTING_SPA_TOKEN` into the bundle, then the publish in step 3 of the deploy order), then restart the accounting service; the startup log reads `API auth: enabled (2 tokens: spa, agent-x)`. Rebuild and publish before the restart (the new bundle's header is ignored while auth is off), otherwise the old bundle's requests get 401 until it is rebuilt and published. Rotation = change the agent token only (edit its entry, restart the service). The SPA token is baked into the bundle and readable by anyone who can load the SPA on the tailnet, so it is not a secret from them; changing it needs a rebuild, a publish and a restart. Never log or commit a token.
 
 ## Converter install (once per checkout, Node ≥ 20)
 
@@ -124,10 +124,10 @@ The converter copies `moze.realm` into a scratch directory before opening it; it
    ```bash
    cd /home/opc/workspace/home-hub && npx pm2 restart accounting-service
    curl -s http://localhost:8000/health
-   curl -s http://localhost:8000/preference
+   curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8000/preference
    ```
 
-   Expected: `{"status":"ok"}` and the preference row (defaults on first read).
+   Expected: `{"status":"ok"}` and the preference row (defaults on first read). With `ACCOUNTING_API_TOKENS` unset the header is ignored; when it is set, export `TOKEN` to one of its tokens first (`/health` needs none).
 
 3. **Frontend publish**: `cd /home/opc/workspace/home-hub/frontend && npm run build`, then publish `frontend/dist/inventory-ui/browser` with the existing production publisher (the procedure that fills `/var/lib/home-hub-production/store/current/web`).
 
