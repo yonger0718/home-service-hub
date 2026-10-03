@@ -79,7 +79,9 @@
 .name { font-weight: 800; grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { color: var(--app-text-muted); font-size: 0.72rem; grid-area: meta; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bal { font-variant-numeric: tabular-nums; font-weight: 800; grid-area: bal; text-align: right; white-space: nowrap; }
-.due { display: flex; grid-area: due; justify-content: flex-end; padding-top: 2px; }
+.due { align-items: center; display: flex; flex-wrap: wrap; gap: 2px 8px; grid-area: due; justify-content: flex-end; min-width: 0; padding-top: 2px; }
+/* 待繳帳款 on the left, the due pill on the right; at 390 px the pill wraps below instead of scrolling. */
+.owed { color: var(--app-text); font-size: 0.72rem; font-variant-numeric: tabular-nums; font-weight: 700; margin-right: auto; min-width: 0; overflow-wrap: anywhere; }
 
 .badge {
   background: var(--app-primary-soft);
@@ -94,6 +96,8 @@
 
 .pill { border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-muted); font-size: 0.62rem; font-weight: 700; padding: 0 6px; white-space: nowrap; }
 .pill.rv { background: var(--app-primary-soft); border-color: transparent; color: var(--app-primary); }
+.pill.warn { background: var(--app-state-warning-bg); border-color: transparent; color: var(--app-text); }
+.pill.warn.overdue { color: var(--tone-neg, var(--c-red)); }
 .neg { color: var(--tone-neg, var(--c-red)); }
 .muted { color: var(--app-text-muted); font-size: 0.85rem; }
 

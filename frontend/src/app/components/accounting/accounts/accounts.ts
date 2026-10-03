@@ -5,9 +5,18 @@ import { catchError, forkJoin, of } from 'rxjs';
 
 import { ImportRun, LedgerAccount } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { currentDues, duePillText } from '../billing/billing-math';
+import { BillState, BillingService } from '../billing/billing.service';
 import { dueDate, statementPeriod } from '../cycle';
-import { shortDate, todayIso } from '../dates';
+import { daysBetween, shortDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
+
+/** A credit card row's third line: what is left on its current statement and when it is due. */
+export interface CardDue {
+  owedText: string;
+  pill: string;
+  overdue: boolean;
+}
 
 const STATUS_LABELS: Record<ImportRun['status'], string> = {
   running: '匯入中',
@@ -104,6 +113,7 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
 })
 export class AccountingAccountsComponent {
   private accountingService = inject(AccountingService);
+  private readonly bills = inject(BillingService);
   private requestId = 0;
 
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -133,6 +143,19 @@ export class AccountingAccountsComponent {
     return summary?.needs_review?.count ?? summary?.unpaired_transfers?.length ?? 0;
   });
   readonly formatMoney = formatMoney;
+  /** Each card's current statement (the same resolution as the calendar and the reminder centre). */
+  private readonly dues = computed(() => currentDues(this.accounts(), this.today));
+  /** Per card id: the current statement when something is left to pay. */
+  private readonly owed = computed(() => {
+    const owed = new Map<number, BillState>();
+    for (const event of this.dues()) {
+      const bill = this.bills.bill(event);
+      if (bill && bill.remaining > 0) {
+        owed.set(event.accountId, bill);
+      }
+    }
+    return owed;
+  });
 
   constructor() {
     // The list stays beside the detail pane at ≥ 760 px, so it reloads after any account or entry write
@@ -144,6 +167,12 @@ export class AccountingAccountsComponent {
       this.accountingService.entriesChanged();
       this.accountingService.preferenceChanged();
       untracked(() => this.load());
+    });
+
+    effect(() => {
+      const dues = this.dues();
+      this.bills.generation();
+      untracked(() => this.bills.ensure(dues));
     });
   }
 
@@ -244,6 +273,20 @@ export class AccountingAccountsComponent {
     return parts.join(' · ');
   }
 
+  /** `待繳帳款 $X` and `MM/DD 繳費截止` / `明天繳費截止` / `今天繳費截止` / `已逾期`; null when nothing is left to pay. */
+  cardDue(account: LedgerAccount): CardDue | null {
+    const bill = this.owed().get(account.id);
+    if (!bill) {
+      return null;
+    }
+    return {
+      owedText: `待繳帳款 ${formatMoney(bill.remaining, bill.currency)}`,
+      pill: duePillText(bill.due, this.today),
+      overdue: daysBetween(this.today, bill.due) < 0,
+    };
+  }
+
+  /** The cycle pill (next closing and its due day), shown while nothing is left to pay on the current statement. */
   duePill(account: LedgerAccount): string | null {
     if (!account.is_credit || account.closing_day === null || account.closing_day === undefined) {
       return null;
