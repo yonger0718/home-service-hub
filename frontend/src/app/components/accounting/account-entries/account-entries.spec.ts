@@ -247,6 +247,32 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     expect(el.querySelector<HTMLInputElement>('.filter-q')!.value).toBe('');
   });
 
+  it('drops a late period summary when the passbook switches account', () => {
+    const fixture = TestBed.createComponent(AccountingAccountEntriesComponent);
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/accounts/7').flush(ACCOUNT);
+    expectEntries().flush(page(PERIOD));
+    fixture.detectChanges();
+    const lateSummary = expectSummary('2026-09-16', '2026-10-15');
+    const el = fixture.nativeElement as HTMLElement;
+
+    params.next(convertToParamMap({ id: '8' }));
+    fixture.detectChanges();
+    lateSummary.flush(SUMMARY);
+    fixture.detectChanges();
+    expect(fixture.componentInstance.periodSummary()).toBeNull();
+    expect(headerValues(el)).not.toContain('−$4,905');
+
+    http.expectOne('/api/accounting/accounts/8').flush({ ...ACCOUNT, id: 8 });
+    http.expectOne(r => r.url === '/api/accounting/accounts/8/entries').flush(page([]));
+    fixture.detectChanges();
+    http.expectOne(r => r.url === '/api/accounting/accounts/8/summary')
+      .flush({ ...SUMMARY, account_id: 8, end_balance: '-100.0000' });
+    fixture.detectChanges();
+    expect(fixture.componentInstance.periodSummary()?.account_id).toBe(8);
+    expect(headerValues(el)).toContain('−$100');
+  });
+
   it('loads more with the next offset and ignores a stale page after a filter change', () => {
     const fixture = render(page([entry(1)], 2));
     const el = fixture.nativeElement as HTMLElement;

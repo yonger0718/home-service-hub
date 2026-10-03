@@ -92,6 +92,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
       // Drop any page still in flight for the previous account.
       this.requestId++;
+      this.summaryRequestId++;
       this.accountId.set(Number(params.get('id')));
       this.account.set(null);
       this.period.set(null);
