@@ -416,6 +416,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
                 "parent_entry_id": entry.parent_entry_id,
                 "transfer_group_id": entry.transfer_group_id,
                 "is_settlement": entry.is_settlement,
+                "is_closed": entry.is_closed,
                 "group": groups.get(entry.group_id),
                 "rule_names": rule_names[entry.id],
                 "invoice_number": entry.invoice_number,
@@ -634,7 +635,7 @@ def get_entry_detail(db: Session, entry_id: int) -> dict | None:
     ]
     detail["rewards"] = rows(LedgerEntry.reward_source_entry_id == entry.id)
     if entry.kind in ("receivable", "payable") and not entry.is_settlement and entry.settles_entry_id is None:
-        open_amount = _open_amount(db, entry)
+        open_amount = Decimal("0.0000") if entry.is_closed else _open_amount(db, entry)
         detail["open_amount"], detail["is_settled"] = open_amount, open_amount == 0
     else:
         detail["open_amount"], detail["is_settled"] = None, None

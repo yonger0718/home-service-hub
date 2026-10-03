@@ -48,6 +48,9 @@ const REVIEW_REASON_LABELS: Record<string, string> = {
   unpaired_transfer: '轉帳未配對',
   fx_backup_rate_missing: '缺少備份匯率',
   reward_source_from_package: '回饋來源推定',
+  cross_currency_settlement: '跨幣別結清',
+  settlement_overflow: '結清金額超過原款',
+  settlement_original_missing: '找不到結清對應款項',
 };
 
 function reviewReasons(value: unknown): [string, number][] {

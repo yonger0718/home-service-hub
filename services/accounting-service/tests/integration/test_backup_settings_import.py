@@ -61,7 +61,8 @@ def test_credit_card_settings_seeded(db_session, backup):
     summary = _import_backup(db_session, _settings_backup(backup))
 
     card, main, bank = (_account(db_session, n) for n in ("華航卡", "主卡", "台新"))
-    assert (card.is_credit, card.closing_day, card.due_rule, card.due_value) == (True, 15, "days_after_closing", 20)
+    # MOZE startDay 15 is the first day of the period, so the statement closes on the 14th
+    assert (card.is_credit, card.closing_day, card.due_rule, card.due_value) == (True, 14, "days_after_closing", 20)
     assert card.credit_limit == Decimal("300000.0000")
     assert (card.combined_account_id, card.auto_pay_account_id) == (main.id, bank.id)
     assert card.credit_sharing_id == moze_uuid("CS-1")
@@ -70,6 +71,14 @@ def test_credit_card_settings_seeded(db_session, backup):
     assert db_session.get(AccountGroup, card.group_id).name == "信用卡"
     assert (bank.closing_day, bank.due_rule, bank.credit_limit, bank.icon) == (None, None, None, "🏦")
     assert summary["accounts_created"] == ["台新", "主卡", "華航卡"]
+
+
+@pytest.mark.parametrize("credit", [True, False])
+@pytest.mark.parametrize(("start_day", "closing_day"), [(7, 6), (31, 30), (2, 1), (1, None)])
+def test_closing_day_is_the_day_before_moze_start_day(db_session, backup, credit, start_day, closing_day):
+    # startDay is the first day of the statement period; startDay 1 is the calendar month (closing on the last day)
+    _import_backup(db_session, backup.data(accounts=[backup.account("A-1", "帳戶", isCreditAccount=credit, startDay=start_day)]))
+    assert _account(db_session, "帳戶").closing_day == closing_day
 
 
 def test_system_accounts_are_archived_and_excluded_from_totals(db_session, backup):
@@ -112,7 +121,7 @@ def test_locally_edited_settings_survive_a_reimport(db_session, backup):
     assert card.opening_balance == Decimal("-500.0000")
     [skipped] = summary["settings_skipped"]
     assert skipped["name"] == "華航卡"
-    assert "closing_day: 15 → kept 20" in skipped["differences"]
+    assert "closing_day: 14 → kept 20" in skipped["differences"]
 
 
 def test_currency_change_refused_while_a_hermes_entry_remains(db_session, backup):

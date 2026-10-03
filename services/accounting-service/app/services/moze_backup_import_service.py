@@ -242,9 +242,9 @@ def _account_settings(account: dict, result: SettingsResult) -> dict:
     where = f"AHAccount '{account['name']}'"
     credit = account["isCreditAccount"]
     system = account["type"] in SYSTEM_ACCOUNT_TYPES
-    closing_day = account["startDay"] if 1 <= account["startDay"] <= 31 else None
-    if not credit and closing_day == 1:
-        closing_day = None
+    # startDay is the FIRST day of MOZE's statement period (16 → 16th to 15th, closing on the 15th), so the closing
+    # day is the day before; startDay 1 is the calendar month, closing on its last day, which None represents.
+    closing_day = account["startDay"] - 1 if 2 <= account["startDay"] <= 31 else None
     fee_enabled = account["isCurrencyFeeEnabled"]
     return {
         "group_id": result.groups.get(account["group"]),
@@ -538,6 +538,8 @@ class EntryResult:
     tag_delimiter: str | None = None
     package_members: dict[str, list[LedgerEntry]] = field(default_factory=dict)  # AHPackage id -> grouped entries
     reward_source_from_package: int = 0  # rewards whose rewardRecordID names an imported package
+    settlements_linked: Counter = field(default_factory=lambda: Counter(by_related_id=0, by_target=0))
+    debts_closed_from_target: int = 0
 
 
 def _account_currency(data: BackupData, main_currency: str) -> dict[str, str]:
@@ -752,14 +754,94 @@ def _link_refunds(data: BackupData, result: EntryResult) -> None:
 
 
 def _link_settlements(data: BackupData, result: EntryResult) -> None:
+    """Link each collection / repayment (`SETTLING_TYPES`) to the receivable / payable it settles.
+
+    `relatedID` wins when it names an imported original of the matching type (a receivable for a collection, a
+    payable for a repayment). Otherwise (MOZE leaves `relatedID` empty on collections) the settlements of a `target`
+    are allocated FIFO by date to its imported originals of the matching type: each goes to the earliest original
+    with an open amount left (same-currency settlements only), and one exceeding what is left (or finding nothing
+    open, then linked to the last original) is reviewed as `settlement_overflow`. A link across currencies is kept and reviewed as `cross_currency_settlement`; a
+    settlement with no original is reviewed as `settlement_original_missing`.
+    """
     types = {record["identifier"]: record["type"] for record in data.records}
+    original_type = dict(zip(SETTLING_TYPES, SETTLED_TYPES))
+
+    def is_original(identifier: str | None, record_type: int) -> bool:
+        entry = result.entries.get(identifier)
+        return (
+            entry is not None and types.get(identifier) == record_type
+            and entry.kind in ("receivable", "payable") and not entry.is_settlement
+        )
+
+    def link(entry: LedgerEntry, original: LedgerEntry) -> None:
+        entry.settles_entry_id = original.id
+        if entry.currency != original.currency:
+            _review(entry, "cross_currency_settlement", result)
+
+    def order(record: dict) -> tuple:
+        return record["date"], record["identifier"]
+
+    originals: dict[tuple[str, int], list[dict]] = {}  # (target, original type) -> imported originals
+    for record in sorted(data.records, key=order):
+        if record["target"] and record["type"] in SETTLED_TYPES and is_original(record["identifier"], record["type"]):
+            originals.setdefault((record["target"], record["type"]), []).append(record)
+
+    settled: Counter = Counter()  # original identifier -> sum of same-currency settlements linked to it
+    unresolved: list[dict] = []
+    for record in sorted(data.records, key=order):
+        entry = result.entries.get(record["identifier"])
+        if entry is None or record["type"] not in SETTLING_TYPES or not entry.is_settlement:
+            continue
+        related = record["relatedID"]
+        if is_original(related, original_type[record["type"]]):
+            original = result.entries[related]
+            link(entry, original)
+            if entry.currency == original.currency:
+                settled[related] += entry.amount
+            result.settlements_linked["by_related_id"] += 1
+        else:
+            unresolved.append(record)
+
+    for record in unresolved:  # already in date order
+        entry = result.entries[record["identifier"]]
+        candidates = originals.get((record["target"], original_type[record["type"]]), [])
+        if not candidates:
+            _review(entry, "settlement_original_missing", result)
+            continue
+        result.settlements_linked["by_target"] += 1
+
+        def remaining(candidate: dict) -> Decimal:
+            original = result.entries[candidate["identifier"]]
+            balance = original.amount + settled[candidate["identifier"]]  # a receivable is negative, a payable positive
+            return max(-balance if original.amount < 0 else balance, Decimal(0))
+
+        chosen = next((candidate for candidate in candidates if remaining(candidate) > 0), None)
+        overflow = chosen is None
+        chosen = chosen or candidates[-1]
+        original = result.entries[chosen["identifier"]]
+        link(entry, original)
+        if entry.currency == original.currency:
+            overflow = overflow or abs(entry.amount) > remaining(chosen)
+            settled[chosen["identifier"]] += entry.amount
+        if overflow:
+            _review(entry, "settlement_overflow", result)
+
+
+def _close_settled_debts(data: BackupData, result: EntryResult) -> None:
+    """Close every imported receivable / payable original whose `AHTarget` MOZE marks settled (`isSettle`).
+
+    MOZE's flag is the authority: it closes debts whose settlements do not net (one collection covering several
+    originals, another currency, rounding). Links and review flags are left as they are.
+    """
+    settled_targets = {target["identifier"] for target in data.targets if target["isSettle"]}
     for record in data.records:
         entry = result.entries.get(record["identifier"])
-        related = record["relatedID"]
-        if entry is None or record["type"] not in SETTLING_TYPES or not related:
-            continue
-        if types.get(related) in SETTLED_TYPES and related in result.entries:
-            entry.settles_entry_id = result.entries[related].id
+        if (
+            entry is not None and record["target"] in settled_targets and record["type"] in SETTLED_TYPES
+            and entry.kind in ("receivable", "payable") and not entry.is_settlement
+        ):
+            entry.is_closed = True
+            result.debts_closed_from_target += 1
 
 
 def _link_rewards_and_attachments(session: Session, data: BackupData, settings: SettingsResult, result: EntryResult) -> None:
@@ -929,6 +1011,7 @@ def insert_entries(
     _link_transfers(data, result)
     _link_refunds(data, result)
     _link_settlements(data, result)
+    _close_settled_debts(data, result)
     _link_groups(session, data, result)  # before rewards: a reward may name a package as its source
     _link_rewards_and_attachments(session, data, settings, result)
     session.flush()
@@ -1122,6 +1205,8 @@ def replace_ledger_from_backup(
         "rules": len(settings.rules),
         "attachments": entries.attachments,
         "counterparties": len(set(settings.counterparties.values())),
+        "settlements_linked": dict(entries.settlements_linked),
+        "debts_closed_from_target": entries.debts_closed_from_target,
         "needs_review": {
             "count": sum(1 for entry in entries.entries.values() if entry.needs_review),
             "reasons": dict(sorted(entries.needs_review.items())),

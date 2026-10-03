@@ -119,6 +119,7 @@ class EntryOut(BaseModel):
     parent_entry_id: int | None
     transfer_group_id: UUID | None
     is_settlement: bool
+    is_closed: bool
     group: EntryGroupSummaryOut | None
     rule_names: list[str]
     invoice_number: str | None

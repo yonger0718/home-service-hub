@@ -260,6 +260,8 @@ def upgrade() -> None:
         "WHERE (kind = 'receivable' AND amount > 0) OR (kind = 'payable' AND amount < 0)"
     )
     op.create_check_constraint("ck_ledger_entry_settlement_sign", "ledger_entry", SETTLEMENT_SIGN_SQL)
+    # A debt MOZE marks settled (AHTarget.isSettle), closed whatever its settlements sum to.
+    op.add_column("ledger_entry", sa.Column("is_closed", sa.Boolean(), nullable=False, server_default=sa.text("false")))
 
     # Free-text counterparty → one counterparty row per distinct value (D16).
     op.execute(
@@ -333,6 +335,8 @@ def downgrade() -> None:
     # is_settlement is derivable from kind and sign for every row phase 1 can hold, so no guard.
     op.drop_constraint("ck_ledger_entry_settlement_sign", "ledger_entry", type_="check")
     op.drop_column("ledger_entry", "is_settlement")
+    # Only the backup importer sets is_closed, and moze_backup rows already block the downgrade.
+    op.drop_column("ledger_entry", "is_closed")
 
     op.execute("DROP TRIGGER trg_ledger_entry_posted_date ON ledger_entry")
     op.execute("DROP FUNCTION ledger_entry_default_posted_date()")
