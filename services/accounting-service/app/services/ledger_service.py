@@ -278,7 +278,7 @@ def _is_debt_original(entry: LedgerEntry) -> bool:
     return entry.kind in ("receivable", "payable") and not entry.is_settlement and entry.settles_entry_id is None
 
 
-def _open_debt_filter():
+def open_debt_filter():
     """Unsettled receivable/payable originals: not a settlement, not closed (MOZE isSettle), and
     amount + Σ linked settlements != 0."""
     settled = _settled_sum()
@@ -296,7 +296,7 @@ def _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterpart
     if counterparty_id is not None:
         filters.append(LedgerEntry.counterparty_id == counterparty_id)
     if open_only:
-        filters.append(_open_debt_filter())
+        filters.append(open_debt_filter())
     if account_ids is not None:
         filters.append(LedgerEntry.account_id.in_(account_ids))
     if kind is not None:

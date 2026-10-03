@@ -19,6 +19,7 @@ from ..models import (
 )
 from ..schemas.writes import AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
+from .ledger_service import open_debt_filter
 
 PREFERENCE_FIELDS = (
     "expense_income_colors", "keypad_layout", "week_start", "main_currency", "hide_rewards_on_timeline",
@@ -453,10 +454,24 @@ def _open_amounts(db: Session) -> dict[int, list[dict]]:
     return amounts
 
 
+def _open_counts(db: Session) -> dict[int, int]:
+    """Per counterparty: its open receivable / payable originals (the `GET /entries?open=true` definition)."""
+    rows = db.execute(
+        select(LedgerEntry.counterparty_id, func.count())
+        .where(LedgerEntry.counterparty_id.is_not(None), open_debt_filter())
+        .group_by(LedgerEntry.counterparty_id)
+    )
+    return {counterparty_id: count for counterparty_id, count in rows}
+
+
 def list_counterparties(db: Session) -> list[dict]:
     amounts = _open_amounts(db)
+    counts = _open_counts(db)
     return [
-        {"id": row.id, "name": row.name, "moze_id": row.moze_id, "open_amounts": amounts.get(row.id, [])}
+        {
+            "id": row.id, "name": row.name, "moze_id": row.moze_id, "open_amounts": amounts.get(row.id, []),
+            "open_count": counts.get(row.id, 0),
+        }
         for row in db.scalars(select(Counterparty).order_by(Counterparty.name))
     ]
 

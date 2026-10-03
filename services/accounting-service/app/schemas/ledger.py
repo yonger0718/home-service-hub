@@ -235,6 +235,8 @@ class CounterpartyOut(BaseModel):
     name: str
     moze_id: str | None
     open_amounts: list[OpenAmountOut]
+    # Open (unsettled, not closed) receivable / payable originals: never nets the two sides like `open_amounts`.
+    open_count: int
 
 
 class PreferenceOut(BaseModel):

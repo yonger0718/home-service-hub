@@ -417,6 +417,30 @@ def test_counterparty_open_amounts_leave_out_closed_debts_and_their_settlements(
     assert rows["Alan"]["open_amounts"] == [{"currency": "TWD", "amount": "100.0000"}]
 
 
+def test_counterparty_open_count_counts_open_debt_originals(client, db_session, seed):
+    wallet = seed.account("錢包")
+    alan, bob, cy = seed.counterparty("Alan"), seed.counterparty("Bob"), seed.counterparty("Cy")
+    # Alan: a netting pair (lent 100, borrowed 100) counts 2 although open_amounts nets to nothing.
+    seed.entry(wallet, "-100", kind="receivable", counterparty_id=alan.id)
+    seed.entry(wallet, "100", kind="payable", counterparty_id=alan.id)
+    # Bob: a fully settled loan, and a closed one with a partial settlement: nothing open.
+    settled = seed.entry(wallet, "-300", kind="receivable", counterparty_id=bob.id)
+    seed.entry(wallet, "300", kind="receivable", counterparty_id=bob.id, settles_entry_id=settled.id, is_settlement=True)
+    closed = seed.entry(wallet, "-420", kind="receivable", counterparty_id=bob.id)
+    closed.is_closed = True
+    seed.entry(wallet, "400", kind="receivable", counterparty_id=bob.id, settles_entry_id=closed.id, is_settlement=True)
+    # Cy: one partly settled loan.
+    partly = seed.entry(wallet, "-500", kind="receivable", counterparty_id=cy.id)
+    seed.entry(wallet, "200", kind="receivable", counterparty_id=cy.id, settles_entry_id=partly.id, is_settlement=True)
+    db_session.commit()
+
+    rows = {row["name"]: row for row in client.get("/counterparties").json()}
+
+    assert (rows["Alan"]["open_count"], rows["Alan"]["open_amounts"]) == (2, [])
+    assert rows["Bob"]["open_count"] == 0
+    assert rows["Cy"]["open_count"] == 1
+
+
 def test_counterparty_rename_shows_in_listings_and_delete_rule(client, db_session, seed):
     wallet = seed.account()
     alan, spare = seed.counterparty("Alan"), seed.counterparty("Spare")
