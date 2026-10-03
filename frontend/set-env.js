@@ -39,6 +39,9 @@ required.forEach(v => {
   }
 });
 
+// 選用: accounting API 的 bearer token（未設定時為空字串，不送 Authorization header）
+const accountingToken = JSON.stringify(envConfig.ACCOUNTING_SPA_TOKEN || '');
+
 const envConfigFile = `export const environment = {
   production: false,
   apiUrl: '${envConfig.FRONTEND_API_URL}',
@@ -46,7 +49,8 @@ const envConfigFile = `export const environment = {
   inventoryServicePort: '${envConfig.INVENTORY_ITEM_SERVICE_PORT}',
   accountingServiceHost: '${envConfig.ACCOUNTING_SERVICE_HOST}',
   accountingServicePort: '${envConfig.ACCOUNTING_SERVICE_PORT}',
-  otelEndpoint: '${envConfig.OTEL_COLLECTOR_ENDPOINT_HTTP}'
+  otelEndpoint: '${envConfig.OTEL_COLLECTOR_ENDPOINT_HTTP}',
+  accountingToken: ${accountingToken}
 };
 `;
 

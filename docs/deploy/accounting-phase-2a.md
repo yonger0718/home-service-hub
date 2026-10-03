@@ -13,6 +13,16 @@ MOZE_REALM_EXPORTER=
 
 `MOZE_REALM_EXPORTER` empty means the default command `node <repo>/tools/moze-realm-export/index.js` (`node` from the service's `PATH`). A value naming one existing file is run as before (a `.js` file with `node` from `PATH`, anything else directly). Any other value is split like a shell command line and run as the command, so when `node` is not on the service's `PATH` set e.g. `MOZE_REALM_EXPORTER=/usr/bin/node /home/opc/workspace/home-hub/tools/moze-realm-export/index.js` (quote a path containing spaces); the last `.js` argument must exist, otherwise every backup import answers 422 naming it. `ACCOUNTING_IMPORT_LOCKED` stays `false` until the 2b cutover; while it is false, MOZE-imported rows are read-only and imports run.
 
+API tokens (optional, for agents and scripts; details and curl examples in the service README "API access for agents"):
+
+```text
+ACCOUNTING_API_TOKENS=spa:<token1>,agent-x:<token2>
+ACCOUNTING_SPA_TOKEN=<token1>
+ACCOUNTING_DOCS_PUBLIC=false
+```
+
+Both unset (the default) means no auth, exactly as before. To turn it on, set both in the same edit, rebuild the SPA (`npm run build`, which runs `set-env.js` and bakes `ACCOUNTING_SPA_TOKEN` into the bundle), then restart the accounting service; the startup log reads `API auth: enabled (2 tokens: spa, agent-x)`. Rebuild before the restart (the new bundle's header is ignored while auth is off), otherwise the old bundle's requests get 401 until it is rebuilt. Rotation = change the agent token only (edit its entry, restart the service). The SPA token is baked into the bundle and readable by anyone who can load the SPA on the tailnet, so it is not a secret from them; changing it needs a rebuild plus restart. Never log or commit a token.
+
 ## Converter install (once per checkout, Node ≥ 20)
 
 ```bash
