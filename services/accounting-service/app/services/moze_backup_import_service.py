@@ -757,7 +757,8 @@ def _link_settlements(data: BackupData, result: EntryResult) -> None:
     """Link each collection / repayment (`SETTLING_TYPES`) to the receivable / payable it settles.
 
     `relatedID` wins when it names an imported original of the matching type (a receivable for a collection, a
-    payable for a repayment). Otherwise (MOZE leaves `relatedID` empty on collections) the settlements of a `target`
+    payable for a repayment); such a link counts against the original's open amount like any other, so an explicit
+    overpayment is reviewed as `settlement_overflow` too. Otherwise (MOZE leaves `relatedID` empty on collections) the settlements of a `target`
     are allocated FIFO by date to its imported originals of the matching type: each goes to the earliest original
     with an open amount left (same-currency settlements only), and one exceeding what is left (or finding nothing
     open, then linked to the last original) is reviewed as `settlement_overflow`. A link across currencies is kept and reviewed as `cross_currency_settlement`; a
@@ -787,6 +788,22 @@ def _link_settlements(data: BackupData, result: EntryResult) -> None:
             originals.setdefault((record["target"], record["type"]), []).append(record)
 
     settled: Counter = Counter()  # original identifier -> sum of same-currency settlements linked to it
+
+    def remaining(identifier: str) -> Decimal:
+        original = result.entries[identifier]
+        balance = original.amount + settled[identifier]  # a receivable is negative, a payable positive
+        return max(-balance if original.amount < 0 else balance, Decimal(0))
+
+    def allocate(entry: LedgerEntry, identifier: str, overflow: bool = False) -> None:
+        """Link `entry` to the original, counting it against the original's open amount when in its currency."""
+        original = result.entries[identifier]
+        link(entry, original)
+        if entry.currency == original.currency:
+            overflow = overflow or abs(entry.amount) > remaining(identifier)
+            settled[identifier] += entry.amount
+        if overflow:
+            _review(entry, "settlement_overflow", result)
+
     unresolved: list[dict] = []
     for record in sorted(data.records, key=order):
         entry = result.entries.get(record["identifier"])
@@ -794,10 +811,7 @@ def _link_settlements(data: BackupData, result: EntryResult) -> None:
             continue
         related = record["relatedID"]
         if is_original(related, original_type[record["type"]]):
-            original = result.entries[related]
-            link(entry, original)
-            if entry.currency == original.currency:
-                settled[related] += entry.amount
+            allocate(entry, related)
             result.settlements_linked["by_related_id"] += 1
         else:
             unresolved.append(record)
@@ -809,22 +823,8 @@ def _link_settlements(data: BackupData, result: EntryResult) -> None:
             _review(entry, "settlement_original_missing", result)
             continue
         result.settlements_linked["by_target"] += 1
-
-        def remaining(candidate: dict) -> Decimal:
-            original = result.entries[candidate["identifier"]]
-            balance = original.amount + settled[candidate["identifier"]]  # a receivable is negative, a payable positive
-            return max(-balance if original.amount < 0 else balance, Decimal(0))
-
-        chosen = next((candidate for candidate in candidates if remaining(candidate) > 0), None)
-        overflow = chosen is None
-        chosen = chosen or candidates[-1]
-        original = result.entries[chosen["identifier"]]
-        link(entry, original)
-        if entry.currency == original.currency:
-            overflow = overflow or abs(entry.amount) > remaining(chosen)
-            settled[chosen["identifier"]] += entry.amount
-        if overflow:
-            _review(entry, "settlement_overflow", result)
+        chosen = next((candidate for candidate in candidates if remaining(candidate["identifier"]) > 0), None)
+        allocate(entry, (chosen or candidates[-1])["identifier"], overflow=chosen is None)
 
 
 def _close_settled_debts(data: BackupData, result: EntryResult) -> None:

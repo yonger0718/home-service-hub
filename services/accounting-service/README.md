@@ -53,10 +53,12 @@ matching type (a receivable for a collection, a payable for a repayment) is link
 matching type that shares its `target` (counterparty); with several, the target's settlements are allocated FIFO by
 date to the earliest original with an open amount left (same-currency settlements only). The report counts both in
 `settlements_linked` (`by_related_id`, `by_target`). Links are reviewed as `settlement_overflow` (more than the
-originals left open), `cross_currency_settlement` (the settlement's currency differs from the original's; resolved by
-hand) or, with no original, `settlement_original_missing`. Future-dated and disabled rows stay skipped: a settlement
-whose original is future-dated or disabled links by target to another imported original if one exists; otherwise it is
-reviewed as `settlement_original_missing`.
+original has left open, whether linked by `relatedID` or by target), `cross_currency_settlement` (the settlement's
+currency differs from the original's; it stays linked but never reduces the original's `open_amount`, `is_settled` or
+the counterparty's `open_amounts`, and is resolved by hand or closed by `isSettle` below) or, with no original,
+`settlement_original_missing`. Future-dated and disabled rows stay skipped: a settlement whose original is
+future-dated or disabled links by target to another imported original if one exists; otherwise it is reviewed as
+`settlement_original_missing`.
 
 MOZE's own "debt closed" flag, `AHTarget.isSettle`, is the authority: every imported receivable / payable original
 whose target has `isSettle = true` is imported with `is_closed = true` (counted in `debts_closed_from_target`), even

@@ -327,6 +327,24 @@ def test_related_id_link_takes_precedence_over_the_shared_target(db_session, bac
     assert summary["needs_review"]["reasons"] == {}
 
 
+@pytest.mark.parametrize(
+    ("collections", "flagged"),
+    [([150], {"R-S0"}), ([60, 30, 20], {"R-S2"})],  # one explicit overpayment; cumulative explicit overpayment
+)
+def test_explicit_related_id_overpayment_is_flagged_as_overflow(db_session, backup, collections, flagged):
+    records = [backup.record("R-LEND", type_=3, price=-100, target="T-1")] + [
+        backup.record(f"R-S{n}", type_=5, price=price, target="T-1", relatedID="R-LEND", date=f"2026-09-0{n + 2}T12:00:00")
+        for n, price in enumerate(collections)
+    ]
+    summary = _import_backup(db_session, _settlement_backup(backup, *records))
+    original = _by_moze_id(db_session, "R-LEND").id
+    for n in range(len(collections)):
+        entry = _by_moze_id(db_session, f"R-S{n}")
+        assert (entry.settles_entry_id, entry.needs_review) == (original, f"R-S{n}" in flagged)
+    assert summary["needs_review"]["reasons"] == {"settlement_overflow": 1}
+    assert summary["settlements_linked"] == {"by_related_id": len(collections), "by_target": 0}
+
+
 def test_collection_without_related_id_settles_the_receivable_sharing_its_target(db_session, backup):
     summary = _import_backup(db_session, _settlement_backup(
         backup,
@@ -420,6 +438,11 @@ def test_settlement_in_another_currency_is_linked_and_flagged(db_session, backup
     assert (collection.settles_entry_id, collection.needs_review) == (_by_moze_id(db_session, "R-LEND").id, True)
     assert summary["needs_review"]["reasons"] == {"cross_currency_settlement": 1}
     assert summary["settlements_linked"] == {"by_related_id": 0, "by_target": 1}
+    # linked but never netted: the original stays open in its own currency
+    detail = ledger_service.get_entry_detail(db_session, _by_moze_id(db_session, "R-LEND").id)
+    assert (detail["open_amount"], detail["is_settled"]) == (Decimal("420.0000"), False)
+    [alan] = [row for row in settings_service.list_counterparties(db_session) if row["name"] == "Alan"]
+    assert alan["open_amounts"] == [{"currency": "TWD", "amount": Decimal("420.0000")}]
 
 
 @pytest.mark.parametrize("related", [None, "R-GONE"])
