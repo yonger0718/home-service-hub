@@ -138,6 +138,30 @@ describe('AccountingLayoutComponent', () => {
     expect(router.url).toBe('/accounting/entries/5');
   });
 
+  it('leaves an Escape that is part of an IME composition, so an unsaved form is not discarded', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    await find(harness, '.detail-pane.open');
+    const navigate = vi.spyOn(router, 'navigateByUrl');
+
+    const composing = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: true });
+    document.dispatchEvent(composing);
+    const ime = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, keyCode: 229 } as KeyboardEventInit);
+    document.dispatchEvent(ime);
+
+    expect(composing.defaultPrevented).toBe(false);
+    expect(ime.defaultPrevented).toBe(false);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(router.url).toBe('/accounting/entries/5');
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+  });
+
   it('leaves Escape alone when no sheet is open, and has no dialog role in panes mode', async () => {
     const harness = await start('panes', '/accounting/entries/5');
     const pane = await find(harness, '.detail-pane');

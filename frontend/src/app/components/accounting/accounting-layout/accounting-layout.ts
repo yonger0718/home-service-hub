@@ -171,9 +171,12 @@ export class AccountingLayoutComponent {
     void this.router.navigateByUrl(this.listKey() === 'accounts' ? '/accounting/accounts' : '/accounting');
   }
 
-  /** Escape closes the sheet; marked handled so global shortcuts skip it. */
+  /**
+   * Escape closes the sheet; marked handled so global shortcuts skip it. An Escape already handled, or one that is part
+   * of an IME composition (which child forms ignore), is left alone so an unsaved form is not discarded.
+   */
   onEscape(event: Event): void {
-    if (event.defaultPrevented) return;
+    if (isHandledKey(event as KeyboardEvent)) return;
     if (!this.sheetOpen()) {
       return;
     }
