@@ -1,6 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { Location } from '@angular/common';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { describe, expect, it, vi } from 'vitest';
@@ -231,6 +232,62 @@ describe('AccountingLayoutComponent', () => {
     expect((await find(harness, LIST)).tagName.toLowerCase()).toBe('app-accounting-accounts');
     expect((await find(harness, PANE_PAGE)).tagName.toLowerCase()).toBe('app-entry-detail');
     expect(TestBed.inject(Router).url).toBe('/accounting/accounts/5/entries/9');
+  });
+
+  it('shows the reminder centre beside the timeline at 1280px and as its own screen on a phone', async () => {
+    const harness = await start('panes', '/accounting/reminders');
+    expect((await find(harness, LIST)).tagName.toLowerCase()).toBe('app-ledger-timeline');
+    expect((await find(harness, PANE_PAGE)).tagName.toLowerCase()).toBe('app-accounting-reminders');
+    expect(TestBed.inject(Router).url).toBe('/accounting/reminders');
+  });
+
+  it('renders the reminder centre as a full page on a phone', async () => {
+    const harness = await start('phone', '/accounting/reminders');
+    expect((await find(harness, SCREEN)).tagName.toLowerCase()).toBe('app-accounting-reminders');
+    expect(harness.routeNativeElement!.querySelector('.dbody')).toBeNull();
+  });
+
+  it('moves into expanded reminder rows with ↓ and leaves ↓ alone without them', async () => {
+    const harness = await start('phone', '/accounting/reminders');
+    await find(harness, SCREEN);
+    const router = TestBed.inject(Router);
+    expect(harness.routeNativeElement!.querySelector('[data-entry-id]')).toBeNull();
+    expect(press('ArrowDown').defaultPrevented).toBe(false);
+    expect(router.url).toBe('/accounting/reminders');
+
+    addRows(harness, [72, 74]);
+    expect(press('ArrowDown').defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/72'));
+    // ✕ on that detail returns to the reminder centre.
+    expect((TestBed.inject(Location).getState() as Record<string, unknown>)['closeTo']).toBe('reminders');
+  });
+
+  it('keeps ↓ inside the reminder centre pane at 1280px, past the timeline rows on the left', async () => {
+    const harness = await start('panes', '/accounting/reminders');
+    const list = await find(harness, LIST);
+    const pane = await find(harness, PANE_PAGE);
+    const router = TestBed.inject(Router);
+    const timelineRows = document.createElement('div');
+    for (const id of [5, 6]) {
+      const row = document.createElement('button');
+      row.dataset['entryId'] = String(id);
+      timelineRows.appendChild(row);
+    }
+    list.appendChild(timelineRows);
+    // No expanded counterparty yet: ↓ is left to the page, never taken by the timeline's rows.
+    expect(press('ArrowDown').defaultPrevented).toBe(false);
+    expect(router.url).toBe('/accounting/reminders');
+
+    const expanded = document.createElement('div');
+    for (const id of [72, 74]) {
+      const row = document.createElement('button');
+      row.dataset['entryId'] = String(id);
+      expanded.appendChild(row);
+    }
+    pane.appendChild(expanded);
+    expect(press('ArrowDown').defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/72'));
+    expect((TestBed.inject(Location).getState() as Record<string, unknown>)['closeTo']).toBe('reminders');
   });
 
   /** Rows as the list pages render them; the layout moves through `[data-entry-id]` in its host. */

@@ -168,6 +168,16 @@ export interface LedgerEntry {
    * MOZE types 5 / 6, with or without a `settles_entry_id` link. Such rows cannot be edited (`PUT` answers 422 `kind`).
    */
   is_settlement: boolean;
+  /**
+   * `EntryOut.is_closed`: a receivable / payable original MOZE marked settled (target isSettle), even when its
+   * settlements do not net it to zero. The server then reports `open_amount` 0 and `is_settled` true.
+   */
+  is_closed: boolean;
+  /**
+   * `EntryOut.open_amount`: what is left on a receivable / payable original (|amount + Σ linked settlements|, 0 when
+   * closed); null for every other row (settlements included).
+   */
+  open_amount: string | null;
   /** Running balance in canonical order (`EntryOut.running_balance`, Task 4); typed nullable so older payloads still parse. */
   running_balance: string | null;
   source: EntrySource;
@@ -187,7 +197,6 @@ export interface EntryDetail extends LedgerEntry {
   refunded_by: LedgerEntry[];
   rules: RewardRule[];
   rewards: LedgerEntry[];
-  open_amount: string | null;
   is_settled: boolean | null;
   refunded_amount: string;
   /** Write responses only: the foreign-transaction fee the account proposes, for the client to add. */
@@ -213,6 +222,9 @@ export interface EntryQuery {
 export interface AllEntriesQuery extends EntryQuery {
   account_id?: number[];
   hide_rewards?: boolean;
+  counterparty_id?: number;
+  /** Only unsettled receivable / payable originals (settlements excluded). */
+  open?: boolean;
 }
 
 export interface MonthSummary {
@@ -421,6 +433,11 @@ export interface Counterparty {
   moze_id?: string | null;
   /** Non-zero currencies only; `amount = −Σ amount` of that counterparty's receivable / payable entries. */
   open_amounts: { currency: string; amount: string }[];
+  /**
+   * `CounterpartyOut.open_count`: open (unsettled, not closed) receivable / payable originals; unlike `open_amounts`
+   * it never nets the two sides. Optional so hand-written test literals may omit it (counts as 0).
+   */
+  open_count?: number;
 }
 
 export interface CounterpartyInput {

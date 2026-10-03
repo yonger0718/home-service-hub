@@ -91,141 +91,6 @@
   }
 }
 
-.row {
-  align-items: center;
-  background: none;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  display: grid;
-  font: inherit;
-  gap: 2px 10px;
-  grid-template-areas:
-    'ico name amt'
-    'ico sub pills';
-  grid-template-columns: 40px minmax(0, 1fr) auto;
-  padding: 7px 0;
-  text-align: left;
-  width: 100%;
-
-  & + .row {
-    border-top: 1px solid var(--app-border);
-  }
-
-  &.sel {
-    background: var(--app-primary-soft);
-    border-radius: var(--radius-sm);
-    margin: 0 -8px;
-    padding-inline: 8px;
-    width: calc(100% + 16px);
-  }
-
-  &.sel + .row {
-    border-top: 0;
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--app-primary);
-    outline-offset: 2px;
-  }
-}
-
-.ico {
-  align-items: center;
-  border-radius: 50%;
-  display: flex;
-  font-size: 1.15rem;
-  grid-area: ico;
-  height: 38px;
-  justify-content: center;
-  width: 38px;
-}
-
-.name {
-  font-weight: 700;
-  grid-area: name;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.badge {
-  background: var(--app-primary-soft);
-  border-radius: 4px;
-  color: var(--app-primary);
-  font-size: 0.6rem;
-  font-weight: 800;
-  margin-left: 4px;
-  padding: 0 4px;
-  vertical-align: middle;
-}
-
-.sub {
-  color: var(--app-text-muted);
-  font-size: 0.75rem;
-  grid-area: sub;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.amt {
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-  grid-area: amt;
-  text-align: right;
-  white-space: nowrap;
-
-  small {
-    color: var(--app-text-muted);
-    display: block;
-    font-size: 0.68rem;
-    font-weight: 600;
-  }
-}
-
-.pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  grid-area: pills;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
-.pill {
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-pill);
-  color: var(--app-text-muted);
-  font-size: 0.62rem;
-  font-weight: 700;
-  max-width: 100%;
-  overflow: hidden;
-  padding: 0 6px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-
-  &.rw {
-    background: var(--c-green-soft);
-    border-color: transparent;
-    color: var(--c-green);
-  }
-
-  &.rv {
-    background: var(--app-primary-soft);
-    border-color: transparent;
-    color: var(--app-primary);
-  }
-
-  &.review {
-    background: var(--app-state-warning-bg);
-    border-color: transparent;
-    color: var(--app-text);
-  }
-}
-
 .empty,
 .load-error {
   color: var(--app-text-muted);
@@ -276,4 +141,96 @@
       outline-offset: 1px;
     }
   }
+}
+
+/* 近 7 天 card payments (list view, under the month totals). */
+.bill-banner {
+  background: var(--app-primary-soft);
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--app-primary);
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  font-size: var(--fs-label, 0.75rem);
+  font-weight: 700;
+  margin: -6px 0 10px;
+  padding: 5px 10px;
+  text-align: left;
+  width: 100%;
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}
+
+/* 繳費提醒 lines above the selected 日曆 day's rows. */
+.bills {
+  display: grid;
+  gap: 4px;
+  margin: 4px 0 6px;
+}
+
+.bill {
+  background: var(--app-surface-soft);
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm, 0.85rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 6px 10px;
+  text-align: left;
+  width: 100%;
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}
+
+/* Partly paid: what went in and what is left, quieter than the bill itself. */
+.paid-mark {
+  color: var(--app-text-muted);
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+/* 🔔 提醒中心 with its pending count (hidden at 0). */
+.bell {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  flex: none;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 4px;
+  position: relative;
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}
+
+.bell-count {
+  background: var(--c-red);
+  border-radius: var(--radius-pill);
+  color: #fff;
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 1;
+  min-width: 14px;
+  padding: 2px 4px;
+  position: absolute;
+  right: -4px;
+  text-align: center;
+  top: -2px;
 }

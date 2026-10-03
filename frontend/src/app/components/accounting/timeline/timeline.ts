@@ -17,6 +17,7 @@ import { Router } from '@angular/router';
 import { filter, forkJoin, fromEvent } from 'rxjs';
 
 import {
+  Counterparty,
   DailySummary,
   DEFAULT_PREFERENCE,
   ENTRY_KIND_LABELS,
@@ -30,6 +31,8 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
+import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../billing/billing-math';
+import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
@@ -98,6 +101,16 @@ export interface TimelineRow {
   fx: string | null;
   pills: TimelinePill[];
   groupCount: number | null;
+}
+
+/** One 繳費提醒 line in the 日曆 day panel (only statements with a remaining balance). */
+export interface BillLine {
+  key: string;
+  accountId: number;
+  name: string;
+  amountText: string;
+  /** `已繳 $X · 剩餘 $Y` for a partly paid statement; null when nothing was paid yet. */
+  paidText: string | null;
 }
 
 export interface TimelineDay {
@@ -264,7 +277,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
   standalone: true,
   imports: [CalendarMonthComponent, NgTemplateOutlet],
   templateUrl: './timeline.html',
-  styleUrls: ['../filters.scss', './timeline.scss'],
+  styleUrls: ['../filters.scss', '../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LedgerTimelineComponent implements OnInit {
@@ -277,9 +290,13 @@ export class LedgerTimelineComponent implements OnInit {
   private summaryRequestId = 0;
   private dailyRequestId = 0;
   private dayRequestId = 0;
+  private readonly bills = inject(BillingService);
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
+  /** For the 🔔 count only (counterparties with an open amount). */
+  private readonly counterparties = signal<Counterparty[]>([]);
+  private counterpartyRequestId = 0;
   readonly month = signal(currentMonth());
   readonly summary = signal<MonthSummary | null>(null);
   readonly entries = signal<LedgerEntry[]>([]);
@@ -322,6 +339,63 @@ export class LedgerTimelineComponent implements OnInit {
     const date = this.selectedDay();
     return date ? dayLabel(date) : '';
   });
+  /** Credit-card closing / due days of the shown month (empty without cards that have a closing day). */
+  private readonly monthBilling = computed(() => billingEvents(this.accounts(), this.month()));
+  /** Due days from today through today + 6 (may reach into next month). */
+  private readonly upcomingEvents = computed(() => upcomingDues(this.accounts(), this.today()));
+  /** Each card's current statement as the reminder centre lists it (for the 🔔 count). */
+  private readonly reminderEvents = computed(() => reminderDues(this.accounts(), this.today()));
+  /** Due events whose statement is needed: the shown month's, the 近 7 天 window's and the 🔔's (deduplicated). */
+  private readonly trackedDues = computed(() => {
+    const events = new Map<string, BillingEvent>();
+    for (const event of [...this.monthBilling(), ...this.upcomingEvents(), ...this.reminderEvents()]) {
+      if (event.kind === 'due') {
+        events.set(billKey(event), event);
+      }
+    }
+    return [...events.values()];
+  });
+  /** A due event's resolved statement when something is left to pay; null otherwise (also while unresolved). */
+  private openBill(event: BillingEvent): BillState | null {
+    const bill = this.bills.bill(event);
+    return bill && bill.remaining > 0 ? bill : null;
+  }
+  /** What the grid marks: every closing day, and the due days of statements with a remaining balance. */
+  readonly billing = computed(() => this.monthBilling().filter(event => event.kind === 'closing' || this.openBill(event) !== null));
+  readonly billLines = computed(() => {
+    const day = this.selectedDay();
+    if (this.view() !== 'calendar' || !day) {
+      return [];
+    }
+    const lines: BillLine[] = [];
+    for (const event of this.monthBilling()) {
+      const bill = event.kind === 'due' && event.date === day ? this.openBill(event) : null;
+      if (bill) {
+        lines.push({
+          key: billKey(event),
+          accountId: event.accountId,
+          name: event.name,
+          amountText: formatMoney(bill.statement, bill.currency),
+          paidText:
+            bill.paid > 0
+              ? `已繳 ${formatMoney(bill.paid, bill.currency)} · 剩餘 ${formatMoney(bill.remaining, bill.currency)}`
+              : null,
+        });
+      }
+    }
+    return lines;
+  });
+  /**
+   * 🔔 count: cards with something left to pay (as the reminder centre lists them; a card whose statement failed to
+   * read is not counted) + counterparties with open debt rows (`open_count`, which never nets 應收 against 應付).
+   */
+  readonly reminderCount = computed(
+    () =>
+      this.reminderEvents().filter(event => this.openBill(event) !== null).length +
+      this.counterparties().filter(counterparty => (counterparty.open_count ?? 0) > 0).length,
+  );
+  /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
+  readonly upcomingBills = computed(() => this.upcomingEvents().filter(event => this.openBill(event) !== null));
   readonly missingRates = computed(() =>
     (this.view() === 'calendar' ? this.daily()?.missing_rates : this.summary()?.missing_rates) ?? [],
   );
@@ -385,6 +459,23 @@ export class LedgerTimelineComponent implements OnInit {
       const month = this.month();
       this.accounting.entriesChanged();
       untracked(() => this.loadSummary(month));
+    });
+
+    // Statements of the due events the grid and the banner need (`BillingService` reads each once per change round).
+    effect(() => {
+      if (!this.preference()) {
+        return;
+      }
+      const events = this.trackedDues();
+      this.bills.generation();
+      untracked(() => this.bills.ensure(events, this.today()));
+    });
+
+    // The 🔔's counterparties: open amounts move with entry writes; a backup import (accountsChanged) replaces them.
+    effect(() => {
+      this.accounting.entriesChanged();
+      this.accounting.accountsChanged();
+      untracked(() => this.loadCounterparties());
     });
 
     // A saved preference (settings pane beside this list in the wide layout) is re-read; the effects above then reload.
@@ -578,6 +669,24 @@ export class LedgerTimelineComponent implements OnInit {
     this.dayError.set(false);
   }
 
+  private loadCounterparties(): void {
+    const id = ++this.counterpartyRequestId;
+    this.accounting.getCounterparties().subscribe({
+      next: counterparties => {
+        if (id === this.counterpartyRequestId) {
+          this.counterparties.set(counterparties);
+        }
+      },
+      // Intentionally swallowed: the 🔔 count is a hint. On failure it keeps the last known counterparties (none on
+      // first load), and the reminder centre itself reports its own load errors.
+      error: () => undefined,
+    });
+  }
+
+  openReminders(): void {
+    void this.router.navigate(['/accounting/reminders']);
+  }
+
   setView(view: TimelineView): void {
     if (view !== this.view()) {
       this.view.set(view);
@@ -588,6 +697,21 @@ export class LedgerTimelineComponent implements OnInit {
   /** Tapping the selected day again closes it. */
   selectDay(date: string): void {
     this.selectedDay.update(current => (current === date ? null : date));
+  }
+
+  /** The 近 7 天 banner: 日曆 on the first upcoming due day (next month's when it falls there). */
+  openUpcoming(): void {
+    const first = this.upcomingBills()[0];
+    if (!first) {
+      return;
+    }
+    this.setView('calendar');
+    this.month.set(first.date.slice(0, 7));
+    this.selectedDay.set(first.date);
+  }
+
+  openCard(accountId: number): void {
+    void this.router.navigate(['/accounting/accounts', accountId]);
   }
 
   moveMonth(delta: number): void {

@@ -54,4 +54,14 @@ describe('summarizeReport', () => {
     expect(view.reviewReasons).toEqual([['轉帳未配對', 1], ['缺少備份匯率', 2], ['回饋來源推定', 1], ['something_new', 1]]);
     expect(summarizeReport({ needs_review: { reasons: ['unpaired_transfer', 'x'] } }).reviewReasons).toEqual([['轉帳未配對', 1], ['x', 1]]);
   });
+
+  it('labels the settlement review reasons in Chinese', () => {
+    const view = summarizeReport({
+      needs_review: {
+        count: 4,
+        reasons: { cross_currency_settlement: 1, settlement_overflow: 2, settlement_original_missing: 1 },
+      },
+    });
+    expect(view.reviewReasons).toEqual([['跨幣別結清', 1], ['結清金額超過原款', 2], ['找不到結清對應款項', 1]]);
+  });
 });

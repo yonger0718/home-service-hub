@@ -119,6 +119,7 @@ class EntryOut(BaseModel):
     parent_entry_id: int | None
     transfer_group_id: UUID | None
     is_settlement: bool
+    is_closed: bool
     group: EntryGroupSummaryOut | None
     rule_names: list[str]
     invoice_number: str | None
@@ -127,6 +128,8 @@ class EntryOut(BaseModel):
     moze_id: str | None
     locked: bool
     running_balance: Decimal
+    # Receivable / payable originals: |amount + Σ linked settlements| (0 when closed); null for every other row.
+    open_amount: Decimal | None
 
 
 class EntryPage(BaseModel):
@@ -147,7 +150,6 @@ class EntryDetailOut(EntryOut):
     refunded_by: list[EntryOut]
     rules: list[RewardRuleOut]
     rewards: list[EntryOut]
-    open_amount: Decimal | None
     is_settled: bool | None
     refunded_amount: Decimal
 
@@ -233,6 +235,8 @@ class CounterpartyOut(BaseModel):
     name: str
     moze_id: str | None
     open_amounts: list[OpenAmountOut]
+    # Open (unsettled, not closed) receivable / payable originals: never nets the two sides like `open_amounts`.
+    open_count: int
 
 
 class PreferenceOut(BaseModel):

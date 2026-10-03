@@ -33,6 +33,11 @@ describe('resolveShortcut', () => {
     expect(resolveShortcut(key('ArrowUp'), { url: '/accounting/entries/9', targetTag: null })).toEqual({ type: 'move', delta: -1 });
     expect(resolveShortcut(key('ArrowDown'), { url: '/accounting/accounts/5', targetTag: null })).toEqual({ type: 'move', delta: 1 });
     expect(resolveShortcut(key('ArrowDown'), { url: '/accounting/accounts/5/entries/9', targetTag: null })).toEqual({ type: 'move', delta: 1 });
+    // The reminder centre lists entry rows under an expanded counterparty (the layout leaves ↓ alone without rows).
+    expect(resolveShortcut(key('ArrowDown'), { url: '/accounting/reminders', targetTag: null })).toEqual({ type: 'move', delta: 1 });
+    expect(resolveShortcut(key('ArrowUp'), { url: '/accounting/reminders', targetTag: null })).toEqual({ type: 'move', delta: -1 });
+    expect(resolveShortcut(key('e'), { url: '/accounting/reminders', targetTag: null })).toBeNull();
+    expect(resolveShortcut(key('ArrowDown'), { url: '/accounting/reminders/5', targetTag: null })).toBeNull();
   });
 
   it('ignores list keys while typing, with modifiers, and outside list pages', () => {

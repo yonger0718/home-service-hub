@@ -263,8 +263,41 @@ def _text_filter(q: str):
     )
 
 
-def _filters(kind, date_from, date_to, q, account_ids, hide_rewards) -> list:
+def _settled_sum():
+    """Σ amount of the settlements linked to the outer `LedgerEntry` row in its own currency (correlated scalar
+    subquery); a settlement in another currency stays linked but never nets."""
+    settlement = aliased(LedgerEntry)
+    return (
+        select(func.coalesce(func.sum(settlement.amount), 0))
+        .where(settlement.settles_entry_id == LedgerEntry.id, settlement.currency == LedgerEntry.currency)
+        .correlate(LedgerEntry)
+        .scalar_subquery()
+    )
+
+
+def _is_debt_original(entry: LedgerEntry) -> bool:
+    return entry.kind in ("receivable", "payable") and not entry.is_settlement and entry.settles_entry_id is None
+
+
+def open_debt_filter():
+    """Unsettled receivable/payable originals: not a settlement, not closed (MOZE isSettle), and
+    amount + Σ linked settlements != 0."""
+    settled = _settled_sum()
+    return and_(
+        LedgerEntry.kind.in_(("receivable", "payable")),
+        LedgerEntry.is_settlement.is_(False),
+        LedgerEntry.settles_entry_id.is_(None),
+        LedgerEntry.is_closed.is_(False),
+        LedgerEntry.amount + settled != 0,
+    )
+
+
+def _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id=None, open_only=False) -> list:
     filters = []
+    if counterparty_id is not None:
+        filters.append(LedgerEntry.counterparty_id == counterparty_id)
+    if open_only:
+        filters.append(open_debt_filter())
     if account_ids is not None:
         filters.append(LedgerEntry.account_id.in_(account_ids))
     if kind is not None:
@@ -339,6 +372,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
             func.coalesce(Category.color, parent_category.color).label("category_color"),
             Project.name.label("project_name"),
             Counterparty.name.label("counterparty_name"),
+            _settled_sum().label("settled_sum"),
         )
         .join(running, running.c.entry_id == LedgerEntry.id)
         .join(Account, Account.id == LedgerEntry.account_id)
@@ -395,6 +429,7 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
                 "parent_entry_id": entry.parent_entry_id,
                 "transfer_group_id": entry.transfer_group_id,
                 "is_settlement": entry.is_settlement,
+                "is_closed": entry.is_closed,
                 "group": groups.get(entry.group_id),
                 "rule_names": rule_names[entry.id],
                 "invoice_number": entry.invoice_number,
@@ -404,6 +439,11 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
                 "moze_id": entry.moze_id,
                 "locked": is_locked(entry.source, entry.moze_id),
                 "running_balance": row.running_balance,
+                "open_amount": (
+                    (Decimal("0.0000") if entry.is_closed else abs(entry.amount + row.settled_sum))
+                    if _is_debt_original(entry)
+                    else None
+                ),
             }
         )
     return page
@@ -437,8 +477,10 @@ def list_all_entries(
     q: str | None = None,
     account_ids: list[int] | None = None,
     hide_rewards: bool = False,
+    counterparty_id: int | None = None,
+    open_only: bool = False,
 ) -> tuple[int, list[dict]]:
-    filters = _filters(kind, date_from, date_to, q, account_ids, hide_rewards)
+    filters = _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id, open_only)
     total = db.scalar(select(func.count()).select_from(LedgerEntry).where(*filters))
     return total, _entry_rows(db, filters, running_accounts=account_ids, limit=limit, offset=offset)
 
@@ -568,13 +610,6 @@ def period_summary(db: Session, account_id: int, date_from: date, date_to: date)
     }
 
 
-def _open_amount(db: Session, entry: LedgerEntry) -> Decimal:
-    settled = db.scalar(
-        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(LedgerEntry.settles_entry_id == entry.id)
-    )
-    return abs(entry.amount + settled)
-
-
 def get_entry_detail(db: Session, entry_id: int) -> dict | None:
     entry = db.get(LedgerEntry, entry_id)
     if entry is None:
@@ -610,10 +645,8 @@ def get_entry_detail(db: Session, entry_id: int) -> dict | None:
         )
     ]
     detail["rewards"] = rows(LedgerEntry.reward_source_entry_id == entry.id)
-    if entry.kind in ("receivable", "payable") and not entry.is_settlement and entry.settles_entry_id is None:
-        open_amount = _open_amount(db, entry)
-        detail["open_amount"], detail["is_settled"] = open_amount, open_amount == 0
-    else:
-        detail["open_amount"], detail["is_settled"] = None, None
+    # `open_amount` comes with the row (`_entry_rows`); `is_settled` follows from it.
+    open_amount = detail["open_amount"]
+    detail["is_settled"] = None if open_amount is None else open_amount == 0
     detail["refunded_amount"] = sum((item["amount"] for item in detail["refunded_by"]), Decimal(0))
     return detail

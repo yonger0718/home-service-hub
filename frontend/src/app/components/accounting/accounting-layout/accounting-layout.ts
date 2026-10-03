@@ -49,6 +49,7 @@ export function readLayoutState(root: ActivatedRouteSnapshot): LayoutRouteState 
 /** `/accounting/entries/:id…` or, opened from a passbook, `/accounting/accounts/:id/entries/:eid`. */
 const ENTRY_URL = /^\/accounting(?:\/accounts\/\d+)?\/entries\/(\d+)(?:\/|$)/;
 /** A passbook (`/accounting/accounts/:id`) or an entry opened from it: ↓ / ↑ stay inside that passbook. */
+const REMINDERS_URL = /^\/accounting\/reminders(?:\/|$)/;
 const PASSBOOK_URL = /^\/accounting\/accounts\/(\d+)(?:\/entries\/\d+)?$/;
 const FORM_URL = /^\/accounting\/(?:entry|entries\/\d+\/edit)(?:[/?#]|$)/;
 const SWIPE_CLOSE_PX = 80;
@@ -206,8 +207,18 @@ export class AccountingLayoutComponent {
     }
   }
 
+  /**
+   * Entry rows ↑ / ↓ walk. On the reminder centre only its own rows count (in the wide layout it sits in the pane,
+   * beside the timeline's rows on the left).
+   */
   private rows(): HTMLElement[] {
-    return Array.from(this.host.nativeElement.querySelectorAll<HTMLElement>('[data-entry-id]'));
+    const host = this.host.nativeElement;
+    const scope = this.onReminders() ? (host.querySelector<HTMLElement>('.detail-pane') ?? host) : host;
+    return Array.from(scope.querySelectorAll<HTMLElement>('[data-entry-id]'));
+  }
+
+  private onReminders(): boolean {
+    return REMINDERS_URL.test(this.router.url.split(/[?#]/)[0]);
   }
 
   private moveSelection(delta: 1 | -1): void {
@@ -222,6 +233,11 @@ export class AccountingLayoutComponent {
     next.scrollIntoView?.({ block: 'nearest' });
     const id = Number(next.dataset['entryId']);
     const passbook = PASSBOOK_URL.exec(path);
+    if (REMINDERS_URL.test(path)) {
+      // Opened from the reminder centre: ✕ on the detail returns there.
+      void this.router.navigate(['/accounting/entries', id], { state: { closeTo: 'reminders' } });
+      return;
+    }
     void this.router.navigate(passbook ? ['/accounting/accounts', Number(passbook[1]), 'entries', id] : ['/accounting/entries', id]);
   }
 

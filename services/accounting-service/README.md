@@ -41,10 +41,31 @@ and stores future-dated rows, periods and installments in `moze_schedule`. Manua
 attachments are never touched. Accounts edited locally (`settings_locally_edited`) keep their settings and, when
 the backup no longer names them, are neither archived nor zeroed. Neither importer deletes a category, project or
 counterparty without a `moze_id` (CSV-created or created in Settings); the backup importer deletes only unused
-rows whose `moze_id` left the backup.
+rows whose `moze_id` left the backup. MOZE's `startDay` is the first day of the statement period, so an account's
+`closing_day` is `startDay − 1`; `startDay` 1 (the calendar month) imports as no closing day, for every account.
 The report lists per-type counts, skipped future rows, `needs_review` reasons and per-account `moze_part` /
 `previous_moze_part`; `balanceInfo` is not compared until a rule is confirmed, so the CLI warns
 `WARNING: 0 of N accounts compared` and the balances are checked by hand.
+
+Collections and repayments (MOZE types 5 / 6) settle the receivable / payable their `relatedID` names. MOZE leaves
+`relatedID` empty on collections, so a settlement whose `relatedID` is empty or names no imported original of the
+matching type (a receivable for a collection, a payable for a repayment) is linked to the imported original of the
+matching type that shares its `target` (counterparty); with several, the target's settlements are allocated FIFO by
+date to the earliest original with an open amount left (same-currency settlements only). The report counts both in
+`settlements_linked` (`by_related_id`, `by_target`). Links are reviewed as `settlement_overflow` (more than the
+original has left open, whether linked by `relatedID` or by target), `cross_currency_settlement` (the settlement's
+currency differs from the original's; it stays linked but never reduces the original's `open_amount`, `is_settled` or
+the counterparty's `open_amounts`, and is resolved by hand or closed by `isSettle` below) or, with no original,
+`settlement_original_missing`. Future-dated and disabled rows stay skipped: a settlement whose original is
+future-dated or disabled links by target to another imported original if one exists; otherwise it is reviewed as
+`settlement_original_missing`.
+
+MOZE's own "debt closed" flag, `AHTarget.isSettle`, is the authority: every imported receivable / payable original
+whose target has `isSettle = true` is imported with `is_closed = true` (counted in `debts_closed_from_target`), even
+where its settlements do not net (one collection covering several originals, another currency, rounding). A closed
+debt reads `open_amount` 0 and `is_settled` true, leaves the counterparty's `open_amounts` together with the
+settlements linked to it, and refuses `POST /entries/{id}/settle` (422 on `is_closed`). Links and review flags are
+kept as they are; each full replace sets the flag again from the backup.
 
 API
 ---

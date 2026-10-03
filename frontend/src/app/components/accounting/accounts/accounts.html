@@ -20,7 +20,12 @@
       } @else {
         <span class="bal" [class.neg]="+account.balance < 0">{{ formatMoney(account.balance, account.currency) }}</span>
       }
-      @if (duePill(account); as pill) {
+      @if (cardDue(account); as owed) {
+        <span class="due">
+          <span class="owed">{{ owed.owedText }}</span>
+          <span class="pill warn" [class.overdue]="owed.overdue">{{ owed.pill }}</span>
+        </span>
+      } @else if (duePill(account); as pill) {
         <span class="due"><span class="pill rv">{{ pill }}</span></span>
       }
     </a>

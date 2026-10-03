@@ -15,6 +15,7 @@ const ACCOUNTING_PHONE_ROUTES: Routes = [
   { path: 'entries/:id/edit', loadComponent: ACCOUNTING_PAGES.entryForm },
   { path: 'entries/:id', loadComponent: ACCOUNTING_PAGES.entryDetail },
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
+  { path: 'reminders', loadComponent: ACCOUNTING_PAGES.reminders },
 ];
 
 /** The page shown in the layout's `pane` outlet; an empty-path named child keeps the URL free of `(pane:…)`. */
@@ -28,6 +29,7 @@ const ACCOUNTING_WIDE_ROUTES: Routes = [
   { path: 'entry', data: { list: 'timeline' }, children: pane('entryForm') },
   { path: 'entries/:id/edit', data: { list: 'timeline' }, children: pane('entryForm') },
   { path: 'entries/:id', data: { list: 'timeline' }, children: pane('entryDetail') },
+  { path: 'reminders', data: { list: 'timeline' }, children: pane('reminders') },
   { path: 'accounts', pathMatch: 'full', data: { list: 'accounts' }, children: [] },
   { path: 'accounts/new', data: { list: 'accounts' }, children: pane('accountSettings') },
   { path: 'accounts/:id/settings', data: { list: 'accounts' }, children: pane('accountSettings') },

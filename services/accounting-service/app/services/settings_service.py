@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..models import (
     SYSTEM_KINDS,
@@ -19,6 +19,7 @@ from ..models import (
 )
 from ..schemas.writes import AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
+from .ledger_service import open_debt_filter
 
 PREFERENCE_FIELDS = (
     "expense_income_colors", "keypad_layout", "week_start", "main_currency", "hide_rewards_on_timeline",
@@ -430,10 +431,27 @@ def delete_project(db: Session, project_id: int) -> None:
 
 
 def _open_amounts(db: Session) -> dict[int, list[dict]]:
-    """Per counterparty and currency: −Σ amount over its receivable and payable entries (settlements included)."""
+    """Per counterparty and currency: −Σ amount over its receivable and payable entries (settlements included).
+
+    Closed debts (`is_closed`) and the settlements linked to them are left out: MOZE counts them as settled. A
+    settlement linked to an original in another currency is left out too: it never nets against that original.
+    """
+    closed = select(LedgerEntry.id).where(LedgerEntry.is_closed).scalar_subquery()
+    original = aliased(LedgerEntry)
+    cross_currency = (
+        select(original.id)
+        .where(original.id == LedgerEntry.settles_entry_id, original.currency != LedgerEntry.currency)
+        .exists()
+    )
     rows = db.execute(
         select(LedgerEntry.counterparty_id, LedgerEntry.currency, func.sum(LedgerEntry.amount))
-        .where(LedgerEntry.counterparty_id.is_not(None), LedgerEntry.kind.in_(("receivable", "payable")))
+        .where(
+            LedgerEntry.counterparty_id.is_not(None),
+            LedgerEntry.kind.in_(("receivable", "payable")),
+            ~LedgerEntry.is_closed,
+            or_(LedgerEntry.settles_entry_id.is_(None), LedgerEntry.settles_entry_id.not_in(closed)),
+            ~cross_currency,
+        )
         .group_by(LedgerEntry.counterparty_id, LedgerEntry.currency)
         .order_by(LedgerEntry.currency)
     )
@@ -444,10 +462,24 @@ def _open_amounts(db: Session) -> dict[int, list[dict]]:
     return amounts
 
 
+def _open_counts(db: Session) -> dict[int, int]:
+    """Per counterparty: its open receivable / payable originals (the `GET /entries?open=true` definition)."""
+    rows = db.execute(
+        select(LedgerEntry.counterparty_id, func.count())
+        .where(LedgerEntry.counterparty_id.is_not(None), open_debt_filter())
+        .group_by(LedgerEntry.counterparty_id)
+    )
+    return {counterparty_id: count for counterparty_id, count in rows}
+
+
 def list_counterparties(db: Session) -> list[dict]:
     amounts = _open_amounts(db)
+    counts = _open_counts(db)
     return [
-        {"id": row.id, "name": row.name, "moze_id": row.moze_id, "open_amounts": amounts.get(row.id, [])}
+        {
+            "id": row.id, "name": row.name, "moze_id": row.moze_id, "open_amounts": amounts.get(row.id, []),
+            "open_count": counts.get(row.id, 0),
+        }
         for row in db.scalars(select(Counterparty).order_by(Counterparty.name))
     ]
 

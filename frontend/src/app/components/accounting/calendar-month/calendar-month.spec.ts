@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DailySummaryDay } from '../../../models/accounting.model';
+import { BillingEvent } from '../billing/billing-math';
 import { CalendarMonthComponent } from './calendar-month';
 
 const DAYS: DailySummaryDay[] = [
@@ -17,7 +18,7 @@ describe('CalendarMonthComponent', () => {
 
   afterEach(() => vi.useRealTimers());
 
-  function render(inputs: Partial<{ weekStart: number; selected: string | null; today: string }> = {}) {
+  function render(inputs: Partial<{ weekStart: number; selected: string | null; today: string; billing: BillingEvent[] }> = {}) {
     TestBed.configureTestingModule({ imports: [CalendarMonthComponent] });
     const fixture = TestBed.createComponent(CalendarMonthComponent);
     fixture.componentRef.setInput('month', '2026-10');
@@ -87,5 +88,49 @@ describe('CalendarMonthComponent', () => {
     expect(cell('2026-10-05').getAttribute('aria-pressed')).toBe('true');
     expect(cell('2026-10-05').classList).toContain('sel');
     expect(cell('2026-10-02').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  describe('billing hints', () => {
+    const period = { start: '2026-08-16', end: '2026-09-15' };
+    const BILLING: BillingEvent[] = [
+      { accountId: 1, name: '玉山 UNI', kind: 'due', date: '2026-10-05', period, nextClosing: '2026-10-15' },
+      { accountId: 7, name: '富邦 J卡', kind: 'due', date: '2026-10-05', period, nextClosing: '2026-10-15' },
+      { accountId: 3, name: '國泰 CUBE', kind: 'due', date: '2026-10-12', period, nextClosing: '2026-10-15' },
+      { accountId: 1, name: '玉山 UNI', kind: 'closing', date: '2026-10-15', period: { start: '2026-09-16', end: '2026-10-15' }, nextClosing: '2026-11-15' },
+    ];
+
+    it('badges due days with the card count and says so in the aria label', () => {
+      const { cell } = render({ billing: BILLING });
+      const twoCards = cell('2026-10-05');
+      const badge = twoCards.querySelector('.due-badge')!;
+      expect(text(badge)).toBe('💳2');
+      expect(badge.getAttribute('aria-hidden')).toBe('true');
+      expect(twoCards.classList).toContain('due');
+      expect(twoCards.getAttribute('aria-label')).toBe('10月5日，收入 50,042，2 張卡繳費到期');
+
+      const oneCard = cell('2026-10-12');
+      expect(text(oneCard.querySelector('.due-badge'))).toBe('💳');
+      expect(oneCard.getAttribute('aria-label')).toBe('10月12日，1 張卡繳費到期');
+    });
+
+    it('marks closing days with a border class and no badge', () => {
+      const { cell } = render({ billing: BILLING });
+      const closing = cell('2026-10-15');
+      expect(closing.classList).toContain('closing');
+      expect(closing.querySelector('.due-badge')).toBeNull();
+      expect(closing.getAttribute('aria-label')).toBe('10月15日');
+      expect(cell('2026-10-05').classList).not.toContain('closing');
+    });
+
+    it('leaves other days without a badge', () => {
+      const { el, cell } = render({ billing: BILLING });
+      expect(el.querySelectorAll('.due-badge').length).toBe(2);
+      expect(cell('2026-10-02').querySelector('.due-badge')).toBeNull();
+      expect(cell('2026-10-02').classList).not.toContain('due');
+    });
+
+    it('shows no billing marks without events', () => {
+      expect(render().el.querySelectorAll('.due-badge, .cell.closing, .cell.due').length).toBe(0);
+    });
   });
 });

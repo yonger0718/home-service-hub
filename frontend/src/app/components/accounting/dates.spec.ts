@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { addDays, shortDate, slashDate, todayIso } from './dates';
+import { addDays, daysBetween, shortDate, slashDate, todayIso } from './dates';
 
 describe('date helpers', () => {
   it('formats the local date as ISO', () => {
@@ -16,5 +16,12 @@ describe('date helpers', () => {
     expect(addDays('2026-10-15', 20)).toBe('2026-11-04');
     expect(addDays('2026-12-31', 1)).toBe('2027-01-01');
     expect(addDays('2026-03-01', -1)).toBe('2026-02-28');
+  });
+
+  it('counts calendar days between two ISO dates', () => {
+    expect(daysBetween('2026-10-03', '2026-10-05')).toBe(2);
+    expect(daysBetween('2026-10-05', '2026-10-03')).toBe(-2);
+    expect(daysBetween('2026-12-31', '2027-01-01')).toBe(1);
+    expect(daysBetween('2026-03-28', '2026-03-30')).toBe(2);
   });
 });

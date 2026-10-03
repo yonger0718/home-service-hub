@@ -5,7 +5,7 @@ import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { DailySummary, LedgerEntry, MonthSummary, Preference } from '../../../models/accounting.model';
+import { Counterparty, DailySummary, LedgerAccount, LedgerEntry, MonthSummary, Preference } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
@@ -31,7 +31,13 @@ describe('LedgerTimelineComponent', () => {
     vi.useRealTimers();
   });
 
-  function render(mode: LayoutMode = 'phone', preference: Preference = makePreference(), providers: Provider[] = []) {
+  function render(
+    mode: LayoutMode = 'phone',
+    preference: Preference = makePreference(),
+    providers: Provider[] = [],
+    accounts: LedgerAccount[] = ACCOUNTS,
+    counterparties: Counterparty[] = [],
+  ) {
     TestBed.configureTestingModule({
       imports: [LedgerTimelineComponent],
       providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([]), ...providers],
@@ -41,9 +47,15 @@ describe('LedgerTimelineComponent', () => {
     const fixture = TestBed.createComponent(LedgerTimelineComponent);
     fixture.detectChanges();
     httpMock.expectOne('/api/accounting/preference').flush(preference);
-    httpMock.expectOne('/api/accounting/accounts').flush(ACCOUNTS);
+    httpMock.expectOne('/api/accounting/accounts').flush(accounts);
+    flushCounterparties(counterparties);
     fixture.detectChanges();
     return { fixture, el: fixture.nativeElement as HTMLElement };
+  }
+
+  /** The 🔔 count's counterparties: read on init and again after every entry or account write. */
+  function flushCounterparties(body: Counterparty[] = []): void {
+    httpMock!.expectOne('/api/accounting/counterparties').flush(body);
   }
 
   function flushSummary(month: string, body?: Partial<MonthSummary>): void {
@@ -466,6 +478,7 @@ describe('LedgerTimelineComponent', () => {
       TestBed.inject(AccountingService).deleteEntry(3).subscribe();
       httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
       fixture.detectChanges();
+      flushCounterparties();
 
       flushSummary('2026-10');
       flushDaily('2026-10');
@@ -589,10 +602,372 @@ describe('LedgerTimelineComponent', () => {
     httpMock!.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/accounts').flush(makeAccount({ id: 9, name: '新卡' }));
     fixture.detectChanges();
     httpMock!.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts').flush([...ACCOUNTS, makeAccount({ id: 9, name: '新卡' })]);
+    flushCounterparties();
     fixture.detectChanges();
 
     const options = Array.from(el.querySelectorAll('.filter-account option')).map(text);
     expect(options).toEqual(['全部帳戶', '玉山 UNI', '富邦 J卡', '新卡']);
+  });
+
+  describe('billing hints', () => {
+    // Closing day 15, due 20 days later: the 08/16 – 09/15 statement is due on 10/05, the 10/15 one on 11/04.
+    const CARD = makeAccount({
+      id: 9,
+      name: '玉山 UNI',
+      is_credit: true,
+      closing_day: 15,
+      due_rule: 'days_after_closing',
+      due_value: 20,
+    });
+    // `paidTo`: payments count from the closing through the day before the next closing, capped at today (10/02).
+    const SEPT = { start: '2026-08-16', end: '2026-09-15', due: '2026-10-05', paidTo: '2026-10-02' };
+    const OCT_CYCLE = { start: '2026-09-16', end: '2026-10-15', due: '2026-11-04', paidTo: '2026-10-15' };
+
+    function billRequests(cycle = SEPT, paidTo = cycle.paidTo): { summary: TestRequest; payments: TestRequest } {
+      const summary = httpMock!.expectOne(
+        r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === cycle.end,
+      );
+      expect(summary.request.params.get('date_from')).toBe(cycle.start);
+      const payments = httpMock!.expectOne(
+        r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === cycle.end,
+      );
+      expect(payments.request.params.get('kind')).toBe('transfer_in');
+      expect(payments.request.params.get('date_to')).toBe(paidTo);
+      return { summary, payments };
+    }
+
+    function answerBill(requests: { summary: TestRequest; payments: TestRequest }, spend: string, payments: string[] = []): void {
+      requests.summary.flush({
+        account_id: 9,
+        currency: 'TWD',
+        date_from: '',
+        date_to: '',
+        spend,
+        income: '0',
+        rewards: '0',
+        net: spend,
+        end_balance: spend,
+        count: 4,
+      });
+      requests.payments.flush({
+        items: payments.map((amount, index) => makeEntry({ id: 40 + index, kind: 'transfer_in', account_id: 9, amount })),
+        total: payments.length,
+        limit: 100,
+        offset: 0,
+      });
+    }
+
+    function flushBill(spend: string, payments: string[] = [], cycle = SEPT, paidTo = cycle.paidTo): void {
+      answerBill(billRequests(cycle, paidTo), spend, payments);
+    }
+
+    function expectNoBillRequest(): void {
+      httpMock!.expectNone(r => r.url.startsWith('/api/accounting/accounts/9/'));
+    }
+
+    function flushDayEntries(): void {
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
+    }
+
+    function renderCalendarWith(accounts = [...ACCOUNTS, CARD]) {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const rendered = render('phone', makePreference(), [], accounts);
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      rendered.fixture.detectChanges();
+      return rendered;
+    }
+
+    function renderListWith(accounts = [...ACCOUNTS, CARD]) {
+      const rendered = render('phone', makePreference(), [], accounts);
+      flushSummary('2026-10');
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      return rendered;
+    }
+
+    function selectDay(fixture: { detectChanges(): void }, el: HTMLElement, date: string): void {
+      (el.querySelector(`button.cell[data-date="${date}"]`) as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushDayEntries();
+      fixture.detectChanges();
+    }
+
+    const cell = (el: HTMLElement, date: string) => el.querySelector(`button.cell[data-date="${date}"]`)!;
+
+    it('badges an unpaid statement only once it is resolved and shows its line on the due day', () => {
+      const { fixture, el } = renderCalendarWith();
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+      const requests = billRequests();
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')).toBeNull();
+      expect(cell(el, '2026-10-15').classList).toContain('closing');
+
+      answerBill(requests, '-12345.0000');
+      fixture.detectChanges();
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
+
+      selectDay(fixture, el, '2026-10-05');
+      expectNoBillRequest();
+      const line = el.querySelector<HTMLButtonElement>('.day-entries .bill')!;
+      expect(text(line)).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
+      expect(line.compareDocumentPosition(el.querySelector('.day-entries .empty')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      line.click();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 9]);
+    });
+
+    it('hides a zero statement everywhere and keeps it resolved across a view switch', () => {
+      const { fixture, el } = renderListWith();
+      flushBill('0.0000');
+      fixture.detectChanges();
+      expect(el.querySelector('.bill-banner')).toBeNull();
+
+      viewButton(el, '日曆').click();
+      fixture.detectChanges();
+      flushDaily('2026-10');
+      expectNoBillRequest();
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      expect(cell(el, '2026-10-15').classList).toContain('closing');
+
+      selectDay(fixture, el, '2026-10-05');
+      expect(el.querySelector('.bill')).toBeNull();
+    });
+
+    it('hides a fully paid statement', () => {
+      const { fixture, el } = renderCalendarWith();
+      flushBill('-800.0000', ['500.0000', '300.0000']);
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      selectDay(fixture, el, '2026-10-05');
+      expect(el.querySelector('.bill')).toBeNull();
+    });
+
+    it('hides a statement that cannot be read', () => {
+      const { fixture, el } = renderCalendarWith();
+      const requests = billRequests();
+      requests.summary.flush('boom', { status: 500, statusText: 'Server Error' });
+      requests.payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+    });
+
+    it('shows what was paid and what remains on a partly paid statement', () => {
+      const { fixture, el } = renderCalendarWith();
+      flushBill('-12345.0000', ['5000.0000']);
+      fixture.detectChanges();
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+
+      selectDay(fixture, el, '2026-10-05');
+      const line = el.querySelector('.day-entries .bill')!;
+      expect(text(line)).toBe('💳 玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345');
+      expect(line.classList).toContain('partial');
+    });
+
+    it('re-resolves after an entry write, keeping the badge until the new figures land', () => {
+      const { fixture, el } = renderCalendarWith();
+      flushBill('-12345.0000');
+      fixture.detectChanges();
+
+      TestBed.inject(AccountingService).deleteEntry(3).subscribe();
+      httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+      flushCounterparties();
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      const requests = billRequests();
+      fixture.detectChanges();
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')).not.toBeNull();
+
+      answerBill(requests, '-12345.0000', ['12345.0000']);
+      fixture.detectChanges();
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')).toBeNull();
+    });
+
+    it('resolves each statement once while moving between months', () => {
+      const { fixture, el } = renderCalendarWith();
+      flushBill('-100.0000');
+      fixture.detectChanges();
+
+      (el.querySelector('.month-next') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushSummary('2026-11');
+      flushDaily('2026-11');
+      flushBill('-200.0000', [], OCT_CYCLE);
+      fixture.detectChanges();
+      expect(cell(el, '2026-11-04').querySelector('.due-badge')).not.toBeNull();
+
+      (el.querySelector('.month-prev') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      expectNoBillRequest();
+      fixture.detectChanges();
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')).not.toBeNull();
+    });
+
+    it('announces the unpaid due days of the next 7 days in the list and opens the first in the calendar', () => {
+      const { fixture, el } = renderListWith();
+      flushBill('-12345.0000');
+      fixture.detectChanges();
+
+      const banner = el.querySelector<HTMLButtonElement>('.bill-banner')!;
+      expect(text(banner)).toBe('近 7 天有 1 筆繳費到期');
+      banner.click();
+      fixture.detectChanges();
+      flushDaily('2026-10');
+      flushDayEntries();
+      expectNoBillRequest();
+      fixture.detectChanges();
+
+      expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
+      expect(cell(el, '2026-10-05').getAttribute('aria-pressed')).toBe('true');
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
+      expect(el.querySelector('.bill-banner')).toBeNull();
+    });
+
+    it("resolves next month's statement for the banner and moves there on tap", () => {
+      vi.setSystemTime(new Date(2026, 9, 30, 12, 0, 0));
+      const { fixture, el } = renderListWith();
+      flushBill('-100.0000', ['100.0000'], SEPT, '2026-10-14');
+      flushBill('-200.0000', [], OCT_CYCLE, '2026-10-30');
+      fixture.detectChanges();
+      expect(text(el.querySelector('.bill-banner'))).toBe('近 7 天有 1 筆繳費到期');
+
+      el.querySelector<HTMLButtonElement>('.bill-banner')!.click();
+      fixture.detectChanges();
+      flushSummary('2026-11');
+      flushDaily('2026-11');
+      flushDayEntries();
+      expectNoBillRequest();
+      fixture.detectChanges();
+
+      expect(text(el.querySelector('.month-label'))).toBe('2026 年 11 月');
+      expect(cell(el, '2026-11-04').getAttribute('aria-pressed')).toBe('true');
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $200 · 到期');
+    });
+
+    const ALAN: Counterparty = { id: 1, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }], open_count: 2 };
+    const SETTLED: Counterparty = { id: 2, name: 'Bea', open_amounts: [], open_count: 0 };
+    const bell = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.bell')!;
+
+    it('shows the 🔔 without a count when nothing is pending, in both views', () => {
+      const { fixture, el } = renderListWith(ACCOUNTS);
+      expect(text(bell(el))).toBe('🔔');
+      expect(bell(el).getAttribute('aria-label')).toBe('提醒中心，0 項');
+      expect(el.querySelector('.bell-count')).toBeNull();
+
+      viewButton(el, '日曆').click();
+      fixture.detectChanges();
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      expect(bell(el)).not.toBeNull();
+    });
+
+    it('counts unpaid cards and counterparties with an open amount, and opens the reminder centre', () => {
+      const rendered = render('phone', makePreference(), [], [...ACCOUNTS, CARD], [ALAN, SETTLED]);
+      flushSummary('2026-10');
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      const { fixture, el } = rendered;
+      // Before the statement lands only the counterparty counts.
+      expect(text(el.querySelector('.bell-count'))).toBe('1');
+
+      flushBill('-12345.0000');
+      fixture.detectChanges();
+      expect(text(el.querySelector('.bell-count'))).toBe('2');
+      expect(bell(el).getAttribute('aria-label')).toBe('提醒中心，2 項');
+
+      const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+      bell(el).click();
+      expect(navigate).toHaveBeenCalledWith(['/accounting/reminders']);
+    });
+
+    it('re-reads the counterparties after an entry write', () => {
+      const { fixture, el } = renderListWith(ACCOUNTS);
+      TestBed.inject(AccountingService).deleteEntry(3).subscribe();
+      httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+      flushSummary('2026-10');
+      flushEntries([]);
+      flushCounterparties([ALAN]);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.bell-count'))).toBe('1');
+    });
+
+    it('counts a counterparty whose receivable and payable net to zero, by its open rows', () => {
+      const { fixture, el } = renderListWith(ACCOUNTS);
+      TestBed.inject(AccountingService).deleteEntry(3).subscribe();
+      httpMock!.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+      flushSummary('2026-10');
+      flushEntries([]);
+      flushCounterparties([{ id: 4, name: 'Dee', open_amounts: [], open_count: 2 }, SETTLED]);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.bell-count'))).toBe('1');
+    });
+
+    it('leaves a card whose statement cannot be read out of the count', () => {
+      const { fixture, el } = renderListWith();
+      const requests = billRequests();
+      requests.summary.flush({
+        account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-100.0000', income: '0', rewards: '0',
+        net: '0', end_balance: '0', count: 1,
+      });
+      requests.payments.flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(el.querySelector('.bell-count')).toBeNull();
+    });
+
+    it('leaves a paid card out of the count', () => {
+      const { fixture, el } = renderListWith();
+      flushBill('-800.0000', ['800.0000']);
+      fixture.detectChanges();
+      expect(el.querySelector('.bell-count')).toBeNull();
+    });
+
+    it('badges the due day of a card whose statement is the calendar month', () => {
+      const monthly = makeAccount({ id: 9, name: '月結卡', is_credit: true, closing_day: null, due_rule: 'fixed_day', due_value: 5 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, monthly]);
+      flushBill('-500.0000', [], { start: '2026-09-01', end: '2026-09-30', due: '2026-10-05', paidTo: '2026-10-02' });
+      fixture.detectChanges();
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(cell(el, '2026-10-31').classList).toContain('closing');
+    });
+
+    it("badges only the master card, with its combined cards' spend in the statement", () => {
+      const child = makeAccount({ id: 21, name: '玉山 UNI 副卡', is_credit: true, closing_day: 15, due_rule: 'days_after_closing', due_value: 20, combined_account_id: 9 });
+      const { fixture, el } = renderCalendarWith([...ACCOUNTS, CARD, child]);
+      const requests = billRequests();
+      const childSummary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/21/summary');
+      expect(childSummary.request.params.get('date_to')).toBe(SEPT.end);
+      httpMock!.expectNone(r => r.url === '/api/accounting/accounts/21/entries');
+      answerBill(requests, '-1000.0000');
+      childSummary.flush({
+        account_id: 21, currency: 'TWD', date_from: '', date_to: '', spend: '-234.0000', income: '0', rewards: '0',
+        net: '0', end_balance: '0', count: 1,
+      });
+      fixture.detectChanges();
+
+      expect(el.querySelectorAll('.due-badge').length).toBe(1);
+      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
+      selectDay(fixture, el, '2026-10-05');
+      expect(Array.from(el.querySelectorAll('.day-entries .bill')).map(text)).toEqual(['💳 玉山 UNI 帳單 $1,234 · 到期']);
+    });
+
+    it('renders nothing and asks for no statement without credit cards', () => {
+      const { fixture, el } = renderListWith(ACCOUNTS);
+      httpMock!.expectNone(r => r.url.includes('/accounts/') && r.url.includes('/summary'));
+      expect(el.querySelector('.bill-banner')).toBeNull();
+
+      viewButton(el, '日曆').click();
+      fixture.detectChanges();
+      flushDaily('2026-10');
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.due-badge, .cell.closing').length).toBe(0);
+      selectDay(fixture, el, '2026-10-05');
+      expect(el.querySelector('.bill')).toBeNull();
+    });
   });
 });
 

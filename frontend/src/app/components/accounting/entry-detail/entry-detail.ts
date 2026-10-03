@@ -74,10 +74,11 @@ export class EntryDetailComponent implements OnInit {
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly loadError = signal(false);
   /**
-   * Set when the navigation that opened this entry asked ✕ to go to the parent list (`state.closeTo === 'list'`):
-   * after a split member edit the previous history entry is the member's old, deleted id.
+   * Set when the navigation that opened this entry asked ✕ to go to a fixed page: `state.closeTo === 'list'` (the
+   * parent list; after a split member edit the previous history entry is the member's old, deleted id) or
+   * `'reminders'` (opened from the reminder centre).
    */
-  private closeToList = false;
+  private closeTo: 'list' | 'reminders' | null = null;
   readonly panel = signal<DetailPanel>(null);
   readonly formAccountId = signal<number | null>(null);
   readonly formAmount = signal('');
@@ -142,7 +143,7 @@ export class EntryDetailComponent implements OnInit {
   });
   readonly canSettle = computed(() => {
     const detail = this.detail();
-    return this.isDebt() && !this.locked() && !detail?.is_settled && Number(detail?.open_amount ?? 0) > 0;
+    return this.isDebt() && !this.locked() && !detail?.is_settled && !detail?.is_closed && Number(detail?.open_amount ?? 0) > 0;
   });
   readonly refundable = computed(() => {
     const detail = this.detail();
@@ -220,6 +221,27 @@ export class EntryDetailComponent implements OnInit {
     this.panel() === 'settle' ? Number(this.detail()?.open_amount ?? 0) : this.refundable(),
   );
   readonly settleLabel = computed(() => (this.detail()?.kind === 'payable' ? '新增還款' : '新增收款'));
+  /**
+   * A debt original once something came back (or MOZE closed it): `原始 $420 · 已收 $200 · 剩餘 $220` (已還 for a
+   * payable; 已結清 in place of 剩餘 when closed). 已收 / 已還 is Σ of the linked settlements.
+   */
+  readonly breakdown = computed(() => {
+    const detail = this.detail();
+    if (!detail || detail.open_amount === null || (detail.kind !== 'receivable' && detail.kind !== 'payable')) {
+      return null;
+    }
+    const back = Math.abs(detail.settled_by.reduce((sum, settlement) => sum + Number(settlement.amount), 0));
+    if (back === 0 && !detail.is_closed) {
+      return null;
+    }
+    const currency = detail.currency;
+    const parts = [
+      `原始 ${formatMoney(Math.abs(Number(detail.amount)), currency)}`,
+      `${detail.kind === 'payable' ? '已還' : '已收'} ${formatMoney(back, currency)}`,
+      detail.is_closed ? '已結清' : `剩餘 ${formatMoney(detail.open_amount, currency)}`,
+    ];
+    return parts.join(' · ');
+  });
 
   ngOnInit(): void {
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
@@ -230,7 +252,8 @@ export class EntryDetailComponent implements OnInit {
       this.routeEntryId.set(id);
       this.passbookId.set(passbook ? Number(params.get('id')) : null);
       const state = this.router.currentNavigation()?.extras.state ?? (this.location.getState() as Record<string, unknown> | null);
-      this.closeToList = state?.['closeTo'] === 'list';
+      const closeTo = state?.['closeTo'];
+      this.closeTo = closeTo === 'list' || closeTo === 'reminders' ? closeTo : null;
       // Another entry: drop the shown one at once, so nothing acts on it while the new one loads. A reload of the
       // same entry keeps it (and keeps it when that reload fails).
       if (this.detail()?.id !== id) {
@@ -247,18 +270,21 @@ export class EntryDetailComponent implements OnInit {
   /** Bumped per `load()`; a response for an earlier load (fast navigation between entries) is dropped. */
   private loadSeq = 0;
 
-  /** The list the detail belongs to: the passbook it was opened from, else the timeline. */
+  /** The list the detail belongs to: the reminder centre or the passbook it was opened from, else the timeline. */
   private parentUrl(): string {
+    if (this.closeTo === 'reminders') {
+      return '/accounting/reminders';
+    }
     const passbook = this.passbookId();
     return passbook === null ? '/accounting' : `/accounting/accounts/${passbook}`;
   }
 
   /**
    * ✕ and after a delete: back to where the owner came from (in-app history), else the parent list. Opened with
-   * `closeTo: 'list'` it always goes to the parent list.
+   * `closeTo` it always goes to that page.
    */
   close(): void {
-    if (this.closeToList) {
+    if (this.closeTo !== null) {
       void this.router.navigateByUrl(this.parentUrl());
       return;
     }

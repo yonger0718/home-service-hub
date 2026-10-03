@@ -54,7 +54,35 @@ describe('AccountingAccountsComponent', () => {
     vi.useRealTimers();
   });
 
-  function render(accounts: LedgerAccount[], latest: ImportRun | null): ComponentFixture<AccountingAccountsComponent> {
+  /**
+   * Answers every open statement read (`BillingService`): summary spend per card id (default 0, i.e. nothing to pay)
+   * and the payments made in its payment window (closing → day before the next closing, capped at today).
+   */
+  function flushBills(bills: Record<number, { spend: string; payments?: string[] }> = {}): void {
+    for (const req of http.match(r => /^\/api\/accounting\/accounts\/\d+\/summary$/.test(r.url))) {
+      const id = Number(req.request.url.split('/')[4]);
+      const spend = bills[id]?.spend ?? '0';
+      req.flush({
+        account_id: id, currency: 'TWD', date_from: req.request.params.get('date_from'), date_to: req.request.params.get('date_to'),
+        spend, income: '0', rewards: '0', net: spend, end_balance: spend, count: 1,
+      });
+    }
+    for (const req of http.match(r => /^\/api\/accounting\/accounts\/\d+\/entries$/.test(r.url))) {
+      const id = Number(req.request.url.split('/')[4]);
+      expect(req.request.params.get('kind')).toBe('transfer_in');
+      const payments = bills[id]?.payments ?? [];
+      req.flush({
+        items: payments.map((amount, index) => ({ id: 500 + index, kind: 'transfer_in', amount, account_id: id })),
+        total: payments.length, limit: 100, offset: 0,
+      });
+    }
+  }
+
+  function render(
+    accounts: LedgerAccount[],
+    latest: ImportRun | null,
+    bills: Record<number, { spend: string; payments?: string[] }> = {},
+  ): ComponentFixture<AccountingAccountsComponent> {
     const fixture = TestBed.createComponent(AccountingAccountsComponent);
     fixture.detectChanges();
     http.expectOne(r => r.url === '/api/accounting/accounts' && !r.urlWithParams.includes('include_archived=true')).flush(accounts);
@@ -68,6 +96,8 @@ describe('AccountingAccountsComponent', () => {
       expense_income_colors: 'red_green', keypad_layout: 'calculator', week_start: 0, main_currency: 'TWD',
       hide_rewards_on_timeline: false, abbreviate_totals: true,
     });
+    fixture.detectChanges();
+    flushBills(bills);
     fixture.detectChanges();
     return fixture;
   }
@@ -115,6 +145,121 @@ describe('AccountingAccountsComponent', () => {
     // The currency appears only when it is not the main currency.
     expect(all.find(r => r.textContent?.includes('Pi 拍錢包'))!.querySelector('.meta')?.textContent?.trim()).toBe('不納入總餘額');
     expect(rows(el)[0].querySelector('.meta')?.textContent?.trim()).toBe('');
+  });
+
+  describe('card due pills', () => {
+    const master = (el: HTMLElement) => rows(el).find(r => r.querySelector('.name')?.textContent?.includes('玉山信用卡'))!;
+    const UNPAID = { 10: { spend: '-12345.0000', payments: ['5000.0000'] } };
+
+    it('shows 待繳帳款 and the due date of a statement with something left to pay', () => {
+      const el = render(ACCOUNTS, LATEST, UNPAID).nativeElement as HTMLElement;
+      expect(master(el).querySelector('.owed')?.textContent?.trim()).toBe('待繳帳款 $7,345');
+      expect(master(el).querySelector('.due .pill')?.textContent?.trim()).toBe('10/05 繳費截止');
+      expect(master(el).querySelector('.due .pill')?.classList).toContain('warn');
+      // 可用額度 keeps its line.
+      expect(master(el).querySelector('.meta')?.textContent?.trim()).toBe('可用額度 $251,678');
+      // The 主帳戶's children (calendar-month statements here) have nothing left to pay: no 待繳帳款.
+      expect(rows(el).find(r => r.querySelector('.name')?.textContent?.trim() === '玉山 Only')!.querySelector('.owed')).toBeNull();
+    });
+
+    it('says 明天 / 今天 繳費截止 and 已逾期 around the due date', () => {
+      vi.setSystemTime(new Date(2026, 9, 4, 10, 0));
+      let el = render(ACCOUNTS, LATEST, UNPAID).nativeElement as HTMLElement;
+      expect(master(el).querySelector('.due .pill')?.textContent?.trim()).toBe('明天繳費截止');
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        imports: [AccountingAccountsComponent],
+        providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+      });
+      http = TestBed.inject(HttpTestingController);
+
+      vi.setSystemTime(new Date(2026, 9, 5, 10, 0));
+      el = render(ACCOUNTS, LATEST, UNPAID).nativeElement as HTMLElement;
+      expect(master(el).querySelector('.due .pill')?.textContent?.trim()).toBe('今天繳費截止');
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        imports: [AccountingAccountsComponent],
+        providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+      });
+      http = TestBed.inject(HttpTestingController);
+
+      vi.setSystemTime(new Date(2026, 9, 6, 10, 0));
+      el = render(ACCOUNTS, LATEST, UNPAID).nativeElement as HTMLElement;
+      const pill = master(el).querySelector('.due .pill')!;
+      expect(pill.textContent?.trim()).toBe('已逾期');
+      expect(pill.classList).toContain('overdue');
+    });
+
+    it('shows 待繳帳款 and the pills of a card whose statement is the calendar month', () => {
+      const monthly = account({ ...CARD, id: 30, name: '月結卡', closing_day: null, due_rule: 'fixed_day', due_value: 5, balance: '-900' });
+      const wallet = account({ id: 31, name: '現金袋', closing_day: null, due_rule: 'fixed_day', due_value: 5 });
+      const el = render([wallet, monthly], LATEST, { 30: { spend: '-900.0000' } }).nativeElement as HTMLElement;
+      const row = rows(el).find(r => r.querySelector('.name')?.textContent?.trim() === '月結卡')!;
+      expect(row.querySelector('.owed')?.textContent?.trim()).toBe('待繳帳款 $900');
+      expect(row.querySelector('.due .pill')?.textContent?.trim()).toBe('10/05 繳費截止');
+      expect(rows(el).find(r => r.querySelector('.name')?.textContent?.trim() === '現金袋')!.querySelector('.due')).toBeNull();
+    });
+
+    it('shows the cycle pill of a paid card whose statement is the calendar month', () => {
+      const monthly = account({ ...CARD, id: 30, name: '月結卡', closing_day: null, due_rule: 'fixed_day', due_value: 5 });
+      const el = render([monthly], LATEST).nativeElement as HTMLElement;
+      expect(rows(el)[0].querySelector('.due .pill')?.textContent?.trim()).toBe('結帳 10/31 · 繳款 11/05');
+    });
+
+    it("adds the combined cards' spend to the master's 待繳帳款 and gives them no due pill", () => {
+      const el = render(ACCOUNTS, LATEST, { 10: { spend: '-12345.0000', payments: ['5000.0000'] }, 12: { spend: '-1000.0000' } })
+        .nativeElement as HTMLElement;
+      expect(master(el).querySelector('.owed')?.textContent?.trim()).toBe('待繳帳款 $8,345');
+      const uni = rows(el).find(r => r.querySelector('.name')?.textContent?.trim() === '玉山 UNI')!;
+      expect(uni.querySelector('.owed')).toBeNull();
+      expect(uni.querySelector('.due .pill')?.textContent).not.toContain('繳費截止');
+      // Payments are read on the master card only.
+      http.expectNone(r => /\/accounts\/1[123]\/entries$/.test(r.url));
+    });
+
+    it('falls back to the cycle pill when the statement cannot be read', () => {
+      const fixture = TestBed.createComponent(AccountingAccountsComponent);
+      fixture.detectChanges();
+      http.expectOne(r => r.url === '/api/accounting/accounts' && !r.urlWithParams.includes('include_archived=true')).flush(ACCOUNTS);
+      http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+      http.expectOne('/api/accounting/preference').flush({
+        expense_income_colors: 'red_green', keypad_layout: 'calculator', week_start: 0, main_currency: 'TWD',
+        hide_rewards_on_timeline: false, abbreviate_totals: true,
+      });
+      fixture.detectChanges();
+      for (const req of http.match(r => r.url.endsWith('/summary'))) {
+        req.flush('boom', { status: 500, statusText: 'Server Error' });
+      }
+      for (const req of http.match(r => r.url.endsWith('/entries'))) {
+        req.flush({ items: [], total: 0, limit: 100, offset: 0 });
+      }
+      fixture.detectChanges();
+      const el = fixture.nativeElement as HTMLElement;
+      expect(master(el).querySelector('.owed')).toBeNull();
+      expect(master(el).querySelector('.due .pill')?.textContent?.trim()).toBe('結帳 10/15 · 繳款 11/04');
+    });
+
+    it('keeps the cycle pill and no 待繳帳款 for a paid statement', () => {
+      const el = render(ACCOUNTS, LATEST, { 10: { spend: '-800.0000', payments: ['800.0000'] } }).nativeElement as HTMLElement;
+      expect(master(el).querySelector('.owed')).toBeNull();
+      expect(master(el).querySelector('.due .pill')?.textContent?.trim()).toBe('結帳 10/15 · 繳款 11/04');
+    });
+
+    it('re-reads the statement after an entry write', () => {
+      const fixture = render(ACCOUNTS, LATEST, UNPAID);
+      const el = fixture.nativeElement as HTMLElement;
+      expect(master(el).querySelector('.owed')).not.toBeNull();
+      TestBed.inject(AccountingService).deleteEntry(99).subscribe();
+      http.expectOne(r => r.method === 'DELETE').flush(null);
+      fixture.detectChanges();
+      http.expectOne(r => r.method === 'GET' && r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+      http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+      fixture.detectChanges();
+      flushBills({ 10: { spend: '-12345.0000', payments: ['12345.0000'] } });
+      fixture.detectChanges();
+
+      expect(master(el).querySelector('.owed')).toBeNull();
+    });
   });
 
   it('shows the total, assets and liabilities of accounts included in the total', () => {
@@ -200,6 +345,7 @@ describe('AccountingAccountsComponent', () => {
       .flush([account({ id: 1, name: '零錢包', balance: '3070', balance_main: '3070' }), ...ACCOUNTS.slice(1)]);
     http.expectOne('/api/accounting/imports/latest').flush(LATEST);
     fixture.detectChanges();
+    flushBills();
 
     expect(rows(el)[0].querySelector('.name')?.textContent?.trim()).toBe('零錢包');
   });
@@ -218,6 +364,7 @@ describe('AccountingAccountsComponent', () => {
       .flush([account({ id: 1, name: '錢包', balance: '9999', balance_main: '9999' }), ...ACCOUNTS.slice(1)]);
     http.expectOne('/api/accounting/imports/latest').flush(LATEST);
     fixture.detectChanges();
+    flushBills();
 
     expect(rows(el)[0].querySelector('.bal')?.textContent?.trim()).toBe('$9,999');
   });
@@ -251,6 +398,7 @@ describe('AccountingAccountsComponent', () => {
     ]);
     http.expectOne('/api/accounting/imports/latest').flush(LATEST);
     fixture.detectChanges();
+    flushBills();
 
     expect(el.querySelector('.nw small')?.textContent?.trim()).toBe('總額 JPY');
     expect(el.querySelector('.total-amount')?.textContent?.trim()).toBe('¥14,000');

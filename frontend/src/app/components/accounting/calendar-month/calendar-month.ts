@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
 
 import { DailySummaryDay } from '../../../models/accounting.model';
+import { BillingEvent } from '../billing/billing-math';
 import { todayIso } from '../dates';
 import { compactMoney, formatNumber } from '../format';
 import { CalendarCell, buildCalendar } from './calendar-math';
@@ -12,6 +13,10 @@ interface CalendarCellView extends CalendarCell {
   expenseText: string | null;
   incomeText: string | null;
   label: string;
+  /** Cards whose payment falls due on this day (💳 badge). */
+  dueCount: number;
+  /** A card's statement closes on this day (top border, no badge). */
+  closing: boolean;
 }
 
 /** Month grid for the timeline's 日曆 view: per-day spend / income from `GET /entries/summary/daily`. */
@@ -30,6 +35,8 @@ export class CalendarMonthComponent {
   /** `Preference.week_start`: 0 = Sunday first, 1 = Monday first. */
   readonly weekStart = input(0);
   readonly selected = input<string | null>(null);
+  /** Credit-card closing / due days of the month (`billingEvents`). */
+  readonly billing = input<BillingEvent[]>([]);
   readonly today = input(todayIso());
   readonly daySelected = output<string>();
 
@@ -37,6 +44,15 @@ export class CalendarMonthComponent {
 
   readonly rows = computed(() => {
     const currency = this.currency();
+    const dueCounts = new Map<string, number>();
+    const closingDays = new Set<string>();
+    for (const event of this.billing()) {
+      if (event.kind === 'due') {
+        dueCounts.set(event.date, (dueCounts.get(event.date) ?? 0) + 1);
+      } else {
+        closingDays.add(event.date);
+      }
+    }
     return buildCalendar(this.month(), this.days(), this.weekStart()).map(row =>
       row.map((cell): CalendarCellView => {
         const spend = -cell.expense;
@@ -49,7 +65,12 @@ export class CalendarMonthComponent {
         if (incomeText !== null) {
           parts.push(`收入 ${formatNumber(cell.income, currency)}`);
         }
-        return { ...cell, expenseText, incomeText, label: parts.join('，') };
+        const dueCount = cell.outside ? 0 : (dueCounts.get(cell.date) ?? 0);
+        if (dueCount > 0) {
+          parts.push(`${dueCount} 張卡繳費到期`);
+        }
+        const closing = !cell.outside && closingDays.has(cell.date);
+        return { ...cell, expenseText, incomeText, label: parts.join('，'), dueCount, closing };
       }),
     );
   });

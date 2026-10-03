@@ -7,7 +7,8 @@ export type AccountingPage =
   | 'accountSettings'
   | 'entryForm'
   | 'entryDetail'
-  | 'settings';
+  | 'settings'
+  | 'reminders';
 
 /** Pages that act as the left-hand list in the two-pane layout (Task 21). */
 export type AccountingListKey = Extract<AccountingPage, 'timeline' | 'accounts'>;
@@ -26,4 +27,5 @@ export const ACCOUNTING_PAGES: Record<AccountingPage, PageLoader> = {
   entryForm: () => import('./entry-form/entry-form').then(m => m.EntryFormComponent),
   entryDetail: () => import('./entry-detail/entry-detail').then(m => m.EntryDetailComponent),
   settings: () => import('./accounting-settings/accounting-settings').then(m => m.AccountingSettingsComponent),
+  reminders: () => import('./reminders/reminders').then(m => m.AccountingRemindersComponent),
 };

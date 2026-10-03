@@ -101,6 +101,7 @@
 .open-state { font-weight: 800; margin: 8px 0 0; }
 .open-amount { color: var(--app-primary); }
 .settled { color: var(--c-green, #1f9d6b); }
+.breakdown { color: var(--app-text-muted); font-size: 0.78rem; font-variant-numeric: tabular-nums; font-weight: 600; margin: 2px 0 0; overflow-wrap: anywhere; }
 
 .dsec { color: var(--app-text-muted); font-size: 0.78rem; font-weight: 800; margin: 12px 0 4px; }
 
