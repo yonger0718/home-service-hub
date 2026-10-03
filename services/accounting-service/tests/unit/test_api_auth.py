@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from starlette.middleware.cors import CORSMiddleware
 
-from app.auth import ApiTokenMiddleware, api_auth_status, parse_tokens
+from app.auth import ApiTokenMiddleware, api_auth_status, docs_paths, parse_tokens
 from app.main import app
 
 TOKEN = "s3cret-token-value"
@@ -59,6 +59,12 @@ def test_parse_tokens_rejects_an_empty_token_instead_of_disabling_auth():
     with pytest.raises(ValueError) as excinfo:
         parse_tokens("spa:")
     assert "spa" in str(excinfo.value)
+
+
+def test_parse_tokens_names_a_bare_colon_item():
+    with pytest.raises(ValueError) as excinfo:
+        parse_tokens("ok-token, : ")
+    assert "empty item ':'" in str(excinfo.value)
 
 
 def test_api_auth_status_never_names_a_token(monkeypatch):
@@ -142,6 +148,13 @@ def _assert_unauthorized(response):
         {"Authorization": TOKEN},
         {"Authorization": "Bearer "},
         {"Authorization": f"Bearer spa:{TOKEN}"},
+        {"Authorization": f"bearer {TOKEN}"},
+        {"Authorization": f"BEARER {TOKEN}"},
+        {"Authorization": f"Bearer  {TOKEN}"},
+        {"Authorization": f"Bearer {TOKEN} "},
+        {"Authorization": f"Bearer\t{TOKEN}"},
+        {"Authorization": f"Bearer {TOKEN} extra"},
+        {"Authorization": f"Bearer {TOKEN}\t"},
     ],
 )
 def test_enabled_refuses_missing_or_wrong_tokens(enabled, probe_app, headers):
@@ -153,15 +166,25 @@ def test_enabled_refuses_missing_or_wrong_tokens(enabled, probe_app, headers):
 def test_enabled_accepts_a_valid_token_and_labels_the_request(enabled, probe_app):
     client = TestClient(probe_app)
     assert client.get("/whoami", headers={"Authorization": f"Bearer {TOKEN}"}).json() == {"label": "spa"}
-    assert client.get("/whoami", headers={"Authorization": "bearer other-token"}).json() == {"label": "agent-x"}
+    assert client.get("/whoami", headers={"Authorization": "Bearer other-token"}).json() == {"label": "agent-x"}
     assert client.get("/whoami", headers={"Authorization": "Bearer bare-token"}).json() == {"label": None}
     assert client.post("/entries", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
 
 
 def test_enabled_health_is_exempt(enabled, probe_app):
-    response = TestClient(probe_app).get("/health")
+    client = TestClient(probe_app)
+    response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert client.head("/health").status_code != 401  # HEAD passes the middleware (the route itself is GET-only)
+    _assert_unauthorized(client.post("/health"))
+
+
+def test_enabled_real_app_readiness_is_exempt(enabled, client):
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "database": "ok"}
+    assert client.head("/health/ready").status_code != 401
 
 
 def test_enabled_real_app_health_exempt_and_root_protected(enabled):
@@ -177,16 +200,27 @@ def test_enabled_valid_token_reaches_a_database_route(enabled, client):
     assert client.get("/accounts", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
 
 
+DOCS = ("/docs", "/redoc", "/docs/oauth2-redirect", "/openapi.json")
+
+
+def test_docs_paths_come_from_the_app():
+    assert docs_paths(app) == frozenset(DOCS)
+    assert docs_paths(FastAPI(docs_url=None, redoc_url="/r", openapi_url="/o.json")) == frozenset({"/r", "/o.json"})
+
+
 def test_enabled_docs_protected_unless_docs_public(enabled, monkeypatch):
     with TestClient(app) as client:
-        _assert_unauthorized(client.get("/docs"))
-        _assert_unauthorized(client.get("/openapi.json"))
+        for path in DOCS:
+            _assert_unauthorized(client.get(path))
         monkeypatch.setenv("ACCOUNTING_DOCS_PUBLIC", "true")
-        assert client.get("/docs").status_code == 200
-        assert client.get("/openapi.json").status_code == 200
+        for path in DOCS:
+            assert client.get(path).status_code == 200, path
+            assert client.head(path).status_code != 401, path
         _assert_unauthorized(client.get("/"))
+        _assert_unauthorized(client.post("/openapi.json"))
         monkeypatch.setenv("ACCOUNTING_DOCS_PUBLIC", "false")
-        _assert_unauthorized(client.get("/docs"))
+        for path in DOCS:
+            _assert_unauthorized(client.get(path))
 
 
 def test_enabled_compares_with_hmac_compare_digest(enabled, probe_app, monkeypatch):
@@ -202,6 +236,29 @@ def test_enabled_compares_with_hmac_compare_digest(enabled, probe_app, monkeypat
     monkeypatch.setattr(auth.hmac, "compare_digest", spy)
     TestClient(probe_app).get("/whoami", headers={"Authorization": "Bearer bare-token"})
     assert len(calls) == 3  # every configured token is compared; no early exit
+
+
+def _allowed_origin() -> str:
+    """First configured CORS origin, read from the app (never printed)."""
+    cors = next(m for m in app.user_middleware if m.cls is CORSMiddleware)
+    origins = [o for o in cors.kwargs.get("allow_origins", []) if o != "*"]
+    if not origins:
+        pytest.skip("no explicit CORS origin configured")
+    return origins[0]
+
+
+def test_enabled_cors_preflight_is_answered_and_401_keeps_cors_headers(enabled):
+    origin = _allowed_origin()
+    with TestClient(app) as client:
+        preflight = client.options(
+            "/accounts",
+            headers={"Origin": origin, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "authorization"},
+        )
+        assert preflight.status_code == 200
+        assert preflight.headers["access-control-allow-origin"] == origin
+        response = client.get("/accounts", headers={"Origin": origin})
+        _assert_unauthorized(response)
+        assert response.headers["access-control-allow-origin"] == origin
 
 
 def test_auth_sits_inside_cors_so_preflight_and_401s_keep_cors_headers():

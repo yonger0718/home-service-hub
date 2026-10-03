@@ -1,16 +1,18 @@
 """Optional bearer-token auth for API clients (agents, scripts and the SPA).
 
 `ACCOUNTING_API_TOKENS` is a comma-separated list of `label:token` or bare `token` values. Unset or empty, the
-middleware is a pure pass-through and every request behaves as before. Set, every request except `GET /health`
-(and `GET /docs`, `GET /openapi.json` when `ACCOUNTING_DOCS_PUBLIC=true`) needs `Authorization: Bearer <token>`
-matching one configured token; otherwise 401 `{"detail": "unauthorized"}`. The matching token's label is put on
+middleware is a pure pass-through and every request behaves as before. Set, every request except `GET`/`HEAD` on
+`/health` and `/health/ready` (and on the docs pages, `/openapi.json` included, when `ACCOUNTING_DOCS_PUBLIC=true`)
+needs exactly `Authorization: Bearer <token>` matching one configured token; otherwise 401 `{"detail": "unauthorized"}`. The matching token's label is put on
 `request.state.client_label` (None for a bare token). Tokens are never logged.
 
 Both variables are read per request (like ACCOUNTING_IMPORT_LOCKED) so tests can toggle them; parsing is cached.
 """
 
+import hashlib
 import hmac
 import os
+from collections.abc import Iterable
 from functools import lru_cache
 
 from starlette.responses import JSONResponse
@@ -18,8 +20,19 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 TOKENS_ENV = "ACCOUNTING_API_TOKENS"
 DOCS_PUBLIC_ENV = "ACCOUNTING_DOCS_PUBLIC"
-ALWAYS_PUBLIC = frozenset({"/health"})
-DOCS_PATHS = frozenset({"/docs", "/openapi.json"})
+ALWAYS_PUBLIC = frozenset({"/health", "/health/ready"})
+PUBLIC_METHODS = frozenset({"GET", "HEAD"})
+
+
+def docs_paths(app) -> frozenset[str]:
+    """The FastAPI app's docs, ReDoc, OAuth2 redirect and OpenAPI paths (those that are enabled).
+
+    Like FastAPI, the OAuth2 redirect only counts while the Swagger UI (`docs_url`) is served.
+    """
+    names = ["docs_url", "redoc_url", "openapi_url"]
+    if getattr(app, "docs_url", None):
+        names.append("swagger_ui_oauth2_redirect_url")
+    return frozenset(path for path in (getattr(app, name, None) for name in names) if path)
 
 
 @lru_cache(maxsize=8)
@@ -39,6 +52,8 @@ def parse_tokens(raw: str | None) -> tuple[tuple[str | None, str], ...]:
             label, token = "", item
         label, token = label.strip(), token.strip()
         if not token:
+            if not label:
+                raise ValueError(f"{TOKENS_ENV}: empty item {item!r}")
             raise ValueError(f"{TOKENS_ENV}: empty token for label {label!r}")
         pairs.append((label or None, token))
     return tuple(pairs)
@@ -61,31 +76,42 @@ def api_auth_status() -> str:
     return f"API auth: enabled ({len(tokens)} tokens: {labels})"
 
 
-def _bearer(scope: Scope) -> str | None:
+def _bearer(scope: Scope) -> bytes | None:
+    """The token from exactly `Bearer <token>` (one space, no other whitespace); anything else is None."""
     for name, value in scope.get("headers") or ():
         if name == b"authorization":
-            scheme, _, credentials = value.decode("latin-1").partition(" ")
-            if scheme.lower() == "bearer" and credentials.strip():
-                return credentials.strip()
-            return None
+            if not value.startswith(b"Bearer "):
+                return None
+            token = value[len(b"Bearer "):]
+            if not token or any(ch in token for ch in b" \t\r\n"):
+                return None
+            return token
     return None
 
 
-def _match(presented: str, tokens: tuple[tuple[str | None, str], ...]) -> tuple[bool, str | None]:
-    """Constant-time per token, and every configured token is compared (no early exit)."""
-    presented_bytes = presented.encode()
+def _digest(value: bytes) -> bytes:
+    return hashlib.sha256(value).digest()
+
+
+def _match(presented: bytes, tokens: tuple[tuple[str | None, str], ...]) -> tuple[bool, str | None]:
+    """SHA-256 both sides (equal lengths, so no length leak), compare_digest every configured token, no early exit."""
+    presented_digest = _digest(presented)
     found, found_label = False, None
     for label, token in tokens:
-        if hmac.compare_digest(presented_bytes, token.encode()) and not found:
+        if hmac.compare_digest(presented_digest, _digest(token.encode())) and not found:
             found, found_label = True, label
     return found, found_label
 
 
 class ApiTokenMiddleware:
-    """Pure ASGI middleware; with no tokens configured it forwards scope, receive and send untouched."""
+    """Pure ASGI middleware; with no tokens configured it forwards scope, receive and send untouched.
 
-    def __init__(self, app: ASGIApp) -> None:
+    `docs_paths` are open only while ACCOUNTING_DOCS_PUBLIC=true; main.py passes `docs_paths(app)`.
+    """
+
+    def __init__(self, app: ASGIApp, docs_paths: Iterable[str] = ()) -> None:
         self.app = app
+        self.docs_paths = frozenset(docs_paths)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -104,9 +130,8 @@ class ApiTokenMiddleware:
         scope.setdefault("state", {})["client_label"] = label
         await self.app(scope, receive, send)
 
-    @staticmethod
-    def _exempt(scope: Scope) -> bool:
-        if scope.get("method") != "GET":
+    def _exempt(self, scope: Scope) -> bool:
+        if scope.get("method") not in PUBLIC_METHODS:
             return False
         path = scope.get("path", "")
-        return path in ALWAYS_PUBLIC or (path in DOCS_PATHS and docs_public())
+        return path in ALWAYS_PUBLIC or (path in self.docs_paths and docs_public())

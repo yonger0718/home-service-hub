@@ -86,9 +86,10 @@ API access for agents
 The API has no auth unless `ACCOUNTING_API_TOKENS` is set in the root `.env`: a comma-separated list of
 `label:token` (or bare `token`) values, e.g. `ACCOUNTING_API_TOKENS=spa:<token1>,agent-x:<token2>`. Generate tokens
 with `openssl rand -hex 32`; a token containing `:` needs a label. Unset or empty, nothing changes (startup logs
-`API auth: disabled`); an item with an empty token stops the service at startup. Set, every request except `GET /health`
-needs `Authorization: Bearer <token>` matching one configured token (constant-time compare), otherwise 401
-`{"detail": "unauthorized"}` with `WWW-Authenticate: Bearer`. `GET /docs` and `GET /openapi.json` are open only with
+`API auth: disabled`); an item with an empty token stops the service at startup. Set, every request except `GET`/`HEAD`
+on `/health` and `/health/ready` needs exactly `Authorization: Bearer <token>` (one space, no other whitespace) matching
+one configured token (SHA-256 digests compared in constant time), otherwise 401 `{"detail": "unauthorized"}` with
+`WWW-Authenticate: Bearer`. `/docs`, `/redoc`, `/docs/oauth2-redirect` and `/openapi.json` are open only with
 `ACCOUNTING_DOCS_PUBLIC=true`. The matching label is on `request.state.client_label` (None for a bare token); tokens
 are never logged. Restart the service after changing either variable. The SPA sends its own token
 (`ACCOUNTING_SPA_TOKEN`, see `docs/deploy/accounting-phase-2a.md`).
