@@ -10,6 +10,8 @@ const DECIMAL_FORMAT = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 
+const DECIMAL_ONE = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
+
 const CURRENCY_SYMBOLS: Record<string, string> = {
   TWD: '$',
   JPY: '¥',
@@ -85,6 +87,27 @@ export function formatSigned(value: string | number | null | undefined, currency
     return `${currencySymbol(currency)}0`;
   }
   return `${amount < 0 ? MINUS : '+'}${currencySymbol(currency)}${body}`;
+}
+
+/**
+ * Compact figure for tight spaces (calendar cells): whole units, no symbol, `−` for negatives;
+ * from 10,000 `1.2萬`, from 100,000,000 `1.2億` (one decimal, trailing `.0` trimmed).
+ * Every currency (JPY, USD …) is whole units here; `currency` keeps the call shape of `formatMoney`.
+ */
+export function compactMoney(value: string | number | null | undefined, currency: string): string {
+  const raw = toNumber(value);
+  const amount = Math.round(Math.abs(raw));
+  const sign = raw < 0 && amount !== 0 ? MINUS : '';
+  const scaled = (unit: number) => Math.round(amount / (unit / 10)) / 10;
+  let body: string;
+  if (amount >= 1e8 || scaled(1e4) >= 1e4) {
+    body = `${DECIMAL_ONE.format(scaled(1e8))}億`;
+  } else if (amount >= 1e4) {
+    body = `${DECIMAL_ONE.format(scaled(1e4))}萬`;
+  } else {
+    body = WHOLE_FORMAT.format(amount);
+  }
+  return `${sign}${body}`;
 }
 
 export function isNegative(value: string | number | null | undefined): boolean {

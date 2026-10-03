@@ -12,6 +12,10 @@
         (click)="toggleFilters()"
       >⌕</button>
     }
+    <div class="view-toggle" role="radiogroup" aria-label="檢視模式">
+      <button type="button" role="radio" [attr.aria-checked]="view() === 'list'" (click)="setView('list')">清單</button>
+      <button type="button" role="radio" [attr.aria-checked]="view() === 'calendar'" (click)="setView('calendar')">日曆</button>
+    </div>
   </div>
 
   @if (summary(); as s) {
@@ -20,9 +24,9 @@
       <div><small>收入</small><b class="pos sum-income">{{ incomeText(s) }}</b></div>
       <div><small>結餘</small><b class="sum-net">{{ formatSigned(s.net, s.currency) }}</b></div>
     </div>
-    @if (s.missing_rates.length > 0) {
-      <p class="missing-rates">部分外幣未換算 ({{ s.missing_rates.join(', ') }})</p>
-    }
+  }
+  @if (missingRates().length > 0) {
+    <p class="missing-rates">部分外幣未換算 ({{ missingRates().join(', ') }})</p>
   }
 
   @if (!isPhone() || filtersOpen()) {
@@ -50,40 +54,76 @@
     </div>
   }
 
-  @if (loadError()) {
-    <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
-  }
+  <ng-template #rowTemplate let-row>
+    <button type="button" class="row" [class.sel]="row.entryId === selectedId()" [attr.data-entry-id]="row.entryId"
+      [attr.aria-current]="row.entryId === selectedId() ? 'true' : null"
+      (click)="open(row)">
+      <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
+      <span class="name">{{ row.title }}@if (row.groupCount) {<span class="badge">{{ row.groupCount }}</span>}</span>
+      <span class="sub">{{ row.sub }}</span>
+      <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">
+        {{ row.amountText }}
+        @if (row.fx) {
+          <small class="fx">{{ row.fx }}</small>
+        }
+      </span>
+      <span class="pills">
+        @for (pill of row.pills; track $index) {
+          <span class="pill" [class.rw]="pill.tone === 'rw'" [class.rv]="pill.tone === 'rv'" [class.review]="pill.tone === 'review'">{{ pill.label }}</span>
+        }
+      </span>
+    </button>
+  </ng-template>
 
-  @for (day of days(); track day.date) {
-    <div class="day"><span>{{ day.label }}</span><b>{{ formatSigned(day.net, mainCurrency()) }}</b></div>
-    @for (row of day.rows; track row.key) {
-      <button type="button" class="row" [class.sel]="row.entryId === selectedId()" [attr.data-entry-id]="row.entryId"
-        [attr.aria-current]="row.entryId === selectedId() ? 'true' : null"
-        (click)="open(row)">
-        <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
-        <span class="name">{{ row.title }}@if (row.groupCount) {<span class="badge">{{ row.groupCount }}</span>}</span>
-        <span class="sub">{{ row.sub }}</span>
-        <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">
-          {{ row.amountText }}
-          @if (row.fx) {
-            <small class="fx">{{ row.fx }}</small>
+  @if (view() === 'calendar') {
+    <app-calendar-month
+      [month]="month()"
+      [days]="daily()?.days ?? []"
+      [currency]="daily()?.currency ?? mainCurrency()"
+      [weekStart]="weekStart()"
+      [selected]="selectedDay()"
+      [today]="today()"
+      (daySelected)="selectDay($event)"
+    />
+    @if (selectedDay()) {
+      <div class="day-entries">
+        <div class="day day-net">
+          <span>{{ selectedDayText() }}</span>
+          @if (dayNet(); as d) {
+            <b [class.neg]="d.net < 0" [class.pos]="d.net > 0">{{ d.text }}</b>
           }
-        </span>
-        <span class="pills">
-          @for (pill of row.pills; track $index) {
-            <span class="pill" [class.rw]="pill.tone === 'rw'" [class.rv]="pill.tone === 'rv'" [class.review]="pill.tone === 'review'">{{ pill.label }}</span>
+        </div>
+        @if (dayError()) {
+          <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
+        }
+        @for (row of dayRows(); track row.key) {
+          <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+        } @empty {
+          @if (!dayLoading() && !dayError()) {
+            <p class="empty">這天沒有紀錄</p>
           }
-        </span>
-      </button>
+        }
+      </div>
     }
-  } @empty {
-    @if (!loading() && !loadError()) {
-      <p class="empty">這個月沒有紀錄</p>
+  } @else {
+    @if (loadError()) {
+      <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
     }
-  }
 
-  @if (hasMore()) {
-    <div #sentinel class="sentinel" aria-hidden="true"></div>
-    <button type="button" class="more" [disabled]="loading()" (click)="loadMore()">載入更多</button>
+    @for (day of days(); track day.date) {
+      <div class="day"><span>{{ day.label }}</span><b>{{ formatSigned(day.net, mainCurrency()) }}</b></div>
+      @for (row of day.rows; track row.key) {
+        <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+      }
+    } @empty {
+      @if (!loading() && !loadError()) {
+        <p class="empty">這個月沒有紀錄</p>
+      }
+    }
+
+    @if (hasMore()) {
+      <div #sentinel class="sentinel" aria-hidden="true"></div>
+      <button type="button" class="more" [disabled]="loading()" (click)="loadMore()">載入更多</button>
+    }
   }
 </section>

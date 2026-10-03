@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   OnInit,
   computed,
@@ -10,10 +11,13 @@ import {
   untracked,
   viewChild,
 } from '@angular/core';
+import { DOCUMENT, NgTemplateOutlet } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
-import { forkJoin } from 'rxjs';
+import { filter, forkJoin, fromEvent } from 'rxjs';
 
 import {
+  DailySummary,
   DEFAULT_PREFERENCE,
   ENTRY_KIND_LABELS,
   EntryKind,
@@ -26,10 +30,38 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
+import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { todayIso } from '../dates';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
 
 export const TIMELINE_PAGE_SIZE = 50;
+/** One day's entries in the 日曆 view are read in a single request. */
+export const CALENDAR_DAY_LIMIT = 500;
+export const TIMELINE_VIEW_KEY = 'hh.accounting.timelineView';
+
+export type TimelineView = 'list' | 'calendar';
+
+/** The remembered view; otherwise 日曆 in the two-pane layout and 清單 elsewhere (read once, resizes keep the view). */
+function initialView(wide: boolean): TimelineView {
+  try {
+    const stored = localStorage.getItem(TIMELINE_VIEW_KEY);
+    if (stored === 'calendar' || stored === 'list') {
+      return stored;
+    }
+  } catch {
+    // Storage blocked: fall through to the layout default.
+  }
+  return wide ? 'calendar' : 'list';
+}
+
+function storeView(view: TimelineView): void {
+  try {
+    localStorage.setItem(TIMELINE_VIEW_KEY, view);
+  } catch {
+    // Storage blocked (private mode): the choice simply is not remembered.
+  }
+}
 
 const WEEKDAYS = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
 const TRANSFER_KINDS = new Set<EntryKind>(['transfer_out', 'transfer_in']);
@@ -230,6 +262,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
+  imports: [CalendarMonthComponent, NgTemplateOutlet],
   templateUrl: './timeline.html',
   styleUrls: ['../filters.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -239,8 +272,11 @@ export class LedgerTimelineComponent implements OnInit {
   private readonly router = inject(Router);
   private readonly layoutMode = inject(LayoutModeService);
   private readonly layout = inject(AccountingLayoutComponent, { optional: true });
+  private readonly document = inject(DOCUMENT);
   private requestId = 0;
   private summaryRequestId = 0;
+  private dailyRequestId = 0;
+  private dayRequestId = 0;
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -254,6 +290,12 @@ export class LedgerTimelineComponent implements OnInit {
   readonly kindFilter = signal<EntryKind | null>(null);
   readonly query = signal('');
   readonly filtersOpen = signal(false);
+  readonly view = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
+  readonly daily = signal<DailySummary | null>(null);
+  readonly selectedDay = signal<string | null>(null);
+  readonly dayEntries = signal<LedgerEntry[]>([]);
+  readonly dayLoading = signal(false);
+  readonly dayError = signal(false);
   readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
 
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
@@ -263,10 +305,37 @@ export class LedgerTimelineComponent implements OnInit {
   readonly hasMore = computed(() => this.entries().length < this.total());
   readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
   readonly monthText = computed(() => monthLabel(this.month()));
+  readonly weekStart = computed(() => this.preference()?.week_start ?? DEFAULT_PREFERENCE.week_start);
+  /** Outlined in the 日曆 grid; refreshed on a month change and when the tab becomes visible (past midnight). */
+  readonly today = signal(todayIso());
+  /** The selected day's rows as the list groups them (`buildDays`), so filters apply to rows and net alike. */
+  private readonly dayGroup = computed(
+    () => buildDays(this.dayEntries(), this.mainCurrency(), this.hideRewards())[0] ?? null,
+  );
+  readonly dayRows = computed(() => this.dayGroup()?.rows ?? []);
+  /** Net of the rows shown (main-currency rows only, the list's per-day rule); the grid keeps the summary figures. */
+  readonly dayNet = computed(() => {
+    const group = this.dayGroup();
+    return group ? { net: group.net, text: formatSigned(group.net, this.mainCurrency()) } : null;
+  });
+  readonly selectedDayText = computed(() => {
+    const date = this.selectedDay();
+    return date ? dayLabel(date) : '';
+  });
+  readonly missingRates = computed(() =>
+    (this.view() === 'calendar' ? this.daily()?.missing_rates : this.summary()?.missing_rates) ?? [],
+  );
   readonly kindOptions = TIMELINE_FILTER_KINDS.map(kind => ({ kind, label: ENTRY_KIND_LABELS[kind] }));
   readonly formatSigned = formatSigned;
 
   constructor() {
+    fromEvent(this.document, 'visibilitychange')
+      .pipe(
+        filter(() => this.document.visibilityState === 'visible'),
+        takeUntilDestroyed(inject(DestroyRef)),
+      )
+      .subscribe(() => this.today.set(todayIso()));
+
     effect(() => {
       if (!this.preference()) {
         return;
@@ -276,7 +345,37 @@ export class LedgerTimelineComponent implements OnInit {
       this.kindFilter();
       this.query();
       this.accounting.entriesChanged();
+      if (this.view() === 'calendar') {
+        // The list page is not shown: skip it, and switching back starts again from page 1.
+        untracked(() => this.clearList());
+        return;
+      }
       untracked(() => this.load(true));
+    });
+
+    // 日曆: per-day figures for the month (a saved preference re-reads `preference`, which re-runs this).
+    effect(() => {
+      if (!this.preference()) {
+        return;
+      }
+      const month = this.month();
+      const view = this.view();
+      this.accounting.entriesChanged();
+      untracked(() => (view === 'calendar' ? this.loadDaily(month) : this.dropDaily()));
+    });
+
+    // 日曆: the tapped day's entries, with the list's filters.
+    effect(() => {
+      if (!this.preference()) {
+        return;
+      }
+      const day = this.selectedDay();
+      const view = this.view();
+      this.accountFilter();
+      this.kindFilter();
+      this.query();
+      this.accounting.entriesChanged();
+      untracked(() => (view === 'calendar' && day ? this.loadDay(day) : this.clearDay()));
     });
 
     effect(() => {
@@ -410,7 +509,90 @@ export class LedgerTimelineComponent implements OnInit {
     });
   }
 
+  private clearList(): void {
+    ++this.requestId;
+    this.entries.set([]);
+    this.total.set(0);
+    this.loading.set(false);
+    this.loadError.set(false);
+  }
+
+  private loadDaily(month: string): void {
+    const id = ++this.dailyRequestId;
+    this.accounting.getDailySummary(month).subscribe({
+      next: daily => {
+        if (id === this.dailyRequestId) {
+          this.daily.set(daily);
+        }
+      },
+      error: () => {
+        if (id === this.dailyRequestId) {
+          this.daily.set(null);
+        }
+      },
+    });
+  }
+
+  private dropDaily(): void {
+    ++this.dailyRequestId;
+    this.daily.set(null);
+  }
+
+  private loadDay(date: string): void {
+    const id = ++this.dayRequestId;
+    this.dayLoading.set(true);
+    this.dayError.set(false);
+    const account = this.accountFilter();
+    this.accounting
+      .getAllEntries({
+        limit: CALENDAR_DAY_LIMIT,
+        offset: 0,
+        date_from: date,
+        date_to: date,
+        kind: this.kindFilter(),
+        q: this.query() || null,
+        account_id: account === null ? undefined : [account],
+        hide_rewards: this.hideRewards(),
+      })
+      .subscribe({
+        next: page => {
+          if (id === this.dayRequestId) {
+            this.dayEntries.set(page.items);
+            this.dayLoading.set(false);
+          }
+        },
+        error: () => {
+          if (id === this.dayRequestId) {
+            this.dayEntries.set([]);
+            this.dayError.set(true);
+            this.dayLoading.set(false);
+          }
+        },
+      });
+  }
+
+  private clearDay(): void {
+    ++this.dayRequestId;
+    this.dayEntries.set([]);
+    this.dayLoading.set(false);
+    this.dayError.set(false);
+  }
+
+  setView(view: TimelineView): void {
+    if (view !== this.view()) {
+      this.view.set(view);
+      storeView(view);
+    }
+  }
+
+  /** Tapping the selected day again closes it. */
+  selectDay(date: string): void {
+    this.selectedDay.update(current => (current === date ? null : date));
+  }
+
   moveMonth(delta: number): void {
+    this.selectedDay.set(null);
+    this.today.set(todayIso());
     this.month.update(month => shiftMonth(month, delta));
   }
 

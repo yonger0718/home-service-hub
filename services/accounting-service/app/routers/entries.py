@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..schemas.ledger import EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
+from ..schemas.ledger import DailySummaryOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
 from ..schemas.writes import EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, SettleIn
 from ..services import entry_write_service, ledger_service, settlement_service
 from .errors import service_errors
@@ -31,10 +31,18 @@ def list_entries(
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
+MONTH_PATTERN = r"^\d{4}-(0[1-9]|1[0-2])$"
+
+
 # Declared before /{entry_id} so "summary" is never parsed as an entry id.
 @router.get("/summary", response_model=MonthSummaryOut)
-def month_summary(month: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"), db: Session = Depends(get_db)):
+def month_summary(month: str = Query(pattern=MONTH_PATTERN), db: Session = Depends(get_db)):
     return ledger_service.month_summary(db, month)
+
+
+@router.get("/summary/daily", response_model=DailySummaryOut)
+def daily_summary(month: str = Query(pattern=MONTH_PATTERN), db: Session = Depends(get_db)):
+    return ledger_service.daily_summary(db, month)
 
 
 @router.get("/{entry_id}", response_model=EntryDetailOut)

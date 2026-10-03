@@ -226,6 +226,24 @@ export interface MonthSummary {
   missing_rates: string[];
 }
 
+/** One entry_date of `GET /entries/summary/daily`; same rules and currency as `MonthSummary`. */
+export interface DailySummaryDay {
+  date: string;
+  /** Negative (spend net of refunds) in the main currency. */
+  expense: string;
+  income: string;
+  /** Rows counted into the figures. */
+  count: number;
+}
+
+/** `GET /entries/summary/daily?month=`: days without counted rows are omitted. */
+export interface DailySummary {
+  month: string;
+  currency: string;
+  days: DailySummaryDay[];
+  missing_rates: string[];
+}
+
 export interface ChildInput {
   /** Unsigned; the server stores fees negative and discounts positive. */
   amount: string;

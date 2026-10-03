@@ -250,3 +250,30 @@
   margin: 12px auto;
   padding: 8px 18px;
 }
+
+.view-toggle {
+  background: var(--app-surface-soft);
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+
+  button {
+    border-radius: var(--radius-pill);
+    color: var(--app-text-muted);
+    font-size: var(--fs-label, 0.75rem);
+    font-weight: 700;
+    padding: 3px 10px;
+
+    &[aria-checked='true'] {
+      background: var(--app-surface);
+      color: var(--app-text);
+    }
+
+    &:focus-visible {
+      outline: 2px solid var(--app-primary);
+      outline-offset: 1px;
+    }
+  }
+}

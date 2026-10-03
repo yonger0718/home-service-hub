@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { makeEntry } from './testing/fixtures';
 import {
+  compactMoney,
   currencyDecimals,
   displayCategory,
   displayTitle,
@@ -91,5 +92,28 @@ describe('displayCategory / displayTitle', () => {
     expect(displayTitle(makeEntry({ name: 'Uniqlo 外套', category: '購物/衣物' }))).toBe('Uniqlo 外套');
     expect(displayTitle(makeEntry({ name: '  ', category: '飲食/午餐' }))).toBe('午餐');
     expect(displayTitle(makeEntry({ name: null, category: null, kind: 'reward' }))).toBe('紅利回饋');
+  });
+});
+
+describe('compactMoney', () => {
+  it('shows whole units below 10,000 without a symbol', () => {
+    expect(compactMoney(999, 'TWD')).toBe('999');
+    expect(compactMoney('1234.6', 'TWD')).toBe('1,235');
+    expect(compactMoney('12.34', 'USD')).toBe('12');
+    expect(compactMoney(-8, 'TWD')).toBe('−8');
+  });
+
+  it('abbreviates 萬 and 億 with one trimmed decimal', () => {
+    expect(compactMoney(10000, 'TWD')).toBe('1萬');
+    expect(compactMoney(12345, 'TWD')).toBe('1.2萬');
+    expect(compactMoney(-123456, 'TWD')).toBe('−12.3萬');
+    expect(compactMoney(100000000, 'TWD')).toBe('1億');
+    expect(compactMoney(123456789, 'TWD')).toBe('1.2億');
+    expect(compactMoney(99999999, 'TWD')).toBe('1億');
+  });
+
+  it('keeps JPY in whole yen', () => {
+    expect(compactMoney('5390.6', 'JPY')).toBe('5,391');
+    expect(compactMoney('180000', 'JPY')).toBe('18萬');
   });
 });
