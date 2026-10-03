@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.models import Account, Category, Counterparty, EntryGroup, EntryRewardRule, LedgerEntry, Project, RewardRule
-from app.services import ledger_service
+from app.services import ledger_service, settings_service
 from app.services.moze_csv import MozeImportError
 from tests.helpers import _by_moze_id, _entries, _import_backup
 
@@ -308,18 +308,101 @@ def test_refund_links_to_the_original_from_either_side(db_session, backup, side)
     assert summary["confirmed_maps"]["refund_direction"] == expected
 
 
-def test_collection_settles_the_receivable_it_names(db_session, backup):
-    data = backup.data(
-        accounts=[_wallet(backup)], targets=[backup.target("T-1", "Alan")],
-        records=[
-            backup.record("R-LEND", type_=3, price=-420, target="T-1"),
-            backup.record("R-BACK", type_=5, price=200, target="T-1", relatedID="R-LEND"),
-            backup.record("R-OTHER", type_=5, price=100, target="T-1"),
-        ],
+def _settlement_backup(backup, *records, accounts=None):
+    return backup.data(
+        accounts=accounts or [_wallet(backup)], targets=[backup.target("T-1", "Alan")], records=list(records)
     )
-    _import_backup(db_session, data)
-    assert _by_moze_id(db_session, "R-BACK").settles_entry_id == _by_moze_id(db_session, "R-LEND").id
-    assert _by_moze_id(db_session, "R-OTHER").settles_entry_id is None
+
+
+def test_related_id_link_takes_precedence_over_the_shared_target(db_session, backup):
+    # FIFO by target would pick R-LEND-1; the relatedID names R-LEND-2 and wins.
+    summary = _import_backup(db_session, _settlement_backup(
+        backup,
+        backup.record("R-LEND-1", type_=3, price=-420, target="T-1", date="2026-09-01T12:00:00"),
+        backup.record("R-LEND-2", type_=3, price=-200, target="T-1", date="2026-09-02T12:00:00"),
+        backup.record("R-BACK", type_=5, price=200, target="T-1", relatedID="R-LEND-2", date="2026-09-03T12:00:00"),
+    ))
+    assert _by_moze_id(db_session, "R-BACK").settles_entry_id == _by_moze_id(db_session, "R-LEND-2").id
+    assert summary["settlements_linked"] == {"by_related_id": 1, "by_target": 0}
+    assert summary["needs_review"]["reasons"] == {}
+
+
+def test_collection_without_related_id_settles_the_receivable_sharing_its_target(db_session, backup):
+    summary = _import_backup(db_session, _settlement_backup(
+        backup,
+        backup.record("R-LEND", type_=3, price=-420, target="T-1"),
+        backup.record("R-BACK", type_=5, price=420, target="T-1", date="2026-09-05T12:00:00"),
+    ))
+    collection, original = _by_moze_id(db_session, "R-BACK"), _by_moze_id(db_session, "R-LEND")
+    assert (collection.is_settlement, collection.settles_entry_id, collection.needs_review) == (True, original.id, False)
+    detail = ledger_service.get_entry_detail(db_session, original.id)
+    assert (detail["open_amount"], detail["is_settled"]) == (Decimal(0), True)
+    [alan] = [row for row in settings_service.list_counterparties(db_session) if row["name"] == "Alan"]
+    assert alan["open_amounts"] == []
+    assert summary["settlements_linked"] == {"by_related_id": 0, "by_target": 1}
+
+
+def test_repayment_with_an_unresolved_related_id_settles_the_payable_sharing_its_target(db_session, backup):
+    summary = _import_backup(db_session, _settlement_backup(
+        backup,
+        backup.record("R-BORROW", type_=4, price=1000, target="T-1"),
+        backup.record("R-PAY", type_=6, price=-300, target="T-1", relatedID="R-GONE", date="2026-09-05T12:00:00"),
+    ))
+    assert _by_moze_id(db_session, "R-PAY").settles_entry_id == _by_moze_id(db_session, "R-BORROW").id
+    detail = ledger_service.get_entry_detail(db_session, _by_moze_id(db_session, "R-BORROW").id)
+    assert (detail["open_amount"], detail["is_settled"]) == (Decimal("700.0000"), False)
+    assert summary["settlements_linked"] == {"by_related_id": 0, "by_target": 1}
+
+
+def test_settlements_of_a_target_with_several_originals_are_allocated_fifo_by_date(db_session, backup):
+    summary = _import_backup(db_session, _settlement_backup(
+        backup,
+        backup.record("R-LEND-2", type_=3, price=-100, target="T-1", date="2026-09-02T12:00:00"),
+        backup.record("R-LEND-1", type_=3, price=-100, target="T-1", date="2026-09-01T12:00:00"),
+        backup.record("R-S3", type_=5, price=50, target="T-1", date="2026-09-06T12:00:00"),
+        backup.record("R-S1", type_=5, price=100, target="T-1", date="2026-08-30T12:00:00"),  # before its original
+        backup.record("R-S2", type_=5, price=60, target="T-1", date="2026-09-04T12:00:00"),
+        backup.record("R-S4", type_=5, price=10, target="T-1", date="2026-09-07T12:00:00"),
+    ))
+    first, second = _by_moze_id(db_session, "R-LEND-1").id, _by_moze_id(db_session, "R-LEND-2").id
+    linked = {moze_id: _by_moze_id(db_session, moze_id) for moze_id in ("R-S1", "R-S2", "R-S3", "R-S4")}
+    assert {moze_id: entry.settles_entry_id for moze_id, entry in linked.items()} == {
+        "R-S1": first, "R-S2": second, "R-S3": second, "R-S4": second,
+    }
+    # R-S3 exceeds the 40 left on R-LEND-2; R-S4 finds nothing open and goes to the last original.
+    assert {moze_id: entry.needs_review for moze_id, entry in linked.items()} == {
+        "R-S1": False, "R-S2": False, "R-S3": True, "R-S4": True,
+    }
+    assert summary["needs_review"]["reasons"] == {"settlement_overflow": 2}
+    assert summary["settlements_linked"] == {"by_related_id": 0, "by_target": 4}
+
+
+def test_settlement_in_another_currency_is_linked_and_flagged(db_session, backup):
+    summary = _import_backup(db_session, _settlement_backup(
+        backup,
+        backup.record("R-LEND", type_=3, price=-420, target="T-1"),
+        backup.record("R-BACK", "A-YEN", type_=5, price=2000, currency="JPY", target="T-1", date="2026-09-05T12:00:00"),
+        accounts=[_wallet(backup), backup.account("A-YEN", "日幣", "JPY")],
+    ))
+    collection = _by_moze_id(db_session, "R-BACK")
+    assert (collection.settles_entry_id, collection.needs_review) == (_by_moze_id(db_session, "R-LEND").id, True)
+    assert summary["needs_review"]["reasons"] == {"cross_currency_settlement": 1}
+    assert summary["settlements_linked"] == {"by_related_id": 0, "by_target": 1}
+
+
+@pytest.mark.parametrize("related", [None, "R-GONE"])
+def test_settlement_without_an_original_is_flagged(db_session, backup, related):
+    summary = _import_backup(db_session, _settlement_backup(
+        backup,
+        backup.record("R-LEND", type_=3, price=-420, target="T-1"),
+        backup.record("R-PAY", type_=6, price=-300, target="T-1", relatedID=related),  # no payable on T-1
+        backup.record("R-BACK", type_=5, price=100),  # no target at all
+    ))
+    for moze_id in ("R-PAY", "R-BACK"):
+        entry = _by_moze_id(db_session, moze_id)
+        assert (entry.settles_entry_id, entry.needs_review) == (None, True)
+    assert summary["needs_review"]["reasons"] == {"settlement_original_missing": 2}
+    assert summary["settlements_linked"] == {"by_related_id": 0, "by_target": 0}
 
 
 def test_collections_and_repayments_are_flagged_as_settlements(db_session, backup):
@@ -334,7 +417,6 @@ def test_collections_and_repayments_are_flagged_as_settlements(db_session, backu
     collection = _by_moze_id(db_session, "R-BACK")
     assert (collection.kind, collection.amount) == ("receivable", Decimal("150.0000"))
     assert collection.is_settlement is True
-    assert collection.settles_entry_id is None
     assert _by_moze_id(db_session, "R-LEND").is_settlement is False
 
 

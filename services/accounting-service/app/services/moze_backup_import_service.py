@@ -538,6 +538,7 @@ class EntryResult:
     tag_delimiter: str | None = None
     package_members: dict[str, list[LedgerEntry]] = field(default_factory=dict)  # AHPackage id -> grouped entries
     reward_source_from_package: int = 0  # rewards whose rewardRecordID names an imported package
+    settlements_linked: Counter = field(default_factory=lambda: Counter(by_related_id=0, by_target=0))
 
 
 def _account_currency(data: BackupData, main_currency: str) -> dict[str, str]:
@@ -752,14 +753,80 @@ def _link_refunds(data: BackupData, result: EntryResult) -> None:
 
 
 def _link_settlements(data: BackupData, result: EntryResult) -> None:
+    """Link each collection / repayment (`SETTLING_TYPES`) to the receivable / payable it settles.
+
+    `relatedID` wins when it names an imported original. Otherwise (MOZE leaves `relatedID` empty on collections)
+    the settlement goes to an imported original of the matching type with the same `target`: with several, the
+    settlements of that target are allocated FIFO by date to the earliest original still open in their currency,
+    and one exceeding what is left (or finding nothing open, then linked to the last original) is reviewed as
+    `settlement_overflow`. A link across currencies is kept and reviewed as `cross_currency_settlement`; a
+    settlement with no original is reviewed as `settlement_original_missing`.
+    """
     types = {record["identifier"]: record["type"] for record in data.records}
-    for record in data.records:
+    original_type = dict(zip(SETTLING_TYPES, SETTLED_TYPES))
+
+    def is_original(identifier: str | None) -> bool:
+        entry = result.entries.get(identifier)
+        return (
+            entry is not None and types.get(identifier) in SETTLED_TYPES
+            and entry.kind in ("receivable", "payable") and not entry.is_settlement
+        )
+
+    def link(entry: LedgerEntry, original: LedgerEntry) -> None:
+        entry.settles_entry_id = original.id
+        if entry.currency != original.currency:
+            _review(entry, "cross_currency_settlement", result)
+
+    def order(record: dict) -> tuple:
+        return record["date"], record["identifier"]
+
+    originals: dict[tuple[str, int], list[dict]] = {}  # (target, original type) -> imported originals
+    for record in sorted(data.records, key=order):
+        if record["target"] and is_original(record["identifier"]):
+            originals.setdefault((record["target"], record["type"]), []).append(record)
+
+    settled: Counter = Counter()  # original identifier -> sum of same-currency settlements linked to it
+    unresolved: list[dict] = []
+    for record in sorted(data.records, key=order):
         entry = result.entries.get(record["identifier"])
-        related = record["relatedID"]
-        if entry is None or record["type"] not in SETTLING_TYPES or not related:
+        if entry is None or record["type"] not in SETTLING_TYPES or not entry.is_settlement:
             continue
-        if types.get(related) in SETTLED_TYPES and related in result.entries:
-            entry.settles_entry_id = result.entries[related].id
+        related = record["relatedID"]
+        if is_original(related):
+            original = result.entries[related]
+            link(entry, original)
+            if entry.currency == original.currency:
+                settled[related] += entry.amount
+            result.settlements_linked["by_related_id"] += 1
+        else:
+            unresolved.append(record)
+
+    for record in unresolved:  # already in date order
+        entry = result.entries[record["identifier"]]
+        candidates = originals.get((record["target"], original_type[record["type"]]), [])
+        if not candidates:
+            _review(entry, "settlement_original_missing", result)
+            continue
+        result.settlements_linked["by_target"] += 1
+        if len(candidates) == 1:
+            link(entry, result.entries[candidates[0]["identifier"]])
+            continue
+
+        def remaining(candidate: dict) -> Decimal:
+            original = result.entries[candidate["identifier"]]
+            balance = original.amount + settled[candidate["identifier"]]  # a receivable is negative, a payable positive
+            return max(-balance if original.amount < 0 else balance, Decimal(0))
+
+        chosen = next((candidate for candidate in candidates if remaining(candidate) > 0), None)
+        overflow = chosen is None
+        chosen = chosen or candidates[-1]
+        original = result.entries[chosen["identifier"]]
+        link(entry, original)
+        if entry.currency == original.currency:
+            overflow = overflow or abs(entry.amount) > remaining(chosen)
+            settled[chosen["identifier"]] += entry.amount
+        if overflow:
+            _review(entry, "settlement_overflow", result)
 
 
 def _link_rewards_and_attachments(session: Session, data: BackupData, settings: SettingsResult, result: EntryResult) -> None:
@@ -1122,6 +1189,7 @@ def replace_ledger_from_backup(
         "rules": len(settings.rules),
         "attachments": entries.attachments,
         "counterparties": len(set(settings.counterparties.values())),
+        "settlements_linked": dict(entries.settlements_linked),
         "needs_review": {
             "count": sum(1 for entry in entries.entries.values() if entry.needs_review),
             "reasons": dict(sorted(entries.needs_review.items())),
