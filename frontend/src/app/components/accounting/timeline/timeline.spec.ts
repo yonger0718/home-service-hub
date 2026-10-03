@@ -601,7 +601,7 @@ describe('LedgerTimelineComponent', () => {
   });
 
   describe('billing hints', () => {
-    // Closing day 15, due 20 days later: the 08/16 – 09/15 statement is due on 10/05.
+    // Closing day 15, due 20 days later: the 08/16 – 09/15 statement is due on 10/05, the 10/15 one on 11/04.
     const CARD = makeAccount({
       id: 9,
       name: '玉山 UNI',
@@ -610,6 +610,54 @@ describe('LedgerTimelineComponent', () => {
       due_rule: 'days_after_closing',
       due_value: 20,
     });
+    const SEPT = { start: '2026-08-16', end: '2026-09-15', due: '2026-10-05' };
+    const OCT_CYCLE = { start: '2026-09-16', end: '2026-10-15', due: '2026-11-04' };
+
+    function billRequests(cycle = SEPT): { summary: TestRequest; payments: TestRequest } {
+      const summary = httpMock!.expectOne(
+        r => r.url === '/api/accounting/accounts/9/summary' && r.params.get('date_to') === cycle.end,
+      );
+      expect(summary.request.params.get('date_from')).toBe(cycle.start);
+      const payments = httpMock!.expectOne(
+        r => r.url === '/api/accounting/accounts/9/entries' && r.params.get('date_from') === cycle.end,
+      );
+      expect(payments.request.params.get('kind')).toBe('transfer_in');
+      expect(payments.request.params.get('date_to')).toBe(cycle.due);
+      return { summary, payments };
+    }
+
+    function answerBill(requests: { summary: TestRequest; payments: TestRequest }, spend: string, payments: string[] = []): void {
+      requests.summary.flush({
+        account_id: 9,
+        currency: 'TWD',
+        date_from: '',
+        date_to: '',
+        spend,
+        income: '0',
+        rewards: '0',
+        net: spend,
+        end_balance: spend,
+        count: 4,
+      });
+      requests.payments.flush({
+        items: payments.map((amount, index) => makeEntry({ id: 40 + index, kind: 'transfer_in', account_id: 9, amount })),
+        total: payments.length,
+        limit: 100,
+        offset: 0,
+      });
+    }
+
+    function flushBill(spend: string, payments: string[] = [], cycle = SEPT): void {
+      answerBill(billRequests(cycle), spend, payments);
+    }
+
+    function expectNoBillRequest(): void {
+      httpMock!.expectNone(r => r.url.startsWith('/api/accounting/accounts/9/'));
+    }
+
+    function flushDayEntries(): void {
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
+    }
 
     function renderCalendarWith(accounts = [...ACCOUNTS, CARD]) {
       localStorage.setItem(VIEW_KEY, 'calendar');
@@ -620,94 +668,95 @@ describe('LedgerTimelineComponent', () => {
       return rendered;
     }
 
-    function selectDueDay(fixture: { detectChanges(): void }, el: HTMLElement): void {
-      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
+    function renderListWith(accounts = [...ACCOUNTS, CARD]) {
+      const rendered = render('phone', makePreference(), [], accounts);
+      flushSummary('2026-10');
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      return rendered;
+    }
+
+    function selectDay(fixture: { detectChanges(): void }, el: HTMLElement, date: string): void {
+      (el.querySelector(`button.cell[data-date="${date}"]`) as HTMLButtonElement).click();
       fixture.detectChanges();
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
+      flushDayEntries();
+      fixture.detectChanges();
     }
 
-    function flushStatement(spend: string): void {
-      const req = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary');
-      expect(req.request.params.get('date_from')).toBe('2026-08-16');
-      expect(req.request.params.get('date_to')).toBe('2026-09-15');
-      req.flush({
-        account_id: 9,
-        currency: 'TWD',
-        date_from: '2026-08-16',
-        date_to: '2026-09-15',
-        spend,
-        income: '0',
-        rewards: '0',
-        net: spend,
-        end_balance: spend,
-        count: 4,
-      });
-    }
+    const cell = (el: HTMLElement, date: string) => el.querySelector(`button.cell[data-date="${date}"]`)!;
 
-    function flushTransfers(items: LedgerEntry[]): void {
-      const req = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries');
-      expect(req.request.params.get('kind')).toBe('transfer_in');
-      expect(req.request.params.get('date_from')).toBe('2026-09-15');
-      expect(req.request.params.get('date_to')).toBe('2026-10-05');
-      expect(req.request.params.get('limit')).toBe('10');
-      req.flush({ items, total: items.length, limit: 10, offset: 0 });
-    }
-
-    it("badges the card's due day in the grid", () => {
-      const { el } = renderCalendarWith();
-      const due = el.querySelector('button.cell[data-date="2026-10-05"]')!;
-      expect(text(due.querySelector('.due-badge'))).toBe('💳');
-      expect(due.getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
-      expect(el.querySelector('button.cell[data-date="2026-10-15"]')!.classList).toContain('closing');
-    });
-
-    it("shows the statement amount on a selected due day and opens the card's passbook", () => {
+    it('badges an unpaid statement only once it is resolved and shows its line on the due day', () => {
       const { fixture, el } = renderCalendarWith();
       const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
-      selectDueDay(fixture, el);
-      fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 — · 到期');
+      const requests = billRequests();
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')).toBeNull();
+      expect(cell(el, '2026-10-15').classList).toContain('closing');
 
-      flushStatement('-12345.0000');
-      flushTransfers([]);
+      answerBill(requests, '-12345.0000');
       fixture.detectChanges();
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+      expect(cell(el, '2026-10-05').getAttribute('aria-label')).toBe('10月5日，1 張卡繳費到期');
 
+      selectDay(fixture, el, '2026-10-05');
+      expectNoBillRequest();
       const line = el.querySelector<HTMLButtonElement>('.day-entries .bill')!;
       expect(text(line)).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
-      expect(line.classList).not.toContain('paid');
-      // The line sits above the day's rows.
       expect(line.compareDocumentPosition(el.querySelector('.day-entries .empty')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
       line.click();
       expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 9]);
     });
 
-    it('marks the statement 已繳 when a transfer reached the card after closing', () => {
-      const { fixture, el } = renderCalendarWith();
-      selectDueDay(fixture, el);
-      flushStatement('-800.0000');
-      flushTransfers([makeEntry({ id: 40, kind: 'transfer_in', account_id: 9, amount: '800.0000', entry_date: '2026-09-30' })]);
+    it('hides a zero statement everywhere and keeps it resolved across a view switch', () => {
+      const { fixture, el } = renderListWith();
+      flushBill('0.0000');
       fixture.detectChanges();
+      expect(el.querySelector('.bill-banner')).toBeNull();
 
+      viewButton(el, '日曆').click();
+      fixture.detectChanges();
+      flushDaily('2026-10');
+      expectNoBillRequest();
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      expect(cell(el, '2026-10-15').classList).toContain('closing');
+
+      selectDay(fixture, el, '2026-10-05');
+      expect(el.querySelector('.bill')).toBeNull();
+    });
+
+    it('hides a fully paid statement', () => {
+      const { fixture, el } = renderCalendarWith();
+      flushBill('-800.0000', ['500.0000', '300.0000']);
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+      selectDay(fixture, el, '2026-10-05');
+      expect(el.querySelector('.bill')).toBeNull();
+    });
+
+    it('hides a statement that cannot be read', () => {
+      const { fixture, el } = renderCalendarWith();
+      const requests = billRequests();
+      requests.summary.flush('boom', { status: 500, statusText: 'Server Error' });
+      requests.payments.flush({ items: [], total: 0, limit: 100, offset: 0 });
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.due-badge').length).toBe(0);
+    });
+
+    it('shows what was paid and what remains on a partly paid statement', () => {
+      const { fixture, el } = renderCalendarWith();
+      flushBill('-12345.0000', ['5000.0000']);
+      fixture.detectChanges();
+      expect(text(cell(el, '2026-10-05').querySelector('.due-badge'))).toBe('💳');
+
+      selectDay(fixture, el, '2026-10-05');
       const line = el.querySelector('.day-entries .bill')!;
-      expect(text(line)).toBe('💳 玉山 UNI 帳單 $800 · 到期 已繳 ✓');
-      expect(line.classList).toContain('paid');
+      expect(text(line)).toBe('💳 玉山 UNI 帳單 $12,345 · 到期 已繳 $5,000 · 剩餘 $7,345');
+      expect(line.classList).toContain('partial');
     });
 
-    it('shows a statement where refunds outweigh spend as a signed credit', () => {
+    it('re-resolves after an entry write, keeping the badge until the new figures land', () => {
       const { fixture, el } = renderCalendarWith();
-      selectDueDay(fixture, el);
-      flushStatement('300.0000');
-      flushTransfers([]);
-      fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 −$300 · 到期');
-    });
-
-    it('keeps the shown amount through an entry write until the new one lands', () => {
-      const { fixture, el } = renderCalendarWith();
-      selectDueDay(fixture, el);
-      flushStatement('-12345.0000');
-      flushTransfers([]);
+      flushBill('-12345.0000');
       fixture.detectChanges();
 
       TestBed.inject(AccountingService).deleteEntry(3).subscribe();
@@ -715,65 +764,40 @@ describe('LedgerTimelineComponent', () => {
       fixture.detectChanges();
       flushSummary('2026-10');
       flushDaily('2026-10');
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
-      const summary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary');
-      const transfers = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries');
+      const requests = billRequests();
       fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')).not.toBeNull();
 
-      summary.flush({ account_id: 9, currency: 'TWD', date_from: '2026-08-16', date_to: '2026-09-15', spend: '-12000.0000', income: '0', rewards: '0', net: '-12000', end_balance: '-12000', count: 3 });
-      transfers.flush({ items: [makeEntry({ id: 41, kind: 'transfer_in', account_id: 9 })], total: 1, limit: 10, offset: 0 });
+      answerBill(requests, '-12345.0000', ['12345.0000']);
       fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $12,000 · 到期 已繳 ✓');
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')).toBeNull();
     });
 
-    it('shows a dash when the statement cannot be read', () => {
+    it('resolves each statement once while moving between months', () => {
       const { fixture, el } = renderCalendarWith();
-      selectDueDay(fixture, el);
-      httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary').flush('boom', { status: 500, statusText: 'Server Error' });
-      flushTransfers([]);
+      flushBill('-100.0000');
       fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 — · 到期');
-    });
 
-    it('drops a late statement for a day that is no longer selected', () => {
-      const { fixture, el } = renderCalendarWith();
-      selectDueDay(fixture, el);
-      const lateSummary = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary');
-      const lateTransfers = httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries');
+      (el.querySelector('.month-next') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushSummary('2026-11');
+      flushDaily('2026-11');
+      flushBill('-200.0000', [], OCT_CYCLE);
+      fixture.detectChanges();
+      expect(cell(el, '2026-11-04').querySelector('.due-badge')).not.toBeNull();
 
-      (el.querySelector('button.cell[data-date="2026-10-02"]') as HTMLButtonElement).click();
+      (el.querySelector('.month-prev') as HTMLButtonElement).click();
       fixture.detectChanges();
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
-      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
-      fixture.detectChanges();
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
-
-      lateSummary.flush({ account_id: 9, currency: 'TWD', date_from: '', date_to: '', spend: '-1', income: '0', rewards: '0', net: '-1', end_balance: '-1', count: 1 });
-      lateTransfers.flush({ items: [], total: 0, limit: 10, offset: 0 });
-      fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 — · 到期');
-
-      flushStatement('-500.0000');
-      flushTransfers([]);
-      fixture.detectChanges();
-      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $500 · 到期');
-    });
-
-    it('requests no statement on a day without a due card', () => {
-      const { fixture, el } = renderCalendarWith();
-      (el.querySelector('button.cell[data-date="2026-10-15"]') as HTMLButtonElement).click();
-      fixture.detectChanges();
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
-      httpMock!.expectNone(r => r.url.startsWith('/api/accounting/accounts/9/'));
-      fixture.detectChanges();
-      expect(el.querySelector('.bill')).toBeNull();
-    });
-
-    it('announces the due days of the next 7 days in the list and opens the first in the calendar', () => {
-      const { fixture, el } = render('phone', makePreference(), [], [...ACCOUNTS, CARD]);
       flushSummary('2026-10');
-      flushEntries([]);
+      flushDaily('2026-10');
+      expectNoBillRequest();
+      fixture.detectChanges();
+      expect(cell(el, '2026-10-05').querySelector('.due-badge')).not.toBeNull();
+    });
+
+    it('announces the unpaid due days of the next 7 days in the list and opens the first in the calendar', () => {
+      const { fixture, el } = renderListWith();
+      flushBill('-12345.0000');
       fixture.detectChanges();
 
       const banner = el.querySelector<HTMLButtonElement>('.bill-banner')!;
@@ -781,42 +805,40 @@ describe('LedgerTimelineComponent', () => {
       banner.click();
       fixture.detectChanges();
       flushDaily('2026-10');
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
-      flushStatement('-12345.0000');
-      flushTransfers([]);
+      flushDayEntries();
+      expectNoBillRequest();
       fixture.detectChanges();
 
       expect(viewButton(el, '日曆').getAttribute('aria-checked')).toBe('true');
-      expect(el.querySelector('button.cell[data-date="2026-10-05"]')!.getAttribute('aria-pressed')).toBe('true');
+      expect(cell(el, '2026-10-05').getAttribute('aria-pressed')).toBe('true');
       expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $12,345 · 到期');
       expect(el.querySelector('.bill-banner')).toBeNull();
     });
 
-    it('moves to next month when the first due day of the week is there', () => {
+    it("resolves next month's statement for the banner and moves there on tap", () => {
       vi.setSystemTime(new Date(2026, 9, 30, 12, 0, 0));
-      const { fixture, el } = render('phone', makePreference(), [], [...ACCOUNTS, CARD]);
-      flushSummary('2026-10');
-      flushEntries([]);
+      const { fixture, el } = renderListWith();
+      flushBill('-100.0000', ['100.0000']);
+      flushBill('-200.0000', [], OCT_CYCLE);
       fixture.detectChanges();
+      expect(text(el.querySelector('.bill-banner'))).toBe('近 7 天有 1 筆繳費到期');
 
       el.querySelector<HTMLButtonElement>('.bill-banner')!.click();
       fixture.detectChanges();
       flushSummary('2026-11');
       flushDaily('2026-11');
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
-      httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/summary').flush('boom', { status: 500, statusText: 'Server Error' });
-      httpMock!.expectOne(r => r.url === '/api/accounting/accounts/9/entries').flush({ items: [], total: 0, limit: 10, offset: 0 });
+      flushDayEntries();
+      expectNoBillRequest();
       fixture.detectChanges();
 
       expect(text(el.querySelector('.month-label'))).toBe('2026 年 11 月');
-      expect(el.querySelector('button.cell[data-date="2026-11-04"]')!.getAttribute('aria-pressed')).toBe('true');
+      expect(cell(el, '2026-11-04').getAttribute('aria-pressed')).toBe('true');
+      expect(text(el.querySelector('.day-entries .bill'))).toBe('💳 玉山 UNI 帳單 $200 · 到期');
     });
 
-    it('renders nothing without credit cards', () => {
-      const { fixture, el } = render('phone');
-      flushSummary('2026-10');
-      flushEntries([]);
-      fixture.detectChanges();
+    it('renders nothing and asks for no statement without credit cards', () => {
+      const { fixture, el } = renderListWith(ACCOUNTS);
+      httpMock!.expectNone(r => r.url.includes('/accounts/') && r.url.includes('/summary'));
       expect(el.querySelector('.bill-banner')).toBeNull();
 
       viewButton(el, '日曆').click();
@@ -824,12 +846,7 @@ describe('LedgerTimelineComponent', () => {
       flushDaily('2026-10');
       fixture.detectChanges();
       expect(el.querySelectorAll('.due-badge, .cell.closing').length).toBe(0);
-
-      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
-      fixture.detectChanges();
-      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
-      httpMock!.expectNone(r => r.url.includes('/summary') && r.url.includes('/accounts/'));
-      fixture.detectChanges();
+      selectDay(fixture, el, '2026-10-05');
       expect(el.querySelector('.bill')).toBeNull();
     });
   });

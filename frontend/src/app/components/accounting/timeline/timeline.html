@@ -100,10 +100,10 @@
         @if (billLines().length > 0) {
           <div class="bills" role="group" aria-label="繳費提醒">
             @for (bill of billLines(); track bill.key) {
-              <button type="button" class="bill" [class.paid]="bill.paid" (click)="openCard(bill.accountId)">
+              <button type="button" class="bill" [class.partial]="bill.paidText !== null" (click)="openCard(bill.accountId)">
                 💳 {{ bill.name }} 帳單 {{ bill.amountText }} · 到期
-                @if (bill.paid) {
-                  <span class="paid-mark">已繳 ✓</span>
+                @if (bill.paidText) {
+                  <span class="paid-mark">{{ bill.paidText }}</span>
                 }
               </button>
             }

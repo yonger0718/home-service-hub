@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { makeAccount } from '../testing/fixtures';
-import { billingEvents, upcomingDues } from './billing-math';
+import { billBalance, billingEvents, upcomingDues } from './billing-math';
 
 const card = (overrides: Parameters<typeof makeAccount>[0]) =>
   makeAccount({ is_credit: true, due_rule: null, due_value: null, ...overrides });
@@ -96,5 +96,17 @@ describe('upcomingDues', () => {
 
   it('never includes closing days', () => {
     expect(upcomingDues([uni], '2026-10-12')).toEqual([]);
+  });
+});
+
+describe('billBalance', () => {
+  it('turns the negative spend into a statement and subtracts the payments', () => {
+    expect(billBalance('-12345.0000', ['5000.0000'])).toEqual({ statement: 12345, paid: 5000, remaining: 7345 });
+  });
+
+  it('leaves nothing remaining for a zero, refund-heavy or fully paid statement', () => {
+    expect(billBalance('0.0000', []).remaining).toBe(0);
+    expect(billBalance('300.0000', []).remaining).toBe(-300);
+    expect(billBalance('-800.1000', ['500.0500', '300.0500']).remaining).toBe(0);
   });
 });

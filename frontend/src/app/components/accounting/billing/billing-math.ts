@@ -70,3 +70,21 @@ export function upcomingDues(cards: BillingCard[], today: string): BillingEvent[
     event => event.kind === 'due' && event.date >= today && event.date <= last,
   );
 }
+
+/** A statement's figures: `remaining > 0` is the only case the billing hints show. */
+export interface BillBalance {
+  /** −spend of the cycle: positive for a bill, ≤ 0 for a zero or refund-heavy statement. */
+  statement: number;
+  /** Σ `transfer_in` to the card between the closing date and the due date (inclusive). */
+  paid: number;
+  remaining: number;
+}
+
+/** Amounts are 4-dp decimal strings: round the float sums back to 4 dp so a fully paid bill is exactly 0. */
+const round4 = (value: number) => Math.round(value * 1e4) / 1e4 || 0;
+
+export function billBalance(spend: string, payments: string[]): BillBalance {
+  const statement = round4(-Number(spend));
+  const paid = round4(payments.reduce((sum, amount) => sum + Number(amount), 0));
+  return { statement, paid, remaining: round4(statement - paid) };
+}

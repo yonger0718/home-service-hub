@@ -30,7 +30,7 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
-import { BillingEvent, billingEvents, upcomingDues } from '../billing/billing-math';
+import { BillBalance, BillingEvent, billBalance, billingEvents, upcomingDues } from '../billing/billing-math';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
@@ -40,8 +40,8 @@ export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
 export const CALENDAR_DAY_LIMIT = 500;
 export const TIMELINE_VIEW_KEY = 'hh.accounting.timelineView';
-/** A due line only asks whether any payment reached the card, so a few rows suffice. */
-export const BILL_PAYMENT_LIMIT = 10;
+/** Payments to a card within one closing → due window: far fewer than this in practice. */
+export const BILL_PAYMENT_LIMIT = 100;
 
 export type TimelineView = 'list' | 'calendar';
 
@@ -103,20 +103,32 @@ export interface TimelineRow {
   groupCount: number | null;
 }
 
-/** One 繳費提醒 line in the 日曆 day panel. */
+/** One 繳費提醒 line in the 日曆 day panel (only statements with a remaining balance). */
 export interface BillLine {
   key: string;
   accountId: number;
   name: string;
-  /** The statement's spend as a positive figure; `—` while loading or when it cannot be read. */
   amountText: string;
-  /** A `transfer_in` reached the card between the closing date and the due date (inclusive). */
-  paid: boolean;
+  /** `已繳 $X · 剩餘 $Y` for a partly paid statement; null when nothing was paid yet. */
+  paidText: string | null;
 }
 
+/** A due event's statement: the halves fill in as their responses land; `null` = that request failed. */
 interface BillState {
-  amountText?: string;
-  paid?: boolean;
+  spend?: string | null;
+  currency?: string;
+  payments?: string[] | null;
+}
+
+interface ResolvedBill extends BillBalance {
+  currency: string;
+}
+
+function resolved(state: BillState | undefined): ResolvedBill | null {
+  if (!state || typeof state.spend !== 'string' || !Array.isArray(state.payments)) {
+    return null;
+  }
+  return { ...billBalance(state.spend, state.payments), currency: state.currency ?? 'TWD' };
 }
 
 function billKey(event: BillingEvent): string {
@@ -301,8 +313,8 @@ export class LedgerTimelineComponent implements OnInit {
   private dailyRequestId = 0;
   private dayRequestId = 0;
   private billRequestId = 0;
-  /** Keys of the due lines last loaded: a re-read of the same lines keeps their figures until the new ones land. */
-  private billKeys = '';
+  /** Per due event (`billKey`): the `entriesChanged` count it was last requested at, and that request's id. */
+  private readonly billRequests = new Map<string, { change: number; id: number }>();
 
   readonly preference = signal<Preference | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -322,6 +334,7 @@ export class LedgerTimelineComponent implements OnInit {
   readonly dayEntries = signal<LedgerEntry[]>([]);
   readonly dayLoading = signal(false);
   readonly dayError = signal(false);
+  /** Statements of due events, cached for the session (re-read on `entriesChanged`, kept shown until then). */
   private readonly bills = signal<ReadonlyMap<string, BillState>>(new Map());
   readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
 
@@ -350,25 +363,51 @@ export class LedgerTimelineComponent implements OnInit {
     return date ? dayLabel(date) : '';
   });
   /** Credit-card closing / due days of the shown month (empty without cards that have a closing day). */
-  readonly billing = computed(() => billingEvents(this.accounts(), this.month()));
-  /** Cards due on the selected 日曆 day. */
-  private readonly dueEvents = computed(() => {
+  private readonly monthBilling = computed(() => billingEvents(this.accounts(), this.month()));
+  /** Due days from today through today + 6 (may reach into next month). */
+  private readonly upcomingEvents = computed(() => upcomingDues(this.accounts(), this.today()));
+  /** Due events whose statement is needed: the shown month's and the 近 7 天 window's (deduplicated). */
+  private readonly trackedDues = computed(() => {
+    const events = new Map<string, BillingEvent>();
+    for (const event of [...this.monthBilling(), ...this.upcomingEvents()]) {
+      if (event.kind === 'due') {
+        events.set(billKey(event), event);
+      }
+    }
+    return [...events.values()];
+  });
+  /** A due event's resolved statement when something is left to pay; null otherwise (also while unresolved). */
+  private openBill(event: BillingEvent): ResolvedBill | null {
+    const bill = resolved(this.bills().get(billKey(event)));
+    return bill && bill.remaining > 0 ? bill : null;
+  }
+  /** What the grid marks: every closing day, and the due days of statements with a remaining balance. */
+  readonly billing = computed(() => this.monthBilling().filter(event => event.kind === 'closing' || this.openBill(event) !== null));
+  readonly billLines = computed(() => {
     const day = this.selectedDay();
     if (this.view() !== 'calendar' || !day) {
       return [];
     }
-    return this.billing().filter(event => event.kind === 'due' && event.date === day);
+    const lines: BillLine[] = [];
+    for (const event of this.monthBilling()) {
+      const bill = event.kind === 'due' && event.date === day ? this.openBill(event) : null;
+      if (bill) {
+        lines.push({
+          key: billKey(event),
+          accountId: event.accountId,
+          name: event.name,
+          amountText: formatMoney(bill.statement, bill.currency),
+          paidText:
+            bill.paid > 0
+              ? `已繳 ${formatMoney(bill.paid, bill.currency)} · 剩餘 ${formatMoney(bill.remaining, bill.currency)}`
+              : null,
+        });
+      }
+    }
+    return lines;
   });
-  readonly billLines = computed(() => {
-    const states = this.bills();
-    return this.dueEvents().map((event): BillLine => {
-      const key = billKey(event);
-      const state = states.get(key);
-      return { key, accountId: event.accountId, name: event.name, amountText: state?.amountText ?? '—', paid: state?.paid ?? false };
-    });
-  });
-  /** Due days from today through today + 6 (may reach into next month): the list view's 近 7 天 banner. */
-  readonly upcomingBills = computed(() => upcomingDues(this.accounts(), this.today()));
+  /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
+  readonly upcomingBills = computed(() => this.upcomingEvents().filter(event => this.openBill(event) !== null));
   readonly missingRates = computed(() =>
     (this.view() === 'calendar' ? this.daily()?.missing_rates : this.summary()?.missing_rates) ?? [],
   );
@@ -434,11 +473,14 @@ export class LedgerTimelineComponent implements OnInit {
       untracked(() => this.loadSummary(month));
     });
 
-    // 日曆: the statement amount and payment state of each card due on the tapped day.
+    // Statements of the due events the grid and the banner need; each once, again after an entry write.
     effect(() => {
-      const events = this.dueEvents();
-      this.accounting.entriesChanged();
-      untracked(() => this.loadBills(events));
+      if (!this.preference()) {
+        return;
+      }
+      const events = this.trackedDues();
+      const change = this.accounting.entriesChanged();
+      untracked(() => this.resolveBills(events, change));
     });
 
     // A saved preference (settings pane beside this list in the wide layout) is re-read; the effects above then reload.
@@ -632,24 +674,26 @@ export class LedgerTimelineComponent implements OnInit {
     this.dayError.set(false);
   }
 
-  private loadBills(events: BillingEvent[]): void {
-    const id = ++this.billRequestId;
-    const keys = events.map(billKey).join(',');
-    if (keys !== this.billKeys) {
-      this.billKeys = keys;
-      this.bills.set(new Map());
-    }
-    const patch = (key: string, change: BillState) => {
-      if (id === this.billRequestId) {
-        this.bills.update(states => new Map(states).set(key, { ...states.get(key), ...change }));
-      }
-    };
+  /**
+   * One statement summary + one payments read per due event and `entriesChanged` count. The previous figures stay
+   * until the new ones land; a response for a superseded request is dropped.
+   */
+  private resolveBills(events: BillingEvent[], change: number): void {
     for (const event of events) {
       const key = billKey(event);
-      // Errors put the line back to `—` / unpaid. `spend` is negative for a bill; refunds can make it a credit (−).
+      if (this.billRequests.get(key)?.change === change) {
+        continue;
+      }
+      const id = ++this.billRequestId;
+      this.billRequests.set(key, { change, id });
+      const patch = (update: BillState) => {
+        if (this.billRequests.get(key)?.id === id) {
+          this.bills.update(states => new Map(states).set(key, { ...states.get(key), ...update }));
+        }
+      };
       this.accounting.getAccountSummary(event.accountId, event.period.start, event.period.end).subscribe({
-        next: summary => patch(key, { amountText: formatMoney(-Number(summary.spend), summary.currency) }),
-        error: () => patch(key, { amountText: undefined }),
+        next: summary => patch({ spend: summary.spend, currency: summary.currency }),
+        error: () => patch({ spend: null }),
       });
       this.accounting
         .getEntries(event.accountId, {
@@ -659,8 +703,8 @@ export class LedgerTimelineComponent implements OnInit {
           limit: BILL_PAYMENT_LIMIT,
         })
         .subscribe({
-          next: page => patch(key, { paid: page.items.length > 0 }),
-          error: () => patch(key, { paid: undefined }),
+          next: page => patch({ payments: page.items.map(entry => entry.amount) }),
+          error: () => patch({ payments: null }),
         });
     }
   }

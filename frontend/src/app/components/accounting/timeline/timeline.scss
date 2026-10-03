@@ -323,18 +323,15 @@
   text-align: left;
   width: 100%;
 
-  &.paid {
-    color: var(--app-text-muted);
-    font-weight: 600;
-  }
-
   &:focus-visible {
     outline: 2px solid var(--app-primary);
     outline-offset: 1px;
   }
 }
 
+/* Partly paid: what went in and what is left, quieter than the bill itself. */
 .paid-mark {
-  color: var(--tone-pos, var(--c-green));
+  color: var(--app-text-muted);
+  font-weight: 600;
   margin-left: 4px;
 }
