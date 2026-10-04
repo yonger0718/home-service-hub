@@ -159,6 +159,9 @@ EXPECTED_WRITES = {
     ("/counterparties/{counterparty_id}", "DELETE"),
     ("/preference", "PUT"),
     ("/imports/moze", "POST"), ("/imports/moze-backup", "POST"),
+    # Schedules: PUT / DELETE of an imported definition answer locked_until_cutover (schedule_service, D36).
+    ("/schedules/definitions", "POST"), ("/schedules/definitions/{definition_id}", "PUT"),
+    ("/schedules/definitions/{definition_id}", "DELETE"),
 }
 
 
