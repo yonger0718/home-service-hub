@@ -175,7 +175,8 @@ import through the API, and every 10 minutes after a run that found the job lock
 once the import lock is released — generation always, posting only when `ACCOUNTING_SCHEDULER_ENABLED` is on (else it
 prints the number of due but unposted periods on its `schedule_job:` stderr line). The job generates instances 13 months
 ahead and posts due periods of `active`, `auto` definitions dated on or after the definition's `auto_post_from`
-(never a reopened period), per definition in `seq` order: a period waits while an earlier one is due or failed. `ACCOUNTING_SCHEDULER_ENABLED=false` turns the in-process job off (tests do); the job lock
+(never a reopened period), per definition in `seq` order: a period waits while an earlier one is due or failed.
+`ACCOUNTING_SCHEDULER_ENABLED=false` turns the in-process job off (tests do); the job lock
 (`pg_try_advisory_lock(0x53434844)`) makes a second runner return `busy`.
 
     .venv/bin/python -m app.services.schedule_job --dry-run     # print what would be generated and posted
@@ -186,12 +187,13 @@ HTTP 409 `import_running`. An import waits up to 30 s (`IMPORT_LOCK_WAIT_SEC` in
 schedule writers to finish and is refused afterwards (`ImportAlreadyRunningError`, HTTP 409 `import already running`);
 the job shares the key per period, so an import started during a long job posting loop may be refused — run it again
 once the job is done. A posting failure that finds an import running leaves the period `pending` without
-`last_error` (the import refreshes it). Before cutover (`ACCOUNTING_IMPORT_LOCKED` not `true`) imported definitions cannot be
-edited or deleted and MOZE-booked periods cannot be reposted (409 `locked_until_cutover`); pause, resume, end, mode,
-catch-up and per-period actions work. A re-import never duplicates a period HomeHub posted or skipped
-(`schedules.past_records_already_posted` / `…_skipped` in the report), nor one the owner edited while it was pending
-(`past_records_owner_pending`: MOZE's record is not imported, the period stays pending), and never touches local
-definitions. Amount differences are reported per line (`past_records_amount_differs.lines`, `amount_differs`).
+`last_error`; the job retries it on its next run. Before cutover (`ACCOUNTING_IMPORT_LOCKED` not `true`) imported
+definitions cannot be edited or deleted and MOZE-booked periods cannot be reposted (409 `locked_until_cutover`);
+pause, resume, end, mode, catch-up and per-period actions work. A re-import never duplicates a period HomeHub
+posted or skipped (`schedules.past_records_already_posted` / `…_skipped` in the report), nor one the owner edited
+while it was pending (`past_records_owner_pending`: MOZE's record is not imported, the period stays pending), and
+never touches local definitions. Amount differences are reported per line (`past_records_amount_differs.lines`,
+`amount_differs`).
 
 Lock order (D32, every schedule write path): the shared import key (`pg_try_advisory_xact_lock_shared`, 409
 `import_running` while an import holds it) → the `schedule_definition` row (`FOR SHARE` when posting or acting on one

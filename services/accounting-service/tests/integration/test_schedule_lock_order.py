@@ -61,7 +61,8 @@ def test_definition_edit_waits_for_a_post(pg_engine, db_session, seed, today):
     instance = seed.instance(definition, 1, date(2026, 10, 22))
     db_session.commit()
     body = DefinitionUpdateIn(
-        name="Netflix", template={"lines": [{"kind": "expense", "account_id": card.id, "amount": "420", "currency": "TWD"}]},
+        name="Netflix",
+        template={"lines": [{"kind": "expense", "account_id": card.id, "amount": "420", "currency": "TWD"}]},
         interval_unit="month", anchor_date=date(2026, 10, 22),
     )
     outcome = race(
@@ -73,6 +74,8 @@ def test_definition_edit_waits_for_a_post(pg_engine, db_session, seed, today):
     row = _row(db_session, instance.id)
     assert row.status == "posted"
     assert db_session.get(LedgerEntry, row.posted_entry_ids[0]).amount == Decimal("-390")
+    edited = _definition(db_session, definition.id)  # the edit was not lost: it landed after the post committed
+    assert (edited.name, edited.template["lines"][0]["amount"]) == ("Netflix", "420")
 
 
 def test_import_waits_for_a_post(pg_engine, db_session, seed, today):
@@ -156,6 +159,8 @@ def test_loan_close_out_waits_for_a_delete_that_revives_the_definition(pg_engine
     assert outcome == "committed"
     assert (_row(db_session, pending.id).status, _row(db_session, pending.id).note) == ("skipped", "貸款已結清")
     assert _definition(db_session, period["definition"].id).status == "ended"
+    first = _row(db_session, period["instance"].id)  # the delete's partial result was not lost either
+    assert (first.status, first.is_partial, first.posted_entry_ids) == ("posted", True, [period["repayment"]])
 
 
 def test_delete_after_a_loan_close_out_is_refused_with_a_retry_message(pg_engine, db_session, seed, period):

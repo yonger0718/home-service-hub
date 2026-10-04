@@ -272,7 +272,7 @@ def record_failure(db: Session, instance_id: int, message: str) -> None:
     """Roll the failed posting back, then store last_error on the still-pending instance in its own transaction.
 
     Like every schedule write it shares the import key first (D32); while an import holds the key the write is
-    skipped (the instance stays pending and the import refreshes it) and nothing is raised.
+    skipped (the instance stays pending without last_error; the job retries it on its next run) and nothing is raised.
     """
     db.rollback()
     try:
