@@ -446,6 +446,11 @@ def _entry_rows(db: Session, filters: list, *, running_accounts: list[int] | Non
                 ),
             }
         )
+    from .schedule_read import schedule_links  # schedule_read imports this module: no module-level import
+
+    links = schedule_links(db, [item["id"] for item in page])
+    for item in page:
+        item["schedule"] = links.get(item["id"])
     return page
 
 
@@ -649,4 +654,8 @@ def get_entry_detail(db: Session, entry_id: int) -> dict | None:
     open_amount = detail["open_amount"]
     detail["is_settled"] = None if open_amount is None else open_amount == 0
     detail["refunded_amount"] = sum((item["amount"] for item in detail["refunded_by"]), Decimal(0))
+    from .schedule_read import loan_schedule_for
+
+    # Only receivable / payable originals carry open_amount; only they can be a schedule's loan.
+    detail["loan_schedule"] = loan_schedule_for(db, entry.id) if detail["open_amount"] is not None else None
     return detail

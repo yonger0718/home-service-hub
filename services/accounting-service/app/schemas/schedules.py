@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .writes import Currency, Int32, Money, NonNegativeMoney, ShortText
+from .ledger import CurrencyAmountOut
 
 ScheduleLineKind = Literal["expense", "income", "receivable", "payable", "transfer", "repayment", "collection", "interest"]
 IntervalUnit = Literal["day", "week", "month", "year"]
@@ -117,11 +118,6 @@ class TemplateOut(BaseModel):
     lines: list[TemplateLineOut]
     description: str | None
     tags: list[str]
-
-
-class CurrencyAmountOut(BaseModel):
-    currency: str
-    amount: Decimal
 
 
 class FailingOut(BaseModel):
