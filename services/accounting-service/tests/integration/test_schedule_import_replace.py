@@ -420,6 +420,106 @@ def test_cli_import_runs_the_job_inline_after_releasing_the_lock(
     assert f"posted {posted}, failed 0, due_unposted {1 - posted}" in err
 
 
+def _fee_period_data(backup, exported_at, moze_balance=None):
+    # R (a PER-M period) carries a feeID fee child and a reward; MOZE books all three.
+    fields = {"balanceInfo": {"1": moze_balance}} if moze_balance is not None else {}
+    return backup.data(
+        exported_at=exported_at,
+        accounts=[backup.account("A-WALLET", "錢包", cacheDate=f"{exported_at[:10]}T00:00:00", **fields)],
+        periods=[backup.period("PER-M", unit=2, days=9, start="2026-10-09T00:00:00")],
+        records=[
+            _rec(backup, "R-SEP", "2026-09-09", eventID="PER-M"),
+            _rec(backup, "R", "2026-10-09", eventID="PER-M", feeID="R-FEE"),
+            _rec(backup, "R-FEE", "2026-10-09", type_=16, price=-15),
+            _rec(backup, "R-RW", "2026-10-09", type_=14, price=2, rewardRecordID="R"),
+        ],
+    )
+
+
+def test_fee_child_of_a_posted_covered_record_is_reparented_onto_the_stand_in(db_session, backup, today, monkeypatch):
+    # Review fix: a covered record's fee / reward dependants hang off the HomeHub entry standing in for it, so the
+    # ledger holds them as MOZE does and a strict compared import succeeds.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _fee_period_data(backup, "2026-10-01T17:00:37"))
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R"))
+    assert posting.post_instance(db_session, instance.id, actor="auto", job=True, today=date(2026, 10, 9)).outcome == "posted"
+    db_session.commit()
+    today(date(2026, 10, 12))
+    monkeypatch.setattr(moze_backup_import_service, "balance_info_key", lambda account: "1" if account["balanceInfo"] else None)
+
+    summary = _import_backup(db_session, _fee_period_data(backup, "2026-10-12T17:00:00", moze_balance=-213), strict=True)
+
+    (stand_in,) = _schedule_entries(db_session)
+    assert _by_moze_id(db_session, "R") is None
+    fee, reward = _by_moze_id(db_session, "R-FEE"), _by_moze_id(db_session, "R-RW")
+    assert (fee.kind, fee.parent_entry_id, fee.amount) == ("fee", stand_in.id, Decimal("-15"))
+    assert reward.reward_source_entry_id == stand_in.id
+    wallet = summary["accounts"][0]
+    assert (Decimal(wallet["moze_part"]), Decimal(wallet["difference"])) == (Decimal("-213"), Decimal("0"))
+    assert summary["schedules"]["dependants_suppressed"] == {"count": 0, "records": []}
+
+
+@pytest.mark.parametrize(("hold", "moze_part"), [("skip", "-113"), ("owner_edit", "-213")])
+def test_dependants_of_a_skipped_covered_record_are_suppressed_and_compensated(db_session, backup, today, hold, moze_part):
+    # Review fix: a skipped or owner-held period has no HomeHub entry to carry the dependants, so they are not
+    # imported; their MOZE amounts join moze_part (the owner-held record itself too, R-F1) and the report lists them.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _fee_period_data(backup, "2026-10-01T17:00:37"))
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R"))
+    if hold == "skip":
+        schedule_service.skip_instance(db_session, instance.id)
+    else:
+        schedule_service.update_instance(db_session, instance.id, InstanceUpdateIn(amounts=["120"]))
+    db_session.commit()
+    today(date(2026, 10, 12))
+
+    summary = _import_backup(db_session, _fee_period_data(backup, "2026-10-12T17:00:00"))
+
+    assert [_by_moze_id(db_session, key) for key in ("R", "R-FEE", "R-RW")] == [None, None, None]
+    assert Decimal(summary["accounts"][0]["moze_part"]) == Decimal(moze_part)
+    assert summary["schedules"]["dependants_suppressed"] == {
+        "count": 2,
+        "records": [
+            {"moze_id": "R-FEE", "parent_moze_id": "R", "type": 16},
+            {"moze_id": "R-RW", "parent_moze_id": "R", "type": 14},
+        ],
+    }
+
+
+def test_dependants_follow_fee_and_reward_links_transitively():
+    def record(identifier, *, type_=0, fee=None, reward_of=None):
+        return {"identifier": identifier, "type": type_, "feeID": fee, "rewardRecordID": reward_of}
+
+    records = [
+        record("ROOT", fee="FEE-1"), record("FEE-1", type_=16, fee="FEE-2"), record("FEE-2", type_=12),
+        record("RW", type_=14, reward_of="ROOT"), record("RW-FEE", type_=16), record("OTHER", fee="OTHER-FEE"),
+        record("OTHER-FEE", type_=16), record("SELF", fee="SELF"),
+    ]
+    records[4]["feeID"] = None
+    records[3]["feeID"] = "RW-FEE"
+    assert moze_backup_import_service._dependants(records, {"ROOT", "SELF"}) == {"FEE-1", "FEE-2", "RW", "RW-FEE"}
+    assert moze_backup_import_service._dependant_parents(records, {"ROOT"}) == {
+        "FEE-1": "ROOT", "FEE-2": "FEE-1", "RW": "ROOT", "RW-FEE": "RW",
+    }
+    assert moze_backup_import_service._dependants(records, ()) == set()
+
+
+def test_cli_job_crash_keeps_the_import_exit_code(pg_engine, db_session, backup, fake_exporter, tmp_path, monkeypatch, capsys):
+    def crash(engine, **kwargs):
+        raise RuntimeError("owner detail 錢包 must not be printed")
+
+    monkeypatch.setattr(schedule_job, "run_after_cli_import", crash)
+    zip_path = tmp_path / "MOZE_4.0.zip"
+    zip_path.write_bytes(b"PK")
+    doc = backup.doc(accounts=[backup.account("A-WALLET", "錢包")])
+
+    assert moze_backup_import_service.main([str(zip_path)], engine=pg_engine, exporter=fake_exporter(doc)) == 0
+
+    err = capsys.readouterr().err
+    assert "schedule_job: status crashed error_class=RuntimeError" in err
+    assert "owner detail" not in err
+
+
 def test_the_old_schedule_listing_is_gone(client):
     # Spec REMOVED "Scheduled data preserved for phase 4".
     assert client.get("/imports/schedules").status_code == 404

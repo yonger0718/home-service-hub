@@ -38,6 +38,7 @@ from ..models import (
     Preference,
     Project,
     RewardRule,
+    ScheduleInstance,
 )
 from . import fx_rate_service, ledger_service
 from . import schedule_import
@@ -542,6 +543,10 @@ class EntryResult:
     reward_source_from_package: int = 0  # rewards whose rewardRecordID names an imported package
     settlements_linked: Counter = field(default_factory=lambda: Counter(by_related_id=0, by_target=0))
     debts_closed_from_target: int = 0
+    # covered record id -> the HomeHub entry standing in for it (D37): parent of its fee children, source of its rewards
+    stand_ins: dict[str, LedgerEntry] = field(default_factory=dict)
+    # (record, parent record id) of the fee / reward dependants of skipped or owner-held covered records, not imported
+    dependants_suppressed: list[tuple[dict, str]] = field(default_factory=list)
 
 
 def _account_currency(data: BackupData, main_currency: str) -> dict[str, str]:
@@ -854,7 +859,7 @@ def _link_rewards_and_attachments(session: Session, data: BackupData, settings: 
             continue
         if record["type"] == 14:
             entry.reward_rule_id = settings.rules.get(record["rewardID"])
-            source = result.entries.get(record["rewardRecordID"])
+            source = result.entries.get(record["rewardRecordID"]) or result.stand_ins.get(record["rewardRecordID"])
             if source is None and record["rewardRecordID"] in result.package_members:
                 source = _primary_member(result.package_members[record["rewardRecordID"]])
                 if source is not None:
@@ -936,24 +941,29 @@ def _disabled_ids(records: list[dict], transfers: list[dict], result: EntryResul
     return skipped
 
 
-def _dependants(records: list[dict], roots: Collection[str]) -> set[str]:
-    """Fee and reward records hanging off `roots` (records not imported because HomeHub already covered them)."""
+def _dependant_parents(records: list[dict], roots: Collection[str]) -> dict[str, str]:
+    """Fee and reward records hanging off `roots`, transitively: dependant id -> its direct parent record id."""
     if not roots:
-        return set()
+        return {}
     children: dict[str, list[str]] = {}
     for record in records:
         if record["feeID"] and record["feeID"] != record["identifier"]:
             children.setdefault(record["identifier"], []).append(record["feeID"])
         if record["type"] == 14 and record["rewardRecordID"]:
             children.setdefault(record["rewardRecordID"], []).append(record["identifier"])
-    found: set[str] = set()
-    pending = [child for root in roots for child in children.get(root, [])]
+    found: dict[str, str] = {}
+    pending = [(child, root) for root in roots for child in children.get(root, [])]
     while pending:
-        identifier = pending.pop()
+        identifier, parent = pending.pop()
         if identifier not in found:
-            found.add(identifier)
-            pending.extend(children.get(identifier, []))
+            found[identifier] = parent
+            pending.extend((child, identifier) for child in children.get(identifier, []))
     return found
+
+
+def _dependants(records: list[dict], roots: Collection[str]) -> set[str]:
+    """Fee and reward records hanging off `roots` (records not imported because HomeHub already covered them)."""
+    return set(_dependant_parents(records, roots))
 
 
 def insert_entries(
@@ -965,9 +975,16 @@ def insert_entries(
     *,
     allow_fx_outliers: bool,
     skip_ids: frozenset[str] = frozenset(),
+    stand_ins: Mapping[str, LedgerEntry] | None = None,
 ) -> EntryResult:
-    """Insert one entry per live AHRecord dated up to the export date, with children, FX and links."""
+    """Insert one entry per live AHRecord dated up to the export date, with children, FX and links.
+
+    `skip_ids`: covered records HomeHub already decided (D37), never inserted. Their fee / reward dependants hang off
+    the entry in `stand_ins` (a posted period's HomeHub entry); without one (skipped, owner-held) they are left out
+    and listed in `dependants_suppressed` for the balance comparison and the report.
+    """
     result = EntryResult()
+    result.stand_ins = dict(stand_ins or {})
     cutoff = data.exported_at.date()
     conversions = {conversion["recordID"]: conversion for conversion in data.conversions}
     kinds = {record["identifier"]: record_kind(record) for record in data.records}  # fails on unknown types first
@@ -987,12 +1004,18 @@ def insert_entries(
         else:
             current.append(record)
     disabled = _disabled_ids(current, data.transfers, result)
-    disabled |= _dependants(data.records, skip_ids)
+    held = _dependant_parents(data.records, skip_ids - result.stand_ins.keys())
+    result.dependants_suppressed = [
+        (record, held[record["identifier"]])
+        for record in current
+        if record["identifier"] in held and record["identifier"] not in disabled
+    ]
+    disabled |= held.keys()
     live = [record for record in current if record["identifier"] not in disabled]
     live_ids = {record["identifier"] for record in live}
     fee_parent = {
         record["feeID"]: record["identifier"]
-        for record in live
+        for record in [*live, *(record for record in data.records if record["identifier"] in result.stand_ins)]
         if record["feeID"] and record["feeID"] in live_ids and record["feeID"] != record["identifier"]
     }
     fee_records: dict[str, list[dict]] = {}
@@ -1017,6 +1040,9 @@ def insert_entries(
     for record in sorted(live, key=lambda r: r["date"]):
         if record["identifier"] not in fee_parent:
             build(record)
+    for covered_id in sorted(result.stand_ins):  # fee children of covered records hang off their stand-in entry
+        for child_record in fee_records.get(covered_id, []):
+            build(child_record)
     unbuilt = sorted(live_ids - set(result.entries))
     if unbuilt:
         raise MozeImportError(f"AHRecord '{unbuilt[0]}': feeID links form a cycle")
@@ -1033,7 +1059,8 @@ def insert_entries(
     session.flush()
     for record, entry, children in ordered:
         if record["identifier"] in fee_parent:
-            entry.parent_entry_id = result.entries[fee_parent[record["identifier"]]].id
+            parent_id = fee_parent[record["identifier"]]
+            entry.parent_entry_id = (result.entries.get(parent_id) or result.stand_ins[parent_id]).id
         for child in children:
             child.parent_entry_id = entry.id
         session.add_all(children)
@@ -1197,6 +1224,31 @@ def _account_reports(
     return reports
 
 
+def _stand_in_parents(session: Session, data: BackupData, settings: SettingsResult, covered) -> dict[str, LedgerEntry]:
+    """Covered record id -> the HomeHub entry standing in for it (status posted, D37): its instance's posted entry on
+    the record's account, else the instance's first posted entry. Fee / reward dependants of the record hang off it."""
+    posted = {record_id: item.instance_id for record_id, item in covered.items() if item.status == "posted"}
+    if not posted:
+        return {}
+    rows = select(ScheduleInstance.id, ScheduleInstance.posted_entry_ids).where(
+        ScheduleInstance.id.in_(set(posted.values()))
+    )
+    posted_ids = dict(session.execute(rows).all())
+    wanted = {entry_id for entry_ids in posted_ids.values() for entry_id in entry_ids or ()}
+    entries = {entry.id: entry for entry in session.scalars(select(LedgerEntry).where(LedgerEntry.id.in_(wanted)))}
+    accounts = {record["identifier"]: record["account"] for record in data.records}
+    found = {}
+    for record_id, instance_id in posted.items():
+        candidates = [entries[entry_id] for entry_id in posted_ids.get(instance_id) or () if entry_id in entries]
+        if not candidates:
+            continue
+        account = settings.accounts.get(accounts.get(record_id))
+        found[record_id] = next(
+            (entry for entry in candidates if account is not None and entry.account_id == account.id), candidates[0]
+        )
+    return found
+
+
 def replace_ledger_from_backup(
     session: Session,
     data: BackupData,
@@ -1224,7 +1276,7 @@ def replace_ledger_from_backup(
     )
     entries = insert_entries(
         session, data, settings, import_run_id, rates or {}, allow_fx_outliers=allow_fx_outliers,
-        skip_ids=frozenset(covered),
+        skip_ids=frozenset(covered), stand_ins=_stand_in_parents(session, data, settings, covered),
     )
     delete_unused_rows(session, keep=settings.kept_moze_ids)
     schedules = schedule_import.apply_schedules(
@@ -1234,6 +1286,17 @@ def replace_ledger_from_backup(
     schedule_import.loan_check(session, mapped, schedules)  # after re-pointing: HomeHub's repayments count
     stand_ins = schedule_import.stand_in_entry_ids(session, covered)
     suppressed = schedule_import.suppressed_amounts(covered)  # R-F1: owner-held periods MOZE already booked
+    suppressed += [  # dependants of skipped / owner-held periods: MOZE booked them, HomeHub holds no parent for them
+        (record["account"], record["date"].date(), Decimal(str(_record_amount(record))))
+        for record, _ in entries.dependants_suppressed
+    ]
+    schedules["dependants_suppressed"] = {
+        "count": len(entries.dependants_suppressed),
+        "records": [
+            {"moze_id": record["identifier"], "parent_moze_id": parent, "type": record["type"]}
+            for record, parent in sorted(entries.dependants_suppressed, key=lambda item: item[0]["identifier"])
+        ],
+    }
     session.flush()
 
     accounts = _account_reports(session, data, settings, previous, stand_ins, suppressed)
@@ -1434,12 +1497,16 @@ def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None, exp
     if not args.dry_run and report["status"] == "succeeded":
         # R-F4: this process has no scheduler; the import lock is released, so the job runs here (posting only with
         # ACCOUNTING_SCHEDULER_ENABLED on, else a due-but-unposted count). Counts only on stderr.
-        job = schedule_job.run_after_cli_import(engine)
-        print(
-            f"schedule_job: status {job['status']}, generated {job['generated']}, posted {len(job['posted'])}, "
-            f"failed {len(job['failed'])}, due_unposted {job.get('due_unposted', 0)}",
-            file=sys.stderr,
-        )
+        try:
+            job = schedule_job.run_after_cli_import(engine)
+        except Exception as exc:  # the import is committed; its exit code stands (no message text: owner data)
+            print(f"schedule_job: status crashed error_class={type(exc).__name__}", file=sys.stderr)
+        else:
+            print(
+                f"schedule_job: status {job['status']}, generated {job['generated']}, posted {len(job['posted'])}, "
+                f"failed {len(job['failed'])}, due_unposted {job.get('due_unposted', 0)}",
+                file=sys.stderr,
+            )
     return 0
 
 
