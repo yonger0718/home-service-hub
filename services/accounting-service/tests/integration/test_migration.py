@@ -13,9 +13,11 @@ LEGACY_TABLES = (
 )
 LEDGER_TABLES = (
     "account", "account_group", "category", "counterparty", "entry_group", "entry_reward_rule", "fx_rate",
-    "import_run", "ledger_entry", "moze_schedule", "preference", "project", "reward_rule",
+    "import_run", "ledger_entry", "schedule_definition", "schedule_instance", "preference", "project", "reward_rule",
 )
 PHASE_1_HEAD = "5d2e7c9a1b3f"
+PHASE_2A_HEAD = "7b1e4a2c9d05"
+SCHEDULES_HEAD = "c4e8b2f1a7d3"
 
 
 def _schema(url) -> dict:
@@ -305,7 +307,7 @@ def test_downgrade_refuses_when_phase_2a_data_exists(database_factory, alembic_c
     assert "1 ledger_entry rows with source = manual" in message
     assert "1 ledger_entry rows whose posted_date differs from entry_date" in message
     assert "1 account_group rows" in message
-    assert _version(url) == "7b1e4a2c9d05"
+    assert _version(url) == SCHEDULES_HEAD
 
 
 def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config):
@@ -341,7 +343,7 @@ def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config)
     assert "1 ledger_entry rows with source = moze_backup" in message
     assert "1 reward_rule rows" in message
     assert "source = manual" not in message
-    assert _version(url) == "7b1e4a2c9d05"
+    assert _version(url) == SCHEDULES_HEAD
 
 
 def test_self_referencing_entry_links_are_indexed(pg_engine):
@@ -349,3 +351,102 @@ def test_self_referencing_entry_links_are_indexed(pg_engine):
     indexes = {i["name"]: tuple(i["column_names"]) for i in inspect(pg_engine).get_indexes("ledger_entry")}
     assert indexes["ix_ledger_entry_refunds_entry_id"] == ("refunds_entry_id",)
     assert indexes["ix_ledger_entry_parent_entry_id"] == ("parent_entry_id",)
+
+
+def _insert_schedule_rows(url, *, acted_by: str | None, schedule_entry: bool) -> None:
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        account_id = conn.execute(
+            text("INSERT INTO account (name, currency) VALUES ('錢包', 'TWD') RETURNING id")
+        ).scalar_one()
+        definition_id = conn.execute(
+            text(
+                "INSERT INTO schedule_definition (kind, name, template, interval_unit, anchor_date, auto_post_from) "
+                "VALUES ('recurring', 'Netflix', '{\"lines\": []}', 'month', '2026-10-22', '2026-10-03') RETURNING id"
+            )
+        ).scalar_one()
+        entry_ids = "[]"
+        if schedule_entry:
+            entry_id = conn.execute(
+                text(
+                    "INSERT INTO ledger_entry (account_id, kind, amount, currency, entry_date, posted_date, source) "
+                    "VALUES (:a, 'expense', -390, 'TWD', '2026-10-22', '2026-10-22', 'schedule') RETURNING id"
+                ),
+                {"a": account_id},
+            ).scalar_one()
+            entry_ids = f"[{entry_id}]"
+        if acted_by is None:
+            conn.execute(
+                text(
+                    "INSERT INTO schedule_instance (definition_id, seq, rule_date, due_date) "
+                    "VALUES (:d, 1, '2026-10-22', '2026-10-22')"
+                ),
+                {"d": definition_id},
+            )
+        else:
+            conn.execute(
+                text(
+                    "INSERT INTO schedule_instance (definition_id, seq, rule_date, due_date, status, posted_entry_ids, "
+                    "acted_at, acted_by) VALUES (:d, 1, '2026-10-22', '2026-10-22', 'posted', CAST(:ids AS jsonb), "
+                    "now(), CAST(:by AS schedule_actor))"
+                ),
+                {"d": definition_id, "ids": entry_ids if entry_ids != "[]" else "[999]", "by": acted_by},
+            )
+    engine.dispose()
+
+
+def test_upgrade_adds_schedule_source_and_tables_and_drops_moze_schedule(database_factory, alembic_config):
+    url = database_factory()
+    command.upgrade(alembic_config(url), "head")
+    engine = create_engine(url)
+    try:
+        tables = set(inspect(engine).get_table_names())
+        definition_columns = {column["name"]: column for column in inspect(engine).get_columns("schedule_definition")}
+        with engine.connect() as conn:
+            sources = conn.execute(text("SELECT unnest(enum_range(NULL::entry_source))::text")).scalars().all()
+            kinds = conn.execute(text("SELECT count(*) FROM pg_type WHERE typname = 'moze_schedule_kind'")).scalar_one()
+    finally:
+        engine.dispose()
+    assert {"schedule_definition", "schedule_instance"} <= tables
+    owner_edited = definition_columns["template_owner_edited"]  # proposal decision 24
+    assert (owner_edited["nullable"], owner_edited["default"]) == (False, "false")
+    assert "moze_schedule" not in tables
+    assert "schedule" in sources
+    assert kinds == 0
+    assert _version(url) == SCHEDULES_HEAD
+
+
+def test_downgrade_recreates_an_empty_moze_schedule(database_factory, alembic_config):
+    url = database_factory()
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    _insert_schedule_rows(url, acted_by=None, schedule_entry=False)  # a pending period only: nothing HomeHub posted
+    command.downgrade(config, PHASE_2A_HEAD)
+    engine = create_engine(url)
+    try:
+        tables = set(inspect(engine).get_table_names())
+        with engine.connect() as conn:
+            rows = conn.execute(text("SELECT count(*) FROM moze_schedule")).scalar_one()
+            sources = conn.execute(text("SELECT unnest(enum_range(NULL::entry_source))::text")).scalars().all()
+    finally:
+        engine.dispose()
+    assert "moze_schedule" in tables and rows == 0
+    assert not {"schedule_definition", "schedule_instance"} & tables
+    assert "schedule" not in sources
+    assert _version(url) == PHASE_2A_HEAD
+
+
+def test_downgrade_refuses_while_homehub_posted_data_exists(database_factory, alembic_config):
+    url = database_factory()
+    config = alembic_config(url)
+    command.upgrade(config, "head")
+    _insert_schedule_rows(url, acted_by="auto", schedule_entry=True)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        command.downgrade(config, PHASE_2A_HEAD)
+
+    message = str(excinfo.value)
+    assert message.startswith("refusing to downgrade c4e8b2f1a7d3: ")
+    assert "1 ledger_entry rows with source = schedule" in message
+    assert "1 schedule instances posted or skipped by HomeHub (acted_by auto or owner)" in message
+    assert _version(url) == SCHEDULES_HEAD
