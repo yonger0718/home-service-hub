@@ -201,3 +201,99 @@ def delete_definition(db: Session, definition_id: int) -> None:
         raise ConflictError("排程已有入帳的期別，不能刪除；請改用結束（end）")
     db.delete(definition)  # instances go by ON DELETE CASCADE
     db.flush()
+
+
+def pause(db: Session, definition_id: int) -> None:
+    take_import_key_shared(db)
+    definition = lock_definition(db, definition_id)
+    if definition.status != "active":
+        raise ConflictError(f"只有進行中的排程可以暫停（目前 {definition.status}）")
+    definition.status = "paused"
+    db.flush()
+
+
+def _due_pending(db: Session, definition_id: int, today: date):
+    return select(ScheduleInstance).where(
+        ScheduleInstance.definition_id == definition_id,
+        ScheduleInstance.status == "pending",
+        ScheduleInstance.due_date <= today,
+    )
+
+
+def resume(db: Session, definition_id: int, backlog: str) -> list[int]:
+    """Active again; the paused months are skipped (default) or returned to be posted after this commits."""
+    take_import_key_shared(db)
+    definition = lock_definition(db, definition_id)
+    if definition.status != "paused":
+        raise ConflictError(f"只有暫停中的排程可以繼續（目前 {definition.status}）")
+    lock_instances(db, definition_id)
+    definition.status = "active"
+    due = list(db.scalars(_due_pending(db, definition_id, _today()).order_by(ScheduleInstance.seq)))
+    if backlog == "post":
+        db.flush()
+        return [row.id for row in due]
+    now = _now()
+    for row in due:
+        row.status, row.acted_at, row.acted_by = "skipped", now, "owner"
+    db.flush()
+    return []
+
+
+def end(db: Session, definition_id: int) -> None:
+    take_import_key_shared(db)
+    definition = lock_definition(db, definition_id)
+    if definition.status == "ended":
+        raise ConflictError("排程已結束")
+    for row in lock_instances(db, definition_id):
+        if row.status == "pending":
+            db.delete(row)
+    definition.status = "ended"
+    if definition.review_reason == "not_live":
+        definition.review_reason = None  # the owner's end: a later backup import must not revive it (Task 17)
+    db.flush()
+
+
+def set_mode(db: Session, definition_id: int, posting_mode: str) -> None:
+    take_import_key_shared(db)
+    definition = lock_definition(db, definition_id)
+    _set_mode(definition, posting_mode, _today())
+    db.flush()
+
+
+def catch_up_ids(db: Session, definition_id: int) -> list[int]:
+    """補入帳至今天: the pending periods due today or earlier, in seq order; refused while paused."""
+    take_import_key_shared(db)
+    definition = lock_definition(db, definition_id, share=True)
+    if definition.status == "paused":
+        raise ConflictError("排程已暫停，請先繼續")
+    due = _due_pending(db, definition_id, _today()).with_only_columns(ScheduleInstance.id)
+    return list(db.scalars(due.order_by(ScheduleInstance.seq)))
+
+
+def post_sequence(db: Session, instance_ids: list[int]) -> tuple[list[int], dict | None]:
+    """Post each instance in its own transaction (acted_by owner), stopping at the first failure (D31)."""
+    posted: list[int] = []
+    for instance_id in instance_ids:
+        try:
+            result = posting.post_instance(db, instance_id, actor="owner")
+            db.commit()
+        except ImportRunningError:
+            db.rollback()
+            return posted, {"instance_id": instance_id, "error": "import_running"}
+        except ValidationError as exc:
+            message = posting.failure_message(exc)
+            posting.record_failure(db, instance_id, message)
+            return posted, {"instance_id": instance_id, "error": message}
+        except (ConflictError, NotFoundError):
+            db.rollback()  # posted, skipped or deleted by someone else meanwhile
+            continue
+        except Exception as exc:  # noqa: BLE001 — IntegrityError, a deadlock's OperationalError, EditLockedError …
+            # Spec: on any error a second transaction stores last_error; failure_message keeps only the class name.
+            message = posting.failure_message(exc)
+            posting.record_failure(db, instance_id, message)
+            return posted, {"instance_id": instance_id, "error": message}
+        if result.outcome == "posted":
+            posted.append(instance_id)
+        elif result.outcome == "loan_closed":
+            break  # the later periods were skipped with it
+    return posted, None

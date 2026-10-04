@@ -85,3 +85,46 @@ def delete_definition(definition_id: int, db: Session = Depends(get_db)):
         schedule_service.delete_definition(db, definition_id)
     db.commit()
     return Response(status_code=204)
+
+
+@router.post("/definitions/{definition_id}/pause", response_model=DefinitionOut)
+def pause_definition(definition_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        schedule_service.pause(db, definition_id)
+    db.commit()
+    return _definition_out(db, definition_id)
+
+
+@router.post("/definitions/{definition_id}/resume", response_model=DefinitionOut)
+def resume_definition(definition_id: int, payload: ResumeIn | None = None, db: Session = Depends(get_db)):
+    with service_errors():
+        to_post = schedule_service.resume(db, definition_id, payload.backlog if payload else "skip")
+    db.commit()
+    if to_post:
+        schedule_service.post_sequence(db, to_post)
+    return _definition_out(db, definition_id)
+
+
+@router.post("/definitions/{definition_id}/end", response_model=DefinitionOut)
+def end_definition(definition_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        schedule_service.end(db, definition_id)
+    db.commit()
+    return _definition_out(db, definition_id)
+
+
+@router.put("/definitions/{definition_id}/mode", response_model=DefinitionOut)
+def put_mode(definition_id: int, payload: ModeIn, db: Session = Depends(get_db)):
+    with service_errors():
+        schedule_service.set_mode(db, definition_id, payload.posting_mode)
+    db.commit()
+    return _definition_out(db, definition_id)
+
+
+@router.post("/definitions/{definition_id}/catch-up", response_model=CatchUpOut)
+def catch_up(definition_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        instance_ids = schedule_service.catch_up_ids(db, definition_id)
+    db.commit()
+    posted, failed = schedule_service.post_sequence(db, instance_ids)
+    return {"posted": posted, "failed": failed, "definition": _definition_out(db, definition_id)}
