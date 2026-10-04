@@ -29,7 +29,6 @@ from ..schemas.schedules import (
     RunReportOut,
 )
 from ..services import schedule_job, schedule_locks, schedule_read, schedule_service
-from ..services.errors import ConflictError
 from .errors import service_errors
 
 router = APIRouter(prefix="/schedules", tags=["Schedules"])
@@ -201,7 +200,8 @@ def run_now(engine: Engine = Depends(get_engine)):
     with service_errors():
         if not schedule_locks.import_key_free(engine):
             raise schedule_locks.ImportRunningError()
-        report = schedule_job.run(engine, "manual")
-        if report["status"] == "busy":
-            raise ConflictError("busy")
+    # Outside service_errors: an error escaping the run after partial commits is a 500, not a 422 / 404 / 409.
+    report = schedule_job.run(engine, "manual")
+    if report["status"] == "busy":
+        raise HTTPException(status_code=409, detail="busy")
     return report

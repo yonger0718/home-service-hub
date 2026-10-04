@@ -1,9 +1,11 @@
 """The daily job (spec "Daily schedule job", "Run-now endpoint")."""
 
 import json
+import logging
 from datetime import date, datetime, timezone
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 
 from app.models import LedgerEntry, ScheduleDefinition, ScheduleInstance
@@ -348,3 +350,88 @@ def test_import_starts_mid_run(client, db_session, seed, card, pg_engine, today,
     assert response.status_code == 200
     body = response.json()
     assert (body["status"], body["posted"], body["trigger"]) == ("import_running", ids[:2], "manual")
+
+
+def test_pre_auto_post_from_period_with_error_blocks_the_series(db_session, seed, card, pg_engine):
+    # R-F6 reading: a period due before auto_post_from is the owner's, but once it carries last_error (an owner post
+    # failed) it holds the later periods; the job records nothing on either.
+    netflix = seed.definition([seed.line("expense", card, "390")], anchor=date(2026, 9, 22), auto_post_from=date(2026, 10, 1))
+    seed.instance(netflix, 1, date(2026, 9, 22), last_error="lines[0].account_id: 帳戶已封存")
+    later = seed.instance(netflix, 2, date(2026, 10, 22))
+    db_session.commit()
+
+    report = schedule_job.run(pg_engine, "cron", today=date(2026, 10, 22))
+
+    assert (report["posted"], report["failed"], report["stopped_definitions"]) == ([], [], [netflix.id])
+    assert (_row(db_session, later.id).status, _row(db_session, later.id).last_error) == ("pending", None)
+
+
+def test_one_broken_definition_does_not_stop_generation(db_session, seed, card, pg_engine, monkeypatch, caplog):
+    # One definition's generation error is logged (class + frames, no message), rolled back and listed under
+    # generation_failed; the other definitions still generate and the job still posts.
+    broken = seed.definition([seed.line("expense", card, "390")], name="A", anchor=date(2026, 10, 22))
+    waiting = seed.instance(broken, 1, date(2026, 10, 22))
+    fine = seed.definition([seed.line("expense", card, "149")], name="B", anchor=date(2026, 10, 22))
+    db_session.commit()
+    real_generate = schedule_job.generation.generate_locked
+    secret = "SECRET" + "-GEN-TOKEN"
+
+    def broken_first(db, definition_id, today):
+        if definition_id == broken.id:
+            raise RuntimeError(secret)
+        return real_generate(db, definition_id, today)
+
+    monkeypatch.setattr(schedule_job.generation, "generate_locked", broken_first)
+    # alembic's fileConfig (the session's in-process upgrade) disables loggers that already exist (as in
+    # test_backup_replace_and_report); the service runs migrations in a separate process.
+    monkeypatch.setattr(logging.getLogger("app.services.schedule_job"), "disabled", False)
+    caplog.set_level("INFO", logger="app.services.schedule_job")
+    report = schedule_job.run(pg_engine, "cron", today=date(2026, 10, 22))
+
+    assert (report["status"], report["generation_failed"], report["generated"]) == ("completed", [broken.id], 14)
+    fine_first = db_session.scalar(
+        select(ScheduleInstance.id).where(ScheduleInstance.definition_id == fine.id, ScheduleInstance.seq == 1)
+    )
+    assert report["posted"] == [waiting.id, fine_first]
+    assert db_session.get(ScheduleDefinition, broken.id).generated_until is None
+    [record] = [r for r in caplog.records if r.getMessage() == "schedule_job.generation_error"]
+    assert (record.levelname, record.definition_id, record.error_class) == ("ERROR", broken.id, "RuntimeError")
+    assert "broken_first" in record.frames
+    assert secret not in caplog.text and all(secret not in repr(r.__dict__) for r in caplog.records)
+
+
+def test_post_error_is_logged_with_frames_and_no_message(db_session, seed, card, pg_engine, monkeypatch, caplog):
+    netflix = seed.definition([seed.line("expense", card, "390")])
+    instance = seed.instance(netflix, 1, date(2026, 10, 22))
+    db_session.commit()
+    secret = "SECRET" + "-POST-TOKEN"
+
+    def explode(db, instance_id, **kwargs):
+        try:
+            raise KeyError(secret)
+        except KeyError as inner:
+            raise RuntimeError(secret) from inner
+
+    monkeypatch.setattr(posting, "post_instance", explode)
+    # alembic's fileConfig (the session's in-process upgrade) disables loggers that already exist (as in
+    # test_backup_replace_and_report); the service runs migrations in a separate process.
+    monkeypatch.setattr(logging.getLogger("app.services.schedule_job"), "disabled", False)
+    caplog.set_level("INFO", logger="app.services.schedule_job")
+    report = schedule_job.run(pg_engine, "cron", today=date(2026, 10, 22))
+
+    assert report["failed"] == [instance.id]
+    [record] = [r for r in caplog.records if r.getMessage() == "schedule_job.post_error"]
+    assert (record.levelname, record.instance_id, record.error_class) == ("ERROR", instance.id, "RuntimeError")
+    assert "explode" in record.frames and record.error_chain == ["KeyError"]
+    assert secret not in caplog.text and all(secret not in repr(r.__dict__) for r in caplog.records)
+
+
+def test_run_now_error_after_the_pre_checks_is_a_500(client, monkeypatch):
+    # service_errors covers only the pre-checks: a service error escaping the run (after partial commits) is not
+    # mapped to 404 / 409 / 422. `client` installs the test-database overrides this raw client shares.
+    def gone(engine, trigger, **kwargs):
+        raise NotFoundError("schedule instance 1 not found")
+
+    monkeypatch.setattr(schedule_job, "run", gone)
+    with TestClient(client.app, raise_server_exceptions=False) as raw:
+        assert raw.post("/schedules/run-now").status_code == 500

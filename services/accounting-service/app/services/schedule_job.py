@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sys
+import traceback
 from datetime import date, datetime, timedelta
 from typing import Sequence
 from zoneinfo import ZoneInfo
@@ -102,9 +103,30 @@ def _post_job_one(db: Session, instance_id: int, definition_id: int, today: date
 
 def _new_report(trigger: str, today: date) -> dict:
     return {
-        "trigger": trigger, "today": today.isoformat(), "status": "completed", "generated": 0, "posted": [],
-        "failed": [], "stopped_definitions": [],
+        "trigger": trigger, "today": today.isoformat(), "status": "completed", "generated": 0,
+        "generation_failed": [], "posted": [], "failed": [], "stopped_definitions": [],
     }
+
+
+def _log_error(event: str, exc: BaseException, **ids) -> None:
+    """ERROR with ids, the error class, the traceback frames and the classes of the cause / context chain — never the
+    message: a driver's text (e.g. DETAIL "Failing row contains (...)") can carry amounts and names. The full exception
+    goes to DEBUG only, for local debugging."""
+    chain: list[str] = []
+    seen = {id(exc)}
+    link = exc.__cause__ or exc.__context__
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        chain.append(link.__class__.__name__)
+        link = link.__cause__ or link.__context__
+    logger.error(
+        event,
+        extra={
+            **ids, "error_class": exc.__class__.__name__, "error_chain": chain,
+            "frames": "".join(traceback.format_tb(exc.__traceback__)),
+        },
+    )
+    logger.debug(event, exc_info=exc)
 
 
 def _definition_ids(db: Session) -> list[int]:
@@ -114,7 +136,8 @@ def _definition_ids(db: Session) -> list[int]:
 
 
 def _generate_all(factory, today: date, report: dict) -> bool:
-    """One transaction per definition; False when an import stopped the run."""
+    """One transaction per definition; False when an import stopped the run. Any other error rolls back that
+    definition only (generation_failed, logged); the run goes on with the next one and then posts."""
     with factory() as db:
         definition_ids = _definition_ids(db)
     for definition_id in definition_ids:
@@ -128,6 +151,10 @@ def _generate_all(factory, today: date, report: dict) -> bool:
                 return False
             except NotFoundError:
                 db.rollback()  # deleted since the id list was read
+            except Exception as exc:  # noqa: BLE001 — one broken definition must not stop the other schedules
+                db.rollback()
+                _log_error("schedule_job.generation_error", exc, definition_id=definition_id)
+                report["generation_failed"].append(definition_id)
     return True
 
 
@@ -164,10 +191,7 @@ def _post_due(factory, today: date, report: dict) -> None:
                 # EditLockedError lands here on purpose: the job posts with check_cutover_lock=False, so a cutover
                 # refusal means a period entry is a MOZE row — recorded as a failure that stops the definition.
                 db.rollback()
-                # No traceback: a database error's text carries the statement parameters (amounts, names).
-                logger.error(
-                    "schedule_job.post_error", extra={"instance_id": instance_id, "error_class": exc.__class__.__name__}
-                )
+                _log_error("schedule_job.post_error", exc, instance_id=instance_id)
                 posting.record_failure(db, instance_id, posting.failure_message(exc))
                 report["failed"].append(instance_id)
                 stopped.add(definition_id)
@@ -192,6 +216,9 @@ def _dry_run(factory, today: date, report: dict) -> None:
                     savepoint.rollback()
                     report["status"] = "import_running"
                     return
+                except Exception:  # noqa: BLE001 — as _generate_all: that definition only
+                    savepoint.rollback()
+                    report["generation_failed"].append(definition_id)
             stopped: set[int] = set()
             for instance_id, definition_id in due_instances(db, today):
                 if definition_id in stopped:
@@ -251,6 +278,7 @@ def run(engine: Engine, trigger: str, *, today: date | None = None, dry_run: boo
         "schedule_job.run",
         extra={
             "trigger": trigger, "run_status": report["status"], "generated": report["generated"],
+            "generation_failed": report["generation_failed"],
             "posted_ids": report["posted"], "failed_ids": report["failed"],
             "stopped_definitions": report["stopped_definitions"],
         },
@@ -262,7 +290,7 @@ def _job(engine: Engine, trigger: str) -> None:
     try:
         report = run(engine, trigger)
     except Exception as exc:  # noqa: BLE001 — the scheduler thread must survive
-        logger.error("schedule_job.crashed", extra={"trigger": trigger, "error_class": exc.__class__.__name__})
+        _log_error("schedule_job.crashed", exc, trigger=trigger)
         report = {"status": "crashed", "today": ledger_service._today().isoformat()}
     _after_run(engine, report)
 

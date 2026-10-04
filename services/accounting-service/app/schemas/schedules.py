@@ -221,6 +221,7 @@ class RunReportOut(BaseModel):
     today: date
     status: str
     generated: int
+    generation_failed: list[int]
     posted: list[int]
     failed: list[int]
     stopped_definitions: list[int]

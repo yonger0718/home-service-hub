@@ -1,5 +1,6 @@
 """Scheduler wiring of the schedule job (design D34); no database."""
 
+import logging
 from datetime import date
 
 import pytest
@@ -86,3 +87,21 @@ def test_cli_import_job_posts_only_when_the_scheduler_switch_is_on(monkeypatch, 
     monkeypatch.setattr(schedule_job, "run", lambda engine, trigger, **kwargs: calls.append((trigger, kwargs)) or {})
     schedule_job.run_after_cli_import(object(), today=date(2026, 10, 9))
     assert calls == [("import", {"today": date(2026, 10, 9), "post": post})]
+
+
+def test_crashed_run_is_logged_with_frames_and_no_message(monkeypatch, caplog):
+    secret = "SECRET" + "-CRASH-TOKEN"
+
+    def crash(engine, trigger, **kwargs):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(schedule_job, "run", crash)
+    monkeypatch.setattr(schedule_job, "_scheduler", None)
+    # In a full run alembic's fileConfig (the integration session's upgrade) has disabled existing loggers.
+    monkeypatch.setattr(logging.getLogger("app.services.schedule_job"), "disabled", False)
+    caplog.set_level("INFO", logger="app.services.schedule_job")
+    schedule_job._job(object(), "cron")
+    [record] = [r for r in caplog.records if r.getMessage() == "schedule_job.crashed"]
+    assert (record.levelname, record.trigger, record.error_class) == ("ERROR", "cron", "RuntimeError")
+    assert "crash" in record.frames and record.error_chain == []
+    assert secret not in caplog.text and all(secret not in repr(r.__dict__) for r in caplog.records)
