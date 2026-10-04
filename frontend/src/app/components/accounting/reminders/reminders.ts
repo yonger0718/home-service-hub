@@ -1,15 +1,20 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
-import { Router, RouterLink } from '@angular/router';
-import { forkJoin } from 'rxjs';
+import { NgTemplateOutlet } from '@angular/common';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { Observable, catchError, forkJoin, of } from 'rxjs';
 
-import { Counterparty, LedgerAccount, LedgerEntry } from '../../../models/accounting.model';
+import { Counterparty, LedgerAccount, LedgerEntry, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { AccountingToastService, scheduleActionError } from '../accounting-toast';
+import { isHandledKey } from '../accounting-ui';
 import { BillingEvent, dueCountdown, reminderDues } from '../billing/billing-math';
 import { BillState, BillingService } from '../billing/billing.service';
 import { daysBetween, shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney, formatSigned } from '../format';
 import { TimelineRow, buildDays } from '../timeline/timeline';
+import { QueueRow, queueRows } from './schedule-queue';
 
 /** Open receivables / payables read for the counts and dates, and per expanded counterparty. */
 export const REMINDER_ENTRY_LIMIT = 500;
@@ -17,13 +22,18 @@ export const REMINDER_ENTRY_LIMIT = 500;
 /** A timeline row with the reminder centre's optional remaining slot. */
 export type ReminderEntryRow = TimelineRow & { remaining: DebtRemaining | null };
 
-export type ReminderTab = 'all' | 'cards' | 'debts';
+export type ReminderTab = 'all' | 'cards' | 'debts' | 'pending';
 
 export const REMINDER_TABS: { key: ReminderTab; label: string }[] = [
   { key: 'all', label: '全部' },
   { key: 'cards', label: '信用卡帳單' },
   { key: 'debts', label: '借還款追蹤' },
+  { key: 'pending', label: '待完成交易' },
 ];
+
+export function isReminderTab(value: string | null): value is ReminderTab {
+  return REMINDER_TABS.some(option => option.key === value);
+}
 
 export interface CardReminder {
   accountId: number;
@@ -177,20 +187,23 @@ export function debtReminders(counterparties: Counterparty[], openEntries: Ledge
   return rows.sort((a, b) => a.name.localeCompare(b.name) || a.id - b.id);
 }
 
-/** `/accounting/reminders` (提醒中心): unpaid card statements and open receivables / payables. */
+/** `/accounting/reminders` (提醒中心): card statements, open debts, 待完成交易 and (Task 24) 週期／分期. */
 @Component({
   selector: 'app-accounting-reminders',
   standalone: true,
-  imports: [RouterLink],
+  imports: [RouterLink, NgTemplateOutlet],
   templateUrl: './reminders.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './reminders.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(keydown)': 'onKeydown($event)' },
 })
 export class AccountingRemindersComponent {
   private readonly accounting = inject(AccountingService);
   private readonly bills = inject(BillingService);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
   private readonly layoutMode = inject(LayoutModeService);
+  private readonly toast = inject(AccountingToastService);
   private requestId = 0;
   private expandRequestId = 0;
 
@@ -199,12 +212,18 @@ export class AccountingRemindersComponent {
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly counterparties = signal<Counterparty[]>([]);
   readonly openEntries = signal<LedgerEntry[]>([]);
+  readonly queue = signal<ScheduleInstance[]>([]);
+  readonly queueFailed = signal(false);
   readonly loaded = signal(false);
   readonly loadError = signal(false);
   readonly today = signal(todayIso());
   readonly expanded = signal<number | null>(null);
   readonly expandedEntries = signal<LedgerEntry[] | null>(null);
   readonly expandError = signal(false);
+  /** The 待完成交易 item whose inline 略過這一期？剩餘不變 prompt is open. */
+  readonly confirmingSkip = signal<number | null>(null);
+  readonly busyInstance = signal<number | null>(null);
+  readonly actionError = signal<string | null>(null);
   /** 借還款追蹤 filters: kept while the page is open, applied on that tab only. */
   readonly debtCounterparty = signal<number | null>(null);
   readonly debtKind = signal<DebtKind | null>(null);
@@ -237,6 +256,7 @@ export class AccountingRemindersComponent {
   readonly debtFilteredOut = computed(
     () => this.showDebtFilters() && this.debtRows().length === 0 && this.debtCounterparties().length > 0,
   );
+  readonly queueGroups = computed(() => queueRows(this.queue(), this.today()));
   /** Cards whose statement read failed: shown as 帳單讀取失敗 with 重試, never as "nothing to pay". */
   private readonly failedDues = computed(() => this.dues().filter(event => this.bills.failed(event)));
   readonly billsFailed = computed(() => this.failedDues().length > 0);
@@ -249,16 +269,19 @@ export class AccountingRemindersComponent {
   });
   /** Every statement read at least once: the empty state waits for them. */
   private readonly billsSettled = computed(() => this.dues().every((event: BillingEvent) => this.bills.isSettled(event)));
-  readonly showCards = computed(() => this.tab() !== 'debts');
-  readonly showDebts = computed(() => this.tab() !== 'cards');
+  readonly showCards = computed(() => this.tab() === 'all' || this.tab() === 'cards');
+  readonly showDebts = computed(() => this.tab() === 'all' || this.tab() === 'debts');
+  readonly showQueue = computed(() => this.tab() === 'all' || this.tab() === 'pending');
   readonly empty = computed(() => {
     if (!this.loaded() || this.loadError()) {
       return false;
     }
+    const groups = this.queueGroups();
     const cards = this.showCards() ? this.cardRows().length : 0;
     const debts = this.showDebts() ? this.debtCounterparties().length : 0;
-    const failed = this.showCards() && this.billsFailed();
-    return cards === 0 && debts === 0 && !failed && (!this.showCards() || this.billsSettled());
+    const queue = this.tab() === 'pending' ? groups.due.length + groups.upcoming.length : this.tab() === 'all' ? groups.due.length : 0;
+    const failed = (this.showCards() && this.billsFailed()) || (this.showQueue() && this.queueFailed());
+    return cards === 0 && debts === 0 && queue === 0 && !failed && (!this.showCards() || this.billsSettled());
   });
   /**
    * The expanded counterparty's open entries as timeline rows, one per entry (a split group's debt line is its own
@@ -276,6 +299,11 @@ export class AccountingRemindersComponent {
   });
 
   constructor() {
+    this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe(params => {
+      const tab = params.get('tab');
+      this.tab.set(isReminderTab(tab) ? tab : 'all');
+    });
+
     effect(() => {
       this.accounting.entriesChanged();
       this.accounting.accountsChanged();
@@ -302,14 +330,17 @@ export class AccountingRemindersComponent {
       accounts: this.accounting.getAccounts(),
       counterparties: this.accounting.getCounterparties(),
       open: this.accounting.getAllEntries({ open: true, limit: REMINDER_ENTRY_LIMIT, offset: 0 }),
+      queue: this.accounting.getScheduleInstances({ queue: true }).pipe(catchError(() => of(null))),
     }).subscribe({
-      next: ({ accounts, counterparties, open }) => {
+      next: ({ accounts, counterparties, open, queue }) => {
         if (id !== this.requestId) {
           return;
         }
         this.accounts.set(accounts);
         this.counterparties.set(counterparties);
         this.openEntries.set(open.items);
+        this.queue.set(queue ?? []);
+        this.queueFailed.set(queue === null);
         this.loadError.set(false);
         this.loaded.set(true);
       },
@@ -383,5 +414,58 @@ export class AccountingRemindersComponent {
   /** The entry's detail; its ✕ (and a delete) comes back to the reminder centre. */
   open(row: Pick<TimelineRow, 'entryId'>): void {
     void this.router.navigate(['/accounting/entries', row.entryId], { state: { closeTo: 'reminders' } });
+  }
+
+  // ---- 待完成交易 -------------------------------------------------------------------------------------------
+
+  /** One schedule action; on success the service bumps entriesChanged, which reloads the list and the 🔔. */
+  private act(row: QueueRow, request: Observable<unknown>): void {
+    this.busyInstance.set(row.id);
+    this.actionError.set(null);
+    request.subscribe({
+      next: () => {
+        this.busyInstance.set(null);
+        this.confirmingSkip.set(null);
+      },
+      error: (error: unknown) => {
+        this.busyInstance.set(null);
+        this.actionError.set(scheduleActionError(error, this.toast));
+      },
+    });
+  }
+
+  post(row: QueueRow): void {
+    this.act(row, this.accounting.postScheduleInstance(row.id));
+  }
+
+  askSkip(row: QueueRow): void {
+    this.confirmingSkip.set(row.id);
+  }
+
+  skip(row: QueueRow): void {
+    this.act(row, this.accounting.skipScheduleInstance(row.id));
+  }
+
+  catchUp(row: QueueRow): void {
+    this.act(row, this.accounting.catchUpSchedule(row.definitionId));
+  }
+
+  repost(row: QueueRow): void {
+    this.act(row, this.accounting.repostScheduleInstance(row.id, row.amounts));
+  }
+
+  acceptPartial(row: QueueRow): void {
+    this.act(row, this.accounting.acceptPartialScheduleInstance(row.id));
+  }
+
+  /** Esc closes an open 略過 prompt first (marked handled so the layout's Esc does not also close the pane). */
+  onKeydown(event: KeyboardEvent): void {
+    if (isHandledKey(event)) {
+      return;
+    }
+    if (event.key === 'Escape' && this.confirmingSkip() !== null) {
+      event.preventDefault();
+      this.confirmingSkip.set(null);
+    }
   }
 }

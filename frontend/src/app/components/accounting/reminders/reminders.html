@@ -116,8 +116,78 @@
       }
     }
 
+    @if (showQueue()) {
+      @if (queueFailed()) {
+        <p class="load-error queue-load-error">待完成交易讀取失敗，請稍後再試。</p>
+      }
+      @if (tab() === 'pending') {
+        @if (queueGroups().due.length > 0) {
+          <h3 class="section">已到期</h3>
+          @for (row of queueGroups().due; track row.id) {
+            <ng-container *ngTemplateOutlet="queueItem; context: { $implicit: row }" />
+          }
+        }
+        @if (queueGroups().upcoming.length > 0) {
+          <h3 class="section">即將到來</h3>
+          @for (row of queueGroups().upcoming; track row.id) {
+            <ng-container *ngTemplateOutlet="queueItem; context: { $implicit: row }" />
+          }
+        }
+      } @else if (queueGroups().due.length > 0) {
+        <h3 class="section">待完成交易</h3>
+        @for (row of queueGroups().due; track row.id) {
+          <ng-container *ngTemplateOutlet="queueItem; context: { $implicit: row }" />
+        }
+      }
+      @if (actionError(); as message) {
+        <p class="load-error action-error" role="alert">{{ message }}</p>
+      }
+    }
     @if (empty()) {
       <p class="empty">目前沒有待處理項目</p>
     }
   }
 </section>
+
+<ng-template #queueItem let-row>
+  <div class="queue-item" [attr.data-instance-id]="row.id" [attr.aria-busy]="busyInstance() === row.id">
+    <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
+    <span class="name">{{ row.title }}</span>
+    <span class="due" [class.overdue]="row.overdue" [class.today]="row.today">{{ row.overdueText ?? row.dueText }}</span>
+    <span class="lines">
+      @for (line of row.lines; track $index) {
+        <span class="line">
+          <small>{{ line.text }}</small>
+          <span [class.neg]="line.tone === 'out'" [class.pos]="line.tone === 'in'">{{ line.amount }}</span>
+        </span>
+      }
+    </span>
+    <span class="total">{{ row.totalText }}</span>
+    @if (row.error) {
+      <span class="queue-error" role="alert">{{ row.error }}</span>
+    }
+    <span class="queue-actions">
+      @if (row.partial) {
+        <span class="badge partial">部分入帳</span>
+        <button type="button" class="repost" [disabled]="busyInstance() === row.id" (click)="repost(row)">重新入帳</button>
+        <button type="button" class="accept" [disabled]="busyInstance() === row.id" (click)="acceptPartial(row)">保留部分</button>
+      } @else {
+        @if (row.error) {
+          <button type="button" class="retry" [disabled]="busyInstance() === row.id" (click)="post(row)">重試</button>
+        } @else {
+          <button type="button" class="post" [disabled]="busyInstance() === row.id" (click)="post(row)">入帳</button>
+        }
+        @if (confirmingSkip() === row.id) {
+          <span class="skip-confirm">略過這一期？剩餘不變</span>
+          <button type="button" class="skip-yes" [disabled]="busyInstance() === row.id" (click)="skip(row)">略過</button>
+          <button type="button" class="skip-no" (click)="confirmingSkip.set(null)">取消</button>
+        } @else {
+          <button type="button" class="skip" [disabled]="busyInstance() === row.id" (click)="askSkip(row)">略過</button>
+        }
+        @if (row.offerCatchUp) {
+          <button type="button" class="catch-up" [disabled]="busyInstance() === row.id" (click)="catchUp(row)">補入帳至今天</button>
+        }
+      }
+    </span>
+  </div>
+</ng-template>
