@@ -28,7 +28,8 @@ from ..schemas.schedules import (
     ResumeIn,
     RunReportOut,
 )
-from ..services import schedule_read, schedule_service
+from ..services import schedule_job, schedule_locks, schedule_read, schedule_service
+from ..services.errors import ConflictError
 from .errors import service_errors
 
 router = APIRouter(prefix="/schedules", tags=["Schedules"])
@@ -191,3 +192,16 @@ def accept_partial(instance_id: int, db: Session = Depends(get_db)):
         schedule_service.accept_partial(db, instance_id)
     db.commit()
     return _instance_out(db, instance_id)
+
+
+@router.post("/run-now", response_model=RunReportOut)
+def run_now(engine: Engine = Depends(get_engine)):
+    """立即執行: the daily job, now (D40, D42: same perimeter as every endpoint; the advisory locks make a repeat safe).
+    409 import_running while an import holds the key, 409 busy while another run holds the job lock."""
+    with service_errors():
+        if not schedule_locks.import_key_free(engine):
+            raise schedule_locks.ImportRunningError()
+        report = schedule_job.run(engine, "manual")
+        if report["status"] == "busy":
+            raise ConflictError("busy")
+    return report

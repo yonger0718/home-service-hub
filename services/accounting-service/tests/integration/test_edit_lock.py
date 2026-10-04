@@ -171,6 +171,8 @@ EXPECTED_WRITES = {
     ("/schedules/instances/{instance_id}/skip", "POST"), ("/schedules/instances/{instance_id}/reopen", "POST"),
     ("/schedules/instances/{instance_id}/repost", "POST"),
     ("/schedules/instances/{instance_id}/accept-partial", "POST"),
+    # The daily job, now (acted_by auto; the job posts without the cutover check, D34).
+    ("/schedules/run-now", "POST"),
 }
 
 

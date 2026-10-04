@@ -92,6 +92,12 @@ def no_import_lock_from_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_scheduler(monkeypatch):
+    """The in-process schedule job never starts inside the test process (TestClient runs startup hooks)."""
+    monkeypatch.setenv("ACCOUNTING_SCHEDULER_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
 def no_api_auth_from_env(monkeypatch):
     """Tokens in a production .env must never break the suite; auth tests set the variables themselves."""
     monkeypatch.delenv("ACCOUNTING_API_TOKENS", raising=False)
