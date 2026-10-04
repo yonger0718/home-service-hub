@@ -191,10 +191,16 @@ The accounting service SHALL run a schedule job in-process (APScheduler, `coales
 
 1. take the PostgreSQL advisory lock `0x53434844` with `pg_try_advisory_lock` on a dedicated connection, and return `busy` without doing anything when it is held;
 2. generate instances for every definition, one transaction per definition;
-3. post, each in its own transaction with `acted_by = auto`, every `pending` instance with `due_date ≤ today`, `due_date ≥ auto_post_from` of its definition and `reopened_at` NULL whose definition is `active` with `posting_mode = auto`, ordered by `due_date`, `definition_id`, `seq`, selecting and locking each instance with `FOR UPDATE SKIP LOCKED`; each posting transaction SHALL first take `pg_try_advisory_xact_lock_shared` on the import lock key and the run SHALL stop with `import_running` when an import holds it; after a failure the same definition's later instances SHALL NOT be posted in that run;
+3. post, each in its own transaction with `acted_by = auto`, every `pending` instance with `due_date ≤ today`, `due_date ≥ auto_post_from` of its definition and `reopened_at` NULL whose definition is `active` with `posting_mode = auto`, ordered by `definition_id`, `seq` — within one definition the periods SHALL be attempted in `seq` order, never in `due_date` order — selecting and locking each instance with `FOR UPDATE SKIP LOCKED`; each posting transaction SHALL first take `pg_try_advisory_xact_lock_shared` on the import lock key and the run SHALL stop with `import_running` when an import holds it; after a failure the same definition's later instances SHALL NOT be posted in that run; and, checked under the definition's row lock, an instance SHALL NOT be posted while an earlier `seq` of the same definition is `pending` and either due for the job (the conditions above) or failed (`last_error` set), even when the owner moved that earlier instance's `due_date` past this one's (instances due before `auto_post_from` and reopened instances are the owner's and do not hold the series);
 4. log a report with counts and ids only (`status`, `generated`, `posted`, `failed`, `stopped_definitions`), never names or amounts.
 
-`confirm`, `paused` and `ended` definitions, instances due before their definition's `auto_post_from`, and reopened instances SHALL never be auto-posted. The job SHALL never convert or import anything. It SHALL also be runnable as `python -m app.services.schedule_job [--dry-run]`; `--dry-run` SHALL print the report of what it would generate and post and write nothing.
+`confirm`, `paused` and `ended` definitions, instances due before their definition's `auto_post_from`, and reopened instances SHALL never be auto-posted. The job SHALL never convert or import anything. It SHALL also be runnable as `python -m app.services.schedule_job [--dry-run]`; `--dry-run` SHALL print the report of what it would generate and post and write nothing. The standalone backup importer CLI has no in-process scheduler: after a successful real import, once it has released the import lock, it SHALL run the job inline in its own process — generation always, posting only when `ACCOUNTING_SCHEDULER_ENABLED` is not `false` / `0` / `no`; otherwise the run SHALL log the count of due instances it did not post.
+
+#### Scenario: A moved earlier period holds the next one
+- **GIVEN** an `auto` monthly definition whose seq 1 the owner moved to 2026-11-10 and whose seq 2 is due 2026-11-09
+- **WHEN** the job runs on 2026-11-10
+- **THEN** seq 1 SHALL be attempted before seq 2
+- **AND** when seq 1 fails, seq 2 SHALL stay `pending` in that run and in later runs while seq 1 is still `pending` and failing, and SHALL be posted by the first run after the owner posts seq 1
 
 #### Scenario: No silent backlog after an import
 - **GIVEN** a backup imported on 2026-10-03 with an `auto` definition whose pending instances are due 2026-10-01 and 2026-10-03
@@ -237,7 +243,7 @@ The service SHALL expose:
 - `GET /api/accounting/schedules/definitions?status=&kind=` returning every definition (default: all statuses) ordered by next due date, each with `id`, `kind`, `name`, `status`, `posting_mode`, `interval_unit`, `interval_n`, `anchor_date`, `day_of_month`, `first_seq`, `times`, `end_date`, `total_amount`, `auto_post_from`, `template` (lines with `account_name`, `to_account_name`, `category`, `counterparty` added), `created_locally`, `template_owner_edited`, `imported` (`moze_id` is set), `review_reason`, `generated_until`, `posted_count`, `skipped_count`, `pending_count`, `next_due_date`, `next_amount` (signed sum of the next pending instance's lines, per currency), `remaining` and `repaid` (see "Loan summary"), `loan_entry_id`, `needs_check` (an `ended` loan definition whose loan's open amount is not 0, or `review_reason` set), and `failing` (`{instance_id, due_date, last_error}` of the earliest pending instance with an error, or null).
 - `GET /api/accounting/schedules/definitions/{id}` returning the same object plus `instances` (all, by `seq`).
 - `POST /api/accounting/schedules/definitions` with `kind`, `name`, `template`, `interval_unit`, `interval_n`, `anchor_date`, optional `day_of_month`, `times`, `end_date`, `total_amount`, `posting_mode`, and optional `loan`. It SHALL create the definition with `auto_post_from` = today, generate its instances, post nothing, and return HTTP 201 with the definition. For an `installment` with `total_amount`, the first line's `amount` is the per-period amount; the last instance SHALL get an `amount_override` covering every line — the first line's remainder so that the periods sum to `total_amount`, the template amounts for the other lines (for a loan of `300000` over 36 with interest `620`: `["8345", "620"]`) — and a request where `amount × (times − 1) ≥ total_amount` SHALL be refused (HTTP 422 naming `total_amount`). `loan` (`{account_id, counterparty_id, category_id, amount, entry_date, name}`, installments only) SHALL create a `payable` entry of `+amount` (`source = 'manual'`) in the same transaction, set `total_amount = loan.amount`, and set `loan_entry_id` on every `repayment` line whose `loan_entry_id` is null.
-- `PUT /api/accounting/schedules/definitions/{id}` with the create fields except `kind` and `loan`. It SHALL lock the definition (`FOR UPDATE`) then its instances, delete its `pending` instances due on or after tomorrow, save the new rule, regenerate (the first new instance is the new rule's first occurrence on or after tomorrow and strictly after the latest remaining instance's `due_date`, with `seq` = the remaining maximum + 1), and rebase the stored `anchor_date` and `first_seq` to that first regenerated instance. Overrides of remaining pending instances SHALL be kept for lines still at the same index with the same kind and cleared otherwise. Posted and skipped instances SHALL be untouched.
+- `PUT /api/accounting/schedules/definitions/{id}` with the create fields except `kind` and `loan`. It SHALL lock the definition (`FOR UPDATE`) then its instances, delete its `pending` instances due on or after tomorrow, save the new rule, and regenerate (the first new instance is the new rule's first occurrence on or after tomorrow and strictly after the latest remaining instance's `rule_date` and `due_date`, with `seq` = the remaining maximum + 1). Occurrences SHALL always be computed from the rule anchor: the edit SHALL NOT rebase `anchor_date` or `first_seq` implicitly. `anchor_date` SHALL change only when the request sends a different `anchor_date` (stored as occurrence 0 of the new rule); a `month` or `year` rule sent with a new `anchor_date` and no `day_of_month` SHALL get `day_of_month` = that anchor's day. With the anchor unchanged, `day_of_month` SHALL be stored as sent (null keeps the anchor's own day), so a 31st or a 02-29 anchor keeps returning to its day. Overrides of remaining pending instances SHALL be kept for lines still at the same index with the same kind and cleared otherwise. Posted and skipped instances SHALL be untouched.
 - `DELETE /api/accounting/schedules/definitions/{id}` deleting the definition and its instances; refused with HTTP 409 when any instance is `posted`, with a message pointing to `end`.
 
 Every write SHALL first take the shared import lock (HTTP 409 `import_running` when an import holds it). Unknown ids SHALL return HTTP 404. Every write SHALL return the definition in the list shape.
@@ -253,8 +259,19 @@ Every write SHALL first take the shared import lock (HTTP 409 `import_running` w
 #### Scenario: Edit regenerates only future pending periods, then rolls forward
 - **GIVEN** today 2026-10-03, an unlimited monthly `1000` definition with seq 1 (2026-09-01) posted, seq 2 (2026-10-01) pending and overdue, and seq 3 to 14 pending from 2026-11-01
 - **WHEN** its amount is changed to `1200` and `day_of_month` to 15
-- **THEN** seq 1 and seq 2 SHALL be unchanged, the first regenerated instance SHALL be seq 3 due 2026-10-15 with amount `1200`, `anchor_date` SHALL be 2026-10-15 and `first_seq` 3
+- **THEN** seq 1 and seq 2 SHALL be unchanged, the first regenerated instance SHALL be seq 3 due 2026-10-15 with amount `1200`, `anchor_date` SHALL be 2026-09-15 (occurrence 0 of the new rule, not rebased to seq 3) and `first_seq` 1
 - **AND** when the job runs on 2026-11-15 the next new instance SHALL be due 2027-11-15 with the next free seq
+
+#### Scenario: Edit keeps a month-end anchor
+- **GIVEN** today 2026-02-01 and a monthly definition anchored 2026-01-31 without `day_of_month`, seq 1 posted on 2026-01-31
+- **WHEN** its amount is edited with `anchor_date = 2026-01-31` and no `day_of_month`
+- **THEN** the regenerated instances SHALL be due 2026-02-28, 2026-03-31 and 2026-04-30, `anchor_date` SHALL stay 2026-01-31, and later roll-forwards SHALL keep landing on the month's last day up to the 31st
+- **AND** a yearly definition anchored 2028-02-29 and edited on 2028-03-01 SHALL generate 2029-02-28, 2030-02-28, 2031-02-28 and 2032-02-29
+
+#### Scenario: Edit with a new anchor takes its day
+- **GIVEN** the month-end definition above
+- **WHEN** it is edited with `anchor_date = 2026-02-10` and no `day_of_month`
+- **THEN** `anchor_date` SHALL be 2026-02-10, `day_of_month` 10, and the regenerated instances SHALL be due 2026-02-10 and 2026-03-10
 
 #### Scenario: Delete refused after posting
 - **GIVEN** a definition with one posted instance
@@ -357,7 +374,7 @@ Every write SHALL first take the shared import lock (HTTP 409 `import_running`),
 - `following`: every `pending` instance with a `seq` below the edited one that has no `amount_override` SHALL get an `amount_override` equal to the template amounts before the edit (it keeps the old price); the template's line amounts SHALL become the sent amounts and `template_owner_edited` SHALL become true; every `pending` instance with a `seq` at or above the edited one whose `edited_by_owner` is false SHALL have its `amount_override` cleared; the edited instance SHALL follow the template, unless it was already `edited_by_owner`, in which case its `amount_override` SHALL become the sent amounts.
 - `all`: the same without the first step, the clearing applying to every `pending` instance of the definition; the overrides of other owner-edited instances SHALL be kept.
 
-`posted` and `skipped` instances SHALL never be changed by any scope; instances generated later SHALL take the new template amounts. For an `installment` with `total_amount` and `times`, a request whose first amount × (`times` − 1) ≥ `total_amount` SHALL be refused (HTTP 422 naming `amounts`), and its pending last instance (`seq = times`), when it is neither the edited instance nor owner-edited, SHALL keep a remainder override: recomputed from the new amounts for a local definition, kept as imported otherwise. `following` and `all` SHALL be allowed on imported definitions before cutover (amounts are not rule fields); `PUT` and `DELETE` on the definition stay refused with `locked_until_cutover`.
+`posted` and `skipped` instances SHALL never be changed by any scope; instances generated later SHALL take the new template amounts. For an `installment` with `total_amount` and `times`, the pending last instance (`seq = times`) SHALL get an `amount_override` whose first line is the residual `total_amount − Σ` of the first line's effective amount of every other period — posted periods as posted (their override, else the template before the edit), skipped periods excluded, pending periods after the edit (preserved owner overrides, the old price `following` keeps, imported amounts, else the new template amounts), and periods not generated yet at the new template amount — and whose other lines are the new amounts (or a preserved owner override's); this SHALL hold for local and imported definitions alike, so the periods keep summing to `total_amount`. A request for which that residual is not above 0 SHALL be refused with HTTP 422 naming `amounts` (the message carries no amount) and SHALL change nothing. A last period not generated yet SHALL get its amount when it is generated. `following` and `all` SHALL be allowed on imported definitions before cutover (amounts are not rule fields); `PUT` and `DELETE` on the definition stay refused with `locked_until_cutover`.
 
 #### Scenario: Only this period by default
 - **GIVEN** a monthly Netflix definition with template amount `390` and pending instances seq 2 (2026-10-22), seq 3 (2026-11-22) and seq 4 (2026-12-22) without overrides
@@ -373,6 +390,16 @@ Every write SHALL first take the shared import lock (HTTP 409 `import_running`),
 - **GIVEN** the same definition whose seq 4 the owner edited to `400`
 - **WHEN** seq 2 is edited with `amounts = ["420"]` and `scope = all`
 - **THEN** the template amount SHALL be `420`, seq 2 and seq 3 SHALL have no override, seq 4 SHALL keep `["400"]`, and the posted seq 1 SHALL be unchanged
+
+#### Scenario: Installment total kept by a scoped edit
+- **GIVEN** an `installment` of `10000` over 3 with pending periods of `3333`, `3333` and `3334`
+- **WHEN** the second period is edited with `amounts = ["3000"]` and `scope = following`
+- **THEN** the periods SHALL post `3333`, `3000` and `3667`, which sum to `10000`
+
+#### Scenario: Scoped edit that would overbook refused
+- **GIVEN** an `installment` of `10000` over 3 whose first period was posted at `6000`
+- **WHEN** the second period is edited with `amounts = ["4000"]` and `scope = following`
+- **THEN** the response SHALL be HTTP 422 naming `amounts` and nothing SHALL change
 
 #### Scenario: A scope with another field is refused
 - **WHEN** `PUT /api/accounting/schedules/instances/{id}` sends `due_date` with `scope = following`

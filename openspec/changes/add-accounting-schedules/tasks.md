@@ -18,21 +18,21 @@
 
 - **Dates.** Every schedule date is a naive Asia/Taipei date: `rule_date`, `due_date`, `anchor_date`, `end_date`, `auto_post_from`, `generated_until`, the horizon and `overdue_days`. "Today" is `ledger_service._today()`, always called through the module attribute (`from . import ledger_service` … `ledger_service._today()`), so tests patch one function. Timestamps (`acted_at`, `last_error_at`, `reopened_at`, `created_at`, `updated_at`) are TIMESTAMPTZ.
 - **Horizon.** `horizon(today) = add_months(today, 13)` (same day of month, clamped); generation inserts occurrences with `date ≤ horizon` and sets `generated_until = horizon`.
-- **Occurrence k** of a rule: `day` → `anchor + k·n` days; `week` → `anchor + 7·k·n` days; `month` → the month `k·n` after the anchor's, day `min(day_of_month or anchor.day, month length)`; `year` → the anchor's month `k·n` years later, clamped the same way. Always from the anchor, never from the previous occurrence.
+- **Occurrence k** of a rule: `day` → `anchor + k·n` days; `week` → `anchor + 7·k·n` days; `month` → the month `k·n` after the anchor's, day `min(day_of_month or anchor.day, month length)`; `year` → the anchor's month `k·n` years later, clamped the same way. Always from the anchor, never from the previous occurrence. ★The anchor is never rebased implicitly (Multica R-F3): `update_definition` changes `anchor_date` only when the owner sends a different one (then a `month` / `year` rule without `day_of_month` takes the new anchor's day); a Jan-31 rule stays Jan-31-based (Feb-28, then Mar-31) and a Feb-29 yearly anchor returns to Feb-29 in leap years (Task 10).
 - **`rule_date` / `due_date`.** `rule_date` is the occurrence the rule produced (set at generation or import, never changed by an instance edit); `due_date` equals it unless the owner moved the period. Generation continues strictly after the latest instance's `rule_date`; adoption matches `rule_date` first, then `due_date`. No holiday shifting.
 - **`auto_post_from`.** The Taipei date a definition was created locally or first imported; `PUT …/mode` to `auto` (from `confirm`) moves it to today. The job never posts an instance due before it, never posts a reopened instance (`reopened_at` set), never posts `confirm`, `paused` or `ended` definitions. Only 補入帳至今天 (`catch-up`), `resume` with `backlog = post`, `post` and `repost` post past periods, all with `acted_by = owner`.
 - **Lock order (D32), every path:** `pg_try_advisory_xact_lock_shared(IMPORT_LOCK_KEY)` (409 `import_running` when an import holds it) → `schedule_definition` row (`FOR SHARE` when posting or acting on one instance, `FOR UPDATE` when editing, pausing, resuming, ending, changing mode or deleting; a post or repost of a template with a loan line takes `FOR UPDATE` too, because it may end the definition — two `FOR SHARE` holders that both upgrade deadlock) → `schedule_instance` row(s) (`FOR UPDATE`, ascending id; the job adds `SKIP LOCKED`; a post of a loan template also locks the definition's later pending instances, `seq > k`, before any entry lock) → the ledger's order (`entry_group` rows ascending → target entries with their transfer legs in one statement, the loan entry included in that statement for a repost → nothing else). No path that holds an entry or group lock ever locks a schedule row. The entry-delete path reads the instance unlocked, then takes the key, the definition (`FOR SHARE`, `FOR UPDATE` when the definition is `ended`, since the hook may revive it) and the instance (`FOR UPDATE`), re-checks containment, then continues with group → entries. The backup importer holds the key exclusively (retrying `pg_try_advisory_lock` for up to 30 s while shared holders finish) and locks every definition, then every instance, ascending id, before deleting any entry.
 - **Import shared lock on every schedule write path:** create, update, delete, pause, resume, end, mode, catch-up, instance edit, post, skip, reopen, repost, accept-partial, generation, run-now and the entry-delete path that touches an instance. The refusal is `schedule_locks.ImportRunningError` (a `ConflictError`, message `import_running`), answered as HTTP 409 with body `{"code": …, "message": "import_running", …}`.
-- **Posting.** One database transaction per instance; idempotent by row lock + `status` + the partial unique index `ux_schedule_instance_posted_day`; entries dated `entry_date = posted_date = due_date`, `entry_time = NULL`, `source = 'schedule'`, `moze_id = NULL`, `import_run_id = NULL`, category defaults never remembered. On any error the transaction rolls back and a second short transaction writes `last_error` (`"<field>: <message>"`, never an amount, name or counterparty) and `last_error_at`; the instance stays `pending`. Multi-instance operations commit status changes first, then post one transaction each in `seq` order, stopping at the first failure.
-- **Amounts.** Template and override amounts are unsigned decimal strings with at most 4 decimals (`"8333"`, `"0.5"`); the server applies signs. A line's amount for a period is `amount_override[i]` when the instance has an override, else the template's; `"0"` means the line is not written. Overrides are aligned with the template's lines on every write (422 naming `amounts`). Re-imports never overwrite `edited_by_owner` instances, nor the template amounts or pending overrides of a `template_owner_edited` definition (Task 17). A pending period's amounts can be edited for that period only (`scope = this`), for it and the later ones (`following`) or for every pending period (`all`) — Task 12, proposal decision 24.
+- **Posting.** One database transaction per instance; idempotent by row lock + `status` + the partial unique index `ux_schedule_instance_posted_day`; entries dated `entry_date = posted_date = due_date`, `entry_time = NULL`, `source = 'schedule'`, `moze_id = NULL`, `import_run_id = NULL`, category defaults never remembered. On any error the transaction rolls back and a second short transaction writes `last_error` (`"<field>: <message>"`, never an amount, name or counterparty) and `last_error_at`; the instance stays `pending`. Multi-instance operations commit status changes first, then post one transaction each in `seq` order, stopping at the first failure. ★The job also attempts each definition's periods in `seq` order (never `due_date` order), and under the definition lock a period waits while an earlier `seq` of the same definition is pending and due for the job, or failed — even when its `due_date` was moved past this one's (Multica R-F6, D31 over D34; Task 15 `blocked_by_earlier`).
+- **Amounts.** Template and override amounts are unsigned decimal strings with at most 4 decimals (`"8333"`, `"0.5"`); the server applies signs. A line's amount for a period is `amount_override[i]` when the instance has an override, else the template's; `"0"` means the line is not written. Overrides are aligned with the template's lines on every write (422 naming `amounts`). Re-imports never overwrite `edited_by_owner` instances, nor the template amounts or pending overrides of a `template_owner_edited` definition (Task 17); an owner-edited pending period whose MOZE record turned past keeps the owner's choice and the record is not imported (Multica R-F1, Task 17 `covered_records` → `owner_pending`, Task 18). An installment with a total keeps Σ = total under a scoped amount edit: its last period takes the residual of the actual allocations (Multica R-A1, Task 12 `installment_residual`). A pending period's amounts can be edited for that period only (`scope = this`), for it and the later ones (`following`) or for every pending period (`all`) — Task 12, proposal decision 24.
 - **Partial periods.** Deleting an entry listed by a posted instance deletes only that entry (with children and transfer pair); remaining entries keep the instance `posted` with `is_partial = true` and note `部分入帳記錄已於 YYYY-MM-DD 刪除`; none remaining → `skipped` (`入帳記錄已刪除`) when `acted_by = import`, else `pending` with `reopened_at = now()` and note `入帳記錄已於 YYYY-MM-DD 刪除`. A pending or partial result revives an `ended` definition. Partial periods sit in 待完成交易 and the bell until 重新入帳 (`repost`) or 保留部分 (`accept-partial`).
-- **Adoption (re-import).** An instance without `moze_id` of the same definition whose `rule_date` (else `due_date`) equals a MOZE record's date is adopted (gets `moze_id`, `moze_record_ids`, and, when pending and not owner-edited, the override); a posted adopted instance keeps its entries and the MOZE record is not imported (`past_records_already_posted`). Instances posted by `auto` / `owner`, skipped by anyone but `import`, and owner-edited pending instances are never changed by an import; `created_locally` definitions are never written by an import except the loan-link re-pointing.
+- **Adoption (re-import).** An instance without `moze_id` of the same definition whose `rule_date` (else `due_date`) equals a MOZE record's date is adopted (gets `moze_id`, `moze_record_ids`, and, when pending and not owner-edited, the override); a posted adopted instance keeps its entries and the MOZE record is not imported (`past_records_already_posted`). Instances posted by `auto` / `owner`, skipped by anyone but `import`, and owner-edited pending instances are never changed by an import (their past MOZE records are not imported: `past_records_already_posted` / `…_skipped` / `past_records_owner_pending`); `created_locally` definitions are never written by an import except the loan-link re-pointing.
 - **Cutover lock.** While `ACCOUNTING_IMPORT_LOCKED` is not `true`: `PUT` / `DELETE` of a definition with a `moze_id`, and `repost` (or `reopen` of a posted period, whose entries are MOZE rows) of an `acted_by = import` instance, answer 409 `locked_until_cutover`; `schedule` entries are editable at all times; posting against a `moze_backup` loan bypasses D19 for that target only.
-- **Scheduler.** `ACCOUNTING_SCHEDULER_ENABLED` (default `true`; `false`, `0` and `no` disable it) gates the in-process APScheduler; `tests/conftest.py` sets it `false` for every test (autouse). Job lock key `SCHEDULE_JOB_LOCK_KEY = 0x53434844` (`"SCHD"`), session-level `pg_try_advisory_lock` on a dedicated connection.
-- **Logs and reports** carry ids, counts and error classes only — never names, amounts or counterparties (the import report's `loan_remainder_check` and `amount_differs` are the only owner-facing lists with amounts, as the spec requires).
+- **Scheduler.** `ACCOUNTING_SCHEDULER_ENABLED` (default `true`; `false`, `0` and `no` disable it) gates the in-process APScheduler; `tests/conftest.py` sets it `false` for every test (autouse). The standalone importer CLI has no scheduler: after its import releases the lock it runs the job inline (`schedule_job.run_after_cli_import`): generation always, posting only when this switch is on, else a logged count of due but unposted instances (Multica R-F4, Tasks 15, 18); the API path keeps `trigger_after_import`. Job lock key `SCHEDULE_JOB_LOCK_KEY = 0x53434844` (`"SCHD"`), session-level `pg_try_advisory_lock` on a dedicated connection.
+- **Logs and reports** carry ids, counts and error classes only — never names, amounts or counterparties (the import report's `loan_remainder_check`, `amount_differs` and `past_records_amount_differs.lines` are the only owner-facing lists with amounts, as the spec requires; amount differences are reported per line, never as period totals — Multica R-F5).
 - **Owner data rule.** Tests build synthetic rows only. `~/workspace/moze-backup/MOZE_4.0.zip` is read only by Task 28's acceptance script against the disposable database `accounting_schedules_verify`, printing aggregates; nothing from it is committed or printed row by row. No step touches the production `accounting_db`.
 - **Frontend.** Every page usable at 390 px without horizontal page scroll; tone tokens only (`var(--tone-neg, var(--c-red))`, `var(--tone-pos, var(--c-green))`, `var(--app-state-warning-bg)`, `var(--app-text-muted)`, `var(--app-border)`, `var(--app-primary)`); keyboard/IME contract: every key handler starts with `isHandledKey(event)`, sheets use `sheetKeyAction` (Esc closes and is marked handled, ⏎ in a field confirms, ⏎ on a button clicks natively), inline confirmations close on Esc; every load that can be superseded carries a request id and drops older answers; a 409 `import_running` from any schedule action (and an entry delete that touches a period) shows the toast `匯入進行中，請稍後再試` and leaves the page unchanged.
-- **Copy (verbatim).** `單次` `週期` `分期`; `每 N 天|週|月|年`; `起始日`; `結束` `無限期` `N 次` `日期`; `入帳方式` `自動入帳` `提醒入帳`; `總額` `期數` `首次還款日` `每期金額` `利息` `還款帳戶`; footers `週期：#1 / 無限期（每月 / 22號）`, `週期：#1 / 12（每月 / 22號）`, `分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）`; `排程不支援`; `編輯這一筆` `編輯整個排程`; `待完成交易` `已到期` `即將到來` `已逾期 N 天` `今天` `重試` `入帳` `略過` `略過這一期？剩餘不變` `補入帳至今天` `部分入帳` `重新入帳` `保留部分`; period amount scope sheet `套用範圖` with `僅這一期` `這一期與之後` `全部週期`; `週期／分期` `已結束` `下期 11/09` `已入帳 k / N` `剩餘` `自動` `提醒` `已暫停` `需檢查`; `暫停` `繼續` `略過期間的 N 期` `補入帳` `結束後未入帳的 N 期將刪除` `刪除`; `剩餘 −$275,001 · 已還 $24,999 · 下期 02/09`; pills `週期 #k/N`, `週期 #k`, `分期 #k/N`, badge `部分`; delete notes `同期的 利息 −$620 會保留，此期標示為部分入帳`, `此期將回到待完成交易`, `此期將標示為略過`; toast `匯入進行中，請稍後再試`; bell aria-label `提醒中心，N 項`.
+- **Copy (verbatim).** `單次` `週期` `分期`; `每 N 天|週|月|年`; `起始日`; `結束` `無限期` `N 次` `日期`; `入帳方式` `自動入帳` `提醒入帳`; `總額` `期數` `首次還款日` `每期金額` `利息` `還款帳戶`; footers `週期：#1 / 無限期（每月 / 22號）`, `週期：#1 / 12（每月 / 22號）`, `分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）`; `排程不支援`; `編輯這一筆` `編輯整個排程`; `待完成交易` `已到期` `即將到來` `已逾期 N 天` `今天` `重試` `入帳` `略過` `略過這一期？剩餘不變` `補入帳至今天` `部分入帳` `重新入帳` `保留部分`; period amount scope sheet `套用範圖` with `僅這一期` `這一期與之後` `全部週期`; `週期／分期` `已結束` `下期 11/09` `已入帳 k / N` `剩餘` `自動` `提醒` `已暫停` `需檢查`; `暫停` `繼續` `略過期間的 N 期` `補入帳` `結束後未入帳的 N 期將刪除` `刪除`; `剩餘 −$275,001 · 已還 $24,999 · 下期 02/09`; pills `週期 #k/N`, `週期 #k`, `分期 #k/N`, badge `部分`; delete notes `同期的 利息 −$620 會保留，此期標示為部分入帳`, `此期將回到待完成交易`, `此期將標示為略過`; toast `匯入進行中，請稍後再試`; bell aria-label `提醒中心，N 項`; create then catch-up (Task 22, Multica R-F2) `排程已建立，入帳未完成；按 ✓ 重試入帳`, toast `排程已建立；這一期入帳失敗，請到待完成交易處理`; import report (Task 27, R-A3) `待入帳金額與 MOZE 不同 N 期`, `保留待入帳 N 期`, item line `<名稱> 第 k 期 <日期>：HomeHub $<金額> / MOZE $<金額>`.
 - Commit after every task with a Conventional Commits subject and the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ## Review Focus
@@ -50,6 +50,7 @@
 - Importer refinements beyond the spec text (plan review of Tasks 16–17; each keeps the spec's outcome or makes it stricter): an `AHInstallment` with `times < 2` becomes `kind = recurring` (the spec says every installment becomes `installment`, but `ck_schedule_definition_installment` needs `times ≥ 2`); a future record whose `eventID` names no period or installment becomes a single definition with review reason `event_missing`; template lines are the first group's lines plus any record kind a later group carries (so a later package's interest is never dropped); a "live" `AHPeriod` is one with at least one enabled future record — a period without one is set `ended` with `review_reason = not_live` (a reason outside the spec's list), and a later backup with an enabled future record sets it back to `active`; the end itself deletes no pending row, so owner-edited and HomeHub-generated pending rows stay (D37), and only the import's own end is ever undone; a finite period's `times` is capped at its highest mapped seq (Task 28.5 checks MOZE pre-generates every finite series).
 - Owner decision 2026-10-04: per-period amount edits with scope — see proposal decision 24.
 - Test data (owner data rule): spec scenarios, tests and fixtures use the synthetic names `範例銀行` and `範例卡`; the scenarios' arithmetic is unchanged.
+- Multica AGENT-59 rulings (2026-10-04, R-F1 … R-A3) are written into the spec files, `design.md` (D34, D35, D37) and Tasks 10, 12, 15, 17, 18, 20, 22, 27, 28; where they changed spec text (no implicit anchor rebase; job order by `seq` with a sequence barrier; the CLI's inline job; owner-edited pending periods win over a past MOZE record; per-line amount reports; the installment residual) the spec now says so. Interpretations recorded here: (a) R-F6's barrier is "an earlier `seq` pending and due *for the job* (`auto_eligible`), or failed (`last_error`)": a pre-`auto_post_from` backlog period or a reopened period without an error does not hold the series, because the spec scenarios "No silent backlog after an import" and "Switching to automatic posting" require the later period to post while the earlier one waits for the owner; (b) R-A1's residual is written onto a *generated* pending last period; a last period not generated yet (a local loan longer than the 13-month horizon) is later generated by the landed `schedule_generation.last_period_override` (`total − amount × (times − 1)`), which equals the residual only when every other period follows the template — the ruling keeps that helper for the generation path, so the gap is recorded for the final review; (c) R-A2's comparison runs for every retained owner-edited pending period, not only on `template_owner_edited` definitions; (d) R-F5's in-leg of a transfer is reported with `kind = "transfer_in"`. Deferred minor (no plan change): Task 19's race helper serializes whole operations rather than forcing interleavings — for the final review.
 
 Implementation-time confirmations recorded by Task 28 in `design.md` "Implementation notes": the MOZE weekday numbering of `AHPeriod.days` for weekly periods (assumed 1 = Sunday … 7 = Saturday, Apple `Calendar`; a wrong assumption shows as `interval_mismatch` on every weekly period, never as wrong dates) and whether a MOZE posting-mode field exists (none is assumed; every imported definition is `auto`).
 
@@ -212,7 +213,7 @@ def end_if_complete(db: Session, definition: ScheduleDefinition) -> bool
 def generate_locked(db: Session, definition_id: int, today: date) -> int                # key + FOR UPDATE + generate + end_if_complete
 
 # app/services/schedule_posting.py
-@dataclass(frozen=True) class PostResult: instance_id: int; outcome: str; entry_ids: tuple[int, ...] = ()   # posted | loan_closed | skipped_locked | not_due
+@dataclass(frozen=True) class PostResult: instance_id: int; outcome: str; entry_ids: tuple[int, ...] = ()   # posted | loan_closed | skipped_locked | not_due (+ blocked, made only by schedule_job._post_job_one, R-F6)
 def auto_eligible(definition: ScheduleDefinition, instance: ScheduleInstance, today: date) -> bool
 def lock_definition_for_post(db: Session, definition_id: int) -> ScheduleDefinition       # FOR SHARE; FOR UPDATE with a loan line
 def lock_later_pending(db: Session, definition: ScheduleDefinition, instance: ScheduleInstance) -> list[ScheduleInstance]   # seq > instance.seq, ascending id
@@ -244,6 +245,7 @@ def set_mode(db: Session, definition_id: int, posting_mode: str) -> None
 def catch_up_ids(db: Session, definition_id: int) -> list[int]
 def post_sequence(db: Session, instance_ids: list[int]) -> tuple[list[int], dict | None]   # commits each; (posted ids, {"instance_id", "error"} | None)
 def update_instance(db: Session, instance_id: int, payload: InstanceUpdateIn) -> None             # payload.scope: this | following | all (decision 24)
+def installment_residual(definition: ScheduleDefinition, rows: list[ScheduleInstance], *, old_amounts: list[str], new_amounts: list[str], overrides: dict[int, list[str] | None]) -> Decimal | None   # R-A1; pure; ValidationError("amounts")
 def post_one(db: Session, instance_id: int) -> None                                       # acted_by owner; failure recorded, re-raised
 def skip_instance(db: Session, instance_id: int) -> None
 def reopen_instance(db: Session, instance_id: int) -> None
@@ -259,8 +261,10 @@ def assert_group_not_scheduled(db: Session, group_id: int) -> None              
 
 # app/services/schedule_job.py
 TRIGGERS = ("cron", "startup", "retry", "import", "manual")
-def due_instances(db: Session, today: date) -> list[tuple[int, int]]                       # (instance_id, definition_id)
-def run(engine: Engine, trigger: str, *, today: date | None = None, dry_run: bool = False) -> dict
+def due_instances(db: Session, today: date) -> list[tuple[int, int]]                       # (instance_id, definition_id), ordered definition_id, seq (R-F6)
+def blocked_by_earlier(db: Session, definition: ScheduleDefinition, instance_id: int, today: date) -> bool   # R-F6, under the definition lock
+def run(engine: Engine, trigger: str, *, today: date | None = None, dry_run: bool = False, post: bool = True) -> dict   # post=False: report["due_unposted"]
+def run_after_cli_import(engine: Engine, *, today: date | None = None) -> dict                # R-F4: run(engine, "import", post=is_enabled())
 def is_enabled() -> bool
 def build_scheduler(engine: Engine) -> BackgroundScheduler
 def start(engine: Engine) -> None
@@ -280,7 +284,7 @@ def map_schedules(data: BackupData) -> MapResult
 
 # app/services/schedule_import.py
 @dataclass class CapturedLinks: template_links: list[tuple[int, int, str]]; settlement_links: list[tuple[int, str]]
-@dataclass class Covered: instance_id: int; status: str; moze_total: Decimal
+@dataclass class Covered: instance_id: int; status: str; moze_lines: tuple[tuple[str, str | None], ...]; day: date; account_amounts: tuple[tuple[str, Decimal], ...] = ()   # status posted | skipped | owner_pending (R-F1); moze_lines per template line (R-F5)
 def new_report(mapped: MapResult) -> dict
 def lock_schedule_rows(session: Session) -> None
 def merge_known_past_singles(session: Session, mapped: MapResult) -> None                  # past singles whose record:<id> definition exists join mapped.definitions
@@ -291,6 +295,7 @@ def apply_schedules(session, data, mapped, settings, entries, covered, *, starte
 def restore_links(session: Session, captured: CapturedLinks, report: dict) -> None
 def loan_check(session: Session, mapped: MapResult, report: dict) -> None                 # after restore_links: fills loan_remainder_check
 def stand_in_entry_ids(session: Session, covered: dict[str, Covered]) -> set[int]
+def suppressed_amounts(covered: dict[str, Covered]) -> list[tuple[str, date, Decimal]]   # R-F1: (MOZE account id, date, signed total) for moze_part
 
 # changed ledger signatures
 entry_write_service.insert_prepared(db, prepared, *, group_id=None, remember=True, source="manual") -> int
@@ -298,6 +303,7 @@ entry_write_service.write_children(db, parent, fee, discount, *, source="manual"
 transfer_service.create_transfer(db, payload, *, source="manual", remember=True) -> UUID
 settlement_service.settle(db, entry_id, payload, *, source="manual", check_cutover_lock=True, name=None) -> int
 moze_import_service.import_lock(engine, *, wait_seconds=IMPORT_LOCK_WAIT_SEC)               # IMPORT_LOCK_WAIT_SEC = 30
+moze_backup_import_service.run_backup_import(..., trigger_job=True)                          # the CLI passes False and runs schedule_job.run_after_cli_import (R-F4)
 moze_import_service.delete_unused_rows(session, keep=None)                                  # template references count as usage
 moze_import_service._archive_disappeared_accounts(session, named_in_file, keep_ids=frozenset())
 ```
@@ -367,17 +373,21 @@ class LoanScheduleOut: definition_id, name, status, posting_mode, posted_count, 
 {"definitions": {"recurring": {"created": 0, "updated": 0, "ended": 0, "deleted": 0}, "installment": {…}, "single": {…}},
  "instances": {"created": 0, "updated": 0, "kept": 0, "kept_owner_edited": 0, "adopted": 0, "deleted": 0, "posted_from_past": 0, "skipped_disabled": 0},
  "records_mapped": 0, "rewards_ignored": 0, "unsupported_types": {"7": 0},
- "past_records_already_posted": 0, "past_records_already_skipped": 0, "past_records_amount_differs": {"count": 0, "instance_ids": []},
+ "past_records_already_posted": 0, "past_records_already_skipped": 0,
+ "past_records_amount_differs": {"count": 0, "instance_ids": [], "lines": [<line item>]},
+ "past_records_owner_pending": [{"definition_id": 0, "seq": 0, "date": "…"}],
  "relinked": {"templates": 0, "settlements": 0}, "review": [{"moze_id": "…", "reason": "…"}],
- "amount_differs": [{"definition_id": 0, "seq": 0, "date": "…", "moze_amounts": ["…"], "amounts": ["…"]}],
+ "amount_differs": [<line item>],
  "loan_remainder_check": [{"definition": "…", "moze_remainder": "…", "open_amount": "…", "difference": "…"}]}
 ```
+
+`<line item>` (Multica R-F5, per line, never period totals): `{"definition_id": 0, "name": "…", "seq": 0, "date": "…", "line": 0, "kind": "repayment" | "interest" | "expense" | … | "transfer_in", "amount": "8333", "moze_amount": "8400"}` — `amount` is HomeHub's (posted, or what the pending period will post), `moze_amount` the matching MOZE record's. `amount_differs` covers pending periods of `template_owner_edited` definitions and every retained owner-edited pending period (R-A2).
 
 Review reasons: `interval_mismatch`, `loan_missing`, `same_date`, `seq_conflict`, `no_records`, `event_missing`, `account_missing`. The definition's `review_reason` can also be `not_live` (`schedule_import.NOT_LIVE`: a MOZE period the import ended for having no enabled future record; cleared when one reappears); it is not listed under `review`. `skipped_future` counts enabled future records only (disabled future records move to `disabled_skipped`), so `Σ skipped_future == records_mapped + rewards_ignored + Σ unsupported_types`.
 
 ### Frontend contract
 
-`models/accounting.model.ts` exports (new): `ScheduleDefinitionKind`, `ScheduleIntervalUnit`, `SchedulePostingMode`, `ScheduleStatus`, `ScheduleInstanceStatus`, `ScheduleActor`, `ScheduleLineKind`, `ScheduleLineInput`, `ScheduleLine`, `ScheduleTemplateInput`, `ScheduleTemplate`, `CurrencyAmount`, `ScheduleFailing`, `ScheduleDefinition`, `ScheduleDefinitionDetail`, `ScheduleInstanceLine`, `ScheduleInstance`, `ScheduleLoanInput`, `ScheduleDefinitionInput`, `ScheduleDefinitionUpdate`, `ScheduleInstanceQuery`, `ScheduleCatchUpResult`, `ScheduleRunReport`, `EntryScheduleLink`, `LoanSchedule`, `ScheduleImportReport`; `EntrySource` gains `'schedule'`; `LedgerEntry.schedule?: EntryScheduleLink | null`; `EntryDetail.loan_schedule?: LoanSchedule | null`; `BackupImportReport.schedules?: ScheduleImportReport`; `ScheduleAmountScope = 'this' | 'following' | 'all'` (added by Task 24). `ScheduleKind` and `ScheduleItem` are removed.
+`models/accounting.model.ts` exports (new): `ScheduleDefinitionKind`, `ScheduleIntervalUnit`, `SchedulePostingMode`, `ScheduleStatus`, `ScheduleInstanceStatus`, `ScheduleActor`, `ScheduleLineKind`, `ScheduleLineInput`, `ScheduleLine`, `ScheduleTemplateInput`, `ScheduleTemplate`, `CurrencyAmount`, `ScheduleFailing`, `ScheduleDefinition`, `ScheduleDefinitionDetail`, `ScheduleInstanceLine`, `ScheduleInstance`, `ScheduleLoanInput`, `ScheduleDefinitionInput`, `ScheduleDefinitionUpdate`, `ScheduleInstanceQuery`, `ScheduleCatchUpResult`, `ScheduleRunReport`, `EntryScheduleLink`, `LoanSchedule`, `ScheduleImportReport`; `EntrySource` gains `'schedule'`; `LedgerEntry.schedule?: EntryScheduleLink | null`; `EntryDetail.loan_schedule?: LoanSchedule | null`; `BackupImportReport.schedules?: ScheduleImportReport`; `ScheduleAmountDiffer` (one differing line of the import report, Task 20, R-A3); `ScheduleAmountScope = 'this' | 'following' | 'all'` (added by Task 24). `ScheduleKind` and `ScheduleItem` are removed.
 
 `AccountingService` (new): `getScheduleDefinitions(query?: { status?: ScheduleStatus; kind?: ScheduleDefinitionKind })`, `getScheduleDefinition(id)`, `createScheduleDefinition(input)`, `updateScheduleDefinition(id, input)`, `deleteScheduleDefinition(id)`, `pauseSchedule(id)`, `resumeSchedule(id, backlog: 'skip' | 'post')`, `endSchedule(id)`, `setScheduleMode(id, mode)`, `catchUpSchedule(id)`, `getScheduleInstances(query)`, `updateScheduleInstance(id, body: { due_date?: string; amounts?: string[]; scope?: ScheduleAmountScope })` (`scope` added by Task 24), `postScheduleInstance(id)`, `skipScheduleInstance(id)`, `reopenScheduleInstance(id)`, `repostScheduleInstance(id, amounts: string[])`, `acceptPartialScheduleInstance(id)`, `runSchedulesNow()`. Every write bumps `entriesChanged`. `getSchedules` is removed.
 
@@ -4377,7 +4387,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Rules:
 - Create (spec "Definition endpoints"): shared import key; rule checks (installment → `interval_unit = month`, else 422 `interval_unit`; `times ≥ 2`, else 422 `times`; `day_of_month` only for month / year; `end_date ≥ anchor_date`; `total_amount` only on installments); `loan` (installments only) creates a `payable` of `+amount` (`source = 'manual'`, `remember=False`) in the same transaction, sets `total_amount = loan.amount` and fills `loan_entry_id` on repayment lines that have none; template validation; for an installment with a total, `amount × (times − 1) ≥ total_amount` → 422 `total_amount`; `auto_post_from` = today; generation (Task 6 puts the last-period override on `seq == times`); nothing posts.
-- Update (編輯整個排程, D35): shared key → definition `FOR UPDATE` → every instance `FOR UPDATE`; imported definitions before cutover → 409 `locked_until_cutover`; delete pending instances due on or after tomorrow (a period due **today** stays — Review Focus 5); realign the remaining pending overrides; `times` below the remaining maximum seq → 422 `times`; the first new instance is the new rule's first occurrence on or after tomorrow and strictly after the latest remaining `max(rule_date, due_date)` (the bound `generate` uses is the latest `rule_date`; a moved period can make either one later), with `seq` = remaining maximum + 1, and `anchor_date` / `first_seq` are rebased to it (only while that seq fits `times` and the date fits `end_date`; otherwise the sent anchor is stored and nothing regenerates); `posting_mode` follows `_set_mode` (a switch to `auto` moves `auto_post_from` to today); a missing `total_amount` on an installment keeps the stored one; regenerate.
+- Update (編輯整個排程, D35): shared key → definition `FOR UPDATE` → every instance `FOR UPDATE`; imported definitions before cutover → 409 `locked_until_cutover`; delete pending instances due on or after tomorrow (a period due **today** stays — Review Focus 5); realign the remaining pending overrides; `times` below the remaining maximum seq → 422 `times`; the first new instance is the new rule's first occurrence on or after tomorrow and strictly after the latest remaining `max(rule_date, due_date)` (the bound `generate` uses is the latest `rule_date`; a moved period can make either one later), with `seq` = remaining maximum + 1 — inserted by `update_definition` itself (with the last-period override when that seq is `times`), after which `generate` continues strictly after its `rule_date` (only while that seq fits `times` and the date fits `end_date`; otherwise nothing regenerates); ★the rule anchor is never rebased implicitly (Multica R-F3, Global Constraints "Occurrence k"): `anchor_date` and `first_seq` keep their stored values unless the owner sends a different `anchor_date`; a new `anchor_date` is stored as occurrence 0 of the new rule (`rules.normalize_anchor`) and, for a `month` / `year` rule sent without `day_of_month`, `day_of_month` is set to the new anchor's day; an unchanged anchor keeps `day_of_month` as sent (`None` = the anchor's own day), so a Jan-31 monthly rule edited on Feb-1 still gives Feb-28 then Mar-31, and a Feb-29 yearly rule returns to Feb-29 in leap years; `posting_mode` follows `_set_mode` (a switch to `auto` moves `auto_post_from` to today); a missing `total_amount` on an installment keeps the stored one; regenerate.
 - Delete: shared key → definition `FOR UPDATE`; imported before cutover → 409 `locked_until_cutover`; any posted instance → 409 with a message pointing to 結束; otherwise the definition and (by cascade) its instances go.
 - `anchor_date` is stored as occurrence 0 of the rule (`rules.normalize_anchor`): a `day_of_month` earlier than the sent day starts the next period (起始日 09-20 with day 15 → 10-15). `DefinitionUpdateIn.posting_mode` is optional: left out (`None`), a `PUT` keeps the stored mode and `auto_post_from`; `DefinitionIn` keeps the `"auto"` default.
 - The token auth of #42 (`ApiTokenMiddleware`, `ACCOUNTING_API_TOKENS`) is app-wide, so the new routes need no auth code; one test pins the 401 without a bearer token.
@@ -4545,8 +4555,10 @@ def test_edit_regenerates_only_future_pending_periods_then_rolls_forward(client,
     ]
     assert (rows[2].seq, rows[2].due_date) == (3, date(2026, 10, 15))
     db_session.refresh(definition)
-    assert (definition.anchor_date, definition.first_seq, definition.template["lines"][0]["amount"]) == (
-        date(2026, 10, 15), 3, "1200",
+    # R-F3: the unchanged anchor is not rebased to the first regenerated period; it is only normalized to occurrence 0
+    # of the new rule (day 15 → 2026-09-15), and first_seq stays 1.
+    assert (definition.anchor_date, definition.first_seq, definition.day_of_month, definition.template["lines"][0]["amount"]) == (
+        date(2026, 9, 15), 1, 15, "1200",
     )
     # Rolling forward one month later (horizon 2027-11-15) adds exactly the next period after 2027-10-15.
     created = generation.generate_locked(db_session, definition.id, date(2026, 10, 15))
@@ -4579,7 +4591,100 @@ def test_edit_keeps_the_instance_due_today_and_regenerates_from_tomorrow(client,
     assert (kept.seq, kept.due_date, kept.status, kept.amount_override) == (2, date(2026, 10, 3), "pending", ["1100", "50"])
     assert [(row.seq, row.due_date) for row in rows[2:4]] == [(3, date(2026, 11, 3)), (4, date(2026, 12, 3))]
     db_session.refresh(definition)
-    assert (definition.anchor_date, definition.first_seq) == (date(2026, 11, 3), 3)
+    assert (definition.anchor_date, definition.first_seq) == (date(2026, 9, 3), 1)  # R-F3: never rebased implicitly
+
+
+def _month_end_definition(db_session, seed, card, **columns):
+    """A monthly rule anchored on 2026-01-31: seq 1 posted, seq 2… generated on 2026-02-01 (Feb-28, Mar-31, …)."""
+    definition = seed.definition([seed.line("expense", card, "1000")], name="月底", anchor=date(2026, 1, 31), **columns)
+    entry = seed.entry(card, "-1000", day=date(2026, 1, 31), source="schedule")
+    seed.instance(definition, 1, date(2026, 1, 31), status="posted", entries=[entry])
+    generation.generate(db_session, definition, date(2026, 2, 1))
+    db_session.commit()
+    return definition
+
+
+@pytest.mark.parametrize("day_of_month", [None, 31], ids=["implicit_day", "explicit_day"])
+def test_edit_keeps_a_month_end_anchor_then_rolls_forward_on_the_31st(client, db_session, seed, today, day_of_month):
+    # Multica R-F3: an edit on Feb-1 must not rebase the Jan-31 anchor to Feb-28 (which would give Mar-28 next).
+    today(date(2026, 2, 1))
+    card = seed.account("範例卡")
+    definition = _month_end_definition(db_session, seed, card, day_of_month=day_of_month)
+
+    response = client.put(
+        f"/schedules/definitions/{definition.id}",
+        json={"name": "月底", "template": {"lines": [_line("expense", card, "1200")]}, "interval_unit": "month",
+              "anchor_date": "2026-01-31", "day_of_month": day_of_month},
+    )
+
+    assert response.status_code == 200
+    rows = _instances(db_session, definition.id)
+    assert [(row.seq, row.due_date) for row in rows[1:4]] == [
+        (2, date(2026, 2, 28)), (3, date(2026, 3, 31)), (4, date(2026, 4, 30)),
+    ]
+    db_session.refresh(definition)
+    assert (definition.anchor_date, definition.day_of_month, definition.first_seq) == (date(2026, 1, 31), day_of_month, 1)
+    assert rows[-1].due_date == date(2027, 2, 28)  # horizon(2026-02-01) = 2027-03-01
+    created = generation.generate_locked(db_session, definition.id, date(2026, 3, 1))  # horizon 2027-04-01
+    db_session.commit()
+    last = _instances(db_session, definition.id)[-1]
+    assert (created, last.due_date, last.seq) == (1, date(2027, 3, 31), rows[-1].seq + 1)
+
+
+def test_edit_keeps_a_leap_day_yearly_anchor_then_returns_to_feb_29(client, db_session, seed, today):
+    # Multica R-F3: a Feb-29 yearly rule edited in a common year still lands on Feb-29 in the next leap year.
+    today(date(2028, 3, 1))
+    card = seed.account("範例卡")
+    definition = seed.definition(
+        [seed.line("expense", card, "990")], name="年費", interval_unit="year", anchor=date(2028, 2, 29),
+        auto_post_from=date(2028, 2, 1),
+    )
+    entry = seed.entry(card, "-990", day=date(2028, 2, 29), source="schedule")
+    seed.instance(definition, 1, date(2028, 2, 29), status="posted", entries=[entry])
+    generation.generate(db_session, definition, date(2028, 3, 1))  # seq 2 on 2029-02-28
+    db_session.commit()
+
+    response = client.put(
+        f"/schedules/definitions/{definition.id}",
+        json={"name": "年費", "template": {"lines": [_line("expense", card, "1090")]}, "interval_unit": "year",
+              "anchor_date": "2028-02-29"},
+    )
+
+    assert response.status_code == 200
+    assert [(row.seq, row.due_date) for row in _instances(db_session, definition.id)] == [
+        (1, date(2028, 2, 29)), (2, date(2029, 2, 28)),
+    ]
+    db_session.refresh(definition)
+    assert (definition.anchor_date, definition.day_of_month) == (date(2028, 2, 29), None)
+    generation.generate_locked(db_session, definition.id, date(2031, 3, 1))  # horizon 2032-04-01
+    db_session.commit()
+    assert [row.due_date for row in _instances(db_session, definition.id)][2:] == [
+        date(2030, 2, 28), date(2031, 2, 28), date(2032, 2, 29),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("day_of_month", "anchor", "first"),
+    [(None, date(2026, 2, 10), date(2026, 2, 10)), (25, date(2026, 2, 25), date(2026, 2, 25))],
+    ids=["implicit_day", "explicit_day"],
+)
+def test_edit_with_a_new_anchor_takes_its_day(client, db_session, seed, today, day_of_month, anchor, first):
+    # Multica R-F3: only an explicit new anchor_date moves the anchor; without day_of_month its day becomes the rule's.
+    today(date(2026, 2, 1))
+    card = seed.account("範例卡")
+    definition = _month_end_definition(db_session, seed, card)
+
+    response = client.put(
+        f"/schedules/definitions/{definition.id}",
+        json={"name": "月底", "template": {"lines": [_line("expense", card, "1000")]}, "interval_unit": "month",
+              "anchor_date": "2026-02-10", "day_of_month": day_of_month},
+    )
+
+    assert response.status_code == 200
+    db_session.refresh(definition)
+    assert (definition.anchor_date, definition.day_of_month) == (anchor, first.day)
+    rows = _instances(db_session, definition.id)
+    assert [(row.seq, row.due_date) for row in rows[1:3]] == [(2, first), (3, first.replace(month=3))]
 
 
 def test_delete_refused_after_posting(client, db_session, seed, today):
@@ -4702,7 +4807,7 @@ def test_schedule_writes_need_the_bearer_token_when_api_tokens_are_set(client, d
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_definitions_api.py
 ```
 
-Expected: 14 failures with `404 Not Found` (no `/schedules` routes yet; with the token set, the unauthenticated call is already 401, so `test_schedule_writes_need_the_bearer_token…` fails on the `201` assertion); `test_edit_…` tests fail the same way.
+Expected: 19 failures with `404 Not Found` (no `/schedules` routes yet; with the token set, the unauthenticated call is already 401, so `test_schedule_writes_need_the_bearer_token…` fails on the `201` assertion); `test_edit_…` tests fail the same way.
 
 - [ ] 10.3 Create `services/accounting-service/app/services/schedule_service.py`:
 
@@ -4856,7 +4961,15 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
     if payload.posting_mode is not None:
         _set_mode(definition, payload.posting_mode, today)
 
-    unit, n, day_of_month, anchor = payload.interval_unit, payload.interval_n, payload.day_of_month, payload.anchor_date
+    # R-F3: occurrences are always computed from the rule anchor, which an edit never rebases implicitly. Only a
+    # different anchor_date moves it; a month / year rule sent without day_of_month then takes the new anchor's day.
+    unit, n, day_of_month = payload.interval_unit, payload.interval_n, payload.day_of_month
+    anchor_changed = payload.anchor_date != definition.anchor_date
+    if anchor_changed and day_of_month is None and unit in ("month", "year"):
+        day_of_month = payload.anchor_date.day
+    base = payload.anchor_date if anchor_changed else definition.anchor_date
+    anchor = rules.normalize_anchor(base, unit, n, day_of_month)  # occurrence 0; keeps a 31st / 02-29 anchor as is
+    definition.anchor_date, definition.day_of_month = anchor, day_of_month  # first_seq is kept
     k = rules.first_index_on_or_after(anchor, unit, n, day_of_month, tomorrow)
     # The same bound generation uses: generate() continues strictly after the latest rule_date, and an owner may
     # have moved a period (due_date ≠ rule_date) either way — start after the later of the two.
@@ -4864,15 +4977,19 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
     if latest is not None:
         k = max(k, rules.first_index_after(anchor, unit, n, day_of_month, latest))
     first = rules.occurrence(anchor, unit, n, k, day_of_month)
-    next_seq = max_seq + 1
+    next_seq = max(max_seq + 1, definition.first_seq)
     fits = (payload.times is None or next_seq <= payload.times) and (payload.end_date is None or first <= payload.end_date)
-    if fits:
-        definition.anchor_date, definition.first_seq = first, next_seq
-    else:
-        definition.anchor_date = rules.normalize_anchor(anchor, unit, n, day_of_month)
-        definition.first_seq = min(definition.first_seq, max(max_seq, 1))
     db.flush()
-    generation.generate(db, definition, today)
+    if fits:
+        # The first regenerated period is inserted here, so generate() (strictly after the latest rule_date) continues
+        # from it without the anchor being moved; it carries the last-period override when it is the last seq.
+        last_override = generation.last_period_override(definition)
+        db.add(ScheduleInstance(
+            definition_id=definition.id, seq=next_seq, rule_date=first, due_date=first,
+            amount_override=last_override if last_override is not None and next_seq == definition.times else None,
+        ))
+        db.flush()
+        generation.generate(db, definition, today)
     generation.end_if_complete(db, definition)
 
 
@@ -4997,7 +5114,7 @@ def delete_definition(definition_id: int, db: Session = Depends(get_db)):
 
 - [ ] 10.6 Run 10.2 again.
 
-Expected: `14 passed`.
+Expected: `19 passed`.
 
 - [ ] 10.7 Commit.
 
@@ -5417,12 +5534,12 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `services/accounting-service/tests/integration/test_schedule_instances_api.py`
 
 **Interfaces:**
-- Consumes: Task 8 (`post_instance`, `post_locked(locked_loan=)`, `lock_definition_for_post`, `lock_later_pending`, `record_failure`, `failure_message`, `delete_period_entries(also_lock=)`); Task 9 (`list_instances`, `instance_out`, `definition_out`); Task 10 helpers (`_instance_out`); Task 5 (`lock_instances`, `check_amounts`, `template_amounts`); Task 6 (`generation.last_period_override`); Task 2 (`ScheduleDefinition.template_owner_edited`).
-- Produces: `update_instance` (with `scope`), `post_one`, `skip_instance`, `reopen_instance`, `repost_instance`, `accept_partial` and the private `_instance_locked(db, instance_id, *, share=True) -> (definition, instance)` and `_apply_amount_scope(db, instance_id, payload)`; `InstanceUpdateIn.scope`; `DefinitionOut.template_owner_edited`; routes `GET /instances`, `PUT /instances/{id}`, `POST /instances/{id}/post|skip|reopen|repost|accept-partial`.
+- Consumes: Task 8 (`post_instance`, `post_locked(locked_loan=)`, `lock_definition_for_post`, `lock_later_pending`, `record_failure`, `failure_message`, `delete_period_entries(also_lock=)`); Task 9 (`list_instances`, `instance_out`, `definition_out`); Task 10 helpers (`_instance_out`); Task 5 (`lock_instances`, `check_amounts`, `template_amounts`); Task 4 (`rules.plain`); Task 2 (`ScheduleDefinition.template_owner_edited`).
+- Produces: `update_instance` (with `scope`), `post_one`, `skip_instance`, `reopen_instance`, `repost_instance`, `accept_partial`, `installment_residual(definition, rows, *, old_amounts, new_amounts, overrides) -> Decimal | None` (R-A1) and the private `_instance_locked(db, instance_id, *, share=True) -> (definition, instance)` and `_apply_amount_scope(db, instance_id, payload)`; `InstanceUpdateIn.scope`; `DefinitionOut.template_owner_edited`; routes `GET /instances`, `PUT /instances/{id}`, `POST /instances/{id}/post|skip|reopen|repost|accept-partial`.
 
 Rules (spec "Instance endpoints", D33, D35): shared key → definition (`FOR SHARE`; `reopen` takes `FOR UPDATE` because it may revive the definition; `post` and `repost` go through `posting.lock_definition_for_post`, `FOR UPDATE` with a loan line) → instance `FOR UPDATE`. `PUT` only on pending (409), `amounts` aligned (422 `amounts`), a `due_date` equal to the date of another non-skipped (posted or pending) instance of the same definition → 422 `due_date` (two pending periods on one day would collide on `ux_schedule_instance_posted_day`), `rule_date` never changes, `edited_by_owner = true`. `post`: `acted_by = owner`; any failure is stored in `last_error` (second transaction): a validation failure is answered 422 with the field, `ConflictError` / `NotFoundError` / `EditLockedError` pass through unrecorded, any other exception is recorded by class name and answered 409. `skip`: pending only, writes nothing. `reopen`: 409 when already pending; posted → its entries are deleted (ledger lock order, cutover lock applies) with note `入帳記錄已於 YYYY-MM-DD 刪除`; skipped → pending; both set `reopened_at`; an ended definition becomes active; allowed even when the template references an archived row. `repost`: posted only (409), refused with 409 `locked_until_cutover` before cutover for `acted_by = import`; deletes the period's entries and posts again with the new override in one transaction; the definition is locked through `posting.lock_definition_for_post` (`FOR UPDATE` with a loan line, since the repost may end it), the later pending instances through `posting.lock_later_pending` before any entry lock, and the loan entry joins the period's single entry-lock statement (`delete_period_entries(also_lock=loan_id)`), which `post_locked(locked_loan=…)` reuses. `accept-partial`: posted and partial only (409); `is_partial = false`, note kept. `GET /instances?from=&until=&status=&definition_id=&queue=` with `status` `pending | posted | skipped | all` (default `pending`).
 
-Amount edit scope (spec "Instance amount edit scope", D35, proposal decision 24): `PUT /instances/{id}` takes `scope` — `this` (default; the rules above), `following`, `all`. A scope other than `this` needs `amounts` and no `due_date` (422 `scope`), amounts aligned (422 `amounts`) and each > 0 (422 `amounts`: they become template amounts), a pending instance (409), and for an installment with `total_amount` and `times` a first amount × (`times` − 1) below the total (422 `amounts`). Lock order: key → definition `FOR UPDATE` → `lock_instances` (every instance, ascending id). One transaction: `following` first gives each earlier pending instance (`seq` below this one) without an override the template amounts before the edit; then the template's line amounts become the new ones and `template_owner_edited = true`; every pending instance from this `seq` on (`following`) or every pending instance (`all`) loses its override unless it is owner-edited; this instance follows the template, or, when it was already owner-edited, takes the new amounts as its override (it stays owner-edited). The pending last period of an installment with a total (`seq == times`), when it is neither this instance nor owner-edited, keeps a remainder override: `generation.last_period_override` (new amounts) for a local definition; an imported one keeps MOZE's. Posted and skipped instances never change. No cutover check: amounts are not rule fields, so imported definitions accept the edit before cutover (Task 10's `PUT` / `DELETE` lock stays).
+Amount edit scope (spec "Instance amount edit scope", D35, proposal decision 24): `PUT /instances/{id}` takes `scope` — `this` (default; the rules above), `following`, `all`. A scope other than `this` needs `amounts` and no `due_date` (422 `scope`), amounts aligned (422 `amounts`) and each > 0 (422 `amounts`: they become template amounts), a pending instance (409), and for an installment with `total_amount` and `times` a residual above 0 (below). Lock order: key → definition `FOR UPDATE` → `lock_instances` (every instance, ascending id). One transaction: `following` first gives each earlier pending instance (`seq` below this one) without an override the template amounts before the edit; then the template's line amounts become the new ones and `template_owner_edited = true`; every pending instance from this `seq` on (`following`) or every pending instance (`all`) loses its override unless it is owner-edited; this instance follows the template, or, when it was already owner-edited, takes the new amounts as its override (it stays owner-edited). ★Installment total (Multica R-A1, D35): for an installment with `total_amount` and `times`, the pending last period (`seq == times`) gets `[residual, *other line amounts]`, where `residual = installment_residual(definition, rows, old_amounts=…, new_amounts=…, overrides=…)` (pure, computed before anything is written) = total − Σ of the first line's effective amount of every other period — posted (its override, else the template before this edit), skipped excluded, pending after the scope step (preserved owner overrides, the old price `following` gives earlier periods, MOZE's amounts on imported rows, else the new template), ungenerated (the new template); a residual ≤ 0 (the others already reach the total) → 422 `amounts` with a message carrying no amount, and nothing changes. This applies to local and imported installments alike and replaces the earlier `last_period_override` reuse: `generation.last_period_override` (landed in Task 6) is not used for scoped edits — it stays for the generation path, so a last period that is not generated yet (a loan longer than the 13-month horizon) is written later by generation with `total − amount × (times − 1)` (recorded under Known Spec Conflicts). Posted and skipped instances never change. No cutover check: amounts are not rule fields, so imported definitions accept the edit before cutover (Task 10's `PUT` / `DELETE` lock stays).
 
 - [ ] 12.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_instances_api.py`:
 
@@ -5820,6 +5937,71 @@ def test_installment_scope_keeps_the_last_period_remainder(client, db_session, s
     assert _template(db_session, loan.definition.id) == (["8333", "598"], True)
     assert _row(db_session, before_last.id).amount_override is None
     assert _row(db_session, last.id).amount_override == ["8345", "598"]  # remainder of 300000 − 35 × 8333, new interest
+
+
+def _card_installment(seed, times, amount, total, *, posted=()):
+    """A local expense installment; seqs in `posted` are posted at the template amount, the others pending."""
+    card = seed.account("範例卡")
+    definition = seed.definition(
+        [seed.line("expense", card, amount)], kind="installment", name="分期", anchor=date(2026, 9, 15), times=times,
+        total_amount=Decimal(total),
+    )
+    rows = []
+    for seq in range(1, times + 1):
+        day = date(2026, 8 + seq, 15) if 8 + seq <= 12 else date(2027, 8 + seq - 12, 15)
+        if seq in posted:
+            entry = seed.entry(card, f"-{amount}", day=day, source="schedule")
+            rows.append(seed.instance(definition, seq, day, status="posted", entries=[entry]))
+        else:
+            rows.append(seed.instance(definition, seq, day))
+    return SimpleNamespace(definition=definition, rows=rows)
+
+
+def _first_amounts(db, rows) -> list[str]:
+    db.expire_all()
+    definition = db.get(ScheduleDefinition, rows[0].definition_id)
+    template = definition.template["lines"][0]["amount"]
+    return [
+        (_row(db, row.id).amount_override or [template])[0] for row in rows
+    ]
+
+
+def test_installment_following_keeps_the_total_against_the_actual_allocations(client, db_session, seed, today):
+    # Multica R-A1: 10,000 over 3 (3,333 / 3,333 / 3,334); 這一期與之後 from the second to 3,000 must give
+    # 3,333 / 3,000 / 3,667 = 10,000 — never 3,333 / 3,000 / 4,000.
+    today(date(2026, 9, 1))
+    plan = _card_installment(seed, 3, "3333", "10000")
+    plan.rows[2].amount_override = ["3334"]
+    db_session.commit()
+    response = client.put(f"/schedules/instances/{plan.rows[1].id}", json={"amounts": ["3000"], "scope": "following"})
+    assert response.status_code == 200
+    amounts = _first_amounts(db_session, plan.rows)
+    assert amounts == ["3333", "3000", "3667"] and sum(Decimal(value) for value in amounts) == Decimal("10000")
+
+
+def test_installment_scope_counts_posted_and_owner_edited_periods(client, db_session, seed, today):
+    # Multica R-A1: a principal change after a posted and an owner-edited period; 全部週期 from the third.
+    today(date(2026, 10, 1))
+    plan = _card_installment(seed, 4, "2500", "10000", posted={1})
+    plan.rows[1].amount_override, plan.rows[1].edited_by_owner = ["2000"], True
+    db_session.commit()
+    response = client.put(f"/schedules/instances/{plan.rows[2].id}", json={"amounts": ["2600"], "scope": "all"})
+    assert response.status_code == 200
+    # seq 1 posted at 2,500 (no override); 2,500 + 2,000 + 2,600 + 2,900 = 10,000
+    assert [_row(db_session, row.id).amount_override for row in plan.rows] == [None, ["2000"], None, ["2900"]]
+    assert _template(db_session, plan.definition.id) == (["2600"], True)
+
+
+def test_installment_scope_that_would_overbook_is_refused(client, db_session, seed, today):
+    # Multica R-A1: the old per-period check (4,000 × 2 < 10,000) passes, but the posted 6,000 makes Σ reach the total.
+    today(date(2026, 10, 1))
+    plan = _card_installment(seed, 3, "3333", "10000", posted={1})
+    plan.rows[0].amount_override = ["6000"]
+    db_session.commit()
+    response = client.put(f"/schedules/instances/{plan.rows[1].id}", json={"amounts": ["4000"], "scope": "following"})
+    assert response.status_code == 422 and _fields(response) == {"amounts"}
+    assert "4000" not in response.text and "6000" not in response.text
+    assert _template(db_session, plan.definition.id) == (["3333"], False)
 ```
 
 - [ ] 12.2 Run it.
@@ -5828,7 +6010,7 @@ def test_installment_scope_keeps_the_last_period_remainder(client, db_session, s
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_instances_api.py
 ```
 
-Expected: 22 failures (404 / 405 on `/schedules/instances…`).
+Expected: 25 failures (404 / 405 on `/schedules/instances…`).
 
 - [ ] 12.3 Schema and read shape, then the service.
 
@@ -5903,12 +6085,52 @@ def update_instance(db: Session, instance_id: int, payload: InstanceUpdateIn) ->
     db.flush()
 
 
-def _keeps_remainder(definition: ScheduleDefinition, row: ScheduleInstance) -> bool:
-    """The last period of an installment with a total carries the remainder (D35), not the per-period amount."""
-    return (
-        definition.kind == "installment" and definition.total_amount is not None
-        and definition.times is not None and row.seq == definition.times
-    )
+def installment_residual(
+    definition: ScheduleDefinition,
+    rows: list[ScheduleInstance],
+    *,
+    old_amounts: list[str],
+    new_amounts: list[str],
+    overrides: dict[int, list[str] | None],
+) -> Decimal | None:
+    """Multica R-A1 (D35): the first line's amount of the last period (seq == times) of an installment with a total,
+    computed against the ACTUAL allocations of every other period, so a scoped edit keeps Σ = total_amount:
+
+    - posted: the amount it was posted with as the schedule records it (its override, else the template amount
+      before this edit, `old_amounts`);
+    - skipped: excluded (nothing was written);
+    - pending: its override after the edit (`overrides[row.id]` when the edit sets it, else the stored one —
+      preserved owner overrides, the old price that `following` gives the earlier periods, MOZE's amounts on imported
+      rows), else the new template amount (`new_amounts`);
+    - ungenerated (no row for that seq): the new template amount.
+
+    Pure over the given rows (nothing is written), so a refusal leaves the session untouched. None when the
+    definition is not an installment with a total and times. When the others already reach the total the edit is
+    refused: ValidationError("amounts") — the message carries no amount.
+    `generation.last_period_override` (Task 6) is NOT used for scoped edits; it stays for the generation path."""
+    if definition.kind != "installment" or definition.total_amount is None or definition.times is None:
+        return None
+    new_first = Decimal(new_amounts[0])
+    by_seq = {row.seq: row for row in rows}
+    spent = Decimal(0)
+    for seq in range(1, definition.times):
+        row = by_seq.get(seq)
+        if row is None:
+            spent += new_first
+            continue
+        if row.status == "skipped":
+            continue
+        override = overrides[row.id] if row.id in overrides else row.amount_override
+        if override is not None:
+            spent += Decimal(override[0])
+        elif row.status == "posted":
+            spent += Decimal(old_amounts[0])
+        else:
+            spent += new_first
+    last = Decimal(definition.total_amount) - spent
+    if last <= 0:
+        raise ValidationError("amounts", "其他期別的金額已達總額")
+    return last
 
 
 def _apply_amount_scope(db: Session, instance_id: int, payload: InstanceUpdateIn) -> None:
@@ -5917,8 +6139,10 @@ def _apply_amount_scope(db: Session, instance_id: int, payload: InstanceUpdateIn
     The new amounts become the template's (template_owner_edited, so re-imports keep them, D37); every pending period
     from this one (following) or every pending period (all) follows the template, except owner-edited ones other
     than this; with `following` the earlier pending periods keep the old price as an override. Posted and skipped
-    periods never change. Lock order (D32): key → definition FOR UPDATE → every instance FOR UPDATE, ascending id.
-    No cutover check: amounts are not rule fields (update_definition / delete_definition keep their lock)."""
+    periods never change. An installment with a total gives its pending last period the residual of
+    installment_residual (R-A1). Lock order (D32): key → definition FOR UPDATE → every instance FOR UPDATE,
+    ascending id. No cutover check: amounts are not rule fields (update_definition / delete_definition keep their
+    lock)."""
     if payload.amounts is None or payload.due_date is not None:
         raise ValidationError("scope", "套用到其他期別時只能修改金額")
     take_import_key_shared(db)
@@ -5932,32 +6156,34 @@ def _apply_amount_scope(db: Session, instance_id: int, payload: InstanceUpdateIn
     amounts = check_amounts(definition.template, payload.amounts)
     if any(Decimal(value) == 0 for value in amounts):
         raise ValidationError("amounts", "套用到其他期別時每一行金額須大於 0")
-    if definition.kind == "installment" and definition.total_amount is not None and definition.times is not None:
-        if Decimal(amounts[0]) * (definition.times - 1) >= Decimal(definition.total_amount):
-            raise ValidationError("amounts", "每期金額乘以期數已達總額")
     pending = [row for row in rows if row.status == "pending"]
     old_amounts = template_amounts(definition.template)
-    if payload.scope == "following":
-        for row in pending:
-            if row.seq < instance.seq and row.amount_override is None:
-                row.amount_override = list(old_amounts)  # the earlier periods keep the old price
+    planned: dict[int, list[str] | None] = {}  # the overrides this edit writes; computed before anything changes
+    for row in pending:
+        if payload.scope == "following" and row.seq < instance.seq:
+            if row.amount_override is None:
+                planned[row.id] = list(old_amounts)  # the earlier periods keep the old price
+        elif row.id == instance.id:
+            planned[row.id] = list(amounts) if row.edited_by_owner else None
+        elif not row.edited_by_owner:
+            planned[row.id] = None
+    residual = installment_residual(  # 422 `amounts` when the others reach the total; nothing written yet
+        definition, rows, old_amounts=old_amounts, new_amounts=amounts, overrides=planned
+    )
+    for row in pending:
+        if row.id in planned:
+            row.amount_override = planned[row.id]
     template = copy.deepcopy(definition.template)
     for line, amount in zip(template["lines"], amounts):
         line["amount"] = amount
     definition.template, definition.template_owner_edited = template, True
-    remainder = generation.last_period_override(definition)  # local installment with a total only, else None
-    for row in pending:
-        if payload.scope == "following" and row.seq < instance.seq:
-            continue
-        if row.id == instance.id:
-            row.amount_override = list(amounts) if row.edited_by_owner else None
-        elif row.edited_by_owner:
-            continue
-        elif _keeps_remainder(definition, row):
-            if remainder is not None:
-                row.amount_override = remainder  # local: recomputed from the new amounts; imported: MOZE's stays
-        else:
-            row.amount_override = None
+    last = next((row for row in pending if definition.times is not None and row.seq == definition.times), None)
+    if residual is not None and last is not None:
+        # The last pending period always closes the total (local or imported); its other lines keep a preserved
+        # owner override, else take the new amounts. An ungenerated last period is written later by generation.
+        keep = last.edited_by_owner and last.id != instance.id and last.amount_override is not None
+        rest = last.amount_override[1:] if keep else amounts[1:]
+        last.amount_override = [rules.plain(residual), *rest]
     db.flush()
 
 
@@ -6115,7 +6341,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_definitions_api.py tests/integration/test_schedule_state_api.py tests/integration/test_schedule_read.py 2>&1 | tail -1
 ```
 
-Expected: `22 passed`; then `35 passed` (14 definitions + 12 state + 9 read).
+Expected: `25 passed`; then `40 passed` (19 definitions + 12 state + 9 read).
 
 - [ ] 12.6 Commit.
 
@@ -6822,11 +7048,12 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `generation.generate_locked` (Task 6); `posting.post_instance`, `record_failure`, `failure_message` (Task 8) — called through the module attribute `posting.post_instance` so a test can wrap it; `SCHEDULE_JOB_LOCK_KEY`, `ImportRunningError`, `import_key_free` (Task 5); `schedule_service.create_definition`, `set_mode` (Tasks 10–11, tests).
-- Produces: `schedule_job.TRIGGERS`, `due_instances`, `run`, `is_enabled`, `build_scheduler`, `start`, `stop`, `trigger_after_import`, `main`, `_after_run(engine, report, scheduler=None)`, `_retry(engine, day)`, job ids `schedule_daily`, `schedule_startup`, `schedule_retry`, `schedule_import`; route `POST /schedules/run-now` → `RunReportOut`.
+- Produces: `schedule_job.TRIGGERS`, `due_instances`, `blocked_by_earlier(db, definition, instance_id, today) -> bool` (R-F6), `run(…, post=True)`, `run_after_cli_import(engine, *, today=None) -> dict` (R-F4, called by Task 18's importer CLI), `is_enabled`, `build_scheduler`, `start`, `stop`, `trigger_after_import`, `main`, `_post_job_one(db, instance_id, definition_id, today) -> PostResult`, `_after_run(engine, report, scheduler=None)`, `_retry(engine, day)`, job ids `schedule_daily`, `schedule_startup`, `schedule_retry`, `schedule_import`; route `POST /schedules/run-now` → `RunReportOut`.
 
 Rules (D34, spec "Daily schedule job", "Run-now endpoint"):
-- `run(engine, trigger, *, today=None, dry_run=False)`: `pg_try_advisory_lock(SCHEDULE_JOB_LOCK_KEY)` on a dedicated connection (held → `status = "busy"`, nothing done; released in `finally`); generation, one transaction per non-ended definition (each takes the shared import key; refused → stop with `import_running`); then post `due_instances` (pending, `due_date ≤ today`, `due_date ≥ auto_post_from`, `reopened_at IS NULL`, definition `active` and `auto`, ordered `due_date, definition_id, seq`), each in its own transaction with `actor = "auto"`, `job=True` (SKIP LOCKED and eligibility re-checked under the lock); `import_running` stops the run; a `ValidationError` (or any unexpected error, logged by class) records `last_error` and stops that definition's later instances for this run; a `ConflictError` (someone else posted / skipped it) or a `NotFoundError` (the period was deleted by `end` or a definition `PUT` after `due_instances` read it) moves on without recording anything; `EditLockedError` is treated as a failure (recorded, stops the definition). Report `{trigger, today (ISO), status (completed | busy | import_running | dry_run), generated, posted [ids], failed [ids], stopped_definitions [ids]}` — logged as counts and ids.
+- `run(engine, trigger, *, today=None, dry_run=False)`: `pg_try_advisory_lock(SCHEDULE_JOB_LOCK_KEY)` on a dedicated connection (held → `status = "busy"`, nothing done; released in `finally`); generation, one transaction per non-ended definition (each takes the shared import key; refused → stop with `import_running`); then post `due_instances` (pending, `due_date ≤ today`, `due_date ≥ auto_post_from`, `reopened_at IS NULL`, definition `active` and `auto`, ordered ★`definition_id, seq` — D31's sequence order, never `due_date` order, Multica R-F6), each in its own transaction through `_post_job_one`: shared import key → `posting.lock_definition_for_post` (the same strength `post_instance` takes next, so no lock upgrade) → ★`blocked_by_earlier` under that lock — a period is not eligible while an earlier `seq` of the same definition is `pending` and either due for the job (`posting.auto_eligible`) or failed (`last_error` set), even when the owner moved the earlier period's `due_date` past this one's; pre-`auto_post_from` and reopened periods are the owner's (D34) and do not hold the series; a held period is passed over without recording anything and its definition is listed under `stopped_definitions` — then `posting.post_instance(…, actor = "auto", job=True)` (SKIP LOCKED and eligibility re-checked under the lock; an earlier period the owner is acting on is still `pending` to this read, so the later one waits for the next run); `import_running` stops the run; a `ValidationError` (or any unexpected error, logged by class) records `last_error` and stops that definition's later instances for this run; a `ConflictError` (someone else posted / skipped it) or a `NotFoundError` (the period was deleted by `end` or a definition `PUT` after `due_instances` read it) moves on without recording anything; `EditLockedError` is treated as a failure (recorded, stops the definition). Report `{trigger, today (ISO), status (completed | busy | import_running | dry_run), generated, posted [ids], failed [ids], stopped_definitions [ids]}` — logged as counts and ids.
 - `--dry-run`: one session, generation and posting inside savepoints, everything rolled back; status `dry_run`; prints the report.
+- ★`run(…, post=False)` (Multica R-F4): generation only; the run then counts the instances that are due for the job (`due_instances`) but were not posted, as `report["due_unposted"]`, and logs `schedule_job.due_unposted` with that count. `run_after_cli_import(engine)` is the importer CLI's inline job (the standalone CLI process has no scheduler, so `trigger_after_import` would do nothing there): `run(engine, "import", post=is_enabled())` — generation always; posting only when `ACCOUNTING_SCHEDULER_ENABLED` is truthy, parsed exactly as the scheduler switch.
 - Scheduler: `BackgroundScheduler(timezone="Asia/Taipei")`, `CronTrigger(hour=0, minute=5)` with `coalesce=True`, `max_instances=1`, `misfire_grace_time=3600`; a one-off run 10 s after start; after a run ending `busy` / `import_running` (or crashing), an `IntervalTrigger(minutes=10)` retry job that removes itself once a run completes or the Taipei day changes; `trigger_after_import` adds a one-off run now (the importer calls it after releasing its lock, Task 18). Started from `app.main` on startup when `is_enabled()`, stopped on shutdown.
 - `run-now`: 409 `import_running` when an import holds the key, 409 when the job lock is held (`busy`); otherwise HTTP 200 with the report (an import that starts mid-run ends it with `status = import_running` and the partial counts).
 
@@ -6928,6 +7155,19 @@ def test_trigger_after_import_needs_a_running_scheduler(monkeypatch):
     monkeypatch.setattr(schedule_job, "_scheduler", fake)
     schedule_job.trigger_after_import(object())
     assert fake.jobs["schedule_import"]["kwargs"]["trigger"] == "import"
+
+
+@pytest.mark.parametrize(("value", "post"), [(None, True), ("true", True), ("false", False), ("0", False), ("no", False)])
+def test_cli_import_job_posts_only_when_the_scheduler_switch_is_on(monkeypatch, value, post):
+    # Multica R-F4: the importer CLI runs the job inline; posting follows ACCOUNTING_SCHEDULER_ENABLED (same parsing).
+    if value is None:
+        monkeypatch.delenv("ACCOUNTING_SCHEDULER_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("ACCOUNTING_SCHEDULER_ENABLED", value)
+    calls = []
+    monkeypatch.setattr(schedule_job, "run", lambda engine, trigger, **kwargs: calls.append((trigger, kwargs)) or {})
+    schedule_job.run_after_cli_import(object(), today=date(2026, 10, 9))
+    assert calls == [("import", {"today": date(2026, 10, 9), "post": post})]
 ```
 
 - [ ] 15.4 Write the failing integration test `services/accounting-service/tests/integration/test_schedule_job.py`:
@@ -7037,6 +7277,72 @@ def test_retry_after_an_import(db_session, seed, card, pg_engine):
     assert (stopped["status"], stopped["posted"]) == ("import_running", [])
     after = schedule_job.run(pg_engine, "import", today=date(2026, 10, 9))
     assert (after["status"], after["posted"]) == ("completed", [instance.id])
+
+
+def test_moved_earlier_seq_is_attempted_before_the_next_one(db_session, seed, card, pg_engine, monkeypatch):
+    # Multica R-F6 (D31 wins over due-date order): seq 1 moved to Nov-10, seq 2 on Nov-9; run on Nov-10.
+    netflix = seed.definition([seed.line("expense", card, "390")], anchor=date(2026, 10, 9), auto_post_from=date(2026, 10, 1))
+    moved = seed.instance(netflix, 1, date(2026, 11, 10), rule_date=date(2026, 10, 9), edited_by_owner=True)
+    second = seed.instance(netflix, 2, date(2026, 11, 9))
+    db_session.commit()
+    order: list[int] = []
+    real_post = posting.post_instance
+    monkeypatch.setattr(posting, "post_instance", lambda db, instance_id, **kwargs: order.append(instance_id) or real_post(db, instance_id, **kwargs))
+
+    report = schedule_job.run(pg_engine, "cron", today=date(2026, 11, 10))
+
+    assert order == [moved.id, second.id] and report["posted"] == [moved.id, second.id]
+
+
+def test_failed_moved_earlier_seq_holds_the_next_one_until_the_owner_posts_it(db_session, seed, card, pg_engine):
+    # Multica R-F6: seq 1 (moved later) fails → seq 2 is not posted, in this run and the next; the owner posts seq 1
+    # → seq 2 posts on the next run.
+    netflix = seed.definition([seed.line("expense", card, "390")], anchor=date(2026, 10, 9), auto_post_from=date(2026, 10, 1))
+    moved = seed.instance(
+        netflix, 1, date(2026, 11, 10), rule_date=date(2026, 10, 9), edited_by_owner=True, amount_override=["0"]
+    )
+    second = seed.instance(netflix, 2, date(2026, 11, 9))
+    db_session.commit()
+
+    first_run = schedule_job.run(pg_engine, "cron", today=date(2026, 11, 10))
+    assert (first_run["failed"], first_run["posted"], first_run["stopped_definitions"]) == ([moved.id], [], [netflix.id])
+    assert _row(db_session, second.id).status == "pending"
+    again = schedule_job.run(pg_engine, "retry", today=date(2026, 11, 10))
+    assert (again["posted"], _row(db_session, second.id).status) == ([], "pending")
+
+    row = _row(db_session, moved.id)
+    row.amount_override = ["390"]
+    db_session.commit()
+    posting.post_instance(db_session, moved.id, actor="owner")
+    db_session.commit()
+    after = schedule_job.run(pg_engine, "cron", today=date(2026, 11, 11))
+    assert after["posted"] == [second.id] and _row(db_session, second.id).acted_by == "auto"
+
+
+def test_a_failed_earlier_period_the_job_does_not_own_still_holds_the_series(db_session, seed, card, pg_engine):
+    # Multica R-F6 "(or failed)": a reopened seq 1 whose owner post failed (last_error) keeps seq 2 waiting; a reopened
+    # seq 1 without an error does not (the owner deleted it on purpose, D33).
+    netflix = seed.definition([seed.line("expense", card, "390")], anchor=date(2026, 10, 9), auto_post_from=date(2026, 10, 1))
+    reopened_at = datetime(2026, 10, 10, tzinfo=timezone.utc)
+    first = seed.instance(netflix, 1, date(2026, 10, 9), reopened_at=reopened_at, last_error="lines[0].account_id: 帳戶已封存")
+    second = seed.instance(netflix, 2, date(2026, 11, 9))
+    db_session.commit()
+    held = schedule_job.run(pg_engine, "cron", today=date(2026, 11, 9))
+    assert (held["posted"], held["failed"], held["stopped_definitions"]) == ([], [], [netflix.id])
+
+    row = _row(db_session, first.id)
+    row.last_error = None
+    db_session.commit()
+    assert schedule_job.run(pg_engine, "cron", today=date(2026, 11, 9))["posted"] == [second.id]
+
+
+def test_due_but_unposted_are_counted_when_posting_is_off(db_session, seed, card, pg_engine):
+    # Multica R-F4: run(post=False) generates and counts what the job would post, posting nothing.
+    netflix = seed.definition([seed.line("expense", card, "390")], anchor=date(2026, 10, 22), auto_post_from=date(2026, 10, 1))
+    db_session.commit()
+    report = schedule_job.run(pg_engine, "import", today=date(2026, 10, 22), post=False)
+    assert (report["status"], report["posted"], report["due_unposted"]) == ("completed", [], 1)
+    assert report["generated"] == 14 and _entries(db_session) == 0
 
 
 def test_failure_stops_the_loan_not_the_others(db_session, seed, card, pg_engine):
@@ -7174,16 +7480,17 @@ def test_import_starts_mid_run(client, db_session, seed, card, pg_engine, today,
         ids.append(seed.instance(definition, 1, date(2026, 10, 22)).id)
     db_session.commit()
     holder = pg_engine.connect()
-    real_post = posting.post_instance
+    real_post = schedule_job._post_job_one
     calls: list[int] = []
 
-    def post_then_import(db, instance_id, **kwargs):
+    def post_then_import(db, instance_id, definition_id, today):
+        # Wraps _post_job_one, before it shares the import key (wrapping post_instance would hold the key already).
         if len(calls) == 2:
             holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY})
         calls.append(instance_id)
-        return real_post(db, instance_id, **kwargs)
+        return real_post(db, instance_id, definition_id, today)
 
-    monkeypatch.setattr(posting, "post_instance", post_then_import)
+    monkeypatch.setattr(schedule_job, "_post_job_one", post_then_import)
     try:
         response = client.post("/schedules/run-now")
     finally:
@@ -7239,7 +7546,7 @@ from . import ledger_service
 from . import schedule_generation as generation
 from . import schedule_posting as posting
 from .errors import ConflictError, NotFoundError, ValidationError
-from .schedule_locks import SCHEDULE_JOB_LOCK_KEY, ImportRunningError
+from .schedule_locks import SCHEDULE_JOB_LOCK_KEY, ImportRunningError, take_import_key_shared
 
 logger = logging.getLogger(__name__)
 
@@ -7261,7 +7568,8 @@ def is_enabled() -> bool:
 
 
 def due_instances(db: Session, today: date) -> list[tuple[int, int]]:
-    """(instance id, definition id) the job may post today, in posting order."""
+    """(instance id, definition id) the job may post today, in posting order: per definition, in seq order (D31,
+    R-F6) — a period the owner moved later is still attempted before the next seq."""
     rows = db.execute(
         select(ScheduleInstance.id, ScheduleInstance.definition_id)
         .join(ScheduleDefinition, ScheduleDefinition.id == ScheduleInstance.definition_id)
@@ -7273,9 +7581,38 @@ def due_instances(db: Session, today: date) -> list[tuple[int, int]]:
             ScheduleDefinition.status == "active",
             ScheduleDefinition.posting_mode == "auto",
         )
-        .order_by(ScheduleInstance.due_date, ScheduleInstance.definition_id, ScheduleInstance.seq)
+        .order_by(ScheduleInstance.definition_id, ScheduleInstance.seq)
     )
     return [(instance_id, definition_id) for instance_id, definition_id in rows]
+
+
+def blocked_by_earlier(db: Session, definition: ScheduleDefinition, instance_id: int, today: date) -> bool:
+    """D31 / Multica R-F6: within one definition periods are attempted in seq order. A period waits while an earlier
+    seq of the same definition is pending and either due for the job (auto_eligible) or failed (last_error) — also
+    when the owner moved that earlier period's due_date past this one's. Pre-auto_post_from and reopened periods are
+    the owner's (D34) and do not hold the series. Called under the definition lock (lock_definition_for_post): an
+    owner action on the earlier period is either committed (seen) or not yet (seen as pending: this one waits)."""
+    instance = db.get(ScheduleInstance, instance_id)
+    if instance is None:
+        return False  # deleted meanwhile: post_instance answers NotFoundError
+    earlier = db.scalars(
+        select(ScheduleInstance).where(
+            ScheduleInstance.definition_id == definition.id,
+            ScheduleInstance.status == "pending",
+            ScheduleInstance.seq < instance.seq,
+        )
+    )
+    return any(posting.auto_eligible(definition, row, today) or row.last_error is not None for row in earlier)
+
+
+def _post_job_one(db: Session, instance_id: int, definition_id: int, today: date) -> posting.PostResult:
+    """One job posting transaction: shared key → definition (lock_definition_for_post, the strength post_instance
+    takes next) → the sequence barrier → post_instance (instance FOR UPDATE SKIP LOCKED, eligibility re-checked)."""
+    take_import_key_shared(db)
+    definition = posting.lock_definition_for_post(db, definition_id)
+    if blocked_by_earlier(db, definition, instance_id, today):
+        return posting.PostResult(instance_id, "blocked")
+    return posting.post_instance(db, instance_id, actor="auto", job=True, today=today)
 
 
 def _new_report(trigger: str, today: date) -> dict:
@@ -7318,7 +7655,7 @@ def _post_due(factory, today: date, report: dict) -> None:
             continue  # a loan's periods post in order: a failure stops the later ones for this run
         with factory() as db:
             try:
-                result = posting.post_instance(db, instance_id, actor="auto", job=True, today=today)
+                result = _post_job_one(db, instance_id, definition_id, today)
                 db.commit()
             except ImportRunningError:
                 db.rollback()
@@ -7345,6 +7682,8 @@ def _post_due(factory, today: date, report: dict) -> None:
                 continue
             if result.outcome == "posted":
                 report["posted"].append(instance_id)
+            elif result.outcome == "blocked":
+                stopped.add(definition_id)  # an earlier seq is pending and due, or failed: nothing recorded
     report["stopped_definitions"] = sorted(stopped)
 
 
@@ -7367,7 +7706,7 @@ def _dry_run(factory, today: date, report: dict) -> None:
                     continue
                 savepoint = db.begin_nested()
                 try:
-                    result = posting.post_instance(db, instance_id, actor="auto", job=True, today=today)
+                    result = _post_job_one(db, instance_id, definition_id, today)
                     savepoint.commit()
                 except ImportRunningError:
                     savepoint.rollback()
@@ -7380,6 +7719,8 @@ def _dry_run(factory, today: date, report: dict) -> None:
                     continue
                 if result.outcome == "posted":
                     report["posted"].append(instance_id)
+                elif result.outcome == "blocked":
+                    stopped.add(definition_id)
             report["stopped_definitions"] = sorted(stopped)
         finally:
             db.rollback()
@@ -7387,7 +7728,9 @@ def _dry_run(factory, today: date, report: dict) -> None:
         report["status"] = "dry_run"
 
 
-def run(engine: Engine, trigger: str, *, today: date | None = None, dry_run: bool = False) -> dict:
+def run(engine: Engine, trigger: str, *, today: date | None = None, dry_run: bool = False, post: bool = True) -> dict:
+    """post=False (R-F4, the importer CLI with the scheduler switched off): generation only, then the count of due
+    but unposted instances (report["due_unposted"], logged)."""
     if trigger not in TRIGGERS:
         raise ValueError(f"unknown trigger {trigger!r}")
     today = today or ledger_service._today()
@@ -7403,7 +7746,12 @@ def run(engine: Engine, trigger: str, *, today: date | None = None, dry_run: boo
                 if dry_run:
                     _dry_run(factory, today, report)
                 elif _generate_all(factory, today, report):
-                    _post_due(factory, today, report)
+                    if post:
+                        _post_due(factory, today, report)
+                    else:
+                        with factory() as db:
+                            report["due_unposted"] = len(due_instances(db, today))
+                        logger.info("schedule_job.due_unposted", extra={"count": report["due_unposted"]})
             finally:
                 lock_conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": SCHEDULE_JOB_LOCK_KEY})
                 lock_conn.commit()
@@ -7497,6 +7845,14 @@ def trigger_after_import(engine: Engine) -> None:
     )
 
 
+def run_after_cli_import(engine: Engine, *, today: date | None = None) -> dict:
+    """Multica R-F4: the standalone importer CLI has no scheduler, so trigger_after_import would do nothing. Once the
+    CLI import has released the import lock it runs the job inline in its own process: generation always; posting
+    only when ACCOUNTING_SCHEDULER_ENABLED is truthy (is_enabled, the scheduler's own parsing); otherwise the run logs
+    how many instances are due but unposted. The API path keeps trigger_after_import."""
+    return run(engine, "import", today=today, post=is_enabled())
+
+
 def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.services.schedule_job")
     parser.add_argument("--dry-run", action="store_true", help="print what would be generated and posted; write nothing")
@@ -7545,7 +7901,7 @@ def run_now(engine: Engine = Depends(get_engine)):
 
 - [ ] 15.9 Run 15.5 again.
 
-Expected: `5 passed` (unit) and `15 passed` (integration), 20 in all.
+Expected: `10 passed` (unit) and `19 passed` (integration), 29 in all.
 
 - [ ] 15.10 Confirm the CLI parses (no database call with `--help`).
 
@@ -8896,8 +9252,35 @@ def test_owner_set_template_amounts_survive_a_reimport(db_session, backup, today
     pending = [(row.seq, row.amount_override) for row in _instances(db_session, definition) if row.status == "pending"]
     assert pending == [(3, None), (4, None), (5, None)]
     assert summary["schedules"]["amount_differs"] == [
-        {"definition_id": definition.id, "seq": seq, "date": day, "moze_amounts": ["100"], "amounts": ["120"]}
+        {"definition_id": definition.id, "name": definition.name, "seq": seq, "date": day, "line": 0, "kind": "expense",
+         "amount": "120", "moze_amount": "100"}
         for seq, day in ((3, "2026-10-05"), (4, "2026-10-12"), (5, "2026-10-19"))
+    ]
+
+
+def test_owner_edited_pending_period_on_an_owner_priced_definition_is_compared(db_session, backup, today):
+    # Multica R-A2: template_owner_edited, template 150, MOZE 100, a retained owner override 120 → one amount_differs
+    # item, 120 against MOZE's 100 (the period's effective posting amount is the owner's override).
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _weekly(backup))
+    definition = _definition(db_session, "PER-W")
+    line = definition.template["lines"][0]
+    definition.template = {**definition.template, "lines": [{**line, "amount": "150"}]}
+    definition.template_owner_edited = True
+    rows = [row for row in _instances(db_session, definition) if row.status == "pending"]
+    for row in rows:
+        row.amount_override = None
+    rows[0].amount_override, rows[0].edited_by_owner = ["120"], True
+    db_session.commit()
+
+    summary = _import_backup(db_session, _weekly(backup, days=WEEKLY[:3]))  # only the owner-edited period stays pending
+
+    db_session.expire_all()
+    row = db_session.get(ScheduleInstance, rows[0].id)
+    assert (row.status, row.amount_override, row.edited_by_owner) == ("pending", ["120"], True)
+    assert summary["schedules"]["amount_differs"] == [
+        {"definition_id": definition.id, "name": definition.name, "seq": row.seq, "date": row.due_date.isoformat(),
+         "line": 0, "kind": "expense", "amount": "120", "moze_amount": "100"},
     ]
 ```
 
@@ -8907,7 +9290,7 @@ def test_owner_set_template_amounts_survive_a_reimport(db_session, backup, today
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_import_apply.py
 ```
 
-Expected: 23 failures (`KeyError: 'schedules'` / `AttributeError: 'NoneType' object has no attribute …`).
+Expected: 24 failures (`KeyError: 'schedules'` / `AttributeError: 'NoneType' object has no attribute …`).
 
 - [ ] 17.3 Create `services/accounting-service/app/services/schedule_import.py`:
 
@@ -8930,7 +9313,7 @@ from sqlalchemy.orm import Session, aliased
 
 from ..models import Category, LedgerEntry, ScheduleDefinition, ScheduleInstance
 from . import settlement_service
-from .schedule_import_map import MapResult, MappedDefinition, MappedInstance
+from .schedule_import_map import TRANSFER_TYPE, MapResult, MappedDefinition, MappedInstance
 from .schedule_rules import plain
 from .schedule_templates import (
     LEDGER_KINDS, LINE_KEYS, LOAN_LINE_KINDS, loan_line, realign_override, referenced_ids, template_amounts,
@@ -8951,11 +9334,19 @@ class CapturedLinks:
 
 @dataclass(frozen=True)
 class Covered:
-    """A MOZE record HomeHub already booked (posted) or dropped (skipped) through the instance `instance_id`."""
+    """A past MOZE record HomeHub already decided through the instance `instance_id`: booked it (`posted`), dropped
+    it (`skipped`), or holds it as an owner-edited pending period (`owner_pending`, Multica R-F1: the owner's pending
+    choice wins, the record is suppressed). None of them is imported as an entry (D37).
+
+    `moze_lines` is MOZE's amount per template line of the period — (|amount|, |in-leg amount| for a transfer line,
+    else None) — for the per-line comparison (R-F5); `day` is the record date; `account_amounts` the record's signed
+    `total` per MOZE account id (the balance comparison of a suppressed `owner_pending` record)."""
 
     instance_id: int
-    status: str
-    moze_total: Decimal
+    status: str  # posted | skipped | owner_pending
+    moze_lines: tuple[tuple[str, str | None], ...]
+    day: date
+    account_amounts: tuple[tuple[str, Decimal], ...] = ()
 
 
 def _jsonable(value):
@@ -8979,10 +9370,14 @@ def new_report(mapped: MapResult) -> dict:
         "unsupported_types": dict(sorted(mapped.unsupported_types.items())),
         "past_records_already_posted": 0,
         "past_records_already_skipped": 0,
-        "past_records_amount_differs": {"count": 0, "instance_ids": []},
+        # per line (R-F5): count / instance_ids of posted periods with a differing line, `lines` the items (owner-facing)
+        "past_records_amount_differs": {"count": 0, "instance_ids": [], "lines": []},
+        "past_records_owner_pending": [],  # R-F1: {definition_id, seq, date} of suppressed records held by the owner
         "relinked": {"templates": 0, "settlements": 0},
         "review": list(mapped.review),
-        "amount_differs": [],  # template_owner_edited definitions: MOZE amounts that differ (owner-facing, never logged)
+        # per line (R-F5, R-A2): pending periods whose amounts the import keeps (template_owner_edited definitions,
+        # owner-edited periods) and MOZE's differ; owner-facing, never logged
+        "amount_differs": [],
         "loan_remainder_check": [],
     }
 
@@ -9048,17 +9443,94 @@ def _find(rows: list[ScheduleInstance], mapped: MappedInstance) -> tuple[Schedul
     return row, row is not None
 
 
-def _moze_total(mapped: MappedInstance) -> Decimal:
-    """|total| of the period's records, a transfer counted once (its out-leg)."""
-    return sum(
-        (abs(Decimal(str(record["total"]))) for record in mapped.records if not (record["type"] == 2 and record["isTransferIn"])),
-        Decimal(0),
-    )
+def _moze_lines(template: dict, amounts: list, records: list[dict]) -> tuple[tuple[str, str | None], ...]:
+    """MOZE's amount per template line (R-F5): `amounts` is the mapped |total| per line (record → line identity kept by
+    the mapping: a packaged repayment and its interest land on their own lines, "0" for a missing member); a transfer
+    line also carries its in-leg record's |total|. `records` is empty when the amounts were realigned to a kept
+    template (account_missing): the in-leg is then not compared."""
+    in_leg = next((record for record in records if record["type"] == TRANSFER_TYPE and record["isTransferIn"]), None)
+    lines = []
+    for line, amount in zip(template["lines"], amounts):
+        in_amount = None
+        if line["kind"] == "transfer" and in_leg is not None:
+            in_amount = plain(abs(Decimal(str(in_leg["total"]))))
+        lines.append((plain(amount), in_amount))
+    return tuple(lines)
+
+
+def _entry_line_kind(entry: LedgerEntry) -> str:
+    if entry.kind in ("transfer_out", "transfer_in"):
+        return "transfer"
+    if entry.is_settlement:
+        return "repayment" if entry.kind == "payable" else "collection"
+    return entry.kind  # expense, income, receivable, payable, interest
+
+
+def _posted_lines(session: Session, template: dict, entry_ids: list[int]) -> list[tuple[str, str | None]]:
+    """What HomeHub posted per template line, from the period's entries (posted_entry_ids keeps the line order and a
+    "0" line wrote nothing): (|amount|, |in-leg amount| for a transfer line, else None); "0" for a missing entry."""
+    found = {entry.id: entry for entry in session.scalars(select(LedgerEntry).where(LedgerEntry.id.in_(entry_ids)))}
+    pool = [found[entry_id] for entry_id in entry_ids if entry_id in found]
+    used: set[int] = set()
+    lines: list[tuple[str, str | None]] = []
+    for line in template["lines"]:
+        out = next(
+            (entry for entry in pool
+             if entry.id not in used and entry.kind != "transfer_in" and _entry_line_kind(entry) == line["kind"]),
+            None,
+        )
+        if out is not None:
+            used.add(out.id)
+        in_amount = None
+        if line["kind"] == "transfer":
+            leg = next((entry for entry in pool if entry.id not in used and entry.kind == "transfer_in"), None)
+            if leg is not None:
+                used.add(leg.id)
+            in_amount = plain(abs(Decimal(leg.amount))) if leg is not None else "0"
+        lines.append((plain(abs(Decimal(out.amount))) if out is not None else "0", in_amount))
+    return lines
+
+
+def _pending_lines(definition: ScheduleDefinition, row: ScheduleInstance) -> list[tuple[str, str | None]]:
+    """What a pending period will post per line: its override, else the template; a transfer's in-leg is the line's
+    to_amount (cross-currency), else the same amount."""
+    amounts = list(row.amount_override) if row.amount_override is not None else template_amounts(definition.template)
+    lines: list[tuple[str, str | None]] = []
+    for line, amount in zip(definition.template["lines"], amounts):
+        in_amount = None
+        if line["kind"] == "transfer":
+            in_amount = plain(line["to_amount"]) if line.get("to_amount") is not None else plain(amount)
+        lines.append((plain(amount), in_amount))
+    return lines
+
+
+def _line_differences(definition: ScheduleDefinition, row: ScheduleInstance, ours, theirs) -> list[dict]:
+    """One owner-facing item per differing line (R-F5): out-leg / entry amount under the line's kind, a transfer's
+    in-leg under `transfer_in`. Never logged."""
+    items = []
+
+    def item(index: int, kind: str, amount: str, moze_amount: str) -> dict:
+        return {
+            "definition_id": definition.id, "name": definition.name, "seq": row.seq, "date": row.due_date.isoformat(),
+            "line": index, "kind": kind, "amount": amount, "moze_amount": moze_amount,
+        }
+
+    for index, (line, (amount, in_amount), (moze_amount, moze_in)) in enumerate(
+        zip(definition.template["lines"], ours, theirs)
+    ):
+        if Decimal(amount) != Decimal(moze_amount):
+            items.append(item(index, line["kind"], amount, moze_amount))
+        if line["kind"] == "transfer" and in_amount is not None and moze_in is not None:
+            if Decimal(in_amount) != Decimal(moze_in):
+                items.append(item(index, "transfer_in", in_amount, moze_in))
+    return items
 
 
 def covered_records(session: Session, mapped: MapResult) -> dict[str, Covered]:
-    """Past MOZE records HomeHub already covered: their instance (matched or adoptable) is posted by auto / owner or
-    skipped by anyone but import. These records are not imported as entries (D37)."""
+    """Past MOZE records HomeHub already covered: their instance (matched or adoptable) is posted by auto / owner,
+    skipped by anyone but import, or — Multica R-F1 — pending and owner-edited (the owner's pending choice wins: the
+    record is suppressed, the instance stays pending with its override and a later post writes the period once).
+    These records are not imported as entries (D37)."""
     covered: dict[str, Covered] = {}
     definitions = {
         row.moze_id: row for row in session.scalars(select(ScheduleDefinition).where(ScheduleDefinition.moze_id.is_not(None)))
@@ -9076,11 +9548,29 @@ def covered_records(session: Session, mapped: MapResult) -> dict[str, Covered]:
                 continue
             kept_posted = row.status == "posted" and row.acted_by in ("auto", "owner")
             kept_skipped = row.status == "skipped" and row.acted_by != "import"
-            if kept_posted or kept_skipped:
-                status = "posted" if kept_posted else "skipped"
+            owner_pending = row.status == "pending" and row.edited_by_owner and item.enabled
+            if kept_posted or kept_skipped or owner_pending:
+                status = "posted" if kept_posted else "skipped" if kept_skipped else "owner_pending"
+                moze_lines = _moze_lines(definition.template, list(item.amounts), item.records)
+                account_amounts = tuple(
+                    (record["account"], Decimal(str(record["total"]))) for record in item.records
+                )
                 for record_id in item.record_ids:
-                    covered[record_id] = Covered(row.id, status, _moze_total(item))
+                    covered[record_id] = Covered(row.id, status, moze_lines, item.day, account_amounts)
     return covered
+
+
+def suppressed_amounts(covered: dict[str, Covered]) -> list[tuple[str, date, Decimal]]:
+    """(MOZE account id, date, signed total) of every record suppressed for an owner-edited pending period (R-F1):
+    MOZE booked them, HomeHub has not yet, so the balance comparison adds them to `moze_part` (Task 18)."""
+    seen: set[int] = set()
+    amounts = []
+    for item in covered.values():
+        if item.status != "owner_pending" or item.instance_id in seen:
+            continue
+        seen.add(item.instance_id)
+        amounts.extend((account, item.day, total) for account, total in item.account_amounts)
+    return amounts
 
 
 def template_usage(session: Session) -> dict[str, set[int]]:
@@ -9184,17 +9674,13 @@ def _keep_owner_amounts(old: dict, new: dict) -> dict:
     return kept
 
 
-def _note_amount_differs(report: dict, definition: ScheduleDefinition, row: ScheduleInstance, moze_amounts: list) -> None:
-    """The owner's price stands on a template_owner_edited definition; a MOZE amount that differs from what the period
-    will post is listed for the owner (report only — logs carry ids and counts)."""
-    amounts = list(row.amount_override) if row.amount_override is not None else template_amounts(definition.template)
-    if [Decimal(str(value)) for value in amounts] != [Decimal(str(value)) for value in moze_amounts]:
-        report["amount_differs"].append(
-            {
-                "definition_id": definition.id, "seq": row.seq, "date": row.due_date.isoformat(),
-                "moze_amounts": [str(value) for value in moze_amounts], "amounts": [str(value) for value in amounts],
-            }
-        )
+def _note_amount_differs(
+    report: dict, definition: ScheduleDefinition, row: ScheduleInstance, moze_lines: tuple[tuple[str, str | None], ...]
+) -> None:
+    """The owner's amounts stand (a template_owner_edited definition, or an owner-edited pending period — R-A2); each
+    line whose MOZE amount differs from what the period will post (its override, else the template) is listed for the
+    owner, per line (R-F5; report only — logs carry ids and counts)."""
+    report["amount_differs"].extend(_line_differences(definition, row, _pending_lines(definition, row), moze_lines))
 
 
 def _live(mapped: MappedDefinition) -> bool:
@@ -9292,6 +9778,7 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
             list(item.amounts) if realign_from is None
             else realign_override(realign_from, definition.template, list(item.amounts))
         )
+        moze_lines = _moze_lines(definition.template, amounts, item.records if realign_from is None else [])
         row, adopted = _find(rows, item)
         if row is None:
             if any(other.seq == item.seq for other in rows):
@@ -9306,7 +9793,7 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
             status = _moze_status(row, item, entries, started_at)
             if status == "pending" and definition.template_owner_edited:
                 row.amount_override = None  # the period follows the owner's template price (decision 24)
-                _note_amount_differs(report, definition, row, amounts)
+                _note_amount_differs(report, definition, row, moze_lines)
             session.add(row)
             session.flush()
             rows.append(row)
@@ -9327,7 +9814,11 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
         row.moze_payload = _jsonable(item.records)
         if row.status == "pending":
             if row.edited_by_owner:
+                # Kept as the owner left it — also when its record is now past (R-F1: the record is suppressed by
+                # covered_records, never imported beside it); its effective amounts are still compared (R-A2).
                 counters["kept_owner_edited"] += 1
+                if item.enabled:
+                    _note_amount_differs(report, definition, row, moze_lines)
             elif item.past or not item.enabled:
                 _moze_status(row, item, entries, started_at)
                 counters["updated"] += 1
@@ -9348,7 +9839,7 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
                     if not taken:
                         row.rule_date, row.due_date, changed = item.day, item.day, True
                 if owner_price:
-                    _note_amount_differs(report, definition, row, amounts)
+                    _note_amount_differs(report, definition, row, moze_lines)
                 counters["updated" if changed else "kept"] += 1
         elif row.acted_by == "import":
             _moze_status(row, item, entries, started_at)
@@ -9409,24 +9900,25 @@ def _end_absent(session: Session, seen: set[int], entries, started_at: datetime,
 
 
 def _amount_differs(session: Session, covered: dict[str, Covered], report: dict) -> None:
-    by_instance: dict[int, Decimal] = {}
+    """past_records_amount_differs, per line (R-F5): each line HomeHub posted (from the period's entries) against the
+    matching MOZE record's amount — never period totals, so 8333 + 620 against 8400 + 553 is reported."""
+    by_instance: dict[int, Covered] = {}
     for item in covered.values():
         if item.status == "posted":
-            by_instance[item.instance_id] = item.moze_total
-    differs = []
-    for instance_id, moze_total in sorted(by_instance.items()):
+            by_instance[item.instance_id] = item
+    differs, lines = [], []
+    for instance_id, item in sorted(by_instance.items()):
         instance = session.get(ScheduleInstance, instance_id)
         if instance is None or not instance.posted_entry_ids:
             continue
-        posted = sum(
-            (abs(Decimal(entry.amount)) for entry in session.scalars(
-                select(LedgerEntry).where(LedgerEntry.id.in_(instance.posted_entry_ids), LedgerEntry.kind != "transfer_in")
-            )),
-            Decimal(0),
+        definition = session.get(ScheduleDefinition, instance.definition_id)
+        found = _line_differences(
+            definition, instance, _posted_lines(session, definition.template, instance.posted_entry_ids), item.moze_lines
         )
-        if posted != moze_total:
+        if found:
             differs.append(instance_id)
-    report["past_records_amount_differs"] = {"count": len(differs), "instance_ids": differs}
+            lines.extend(found)
+    report["past_records_amount_differs"] = {"count": len(differs), "instance_ids": differs, "lines": lines}
 
 
 def loan_check(session: Session, mapped: MapResult, report: dict) -> None:
@@ -9493,6 +9985,13 @@ def apply_schedules(
     _end_absent(session, seen, entries, started_at, report)
     report["past_records_already_posted"] = sum(1 for item in covered.values() if item.status == "posted")
     report["past_records_already_skipped"] = sum(1 for item in covered.values() if item.status == "skipped")
+    held = sorted({item.instance_id for item in covered.values() if item.status == "owner_pending"})
+    for instance_id in held:  # R-F1: the owner's pending choice won over a MOZE record now past
+        row = session.get(ScheduleInstance, instance_id)
+        if row is not None:
+            report["past_records_owner_pending"].append(
+                {"definition_id": row.definition_id, "seq": row.seq, "date": row.due_date.isoformat()}
+            )
     _amount_differs(session, covered, report)
     return report  # loan_check runs after restore_links (Task 18 wiring)
 
@@ -9612,7 +10111,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests/integration/test_backup_entries_import.py tests/integration/test_backup_replace_and_report.py tests/integration/test_backup_settings_import.py tests/integration/test_backup_imports_api.py 2>&1 | tail -1
 ```
 
-Expected: `23 passed`; then the same pass counts as after Task 16, 0 failed.
+Expected: `24 passed`; then the same pass counts as after Task 16, 0 failed.
 
 - [ ] 17.6 Commit.
 
@@ -9631,17 +10130,20 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `services/accounting-service/app/services/moze_import_service.py` (`import_lock` waits for shared holders; `delete_unused_rows` and `_archive_disappeared_accounts` count template references)
-- Modify: `services/accounting-service/app/services/moze_backup_import_service.py` (`insert_entries(skip_ids=)`, `_dependants`, `_moze_part(extra_ids=)`, `_account_reports(stand_ins)`, `replace_ledger_from_backup`, `run_backup_import` triggers the job)
+- Modify: `services/accounting-service/app/services/moze_backup_import_service.py` (`insert_entries(skip_ids=)`, `_dependants`, `_moze_part(extra_ids=, extra_amounts=)`, `_account_reports(stand_ins, suppressed)`, `replace_ledger_from_backup`, `run_backup_import(trigger_job=True)` triggers the job, the CLI `main` runs it inline)
 - Test: `services/accounting-service/tests/integration/test_schedule_import_replace.py`
 
 **Interfaces:**
-- Consumes: `schedule_import.capture_links`, `covered_records`, `template_usage`, `restore_links`, `stand_in_entry_ids`, `apply_schedules` (Task 17); `schedule_job.trigger_after_import` (Task 15); `schedule_posting.post_instance`, `schedule_service.skip_instance`, `schedule_generation.generate` (tests).
+- Consumes: `schedule_import.capture_links`, `covered_records`, `template_usage`, `restore_links`, `stand_in_entry_ids`, `suppressed_amounts`, `apply_schedules` (Task 17); `schedule_job.trigger_after_import`, `schedule_job.run_after_cli_import` (Task 15); `schedule_locks.import_key_free` (tests); `schedule_posting.post_instance`, `schedule_service.skip_instance`, `schedule_generation.generate` (tests).
 - Produces: `moze_import_service.IMPORT_LOCK_WAIT_SEC = 30`, `IMPORT_LOCK_POLL_SEC = 0.2`, `import_lock(engine, *, wait_seconds=IMPORT_LOCK_WAIT_SEC)`; `_archive_disappeared_accounts(session, named_in_file, keep_ids=frozenset())`; `insert_entries(..., skip_ids=frozenset())`.
 
 Rules (spec "Record mapping", "Transactional full replace and report", D32, D37):
 - Order inside the ledger transaction: renames → previous parts → map → **lock schedule rows** → merge known past singles → capture links → covered records → delete MOZE entries → settings → template usage → archive (template accounts kept) → insert entries **skipping covered records** (and their fee / reward dependants) → delete unused rows (template references count as usage) → apply schedules → restore links → **loan check** (after re-pointing, so HomeHub's repayments count in `open_amount`) → stand-in ids → balance report (`moze_part` adds the schedule entries of covered posted periods on the account, posted by the cache date).
 - `import_lock`: `pg_try_advisory_lock` retried every 0.2 s for up to 30 s while only shared holders (schedule writers) hold the key; an exclusive holder (another import) is refused at once (`ImportAlreadyRunningError`) as before; still refused after 30 s. Operator note: the daily job re-takes the shared key once per posting transaction with sub-millisecond gaps, so an import started during a long job posting loop can find the key shared on every poll and is refused after 30 s; that is accepted — run the import again once the job finishes (the README and runbook say so).
-- After a real (non-dry-run) import that succeeded, once `import_lock` has been released, `schedule_job.trigger_after_import(engine)`; a dry run never triggers it.
+- After a real (non-dry-run) import that succeeded, once `import_lock` has been released, `schedule_job.trigger_after_import(engine)` (the API path: the in-process scheduler runs the job); a dry run never triggers it.
+- ★CLI (Multica R-F4): the standalone `python -m app.services.moze_backup_import_service` process has no scheduler, so its `main` calls `run_backup_import(…, trigger_job=False)` and, after a real import that succeeded (the import lock is released when `run_backup_import` returns), runs `schedule_job.run_after_cli_import(engine)` inline: generation always; posting only when `ACCOUNTING_SCHEDULER_ENABLED` is truthy (same parsing as the scheduler), otherwise the run counts and logs the due-but-unposted instances. It prints one stderr line `schedule_job: status <s>, generated <n>, posted <n>, failed <n>, due_unposted <n>` (counts only); the CLI's exit code stays the import's.
+- ★Owner-edited pending period whose record turned past (Multica R-F1, D37): `covered_records` returns it as `owner_pending`, so the record is not inserted (skipped like a covered record), the instance stays pending with its override, `apply_schedules` lists it under `past_records_owner_pending`, and the balance comparison adds the suppressed record's MOZE amount to `moze_part` (`schedule_import.suppressed_amounts` → `_account_reports(…, suppressed)` → `_moze_part(extra_amounts=)`, by the cache date), since MOZE booked it and HomeHub has not yet.
+- ★Per-line amount comparison (Multica R-F5): `past_records_amount_differs` compares each line HomeHub posted with the matching MOZE record (Task 17 `_amount_differs`), so equal totals with a different principal / interest split are reported.
 
 - [ ] 18.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_import_replace.py`:
 
@@ -9662,8 +10164,11 @@ from app.services import schedule_generation as generation
 from app.services import schedule_job, schedule_service, settlement_service
 from app.services import schedule_posting as posting
 from app.services import schedule_rules as rules
+from app.schemas.schedules import InstanceUpdateIn
+from app.services import moze_backup_import_service
 from app.services.moze_backup_import_service import run_backup_import
 from app.services.moze_import_service import IMPORT_LOCK_KEY, ImportAlreadyRunningError, import_lock
+from app.services.schedule_locks import import_key_free
 from tests.helpers import _by_moze_id, _import_backup
 
 
@@ -9671,12 +10176,12 @@ def _rec(backup, identifier, day, *, type_=0, price=-100, account="A-WALLET", **
     return backup.record(identifier, account, type_=type_, price=price, date=f"{day}T00:00:00", **fields)
 
 
-def _loan_data(backup, *, exported_at="2026-10-01T17:00:37", first_total=-8333, with_loan=True):
+def _loan_data(backup, *, exported_at="2026-10-01T17:00:37", first_total=-8333, first_interest=-620, with_loan=True):
     dates = [f"{rules.add_months(date(2026, 10, 9), k).isoformat()}T00:00:00" for k in range(3)]
     records = [
         _rec(backup, "R-REP1", "2026-10-09", type_=6, price=first_total, eventID="INS-1", packageID="PK-1",
              relatedID="R-LOAN", target="T-BANK"),
-        _rec(backup, "R-INT1", "2026-10-09", type_=15, price=-620, eventID="INS-1", packageID="PK-1"),
+        _rec(backup, "R-INT1", "2026-10-09", type_=15, price=first_interest, eventID="INS-1", packageID="PK-1"),
         _rec(backup, "R-REP2", "2026-11-09", type_=6, price=-8333, eventID="INS-1", packageID="PK-2",
              relatedID="R-LOAN", target="T-BANK"),
         _rec(backup, "R-INT2", "2026-11-09", type_=15, price=-620, eventID="INS-1", packageID="PK-2"),
@@ -9722,7 +10227,9 @@ def test_reimport_after_local_post_keeps_schedule_entries_and_skips_the_record(d
     row = db_session.get(ScheduleInstance, instance.id)
     assert (row.status, row.acted_by) == ("posted", "auto")
     block = summary["schedules"]
-    assert (block["past_records_already_posted"], block["past_records_amount_differs"]) == (2, {"count": 0, "instance_ids": []})
+    assert (block["past_records_already_posted"], block["past_records_amount_differs"]) == (
+        2, {"count": 0, "instance_ids": [], "lines": []},
+    )
     assert Decimal(summary["accounts"][0]["moze_part"]) == Decimal("25000") - Decimal("8953")
     # loan_check runs after restore_links: HomeHub's repayment counts, so MOZE's remainder matches (no false alarm).
     assert [(row["moze_remainder"], row["open_amount"], row["difference"]) for row in block["loan_remainder_check"]] == [
@@ -9763,8 +10270,71 @@ def test_different_amount_reported(db_session, backup, today):
     instance = _post_first_loan_period(db_session, backup, today)
     today(date(2026, 10, 12))
     summary = _import_backup(db_session, _loan_data(backup, exported_at="2026-10-12T17:00:00", first_total=-8400))
-    assert summary["schedules"]["past_records_amount_differs"] == {"count": 1, "instance_ids": [instance.id]}
+    block = summary["schedules"]["past_records_amount_differs"]
+    assert (block["count"], block["instance_ids"]) == (1, [instance.id])
+    assert [(item["line"], item["kind"], item["amount"], item["moze_amount"]) for item in block["lines"]] == [
+        (0, "repayment", "8333", "8400"),
+    ]
     assert _by_moze_id(db_session, "R-REP1") is None
+
+
+def test_equal_totals_with_a_different_allocation_are_reported_per_line(db_session, backup, today):
+    # Multica R-F5: HomeHub posted 8333 + 620; MOZE's record says 8400 + 553 — the same 8953, a different split.
+    instance = _post_first_loan_period(db_session, backup, today)
+    today(date(2026, 10, 12))
+    summary = _import_backup(
+        db_session, _loan_data(backup, exported_at="2026-10-12T17:00:00", first_total=-8400, first_interest=-553)
+    )
+    definition = db_session.scalar(select(ScheduleDefinition).where(ScheduleDefinition.moze_id == "INS-1"))
+    block = summary["schedules"]["past_records_amount_differs"]
+    assert (block["count"], block["instance_ids"]) == (1, [instance.id])
+    assert block["lines"] == [
+        {"definition_id": definition.id, "name": definition.name, "seq": 1, "date": "2026-10-09", "line": 0,
+         "kind": "repayment", "amount": "8333", "moze_amount": "8400"},
+        {"definition_id": definition.id, "name": definition.name, "seq": 1, "date": "2026-10-09", "line": 1,
+         "kind": "interest", "amount": "620", "moze_amount": "553"},
+    ]
+    # identical amounts → nothing reported (test_reimport_after_local_post_keeps_schedule_entries_and_skips_the_record)
+
+
+def _owner_period_data(backup, exported_at):
+    return backup.data(
+        exported_at=exported_at,
+        accounts=[backup.account("A-WALLET", "錢包", cacheDate=f"{exported_at[:10]}T00:00:00")],
+        periods=[backup.period("PER-M", unit=2, days=9, start="2026-10-09T00:00:00")],
+        records=[_rec(backup, "R-SEP", "2026-09-09", eventID="PER-M"), _rec(backup, "R", "2026-10-09", eventID="PER-M")],
+    )
+
+
+def test_owner_edited_period_whose_record_turned_past_is_booked_once(db_session, backup, today):
+    # Multica R-F1: the owner edits an imported future period; the next backup holds its record as past. The owner's
+    # pending choice wins: no entry is imported, the period stays pending with its override, the report lists it, and
+    # a later post writes it once (a further re-import then counts it as already posted).
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _owner_period_data(backup, "2026-10-01T17:00:37"))
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R"))
+    schedule_service.update_instance(db_session, instance.id, InstanceUpdateIn(amounts=["120"]))
+    db_session.commit()
+    today(date(2026, 10, 12))
+
+    summary = _import_backup(db_session, _owner_period_data(backup, "2026-10-12T17:00:00"))
+
+    assert _by_moze_id(db_session, "R") is None and _schedule_entries(db_session) == []
+    db_session.expire_all()
+    row = db_session.get(ScheduleInstance, instance.id)
+    assert (row.status, row.amount_override, row.edited_by_owner, row.posted_entry_ids) == ("pending", ["120"], True, [])
+    block = summary["schedules"]
+    assert block["past_records_owner_pending"] == [{"definition_id": row.definition_id, "seq": row.seq, "date": "2026-10-09"}]
+    assert block["past_records_already_posted"] == 0
+    assert [(item["amount"], item["moze_amount"]) for item in block["amount_differs"]] == [("120", "100")]  # R-A2
+    assert Decimal(summary["accounts"][0]["moze_part"]) == Decimal("-200")  # R-SEP and the suppressed R, as MOZE
+
+    assert posting.post_instance(db_session, instance.id, actor="owner").outcome == "posted"
+    db_session.commit()
+    again = _import_backup(db_session, _owner_period_data(backup, "2026-10-13T17:00:00"))
+    assert [entry.amount for entry in _schedule_entries(db_session)] == [Decimal("-120")]
+    assert _by_moze_id(db_session, "R") is None
+    assert (again["schedules"]["past_records_already_posted"], again["schedules"]["past_records_owner_pending"]) == (1, [])
 
 
 def test_loan_link_survives_the_full_replace(db_session, backup, today):
@@ -9963,6 +10533,43 @@ def test_real_import_triggers_a_job_run_and_a_dry_run_does_not(pg_engine, db_ses
     assert report["status"] == "succeeded" and calls == [pg_engine]
 
 
+@pytest.mark.parametrize(("switch", "posted"), [("true", 1), ("false", 0)], ids=["scheduler_on", "scheduler_off"])
+def test_cli_import_runs_the_job_inline_after_releasing_the_lock(
+    pg_engine, db_session, backup, fake_exporter, tmp_path, monkeypatch, capsys, today, switch, posted
+):
+    # Multica R-F4: the standalone importer CLI (no scheduler in its process) runs the job itself, after the import
+    # lock is released: generation always, posting only with ACCOUNTING_SCHEDULER_ENABLED on, else a due count.
+    today(date(2026, 10, 9))
+    monkeypatch.setenv("ACCOUNTING_SCHEDULER_ENABLED", switch)
+    triggered, seen_free = [], []
+    monkeypatch.setattr(schedule_job, "trigger_after_import", lambda engine: triggered.append(engine))
+    real_run = schedule_job.run
+
+    def run_checking_the_lock(engine, trigger, **kwargs):
+        seen_free.append(import_key_free(engine))  # the import's advisory lock is already released
+        return real_run(engine, trigger, **kwargs)
+
+    monkeypatch.setattr(schedule_job, "run", run_checking_the_lock)
+    zip_path = tmp_path / "MOZE_4.0.zip"
+    zip_path.write_bytes(b"PK")
+    doc = backup.doc(
+        exported_at="2026-10-08T03:00:00", accounts=[backup.account("A-WALLET", "錢包")],
+        periods=[backup.period("PER-M", unit=2, days=9, start="2026-10-09T00:00:00")],
+        records=[_rec(backup, "R-SEP", "2026-09-09", eventID="PER-M"), _rec(backup, "R-OCT", "2026-10-09", eventID="PER-M")],
+    )
+
+    assert moze_backup_import_service.main([str(zip_path)], engine=pg_engine, exporter=fake_exporter(doc)) == 0
+
+    err = capsys.readouterr().err
+    assert triggered == [] and seen_free == [True]
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R-OCT"))
+    db_session.expire_all()
+    assert db_session.get(ScheduleInstance, instance.id).status == ("posted" if posted else "pending")
+    generated = db_session.scalar(select(func.count()).select_from(ScheduleInstance).where(ScheduleInstance.moze_id.is_(None)))
+    assert generated > 0  # the horizon was generated in both cases
+    assert f"posted {posted}, failed 0, due_unposted {1 - posted}" in err
+
+
 def test_the_old_schedule_listing_is_gone(client):
     # Spec REMOVED "Scheduled data preserved for phase 4".
     assert client.get("/imports/schedules").status_code == 404
@@ -9974,7 +10581,7 @@ def test_the_old_schedule_listing_is_gone(client):
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_import_replace.py
 ```
 
-Expected: failures — the covered record is imported again (`_by_moze_id(db_session, "R-REP1")` / `"X1"` is not None), the local loan link is not re-pointed, the lock-wait test is refused at once, the trigger is never called; `test_the_old_schedule_listing_is_gone`, `test_schedule_entry_survives_a_backup_import`, `test_skipped_future_adds_up` (Task 17 already reports the counts) and `test_import_is_refused_at_once_while_another_import_runs` (an exclusive holder was already refused at once) already pass.
+Expected: failures — the covered record is imported again (`_by_moze_id(db_session, "R-REP1")` / `"X1"` is not None), the local loan link is not re-pointed, the lock-wait test is refused at once, the trigger is never called, the owner-edited period's past record is imported beside it (R-F1), the CLI never runs the job (R-F4); `test_equal_totals_with_a_different_allocation_are_reported_per_line` already passes once Task 17's per-line comparison is in (its records are covered only after this task's wiring, so it fails here too); `test_the_old_schedule_listing_is_gone`, `test_schedule_entry_survives_a_backup_import`, `test_skipped_future_adds_up` (Task 17 already reports the counts) and `test_import_is_refused_at_once_while_another_import_runs` (an exclusive holder was already refused at once) already pass.
 
 - [ ] 18.3 Edit `services/accounting-service/app/services/moze_import_service.py`:
   - add `import time` to the imports and, below `IMPORT_LOCK_KEY = 0x4D4F5A45 …`, add
@@ -10109,10 +10716,11 @@ def _dependants(records: list[dict], roots: Collection[str]) -> set[str]:
 ```python
 def _moze_part(
     session: Session, account: Account, cutoff: date, *, sources: Sequence[str], any_moze_id: bool,
-    extra_ids: Collection[int] = (),
+    extra_ids: Collection[int] = (), extra_amounts: Collection[tuple[date, Decimal]] = (),
 ) -> Decimal:
     """opening + Σ amount of the account's MOZE entries (and `extra_ids`: schedule entries standing in for records
-    skipped as already posted, D37) posted up to `cutoff`."""
+    skipped as already posted, D37) posted up to `cutoff`, plus `extra_amounts` up to `cutoff`: MOZE records suppressed
+    for an owner-edited pending period (R-F1), which MOZE booked and HomeHub has not yet."""
     condition = LedgerEntry.source.in_(sources)
     if any_moze_id:
         condition = or_(condition, LedgerEntry.moze_id.is_not(None))
@@ -10123,10 +10731,20 @@ def _moze_part(
             LedgerEntry.account_id == account.id, LedgerEntry.posted_date <= cutoff, condition
         )
     )
-    return _amount(account.opening_balance + total)
+    suppressed = sum((amount for day, amount in extra_amounts if day <= cutoff), Decimal(0))
+    return _amount(account.opening_balance + total + suppressed)
 ```
 
-  - change `def _account_reports(session, data, settings, previous) -> list[dict]:` to `def _account_reports(session, data, settings, previous, stand_ins: Collection[int] = ()) -> list[dict]:` and its `moze_part = _moze_part(session, account, _cache_date(record, data), sources=(SOURCE,), any_moze_id=False)` to `moze_part = _moze_part(session, account, _cache_date(record, data), sources=(SOURCE,), any_moze_id=False, extra_ids=stand_ins)`;
+  - change `def _account_reports(session, data, settings, previous) -> list[dict]:` to `def _account_reports(session, data, settings, previous, stand_ins: Collection[int] = (), suppressed: Collection[tuple[str, date, Decimal]] = ()) -> list[dict]:` and its `moze_part = _moze_part(session, account, _cache_date(record, data), sources=(SOURCE,), any_moze_id=False)` to
+
+```python
+        extra = [(day, amount) for moze_account, day, amount in suppressed if moze_account == record["identifier"]]
+        moze_part = _moze_part(
+            session, account, _cache_date(record, data), sources=(SOURCE,), any_moze_id=False, extra_ids=stand_ins,
+            extra_amounts=extra,
+        )
+```
+
   - in `replace_ledger_from_backup` replace everything from `mapped = map_schedules(data)` through `accounts = _account_reports(session, data, settings, previous)` with
 
 ```python
@@ -10153,9 +10771,10 @@ def _moze_part(
     schedule_import.restore_links(session, captured, schedules)
     schedule_import.loan_check(session, mapped, schedules)  # after re-pointing: HomeHub's repayments count
     stand_ins = schedule_import.stand_in_entry_ids(session, covered)
+    suppressed = schedule_import.suppressed_amounts(covered)  # R-F1: owner-held periods MOZE already booked
     session.flush()
 
-    accounts = _account_reports(session, data, settings, previous, stand_ins)
+    accounts = _account_reports(session, data, settings, previous, stand_ins, suppressed)
 ```
 
   - in `run_backup_import` replace
@@ -10176,9 +10795,33 @@ def _moze_part(
             conn, data, file_name, sha256, dry_run=dry_run, renames=renames or {}, strict=strict,
             allow_fx_outliers=allow_fx_outliers, http_get=http_get,
         )
-    if not dry_run and report["status"] == "succeeded":
+    if trigger_job and not dry_run and report["status"] == "succeeded":
         schedule_job.trigger_after_import(engine)  # D34: once the advisory lock is released
     return report
+```
+
+  and add the keyword `trigger_job: bool = True,` after `keep_json: Path | None = None,` in the signature of `run_backup_import` (the API router keeps the default).
+  - in `main`, add `trigger_job=False,` to the `run_backup_import(...)` call (after `keep_json=args.keep_json,`) and replace the final
+
+```python
+    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return 0
+```
+
+  with
+
+```python
+    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    if not args.dry_run and report["status"] == "succeeded":
+        # R-F4: this process has no scheduler; the import lock is released, so the job runs here (posting only with
+        # ACCOUNTING_SCHEDULER_ENABLED on, else a due-but-unposted count). Counts only on stderr.
+        job = schedule_job.run_after_cli_import(engine)
+        print(
+            f"schedule_job: status {job['status']}, generated {job['generated']}, posted {len(job['posted'])}, "
+            f"failed {len(job['failed'])}, due_unposted {job.get('due_unposted', 0)}",
+            file=sys.stderr,
+        )
+    return 0
 ```
 
 - [ ] 18.5 Run 18.2 again, then the whole backend suite.
@@ -10189,7 +10832,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests 2>&1 | tail -2
 ```
 
-Expected: `15 passed`; the full suite `N passed`, 0 failed, with N = Task 3's count + 9 + 13 + 12 + 5 + 15 + 9 + 14 + 12 + 22 + 12 + 4 + 20 + 15 + 19 + 15 (Tasks 4–18 in order; = Task 3's count + 196).
+Expected: `19 passed`; the full suite `N passed`, 0 failed, with N = Task 3's count + 9 + 13 + 12 + 5 + 15 + 9 + 19 + 12 + 25 + 12 + 4 + 29 + 15 + 24 + 19 (Tasks 4–18 in order; = Task 3's count + 222).
 
 - [ ] 18.6 Commit.
 
@@ -10457,9 +11100,12 @@ stays `pending` with `last_error`.
     POST   /schedules/run-now
 
 The daily job runs in-process (APScheduler) at 00:05 Asia/Taipei, about 10 s after startup, after every real backup
-import, and every 10 minutes after a run that found the job lock or an import busy. It generates instances 13 months
+import through the API, and every 10 minutes after a run that found the job lock or an import busy. The importer CLI
+(`python -m app.services.moze_backup_import_service`) has no scheduler: after a real import it runs the job itself,
+once the import lock is released — generation always, posting only when `ACCOUNTING_SCHEDULER_ENABLED` is on (else it
+prints the number of due but unposted periods on its `schedule_job:` stderr line). The job generates instances 13 months
 ahead and posts due periods of `active`, `auto` definitions dated on or after the definition's `auto_post_from`
-(never a reopened period). `ACCOUNTING_SCHEDULER_ENABLED=false` turns the in-process job off (tests do); the job lock
+(never a reopened period), per definition in `seq` order: a period waits while an earlier one is due or failed. `ACCOUNTING_SCHEDULER_ENABLED=false` turns the in-process job off (tests do); the job lock
 (`pg_try_advisory_lock(0x53434844)`) makes a second runner return `busy`.
 
     .venv/bin/python -m app.services.schedule_job --dry-run     # print what would be generated and posted
@@ -10470,7 +11116,9 @@ HTTP 409 `import_running`. An import waits up to 30 s for schedule writers to fi
 posting loop may still be refused (`import already running`) — run it again once the job is done. Before cutover (`ACCOUNTING_IMPORT_LOCKED` not `true`) imported definitions cannot be
 edited or deleted and MOZE-booked periods cannot be reposted (409 `locked_until_cutover`); pause, resume, end, mode,
 catch-up and per-period actions work. A re-import never duplicates a period HomeHub posted or skipped
-(`schedules.past_records_already_posted` / `…_skipped` in the report) and never touches local definitions.
+(`schedules.past_records_already_posted` / `…_skipped` in the report), nor one the owner edited while it was pending
+(`past_records_owner_pending`: MOZE's record is not imported, the period stays pending), and never touches local
+definitions. Amount differences are reported per line (`past_records_amount_differs.lines`, `amount_differs`).
 ````
 
 - [ ] 19.4 Run the whole backend suite once more.
@@ -11008,6 +11656,18 @@ export interface LoanSchedule {
   needs_check: boolean;
 }
 
+/** One differing line of a period (Multica R-F5): HomeHub's amount against MOZE's record; owner-facing, never logged. */
+export interface ScheduleAmountDiffer {
+  definition_id: number;
+  name: string;
+  seq: number;
+  date: string;
+  line: number;
+  kind: ScheduleLineKind | 'transfer_in';
+  amount: string;
+  moze_amount: string;
+}
+
 /** `summary.schedules` of a backup import. */
 export interface ScheduleImportReport {
   definitions: Record<'recurring' | 'installment' | 'single', { created: number; updated: number; ended: number; deleted: number }>;
@@ -11017,9 +11677,13 @@ export interface ScheduleImportReport {
   unsupported_types: Record<string, number>;
   past_records_already_posted: number;
   past_records_already_skipped: number;
-  past_records_amount_differs: { count: number; instance_ids: number[] };
+  past_records_amount_differs: { count: number; instance_ids: number[]; lines: ScheduleAmountDiffer[] };
+  /** R-F1: owner-edited pending periods whose MOZE record turned past (the record was not imported). */
+  past_records_owner_pending: { definition_id: number; seq: number; date: string }[];
   relinked: { templates: number; settlements: number };
   review: { moze_id: string; reason: string }[];
+  /** R-A3: pending periods whose kept amounts (owner price, owner edit) differ from MOZE's, per line. */
+  amount_differs: ScheduleAmountDiffer[];
   loan_remainder_check: { definition: string; moze_remainder: string; open_amount: string; difference: string }[];
 }
 ```
@@ -12177,10 +12841,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 20 (service methods, `isImportRunning`, `IMPORT_RUNNING_TOAST`, `splitInstallment`, `AccountingToastService`, `makeDefinition`); Task 21 (`ScheduleTabsComponent`, `ScheduleDraft`, `defaultDraft`); `fieldErrors`, `writeErrorMessage` (`http-errors.ts`); `parseAmountText`, `amountString`; `resolveCounterpartyId`, `transferCommonFrom`, `TransferEdit`; `TransferPanelComponent.buildInput`, `from()`, `to()`.
-- Produces: `schedule-save.ts` exports `ScheduleFormError` (`field`, `message`), `ScheduleFormValues`, `ScheduleFormState`, `buildDefinitionInput(values) -> ScheduleDefinitionInput`, `definitionUpdateFrom(input) -> ScheduleDefinitionUpdate`, `shouldCatchUp(input, today) -> boolean`, `draftFromDefinition(definition) -> ScheduleFormState`, `transferEditFromLine(line) -> TransferEdit`; entry form signals `scheduleDraft`, `scheduleId`, `definitionLocked`, `fieldErrors`, computed `scheduling`; definition mode at `/accounting/entry?schedule=<id>`; `TransferPanelComponent.scheduled` input.
+- Produces: `schedule-save.ts` exports `ScheduleFormError` (`field`, `message`), `ScheduleFormValues`, `ScheduleFormState`, `buildDefinitionInput(values) -> ScheduleDefinitionInput`, `definitionUpdateFrom(input) -> ScheduleDefinitionUpdate`, `shouldCatchUp(input, today) -> boolean`, `draftFromDefinition(definition) -> ScheduleFormState`, `transferEditFromLine(line) -> TransferEdit`; entry form signals `scheduleDraft`, `scheduleId`, `definitionLocked`, `fieldErrors`, `createdScheduleId` (R-F2), computed `scheduling`, the private `runCatchUp(definitionId, keepGoing)` and the exported copy `CATCH_UP_RETRY_TEXT`, `CATCH_UP_FAILED_TOAST` (`entry-form.ts`); definition mode at `/accounting/entry?schedule=<id>`; `TransferPanelComponent.scheduled` input.
 
 Rules (spec "Entry form schedule tabs", "Scheduled entry edit scope" for 編輯整個排程, D43):
 - With 週期 or 分期 selected the form calls `POST /schedules/definitions` instead of the entry endpoint: one template line from the form (kind, account, category, project, counterparty, amount, name, merchant; for 轉帳 the to-account and, across currencies, the in-amount); 分期 on 支出 → one `expense` line of 每期金額 (+ an `interest` line with 利息) and `total_amount` = 總額; 分期 on 應付款項 → a `repayment` line from 還款帳戶 (+ `interest`), and `loan` = the payable's account, counterparty, category, 總額, 日期 and name. The definition name is the entry's 名稱, else the category name, else the kind's label. After a create whose `posting_mode` is `auto` and whose `anchor_date` is today, `catch-up` is called; never otherwise.
+- ★Create, then catch-up (Multica R-F2): creation is complete when the create response arrives. The form keeps `created.id` in `createdScheduleId` and from then on never calls create again: a catch-up that errors (409 `import_running` → the toast as well, a network error, any other failure) leaves the form open, disabled, with the error line `排程已建立，入帳未完成；按 ✓ 重試入帳`, and ✓ retries **only** `catch-up` for that id (leaving the page is fine too: the definition exists, its period waits in 待完成交易). A catch-up answered HTTP 200 with `failed` set (`CatchUpOut.failed`, the period's error recorded as `last_error`) is surfaced — the toast `排程已建立；這一期入帳失敗，請到待完成交易處理` — and the form finishes; the result is never discarded.
 - On 週期 / 分期 the currency (FX) pill, the split "+" (split lines), the fee / discount "+" and chips, the reward chips and the invoice fields are hidden and `排程不支援` is shown (the entry form has no photo tile in phase 2a; nothing else to hide); a form that still holds an FX conversion is refused with `排程不支援外幣，請先移除匯率`, and while it holds one the currency pill stays a button on 週期 / 分期 too, so the owner can open the FX sheet and remove the rate without going back to 單次.
 - Errors: a `ScheduleFormError` names its field; a 422 fills `fieldErrors` (shown beside the field by `app-schedule-tabs`) and the error line; a 409 `import_running` shows the toast and changes nothing else. `fieldErrors()` keys by the last string of `loc`, so a Pydantic request error on `template.lines.1.amount` arrives as `amount` (shown in the error line, not in a 每期金額 / 利息 slot); only the service-level `ValidationError("lines[i].amount")` reaches those slots. Accepted: the form validates amounts before sending, so a Pydantic amount error means a client bug.
 - 連續記帳 resets the tab to 單次 for the next record.
@@ -12328,6 +12993,7 @@ import { MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'v
 
 import { Counterparty, Project } from '../../../models/accounting.model';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { AccountingToastService } from '../accounting-toast';
 import { FxValue } from '../fx-sheet/fx-sheet';
 import { makeAccount, makeAccountDetail, makeCategory, makeDefinition, makePreference } from '../testing/fixtures';
 import { EntryFormComponent } from './entry-form';
@@ -12458,6 +13124,10 @@ describe('EntryFormComponent schedules', () => {
     return httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions');
   }
 
+  function catchUpRequest() {
+    return httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions/9/catch-up');
+  }
+
   it('creates a monthly Netflix definition without an entry or a catch-up', async () => {
     // Spec "Monthly Netflix".
     const { el, left } = await netflix('2026-10-22');
@@ -12485,6 +13155,43 @@ describe('EntryFormComponent schedules', () => {
       .flush({ posted: [31], failed: null, definition: makeDefinition({ id: 9 }) });
     settle();
     expect(left()).toBe(true);
+  });
+
+  it('retries only the catch-up after it failed: exactly one create request', async () => {
+    // Multica R-F2: the create succeeded, the catch-up hit 409 import_running; ✓ again must not create a second
+    // schedule (or a second payable for a loan) — it retries the catch-up for the kept id.
+    const { el, left } = await netflix(null);
+    keys(el, '✓');
+    definitionRequest().flush(makeDefinition({ id: 9, anchor_date: '2026-10-03' }));
+    settle();
+    catchUpRequest().flush(
+      { code: 'conflict', message: 'import_running' }, { status: 409, statusText: 'Conflict' },
+    );
+    settle();
+    expect(left()).toBe(false);
+    expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
+    expect(text(el.querySelector('.form-error'))).toBe('排程已建立，入帳未完成；按 ✓ 重試入帳');
+
+    keys(el, '✓');
+    httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions');
+    catchUpRequest().flush({ posted: [31], failed: null, definition: makeDefinition({ id: 9 }) });
+    settle();
+    expect(left()).toBe(true);
+  });
+
+  it('surfaces a catch-up answered 200 with a failed period', async () => {
+    // Multica R-F2: CatchUpOut.failed is shown, never discarded; the schedule exists, the period waits in 待完成交易.
+    const { el, left } = await netflix(null);
+    keys(el, '✓');
+    definitionRequest().flush(makeDefinition({ id: 9, anchor_date: '2026-10-03' }));
+    settle();
+    catchUpRequest().flush({
+      posted: [], failed: { instance_id: 31, error: 'lines[0].account_id: 帳戶已封存' }, definition: makeDefinition({ id: 9 }),
+    });
+    settle();
+    expect(TestBed.inject(AccountingToastService).message()).toBe('排程已建立；這一期入帳失敗，請到待完成交易處理');
+    expect(left()).toBe(true);
+    httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions');
   });
 
   it('leaves a back-dated start to 待完成交易', async () => {
@@ -13055,7 +13762,7 @@ export function draftFromDefinition(definition: ScheduleDefinition): ScheduleFor
           [currency]="accountCurrency()"
           [accounts]="accountOptions()"
           [accountId]="accountId()"
-          [disabled]="locked() || definitionLocked()"
+          [disabled]="locked() || definitionLocked() || createdScheduleId() !== null"
           [definitionMode]="scheduleId() !== null"
           [errors]="fieldErrors()"
           [(draft)]="scheduleDraft"
@@ -13096,6 +13803,8 @@ import { ScheduleFormError, buildDefinitionInput, definitionUpdateFrom, draftFro
   /** The payable a loan definition repays (definition mode). */
   private loanEntryId: number | null = null;
   private definitionRequest = 0;
+  /** R-F2: a definition this form created whose catch-up has not completed; ✓ then retries the catch-up only. */
+  readonly createdScheduleId = signal<number | null>(null);
 ```
 
   - replace `readonly title = computed(() => (this.editing() ? '編輯記錄' : '新增記錄'));` with `readonly title = computed(() => (this.scheduleId() !== null ? '編輯排程' : this.editing() ? '編輯記錄' : '新增記錄'));`;
@@ -13123,6 +13832,7 @@ import { ScheduleFormError, buildDefinitionInput, definitionUpdateFrom, draftFro
     ++this.definitionRequest;
     this.loanEntryId = null;
     this.definitionLocked.set(false);
+    this.createdScheduleId.set(null);
     this.scheduleId.set(scheduleParam !== null ? Number(scheduleParam) : null);
 ```
 
@@ -13226,6 +13936,11 @@ import { ScheduleFormError, buildDefinitionInput, definitionUpdateFrom, draftFro
   /** 週期 / 分期: create (then catch-up when it starts today, 自動入帳) or, in definition mode, PUT the definition. */
   private saveSchedule(keepGoing: boolean): void {
     this.fieldErrors.set({});
+    const created = this.createdScheduleId();
+    if (created !== null) {
+      this.runCatchUp(created, keepGoing); // R-F2: the create already completed — never create it again
+      return;
+    }
     const panel = this.transferPanel();
     const transfer = this.kind() === 'transfer' ? (panel?.buildInput(transferCommonFrom(this.sharedFields())) ?? null) : null;
     if (this.kind() === 'transfer' && !transfer) {
@@ -13263,22 +13978,21 @@ import { ScheduleFormError, buildDefinitionInput, definitionUpdateFrom, draftFro
       ),
       switchMap(input =>
         definitionId !== null
-          ? this.accounting.updateScheduleDefinition(definitionId, definitionUpdateFrom(input))
+          ? this.accounting.updateScheduleDefinition(definitionId, definitionUpdateFrom(input)).pipe(map(() => null))
           : this.accounting
               .createScheduleDefinition(input)
-              .pipe(
-                switchMap(created =>
-                  shouldCatchUp(input, todayIso())
-                    ? this.accounting.catchUpSchedule(created.id).pipe(map(() => created))
-                    : of(created),
-                ),
-              ),
+              .pipe(map(created => (shouldCatchUp(input, todayIso()) ? created.id : null))),
       ),
     );
     this.saving.set(true);
     request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: () => {
+      next: catchUpId => {
         this.saving.set(false);
+        if (catchUpId !== null) {
+          this.createdScheduleId.set(catchUpId); // creation is complete from here on (R-F2)
+          this.runCatchUp(catchUpId, keepGoing);
+          return;
+        }
         this.finish(keepGoing);
       },
       error: (error: unknown) => {
@@ -13297,6 +14011,40 @@ import { ScheduleFormError, buildDefinitionInput, definitionUpdateFrom, draftFro
       },
     });
   }
+
+  /** 補入帳 right after a create that starts today (自動入帳), and its retry (R-F2). A 200 with `failed` is surfaced in
+   *  the toast, never discarded; an error keeps `createdScheduleId`, so ✓ retries this call only. */
+  private runCatchUp(definitionId: number, keepGoing: boolean): void {
+    this.saving.set(true);
+    this.accounting
+      .catchUpSchedule(definitionId)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: result => {
+          this.saving.set(false);
+          this.createdScheduleId.set(null);
+          if (result.failed !== null) {
+            this.toast.show(CATCH_UP_FAILED_TOAST);
+          }
+          this.finish(keepGoing);
+        },
+        error: (error: unknown) => {
+          this.saving.set(false);
+          if (isImportRunning(error)) {
+            this.toast.show(IMPORT_RUNNING_TOAST);
+          }
+          this.error.set(CATCH_UP_RETRY_TEXT);
+        },
+      });
+  }
+```
+
+  and add above `@Component` (module level):
+
+```typescript
+/** R-F2 copy: the schedule exists; only its first catch-up is outstanding. */
+export const CATCH_UP_RETRY_TEXT = '排程已建立，入帳未完成；按 ✓ 重試入帳';
+export const CATCH_UP_FAILED_TOAST = '排程已建立；這一期入帳失敗，請到待完成交易處理';
 ```
 
 - [ ] 22.8 Run 22.3 again, then the existing entry form and transfer panel specs.
@@ -13307,7 +14055,7 @@ npx ng test --watch=false --include='src/app/components/accounting/entry-form/sc
 npx ng test --watch=false --include='src/app/components/accounting/entry-form/**/*.spec.ts' --include='src/app/components/accounting/transfer-panel/*.spec.ts' 2>&1 | tail -4
 ```
 
-Expected: `18 passed` (7 + 11); then every entry-form and transfer-panel spec passes (the existing ones see the 進階 block as a tab block whose 單次 panel still holds 入帳日).
+Expected: `20 passed` (7 + 13); then every entry-form and transfer-panel spec passes (the existing ones see the 進階 block as a tab block whose 單次 panel still holds 入帳日).
 
 - [ ] 22.9 Commit.
 
@@ -16334,9 +17082,9 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `ScheduleImportReport` (Task 20); the reminder centre's `?tab=debts` and fragment `schedules` (Task 24).
-- Produces: `AccountingSettingsComponent.openSchedules()`; `ReportView.schedules: ScheduleReportView | null` with `ScheduleReportView { recurring, installment, single, recordsMapped, rewardsIgnored, alreadyPosted, alreadySkipped, amountDiffers, review }` (numbers).
+- Produces: `AccountingSettingsComponent.openSchedules()`; `ReportView.schedules: ScheduleReportView | null` with `ScheduleReportView { recurring, installment, single, recordsMapped, rewardsIgnored, alreadyPosted, alreadySkipped, amountDiffers, review, ownerPending, pendingAmountDiffers }` (numbers) and the item lists `pastAmountLines`, `pendingAmountLines: ScheduleAmountLineView[]` with `ScheduleAmountLineView { name, seq, date, kind, amount, mozeAmount }` (Multica R-A3).
 
-Rules (spec "Accounting settings page"): the 匯入 section's 週期／分期 row opens `/accounting/reminders?tab=debts` scrolled to the 週期／分期 section; the page never calls `/api/accounting/imports/schedules`; after an import the report shows its `schedules` block (definitions created per kind, records mapped, rewards ignored, periods HomeHub already posted or skipped, amount differences, items to review).
+Rules (spec "Accounting settings page"): the 匯入 section's 週期／分期 row opens `/accounting/reminders?tab=debts` scrolled to the 週期／分期 section; the page never calls `/api/accounting/imports/schedules`; after an import the report shows its `schedules` block (definitions created per kind, records mapped, rewards ignored, periods HomeHub already posted or skipped, amount differences, items to review). ★Multica R-A3: both amount-difference lists are shown — `past_records_amount_differs` (periods HomeHub posted) and `amount_differs` (pending periods whose owner-kept amounts differ) — each as a count plus one line per differing item, `<名稱> 第 k 期 <日期>：HomeHub $<amount> / MOZE $<moze_amount>`; `past_records_owner_pending` shows as a count (`保留待入帳 N 期`). An import whose only finding is `amount_differs` still shows the warning.
 
 - [ ] 27.1 Update the tests. In `frontend/src/app/components/accounting/accounting-settings/accounting-settings.spec.ts`: delete the `SCHEDULES` constant; delete both lines `http.expectOne(r => r.url.startsWith('/api/accounting/imports/schedules')).flush(…);` (in `beforeEach` and in `imports for real after the dry run and refreshes the latest import and schedules`, whose title becomes `imports for real after the dry run and refreshes the latest import`); add `Router` to its `import { provideRouter } from '@angular/router';` line and `vi` to its vitest import; replace the test `shows the static lock state and the schedules list` with
 
@@ -16372,9 +17120,34 @@ Rules (spec "Accounting settings page"): the 匯入 section's 週期／分期 ro
     });
     expect(view.schedules).toEqual({
       recurring: 11, installment: 14, single: 0, recordsMapped: 534, rewardsIgnored: 63, alreadyPosted: 2, alreadySkipped: 1,
-      amountDiffers: 1, review: 1,
+      amountDiffers: 1, review: 1, ownerPending: 0, pendingAmountDiffers: 0, pastAmountLines: [], pendingAmountLines: [],
     });
     expect(summarizeReport({ summary: {} }).schedules).toBeNull();
+  });
+
+  it('shows pending amount differences when they are the only finding', () => {
+    // Multica R-A3: only amount_differs is non-empty; the view still carries its count and per-period lines.
+    const view = summarizeReport({
+      summary: {
+        schedules: {
+          definitions: {
+            recurring: { created: 0, updated: 1, ended: 0, deleted: 0 },
+            installment: { created: 0, updated: 0, ended: 0, deleted: 0 },
+            single: { created: 0, updated: 0, ended: 0, deleted: 0 },
+          },
+          records_mapped: 4, rewards_ignored: 0, past_records_already_posted: 0, past_records_already_skipped: 0,
+          past_records_amount_differs: { count: 0, instance_ids: [], lines: [] }, past_records_owner_pending: [], review: [],
+          amount_differs: [
+            { definition_id: 7, name: 'Netflix', seq: 3, date: '2026-10-05', line: 0, kind: 'expense', amount: '120', moze_amount: '100' },
+          ],
+        },
+      },
+    });
+    expect(view.schedules?.pendingAmountDiffers).toBe(1);
+    expect(view.schedules?.amountDiffers).toBe(0);
+    expect(view.schedules?.pendingAmountLines).toEqual([
+      { name: 'Netflix', seq: 3, date: '2026-10-05', kind: 'expense', amount: '120', mozeAmount: '100' },
+    ]);
   });
 ```
 
@@ -16399,6 +17172,31 @@ export interface ScheduleReportView {
   alreadySkipped: number;
   amountDiffers: number;
   review: number;
+  /** R-F1: owner-edited pending periods whose MOZE record turned past. */
+  ownerPending: number;
+  /** R-A3: pending periods (owner-kept amounts) with a line MOZE disagrees with. */
+  pendingAmountDiffers: number;
+  pastAmountLines: ScheduleAmountLineView[];
+  pendingAmountLines: ScheduleAmountLineView[];
+}
+
+export interface ScheduleAmountLineView {
+  name: string;
+  seq: number;
+  date: string;
+  kind: string;
+  amount: string;
+  mozeAmount: string;
+}
+
+function amountLines(value: unknown): ScheduleAmountLineView[] {
+  return (Array.isArray(value) ? value : []).map(item => {
+    const row = record(item);
+    return {
+      name: String(row['name'] ?? ''), seq: Number(row['seq']) || 0, date: String(row['date'] ?? ''),
+      kind: String(row['kind'] ?? ''), amount: String(row['amount'] ?? ''), mozeAmount: String(row['moze_amount'] ?? ''),
+    };
+  });
 }
 
 function scheduleView(value: unknown): ScheduleReportView | null {
@@ -16417,6 +17215,12 @@ function scheduleView(value: unknown): ScheduleReportView | null {
     alreadySkipped: Number(block['past_records_already_skipped']) || 0,
     amountDiffers: Number(record(block['past_records_amount_differs'])['count']) || 0,
     review: Array.isArray(block['review']) ? (block['review'] as unknown[]).length : 0,
+    ownerPending: Array.isArray(block['past_records_owner_pending']) ? (block['past_records_owner_pending'] as unknown[]).length : 0,
+    pendingAmountDiffers: new Set(
+      amountLines(block['amount_differs']).map(line => `${line.name}#${line.seq}`),
+    ).size,
+    pastAmountLines: amountLines(record(block['past_records_amount_differs'])['lines']),
+    pendingAmountLines: amountLines(block['amount_differs']),
   };
 }
 ```
@@ -16454,10 +17258,23 @@ function scheduleView(value: unknown): ScheduleReportView | null {
             @if (s.amountDiffers) {
               <span class="import-error">；金額不同 {{ s.amountDiffers }} 期</span>
             }
+            @if (s.pendingAmountDiffers) {
+              <span class="import-error">；待入帳金額與 MOZE 不同 {{ s.pendingAmountDiffers }} 期</span>
+            }
+            @if (s.ownerPending) {
+              <span>；保留待入帳 {{ s.ownerPending }} 期</span>
+            }
             @if (s.review) {
               <span class="import-error">；待檢查 {{ s.review }} 筆</span>
             }
           </p>
+          @if (s.pastAmountLines.length || s.pendingAmountLines.length) {
+            <ul class="schedule-amount-lines">
+              @for (line of s.pastAmountLines.concat(s.pendingAmountLines); track $index) {
+                <li>{{ line.name }} 第 {{ line.seq }} 期 {{ line.date }}：HomeHub ${{ line.amount }} / MOZE ${{ line.mozeAmount }}</li>
+              }
+            </ul>
+          }
         }
 ```
 
@@ -16514,7 +17331,7 @@ npx ng build 2>&1 | tail -3
 git checkout -- angular.json 2>/dev/null; git status --short | grep -v '^ M frontend/src\|^?? ' || true
 ```
 
-Expected: the settings specs pass; the full suite `B_front + 85` passed (Tasks 20–27: 15 + 8 + 18 + 14 + 14 + 6 + 9 + 1), no failed files; the build ends with `Application bundle generation complete.`
+Expected: the settings specs pass; the full suite `B_front + 88` passed (Tasks 20–27: 15 + 8 + 20 + 14 + 14 + 6 + 9 + 2), no failed files; the build ends with `Application bundle generation complete.`
 
 - [ ] 27.7 Commit.
 
@@ -16537,7 +17354,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Consumes: the migration (Task 3), the backup CLI with schedules (Tasks 16–18), the job CLI (Task 15), the API (Tasks 9–15), the SPA (Tasks 20–27), the converter `tools/moze-realm-export`.
 - Produces: the aggregates for the PR description and `design.md` "Implementation notes" (definitions per kind, `records_mapped`, `rewards_ignored`, `skipped_future` total, review reasons, loan remainder differences as a count, instance statuses, import timing); the confirmed MOZE weekday numbering and posting-mode field; the owner's pass/fail list (one loan, one recurring transfer, one 提醒入帳 item, 390 px). Drops `accounting_schedules_verify` at the end. Never touches `accounting_db`.
 
-Rules: nothing from the backup is printed row by row: the script prints counts, key names and reason codes only (the loan remainder check is reduced to the number of loans whose difference is not 0). The verify API runs with `ACCOUNTING_SCHEDULER_ENABLED=false` so that only the owner's actions and the importer's trigger post anything; the preview binds to the Tailscale address only, and opening its port (and any firewall rule) is an owner-approved action (28.10a), closed again in 28.12.
+Rules: nothing from the backup is printed row by row: the script prints counts, key names and reason codes only (the loan remainder check is reduced to the number of loans whose difference is not 0); of the importer CLI's stderr only its `schedule_job:` line (counts) is shown — the rest can name accounts. The verify API and the importer CLI run with `ACCOUNTING_SCHEDULER_ENABLED=false`, so the CLI's inline job (Task 18, Multica R-F4) generates the horizon but posts nothing, and only the explicit job run of 28.8b and the owner's actions post anything; the preview binds to the Tailscale address only, and opening its port (and any firewall rule) is an owner-approved action (28.10a), closed again in 28.12.
 
 - [ ] 28.1 Run every suite and the production build.
 
@@ -16547,7 +17364,7 @@ cd /home/opc/workspace/home-hub-schedules/frontend && npx ng test --watch=false 
 cd /home/opc/workspace/home-hub-schedules/frontend && npm run build 2>&1 | tail -3 && ls dist/inventory-ui/browser/index.html
 ```
 
-Expected: pytest `… passed` with no failures (the Task 19 count); Vitest no failed files (`B_front + 85`); `Application bundle generation complete` and the `index.html` path.
+Expected: pytest `… passed` with no failures (the Task 19 count); Vitest no failed files (`B_front + 88`); `Application bundle generation complete` and the `index.html` path.
 
 - [ ] 28.2 Create the disposable database and point the worktree `.env` at it (a filtered private copy; nothing is printed).
 
@@ -16684,31 +17501,62 @@ Expected: `aggregates.py  notes.txt`.
 
 ```bash
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service
-time .venv/bin/python -m app.services.moze_backup_import_service ~/workspace/moze-backup/MOZE_4.0.zip 2>/dev/null \
+time .venv/bin/python -m app.services.moze_backup_import_service ~/workspace/moze-backup/MOZE_4.0.zip \
+  2> >(grep '^schedule_job:' >&2) \
   | python3 /home/opc/workspace/moze-verify-schedules/aggregates.py
-docker exec -i stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_schedules_verify -At' <<'SQL'
-SELECT kind || ':' || status || ':' || posting_mode || ':' || count(*) FROM schedule_definition GROUP BY 1 ORDER BY 1;
-SELECT status || ':' || coalesce(acted_by::text, '-') || ':' || count(*) FROM schedule_instance GROUP BY 1 ORDER BY 1;
+docker exec -i stonk-postgres-1 sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d accounting_schedules_verify -At' <<'SQL'
+SELECT kind || ':' || status || ':' || posting_mode || ':' || count(*) FROM schedule_definition GROUP BY kind, status, posting_mode ORDER BY 1;
+SELECT status || ':' || coalesce(acted_by::text, '-') || ':' || count(*) FROM schedule_instance GROUP BY status, acted_by ORDER BY 1;
 SELECT 'schedule_entries:' || count(*) FROM ledger_entry WHERE source = 'schedule';
 SELECT md5(string_agg(id || ':' || status || ':' || seq || ':' || due_date || ':' || coalesce(amount_override::text, ''), ',' ORDER BY id)) FROM schedule_instance;
 SQL
-.venv/bin/python -m app.services.moze_backup_import_service ~/workspace/moze-backup/MOZE_4.0.zip 2>/dev/null \
+echo "psql exit $?"
+.venv/bin/python -m app.services.moze_backup_import_service ~/workspace/moze-backup/MOZE_4.0.zip \
+  2> >(grep '^schedule_job:' >&2) \
   | python3 /home/opc/workspace/moze-verify-schedules/aggregates.py
-docker exec -i stonk-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d accounting_schedules_verify -At' <<'SQL'
+docker exec -i stonk-postgres-1 sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d accounting_schedules_verify -At' <<'SQL'
 SELECT md5(string_agg(id || ':' || status || ':' || seq || ':' || due_date || ':' || coalesce(amount_override::text, ''), ',' ORDER BY id)) FROM schedule_instance;
 SQL
 ```
 
-Expected: the first line equals 28.4's except `status` `succeeded`; definition rows `installment:active:auto:…`, `recurring:active:auto:…` (plus `…:ended:…` for series MOZE already finished and `paused` only for a review reason of 28.4), summing to 25; instance rows `pending:-:…`, `posted:import:…` (periods MOZE booked up to the export date) and `skipped:import:…` (disabled ones); `schedule_entries:` 0 or the periods due on the import date that the post-import job run posted (`auto_post_from` = today, so nothing earlier); a hash. Second import: `definitions_created` all 0, `instances.created` 0, `instances.deleted` 0, `instances.adopted` 0, and the same hash. Append both aggregate lines, the status counts and the `real` time to `notes.txt`.
+Expected (Multica R-F7: every query groups by its plain columns, and `ON_ERROR_STOP=1` makes a failing statement end psql with exit 3 instead of letting later statements print — `psql exit 0` is part of the evidence):
+- first import: the stderr line `schedule_job: status completed, generated G, posted 0, failed 0, due_unposted D` — the CLI's inline job (R-F4) generated the horizon (G ≥ 0 HomeHub-generated periods beyond MOZE's records) and, with the scheduler switched off, posted nothing; D is the number of periods due on the import date (0 or a small count); then one JSON line equal to 28.4's except `status` `succeeded`;
+- definition rows, one per (kind, status, mode), e.g. `installment:active:auto:14`, `recurring:active:auto:11` (plus `…:ended:…` rows for series MOZE already finished and `…:paused:…` only for a review reason of 28.4), whose counts sum to 25;
+- instance rows, one per (status, actor): `pending:-:P`, `posted:import:I` (periods MOZE booked up to the export date) and `skipped:import:S` (disabled ones) — no `posted:auto` row yet;
+- `schedule_entries:0` (nothing posted: D periods wait for 28.8b);
+- a hash; `psql exit 0`;
+- second import: `schedule_job: status completed, generated 0, posted 0, failed 0, due_unposted D` (same D), `definitions_created` all 0, `instances.created` 0, `instances.deleted` 0, `instances.adopted` 0, and the same hash.
 
-- [ ] 28.8 Job dry run on the imported data.
+Append both `schedule_job:` lines, both aggregate lines, the status counts and the `real` time to `notes.txt`.
+
+- [ ] 28.8 Generate the horizon and post what is due — two explicit steps (Multica R-F4; the scheduler is off here, so nothing else does either).
+
+  28.8a **Generate the horizon.** The importer CLI's inline job already generated it (28.7, `generated G`); confirm every live definition reaches `horizon(today)` and that a further generation adds nothing:
 
 ```bash
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service
+HORIZON=$(.venv/bin/python -c "from app.services import ledger_service, schedule_rules as r; print(r.horizon(ledger_service._today()))")
+docker exec -i stonk-postgres-1 sh -c "psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d accounting_schedules_verify -At" <<SQL
+SELECT 'short_of_horizon:' || count(*) FROM schedule_definition
+ WHERE status <> 'ended' AND review_reason IS DISTINCT FROM 'interval_mismatch' AND generated_until IS DISTINCT FROM DATE '$HORIZON';
+SELECT 'homehub_generated:' || count(*) FROM schedule_instance WHERE moze_id IS NULL;
+SQL
 .venv/bin/python -m app.services.schedule_job --dry-run | python3 -c "import json,sys; r=json.load(sys.stdin); print(r['status'], r['generated'], len(r['posted']), len(r['failed']), len(r['stopped_definitions']))"
 ```
 
-Expected: `dry_run 0 0 0 0` (the import's own run already generated to the horizon and posted what was due today; periods due before the import date wait for the owner). A non-zero `failed` count: stop and read the failing instances' `last_error` codes (`SELECT id, last_error FROM schedule_instance WHERE last_error IS NOT NULL` — field and message only, by construction). Append the line to `notes.txt`.
+Expected: `short_of_horizon:0`; `homehub_generated:G` (the `generated` of 28.7's first `schedule_job:` line); then `dry_run 0 D 0 0` — nothing left to generate, and the D periods due on the import date are what a run would post.
+
+  28.8b **Post what is due.** Run the job once for real (trigger `manual`, the same code path as the 00:05 run), then dry-run again:
+
+```bash
+.venv/bin/python -m app.services.schedule_job | python3 -c "import json,sys; r=json.load(sys.stdin); print(r['status'], r['generated'], len(r['posted']), len(r['failed']), len(r['stopped_definitions']))"
+.venv/bin/python -m app.services.schedule_job --dry-run | python3 -c "import json,sys; r=json.load(sys.stdin); print(r['status'], r['generated'], len(r['posted']), len(r['failed']), len(r['stopped_definitions']))"
+docker exec -i stonk-postgres-1 sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d accounting_schedules_verify -At' <<'SQL'
+SELECT status || ':' || coalesce(acted_by::text, '-') || ':' || count(*) FROM schedule_instance GROUP BY status, acted_by ORDER BY 1;
+SQL
+```
+
+Expected: `completed 0 D 0 0`; `dry_run 0 0 0 0`; the instance rows of 28.7 with D moved from `pending:-` to a new `posted:auto:D` row (absent when D = 0). Periods due before the import date wait for the owner (no silent backlog). A non-zero `failed` count: stop and read the failing instances' `last_error` codes (`SELECT id, last_error FROM schedule_instance WHERE last_error IS NOT NULL` — field and message only, by construction). Append the three lines to `notes.txt`.
 
 - [ ] 28.9 Start the verify API on :8011 (background, e.g. `run_in_background`) and check it.
 
@@ -16812,7 +17660,7 @@ Add to the root `.env` (`.env.example` documents it):
 ACCOUNTING_SCHEDULER_ENABLED=true
 ```
 
-`true` (the default when absent) runs the schedule job inside `accounting-service`: daily at 00:05 Asia/Taipei, once 10 s after start-up, every 10 minutes after a run that ended `busy` or `import_running` until a run completes or the day changes, and once after every real backup import. `false`, `0` or `no` turn it off; periods then wait until someone runs `python -m app.services.schedule_job`, taps 補入帳至今天, or calls `POST /api/accounting/schedules/run-now`. Run exactly one `accounting-service` process with the job enabled: the job lock (`pg_try_advisory_lock` on key `0x53434844`) makes a second runner a no-op, but logs `busy` every day.
+`true` (the default when absent) runs the schedule job inside `accounting-service`: daily at 00:05 Asia/Taipei, once 10 s after start-up, every 10 minutes after a run that ended `busy` or `import_running` until a run completes or the day changes, and once after every real backup import (through the API; the importer CLI runs the job inline after its import — generation always, posting only when this switch is on). `false`, `0` or `no` turn it off; periods then wait until someone runs `python -m app.services.schedule_job`, taps 補入帳至今天, or calls `POST /api/accounting/schedules/run-now`. Run exactly one `accounting-service` process with the job enabled: the job lock (`pg_try_advisory_lock` on key `0x53434844`) makes a second runner a no-op, but logs `busy` every day.
 
 ## What the migration does
 
@@ -16865,7 +17713,7 @@ Revision `c4e8b2f1a7d3`:
    ls -l ~/backups/home-hub-schedules/moze-schedules-*.json
    ```
 
-   Or from the SPA: 記帳設定 → 匯入 → 試算 → 匯入 (the report shows 週期／分期 counts). Check: definitions `recurring` 11 and `installment` 14 created, `records_mapped` 534, `rewards_ignored` 63, `unsupported_types` empty, `review` without `interval_mismatch`, every `loan_remainder_check` difference 0, and the balance comparison as in phase 2a. The real import ends with a job run: periods due today post, periods due earlier wait in 提醒中心 › 待完成交易 for 補入帳至今天 (nothing is posted silently for the past). Delete both JSON files after reading (`rm -f ~/backups/home-hub-schedules/moze-schedules-*.json`).
+   Or from the SPA: 記帳設定 → 匯入 → 試算 → 匯入 (the report shows 週期／分期 counts). Check: definitions `recurring` 11 and `installment` 14 created, `records_mapped` 534, `rewards_ignored` 63, `unsupported_types` empty, `review` without `interval_mismatch`, every `loan_remainder_check` difference 0, and the balance comparison as in phase 2a. The real import ends with a job run (the CLI runs it inline and prints a `schedule_job:` counts line on stderr; with `ACCOUNTING_SCHEDULER_ENABLED` on it posts): periods due today post, periods due earlier wait in 提醒中心 › 待完成交易 for 補入帳至今天 (nothing is posted silently for the past). Delete both JSON files after reading (`rm -f ~/backups/home-hub-schedules/moze-schedules-*.json`).
 
 4. **Caddy**: no Caddy change in this release (no new SPA path), but its deep links `/accounting/reminders?tab=debts&schedule=<id>` (entry detail, settings) and `/accounting/entry?schedule=<id>` need `/accounting/reminders` and `/accounting/entry` in the live `@hub_spa` matcher (the 2a matcher lists `entry`; `reminders` came with the reminder centre). Confirm:
 
@@ -17041,10 +17889,14 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Failure stops the loan, not the others | 15 — `test_failure_stops_the_loan_not_the_others`, `test_a_period_deleted_mid_run_is_passed_over` |
 | Paused definition | 15 — `test_paused_definition` |
 | Dry run | 15 — `test_dry_run`; 28.8 on real data |
+| A moved earlier period holds the next one | 15 — `test_moved_earlier_seq_is_attempted_before_the_next_one`, `test_failed_moved_earlier_seq_holds_the_next_one_until_the_owner_posts_it`, `test_a_failed_earlier_period_the_job_does_not_own_still_holds_the_series` (Multica R-F6) |
+| (importer CLI runs the job inline, requirement text) | 15 — `test_cli_import_job_posts_only_when_the_scheduler_switch_is_on`, `test_due_but_unposted_are_counted_when_posting_is_off`; 18 — `test_cli_import_runs_the_job_inline_after_releasing_the_lock`; 28.7–28.8 on real data (Multica R-F4) |
 | **Definition endpoints** | 5 (schemas), 9 (read shapes), 10 (CRUD, 409 / 422 cases) |
 | Card installment remainder on the last period | 6 (split), 10 |
 | Loan and schedule in one call | 10 (today 2026-10-09, so the 13-month horizon holds all 13 instances the scenario counts) |
 | Edit regenerates only future pending periods, then rolls forward | 10 — `test_edit_regenerates_only_future_pending_periods_then_rolls_forward`, `test_edit_keeps_the_instance_due_today_and_regenerates_from_tomorrow` (Review Focus 5), `test_put_without_posting_mode_keeps_the_stored_mode` |
+| Edit keeps a month-end anchor | 10 — `test_edit_keeps_a_month_end_anchor_then_rolls_forward_on_the_31st` (implicit and explicit `day_of_month`), `test_edit_keeps_a_leap_day_yearly_anchor_then_returns_to_feb_29` (Multica R-F3) |
+| Edit with a new anchor takes its day | 10 — `test_edit_with_a_new_anchor_takes_its_day` (implicit and explicit) |
 | Delete refused after posting | 10 |
 | **Definition state endpoints** | 11 (pause, resume, end, mode, catch-up; 409 / 422 cases) |
 | Resume skips the paused months by default | 11 |
@@ -17065,6 +17917,8 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Only this period by default | 12 — `test_only_this_period_by_default` |
 | This period and the following ones keep the old price before | 12 — `test_this_period_and_the_following_ones_keep_the_old_price_before` |
 | All periods keep other owner edits | 12 — `test_all_periods_keep_other_owner_edits` |
+| Installment total kept by a scoped edit | 12 — `test_installment_following_keeps_the_total_against_the_actual_allocations`, `test_installment_scope_counts_posted_and_owner_edited_periods`, `test_installment_scope_keeps_the_last_period_remainder` (Multica R-A1) |
+| Scoped edit that would overbook refused | 12 — `test_installment_scope_that_would_overbook_is_refused` |
 | A scope with another field is refused | 12 — `test_a_scope_with_another_field_is_refused` |
 | Imported definition before cutover | 12 — `test_scope_edit_allowed_on_an_imported_definition_before_cutover` |
 | **Run-now endpoint** | 15 (and `test_run_now_needs_the_bearer_token_when_api_tokens_are_set`: #42 token auth, design D42); 10 — `test_schedule_writes_need_the_bearer_token_when_api_tokens_are_set` |
@@ -17134,8 +17988,12 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Re-pointing finds no loan | 18 — `test_re_pointing_finds_no_loan` |
 | Owner-edited pending period kept | 17 — `test_owner_edited_pending_period_kept` |
 | Owner-set price survives a re-import | 17 — `test_owner_set_template_amounts_survive_a_reimport` |
+| Owner-edited period compared on re-import | 17 — `test_owner_edited_pending_period_on_an_owner_priced_definition_is_compared` (Multica R-A2) |
+| Owner-edited period whose record turned past | 18 — `test_owner_edited_period_whose_record_turned_past_is_booked_once` (Multica R-F1) |
 | Re-import keeps owner decisions and local definitions | 17 — `test_reimport_keeps_owner_decisions_and_local_definitions`, `test_import_row_whose_record_left_the_backup_becomes_skipped`, `test_pending_imported_row_follows_moze_and_clears_failure_marks`, `test_moze_date_refresh_never_lands_on_another_pending_period` |
 | Different amount reported | 18 — `test_different_amount_reported` |
+| Different allocation reported per line | 18 — `test_equal_totals_with_a_different_allocation_are_reported_per_line`; identical amounts: `test_reimport_after_local_post_keeps_schedule_entries_and_skips_the_record` (Multica R-F5) |
+| CLI import runs the job | 18 — `test_cli_import_runs_the_job_inline_after_releasing_the_lock` (scheduler on / off); 15 — `test_cli_import_job_posts_only_when_the_scheduler_switch_is_on` (Multica R-F4) |
 | Loan link survives the full replace | 18 — `test_loan_link_survives_the_full_replace`; `loan_remainder_check` after re-pointing: `test_reimport_after_local_post_keeps_schedule_entries_and_skips_the_record` |
 | Template reference keeps a category | 18 — `test_template_reference_keeps_a_category_and_an_account` |
 | **REMOVED: Scheduled data preserved for phase 4** | 2 (`MozeSchedule` and `GET /imports/schedules` removed), 3 (drops `moze_schedule`; `test_downgrade_recreates_an_empty_moze_schedule`), 18 — `test_the_old_schedule_listing_is_gone`, 27 (SPA no longer calls it), 29 (runbook) |
@@ -17147,9 +18005,11 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | **Accounting settings page** (MODIFIED: 週期／分期 link, `schedules` report block) | 27 |
 | Rename a counterparty | unchanged — 2a `accounting-settings.spec.ts` (kept in 27.1) |
 | Backup dry run from the page | unchanged — 2a spec (kept, its real-run test only loses the schedules request); 27 — `summarises the schedules block` |
+| Pending amount differences shown | 27 — `shows pending amount differences when they are the only finding` (Multica R-A3) |
 | Schedule list moved to 提醒中心 | 27 — `shows the static lock state and links 週期／分期 to the reminder centre` |
 | **Entry form schedule tabs** | 20 (`schedule-math`), 21 (`app-schedule-tabs`), 22 (save as definition, definition mode) |
 | Monthly Netflix | 22 |
+| Catch-up retried without a second create | 22 — `retries only the catch-up after it failed: exactly one create request`, `surfaces a catch-up answered 200 with a failed period` (Multica R-F2) |
 | Recurring transfer from the form | 22 |
 | Card installment split | 20 — `splits an installment with the remainder on the last period`; 21 |
 | New loan with interest | 22 |

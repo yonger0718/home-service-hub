@@ -2,7 +2,7 @@
 
 ### Requirement: Accounting settings page
 
-The SPA SHALL provide `/accounting/settings` (replacing the redirect) with sections: 資料 (帳戶分組, 類別, 專案, 對象: each a list with add, rename, reorder by drag, hide or archive, and delete when unused; categories show icon and colour pickers and the two-level tree per kind), 顯示 (支出收入顏色, 數字鍵盤順序, 月曆起始星期, 首頁隱藏紅利回饋, 總額縮寫), and 匯入 (upload a MOZE backup zip with a dry-run first, showing the report; the latest import; the import lock state; the import report's `schedules` block after an import; and a 週期／分期 row linking to the 週期／分期 section of 提醒中心, replacing the read-only list of phase 2a). The settings sub-nav item of the accounting group SHALL point here instead of the global `/settings`.
+The SPA SHALL provide `/accounting/settings` (replacing the redirect) with sections: 資料 (帳戶分組, 類別, 專案, 對象: each a list with add, rename, reorder by drag, hide or archive, and delete when unused; categories show icon and colour pickers and the two-level tree per kind), 顯示 (支出收入顏色, 數字鍵盤順序, 月曆起始星期, 首頁隱藏紅利回饋, 總額縮寫), and 匯入 (upload a MOZE backup zip with a dry-run first, showing the report; the latest import; the import lock state; the import report's `schedules` block after an import — including a count and one line per differing item (definition name, 第 k 期, date, HomeHub amount against MOZE's) for both `past_records_amount_differs` and `amount_differs`, and the count of `past_records_owner_pending`; and a 週期／分期 row linking to the 週期／分期 section of 提醒中心, replacing the read-only list of phase 2a). The settings sub-nav item of the accounting group SHALL point here instead of the global `/settings`.
 
 #### Scenario: Rename a counterparty
 - **WHEN** `Alan` is renamed to `Alan Chen`
@@ -11,6 +11,11 @@ The SPA SHALL provide `/accounting/settings` (replacing the redirect) with secti
 #### Scenario: Backup dry run from the page
 - **WHEN** a zip is chosen and 試算 tapped
 - **THEN** the page SHALL show the report (per-type counts, skipped future rows, balance differences) without changing data, and offer 匯入 as a second step
+
+#### Scenario: Pending amount differences shown
+- **GIVEN** an import report whose `schedules` block has only `amount_differs` non-empty (Netflix seq 3, 2026-10-05, HomeHub `120`, MOZE `100`)
+- **WHEN** the report is shown
+- **THEN** the page SHALL show a warning with the count 1 and the line `Netflix 第 3 期 2026-10-05：HomeHub $120 / MOZE $100`
 
 #### Scenario: Schedule list moved to 提醒中心
 - **WHEN** the owner taps 週期／分期 in 匯入
@@ -26,12 +31,17 @@ The entry form's 進階 section SHALL offer the tabs 單次 / 週期 / 分期 (M
 - **週期** (支出, 收入, 轉帳, 應收款項, 應付款項): 區間 `每 N {天|週|月|年}` (N ≥ 1, default 每 1 月), 起始日 (default the entry's 日期), 結束 {無限期 | N 次 | 日期} (default 無限期), 入帳方式 {自動入帳 | 提醒入帳} (default 自動入帳). The footer SHALL read `週期：#1 / 無限期（每月 / 22號）` or `週期：#1 / 12（每月 / 22號）` in MOZE's wording.
 - **分期** (支出 and 應付款項 only): 總額 (default the amount tile), 期數 (≥ 2), 首次還款日 (default one month after the 日期), 每期金額 (auto `floor(總額 ÷ 期數)` in whole units for TWD and JPY and to 2 decimals otherwise, editable; the remainder goes to the last period, and for 應付款項 the last repayment is clamped to the loan's open amount), 利息 (optional, per period, flat), 入帳方式, and for 應付款項 還款帳戶 (default the entry's account). The footer SHALL read `分期：#1 / 期數（$總額） 首次還款日將從 YYYY/MM/DD 開始進行（期數 期）`.
 
-Saving with 週期 or 分期 SHALL call `POST /api/accounting/schedules/definitions` instead of the entry endpoint: one template line built from the form (kind, account, category, project, counterparty, amount, name, merchant; for 轉帳 the to-account and in-amount; for 分期 on 應付款項 a `repayment` line and, with 利息, an `interest` line, with `loan` carrying the payable's account, counterparty, category, 總額, 日期 and name). When the definition is `auto` and its 起始日 or 首次還款日 is today, the form SHALL then call `catch-up` for it; with an earlier date it SHALL NOT, and the past periods wait in 待完成交易 for the owner. On the 週期 and 分期 tabs the currency (FX) pill, the split "+", the fee / discount "+", the reward chips, the photo tile and the invoice fields SHALL be hidden, with the note `排程不支援` in their place. The form SHALL show a validation message beside the field the server names. 連續記帳 SHALL keep the tab at 單次 for the next record.
+Saving with 週期 or 分期 SHALL call `POST /api/accounting/schedules/definitions` instead of the entry endpoint: one template line built from the form (kind, account, category, project, counterparty, amount, name, merchant; for 轉帳 the to-account and in-amount; for 分期 on 應付款項 a `repayment` line and, with 利息, an `interest` line, with `loan` carrying the payable's account, counterparty, category, 總額, 日期 and name). When the definition is `auto` and its 起始日 or 首次還款日 is today, the form SHALL then call `catch-up` for it; with an earlier date it SHALL NOT, and the past periods wait in 待完成交易 for the owner. Creation SHALL be complete when the create response arrives: the form SHALL keep the created definition's id, and when the catch-up fails (an HTTP error, including 409 `import_running`) the form SHALL stay open with `排程已建立，入帳未完成；按 ✓ 重試入帳` and ✓ SHALL retry only the catch-up — it SHALL never send a second create. A catch-up answered with a `failed` period SHALL be surfaced in the toast `排程已建立；這一期入帳失敗，請到待完成交易處理`, not discarded. On the 週期 and 分期 tabs the currency (FX) pill, the split "+", the fee / discount "+", the reward chips, the photo tile and the invoice fields SHALL be hidden, with the note `排程不支援` in their place. The form SHALL show a validation message beside the field the server names. 連續記帳 SHALL keep the tab at 單次 for the next record.
 
 #### Scenario: Monthly Netflix
 - **GIVEN** today 2026-10-03
 - **WHEN** the owner enters 支出 娛樂/Netflix `390` on 範例卡, picks 週期 每 1 月, 起始日 2026-10-22, 無限期, 自動入帳, and saves
 - **THEN** a `recurring` definition SHALL be created with one `expense` line of `390`, no entry SHALL be created, and `catch-up` SHALL NOT be called
+
+#### Scenario: Catch-up retried without a second create
+- **GIVEN** a 週期 definition starting today with 自動入帳 whose create succeeded and whose catch-up answered HTTP 409 `import_running`
+- **WHEN** the owner taps ✓ again
+- **THEN** only `catch-up` SHALL be called again and exactly one create request SHALL have been sent
 
 #### Scenario: Recurring transfer from the form
 - **WHEN** the owner enters 轉帳 `15000` from 薪轉 to 交割, picks 週期 每 1 月 起始日 2026-11-05, and saves
