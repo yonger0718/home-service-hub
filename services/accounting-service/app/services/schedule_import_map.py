@@ -166,8 +166,10 @@ def _union_lines(groups: list[list[dict]]) -> list[MappedLine]:
         candidates = _lines(group)
         for candidate in candidates:
             if candidate.kind == "transfer":
-                first = next(line for line in lines if line.kind == "transfer")
-                if first.to_account is None and candidate.to_account is not None:
+                first = next((line for line in lines if line.kind == "transfer"), None)
+                if first is None:
+                    lines.append(candidate)  # a later transfer group under a non-transfer template (reviewed)
+                elif first.to_account is None and candidate.to_account is not None:
                     first.to_account, first.to_amount = candidate.to_account, candidate.to_amount
                 continue
             have = sum(1 for line in lines if line.kind == candidate.kind)
@@ -196,6 +198,15 @@ def _amounts(lines: list[MappedLine], group: list[dict]) -> list[str]:
             if line.kind == "transfer":
                 used.update(record["identifier"] for record in group)  # the in-leg belongs to this line
     return amounts
+
+
+def _mixed_or_in_leg_only(groups: list[list[dict]]) -> bool:
+    """Groups that cannot share one template: transfer and non-transfer primaries mixed, or a transfer group holding only
+    its in-leg (its out-leg is missing from the definition's records)."""
+    transfers = [group[0]["type"] == TRANSFER_TYPE for group in groups]
+    if any(transfers) and not all(transfers):
+        return True
+    return any(group[0]["type"] == TRANSFER_TYPE and group[0]["isTransferIn"] for group in groups)
 
 
 def _name(group: list[dict], data: BackupData, default: str) -> str:
@@ -258,6 +269,8 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
     primary_is_transfer = groups[0][0]["type"] == TRANSFER_TYPE
     if period["type"] in (0, 1) and (period["type"] == 1) != primary_is_transfer:
         review = "interval_mismatch"  # spec: type 1 periods generate transfers, type 0 ordinary records
+    if _mixed_or_in_leg_only(groups):
+        review = "interval_mismatch"
     lines = _union_lines(groups)
     definition = MappedDefinition(
         moze_id=period["identifier"], kind="recurring", source="period", name=_name(groups[0], data, "週期"),
@@ -295,6 +308,8 @@ def _map_installment(
     for k, day in enumerate(dates):
         if day != rules.add_months(anchor, k, day_of_month):
             review = "interval_mismatch"
+    if _mixed_or_in_leg_only(groups):
+        review = "interval_mismatch"
     first = next((group for group in groups if group[0]["type"] in INSTALLMENT_PRIMARY_TYPES), groups[0])
     total = abs(Decimal(str(installment["total"])))
     definition = MappedDefinition(

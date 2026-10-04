@@ -247,3 +247,36 @@ def test_period_and_installment_fields_are_validated(backup):
     data = parse_backup_doc(backup.doc(accounts=_accounts(backup), installments=[as_list, as_dict]))
     assert data.installments[0]["dateInfo"] == [datetime(2026, 11, 9), datetime(2026, 12, 9)]
     assert data.installments[1]["dateInfo"][9:] == [datetime(2027, 10, 9), datetime(2027, 11, 9)]
+
+
+def test_later_transfer_group_does_not_crash_and_flags_the_period(backup):
+    # An expense first, a transfer pair later under one period: mapped without an exception, flagged for review.
+    data = backup.data(
+        accounts=_accounts(backup),
+        periods=[backup.period("PER-MIX", unit=2, days=3, start="2026-11-03T00:00:00")],
+        records=[
+            _rec(backup, "R-1", "2026-11-03", eventID="PER-MIX"),
+            _rec(backup, "O-2", "2026-12-03", type_=2, price=-50, eventID="PER-MIX"),
+            _rec(backup, "I-2", "2026-12-03", type_=2, price=50, account="A-BANK", eventID="PER-MIX"),
+        ],
+        transfers=[backup.transfer("X-2", "O-2", "I-2")],
+    )
+    result = map_schedules(data)
+    [definition] = result.definitions
+    assert definition.review_reason == "interval_mismatch"
+    assert {"moze_id": "PER-MIX", "reason": "interval_mismatch"} in result.review
+    assert [line.kind for line in definition.lines] == ["expense", "transfer"]
+    assert [item.amounts for item in definition.instances] == [["100", "0"], ["0", "50"]]
+
+
+def test_in_leg_only_transfer_group_is_flagged(backup):
+    # The backup holds a transfer's in-leg without its out-leg: never mapped as an out-leg, flagged for review.
+    data = backup.data(
+        accounts=_accounts(backup),
+        periods=[backup.period("PER-IN", unit=2, days=3, type_=1, start="2026-11-03T00:00:00")],
+        records=[_rec(backup, "I-1", "2026-11-03", type_=2, price=50, account="A-BANK", eventID="PER-IN")],
+    )
+    result = map_schedules(data)
+    [definition] = result.definitions
+    assert definition.review_reason == "interval_mismatch"
+    assert {"moze_id": "PER-IN", "reason": "interval_mismatch"} in result.review
