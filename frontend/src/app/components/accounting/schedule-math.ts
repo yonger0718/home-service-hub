@@ -115,18 +115,11 @@ export function installmentFooter(total: number, times: number, firstDate: strin
 
 type RuleWithTimes = ScheduleRule & Pick<ScheduleDefinition, 'times'>;
 
-/** Manage-sheet summary: `每月 9 號 · 36 期 · 自 2026/11/09`. */
+/** Manage-sheet summary: `每月 9號 · 36 期 · 自 2026/11/09` (day labels as in the footers: `22號`, `10月22號`). */
 export function ruleSummary(rule: RuleWithTimes): string {
   const label = intervalLabel(rule.interval_unit, rule.interval_n);
-  const [, month, day] = parts(rule.anchor_date);
-  const when =
-    rule.interval_unit === 'month'
-      ? `${label} ${rule.day_of_month ?? day} 號`
-      : rule.interval_unit === 'week'
-        ? `${label} ${ruleDayLabel(rule)}`
-        : rule.interval_unit === 'year'
-          ? `${label} ${month} 月 ${rule.day_of_month ?? day} 號`
-          : label;
+  const day = ruleDayLabel(rule);
+  const when = day ? `${label} ${day}` : label;
   return `${when} · ${rule.times === null ? '無限期' : `${rule.times} 期`} · 自 ${slashDate(rule.anchor_date)}`;
 }
 

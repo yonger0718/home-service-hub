@@ -8,6 +8,7 @@ import {
   isImportRunning,
   nextOccurrences,
   recurringFooter,
+  ruleDayLabel,
   ruleSummary,
   scheduleProgress,
   schedulePill,
@@ -45,7 +46,11 @@ describe('schedule-math', () => {
 
   it('summarises a rule and its progress', () => {
     const loan = { interval_unit: 'month' as const, interval_n: 1, anchor_date: '2026-11-09', day_of_month: 9, times: 36 };
-    expect(ruleSummary(loan)).toBe('每月 9 號 · 36 期 · 自 2026/11/09');
+    expect(ruleSummary(loan)).toBe('每月 9號 · 36 期 · 自 2026/11/09');
+    expect(ruleSummary({ ...loan, interval_unit: 'year', anchor_date: '2026-10-22', day_of_month: null })).toBe(
+      '每年 10月22號 · 36 期 · 自 2026/10/22',
+    );
+    expect(ruleDayLabel({ ...loan, interval_unit: 'year', anchor_date: '2026-10-22', day_of_month: null })).toBe('10月22號');
     expect(ruleSummary({ ...loan, interval_unit: 'week', anchor_date: '2026-10-05', day_of_month: null, times: null })).toBe(
       '每週 星期一 · 無限期 · 自 2026/10/05',
     );
