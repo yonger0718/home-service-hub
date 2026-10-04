@@ -64,6 +64,8 @@ export class TransferPanelComponent implements OnInit {
   readonly edit = input<TransferEdit | null>(null);
   /** Editing a saved transfer: an archived leg stays selectable (labelled). A copy moves it to an open account. */
   readonly keepArchived = input(false);
+  /** 週期 on the entry form: schedules carry no fee / discount, so both "+" buttons are hidden (排程不支援). */
+  readonly scheduled = input(false);
   readonly saveRequested = output<boolean>();
 
   readonly categories = signal<CategoryNode[]>([]);

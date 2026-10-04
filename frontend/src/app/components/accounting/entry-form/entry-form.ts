@@ -42,10 +42,12 @@ import {
   LedgerAccount,
   Preference,
   Project,
+  ScheduleDefinition,
   WritableEntryKind,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { AccountingToastService } from '../accounting-toast';
 import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey } from '../accounting-ui';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { evaluateAmount, prettyExpression, roundHalfAway } from '../amount-math';
@@ -53,9 +55,12 @@ import { CategoryPickerComponent } from '../category-picker/category-picker';
 import { FeeSheetComponent } from '../fee-sheet/fee-sheet';
 import { currencyDecimals, formatMoney, formatNumber } from '../format';
 import { FxSheetComponent, FxValue } from '../fx-sheet/fx-sheet';
-import { writeErrorMessage } from '../http-errors';
+import { fieldErrors, writeErrorMessage } from '../http-errors';
 import { AccountingShortcutsService } from '../keyboard-shortcuts';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
+import { IMPORT_RUNNING_TOAST, isImportRunning } from '../schedule-math';
+import { ScheduleDraft, defaultDraft } from '../schedule-tabs/schedule-draft';
+import { ScheduleTabsComponent } from '../schedule-tabs/schedule-tabs';
 import { SplitLinesComponent } from '../split-lines/split-lines';
 import { TransferPanelComponent } from '../transfer-panel/transfer-panel';
 import {
@@ -89,6 +94,7 @@ import {
   rememberEntryUse,
   resolveCounterpartyId,
 } from './entry-save';
+import { ScheduleFormError, buildDefinitionInput, definitionUpdateFrom, draftFromDefinition, shouldCatchUp } from './schedule-save';
 import { TransferEdit, transferCommonFrom, transferEditFrom } from './transfer-math';
 
 export { NO_RELATED } from './entry-save';
@@ -105,6 +111,10 @@ interface FeeProposal {
   input: EntryInput;
   continuous: boolean;
 }
+
+/** R-F2 copy: the schedule exists; only its first catch-up is outstanding. */
+export const CATCH_UP_RETRY_TEXT = '排程已建立，入帳未完成；按 ✓ 重試入帳';
+export const CATCH_UP_FAILED_TOAST = '排程已建立；這一期入帳失敗，請到待完成交易處理';
 
 /** What `load()` fetches: an edit (`copy: false`) or a copy source. */
 interface EntryTarget {
@@ -142,6 +152,7 @@ interface LoadedEntry extends EntryLoad {
     FeeSheetComponent,
     TransferPanelComponent,
     SplitLinesComponent,
+    ScheduleTabsComponent,
   ],
   templateUrl: './entry-form.html',
   styleUrl: './entry-form.scss',
@@ -220,6 +231,23 @@ export class EntryFormComponent implements OnInit {
   private loadedDates: string | null = null;
   readonly transferEdit = signal<TransferEdit | null>(null);
   readonly transferPanel = viewChild(TransferPanelComponent);
+  private readonly toast = inject(AccountingToastService);
+  /** 進階 單次 / 週期 / 分期 (Task 21); 單次 is the plain entry. */
+  readonly scheduleDraft = signal<ScheduleDraft>(defaultDraft(todayIso()));
+  /** 編輯整個排程: the definition being edited (`?schedule=<id>`), else null. */
+  readonly scheduleId = signal<number | null>(null);
+  /** An imported definition before cutover: shown read-only with the lock banner. */
+  readonly definitionLocked = signal(false);
+  /** Server 422 field errors of the last schedule save, shown beside their fields. */
+  readonly fieldErrors = signal<Record<string, string>>({});
+  readonly scheduling = computed(() => this.scheduleDraft().tab !== 'single');
+  /** The payable a loan definition repays (definition mode). */
+  private loanEntryId: number | null = null;
+  private definitionRequest = 0;
+  /** R-F2: a definition this form created whose catch-up has not completed; ✓ then retries the catch-up only. */
+  readonly createdScheduleId = signal<number | null>(null);
+  /** Definition mode: the definition of the current navigation has been applied (else ✓ has no target). */
+  private readonly definitionLoaded = signal(false);
 
   private rulesTouched = false;
   /** Bumped by every `load()`; a response carrying an older value is dropped. */
@@ -233,14 +261,21 @@ export class EntryFormComponent implements OnInit {
   private longPressed = false;
 
   // Derived
-  /** Edit mode whose record failed to load: no update target, so ✓ stays disabled and save() refuses. */
-  readonly loadFailed = computed(() => this.editing() && !this.loading() && this.entryId() === null);
+  /**
+   * Edit mode whose record failed to load, or definition mode whose definition failed to load: no update target, so
+   * ✓ stays disabled and save() refuses.
+   */
+  readonly loadFailed = computed(
+    () =>
+      !this.loading() &&
+      ((this.editing() && this.entryId() === null) || (this.scheduleId() !== null && !this.definitionLoaded())),
+  );
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   readonly inSheet = computed(() => this.layoutMode.mode() === 'sheet');
   readonly isSystem = computed(() => this.kind() === 'system');
   readonly isParty = computed(() => this.kind() === 'receivable' || this.kind() === 'payable');
   readonly categoryKind = computed(() => categoryKindFor(this.kind()));
-  readonly title = computed(() => (this.editing() ? '編輯記錄' : '新增記錄'));
+  readonly title = computed(() => (this.scheduleId() !== null ? '編輯排程' : this.editing() ? '編輯記錄' : '新增記錄'));
   readonly account = computed(() => this.accounts().find(account => account.id === this.accountId()) ?? null);
   /** Open accounts; in edit mode also the record's own account when it is archived. New records never offer archived ones. */
   readonly accountOptions = computed(() =>
@@ -401,7 +436,13 @@ export class EntryFormComponent implements OnInit {
 
     combineLatest([this.route.paramMap, this.route.queryParamMap, toObservable(this.ready).pipe(filter(Boolean))])
       .pipe(takeUntilDestroyed())
-      .subscribe(([params, query]) => this.load(this.start(params.get('id'), query.get('kind'), query.get('copy'))));
+      .subscribe(([params, query]) => {
+        const schedule = query.get('schedule');
+        this.load(this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule));
+        if (schedule !== null) {
+          this.loadDefinition(Number(schedule));
+        }
+      });
 
     this.destroyRef.onDestroy(() => {
       this.clearPress();
@@ -453,7 +494,7 @@ export class EntryFormComponent implements OnInit {
   }
 
   /** Resets the form for a navigation; returns the record to load (edit or copy), or null for a blank record. */
-  private start(id: string | null, kindParam: string | null, copyParam: string | null): EntryTarget | null {
+  private start(id: string | null, kindParam: string | null, copyParam: string | null, scheduleParam: string | null = null): EntryTarget | null {
     this.resetFields();
     this.related.set(NO_RELATED);
     this.feeProposal.set(null);
@@ -466,6 +507,12 @@ export class EntryFormComponent implements OnInit {
     this.originalAccountId.set(null);
     this.accountId.set(null);
     this.editing.set(id !== null);
+    ++this.definitionRequest;
+    this.loanEntryId = null;
+    this.definitionLocked.set(false);
+    this.definitionLoaded.set(false);
+    this.createdScheduleId.set(null);
+    this.scheduleId.set(scheduleParam !== null ? Number(scheduleParam) : null);
     if (id !== null) {
       return { entryId: Number(id), copy: false };
     }
@@ -505,6 +552,8 @@ export class EntryFormComponent implements OnInit {
     this.loadedDates = null;
     this.transferEdit.set(null);
     this.transferPanel()?.reset();
+    this.scheduleDraft.set(defaultDraft(todayIso()));
+    this.fieldErrors.set({});
   }
 
   private datesKey(): string {
@@ -653,8 +702,12 @@ export class EntryFormComponent implements OnInit {
 
   // ---- field handlers -----------------------------------------------------
 
-  /** While editing, the record type cannot change into 系統 or between a transfer and a single entry. */
+  /** While editing, the record type cannot change into 系統 or between a transfer and a single entry; in definition
+   * mode it cannot change at all. */
   tabDisabled(kind: FormKind): boolean {
+    if (this.scheduleId() !== null) {
+      return kind !== this.kind();
+    }
     return this.editing() && (kind === 'system' || (kind === 'transfer') !== (this.kind() === 'transfer'));
   }
 
@@ -940,6 +993,12 @@ export class EntryFormComponent implements OnInit {
     if (this.unsupported()) {
       return this.unsupported();
     }
+    if (this.definitionLocked()) {
+      return 'MOZE 匯入資料，切換後可編輯';
+    }
+    if (this.scheduling() && this.fx()) {
+      return '排程不支援外幣，請先移除匯率';
+    }
     if (this.kind() === 'transfer') {
       // The transfer panel validates its own accounts and amounts (buildInput). An edited leg without its
       // counterpart has no group to PUT, and must never fall through to creating a second transfer.
@@ -962,7 +1021,7 @@ export class EntryFormComponent implements OnInit {
     if (fx && !fx.use_online && this.convertedAmount() === null) {
       return '請輸入匯率或轉換後金額';
     }
-    if (this.isParty() && !this.counterpartyName().trim()) {
+    if (this.isParty() && !this.counterpartyName().trim() && this.loanEntryId === null) {
       return '請輸入對象';
     }
     return null;
@@ -978,12 +1037,23 @@ export class EntryFormComponent implements OnInit {
       this.error.set('記錄未載入，無法儲存');
       return;
     }
+    const created = this.createdScheduleId();
+    if (created !== null) {
+      // R-F2: the definition exists; ✓ retries only its catch-up, whatever the (disabled) fields now say.
+      this.error.set(null);
+      this.runCatchUp(created, continuous);
+      return;
+    }
     const problem = this.validate();
     if (problem) {
       this.error.set(problem);
       return;
     }
     this.error.set(null);
+    if (this.scheduling() || this.scheduleId() !== null) {
+      this.saveSchedule(continuous && this.scheduleId() === null);
+      return;
+    }
     this.saving.set(true);
     // Captured now: the id set when the matching response was applied, not whatever the route says later.
     const targetId = this.entryId();
@@ -1048,6 +1118,150 @@ export class EntryFormComponent implements OnInit {
       }
       this.finish(keepGoing);
     });
+  }
+
+  /** 編輯整個排程: the definition's fields into the form; an answer for an older navigation is dropped. */
+  private loadDefinition(definitionId: number): void {
+    const request = ++this.definitionRequest;
+    this.loading.set(true);
+    this.accounting
+      .getScheduleDefinition(definitionId)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: definition => {
+          if (request === this.definitionRequest) {
+            this.applyDefinition(definition);
+            this.loading.set(false);
+          }
+        },
+        error: () => {
+          if (request === this.definitionRequest) {
+            this.loading.set(false);
+            this.error.set('排程讀取失敗，請稍後再試。');
+          }
+        },
+      });
+  }
+
+  private applyDefinition(definition: ScheduleDefinition): void {
+    const form = draftFromDefinition(definition);
+    this.definitionLoaded.set(true);
+    this.definitionLocked.set(definition.locked);
+    this.loanEntryId = form.loanEntryId;
+    this.kind.set(form.kind);
+    this.scheduleDraft.set(form.draft);
+    this.name.set(form.name);
+    this.merchant.set(form.merchant);
+    this.description.set(form.description);
+    this.tags.set(form.tags);
+    this.projectId.set(form.projectId);
+    this.accountId.set(form.accountId);
+    this.amountExpr.set(form.amount);
+    this.counterpartyName.set(form.counterparty ?? '');
+    this.pendingCategoryId = form.categoryId;
+    this.resolvePendingCategory();
+    this.transferEdit.set(form.transfer);
+  }
+
+  /** 週期 / 分期: create (then catch-up when it starts today, 自動入帳) or, in definition mode, PUT the definition. */
+  private saveSchedule(keepGoing: boolean): void {
+    this.fieldErrors.set({});
+    // R-F2: once a create has answered, save() routes ✓ to runCatchUp and never reaches here for that definition.
+    const panel = this.transferPanel();
+    const transfer = this.kind() === 'transfer' ? (panel?.buildInput(transferCommonFrom(this.sharedFields())) ?? null) : null;
+    if (this.kind() === 'transfer' && !transfer) {
+      return; // the panel shows its own message
+    }
+    const repayId = this.scheduleDraft().repayAccountId;
+    const counterparty: Observable<number | null> = this.isParty() && this.loanEntryId === null
+      ? resolveCounterpartyId(this.accounting, this.counterpartyName(), this.counterparties(), party =>
+          this.counterparties.update(list => [...list, party]),
+        )
+      : of(null);
+    const definitionId = this.scheduleId();
+    const request = counterparty.pipe(
+      map(counterpartyId =>
+        buildDefinitionInput({
+          kind: this.kind(),
+          draft: this.scheduleDraft(),
+          name: this.name(),
+          merchant: this.merchant(),
+          description: this.description(),
+          tags: this.tags(),
+          projectId: this.projectId(),
+          categoryId: this.category()?.id ?? null,
+          categoryName: this.category()?.name ?? null,
+          account: this.account(),
+          amount: this.amount(),
+          counterpartyId,
+          transfer,
+          transferFrom: panel?.from() ?? null,
+          transferTo: panel?.to() ?? null,
+          repayAccount: repayId === null ? null : (this.accounts().find(account => account.id === repayId) ?? null),
+          entryDate: this.entryDate(),
+          loanEntryId: this.loanEntryId,
+        }),
+      ),
+      switchMap(input =>
+        definitionId !== null
+          ? this.accounting.updateScheduleDefinition(definitionId, definitionUpdateFrom(input)).pipe(map(() => null))
+          : this.accounting
+              .createScheduleDefinition(input)
+              .pipe(map(created => (shouldCatchUp(input, todayIso()) ? created.id : null))),
+      ),
+    );
+    this.saving.set(true);
+    request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: catchUpId => {
+        this.saving.set(false);
+        if (catchUpId !== null) {
+          this.createdScheduleId.set(catchUpId); // creation is complete from here on (R-F2)
+          this.runCatchUp(catchUpId, keepGoing);
+          return;
+        }
+        this.finish(keepGoing);
+      },
+      error: (error: unknown) => {
+        this.saving.set(false);
+        if (error instanceof ScheduleFormError) {
+          this.fieldErrors.set({ [error.field]: error.message });
+          this.error.set(error.message);
+          return;
+        }
+        if (isImportRunning(error)) {
+          this.toast.show(IMPORT_RUNNING_TOAST);
+          return;
+        }
+        this.fieldErrors.set(fieldErrors(error));
+        this.error.set(writeErrorMessage(error));
+      },
+    });
+  }
+
+  /** 補入帳 right after a create that starts today (自動入帳), and its retry (R-F2). A 200 with `failed` is surfaced in
+   *  the toast, never discarded; an error keeps `createdScheduleId`, so ✓ retries this call only. */
+  private runCatchUp(definitionId: number, keepGoing: boolean): void {
+    this.saving.set(true);
+    this.accounting
+      .catchUpSchedule(definitionId)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: result => {
+          this.saving.set(false);
+          this.createdScheduleId.set(null);
+          if (result.failed !== null) {
+            this.toast.show(CATCH_UP_FAILED_TOAST);
+          }
+          this.finish(keepGoing);
+        },
+        error: (error: unknown) => {
+          this.saving.set(false);
+          if (isImportRunning(error)) {
+            this.toast.show(IMPORT_RUNNING_TOAST);
+          }
+          this.error.set(CATCH_UP_RETRY_TEXT);
+        },
+      });
   }
 
   /** Runs one write (null: refused before sending): `saving` until it answers, then `done` or the error line. */
