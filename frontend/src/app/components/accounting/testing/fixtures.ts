@@ -7,6 +7,8 @@ import {
   LedgerEntry,
   Preference,
   RewardRule,
+  ScheduleDefinition,
+  ScheduleInstance,
 } from '../../../models/accounting.model';
 
 /** Synthetic DTO factories for specs. Every field has a neutral default; pass only what the test is about. */
@@ -163,4 +165,88 @@ export function makeCategory(overrides: Partial<CategoryNode> = {}): CategoryNod
 
 export function makePreference(overrides: Partial<Preference> = {}): Preference {
   return { ...DEFAULT_PREFERENCE, ...overrides };
+}
+
+export function makeDefinition(overrides: Partial<ScheduleDefinition> = {}): ScheduleDefinition {
+  return {
+    id: 1,
+    kind: 'recurring',
+    name: 'Netflix',
+    status: 'active',
+    posting_mode: 'auto',
+    interval_unit: 'month',
+    interval_n: 1,
+    anchor_date: '2026-10-22',
+    day_of_month: null,
+    first_seq: 1,
+    times: null,
+    end_date: null,
+    total_amount: null,
+    auto_post_from: '2026-10-03',
+    template: {
+      lines: [
+        {
+          kind: 'expense', account_id: 2, to_account_id: null, to_amount: null, counterparty_id: null, category_id: 41,
+          project_id: null, amount: '390', currency: 'TWD', loan_entry_id: null, name: null, merchant: null,
+          account_name: '範例卡', to_account_name: null, category: '娛樂/Netflix', counterparty: null,
+        },
+      ],
+      description: null,
+      tags: [],
+    },
+    created_locally: true,
+    template_owner_edited: false,
+    imported: false,
+    locked: false,
+    review_reason: null,
+    generated_until: '2027-11-03',
+    posted_count: 0,
+    skipped_count: 0,
+    pending_count: 13,
+    next_due_date: '2026-10-22',
+    next_amount: [{ currency: 'TWD', amount: '-390.0000' }],
+    remaining: null,
+    repaid: null,
+    loan_entry_id: null,
+    needs_check: false,
+    failing: null,
+    category_icon: '🎬',
+    category_color: '#c9b8f0',
+    ...overrides,
+  };
+}
+
+export function makeInstance(overrides: Partial<ScheduleInstance> = {}): ScheduleInstance {
+  return {
+    id: 1,
+    definition_id: 1,
+    definition_name: 'Netflix',
+    kind: 'recurring',
+    posting_mode: 'confirm',
+    seq: 1,
+    times: null,
+    due_date: '2026-10-22',
+    rule_date: '2026-10-22',
+    status: 'pending',
+    is_partial: false,
+    overdue_days: 0,
+    lines: [
+      {
+        kind: 'expense', account_id: 2, account_name: '範例卡', to_account_id: null, to_account_name: null,
+        category: '娛樂/Netflix', counterparty: null, amount: '-390.0000', currency: 'TWD',
+      },
+    ],
+    totals: [{ currency: 'TWD', amount: '-390.0000' }],
+    amounts: ['390'],
+    last_error: null,
+    reopened: false,
+    edited_by_owner: false,
+    note: null,
+    posted_entry_ids: [],
+    acted_at: null,
+    acted_by: null,
+    category_icon: '🎬',
+    category_color: '#c9b8f0',
+    ...overrides,
+  };
 }

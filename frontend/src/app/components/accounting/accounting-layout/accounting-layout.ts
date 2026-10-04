@@ -20,6 +20,7 @@ import { filter } from 'rxjs';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
+import { AccountingToastComponent } from '../accounting-toast';
 import { isHandledKey } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
@@ -62,7 +63,7 @@ const SWIPE_CLOSE_PX = 80;
 @Component({
   selector: 'app-accounting-layout',
   standalone: true,
-  imports: [RouterOutlet, RouterLink, NgComponentOutlet],
+  imports: [RouterOutlet, RouterLink, NgComponentOutlet, AccountingToastComponent],
   templateUrl: './accounting-layout.html',
   styleUrl: './accounting-layout.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

@@ -14,7 +14,7 @@ export type EntryKind =
 
 /** Kinds created through `POST /entries`; the server applies the sign. */
 export type WritableEntryKind = 'expense' | 'income' | 'receivable' | 'payable';
-export type EntrySource = 'moze_import' | 'moze_backup' | 'manual' | 'hermes' | 'rule';
+export type EntrySource = 'moze_import' | 'moze_backup' | 'manual' | 'hermes' | 'rule' | 'schedule';
 export type FxSource = 'fx_api' | 'moze_backup' | 'manual';
 export type DueRule = 'fixed_day' | 'days_after_closing';
 export type RoundingMode = 'keep' | 'round' | 'floor' | 'ceil';
@@ -183,6 +183,8 @@ export interface LedgerEntry {
   source: EntrySource;
   moze_id: string | null;
   locked: boolean;
+  /** `EntryOut.schedule`: the posted schedule period that wrote this entry (週期 #k/N, 分期 #k/N pill); optional for older literals. */
+  schedule?: EntryScheduleLink | null;
 }
 
 /** `GET /entries/{id}` and every entry write response (`EntryDetailOut`). */
@@ -201,6 +203,8 @@ export interface EntryDetail extends LedgerEntry {
   refunded_amount: string;
   /** Write responses only: the foreign-transaction fee the account proposes, for the client to add. */
   proposed_fee?: string | null;
+  /** `EntryDetailOut.loan_schedule`: a payable / receivable original that a schedule repays (剩餘 · 已還 · 下期). */
+  loan_schedule?: LoanSchedule | null;
 }
 
 export interface EntryPage {
@@ -609,4 +613,291 @@ export const DEFAULT_CATEGORY_ICONS: Record<string, string> = {
 /** Icon for a category without its own: by main-category name, then by kind, then 📦. */
 export function defaultCategoryIcon(mainName: string | null | undefined, kind: string): string {
   return (mainName ? DEFAULT_CATEGORY_ICONS[mainName] : undefined) ?? DEFAULT_CATEGORY_ICONS[kind] ?? '📦';
+}
+
+// ---- schedules (週期 / 分期 / 待完成交易) -----------------------------------------------------------------------
+
+export type ScheduleDefinitionKind = 'recurring' | 'installment';
+export type ScheduleIntervalUnit = 'day' | 'week' | 'month' | 'year';
+export type SchedulePostingMode = 'auto' | 'confirm';
+export type ScheduleStatus = 'active' | 'paused' | 'ended';
+export type ScheduleInstanceStatus = 'pending' | 'posted' | 'skipped';
+export type ScheduleActor = 'auto' | 'owner' | 'import';
+export type ScheduleLineKind =
+  | 'expense'
+  | 'income'
+  | 'receivable'
+  | 'payable'
+  | 'transfer'
+  | 'repayment'
+  | 'collection'
+  | 'interest';
+
+/** One template line; amounts are unsigned decimal strings, the server applies the sign. */
+export interface ScheduleLineInput {
+  kind: ScheduleLineKind;
+  account_id: number;
+  to_account_id: number | null;
+  to_amount: string | null;
+  counterparty_id: number | null;
+  category_id: number | null;
+  project_id: number | null;
+  amount: string;
+  currency: string;
+  loan_entry_id: number | null;
+  name: string | null;
+  merchant: string | null;
+}
+
+export interface ScheduleLine extends ScheduleLineInput {
+  account_name: string | null;
+  to_account_name: string | null;
+  category: string | null;
+  counterparty: string | null;
+}
+
+export interface ScheduleTemplateInput {
+  lines: ScheduleLineInput[];
+  description: string | null;
+  tags: string[];
+}
+
+export interface ScheduleTemplate {
+  lines: ScheduleLine[];
+  description: string | null;
+  tags: string[];
+}
+
+export interface CurrencyAmount {
+  currency: string;
+  amount: string;
+}
+
+export interface ScheduleFailing {
+  instance_id: number;
+  due_date: string;
+  last_error: string;
+}
+
+/** `GET /schedules/definitions` row (`DefinitionOut`). */
+export interface ScheduleDefinition {
+  id: number;
+  kind: ScheduleDefinitionKind;
+  name: string;
+  status: ScheduleStatus;
+  posting_mode: SchedulePostingMode;
+  interval_unit: ScheduleIntervalUnit;
+  interval_n: number;
+  anchor_date: string;
+  day_of_month: number | null;
+  first_seq: number;
+  times: number | null;
+  end_date: string | null;
+  total_amount: string | null;
+  auto_post_from: string;
+  template: ScheduleTemplate;
+  created_locally: boolean;
+  /** The owner edited the template (D27): a backup import keeps it and lists MOZE's differing amounts. */
+  template_owner_edited: boolean;
+  imported: boolean;
+  /** Imported and before cutover: 編輯整個排程 and 刪除 answer 409 locked_until_cutover. */
+  locked: boolean;
+  review_reason: string | null;
+  generated_until: string | null;
+  posted_count: number;
+  skipped_count: number;
+  pending_count: number;
+  next_due_date: string | null;
+  next_amount: CurrencyAmount[];
+  /** Loans: open amount signed like the loan (payable negative); card installments: what is left of the total. */
+  remaining: string | null;
+  repaid: string | null;
+  loan_entry_id: number | null;
+  needs_check: boolean;
+  failing: ScheduleFailing | null;
+  category_icon: string | null;
+  category_color: string | null;
+}
+
+export interface ScheduleInstanceLine {
+  kind: ScheduleLineKind;
+  account_id: number;
+  account_name: string | null;
+  to_account_id: number | null;
+  to_account_name: string | null;
+  category: string | null;
+  counterparty: string | null;
+  /** Signed: money leaving the paying account is negative. */
+  amount: string;
+  currency: string;
+}
+
+/** `GET /schedules/instances` row (`InstanceOut`). */
+export interface ScheduleInstance {
+  id: number;
+  definition_id: number;
+  definition_name: string;
+  kind: ScheduleDefinitionKind;
+  posting_mode: SchedulePostingMode;
+  seq: number;
+  times: number | null;
+  due_date: string;
+  rule_date: string;
+  status: ScheduleInstanceStatus;
+  is_partial: boolean;
+  overdue_days: number;
+  lines: ScheduleInstanceLine[];
+  totals: CurrencyAmount[];
+  /** Unsigned amounts aligned with the template lines ("0" = not written), for repost bodies. */
+  amounts: string[];
+  last_error: string | null;
+  reopened: boolean;
+  edited_by_owner: boolean;
+  note: string | null;
+  posted_entry_ids: number[];
+  acted_at: string | null;
+  acted_by: ScheduleActor | null;
+  category_icon: string | null;
+  category_color: string | null;
+}
+
+export interface ScheduleDefinitionDetail extends ScheduleDefinition {
+  instances: ScheduleInstance[];
+}
+
+export interface ScheduleLoanInput {
+  account_id: number;
+  counterparty_id: number;
+  category_id: number | null;
+  amount: string;
+  entry_date: string;
+  name: string | null;
+}
+
+export interface ScheduleDefinitionInput {
+  kind: ScheduleDefinitionKind;
+  name: string;
+  template: ScheduleTemplateInput;
+  interval_unit: ScheduleIntervalUnit;
+  interval_n: number;
+  anchor_date: string;
+  day_of_month: number | null;
+  times: number | null;
+  end_date: string | null;
+  total_amount: string | null;
+  posting_mode: SchedulePostingMode;
+  loan: ScheduleLoanInput | null;
+}
+
+/** `PUT /schedules/definitions/{id}`: the create fields except `kind` and `loan`; a left-out `posting_mode` keeps the stored one. */
+export type ScheduleDefinitionUpdate = Omit<ScheduleDefinitionInput, 'kind' | 'loan' | 'posting_mode'> & {
+  posting_mode?: SchedulePostingMode;
+};
+
+/** 套用範圍 of a period edit: 僅這一期 / 這一期與之後 / 全部週期. */
+export type ScheduleInstanceScope = 'this' | 'following' | 'all';
+
+/** `PUT /schedules/instances/{id}` (`InstanceUpdateIn`). */
+export interface ScheduleInstanceUpdate {
+  due_date?: string;
+  amounts?: string[];
+  scope?: ScheduleInstanceScope;
+}
+
+export interface ScheduleInstanceQuery {
+  from?: string;
+  until?: string;
+  status?: ScheduleInstanceStatus | 'all';
+  definition_id?: number;
+  queue?: boolean;
+}
+
+export interface ScheduleCatchUpResult {
+  posted: number[];
+  failed: { instance_id: number; error: string } | null;
+  definition: ScheduleDefinition;
+}
+
+export interface ScheduleRunReport {
+  trigger: string;
+  today: string;
+  status: string;
+  generated: number;
+  /** Ids of the definitions whose generation failed in this run. */
+  generation_failed: number[];
+  posted: number[];
+  failed: number[];
+  stopped_definitions: number[];
+}
+
+/** `EntryOut.schedule`. */
+export interface EntryScheduleLink {
+  definition_id: number;
+  instance_id: number;
+  kind: ScheduleDefinitionKind;
+  seq: number;
+  times: number | null;
+  name: string;
+  is_partial: boolean;
+  acted_by: ScheduleActor | null;
+  posted_entry_ids: number[];
+}
+
+/** `EntryDetailOut.loan_schedule`. */
+export interface LoanSchedule {
+  definition_id: number;
+  name: string;
+  status: ScheduleStatus;
+  posting_mode: SchedulePostingMode;
+  posted_count: number;
+  times: number | null;
+  next_due_date: string | null;
+  next_amount: CurrencyAmount[];
+  remaining: string | null;
+  repaid: string | null;
+  needs_check: boolean;
+}
+
+/** One differing line of a period (Multica R-F5): HomeHub's amount against MOZE's record; owner-facing, never logged. */
+export interface ScheduleAmountDiffer {
+  definition_id: number;
+  name: string;
+  seq: number;
+  date: string;
+  line: number;
+  kind: ScheduleLineKind | 'transfer_in';
+  amount: string;
+  moze_amount: string;
+}
+
+/** `review[].reason` of a backup import's schedules block (`not_live` / `loan_missing` also land on `review_reason`). */
+export type ScheduleReviewReason =
+  | 'interval_mismatch'
+  | 'same_date'
+  | 'no_records'
+  | 'event_missing'
+  | 'seq_conflict'
+  | 'account_missing'
+  | 'loan_missing'
+  | 'not_live';
+
+/** `summary.schedules` of a backup import. */
+export interface ScheduleImportReport {
+  definitions: Record<'recurring' | 'installment' | 'single', { created: number; updated: number; ended: number; deleted: number }>;
+  instances: Record<string, number>;
+  records_mapped: number;
+  rewards_ignored: number;
+  unsupported_types: Record<string, number>;
+  past_records_already_posted: number;
+  past_records_already_skipped: number;
+  past_records_amount_differs: { count: number; instance_ids: number[]; lines: ScheduleAmountDiffer[] };
+  /** R-F1: owner-edited pending periods whose MOZE record turned past (the record was not imported). */
+  past_records_owner_pending: { definition_id: number; seq: number; date: string }[];
+  relinked: { templates: number; settlements: number };
+  review: { moze_id: string; reason: ScheduleReviewReason }[];
+  /** R-A3: pending periods whose kept amounts (owner price, owner edit) differ from MOZE's, per line. */
+  amount_differs: ScheduleAmountDiffer[];
+  loan_remainder_check: { definition: string; moze_remainder: string; open_amount: string; difference: string }[];
+  /** MOZE records hanging off a skipped / owner-held period (fee, discount, …): not imported, MOZE type number kept. */
+  dependants_suppressed: { count: number; records: { moze_id: string; parent_moze_id: string; type: number }[] };
 }
