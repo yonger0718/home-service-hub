@@ -93,11 +93,15 @@ export function ruleDayLabel(rule: ScheduleRule): string {
   }
 }
 
-/** MOZE's 週期 footer: `週期：#1 / 無限期（每月 / 22號）`, `週期：#1 / 12（每月 / 22號）`. */
-export function recurringFooter(rule: ScheduleRule, times: number | null): string {
+/**
+ * MOZE's 週期 footer: `週期：#1 / 無限期（每月 / 22號）`, `週期：#1 / 12（每月 / 22號）`, and for a run that ends on a
+ * date (`endDate`, used when `times` is null) `週期：#1 / 至 2027/01/31（每月 / 22號）`.
+ */
+export function recurringFooter(rule: ScheduleRule, times: number | null, endDate: string | null = null): string {
   const label = intervalLabel(rule.interval_unit, rule.interval_n);
   const day = ruleDayLabel(rule);
-  return `週期：#1 / ${times ?? '無限期'}（${day ? `${label} / ${day}` : label}）`;
+  const end = times ?? (endDate ? `至 ${slashDate(endDate)}` : '無限期');
+  return `週期：#1 / ${end}（${day ? `${label} / ${day}` : label}）`;
 }
 
 /** floor(total ÷ times) in the currency's decimals; the remainder goes to the last period (分期餘額納入 末期). */

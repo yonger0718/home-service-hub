@@ -13,6 +13,10 @@ export interface ScheduleDraft {
   every: number;
   /** 起始日 (週期); follows the entry date until the owner edits it. */
   start: string;
+  /**
+   * True once 起始日 was set deliberately. A consumer that hydrates a draft from an existing definition must set
+   * `startTouched` and `firstTouched` to true, or the entry-date effect replaces the definition's anchor / first date.
+   */
   startTouched: boolean;
   /** Kept from an edited definition (an imported 31st); the form itself never sets it. */
   dayOfMonth: number | null;
@@ -24,6 +28,7 @@ export interface ScheduleDraft {
   periods: number;
   /** 首次還款日 (分期); one month after the entry date until edited. */
   firstDate: string;
+  /** True once 首次還款日 was set deliberately; see `startTouched` (hydrating from a definition sets both). */
   firstTouched: boolean;
   /** 每期金額 as typed; '' = the automatic floor(總額 ÷ 期數). */
   perPeriod: string;

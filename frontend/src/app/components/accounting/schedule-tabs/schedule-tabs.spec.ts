@@ -143,4 +143,38 @@ describe('ScheduleTabsComponent', () => {
     expect(text(el.querySelector('.field-error[data-field="times"]'))).toBe('分期至少 2 期');
     expect(text(el.querySelector('.field-error[data-field="interest"]'))).toBe('金額格式錯誤');
   });
+
+  it('keeps intermediate values while typing and clamps once the field is left', () => {
+    const { fixture, el } = render({ amount: 10000 });
+    tab(fixture, '分期');
+    set(fixture, '.sched-periods', '1');
+    expect(fixture.componentInstance.draft().periods).toBe(12);
+    expect((el.querySelector('.sched-periods') as HTMLInputElement).value).toBe('1');
+    set(fixture, '.sched-periods', '18');
+    expect(fixture.componentInstance.draft().periods).toBe(18);
+    set(fixture, '.sched-periods', '', 'blur');
+    expect(fixture.componentInstance.draft().periods).toBe(2);
+    expect((el.querySelector('.sched-periods') as HTMLInputElement).value).toBe('2');
+    tab(fixture, '週期');
+    set(fixture, '.sched-every', '');
+    expect(fixture.componentInstance.draft().every).toBe(1);
+    set(fixture, '.sched-every', '3');
+    expect(fixture.componentInstance.draft().every).toBe(3);
+    set(fixture, '.sched-every', '', 'blur');
+    expect((el.querySelector('.sched-every') as HTMLInputElement).value).toBe('1');
+    set(fixture, '.sched-end', 'times', 'change');
+    set(fixture, '.sched-end-times', '0');
+    expect(fixture.componentInstance.draft().endTimes).toBe(12);
+    set(fixture, '.sched-end-times', '0', 'blur');
+    expect(fixture.componentInstance.draft().endTimes).toBe(1);
+    expect((el.querySelector('.sched-end-times') as HTMLInputElement).value).toBe('1');
+  });
+
+  it('words the footer of a run that ends on a date', () => {
+    const { fixture, el } = render();
+    tab(fixture, '週期');
+    set(fixture, '.sched-end', 'date', 'change');
+    set(fixture, '.sched-end-date', '2027-01-31', 'change');
+    expect(text(el.querySelector('.schedule-footer'))).toBe('週期：#1 / 至 2027/01/31（每月 / 22號）');
+  });
 });

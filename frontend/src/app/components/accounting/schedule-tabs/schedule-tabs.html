@@ -23,7 +23,7 @@
           <span class="sched-label">區間</span>
           <span class="sched-inline">
             每
-            <input class="sched-every" type="number" min="1" inputmode="numeric" aria-label="間隔" [value]="draft().every" [disabled]="disabled()" (input)="setEvery($any($event.target).value)" />
+            <input class="sched-every" type="number" min="1" inputmode="numeric" aria-label="間隔" [value]="draft().every" [disabled]="disabled()" (input)="setEvery($any($event.target).value)" (blur)="commitCount('every', $any($event.target))" />
             <select class="sched-unit" aria-label="單位" [disabled]="disabled()" (change)="setUnit($any($event.target).value)">
               @for (unit of units; track unit.unit) {
                 <option [value]="unit.unit" [selected]="draft().unit === unit.unit">{{ unit.label }}</option>
@@ -50,7 +50,7 @@
               <option value="date" [selected]="draft().endMode === 'date'">日期</option>
             </select>
             @if (draft().endMode === 'times') {
-              <input class="sched-end-times" type="number" min="1" inputmode="numeric" aria-label="次數" [value]="draft().endTimes" [disabled]="disabled()" (input)="setEndTimes($any($event.target).value)" />
+              <input class="sched-end-times" type="number" min="1" inputmode="numeric" aria-label="次數" [value]="draft().endTimes" [disabled]="disabled()" (input)="setEndTimes($any($event.target).value)" (blur)="commitCount('endTimes', $any($event.target))" />
               <span>次</span>
             }
             @if (draft().endMode === 'date') {
@@ -81,7 +81,7 @@
         </div>
         <label class="sched-row">
           <span class="sched-label">期數</span>
-          <input class="sched-periods" type="number" min="2" inputmode="numeric" [value]="draft().periods" [disabled]="disabled()" (input)="setPeriods($any($event.target).value)" />
+          <input class="sched-periods" type="number" min="2" inputmode="numeric" [value]="draft().periods" [disabled]="disabled()" (input)="setPeriods($any($event.target).value)" (blur)="commitCount('periods', $any($event.target))" />
           @if (error('times'); as message) {
             <small class="field-error" data-field="times">{{ message }}</small>
           }

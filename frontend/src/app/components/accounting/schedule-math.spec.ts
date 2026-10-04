@@ -28,6 +28,7 @@ describe('schedule-math', () => {
   it('writes the 週期 footer', () => {
     expect(recurringFooter(MONTHLY, null)).toBe('週期：#1 / 無限期（每月 / 22號）');
     expect(recurringFooter(MONTHLY, 12)).toBe('週期：#1 / 12（每月 / 22號）');
+    expect(recurringFooter(MONTHLY, null, '2027-01-31')).toBe('週期：#1 / 至 2027/01/31（每月 / 22號）');
     expect(recurringFooter({ ...MONTHLY, interval_unit: 'week', anchor_date: '2026-10-05' }, null)).toBe(
       '週期：#1 / 無限期（每週 / 星期一）',
     );

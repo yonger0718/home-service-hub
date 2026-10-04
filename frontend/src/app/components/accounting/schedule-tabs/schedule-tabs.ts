@@ -14,6 +14,11 @@ const UNITS: readonly { unit: ScheduleIntervalUnit; label: string }[] = [
   { unit: 'year', label: '年' },
 ];
 
+type CountField = 'every' | 'endTimes' | 'periods';
+
+/** 每 N ≥ 1, N 次 ≥ 1, 期數 ≥ 2. */
+const COUNT_MINIMUMS: Record<CountField, number> = { every: 1, endTimes: 1, periods: 2 };
+
 /** 進階 of the entry form: 單次 (projected content: 入帳日) / 週期 / 分期 (spec "Entry form schedule tabs"). */
 @Component({
   selector: 'app-schedule-tabs',
@@ -69,7 +74,11 @@ export class ScheduleTabsComponent {
   readonly footer = computed(() => {
     const draft = this.draft();
     if (draft.tab === 'recurring') {
-      return recurringFooter(this.rule(), draft.endMode === 'times' ? draft.endTimes : null);
+      return recurringFooter(
+        this.rule(),
+        draft.endMode === 'times' ? draft.endTimes : null,
+        draft.endMode === 'date' ? draft.endDate : null,
+      );
     }
     if (draft.tab === 'installment') {
       const amount = this.amount();
@@ -126,7 +135,7 @@ export class ScheduleTabsComponent {
   }
 
   setEvery(value: string): void {
-    this.patch({ every: Math.max(1, Math.floor(Number(value)) || 1) });
+    this.typeCount('every', value);
   }
 
   setUnit(value: string): void {
@@ -144,7 +153,7 @@ export class ScheduleTabsComponent {
   }
 
   setEndTimes(value: string): void {
-    this.patch({ endTimes: Math.max(1, Math.floor(Number(value)) || 1) });
+    this.typeCount('endTimes', value);
   }
 
   setEndDate(value: string): void {
@@ -158,7 +167,27 @@ export class ScheduleTabsComponent {
   }
 
   setPeriods(value: string): void {
-    this.patch({ periods: Math.max(2, Math.floor(Number(value)) || 2) });
+    this.typeCount('periods', value);
+  }
+
+  /**
+   * While typing, a count reaches the draft only once it is a valid whole number (≥ its minimum); clamping here would
+   * rewrite the field mid-edit (期數 12 → Backspace → 1 → 2 → typing 8 gives 28). An invalid value is ignored.
+   */
+  private typeCount(field: CountField, value: string): void {
+    const n = Number(value);
+    if (value.trim() !== '' && Number.isInteger(n) && n >= COUNT_MINIMUMS[field]) {
+      this.patch({ [field]: n });
+    }
+  }
+
+  /** On leaving the field, an invalid or blank count is normalised (floored, raised to its minimum) and shown. */
+  commitCount(field: CountField, element: HTMLInputElement): void {
+    const n = Math.floor(Number(element.value));
+    const value = element.value.trim() !== '' && Number.isFinite(n) ? Math.max(COUNT_MINIMUMS[field], n) : COUNT_MINIMUMS[field];
+    this.patch({ [field]: value });
+    // The bound [value] may not change (the draft already held it), so write the normalised value back directly.
+    element.value = String(value);
   }
 
   setFirst(value: string): void {
