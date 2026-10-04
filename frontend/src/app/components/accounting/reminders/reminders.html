@@ -150,7 +150,7 @@
 </section>
 
 <ng-template #queueItem let-row>
-  <div class="queue-item" [attr.data-instance-id]="row.id" [attr.aria-busy]="busyInstance() === row.id">
+  <div class="queue-item" tabindex="-1" [attr.data-instance-id]="row.id" [attr.aria-busy]="isBusy(row.id)">
     <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
     <span class="name">{{ row.title }}</span>
     <span class="due" [class.overdue]="row.overdue" [class.today]="row.today">{{ row.overdueText ?? row.dueText }}</span>
@@ -169,23 +169,23 @@
     <span class="queue-actions">
       @if (row.partial) {
         <span class="badge partial">部分入帳</span>
-        <button type="button" class="repost" [disabled]="busyInstance() === row.id" (click)="repost(row)">重新入帳</button>
-        <button type="button" class="accept" [disabled]="busyInstance() === row.id" (click)="acceptPartial(row)">保留部分</button>
+        <button type="button" class="repost" [disabled]="isBusy(row.id)" (click)="repost(row)">重新入帳</button>
+        <button type="button" class="accept" [disabled]="isBusy(row.id)" (click)="acceptPartial(row)">保留部分</button>
       } @else {
         @if (row.error) {
-          <button type="button" class="retry" [disabled]="busyInstance() === row.id" (click)="post(row)">重試</button>
+          <button type="button" class="retry" [disabled]="isBusy(row.id)" (click)="post(row)">重試</button>
         } @else {
-          <button type="button" class="post" [disabled]="busyInstance() === row.id" (click)="post(row)">入帳</button>
+          <button type="button" class="post" [disabled]="isBusy(row.id)" (click)="post(row)">入帳</button>
         }
         @if (confirmingSkip() === row.id) {
           <span class="skip-confirm">略過這一期？剩餘不變</span>
-          <button type="button" class="skip-yes" [disabled]="busyInstance() === row.id" (click)="skip(row)">略過</button>
-          <button type="button" class="skip-no" (click)="confirmingSkip.set(null)">取消</button>
+          <button type="button" class="skip-yes" [disabled]="isBusy(row.id)" (click)="skip(row)">略過</button>
+          <button type="button" class="skip-no" (click)="closeSkip()">取消</button>
         } @else {
-          <button type="button" class="skip" [disabled]="busyInstance() === row.id" (click)="askSkip(row)">略過</button>
+          <button type="button" class="skip" [disabled]="isBusy(row.id)" (click)="askSkip(row)">略過</button>
         }
         @if (row.offerCatchUp) {
-          <button type="button" class="catch-up" [disabled]="busyInstance() === row.id" (click)="catchUp(row)">補入帳至今天</button>
+          <button type="button" class="catch-up" [disabled]="isBusy(row.id)" (click)="catchUp(row)">補入帳至今天</button>
         }
       }
     </span>

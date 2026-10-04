@@ -1,4 +1,15 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  Injector,
+  afterNextRender,
+  computed,
+  effect,
+  inject,
+  signal,
+  untracked,
+} from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
@@ -204,6 +215,8 @@ export class AccountingRemindersComponent {
   private readonly route = inject(ActivatedRoute);
   private readonly layoutMode = inject(LayoutModeService);
   private readonly toast = inject(AccountingToastService);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
   private requestId = 0;
   private expandRequestId = 0;
 
@@ -222,7 +235,8 @@ export class AccountingRemindersComponent {
   readonly expandError = signal(false);
   /** The 待完成交易 item whose inline 略過這一期？剩餘不變 prompt is open. */
   readonly confirmingSkip = signal<number | null>(null);
-  readonly busyInstance = signal<number | null>(null);
+  /** Items with an action in flight: their buttons are disabled; overlapping actions on two items stay independent. */
+  readonly busyInstances = signal<ReadonlySet<number>>(new Set());
   readonly actionError = signal<string | null>(null);
   /** 借還款追蹤 filters: kept while the page is open, applied on that tab only. */
   readonly debtCounterparty = signal<number | null>(null);
@@ -326,6 +340,7 @@ export class AccountingRemindersComponent {
 
   private load(): void {
     const id = ++this.requestId;
+    this.actionError.set(null);
     forkJoin({
       accounts: this.accounting.getAccounts(),
       counterparties: this.accounting.getCounterparties(),
@@ -420,26 +435,67 @@ export class AccountingRemindersComponent {
 
   /** One schedule action; on success the service bumps entriesChanged, which reloads the list and the 🔔. */
   private act(row: QueueRow, request: Observable<unknown>): void {
-    this.busyInstance.set(row.id);
+    this.setBusy(row.id, true);
     this.actionError.set(null);
     request.subscribe({
       next: () => {
-        this.busyInstance.set(null);
-        this.confirmingSkip.set(null);
+        this.setBusy(row.id, false);
+        if (this.confirmingSkip() === row.id) {
+          this.closeSkip();
+        }
       },
       error: (error: unknown) => {
-        this.busyInstance.set(null);
+        this.setBusy(row.id, false);
         this.actionError.set(scheduleActionError(error, this.toast));
       },
     });
+  }
+
+  private setBusy(id: number, busy: boolean): void {
+    this.busyInstances.update(current => {
+      const next = new Set(current);
+      if (busy) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  }
+
+  isBusy(id: number): boolean {
+    return this.busyInstances().has(id);
+  }
+
+  /** Focuses `selector` inside the item once it has rendered (falling back to the item itself). */
+  private focusInItem(id: number, selector: string): void {
+    afterNextRender(
+      () => {
+        const item = this.host.nativeElement.querySelector<HTMLElement>(`.queue-item[data-instance-id="${id}"]`);
+        (item?.querySelector<HTMLElement>(selector) ?? item)?.focus();
+      },
+      { injector: this.injector },
+    );
   }
 
   post(row: QueueRow): void {
     this.act(row, this.accounting.postScheduleInstance(row.id));
   }
 
+  /** Opens the inline 略過 prompt and moves focus into it, so Esc there reaches this component (not the layout). */
   askSkip(row: QueueRow): void {
     this.confirmingSkip.set(row.id);
+    this.focusInItem(row.id, '.skip-no');
+  }
+
+  /** Closes the 略過 prompt and returns focus to the item's 入帳 / 重試 (else the item). */
+  closeSkip(): void {
+    const id = this.confirmingSkip();
+    if (id === null) {
+      return;
+    }
+    this.confirmingSkip.set(null);
+    this.focusInItem(id, '.post, .retry');
   }
 
   skip(row: QueueRow): void {
@@ -465,7 +521,7 @@ export class AccountingRemindersComponent {
     }
     if (event.key === 'Escape' && this.confirmingSkip() !== null) {
       event.preventDefault();
-      this.confirmingSkip.set(null);
+      this.closeSkip();
     }
   }
 }

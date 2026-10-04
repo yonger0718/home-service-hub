@@ -631,15 +631,53 @@ describe('AccountingRemindersComponent', () => {
       flushLoad([], [], [], []);
     });
 
-    it('closes the skip prompt on Esc', () => {
+    it('moves focus into the skip prompt, closes it on Esc from there and returns focus to 入帳', async () => {
+      // The 略過 button is replaced by the prompt, so focus must move into it or Esc never reaches the component.
       const { fixture, el } = render([], [], [], [RENT]);
       tab(el, '待完成交易').click();
       fixture.detectChanges();
+      button(item(el, 31), '略過').focus();
       button(item(el, 31), '略過').click();
       fixture.detectChanges();
-      item(el, 31).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await fixture.whenStable();
+      const prompt = item(el, 31).querySelector('.queue-actions')!;
+      expect(item(el, 31).querySelector('.skip-confirm')).not.toBeNull();
+      expect(document.activeElement).toBe(item(el, 31).querySelector('.skip-no'));
+      expect(prompt.contains(document.activeElement)).toBe(true);
+
+      const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      document.activeElement!.dispatchEvent(escape);
       fixture.detectChanges();
+      await fixture.whenStable();
+      // Marked handled, so the layout's document-level Esc leaves the pane open.
+      expect(escape.defaultPrevented).toBe(true);
+      expect(item(el, 31)).not.toBeNull();
       expect(item(el, 31).querySelector('.skip-confirm')).toBeNull();
+      expect(document.activeElement).toBe(button(item(el, 31), '入帳'));
+    });
+
+    it('keeps cards and counterparties when the queue load fails', () => {
+      const fixture = TestBed.createComponent(AccountingRemindersComponent);
+      fixture.detectChanges();
+      http.expectOne(r => r.url === '/api/accounting/accounts').flush([SOON]);
+      http.expectOne('/api/accounting/counterparties').flush([ALAN]);
+      http
+        .expectOne(r => r.url === '/api/accounting/entries' && !r.params.has('counterparty_id'))
+        .flush({ items: ALAN_OPEN, total: ALAN_OPEN.length, limit: 500, offset: 0 });
+      http
+        .expectOne(r => r.url === '/api/accounting/schedules/instances' && r.params.get('queue') === 'true')
+        .flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      flushBill(9, '-12345.0000', ['5000.0000']);
+      fixture.detectChanges();
+      const el = fixture.nativeElement as HTMLElement;
+      expect(text(el.querySelector('.queue-load-error'))).toBe('待完成交易讀取失敗，請稍後再試。');
+      expect(el.querySelectorAll('.card-row').length).toBe(1);
+      expect(el.querySelectorAll('.debt-row').length).toBe(1);
+      tab(el, '待完成交易').click();
+      fixture.detectChanges();
+      expect(text(el.querySelector('.queue-load-error'))).toBe('待完成交易讀取失敗，請稍後再試。');
+      expect(el.querySelector('.empty')).toBeNull();
     });
 
     it('posts from the queue and the item leaves the list', () => {
@@ -653,6 +691,28 @@ describe('AccountingRemindersComponent', () => {
       flushLoad([], [], [], []);
       fixture.detectChanges();
       expect(item(el, 31)).toBeNull();
+    });
+
+    it('keeps a second item busy while the first action finishes', () => {
+      const other = makeInstance({ id: 33, definition_id: 11, due_date: '2026-10-02', overdue_days: 1 });
+      const { fixture, el } = render([], [], [], [RENT, other]);
+      tab(el, '待完成交易').click();
+      fixture.detectChanges();
+      button(item(el, 31), '入帳').click();
+      button(item(el, 33), '入帳').click();
+      fixture.detectChanges();
+      expect(button(item(el, 31), '入帳').disabled).toBe(true);
+      expect(button(item(el, 33), '入帳').disabled).toBe(true);
+      http.expectOne(r => r.url === '/api/accounting/schedules/instances/31/post').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(button(item(el, 31), '入帳').disabled).toBe(false);
+      expect(button(item(el, 33), '入帳').disabled).toBe(true);
+      http.expectOne(r => r.url === '/api/accounting/schedules/instances/33/post').flush(makeInstance({ id: 33, status: 'posted' }));
+      fixture.detectChanges();
+      flushLoad([], [], [], [RENT]);
+      fixture.detectChanges();
+      // A reload clears the previous action's error line.
+      expect(el.querySelector('.action-error')).toBeNull();
     });
 
     it('offers 補入帳至今天 for a backlog', () => {
@@ -700,7 +760,7 @@ describe('AccountingRemindersComponent', () => {
       fixture.detectChanges();
       button(item(el, 31), '入帳').click();
       http.expectOne(r => r.url.endsWith('/instances/31/post')).flush(
-        { code: 409, message: 'import_running', trace_id: 't' }, { status: 409, statusText: 'Conflict' },
+        { detail: 'import_running' }, { status: 409, statusText: 'Conflict' },
       );
       fixture.detectChanges();
       expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
