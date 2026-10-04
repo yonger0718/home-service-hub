@@ -256,6 +256,8 @@ def end(db: Session, definition_id: int) -> None:
 def set_mode(db: Session, definition_id: int, posting_mode: str) -> None:
     take_import_key_shared(db)
     definition = lock_definition(db, definition_id)
+    if definition.status == "ended":
+        raise ConflictError("definition_ended")  # consistent with PUT of an ended definition (Task 10)
     _set_mode(definition, posting_mode, _today())
     db.flush()
 
@@ -270,25 +272,40 @@ def catch_up_ids(db: Session, definition_id: int) -> list[int]:
     return list(db.scalars(due.order_by(ScheduleInstance.seq)))
 
 
+_NOT_MINE = ("already_posted", "skipped")  # someone else posted or skipped the period meanwhile
+
+
+def _post_with_retry(db: Session, instance_id: int) -> posting.PostResult:
+    """post_instance, retried once when the template gained a loan line under it (definition_changed)."""
+    try:
+        return posting.post_instance(db, instance_id, actor="owner")
+    except ConflictError as exc:
+        if str(exc) != "definition_changed":
+            raise
+        db.rollback()
+        return posting.post_instance(db, instance_id, actor="owner")
+
+
 def post_sequence(db: Session, instance_ids: list[int]) -> tuple[list[int], dict | None]:
-    """Post each instance in its own transaction (acted_by owner), stopping at the first failure (D31)."""
+    """Post each instance in its own transaction (acted_by owner) in seq order, stopping at the first failure (D31,
+    R-F6): only a period someone else posted, skipped or deleted meanwhile is passed over."""
     posted: list[int] = []
     for instance_id in instance_ids:
         try:
-            result = posting.post_instance(db, instance_id, actor="owner")
+            result = _post_with_retry(db, instance_id)
             db.commit()
         except ImportRunningError:
             db.rollback()
             return posted, {"instance_id": instance_id, "error": "import_running"}
-        except ValidationError as exc:
-            message = posting.failure_message(exc)
-            posting.record_failure(db, instance_id, message)
-            return posted, {"instance_id": instance_id, "error": message}
-        except (ConflictError, NotFoundError):
-            db.rollback()  # posted, skipped or deleted by someone else meanwhile
+        except NotFoundError:
+            db.rollback()
             continue
-        except Exception as exc:  # noqa: BLE001 — IntegrityError, a deadlock's OperationalError, EditLockedError …
-            # Spec: on any error a second transaction stores last_error; failure_message keeps only the class name.
+        except Exception as exc:  # noqa: BLE001 — ValidationError, ConflictError, IntegrityError, OperationalError …
+            if isinstance(exc, ConflictError) and str(exc) in _NOT_MINE:
+                db.rollback()
+                continue
+            # Spec: on any error a second transaction stores last_error; failure_message keeps only the class name
+            # for anything but a ValidationError.
             message = posting.failure_message(exc)
             posting.record_failure(db, instance_id, message)
             return posted, {"instance_id": instance_id, "error": message}

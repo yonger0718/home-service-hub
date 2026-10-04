@@ -9,6 +9,7 @@ from sqlalchemy import func, select, text
 from app.models import LedgerEntry, ScheduleDefinition, ScheduleInstance
 from app.services import schedule_posting as posting
 from app.services import schedule_read
+from app.services.errors import ConflictError
 from app.services.moze_import_service import IMPORT_LOCK_KEY
 
 
@@ -206,3 +207,65 @@ def test_state_actions_work_on_imported_definitions_before_cutover(client, db_se
         lambda: client.post(f"/schedules/definitions/{imported.id}/end"),
     ):
         assert call().status_code == 200
+
+
+def _flaky_post(monkeypatch, instance_id, message, times):
+    """posting.post_instance raising ConflictError(message) for instance_id on its first `times` calls."""
+    real = posting.post_instance
+    calls = {"left": times}
+
+    def flaky(db, target_id, **kwargs):
+        if target_id == instance_id and calls["left"] > 0:
+            calls["left"] -= 1
+            raise ConflictError(message)
+        return real(db, target_id, **kwargs)
+
+    monkeypatch.setattr(posting, "post_instance", flaky)
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_post_sequence_retries_definition_changed_once_then_stops(client, db_session, seed, card, today, monkeypatch,
+                                                                  failures):
+    # R-F6: a period whose template changed under it is retried once; it never lets a later period jump the queue.
+    today(date(2026, 10, 3))
+    rent = seed.definition([seed.line("expense", card, "18000")], name="房租", posting_mode="confirm")
+    first = seed.instance(rent, 1, date(2026, 9, 22))
+    second = seed.instance(rent, 2, date(2026, 10, 1))
+    db_session.commit()
+    _flaky_post(monkeypatch, first.id, "definition_changed", failures)
+
+    body = client.post(f"/schedules/definitions/{rent.id}/catch-up").json()
+
+    rows = _rows(db_session, rent)
+    if failures == 1:
+        assert (body["posted"], body["failed"]) == ([first.id, second.id], None)
+        assert [row.status for row in rows] == ["posted", "posted"]
+    else:
+        assert (body["posted"], body["failed"]) == ([], {"instance_id": first.id, "error": "ConflictError"})
+        assert [(row.status, row.last_error) for row in rows] == [("pending", "ConflictError"), ("pending", None)]
+
+
+def test_post_sequence_skips_already_posted_and_continues(client, db_session, seed, card, today, monkeypatch):
+    today(date(2026, 10, 3))
+    rent = seed.definition([seed.line("expense", card, "18000")], name="房租", posting_mode="confirm")
+    first = seed.instance(rent, 1, date(2026, 9, 22))
+    second = seed.instance(rent, 2, date(2026, 10, 1))
+    db_session.commit()
+    _flaky_post(monkeypatch, first.id, "already_posted", 1)
+
+    body = client.post(f"/schedules/definitions/{rent.id}/catch-up").json()
+
+    assert (body["posted"], body["failed"]) == ([second.id], None)
+    assert [(row.status, row.last_error) for row in _rows(db_session, rent)] == [("pending", None), ("posted", None)]
+
+
+def test_mode_change_on_ended_definition_is_refused(client, db_session, seed, card, today):
+    today(date(2026, 10, 3))
+    ended = seed.definition([seed.line("expense", card, "390")], status="ended", posting_mode="confirm")
+    db_session.commit()
+
+    response = client.put(f"/schedules/definitions/{ended.id}/mode", json={"posting_mode": "auto"})
+
+    assert (response.status_code, response.json()["message"]) == (409, "definition_ended")
+    db_session.expire_all()
+    assert db_session.get(ScheduleDefinition, ended.id).posting_mode == "confirm"
