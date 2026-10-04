@@ -307,7 +307,7 @@ def test_this_period_and_the_following_ones_keep_the_old_price_before(client, db
     assert _overrides(db_session, netflix.rows) == [(["390"], False), (None, False), (None, False)]
     assert _template(db_session, netflix.definition.id) == (["420"], True)
     first = _row(db_session, netflix.first.id)
-    assert (first.status, first.amount_override) == ("posted", None)
+    assert (first.status, first.amount_override) == ("posted", ["390"])  # its posted amount, pinned (metadata only)
     detail = client.get(f"/schedules/definitions/{netflix.definition.id}").json()
     assert detail["template_owner_edited"] is True
     pending = [item["amounts"] for item in detail["instances"] if item["status"] == "pending"]
@@ -442,8 +442,8 @@ def test_installment_scope_counts_posted_and_owner_edited_periods(client, db_ses
     db_session.commit()
     response = client.put(f"/schedules/instances/{plan.rows[2].id}", json={"amounts": ["2600"], "scope": "all"})
     assert response.status_code == 200
-    # seq 1 posted at 2,500 (no override); 2,500 + 2,000 + 2,600 + 2,900 = 10,000
-    assert [_row(db_session, row.id).amount_override for row in plan.rows] == [None, ["2000"], None, ["2900"]]
+    # seq 1 posted at 2,500 (its amount now pinned); 2,500 + 2,000 + 2,600 + 2,900 = 10,000
+    assert [_row(db_session, row.id).amount_override for row in plan.rows] == [["2500"], ["2000"], None, ["2900"]]
     assert _template(db_session, plan.definition.id) == (["2600"], True)
 
 
@@ -483,3 +483,38 @@ def test_generation_after_scoped_edit_keeps_the_total(client, db_session, seed, 
     rows.append(last)
     amounts = _first_amounts(db_session, rows)
     assert amounts == ["2500", "2600", "2600", "2300"] and sum(Decimal(value) for value in amounts) == Decimal("10000")
+
+
+def test_repeated_following_edits_keep_the_total(client, db_session, seed, today):
+    # Review of R-A1: a posted period keeps the amount it was posted with across successive template changes, so the
+    # last period generated later closes the total (2,500 + 2,600 + 2,700 + 2,700 + 2,000 = 12,500).
+    today(date(2026, 10, 1))
+    card = seed.account("範例卡")
+    definition = seed.definition(
+        [seed.line("expense", card, "2500")], kind="installment", name="分期", anchor=date(2026, 9, 15), times=5,
+        total_amount=Decimal("12500"),
+    )
+    entry = seed.entry(card, "-2500", day=date(2026, 9, 15), source="schedule")
+    rows = [seed.instance(definition, 1, date(2026, 9, 15), status="posted", entries=[entry])]
+    rows += [seed.instance(definition, seq, date(2026, 8 + seq, 15)) for seq in (2, 3, 4)]
+    db_session.commit()
+
+    first = client.put(f"/schedules/instances/{rows[1].id}", json={"amounts": ["2600"], "scope": "following"})
+    assert first.status_code == 200
+    assert _row(db_session, rows[0].id).amount_override == ["2500"]  # materialised before the template changed
+    today(date(2026, 10, 15))
+    assert client.post(f"/schedules/instances/{rows[1].id}/post").status_code == 200
+    second = client.put(f"/schedules/instances/{rows[2].id}", json={"amounts": ["2700"], "scope": "following"})
+    assert second.status_code == 200
+    assert generation.generate_locked(db_session, definition.id, date(2026, 10, 15)) == 1
+    db_session.commit()
+
+    last = db_session.scalar(
+        select(ScheduleInstance).where(ScheduleInstance.definition_id == definition.id, ScheduleInstance.seq == 5)
+    )
+    rows.append(last)
+    assert [_row(db_session, row.id).amount_override for row in rows[:2]] == [["2500"], ["2600"]]
+    amounts = _first_amounts(db_session, rows)
+    assert amounts == ["2500", "2600", "2700", "2700", "2000"]
+    assert sum(Decimal(value) for value in amounts) == Decimal("12500")
+    assert _row(db_session, rows[0].id).posted_entry_ids == [entry.id]  # the posted row's entries are untouched

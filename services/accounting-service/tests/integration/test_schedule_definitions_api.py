@@ -473,3 +473,30 @@ def test_schedule_writes_need_the_bearer_token_when_api_tokens_are_set(client, d
 
     assert refused.status_code == 401
     assert allowed.status_code == 201
+
+
+def test_definition_put_materialises_posted_amounts_before_template_change(client, db_session, seed, today):
+    # Review of R-A1: a PUT that changes a line amount pins the posted periods' amounts first, so the last period
+    # closes the total (2,500 + 3,000 + 3,000 + 1,500 = 10,000), not 10,000 − 3 × 3,000 (Σ 9,500).
+    today(date(2026, 10, 3))
+    card = seed.account("範例卡")
+    definition = seed.definition(
+        [seed.line("expense", card, "2500")], kind="installment", name="分期", anchor=date(2026, 9, 15), times=4,
+        total_amount=Decimal("10000"),
+    )
+    entry = seed.entry(card, "-2500", day=date(2026, 9, 15), source="schedule")
+    posted = seed.instance(definition, 1, date(2026, 9, 15), status="posted", entries=[entry])
+    db_session.commit()
+
+    response = client.put(
+        f"/schedules/definitions/{definition.id}",
+        json={"name": "分期", "template": {"lines": [_line("expense", card, "3000")]}, "interval_unit": "month",
+              "anchor_date": "2026-09-15", "times": 4, "total_amount": "10000"},
+    )
+
+    assert response.status_code == 200
+    rows = _instances(db_session, definition.id)
+    assert (rows[0].id, rows[0].status, rows[0].amount_override) == (posted.id, "posted", ["2500"])
+    effective = [Decimal((row.amount_override or ["3000"])[0]) for row in rows]
+    assert effective == [Decimal(2500), Decimal(3000), Decimal(3000), Decimal(1500)]
+    assert sum(effective) == Decimal(10000)

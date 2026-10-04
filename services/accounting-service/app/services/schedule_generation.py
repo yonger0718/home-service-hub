@@ -55,7 +55,7 @@ def installment_residual(
     definition is not an installment with a total and times. When the others already reach the total the edit is
     refused: ValidationError("amounts") — the message carries no amount.
     last_period_override (Task 6) is NOT used for scoped edits; generation uses this residual too once the owner has
-    edited amounts (_generated_last_override)."""
+    edited amounts (generated_last_override)."""
     if definition.kind != "installment" or definition.total_amount is None or definition.times is None:
         return None
     new_first = Decimal(new_amounts[0])
@@ -81,17 +81,27 @@ def installment_residual(
     return last
 
 
-def _generated_last_override(db: Session, definition: ScheduleDefinition) -> list[str] | None:
+def generated_last_override(db: Session, definition: ScheduleDefinition) -> list[str] | None:
     """The override of a last period generated now. Without owner amount edits (no template_owner_edited, no
-    owner-edited override) it is Task 6's last_period_override; after them it is installment_residual against the
-    actual allocations, so a last period generated after a scoped edit keeps Σ = total_amount (R-A1). Should the
-    owner's own edits already reach the total, the period follows the template (no invented amount)."""
+    owner-edited override, no posted amounts pinned by a template change on a local definition) it is Task 6's
+    last_period_override; after them it is installment_residual against the actual allocations, so a last period
+    generated after an amount edit keeps Σ = total_amount (R-A1). Posted periods carry the amounts they were posted
+    with (pinned before any template change), so the current template stands in for old_amounts. Should the owner's
+    own edits already reach the total, the period follows the template (no invented amount)."""
     fallback = last_period_override(definition)
     if definition.kind != "installment" or definition.total_amount is None or definition.times is None:
         return fallback
-    rows = list(db.scalars(select(ScheduleInstance).where(ScheduleInstance.definition_id == definition.id)))
+    rows = list(
+        db.scalars(  # populate_existing: count what the rows hold now, not a stale identity-map copy
+            select(ScheduleInstance)
+            .where(ScheduleInstance.definition_id == definition.id)
+            .execution_options(populate_existing=True)
+        )
+    )
     owner_edited = definition.template_owner_edited or any(
-        row.edited_by_owner and row.amount_override is not None for row in rows
+        row.amount_override is not None
+        and (row.edited_by_owner or (row.status == "posted" and definition.created_locally))
+        for row in rows
     )
     if not owner_edited:
         return fallback
@@ -147,7 +157,7 @@ def generate(db: Session, definition: ScheduleDefinition, today: date) -> int:
             continue  # this date is already posted for the definition: no second period, no seq consumed
         instance = ScheduleInstance(definition_id=definition.id, seq=seq, rule_date=day, due_date=day)
         if seq == definition.times:
-            instance.amount_override = _generated_last_override(db, definition)
+            instance.amount_override = generated_last_override(db, definition)
         db.add(instance)
         created += 1
         seq += 1

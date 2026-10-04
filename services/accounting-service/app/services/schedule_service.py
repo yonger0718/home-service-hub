@@ -147,9 +147,15 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
         db.delete(row)
     db.flush()
     old_template = definition.template
+    old_amounts = template_amounts(old_template)
+    amounts_changed = old_amounts != template_amounts(template)
     for row in remaining:
         if row.status == "pending":
             row.amount_override = realign_override(old_template, template, row.amount_override)
+        elif row.status == "posted" and row.amount_override is None and amounts_changed:
+            # R-A1 review: pin the amounts it was posted with before the template changes (metadata only; its
+            # entries stay), so an installment's last period keeps Σ = total_amount
+            row.amount_override = list(old_amounts)
 
     definition.name, definition.template = payload.name, template
     definition.interval_unit, definition.interval_n = payload.interval_unit, payload.interval_n
@@ -186,10 +192,9 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
     if fits:
         # The first regenerated period is inserted here, so generate() (strictly after the latest rule_date) continues
         # from it without the anchor being moved; it carries the last-period override when it is the last seq.
-        last_override = generation.last_period_override(definition)
         db.add(ScheduleInstance(
             definition_id=definition.id, seq=next_seq, rule_date=first, due_date=first,
-            amount_override=last_override if last_override is not None and next_seq == definition.times else None,
+            amount_override=generation.generated_last_override(db, definition) if next_seq == definition.times else None,
         ))
         db.flush()
         generation.generate(db, definition, today)
@@ -394,6 +399,9 @@ def _apply_amount_scope(db: Session, instance_id: int, payload: InstanceUpdateIn
     pending = [row for row in rows if row.status == "pending"]
     old_amounts = template_amounts(definition.template)
     planned: dict[int, list[str] | None] = {}  # the overrides this edit writes; computed before anything changes
+    for row in rows:
+        if row.status == "posted" and row.amount_override is None:
+            planned[row.id] = list(old_amounts)  # pin the amounts it was posted with (metadata only, R-A1 review)
     for row in pending:
         if payload.scope == "following" and row.seq < instance.seq:
             if row.amount_override is None:
@@ -405,7 +413,7 @@ def _apply_amount_scope(db: Session, instance_id: int, payload: InstanceUpdateIn
     residual = installment_residual(  # 422 `amounts` when the others reach the total; nothing written yet
         definition, rows, old_amounts=old_amounts, new_amounts=amounts, overrides=planned
     )
-    for row in pending:
+    for row in rows:
         if row.id in planned:
             row.amount_override = planned[row.id]
     template = copy.deepcopy(definition.template)
