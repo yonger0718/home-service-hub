@@ -31,6 +31,7 @@ from .schedule_locks import (
 )
 from .schedule_generation import installment_residual
 from .schedule_templates import (
+    aligned_override,
     check_amounts,
     loan_line,
     normalize_template,
@@ -466,6 +467,7 @@ def reopen_instance(db: Session, instance_id: int) -> None:
         instance.note = f"入帳記錄已於 {_today().isoformat()} 刪除"
     instance.status, instance.posted_entry_ids, instance.is_partial = "pending", [], False
     instance.acted_at, instance.acted_by, instance.reopened_at = None, None, _now()
+    instance.amount_override = aligned_override(definition.template, instance.amount_override)
     if definition.status == "ended":
         definition.status = "active"
     db.flush()

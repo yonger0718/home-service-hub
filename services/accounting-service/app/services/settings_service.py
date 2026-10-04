@@ -18,6 +18,7 @@ from ..models import (
     RewardRule,
 )
 from ..schemas.writes import AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn
+from . import schedule_entry_hooks
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
 from .ledger_service import open_debt_filter
 
@@ -198,6 +199,8 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
     """
     account = _get(db, Account, account_id, "account")
     _validate_account(db, payload, account)
+    if payload.is_archived and not account.is_archived:
+        schedule_entry_hooks.assert_not_referenced(db, account_id=account_id)
     previous_sharing_id = account.credit_sharing_id
     for field, value in payload.model_dump(exclude=ACCOUNT_COLUMNS_EXCLUDE).items():
         setattr(account, field, value)
@@ -209,6 +212,7 @@ def update_account(db: Session, account_id: int, payload: AccountIn) -> None:
 
 def delete_account(db: Session, account_id: int) -> None:
     account = _get(db, Account, account_id, "account")
+    schedule_entry_hooks.assert_not_referenced(db, account_id=account_id)
     entries = _count(db, LedgerEntry.account_id == account_id)
     if entries:
         raise ConflictError(f"account has {entries} entries; set is_archived instead of deleting it")
@@ -364,6 +368,8 @@ def create_category(db: Session, payload: CategoryIn) -> int:
 def update_category(db: Session, category_id: int, payload: CategoryIn) -> None:
     category = _get(db, Category, category_id, "category")
     _validate_category(db, payload, category)
+    if payload.is_hidden and not category.is_hidden:
+        schedule_entry_hooks.assert_not_referenced(db, category_id=category_id)
     for field, value in payload.model_dump().items():
         setattr(category, field, value)
     db.flush()
@@ -371,6 +377,7 @@ def update_category(db: Session, category_id: int, payload: CategoryIn) -> None:
 
 def delete_category(db: Session, category_id: int) -> None:
     category = _get(db, Category, category_id, "category")
+    schedule_entry_hooks.assert_not_referenced(db, category_id=category_id)
     entries = _count(db, LedgerEntry.category_id == category_id)
     if entries:
         raise ConflictError(f"category is used by {entries} entries; hide it instead")
@@ -410,6 +417,8 @@ def create_project(db: Session, payload: ProjectIn) -> int:
 def update_project(db: Session, project_id: int, payload: ProjectIn) -> None:
     project = _get(db, Project, project_id, "project")
     _unique_name(db, Project, payload.name, project_id)
+    if payload.is_archived and not project.is_archived:
+        schedule_entry_hooks.assert_not_referenced(db, project_id=project_id)
     for field, value in payload.model_dump().items():
         setattr(project, field, value)
     db.flush()
@@ -417,6 +426,7 @@ def update_project(db: Session, project_id: int, payload: ProjectIn) -> None:
 
 def delete_project(db: Session, project_id: int) -> None:
     project = _get(db, Project, project_id, "project")
+    schedule_entry_hooks.assert_not_referenced(db, project_id=project_id)
     entries = _count(db, LedgerEntry.project_id == project_id)
     if entries:
         raise ConflictError(f"project is used by {entries} entries; archive it instead")
@@ -502,6 +512,7 @@ def update_counterparty(db: Session, counterparty_id: int, payload: Counterparty
 
 def delete_counterparty(db: Session, counterparty_id: int) -> None:
     counterparty = _get(db, Counterparty, counterparty_id, "counterparty")
+    schedule_entry_hooks.assert_not_referenced(db, counterparty_id=counterparty_id)
     entries = _count(db, LedgerEntry.counterparty_id == counterparty_id)
     if entries:
         raise ConflictError(f"counterparty is used by {entries} entries")

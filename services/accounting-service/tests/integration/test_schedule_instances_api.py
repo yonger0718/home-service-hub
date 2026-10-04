@@ -518,3 +518,23 @@ def test_repeated_following_edits_keep_the_total(client, db_session, seed, today
     assert amounts == ["2500", "2600", "2700", "2700", "2000"]
     assert sum(Decimal(value) for value in amounts) == Decimal("12500")
     assert _row(db_session, rows[0].id).posted_entry_ids == [entry.id]  # the posted row's entries are untouched
+
+
+def test_reopen_clears_a_misaligned_override(client, db_session, seed, today):
+    # A posted row's amount_override carries the amounts it was posted with (pinned before a template change). Back
+    # to pending, an override whose line count no longer matches the template is cleared; a matching one is kept.
+    today(date(2026, 10, 23))
+    card = seed.account("範例卡")
+    definition = seed.definition([seed.line("expense", card, "390")], name="串流")
+    entry = seed.entry(card, "-390", day=date(2026, 9, 22), source="schedule")
+    pinned = seed.instance(definition, 1, date(2026, 9, 22), status="posted", entries=[entry],
+                           amount_override=["390", "149"])
+    skipped = seed.instance(definition, 2, date(2026, 10, 22), status="skipped", acted_by="owner",
+                            amount_override=["400"])
+    db_session.commit()
+
+    assert client.post(f"/schedules/instances/{pinned.id}/reopen").status_code == 200
+    assert client.post(f"/schedules/instances/{skipped.id}/reopen").status_code == 200
+
+    assert (_row(db_session, pinned.id).status, _row(db_session, pinned.id).amount_override) == ("pending", None)
+    assert (_row(db_session, skipped.id).status, _row(db_session, skipped.id).amount_override) == ("pending", ["400"])

@@ -166,6 +166,15 @@ def realign_override(old: dict, new: dict, override: list[str] | None) -> list[s
     return result if kept else None
 
 
+def aligned_override(template: dict, override: list[str] | None) -> list[str] | None:
+    """The override a period keeps when it returns to pending: a posted row's override holds the amounts it was
+    posted with (pinned before a template change), so one whose line count no longer matches the template is
+    dropped and the period follows the template."""
+    if override is None or len(override) != len(template["lines"]):
+        return None
+    return override
+
+
 def loan_line(template: dict) -> tuple[int, dict] | None:
     for index, line in enumerate(template["lines"]):
         if line.get("kind") in LOAN_LINE_KINDS:

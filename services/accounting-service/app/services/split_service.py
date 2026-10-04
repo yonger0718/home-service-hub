@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..models import EntryGroup, LedgerEntry
 from ..schemas.writes import EntryIn, SplitIn
+from . import schedule_entry_hooks
 from .edit_lock import assert_editable
 from .entry_write_service import (
     EDITABLE_KINDS,
@@ -145,6 +146,7 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
     that lock, so no settle / refund can commit between the check and the delete, and a concurrent PUT /
     DELETE of the same group waits and then sees this one's members. Members are never created with
     is_settlement: SplitMemberIn has no such field and insert_prepared stores False."""
+    schedule_entry_hooks.assert_group_not_scheduled(db, group_id)
     assert_editable(_get_split(db, group_id))
     prepared = _prepare_all(db, payload, http_get)
     group = _locked_split(db, group_id)
@@ -163,12 +165,16 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
 
 
 def delete_split(db: Session, group_id: int) -> None:
-    """Same lock order as update_split (group → members), so it waits for a concurrent PUT and then deletes
-    that PUT's members rather than the ones the PUT already replaced. Groups holding transfer legs or
-    non-editable kinds are refused under the member locks; settled members may be deleted (links are cleared)."""
+    """Same lock order as update_split (group → members), after the schedule rows of a posted period that lists the
+    members (D32). Groups holding transfer legs or non-editable kinds are refused under the member locks; settled
+    members may be deleted (links are cleared)."""
+    instance = schedule_entry_hooks.lock_for_entry_delete(db, member_ids(db, group_id))
     group = _locked_split(db, group_id)
     assert_editable(group)
     members = _locked_members(db, group_id)
     _assert_no_transfers_or_system_entries(members)
-    delete_entries_cascade(db, [member.id for member in members])
+    doomed = [member.id for member in members]  # read before the cascade expires (and deletes) the rows
+    delete_entries_cascade(db, doomed)
     db.execute(delete(EntryGroup).where(EntryGroup.id == group_id))
+    if instance is not None:
+        schedule_entry_hooks.after_entries_deleted(db, instance, set(doomed))
