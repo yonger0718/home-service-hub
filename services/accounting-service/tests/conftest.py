@@ -295,6 +295,22 @@ def _bk_package(identifier="PK-1", records=("R-1",), type_=0, event_type=0, **fi
     }
 
 
+def _bk_period(identifier="PER-1", *, unit=2, days=21, times=0, type_=0, start="2026-10-21T00:00:00", **fields) -> dict:
+    return {
+        "identifier": identifier, "unit": unit, "days": days, "times": times, "type": type_, "startDate": start,
+        "count": 1, "startIndex": 1, **fields,
+    }
+
+
+def _bk_installment(identifier="INS-1", *, day_of_month=9, dates=(), times=36, total=300000, remainder=0, **fields) -> dict:
+    return {
+        "identifier": identifier, "account": "A-WALLET", "dayOfMonth": day_of_month,
+        "dateInfo": {str(index): day for index, day in enumerate(dates)}, "times": times, "total": total,
+        "installment": 0, "remainder": remainder, "startDate": dates[0] if dates else "2026-01-01T00:00:00",
+        "interestType": 0, "interestRate": 0, **fields,
+    }
+
+
 def _bk_rule(identifier="B-1", account="A-CARD", **fields) -> dict:
     return {
         "identifier": identifier, "accountID": account, "name": "回饋", "desc": "", "type": 0,
@@ -354,6 +370,7 @@ def backup():
     return SimpleNamespace(
         group=_bk_group, account=_bk_account, category=_bk_category, classification=_bk_classification,
         project=_bk_project, target=_bk_target, record=_bk_record, transfer=_bk_transfer, package=_bk_package,
+        period=_bk_period, installment=_bk_installment,
         rule=_bk_rule, conversion=_bk_conversion, preference=_bk_preference, doc=_bk_doc, write=_bk_write,
         data=_bk_data, exported_at=BACKUP_EXPORTED_AT,
     )

@@ -50,9 +50,8 @@ def _doc(backup, *, price=-120, extra_records=()):
             *extra_records,
         ],
         packages=[backup.package("PK-1", ["R-1", "R-3"])],
-        periods=[{"identifier": "PER-1", "startDate": "2026-01-05T00:00:00", "unit": 2}],
-        installments=[{"identifier": "INS-1", "startDate": "2026-03-09T00:00:00", "installment": 3000.5,
-                       "dateInfo": {"0": "2026-11-09T00:00:00"}}],
+        periods=[backup.period("PER-1", unit=2, days=5, start="2026-01-05T00:00:00")],
+        installments=[backup.installment("INS-1", dates=("2026-11-09T00:00:00", "2026-12-09T00:00:00"), times=2, total=6001)],
     )
 
 

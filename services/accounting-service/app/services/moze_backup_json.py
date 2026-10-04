@@ -275,8 +275,9 @@ REWARD_WINDOW_MAP: dict[int, str] = {0: "statement_cycle"}
 COLOR_MAP: dict[int, str] = {0: "red_green", 1: "green_red"}
 KEYPAD_MAP: dict[int, str] = {1: "calculator", 0: "phone"}
 
-# Field types: str, str? (nullable), num (Decimal), int, bool, dt (datetime), dt?, list, dict
+# Field types: str, str? (nullable), num (Decimal), int, bool, dt (datetime), dt?, list, dict, dates
 S, SN, NUM, INT, BOOL, DT, DTN, LIST, DICT = "str", "str?", "num", "int", "bool", "dt", "dt?", "list", "dict"
+DATES = "dates"  # AHInstallment.dateInfo: a list, or an object keyed "0", "1", … — normalised to a list of datetimes
 
 CLASS_FIELDS: dict[str, dict[str, str]] = {
     "AHAccount": {
@@ -322,8 +323,10 @@ CLASS_FIELDS: dict[str, dict[str, str]] = {
     "AHBonusRewardSharing": {"identifier": S, "bonusRewards": LIST},
     "AHCreditSharing": {"identifier": S, "accounts": LIST},
     "AHCurrencyConversion": {"recordID": S, "exchangeRate": NUM, "baseCurrencyCode": S, "targetCurrencyCode": S},
-    "AHPeriod": {"identifier": S},
-    "AHInstallment": {"identifier": S},
+    "AHPeriod": {"identifier": S, "unit": INT, "days": INT, "times": INT, "type": INT, "startDate": DTN},
+    "AHInstallment": {
+        "identifier": S, "dayOfMonth": INT, "dateInfo": DATES, "times": INT, "total": NUM, "remainder": NUM,
+    },
     "AHPreference": {
         "expenseIncomeColor": INT, "numberPadType": INT, "firstWeekday": INT, "mainCurrency": SN,
         "hideRewardsOnHome": BOOL, "isTotalBalanceAbbreviate": BOOL,
@@ -434,8 +437,20 @@ def _normalise(value: Any, kind: str, where: str, field: str) -> Any:
         return value
     if base == "dict" and isinstance(value, dict):
         return value
+    if base == "dates":
+        items = value
+        if isinstance(value, dict):
+            try:
+                items = [value[key] for key in sorted(value, key=int)]
+            except ValueError:
+                items = None
+        if isinstance(items, list):
+            parsed_items = [_datetime(item) for item in items]
+            if all(item is not None for item in parsed_items):
+                return parsed_items
     expected = {"str": "a string", "int": "an integer", "bool": "a boolean", "num": "a number",
-                "dt": "an ISO date-time", "list": "a list", "dict": "an object"}[base]
+                "dt": "an ISO date-time", "list": "a list", "dict": "an object",
+                "dates": "a list of ISO date-times"}[base]
     raise MozeImportError(f"{where}: field '{field}' must be {expected}{' or null' if nullable else ''}")
 
 
