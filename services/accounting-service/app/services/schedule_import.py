@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Collection
 
 from sqlalchemy import exists, select, update
 from sqlalchemy.orm import Session, aliased
@@ -264,13 +265,16 @@ def covered_records(session: Session, mapped: MapResult) -> dict[str, Covered]:
     return covered
 
 
-def suppressed_amounts(covered: dict[str, Covered]) -> list[tuple[str, date, Decimal]]:
+def suppressed_amounts(
+    covered: dict[str, Covered], statuses: Collection[str] = ("owner_pending",)
+) -> list[tuple[str, date, Decimal]]:
     """(MOZE account id, date, signed total) of every record suppressed for an owner-edited pending period (R-F1):
-    MOZE booked them, HomeHub has not yet, so the balance comparison adds them to `moze_part` (Task 18)."""
+    MOZE booked them, HomeHub has not yet, so the balance comparison adds them to `moze_part` (Task 18). The full
+    replace also passes `skipped`: the owner's skip is a deliberate disagreement with MOZE the comparison explains."""
     seen: set[int] = set()
     amounts = []
     for item in covered.values():
-        if item.status != "owner_pending" or item.instance_id in seen:
+        if item.status not in statuses or item.instance_id in seen:
             continue
         seen.add(item.instance_id)
         amounts.extend((account, item.day, total) for account, total in item.account_amounts)

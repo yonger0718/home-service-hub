@@ -1285,7 +1285,8 @@ def replace_ledger_from_backup(
     schedule_import.restore_links(session, captured, schedules)
     schedule_import.loan_check(session, mapped, schedules)  # after re-pointing: HomeHub's repayments count
     stand_ins = schedule_import.stand_in_entry_ids(session, covered)
-    suppressed = schedule_import.suppressed_amounts(covered)  # R-F1: owner-held periods MOZE already booked
+    # R-F1 owner-held periods and periods HomeHub skipped: MOZE booked them, HomeHub (deliberately) has not
+    suppressed = schedule_import.suppressed_amounts(covered, ("owner_pending", "skipped"))
     suppressed += [  # dependants of skipped / owner-held periods: MOZE booked them, HomeHub holds no parent for them
         (record["account"], record["date"].date(), Decimal(str(_record_amount(record))))
         for record, _ in entries.dependants_suppressed

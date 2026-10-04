@@ -459,10 +459,11 @@ def test_fee_child_of_a_posted_covered_record_is_reparented_onto_the_stand_in(db
     assert summary["schedules"]["dependants_suppressed"] == {"count": 0, "records": []}
 
 
-@pytest.mark.parametrize(("hold", "moze_part"), [("skip", "-113"), ("owner_edit", "-213")])
+@pytest.mark.parametrize(("hold", "moze_part"), [("skip", "-213"), ("owner_edit", "-213")])
 def test_dependants_of_a_skipped_covered_record_are_suppressed_and_compensated(db_session, backup, today, hold, moze_part):
     # Review fix: a skipped or owner-held period has no HomeHub entry to carry the dependants, so they are not
-    # imported; their MOZE amounts join moze_part (the owner-held record itself too, R-F1) and the report lists them.
+    # imported; their MOZE amounts join moze_part (the held record itself too: R-F1, and the owner's skip) and the
+    # report lists them.
     today(date(2026, 10, 3))
     _import_backup(db_session, _fee_period_data(backup, "2026-10-01T17:00:37"))
     instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R"))
@@ -484,6 +485,31 @@ def test_dependants_of_a_skipped_covered_record_are_suppressed_and_compensated(d
             {"moze_id": "R-RW", "parent_moze_id": "R", "type": 14},
         ],
     }
+
+
+def test_skipped_covered_record_is_compensated_in_the_balance_comparison(db_session, backup, today, monkeypatch):
+    # The owner skipped a period in HomeHub; MOZE booked it. The record is not imported, and the comparison adds its
+    # MOZE amount to moze_part, so the deliberate disagreement is explained and a strict import succeeds.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _owner_period_data(backup, "2026-10-01T17:00:37"))
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R"))
+    schedule_service.skip_instance(db_session, instance.id)
+    db_session.commit()
+    today(date(2026, 10, 12))
+    monkeypatch.setattr(moze_backup_import_service, "balance_info_key", lambda account: "1" if account["balanceInfo"] else None)
+    data = _owner_period_data(backup, "2026-10-12T17:00:00")
+    data.accounts[0]["balanceInfo"] = {"1": Decimal("-200")}
+
+    summary = _import_backup(db_session, data, strict=True)
+
+    assert _by_moze_id(db_session, "R") is None
+    wallet = summary["accounts"][0]
+    assert (Decimal(wallet["moze_part"]), Decimal(wallet["difference"]), Decimal(wallet["balance"])) == (
+        Decimal("-200"), Decimal("0"), Decimal("-100"),
+    )
+    assert summary["schedules"]["past_records_already_skipped"] == 1
+    db_session.expire_all()
+    assert db_session.get(ScheduleInstance, instance.id).status == "skipped"
 
 
 def test_dependants_follow_fee_and_reward_links_transitively():
