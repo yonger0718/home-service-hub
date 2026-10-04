@@ -40,6 +40,8 @@ from ..models import (
     RewardRule,
 )
 from . import fx_rate_service, ledger_service
+from . import schedule_import
+from .schedule_import_map import map_schedules
 from .moze_backup_json import (
     ARCHIVE_GROUP,
     category_name,
@@ -951,7 +953,12 @@ def insert_entries(
     current = []
     for record in data.records:
         if _is_future(record, cutoff):
-            result.skipped_future[record["type"]] += 1
+            # Enabled future rows become schedule periods (schedule_import); disabled ones count with the other
+            # disabled rows, so Σ skipped_future = records_mapped + rewards_ignored + Σ unsupported_types.
+            if record["isEnabled"]:
+                result.skipped_future[record["type"]] += 1
+            else:
+                result.disabled_skipped[record["type"]] += 1
             result.skipped_records.append(record)
         else:
             current.append(record)
@@ -1162,11 +1169,19 @@ def replace_ledger_from_backup(
     """Full replace in the caller's transaction; returns the report summary. Raises MozeImportError."""
     renamed = _apply_renames(session, renames or {})
     previous = _previous_moze_parts(session, data)
+    mapped = map_schedules(data)
+    schedule_import.lock_schedule_rows(session)  # D32: schedule rows before any entry is deleted
+    schedule_import.merge_known_past_singles(session, mapped)
+    started_at = _now()
     delete_moze_entries(session)
     settings = upsert_settings(session, data)
     archived = _archive_disappeared_accounts(session, {account.name for account in settings.accounts.values()})
     entries = insert_entries(session, data, settings, import_run_id, rates or {}, allow_fx_outliers=allow_fx_outliers)
     delete_unused_rows(session, keep=settings.kept_moze_ids)
+    schedules = schedule_import.apply_schedules(
+        session, data, mapped, settings, entries, {}, started_at=started_at, today=ledger_service._today()
+    )
+    schedule_import.loan_check(session, mapped, schedules)  # Task 18 moves it after restore_links
     session.flush()
 
     accounts = _account_reports(session, data, settings, previous)
@@ -1181,6 +1196,7 @@ def replace_ledger_from_backup(
         "kind_counts": dict(sorted(entries.kind_counts.items())),
         "skipped_future": {str(key): value for key, value in sorted(entries.skipped_future.items())},
         "disabled_skipped": {str(key): value for key, value in sorted(entries.disabled_skipped.items())},
+        "schedules": schedules,
         "groups": entries.groups,
         "transfers": entries.transfers,
         "transfer_rate_mismatches": entries.transfer_rate_mismatches,
