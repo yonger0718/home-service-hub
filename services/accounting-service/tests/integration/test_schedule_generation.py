@@ -184,3 +184,32 @@ def test_generate_locked_takes_the_shared_import_key(db_session, seed, pg_engine
             holder.commit()
     db_session.rollback()
     assert generation.generate_locked(db_session, definition.id, date(2026, 10, 3)) == 13
+
+
+def test_an_accepted_scoped_edit_still_generates_the_last_period(db_session, seed, pg_engine):
+    # Multica review 3 #2 (ruling R2): 36,000 over 36 at 1,000; seq 1–13 skipped, seq 14 pending, the rest not yet
+    # generated. 這一期與之後 from seq 14 to 1,500 is valid (22 × 1,500 = 33,000 → residual 3,000), while the legacy
+    # uniform formula (36,000 − 1,500 × 35) is negative: generating seq 36 must take the residual, not raise.
+    from app.schemas.schedules import InstanceUpdateIn
+    from app.services import schedule_job, schedule_rules as rules, schedule_service
+
+    card = seed.account("範例卡")
+    plan = seed.definition(
+        [seed.line("expense", card, "1000")], kind="installment", name="分期", anchor=date(2026, 9, 15), times=36,
+        total_amount=Decimal("36000"),
+    )
+    for seq in range(1, 14):
+        seed.instance(plan, seq, rules.add_months(date(2026, 9, 15), seq - 1), status="skipped", acted_by="owner")
+    current = seed.instance(plan, 14, date(2027, 10, 15))
+    db_session.commit()
+    schedule_service.update_instance(db_session, current.id, InstanceUpdateIn(amounts=["1500"], scope="following"))
+    db_session.commit()
+
+    report = schedule_job.run(pg_engine, "cron", today=date(2028, 8, 1), post=False)
+
+    assert (report["status"], report["generation_failed"]) == ("completed", [])
+    rows = _instances(db_session, plan)
+    assert [row.seq for row in rows] == list(range(1, 37))
+    assert rows[-1].amount_override == ["3000"]
+    allocated = sum(Decimal((row.amount_override or ["1500"])[0]) for row in rows if row.status != "skipped")
+    assert allocated == Decimal("36000")

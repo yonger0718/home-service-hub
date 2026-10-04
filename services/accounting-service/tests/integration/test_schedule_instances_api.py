@@ -394,8 +394,9 @@ def test_installment_scope_keeps_the_last_period_remainder(client, db_session, s
     assert _row(db_session, last.id).amount_override == ["8345", "598"]  # remainder of 300000 − 35 × 8333, new interest
 
 
-def _card_installment(seed, times, amount, total, *, posted=()):
-    """A local expense installment; seqs in `posted` are posted at the template amount, the others pending."""
+def _card_installment(seed, times, amount, total, *, posted=(), skipped=()):
+    """A local expense installment; seqs in `posted` are posted at the template amount, seqs in `skipped` skipped by
+    the owner, the others pending."""
     card = seed.account("範例卡")
     definition = seed.definition(
         [seed.line("expense", card, amount)], kind="installment", name="分期", anchor=date(2026, 9, 15), times=times,
@@ -407,6 +408,8 @@ def _card_installment(seed, times, amount, total, *, posted=()):
         if seq in posted:
             entry = seed.entry(card, f"-{amount}", day=day, source="schedule")
             rows.append(seed.instance(definition, seq, day, status="posted", entries=[entry]))
+        elif seq in skipped:
+            rows.append(seed.instance(definition, seq, day, status="skipped", acted_by="owner"))
         else:
             rows.append(seed.instance(definition, seq, day))
     return SimpleNamespace(definition=definition, rows=rows)
@@ -457,6 +460,43 @@ def test_installment_scope_that_would_overbook_is_refused(client, db_session, se
     assert response.status_code == 422 and _fields(response) == {"amounts"}
     assert "4000" not in response.text and "6000" not in response.text
     assert _template(db_session, plan.definition.id) == (["3333"], False)
+
+
+def test_installment_scope_with_the_last_period_posted_must_close_the_total(client, db_session, seed, today):
+    # Multica review 3 #1 (ruling R1): seq 3 already posted at 3,334, so no pending last period can absorb a residual;
+    # 4,000 + 4,000 + 3,334 = 11,334 is refused, 3,333 + 3,333 + 3,334 = 10,000 is accepted.
+    today(date(2026, 12, 1))
+    plan = _card_installment(seed, 3, "3333", "10000", posted={3})
+    plan.rows[2].amount_override = ["3334"]
+    db_session.commit()
+    refused = client.put(f"/schedules/instances/{plan.rows[0].id}", json={"amounts": ["4000"], "scope": "following"})
+    assert refused.status_code == 422 and _fields(refused) == {"amounts"}
+    assert "4000" not in refused.text and "3334" not in refused.text
+    assert _template(db_session, plan.definition.id) == (["3333"], False)
+    assert [_row(db_session, row.id).amount_override for row in plan.rows] == [None, None, ["3334"]]
+
+    accepted = client.put(f"/schedules/instances/{plan.rows[0].id}", json={"amounts": ["3333"], "scope": "following"})
+    assert accepted.status_code == 200
+    amounts = _first_amounts(db_session, plan.rows)
+    assert amounts == ["3333", "3333", "3334"] and sum(Decimal(value) for value in amounts) == Decimal("10000")
+    assert _row(db_session, plan.rows[2].id).status == "posted"
+
+
+def test_installment_scope_with_the_last_period_skipped_must_close_the_total(client, db_session, seed, today):
+    # Ruling R1: a skipped last period contributes 0 (decision 7), so the pending periods alone must make the total.
+    today(date(2026, 12, 1))
+    plan = _card_installment(seed, 3, "3333", "10000", skipped={3})
+    db_session.commit()
+    refused = client.put(f"/schedules/instances/{plan.rows[0].id}", json={"amounts": ["4000"], "scope": "following"})
+    assert refused.status_code == 422 and _fields(refused) == {"amounts"}
+    assert "4000" not in refused.text
+    assert _template(db_session, plan.definition.id) == (["3333"], False)
+
+    accepted = client.put(f"/schedules/instances/{plan.rows[0].id}", json={"amounts": ["5000"], "scope": "all"})
+    assert accepted.status_code == 200
+    assert _template(db_session, plan.definition.id) == (["5000"], True)
+    assert [_row(db_session, row.id).amount_override for row in plan.rows] == [None, None, None]
+    assert _row(db_session, plan.rows[2].id).status == "skipped"
 
 
 def test_generation_after_scoped_edit_keeps_the_total(client, db_session, seed, today):

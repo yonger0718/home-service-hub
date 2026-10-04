@@ -487,9 +487,35 @@ def test_dependants_of_a_skipped_covered_record_are_suppressed_and_compensated(d
     }
 
 
-def test_skipped_covered_record_is_compensated_in_the_balance_comparison(db_session, backup, today, monkeypatch):
+def test_dependants_of_a_disabled_skipped_record_are_not_compensated(db_session, backup, today):
+    # Ruling R3: MOZE leaves a disabled record and its fee / reward children out of balances, so a skipped period whose
+    # record is now disabled compensates neither (moze_part is R-SEP alone) and lists no suppressed dependant.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _fee_period_data(backup, "2026-10-01T17:00:37"))
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R"))
+    schedule_service.skip_instance(db_session, instance.id)
+    db_session.commit()
+    today(date(2026, 10, 12))
+    data = _fee_period_data(backup, "2026-10-12T17:00:00")
+    next(record for record in data.records if record["identifier"] == "R")["isEnabled"] = False
+
+    summary = _import_backup(db_session, data)
+
+    assert [_by_moze_id(db_session, key) for key in ("R", "R-FEE", "R-RW")] == [None, None, None]
+    assert Decimal(summary["accounts"][0]["moze_part"]) == Decimal("-100")
+    assert summary["schedules"]["dependants_suppressed"] == {"count": 0, "records": []}
+    db_session.expire_all()
+    assert db_session.get(ScheduleInstance, instance.id).status == "skipped"
+
+
+@pytest.mark.parametrize(("enabled", "moze_part"), [(True, "-200"), (False, "-100")])
+def test_skipped_covered_record_is_compensated_in_the_balance_comparison(
+    db_session, backup, today, monkeypatch, enabled, moze_part
+):
     # The owner skipped a period in HomeHub; MOZE booked it. The record is not imported, and the comparison adds its
     # MOZE amount to moze_part, so the deliberate disagreement is explained and a strict import succeeds.
+    # Multica review 3 #3 (ruling R3): once the next export disables the record MOZE no longer counts it, so nothing
+    # is compensated (moze_part is R-SEP alone) — the owner's skip stays.
     today(date(2026, 10, 3))
     _import_backup(db_session, _owner_period_data(backup, "2026-10-01T17:00:37"))
     instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R"))
@@ -498,14 +524,15 @@ def test_skipped_covered_record_is_compensated_in_the_balance_comparison(db_sess
     today(date(2026, 10, 12))
     monkeypatch.setattr(moze_backup_import_service, "balance_info_key", lambda account: "1" if account["balanceInfo"] else None)
     data = _owner_period_data(backup, "2026-10-12T17:00:00")
-    data.accounts[0]["balanceInfo"] = {"1": Decimal("-200")}
+    data.accounts[0]["balanceInfo"] = {"1": Decimal(moze_part)}
+    next(record for record in data.records if record["identifier"] == "R")["isEnabled"] = enabled
 
     summary = _import_backup(db_session, data, strict=True)
 
     assert _by_moze_id(db_session, "R") is None
     wallet = summary["accounts"][0]
     assert (Decimal(wallet["moze_part"]), Decimal(wallet["difference"]), Decimal(wallet["balance"])) == (
-        Decimal("-200"), Decimal("0"), Decimal("-100"),
+        Decimal(moze_part), Decimal("0"), Decimal("-100"),
     )
     assert summary["schedules"]["past_records_already_skipped"] == 1
     db_session.expire_all()

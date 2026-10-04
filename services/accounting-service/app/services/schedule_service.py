@@ -29,7 +29,7 @@ from .schedule_locks import (
     lock_instances,
     take_import_key_shared,
 )
-from .schedule_generation import installment_residual
+from .schedule_generation import check_installment_closed, installment_residual
 from .schedule_templates import (
     aligned_override,
     check_amounts,
@@ -381,8 +381,9 @@ def _apply_amount_scope(db: Session, instance_id: int, payload: InstanceUpdateIn
     from this one (following) or every pending period (all) follows the template, except owner-edited ones other
     than this; with `following` the earlier pending periods keep the old price as an override. Posted and skipped
     periods never change. An installment with a total gives its pending last period the residual of
-    installment_residual (R-A1). Lock order (D32): key → definition FOR UPDATE → every instance FOR UPDATE,
-    ascending id. No cutover check: amounts are not rule fields (update_definition / delete_definition keep their
+    installment_residual (R-A1); when its last period is already posted or skipped the edit must leave Σ exactly
+    total_amount (check_installment_closed, ruling R1). Lock order (D32): key → definition FOR UPDATE → every
+    instance FOR UPDATE, ascending id. No cutover check: amounts are not rule fields (update_definition / delete_definition keep their
     lock)."""
     if payload.amounts is None or payload.due_date is not None:
         raise ValidationError("scope", "套用到其他期別時只能修改金額")
@@ -411,9 +412,17 @@ def _apply_amount_scope(db: Session, instance_id: int, payload: InstanceUpdateIn
             planned[row.id] = list(amounts) if row.edited_by_owner else None
         elif not row.edited_by_owner:
             planned[row.id] = None
-    residual = installment_residual(  # 422 `amounts` when the others reach the total; nothing written yet
-        definition, rows, old_amounts=old_amounts, new_amounts=amounts, overrides=planned
+    closed = next(
+        (row for row in rows if definition.times is not None and row.seq == definition.times and row.status != "pending"),
+        None,
     )
+    if closed is not None:  # R1: a posted / skipped last period absorbs nothing, so Σ must already be the total
+        check_installment_closed(definition, rows, old_amounts=old_amounts, new_amounts=amounts, overrides=planned)
+        residual = None
+    else:
+        residual = installment_residual(  # 422 `amounts` when the others reach the total; nothing written yet
+            definition, rows, old_amounts=old_amounts, new_amounts=amounts, overrides=planned
+        )
     for row in rows:
         if row.id in planned:
             row.amount_override = planned[row.id]

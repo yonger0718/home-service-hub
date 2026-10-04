@@ -547,6 +547,8 @@ class EntryResult:
     stand_ins: dict[str, LedgerEntry] = field(default_factory=dict)
     # (record, parent record id) of the fee / reward dependants of skipped or owner-held covered records, not imported
     dependants_suppressed: list[tuple[dict, str]] = field(default_factory=list)
+    # past records MOZE leaves out of balances (_disabled_ids over every past record, covered ones included, R3)
+    uncounted_ids: set[str] = field(default_factory=set)
 
 
 def _account_currency(data: BackupData, main_currency: str) -> dict[str, str]:
@@ -1004,11 +1006,17 @@ def insert_entries(
         else:
             current.append(record)
     disabled = _disabled_ids(current, data.transfers, result)
+    # Ruling R3: the same rule over the covered records too (a scratch result: covered rows are not counted in the
+    # report), so a disabled covered record, its transfer's other leg and its dependants are never compensated.
+    past = [record for record in data.records if not _is_future(record, cutoff)]
+    result.uncounted_ids = _disabled_ids(past, data.transfers, EntryResult())
     held = _dependant_parents(data.records, skip_ids - result.stand_ins.keys())
     result.dependants_suppressed = [
         (record, held[record["identifier"]])
         for record in current
-        if record["identifier"] in held and record["identifier"] not in disabled
+        if record["identifier"] in held
+        and record["identifier"] not in disabled
+        and record["identifier"] not in result.uncounted_ids
     ]
     disabled |= held.keys()
     live = [record for record in current if record["identifier"] not in disabled]
@@ -1286,7 +1294,7 @@ def replace_ledger_from_backup(
     schedule_import.loan_check(session, mapped, schedules)  # after re-pointing: HomeHub's repayments count
     stand_ins = schedule_import.stand_in_entry_ids(session, covered)
     # R-F1 owner-held periods and periods HomeHub skipped: MOZE booked them, HomeHub (deliberately) has not
-    suppressed = schedule_import.suppressed_amounts(covered, ("owner_pending", "skipped"))
+    suppressed = schedule_import.suppressed_amounts(covered, ("owner_pending", "skipped"), entries.uncounted_ids)
     suppressed += [  # dependants of skipped / owner-held periods: MOZE booked them, HomeHub holds no parent for them
         (record["account"], record["date"].date(), Decimal(str(_record_amount(record))))
         for record, _ in entries.dependants_suppressed

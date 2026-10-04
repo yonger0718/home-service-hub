@@ -176,6 +176,9 @@ once the import lock is released — generation always, posting only when `ACCOU
 prints the number of due but unposted periods on its `schedule_job:` stderr line). The job generates instances 13 months
 ahead and posts due periods of `active`, `auto` definitions dated on or after the definition's `auto_post_from`
 (never a reopened period), per definition in `seq` order: a period waits while an earlier one is due or failed.
+A pending period due before `auto_post_from`, or a reopened one, is the owner's and does not hold the series — except
+when it carries `last_error` (an owner post of it failed): then it holds the later periods until the owner posts or
+skips it.
 `ACCOUNTING_SCHEDULER_ENABLED=false` turns the in-process job off (tests do); the job lock
 (`pg_try_advisory_lock(0x53434844)`) makes a second runner return `busy`.
 

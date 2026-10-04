@@ -76,7 +76,10 @@ def blocked_by_earlier(db: Session, definition: ScheduleDefinition, instance_id:
     """D31 / Multica R-F6: within one definition periods are attempted in seq order. A period waits while an earlier
     seq of the same definition is pending and either due for the job (auto_eligible) or failed (last_error) — also
     when the owner moved that earlier period's due_date past this one's. Pre-auto_post_from and reopened periods are
-    the owner's (D34) and do not hold the series. Called under the definition lock (lock_definition_for_post): an
+    the owner's (D34) and do not hold the series ONLY while they carry no last_error: the exception (ruling R4) is
+    such a period with last_error (an owner post of it failed) — it holds every later period until the owner posts
+    or skips it, as test_pre_auto_post_from_period_with_error_blocks_the_series and
+    test_a_failed_earlier_period_the_job_does_not_own_still_holds_the_series pin. Called under the definition lock (lock_definition_for_post): an
     owner action on the earlier period is either committed (seen) or not yet (seen as pending: this one waits)."""
     instance = db.get(ScheduleInstance, instance_id)
     if instance is None:

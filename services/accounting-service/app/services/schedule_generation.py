@@ -58,10 +58,46 @@ def installment_residual(
     edited amounts (generated_last_override)."""
     if definition.kind != "installment" or definition.total_amount is None or definition.times is None:
         return None
+    spent = _allocated(definition.times - 1, rows, old_amounts=old_amounts, new_amounts=new_amounts, overrides=overrides)
+    last = Decimal(definition.total_amount) - spent
+    if last <= 0:
+        raise ValidationError("amounts", "其他期別的金額已達總額")
+    return last
+
+
+def check_installment_closed(
+    definition: ScheduleDefinition,
+    rows: list[ScheduleInstance],
+    *,
+    old_amounts: list[str],
+    new_amounts: list[str],
+    overrides: dict[int, list[str] | None],
+) -> None:
+    """Multica review 3 #1 (ruling R1): an installment with a total whose last period (seq == times) is already
+    posted or skipped has no pending last period to absorb a residual, so a scoped edit is accepted only when the
+    effective allocations of every period (installment_residual's rules, the last one included: posted at its
+    pinned / effective amount, skipped 0) sum exactly to total_amount; otherwise ValidationError("amounts") with no
+    amount in the message. A no-op for any other definition."""
+    if definition.kind != "installment" or definition.total_amount is None or definition.times is None:
+        return
+    allocated = _allocated(definition.times, rows, old_amounts=old_amounts, new_amounts=new_amounts, overrides=overrides)
+    if allocated != Decimal(definition.total_amount):
+        raise ValidationError("amounts", "末期已入帳或略過，各期金額合計須等於總額")
+
+
+def _allocated(
+    through_seq: int,
+    rows: list[ScheduleInstance],
+    *,
+    old_amounts: list[str],
+    new_amounts: list[str],
+    overrides: dict[int, list[str] | None],
+) -> Decimal:
+    """Σ of the first-line allocations of seq 1..through_seq under installment_residual's rules."""
     new_first = Decimal(new_amounts[0])
     by_seq = {row.seq: row for row in rows}
     spent = Decimal(0)
-    for seq in range(1, definition.times):
+    for seq in range(1, through_seq + 1):
         row = by_seq.get(seq)
         if row is None:
             spent += new_first
@@ -75,10 +111,7 @@ def installment_residual(
             spent += Decimal(old_amounts[0])
         else:
             spent += new_first
-    last = Decimal(definition.total_amount) - spent
-    if last <= 0:
-        raise ValidationError("amounts", "其他期別的金額已達總額")
-    return last
+    return spent
 
 
 def generated_last_override(db: Session, definition: ScheduleDefinition) -> list[str] | None:
@@ -87,10 +120,11 @@ def generated_last_override(db: Session, definition: ScheduleDefinition) -> list
     last_period_override; after them it is installment_residual against the actual allocations, so a last period
     generated after an amount edit keeps Σ = total_amount (R-A1). Posted periods carry the amounts they were posted
     with (pinned before any template change), so the current template stands in for old_amounts. Should the owner's
-    own edits already reach the total, the period follows the template (no invented amount)."""
-    fallback = last_period_override(definition)
+    own edits already reach the total, the period follows the template (no invented amount). The legacy formula is
+    evaluated only in its own branch (ruling R2): after owner edits it may not apply (1,500 × 35 > 36,000) although
+    the residual is valid."""
     if definition.kind != "installment" or definition.total_amount is None or definition.times is None:
-        return fallback
+        return None  # last_period_override is None for these too
     rows = list(
         db.scalars(  # populate_existing: count what the rows hold now, not a stale identity-map copy
             select(ScheduleInstance)
@@ -104,7 +138,7 @@ def generated_last_override(db: Session, definition: ScheduleDefinition) -> list
         for row in rows
     )
     if not owner_edited:
-        return fallback
+        return last_period_override(definition)
     amounts = template_amounts(definition.template)
     try:
         residual = installment_residual(definition, rows, old_amounts=amounts, new_amounts=amounts, overrides={})

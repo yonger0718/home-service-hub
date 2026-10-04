@@ -45,13 +45,14 @@ class Covered:
 
     `moze_lines` is MOZE's amount per template line of the period — (|amount|, |in-leg amount| for a transfer line,
     else None) — for the per-line comparison (R-F5); `day` is the record date; `account_amounts` the record's signed
-    `total` per MOZE account id (the balance comparison of a suppressed `owner_pending` record)."""
+    `total` per MOZE account id, keyed by the record id (the balance comparison of a suppressed `owner_pending` or
+    skipped record; suppressed_amounts leaves out the records MOZE does not count, ruling R3)."""
 
     instance_id: int
     status: str  # posted | skipped | owner_pending
     moze_lines: tuple[tuple[str, str | None], ...]
     day: date
-    account_amounts: tuple[tuple[str, Decimal], ...] = ()
+    account_amounts: tuple[tuple[str, str, Decimal], ...] = ()  # (record id, MOZE account id, signed total)
 
 
 def _jsonable(value):
@@ -258,7 +259,8 @@ def covered_records(session: Session, mapped: MapResult) -> dict[str, Covered]:
                 status = "posted" if kept_posted else "skipped" if kept_skipped else "owner_pending"
                 moze_lines = _moze_lines(definition.template, list(item.amounts), item.records)
                 account_amounts = tuple(
-                    (record["account"], Decimal(str(record["total"]))) for record in item.records
+                    (record["identifier"], record["account"], Decimal(str(record["total"])))
+                    for record in item.records
                 )
                 for record_id in item.record_ids:
                     covered[record_id] = Covered(row.id, status, moze_lines, item.day, account_amounts)
@@ -266,18 +268,26 @@ def covered_records(session: Session, mapped: MapResult) -> dict[str, Covered]:
 
 
 def suppressed_amounts(
-    covered: dict[str, Covered], statuses: Collection[str] = ("owner_pending",)
+    covered: dict[str, Covered],
+    statuses: Collection[str] = ("owner_pending",),
+    uncounted: Collection[str] = frozenset(),
 ) -> list[tuple[str, date, Decimal]]:
     """(MOZE account id, date, signed total) of every record suppressed for an owner-edited pending period (R-F1):
     MOZE booked them, HomeHub has not yet, so the balance comparison adds them to `moze_part` (Task 18). The full
-    replace also passes `skipped`: the owner's skip is a deliberate disagreement with MOZE the comparison explains."""
+    replace also passes `skipped`: the owner's skip is a deliberate disagreement with MOZE the comparison explains.
+    Ruling R3: only records MOZE counts are compensated — a record in `uncounted` (disabled, the other leg of a
+    disabled transfer, or a dependant of one: the importer's disabled rule) adds nothing; the owner's skip stays."""
     seen: set[int] = set()
     amounts = []
     for item in covered.values():
         if item.status not in statuses or item.instance_id in seen:
             continue
         seen.add(item.instance_id)
-        amounts.extend((account, item.day, total) for account, total in item.account_amounts)
+        amounts.extend(
+            (account, item.day, total)
+            for record_id, account, total in item.account_amounts
+            if record_id not in uncounted
+        )
     return amounts
 
 
