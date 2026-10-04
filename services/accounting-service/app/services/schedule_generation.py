@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..models import ScheduleDefinition, ScheduleInstance
 from . import schedule_rules as rules
+from .errors import ValidationError
 from .schedule_locks import lock_definition, take_import_key_shared
 from .schedule_templates import template_amounts
 
@@ -29,6 +30,77 @@ def last_period_override(definition: ScheduleDefinition) -> list[str] | None:
     amounts = template_amounts(definition.template)
     last = rules.last_period_amount(Decimal(definition.total_amount), Decimal(amounts[0]), definition.times)
     return [rules.plain(last), *amounts[1:]]
+
+
+def installment_residual(
+    definition: ScheduleDefinition,
+    rows: list[ScheduleInstance],
+    *,
+    old_amounts: list[str],
+    new_amounts: list[str],
+    overrides: dict[int, list[str] | None],
+) -> Decimal | None:
+    """Multica R-A1 (D35): the first line's amount of the last period (seq == times) of an installment with a total,
+    computed against the ACTUAL allocations of every other period, so a scoped edit keeps Σ = total_amount:
+
+    - posted: the amount it was posted with as the schedule records it (its override, else the template amount
+      before this edit, `old_amounts`);
+    - skipped: excluded (nothing was written);
+    - pending: its override after the edit (`overrides[row.id]` when the edit sets it, else the stored one —
+      preserved owner overrides, the old price that `following` gives the earlier periods, MOZE's amounts on imported
+      rows), else the new template amount (`new_amounts`);
+    - ungenerated (no row for that seq): the new template amount.
+
+    Pure over the given rows (nothing is written), so a refusal leaves the session untouched. None when the
+    definition is not an installment with a total and times. When the others already reach the total the edit is
+    refused: ValidationError("amounts") — the message carries no amount.
+    last_period_override (Task 6) is NOT used for scoped edits; generation uses this residual too once the owner has
+    edited amounts (_generated_last_override)."""
+    if definition.kind != "installment" or definition.total_amount is None or definition.times is None:
+        return None
+    new_first = Decimal(new_amounts[0])
+    by_seq = {row.seq: row for row in rows}
+    spent = Decimal(0)
+    for seq in range(1, definition.times):
+        row = by_seq.get(seq)
+        if row is None:
+            spent += new_first
+            continue
+        if row.status == "skipped":
+            continue
+        override = overrides[row.id] if row.id in overrides else row.amount_override
+        if override is not None:
+            spent += Decimal(override[0])
+        elif row.status == "posted":
+            spent += Decimal(old_amounts[0])
+        else:
+            spent += new_first
+    last = Decimal(definition.total_amount) - spent
+    if last <= 0:
+        raise ValidationError("amounts", "其他期別的金額已達總額")
+    return last
+
+
+def _generated_last_override(db: Session, definition: ScheduleDefinition) -> list[str] | None:
+    """The override of a last period generated now. Without owner amount edits (no template_owner_edited, no
+    owner-edited override) it is Task 6's last_period_override; after them it is installment_residual against the
+    actual allocations, so a last period generated after a scoped edit keeps Σ = total_amount (R-A1). Should the
+    owner's own edits already reach the total, the period follows the template (no invented amount)."""
+    fallback = last_period_override(definition)
+    if definition.kind != "installment" or definition.total_amount is None or definition.times is None:
+        return fallback
+    rows = list(db.scalars(select(ScheduleInstance).where(ScheduleInstance.definition_id == definition.id)))
+    owner_edited = definition.template_owner_edited or any(
+        row.edited_by_owner and row.amount_override is not None for row in rows
+    )
+    if not owner_edited:
+        return fallback
+    amounts = template_amounts(definition.template)
+    try:
+        residual = installment_residual(definition, rows, old_amounts=amounts, new_amounts=amounts, overrides={})
+    except ValidationError:
+        return None
+    return [rules.plain(residual), *amounts[1:]]
 
 
 def _latest(db: Session, definition_id: int) -> ScheduleInstance | None:
@@ -65,7 +137,6 @@ def generate(db: Session, definition: ScheduleDefinition, today: date) -> int:
     )
     k = 0 if latest is None else rules.first_index_after(anchor, unit, n, day_of_month, latest.rule_date)
     seq = definition.first_seq if max_seq is None else max(max_seq + 1, definition.first_seq)
-    last_override = last_period_override(definition)
     created = 0
     while definition.times is None or seq <= definition.times:
         day = rules.occurrence(anchor, unit, n, k, day_of_month)
@@ -75,8 +146,8 @@ def generate(db: Session, definition: ScheduleDefinition, today: date) -> int:
         if day in posted_days:
             continue  # this date is already posted for the definition: no second period, no seq consumed
         instance = ScheduleInstance(definition_id=definition.id, seq=seq, rule_date=day, due_date=day)
-        if last_override is not None and seq == definition.times:
-            instance.amount_override = last_override
+        if seq == definition.times:
+            instance.amount_override = _generated_last_override(db, definition)
         db.add(instance)
         created += 1
         seq += 1

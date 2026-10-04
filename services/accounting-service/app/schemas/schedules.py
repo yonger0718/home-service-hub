@@ -86,6 +86,8 @@ class InstanceUpdateIn(BaseModel):
 
     due_date: date | None = None
     amounts: list[NonNegativeMoney] | None = None
+    # 套用範圖 (proposal decision 24): 僅這一期 / 這一期與之後 / 全部週期
+    scope: Literal["this", "following", "all"] = "this"
 
 
 class RepostIn(BaseModel):
@@ -145,6 +147,7 @@ class DefinitionOut(BaseModel):
     auto_post_from: date
     template: TemplateOut
     created_locally: bool
+    template_owner_edited: bool
     imported: bool
     locked: bool
     review_reason: str | None

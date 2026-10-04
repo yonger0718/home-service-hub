@@ -166,6 +166,11 @@ EXPECTED_WRITES = {
     ("/schedules/definitions/{definition_id}/pause", "POST"), ("/schedules/definitions/{definition_id}/resume", "POST"),
     ("/schedules/definitions/{definition_id}/end", "POST"), ("/schedules/definitions/{definition_id}/mode", "PUT"),
     ("/schedules/definitions/{definition_id}/catch-up", "POST"),
+    # Instance actions; repost / reopen of a MOZE-booked period answer locked_until_cutover (spec "Instance endpoints").
+    ("/schedules/instances/{instance_id}", "PUT"), ("/schedules/instances/{instance_id}/post", "POST"),
+    ("/schedules/instances/{instance_id}/skip", "POST"), ("/schedules/instances/{instance_id}/reopen", "POST"),
+    ("/schedules/instances/{instance_id}/repost", "POST"),
+    ("/schedules/instances/{instance_id}/accept-partial", "POST"),
 }
 
 

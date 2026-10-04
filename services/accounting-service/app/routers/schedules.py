@@ -128,3 +128,66 @@ def catch_up(definition_id: int, db: Session = Depends(get_db)):
     db.commit()
     posted, failed = schedule_service.post_sequence(db, instance_ids)
     return {"posted": posted, "failed": failed, "definition": _definition_out(db, definition_id)}
+
+
+@router.get("/instances", response_model=list[InstanceOut])
+def list_instances(
+    date_from: date | None = Query(default=None, alias="from"),
+    until: date | None = None,
+    status: Literal["pending", "posted", "skipped", "all"] = "pending",
+    definition_id: int | None = None,
+    queue: bool = False,
+    db: Session = Depends(get_db),
+):
+    return schedule_read.list_instances(
+        db, date_from=date_from, until=until, status=None if status == "all" else status,
+        definition_id=definition_id, queue=queue,
+    )
+
+
+@router.put("/instances/{instance_id}", response_model=InstanceOut)
+def put_instance(instance_id: int, payload: InstanceUpdateIn, db: Session = Depends(get_db)):
+    with service_errors():
+        schedule_service.update_instance(db, instance_id, payload)
+    db.commit()
+    return _instance_out(db, instance_id)
+
+
+@router.post("/instances/{instance_id}/post", response_model=InstanceOut)
+def post_instance(instance_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        schedule_service.post_one(db, instance_id)
+    db.commit()
+    return _instance_out(db, instance_id)
+
+
+@router.post("/instances/{instance_id}/skip", response_model=InstanceOut)
+def skip_instance(instance_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        schedule_service.skip_instance(db, instance_id)
+    db.commit()
+    return _instance_out(db, instance_id)
+
+
+@router.post("/instances/{instance_id}/reopen", response_model=InstanceOut)
+def reopen_instance(instance_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        schedule_service.reopen_instance(db, instance_id)
+    db.commit()
+    return _instance_out(db, instance_id)
+
+
+@router.post("/instances/{instance_id}/repost", response_model=InstanceOut)
+def repost_instance(instance_id: int, payload: RepostIn, db: Session = Depends(get_db)):
+    with service_errors():
+        schedule_service.repost_instance(db, instance_id, payload.amounts)
+    db.commit()
+    return _instance_out(db, instance_id)
+
+
+@router.post("/instances/{instance_id}/accept-partial", response_model=InstanceOut)
+def accept_partial(instance_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        schedule_service.accept_partial(db, instance_id)
+    db.commit()
+    return _instance_out(db, instance_id)

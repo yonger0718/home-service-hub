@@ -5,6 +5,7 @@ Every write first shares the import advisory key (409 import_running while an im
 and its instances (D32). Services never commit, except post_sequence, which commits one transaction per instance.
 """
 
+import copy
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -28,7 +29,15 @@ from .schedule_locks import (
     lock_instances,
     take_import_key_shared,
 )
-from .schedule_templates import check_amounts, loan_line, normalize_template, realign_override, validate_template
+from .schedule_generation import installment_residual
+from .schedule_templates import (
+    check_amounts,
+    loan_line,
+    normalize_template,
+    realign_override,
+    template_amounts,
+    validate_template,
+)
 
 
 def _today() -> date:
@@ -314,3 +323,180 @@ def post_sequence(db: Session, instance_ids: list[int]) -> tuple[list[int], dict
         elif result.outcome == "loan_closed":
             break  # the later periods were skipped with it
     return posted, None
+
+
+def _instance_locked(db: Session, instance_id: int, *, share: bool = True) -> tuple[ScheduleDefinition, ScheduleInstance]:
+    """Shared import key → definition (FOR SHARE, or FOR UPDATE when the action may change it) → instance FOR UPDATE."""
+    take_import_key_shared(db)
+    definition = lock_definition(db, get_instance(db, instance_id).definition_id, share=share)
+    instance = lock_instance(db, instance_id)
+    if instance is None:
+        raise NotFoundError(f"schedule instance {instance_id} not found")
+    return definition, instance
+
+
+def update_instance(db: Session, instance_id: int, payload: InstanceUpdateIn) -> None:
+    """編輯這一筆 on a pending period: date and / or amounts; rule_date never changes. A scope other than `this`
+    (這一期與之後 / 全部週期, proposal decision 24) is the amounts-only path of _apply_amount_scope."""
+    if payload.scope != "this":
+        _apply_amount_scope(db, instance_id, payload)
+        return
+    definition, instance = _instance_locked(db, instance_id)
+    if instance.status != "pending":
+        raise ConflictError("只有待入帳的期別可以修改")
+    if payload.amounts is not None:
+        instance.amount_override = check_amounts(definition.template, payload.amounts)
+    if payload.due_date is not None:
+        taken = db.scalar(
+            select(ScheduleInstance.status)
+            .where(
+                ScheduleInstance.definition_id == definition.id,
+                ScheduleInstance.id != instance.id,
+                ScheduleInstance.status != "skipped",
+                ScheduleInstance.due_date == payload.due_date,
+            )
+            .order_by(ScheduleInstance.status.desc())  # 'posted' first
+            .limit(1)
+        )
+        if taken == "posted":
+            raise ValidationError("due_date", "這一天已有入帳的期別")
+        if taken is not None:
+            # two pending periods on one day would collide on ux_schedule_instance_posted_day when both post
+            raise ValidationError("due_date", "這一天已有另一期待入帳")
+        instance.due_date = payload.due_date
+    instance.edited_by_owner = True
+    db.flush()
+
+
+def _apply_amount_scope(db: Session, instance_id: int, payload: InstanceUpdateIn) -> None:
+    """這一期與之後 (`following`) / 全部週期 (`all`), spec "Instance amount edit scope".
+
+    The new amounts become the template's (template_owner_edited, so re-imports keep them, D37); every pending period
+    from this one (following) or every pending period (all) follows the template, except owner-edited ones other
+    than this; with `following` the earlier pending periods keep the old price as an override. Posted and skipped
+    periods never change. An installment with a total gives its pending last period the residual of
+    installment_residual (R-A1). Lock order (D32): key → definition FOR UPDATE → every instance FOR UPDATE,
+    ascending id. No cutover check: amounts are not rule fields (update_definition / delete_definition keep their
+    lock)."""
+    if payload.amounts is None or payload.due_date is not None:
+        raise ValidationError("scope", "套用到其他期別時只能修改金額")
+    take_import_key_shared(db)
+    definition = lock_definition(db, get_instance(db, instance_id).definition_id)
+    rows = lock_instances(db, definition.id)
+    instance = next((row for row in rows if row.id == instance_id), None)
+    if instance is None:
+        raise NotFoundError(f"schedule instance {instance_id} not found")
+    if instance.status != "pending":
+        raise ConflictError("只有待入帳的期別可以修改")
+    amounts = check_amounts(definition.template, payload.amounts)
+    if any(Decimal(value) == 0 for value in amounts):
+        raise ValidationError("amounts", "套用到其他期別時每一行金額須大於 0")
+    pending = [row for row in rows if row.status == "pending"]
+    old_amounts = template_amounts(definition.template)
+    planned: dict[int, list[str] | None] = {}  # the overrides this edit writes; computed before anything changes
+    for row in pending:
+        if payload.scope == "following" and row.seq < instance.seq:
+            if row.amount_override is None:
+                planned[row.id] = list(old_amounts)  # the earlier periods keep the old price
+        elif row.id == instance.id:
+            planned[row.id] = list(amounts) if row.edited_by_owner else None
+        elif not row.edited_by_owner:
+            planned[row.id] = None
+    residual = installment_residual(  # 422 `amounts` when the others reach the total; nothing written yet
+        definition, rows, old_amounts=old_amounts, new_amounts=amounts, overrides=planned
+    )
+    for row in pending:
+        if row.id in planned:
+            row.amount_override = planned[row.id]
+    template = copy.deepcopy(definition.template)
+    for line, amount in zip(template["lines"], amounts):
+        line["amount"] = amount
+    definition.template, definition.template_owner_edited = template, True
+    last = next((row for row in pending if definition.times is not None and row.seq == definition.times), None)
+    if residual is not None and last is not None:
+        # The last pending period always closes the total (local or imported); its other lines keep a preserved
+        # owner override, else take the new amounts. An ungenerated last period is written later by generation.
+        keep = last.edited_by_owner and last.id != instance.id and last.amount_override is not None
+        rest = last.amount_override[1:] if keep else amounts[1:]
+        last.amount_override = [rules.plain(residual), *rest]
+    db.flush()
+
+
+def post_one(db: Session, instance_id: int) -> None:
+    """[入帳]: acted_by owner. Any failure is stored as last_error (own transaction): a validation failure is
+    re-raised (422); conflicts, a missing row and the cutover lock pass through unrecorded; any other error
+    (IntegrityError, a deadlock's OperationalError) is recorded by class name and answered 409."""
+    try:
+        posting.post_instance(db, instance_id, actor="owner")
+    except ValidationError as exc:
+        posting.record_failure(db, instance_id, posting.failure_message(exc))
+        raise
+    except (ConflictError, NotFoundError, EditLockedError):
+        db.rollback()
+        raise
+    except Exception as exc:  # noqa: BLE001 — spec: on any error a separate transaction stores last_error
+        message = posting.failure_message(exc)
+        posting.record_failure(db, instance_id, message)
+        raise ConflictError(message) from exc
+
+
+def skip_instance(db: Session, instance_id: int) -> None:
+    """[略過]: no entry is written, so a loan's open amount stays (略過這一期？剩餘不變)."""
+    _, instance = _instance_locked(db, instance_id)
+    if instance.status != "pending":
+        raise ConflictError("只有待入帳的期別可以略過")
+    instance.status, instance.acted_at, instance.acted_by = "skipped", _now(), "owner"
+    db.flush()
+
+
+def reopen_instance(db: Session, instance_id: int) -> None:
+    definition, instance = _instance_locked(db, instance_id, share=False)
+    if instance.status == "pending":
+        raise ConflictError("這一期已是待入帳")
+    if instance.status == "posted":
+        posting.delete_period_entries(db, list(instance.posted_entry_ids))
+        instance.note = f"入帳記錄已於 {_today().isoformat()} 刪除"
+    instance.status, instance.posted_entry_ids, instance.is_partial = "pending", [], False
+    instance.acted_at, instance.acted_by, instance.reopened_at = None, None, _now()
+    if definition.status == "ended":
+        definition.status = "active"
+    db.flush()
+
+
+def repost_instance(db: Session, instance_id: int, amounts: list) -> None:
+    """編輯這一筆 on a posted (or partial) period: delete its entries and post again with new amounts, atomically.
+
+    Lock order (D32): key → definition (lock_definition_for_post: FOR UPDATE with a loan line, since the repost may
+    end it) → instance → the later pending instances (loan templates) → groups → the period's entries **and the
+    loan** in one statement (delete_period_entries(also_lock=…)); post_locked reuses that loan row, so no second
+    entry-lock statement runs."""
+    take_import_key_shared(db)
+    definition = posting.lock_definition_for_post(db, get_instance(db, instance_id).definition_id)
+    instance = lock_instance(db, instance_id)
+    if instance is None:
+        raise NotFoundError(f"schedule instance {instance_id} not found")
+    if instance.status != "posted":
+        raise ConflictError("只有已入帳的期別可以重新入帳")
+    if instance.acted_by == "import" and not import_locked():
+        raise EditLockedError()
+    override = check_amounts(definition.template, amounts)
+    reference = loan_line(definition.template)
+    loan_id = None
+    if reference is not None:
+        posting.lock_later_pending(db, definition, instance)  # schedule rows before any entry lock
+        loan_id = reference[1]["loan_entry_id"]
+    loan = posting.delete_period_entries(db, list(instance.posted_entry_ids), also_lock=loan_id)
+    instance.status, instance.posted_entry_ids, instance.is_partial = "pending", [], False
+    instance.acted_at, instance.acted_by = None, None
+    instance.amount_override, instance.edited_by_owner = override, True
+    db.flush()
+    posting.post_locked(db, definition, instance, "owner", locked_loan=loan)
+
+
+def accept_partial(db: Session, instance_id: int) -> None:
+    """保留部分: keep what is left of the period; the note stays."""
+    _, instance = _instance_locked(db, instance_id)
+    if instance.status != "posted" or not instance.is_partial:
+        raise ConflictError("只有部分入帳的期別可以保留部分")
+    instance.is_partial = False
+    db.flush()
