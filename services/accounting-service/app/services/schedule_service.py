@@ -116,6 +116,8 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
     definition = lock_definition(db, definition_id)
     if definition.moze_id is not None and not import_locked():
         raise EditLockedError()  # D36: the next import would overwrite a template edit
+    if definition.status == "ended":
+        raise ConflictError("definition_ended")  # spec: no pending instance is ever created for an ended definition
     instances = lock_instances(db, definition_id)
     today = _today()
     tomorrow = today + timedelta(days=1)
@@ -144,6 +146,8 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
     definition.interval_unit, definition.interval_n = payload.interval_unit, payload.interval_n
     definition.day_of_month, definition.times, definition.end_date = payload.day_of_month, payload.times, payload.end_date
     definition.total_amount = total
+    if definition.review_reason == "interval_mismatch":
+        definition.review_reason = None  # the owner's edit replaces the import's invented rule, so it may roll forward
     if payload.posting_mode is not None:
         _set_mode(definition, payload.posting_mode, today)
 
@@ -164,7 +168,11 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
         k = max(k, rules.first_index_after(anchor, unit, n, day_of_month, latest))
     first = rules.occurrence(anchor, unit, n, k, day_of_month)
     next_seq = max(max_seq + 1, definition.first_seq)
-    fits = (payload.times is None or next_seq <= payload.times) and (payload.end_date is None or first <= payload.end_date)
+    fits = (
+        (payload.times is None or next_seq <= payload.times)
+        and (payload.end_date is None or first <= payload.end_date)
+        and first <= rules.horizon(today)  # beyond the horizon generate() inserts it later, once it is within reach
+    )
     db.flush()
     if fits:
         # The first regenerated period is inserted here, so generate() (strictly after the latest rule_date) continues

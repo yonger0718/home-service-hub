@@ -289,6 +289,77 @@ def test_edit_with_a_new_anchor_takes_its_day(client, db_session, seed, today, d
     assert [(row.seq, row.due_date) for row in rows[1:3]] == [(2, first), (3, first.replace(month=3))]
 
 
+def test_edit_of_an_ended_definition_is_refused(client, db_session, seed, today):
+    # Spec: no pending instance is ever created for an ended definition; an edit of one answers 409 definition_ended.
+    today(date(2026, 10, 3))
+    card = seed.account("範例卡")
+    definition = seed.definition([seed.line("expense", card, "1000")], name="訂閱", anchor=date(2026, 9, 1), status="ended")
+    entry = seed.entry(card, "-1000", day=date(2026, 9, 1), source="schedule")
+    seed.instance(definition, 1, date(2026, 9, 1), status="posted", entries=[entry])
+    db_session.commit()
+
+    response = client.put(
+        f"/schedules/definitions/{definition.id}",
+        json={"name": "訂閱", "template": {"lines": [_line("expense", card, "1200")]}, "interval_unit": "month",
+              "anchor_date": "2026-09-01"},
+    )
+
+    assert (response.status_code, response.json()["message"]) == (409, "definition_ended")
+    assert [(row.seq, row.status) for row in _instances(db_session, definition.id)] == [(1, "posted")]
+    db_session.refresh(definition)
+    assert (definition.status, definition.template["lines"][0]["amount"]) == ("ended", "1000")
+
+
+def test_edit_clears_interval_mismatch_and_regenerates(client, db_session, seed, today):
+    # The owner's edit defines the rule of an interval_mismatch import, so generation may roll it forward again.
+    today(date(2026, 10, 3))
+    card = seed.account("範例卡")
+    definition = seed.definition(
+        [seed.line("expense", card, "1000")], name="訂閱", anchor=date(2026, 9, 1), review_reason="interval_mismatch"
+    )
+    entry = seed.entry(card, "-1000", day=date(2026, 9, 1), source="schedule")
+    seed.instance(definition, 1, date(2026, 9, 1), status="posted", entries=[entry])
+    seed.instance(definition, 2, date(2026, 10, 1))
+    db_session.commit()
+
+    response = client.put(
+        f"/schedules/definitions/{definition.id}",
+        json={"name": "訂閱", "template": {"lines": [_line("expense", card, "1000")]}, "interval_unit": "month",
+              "anchor_date": "2026-09-01"},
+    )
+
+    assert response.status_code == 200
+    db_session.refresh(definition)
+    assert definition.review_reason is None
+    rows = _instances(db_session, definition.id)
+    # horizon(2026-10-03) = 2027-11-03: seq 3 on 2026-11-01 through seq 15 on 2027-11-01
+    assert [(row.seq, row.due_date) for row in (rows[2], rows[-1])] == [(3, date(2026, 11, 1)), (15, date(2027, 11, 1))]
+    assert len(rows) == 15
+
+
+def test_edit_does_not_insert_a_period_beyond_the_horizon(client, db_session, seed, today):
+    # Spec: due_date ≤ horizon(today). Every 60 weeks from 2026-10-01 the next period is 2027-11-25 > 2027-11-03.
+    today(date(2026, 10, 3))
+    card = seed.account("範例卡")
+    definition = seed.definition(
+        [seed.line("expense", card, "1000")], name="保養", interval_unit="week", interval_n=60, anchor=date(2026, 10, 1)
+    )
+    entry = seed.entry(card, "-1000", day=date(2026, 10, 1), source="schedule")
+    seed.instance(definition, 1, date(2026, 10, 1), status="posted", entries=[entry])
+    db_session.commit()
+
+    response = client.put(
+        f"/schedules/definitions/{definition.id}",
+        json={"name": "保養", "template": {"lines": [_line("expense", card, "1200")]}, "interval_unit": "week",
+              "interval_n": 60, "anchor_date": "2026-10-01"},
+    )
+
+    assert response.status_code == 200
+    rows = _instances(db_session, definition.id)
+    assert [(row.seq, row.status) for row in rows] == [(1, "posted")]
+    assert all(row.due_date <= date(2027, 11, 3) for row in rows)
+
+
 def test_delete_refused_after_posting(client, db_session, seed, today):
     # Spec "Delete refused after posting".
     today(date(2026, 10, 3))
