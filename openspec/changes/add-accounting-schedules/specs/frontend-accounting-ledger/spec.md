@@ -92,7 +92,16 @@ Editing an entry whose `schedule` is set SHALL first ask 編輯這一筆 / 編�
 
 ### Requirement: 週期／分期 section
 
-The 借還款追蹤 tab of 提醒中心 SHALL show, below the counterparties, a section 週期／分期 listing every definition that is not `ended` from `GET /api/accounting/schedules/definitions`, ordered by next due date: icon, name, next date (`下期 11/09`), progress `已入帳 k / N` (or `每月` / `每 2 週` … when `times` is NULL), `剩餘 −$275,001` for loans and `剩餘 $6,667` for installments with a total, a mode badge 自動 or 提醒, a 已暫停 badge when paused, a 需檢查 badge when `needs_check` is true (an ended loan definition whose loan is still open, or `review_reason` set), and, when `failing` is set, the error text with 重試 (calling `catch-up`). A collapsed 已結束 row SHALL list ended definitions, with 需檢查 where it applies. Tapping a row SHALL open a manage sheet with: the rule summary (`每月 9 號 · 36 期 · 自 2026/11/09`), the next three periods, 暫停 / 繼續 (繼續 asks 略過期間的 N 期 / 補入帳 when paused instances are overdue and sends `backlog`), 入帳方式 自動入帳 / 提醒入帳, 補入帳至今天 (when something is overdue), 編輯 (definition mode of the entry form), 結束 (confirm: `結束後未入帳的 N 期將刪除`), and 刪除 only when nothing was posted.
+The 借還款追蹤 tab of 提醒中心 SHALL show, below the counterparties, a section 週期／分期 listing every definition that is not `ended` from `GET /api/accounting/schedules/definitions`, ordered by next due date: icon, name, next date (`下期 11/09`), progress `已入帳 k / N` (or `每月` / `每 2 週` … when `times` is NULL), `剩餘 −$275,001` for loans and `剩餘 $6,667` for installments with a total, a mode badge 自動 or 提醒, a 已暫停 badge when paused, a 需檢查 badge when `needs_check` is true (an ended loan definition whose loan is still open, or `review_reason` set), and, when `failing` is set, the error text with 重試 (calling `catch-up`). A collapsed 已結束 row SHALL list ended definitions, with 需檢查 where it applies. Tapping a row SHALL open a manage sheet with: the rule summary (`每月 9 號 · 36 期 · 自 2026/11/09`), the next three periods (each with 調整, which opens the period's amounts, one field per template line, with 儲存), 暫停 / 繼續 (繼續 asks 略過期間的 N 期 / 補入帳 when paused instances are overdue and sends `backlog`), 入帳方式 自動入帳 / 提醒入帳, 補入帳至今天 (when something is overdue), 編輯 (definition mode of the entry form), 結束 (confirm: `結束後未入帳的 N 期將刪除`), and 刪除 only when nothing was posted. When the owner saves a period with at least one changed amount, a sheet titled `套用範圖` SHALL ask with the buttons `僅這一期` / `這一期與之後` / `全部週期` (focus on `僅這一期`) and SHALL call `PUT /api/accounting/schedules/instances/{id}` with the amounts and `scope` `this` / `following` / `all` respectively; Esc SHALL close that sheet and save nothing; a save without a changed amount SHALL close the editor without asking or calling the server. The sheet follows the keyboard contract of every sheet (Esc closes and is handled; ⏎ in a field saves).
+
+#### Scenario: Price change from this period on
+- **GIVEN** the Netflix sheet whose next period is `−$390`
+- **WHEN** the owner taps 調整 on it, enters `420`, taps 儲存 and chooses `這一期與之後`
+- **THEN** `PUT /api/accounting/schedules/instances/{id}` SHALL be called with `{"amounts": ["420"], "scope": "following"}` and the sheet SHALL reload
+
+#### Scenario: Scope question cancelled
+- **WHEN** the `套用範圖` sheet is open and the owner presses Esc
+- **THEN** the sheet SHALL close and no request SHALL be made
 
 #### Scenario: Loan row
 - **GIVEN** the 信貸 definition with 3 of 36 periods posted and the next on 2027-02-09

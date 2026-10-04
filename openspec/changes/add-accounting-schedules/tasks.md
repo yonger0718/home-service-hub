@@ -24,15 +24,15 @@
 - **Lock order (D32), every path:** `pg_try_advisory_xact_lock_shared(IMPORT_LOCK_KEY)` (409 `import_running` when an import holds it) → `schedule_definition` row (`FOR SHARE` when posting or acting on one instance, `FOR UPDATE` when editing, pausing, resuming, ending, changing mode or deleting; a post or repost of a template with a loan line takes `FOR UPDATE` too, because it may end the definition — two `FOR SHARE` holders that both upgrade deadlock) → `schedule_instance` row(s) (`FOR UPDATE`, ascending id; the job adds `SKIP LOCKED`; a post of a loan template also locks the definition's later pending instances, `seq > k`, before any entry lock) → the ledger's order (`entry_group` rows ascending → target entries with their transfer legs in one statement, the loan entry included in that statement for a repost → nothing else). No path that holds an entry or group lock ever locks a schedule row. The entry-delete path reads the instance unlocked, then takes the key, the definition (`FOR SHARE`, `FOR UPDATE` when the definition is `ended`, since the hook may revive it) and the instance (`FOR UPDATE`), re-checks containment, then continues with group → entries. The backup importer holds the key exclusively (retrying `pg_try_advisory_lock` for up to 30 s while shared holders finish) and locks every definition, then every instance, ascending id, before deleting any entry.
 - **Import shared lock on every schedule write path:** create, update, delete, pause, resume, end, mode, catch-up, instance edit, post, skip, reopen, repost, accept-partial, generation, run-now and the entry-delete path that touches an instance. The refusal is `schedule_locks.ImportRunningError` (a `ConflictError`, message `import_running`), answered as HTTP 409 with body `{"code": …, "message": "import_running", …}`.
 - **Posting.** One database transaction per instance; idempotent by row lock + `status` + the partial unique index `ux_schedule_instance_posted_day`; entries dated `entry_date = posted_date = due_date`, `entry_time = NULL`, `source = 'schedule'`, `moze_id = NULL`, `import_run_id = NULL`, category defaults never remembered. On any error the transaction rolls back and a second short transaction writes `last_error` (`"<field>: <message>"`, never an amount, name or counterparty) and `last_error_at`; the instance stays `pending`. Multi-instance operations commit status changes first, then post one transaction each in `seq` order, stopping at the first failure.
-- **Amounts.** Template and override amounts are unsigned decimal strings with at most 4 decimals (`"8333"`, `"0.5"`); the server applies signs. A line's amount for a period is `amount_override[i]` when the instance has an override, else the template's; `"0"` means the line is not written. Overrides are aligned with the template's lines on every write (422 naming `amounts`). Re-imports never overwrite `edited_by_owner` instances.
+- **Amounts.** Template and override amounts are unsigned decimal strings with at most 4 decimals (`"8333"`, `"0.5"`); the server applies signs. A line's amount for a period is `amount_override[i]` when the instance has an override, else the template's; `"0"` means the line is not written. Overrides are aligned with the template's lines on every write (422 naming `amounts`). Re-imports never overwrite `edited_by_owner` instances, nor the template amounts or pending overrides of a `template_owner_edited` definition (Task 17). A pending period's amounts can be edited for that period only (`scope = this`), for it and the later ones (`following`) or for every pending period (`all`) — Task 12, proposal decision 24.
 - **Partial periods.** Deleting an entry listed by a posted instance deletes only that entry (with children and transfer pair); remaining entries keep the instance `posted` with `is_partial = true` and note `部分入帳記錄已於 YYYY-MM-DD 刪除`; none remaining → `skipped` (`入帳記錄已刪除`) when `acted_by = import`, else `pending` with `reopened_at = now()` and note `入帳記錄已於 YYYY-MM-DD 刪除`. A pending or partial result revives an `ended` definition. Partial periods sit in 待完成交易 and the bell until 重新入帳 (`repost`) or 保留部分 (`accept-partial`).
 - **Adoption (re-import).** An instance without `moze_id` of the same definition whose `rule_date` (else `due_date`) equals a MOZE record's date is adopted (gets `moze_id`, `moze_record_ids`, and, when pending and not owner-edited, the override); a posted adopted instance keeps its entries and the MOZE record is not imported (`past_records_already_posted`). Instances posted by `auto` / `owner`, skipped by anyone but `import`, and owner-edited pending instances are never changed by an import; `created_locally` definitions are never written by an import except the loan-link re-pointing.
 - **Cutover lock.** While `ACCOUNTING_IMPORT_LOCKED` is not `true`: `PUT` / `DELETE` of a definition with a `moze_id`, and `repost` (or `reopen` of a posted period, whose entries are MOZE rows) of an `acted_by = import` instance, answer 409 `locked_until_cutover`; `schedule` entries are editable at all times; posting against a `moze_backup` loan bypasses D19 for that target only.
 - **Scheduler.** `ACCOUNTING_SCHEDULER_ENABLED` (default `true`; `false`, `0` and `no` disable it) gates the in-process APScheduler; `tests/conftest.py` sets it `false` for every test (autouse). Job lock key `SCHEDULE_JOB_LOCK_KEY = 0x53434844` (`"SCHD"`), session-level `pg_try_advisory_lock` on a dedicated connection.
-- **Logs and reports** carry ids, counts and error classes only — never names, amounts or counterparties (the import report's `loan_remainder_check` is the one owner-facing list with amounts, as the spec requires).
+- **Logs and reports** carry ids, counts and error classes only — never names, amounts or counterparties (the import report's `loan_remainder_check` and `amount_differs` are the only owner-facing lists with amounts, as the spec requires).
 - **Owner data rule.** Tests build synthetic rows only. `~/workspace/moze-backup/MOZE_4.0.zip` is read only by Task 28's acceptance script against the disposable database `accounting_schedules_verify`, printing aggregates; nothing from it is committed or printed row by row. No step touches the production `accounting_db`.
 - **Frontend.** Every page usable at 390 px without horizontal page scroll; tone tokens only (`var(--tone-neg, var(--c-red))`, `var(--tone-pos, var(--c-green))`, `var(--app-state-warning-bg)`, `var(--app-text-muted)`, `var(--app-border)`, `var(--app-primary)`); keyboard/IME contract: every key handler starts with `isHandledKey(event)`, sheets use `sheetKeyAction` (Esc closes and is marked handled, ⏎ in a field confirms, ⏎ on a button clicks natively), inline confirmations close on Esc; every load that can be superseded carries a request id and drops older answers; a 409 `import_running` from any schedule action (and an entry delete that touches a period) shows the toast `匯入進行中，請稍後再試` and leaves the page unchanged.
-- **Copy (verbatim).** `單次` `週期` `分期`; `每 N 天|週|月|年`; `起始日`; `結束` `無限期` `N 次` `日期`; `入帳方式` `自動入帳` `提醒入帳`; `總額` `期數` `首次還款日` `每期金額` `利息` `還款帳戶`; footers `週期：#1 / 無限期（每月 / 22號）`, `週期：#1 / 12（每月 / 22號）`, `分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）`; `排程不支援`; `編輯這一筆` `編輯整個排程`; `待完成交易` `已到期` `即將到來` `已逾期 N 天` `今天` `重試` `入帳` `略過` `略過這一期？剩餘不變` `補入帳至今天` `部分入帳` `重新入帳` `保留部分`; `週期／分期` `已結束` `下期 11/09` `已入帳 k / N` `剩餘` `自動` `提醒` `已暫停` `需檢查`; `暫停` `繼續` `略過期間的 N 期` `補入帳` `結束後未入帳的 N 期將刪除` `刪除`; `剩餘 −$275,001 · 已還 $24,999 · 下期 02/09`; pills `週期 #k/N`, `週期 #k`, `分期 #k/N`, badge `部分`; delete notes `同期的 利息 −$620 會保留，此期標示為部分入帳`, `此期將回到待完成交易`, `此期將標示為略過`; toast `匯入進行中，請稍後再試`; bell aria-label `提醒中心，N 項`.
+- **Copy (verbatim).** `單次` `週期` `分期`; `每 N 天|週|月|年`; `起始日`; `結束` `無限期` `N 次` `日期`; `入帳方式` `自動入帳` `提醒入帳`; `總額` `期數` `首次還款日` `每期金額` `利息` `還款帳戶`; footers `週期：#1 / 無限期（每月 / 22號）`, `週期：#1 / 12（每月 / 22號）`, `分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）`; `排程不支援`; `編輯這一筆` `編輯整個排程`; `待完成交易` `已到期` `即將到來` `已逾期 N 天` `今天` `重試` `入帳` `略過` `略過這一期？剩餘不變` `補入帳至今天` `部分入帳` `重新入帳` `保留部分`; period amount scope sheet `套用範圖` with `僅這一期` `這一期與之後` `全部週期`; `週期／分期` `已結束` `下期 11/09` `已入帳 k / N` `剩餘` `自動` `提醒` `已暫停` `需檢查`; `暫停` `繼續` `略過期間的 N 期` `補入帳` `結束後未入帳的 N 期將刪除` `刪除`; `剩餘 −$275,001 · 已還 $24,999 · 下期 02/09`; pills `週期 #k/N`, `週期 #k`, `分期 #k/N`, badge `部分`; delete notes `同期的 利息 −$620 會保留，此期標示為部分入帳`, `此期將回到待完成交易`, `此期將標示為略過`; toast `匯入進行中，請稍後再試`; bell aria-label `提醒中心，N 項`.
 - Commit after every task with a Conventional Commits subject and the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ## Review Focus
@@ -48,7 +48,7 @@
 - Owner amendment 4 (自動 catch up) is implemented as 補入帳至今天 on tap, per proposal decision 2 — owner to confirm.
 - Lock strength: `specs/accounting-schedules/spec.md` now states the `FOR UPDATE` upgrade for a loan-line post and for the entry-delete path on an `ended` definition (D32 refinements); the plan follows that text.
 - Importer refinements beyond the spec text (plan review of Tasks 16–17; each keeps the spec's outcome or makes it stricter): an `AHInstallment` with `times < 2` becomes `kind = recurring` (the spec says every installment becomes `installment`, but `ck_schedule_definition_installment` needs `times ≥ 2`); a future record whose `eventID` names no period or installment becomes a single definition with review reason `event_missing`; template lines are the first group's lines plus any record kind a later group carries (so a later package's interest is never dropped); a "live" `AHPeriod` is one with at least one enabled future record — a period without one is set `ended` with `review_reason = not_live` (a reason outside the spec's list), and a later backup with an enabled future record sets it back to `active`; the end itself deletes no pending row, so owner-edited and HomeHub-generated pending rows stay (D37), and only the import's own end is ever undone; a finite period's `times` is capped at its highest mapped seq (Task 28.5 checks MOZE pre-generates every finite series).
-- Owner choice (not changed): a HomeHub-generated period of an imported unlimited period posts the template amount taken from MOZE's earliest record (D37, "lines from the first generated record"); the latest record's amount (a price change) may be what the owner expects. Owner to confirm before cutover.
+- Owner decision 2026-10-04: per-period amount edits with scope — see proposal decision 24.
 - Test data (owner data rule): spec scenarios, tests and fixtures use the synthetic names `範例銀行` and `範例卡`; the scenarios' arithmetic is unchanged.
 
 Implementation-time confirmations recorded by Task 28 in `design.md` "Implementation notes": the MOZE weekday numbering of `AHPeriod.days` for weekly periods (assumed 1 = Sunday … 7 = Saturday, Apple `Calendar`; a wrong assumption shows as `interval_mismatch` on every weekly period, never as wrong dates) and whether a MOZE posting-mode field exists (none is assumed; every imported definition is `auto`).
@@ -147,6 +147,7 @@ class ScheduleDefinition(Base, TimestampMixin):   # schedule_definition
     times Integer nullable; end_date Date nullable; total_amount Numeric(20,4) nullable
     posting_mode schedule_posting_mode not null default 'auto'; status schedule_status not null default 'active'
     auto_post_from Date not null; generated_until Date nullable; created_locally Boolean not null default true
+    template_owner_edited Boolean not null default false   # set by a 這一期與之後 / 全部週期 amount edit (Task 12); the importer keeps the template amounts (Task 17)
     moze_payload JSONB nullable; review_reason String(64) nullable
     checks: ck_schedule_definition_interval_n, ck_schedule_definition_day_of_month, ck_schedule_definition_first_seq,
             ck_schedule_definition_times, ck_schedule_definition_end_date, ck_schedule_definition_total_amount,
@@ -242,7 +243,7 @@ def end(db: Session, definition_id: int) -> None
 def set_mode(db: Session, definition_id: int, posting_mode: str) -> None
 def catch_up_ids(db: Session, definition_id: int) -> list[int]
 def post_sequence(db: Session, instance_ids: list[int]) -> tuple[list[int], dict | None]   # commits each; (posted ids, {"instance_id", "error"} | None)
-def update_instance(db: Session, instance_id: int, payload: InstanceUpdateIn) -> None
+def update_instance(db: Session, instance_id: int, payload: InstanceUpdateIn) -> None             # payload.scope: this | following | all (decision 24)
 def post_one(db: Session, instance_id: int) -> None                                       # acted_by owner; failure recorded, re-raised
 def skip_instance(db: Session, instance_id: int) -> None
 def reopen_instance(db: Session, instance_id: int) -> None
@@ -319,11 +320,11 @@ class DefinitionUpdateIn(BaseModel):
 class DefinitionIn(DefinitionUpdateIn): kind: Literal["recurring","installment"]; loan: LoanIn | None = None; posting_mode: Literal["auto","confirm"] = "auto"
 class ResumeIn(BaseModel): backlog: Literal["skip","post"] = "skip"
 class ModeIn(BaseModel): posting_mode: Literal["auto","confirm"]
-class InstanceUpdateIn(BaseModel): due_date: date | None = None; amounts: list[NonNegativeMoney] | None = None
+class InstanceUpdateIn(BaseModel): due_date: date | None = None; amounts: list[NonNegativeMoney] | None = None; scope: Literal["this","following","all"] = "this"   # scope added by Task 12
 class RepostIn(BaseModel): amounts: list[NonNegativeMoney]
 class TemplateLineOut(...): every LINE_KEYS key + account_name, to_account_name, category, counterparty
 class DefinitionOut: id, kind, name, status, posting_mode, interval_unit, interval_n, anchor_date, day_of_month, first_seq, times,
-    end_date, total_amount, auto_post_from, template {lines: [TemplateLineOut], description, tags}, created_locally, imported, locked,
+    end_date, total_amount, auto_post_from, template {lines: [TemplateLineOut], description, tags}, created_locally, template_owner_edited, imported, locked,
     review_reason, generated_until, posted_count, skipped_count, pending_count, next_due_date, next_amount [{currency, amount}],
     remaining, repaid, loan_entry_id, needs_check, failing {instance_id, due_date, last_error} | None, category_icon, category_color
 class DefinitionDetailOut(DefinitionOut): instances: list[InstanceOut]
@@ -355,7 +356,7 @@ class LoanScheduleOut: definition_id, name, status, posting_mode, posted_count, 
 | `PUT /schedules/definitions/{id}/mode` | `ModeIn` | `DefinitionOut` |
 | `POST /schedules/definitions/{id}/catch-up` | — | `CatchUpOut` (200 even when one failed) |
 | `GET /schedules/instances?from=&until=&status=&definition_id=&queue=` | — | `list[InstanceOut]` |
-| `PUT /schedules/instances/{id}` | `InstanceUpdateIn` | `InstanceOut` |
+| `PUT /schedules/instances/{id}` | `InstanceUpdateIn` (`scope` `this` default · `following` · `all`; not `this` → `amounts` only, else 422 `scope`) | `InstanceOut` |
 | `POST /schedules/instances/{id}/post` · `/skip` · `/reopen` · `/accept-partial` | — | `InstanceOut` |
 | `POST /schedules/instances/{id}/repost` | `RepostIn` | `InstanceOut` |
 | `POST /schedules/run-now` | — | `RunReportOut` (409 `import_running` when an import holds its key; 409 with message `schedule job already running` when the job lock is held — the SPA matches only `import_running`) |
@@ -368,6 +369,7 @@ class LoanScheduleOut: definition_id, name, status, posting_mode, posted_count, 
  "records_mapped": 0, "rewards_ignored": 0, "unsupported_types": {"7": 0},
  "past_records_already_posted": 0, "past_records_already_skipped": 0, "past_records_amount_differs": {"count": 0, "instance_ids": []},
  "relinked": {"templates": 0, "settlements": 0}, "review": [{"moze_id": "…", "reason": "…"}],
+ "amount_differs": [{"definition_id": 0, "seq": 0, "date": "…", "moze_amounts": ["…"], "amounts": ["…"]}],
  "loan_remainder_check": [{"definition": "…", "moze_remainder": "…", "open_amount": "…", "difference": "…"}]}
 ```
 
@@ -375,13 +377,13 @@ Review reasons: `interval_mismatch`, `loan_missing`, `same_date`, `seq_conflict`
 
 ### Frontend contract
 
-`models/accounting.model.ts` exports (new): `ScheduleDefinitionKind`, `ScheduleIntervalUnit`, `SchedulePostingMode`, `ScheduleStatus`, `ScheduleInstanceStatus`, `ScheduleActor`, `ScheduleLineKind`, `ScheduleLineInput`, `ScheduleLine`, `ScheduleTemplateInput`, `ScheduleTemplate`, `CurrencyAmount`, `ScheduleFailing`, `ScheduleDefinition`, `ScheduleDefinitionDetail`, `ScheduleInstanceLine`, `ScheduleInstance`, `ScheduleLoanInput`, `ScheduleDefinitionInput`, `ScheduleDefinitionUpdate`, `ScheduleInstanceQuery`, `ScheduleCatchUpResult`, `ScheduleRunReport`, `EntryScheduleLink`, `LoanSchedule`, `ScheduleImportReport`; `EntrySource` gains `'schedule'`; `LedgerEntry.schedule?: EntryScheduleLink | null`; `EntryDetail.loan_schedule?: LoanSchedule | null`; `BackupImportReport.schedules?: ScheduleImportReport`. `ScheduleKind` and `ScheduleItem` are removed.
+`models/accounting.model.ts` exports (new): `ScheduleDefinitionKind`, `ScheduleIntervalUnit`, `SchedulePostingMode`, `ScheduleStatus`, `ScheduleInstanceStatus`, `ScheduleActor`, `ScheduleLineKind`, `ScheduleLineInput`, `ScheduleLine`, `ScheduleTemplateInput`, `ScheduleTemplate`, `CurrencyAmount`, `ScheduleFailing`, `ScheduleDefinition`, `ScheduleDefinitionDetail`, `ScheduleInstanceLine`, `ScheduleInstance`, `ScheduleLoanInput`, `ScheduleDefinitionInput`, `ScheduleDefinitionUpdate`, `ScheduleInstanceQuery`, `ScheduleCatchUpResult`, `ScheduleRunReport`, `EntryScheduleLink`, `LoanSchedule`, `ScheduleImportReport`; `EntrySource` gains `'schedule'`; `LedgerEntry.schedule?: EntryScheduleLink | null`; `EntryDetail.loan_schedule?: LoanSchedule | null`; `BackupImportReport.schedules?: ScheduleImportReport`; `ScheduleAmountScope = 'this' | 'following' | 'all'` (added by Task 24). `ScheduleKind` and `ScheduleItem` are removed.
 
-`AccountingService` (new): `getScheduleDefinitions(query?: { status?: ScheduleStatus; kind?: ScheduleDefinitionKind })`, `getScheduleDefinition(id)`, `createScheduleDefinition(input)`, `updateScheduleDefinition(id, input)`, `deleteScheduleDefinition(id)`, `pauseSchedule(id)`, `resumeSchedule(id, backlog: 'skip' | 'post')`, `endSchedule(id)`, `setScheduleMode(id, mode)`, `catchUpSchedule(id)`, `getScheduleInstances(query)`, `updateScheduleInstance(id, body: { due_date?: string; amounts?: string[] })`, `postScheduleInstance(id)`, `skipScheduleInstance(id)`, `reopenScheduleInstance(id)`, `repostScheduleInstance(id, amounts: string[])`, `acceptPartialScheduleInstance(id)`, `runSchedulesNow()`. Every write bumps `entriesChanged`. `getSchedules` is removed.
+`AccountingService` (new): `getScheduleDefinitions(query?: { status?: ScheduleStatus; kind?: ScheduleDefinitionKind })`, `getScheduleDefinition(id)`, `createScheduleDefinition(input)`, `updateScheduleDefinition(id, input)`, `deleteScheduleDefinition(id)`, `pauseSchedule(id)`, `resumeSchedule(id, backlog: 'skip' | 'post')`, `endSchedule(id)`, `setScheduleMode(id, mode)`, `catchUpSchedule(id)`, `getScheduleInstances(query)`, `updateScheduleInstance(id, body: { due_date?: string; amounts?: string[]; scope?: ScheduleAmountScope })` (`scope` added by Task 24), `postScheduleInstance(id)`, `skipScheduleInstance(id)`, `reopenScheduleInstance(id)`, `repostScheduleInstance(id, amounts: string[])`, `acceptPartialScheduleInstance(id)`, `runSchedulesNow()`. Every write bumps `entriesChanged`. `getSchedules` is removed.
 
 `schedule-math.ts`: `IMPORT_RUNNING_TOAST`, `isImportRunning(err)`, `addMonthsIso(iso, months, dayOfMonth?)`, `occurrenceDate(rule, k)`, `nextOccurrences(rule, count, after?)`, `intervalLabel(unit, n)`, `ruleDayLabel(rule)`, `recurringFooter(rule, times)`, `splitInstallment(total, times, currency)`, `installmentFooter(total, times, firstDate, currency)`, `ruleSummary(definition)`, `scheduleProgress(definition)`, `schedulePill(link)`, interface `ScheduleRule { interval_unit; interval_n; anchor_date; day_of_month }`.
 
-Components: `app-accounting-toast` (`AccountingToastService.show(text, ms = 3000)`, `message` signal); `app-schedule-tabs` (inputs `kind` (`FormKind`, required), `entryDate` (required), `amount` (number | null), `currency`, `accounts`, `accountId` (the form's account, the 還款帳戶 default), `disabled` (the form's locked / saving state), `definitionMode`, `errors` (field → message, for the 每期金額 / 利息 slots); `draft` model `ScheduleDraft` (required, from `schedule-tabs/schedule-draft.ts`); `<ng-content>` is the 單次 panel); `app-schedule-sheet` (`definitionId` input; `(closed)` output). Routes: no new route; definition mode is `/accounting/entry?schedule=<id>`; the reminder centre reads `?tab=all|cards|debts|pending`, `?schedule=<id>` (opens the sheet) and the fragment `schedules`.
+Components: `app-accounting-toast` (`AccountingToastService.show(text, ms = 3000)`, `message` signal); `app-schedule-tabs` (inputs `kind` (`FormKind`, required), `entryDate` (required), `amount` (number | null), `currency`, `accounts`, `accountId` (the form's account, the 還款帳戶 default), `disabled` (the form's locked / saving state), `definitionMode`, `errors` (field → message, for the 每期金額 / 利息 slots); `draft` model `ScheduleDraft` (required, from `schedule-tabs/schedule-draft.ts`); `<ng-content>` is the 單次 panel); `app-schedule-sheet` (`definitionId` input; `(closed)` output; 調整 on each listed period with the `套用範圖` scope sheet, Task 24). Routes: no new route; definition mode is `/accounting/entry?schedule=<id>`; the reminder centre reads `?tab=all|cards|debts|pending`, `?schedule=<id>` (opens the sheet) and the fragment `schedules`.
 
 ## Task Index
 
@@ -643,7 +645,8 @@ def test_definition_defaults(model_session):
     assert (
         definition.interval_n, definition.first_seq, definition.times, definition.posting_mode, definition.status,
         definition.created_locally, definition.moze_id, definition.generated_until, definition.review_reason,
-    ) == (1, 1, None, "auto", "active", True, None, None, None)
+        definition.template_owner_edited,
+    ) == (1, 1, None, "auto", "active", True, None, None, None, False)
 
 
 def test_instance_defaults(model_session):
@@ -828,6 +831,9 @@ class ScheduleDefinition(Base, TimestampMixin):
     auto_post_from = Column(Date, nullable=False)
     generated_until = Column(Date, nullable=True)
     created_locally = Column(Boolean, nullable=False, server_default=text("true"))
+    # Proposal decision 24: the owner changed the template amounts with a 這一期與之後 / 全部週期 period edit;
+    # re-imports then keep those amounts and write no MOZE override on pending periods (D37).
+    template_owner_edited = Column(Boolean, nullable=False, server_default=text("false"))
     moze_payload = Column(JSONB, nullable=True)
     review_reason = Column(String(64), nullable=True)
 
@@ -1043,12 +1049,15 @@ def test_upgrade_adds_schedule_source_and_tables_and_drops_moze_schedule(databas
     engine = create_engine(url)
     try:
         tables = set(inspect(engine).get_table_names())
+        definition_columns = {column["name"]: column for column in inspect(engine).get_columns("schedule_definition")}
         with engine.connect() as conn:
             sources = conn.execute(text("SELECT unnest(enum_range(NULL::entry_source))::text")).scalars().all()
             kinds = conn.execute(text("SELECT count(*) FROM pg_type WHERE typname = 'moze_schedule_kind'")).scalar_one()
     finally:
         engine.dispose()
     assert {"schedule_definition", "schedule_instance"} <= tables
+    owner_edited = definition_columns["template_owner_edited"]  # proposal decision 24
+    assert (owner_edited["nullable"], owner_edited["default"]) == (False, "false")
     assert "moze_schedule" not in tables
     assert "schedule" in sources
     assert kinds == 0
@@ -1211,6 +1220,7 @@ def upgrade() -> None:
         sa.Column("auto_post_from", sa.Date(), nullable=False),
         sa.Column("generated_until", sa.Date(), nullable=True),
         sa.Column("created_locally", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+        sa.Column("template_owner_edited", sa.Boolean(), nullable=False, server_default=sa.text("false")),
         sa.Column("moze_payload", postgresql.JSONB(), nullable=True),
         sa.Column("review_reason", sa.String(64), nullable=True),
         *_timestamps(),
@@ -5400,15 +5410,19 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Model:** opus
 
 **Files:**
-- Modify: `services/accounting-service/app/services/schedule_service.py` (append the instance actions)
+- Modify: `services/accounting-service/app/services/schedule_service.py` (append the instance actions, the amount edit scope included)
+- Modify: `services/accounting-service/app/schemas/schedules.py` (`InstanceUpdateIn.scope`, `DefinitionOut.template_owner_edited`)
+- Modify: `services/accounting-service/app/services/schedule_read.py` (`definition_out` returns `template_owner_edited`)
 - Modify: `services/accounting-service/app/routers/schedules.py` (append seven endpoints)
 - Test: `services/accounting-service/tests/integration/test_schedule_instances_api.py`
 
 **Interfaces:**
-- Consumes: Task 8 (`post_instance`, `post_locked(locked_loan=)`, `lock_definition_for_post`, `lock_later_pending`, `record_failure`, `failure_message`, `delete_period_entries(also_lock=)`); Task 9 (`list_instances`, `instance_out`); Task 10 helpers (`_instance_out`).
-- Produces: `update_instance`, `post_one`, `skip_instance`, `reopen_instance`, `repost_instance`, `accept_partial` and the private `_instance_locked(db, instance_id, *, share=True) -> (definition, instance)`; routes `GET /instances`, `PUT /instances/{id}`, `POST /instances/{id}/post|skip|reopen|repost|accept-partial`.
+- Consumes: Task 8 (`post_instance`, `post_locked(locked_loan=)`, `lock_definition_for_post`, `lock_later_pending`, `record_failure`, `failure_message`, `delete_period_entries(also_lock=)`); Task 9 (`list_instances`, `instance_out`, `definition_out`); Task 10 helpers (`_instance_out`); Task 5 (`lock_instances`, `check_amounts`, `template_amounts`); Task 6 (`generation.last_period_override`); Task 2 (`ScheduleDefinition.template_owner_edited`).
+- Produces: `update_instance` (with `scope`), `post_one`, `skip_instance`, `reopen_instance`, `repost_instance`, `accept_partial` and the private `_instance_locked(db, instance_id, *, share=True) -> (definition, instance)` and `_apply_amount_scope(db, instance_id, payload)`; `InstanceUpdateIn.scope`; `DefinitionOut.template_owner_edited`; routes `GET /instances`, `PUT /instances/{id}`, `POST /instances/{id}/post|skip|reopen|repost|accept-partial`.
 
 Rules (spec "Instance endpoints", D33, D35): shared key → definition (`FOR SHARE`; `reopen` takes `FOR UPDATE` because it may revive the definition; `post` and `repost` go through `posting.lock_definition_for_post`, `FOR UPDATE` with a loan line) → instance `FOR UPDATE`. `PUT` only on pending (409), `amounts` aligned (422 `amounts`), a `due_date` equal to the date of another non-skipped (posted or pending) instance of the same definition → 422 `due_date` (two pending periods on one day would collide on `ux_schedule_instance_posted_day`), `rule_date` never changes, `edited_by_owner = true`. `post`: `acted_by = owner`; any failure is stored in `last_error` (second transaction): a validation failure is answered 422 with the field, `ConflictError` / `NotFoundError` / `EditLockedError` pass through unrecorded, any other exception is recorded by class name and answered 409. `skip`: pending only, writes nothing. `reopen`: 409 when already pending; posted → its entries are deleted (ledger lock order, cutover lock applies) with note `入帳記錄已於 YYYY-MM-DD 刪除`; skipped → pending; both set `reopened_at`; an ended definition becomes active; allowed even when the template references an archived row. `repost`: posted only (409), refused with 409 `locked_until_cutover` before cutover for `acted_by = import`; deletes the period's entries and posts again with the new override in one transaction; the definition is locked through `posting.lock_definition_for_post` (`FOR UPDATE` with a loan line, since the repost may end it), the later pending instances through `posting.lock_later_pending` before any entry lock, and the loan entry joins the period's single entry-lock statement (`delete_period_entries(also_lock=loan_id)`), which `post_locked(locked_loan=…)` reuses. `accept-partial`: posted and partial only (409); `is_partial = false`, note kept. `GET /instances?from=&until=&status=&definition_id=&queue=` with `status` `pending | posted | skipped | all` (default `pending`).
+
+Amount edit scope (spec "Instance amount edit scope", D35, proposal decision 24): `PUT /instances/{id}` takes `scope` — `this` (default; the rules above), `following`, `all`. A scope other than `this` needs `amounts` and no `due_date` (422 `scope`), amounts aligned (422 `amounts`) and each > 0 (422 `amounts`: they become template amounts), a pending instance (409), and for an installment with `total_amount` and `times` a first amount × (`times` − 1) below the total (422 `amounts`). Lock order: key → definition `FOR UPDATE` → `lock_instances` (every instance, ascending id). One transaction: `following` first gives each earlier pending instance (`seq` below this one) without an override the template amounts before the edit; then the template's line amounts become the new ones and `template_owner_edited = true`; every pending instance from this `seq` on (`following`) or every pending instance (`all`) loses its override unless it is owner-edited; this instance follows the template, or, when it was already owner-edited, takes the new amounts as its override (it stays owner-edited). The pending last period of an installment with a total (`seq == times`), when it is neither this instance nor owner-edited, keeps a remainder override: `generation.last_period_override` (new amounts) for a local definition; an imported one keeps MOZE's. Posted and skipped instances never change. No cutover check: amounts are not rule fields, so imported definitions accept the edit before cutover (Task 10's `PUT` / `DELETE` lock stays).
 
 - [ ] 12.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_instances_api.py`:
 
@@ -5672,6 +5686,140 @@ def test_post_records_any_error_and_answers_409(client, db_session, seed, today,
     assert (response.status_code, response.json()["message"]) == (409, "RuntimeError")
     row = _row(db_session, instance.id)
     assert (row.status, row.last_error) == ("pending", "RuntimeError")
+
+
+# --- Amount edit scope (spec "Instance amount edit scope", proposal decision 24) ---
+
+
+@pytest.fixture()
+def netflix(seed):
+    """Monthly 390: seq 1 posted, seq 2–4 pending without overrides."""
+    card = seed.account("範例卡")
+    definition = seed.definition([seed.line("expense", card, "390")], anchor=date(2026, 9, 22))
+    entry = seed.entry(card, "-390", day=date(2026, 9, 22), source="schedule")
+    first = seed.instance(definition, 1, date(2026, 9, 22), status="posted", entries=[entry])
+    rows = [seed.instance(definition, seq, day) for seq, day in (
+        (2, date(2026, 10, 22)), (3, date(2026, 11, 22)), (4, date(2026, 12, 22)),
+    )]
+    return SimpleNamespace(card=card, definition=definition, first=first, rows=rows)
+
+
+def _template(db, definition_id) -> tuple[list[str], bool]:
+    db.expire_all()
+    definition = db.get(ScheduleDefinition, definition_id)
+    return [line["amount"] for line in definition.template["lines"]], definition.template_owner_edited
+
+
+def _overrides(db, rows) -> list[tuple]:
+    return [(_row(db, row.id).amount_override, _row(db, row.id).edited_by_owner) for row in rows]
+
+
+def test_only_this_period_by_default(client, db_session, netflix, today):
+    # Spec "Only this period by default".
+    today(date(2026, 10, 3))
+    db_session.commit()
+    response = client.put(f"/schedules/instances/{netflix.rows[1].id}", json={"amounts": ["420"]})
+    assert response.status_code == 200
+    assert _overrides(db_session, netflix.rows) == [(None, False), (["420"], True), (None, False)]
+    assert _template(db_session, netflix.definition.id) == (["390"], False)
+
+
+def test_this_period_and_the_following_ones_keep_the_old_price_before(client, db_session, netflix, today):
+    # Spec "This period and the following ones keep the old price before".
+    today(date(2026, 10, 3))
+    db_session.commit()
+    response = client.put(
+        f"/schedules/instances/{netflix.rows[1].id}", json={"amounts": ["420"], "scope": "following"}
+    )
+    assert (response.status_code, response.json()["amounts"]) == (200, ["420"])
+    assert _overrides(db_session, netflix.rows) == [(["390"], False), (None, False), (None, False)]
+    assert _template(db_session, netflix.definition.id) == (["420"], True)
+    first = _row(db_session, netflix.first.id)
+    assert (first.status, first.amount_override) == ("posted", None)
+    detail = client.get(f"/schedules/definitions/{netflix.definition.id}").json()
+    assert detail["template_owner_edited"] is True
+    pending = [item["amounts"] for item in detail["instances"] if item["status"] == "pending"]
+    assert pending == [["390"], ["420"], ["420"]]  # seq 2 keeps the old price; seq 3 and 4 follow the template
+
+
+def test_following_replaces_the_edited_periods_own_override_and_keeps_later_owner_edits(
+    client, db_session, netflix, today
+):
+    today(date(2026, 10, 3))
+    netflix.rows[1].amount_override, netflix.rows[1].edited_by_owner = ["405"], True
+    netflix.rows[2].amount_override, netflix.rows[2].edited_by_owner = ["400"], True
+    db_session.commit()
+    response = client.put(
+        f"/schedules/instances/{netflix.rows[1].id}", json={"amounts": ["420"], "scope": "following"}
+    )
+    assert response.status_code == 200
+    assert _overrides(db_session, netflix.rows) == [(["390"], False), (["420"], True), (["400"], True)]
+
+
+def test_all_periods_keep_other_owner_edits(client, db_session, netflix, today):
+    # Spec "All periods keep other owner edits".
+    today(date(2026, 10, 3))
+    netflix.rows[2].amount_override, netflix.rows[2].edited_by_owner = ["400"], True
+    db_session.commit()
+    response = client.put(f"/schedules/instances/{netflix.rows[0].id}", json={"amounts": ["420"], "scope": "all"})
+    assert response.status_code == 200
+    assert _overrides(db_session, netflix.rows) == [(None, False), (None, False), (["400"], True)]
+    assert _template(db_session, netflix.definition.id) == (["420"], True)
+    assert _row(db_session, netflix.first.id).status == "posted"
+
+
+def test_a_scope_with_another_field_is_refused(client, db_session, netflix, today):
+    # Spec "A scope with another field is refused"; amounts become template amounts, so "0" is refused too.
+    today(date(2026, 10, 3))
+    db_session.commit()
+    target = netflix.rows[0].id
+    for body in (
+        {"amounts": ["420"], "due_date": "2026-10-23", "scope": "following"},
+        {"due_date": "2026-10-23", "scope": "all"},
+    ):
+        response = client.put(f"/schedules/instances/{target}", json=body)
+        assert response.status_code == 422 and _fields(response) == {"scope"}
+    zero = client.put(f"/schedules/instances/{target}", json={"amounts": ["0"], "scope": "all"})
+    assert zero.status_code == 422 and _fields(zero) == {"amounts"}
+    posted = client.put(f"/schedules/instances/{netflix.first.id}", json={"amounts": ["420"], "scope": "all"})
+    assert posted.status_code == 409
+    assert _template(db_session, netflix.definition.id) == (["390"], False)
+    row = _row(db_session, target)
+    assert (row.due_date, row.amount_override, row.edited_by_owner) == (date(2026, 10, 22), None, False)
+
+
+def test_scope_edit_allowed_on_an_imported_definition_before_cutover(client, db_session, seed, today, monkeypatch):
+    # Spec "Imported definition before cutover": amounts are not rule fields.
+    today(date(2026, 10, 3))
+    monkeypatch.setenv("ACCOUNTING_IMPORT_LOCKED", "false")
+    card = seed.account("範例卡")
+    imported = seed.definition([seed.line("expense", card, "390")], created_locally=False, moze_id="P-1")
+    pending = seed.instance(imported, 1, date(2026, 10, 22), moze_id="R-1", amount_override=["390"])
+    db_session.commit()
+    response = client.put(f"/schedules/instances/{pending.id}", json={"amounts": ["420"], "scope": "all"})
+    assert response.status_code == 200
+    assert _template(db_session, imported.id) == (["420"], True)
+    assert _row(db_session, pending.id).amount_override is None
+    refused = client.delete(f"/schedules/definitions/{imported.id}")
+    assert (refused.status_code, refused.json()["message"]) == (409, "locked_until_cutover")
+
+
+def test_installment_scope_keeps_the_last_period_remainder(client, db_session, seed, loan, today):
+    today(date(2026, 10, 3))
+    before_last = seed.instance(loan.definition, 35, date(2029, 9, 9))
+    last = seed.instance(loan.definition, 36, date(2029, 10, 9), amount_override=["8345", "620"])
+    db_session.commit()
+    too_much = client.put(
+        f"/schedules/instances/{before_last.id}", json={"amounts": ["9000", "598"], "scope": "following"}
+    )
+    assert too_much.status_code == 422 and _fields(too_much) == {"amounts"}  # 9000 × 35 ≥ 300000
+    response = client.put(
+        f"/schedules/instances/{before_last.id}", json={"amounts": ["8333", "598"], "scope": "following"}
+    )
+    assert response.status_code == 200
+    assert _template(db_session, loan.definition.id) == (["8333", "598"], True)
+    assert _row(db_session, before_last.id).amount_override is None
+    assert _row(db_session, last.id).amount_override == ["8345", "598"]  # remainder of 300000 − 35 × 8333, new interest
 ```
 
 - [ ] 12.2 Run it.
@@ -5680,9 +5828,36 @@ def test_post_records_any_error_and_answers_409(client, db_session, seed, today,
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_instances_api.py
 ```
 
-Expected: 15 failures (404 / 405 on `/schedules/instances…`).
+Expected: 22 failures (404 / 405 on `/schedules/instances…`).
 
-- [ ] 12.3 Append to `services/accounting-service/app/services/schedule_service.py`:
+- [ ] 12.3 Schema and read shape, then the service.
+
+  In `services/accounting-service/app/schemas/schedules.py`, replace the `InstanceUpdateIn` class with
+
+```python
+class InstanceUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    due_date: date | None = None
+    amounts: list[NonNegativeMoney] | None = None
+    # 套用範圖 (proposal decision 24): 僅這一期 / 這一期與之後 / 全部週期
+    scope: Literal["this", "following", "all"] = "this"
+```
+
+  and in `DefinitionOut` add the field `template_owner_edited: bool` directly below `created_locally: bool`. In `services/accounting-service/app/services/schedule_read.py` (`definition_out`), replace
+
+```python
+        "created_locally": definition.created_locally, "imported": definition.moze_id is not None,
+```
+
+  with
+
+```python
+        "created_locally": definition.created_locally, "template_owner_edited": definition.template_owner_edited,
+        "imported": definition.moze_id is not None,
+```
+
+  In `services/accounting-service/app/services/schedule_service.py`, add `import copy` above `from datetime import …` and extend the templates import to `from .schedule_templates import check_amounts, loan_line, normalize_template, realign_override, template_amounts, validate_template`. Then append:
 
 ```python
 def _instance_locked(db: Session, instance_id: int, *, share: bool = True) -> tuple[ScheduleDefinition, ScheduleInstance]:
@@ -5696,7 +5871,11 @@ def _instance_locked(db: Session, instance_id: int, *, share: bool = True) -> tu
 
 
 def update_instance(db: Session, instance_id: int, payload: InstanceUpdateIn) -> None:
-    """編輯這一筆 on a pending period: date and / or amounts; rule_date never changes."""
+    """編輯這一筆 on a pending period: date and / or amounts; rule_date never changes. A scope other than `this`
+    (這一期與之後 / 全部週期, proposal decision 24) is the amounts-only path of _apply_amount_scope."""
+    if payload.scope != "this":
+        _apply_amount_scope(db, instance_id, payload)
+        return
     definition, instance = _instance_locked(db, instance_id)
     if instance.status != "pending":
         raise ConflictError("只有待入帳的期別可以修改")
@@ -5721,6 +5900,64 @@ def update_instance(db: Session, instance_id: int, payload: InstanceUpdateIn) ->
             raise ValidationError("due_date", "這一天已有另一期待入帳")
         instance.due_date = payload.due_date
     instance.edited_by_owner = True
+    db.flush()
+
+
+def _keeps_remainder(definition: ScheduleDefinition, row: ScheduleInstance) -> bool:
+    """The last period of an installment with a total carries the remainder (D35), not the per-period amount."""
+    return (
+        definition.kind == "installment" and definition.total_amount is not None
+        and definition.times is not None and row.seq == definition.times
+    )
+
+
+def _apply_amount_scope(db: Session, instance_id: int, payload: InstanceUpdateIn) -> None:
+    """這一期與之後 (`following`) / 全部週期 (`all`), spec "Instance amount edit scope".
+
+    The new amounts become the template's (template_owner_edited, so re-imports keep them, D37); every pending period
+    from this one (following) or every pending period (all) follows the template, except owner-edited ones other
+    than this; with `following` the earlier pending periods keep the old price as an override. Posted and skipped
+    periods never change. Lock order (D32): key → definition FOR UPDATE → every instance FOR UPDATE, ascending id.
+    No cutover check: amounts are not rule fields (update_definition / delete_definition keep their lock)."""
+    if payload.amounts is None or payload.due_date is not None:
+        raise ValidationError("scope", "套用到其他期別時只能修改金額")
+    take_import_key_shared(db)
+    definition = lock_definition(db, get_instance(db, instance_id).definition_id)
+    rows = lock_instances(db, definition.id)
+    instance = next((row for row in rows if row.id == instance_id), None)
+    if instance is None:
+        raise NotFoundError(f"schedule instance {instance_id} not found")
+    if instance.status != "pending":
+        raise ConflictError("只有待入帳的期別可以修改")
+    amounts = check_amounts(definition.template, payload.amounts)
+    if any(Decimal(value) == 0 for value in amounts):
+        raise ValidationError("amounts", "套用到其他期別時每一行金額須大於 0")
+    if definition.kind == "installment" and definition.total_amount is not None and definition.times is not None:
+        if Decimal(amounts[0]) * (definition.times - 1) >= Decimal(definition.total_amount):
+            raise ValidationError("amounts", "每期金額乘以期數已達總額")
+    pending = [row for row in rows if row.status == "pending"]
+    old_amounts = template_amounts(definition.template)
+    if payload.scope == "following":
+        for row in pending:
+            if row.seq < instance.seq and row.amount_override is None:
+                row.amount_override = list(old_amounts)  # the earlier periods keep the old price
+    template = copy.deepcopy(definition.template)
+    for line, amount in zip(template["lines"], amounts):
+        line["amount"] = amount
+    definition.template, definition.template_owner_edited = template, True
+    remainder = generation.last_period_override(definition)  # local installment with a total only, else None
+    for row in pending:
+        if payload.scope == "following" and row.seq < instance.seq:
+            continue
+        if row.id == instance.id:
+            row.amount_override = list(amounts) if row.edited_by_owner else None
+        elif row.edited_by_owner:
+            continue
+        elif _keeps_remainder(definition, row):
+            if remainder is not None:
+                row.amount_override = remainder  # local: recomputed from the new amounts; imported: MOZE's stays
+        else:
+            row.amount_override = None
     db.flush()
 
 
@@ -5878,15 +6115,16 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_definitions_api.py tests/integration/test_schedule_state_api.py tests/integration/test_schedule_read.py 2>&1 | tail -1
 ```
 
-Expected: `15 passed`; then `35 passed` (14 definitions + 12 state + 9 read).
+Expected: `22 passed`; then `35 passed` (14 definitions + 12 state + 9 read).
 
 - [ ] 12.6 Commit.
 
 ```bash
 cd /home/opc/workspace/home-hub-schedules
 git add services/accounting-service/app/services/schedule_service.py services/accounting-service/app/routers/schedules.py \
+  services/accounting-service/app/schemas/schedules.py services/accounting-service/app/services/schedule_read.py \
   services/accounting-service/tests/integration/test_schedule_instances_api.py
-git commit -m "feat(accounting): schedule instance endpoints: edit, post, skip, reopen, repost, accept-partial
+git commit -m "feat(accounting): schedule instance endpoints: edit (with scope), post, skip, reopen, repost, accept-partial
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -8100,6 +8338,7 @@ Rules (D37, spec "Schedule definitions and instances from the backup", "Transact
 - Re-import: upsert by `moze_id`; rule, template, name, times, total and payload refreshed; `posting_mode`, `auto_post_from`, `first_seq` kept; a review reason new in this import pauses (unless ended), a resolved one is cleared without touching `status`.
 - Instances: matched by `moze_id` (over every row first), then by any of `moze_record_ids` (MOZE changed the package's primary record: the row takes the new `moze_id`), then adopted (no `moze_id`, `rule_date` = the record date, else `due_date`): an adopted row gets `moze_id` and `moze_record_ids`, and its override when pending and not owner-edited. New rows: disabled → `skipped` (`acted_by = import`, `acted_at` = import start); past with imported entries → `posted` (`acted_by = import`); past without entries → `skipped`; future → `pending` (not created for an `ended` definition); a seq already used → `review` `seq_conflict`, record not mapped. Existing pending rows: owner-edited → kept (`kept_owner_edited`); record now past or disabled → recomputed as above; else the override is refreshed and, for a row matched by its `moze_id` (not adopted in this import), `rule_date` / `due_date` follow MOZE's date unless another posted or pending (any non-skipped) instance already holds that day — Task 12 refuses the same move with 422 `due_date`, and two pending periods on one day would collide on `ux_schedule_instance_posted_day` (`updated` when anything changed, else `kept`); a row adopted in this import keeps its dates (spec "Moved period adopted"; an owner-moved row is owner-edited anyway). A status leaving `pending` clears `last_error`, `last_error_at`, `reopened_at` and `note`. `acted_by = import` rows are recomputed from the new entries — also those whose record left the backup (no entries left → `skipped`, `acted_by = import`), in a present definition and in an absent one. When the template changes, every instance's `amount_override` is realigned with `realign_override` (owner-edited and posted rows included). A definition whose lines cannot resolve (`account_missing`) keeps its template untouched but its instances are still recomputed, MOZE's per-period amounts realigned from the mapped lines to the kept template's lines (`realign_override`), so no override goes out of line with the template. A MOZE period with no enabled future record left (not live: cancelled or finished in MOZE, or not yet pre-generated during the mirror month) is set `ended` with `review_reason = not_live`, so HomeHub never generates or auto-posts after MOZE stopped; the import deletes no extra pending row for it — MOZE-sourced pending rows whose record left the backup go by the ordinary rule below, owner-edited and HomeHub-generated pending rows stay (D37). The end is reversible: a later import whose mapped period has an enabled future record sets an `ended` + `not_live` definition back to `active` (`paused` when the mapping gives a review reason), clears the reason, and creates the pending periods. An `ended` definition with any other reason (the owner's 結束) is never revived; the owner's `end` clears a stale `not_live` (Task 11). `not_live` is stored on the definition only (it shows 需檢查, since the spec's `needs_check` is true whenever `review_reason` is set) and is not listed under `schedules.review`. Rows posted by `auto` / `owner` and rows skipped by anyone but `import` are kept. Imported pending rows absent from the backup are deleted unless owner-edited; rows without `moze_id` are never deleted; a row a mapped period matched or created in this import is never swept by that final loop. An imported definition absent from the backup ends (pending rows deleted) when it has history, else it is deleted. Local definitions are never touched here.
 - `skipped_future` counts only enabled future records; disabled future records are counted under `disabled_skipped` (so `Σ skipped_future = records_mapped + rewards_ignored + Σ unsupported_types`).
+- Owner-set template amounts (proposal decision 24, D37, spec "Owner-set price survives a re-import"): for a definition with `template_owner_edited = true` (Task 12's 這一期與之後 / 全部週期), `_upsert_definition` keeps the stored line amounts (a refreshed line at the same index with the same kind keeps its amount, `_keep_owner_amounts`), and `_apply_instances` writes no MOZE `amount_override` on its pending rows — new (override `None`), refreshed or adopted — while dates, statuses, adoption and every other rule above apply unchanged. Each such pending row whose MOZE amounts differ from the amounts it will post (its override, else the template's) is appended to the report list `amount_differs` as `{"definition_id", "seq", "date", "moze_amounts", "amounts"}` (owner-facing, like `loan_remainder_check`; nothing of it is logged).
 
 - [ ] 17.1 Write the failing test `services/accounting-service/tests/integration/test_schedule_import_apply.py`:
 
@@ -8634,6 +8873,32 @@ def test_row_matched_by_a_record_id_takes_the_new_primary_id(db_session, backup,
         "R-REP2", ["R-REP2", "R-INT2"], ["8333", "600"], "pending",
     )
     assert summary["schedules"]["instances"]["deleted"] == 0
+
+
+def test_owner_set_template_amounts_survive_a_reimport(db_session, backup, today):
+    # Spec "Owner-set price survives a re-import" (proposal decision 24): after 全部週期 the owner's price stands on
+    # refreshed and new pending periods; MOZE's differing amounts are only reported.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _weekly(backup))
+    definition = _definition(db_session, "PER-W")
+    line = definition.template["lines"][0]
+    definition.template = {**definition.template, "lines": [{**line, "amount": "120"}]}
+    definition.template_owner_edited = True
+    for row in _instances(db_session, definition):
+        if row.status == "pending":
+            row.amount_override = None  # what Task 12's scope = all leaves behind
+    db_session.commit()
+
+    summary = _import_backup(db_session, _weekly(backup, extra=[_rec(backup, "R-2026-10-19", "2026-10-19", eventID="PER-W")]))
+
+    definition = _definition(db_session, "PER-W")
+    assert (definition.template["lines"][0]["amount"], definition.template_owner_edited) == ("120", True)
+    pending = [(row.seq, row.amount_override) for row in _instances(db_session, definition) if row.status == "pending"]
+    assert pending == [(3, None), (4, None), (5, None)]
+    assert summary["schedules"]["amount_differs"] == [
+        {"definition_id": definition.id, "seq": seq, "date": day, "moze_amounts": ["100"], "amounts": ["120"]}
+        for seq, day in ((3, "2026-10-05"), (4, "2026-10-12"), (5, "2026-10-19"))
+    ]
 ```
 
 - [ ] 17.2 Run it.
@@ -8642,7 +8907,7 @@ def test_row_matched_by_a_record_id_takes_the_new_primary_id(db_session, backup,
 cd /home/opc/workspace/home-hub-schedules/services/accounting-service && .venv/bin/pytest -q -p no:warnings tests/integration/test_schedule_import_apply.py
 ```
 
-Expected: 22 failures (`KeyError: 'schedules'` / `AttributeError: 'NoneType' object has no attribute …`).
+Expected: 23 failures (`KeyError: 'schedules'` / `AttributeError: 'NoneType' object has no attribute …`).
 
 - [ ] 17.3 Create `services/accounting-service/app/services/schedule_import.py`:
 
@@ -8667,7 +8932,9 @@ from ..models import Category, LedgerEntry, ScheduleDefinition, ScheduleInstance
 from . import settlement_service
 from .schedule_import_map import MapResult, MappedDefinition, MappedInstance
 from .schedule_rules import plain
-from .schedule_templates import LEDGER_KINDS, LINE_KEYS, LOAN_LINE_KINDS, loan_line, realign_override, referenced_ids
+from .schedule_templates import (
+    LEDGER_KINDS, LINE_KEYS, LOAN_LINE_KINDS, loan_line, realign_override, referenced_ids, template_amounts,
+)
 
 BUCKETS = {"period": "recurring", "installment": "installment", "single": "single"}
 NOT_LIVE = "not_live"  # review_reason of a MOZE period the import ended for having no enabled future record
@@ -8715,6 +8982,7 @@ def new_report(mapped: MapResult) -> dict:
         "past_records_amount_differs": {"count": 0, "instance_ids": []},
         "relinked": {"templates": 0, "settlements": 0},
         "review": list(mapped.review),
+        "amount_differs": [],  # template_owner_edited definitions: MOZE amounts that differ (owner-facing, never logged)
         "loan_remainder_check": [],
     }
 
@@ -8906,6 +9174,29 @@ def _moze_status(row: ScheduleInstance, mapped: MappedInstance, entries, started
     return "pending"
 
 
+def _keep_owner_amounts(old: dict, new: dict) -> dict:
+    """template_owner_edited (proposal decision 24): MOZE refreshes the lines, the owner's per-line amounts stay for a
+    line at the same index with the same kind."""
+    kept = copy.deepcopy(new)
+    for index, line in enumerate(kept["lines"]):
+        if index < len(old["lines"]) and old["lines"][index]["kind"] == line["kind"]:
+            line["amount"] = old["lines"][index]["amount"]
+    return kept
+
+
+def _note_amount_differs(report: dict, definition: ScheduleDefinition, row: ScheduleInstance, moze_amounts: list) -> None:
+    """The owner's price stands on a template_owner_edited definition; a MOZE amount that differs from what the period
+    will post is listed for the owner (report only — logs carry ids and counts)."""
+    amounts = list(row.amount_override) if row.amount_override is not None else template_amounts(definition.template)
+    if [Decimal(str(value)) for value in amounts] != [Decimal(str(value)) for value in moze_amounts]:
+        report["amount_differs"].append(
+            {
+                "definition_id": definition.id, "seq": row.seq, "date": row.due_date.isoformat(),
+                "moze_amounts": [str(value) for value in moze_amounts], "amounts": [str(value) for value in amounts],
+            }
+        )
+
+
 def _live(mapped: MappedDefinition) -> bool:
     """Spec maps each *live* AHPeriod: one with at least one enabled future record. Installments and singles are
     always live here (their series is fixed by MOZE's dateInfo / the record itself)."""
@@ -8921,6 +9212,8 @@ def _upsert_definition(session: Session, mapped: MappedDefinition, template: dic
     a later backup with an enabled future record sets it back to `active` (`paused` with a mapping reason) and
     clears the reason. Only an end the import made is undone: an owner's `ended` (any other reason) stays."""
     bucket = report["definitions"][BUCKETS[mapped.source]]
+    if existing is not None and existing.template_owner_edited:
+        template = _keep_owner_amounts(existing.template, template)  # the owner's price stands (decision 24)
     values = {
         "kind": mapped.kind, "name": mapped.name, "template": template, "interval_unit": mapped.interval_unit,
         "interval_n": mapped.interval_n, "anchor_date": mapped.anchor_date, "day_of_month": mapped.day_of_month,
@@ -8983,7 +9276,8 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
                      started_at: datetime, report: dict, *, realign_from: dict | None = None) -> None:
     """Upsert the definition's instances from the mapped periods. `realign_from` is the mapped template when the
     definition keeps its stored template (account_missing): MOZE's per-period amounts are then realigned to the
-    stored lines with realign_override, so no override goes out of line with the template (Global Constraints)."""
+    stored lines with realign_override, so no override goes out of line with the template (Global Constraints).
+    On a template_owner_edited definition pending rows get no MOZE override; differences go to amount_differs."""
     counters = report["instances"]
     rows = list(
         session.scalars(select(ScheduleInstance).where(ScheduleInstance.definition_id == definition.id).order_by(ScheduleInstance.id))
@@ -9010,6 +9304,9 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
                 moze_record_ids=list(item.record_ids), moze_payload=_jsonable(item.records), amount_override=amounts,
             )
             status = _moze_status(row, item, entries, started_at)
+            if status == "pending" and definition.template_owner_edited:
+                row.amount_override = None  # the period follows the owner's template price (decision 24)
+                _note_amount_differs(report, definition, row, amounts)
             session.add(row)
             session.flush()
             rows.append(row)
@@ -9040,14 +9337,18 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
                 # period adopted": the HomeHub row's rule_date matched). A new date held by another posted or pending
                 # period is refused (two pending periods on one day would collide on ux_schedule_instance_posted_day
                 # when both post — Task 12 refuses the same move with 422 due_date).
-                changed = row.amount_override != amounts
-                row.amount_override = amounts
+                owner_price = definition.template_owner_edited  # decision 24: no MOZE override, only a report line
+                changed = not owner_price and row.amount_override != amounts
+                if not owner_price:
+                    row.amount_override = amounts
                 if not adopted and (row.rule_date, row.due_date) != (item.day, item.day):
                     taken = any(
                         other.id != row.id and other.status != "skipped" and other.due_date == item.day for other in rows
                     )
                     if not taken:
                         row.rule_date, row.due_date, changed = item.day, item.day, True
+                if owner_price:
+                    _note_amount_differs(report, definition, row, amounts)
                 counters["updated" if changed else "kept"] += 1
         elif row.acted_by == "import":
             _moze_status(row, item, entries, started_at)
@@ -9311,7 +9612,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests/integration/test_backup_entries_import.py tests/integration/test_backup_replace_and_report.py tests/integration/test_backup_settings_import.py tests/integration/test_backup_imports_api.py 2>&1 | tail -1
 ```
 
-Expected: `22 passed`; then the same pass counts as after Task 16, 0 failed.
+Expected: `23 passed`; then the same pass counts as after Task 16, 0 failed.
 
 - [ ] 17.6 Commit.
 
@@ -9888,7 +10189,7 @@ cd /home/opc/workspace/home-hub-schedules/services/accounting-service
 .venv/bin/pytest -q -p no:warnings tests 2>&1 | tail -2
 ```
 
-Expected: `15 passed`; the full suite `N passed`, 0 failed, with N = Task 3's count + 9 + 13 + 12 + 5 + 15 + 9 + 14 + 12 + 15 + 12 + 4 + 20 + 15 + 18 + 15 (Tasks 4–18 in order; = Task 3's count + 188).
+Expected: `15 passed`; the full suite `N passed`, 0 failed, with N = Task 3's count + 9 + 13 + 12 + 5 + 15 + 9 + 14 + 12 + 22 + 12 + 4 + 20 + 15 + 19 + 15 (Tasks 4–18 in order; = Task 3's count + 196).
 
 - [ ] 18.6 Commit.
 
@@ -13909,12 +14210,15 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `frontend/src/app/components/accounting/reminders/schedule-queue.ts` (`DefinitionRow`, `definitionRows`), `schedule-queue.spec.ts`
 - Create: `frontend/src/app/components/accounting/reminders/schedule-sheet/schedule-sheet.ts`, `schedule-sheet.html`, `schedule-sheet.scss`, `schedule-sheet.spec.ts`
 - Modify: `frontend/src/app/components/accounting/reminders/reminders.ts`, `reminders.html`, `reminders.scss`, `reminders.spec.ts`
+- Modify: `frontend/src/app/models/accounting.model.ts` (`ScheduleAmountScope`), `frontend/src/app/services/accounting.service.ts` (`updateScheduleInstance` body gains `scope`)
 
 **Interfaces:**
-- Consumes: `getScheduleDefinitions`, `getScheduleDefinition`, `pauseSchedule`, `resumeSchedule`, `endSchedule`, `setScheduleMode`, `catchUpSchedule`, `deleteScheduleDefinition` (Task 20); `ruleSummary`, `scheduleProgress` (Task 20); `AccountingToastService`, `scheduleActionError`; `sheetKeyAction`, `focusSheetField` (`accounting-ui.ts`); `../../sheet.scss`; `makeDefinition`, `makeInstance`.
-- Produces: `DefinitionRow` (`id, icon, color, name, nextText, progress, remainingText, modeBadge, paused, needsCheck, failing`), `definitionRows(definitions) -> { active: DefinitionRow[]; ended: DefinitionRow[] }`; `ScheduleSheetComponent` (`app-schedule-sheet`, input `definitionId`, output `closed`); the reminder centre opens the sheet from a row or from `?schedule=<id>` and scrolls to `#schedules` for the fragment `schedules`.
+- Consumes: `updateScheduleInstance` (Task 20; `scope` added here, Task 12's `InstanceUpdateIn.scope`), `getScheduleDefinitions`, `getScheduleDefinition`, `pauseSchedule`, `resumeSchedule`, `endSchedule`, `setScheduleMode`, `catchUpSchedule`, `deleteScheduleDefinition` (Task 20); `ruleSummary`, `scheduleProgress` (Task 20); `AccountingToastService`, `scheduleActionError`; `sheetKeyAction`, `focusSheetField` (`accounting-ui.ts`); `../../sheet.scss`; `makeDefinition`, `makeInstance`.
+- Produces: `DefinitionRow` (`id, icon, color, name, nextText, progress, remainingText, modeBadge, paused, needsCheck, failing`), `definitionRows(definitions) -> { active: DefinitionRow[]; ended: DefinitionRow[] }`; `ScheduleSheetComponent` (`app-schedule-sheet`, input `definitionId`, output `closed`; 調整 / 儲存 on each listed period and the `套用範圖` scope sheet); `ScheduleAmountScope`; the reminder centre opens the sheet from a row or from `?schedule=<id>` and scrolls to `#schedules` for the fragment `schedules`.
 
 Rules (spec "週期／分期 section"): below the counterparties of 借還款追蹤 (that tab only), every definition that is not ended, ordered by next due date (the server's order): icon, name, `下期 11/09`, `已入帳 k / N` (or the interval when unlimited), `剩餘 −$275,001` / `剩餘 $6,667`, badge 自動 or 提醒, 已暫停 when paused, 需檢查 when `needs_check`, and the failing period's error with 重試 (`catch-up`). A collapsed 已結束 row lists ended definitions (with 需檢查). The sheet shows the rule summary (`每月 9 號 · 36 期 · 自 2026/11/09`), the next three periods, 暫停 / 繼續 (繼續 asks `略過期間的 N 期` / `補入帳` when paused periods are overdue and sends `backlog`), 入帳方式 自動入帳 / 提醒入帳, 補入帳至今天 (when something is overdue and the schedule is not paused), 編輯 (`/accounting/entry?schedule=<id>`), 結束 (inline confirm `結束後未入帳的 N 期將刪除`) and 刪除 only while nothing was posted. Esc closes an open confirmation first, then the sheet; the overlay closes it; a request id drops a stale load; `import_running` shows the toast.
+
+Period amounts (spec "週期／分期 section", "Instance amount edit scope", proposal decision 24): each listed pending period has 調整, which opens its amounts (one field per template line, labelled 每期金額, or 利息 for an `interest` line, pre-filled with the instance's `amounts`) with 取消 / 儲存. 儲存 with every amount unchanged closes the editor and sends nothing; an amount that is not an unsigned decimal with at most 4 decimals shows `金額格式不正確`; otherwise a sheet titled `套用範圖` asks `僅這一期` / `這一期與之後` / `全部週期` (focus on `僅這一期`), each sending `PUT …/instances/{id}` with `{ amounts, scope: 'this' | 'following' | 'all' }`, after which the sheet reloads (the service bump reloads the reminder centre). Keys follow `sheetKeyAction`: Esc closes the scope question first (cancel: nothing saved, focus back on 儲存), then the editor, then an open confirmation, then the sheet; ⏎ in an amount field saves. Imported definitions before cutover take these edits too (amounts are not rule fields; 編輯 still opens the lock banner).
 
 - [ ] 24.1 Write the failing tests. Append to `frontend/src/app/components/accounting/reminders/schedule-queue.spec.ts` (add `makeDefinition` to its fixtures import and `definitionRows` to its `./schedule-queue` import):
 
@@ -14091,6 +14395,74 @@ describe('ScheduleSheetComponent', () => {
     el.querySelector('.sheet')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     expect(closed).toHaveBeenCalledTimes(2);
   });
+
+  describe('period amounts and 套用範圖 (proposal decision 24)', () => {
+    function openEditor(el: HTMLElement): HTMLInputElement {
+      click(el, '.next-period .period-edit');
+      return el.querySelector('.period-editor input') as HTMLInputElement;
+    }
+
+    function type(input: HTMLInputElement, value: string): void {
+      input.value = value;
+      input.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    }
+
+    it('asks 套用範圖 only when an amount changed', () => {
+      const el = render(detail());
+      openEditor(el);
+      click(el, '.period-save');
+      expect(el.querySelector('.period-editor')).toBeNull();
+      expect(el.querySelector('.scope-sheet')).toBeNull();
+      http.expectNone(r => r.method === 'PUT');
+      type(openEditor(el), '420');
+      click(el, '.period-save');
+      expect(text(el.querySelector('.scope-sheet h4'))).toBe('套用範圖');
+      expect(Array.from(el.querySelectorAll('.scope-sheet button')).map(text)).toEqual(['僅這一期', '這一期與之後', '全部週期']);
+      http.expectNone(r => r.method === 'PUT');
+    });
+
+    for (const [selector, scope] of [
+      ['.scope-this', 'this'],
+      ['.scope-following', 'following'],
+      ['.scope-all', 'all'],
+    ] as const) {
+      it(`sends scope ${scope} from ${selector}`, () => {
+        // Spec "Price change from this period on" (following) and its siblings.
+        const el = render(detail());
+        type(openEditor(el), '420');
+        click(el, '.period-save');
+        click(el, selector);
+        const req = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/schedules/instances/100');
+        expect(req.request.body).toEqual({ amounts: ['420'], scope });
+        req.flush(makeInstance({ id: 100, definition_id: 5, amounts: ['420'] }));
+        fixture.detectChanges();
+        http.expectOne('/api/accounting/schedules/definitions/5').flush(detail());
+        fixture.detectChanges();
+        expect(el.querySelector('.scope-sheet')).toBeNull();
+        expect(el.querySelector('.period-editor')).toBeNull();
+      });
+    }
+
+    it('focuses 僅這一期, and Esc cancels without saving or closing the sheet', async () => {
+      // Spec "Scope question cancelled".
+      const el = render(detail());
+      const closed = vi.fn();
+      fixture.componentInstance.closed.subscribe(closed);
+      type(openEditor(el), '420');
+      click(el, '.period-save');
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(document.activeElement).toBe(el.querySelector('.scope-sheet .scope-this'));
+      });
+      el.querySelector('.scope-sheet')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+      expect(el.querySelector('.scope-sheet')).toBeNull();
+      expect(el.querySelector('.period-editor')).not.toBeNull();
+      expect(closed).not.toHaveBeenCalled();
+      http.expectNone(r => r.method === 'PUT');
+    });
+  });
 });
 ```
 
@@ -14242,7 +14614,16 @@ export function definitionRows(definitions: ScheduleDefinition[]): { active: Def
 }
 ```
 
-- [ ] 24.4 Create `frontend/src/app/components/accounting/reminders/schedule-sheet/schedule-sheet.ts`:
+- [ ] 24.4 The scope in the service. In `frontend/src/app/models/accounting.model.ts` add, below `ScheduleActor`,
+
+```typescript
+/** `PUT /schedules/instances/{id}` `scope` (套用範圖): 僅這一期 / 這一期與之後 / 全部週期. */
+export type ScheduleAmountScope = 'this' | 'following' | 'all';
+```
+
+  and in `frontend/src/app/services/accounting.service.ts` add `ScheduleAmountScope` to the model import and replace the signature `updateScheduleInstance(id: number, body: { due_date?: string; amounts?: string[] }): Observable<ScheduleInstance> {` with `updateScheduleInstance(id: number, body: { due_date?: string; amounts?: string[]; scope?: ScheduleAmountScope }): Observable<ScheduleInstance> {` (the body is sent as given; Task 20's service spec stays green).
+
+  Then create `frontend/src/app/components/accounting/reminders/schedule-sheet/schedule-sheet.ts`:
 
 ```typescript
 import {
@@ -14262,7 +14643,7 @@ import {
 import { Router } from '@angular/router';
 import { Observable } from 'rxjs';
 
-import { ScheduleDefinitionDetail, SchedulePostingMode } from '../../../../models/accounting.model';
+import { ScheduleAmountScope, ScheduleDefinitionDetail, SchedulePostingMode } from '../../../../models/accounting.model';
 import { AccountingService } from '../../../../services/accounting.service';
 import { AccountingToastService, scheduleActionError } from '../../accounting-toast';
 import { focusSheetField, sheetKeyAction } from '../../accounting-ui';
@@ -14299,6 +14680,13 @@ export class ScheduleSheetComponent {
   readonly error = signal<string | null>(null);
   readonly confirm = signal<SheetConfirm>(null);
   readonly today = signal(todayIso());
+  /** 調整 (proposal decision 24): the pending period whose amounts are open, the draft, and the 套用範圖 question. */
+  readonly editingId = signal<number | null>(null);
+  readonly editAmounts = signal<string[]>([]);
+  readonly askScope = signal(false);
+  readonly editLabels = computed(() =>
+    (this.definition()?.template.lines ?? []).map(line => (line.kind === 'interest' ? '利息' : '每期金額')),
+  );
 
   readonly summary = computed(() => {
     const definition = this.definition();
@@ -14412,16 +14800,86 @@ export class ScheduleSheetComponent {
     this.act(this.accounting.deleteScheduleDefinition(this.definitionId()), () => this.closed.emit());
   }
 
+  /** 調整 on a listed pending period: its amounts, one field per template line. */
+  editPeriod(id: number): void {
+    const period = this.pending().find(item => item.id === id);
+    if (!period) {
+      return;
+    }
+    this.confirm.set(null);
+    this.error.set(null);
+    this.askScope.set(false);
+    this.editingId.set(id);
+    this.editAmounts.set([...period.amounts]);
+    focusSheetField(this.host.nativeElement, '.period-editor input', this.injector);
+  }
+
+  setEditAmount(index: number, value: string): void {
+    this.editAmounts.update(amounts => amounts.map((amount, i) => (i === index ? value.trim() : amount)));
+  }
+
+  cancelEdit(): void {
+    this.askScope.set(false);
+    this.editingId.set(null);
+  }
+
+  /** 儲存: nothing changed → close without a request; a changed amount → ask 套用範圖 before anything is sent. */
+  saveEdit(): void {
+    const period = this.pending().find(item => item.id === this.editingId());
+    if (!period) {
+      return;
+    }
+    const amounts = this.editAmounts();
+    if (amounts.some(amount => !/^\d+(\.\d{1,4})?$/.test(amount))) {
+      this.error.set('金額格式不正確');
+      return;
+    }
+    this.error.set(null);
+    if (amounts.every((amount, index) => Number(amount) === Number(period.amounts[index]))) {
+      this.cancelEdit();
+      return;
+    }
+    this.askScope.set(true);
+    focusSheetField(this.host.nativeElement, '.scope-sheet .scope-this', this.injector);
+  }
+
+  /** 僅這一期 / 這一期與之後 / 全部週期 → `PUT …/instances/{id}` with `scope`; the sheet then reloads. */
+  applyScope(scope: ScheduleAmountScope): void {
+    const id = this.editingId();
+    if (id === null) {
+      return;
+    }
+    this.act(this.accounting.updateScheduleInstance(id, { amounts: this.editAmounts(), scope }), () => {
+      this.cancelEdit();
+      this.load(this.definitionId());
+    });
+  }
+
   close(): void {
     this.closed.emit();
   }
 
-  /** Esc closes an open confirmation first, then the sheet; handled at the host so the page never sees it. */
+  /**
+   * Handled at the host so the page never sees the key. Esc closes, in order: the 套用範圖 question (nothing is saved),
+   * the period editor, an open confirmation, the sheet. ⏎ in an amount field saves the period.
+   */
   onKeydown(event: KeyboardEvent): void {
-    if (sheetKeyAction(event, this.host.nativeElement.querySelector('.sheet')) !== 'close') {
+    const action = sheetKeyAction(event, this.host.nativeElement.querySelector('.sheet'));
+    if (action === 'confirm') {
+      if (this.editingId() !== null && !this.askScope()) {
+        this.saveEdit();
+      }
       return;
     }
-    if (this.confirm() !== null) {
+    if (action !== 'close') {
+      return;
+    }
+    if (this.askScope()) {
+      this.askScope.set(false);
+      focusSheetField(this.host.nativeElement, '.period-save', this.injector);
+    } else if (this.editingId() !== null) {
+      this.cancelEdit();
+    } else if (this.confirm() !== null) {
       this.confirm.set(null);
     } else {
       this.closed.emit();
@@ -14447,7 +14905,34 @@ export class ScheduleSheetComponent {
       }
       <div class="next-periods">
         @for (period of nextPeriods(); track period.id) {
-          <div class="next-period"><span class="date">{{ period.date }}</span><span class="amount">{{ period.amount }}</span></div>
+          <div class="next-period">
+            <span class="date">{{ period.date }}</span><span class="amount">{{ period.amount }}</span>
+            <button type="button" class="period-edit" [disabled]="busy()" [attr.aria-label]="'調整 ' + period.date" (click)="editPeriod(period.id)">調整</button>
+          </div>
+          @if (editingId() === period.id) {
+            <div class="period-editor">
+              @for (label of editLabels(); track $index) {
+                <label class="period-amount">
+                  <span>{{ label }}</span>
+                  <input type="text" inputmode="decimal" [value]="editAmounts()[$index]" (input)="setEditAmount($index, $any($event.target).value)" />
+                </label>
+              }
+              <div class="btnrow">
+                <button type="button" class="period-cancel" (click)="cancelEdit()">取消</button>
+                <button type="button" class="period-save" [disabled]="busy()" (click)="saveEdit()">儲存</button>
+              </div>
+              @if (askScope()) {
+                <div class="scope-sheet" role="dialog" aria-modal="true" aria-labelledby="scope-sheet-title">
+                  <h4 id="scope-sheet-title">套用範圖</h4>
+                  <div class="btnrow scope-actions">
+                    <button type="button" class="scope-this" [disabled]="busy()" (click)="applyScope('this')">僅這一期</button>
+                    <button type="button" class="scope-following" [disabled]="busy()" (click)="applyScope('following')">這一期與之後</button>
+                    <button type="button" class="scope-all" [disabled]="busy()" (click)="applyScope('all')">全部週期</button>
+                  </div>
+                </div>
+              }
+            </div>
+          }
         } @empty {
           <p class="muted">沒有待入帳的期別</p>
         }
@@ -14511,6 +14996,59 @@ export class ScheduleSheetComponent {
 - [ ] 24.6 Create `frontend/src/app/components/accounting/reminders/schedule-sheet/schedule-sheet.scss`:
 
 ```scss
+.next-period .period-edit {
+  background: none;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-primary);
+  font-size: 0.72rem;
+  margin-left: 8px;
+  padding: 0 10px;
+}
+
+.period-editor {
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 6px;
+  padding: 8px;
+}
+
+.period-amount {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+
+  input {
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+    text-align: right;
+    width: 8rem;
+  }
+}
+
+/* 套用範圖: three buttons that wrap at 390 px. */
+.scope-sheet {
+  border-top: 1px solid var(--app-border);
+  padding-top: 6px;
+
+  h4 {
+    font-size: 0.85rem;
+    margin: 0 0 6px;
+    text-align: center;
+  }
+}
+
+.scope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
 .rule-summary {
   color: var(--app-text-muted);
   font-size: 0.8rem;
@@ -14846,14 +15384,15 @@ export class ScheduleSheetComponent {
 
 - [ ] 24.10 Run 24.2 again.
 
-Expected: every spec under `reminders/` passes (schedule-queue 5, schedule-sheet 7, reminders the Task 23 count + 6).
+Expected: every spec under `reminders/` passes (schedule-queue 5, schedule-sheet 12, reminders the Task 23 count + 6).
 
 - [ ] 24.11 Commit.
 
 ```bash
 cd /home/opc/workspace/home-hub-schedules
-git add frontend/src/app/components/accounting/reminders
-git commit -m "feat(frontend): 週期／分期 section and manage sheet under 借還款追蹤
+git add frontend/src/app/components/accounting/reminders frontend/src/app/models/accounting.model.ts \
+  frontend/src/app/services/accounting.service.ts
+git commit -m "feat(frontend): 週期／分期 section and manage sheet (period amounts with 套用範圖) under 借還款追蹤
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -16465,7 +17004,7 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 
 | Requirement / Scenario | Task — test |
 |---|---|
-| **Schedule definition model** | 2 (`test_definition_defaults`, `test_definition_checks`), 3 (migration tests), 5 (schemas) |
+| **Schedule definition model** | 2 (`test_definition_defaults`, `test_definition_checks`; `template_owner_edited` default), 3 (migration tests; `template_owner_edited` column), 5 (schemas), 12 (`DefinitionOut.template_owner_edited`) |
 | Local recurring definition | 10 — `test_local_recurring_definition`, `test_day_of_month_before_the_start_day_starts_next_month` (anchor = occurrence 0); 4 — `test_occurrence_zero_before_the_anchor_day_is_indexed_and_normalized`; 2 — `test_definition_defaults` |
 | Installment must be monthly | 10 — `test_installment_must_be_monthly_and_have_two_periods` |
 | Installment needs two periods | 10 — `test_installment_must_be_monthly_and_have_two_periods` |
@@ -16522,6 +17061,12 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Repost a repayment with a corrected amount | 12; 8 — `test_delete_period_entries_locks_the_loan_in_the_same_statement_and_keeps_it`; 19 — `test_repost_waits_for_a_delete_of_its_entry`, `test_loan_delete_waits_for_a_repost_on_an_ended_definition` |
 | Accept a partial period | 12 |
 | Date edit onto a posted day refused | 12 — `test_date_edit_onto_a_posted_day_refused`, `test_date_edit_onto_another_pending_period_refused`; posting failures of any class: `test_post_records_any_error_and_answers_409` |
+| **Instance amount edit scope** | 12 (`_apply_amount_scope`; `test_following_replaces_the_edited_periods_own_override_and_keeps_later_owner_edits`, `test_installment_scope_keeps_the_last_period_remainder`), 17 (re-import keeps the owner's template amounts), 24 (SPA `套用範圖`) |
+| Only this period by default | 12 — `test_only_this_period_by_default` |
+| This period and the following ones keep the old price before | 12 — `test_this_period_and_the_following_ones_keep_the_old_price_before` |
+| All periods keep other owner edits | 12 — `test_all_periods_keep_other_owner_edits` |
+| A scope with another field is refused | 12 — `test_a_scope_with_another_field_is_refused` |
+| Imported definition before cutover | 12 — `test_scope_edit_allowed_on_an_imported_definition_before_cutover` |
 | **Run-now endpoint** | 15 (and `test_run_now_needs_the_bearer_token_when_api_tokens_are_set`: #42 token auth, design D42); 10 — `test_schedule_writes_need_the_bearer_token_when_api_tokens_are_set` |
 | Manual run while the job runs | 15 — `test_run_now_refused_while_the_job_runs` |
 | Import starts mid-run | 15 — `test_import_starts_mid_run`, `test_run_now_refused_while_an_import_runs` |
@@ -16588,6 +17133,7 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | New review reason pauses, resolved one clears | 17 — `test_new_review_reason_pauses_and_a_resolved_one_clears` |
 | Re-pointing finds no loan | 18 — `test_re_pointing_finds_no_loan` |
 | Owner-edited pending period kept | 17 — `test_owner_edited_pending_period_kept` |
+| Owner-set price survives a re-import | 17 — `test_owner_set_template_amounts_survive_a_reimport` |
 | Re-import keeps owner decisions and local definitions | 17 — `test_reimport_keeps_owner_decisions_and_local_definitions`, `test_import_row_whose_record_left_the_backup_becomes_skipped`, `test_pending_imported_row_follows_moze_and_clears_failure_marks`, `test_moze_date_refresh_never_lands_on_another_pending_period` |
 | Different amount reported | 18 — `test_different_amount_reported` |
 | Loan link survives the full replace | 18 — `test_loan_link_survives_the_full_replace`; `loan_remainder_check` after re-pointing: `test_reimport_after_local_post_keeps_schedule_entries_and_skips_the_record` |
@@ -16618,6 +17164,8 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Post from the queue | 23 |
 | Catch-up offered for a backlog | 23 |
 | **週期／分期 section** | 24 |
+| Price change from this period on | 24 — `asks 套用範圖 only when an amount changed`, `sends scope following from .scope-following` (and `this` / `all`) |
+| Scope question cancelled | 24 — `focuses 僅這一期, and Esc cancels without saving or closing the sheet` |
 | Loan row | 24 (and `does not say 目前沒有待處理項目 on 借還款追蹤 while schedules are listed`) |
 | Ended loan still open needs a check | 24 |
 | Pause from the sheet | 24 |

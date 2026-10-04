@@ -14,7 +14,7 @@ The system SHALL persist each recurring or installment rule in a `schedule_defin
 - `posting_mode` (enum `schedule_posting_mode`: `auto`, `confirm`; default `auto`)
 - `status` (enum `schedule_status`: `active`, `paused`, `ended`; default `active`)
 - `auto_post_from` (DATE, NOT NULL; the Asia/Taipei date the definition was created locally or first imported)
-- `generated_until` (DATE, nullable), `created_locally` (BOOLEAN, NOT NULL, default true)
+- `generated_until` (DATE, nullable), `created_locally` (BOOLEAN, NOT NULL, default true), `template_owner_edited` (BOOLEAN, NOT NULL, default false; set when the owner changes the template's amounts through a period edit with scope `following` or `all`, see "Instance amount edit scope")
 - `moze_payload` (JSONB, nullable; the raw MOZE row when imported), `review_reason` (VARCHAR(64), nullable)
 - `created_at`, `updated_at` (TIMESTAMPTZ)
 
@@ -234,7 +234,7 @@ The accounting service SHALL run a schedule job in-process (APScheduler, `coales
 
 The service SHALL expose:
 
-- `GET /api/accounting/schedules/definitions?status=&kind=` returning every definition (default: all statuses) ordered by next due date, each with `id`, `kind`, `name`, `status`, `posting_mode`, `interval_unit`, `interval_n`, `anchor_date`, `day_of_month`, `first_seq`, `times`, `end_date`, `total_amount`, `auto_post_from`, `template` (lines with `account_name`, `to_account_name`, `category`, `counterparty` added), `created_locally`, `imported` (`moze_id` is set), `review_reason`, `generated_until`, `posted_count`, `skipped_count`, `pending_count`, `next_due_date`, `next_amount` (signed sum of the next pending instance's lines, per currency), `remaining` and `repaid` (see "Loan summary"), `loan_entry_id`, `needs_check` (an `ended` loan definition whose loan's open amount is not 0, or `review_reason` set), and `failing` (`{instance_id, due_date, last_error}` of the earliest pending instance with an error, or null).
+- `GET /api/accounting/schedules/definitions?status=&kind=` returning every definition (default: all statuses) ordered by next due date, each with `id`, `kind`, `name`, `status`, `posting_mode`, `interval_unit`, `interval_n`, `anchor_date`, `day_of_month`, `first_seq`, `times`, `end_date`, `total_amount`, `auto_post_from`, `template` (lines with `account_name`, `to_account_name`, `category`, `counterparty` added), `created_locally`, `template_owner_edited`, `imported` (`moze_id` is set), `review_reason`, `generated_until`, `posted_count`, `skipped_count`, `pending_count`, `next_due_date`, `next_amount` (signed sum of the next pending instance's lines, per currency), `remaining` and `repaid` (see "Loan summary"), `loan_entry_id`, `needs_check` (an `ended` loan definition whose loan's open amount is not 0, or `review_reason` set), and `failing` (`{instance_id, due_date, last_error}` of the earliest pending instance with an error, or null).
 - `GET /api/accounting/schedules/definitions/{id}` returning the same object plus `instances` (all, by `seq`).
 - `POST /api/accounting/schedules/definitions` with `kind`, `name`, `template`, `interval_unit`, `interval_n`, `anchor_date`, optional `day_of_month`, `times`, `end_date`, `total_amount`, `posting_mode`, and optional `loan`. It SHALL create the definition with `auto_post_from` = today, generate its instances, post nothing, and return HTTP 201 with the definition. For an `installment` with `total_amount`, the first line's `amount` is the per-period amount; the last instance SHALL get an `amount_override` covering every line — the first line's remainder so that the periods sum to `total_amount`, the template amounts for the other lines (for a loan of `300000` over 36 with interest `620`: `["8345", "620"]`) — and a request where `amount × (times − 1) ≥ total_amount` SHALL be refused (HTTP 422 naming `total_amount`). `loan` (`{account_id, counterparty_id, category_id, amount, entry_date, name}`, installments only) SHALL create a `payable` entry of `+amount` (`source = 'manual'`) in the same transaction, set `total_amount = loan.amount`, and set `loan_entry_id` on every `repayment` line whose `loan_entry_id` is null.
 - `PUT /api/accounting/schedules/definitions/{id}` with the create fields except `kind` and `loan`. It SHALL lock the definition (`FOR UPDATE`) then its instances, delete its `pending` instances due on or after tomorrow, save the new rule, regenerate (the first new instance is the new rule's first occurrence on or after tomorrow and strictly after the latest remaining instance's `due_date`, with `seq` = the remaining maximum + 1), and rebase the stored `anchor_date` and `first_seq` to that first regenerated instance. Overrides of remaining pending instances SHALL be kept for lines still at the same index with the same kind and cleared otherwise. Posted and skipped instances SHALL be untouched.
@@ -311,7 +311,7 @@ The service SHALL expose, each taking the shared import lock and then locking th
 The service SHALL expose:
 
 - `GET /api/accounting/schedules/instances?from=&until=&status=&definition_id=&queue=` returning instances ordered by `due_date`, `definition_id`, `seq`. Defaults: `status = pending`, `until = today + 30`, no `from`. `queue=true` SHALL return the 待完成交易 set for definitions with `status = active`: `pending` instances due ≤ `until` that belong to a `confirm` definition, or are reopened, or carry `last_error`, or are due before their definition's `auto_post_from`, plus every `posted` instance with `is_partial = true` whatever its date (the `until` window does not apply to them). Each item SHALL have `id`, `definition_id`, `definition_name`, `kind`, `posting_mode`, `seq`, `times`, `due_date`, `status`, `is_partial`, `overdue_days` (`today − due_date` for a pending past instance, else 0), `lines` (kind, account and to-account ids and names, category, counterparty, signed amount after the precedence of "Posting an instance", currency), `totals` (signed sum per currency), `last_error`, `reopened` (bool), `edited_by_owner`, `note`, `posted_entry_ids`, `acted_at`, `acted_by`.
-- `PUT /api/accounting/schedules/instances/{id}` with optional `due_date` and `amounts` (unsigned, one per line) on a `pending` instance (409 otherwise), storing `amount_override` and setting `edited_by_owner = true`; a `due_date` equal to the `due_date` of a `posted` instance of the same definition SHALL be refused (HTTP 422 naming `due_date`).
+- `PUT /api/accounting/schedules/instances/{id}` with optional `due_date` and `amounts` (unsigned, one per line) on a `pending` instance (409 otherwise), storing `amount_override` and setting `edited_by_owner = true`; a `due_date` equal to the `due_date` of a `posted` instance of the same definition SHALL be refused (HTTP 422 naming `due_date`). An optional `scope` (`this`, the default, `following` or `all`) applies an amounts-only edit to later or all periods as described in "Instance amount edit scope".
 - `POST /api/accounting/schedules/instances/{id}/post` (`acted_by = owner`; see "Posting an instance").
 - `POST /api/accounting/schedules/instances/{id}/skip` → `skipped`, `acted_by = owner` (409 unless `pending`). Skipping writes nothing, so a loan's open amount SHALL not change.
 - `POST /api/accounting/schedules/instances/{id}/reopen` → the instance SHALL always end `pending`: a `skipped` instance becomes `pending`; a `posted` instance (partial or not) has every entry in `posted_entry_ids` deleted (with their children and transfer pairs, without the per-entry rules of "Deleting entries of a posted period") and becomes `pending`; both set `reopened_at`, and an `ended` definition SHALL become `active` (409 when already `pending`). Reopen SHALL be allowed even when the template references an archived row; posting then fails as in "Posting an instance".
@@ -349,6 +349,39 @@ Every write SHALL first take the shared import lock (HTTP 409 `import_running`),
 - **GIVEN** a weekly definition whose 2026-10-05 instance is posted
 - **WHEN** the pending 2026-10-12 instance is moved to 2026-10-05
 - **THEN** the response SHALL be HTTP 422 naming `due_date`
+
+### Requirement: Instance amount edit scope
+
+`PUT /api/accounting/schedules/instances/{id}` SHALL accept an optional `scope`: `this` (default; 僅這一期), `following` (這一期與之後) or `all` (全部週期). With `this` the edit SHALL behave as in "Instance endpoints": the instance's `amount_override` is stored and `edited_by_owner = true`. `following` and `all` SHALL be accepted only for a body that sends `amounts` and no other field; a body with `due_date`, or without `amounts`, and a scope other than `this` SHALL be refused with HTTP 422 naming `scope`. Their `amounts` SHALL be one per template line (HTTP 422 naming `amounts` otherwise) and each greater than 0, because they become template amounts. The instance SHALL be `pending` (HTTP 409 otherwise). Both SHALL take the shared import lock, then the definition (`FOR UPDATE`), then every instance of the definition (`FOR UPDATE`, ascending id), and in one transaction:
+
+- `following`: every `pending` instance with a `seq` below the edited one that has no `amount_override` SHALL get an `amount_override` equal to the template amounts before the edit (it keeps the old price); the template's line amounts SHALL become the sent amounts and `template_owner_edited` SHALL become true; every `pending` instance with a `seq` at or above the edited one whose `edited_by_owner` is false SHALL have its `amount_override` cleared; the edited instance SHALL follow the template, unless it was already `edited_by_owner`, in which case its `amount_override` SHALL become the sent amounts.
+- `all`: the same without the first step, the clearing applying to every `pending` instance of the definition; the overrides of other owner-edited instances SHALL be kept.
+
+`posted` and `skipped` instances SHALL never be changed by any scope; instances generated later SHALL take the new template amounts. For an `installment` with `total_amount` and `times`, a request whose first amount × (`times` − 1) ≥ `total_amount` SHALL be refused (HTTP 422 naming `amounts`), and its pending last instance (`seq = times`), when it is neither the edited instance nor owner-edited, SHALL keep a remainder override: recomputed from the new amounts for a local definition, kept as imported otherwise. `following` and `all` SHALL be allowed on imported definitions before cutover (amounts are not rule fields); `PUT` and `DELETE` on the definition stay refused with `locked_until_cutover`.
+
+#### Scenario: Only this period by default
+- **GIVEN** a monthly Netflix definition with template amount `390` and pending instances seq 2 (2026-10-22), seq 3 (2026-11-22) and seq 4 (2026-12-22) without overrides
+- **WHEN** `PUT /api/accounting/schedules/instances/{id}` sends `amounts = ["420"]` for seq 3 without `scope`
+- **THEN** seq 3 SHALL have `amount_override = ["420"]` and `edited_by_owner = true`, the template amount SHALL stay `390`, and seq 2 and seq 4 SHALL be unchanged
+
+#### Scenario: This period and the following ones keep the old price before
+- **GIVEN** the same definition, whose seq 1 (2026-09-22) is posted with `−390`
+- **WHEN** seq 3 is edited with `amounts = ["420"]` and `scope = following`
+- **THEN** seq 1 SHALL be unchanged, seq 2 SHALL have `amount_override = ["390"]`, the template amount SHALL be `420` with `template_owner_edited = true`, and seq 3 and seq 4 SHALL have no override (they post `−420`)
+
+#### Scenario: All periods keep other owner edits
+- **GIVEN** the same definition whose seq 4 the owner edited to `400`
+- **WHEN** seq 2 is edited with `amounts = ["420"]` and `scope = all`
+- **THEN** the template amount SHALL be `420`, seq 2 and seq 3 SHALL have no override, seq 4 SHALL keep `["400"]`, and the posted seq 1 SHALL be unchanged
+
+#### Scenario: A scope with another field is refused
+- **WHEN** `PUT /api/accounting/schedules/instances/{id}` sends `due_date` with `scope = following`
+- **THEN** the response SHALL be HTTP 422 naming `scope` and nothing SHALL change
+
+#### Scenario: Imported definition before cutover
+- **GIVEN** `ACCOUNTING_IMPORT_LOCKED = false` and a pending instance of an imported definition
+- **WHEN** it is edited with `scope = all`
+- **THEN** the response SHALL be HTTP 200, the template amounts SHALL change with `template_owner_edited = true`, and `DELETE` on the definition SHALL still answer HTTP 409 `locked_until_cutover`
 
 ### Requirement: Run-now endpoint
 
@@ -390,7 +423,7 @@ When an entry listed in a `posted` instance's `posted_entry_ids` is deleted (thr
 
 ### Requirement: Imported definitions before cutover
 
-While `ACCOUNTING_IMPORT_LOCKED` is false, `PUT` and `DELETE` on a definition with a `moze_id`, and `repost` on an instance with `acted_by = import`, SHALL be refused with HTTP 409 `locked_until_cutover`. `pause`, `resume`, `end`, `mode`, `catch-up` and the instance endpoints SHALL be allowed on imported definitions; the job SHALL post them like local ones. After cutover every definition SHALL be editable.
+While `ACCOUNTING_IMPORT_LOCKED` is false, `PUT` and `DELETE` on a definition with a `moze_id`, and `repost` on an instance with `acted_by = import`, SHALL be refused with HTTP 409 `locked_until_cutover`. `pause`, `resume`, `end`, `mode`, `catch-up` and the instance endpoints (including amount edits with `scope = following` or `all`) SHALL be allowed on imported definitions; the job SHALL post them like local ones. After cutover every definition SHALL be editable.
 
 #### Scenario: Template edit refused during the mirror period
 - **GIVEN** `ACCOUNTING_IMPORT_LOCKED = false` and an imported loan definition
