@@ -16,6 +16,7 @@ from app.services import schedule_locks as locks
 from app.services import schedule_posting as posting
 from app.services.edit_lock import EditLockedError
 from app.services.errors import ConflictError, ValidationError
+from app.services.moze_import_service import IMPORT_LOCK_KEY
 
 
 @pytest.fixture()
@@ -163,6 +164,27 @@ def test_archived_account_found_at_posting_time_names_the_line(db_session, seed,
     assert row.last_error.startswith("lines[1].account_id")
     assert "620" not in row.last_error and row.last_error_at is not None
     assert _schedule_entries(db_session) == 0
+
+
+def test_record_failure_skips_the_write_while_an_import_holds_the_key(db_session, seed, pg_engine):
+    # D32: every schedule write shares the import key. record_failure runs after the posting rolled back; while an
+    # import holds the key it leaves the instance pending without last_error (the import refreshes it) and returns.
+    card = seed.account("範例卡")
+    definition = seed.definition([seed.line("expense", card, "390")])
+    instance = seed.instance(definition, 1, date(2026, 10, 22))
+    db_session.commit()
+    with pg_engine.connect() as holder:
+        holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY})
+        holder.commit()
+        try:
+            posting.record_failure(db_session, instance.id, "lines[0].account_id: archived")
+        finally:
+            holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": IMPORT_LOCK_KEY})
+            holder.commit()
+
+    db_session.expire_all()
+    row = db_session.get(ScheduleInstance, instance.id)
+    assert (row.status, row.last_error, row.last_error_at) == ("pending", None, None)
 
 
 def test_zero_override_leaves_a_line_out(db_session, seed, loan, today):

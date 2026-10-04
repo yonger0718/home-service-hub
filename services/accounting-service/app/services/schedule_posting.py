@@ -17,7 +17,7 @@ from ..models import Account, EntryGroup, LedgerEntry, ScheduleDefinition, Sched
 from ..schemas.writes import EntryIn, SettleIn, TransferIn
 from . import entry_write_service, ledger_service, settlement_service, transfer_service
 from .errors import ConflictError, NotFoundError, ValidationError
-from .schedule_locks import get_instance, lock_definition, lock_instance, take_import_key_shared
+from .schedule_locks import ImportRunningError, get_instance, lock_definition, lock_instance, take_import_key_shared
 from .schedule_templates import LOAN_LINE_KINDS, loan_line, resolved_amounts, validate_template
 
 SOURCE = "schedule"
@@ -269,8 +269,17 @@ def failure_message(exc: Exception) -> str:
 
 
 def record_failure(db: Session, instance_id: int, message: str) -> None:
-    """Roll the failed posting back, then store last_error on the still-pending instance in its own transaction."""
+    """Roll the failed posting back, then store last_error on the still-pending instance in its own transaction.
+
+    Like every schedule write it shares the import key first (D32); while an import holds the key the write is
+    skipped (the instance stays pending and the import refreshes it) and nothing is raised.
+    """
     db.rollback()
+    try:
+        take_import_key_shared(db)
+    except ImportRunningError:
+        db.rollback()
+        return
     db.execute(
         update(ScheduleInstance)
         .where(ScheduleInstance.id == instance_id, ScheduleInstance.status == "pending")
