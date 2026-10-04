@@ -17,7 +17,6 @@ from app.models import (
     EntryGroup,
     EntryRewardRule,
     LedgerEntry,
-    MozeSchedule,
     Project,
     RewardRule,
 )
@@ -71,7 +70,7 @@ def _snapshot(pg_engine) -> dict:
         return {
             table: conn.execute(text(f"SELECT * FROM {table} ORDER BY 1")).all()
             for table in ("account", "ledger_entry", "category", "project", "counterparty", "reward_rule",
-                          "entry_group", "entry_reward_rule", "moze_schedule", "import_run")
+                          "entry_group", "entry_reward_rule", "schedule_definition", "schedule_instance", "import_run")
         }
 
 
@@ -180,16 +179,6 @@ def test_reimport_keeps_unused_settings_created_through_the_api(client, db_sessi
     assert sorted(db_session.scalars(select(Counterparty.name))) == ["Alan", "Bob"]
     assert sorted(db_session.scalars(select(Project.name))) == ["2026 京都", "日常"]
     assert db_session.scalar(select(Category.id).where(Category.name == "寵物", Category.kind == "expense")) is not None
-
-
-def test_schedule_is_replaced_on_each_import(db_session, backup):
-    summary = _import_backup(db_session, parse_backup_doc(_doc(backup)))
-    _import_backup(db_session, parse_backup_doc(_doc(backup)))
-    rows = {(r.kind, r.moze_id) for r in db_session.scalars(select(MozeSchedule))}
-    assert rows == {("period", "PER-1"), ("installment", "INS-1"), ("skipped_record", "R-4")}
-    skipped = db_session.scalar(select(MozeSchedule).where(MozeSchedule.kind == "skipped_record"))
-    assert (skipped.payload["date"], skipped.payload["total"]) == ("2026-11-09T00:00:00", "-3000")
-    assert summary["schedules"] == {"period": 1, "installment": 1, "skipped_record": 1}
 
 
 def test_report_shape_and_balance_comparison_default(db_session, backup):

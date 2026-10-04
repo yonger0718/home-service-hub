@@ -23,7 +23,6 @@ from app.models import (
     EntryRewardRule,
     ImportRun,
     LedgerEntry,
-    MozeSchedule,
     Preference,
     Project,
     RewardRule,
@@ -31,7 +30,7 @@ from app.models import (
 
 PHASE_2A_TABLES = {
     "account", "account_group", "category", "counterparty", "entry_group", "entry_reward_rule",
-    "fx_rate", "import_run", "ledger_entry", "moze_schedule", "preference", "project", "reward_rule",
+    "fx_rate", "import_run", "ledger_entry", "schedule_definition", "schedule_instance", "preference", "project", "reward_rule",
 }
 
 
@@ -126,7 +125,7 @@ def test_new_enum_values_are_accepted(model_session):
         original_amount=Decimal("-5390"), original_currency="JPY", fx_rate=Decimal("0.2163"), fx_source="manual",
     )
     group = EntryGroup(kind="split", name="聚餐")
-    model_session.add_all([group, MozeSchedule(kind="period", moze_id="P-1", payload={"n": 1})])
+    model_session.add(group)
     model_session.flush()
     entry.group_id = group.id
     model_session.commit()

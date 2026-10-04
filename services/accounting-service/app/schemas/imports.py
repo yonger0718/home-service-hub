@@ -1,5 +1,4 @@
-from datetime import date, datetime
-from decimal import Decimal
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel
@@ -16,13 +15,3 @@ class ImportReport(BaseModel):
     row_count: int | None
     exported_at: datetime | None = None
     summary: dict | None
-
-
-class ScheduleItemOut(BaseModel):
-    id: int
-    kind: Literal["period", "installment", "skipped_record"]
-    moze_id: str
-    name: str | None
-    next_date: date | None
-    amount: Decimal | None
-    currency: str | None

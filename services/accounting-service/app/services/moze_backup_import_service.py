@@ -21,7 +21,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from sqlalchemy import delete, exists, func, or_, select, text
+from sqlalchemy import exists, func, or_, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -35,7 +35,6 @@ from ..models import (
     EntryRewardRule,
     ImportRun,
     LedgerEntry,
-    MozeSchedule,
     Preference,
     Project,
     RewardRule,
@@ -1092,21 +1091,6 @@ def _jsonable(row: dict) -> dict:
     return json.loads(json.dumps(row, default=default, ensure_ascii=False))
 
 
-def _replace_schedule(session: Session, data: BackupData, skipped: list[dict], import_run_id: int | None) -> dict:
-    session.execute(delete(MozeSchedule))
-    rows = [
-        *(("period", row) for row in data.periods),
-        *(("installment", row) for row in data.installments),
-        *(("skipped_record", row) for row in skipped),
-    ]
-    session.add_all(
-        MozeSchedule(kind=kind, moze_id=row.get("identifier"), payload=_jsonable(row), import_run_id=import_run_id)
-        for kind, row in rows
-    )
-    session.flush()
-    return dict(Counter(kind for kind, _ in rows))
-
-
 def _cache_date(account: dict, data: BackupData) -> date:
     return (account["cacheDate"] or data.exported_at.replace(tzinfo=None)).date()
 
@@ -1183,7 +1167,6 @@ def replace_ledger_from_backup(
     archived = _archive_disappeared_accounts(session, {account.name for account in settings.accounts.values()})
     entries = insert_entries(session, data, settings, import_run_id, rates or {}, allow_fx_outliers=allow_fx_outliers)
     delete_unused_rows(session, keep=settings.kept_moze_ids)
-    schedules = _replace_schedule(session, data, entries.skipped_records, import_run_id)
     session.flush()
 
     accounts = _account_reports(session, data, settings, previous)
@@ -1198,7 +1181,6 @@ def replace_ledger_from_backup(
         "kind_counts": dict(sorted(entries.kind_counts.items())),
         "skipped_future": {str(key): value for key, value in sorted(entries.skipped_future.items())},
         "disabled_skipped": {str(key): value for key, value in sorted(entries.disabled_skipped.items())},
-        "schedules": schedules,
         "groups": entries.groups,
         "transfers": entries.transfers,
         "transfer_rate_mismatches": entries.transfer_rate_mismatches,
@@ -1337,51 +1319,6 @@ def run_backup_import(
             conn, data, file_name, sha256, dry_run=dry_run, renames=renames or {}, strict=strict,
             allow_fx_outliers=allow_fx_outliers, http_get=http_get,
         )
-
-
-def _schedule_due(kind: str, payload: dict) -> date | None:
-    def day(value) -> date | None:
-        return date.fromisoformat(value[:10]) if isinstance(value, str) and len(value) >= 10 else None
-
-    if kind == "skipped_record":
-        return day(payload.get("date"))
-    if kind == "installment":
-        upcoming = sorted(d for d in (day(v) for v in (payload.get("dateInfo") or {}).values()) if d and d >= ledger_service._today())
-        if upcoming:
-            return upcoming[0]
-    return day(payload.get("startDate"))
-
-
-def list_schedules(db: Session, kind: str | None = None) -> list[dict]:
-    """ScheduleItemOut rows: name, next_date, amount and currency are derived from the stored payload.
-
-    currency: the payload's own `currency`, else the currency of the payload's `account` (by moze_id),
-    else the preference's main currency. The payload itself stays in the table and is not returned.
-    """
-    query = select(MozeSchedule).order_by(MozeSchedule.id)
-    if kind is not None:
-        query = query.where(MozeSchedule.kind == kind)
-    account_currency = dict(db.execute(select(Account.moze_id, Account.currency).where(Account.moze_id.is_not(None))).all())
-    main = ledger_service.main_currency(db)
-    items = []
-    for row in db.scalars(query):
-        payload = row.payload or {}
-        amount = payload.get("total") if row.kind == "skipped_record" else payload.get("installment")
-        currency = payload.get("currency")
-        if not isinstance(currency, str) or not currency:
-            currency = account_currency.get(payload.get("account")) or main
-        items.append(
-            {
-                "id": row.id,
-                "kind": row.kind,
-                "moze_id": row.moze_id,
-                "name": payload.get("name") or None,
-                "next_date": _schedule_due(row.kind, payload),
-                "amount": Decimal(str(amount)) if amount is not None else None,
-                "currency": currency,
-            }
-        )
-    return sorted(items, key=lambda item: (item["next_date"] is None, item["next_date"] or date.min, item["id"]))
 
 
 def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None, exporter: Sequence[str] | None = None) -> int:

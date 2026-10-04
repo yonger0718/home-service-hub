@@ -1,7 +1,6 @@
 import json
 import tempfile
 from pathlib import Path
-from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import select
@@ -10,8 +9,8 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db, get_engine
 from ..models import ImportRun
-from ..schemas.imports import ImportReport, ScheduleItemOut
-from ..services.moze_backup_import_service import list_schedules, run_backup_import
+from ..schemas.imports import ImportReport
+from ..services.moze_backup_import_service import run_backup_import
 from ..services.moze_csv import MozeImportError
 from ..services.moze_import_service import (
     ImportAlreadyRunningError,
@@ -104,14 +103,6 @@ def import_moze_backup(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except MozeImportError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.get("/schedules", response_model=list[ScheduleItemOut])
-def import_schedules(
-    kind: Literal["period", "installment", "skipped_record"] | None = Query(default=None),
-    db: Session = Depends(get_db),
-):
-    return list_schedules(db, kind)
 
 
 @router.get("/latest", response_model=ImportReport)

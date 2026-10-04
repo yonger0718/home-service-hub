@@ -21,7 +21,7 @@ from ..models import (
     Counterparty,
     EntryGroup,
     LedgerEntry,
-    MozeSchedule,
+    ScheduleDefinition,
     Preference,
     Project,
     RewardRule,
@@ -391,8 +391,8 @@ TEXT_COLUMNS: dict[str, dict[str, Any]] = {
     },
     "AHPackage": {"identifier": EntryGroup.moze_id, "name": EntryGroup.name, "store": EntryGroup.merchant},
     "AHBonusReward": {"identifier": RewardRule.moze_id, "name": RewardRule.name},
-    "AHPeriod": {"identifier": MozeSchedule.moze_id},
-    "AHInstallment": {"identifier": MozeSchedule.moze_id},
+    "AHPeriod": {"identifier": ScheduleDefinition.moze_id},
+    "AHInstallment": {"identifier": ScheduleDefinition.moze_id},
     "AHPreference": {"mainCurrency": Preference.main_currency},
 }
 
