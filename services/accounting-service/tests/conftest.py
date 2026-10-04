@@ -19,9 +19,20 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import SQLALCHEMY_DATABASE_URL, get_db, get_engine
 from app.main import app
-from app.models import Account, Category, Counterparty, EntryGroup, FxRate, LedgerEntry, Project, RewardRule
+from app.models import (
+    Account,
+    Category,
+    Counterparty,
+    EntryGroup,
+    FxRate,
+    LedgerEntry,
+    Project,
+    RewardRule,
+    ScheduleDefinition,
+    ScheduleInstance,
+)
 from app.services import fx_rate_service
-from tests.helpers import make_account, make_entry
+from tests.helpers import make_account, make_definition, make_entry, make_instance, schedule_line
 from app.services.moze_backup_json import parse_backup_doc
 
 SERVICE_DIR = Path(__file__).resolve().parents[1]
@@ -395,6 +406,15 @@ class Seed:
         extra.setdefault("posted_date", day)
         return make_entry(self.db, account, amount, kind=kind, entry_date=day, source=source, **extra)
 
+    def line(self, kind, account, amount, **fields) -> dict:
+        return schedule_line(kind, account, amount, **fields)
+
+    def definition(self, lines, **fields) -> ScheduleDefinition:
+        return make_definition(self.db, lines, **fields)
+
+    def instance(self, definition, seq, day, **fields) -> ScheduleInstance:
+        return make_instance(self.db, definition, seq, day, **fields)
+
     def fx(self, day, base, quote, rate) -> FxRate:
         return self._add(FxRate(date=day, base=base, quote=quote, rate=Decimal(rate), source="test"))
 
@@ -403,3 +423,15 @@ class Seed:
 def seed(db_session):
     """seed.account(...), seed.entry(account, "-100", kind=..., source=..., ...) and friends on db_session."""
     return Seed(db_session)
+
+
+@pytest.fixture()
+def today(monkeypatch):
+    """today(date(2026, 10, 3)) fixes ledger_service._today(), the Taipei date every schedule service reads."""
+    from app.services import ledger_service
+
+    def set_today(day: date) -> date:
+        monkeypatch.setattr(ledger_service, "_today", lambda: day)
+        return day
+
+    return set_today
