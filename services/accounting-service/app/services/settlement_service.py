@@ -46,14 +46,23 @@ def _same_currency_account(db: Session, account_id: int, currency: str) -> Accou
     return account
 
 
-def settle(db: Session, entry_id: int, payload: SettleIn) -> int:
+def settle(
+    db: Session,
+    entry_id: int,
+    payload: SettleIn,
+    *,
+    source: str = "manual",
+    check_cutover_lock: bool = True,
+    name: str | None = None,
+) -> int:
     """收款 (+amount, kind receivable) or 還款 (−amount, kind payable) pointing at the target, is_settlement=True.
 
     `locked_entry` (Task 12) holds the target FOR UPDATE until the request commits, so a concurrent settle,
     refund, PUT or DELETE of it either committed first or waits; two requests never both pass the open-amount check.
     """
     target = locked_entry(db, entry_id)
-    assert_entry_editable(db, target)
+    if check_cutover_lock:  # False only from schedule_posting: a schedule may repay an imported loan (D36)
+        assert_entry_editable(db, target)
     if target.kind not in SETTLE_SIGNS or target.is_settlement:
         raise ValidationError("kind", "only receivable and payable entries can be settled")
     if target.is_closed:
@@ -70,12 +79,12 @@ def settle(db: Session, entry_id: int, payload: SettleIn) -> int:
         entry_date=payload.entry_date,
         entry_time=payload.entry_time,
         posted_date=payload.entry_date,
-        name=SETTLE_NAMES[target.kind],
+        name=name or SETTLE_NAMES[target.kind],
         counterparty_id=target.counterparty_id,
         description=payload.description,
         settles_entry_id=target.id,
         is_settlement=True,
-        source="manual",
+        source=source,
     )
     db.add(entry)
     db.flush()

@@ -64,7 +64,9 @@ def matching_in_category_id(db: Session, out_category: Category) -> int | None:
     )
 
 
-def _leg_values(db: Session, payload: TransferIn, attached_rules: frozenset[int] = frozenset()) -> tuple[dict, dict]:
+def _leg_values(
+    db: Session, payload: TransferIn, attached_rules: frozenset[int] = frozenset(), entry_source: str = "manual"
+) -> tuple[dict, dict]:
     """Validate the payload and return the column values of the out leg and the in leg. `attached_rules`: the
     rule ids the out leg already links (an update keeps them even when an import disabled the rule)."""
     if payload.from_account_id == payload.to_account_id:
@@ -109,7 +111,7 @@ def _leg_values(db: Session, payload: TransferIn, attached_rules: frozenset[int]
         "tags": list(payload.tags),
         "counterparty_id": None,
         "needs_review": False,
-        "source": "manual",
+        "source": entry_source,
     }
     out_values = {
         **common, **out_fx, "account_id": source.id, "currency": source.currency, "kind": "transfer_out",
@@ -122,22 +124,26 @@ def _leg_values(db: Session, payload: TransferIn, attached_rules: frozenset[int]
     return out_values, in_values
 
 
-def _write_leg_extras(db: Session, out_leg: LedgerEntry, in_leg: LedgerEntry, payload: TransferIn) -> None:
-    write_children(db, out_leg, payload.out_fee, payload.out_discount)
-    write_children(db, in_leg, payload.in_fee, payload.in_discount)
+def _write_leg_extras(
+    db: Session, out_leg: LedgerEntry, in_leg: LedgerEntry, payload: TransferIn, *, source: str = "manual",
+    remember: bool = True,
+) -> None:
+    write_children(db, out_leg, payload.out_fee, payload.out_discount, source=source)
+    write_children(db, in_leg, payload.in_fee, payload.in_discount, source=source)
     write_rule_links(db, out_leg.id, payload.reward_rule_ids)
     write_rule_links(db, in_leg.id, [])
-    remember_defaults(db, payload.category_id, payload.from_account_id, payload.project_id)
+    if remember:
+        remember_defaults(db, payload.category_id, payload.from_account_id, payload.project_id)
 
 
-def create_transfer(db: Session, payload: TransferIn) -> UUID:
-    out_values, in_values = _leg_values(db, payload)
+def create_transfer(db: Session, payload: TransferIn, *, source: str = "manual", remember: bool = True) -> UUID:
+    out_values, in_values = _leg_values(db, payload, entry_source=source)
     group_id = uuid4()
     out_leg = LedgerEntry(transfer_group_id=group_id, **out_values)
     in_leg = LedgerEntry(transfer_group_id=group_id, **in_values)
     db.add_all([out_leg, in_leg])
     db.flush()
-    _write_leg_extras(db, out_leg, in_leg, payload)
+    _write_leg_extras(db, out_leg, in_leg, payload, source=source, remember=remember)
     return group_id
 
 
@@ -178,10 +184,13 @@ def update_transfer(db: Session, group_id: UUID, payload: TransferIn) -> None:
     out_leg, in_leg = _locked_legs(db, group_id)
     assert_entry_editable(db, out_leg)
     assert_entry_editable(db, in_leg)
-    out_values, in_values = _leg_values(db, payload, frozenset(attached_rule_ids(db, out_leg.id)))
+    source = "schedule" if out_leg.source == "schedule" else "manual"
+    out_values, in_values = _leg_values(
+        db, payload, frozenset(attached_rule_ids(db, out_leg.id)), entry_source=source
+    )
     for leg, values in ((out_leg, out_values), (in_leg, in_values)):
         for column, value in values.items():
             setattr(leg, column, value)
     db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id.in_([out_leg.id, in_leg.id])))
     db.flush()
-    _write_leg_extras(db, out_leg, in_leg, payload)
+    _write_leg_extras(db, out_leg, in_leg, payload, source=source)

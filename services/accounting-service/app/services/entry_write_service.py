@@ -200,7 +200,7 @@ def prepare_entry(
     return PreparedEntry(payload, account, fx, payload.posted_date or payload.entry_date)
 
 
-def _apply(entry: LedgerEntry, prepared: PreparedEntry) -> None:
+def _apply(entry: LedgerEntry, prepared: PreparedEntry, source: str = "manual") -> None:
     payload, account, fx = prepared.payload, prepared.account, prepared.fx
     entry.account_id = account.id
     entry.currency = account.currency
@@ -224,7 +224,7 @@ def _apply(entry: LedgerEntry, prepared: PreparedEntry) -> None:
     entry.invoice_number = payload.invoice_number
     entry.invoice_random = payload.invoice_random
     entry.needs_review = False
-    entry.source = "manual"
+    entry.source = source
 
 
 def system_category_id(db: Session, kind: str) -> int:
@@ -241,8 +241,10 @@ def system_category_id(db: Session, kind: str) -> int:
     return category_id
 
 
-def write_children(db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None) -> None:
-    """Fee stored negative, discount positive; same account, date, time and posting date as the parent."""
+def write_children(
+    db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None, *, source: str = "manual"
+) -> None:
+    """Fee stored negative, discount positive; same account, date, time, posting date and source as the parent."""
     for kind, child in (("fee", fee), ("discount", discount)):
         if child is None:
             continue
@@ -258,7 +260,7 @@ def write_children(db: Session, parent: LedgerEntry, fee: ChildIn | None, discou
                 category_id=system_category_id(db, kind),
                 name=child.name or CHILD_DEFAULT_NAMES[kind],
                 parent_entry_id=parent.id,
-                source="manual",
+                source=source,
             )
         )
     db.flush()
@@ -294,14 +296,22 @@ def remember_all_defaults(db: Session, prepared: Iterable[PreparedEntry]) -> Non
         db.flush()
 
 
-def insert_prepared(db: Session, prepared: PreparedEntry, *, group_id: int | None = None, remember: bool = True) -> int:
+def insert_prepared(
+    db: Session,
+    prepared: PreparedEntry,
+    *,
+    group_id: int | None = None,
+    remember: bool = True,
+    source: str = "manual",
+) -> int:
     """Insert one prepared entry with its children and rule links; `remember=False` leaves the category defaults
-    to the caller (remember_all_defaults for a split)."""
+    alone (a split remembers them all at once; a schedule never moves them, D31). `source='schedule'` only from
+    schedule_posting."""
     entry = LedgerEntry(group_id=group_id)
-    _apply(entry, prepared)
+    _apply(entry, prepared, source)
     db.add(entry)
     db.flush()
-    write_children(db, entry, prepared.payload.fee, prepared.payload.discount)
+    write_children(db, entry, prepared.payload.fee, prepared.payload.discount, source=source)
     write_rule_links(db, entry.id, prepared.payload.reward_rule_ids)
     if remember:
         remember_defaults(db, prepared.payload.category_id, prepared.account.id, prepared.payload.project_id)
@@ -443,10 +453,11 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
     if entry.kind not in EDITABLE_KINDS or entry.parent_entry_id is not None:
         raise ValidationError("kind", f"{entry.kind} entries are not edited through this endpoint")
     _check_linked_original(db, entry, prepared)
-    _apply(entry, prepared)
+    source = "schedule" if entry.source == "schedule" else "manual"  # a posted period's entry stays a schedule row
+    _apply(entry, prepared, source)
     db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id == entry.id))
     db.flush()
-    write_children(db, entry, payload.fee, payload.discount)
+    write_children(db, entry, payload.fee, payload.discount, source=source)
     write_rule_links(db, entry.id, payload.reward_rule_ids)
     remember_defaults(db, payload.category_id, prepared.account.id, payload.project_id)
 
