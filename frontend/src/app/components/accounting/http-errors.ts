@@ -31,7 +31,8 @@ export function fieldErrors(err: unknown): Record<string, string> {
 
 /**
  * One human-readable line for a failed write. 404 / 409 bodies are shared_lib's `{"code", "message", "trace_id"}`
- * (the lock refusal has `message == "locked_until_cutover"`); 422 bodies carry a `detail` list.
+ * (the lock refusal has `message == "locked_until_cutover"`; an ended schedule's PUT `definition_ended`); 422 bodies
+ * carry a `detail` list.
  */
 export function writeErrorMessage(err: unknown): string {
   if (err instanceof HttpErrorResponse) {
@@ -39,6 +40,9 @@ export function writeErrorMessage(err: unknown): string {
     const detail = body?.detail;
     if (err.status === 409 && (detail === 'locked_until_cutover' || body?.message === 'locked_until_cutover')) {
       return 'MOZE 匯入資料，切換後可編輯';
+    }
+    if (err.status === 409 && (detail === 'definition_ended' || body?.message === 'definition_ended')) {
+      return '排程已結束，無法編輯';
     }
     if (typeof body?.message === 'string' && body.message) {
       return body.message;

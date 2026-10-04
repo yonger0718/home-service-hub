@@ -8,6 +8,7 @@ import {
   buildDefinitionInput,
   definitionUpdateFrom,
   draftFromDefinition,
+  formCanRepresent,
   shouldCatchUp,
 } from './schedule-save';
 
@@ -125,5 +126,19 @@ describe('schedule-save', () => {
     const update = definitionUpdateFrom(input);
     expect(update).not.toHaveProperty('kind');
     expect(update).not.toHaveProperty('loan');
+  });
+
+  it('tells which definitions the entry form can edit without losing lines', () => {
+    const base = makeDefinition().template.lines[0];
+    const withLines = (kind: 'recurring' | 'installment', lines: (typeof base)[], extra = {}) =>
+      makeDefinition({ kind, total_amount: kind === 'installment' ? '300000' : null, ...extra, template: { lines, description: null, tags: [] } });
+    const interest = { ...base, kind: 'interest' as const, amount: '620', category_id: null };
+    expect(formCanRepresent(withLines('recurring', [base]))).toBe(true);
+    expect(formCanRepresent(withLines('installment', [base, interest], { times: 36 }))).toBe(true);
+    expect(formCanRepresent(withLines('recurring', [base, { ...base, amount: '120' }]))).toBe(false);
+    expect(formCanRepresent(withLines('recurring', [{ ...base, kind: 'repayment', loan_entry_id: 4021 }]))).toBe(false);
+    expect(formCanRepresent(withLines('installment', [{ ...base, kind: 'collection', loan_entry_id: 4021 }], { times: 36 }))).toBe(false);
+    expect(formCanRepresent(withLines('installment', [{ ...base, kind: 'repayment', loan_entry_id: 4021 }, interest], { times: 36 }))).toBe(true);
+    expect(formCanRepresent(withLines('recurring', [base, interest]))).toBe(false);
   });
 });

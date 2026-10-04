@@ -257,6 +257,39 @@ function formKindOf(kind: ScheduleLineKind): FormKind {
   }
 }
 
+/** The error line of a definition the entry form cannot edit without losing or changing its lines. */
+export const FORM_CANNOT_REPRESENT = '此排程的格式無法在表單編輯，請改用排程管理';
+
+/**
+ * 編輯整個排程 through the entry form rebuilds the template from one form line (+ the 利息 line of 分期), so it is
+ * offered only when that rebuild gives back the same lines: one main line, at most one `interest` line on the same
+ * account (分期 only), a 週期 line the form can write (no `repayment` / `collection`), and a 分期 of 支出 (`expense`)
+ * or of a loan (`repayment` with its payable), monthly, with its 總額. Anything else (imported multi-line templates,
+ * a recurring repayment, a collection installment) is shown read-only.
+ */
+export function formCanRepresent(definition: ScheduleDefinition): boolean {
+  const lines = definition.template.lines;
+  const [first, ...rest] = lines;
+  if (!first || first.kind === 'interest' || rest.length > 1 || rest.some(item => item.kind !== 'interest')) {
+    return false;
+  }
+  const interest = rest[0] ?? null;
+  if (definition.kind === 'recurring') {
+    const writable: ScheduleLineKind[] = ['expense', 'income', 'receivable', 'payable', 'transfer'];
+    return interest === null && writable.includes(first.kind) && !(definition.times !== null && definition.end_date !== null);
+  }
+  if (first.kind !== 'expense' && !(first.kind === 'repayment' && first.loan_entry_id !== null)) {
+    return false;
+  }
+  return (
+    definition.interval_unit === 'month' &&
+    definition.interval_n === 1 &&
+    definition.times !== null &&
+    definition.total_amount !== null &&
+    (interest === null || interest.account_id === first.account_id)
+  );
+}
+
 /** 編輯整個排程: the entry form's fields from a definition (its first line, and the interest line of a loan). */
 export function draftFromDefinition(definition: ScheduleDefinition): ScheduleFormState {
   const [first, ...rest] = definition.template.lines;

@@ -33,6 +33,8 @@ describe('http error helpers', () => {
       'MOZE 匯入資料，切換後可編輯',
     );
     expect(writeErrorMessage(httpError(409, { detail: 'locked_until_cutover' }))).toBe('MOZE 匯入資料，切換後可編輯');
+    expect(writeErrorMessage(httpError(409, { detail: 'definition_ended' }))).toBe('排程已結束，無法編輯');
+    expect(writeErrorMessage(httpError(409, { code: 'conflict', message: 'definition_ended' }))).toBe('排程已結束，無法編輯');
     expect(
       writeErrorMessage(httpError(409, { code: 'conflict', message: 'account has entries; archive it instead (is_archived)', trace_id: 't-2' })),
     ).toBe('account has entries; archive it instead (is_archived)');

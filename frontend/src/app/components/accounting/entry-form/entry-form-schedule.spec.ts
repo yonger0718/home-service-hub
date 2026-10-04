@@ -27,6 +27,7 @@ const ACCOUNTS = [
   makeAccount({ id: 1, name: '薪轉' }),
   makeAccount({ id: 2, name: '範例卡', is_credit: true }),
   makeAccount({ id: 3, name: '交割' }),
+  makeAccount({ id: 4, name: '舊卡', is_archived: true }),
 ];
 const PROJECTS: Project[] = [];
 const NETFLIX = makeCategory({ id: 41, parent_id: 40, name: 'Netflix' });
@@ -380,6 +381,41 @@ describe('EntryFormComponent schedules', () => {
     flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     expect(text(el.querySelector('.form-error'))).toBe('排程讀取失敗，請稍後再試。');
     expect((el.querySelector('button.save') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('opens a definition the form cannot represent read-only', async () => {
+    const { el, left } = await open('/accounting/entry?schedule=5');
+    const line = makeDefinition().template.lines[0];
+    respond('/api/accounting/schedules/definitions/5', {
+      ...makeDefinition({ id: 5, imported: true, template: { lines: [line, { ...line, amount: '120', category_id: 41 }], description: null, tags: [] } }),
+      instances: [],
+    });
+    flushAll('/api/accounting/categories', [STREAMING]);
+    flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    flushAll('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect(text(el.querySelector('.form-error'))).toBe('此排程的格式無法在表單編輯，請改用排程管理');
+    expect((el.querySelector('fieldset.content') as HTMLFieldSetElement).disabled).toBe(true);
+    const save = el.querySelector('button.save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    el.querySelector('.entry-form')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    settle();
+    httpMock.expectNone(r => r.method === 'PUT');
+    expect(left()).toBe(false);
+  });
+
+  it('keeps an archived account of the definition selected', async () => {
+    const { el } = await open('/accounting/entry?schedule=5');
+    const line = { ...makeDefinition().template.lines[0], account_id: 4 };
+    respond('/api/accounting/schedules/definitions/5', {
+      ...makeDefinition({ id: 5, template: { lines: [line], description: null, tags: [] } }),
+      instances: [],
+    });
+    flushAll('/api/accounting/categories', [STREAMING]);
+    flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    flushAll('/api/accounting/accounts/4', makeAccountDetail({ id: 4 }));
+    const select = el.querySelector('.account-select') as HTMLSelectElement;
+    expect(select.value).toBe('4');
+    expect(text(select.selectedOptions[0])).toContain('舊卡');
   });
 
   it('shows the lock banner for an imported definition before cutover', async () => {

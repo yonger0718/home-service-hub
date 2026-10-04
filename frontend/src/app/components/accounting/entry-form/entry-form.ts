@@ -94,7 +94,15 @@ import {
   rememberEntryUse,
   resolveCounterpartyId,
 } from './entry-save';
-import { ScheduleFormError, buildDefinitionInput, definitionUpdateFrom, draftFromDefinition, shouldCatchUp } from './schedule-save';
+import {
+  FORM_CANNOT_REPRESENT,
+  ScheduleFormError,
+  buildDefinitionInput,
+  definitionUpdateFrom,
+  draftFromDefinition,
+  formCanRepresent,
+  shouldCatchUp,
+} from './schedule-save';
 import { TransferEdit, transferCommonFrom, transferEditFrom } from './transfer-math';
 
 export { NO_RELATED } from './entry-save';
@@ -238,6 +246,8 @@ export class EntryFormComponent implements OnInit {
   readonly scheduleId = signal<number | null>(null);
   /** An imported definition before cutover: shown read-only with the lock banner. */
   readonly definitionLocked = signal(false);
+  /** A definition whose lines the form cannot rebuild losslessly (`formCanRepresent`): shown read-only. */
+  readonly definitionReadOnly = signal(false);
   /** Server 422 field errors of the last schedule save, shown beside their fields. */
   readonly fieldErrors = signal<Record<string, string>>({});
   readonly scheduling = computed(() => this.scheduleDraft().tab !== 'single');
@@ -277,10 +287,15 @@ export class EntryFormComponent implements OnInit {
   readonly categoryKind = computed(() => categoryKindFor(this.kind()));
   readonly title = computed(() => (this.scheduleId() !== null ? '編輯排程' : this.editing() ? '編輯記錄' : '新增記錄'));
   readonly account = computed(() => this.accounts().find(account => account.id === this.accountId()) ?? null);
-  /** Open accounts; in edit mode also the record's own account when it is archived. New records never offer archived ones. */
+  /**
+   * Open accounts; in edit and definition mode also the record's / definition's own account when it is archived.
+   * New records never offer archived ones.
+   */
   readonly accountOptions = computed(() =>
     this.accounts().filter(
-      account => !account.is_archived || (this.editing() && account.id === this.originalAccountId()),
+      account =>
+        !account.is_archived ||
+        ((this.editing() || this.scheduleId() !== null) && account.id === this.originalAccountId()),
     ),
   );
   readonly projectOptions = computed(() =>
@@ -510,6 +525,7 @@ export class EntryFormComponent implements OnInit {
     ++this.definitionRequest;
     this.loanEntryId = null;
     this.definitionLocked.set(false);
+    this.definitionReadOnly.set(false);
     this.definitionLoaded.set(false);
     this.createdScheduleId.set(null);
     this.scheduleId.set(scheduleParam !== null ? Number(scheduleParam) : null);
@@ -1147,6 +1163,13 @@ export class EntryFormComponent implements OnInit {
     const form = draftFromDefinition(definition);
     this.definitionLoaded.set(true);
     this.definitionLocked.set(definition.locked);
+    if (!formCanRepresent(definition)) {
+      // Saving would drop or change template lines: shown, never written (validate() refuses through unsupported).
+      this.definitionReadOnly.set(true);
+      this.unsupported.set(FORM_CANNOT_REPRESENT);
+      this.error.set(FORM_CANNOT_REPRESENT);
+    }
+    this.originalAccountId.set(form.accountId);
     this.loanEntryId = form.loanEntryId;
     this.kind.set(form.kind);
     this.scheduleDraft.set(form.draft);

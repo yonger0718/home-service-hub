@@ -12,7 +12,7 @@
       class="ib ok save"
       aria-label="儲存"
       title="長按或 ⇧⏎：儲存並續記"
-      [disabled]="locked() || definitionLocked() || saving() || loading() || loadFailed()"
+      [disabled]="locked() || definitionLocked() || definitionReadOnly() || saving() || loading() || loadFailed()"
       (pointerdown)="onSavePointerDown()"
       (pointerup)="onSavePointerUp()"
       (pointerleave)="onSavePointerUp()"
@@ -39,7 +39,7 @@
     </div>
   }
 
-  <fieldset class="content" [disabled]="locked() || definitionLocked() || loading() || createdScheduleId() !== null">
+  <fieldset class="content" [disabled]="locked() || definitionLocked() || definitionReadOnly() || loading() || createdScheduleId() !== null">
     <div class="kinds" role="tablist" aria-label="記錄類型">
       @for (tab of kinds; track tab.kind) {
         <button
@@ -60,7 +60,7 @@
         [locked]="locked()"
         [keypadLayout]="preference().keypad_layout"
         [edit]="transferEdit()"
-        [keepArchived]="entryId() !== null"
+        [keepArchived]="entryId() !== null || scheduleId() !== null"
         [scheduled]="scheduling()"
         (saveRequested)="save($event)"
       />
@@ -259,7 +259,7 @@
           [currency]="accountCurrency()"
           [accounts]="accountOptions()"
           [accountId]="accountId()"
-          [disabled]="locked() || definitionLocked() || createdScheduleId() !== null"
+          [disabled]="locked() || definitionLocked() || definitionReadOnly() || createdScheduleId() !== null"
           [definitionMode]="scheduleId() !== null"
           [errors]="fieldErrors()"
           [(draft)]="scheduleDraft"
