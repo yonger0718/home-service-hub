@@ -19,7 +19,8 @@ from . import settlement_service
 from .schedule_import_map import TRANSFER_TYPE, MapResult, MappedDefinition, MappedInstance
 from .schedule_rules import plain
 from .schedule_templates import (
-    LEDGER_KINDS, LINE_KEYS, LOAN_LINE_KINDS, loan_line, realign_override, referenced_ids, template_amounts,
+    LEDGER_KINDS, LINE_KEYS, LOAN_LINE_KINDS, aligned_override, loan_line, realign_override, referenced_ids,
+    template_amounts,
 )
 
 BUCKETS = {"period": "recurring", "installment": "installment", "single": "single"}
@@ -466,6 +467,21 @@ def _upsert_definition(session: Session, mapped: MappedDefinition, template: dic
     return existing
 
 
+def _day_taken(rows: list[ScheduleInstance], row: ScheduleInstance | None, day: date) -> bool:
+    """Another posted or pending (any non-skipped) period of the definition holds `day`: moving or creating a period
+    there would put two periods on one day (ux_schedule_instance_posted_day once both post; Task 12 refuses the same
+    move with 422 due_date)."""
+    return any(other is not row and other.status != "skipped" and other.due_date == day for other in rows)
+
+
+def _follow_moze_date(rows: list[ScheduleInstance], row: ScheduleInstance, day: date) -> bool:
+    """A row matched by its moze_id follows the date MOZE gives the period, unless the day is taken. True when moved."""
+    if (row.rule_date, row.due_date) == (day, day) or _day_taken(rows, row, day):
+        return False
+    row.rule_date, row.due_date = day, day
+    return True
+
+
 def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: MappedDefinition, entries,
                      started_at: datetime, report: dict, *, realign_from: dict | None = None) -> None:
     """Upsert the definition's instances from the mapped periods. `realign_from` is the mapped template when the
@@ -486,6 +502,9 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
             list(item.amounts) if realign_from is None
             else realign_override(realign_from, definition.template, list(item.amounts))
         )
+        if amounts is None:
+            # nothing of MOZE's lines kept its index and kind in the stored template: the period follows the template
+            amounts = template_amounts(definition.template)
         moze_lines = _moze_lines(definition.template, amounts, item.records if realign_from is None else [])
         row, adopted = _find(rows, item)
         if row is None:
@@ -499,6 +518,9 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
                 moze_record_ids=list(item.record_ids), moze_payload=_jsonable(item.records), amount_override=amounts,
             )
             status = _moze_status(row, item, entries, started_at)
+            if status != "skipped" and _day_taken(rows, None, item.day):
+                report["review"].append({"moze_id": item.moze_id, "reason": "same_date"})
+                continue  # another posted or pending period holds the day; the record is not mapped
             if status == "pending" and definition.template_owner_edited:
                 row.amount_override = None  # the period follows the owner's template price (decision 24)
                 _note_amount_differs(report, definition, row, moze_lines)
@@ -528,6 +550,10 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
                 if item.enabled:
                     _note_amount_differs(report, definition, row, moze_lines)
             elif item.past or not item.enabled:
+                # MOZE booked it (e.g. paid early: the record moved to today) or dropped it: the row takes the
+                # record's day first, so the period, its entry and a later repost share one date.
+                if not adopted:
+                    _follow_moze_date(rows, row, item.day)
                 _moze_status(row, item, entries, started_at)
                 counters["updated"] += 1
             else:
@@ -540,17 +566,25 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
                 changed = not owner_price and row.amount_override != amounts
                 if not owner_price:
                     row.amount_override = amounts
-                if not adopted and (row.rule_date, row.due_date) != (item.day, item.day):
-                    taken = any(
-                        other.id != row.id and other.status != "skipped" and other.due_date == item.day for other in rows
-                    )
-                    if not taken:
-                        row.rule_date, row.due_date, changed = item.day, item.day, True
+                if not adopted and _follow_moze_date(rows, row, item.day):
+                    changed = True
                 if owner_price:
                     _note_amount_differs(report, definition, row, moze_lines)
                 counters["updated" if changed else "kept"] += 1
         elif row.acted_by == "import":
-            _moze_status(row, item, entries, started_at)
+            if not adopted:
+                _follow_moze_date(rows, row, item.day)  # a past record MOZE moved moves the period with it
+            if _moze_status(row, item, entries, started_at) == "pending":
+                # Back to pending (its record is enabled and future again): the pending refresh rules apply. An
+                # owner-priced definition (decision 24) takes no MOZE override, the period follows the owner's
+                # template; an owner-edited row keeps its override, aligned with the template.
+                if definition.template_owner_edited:
+                    row.amount_override = None
+                    _note_amount_differs(report, definition, row, moze_lines)
+                elif row.edited_by_owner:
+                    row.amount_override = aligned_override(definition.template, row.amount_override)
+                else:
+                    row.amount_override = amounts
             counters["updated"] += 1
         else:
             counters["kept"] += 1  # posted by auto / owner, or skipped by HomeHub: the owner's decision stays

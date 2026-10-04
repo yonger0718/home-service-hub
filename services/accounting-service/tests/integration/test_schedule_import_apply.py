@@ -626,3 +626,98 @@ def test_template_change_leaves_posted_overrides_alone(db_session, backup, today
     rows = _instances(db_session, definition)
     assert (rows[0].id, rows[0].status, rows[0].amount_override) == (posted.id, "posted", posted_override)
     assert [row.amount_override for row in rows if row.status == "pending"] == [["100"], ["100"]]
+
+
+def test_account_missing_realignment_that_keeps_nothing_does_not_crash(db_session, backup, today):
+    # Review fix: the package lost its first member and the remaining record's account left the backup. Nothing of
+    # MOZE's lines keeps its index and kind in the stored template, so the period follows the template's amounts.
+    today(date(2026, 10, 3))
+    dates = [f"{rules.add_months(date(2026, 10, 9), k).isoformat()}T00:00:00" for k in range(3)]
+    loan = _rec(backup, "R-LOAN", "2026-09-01", type_=4, price=25000, target="T-BANK")
+
+    def data(records):
+        return backup.data(
+            accounts=_accounts(backup), targets=[backup.target("T-BANK", "範例銀行")],
+            installments=[backup.installment("INS-1", dates=dates, times=3, total=25000)], records=[loan, *records],
+        )
+
+    _import_backup(db_session, data([
+        _rec(backup, "R-REP2", "2026-12-09", type_=6, price=-8333, eventID="INS-1", packageID="PK-2", relatedID="R-LOAN",
+             target="T-BANK"),
+        _rec(backup, "R-INT2", "2026-12-09", type_=15, price=-612, eventID="INS-1", packageID="PK-2"),
+    ]))
+
+    summary = _import_backup(db_session, data([
+        _rec(backup, "R-INT2", "2026-12-09", type_=15, price=-600, eventID="INS-1", packageID="PK-2", account="A-GONE"),
+    ]))
+
+    definition = _definition(db_session, "INS-1")
+    assert [line["kind"] for line in definition.template["lines"]] == ["repayment", "interest"]
+    assert {"moze_id": "INS-1", "reason": "account_missing"} in summary["schedules"]["review"]
+    [row] = _instances(db_session, definition)
+    assert (row.status, row.moze_id, row.amount_override) == ("pending", "R-INT2", ["8333", "612"])
+
+
+def test_early_payment_in_moze_moves_the_period_to_the_record_day(db_session, backup, today):
+    # Review fix: the owner paid an upcoming period early in MOZE (its record moved to today). The period is booked by
+    # the import on the record's day, so the period, its entry and a later repost share one date.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _weekly(backup))
+    waiting = _instances(db_session, _definition(db_session, "PER-W"))[2]
+    assert (waiting.moze_id, waiting.status, waiting.due_date) == ("R-2026-10-05", "pending", date(2026, 10, 5))
+
+    early = _rec(backup, "R-2026-10-05", "2026-10-03", eventID="PER-W")
+    _import_backup(db_session, _weekly(backup, days=WEEKLY[:2], exported_at="2026-10-03T03:00:00",
+                                       extra=[early, _rec(backup, "R-2026-10-12", "2026-10-12", eventID="PER-W")]))
+
+    db_session.expire_all()
+    row = db_session.get(ScheduleInstance, waiting.id)
+    entry = _by_moze_id(db_session, "R-2026-10-05")
+    assert (row.status, row.acted_by, row.rule_date, row.due_date) == ("posted", "import", date(2026, 10, 3), date(2026, 10, 3))
+    assert row.posted_entry_ids == [entry.id]
+    assert entry.entry_date == row.due_date
+
+
+def test_row_back_to_pending_follows_refresh_rules(db_session, backup, today):
+    # Review fix: an import-posted period whose record MOZE moved into the future returns to pending on the record's
+    # day; on an owner-priced definition (decision 24) it takes no MOZE override and the difference is reported.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _weekly(backup))
+    definition = _definition(db_session, "PER-W")
+    first = _instances(db_session, definition)[0]
+    assert (first.status, first.acted_by) == ("posted", "import")
+    line = definition.template["lines"][0]
+    definition.template = {**definition.template, "lines": [{**line, "amount": "120"}]}
+    definition.template_owner_edited = True
+    db_session.commit()
+    data = backup.data(
+        accounts=_accounts(backup), periods=[backup.period("PER-W", unit=1, days=2, start="2026-09-21T00:00:00")],
+        records=[_rec(backup, "R-2026-09-21", "2026-10-19", eventID="PER-W")]
+        + [_rec(backup, f"R-{day}", day, eventID="PER-W") for day in WEEKLY[1:]],
+    )
+
+    summary = _import_backup(db_session, data)
+
+    db_session.expire_all()
+    row = db_session.get(ScheduleInstance, first.id)
+    assert (row.status, row.acted_by, row.posted_entry_ids) == ("pending", None, [])
+    assert (row.rule_date, row.due_date, row.amount_override) == (date(2026, 10, 19), date(2026, 10, 19), None)
+    assert {"definition_id": definition.id, "name": definition.name, "seq": row.seq, "date": "2026-10-19", "line": 0,
+            "kind": "expense", "amount": "120", "moze_amount": "100"} in summary["schedules"]["amount_differs"]
+
+
+def test_new_period_on_a_taken_day_is_reported(db_session, backup, today):
+    # Review fix: a new MOZE period on a day another posted or pending period of the definition holds is reported
+    # (same_date) rather than created, which would collide on ux_schedule_instance_posted_day at posting.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _weekly(backup))
+    definition = _definition(db_session, "PER-W")
+    moved = _instances(db_session, definition)[3]
+    moved.due_date, moved.edited_by_owner = date(2026, 10, 19), True
+    db_session.commit()
+
+    summary = _import_backup(db_session, _weekly(backup, extra=[_rec(backup, "R-NEW", "2026-10-19", eventID="PER-W")]))
+
+    assert {"moze_id": "R-NEW", "reason": "same_date"} in summary["schedules"]["review"]
+    rows = _instances(db_session, _definition(db_session, "PER-W"))
+    assert len(rows) == 4 and all(row.moze_id != "R-NEW" for row in rows)
