@@ -42,9 +42,11 @@ export function scheduleActionError(err: unknown, toast: AccountingToastService)
   selector: 'app-accounting-toast',
   standalone: true,
   template: `
-    @if (toast.message(); as text) {
-      <p class="accounting-toast" role="status" aria-live="polite">{{ text }}</p>
-    }
+    <div role="status" aria-live="polite">
+      @if (toast.message(); as text) {
+        <p class="accounting-toast">{{ text }}</p>
+      }
+    </div>
   `,
   styles: [
     `

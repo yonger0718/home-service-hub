@@ -15,10 +15,14 @@ describe('AccountingToast', () => {
     toast.show('匯入進行中，請稍後再試');
     fixture.detectChanges();
     const el = fixture.nativeElement as HTMLElement;
-    expect(el.querySelector('[role="status"]')?.textContent?.trim()).toBe('匯入進行中，請稍後再試');
+    // A steady live region: the wrapper stays in the DOM so screen readers announce the text when it appears.
+    const region = el.querySelector('[role="status"][aria-live="polite"]');
+    expect(region?.textContent?.trim()).toBe('匯入進行中，請稍後再試');
     vi.advanceTimersByTime(3000);
     fixture.detectChanges();
-    expect(el.querySelector('[role="status"]')).toBeNull();
+    expect(el.querySelector('[role="status"]')).toBe(region);
+    expect(region?.textContent?.trim()).toBe('');
+    expect(el.querySelector('.accounting-toast')).toBeNull();
   });
 
   it('turns import_running into the toast and anything else into an error line', () => {

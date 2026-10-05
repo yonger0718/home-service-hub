@@ -1,0 +1,100 @@
+<div class="overlay" (click)="close()">
+  <div class="sheet schedule-sheet" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="schedule-sheet-title" (click)="$event.stopPropagation()">
+    <div class="grab"></div>
+    @if (definition(); as d) {
+      <h3 id="schedule-sheet-title">{{ d.name }}</h3>
+      <p class="rule-summary">{{ summary() }}</p>
+      @if (d.status === 'paused') {
+        <p class="badge paused">已暫停</p>
+      }
+      @if (d.needs_check) {
+        <p class="badge check">需檢查</p>
+      }
+      <div class="next-periods">
+        @for (period of nextPeriods(); track period.id) {
+          <div class="next-period" [attr.data-period-id]="period.id">
+            <span class="date">{{ period.date }}</span><span class="amount">{{ period.amount }}</span>
+            <button type="button" class="period-edit" [disabled]="busy()" [attr.aria-label]="'調整 ' + period.date" (click)="editPeriod(period.id)">調整</button>
+          </div>
+          @if (editingId() === period.id) {
+            <div class="period-editor">
+              @for (label of editLabels(); track $index) {
+                <label class="period-amount">
+                  <span>{{ label }}</span>
+                  <input type="text" inputmode="decimal" [value]="editAmounts()[$index]" (input)="setEditAmount($index, $any($event.target).value)" />
+                </label>
+              }
+              <div class="btnrow">
+                <button type="button" class="period-cancel" (click)="cancelEdit()">取消</button>
+                <button type="button" class="period-save" [disabled]="busy()" (click)="saveEdit()">儲存</button>
+              </div>
+              @if (askScope()) {
+                <div class="scope-sheet" role="dialog" aria-modal="true" aria-labelledby="scope-sheet-title">
+                  <h4 id="scope-sheet-title">套用範圖</h4>
+                  <div class="btnrow scope-actions">
+                    <button type="button" class="scope-this" [disabled]="busy()" (click)="applyScope('this')">僅這一期</button>
+                    <button type="button" class="scope-following" [disabled]="busy()" (click)="applyScope('following')">這一期與之後</button>
+                    <button type="button" class="scope-all" [disabled]="busy()" (click)="applyScope('all')">全部週期</button>
+                  </div>
+                </div>
+              }
+            </div>
+          }
+        } @empty {
+          <p class="muted">沒有待入帳的期別</p>
+        }
+      </div>
+      <div class="kv">
+        <div>
+          <span class="k">狀態</span>
+          <span class="v">
+            @if (d.status === 'active') {
+              <button type="button" class="sheet-pause" [disabled]="busy()" (click)="pause()">暫停</button>
+            }
+            @if (d.status === 'paused') {
+              <button type="button" class="sheet-resume" [disabled]="busy()" (click)="resume()">繼續</button>
+            }
+          </span>
+        </div>
+        @if (confirm() === 'resume') {
+          <div class="resume-choice">
+            <button type="button" class="resume-skip" [disabled]="busy()" (click)="resume('skip')">略過期間的 {{ overdue() }} 期</button>
+            <button type="button" class="resume-post" [disabled]="busy()" (click)="resume('post')">補入帳</button>
+          </div>
+        }
+        <div>
+          <span class="k">入帳方式</span>
+          <span class="v sheet-modes" role="radiogroup" aria-label="入帳方式">
+            <button type="button" role="radio" class="sheet-mode" data-mode="auto" [attr.aria-checked]="d.posting_mode === 'auto'" [disabled]="busy()" (click)="setMode('auto')">自動入帳</button>
+            <button type="button" role="radio" class="sheet-mode" data-mode="confirm" [attr.aria-checked]="d.posting_mode === 'confirm'" [disabled]="busy()" (click)="setMode('confirm')">提醒入帳</button>
+          </span>
+        </div>
+      </div>
+      @if (error(); as message) {
+        <p class="form-error" role="alert">{{ message }}</p>
+      }
+      @if (confirm() === 'end') {
+        <p class="end-confirm" role="alert">結束後未入帳的 {{ pendingCount() }} 期將刪除</p>
+      }
+      @if (confirm() === 'delete') {
+        <p class="delete-confirm" role="alert">刪除這個排程？</p>
+      }
+      <div class="btnrow sheet-actions">
+        @if (d.status !== 'paused' && overdue() > 0) {
+          <button type="button" class="sheet-catch-up" [disabled]="busy()" (click)="catchUp()">補入帳至今天</button>
+        }
+        <button type="button" class="sheet-edit" (click)="edit()">編輯</button>
+        @if (d.status !== 'ended') {
+          <button type="button" class="danger sheet-end" [disabled]="busy()" (click)="end()">{{ confirm() === 'end' ? '確定結束' : '結束' }}</button>
+        }
+        @if (canDelete()) {
+          <button type="button" class="danger sheet-delete" [disabled]="busy()" (click)="remove()">{{ confirm() === 'delete' ? '確定刪除' : '刪除' }}</button>
+        }
+      </div>
+    } @else if (loadFailed()) {
+      <p class="load-error">排程讀取失敗，請稍後再試。</p>
+    } @else {
+      <p class="muted">讀取中…</p>
+    }
+  </div>
+</div>

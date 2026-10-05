@@ -794,8 +794,11 @@ export type ScheduleDefinitionUpdate = Omit<ScheduleDefinitionInput, 'kind' | 'l
   posting_mode?: SchedulePostingMode;
 };
 
-/** 套用範圍 of a period edit: 僅這一期 / 這一期與之後 / 全部週期. */
+/** 套用範圖 of a period edit: 僅這一期 / 這一期與之後 / 全部週期. */
 export type ScheduleInstanceScope = 'this' | 'following' | 'all';
+
+/** `PUT /schedules/instances/{id}` `scope` (套用範圖): 僅這一期 / 這一期與之後 / 全部週期 — the name Task 24 uses. */
+export type ScheduleAmountScope = ScheduleInstanceScope;
 
 /** `PUT /schedules/instances/{id}` (`InstanceUpdateIn`). */
 export interface ScheduleInstanceUpdate {

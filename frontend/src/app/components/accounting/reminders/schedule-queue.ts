@@ -1,6 +1,7 @@
-import { ScheduleInstance } from '../../../models/accounting.model';
+import { ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
 import { shortDate } from '../dates';
 import { formatMoney, formatSigned } from '../format';
+import { scheduleProgress } from '../schedule-math';
 
 /** Pure 待完成交易 rows (spec "待完成交易 tab"); the server decides what is in the queue. */
 
@@ -85,4 +86,46 @@ export function queueRows(items: ScheduleInstance[], today: string): QueueGroups
     (item.is_partial || item.due_date <= today ? groups.due : groups.upcoming).push(row);
   }
   return groups;
+}
+
+export interface DefinitionRow {
+  id: number;
+  icon: string;
+  color: string;
+  name: string;
+  /** `下期 11/09`; null when nothing is pending. */
+  nextText: string | null;
+  /** `已入帳 3 / 36`, or `每月` / `每 2 週` for an unlimited schedule. */
+  progress: string;
+  /** `剩餘 −$275,001` (loan) / `剩餘 $6,667` (card installment); null otherwise. */
+  remainingText: string | null;
+  modeBadge: '自動' | '提醒';
+  paused: boolean;
+  needsCheck: boolean;
+  failing: { instanceId: number; text: string } | null;
+}
+
+function definitionRow(definition: ScheduleDefinition): DefinitionRow {
+  const currency = definition.template.lines[0]?.currency ?? 'TWD';
+  return {
+    id: definition.id,
+    icon: definition.category_icon ?? (definition.kind === 'installment' ? '💳' : '🔁'),
+    color: definition.category_color ?? 'var(--app-surface-soft)',
+    name: definition.name,
+    nextText: definition.next_due_date ? `下期 ${shortDate(definition.next_due_date)}` : null,
+    progress: scheduleProgress(definition),
+    remainingText: definition.remaining === null ? null : `剩餘 ${formatMoney(definition.remaining, currency)}`,
+    modeBadge: definition.posting_mode === 'auto' ? '自動' : '提醒',
+    paused: definition.status === 'paused',
+    needsCheck: definition.needs_check,
+    failing: definition.failing ? { instanceId: definition.failing.instance_id, text: definition.failing.last_error } : null,
+  };
+}
+
+/** The 週期／分期 section: live definitions in the server's order (next due date first), ended ones apart. */
+export function definitionRows(definitions: ScheduleDefinition[]): { active: DefinitionRow[]; ended: DefinitionRow[] } {
+  return {
+    active: definitions.filter(definition => definition.status !== 'ended').map(definitionRow),
+    ended: definitions.filter(definition => definition.status === 'ended').map(definitionRow),
+  };
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { makeInstance } from '../testing/fixtures';
-import { queueRows, queueTitle } from './schedule-queue';
+import { makeDefinition, makeInstance } from '../testing/fixtures';
+import { definitionRows, queueRows, queueTitle } from './schedule-queue';
 
 const TODAY = '2026-10-03';
 
@@ -58,5 +58,28 @@ describe('queueRows', () => {
       { text: '薪轉', amount: '−$18,000', tone: 'out' },
     ]);
     expect(row.totalText).toBe('−$33,000');
+  });
+});
+
+describe('definitionRows', () => {
+  it('words a loan row and splits off ended definitions', () => {
+    const loan = makeDefinition({
+      id: 12, kind: 'installment', name: '信貸 每月還款', times: 36, posted_count: 3, next_due_date: '2027-02-09',
+      remaining: '-275001.0000', repaid: '24999.0000', category_icon: '🏦',
+    });
+    const ended = makeDefinition({ id: 13, name: '舊貸款', status: 'ended', needs_check: true, next_due_date: null });
+    const paused = makeDefinition({
+      id: 14, name: 'Netflix', status: 'paused', posting_mode: 'confirm',
+      failing: { instance_id: 5, due_date: '2026-10-01', last_error: 'lines[0].account_id: 帳戶已封存' },
+    });
+    const rows = definitionRows([loan, ended, paused]);
+    expect(rows.active.map(row => row.id)).toEqual([12, 14]);
+    expect(rows.ended.map(row => [row.id, row.needsCheck])).toEqual([[13, true]]);
+    const [first, second] = rows.active;
+    expect([first.name, first.nextText, first.progress, first.remainingText, first.modeBadge, first.paused]).toEqual([
+      '信貸 每月還款', '下期 02/09', '已入帳 3 / 36', '剩餘 −$275,001', '自動', false,
+    ]);
+    expect([second.progress, second.modeBadge, second.paused, second.remainingText]).toEqual(['每月', '提醒', true, null]);
+    expect(second.failing).toEqual({ instanceId: 5, text: 'lines[0].account_id: 帳戶已封存' });
   });
 });

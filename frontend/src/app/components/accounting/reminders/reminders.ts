@@ -15,7 +15,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Observable, catchError, forkJoin, of } from 'rxjs';
 
-import { Counterparty, LedgerAccount, LedgerEntry, ScheduleInstance } from '../../../models/accounting.model';
+import { Counterparty, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
@@ -25,7 +25,8 @@ import { BillState, BillingService } from '../billing/billing.service';
 import { daysBetween, shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney, formatSigned } from '../format';
 import { TimelineRow, buildDays } from '../timeline/timeline';
-import { QueueRow, queueRows } from './schedule-queue';
+import { DefinitionRow, QueueRow, definitionRows, queueRows } from './schedule-queue';
+import { ScheduleSheetComponent } from './schedule-sheet/schedule-sheet';
 
 /** Open receivables / payables read for the counts and dates, and per expanded counterparty. */
 export const REMINDER_ENTRY_LIMIT = 500;
@@ -202,7 +203,7 @@ export function debtReminders(counterparties: Counterparty[], openEntries: Ledge
 @Component({
   selector: 'app-accounting-reminders',
   standalone: true,
-  imports: [RouterLink, NgTemplateOutlet],
+  imports: [RouterLink, NgTemplateOutlet, ScheduleSheetComponent],
   templateUrl: './reminders.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './reminders.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -238,6 +239,14 @@ export class AccountingRemindersComponent {
   /** Items with an action in flight: their buttons are disabled; overlapping actions on two items stay independent. */
   readonly busyInstances = signal<ReadonlySet<number>>(new Set());
   readonly actionError = signal<string | null>(null);
+  readonly definitions = signal<ScheduleDefinition[]>([]);
+  readonly definitionsFailed = signal(false);
+  /** The definition whose manage sheet is open (a row tap or `?schedule=<id>`). */
+  readonly sheetId = signal<number | null>(null);
+  /** A failed 重試 on a 週期／分期 row (the 待完成交易 error line is not shown on 借還款追蹤). */
+  readonly scheduleError = signal<string | null>(null);
+  readonly scheduleRows = computed(() => definitionRows(this.definitions()));
+  private scrollToSchedules = false;
   /** 借還款追蹤 filters: kept while the page is open, applied on that tab only. */
   readonly debtCounterparty = signal<number | null>(null);
   readonly debtKind = signal<DebtKind | null>(null);
@@ -295,7 +304,13 @@ export class AccountingRemindersComponent {
     const debts = this.showDebts() ? this.debtCounterparties().length : 0;
     const queue = this.tab() === 'pending' ? groups.due.length + groups.upcoming.length : this.tab() === 'all' ? groups.due.length : 0;
     const failed = (this.showCards() && this.billsFailed()) || (this.showQueue() && this.queueFailed());
-    return cards === 0 && debts === 0 && queue === 0 && !failed && (!this.showCards() || this.billsSettled());
+    // 借還款追蹤 also lists 週期／分期: live or ended definitions (or their failed load) are not "nothing pending".
+    const schedules = this.tab() === 'debts' ? this.scheduleRows().active.length + this.scheduleRows().ended.length : 0;
+    const schedulesFailed = this.tab() === 'debts' && this.definitionsFailed();
+    return (
+      cards === 0 && debts === 0 && queue === 0 && schedules === 0 && !failed && !schedulesFailed &&
+      (!this.showCards() || this.billsSettled())
+    );
   });
   /**
    * The expanded counterparty's open entries as timeline rows, one per entry (a split group's debt line is its own
@@ -316,6 +331,13 @@ export class AccountingRemindersComponent {
     this.route.queryParamMap.pipe(takeUntilDestroyed()).subscribe(params => {
       const tab = params.get('tab');
       this.tab.set(isReminderTab(tab) ? tab : 'all');
+      const schedule = params.get('schedule');
+      if (schedule !== null && Number(schedule) > 0) {
+        this.sheetId.set(Number(schedule));
+      }
+    });
+    this.route.fragment.pipe(takeUntilDestroyed()).subscribe(fragment => {
+      this.scrollToSchedules = fragment === 'schedules';
     });
 
     effect(() => {
@@ -341,13 +363,15 @@ export class AccountingRemindersComponent {
   private load(): void {
     const id = ++this.requestId;
     this.actionError.set(null);
+    this.scheduleError.set(null);
     forkJoin({
       accounts: this.accounting.getAccounts(),
       counterparties: this.accounting.getCounterparties(),
       open: this.accounting.getAllEntries({ open: true, limit: REMINDER_ENTRY_LIMIT, offset: 0 }),
       queue: this.accounting.getScheduleInstances({ queue: true }).pipe(catchError(() => of(null))),
+      definitions: this.accounting.getScheduleDefinitions().pipe(catchError(() => of(null))),
     }).subscribe({
-      next: ({ accounts, counterparties, open, queue }) => {
+      next: ({ accounts, counterparties, open, queue, definitions }) => {
         if (id !== this.requestId) {
           return;
         }
@@ -356,6 +380,14 @@ export class AccountingRemindersComponent {
         this.openEntries.set(open.items);
         this.queue.set(queue ?? []);
         this.queueFailed.set(queue === null);
+        this.definitions.set(definitions ?? []);
+        this.definitionsFailed.set(definitions === null);
+        if (this.scrollToSchedules) {
+          this.scrollToSchedules = false;
+          afterNextRender(() => this.host.nativeElement.querySelector('#schedules')?.scrollIntoView?.({ block: 'start' }), {
+            injector: this.injector,
+          });
+        }
         this.loadError.set(false);
         this.loaded.set(true);
       },
@@ -512,6 +544,40 @@ export class AccountingRemindersComponent {
 
   acceptPartial(row: QueueRow): void {
     this.act(row, this.accounting.acceptPartialScheduleInstance(row.id));
+  }
+
+  // ---- 週期／分期 ---------------------------------------------------------------------------------------------
+
+  openSchedule(id: number): void {
+    this.sheetId.set(id);
+  }
+
+  /** Closes the sheet, drops a `?schedule=` that opened it, and returns focus to the definition's row. */
+  closeSchedule(): void {
+    const id = this.sheetId();
+    this.sheetId.set(null);
+    if (this.route.snapshot.queryParamMap.has('schedule')) {
+      void this.router.navigate([], {
+        relativeTo: this.route,
+        queryParams: { schedule: null },
+        queryParamsHandling: 'merge',
+        replaceUrl: true,
+      });
+    }
+    if (id !== null) {
+      afterNextRender(
+        () => this.host.nativeElement.querySelector<HTMLElement>(`.schedule-row[data-definition-id="${id}"]`)?.focus(),
+        { injector: this.injector },
+      );
+    }
+  }
+
+  /** 重試 on a failing definition row: 補入帳至今天 posts the failing period (and the ones after it) again. */
+  retryDefinition(row: DefinitionRow): void {
+    this.scheduleError.set(null);
+    this.accounting.catchUpSchedule(row.id).subscribe({
+      error: (error: unknown) => this.scheduleError.set(scheduleActionError(error, this.toast)),
+    });
   }
 
   /** Esc closes an open 略過 prompt first (marked handled so the layout's Esc does not also close the pane). */

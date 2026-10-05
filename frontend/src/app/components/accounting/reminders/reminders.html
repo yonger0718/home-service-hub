@@ -116,6 +116,35 @@
       }
     }
 
+    @if (tab() === 'debts') {
+      <h3 class="section" id="schedules">週期／分期</h3>
+      @if (definitionsFailed()) {
+        <p class="load-error">週期／分期讀取失敗，請稍後再試。</p>
+      }
+      @for (row of scheduleRows().active; track row.id) {
+        <ng-container *ngTemplateOutlet="scheduleRow; context: { $implicit: row }" />
+        @if (row.failing; as failing) {
+          <div class="schedule-failing" role="alert">
+            <span class="msg">{{ failing.text }}</span>
+            <button type="button" class="retry" (click)="retryDefinition(row)">重試</button>
+          </div>
+        }
+      } @empty {
+        <p class="muted schedules-empty">沒有週期或分期</p>
+      }
+      @if (scheduleError(); as message) {
+        <p class="load-error schedule-error" role="alert">{{ message }}</p>
+      }
+      @if (scheduleRows().ended.length > 0) {
+        <details class="ended-schedules">
+          <summary>已結束（{{ scheduleRows().ended.length }}）</summary>
+          @for (row of scheduleRows().ended; track row.id) {
+            <ng-container *ngTemplateOutlet="scheduleRow; context: { $implicit: row }" />
+          }
+        </details>
+      }
+    }
+
     @if (showQueue()) {
       @if (queueFailed()) {
         <p class="load-error queue-load-error">待完成交易讀取失敗，請稍後再試。</p>
@@ -191,3 +220,30 @@
     </span>
   </div>
 </ng-template>
+
+<ng-template #scheduleRow let-row>
+  <button type="button" class="schedule-row" [attr.data-definition-id]="row.id" (click)="openSchedule(row.id)">
+    <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
+    <span class="name">{{ row.name }}</span>
+    @if (row.nextText) {
+      <span class="next">{{ row.nextText }}</span>
+    }
+    <span class="facts">
+      <span class="progress">{{ row.progress }}</span>
+      @if (row.remainingText) {
+        <span class="remaining">{{ row.remainingText }}</span>
+      }
+      <span class="badge mode">{{ row.modeBadge }}</span>
+      @if (row.paused) {
+        <span class="badge paused">已暫停</span>
+      }
+      @if (row.needsCheck) {
+        <span class="badge check">需檢查</span>
+      }
+    </span>
+  </button>
+</ng-template>
+
+@if (sheetId(); as id) {
+  <app-schedule-sheet [definitionId]="id" (closed)="closeSchedule()" />
+}

@@ -4,10 +4,10 @@ import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Counterparty, LedgerAccount, LedgerEntry, ScheduleInstance } from '../../../models/accounting.model';
+import { Counterparty, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { AccountingToastService } from '../accounting-toast';
-import { makeAccount, makeEntry, makeInstance } from '../testing/fixtures';
+import { makeAccount, makeDefinition, makeEntry, makeInstance } from '../testing/fixtures';
 import { AccountingRemindersComponent } from './reminders';
 
 const credit = (overrides: Partial<LedgerAccount>) => makeAccount({ is_credit: true, icon: '💳', ...overrides });
@@ -68,6 +68,7 @@ describe('AccountingRemindersComponent', () => {
     counterparties: Counterparty[],
     open: LedgerEntry[],
     queue: ScheduleInstance[] = [],
+    definitions: ScheduleDefinition[] = [],
   ): void {
     http.expectOne(r => r.url === '/api/accounting/accounts').flush(accounts);
     http.expectOne('/api/accounting/counterparties').flush(counterparties);
@@ -77,6 +78,7 @@ describe('AccountingRemindersComponent', () => {
     const queueReq = http.expectOne(r => r.url === '/api/accounting/schedules/instances');
     expect(queueReq.request.params.get('queue')).toBe('true');
     queueReq.flush(queue);
+    http.expectOne(r => r.url === '/api/accounting/schedules/definitions').flush(definitions);
   }
 
   function flushBill(accountId: number, spend: string, payments: string[] = [], paidTo = '2026-10-03'): void {
@@ -105,10 +107,11 @@ describe('AccountingRemindersComponent', () => {
     counterparties: Counterparty[] = [],
     open: LedgerEntry[] = [],
     queue: ScheduleInstance[] = [],
+    definitions: ScheduleDefinition[] = [],
   ) {
     const fixture = TestBed.createComponent(AccountingRemindersComponent);
     fixture.detectChanges();
-    flushLoad(accounts, counterparties, open, queue);
+    flushLoad(accounts, counterparties, open, queue, definitions);
     fixture.detectChanges();
     return { fixture, el: fixture.nativeElement as HTMLElement };
   }
@@ -530,6 +533,7 @@ describe('AccountingRemindersComponent', () => {
       counterparties: http.expectOne('/api/accounting/counterparties'),
       open: http.expectOne(r => r.url === '/api/accounting/entries'),
       queue: http.expectOne(r => r.url === '/api/accounting/schedules/instances'),
+      definitions: http.expectOne(r => r.url === '/api/accounting/schedules/definitions'),
     };
     TestBed.inject(AccountingService).deleteEntry(1).subscribe();
     http.expectOne(r => r.method === 'DELETE').flush(null);
@@ -539,6 +543,7 @@ describe('AccountingRemindersComponent', () => {
     first.counterparties.flush([]);
     first.open.flush({ items: [], total: 0, limit: 500, offset: 0 });
     first.queue.flush([]);
+    first.definitions.flush([]);
     fixture.detectChanges();
 
     expect((fixture.nativeElement as HTMLElement).querySelectorAll('.debt-row').length).toBe(1);
@@ -550,6 +555,7 @@ describe('AccountingRemindersComponent', () => {
     http.expectOne('/api/accounting/counterparties').flush([]);
     http.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
     http.expectOne(r => r.url === '/api/accounting/schedules/instances').flush([]);
+    http.expectOne(r => r.url === '/api/accounting/schedules/definitions').flush([]);
     http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
     expect(text((fixture.nativeElement as HTMLElement).querySelector('.load-error'))).toBe('提醒讀取失敗，請稍後再試。');
@@ -667,6 +673,7 @@ describe('AccountingRemindersComponent', () => {
       http
         .expectOne(r => r.url === '/api/accounting/schedules/instances' && r.params.get('queue') === 'true')
         .flush('boom', { status: 500, statusText: 'Server Error' });
+      http.expectOne(r => r.url === '/api/accounting/schedules/definitions').flush([]);
       fixture.detectChanges();
       flushBill(9, '-12345.0000', ['5000.0000']);
       fixture.detectChanges();
@@ -774,6 +781,90 @@ describe('AccountingRemindersComponent', () => {
       expect(sections(el)).toEqual(['借還款追蹤', '待完成交易']);
       expect(item(el, 31)).not.toBeNull();
       expect(item(el, 61)).toBeNull();
+    });
+  });
+
+  describe('週期／分期', () => {
+    const LOAN = makeDefinition({
+      id: 12, kind: 'installment', name: '信貸 每月還款', times: 36, posted_count: 3, next_due_date: '2027-02-09',
+      remaining: '-275001.0000', repaid: '24999.0000',
+    });
+
+    function row(el: HTMLElement, id: number): HTMLElement {
+      return el.querySelector(`.schedule-row[data-definition-id="${id}"]`) as HTMLElement;
+    }
+
+    it('words the loan row on 借還款追蹤 only', () => {
+      // Spec "Loan row".
+      const { fixture, el } = render([], [], [], [], [LOAN]);
+      expect(row(el, 12)).toBeNull();
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      const loan = row(el, 12);
+      expect(text(loan.querySelector('.name'))).toBe('信貸 每月還款');
+      expect(text(loan.querySelector('.next'))).toBe('下期 02/09');
+      expect(text(loan.querySelector('.progress'))).toBe('已入帳 3 / 36');
+      expect(text(loan.querySelector('.remaining'))).toBe('剩餘 −$275,001');
+      expect(text(loan.querySelector('.badge.mode'))).toBe('自動');
+    });
+
+    it('marks an ended loan that is still open under 已結束', () => {
+      // Spec "Ended loan still open needs a check".
+      const ended = makeDefinition({ id: 13, name: '舊貸款', status: 'ended', needs_check: true, next_due_date: null });
+      const { fixture, el } = render([], [], [], [], [LOAN, ended]);
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      expect(row(el, 13)?.closest('details.ended-schedules')).not.toBeNull();
+      expect(text(row(el, 13).querySelector('.badge.check'))).toBe('需檢查');
+    });
+
+    it('retries a failing schedule with catch-up', () => {
+      const failing = makeDefinition({ id: 14, failing: { instance_id: 5, due_date: '2026-10-01', last_error: 'lines[0].account_id: 帳戶已封存' } });
+      const { fixture, el } = render([], [], [], [], [failing]);
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      expect(text(el.querySelector('.schedule-failing .msg'))).toBe('lines[0].account_id: 帳戶已封存');
+      (el.querySelector('.schedule-failing .retry') as HTMLButtonElement).click();
+      http.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions/14/catch-up')
+        .flush({ posted: [5], failed: null, definition: failing });
+      fixture.detectChanges();
+      flushLoad([], [], [], [], []);
+    });
+
+    it('opens the manage sheet from a row and shows 已暫停 after a pause', () => {
+      // Spec "Pause from the sheet".
+      const { fixture, el } = render([], [], [], [], [LOAN]);
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      row(el, 12).click();
+      fixture.detectChanges();
+      http.expectOne('/api/accounting/schedules/definitions/12').flush({ ...LOAN, instances: [] });
+      fixture.detectChanges();
+      (el.querySelector('app-schedule-sheet .sheet-pause') as HTMLButtonElement).click();
+      http.expectOne('/api/accounting/schedules/definitions/12/pause').flush({ ...LOAN, status: 'paused' });
+      fixture.detectChanges();
+      http.expectOne('/api/accounting/schedules/definitions/12').flush({ ...LOAN, status: 'paused', instances: [] });
+      flushLoad([], [], [], [], [{ ...LOAN, status: 'paused' }]);
+      fixture.detectChanges();
+      expect(text(row(el, 12).querySelector('.badge.paused'))).toBe('已暫停');
+    });
+
+    it('does not say 目前沒有待處理項目 on 借還款追蹤 while schedules are listed', () => {
+      // No open counterparty, one live schedule: the 週期／分期 section is the page's content.
+      const { fixture, el } = render([], [], [], [], [LOAN]);
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      expect(row(el, 12)).not.toBeNull();
+      expect(el.querySelector('.empty')).toBeNull();
+    });
+
+    it('opens the sheet from ?schedule= on 借還款追蹤', async () => {
+      await TestBed.inject(Router).navigateByUrl('/?tab=debts&schedule=12');
+      const { fixture, el } = render([], [], [], [], [LOAN]);
+      http.expectOne('/api/accounting/schedules/definitions/12').flush({ ...LOAN, instances: [] });
+      fixture.detectChanges();
+      expect(text(el.querySelector('.tabs [aria-checked="true"]'))).toBe('借還款追蹤');
+      expect(text(el.querySelector('app-schedule-sheet h3'))).toBe('信貸 每月還款');
     });
   });
 });

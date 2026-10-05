@@ -77,6 +77,7 @@ describe('schedule-math', () => {
       new HttpErrorResponse({ status: 409, error: { code: 409, message, trace_id: 't' } });
     expect(isImportRunning(conflict('import_running'))).toBe(true);
     expect(isImportRunning(conflict('locked_until_cutover'))).toBe(false);
+    expect(isImportRunning(new HttpErrorResponse({ status: 409, error: { detail: 'import_running' } }))).toBe(true);
     expect(isImportRunning(new HttpErrorResponse({ status: 500 }))).toBe(false);
     expect(isImportRunning(new Error('import_running'))).toBe(false);
   });
