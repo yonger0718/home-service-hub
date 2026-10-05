@@ -216,7 +216,7 @@ def _name(group: list[dict], data: BackupData, default: str) -> str:
     primary = group[0]
     if _text(primary["name"]):
         return _text(primary["name"])[:128]
-    names = {row["identifier"]: row["name"] for row in data.classifications}
+    names = {row["identifier"]: category_name(row["name"]) for row in data.classifications}
     names.update({row["identifier"]: category_name(row["name"]) for row in data.categories})
     return (names.get(primary["classification"]) or default)[:128]
 

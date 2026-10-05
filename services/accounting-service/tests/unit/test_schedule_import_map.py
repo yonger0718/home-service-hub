@@ -497,3 +497,17 @@ def test_loan_with_date_info_also_sets_its_payables_aside(backup):
     assert [(line.kind, line.related) for line in definition.lines] == [("repayment", "R-LOAN2")]
     assert [item.moze_id for item in definition.instances] == ["R-REP0", "R-REP1", "R-REP2"]
     assert (definition.review_reason, result.review) == (None, [])
+
+
+@pytest.mark.parametrize(("key", "expected"), [("CATEGORY_CREDIT", "信貸"), ("CATEGORY_NEW_THING", "New Thing")])
+def test_unnamed_period_name_translates_classification_key(backup, key, expected):
+    data = backup.data(
+        accounts=_accounts(backup),
+        classifications=[backup.classification("K-1", key)],
+        records=[
+            _rec(backup, "R-1", "2026-11-09", eventID="PER-1", classification="K-1", name=""),
+        ],
+        periods=[backup.period("PER-1", unit=2, days=9, times=1)],
+    )
+    [definition] = map_schedules(data).definitions
+    assert definition.name == expected
