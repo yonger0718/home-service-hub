@@ -37,8 +37,6 @@ import {
   ScheduleInstance,
   ScheduleInstanceQuery,
   ScheduleInstanceUpdate,
-  ScheduleItem,
-  ScheduleKind,
   SchedulePostingMode,
   ScheduleRunReport,
   ScheduleStatus,
@@ -402,10 +400,6 @@ export class AccountingService {
         }
       }),
     );
-  }
-
-  getSchedules(kind?: ScheduleKind): Observable<ScheduleItem[]> {
-    return this.http.get<ScheduleItem[]>(`${this.apiUrl}/imports/schedules`, { params: toParams({ kind }) });
   }
 
   /** Latest import run, or null when no import has run yet (HTTP 404). */

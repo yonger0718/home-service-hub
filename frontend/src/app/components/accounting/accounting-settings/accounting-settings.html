@@ -205,6 +205,57 @@
         @if (r.fxOutliers > 0) {
           <p class="import-error">匯率異常 {{ r.fxOutliers }} 筆</p>
         }
+        @if (r.schedules; as s) {
+          <p class="schedules-report">
+            <b>週期／分期：</b>週期 {{ s.recurring }}、分期 {{ s.installment }}、單筆 {{ s.single }}；對應 {{ s.recordsMapped }} 筆、略過回饋 {{ s.rewardsIgnored }} 筆
+            @if (s.alreadyPosted || s.alreadySkipped) {
+              ；HomeHub 已入帳 {{ s.alreadyPosted }} 筆、已略過 {{ s.alreadySkipped }} 筆
+            }
+            @if (s.amountDiffers) {
+              <span class="import-error">；金額不同 {{ s.amountDiffers }} 期</span>
+            }
+            @if (s.pendingAmountDiffers) {
+              <span class="import-error">；待入帳金額與 MOZE 不同 {{ s.pendingAmountDiffers }} 期</span>
+            }
+            @if (s.ownerPending) {
+              <span>；保留待入帳 {{ s.ownerPending }} 期</span>
+            }
+            @if (s.dependantsSuppressed) {
+              <span>；未匯入附屬記錄 {{ s.dependantsSuppressed }} 筆</span>
+            }
+            @if (s.review) {
+              <span class="import-error">；待檢查 {{ s.review }} 筆</span>
+            }
+          </p>
+          @if (s.pastAmountLines.length || s.pendingAmountLines.length) {
+            <ul class="schedule-amount-lines">
+              @for (line of s.pastAmountLines.concat(s.pendingAmountLines); track $index) {
+                <li>{{ line.name }} 第 {{ line.seq }} 期 {{ line.date }}：HomeHub ${{ line.amount }} / MOZE ${{ line.mozeAmount }}</li>
+              }
+            </ul>
+          }
+          @if (s.ownerPendingLines.length) {
+            <ul class="schedule-pending-lines">
+              @for (line of s.ownerPendingLines; track $index) {
+                <li>排程 #{{ line.definitionId }} 第 {{ line.seq }} 期 {{ line.date }}：保留待入帳</li>
+              }
+            </ul>
+          }
+          @if (s.dependantLines.length) {
+            <ul class="schedule-dependant-lines">
+              @for (line of s.dependantLines; track $index) {
+                <li>附屬記錄 {{ line.mozeId }}（屬於 {{ line.parentMozeId }}，類型 {{ line.type }}）未匯入</li>
+              }
+            </ul>
+          }
+          @if (s.reviewLines.length) {
+            <ul class="schedule-review-lines">
+              @for (line of s.reviewLines; track $index) {
+                <li>{{ line.mozeId }}：{{ line.label }}</li>
+              }
+            </ul>
+          }
+        }
       </div>
     }
 
@@ -214,16 +265,9 @@
     <p class="lock-note muted">此狀態由伺服器環境變數 ACCOUNTING_IMPORT_LOCKED 控制，頁面無法讀取；切換後設為 true，之後的匯入會被拒絕，所有記錄都可編輯。</p>
   </div>
 
-  <div class="lbl">分期 / 週期</div>
-  <p class="muted">MOZE 的分期與週期記錄，第 4 階段起自動產生；目前僅供參考，到期時請手動記帳。</p>
-  @for (item of schedules(); track item.id) {
-    <div class="data-row schedule-row">
-      <span class="pill">{{ scheduleLabels[item.kind] ?? item.kind }}</span>
-      <span class="row-name">{{ item.name ?? item.moze_id }}</span>
-      <span class="muted">{{ item.next_date ? slashDate(item.next_date) : '—' }}</span>
-      <span class="amount">{{ item.amount !== null ? formatMoney(item.amount, item.currency ?? 'TWD') : '—' }}</span>
-    </div>
-  } @empty {
-    <p class="muted">沒有預定項目</p>
-  }
+  <div class="lbl">週期／分期</div>
+  <button type="button" class="data-row schedules-link" (click)="openSchedules()">
+    <span class="row-name">週期／分期</span>
+    <span class="muted">在提醒中心管理 ›</span>
+  </button>
 </section>

@@ -23,7 +23,6 @@ export type RewardMethod = 'percent' | 'fixed';
 export type RewardPosting = 'after_window' | 'after_transaction' | 'manual';
 export type ColorConvention = 'red_green' | 'green_red';
 export type KeypadLayout = 'calculator' | 'phone';
-export type ScheduleKind = 'period' | 'installment' | 'skipped_record';
 export type ImportKind = 'moze_csv' | 'moze_backup';
 
 /** Decimal values travel as strings (NUMERIC on the server); parse with Number() for display only. */
@@ -475,19 +474,6 @@ export interface FxRateOut {
   source: string;
 }
 
-/** `GET /imports/schedules` row (`ScheduleItemOut`, Task 10): a future MOZE period / installment / skipped record. */
-export interface ScheduleItem {
-  id: number;
-  kind: ScheduleKind;
-  moze_id: string;
-  name: string | null;
-  /** Next occurrence date `YYYY-MM-DD`, or null when unknown. */
-  next_date: string | null;
-  /** Signed decimal string in `currency`, or null. */
-  amount: string | null;
-  currency: string | null;
-}
-
 export interface BackupAccountReport {
   name: string;
   currency: string;
@@ -505,8 +491,8 @@ export interface BackupImportReport {
   exported_at: string | null;
   kind_counts: Record<string, number>;
   skipped_future: Record<string, number>;
-  /** Future MOZE rows stored by kind; a kind with no rows is absent (`dict(Counter(...))` on the server). */
-  schedules: Partial<Record<ScheduleKind, number>>;
+  /** The schedule block of the import (definitions, periods, mirror-period reconciliation). */
+  schedules?: ScheduleImportReport;
   groups: number;
   transfers: number;
   /** Transfers whose two legs imply different FX rates. */

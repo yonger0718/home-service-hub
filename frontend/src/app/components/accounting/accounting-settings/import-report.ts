@@ -15,6 +15,7 @@ export interface ReportView {
   needsReview: number;
   reviewReasons: [string, number][];
   fxOutliers: number;
+  schedules: ScheduleReportView | null;
 }
 
 type Loose = Record<string, unknown>;
@@ -65,6 +66,99 @@ function names(value: unknown): string[] {
   return Object.keys(record(value));
 }
 
+export interface ScheduleReportView {
+  recurring: number;
+  installment: number;
+  single: number;
+  recordsMapped: number;
+  rewardsIgnored: number;
+  alreadyPosted: number;
+  alreadySkipped: number;
+  amountDiffers: number;
+  review: number;
+  /** R-F1: owner-edited pending periods whose MOZE record turned past. */
+  ownerPending: number;
+  /** R-A3: pending periods (owner-kept amounts) with a line MOZE disagrees with. */
+  pendingAmountDiffers: number;
+  pastAmountLines: ScheduleAmountLineView[];
+  pendingAmountLines: ScheduleAmountLineView[];
+  ownerPendingLines: { definitionId: number; seq: number; date: string }[];
+  dependantsSuppressed: number;
+  dependantLines: { mozeId: string; parentMozeId: string; type: number }[];
+  reviewLines: { mozeId: string; label: string }[];
+}
+
+export interface ScheduleAmountLineView {
+  name: string;
+  seq: number;
+  date: string;
+  kind: string;
+  amount: string;
+  mozeAmount: string;
+}
+
+/** Chinese copy of the schedules block's `review[].reason`; unknown reasons are shown as sent. */
+const SCHEDULE_REVIEW_LABELS: Record<string, string> = {
+  interval_mismatch: '間隔與記錄不符',
+  same_date: '同日已有期別',
+  no_records: '沒有期別記錄',
+  event_missing: '找不到對應事件',
+  seq_conflict: '期別序號衝突',
+  account_missing: '找不到帳戶',
+  loan_missing: '找不到貸款',
+  not_live: '已不在 MOZE 啟用中',
+};
+
+function list(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function amountLines(value: unknown): ScheduleAmountLineView[] {
+  return list(value).map(item => {
+    const row = record(item);
+    return {
+      name: String(row['name'] ?? ''), seq: Number(row['seq']) || 0, date: String(row['date'] ?? ''),
+      kind: String(row['kind'] ?? ''), amount: String(row['amount'] ?? ''), mozeAmount: String(row['moze_amount'] ?? ''),
+    };
+  });
+}
+
+function scheduleView(value: unknown): ScheduleReportView | null {
+  const block = record(value);
+  if (!('definitions' in block)) {
+    return null;
+  }
+  const created = (kind: string) => Number(record(record(block['definitions'])[kind])['created']) || 0;
+  const ownerPending = list(block['past_records_owner_pending']).map(record);
+  const dependants = record(block['dependants_suppressed']);
+  const pending = amountLines(block['amount_differs']);
+  return {
+    recurring: created('recurring'),
+    installment: created('installment'),
+    single: created('single'),
+    recordsMapped: Number(block['records_mapped']) || 0,
+    rewardsIgnored: Number(block['rewards_ignored']) || 0,
+    alreadyPosted: Number(block['past_records_already_posted']) || 0,
+    alreadySkipped: Number(block['past_records_already_skipped']) || 0,
+    amountDiffers: Number(record(block['past_records_amount_differs'])['count']) || 0,
+    review: list(block['review']).length,
+    ownerPending: ownerPending.length,
+    pendingAmountDiffers: new Set(pending.map(line => `${line.name}#${line.seq}`)).size,
+    pastAmountLines: amountLines(record(block['past_records_amount_differs'])['lines']),
+    pendingAmountLines: pending,
+    ownerPendingLines: ownerPending.map(row => ({
+      definitionId: Number(row['definition_id']) || 0, seq: Number(row['seq']) || 0, date: String(row['date'] ?? ''),
+    })),
+    dependantsSuppressed: Number(dependants['count']) || 0,
+    dependantLines: list(dependants['records']).map(record).map(row => ({
+      mozeId: String(row['moze_id'] ?? ''), parentMozeId: String(row['parent_moze_id'] ?? ''), type: Number(row['type']) || 0,
+    })),
+    reviewLines: list(block['review']).map(record).map(row => ({
+      mozeId: String(row['moze_id'] ?? ''), label: SCHEDULE_REVIEW_LABELS[String(row['reason'])] ?? String(row['reason'] ?? ''),
+    })),
+  };
+}
+
 /** Normalises the backup import report (`import_run` with `summary`, or the bare summary) for display. */
 export function summarizeReport(report: unknown): ReportView {
   const root = record(report);
@@ -94,5 +188,6 @@ export function summarizeReport(report: unknown): ReportView {
     needsReview: typeof review === 'number' ? review : Number(reviewRecord['count']) || 0,
     reviewReasons: reviewReasons(reviewRecord['reasons']),
     fxOutliers: Array.isArray(outliers) ? outliers.length : Number(outliers) || 0,
+    schedules: scheduleView(summary['schedules']),
   };
 }

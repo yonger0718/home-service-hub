@@ -198,7 +198,6 @@ const CASES: Case[] = [
     url: `${API}/fx-rate`,
     params: { date: '2026-10-02', base: 'JPY', quote: 'TWD' },
   },
-  { name: 'getSchedules', call: s => s.getSchedules('installment'), method: 'GET', url: `${API}/imports/schedules`, params: { kind: 'installment' } },
   {
     name: 'getAccountSummary',
     call: s => s.getAccountSummary(3, '2026-09-16', '2026-10-15'),

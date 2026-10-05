@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
+import { Router } from '@angular/router';
 import { Observable, Subject, catchError, concatMap, forkJoin, map, of } from 'rxjs';
 
 import {
@@ -11,11 +12,9 @@ import {
   ImportRun,
   Preference,
   Project,
-  ScheduleItem,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { isHandledKey } from '../accounting-ui';
-import { slashDate } from '../dates';
 import { formatMoney } from '../format';
 import { writeErrorMessage } from '../http-errors';
 import { ReportView, summarizeReport } from './import-report';
@@ -30,8 +29,6 @@ export const CATEGORY_TABS: [CategoryTab, string][] = [
   ['payable', '應付'],
 ];
 
-/** Partial: an unknown schedule kind shows its raw code (`?? item.kind` in the template). */
-const SCHEDULE_LABELS: Partial<Record<string, string>> = { period: '週期', installment: '分期', skipped_record: '未來記錄' };
 const WEEKDAYS = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 
 function swap<T>(list: T[], index: number, delta: number): T[] | null {
@@ -55,6 +52,7 @@ function swap<T>(list: T[], index: number, delta: number): T[] | null {
 })
 export class AccountingSettingsComponent implements OnInit, OnDestroy {
   private service = inject(AccountingService);
+  private readonly router = inject(Router);
 
   readonly preference = signal<Preference | null>(null);
   readonly groups = signal<AccountGroup[]>([]);
@@ -64,7 +62,6 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
   readonly counterparties = signal<Counterparty[]>([]);
   readonly cpFilter = signal('');
   readonly latest = signal<ImportRun | null>(null);
-  readonly schedules = signal<ScheduleItem[]>([]);
   readonly dataMessage = signal<string | null>(null);
   /** Row whose 刪除 was tapped once (`group:1`, `cat:11`, `project:4`, `cp:5`); one row at a time. */
   readonly confirming = signal<string | null>(null);
@@ -85,9 +82,7 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
 
   readonly categoryTabs = CATEGORY_TABS;
   readonly weekdays = WEEKDAYS;
-  readonly scheduleLabels = SCHEDULE_LABELS;
   readonly formatMoney = formatMoney;
-  readonly slashDate = slashDate;
 
   readonly visibleCounterparties = computed(() => {
     const filter = this.cpFilter().trim().toLowerCase();
@@ -169,9 +164,13 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     this.service.getCounterparties().subscribe(list => this.counterparties.set(list));
   }
 
+  /** 週期／分期 moved to 提醒中心 › 借還款追蹤 (spec "Schedule list moved to 提醒中心"). */
+  openSchedules(): void {
+    void this.router.navigate(['/accounting/reminders'], { queryParams: { tab: 'debts' }, fragment: 'schedules' });
+  }
+
   private loadImportState(): void {
     this.service.getLatestImport().subscribe({ next: run => this.latest.set(run), error: () => this.latest.set(null) });
-    this.service.getSchedules().subscribe({ next: items => this.schedules.set(items), error: () => this.schedules.set([]) });
   }
 
   /** Runs a data-list write, then reloads; 409 shows `conflict`, anything else the server message. */

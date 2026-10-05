@@ -88,3 +88,18 @@ summary.srow::-webkit-details-marker { display: none; }
 .amount { font-variant-numeric: tabular-nums; font-weight: 700; }
 .muted { color: var(--app-text-muted); font-size: 0.8rem; }
 .data-message, .import-error { color: var(--app-danger); font-size: 0.85rem; }
+
+.schedules-link {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  width: 100%;
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}
