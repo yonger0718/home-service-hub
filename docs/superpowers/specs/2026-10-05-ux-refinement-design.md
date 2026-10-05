@@ -36,11 +36,11 @@ Owner decisions: month totals stay whole-month and get labelled, with a filtered
 
 **Month summary header.** When `filtersActive()`:
 - the `.sum` block gets a small eyebrow label `全月 · 未套篩選` (class `sum-scope`), always visible above the three figures;
-- directly below the `.sum` block a row `.match-row` reads `符合條件 {{ total() }} 筆` with a `清除篩選` button (`aria-label="清除篩選"`) that resets all three filters and the query. `total()` is the `total` of the `/entries` page response (already stored). When `total()` is unknown because the list failed, the row shows `符合條件 — 筆`.
+- directly below the `.sum` block a row `.match-row` reads `符合條件 {{ total() }} 筆` with a `清除篩選` button (`aria-label="清除篩選"`) that resets all three filters and the query. The row renders **in list view only** (calendar view calls `clearList()` which zeroes `total`, so the number would be wrong there). `total()` is the `total` of the `/entries` page response. While the list request for the current filters is in flight, and when it failed, the row shows `符合條件 — 筆` (never a stale count from the previous filters: `load(true)` resets `total` to `null` before the request; `total` becomes `number | null`).
 
 When no filter is active neither the eyebrow nor the match row renders.
 
-**Calendar view.** Daily totals keep ignoring filters (API is month-only); when `filtersActive()` the calendar header shows the same `全月 · 未套篩選` eyebrow, and the selected-day list obeys the filters as today.
+**Calendar view.** Daily totals keep ignoring filters (API is month-only); when `filtersActive()` the calendar header shows the same `全月 · 未套篩選` eyebrow plus the `清除篩選` button (no match count), and the selected-day list obeys the filters as today.
 
 **Empty text.**
 - list, no filters: `這個月沒有記錄`
@@ -55,7 +55,7 @@ When no filter is active neither the eyebrow nor the match row renders.
 
 The `@empty` branch therefore requires `!loading() && !loadError()`, and the error branch renders instead of the rows, never beside them.
 
-**Summary failures.** When `/entries/summary` fails, the `.sum` block stays and shows `摘要讀取失敗` with a `重試` button (re-runs `loadSummary()`), instead of disappearing. The daily summary failure in calendar view shows the same text in the calendar header.
+**Summary states are independent of list states.** The `.sum` block has its own three states driven only by the summary request: loading (three `—` figures, `aria-busy`), error (`摘要讀取失敗` + `重試` re-running `loadSummary()`), loaded. It never disappears. The list skeleton/error/empty states are driven only by the list request. The daily summary in calendar view follows the same rule in the calendar header.
 
 ### 1.2 Passbook (`account-entries.*`)
 
@@ -63,7 +63,7 @@ Same three-way exclusivity. The `loadError()` paragraph moves inside the list re
 
 ### 1.3 Accounts overview (`accounts.*`)
 
-- `getLatestImport()` in `load()` gets `catchError(() => of(null))`, matching `preference`. A failed import lookup renders the import panel as `匯入狀態無法取得` with a `重試` button that re-runs only `getLatestImport()`; the account list renders normally.
+- `getLatestImport()` already maps a 404 (no import yet) to `null`; that stays the "尚未匯入" case. In `load()` it gets `catchError(() => { importError.set(true); return of(null); })` with a new signal `importError`. `importError() === true` renders the import panel as `匯入狀態無法取得` with a `重試` button that re-runs only `getLatestImport()` and clears `importError` on success; `null` without error renders today's "尚未匯入" panel; the account list renders normally in both cases.
 - The whole-page `帳戶讀取失敗` state remains only for a failed `getAccounts()`, and gains a `重試` button (`load()`).
 - Zero-accounts empty state: title `還沒有帳戶`, body `新增帳戶開始記帳，或上傳 MOZE 備份匯入。`, two actions: primary `新增帳戶` → `/accounting/accounts/new`, secondary `前往記帳設定` (existing link).
 - A `.skeleton` list (three rows) renders while `!loaded()`.
@@ -83,8 +83,8 @@ In `entry-form.html`, after the date and time tiles and before the invoice tile,
 事件類型   [ 單次 | 週期 | 分期 ]
 ```
 
-- Rendered as a `role="tablist"` with `aria-label="事件類型"`; the tabs are the existing `tabsFor(kind, {editing})` result (so `system`/editing → only 單次; 分期 only for expense/payable). Selecting a tab sets `scheduleDraft().tab` exactly as the current 進階 tabs do.
-- When `scheduling()` is true, the schedule fields (`app-schedule-tabs` body for the active tab: 區間／起始日／結束／入帳方式 or 總額／期數／首期入帳日／每期金額／利息／還款帳戶／入帳方式) render **directly below this tile**, inside the same tile group, with the projected 入帳日 row kept. The `<details class="advanced">` wrapper and its `進階` summary are removed. `app-schedule-tabs` keeps its API (`[(draft)]`, inputs) but no longer renders its own tablist: the tablist moves into the entry form (or `app-schedule-tabs` gets an input `showTabs=false`; implementer's choice, tests must cover the chosen one).
+- Rendered as a `role="tablist"` with `aria-label="事件類型"`. All three tabs always render; tabs not in `tabsFor(kind, {editing})` are disabled (`aria-disabled="true"`, not focusable): `system` kind and editing → only 單次 enabled; 分期 enabled only for expense/payable. Selecting an enabled tab sets `scheduleDraft().tab` exactly as the current 進階 tabs do.
+- `app-schedule-tabs` renders **directly below this tile** for every tab, including 單次, so the projected 入帳日 row (today inside the `single` branch) keeps rendering for single entries in the same place it does now, just without the `進階` fold. For 週期／分期 the component shows that tab's fields (區間／起始日／結束／入帳方式 or 總額／期數／首期入帳日／每期金額／利息／還款帳戶／入帳方式). The `<details class="advanced">` wrapper and its `進階` summary are removed. Regression test: a new single entry still shows the 入帳日 input and saving sends `posted_date`. `app-schedule-tabs` keeps its API (`[(draft)]`, inputs) but no longer renders its own tablist: the tablist moves into the entry form (or `app-schedule-tabs` gets an input `showTabs=false`; implementer's choice, tests must cover the chosen one).
 - Below the fields, the existing footer summary string (e.g. `週期：#1 / 無限期（每月 5號）`) renders as `.event-summary` under the tile whenever a non-single tab is active.
 
 ### 2.2 Unsupported fields copy
@@ -132,6 +132,8 @@ Panel: on `phone` mode a bottom sheet (reuse the fee/fx sheet pattern and `sheet
 3. Groups in `AccountGroup.sort_order`, each with a header (group name, or `未分組`) and rows: `[icon] name` left, `currency badge` + `balance` right (`.acct-balance`, tabular numerals, `.72rem` minimum). Archived accounts (if allowed) under `已封存` last. The selected row has `aria-selected="true"` and a check mark.
 4. Rows are `role="option"` inside `role="listbox"`; ↑/↓ move, Enter selects, Esc closes without change, typing in the search box narrows the list. Selecting closes the panel and returns focus to the trigger.
 
+**Focus.** The picker owns its focus in both forms (phone sheet and popover): on open, focus moves into the panel (search box when present, else the selected row); Tab/Shift+Tab wrap inside the panel; Esc and selection return focus to the trigger. This is implemented in the picker itself (shared helper `trapFocus(container, event)` in `accounting-ui.ts`, also used by §4.2), not borrowed from `sheetKeyAction`. **Nesting rule:** the topmost overlay owns keyboard events; the layout's sheet trap (§4.2) and the entry form's Esc handler ignore `keydown` events whose target is inside an element with `data-overlay` (set on the picker panel and the fee/fx sheets). A picker opened from inside the split-lines block therefore handles its own Esc without closing the form.
+
 ### 3.2 Adoption
 
 Replace the native `<select>` in:
@@ -164,13 +166,14 @@ Replace the native `<select>` in:
 ### 4.3 Unsaved input
 
 - `entry-form` exposes `isDirty: Signal<boolean>` = draft differs from the snapshot taken after initial load (compare the serialised draft used for save, excluding derived fields). Saved or cancelled forms reset the snapshot.
-- The layout's `close()` (✕, backdrop, swipe, Esc layer 3) and entry-form's `cancel()` (Esc layer 1, ✕ on phone) go through one guard: if the active pane component reports `isDirty()`, render an in-pane confirm strip at the top of the pane: `放棄未儲存的內容？` with buttons `留下` (default focus) and `放棄`. `放棄` runs the original close; `留下` dismisses. No `window.confirm`.
-- Pane components opt in by implementing `interface DirtyAware { isDirty(): boolean }`; the layout reads it from the activated `pane` outlet component (`(activate)` event on `router-outlet`). Entry-detail, reminders etc. are not dirty-aware and close immediately.
+- One guard for every exit in **both layouts** (phone: plain `<router-outlet>`, ✕ in the form's topbar and Esc layer 1; sheet: `pane` outlet, ✕ in the grip, backdrop, swipe, Esc layer 3). A small service `DirtyFormRegistry` (`accounting/dirty-form.service.ts`) holds at most one registered form: `register(form: DirtyAware)` / `unregister()` called by entry-form in `ngOnInit`/`ngOnDestroy`, and `requestClose(run: () => void)`. `requestClose` runs `run()` immediately when no form is registered or `isDirty()` is false; otherwise it asks the form to show its confirm strip and stores `run` as the pending action.
+- `interface DirtyAware { isDirty(): boolean; confirmDiscard(): void }`. The confirm strip is rendered **by the entry form itself** at the top of its own template (below the topbar, above the fieldset), so it exists in both layouts: `放棄未儲存的內容？` with buttons `留下` (default focus) and `放棄`. `放棄` runs the pending action; `留下` clears it. No `window.confirm`.
+- Callers: layout `close()` → `registry.requestClose(() => navigate)`; entry-form `cancel()` → `registry.requestClose(() => this.doCancel())`. Entry-detail, reminders etc. never register, so they close immediately.
 - Navigation away by the browser back button is out of scope (no `CanDeactivate` guard this round).
 
 ### 4.4 Tests
 
-`accounting-layout.spec.ts`: swipe from a text input does not close; swipe on the grip with dx 100/dy 10 closes; dx 100/dy 60 does not; inert toggled on open/close; Tab from the last focusable wraps to ✕; dirty pane shows the strip and `放棄` closes, `留下` keeps. `entry-form.spec.ts`: `isDirty` false after load, true after typing a name, false after save.
+`accounting-layout.spec.ts`: swipe from a text input does not close; swipe on the grip with dx 100/dy 10 closes; dx 100/dy 60 does not; inert toggled on open/close; Tab from the last focusable wraps to ✕; with a dirty registered form `close()` does not navigate until `confirmDiscard()`. `entry-form.spec.ts`: `isDirty` false after load, true after typing a name, false after save and after save-and-continue; in phone mode ✕ and Esc on a dirty form show the strip, `放棄` cancels, `留下` keeps the draft; the strip also appears when the layout requests close in sheet mode.
 
 ## 5. Wording and readability
 
@@ -179,7 +182,7 @@ Replace the native `<select>` in:
 - entry-detail `.dgrid`: `類型` becomes two cells — `交易類型` (`kindLabel(d.kind)`) and `事件類型` (`單次` / `週期` / `分期`, derived from `d.schedule?.kind` → recurring=週期, installment=分期, none=單次).
 - `首次還款日` → `首期入帳日` in `schedule-tabs.html:90` and the footer string in `schedule-math.ts:117` (`首期入帳日將從 YYYY/MM/DD 開始（N 期）`); specs updated; identifiers and comments untouched.
 - Font sizes: every `font-size` ≤ `.7rem` in the files listed in the fact sheet (33 declarations) is raised to `.72rem`; `timeline.scss:227` (`.58rem`) is inspected: if it is the calendar day figure, it becomes `.72rem` with `font-variant-numeric: tabular-nums` and the day cell may show `萬` abbreviation (already implemented); otherwise `.72rem`. Visual check at 390px for overflow.
-- Entry-detail colour header: the text colour is chosen from the category colour's luminance (`relativeLuminance(hex) > 0.5 ? dark : light`); helper `textOn(bg)` added to `accounting-ui.ts` with a unit test.
+- Entry-detail colour header: helper `textOn(bg: string | null)` in `accounting-ui.ts` computes the WCAG contrast ratio of the background against `#1d1c1a` and `#ffffff` and returns the one with the higher ratio (ties → dark). When `bg` is null/unparsable (no category colour; the header then uses the CSS token background) the helper returns `null` and the template leaves the text colour to the theme token. Unit test: `#d4823b` → dark text (7.06:1 vs 2.98:1); `#2b2d42` → light; `null` → null.
 
 ## 6. Delivery (Multica)
 
@@ -193,7 +196,7 @@ Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.co
 
 ## Review focus (what tests may not catch)
 
-1. A filter that returns zero rows while the summary request is still in flight must show the skeleton, not `沒有符合條件的記錄`.
+1. The list's empty text must appear only after the list request for the *current* filters resolved with zero rows; a stale response from a previous filter set must be ignored (request sequence counter), independent of the summary request.
 2. Switching 事件類型 from 分期 back to 單次 must restore hidden tiles (fee button, invoice) and clear schedule-only validation errors.
 3. The picker popover on `sheet` mode must not be clipped by the pane's `overflow`; verify at 760×820 with the picker opened near the bottom of the form.
 4. The dirty guard must not fire after a successful save-and-continue (snapshot reset) or when the sheet closes because the route changed to the same pane with a different id.
