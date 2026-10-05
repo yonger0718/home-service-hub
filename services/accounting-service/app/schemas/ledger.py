@@ -9,7 +9,7 @@ EntryKind = Literal[
     "expense", "income", "transfer_out", "transfer_in", "receivable", "payable",
     "balance_adjustment", "fee", "discount", "reward", "interest", "refund",
 ]
-EntrySource = Literal["moze_import", "moze_backup", "manual", "hermes", "rule"]
+EntrySource = Literal["moze_import", "moze_backup", "manual", "hermes", "rule", "schedule"]
 FxSource = Literal["fx_api", "moze_backup", "manual"]
 RoundingMode = Literal["keep", "round", "floor", "ceil"]
 
@@ -90,6 +90,39 @@ class EntryGroupSummaryOut(BaseModel):
     currency: str
 
 
+class EntryScheduleOut(BaseModel):
+    """The posted schedule period that wrote this entry (the 週期 #k/N / 分期 #k/N pill)."""
+
+    definition_id: int
+    instance_id: int
+    kind: Literal["recurring", "installment"]
+    seq: int
+    times: int | None
+    name: str
+    is_partial: bool
+    acted_by: Literal["auto", "owner", "import"] | None
+    posted_entry_ids: list[int]
+
+
+class CurrencyAmountOut(BaseModel):
+    currency: str
+    amount: Decimal
+
+
+class LoanScheduleOut(BaseModel):
+    definition_id: int
+    name: str
+    status: Literal["active", "paused", "ended"]
+    posting_mode: Literal["auto", "confirm"]
+    posted_count: int
+    times: int | None
+    next_due_date: date | None
+    next_amount: list[CurrencyAmountOut]
+    remaining: Decimal | None
+    repaid: Decimal | None
+    needs_check: bool
+
+
 class EntryOut(BaseModel):
     id: int
     kind: EntryKind
@@ -130,6 +163,7 @@ class EntryOut(BaseModel):
     running_balance: Decimal
     # Receivable / payable originals: |amount + Σ linked settlements| (0 when closed); null for every other row.
     open_amount: Decimal | None
+    schedule: EntryScheduleOut | None = None
 
 
 class EntryPage(BaseModel):
@@ -152,6 +186,7 @@ class EntryDetailOut(EntryOut):
     rewards: list[EntryOut]
     is_settled: bool | None
     refunded_amount: Decimal
+    loan_schedule: LoanScheduleOut | None = None
 
 
 class MonthSummaryOut(BaseModel):

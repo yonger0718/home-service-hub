@@ -64,4 +64,73 @@ describe('summarizeReport', () => {
     });
     expect(view.reviewReasons).toEqual([['跨幣別結清', 1], ['結清金額超過原款', 2], ['找不到結清對應款項', 1]]);
   });
+
+  it('summarises the schedules block', () => {
+    const view = summarizeReport({
+      summary: {
+        schedules: {
+          definitions: {
+            recurring: { created: 11, updated: 0, ended: 0, deleted: 0 },
+            installment: { created: 14, updated: 0, ended: 0, deleted: 0 },
+            single: { created: 0, updated: 0, ended: 0, deleted: 0 },
+          },
+          records_mapped: 534, rewards_ignored: 63, past_records_already_posted: 2, past_records_already_skipped: 1,
+          past_records_amount_differs: { count: 1, instance_ids: [77] }, review: [{ moze_id: 'P-1', reason: 'interval_mismatch' }],
+        },
+      },
+    });
+    expect(view.schedules).toEqual({
+      recurring: 11, installment: 14, single: 0, recordsMapped: 534, rewardsIgnored: 63, alreadyPosted: 2, alreadySkipped: 1,
+      amountDiffers: 1, review: 1, ownerPending: 0, pendingAmountDiffers: 0, pastAmountLines: [], pendingAmountLines: [], amountLines: [],
+      ownerPendingLines: [], dependantsSuppressed: 0, dependantLines: [], reviewLines: [{ mozeId: 'P-1', label: '間隔與記錄不符' }],
+    });
+    expect(summarizeReport({ summary: {} }).schedules).toBeNull();
+  });
+
+  it('shows pending amount differences when they are the only finding', () => {
+    // Multica R-A3: only amount_differs is non-empty; the view still carries its count and per-period lines.
+    const view = summarizeReport({
+      summary: {
+        schedules: {
+          definitions: {
+            recurring: { created: 0, updated: 1, ended: 0, deleted: 0 },
+            installment: { created: 0, updated: 0, ended: 0, deleted: 0 },
+            single: { created: 0, updated: 0, ended: 0, deleted: 0 },
+          },
+          records_mapped: 4, rewards_ignored: 0, past_records_already_posted: 0, past_records_already_skipped: 0,
+          past_records_amount_differs: { count: 0, instance_ids: [], lines: [] }, past_records_owner_pending: [], review: [],
+          amount_differs: [
+            { definition_id: 7, name: 'Netflix', seq: 3, date: '2026-10-05', line: 0, kind: 'expense', amount: '120', moze_amount: '100' },
+          ],
+        },
+      },
+    });
+    expect(view.schedules?.pendingAmountDiffers).toBe(1);
+    expect(view.schedules?.amountDiffers).toBe(0);
+    expect(view.schedules?.pendingAmountLines).toEqual([
+      { definitionId: 7, name: 'Netflix', seq: 3, date: '2026-10-05', kind: 'expense', amount: '120', mozeAmount: '100' },
+    ]);
+  });
+
+  it('lists owner-pending periods, suppressed dependants and every review reason with Chinese copy', () => {
+    const reasons = ['interval_mismatch', 'same_date', 'no_records', 'event_missing', 'seq_conflict', 'account_missing', 'loan_missing', 'not_live'];
+    const view = summarizeReport({
+      summary: {
+        schedules: {
+          definitions: { recurring: { created: 0 }, installment: { created: 0 }, single: { created: 0 } },
+          past_records_owner_pending: [{ definition_id: 7, seq: 2, date: '2026-09-05' }],
+          dependants_suppressed: { count: 1, records: [{ moze_id: 'D-1', parent_moze_id: 'P-1', type: 12 }] },
+          review: reasons.map(reason => ({ moze_id: 'X', reason })),
+        },
+      },
+    });
+    expect(view.schedules?.ownerPendingLines).toEqual([{ definitionId: 7, seq: 2, date: '2026-09-05' }]);
+    expect(view.schedules?.dependantsSuppressed).toBe(1);
+    expect(view.schedules?.dependantLines).toEqual([{ mozeId: 'D-1', parentMozeId: 'P-1', type: 12 }]);
+    const labels = view.schedules!.reviewLines.map(line => line.label);
+    expect(labels).toContain('同日已有期別');
+    expect(labels).toContain('沒有期別記錄');
+    expect(labels).toContain('找不到貸款');
+    expect(labels.every(label => !reasons.includes(label))).toBe(true);
+  });
 });

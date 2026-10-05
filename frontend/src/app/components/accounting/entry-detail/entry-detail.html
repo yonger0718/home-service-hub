@@ -25,6 +25,20 @@
         {{ formatMoney(total(), d.currency, { sign: true }) }}
       </span>
     </div>
+    @if (scheduleLink(); as link) {
+      <div class="schedule-line">
+        <button type="button" class="schedule-pill" (click)="openSchedule(link.definition_id)">
+          {{ schedulePillText() }}
+          @if (link.is_partial) {
+            <span class="badge partial">部分</span>
+          }
+        </button>
+        @if (link.is_partial && !locked()) {
+          <button type="button" class="partial-repost" [disabled]="busy()" (click)="repostPartial()">重新入帳</button>
+          <button type="button" class="partial-accept" [disabled]="busy()" (click)="acceptPartial()">保留部分</button>
+        }
+      </div>
+    }
     @if (fxLine() || feeTotal() > 0) {
       <div class="dfx">
         @if (fxLine(); as fx) {
@@ -60,10 +74,15 @@
       <div class="open-state">
         @if (d.is_settled || d.is_closed) {
           <span class="settled">已結清</span>
-        } @else {
+        } @else if (!loanLine()) {
           <span class="open-amount">剩餘 {{ formatMoney(d.open_amount, d.currency) }}</span>
         }
-        @if (breakdown(); as line) {
+        @if (loanLine(); as line) {
+          <p class="loan-line">{{ line }}</p>
+          @if (d.loan_schedule; as loan) {
+            <button type="button" class="loan-link" (click)="openSchedule(loan.definition_id)">{{ loanLinkText() }}</button>
+          }
+        } @else if (breakdown(); as line) {
           <p class="breakdown">{{ line }}</p>
         }
       </div>
@@ -122,7 +141,7 @@
           <p class="form-error" role="alert">{{ formError() }}</p>
         }
         <div class="btnrow">
-          <button type="button" (click)="panel.set(null)">取消</button>
+          <button type="button" (click)="closePanel()">取消</button>
           <button type="button" class="pri form-submit" [disabled]="busy()" (click)="submitForm()">儲存</button>
         </div>
       </div>
@@ -131,6 +150,9 @@
     @if (panel() === 'delete') {
       <div class="delete-confirm" role="alertdialog" aria-label="刪除記錄">
         <p><b>確定刪除這筆記錄？</b></p>
+        @if (scheduleDeleteNote(); as note) {
+          <p class="schedule-delete-note">{{ note }}</p>
+        }
         @if (deleteNotes().length) {
           <p>將一併刪除：</p>
           <ul>
@@ -139,7 +161,7 @@
             }
           </ul>
         }
-        @if (d.group) {
+        @if (d.group && !d.schedule) {
           <p>整組「{{ d.group.name || '拆帳' }}」共 {{ d.group.count }} 筆：</p>
           <ul>
             @for (sibling of siblings(); track sibling.id) {
@@ -154,11 +176,51 @@
           <p class="form-error" role="alert">{{ formError() }}</p>
         }
         <div class="btnrow">
-          <button type="button" (click)="panel.set(null)">取消</button>
-          @if (d.group) {
+          <button type="button" (click)="closePanel()">取消</button>
+          @if (d.group && !d.schedule) {
             <button type="button" class="danger delete-group" [disabled]="busy()" (click)="confirmDelete('group')">刪除整組</button>
           }
           <button type="button" class="danger delete-entry" [disabled]="busy()" (click)="confirmDelete('entry')">刪除</button>
+        </div>
+      </div>
+    }
+
+    @if (panel() === 'scope') {
+      <div class="inline-form scope-choice" role="group" aria-label="編輯範圍">
+        <h4>編輯</h4>
+        <div class="btnrow">
+          <button type="button" class="scope-one" (click)="editOne()">編輯這一筆</button>
+          @if (scheduleDefinition()?.locked) {
+            <p class="scope-locked">MOZE 匯入資料，切換後可編輯</p>
+          } @else {
+            <button type="button" class="scope-all" [disabled]="!scheduleDefinition() || scheduleDefinition()?.status === 'ended'" (click)="editSchedule()">編輯整個排程</button>
+          }
+        </div>
+        @if (formError()) {
+          <p class="form-error" role="alert">{{ formError() }}</p>
+        }
+        <div class="btnrow">
+          <button type="button" (click)="closePanel()">取消</button>
+        </div>
+      </div>
+    }
+
+    @if (panel() === 'repost') {
+      <div class="inline-form repost-form" role="group" aria-label="重新入帳">
+        <h4>{{ schedulePillText() }} · 重新入帳</h4>
+        @for (line of repostLines(); track line.index) {
+          <label>
+            <span>{{ line.label }}</span>
+            <input class="repost-amount" inputmode="decimal" [attr.data-index]="line.index" [value]="repostAmounts().at(line.index) ?? ''" (input)="setRepostAmount(line.index, $any($event.target).value)" />
+            <small>{{ line.currency }}</small>
+          </label>
+        }
+        @if (formError()) {
+          <p class="form-error" role="alert">{{ formError() }}</p>
+        }
+        <div class="btnrow">
+          <button type="button" (click)="closePanel()">取消</button>
+          <button type="button" class="pri repost-submit" [disabled]="busy() || repostLines().length === 0" (click)="submitRepost()">儲存</button>
         </div>
       </div>
     }

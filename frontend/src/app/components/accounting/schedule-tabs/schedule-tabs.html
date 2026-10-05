@@ -1,0 +1,134 @@
+<div class="schedule-tabs">
+  <div class="sched-tablist" role="tablist" aria-label="進階設定">
+    @for (option of tabs(); track option.tab) {
+      <button
+        type="button"
+        role="tab"
+        class="schedule-tab"
+        [class.on]="draft().tab === option.tab"
+        [attr.aria-selected]="draft().tab === option.tab"
+        [disabled]="disabled()"
+        (click)="selectTab(option.tab)"
+      >{{ option.label }}</button>
+    }
+  </div>
+
+  @switch (draft().tab) {
+    @case ('single') {
+      <ng-content />
+    }
+    @case ('recurring') {
+      <div class="sched-grid">
+        <div class="sched-row">
+          <span class="sched-label">區間</span>
+          <span class="sched-inline">
+            每
+            <input class="sched-every" type="number" min="1" inputmode="numeric" aria-label="間隔" [value]="draft().every" [disabled]="disabled()" (input)="setEvery($any($event.target).value)" (blur)="commitCount('every', $any($event.target))" />
+            <select class="sched-unit" aria-label="單位" [disabled]="disabled()" (change)="setUnit($any($event.target).value)">
+              @for (unit of units; track unit.unit) {
+                <option [value]="unit.unit" [selected]="draft().unit === unit.unit">{{ unit.label }}</option>
+              }
+            </select>
+          </span>
+          @if (error('interval_n', 'interval_unit'); as message) {
+            <small class="field-error" data-field="interval">{{ message }}</small>
+          }
+        </div>
+        <label class="sched-row">
+          <span class="sched-label">起始日</span>
+          <input class="sched-start" type="date" [value]="draft().start" [disabled]="disabled()" (change)="setStart($any($event.target).value)" />
+          @if (error('anchor_date'); as message) {
+            <small class="field-error" data-field="anchor_date">{{ message }}</small>
+          }
+        </label>
+        <div class="sched-row">
+          <span class="sched-label">結束</span>
+          <span class="sched-inline">
+            <select class="sched-end" aria-label="結束" [disabled]="disabled()" (change)="setEndMode($any($event.target).value)">
+              <option value="never" [selected]="draft().endMode === 'never'">無限期</option>
+              <option value="times" [selected]="draft().endMode === 'times'">N 次</option>
+              <option value="date" [selected]="draft().endMode === 'date'">日期</option>
+            </select>
+            @if (draft().endMode === 'times') {
+              <input class="sched-end-times" type="number" min="1" inputmode="numeric" aria-label="次數" [value]="draft().endTimes" [disabled]="disabled()" (input)="setEndTimes($any($event.target).value)" (blur)="commitCount('endTimes', $any($event.target))" />
+              <span>次</span>
+            }
+            @if (draft().endMode === 'date') {
+              <input class="sched-end-date" type="date" aria-label="結束日" [value]="draft().endDate" [disabled]="disabled()" (change)="setEndDate($any($event.target).value)" />
+            }
+          </span>
+          @if (error('times', 'end_date'); as message) {
+            <small class="field-error" data-field="end">{{ message }}</small>
+          }
+        </div>
+        <div class="sched-row">
+          <span class="sched-label">入帳方式</span>
+          <span class="sched-modes" role="radiogroup" aria-label="入帳方式">
+            <button type="button" role="radio" class="sched-mode" data-mode="auto" [attr.aria-checked]="draft().mode === 'auto'" [disabled]="disabled()" (click)="setMode('auto')">自動入帳</button>
+            <button type="button" role="radio" class="sched-mode" data-mode="confirm" [attr.aria-checked]="draft().mode === 'confirm'" [disabled]="disabled()" (click)="setMode('confirm')">提醒入帳</button>
+          </span>
+        </div>
+      </div>
+    }
+    @case ('installment') {
+      <div class="sched-grid">
+        <div class="sched-row">
+          <span class="sched-label">總額</span>
+          <b class="sched-total">{{ totalText() }}</b>
+          @if (error('total_amount', 'amount'); as message) {
+            <small class="field-error" data-field="total_amount">{{ message }}</small>
+          }
+        </div>
+        <label class="sched-row">
+          <span class="sched-label">期數</span>
+          <input class="sched-periods" type="number" min="2" inputmode="numeric" [value]="draft().periods" [disabled]="disabled()" (input)="setPeriods($any($event.target).value)" (blur)="commitCount('periods', $any($event.target))" />
+          @if (error('times'); as message) {
+            <small class="field-error" data-field="times">{{ message }}</small>
+          }
+        </label>
+        <label class="sched-row">
+          <span class="sched-label">首次還款日</span>
+          <input class="sched-first" type="date" [value]="draft().firstDate" [disabled]="disabled()" (change)="setFirst($any($event.target).value)" />
+          @if (error('anchor_date'); as message) {
+            <small class="field-error" data-field="anchor_date">{{ message }}</small>
+          }
+        </label>
+        <label class="sched-row">
+          <span class="sched-label">每期金額</span>
+          <input class="sched-per" inputmode="decimal" [value]="perPeriodText()" [disabled]="disabled()" (input)="setPerPeriod($any($event.target).value)" />
+          @if (error('lines[0].amount'); as message) {
+            <small class="field-error" data-field="per_period">{{ message }}</small>
+          }
+        </label>
+        <label class="sched-row">
+          <span class="sched-label">利息</span>
+          <input class="sched-interest" inputmode="decimal" placeholder="0" [value]="draft().interest" [disabled]="disabled()" (input)="setInterest($any($event.target).value)" />
+          @if (error('lines[1].amount'); as message) {
+            <small class="field-error" data-field="interest">{{ message }}</small>
+          }
+        </label>
+        @if (kind() === 'payable') {
+          <label class="sched-row">
+            <span class="sched-label">還款帳戶</span>
+            <select class="sched-repay" [disabled]="disabled()" (change)="setRepay($any($event.target).value)">
+              @for (account of repayOptions(); track account.id) {
+                <option [value]="account.id" [selected]="account.id === repayValue()">{{ accountLabel(account) }}</option>
+              }
+            </select>
+          </label>
+        }
+        <div class="sched-row">
+          <span class="sched-label">入帳方式</span>
+          <span class="sched-modes" role="radiogroup" aria-label="入帳方式">
+            <button type="button" role="radio" class="sched-mode" data-mode="auto" [attr.aria-checked]="draft().mode === 'auto'" [disabled]="disabled()" (click)="setMode('auto')">自動入帳</button>
+            <button type="button" role="radio" class="sched-mode" data-mode="confirm" [attr.aria-checked]="draft().mode === 'confirm'" [disabled]="disabled()" (click)="setMode('confirm')">提醒入帳</button>
+          </span>
+        </div>
+      </div>
+    }
+  }
+
+  @if (footer()) {
+    <p class="schedule-footer">{{ footer() }}</p>
+  }
+</div>

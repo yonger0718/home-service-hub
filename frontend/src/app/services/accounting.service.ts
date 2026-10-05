@@ -28,8 +28,18 @@ import {
   Project,
   ProjectInput,
   RefundInput,
-  ScheduleItem,
-  ScheduleKind,
+  ScheduleCatchUpResult,
+  ScheduleDefinition,
+  ScheduleDefinitionDetail,
+  ScheduleDefinitionInput,
+  ScheduleDefinitionKind,
+  ScheduleDefinitionUpdate,
+  ScheduleInstance,
+  ScheduleInstanceQuery,
+  ScheduleInstanceUpdate,
+  SchedulePostingMode,
+  ScheduleRunReport,
+  ScheduleStatus,
   SettleInput,
   SplitInput,
   TransferInput,
@@ -293,6 +303,82 @@ export class AccountingService {
     return this.http.get<FxRateOut>(`${this.apiUrl}/fx-rate`, { params: { date, base, quote } });
   }
 
+  // ---- schedules (週期 / 分期 / 待完成交易) ------------------------------------------------------------------
+  // Every write bumps entriesChanged: posting writes entries, and the reminder centre and the 🔔 reload on it.
+
+  getScheduleDefinitions(query: { status?: ScheduleStatus; kind?: ScheduleDefinitionKind } = {}): Observable<ScheduleDefinition[]> {
+    return this.http.get<ScheduleDefinition[]>(`${this.apiUrl}/schedules/definitions`, { params: toParams(query) });
+  }
+
+  getScheduleDefinition(id: number): Observable<ScheduleDefinitionDetail> {
+    return this.http.get<ScheduleDefinitionDetail>(`${this.apiUrl}/schedules/definitions/${id}`);
+  }
+
+  createScheduleDefinition(input: ScheduleDefinitionInput): Observable<ScheduleDefinition> {
+    return this.bump(this.http.post<ScheduleDefinition>(`${this.apiUrl}/schedules/definitions`, input));
+  }
+
+  updateScheduleDefinition(id: number, input: ScheduleDefinitionUpdate): Observable<ScheduleDefinition> {
+    return this.bump(this.http.put<ScheduleDefinition>(`${this.apiUrl}/schedules/definitions/${id}`, input));
+  }
+
+  deleteScheduleDefinition(id: number): Observable<void> {
+    return this.bump(this.http.delete<void>(`${this.apiUrl}/schedules/definitions/${id}`));
+  }
+
+  pauseSchedule(id: number): Observable<ScheduleDefinition> {
+    return this.bump(this.http.post<ScheduleDefinition>(`${this.apiUrl}/schedules/definitions/${id}/pause`, {}));
+  }
+
+  resumeSchedule(id: number, backlog: 'skip' | 'post' = 'skip'): Observable<ScheduleDefinition> {
+    return this.bump(this.http.post<ScheduleDefinition>(`${this.apiUrl}/schedules/definitions/${id}/resume`, { backlog }));
+  }
+
+  endSchedule(id: number): Observable<ScheduleDefinition> {
+    return this.bump(this.http.post<ScheduleDefinition>(`${this.apiUrl}/schedules/definitions/${id}/end`, {}));
+  }
+
+  setScheduleMode(id: number, mode: SchedulePostingMode): Observable<ScheduleDefinition> {
+    return this.bump(this.http.put<ScheduleDefinition>(`${this.apiUrl}/schedules/definitions/${id}/mode`, { posting_mode: mode }));
+  }
+
+  catchUpSchedule(id: number): Observable<ScheduleCatchUpResult> {
+    return this.bump(this.http.post<ScheduleCatchUpResult>(`${this.apiUrl}/schedules/definitions/${id}/catch-up`, {}));
+  }
+
+  getScheduleInstances(query: ScheduleInstanceQuery = {}): Observable<ScheduleInstance[]> {
+    return this.http.get<ScheduleInstance[]>(`${this.apiUrl}/schedules/instances`, { params: toParams(query) });
+  }
+
+  updateScheduleInstance(id: number, body: ScheduleInstanceUpdate): Observable<ScheduleInstance> {
+    return this.bump(this.http.put<ScheduleInstance>(`${this.apiUrl}/schedules/instances/${id}`, body));
+  }
+
+  postScheduleInstance(id: number): Observable<ScheduleInstance> {
+    return this.bump(this.http.post<ScheduleInstance>(`${this.apiUrl}/schedules/instances/${id}/post`, {}));
+  }
+
+  skipScheduleInstance(id: number): Observable<ScheduleInstance> {
+    return this.bump(this.http.post<ScheduleInstance>(`${this.apiUrl}/schedules/instances/${id}/skip`, {}));
+  }
+
+  reopenScheduleInstance(id: number): Observable<ScheduleInstance> {
+    return this.bump(this.http.post<ScheduleInstance>(`${this.apiUrl}/schedules/instances/${id}/reopen`, {}));
+  }
+
+  repostScheduleInstance(id: number, amounts: string[]): Observable<ScheduleInstance> {
+    return this.bump(this.http.post<ScheduleInstance>(`${this.apiUrl}/schedules/instances/${id}/repost`, { amounts }));
+  }
+
+  acceptPartialScheduleInstance(id: number): Observable<ScheduleInstance> {
+    return this.bump(this.http.post<ScheduleInstance>(`${this.apiUrl}/schedules/instances/${id}/accept-partial`, {}));
+  }
+
+  runSchedulesNow(): Observable<ScheduleRunReport> {
+    return this.bump(this.http.post<ScheduleRunReport>(`${this.apiUrl}/schedules/run-now`, {}));
+  }
+
+
   // ---- imports -----------------------------------------------------------
 
   /** Upload a MOZE backup zip. Defaults to a strict dry run; pass `dryRun: false` to import. */
@@ -314,10 +400,6 @@ export class AccountingService {
         }
       }),
     );
-  }
-
-  getSchedules(kind?: ScheduleKind): Observable<ScheduleItem[]> {
-    return this.http.get<ScheduleItem[]>(`${this.apiUrl}/imports/schedules`, { params: toParams({ kind }) });
   }
 
   /** Latest import run, or null when no import has run yet (HTTP 404). */

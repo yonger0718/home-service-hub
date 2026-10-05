@@ -1,8 +1,8 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Router, provideRouter } from '@angular/router';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountingService } from '../../../services/accounting.service';
 import { AccountingSettingsComponent } from './accounting-settings';
@@ -28,9 +28,6 @@ const COUNTERPARTIES = [
   { id: 5, name: 'Alan', open_amounts: [{ currency: 'TWD', amount: '220.0000' }, { currency: 'JPY', amount: '-1000.0000' }] },
   { id: 6, name: 'Bob', open_amounts: [] },
 ];
-const SCHEDULES = [
-  { id: 1, kind: 'installment', moze_id: 'I-1', name: 'iPhone 分期', next_date: '2026-10-15', amount: '-1500.0000', currency: 'TWD' },
-];
 
 describe('AccountingSettingsComponent', () => {
   let http: HttpTestingController;
@@ -51,7 +48,6 @@ describe('AccountingSettingsComponent', () => {
     http.expectOne('/api/accounting/projects').flush(PROJECTS);
     http.expectOne('/api/accounting/counterparties').flush(COUNTERPARTIES);
     http.expectOne('/api/accounting/imports/latest').flush({ detail: 'none' }, { status: 404, statusText: 'Not Found' });
-    http.expectOne(r => r.url.startsWith('/api/accounting/imports/schedules')).flush(SCHEDULES);
     fixture.detectChanges();
     el = fixture.nativeElement as HTMLElement;
   });
@@ -125,7 +121,7 @@ describe('AccountingSettingsComponent', () => {
     expect(real.disabled).toBe(false);
   });
 
-  it('imports for real after the dry run and refreshes the latest import and schedules', () => {
+  it('imports for real after the dry run and refreshes the latest import', () => {
     chooseFile();
     el.querySelector<HTMLButtonElement>('.dry-run')!.click();
     http.expectOne(r => r.url.startsWith('/api/accounting/imports/moze-backup')).flush({ status: 'dry_run', summary: {} });
@@ -139,7 +135,6 @@ describe('AccountingSettingsComponent', () => {
       id: 9, status: 'succeeded', started_at: '2026-10-02T03:33:00+08:00', finished_at: null, file_name: 'MOZE_4.0.zip',
       file_sha256: 'a'.repeat(64), row_count: 7553, summary: {},
     });
-    http.expectOne(r => r.url.startsWith('/api/accounting/imports/schedules')).flush([]);
     fixture.detectChanges();
 
     expect(el.querySelector('.import-report')?.textContent).toContain('匯入完成');
@@ -260,15 +255,60 @@ describe('AccountingSettingsComponent', () => {
     expect(el.querySelector('.data-message')?.textContent).toContain('仍有帳戶');
   });
 
-  it('shows the static lock state and the schedules list', () => {
+  it('renders the schedules block of the import report: counts, warning and one line per item', () => {
+    chooseFile();
+    el.querySelector<HTMLButtonElement>('.dry-run')!.click();
+    const zero = { created: 0, updated: 0, ended: 0, deleted: 0 };
+    http.expectOne(r => r.url.startsWith('/api/accounting/imports/moze-backup')).flush({
+      status: 'dry_run',
+      summary: {
+        schedules: {
+          definitions: { recurring: { ...zero, created: 11 }, installment: { ...zero, created: 14 }, single: zero },
+          records_mapped: 534, rewards_ignored: 63, past_records_already_posted: 2, past_records_already_skipped: 1,
+          past_records_amount_differs: {
+            count: 1, instance_ids: [77],
+            lines: [{ definition_id: 5, name: 'iPhone 分期', seq: 2, date: '2026-09-15', line: 0, kind: 'expense', amount: '1500', moze_amount: '1400' }],
+          },
+          past_records_owner_pending: [{ definition_id: 7, seq: 4, date: '2026-09-05' }],
+          review: [{ moze_id: 'P-1', reason: 'same_date' }],
+          amount_differs: [{ definition_id: 7, name: 'Netflix', seq: 3, date: '2026-10-05', line: 0, kind: 'expense', amount: '120', moze_amount: '100' }],
+          dependants_suppressed: { count: 1, records: [{ moze_id: 'D-1', parent_moze_id: 'P-9', type: 12 }] },
+        },
+      },
+    });
+    fixture.detectChanges();
+
+    const text = (selector: string) => Array.from(el.querySelectorAll(selector)).map(li => li.textContent?.trim());
+    const line = el.querySelector('.schedules-report')?.textContent?.replace(/\s+/g, ' ') ?? '';
+    expect(line).toContain('週期 11、分期 14、單筆 0；對應 534 筆、略過回饋 63 筆');
+    expect(line).toContain('HomeHub 已入帳 2 筆、已略過 1 筆');
+    expect(line).toContain('金額不同 1 期');
+    expect(line).toContain('待入帳金額與 MOZE 不同 1 期');
+    expect(line).toContain('保留待入帳 1 期');
+    expect(line).toContain('未匯入附屬記錄 1 筆');
+    expect(line).toContain('待檢查 1 筆');
+    expect(el.querySelectorAll('.schedules-report .import-error').length).toBe(3);
+    expect(text('.schedule-amount-lines li')).toEqual([
+      'iPhone 分期 第 2 期 2026-09-15：HomeHub $1500 / MOZE $1400',
+      'Netflix 第 3 期 2026-10-05：HomeHub $120 / MOZE $100',
+    ]);
+    expect(text('.schedule-pending-lines li')).toEqual(['排程 #7 第 4 期 2026-09-05：保留待入帳']);
+    expect(text('.schedule-dependant-lines li')).toEqual(['附屬記錄 D-1（屬於 P-9，類型 12）未匯入']);
+    expect(text('.schedule-review-lines li')).toEqual(['P-1：同日已有期別']);
+    expect(el.querySelector('.import-report')?.textContent).not.toContain('same_date');
+  });
+
+  it('shows the static lock state and links 週期／分期 to the reminder centre', () => {
+    // Spec "Schedule list moved to 提醒中心".
     expect(el.querySelector('.lock-row .r')?.textContent?.trim()).toBe('未鎖定（切換後鎖定）');
     expect(el.querySelector('.lock-note')?.textContent).toContain('ACCOUNTING_IMPORT_LOCKED');
-    const row = el.querySelector('.schedule-row')!;
-    expect(row.textContent).toContain('分期');
-    expect(row.textContent).toContain('iPhone 分期');
-    expect(row.textContent).toContain('2026/10/15');
-    expect(row.textContent).toContain('−$1,500');
+    expect(el.querySelector('.schedule-row')).toBeNull();
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    (el.querySelector('.schedules-link') as HTMLButtonElement).click();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/reminders'], { queryParams: { tab: 'debts' }, fragment: 'schedules' });
+    http.expectNone(r => r.url.includes('/imports/schedules'));
   });
+
   it('adds a counterparty on ⏎ but not on the ⏎ that commits an IME candidate', () => {
     const input = el.querySelector<HTMLInputElement>('.new-counterparty')!;
     input.value = '陳';

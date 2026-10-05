@@ -373,6 +373,27 @@ describe('EntryFormComponent', () => {
     expect(left()).toBe(true);
   });
 
+  it('offers only 單次 when editing an entry and saves it with PUT, never as a schedule', async () => {
+    // Final review F1: /entries/:id/edit (also 編輯這一筆 of a schedule entry) edits that one record.
+    const { el, left } = await open('/accounting/entries/9/edit');
+    respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, category_id: 12, amount: '-170.0000' }));
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+
+    const tabs = Array.from(el.querySelectorAll('.schedule-tab')).map(node => text(node));
+    expect(tabs).not.toContain('週期');
+    expect(tabs).not.toContain('分期');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.scheduleDraft.update(draft => ({ ...draft, tab: 'recurring' }));
+    form.save(false);
+    settle();
+
+    httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions');
+    httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/9').flush(makeEntryDetail({ id: 9 }));
+    settle();
+    expect(left()).toBe(true);
+  });
+
   it('keeps loading until related entries have loaded', async () => {
     // Request order (no navigation after open()): open() as above → GET entries/9 → answered → loadRelated(9) held;
     // ⏎ and save() issue nothing → release → applied → GET accounts/2 → categories and accounts/2 answered.

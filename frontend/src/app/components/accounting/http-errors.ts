@@ -29,9 +29,19 @@ export function fieldErrors(err: unknown): Record<string, string> {
   return result;
 }
 
+/** Schedule 409 codes (`{"detail": "<code>"}`) in the owner's words. */
+const CONFLICT_MESSAGES: Record<string, string> = {
+  definition_ended: '排程已結束，無法編輯',
+  already_posted: '此期已入帳',
+  skipped: '此期已略過',
+  definition_changed: '排程剛變更，請重試',
+  busy: '排程工作正在執行，請稍後再試',
+};
+
 /**
  * One human-readable line for a failed write. 404 / 409 bodies are shared_lib's `{"code", "message", "trace_id"}`
- * (the lock refusal has `message == "locked_until_cutover"`); 422 bodies carry a `detail` list.
+ * (the lock refusal has `message == "locked_until_cutover"`; an ended schedule's PUT `definition_ended`); 422 bodies
+ * carry a `detail` list.
  */
 export function writeErrorMessage(err: unknown): string {
   if (err instanceof HttpErrorResponse) {
@@ -39,6 +49,10 @@ export function writeErrorMessage(err: unknown): string {
     const detail = body?.detail;
     if (err.status === 409 && (detail === 'locked_until_cutover' || body?.message === 'locked_until_cutover')) {
       return 'MOZE 匯入資料，切換後可編輯';
+    }
+    const conflict = err.status === 409 ? (typeof detail === 'string' ? detail : body?.message) : undefined;
+    if (typeof conflict === 'string' && Object.hasOwn(CONFLICT_MESSAGES, conflict)) {
+      return CONFLICT_MESSAGES[conflict];
     }
     if (typeof body?.message === 'string' && body.message) {
       return body.message;

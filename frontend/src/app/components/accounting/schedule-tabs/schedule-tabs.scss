@@ -1,0 +1,117 @@
+:host {
+  display: block;
+}
+
+.sched-tablist {
+  background: var(--app-surface-soft);
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  gap: 2px;
+  margin: 6px 0;
+  max-width: 100%;
+  padding: 2px;
+}
+
+.schedule-tab {
+  background: none;
+  border: 0;
+  border-radius: var(--radius-pill);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-label, 0.75rem);
+  font-weight: 700;
+  padding: 3px 12px;
+
+  &.on {
+    background: var(--app-surface);
+    color: var(--app-text);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}
+
+.sched-grid {
+  display: flex;
+  flex-direction: column;
+}
+
+.sched-row {
+  align-items: center;
+  border-bottom: 1px solid var(--app-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 6px 0;
+}
+
+.sched-label {
+  color: var(--app-text);
+  font-weight: 600;
+}
+
+.sched-inline {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sched-every,
+.sched-end-times,
+.sched-periods {
+  width: 4.5em;
+}
+
+.sched-per,
+.sched-interest {
+  max-width: 9em;
+  text-align: right;
+}
+
+.sched-modes {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.sched-mode {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-label, 0.75rem);
+  padding: 2px 10px;
+
+  &[aria-checked='true'] {
+    background: var(--app-surface);
+    border-color: var(--app-primary);
+    color: var(--app-text);
+    font-weight: 700;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}
+
+.field-error {
+  color: var(--app-danger);
+  flex-basis: 100%;
+  font-size: 0.72rem;
+}
+
+.schedule-footer {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}

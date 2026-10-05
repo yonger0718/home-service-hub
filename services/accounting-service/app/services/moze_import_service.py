@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import sys
+import time
 from collections import Counter
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -38,6 +39,8 @@ from .moze_csv import MozeImportError, MozeRow, ParsedFile, parse_moze_csv
 from .transfer_pairing import PairingResult, pair_transfers
 
 IMPORT_LOCK_KEY = 0x4D4F5A45  # "MOZE"; one key shared by CLI, REST and dry runs
+IMPORT_LOCK_WAIT_SEC = 30  # D32: schedule writers share the key for a few milliseconds each; an import waits for them
+IMPORT_LOCK_POLL_SEC = 0.2
 SOURCE = "moze_import"
 
 SYSTEM_CATEGORY_NAMES = {
@@ -226,6 +229,14 @@ def _removable(alias: str, table: str, keep: Mapping[str, Collection[str]], para
     return f"({alias}.moze_id IS NOT NULL AND {alias}.moze_id <> ALL(:keep_{table}))"
 
 
+def _unused_by_templates(alias: str, key: str) -> str:
+    """SQL condition: no schedule template line names the row (a template reference counts as usage, D29/D37)."""
+    return (
+        "NOT EXISTS (SELECT 1 FROM schedule_definition d, jsonb_array_elements(d.template -> 'lines') l "
+        f"WHERE l ->> '{key}' = {alias}.id::text)"
+    )
+
+
 def delete_unused_rows(session: Session, keep: Mapping[str, Collection[str]] | None = None) -> None:
     """Delete unused categories, projects and counterparties whose moze_id left the backup (design D6, as
     narrowed by the final review: rows without a moze_id are never swept).
@@ -238,15 +249,15 @@ def delete_unused_rows(session: Session, keep: Mapping[str, Collection[str]] | N
         return
     statements = [
         "DELETE FROM category c WHERE c.parent_id IS NOT NULL "
-        "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) AND {category}",
+        "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) AND {category_template} AND {category}",
         "DELETE FROM category c WHERE c.parent_id IS NULL "
         "AND NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.category_id = c.id) "
-        "AND NOT EXISTS (SELECT 1 FROM category child WHERE child.parent_id = c.id) AND {category}",
+        "AND NOT EXISTS (SELECT 1 FROM category child WHERE child.parent_id = c.id) AND {category_template} AND {category}",
         "DELETE FROM project p WHERE NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.project_id = p.id) "
         "AND NOT EXISTS (SELECT 1 FROM category c WHERE c.default_project_id = p.id) "
-        "AND NOT EXISTS (SELECT 1 FROM reward_rule r WHERE r.reward_project_id = p.id) AND {project}",
+        "AND NOT EXISTS (SELECT 1 FROM reward_rule r WHERE r.reward_project_id = p.id) AND {project_template} AND {project}",
         "DELETE FROM counterparty cp WHERE NOT EXISTS (SELECT 1 FROM ledger_entry e WHERE e.counterparty_id = cp.id) "
-        "AND {counterparty}",
+        "AND {counterparty_template} AND {counterparty}",
     ]
     for statement in statements:
         params: dict = {}
@@ -254,6 +265,9 @@ def delete_unused_rows(session: Session, keep: Mapping[str, Collection[str]] | N
             "category": _removable("c", "category", keep, params),
             "project": _removable("p", "project", keep, params),
             "counterparty": _removable("cp", "counterparty", keep, params),
+            "category_template": _unused_by_templates("c", "category_id"),
+            "project_template": _unused_by_templates("p", "project_id"),
+            "counterparty_template": _unused_by_templates("cp", "counterparty_id"),
         }
         sql = statement.format(**clauses)
         used = {name: value for name, value in params.items() if f":{name}" in sql}
@@ -276,7 +290,9 @@ def _apply_renames(session: Session, renames: Mapping[str, str]) -> list[dict[st
     return applied
 
 
-def _archive_disappeared_accounts(session: Session, named_in_file: set[str]) -> list[str]:
+def _archive_disappeared_accounts(
+    session: Session, named_in_file: set[str], keep_ids: Collection[int] = frozenset()
+) -> list[str]:
     """Archive (and zero the opening balance of) entry-less accounts the file no longer names.
 
     Accounts with settings_locally_edited (every POST /accounts row, and any account edited in Settings) are
@@ -284,7 +300,7 @@ def _archive_disappeared_accounts(session: Session, named_in_file: set[str]) -> 
     """
     archived = []
     for account in session.scalars(select(Account).order_by(Account.id)):
-        if account.name in named_in_file or account.settings_locally_edited:
+        if account.name in named_in_file or account.settings_locally_edited or account.id in keep_ids:
             continue
         has_entries = session.scalar(
             select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)
@@ -435,16 +451,42 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _held_exclusively(conn: Connection) -> bool:
+    """Another import holds the key (exclusive); shared holders are schedule writers that finish in milliseconds.
+    A one-bigint advisory key shows as classid = high 32 bits (0 here), objid = low 32 bits, objsubid = 1; a two-int
+    key with the same low word has objsubid = 2 and must not be mistaken for an import."""
+    return bool(
+        conn.execute(
+            text(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND classid = 0 AND objid = :key "
+                "AND objsubid = 1 AND mode = 'ExclusiveLock' AND granted"
+            ),
+            {"key": IMPORT_LOCK_KEY},
+        ).scalar_one()
+    )
+
+
 @contextmanager
-def import_lock(engine: Engine) -> Iterator[Connection]:
-    """Hold the shared advisory lock for one import (CSV or backup, real or dry run) on a dedicated connection."""
+def import_lock(engine: Engine, *, wait_seconds: float = IMPORT_LOCK_WAIT_SEC) -> Iterator[Connection]:
+    """Hold the shared advisory lock for one import (CSV or backup, real or dry run) on a dedicated connection.
+
+    While schedule writers share the key (pg_try_advisory_xact_lock_shared), retry for up to `wait_seconds`; another
+    import (an exclusive holder) is refused at once.
+    """
     if import_locked():
         raise ImportLockedError("MOZE import is locked (ACCOUNTING_IMPORT_LOCKED=true)")
     with engine.connect() as conn:
-        acquired = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY}).scalar_one()
-        conn.commit()
-        if not acquired:
-            raise ImportAlreadyRunningError("import already running")
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            acquired = conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": IMPORT_LOCK_KEY}).scalar_one()
+            conn.commit()
+            if acquired:
+                break
+            busy = _held_exclusively(conn)
+            conn.commit()
+            if busy or time.monotonic() >= deadline:
+                raise ImportAlreadyRunningError("import already running")
+            time.sleep(IMPORT_LOCK_POLL_SEC)
         try:
             yield conn
         finally:

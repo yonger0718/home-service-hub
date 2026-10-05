@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { amountString, parseAmountText } from './amount-text';
+import { amountString, parseAmountFields, parseAmountText } from './amount-text';
 
 describe('amount text helpers', () => {
   it('evaluates an expression in the currency decimals', () => {
@@ -20,5 +20,14 @@ describe('amount text helpers', () => {
     expect(amountString(46200, 'JPY')).toBe('46200');
     expect(amountString(12.5, 'USD')).toBe('12.5');
     expect(amountString(12, 'USD')).toBe('12');
+  });
+
+  it('reads one amount field per line, or null when one is empty or invalid', () => {
+    // Final review F5: the repost panel and the sheet's period editor send nothing for a bad field.
+    expect(parseAmountFields(['8,333', '620', '0'], ['TWD', 'TWD', 'TWD'])).toEqual(['8333', '620', '0']);
+    expect(parseAmountFields(['12.5'], ['USD'])).toEqual(['12.5']);
+    expect(parseAmountFields(['8333', ''], ['TWD', 'TWD'])).toBeNull();
+    expect(parseAmountFields(['abc'], ['TWD'])).toBeNull();
+    expect(parseAmountFields(['-5'], ['TWD'])).toBeNull();
   });
 });

@@ -1,17 +1,18 @@
 import queue
 import threading
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from datetime import time as dt_time
 from decimal import Decimal
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import sessionmaker
 
-from app.models import Account, LedgerEntry
+from app.models import Account, LedgerEntry, ScheduleDefinition, ScheduleInstance
 from app.services.moze_csv import parse_moze_csv
 from app.services.moze_backup_import_service import replace_ledger_from_backup
 from app.services.moze_import_service import IMPORT_LOCK_KEY, replace_ledger
+from app.services.schedule_templates import LINE_KEYS
 from app.services.transfer_pairing import pair_transfers
 
 
@@ -124,3 +125,60 @@ def race(engine, first, second, timeout: float = 5.0):
     finally:
         first_session.close()
         second_session.close()
+
+
+POSTED_AT = datetime(2026, 10, 1, 1, 0, tzinfo=timezone.utc)
+
+
+def schedule_line(kind: str, account: Account, amount: str, **fields) -> dict:
+    """A template line with every key (unused ones None), in the account's currency."""
+    line = dict.fromkeys(LINE_KEYS)
+    line.update(kind=kind, account_id=account.id, amount=str(amount), currency=account.currency)
+    line.update(fields)
+    return line
+
+
+def make_definition(
+    session,
+    lines: list[dict],
+    *,
+    kind: str = "recurring",
+    name: str = "Netflix",
+    interval_unit: str = "month",
+    anchor: date = date(2026, 10, 22),
+    auto_post_from: date = date(2026, 10, 3),
+    description: str | None = None,
+    tags=(),
+    **columns,
+) -> ScheduleDefinition:
+    """Insert a definition (flushed, not committed) without generating instances or validating the template."""
+    definition = ScheduleDefinition(
+        kind=kind, name=name, template={"lines": list(lines), "description": description, "tags": list(tags)},
+        interval_unit=interval_unit, anchor_date=anchor, auto_post_from=auto_post_from, **columns,
+    )
+    session.add(definition)
+    session.flush()
+    return definition
+
+
+def make_instance(
+    session,
+    definition: ScheduleDefinition,
+    seq: int,
+    day: date,
+    *,
+    status: str = "pending",
+    entries=(),
+    acted_by: str | None = None,
+    rule_date: date | None = None,
+    **columns,
+) -> ScheduleInstance:
+    """Insert one period; posted / skipped ones get acted_at (POSTED_AT unless given) and acted_by (auto unless given)."""
+    acted = {} if status == "pending" else {"acted_at": columns.pop("acted_at", POSTED_AT), "acted_by": acted_by or "auto"}
+    instance = ScheduleInstance(
+        definition_id=definition.id, seq=seq, rule_date=rule_date or day, due_date=day, status=status,
+        posted_entry_ids=[getattr(entry, "id", entry) for entry in entries], **acted, **columns,
+    )
+    session.add(instance)
+    session.flush()
+    return instance

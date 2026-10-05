@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..models import Account, Category, Counterparty, EntryGroup, EntryRewardRule, LedgerEntry, Project, RewardRule
 from ..schemas.writes import MAX_ABS_AMOUNT, BalanceAdjustmentIn, ChildIn, EditableKind, EntryIn, EntryUpdateIn
 from . import fx_rate_service, ledger_service
+from . import schedule_entry_hooks
 from .edit_lock import assert_editable
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (ValidationError re-exported)
 from .moze_import_service import SYSTEM_CATEGORY_NAMES
@@ -200,7 +201,7 @@ def prepare_entry(
     return PreparedEntry(payload, account, fx, payload.posted_date or payload.entry_date)
 
 
-def _apply(entry: LedgerEntry, prepared: PreparedEntry) -> None:
+def _apply(entry: LedgerEntry, prepared: PreparedEntry, source: str = "manual") -> None:
     payload, account, fx = prepared.payload, prepared.account, prepared.fx
     entry.account_id = account.id
     entry.currency = account.currency
@@ -224,7 +225,7 @@ def _apply(entry: LedgerEntry, prepared: PreparedEntry) -> None:
     entry.invoice_number = payload.invoice_number
     entry.invoice_random = payload.invoice_random
     entry.needs_review = False
-    entry.source = "manual"
+    entry.source = source
 
 
 def system_category_id(db: Session, kind: str) -> int:
@@ -241,8 +242,10 @@ def system_category_id(db: Session, kind: str) -> int:
     return category_id
 
 
-def write_children(db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None) -> None:
-    """Fee stored negative, discount positive; same account, date, time and posting date as the parent."""
+def write_children(
+    db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None, *, source: str = "manual"
+) -> None:
+    """Fee stored negative, discount positive; same account, date, time, posting date and source as the parent."""
     for kind, child in (("fee", fee), ("discount", discount)):
         if child is None:
             continue
@@ -258,7 +261,7 @@ def write_children(db: Session, parent: LedgerEntry, fee: ChildIn | None, discou
                 category_id=system_category_id(db, kind),
                 name=child.name or CHILD_DEFAULT_NAMES[kind],
                 parent_entry_id=parent.id,
-                source="manual",
+                source=source,
             )
         )
     db.flush()
@@ -294,14 +297,22 @@ def remember_all_defaults(db: Session, prepared: Iterable[PreparedEntry]) -> Non
         db.flush()
 
 
-def insert_prepared(db: Session, prepared: PreparedEntry, *, group_id: int | None = None, remember: bool = True) -> int:
+def insert_prepared(
+    db: Session,
+    prepared: PreparedEntry,
+    *,
+    group_id: int | None = None,
+    remember: bool = True,
+    source: str = "manual",
+) -> int:
     """Insert one prepared entry with its children and rule links; `remember=False` leaves the category defaults
-    to the caller (remember_all_defaults for a split)."""
+    alone (a split remembers them all at once; a schedule never moves them, D31). `source='schedule'` only from
+    schedule_posting."""
     entry = LedgerEntry(group_id=group_id)
-    _apply(entry, prepared)
+    _apply(entry, prepared, source)
     db.add(entry)
     db.flush()
-    write_children(db, entry, prepared.payload.fee, prepared.payload.discount)
+    write_children(db, entry, prepared.payload.fee, prepared.payload.discount, source=source)
     write_rule_links(db, entry.id, prepared.payload.reward_rule_ids)
     if remember:
         remember_defaults(db, prepared.payload.category_id, prepared.account.id, prepared.payload.project_id)
@@ -335,10 +346,16 @@ def locked_entry(db: Session, entry_id: int) -> LedgerEntry:
     return entry
 
 
-# Lock order for every write that touches a group member (delete_entry here, split_service.update_split /
-# delete_split in Task 14): the entry_group row(s) (lock_group, ascending id) → the target entry / the group's
-# members together with their transfer legs, in ONE statement ordered by ascending id (locked_with_legs) →
-# nothing else. Taking the group last (after a member) deadlocks against a split PUT that holds the group and
+# Lock order (design D32), every write path: the shared import advisory key (schedule paths:
+# schedule_locks.take_import_key_shared) → the schedule_definition row (FOR SHARE when posting or acting on one
+# instance, FOR UPDATE when editing the definition) → schedule_instance row(s) (FOR UPDATE, ascending id) → the
+# entry_group row(s) (lock_group, ascending id) → the target entries together with their transfer legs, in ONE
+# statement ordered by ascending id (locked_with_legs; locked_entry for a single target, e.g. a schedule's loan) →
+# nothing else. No path that holds an entry or group lock ever locks a schedule row: delete_entry / delete_split read
+# the posted instance listing the entry without a lock, then take the key, the definition and the instance
+# (schedule_entry_hooks.lock_for_entry_delete), re-check, and only then lock groups and entries. The backup importer
+# holds the import key exclusively and locks every schedule definition, then every instance (ascending id), before it
+# deletes any entry. Taking the group last (after a member) deadlocks against a split PUT that holds the group and
 # waits for that member (plan review round 5); locking the target first and its other leg in a second statement
 # deadlocks two concurrent deletes of a transfer's two legs (Task 12 review).
 # The account row is a separate lock class taken only by create_balance_adjustment (account FOR UPDATE, then the
@@ -443,10 +460,11 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
     if entry.kind not in EDITABLE_KINDS or entry.parent_entry_id is not None:
         raise ValidationError("kind", f"{entry.kind} entries are not edited through this endpoint")
     _check_linked_original(db, entry, prepared)
-    _apply(entry, prepared)
+    source = "schedule" if entry.source == "schedule" else "manual"  # a posted period's entry stays a schedule row
+    _apply(entry, prepared, source)
     db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id == entry.id))
     db.flush()
-    write_children(db, entry, payload.fee, payload.discount)
+    write_children(db, entry, payload.fee, payload.discount, source=source)
     write_rule_links(db, entry.id, payload.reward_rule_ids)
     remember_defaults(db, payload.category_id, prepared.account.id, payload.project_id)
 
@@ -499,6 +517,9 @@ def delete_entry(db: Session, entry_id: int) -> None:
     of the target has either committed before (its link is cleared below) or waits for this delete and then
     finds no target (404); a concurrent split PUT / DELETE has either replaced the member (404 here) or waits on
     the group lock and then sees the member gone."""
+    # D29: a loan a live schedule repays cannot be deleted; D32/D33: the period's schedule rows are locked first.
+    schedule_entry_hooks.assert_not_referenced(db, loan_entry_id=entry_id)
+    instance = schedule_entry_hooks.lock_for_entry_delete(db, [entry_id])
     group_ids, transfer_group_id = _group_ids_to_lock(db, entry_id)
     for group_id in group_ids:
         lock_group(db, group_id)
@@ -515,11 +536,14 @@ def delete_entry(db: Session, entry_id: int) -> None:
         assert_entry_editable(db, target)
     if not {target.group_id for target in targets if target.group_id is not None} <= set(group_ids):
         raise ConflictError(f"entry {entry_id} changed concurrently; retry the delete")
-    delete_entries_cascade(db, [target.id for target in targets])
+    target_ids = [target.id for target in targets]  # read before the cascade expires (and deletes) the rows
+    delete_entries_cascade(db, target_ids)
     for group_id in group_ids:
         remaining = db.scalar(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.group_id == group_id))
         if remaining == 0:
             db.execute(delete(EntryGroup).where(EntryGroup.id == group_id))
+    if instance is not None:
+        schedule_entry_hooks.after_entries_deleted(db, instance, set(target_ids))
 
 
 def _plain(value: Decimal) -> str:

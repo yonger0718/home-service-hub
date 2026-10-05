@@ -19,17 +19,28 @@ from sqlalchemy.orm import sessionmaker
 
 from app.database import SQLALCHEMY_DATABASE_URL, get_db, get_engine
 from app.main import app
-from app.models import Account, Category, Counterparty, EntryGroup, FxRate, LedgerEntry, Project, RewardRule
+from app.models import (
+    Account,
+    Category,
+    Counterparty,
+    EntryGroup,
+    FxRate,
+    LedgerEntry,
+    Project,
+    RewardRule,
+    ScheduleDefinition,
+    ScheduleInstance,
+)
 from app.services import fx_rate_service
-from tests.helpers import make_account, make_entry
+from tests.helpers import make_account, make_definition, make_entry, make_instance, schedule_line
 from app.services.moze_backup_json import parse_backup_doc
 
 SERVICE_DIR = Path(__file__).resolve().parents[1]
 # Every ledger table, children first; TRUNCATE ... CASCADE also clears rows the list misses.
 # preference is truncated too: settings_service.get_preference recreates the defaults on first read.
 LEDGER_TABLES = (
-    "entry_reward_rule, moze_schedule, ledger_entry, reward_rule, entry_group, counterparty, "
-    "import_run, category, project, account, account_group, fx_rate, preference"
+    "entry_reward_rule, schedule_instance, schedule_definition, ledger_entry, reward_rule, entry_group, "
+    "counterparty, import_run, category, project, account, account_group, fx_rate, preference"
 )
 
 
@@ -78,6 +89,12 @@ def no_network(monkeypatch):
 def no_import_lock_from_env(monkeypatch):
     """A production .env setting must never break the suite; lock tests set the flag themselves."""
     monkeypatch.delenv("ACCOUNTING_IMPORT_LOCKED", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_scheduler(monkeypatch):
+    """The in-process schedule job never starts inside the test process (TestClient runs startup hooks)."""
+    monkeypatch.setenv("ACCOUNTING_SCHEDULER_ENABLED", "false")
 
 
 @pytest.fixture(autouse=True)
@@ -278,6 +295,22 @@ def _bk_package(identifier="PK-1", records=("R-1",), type_=0, event_type=0, **fi
     }
 
 
+def _bk_period(identifier="PER-1", *, unit=2, days=21, times=0, type_=0, start="2026-10-21T00:00:00", **fields) -> dict:
+    return {
+        "identifier": identifier, "unit": unit, "days": days, "times": times, "type": type_, "startDate": start,
+        "count": 1, "startIndex": 1, **fields,
+    }
+
+
+def _bk_installment(identifier="INS-1", *, day_of_month=9, dates=(), times=36, total=300000, remainder=0, **fields) -> dict:
+    return {
+        "identifier": identifier, "account": "A-WALLET", "dayOfMonth": day_of_month,
+        "dateInfo": {str(index): day for index, day in enumerate(dates)}, "times": times, "total": total,
+        "installment": 0, "remainder": remainder, "startDate": dates[0] if dates else "2026-01-01T00:00:00",
+        "interestType": 0, "interestRate": 0, **fields,
+    }
+
+
 def _bk_rule(identifier="B-1", account="A-CARD", **fields) -> dict:
     return {
         "identifier": identifier, "accountID": account, "name": "回饋", "desc": "", "type": 0,
@@ -337,6 +370,7 @@ def backup():
     return SimpleNamespace(
         group=_bk_group, account=_bk_account, category=_bk_category, classification=_bk_classification,
         project=_bk_project, target=_bk_target, record=_bk_record, transfer=_bk_transfer, package=_bk_package,
+        period=_bk_period, installment=_bk_installment,
         rule=_bk_rule, conversion=_bk_conversion, preference=_bk_preference, doc=_bk_doc, write=_bk_write,
         data=_bk_data, exported_at=BACKUP_EXPORTED_AT,
     )
@@ -395,6 +429,15 @@ class Seed:
         extra.setdefault("posted_date", day)
         return make_entry(self.db, account, amount, kind=kind, entry_date=day, source=source, **extra)
 
+    def line(self, kind, account, amount, **fields) -> dict:
+        return schedule_line(kind, account, amount, **fields)
+
+    def definition(self, lines, **fields) -> ScheduleDefinition:
+        return make_definition(self.db, lines, **fields)
+
+    def instance(self, definition, seq, day, **fields) -> ScheduleInstance:
+        return make_instance(self.db, definition, seq, day, **fields)
+
     def fx(self, day, base, quote, rate) -> FxRate:
         return self._add(FxRate(date=day, base=base, quote=quote, rate=Decimal(rate), source="test"))
 
@@ -403,3 +446,15 @@ class Seed:
 def seed(db_session):
     """seed.account(...), seed.entry(account, "-100", kind=..., source=..., ...) and friends on db_session."""
     return Seed(db_session)
+
+
+@pytest.fixture()
+def today(monkeypatch):
+    """today(date(2026, 10, 3)) fixes ledger_service._today(), the Taipei date every schedule service reads."""
+    from app.services import ledger_service
+
+    def set_today(day: date) -> date:
+        monkeypatch.setattr(ledger_service, "_today", lambda: day)
+        return day
+
+    return set_today

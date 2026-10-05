@@ -55,6 +55,12 @@
           }
         </span>
         <span class="pills">
+          @if (entry.schedule; as link) {
+            <span class="pill schedule-pill">{{ schedulePill(link) }}</span>
+            @if (link.is_partial) {
+              <span class="pill review-marker">部分</span>
+            }
+          }
           @if (entry.needs_review) {
             <span class="pill review-marker" title="請確認這筆記錄">待確認</span>
           }

@@ -21,7 +21,7 @@ from ..models import (
     Counterparty,
     EntryGroup,
     LedgerEntry,
-    MozeSchedule,
+    ScheduleDefinition,
     Preference,
     Project,
     RewardRule,
@@ -275,8 +275,12 @@ REWARD_WINDOW_MAP: dict[int, str] = {0: "statement_cycle"}
 COLOR_MAP: dict[int, str] = {0: "red_green", 1: "green_red"}
 KEYPAD_MAP: dict[int, str] = {1: "calculator", 0: "phone"}
 
-# Field types: str, str? (nullable), num (Decimal), int, bool, dt (datetime), dt?, list, dict
+# Field types: str, str? (nullable), num (Decimal), int, bool, dt (datetime), dt?, list, dict, dates
 S, SN, NUM, INT, BOOL, DT, DTN, LIST, DICT = "str", "str?", "num", "int", "bool", "dt", "dt?", "list", "dict"
+DATES = "dates"  # AHInstallment.dateInfo: a list, or an object keyed "0", "1", … — normalised to a list of datetimes
+# A schedule rule integer: an int, or a digit string (MOZE stores AHPeriod.days as a Realm string; Task 28 found it a
+# digit string in every real period) — normalised to an int. A non-digit string is refused like any non-integer.
+DIGITS = "digits"
 
 CLASS_FIELDS: dict[str, dict[str, str]] = {
     "AHAccount": {
@@ -322,8 +326,14 @@ CLASS_FIELDS: dict[str, dict[str, str]] = {
     "AHBonusRewardSharing": {"identifier": S, "bonusRewards": LIST},
     "AHCreditSharing": {"identifier": S, "accounts": LIST},
     "AHCurrencyConversion": {"recordID": S, "exchangeRate": NUM, "baseCurrencyCode": S, "targetCurrencyCode": S},
-    "AHPeriod": {"identifier": S},
-    "AHInstallment": {"identifier": S},
+    "AHPeriod": {
+        "identifier": S, "unit": INT, "days": DIGITS, "times": DIGITS, "type": INT, "startDate": DTN,
+        "count": DIGITS, "startIndex": DIGITS,
+    },
+    "AHInstallment": {
+        "identifier": S, "dayOfMonth": DIGITS, "dateInfo": DATES, "times": DIGITS, "total": NUM, "remainder": NUM,
+        "count": DIGITS, "startIndex": DIGITS,
+    },
     "AHPreference": {
         "expenseIncomeColor": INT, "numberPadType": INT, "firstWeekday": INT, "mainCurrency": SN,
         "hideRewardsOnHome": BOOL, "isTotalBalanceAbbreviate": BOOL,
@@ -351,6 +361,11 @@ CLASS_ATTRS: dict[str, str] = {
 }
 OPTIONAL_CLASSES = ("AHBonusRewardSharing", "AHCreditSharing", "AHPeriod", "AHInstallment", "AHAppConfig")
 PRIMARY_KEYS = {"AHCurrencyConversion": "recordID"}
+# Fields validated when present but not required (older converter output and test documents omit them).
+OPTIONAL_FIELDS: dict[str, frozenset[str]] = {
+    "AHPeriod": frozenset({"count", "startIndex"}),
+    "AHInstallment": frozenset({"count", "startIndex"}),
+}
 
 
 @dataclass(frozen=True)
@@ -391,8 +406,8 @@ TEXT_COLUMNS: dict[str, dict[str, Any]] = {
     },
     "AHPackage": {"identifier": EntryGroup.moze_id, "name": EntryGroup.name, "store": EntryGroup.merchant},
     "AHBonusReward": {"identifier": RewardRule.moze_id, "name": RewardRule.name},
-    "AHPeriod": {"identifier": MozeSchedule.moze_id},
-    "AHInstallment": {"identifier": MozeSchedule.moze_id},
+    "AHPeriod": {"identifier": ScheduleDefinition.moze_id},
+    "AHInstallment": {"identifier": ScheduleDefinition.moze_id},
     "AHPreference": {"mainCurrency": Preference.main_currency},
 }
 
@@ -426,6 +441,11 @@ def _normalise(value: Any, kind: str, where: str, field: str) -> Any:
         return value
     if base == "bool" and isinstance(value, bool):
         return value
+    if base == "digits":
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
+            return int(value.strip())
     if base == "num" and isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
         return value if isinstance(value, Decimal) else Decimal(str(value))
     if base == "dt" and (parsed := _datetime(value)) is not None:
@@ -434,8 +454,20 @@ def _normalise(value: Any, kind: str, where: str, field: str) -> Any:
         return value
     if base == "dict" and isinstance(value, dict):
         return value
-    expected = {"str": "a string", "int": "an integer", "bool": "a boolean", "num": "a number",
-                "dt": "an ISO date-time", "list": "a list", "dict": "an object"}[base]
+    if base == "dates":
+        items = value
+        if isinstance(value, dict):
+            try:
+                items = [value[key] for key in sorted(value, key=int)]
+            except ValueError:
+                items = None
+        if isinstance(items, list):
+            parsed_items = [_datetime(item) for item in items]
+            if all(item is not None for item in parsed_items):
+                return parsed_items
+    expected = {"str": "a string", "int": "an integer", "digits": "an integer", "bool": "a boolean", "num": "a number",
+                "dt": "an ISO date-time", "list": "a list", "dict": "an object",
+                "dates": "a list of ISO date-times"}[base]
     raise MozeImportError(f"{where}: field '{field}' must be {expected}{' or null' if nullable else ''}")
 
 
@@ -449,12 +481,14 @@ def _rows(name: str, raw: Any) -> list[dict]:
         if not isinstance(row, dict):
             raise MozeImportError(f"{name} row {index}: not an object")
         where = f"{name} '{row[key]}'" if isinstance(row.get(key), str) else f"{name} row {index}"
+        optional = OPTIONAL_FIELDS.get(name, frozenset())
         for field in fields:
-            if field not in row:
+            if field not in row and field not in optional:
                 raise MozeImportError(f"{where}: missing field '{field}'")
         normalised = dict(row)
         for field, kind in fields.items():
-            normalised[field] = _normalise(row[field], kind, where, field)
+            if field in row:
+                normalised[field] = _normalise(row[field], kind, where, field)
         _check_lengths(name, normalised, where)
         if key in normalised:
             if normalised[key] in seen:

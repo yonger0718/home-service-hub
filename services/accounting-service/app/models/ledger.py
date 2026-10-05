@@ -21,7 +21,7 @@ from sqlalchemy import (
     event,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.sql import func
 
 from ..database import Base, TimestampMixin
@@ -41,7 +41,7 @@ ENTRY_KINDS = (
     "refund",
 )
 SYSTEM_KINDS = ("fee", "discount", "reward", "interest", "balance_adjustment")
-ENTRY_SOURCES = ("moze_import", "moze_backup", "manual", "hermes", "rule")
+ENTRY_SOURCES = ("moze_import", "moze_backup", "manual", "hermes", "rule", "schedule")
 MOZE_SOURCES = ("moze_import", "moze_backup")
 FX_SOURCES = ("fx_api", "moze_backup", "manual")
 DUE_RULES = ("fixed_day", "days_after_closing")
@@ -52,7 +52,6 @@ REWARD_WINDOWS = ("statement_cycle",)
 REWARD_POSTINGS = ("after_window", "after_transaction", "manual")
 COLOR_CONVENTIONS = ("red_green", "green_red")
 KEYPAD_LAYOUTS = ("calculator", "phone")
-SCHEDULE_KINDS = ("period", "installment", "skipped_record")
 
 entry_kind_enum = Enum(*ENTRY_KINDS, name="entry_kind")
 entry_source_enum = Enum(*ENTRY_SOURCES, name="entry_source")
@@ -65,7 +64,6 @@ reward_window_enum = Enum(*REWARD_WINDOWS, name="reward_window")
 reward_posting_enum = Enum(*REWARD_POSTINGS, name="reward_posting")
 color_convention_enum = Enum(*COLOR_CONVENTIONS, name="color_convention")
 keypad_layout_enum = Enum(*KEYPAD_LAYOUTS, name="keypad_layout")
-schedule_kind_enum = Enum(*SCHEDULE_KINDS, name="moze_schedule_kind")
 
 # posted_date defaults to entry_date (D14). A column default cannot read another column,
 # so a BEFORE trigger fills it; the migration installs the same function and trigger.
@@ -314,12 +312,3 @@ class Preference(Base):
     hide_rewards_on_timeline = Column(Boolean, nullable=False, server_default=text("false"))
     abbreviate_totals = Column(Boolean, nullable=False, server_default=text("true"))
 
-
-class MozeSchedule(Base):
-    __tablename__ = "moze_schedule"
-
-    id = Column(Integer, primary_key=True)
-    kind = Column(schedule_kind_enum, nullable=False)
-    moze_id = Column(String(64), nullable=False)
-    payload = Column(JSONB, nullable=False)
-    import_run_id = Column(Integer, ForeignKey("import_run.id"), nullable=True)

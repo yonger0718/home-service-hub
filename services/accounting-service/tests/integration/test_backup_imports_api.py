@@ -64,19 +64,6 @@ def test_backup_dry_run_writes_nothing(client, db_session, backup, fake_exporter
     assert db_session.scalar(select(ImportRun)) is None
 
 
-def test_skipped_rows_are_retrievable_as_schedules(client, db_session, backup, fake_exporter):
-    _use_exporter(fake_exporter(_doc(backup)))
-    assert _upload(client).status_code == 200
-
-    items = client.get("/imports/schedules", params={"kind": "skipped_record"}).json()
-
-    assert [(i["moze_id"], i["next_date"], i["amount"], i["name"], i["currency"]) for i in items] == [
-        ("R-LOAN", "2026-11-09", "-3000", "房貸", "TWD"), ("R-INT", "2026-12-09", "-12", None, "TWD"),
-    ]
-    assert set(items[0]) == {"id", "kind", "moze_id", "name", "next_date", "amount", "currency"}
-    assert client.get("/imports/schedules", params={"kind": "nonsense"}).status_code == 422
-
-
 def test_converter_failure_is_422_and_writes_no_run(client, db_session, fake_exporter):
     _use_exporter(fake_exporter(exit_code=1, message="moze-realm-export: archive has no moze.realm"))
     response = _upload(client)

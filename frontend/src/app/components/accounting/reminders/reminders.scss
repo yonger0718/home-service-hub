@@ -281,3 +281,255 @@
     }
   }
 }
+
+/* 待完成交易: one period per row; wraps at 390 px. */
+.queue-item {
+  align-items: center;
+  border-top: 1px solid var(--app-border);
+  display: grid;
+  gap: 2px 10px;
+  grid-template-areas: 'ico name due' 'ico lines total' 'ico error error' 'ico actions actions';
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 8px 0;
+
+  > .ico {
+    align-items: center;
+    border-radius: 50%;
+    display: flex;
+    font-size: 1.1rem;
+    grid-area: ico;
+    height: 38px;
+    justify-content: center;
+    width: 38px;
+  }
+
+  > .name {
+    font-weight: 800;
+    grid-area: name;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.queue-item .due {
+  border-radius: var(--radius-pill);
+  color: var(--app-text-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  grid-area: due;
+  justify-self: end;
+  padding: 1px 8px;
+  white-space: nowrap;
+
+  &.today {
+    background: var(--app-state-warning-bg);
+    color: var(--app-text);
+  }
+
+  &.overdue {
+    background: var(--app-state-warning-bg);
+    color: var(--tone-neg, var(--c-red));
+  }
+}
+
+.queue-item .lines {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+  grid-area: lines;
+  min-width: 0;
+
+  .line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 6px;
+  }
+
+  small {
+    color: var(--app-text-muted);
+  }
+}
+
+.queue-item .total {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  grid-area: total;
+  text-align: right;
+}
+
+.queue-error {
+  color: var(--app-danger);
+  font-size: 0.72rem;
+  grid-area: error;
+}
+
+.queue-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-area: actions;
+
+  button {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-pill);
+    color: var(--app-primary);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-label, 0.75rem);
+    font-weight: 700;
+    padding: 2px 12px;
+
+    &:focus-visible {
+      outline: 2px solid var(--app-primary);
+      outline-offset: 1px;
+    }
+
+    &:disabled {
+      opacity: 0.5;
+    }
+  }
+
+  .skip-confirm {
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+}
+
+.badge.partial {
+  background: var(--app-state-warning-bg);
+  border-radius: var(--radius-pill);
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 1px 8px;
+}
+
+.queue-item:focus-visible {
+  outline: 2px solid var(--app-primary);
+  outline-offset: 2px;
+}
+
+/* 週期／分期: same grid as the debt rows; facts wrap under the name at 390 px. */
+.schedule-row {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--app-border);
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 2px 10px;
+  grid-template-areas: 'ico name next' 'ico facts facts';
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 8px 0;
+  text-align: left;
+  width: 100%;
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 2px;
+  }
+
+  > .ico {
+    align-items: center;
+    border-radius: 50%;
+    display: flex;
+    font-size: 1.1rem;
+    grid-area: ico;
+    height: 38px;
+    justify-content: center;
+    width: 38px;
+  }
+
+  > .name {
+    font-weight: 800;
+    grid-area: name;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  > .next {
+    color: var(--app-text-muted);
+    font-size: 0.72rem;
+    grid-area: next;
+    white-space: nowrap;
+  }
+
+  > .facts {
+    align-items: baseline;
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 0.75rem;
+    gap: 0 8px;
+    grid-area: facts;
+    min-width: 0;
+  }
+
+  .remaining {
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+  }
+
+  .badge {
+    border-radius: var(--radius-pill);
+    font-size: 0.68rem;
+    font-weight: 800;
+    padding: 0 8px;
+  }
+
+  .badge.mode,
+  .badge.paused {
+    background: var(--app-surface-soft);
+    color: var(--app-text-muted);
+  }
+
+  .badge.check {
+    background: var(--app-state-warning-bg);
+    color: var(--tone-neg, var(--c-red));
+  }
+}
+
+.schedule-failing {
+  align-items: center;
+  background: var(--app-state-warning-bg);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  justify-content: space-between;
+  margin: 2px 0 6px 50px;
+  padding: 4px 10px;
+
+  .msg {
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
+  }
+
+  .retry {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-pill);
+    color: var(--app-primary);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-label, 0.75rem);
+    font-weight: 700;
+    padding: 2px 12px;
+  }
+}
+
+.ended-schedules summary {
+  color: var(--app-text-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 6px 0;
+}

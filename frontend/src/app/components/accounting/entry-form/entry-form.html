@@ -12,7 +12,7 @@
       class="ib ok save"
       aria-label="儲存"
       title="長按或 ⇧⏎：儲存並續記"
-      [disabled]="locked() || saving() || loading() || loadFailed()"
+      [disabled]="locked() || definitionLocked() || definitionReadOnly() || saving() || loading() || loadFailed()"
       (pointerdown)="onSavePointerDown()"
       (pointerup)="onSavePointerUp()"
       (pointerleave)="onSavePointerUp()"
@@ -21,7 +21,7 @@
     >✓</button>
   </header>
 
-  <app-lock-banner [locked]="locked()" />
+  <app-lock-banner [locked]="locked() || definitionLocked()" />
   @if (savedFlash()) {
     <p class="saved-flash" role="status">已儲存，繼續記下一筆</p>
   }
@@ -39,7 +39,7 @@
     </div>
   }
 
-  <fieldset class="content" [disabled]="locked() || loading()">
+  <fieldset class="content" [disabled]="locked() || definitionLocked() || definitionReadOnly() || loading() || createdScheduleId() !== null">
     <div class="kinds" role="tablist" aria-label="記錄類型">
       @for (tab of kinds; track tab.kind) {
         <button
@@ -60,7 +60,8 @@
         [locked]="locked()"
         [keypadLayout]="preference().keypad_layout"
         [edit]="transferEdit()"
-        [keepArchived]="entryId() !== null"
+        [keepArchived]="entryId() !== null || scheduleId() !== null"
+        [scheduled]="scheduling()"
         (saveRequested)="save($event)"
       />
     }
@@ -112,7 +113,7 @@
           [splittable]="false"
           (picked)="onCategoryPicked($event)"
         />
-        @if (category() !== null) {
+        @if (category() !== null && !scheduling()) {
           <!-- An existing single entry cannot become a split here (that would duplicate it): only split members edit lines. -->
           <app-split-lines
             [(members)]="members"
@@ -128,7 +129,12 @@
       <div class="tiles">
         @if (kind() !== 'transfer') {
           <div class="tile amount wide" [class.invalid]="amountError()">
-            <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx')">{{ entryCurrency() }}</button>
+            @if (scheduling() && !fx()) {
+              <span class="cur">{{ accountCurrency() }}</span>
+            } @else {
+              <!-- also on 週期 / 分期 while a rate is set: the FX sheet is where the owner removes it -->
+              <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx')">{{ entryCurrency() }}</button>
+            }
             @if (isPhone()) {
               <span class="amount-value">{{ amountText() }}</span>
             } @else {
@@ -143,7 +149,9 @@
                 (blur)="commitAmountInput($any($event.target).value)"
               />
             }
-            <button type="button" class="plus fee-open" aria-label="手續費與折扣" (click)="openSheet('fee')">+</button>
+            @if (!scheduling()) {
+              <button type="button" class="plus fee-open" aria-label="手續費與折扣" (click)="openSheet('fee')">+</button>
+            }
           </div>
         }
 
@@ -203,7 +211,10 @@
           <span class="sr-only">時間</span>
           <input type="time" class="time-input" [value]="entryTime()" (change)="entryTime.set($any($event.target).value)" />
         </label>
-        @if (kind() !== 'transfer') {
+        @if (scheduling()) {
+          <p class="tile wide schedule-unsupported">排程不支援</p>
+        }
+        @if (kind() !== 'transfer' && !scheduling()) {
           <div class="tile invoice-tile">
             <input class="invoice-input" placeholder="發票號碼" aria-label="發票號碼" maxlength="16" [value]="invoiceNumber()" (input)="invoiceNumber.set($any($event.target).value)" />
             <input class="random-input" placeholder="隨機碼" aria-label="隨機碼" maxlength="8" [value]="invoiceRandom()" (input)="invoiceRandom.set($any($event.target).value)" />
@@ -212,7 +223,7 @@
       </div>
 
       <div class="chips">
-        @if (kind() !== 'transfer') {
+        @if (kind() !== 'transfer' && !scheduling()) {
           @for (rule of offeredRules(); track rule.id) {
             <button
               type="button"
@@ -226,7 +237,7 @@
         @for (tag of tags(); track tag) {
           <button type="button" class="chip tag" [attr.aria-label]="'移除標籤 ' + tag" (click)="removeTag(tag)">#{{ tag }} ×</button>
         }
-        @if (kind() !== 'transfer') {
+        @if (kind() !== 'transfer' && !scheduling()) {
           @if (fee(); as child) {
             <span class="chip fee">{{ child.name || '手續費' }} {{ feeText(child) }}</span>
           }
@@ -239,12 +250,26 @@
 
       <textarea class="note" placeholder="備註" aria-label="備註" [value]="description()" (input)="description.set($any($event.target).value)"></textarea>
 
-      <details class="advanced">
+      <details class="advanced" [open]="scheduling() || scheduleId() !== null">
         <summary>進階</summary>
-        <label class="adv-row">
-          <span>入帳日</span>
-          <input type="date" class="posted-input" [value]="postedDate() || entryDate()" (change)="postedDate.set($any($event.target).value)" />
-        </label>
+        <app-schedule-tabs
+          [kind]="kind()"
+          [entryDate]="entryDate()"
+          [amount]="amount()"
+          [currency]="accountCurrency()"
+          [accounts]="accountOptions()"
+          [accountId]="accountId()"
+          [disabled]="locked() || definitionLocked() || definitionReadOnly() || createdScheduleId() !== null"
+          [definitionMode]="scheduleId() !== null"
+          [editing]="editing()"
+          [errors]="fieldErrors()"
+          [(draft)]="scheduleDraft"
+        >
+          <label class="adv-row">
+            <span>入帳日</span>
+            <input type="date" class="posted-input" [value]="postedDate() || entryDate()" (change)="postedDate.set($any($event.target).value)" />
+          </label>
+        </app-schedule-tabs>
       </details>
     }
   </fieldset>

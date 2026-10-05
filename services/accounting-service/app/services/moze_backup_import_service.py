@@ -19,9 +19,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Collection, Mapping, Sequence
 
-from sqlalchemy import delete, exists, func, or_, select, text
+from sqlalchemy import exists, func, or_, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -35,12 +35,15 @@ from ..models import (
     EntryRewardRule,
     ImportRun,
     LedgerEntry,
-    MozeSchedule,
     Preference,
     Project,
     RewardRule,
+    ScheduleInstance,
 )
 from . import fx_rate_service, ledger_service
+from . import schedule_import
+from . import schedule_job
+from .schedule_import_map import map_schedules
 from .moze_backup_json import (
     ARCHIVE_GROUP,
     category_name,
@@ -540,6 +543,12 @@ class EntryResult:
     reward_source_from_package: int = 0  # rewards whose rewardRecordID names an imported package
     settlements_linked: Counter = field(default_factory=lambda: Counter(by_related_id=0, by_target=0))
     debts_closed_from_target: int = 0
+    # covered record id -> the HomeHub entry standing in for it (D37): parent of its fee children, source of its rewards
+    stand_ins: dict[str, LedgerEntry] = field(default_factory=dict)
+    # (record, parent record id) of the fee / reward dependants of skipped or owner-held covered records, not imported
+    dependants_suppressed: list[tuple[dict, str]] = field(default_factory=list)
+    # past records MOZE leaves out of balances (_disabled_ids over every past record, covered ones included, R3)
+    uncounted_ids: set[str] = field(default_factory=set)
 
 
 def _account_currency(data: BackupData, main_currency: str) -> dict[str, str]:
@@ -852,7 +861,7 @@ def _link_rewards_and_attachments(session: Session, data: BackupData, settings: 
             continue
         if record["type"] == 14:
             entry.reward_rule_id = settings.rules.get(record["rewardID"])
-            source = result.entries.get(record["rewardRecordID"])
+            source = result.entries.get(record["rewardRecordID"]) or result.stand_ins.get(record["rewardRecordID"])
             if source is None and record["rewardRecordID"] in result.package_members:
                 source = _primary_member(result.package_members[record["rewardRecordID"]])
                 if source is not None:
@@ -934,6 +943,31 @@ def _disabled_ids(records: list[dict], transfers: list[dict], result: EntryResul
     return skipped
 
 
+def _dependant_parents(records: list[dict], roots: Collection[str]) -> dict[str, str]:
+    """Fee and reward records hanging off `roots`, transitively: dependant id -> its direct parent record id."""
+    if not roots:
+        return {}
+    children: dict[str, list[str]] = {}
+    for record in records:
+        if record["feeID"] and record["feeID"] != record["identifier"]:
+            children.setdefault(record["identifier"], []).append(record["feeID"])
+        if record["type"] == 14 and record["rewardRecordID"]:
+            children.setdefault(record["rewardRecordID"], []).append(record["identifier"])
+    found: dict[str, str] = {}
+    pending = [(child, root) for root in roots for child in children.get(root, [])]
+    while pending:
+        identifier, parent = pending.pop()
+        if identifier not in found:
+            found[identifier] = parent
+            pending.extend((child, identifier) for child in children.get(identifier, []))
+    return found
+
+
+def _dependants(records: list[dict], roots: Collection[str]) -> set[str]:
+    """Fee and reward records hanging off `roots` (records not imported because HomeHub already covered them)."""
+    return set(_dependant_parents(records, roots))
+
+
 def insert_entries(
     session: Session,
     data: BackupData,
@@ -942,26 +976,58 @@ def insert_entries(
     rates: Mapping[tuple[date, str, str], Decimal],
     *,
     allow_fx_outliers: bool,
+    skip_ids: frozenset[str] = frozenset(),
+    stand_ins: Mapping[str, LedgerEntry] | None = None,
 ) -> EntryResult:
-    """Insert one entry per live AHRecord dated up to the export date, with children, FX and links."""
+    """Insert one entry per live AHRecord dated up to the export date, with children, FX and links.
+
+    `skip_ids`: covered records HomeHub already decided (D37), never inserted. Their fee / reward dependants hang off
+    the entry in `stand_ins` (a posted period's HomeHub entry); without one (skipped, owner-held) they are left out
+    and listed in `dependants_suppressed` for the balance comparison and the report.
+    """
     result = EntryResult()
+    result.stand_ins = dict(stand_ins or {})
     cutoff = data.exported_at.date()
     conversions = {conversion["recordID"]: conversion for conversion in data.conversions}
     kinds = {record["identifier"]: record_kind(record) for record in data.records}  # fails on unknown types first
 
     current = []
     for record in data.records:
+        if record["identifier"] in skip_ids:
+            continue  # HomeHub already posted or skipped this period (D37)
         if _is_future(record, cutoff):
-            result.skipped_future[record["type"]] += 1
+            # Enabled future rows become schedule periods (schedule_import); disabled ones count with the other
+            # disabled rows, so Σ skipped_future = records_mapped + rewards_ignored + Σ unsupported_types.
+            if record["isEnabled"]:
+                result.skipped_future[record["type"]] += 1
+            else:
+                result.disabled_skipped[record["type"]] += 1
             result.skipped_records.append(record)
         else:
             current.append(record)
     disabled = _disabled_ids(current, data.transfers, result)
+    # Ruling R3: the same rule over the covered records too (a scratch result: covered rows are not counted in the
+    # report), so a disabled covered record, its transfer's other leg and its dependants are never compensated.
+    past = [record for record in data.records if not _is_future(record, cutoff)]
+    result.uncounted_ids = _disabled_ids(past, data.transfers, EntryResult())
+    held = _dependant_parents(data.records, skip_ids - result.stand_ins.keys())
+    result.dependants_suppressed = [
+        (record, held[record["identifier"]])
+        for record in current
+        if record["identifier"] in held
+        and record["identifier"] not in disabled
+        and record["identifier"] not in result.uncounted_ids
+    ]
+    disabled |= held.keys()
+    # Ruling R4 (Multica PR #47 #4): an uncounted record never enters the ledger either — the dependants of a disabled
+    # covered parent (posted: it has a stand-in, so it is in neither `current` nor `held`) and the uncovered other
+    # leg of a disabled covered transfer leg are left out with it, as MOZE leaves them out of balances.
+    disabled |= result.uncounted_ids
     live = [record for record in current if record["identifier"] not in disabled]
     live_ids = {record["identifier"] for record in live}
     fee_parent = {
         record["feeID"]: record["identifier"]
-        for record in live
+        for record in [*live, *(record for record in data.records if record["identifier"] in result.stand_ins)]
         if record["feeID"] and record["feeID"] in live_ids and record["feeID"] != record["identifier"]
     }
     fee_records: dict[str, list[dict]] = {}
@@ -986,6 +1052,9 @@ def insert_entries(
     for record in sorted(live, key=lambda r: r["date"]):
         if record["identifier"] not in fee_parent:
             build(record)
+    for covered_id in sorted(result.stand_ins):  # fee children of covered records hang off their stand-in entry
+        for child_record in fee_records.get(covered_id, []):
+            build(child_record)
     unbuilt = sorted(live_ids - set(result.entries))
     if unbuilt:
         raise MozeImportError(f"AHRecord '{unbuilt[0]}': feeID links form a cycle")
@@ -1002,7 +1071,8 @@ def insert_entries(
     session.flush()
     for record, entry, children in ordered:
         if record["identifier"] in fee_parent:
-            entry.parent_entry_id = result.entries[fee_parent[record["identifier"]]].id
+            parent_id = fee_parent[record["identifier"]]
+            entry.parent_entry_id = (result.entries.get(parent_id) or result.stand_ins[parent_id]).id
         for child in children:
             child.parent_entry_id = entry.id
         session.add_all(children)
@@ -1092,35 +1162,29 @@ def _jsonable(row: dict) -> dict:
     return json.loads(json.dumps(row, default=default, ensure_ascii=False))
 
 
-def _replace_schedule(session: Session, data: BackupData, skipped: list[dict], import_run_id: int | None) -> dict:
-    session.execute(delete(MozeSchedule))
-    rows = [
-        *(("period", row) for row in data.periods),
-        *(("installment", row) for row in data.installments),
-        *(("skipped_record", row) for row in skipped),
-    ]
-    session.add_all(
-        MozeSchedule(kind=kind, moze_id=row.get("identifier"), payload=_jsonable(row), import_run_id=import_run_id)
-        for kind, row in rows
-    )
-    session.flush()
-    return dict(Counter(kind for kind, _ in rows))
-
-
 def _cache_date(account: dict, data: BackupData) -> date:
     return (account["cacheDate"] or data.exported_at.replace(tzinfo=None)).date()
 
 
-def _moze_part(session: Session, account: Account, cutoff: date, *, sources: Sequence[str], any_moze_id: bool) -> Decimal:
+def _moze_part(
+    session: Session, account: Account, cutoff: date, *, sources: Sequence[str], any_moze_id: bool,
+    extra_ids: Collection[int] = (), extra_amounts: Collection[tuple[date, Decimal]] = (),
+) -> Decimal:
+    """opening + Σ amount of the account's MOZE entries (and `extra_ids`: schedule entries standing in for records
+    skipped as already posted, D37) posted up to `cutoff`, plus `extra_amounts` up to `cutoff`: MOZE records suppressed
+    for an owner-edited pending period (R-F1), which MOZE booked and HomeHub has not yet."""
     condition = LedgerEntry.source.in_(sources)
     if any_moze_id:
         condition = or_(condition, LedgerEntry.moze_id.is_not(None))
+    if extra_ids:
+        condition = or_(condition, LedgerEntry.id.in_(list(extra_ids)))
     total = session.scalar(
         select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
             LedgerEntry.account_id == account.id, LedgerEntry.posted_date <= cutoff, condition
         )
     )
-    return _amount(account.opening_balance + total)
+    suppressed = sum((amount for day, amount in extra_amounts if day <= cutoff), Decimal(0))
+    return _amount(account.opening_balance + total + suppressed)
 
 
 def _previous_moze_parts(session: Session, data: BackupData) -> dict[str, Decimal]:
@@ -1144,11 +1208,18 @@ def _moze_balance(record: dict) -> Decimal | None:
     return _amount(Decimal(str(record["balanceInfo"][key])))
 
 
-def _account_reports(session, data, settings, previous) -> list[dict]:
+def _account_reports(
+    session, data, settings, previous, stand_ins: Collection[int] = (),
+    suppressed: Collection[tuple[str, date, Decimal]] = (),
+) -> list[dict]:
     reports = []
     for record in data.accounts:
         account = settings.accounts[record["identifier"]]
-        moze_part = _moze_part(session, account, _cache_date(record, data), sources=(SOURCE,), any_moze_id=False)
+        extra = [(day, amount) for moze_account, day, amount in suppressed if moze_account == record["identifier"]]
+        moze_part = _moze_part(
+            session, account, _cache_date(record, data), sources=(SOURCE,), any_moze_id=False, extra_ids=stand_ins,
+            extra_amounts=extra,
+        )
         moze_balance = _moze_balance(record)
         reports.append(
             {
@@ -1165,6 +1236,31 @@ def _account_reports(session, data, settings, previous) -> list[dict]:
     return reports
 
 
+def _stand_in_parents(session: Session, data: BackupData, settings: SettingsResult, covered) -> dict[str, LedgerEntry]:
+    """Covered record id -> the HomeHub entry standing in for it (status posted, D37): its instance's posted entry on
+    the record's account, else the instance's first posted entry. Fee / reward dependants of the record hang off it."""
+    posted = {record_id: item.instance_id for record_id, item in covered.items() if item.status == "posted"}
+    if not posted:
+        return {}
+    rows = select(ScheduleInstance.id, ScheduleInstance.posted_entry_ids).where(
+        ScheduleInstance.id.in_(set(posted.values()))
+    )
+    posted_ids = dict(session.execute(rows).all())
+    wanted = {entry_id for entry_ids in posted_ids.values() for entry_id in entry_ids or ()}
+    entries = {entry.id: entry for entry in session.scalars(select(LedgerEntry).where(LedgerEntry.id.in_(wanted)))}
+    accounts = {record["identifier"]: record["account"] for record in data.records}
+    found = {}
+    for record_id, instance_id in posted.items():
+        candidates = [entries[entry_id] for entry_id in posted_ids.get(instance_id) or () if entry_id in entries]
+        if not candidates:
+            continue
+        account = settings.accounts.get(accounts.get(record_id))
+        found[record_id] = next(
+            (entry for entry in candidates if account is not None and entry.account_id == account.id), candidates[0]
+        )
+    return found
+
+
 def replace_ledger_from_backup(
     session: Session,
     data: BackupData,
@@ -1178,15 +1274,45 @@ def replace_ledger_from_backup(
     """Full replace in the caller's transaction; returns the report summary. Raises MozeImportError."""
     renamed = _apply_renames(session, renames or {})
     previous = _previous_moze_parts(session, data)
+    mapped = map_schedules(data)
+    schedule_import.lock_schedule_rows(session)  # D32: schedule rows before any entry is deleted
+    schedule_import.merge_known_past_singles(session, mapped)
+    captured = schedule_import.capture_links(session)
+    covered = schedule_import.covered_records(session, mapped)
+    started_at = _now()
     delete_moze_entries(session)
     settings = upsert_settings(session, data)
-    archived = _archive_disappeared_accounts(session, {account.name for account in settings.accounts.values()})
-    entries = insert_entries(session, data, settings, import_run_id, rates or {}, allow_fx_outliers=allow_fx_outliers)
+    usage = schedule_import.template_usage(session)
+    archived = _archive_disappeared_accounts(
+        session, {account.name for account in settings.accounts.values()}, keep_ids=usage["account"]
+    )
+    entries = insert_entries(
+        session, data, settings, import_run_id, rates or {}, allow_fx_outliers=allow_fx_outliers,
+        skip_ids=frozenset(covered), stand_ins=_stand_in_parents(session, data, settings, covered),
+    )
     delete_unused_rows(session, keep=settings.kept_moze_ids)
-    schedules = _replace_schedule(session, data, entries.skipped_records, import_run_id)
+    schedules = schedule_import.apply_schedules(
+        session, data, mapped, settings, entries, covered, started_at=started_at, today=ledger_service._today()
+    )
+    schedule_import.restore_links(session, captured, schedules)
+    schedule_import.loan_check(session, mapped, schedules)  # after re-pointing: HomeHub's repayments count
+    stand_ins = schedule_import.stand_in_entry_ids(session, covered, entries.uncounted_ids)
+    # R-F1 owner-held periods and periods HomeHub skipped: MOZE booked them, HomeHub (deliberately) has not
+    suppressed = schedule_import.suppressed_amounts(covered, ("owner_pending", "skipped"), entries.uncounted_ids)
+    suppressed += [  # dependants of skipped / owner-held periods: MOZE booked them, HomeHub holds no parent for them
+        (record["account"], record["date"].date(), Decimal(str(_record_amount(record))))
+        for record, _ in entries.dependants_suppressed
+    ]
+    schedules["dependants_suppressed"] = {
+        "count": len(entries.dependants_suppressed),
+        "records": [
+            {"moze_id": record["identifier"], "parent_moze_id": parent, "type": record["type"]}
+            for record, parent in sorted(entries.dependants_suppressed, key=lambda item: item[0]["identifier"])
+        ],
+    }
     session.flush()
 
-    accounts = _account_reports(session, data, settings, previous)
+    accounts = _account_reports(session, data, settings, previous, stand_ins, suppressed)
     compared = [report for report in accounts if report["compared"]]
     mismatched = [report for report in compared if Decimal(report["difference"]) != 0]
     if strict and mismatched:
@@ -1316,6 +1442,7 @@ def run_backup_import(
     http_get: fx_rate_service.HttpGet | None = None,
     exporter: Sequence[str] | None = None,
     keep_json: Path | None = None,
+    trigger_job: bool = True,
 ) -> dict:
     """Convert, then import under the shared lock. Raises ImportRefusedError, ConverterError or MozeImportError."""
     if import_locked():
@@ -1333,55 +1460,13 @@ def run_backup_import(
             _keep_private_copy(json_path, Path(keep_json))
         data = load_backup_json(json_path)
     with import_lock(engine) as conn:
-        return _run_backup_locked(
+        report = _run_backup_locked(
             conn, data, file_name, sha256, dry_run=dry_run, renames=renames or {}, strict=strict,
             allow_fx_outliers=allow_fx_outliers, http_get=http_get,
         )
-
-
-def _schedule_due(kind: str, payload: dict) -> date | None:
-    def day(value) -> date | None:
-        return date.fromisoformat(value[:10]) if isinstance(value, str) and len(value) >= 10 else None
-
-    if kind == "skipped_record":
-        return day(payload.get("date"))
-    if kind == "installment":
-        upcoming = sorted(d for d in (day(v) for v in (payload.get("dateInfo") or {}).values()) if d and d >= ledger_service._today())
-        if upcoming:
-            return upcoming[0]
-    return day(payload.get("startDate"))
-
-
-def list_schedules(db: Session, kind: str | None = None) -> list[dict]:
-    """ScheduleItemOut rows: name, next_date, amount and currency are derived from the stored payload.
-
-    currency: the payload's own `currency`, else the currency of the payload's `account` (by moze_id),
-    else the preference's main currency. The payload itself stays in the table and is not returned.
-    """
-    query = select(MozeSchedule).order_by(MozeSchedule.id)
-    if kind is not None:
-        query = query.where(MozeSchedule.kind == kind)
-    account_currency = dict(db.execute(select(Account.moze_id, Account.currency).where(Account.moze_id.is_not(None))).all())
-    main = ledger_service.main_currency(db)
-    items = []
-    for row in db.scalars(query):
-        payload = row.payload or {}
-        amount = payload.get("total") if row.kind == "skipped_record" else payload.get("installment")
-        currency = payload.get("currency")
-        if not isinstance(currency, str) or not currency:
-            currency = account_currency.get(payload.get("account")) or main
-        items.append(
-            {
-                "id": row.id,
-                "kind": row.kind,
-                "moze_id": row.moze_id,
-                "name": payload.get("name") or None,
-                "next_date": _schedule_due(row.kind, payload),
-                "amount": Decimal(str(amount)) if amount is not None else None,
-                "currency": currency,
-            }
-        )
-    return sorted(items, key=lambda item: (item["next_date"] is None, item["next_date"] or date.min, item["id"]))
+    if trigger_job and not dry_run and report["status"] == "succeeded":
+        schedule_job.trigger_after_import(engine)  # D34: once the advisory lock is released
+    return report
 
 
 def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None, exporter: Sequence[str] | None = None) -> int:
@@ -1402,7 +1487,7 @@ def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None, exp
         report = run_backup_import(
             engine, args.path, args.path.name, dry_run=args.dry_run, renames=dict(args.rename),
             strict=not args.no_strict, allow_fx_outliers=args.allow_fx_outliers, exporter=exporter,
-            keep_json=args.keep_json,
+            keep_json=args.keep_json, trigger_job=False,
         )
     except ImportRefusedError as exc:
         print(str(exc), file=sys.stderr)
@@ -1422,6 +1507,19 @@ def main(argv: Sequence[str] | None = None, *, engine: Engine | None = None, exp
             file=sys.stderr,
         )
     print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    if not args.dry_run and report["status"] == "succeeded":
+        # R-F4: this process has no scheduler; the import lock is released, so the job runs here (posting only with
+        # ACCOUNTING_SCHEDULER_ENABLED on, else a due-but-unposted count). Counts only on stderr.
+        try:
+            job = schedule_job.run_after_cli_import(engine)
+        except Exception as exc:  # the import is committed; its exit code stands (no message text: owner data)
+            print(f"schedule_job: status crashed error_class={type(exc).__name__}", file=sys.stderr)
+        else:
+            print(
+                f"schedule_job: status {job['status']}, generated {job['generated']}, posted {len(job['posted'])}, "
+                f"failed {len(job['failed'])}, due_unposted {job.get('due_unposted', 0)}",
+                file=sys.stderr,
+            )
     return 0
 
 

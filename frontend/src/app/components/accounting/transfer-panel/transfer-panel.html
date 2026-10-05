@@ -48,7 +48,9 @@
           (focus)="activeSide.set('out')"
           (keydown)="onAmountKeydown('out', $event)"
           (blur)="normalize('out')" />
-        <button type="button" class="plus" aria-label="轉出手續費與折扣" (click)="openSheet('out', $event)">+</button>
+        @if (!scheduled()) {
+          <button type="button" class="plus" aria-label="轉出手續費與折扣" (click)="openSheet('out', $event)">+</button>
+        }
       </span>
     </div>
     <div class="tile amount-tile in-tile" [class.active]="activeSide() === 'in'" (click)="sameCurrency() ? null : activeSide.set('in')">
@@ -65,7 +67,9 @@
           (focus)="sameCurrency() ? null : activeSide.set('in')"
           (keydown)="onAmountKeydown('in', $event)"
           (blur)="normalize('in')" />
-        <button type="button" class="plus" aria-label="轉入手續費與折扣" (click)="openSheet('in', $event)">+</button>
+        @if (!scheduled()) {
+          <button type="button" class="plus" aria-label="轉入手續費與折扣" (click)="openSheet('in', $event)">+</button>
+        }
       </span>
     </div>
     <div class="tile rate-tile wide">

@@ -1,0 +1,121 @@
+.next-period .period-edit {
+  background: none;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-primary);
+  font-size: 0.72rem;
+  margin-left: 8px;
+  padding: 0 10px;
+}
+
+.period-editor {
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 6px;
+  padding: 8px;
+}
+
+.period-amount {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+
+  input {
+    font-variant-numeric: tabular-nums;
+    min-width: 0;
+    text-align: right;
+    width: 8rem;
+  }
+}
+
+/* 套用範圍: three buttons that wrap at 390 px. */
+.scope-sheet {
+  border-top: 1px solid var(--app-border);
+  padding-top: 6px;
+
+  h4 {
+    font-size: 0.85rem;
+    margin: 0 0 6px;
+    text-align: center;
+  }
+}
+
+.scope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.rule-summary {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  margin: 0 0 6px;
+  text-align: center;
+}
+
+.badge {
+  border-radius: var(--radius-pill);
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 800;
+  margin: 0 4px 6px 0;
+  padding: 1px 8px;
+
+  &.paused {
+    background: var(--app-surface-soft);
+    color: var(--app-text-muted);
+  }
+
+  &.check {
+    background: var(--app-state-warning-bg);
+    color: var(--tone-neg, var(--c-red));
+  }
+}
+
+.next-periods {
+  border-top: 1px solid var(--app-border);
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.next-period {
+  display: flex;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.sheet-modes,
+.resume-choice,
+.sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sheet-mode[aria-checked='true'] {
+  border-color: var(--app-primary);
+  font-weight: 700;
+}
+
+.end-confirm,
+.delete-confirm,
+.form-error {
+  color: var(--app-danger);
+  font-size: 0.8rem;
+  margin: 6px 0;
+}
+
+.muted,
+.load-error {
+  color: var(--app-text-muted);
+  font-size: var(--fs-sm, 0.85rem);
+  text-align: center;
+}
