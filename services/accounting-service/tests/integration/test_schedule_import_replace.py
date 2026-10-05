@@ -569,6 +569,65 @@ def test_dependants_of_a_disabled_skipped_record_are_not_compensated(db_session,
     assert db_session.get(ScheduleInstance, instance.id).status == "skipped"
 
 
+def test_dependants_of_a_disabled_posted_covered_record_never_enter_the_ledger(db_session, backup, today, monkeypatch):
+    # Multica PR #47 finding 4 (ruling R4): HomeHub posted the period; the next export disables its record R. MOZE
+    # leaves R and its fee / reward out of balances, so R-FEE and R-RW are uncounted: no entries (not only no
+    # compensation), the stand-in stays out of moze_part, and a strict compared import passes.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _fee_period_data(backup, "2026-10-01T17:00:37"))
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R"))
+    assert posting.post_instance(db_session, instance.id, actor="auto", job=True, today=date(2026, 10, 9)).outcome == "posted"
+    db_session.commit()
+    today(date(2026, 10, 12))
+    monkeypatch.setattr(moze_backup_import_service, "balance_info_key", lambda account: "1" if account["balanceInfo"] else None)
+    data = _fee_period_data(backup, "2026-10-12T17:00:00", moze_balance=-100)
+    next(record for record in data.records if record["identifier"] == "R")["isEnabled"] = False
+
+    summary = _import_backup(db_session, data, strict=True)
+
+    assert [_by_moze_id(db_session, key) for key in ("R", "R-FEE", "R-RW")] == [None, None, None]
+    assert [entry.id for entry in _schedule_entries(db_session)] == instance.posted_entry_ids
+    wallet = summary["accounts"][0]
+    assert (Decimal(wallet["moze_part"]), Decimal(wallet["difference"])) == (Decimal("-100"), Decimal("0"))
+    assert summary["schedules"]["dependants_suppressed"] == {"count": 0, "records": []}
+    db_session.expire_all()
+    assert db_session.get(ScheduleInstance, instance.id).status == "posted"
+
+
+def test_uncovered_partner_of_a_disabled_covered_transfer_leg_is_not_inserted(db_session, backup, today):
+    # Ruling R4: the out-leg O is a period HomeHub posted; the in-leg I carries no eventID (not covered). Once MOZE
+    # disables O, it leaves the whole transfer out of balances, so I must not become an entry on its own.
+    def data(exported_at, *, enabled=True):
+        records = [
+            _rec(backup, "O-SEP", "2026-09-09", type_=2, price=-500, eventID="PER-T"),
+            _rec(backup, "I-SEP", "2026-09-09", type_=2, price=500, account="A-BANK", eventID="PER-T"),
+            _rec(backup, "O", "2026-10-09", type_=2, price=-500, eventID="PER-T", isEnabled=enabled),
+            _rec(backup, "I", "2026-10-09", type_=2, price=500, account="A-BANK"),
+        ]
+        return backup.data(
+            exported_at=exported_at,
+            accounts=[backup.account("A-WALLET", "錢包"), backup.account("A-BANK", "銀行")],
+            periods=[backup.period("PER-T", unit=2, days=9, type_=1, start="2026-09-09T00:00:00")],
+            records=records,
+            transfers=[backup.transfer("X-SEP", "O-SEP", "I-SEP"), backup.transfer("X", "O", "I")],
+        )
+
+    today(date(2026, 10, 3))
+    _import_backup(db_session, data("2026-10-01T17:00:37"))
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "O"))
+    assert instance is not None and instance.status == "pending"
+    assert posting.post_instance(db_session, instance.id, actor="auto", job=True, today=date(2026, 10, 9)).outcome == "posted"
+    db_session.commit()
+    today(date(2026, 10, 12))
+
+    _import_backup(db_session, data("2026-10-12T17:00:00", enabled=False))
+
+    assert _by_moze_id(db_session, "O") is None
+    assert _by_moze_id(db_session, "I") is None
+    db_session.expire_all()
+    assert db_session.get(ScheduleInstance, instance.id).status == "posted"
+
+
 @pytest.mark.parametrize(("enabled", "moze_part"), [(True, "-200"), (False, "-100")])
 def test_skipped_covered_record_is_compensated_in_the_balance_comparison(
     db_session, backup, today, monkeypatch, enabled, moze_part

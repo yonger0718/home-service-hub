@@ -1019,6 +1019,10 @@ def insert_entries(
         and record["identifier"] not in result.uncounted_ids
     ]
     disabled |= held.keys()
+    # Ruling R4 (Multica PR #47 #4): an uncounted record never enters the ledger either — the dependants of a disabled
+    # covered parent (posted: it has a stand-in, so it is in neither `current` nor `held`) and the uncovered other
+    # leg of a disabled covered transfer leg are left out with it, as MOZE leaves them out of balances.
+    disabled |= result.uncounted_ids
     live = [record for record in current if record["identifier"] not in disabled]
     live_ids = {record["identifier"] for record in live}
     fee_parent = {
