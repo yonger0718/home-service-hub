@@ -7,6 +7,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf } from '../accounting-ui';
 import { Period, periodLabel, shiftPeriod, statementPeriod } from '../cycle';
 import { todayIso } from '../dates';
+import { schedulePill } from '../schedule-math';
 import { formatMoney } from '../format';
 
 export const PAGE_SIZE = 200;
@@ -56,6 +57,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
 
   readonly kindOptions = Object.entries(ENTRY_KIND_LABELS) as [EntryKind, string][];
   readonly formatMoney = formatMoney;
+  readonly schedulePill = schedulePill;
   readonly iconOf = iconOf;
   readonly colorOf = colorOf;
 

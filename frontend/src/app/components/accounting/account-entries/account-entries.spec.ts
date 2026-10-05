@@ -395,4 +395,14 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     expect(from.value).toBe('');
     expect(to.value).toBe('');
   });
+
+  it('shows the schedule pill on a scheduled row', () => {
+    const scheduled = entry(9, {
+      schedule: { definition_id: 3, instance_id: 4, kind: 'recurring', seq: 25, times: null, name: 'Netflix', is_partial: false,
+        acted_by: 'auto', posted_entry_ids: [9] },
+    });
+    const fixture = render({ items: [scheduled], total: 1, limit: PAGE_SIZE, offset: 0 });
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.schedule-pill')?.textContent?.trim()).toBe('週期 #25');
+  });
 });

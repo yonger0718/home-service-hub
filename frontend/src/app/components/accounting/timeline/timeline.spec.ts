@@ -5,12 +5,12 @@ import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Counterparty, DailySummary, LedgerAccount, LedgerEntry, MonthSummary, Preference } from '../../../models/accounting.model';
+import { Counterparty, DailySummary, LedgerAccount, LedgerEntry, MonthSummary, Preference, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
-import { makeAccount, makeEntry, makePreference } from '../testing/fixtures';
-import { LedgerTimelineComponent, buildDays } from './timeline';
+import { makeAccount, makeEntry, makeInstance, makePreference } from '../testing/fixtures';
+import { LedgerTimelineComponent, buildDays, schedulePills } from './timeline';
 
 const VIEW_KEY = 'hh.accounting.timelineView';
 
@@ -37,6 +37,7 @@ describe('LedgerTimelineComponent', () => {
     providers: Provider[] = [],
     accounts: LedgerAccount[] = ACCOUNTS,
     counterparties: Counterparty[] = [],
+    queue: ScheduleInstance[] = [],
   ) {
     TestBed.configureTestingModule({
       imports: [LedgerTimelineComponent],
@@ -48,14 +49,17 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     httpMock.expectOne('/api/accounting/preference').flush(preference);
     httpMock.expectOne('/api/accounting/accounts').flush(accounts);
-    flushCounterparties(counterparties);
+    flushCounterparties(counterparties, queue);
     fixture.detectChanges();
     return { fixture, el: fixture.nativeElement as HTMLElement };
   }
 
-  /** The 🔔 count's counterparties: read on init and again after every entry or account write. */
-  function flushCounterparties(body: Counterparty[] = []): void {
+  /** The 🔔's counterparties and 待完成交易 queue: read on init and again after every entry or account write. */
+  function flushCounterparties(body: Counterparty[] = [], queue: ScheduleInstance[] = []): void {
     httpMock!.expectOne('/api/accounting/counterparties').flush(body);
+    const req = httpMock!.expectOne(r => r.url === '/api/accounting/schedules/instances');
+    expect(req.request.params.get('queue')).toBe('true');
+    req.flush(queue);
   }
 
   function flushSummary(month: string, body?: Partial<MonthSummary>): void {
@@ -883,6 +887,55 @@ describe('LedgerTimelineComponent', () => {
       expect(navigate).toHaveBeenCalledWith(['/accounting/reminders']);
     });
 
+    it('counts 待完成交易 items due today or earlier', () => {
+      // Spec "Bell includes due confirm items" (today here is 2026-10-02: 10-01 is due, 10-20 is not).
+      const queue = [makeInstance({ id: 1, due_date: '2026-10-01' }), makeInstance({ id: 2, due_date: '2026-10-20' })];
+      const rendered = render('phone', makePreference(), [], [...ACCOUNTS, CARD], [], queue);
+      flushSummary('2026-10');
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      flushBill('-12345.0000');
+      rendered.fixture.detectChanges();
+      expect(text(rendered.el.querySelector('.bell-count'))).toBe('2');
+      expect(bell(rendered.el).getAttribute('aria-label')).toBe('提醒中心，2 項');
+    });
+
+    it('counts a partial period until it is accepted', () => {
+      // Spec "Partial period counted until accepted".
+      const partial = makeInstance({ id: 5, status: 'posted', is_partial: true, due_date: '2026-11-09' });
+      const rendered = render('phone', makePreference(), [], ACCOUNTS, [], [partial]);
+      flushSummary('2026-10');
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      expect(text(rendered.el.querySelector('.bell-count'))).toBe('1');
+      TestBed.inject(AccountingService).acceptPartialScheduleInstance(5).subscribe();
+      httpMock!.expectOne(r => r.url.endsWith('/instances/5/accept-partial')).flush(partial);
+      rendered.fixture.detectChanges();
+      flushSummary('2026-10');
+      flushEntries([]);
+      flushCounterparties([], []);
+      rendered.fixture.detectChanges();
+      expect(rendered.el.querySelector('.bell-count')).toBeNull();
+    });
+
+    it('stops counting the item of a definition the owner paused', () => {
+      // Spec "Paused definition not counted".
+      const due = makeInstance({ id: 6, definition_id: 3, due_date: '2026-10-01' });
+      const rendered = render('phone', makePreference(), [], ACCOUNTS, [], [due]);
+      flushSummary('2026-10');
+      flushEntries([]);
+      rendered.fixture.detectChanges();
+      expect(text(rendered.el.querySelector('.bell-count'))).toBe('1');
+      TestBed.inject(AccountingService).pauseSchedule(3).subscribe();
+      httpMock!.expectOne(r => r.url.endsWith('/definitions/3/pause')).flush({});
+      rendered.fixture.detectChanges();
+      flushSummary('2026-10');
+      flushEntries([]);
+      flushCounterparties([], []);
+      rendered.fixture.detectChanges();
+      expect(rendered.el.querySelector('.bell-count')).toBeNull();
+    });
+
     it('re-reads the counterparties after an entry write', () => {
       const { fixture, el } = renderListWith(ACCOUNTS);
       TestBed.inject(AccountingService).deleteEntry(3).subscribe();
@@ -974,6 +1027,32 @@ describe('LedgerTimelineComponent', () => {
 describe('buildDays', () => {
   const group = (total: string | null, currency = 'TWD') => ({
     id: 4, kind: 'split' as const, name: '旅行', merchant: null, description: null, count: 2, total, currency,
+  });
+
+  const link = (overrides: Record<string, unknown>) =>
+    ({ definition_id: 3, instance_id: 9, kind: 'installment', seq: 5, times: 36, name: '分期', is_partial: false, acted_by: 'auto',
+       posted_entry_ids: [1], ...overrides }) as LedgerEntry['schedule'];
+
+  it('puts the schedule pill first, in MOZE wording', () => {
+    // Spec "Installment pill", "Unlimited recurring pill".
+    const [installment] = buildDays([makeEntry({ id: 1, schedule: link({}) })], 'TWD', false);
+    expect(installment.rows[0].pills[0]).toEqual({ label: '分期 #5/36', tone: '' });
+    expect(schedulePills(makeEntry({ schedule: link({ kind: 'recurring', seq: 25, times: null }) }))).toEqual([
+      { label: '週期 #25', tone: '' },
+    ]);
+    const transfer = buildDays(
+      [makeEntry({ id: 3, kind: 'transfer_out', amount: '-15000.0000', transfer_group_id: 't-9', schedule: link({ kind: 'recurring', seq: 2, times: 12 }) })],
+      'TWD',
+      false,
+    );
+    expect(transfer[0].rows[0].pills.map(pill => pill.label)).toEqual(['週期 #2/12', '轉帳']);
+  });
+
+  it('adds 部分 to a partial period', () => {
+    expect(schedulePills(makeEntry({ schedule: link({ seq: 1, is_partial: true }) }))).toEqual([
+      { label: '分期 #1/36', tone: '' },
+      { label: '部分', tone: 'review' },
+    ]);
   });
 
   it('shows — for a group without a total and leaves it out of the day net', () => {

@@ -26,6 +26,7 @@ import {
   LedgerEntry,
   MonthSummary,
   Preference,
+  ScheduleInstance,
   defaultCategoryIcon,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -35,6 +36,7 @@ import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../bill
 import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
+import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
 
@@ -158,8 +160,21 @@ function subLine(entry: LedgerEntry): string {
   return [lead, ...entry.tags.map(tag => `#${tag}`)].filter(Boolean).join(' · ');
 }
 
+/** `分期 #5/36` / `週期 #25` (and `部分` while the period is partial) for an entry a schedule wrote. */
+export function schedulePills(entry: Pick<LedgerEntry, 'schedule'>): TimelinePill[] {
+  const link = entry.schedule;
+  if (!link) {
+    return [];
+  }
+  const pills: TimelinePill[] = [{ label: schedulePill(link), tone: '' }];
+  if (link.is_partial) {
+    pills.push({ label: '部分', tone: 'review' });
+  }
+  return pills;
+}
+
 function pillsOf(entry: LedgerEntry): TimelinePill[] {
-  const pills: TimelinePill[] = [];
+  const pills: TimelinePill[] = schedulePills(entry);
   const kindPill = KIND_PILLS[entry.kind];
   if (kindPill) {
     pills.push(kindPill);
@@ -236,7 +251,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
         amountText: formatMoney(Math.abs(Number(out.amount)), out.currency),
         tone: 'neutral',
         fx: fxLine(out),
-        pills: [{ label: '轉帳', tone: '' }],
+        pills: [...schedulePills(out), { label: '轉帳', tone: '' }],
         groupCount: null,
       };
     } else {
@@ -297,6 +312,9 @@ export class LedgerTimelineComponent implements OnInit {
   /** For the 🔔 count only (counterparties with an open amount). */
   private readonly counterparties = signal<Counterparty[]>([]);
   private counterpartyRequestId = 0;
+  /** For the 🔔 count only: the 待完成交易 queue (`queue=true`). */
+  private readonly queue = signal<ScheduleInstance[]>([]);
+  private queueRequestId = 0;
   readonly month = signal(currentMonth());
   readonly summary = signal<MonthSummary | null>(null);
   readonly entries = signal<LedgerEntry[]>([]);
@@ -386,13 +404,14 @@ export class LedgerTimelineComponent implements OnInit {
     return lines;
   });
   /**
-   * 🔔 count: cards with something left to pay (as the reminder centre lists them; a card whose statement failed to
-   * read is not counted) + counterparties with open debt rows (`open_count`, which never nets 應收 against 應付).
+   * 🔔 count: cards with something left to pay, counterparties with open debt rows, and 待完成交易 items due today or
+   * earlier or partial (paused and ended definitions are not in the queue).
    */
   readonly reminderCount = computed(
     () =>
       this.reminderEvents().filter(event => this.openBill(event) !== null).length +
-      this.counterparties().filter(counterparty => (counterparty.open_count ?? 0) > 0).length,
+      this.counterparties().filter(counterparty => (counterparty.open_count ?? 0) > 0).length +
+      this.queue().filter(item => item.is_partial || item.due_date <= this.today()).length,
   );
   /** The list view's 近 7 天 banner: upcoming due days with a remaining balance. */
   readonly upcomingBills = computed(() => this.upcomingEvents().filter(event => this.openBill(event) !== null));
@@ -475,7 +494,10 @@ export class LedgerTimelineComponent implements OnInit {
     effect(() => {
       this.accounting.entriesChanged();
       this.accounting.accountsChanged();
-      untracked(() => this.loadCounterparties());
+      untracked(() => {
+        this.loadCounterparties();
+        this.loadQueue();
+      });
     });
 
     // A saved preference (settings pane beside this list in the wide layout) is re-read; the effects above then reload.
@@ -667,6 +689,19 @@ export class LedgerTimelineComponent implements OnInit {
     this.dayEntries.set([]);
     this.dayLoading.set(false);
     this.dayError.set(false);
+  }
+
+  private loadQueue(): void {
+    const id = ++this.queueRequestId;
+    this.accounting.getScheduleInstances({ queue: true }).subscribe({
+      next: items => {
+        if (id === this.queueRequestId) {
+          this.queue.set(items);
+        }
+      },
+      // Swallowed like the counterparties: the 🔔 is a hint; the reminder centre reports its own load errors.
+      error: () => undefined,
+    });
   }
 
   private loadCounterparties(): void {
