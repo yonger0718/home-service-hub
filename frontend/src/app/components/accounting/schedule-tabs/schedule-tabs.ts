@@ -5,7 +5,7 @@ import { accountLabel } from '../accounting-ui';
 import { FormKind } from '../entry-form/entry-draft';
 import { formatMoney, formatNumber } from '../format';
 import { ScheduleRule, addMonthsIso, installmentFooter, recurringFooter, splitInstallment } from '../schedule-math';
-import { SCHEDULE_TABS, ScheduleDraft, ScheduleEndMode, ScheduleTab, tabsFor } from './schedule-draft';
+import { SCHEDULE_TABS, ScheduleDraft, ScheduleEndMode, ScheduleTab, dayOf, ruleDayFor, tabsFor } from './schedule-draft';
 
 const UNITS: readonly { unit: ScheduleIntervalUnit; label: string }[] = [
   { unit: 'day', label: '天' },
@@ -100,7 +100,8 @@ export class ScheduleTabsComponent {
         const start = draft.startTouched ? draft.start : date;
         const firstDate = draft.firstTouched ? draft.firstDate : addMonthsIso(date, 1);
         if (start !== draft.start || firstDate !== draft.firstDate) {
-          this.draft.set({ ...draft, start, firstDate });
+          const moved = { ...draft, start, firstDate };
+          this.draft.set({ ...moved, dayOfMonth: ruleDayFor(moved) });
         }
       });
     });
@@ -110,7 +111,8 @@ export class ScheduleTabsComponent {
       untracked(() => {
         const draft = this.draft();
         if (offered.length > 0 && !offered.includes(draft.tab)) {
-          this.draft.set({ ...draft, tab: offered[0] });
+          const switched = { ...draft, tab: offered[0] };
+          this.draft.set({ ...switched, dayOfMonth: ruleDayFor(switched) });
         }
       });
     });
@@ -118,6 +120,14 @@ export class ScheduleTabsComponent {
 
   private patch(changes: Partial<ScheduleDraft>): void {
     this.draft.update(draft => ({ ...draft, ...changes }));
+  }
+
+  /** `patch`, then the rule day re-derived for the changed draft (`ruleDayFor`). */
+  private realign(changes: Partial<ScheduleDraft>): void {
+    this.draft.update(draft => {
+      const next = { ...draft, ...changes };
+      return { ...next, dayOfMonth: ruleDayFor(next) };
+    });
   }
 
   error(...fields: string[]): string | null {
@@ -130,9 +140,10 @@ export class ScheduleTabsComponent {
     return null;
   }
 
+  /** Switching tabs re-derives the rule day from the active tab's date (N1), unless it is a definition's stored day. */
   selectTab(tab: ScheduleTab): void {
     if (!this.disabled()) {
-      this.patch({ tab });
+      this.realign({ tab });
     }
   }
 
@@ -140,8 +151,11 @@ export class ScheduleTabsComponent {
     this.typeCount('every', value);
   }
 
+  /** A day / week rule has no rule day; a month / year one takes 起始日's day (N1: no stale day reaches the payload). */
   setUnit(value: string): void {
-    this.patch({ unit: value as ScheduleIntervalUnit });
+    const unit = value as ScheduleIntervalUnit;
+    const monthly = unit === 'month' || unit === 'year';
+    this.patch({ unit, dayHydrated: false, dayOfMonth: monthly ? dayOf(this.draft().start) : null });
   }
 
   /**
@@ -151,7 +165,7 @@ export class ScheduleTabsComponent {
   setStart(value: string): void {
     if (value) {
       const monthly = this.draft().unit === 'month' || this.draft().unit === 'year';
-      this.patch({ start: value, startTouched: true, dayOfMonth: monthly ? dayOf(value) : null });
+      this.patch({ start: value, startTouched: true, dayOfMonth: monthly ? dayOf(value) : null, dayHydrated: false });
     }
   }
 
@@ -200,7 +214,7 @@ export class ScheduleTabsComponent {
   /** An explicit 首次還款日 also replaces the rule day (R3): 分期 is monthly, so it takes the chosen date's day. */
   setFirst(value: string): void {
     if (value) {
-      this.patch({ firstDate: value, firstTouched: true, dayOfMonth: dayOf(value) });
+      this.patch({ firstDate: value, firstTouched: true, dayOfMonth: dayOf(value), dayHydrated: false });
     }
   }
 
@@ -215,9 +229,4 @@ export class ScheduleTabsComponent {
   setRepay(value: string): void {
     this.patch({ repayAccountId: value ? Number(value) : null });
   }
-}
-
-/** The day of month of an ISO date (YYYY-MM-DD). */
-function dayOf(iso: string): number {
-  return Number(iso.slice(8, 10));
 }

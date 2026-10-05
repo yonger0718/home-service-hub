@@ -197,6 +197,26 @@ describe('schedule-save', () => {
       expect(roundTrip(card)).toEqual(loadedFields(card));
     });
 
+    it('N2: drops the cutoff once 期數 or 首次還款日 changed', () => {
+      const card = makeDefinition({
+        kind: 'installment', name: '手機分期', anchor_date: '2026-11-03', times: 3, end_date: '2026-12-03', total_amount: '27000',
+        template: { lines: [{ ...lineOf, kind: 'expense', name: '手機分期', amount: '9000' }], description: null, tags: [] },
+      });
+      const state = draftFromDefinition(card);
+      const build = (draft: typeof state.draft) =>
+        buildDefinitionInput(
+          {
+            kind: state.kind, draft, name: state.name, merchant: '', description: '', tags: [], projectId: null,
+            categoryId: state.categoryId, categoryName: null, account: CARD, amount: 27000, counterpartyId: null,
+            transfer: null, transferFrom: null, transferTo: null, repayAccount: null, entryDate: '2026-10-03', loanEntryId: null,
+          },
+          { original: card },
+        );
+      expect(build(state.draft).end_date).toBe('2026-12-03');
+      expect(build({ ...state.draft, periods: 4 }).end_date).toBeNull();
+      expect(build({ ...state.draft, firstDate: '2026-11-10' }).end_date).toBeNull();
+    });
+
     it('keeps the interest line category / project / merchant / name', () => {
       const loan = makeDefinition({
         kind: 'installment', name: '信貸', anchor_date: '2026-11-09', times: 36, total_amount: '300000',

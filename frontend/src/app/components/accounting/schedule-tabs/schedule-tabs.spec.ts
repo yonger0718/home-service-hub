@@ -228,4 +228,54 @@ describe('ScheduleTabsComponent', () => {
       expect(payload(draft)).toMatchObject({ anchor_date: '2026-11-15', day_of_month: 15 });
     });
   });
+
+  describe('N1: the rule day follows the unit and the active tab', () => {
+    const payload = (draft: ScheduleDraft) =>
+      buildDefinitionInput({
+        kind: 'expense', draft, name: '', merchant: '', description: '', tags: [], projectId: null, categoryId: 41,
+        categoryName: '房租', account: ACCOUNTS[0], amount: 900, counterpartyId: null, transfer: null, transferFrom: null,
+        transferTo: null, repayAccount: null, entryDate: '2026-10-03', loanEntryId: null,
+      });
+
+    it('create: pick 起始日 on 每月, then switch the unit to 每週 / 每天 → no day_of_month', () => {
+      const { fixture } = render();
+      tab(fixture, '週期');
+      set(fixture, '.sched-start', '2026-11-15', 'change');
+      expect(fixture.componentInstance.draft().dayOfMonth).toBe(15);
+      set(fixture, '.sched-unit', 'week', 'change');
+      expect(payload(fixture.componentInstance.draft()).day_of_month).toBeNull();
+      set(fixture, '.sched-unit', 'day', 'change');
+      expect(payload(fixture.componentInstance.draft()).day_of_month).toBeNull();
+      set(fixture, '.sched-unit', 'month', 'change');
+      expect(payload(fixture.componentInstance.draft()).day_of_month).toBe(15);
+    });
+
+    it('the builder sends no day_of_month for a day / week unit even when the draft holds one', () => {
+      const draft: ScheduleDraft = { ...defaultDraft('2026-10-22'), tab: 'recurring', unit: 'week', dayOfMonth: 31 };
+      expect(payload(draft).day_of_month).toBeNull();
+    });
+
+    it('create: 分期 首次還款日, then 週期 monthly without touching 起始日 → 起始日\'s day', () => {
+      const { fixture } = render({ entryDate: '2026-10-22', amount: 9000 });
+      tab(fixture, '分期');
+      set(fixture, '.sched-first', '2026-11-05', 'change');
+      expect(fixture.componentInstance.draft().dayOfMonth).toBe(5);
+      tab(fixture, '週期');
+      const draft = fixture.componentInstance.draft();
+      expect(payload(draft)).toMatchObject({ anchor_date: '2026-10-22', day_of_month: 22 });
+      expect(nextOccurrences(fixture.componentInstance.rule(), 1)[0]).toBe('2026-10-22');
+    });
+
+    it('definition mode: switching tabs keeps a hydrated rule day whose date was not touched', () => {
+      const draft: ScheduleDraft = {
+        // an imported 31st anchored in November (2026-11-30 is its normalised first date)
+        ...defaultDraft('2026-11-30'), tab: 'recurring', start: '2026-11-30', startTouched: true, firstDate: '2026-11-30',
+        firstTouched: true, dayOfMonth: 31, dayHydrated: true,
+      };
+      const { fixture } = render({ definitionMode: true, kind: 'expense', draft });
+      tab(fixture, '分期');
+      tab(fixture, '週期');
+      expect(fixture.componentInstance.draft().dayOfMonth).toBe(31);
+    });
+  });
 });

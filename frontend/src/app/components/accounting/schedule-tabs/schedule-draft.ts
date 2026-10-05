@@ -18,8 +18,13 @@ export interface ScheduleDraft {
    * `startTouched` and `firstTouched` to true, or the entry-date effect replaces the definition's anchor / first date.
    */
   startTouched: boolean;
-  /** Kept from an edited definition (an imported 31st); the form itself never sets it. */
+  /**
+   * The rule day of a month / year rule; null = the anchor's day. Hydrated from an edited definition (an imported
+   * 31st), else the day of the active tab's date once a date was picked (`ruleDayFor`). Never sent for day / week.
+   */
   dayOfMonth: number | null;
+  /** True while `dayOfMonth` is the edited definition's stored value: no date or unit was changed since (N1). */
+  dayHydrated: boolean;
   endMode: ScheduleEndMode;
   endTimes: number;
   endDate: string;
@@ -63,6 +68,7 @@ export function defaultDraft(entryDate: string): ScheduleDraft {
     start: entryDate,
     startTouched: false,
     dayOfMonth: null,
+    dayHydrated: false,
     endMode: 'never',
     endTimes: 12,
     endDate: addMonthsIso(entryDate, 12),
@@ -74,4 +80,33 @@ export function defaultDraft(entryDate: string): ScheduleDraft {
     interest: '',
     repayAccountId: null,
   };
+}
+
+/** The day of month of an ISO date (YYYY-MM-DD). */
+export function dayOf(iso: string): number {
+  return Number(iso.slice(8, 10));
+}
+
+function monthly(unit: ScheduleIntervalUnit): boolean {
+  return unit === 'month' || unit === 'year';
+}
+
+/**
+ * The rule day the draft should carry (N1): a hydrated definition's day stays until its date or unit is changed; else
+ * a day / week rule has none, and a set rule day follows the active tab's date (週期 → 起始日, 分期 → 首次還款日,
+ * monthly). A null rule day stays null: the server then takes the anchor's day, which is the same date.
+ */
+export function ruleDayFor(draft: ScheduleDraft): number | null {
+  if (draft.dayHydrated || draft.dayOfMonth === null) {
+    return draft.dayOfMonth;
+  }
+  if (draft.tab === 'installment') {
+    return dayOf(draft.firstDate);
+  }
+  return monthly(draft.unit) ? dayOf(draft.start) : null;
+}
+
+/** `day_of_month` of a recurring payload: never for a day / week rule. */
+export function recurringDayOfMonth(draft: ScheduleDraft): number | null {
+  return monthly(draft.unit) ? draft.dayOfMonth : null;
 }

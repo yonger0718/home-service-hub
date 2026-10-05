@@ -11,7 +11,7 @@ import {
 } from '../../../models/accounting.model';
 import { amountString, parseAmountText } from '../amount-text';
 import { splitInstallment } from '../schedule-math';
-import { ScheduleDraft, defaultDraft } from '../schedule-tabs/schedule-draft';
+import { ScheduleDraft, defaultDraft, recurringDayOfMonth } from '../schedule-tabs/schedule-draft';
 import { FormKind } from './entry-draft';
 import { TransferEdit } from './transfer-math';
 
@@ -175,6 +175,17 @@ export function buildDefinitionInput(values: ScheduleFormValues, options: Defini
   return { ...input, template: { ...input.template, lines: mergeLines(input.template.lines, values, options.original ?? null) } };
 }
 
+/**
+ * N2: an edited installment keeps its loaded `end_date` (the form has no 結束 for 分期) only while its 首次還款日 and
+ * 期數 are unchanged; once either moved, the old cutoff no longer describes the run and is dropped.
+ */
+function keptInstallmentCutoff(draft: ScheduleDraft, original: ScheduleDefinition | null): string | null {
+  if (original?.kind !== 'installment') {
+    return null;
+  }
+  return draft.firstDate === original.anchor_date && draft.periods === original.times ? original.end_date : null;
+}
+
 function buildFromForm(values: ScheduleFormValues, original: ScheduleDefinition | null): ScheduleDefinitionInput {
   const { draft } = values;
   const typedName = values.name.trim();
@@ -193,7 +204,7 @@ function buildFromForm(values: ScheduleFormValues, original: ScheduleDefinition 
       interval_unit: draft.unit,
       interval_n: draft.every,
       anchor_date: draft.start,
-      day_of_month: draft.dayOfMonth,
+      day_of_month: recurringDayOfMonth(draft),
       times: draft.endMode === 'times' ? draft.endTimes : null,
       end_date: draft.endMode === 'date' ? draft.endDate : null,
       total_amount: null,
@@ -232,7 +243,7 @@ function buildFromForm(values: ScheduleFormValues, original: ScheduleDefinition 
     anchor_date: draft.firstDate,
     day_of_month: draft.dayOfMonth,
     times: draft.periods,
-    end_date: original?.kind === 'installment' ? original.end_date : null,
+    end_date: keptInstallmentCutoff(draft, original),
     total_amount: totalText,
     posting_mode: draft.mode,
   };
@@ -363,6 +374,7 @@ export function draftFromDefinition(definition: ScheduleDefinition): ScheduleFor
     start: definition.anchor_date,
     startTouched: true,
     dayOfMonth: definition.day_of_month,
+    dayHydrated: true,
     endMode: !installment && definition.times !== null ? 'times' : definition.end_date ? 'date' : 'never',
     endTimes: definition.times ?? base.endTimes,
     endDate: definition.end_date ?? base.endDate,
