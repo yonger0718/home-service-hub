@@ -187,7 +187,7 @@ Lock order: the shared import lock → `schedule_definition` → `schedule_insta
 
 ### Requirement: Daily schedule job
 
-The accounting service SHALL run a schedule job in-process (APScheduler, `coalesce`, one instance at a time) at 00:05 Asia/Taipei every day, about 10 seconds after startup, after every successful backup import that is not a dry run (once the import has released its advisory lock), and every 10 minutes after a run that ended `busy` or `import_running` until a run completes that Taipei day, unless `ACCOUNTING_SCHEDULER_ENABLED` is `false`. A run SHALL:
+The accounting service SHALL run a schedule job in-process (APScheduler, `coalesce`, one instance at a time) at 00:05 Asia/Taipei every day, about 10 seconds after startup, after every successful backup import that is not a dry run (once the import has released its advisory lock), and every 10 minutes after a run that ended `busy`, `import_running` or `crashed` (an unexpected error in the run) until a run completes that Taipei day, unless `ACCOUNTING_SCHEDULER_ENABLED` is `false`. A run SHALL:
 
 1. take the PostgreSQL advisory lock `0x53434844` with `pg_try_advisory_lock` on a dedicated connection, and return `busy` without doing anything when it is held;
 2. generate instances for every definition, one transaction per definition;

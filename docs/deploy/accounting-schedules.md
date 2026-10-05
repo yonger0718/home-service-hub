@@ -81,6 +81,18 @@ Revision `c4e8b2f1a7d3` (down revision `7b1e4a2c9d05`):
 
    Any difference from the expected output: stop, do not deploy.
 
+0c. **Check out the release in the production checkout** (after the drill, before step 1). `NEW_BACKEND` is the commit from step 0b. The checkout must be clean, as the rollback script requires:
+
+   ```bash
+   cd /home/opc/workspace/home-hub
+   git status --short
+   git fetch --quiet && git switch --detach "$NEW_BACKEND"
+   git rev-parse HEAD
+   ls services/accounting-service/alembic/versions | grep -c c4e8b2f1a7d3
+   ```
+
+   Expected: `git status --short` prints nothing (otherwise stop: the rollback script refuses a dirty checkout); `git rev-parse HEAD` equals `$NEW_BACKEND`; `1`. This release changes no `frontend/package.json` and nothing under `tools/`, so no `npm ci` is needed. The services keep running the old code until step 2's restart.
+
 1. **Dependencies and migration**
 
    ```bash
@@ -106,6 +118,8 @@ Revision `c4e8b2f1a7d3` (down revision `7b1e4a2c9d05`):
    - `{"status":"ok"}`;
    - `[]` twice;
    - at least `1`: the start-up run, which finds no definitions. With `ACCOUNTING_SCHEDULER_ENABLED=false`, the log shows `schedule_job.scheduler_disabled` instead.
+
+   The log check relies on INFO-level application logs reaching pm2. The OTel setup of `shared_lib` (required at start-up) puts the root logger at INFO with a stream handler, so they do. A `schedule_job.scheduler_started` line also proves the scheduler is on (`npx pm2 logs accounting-service --lines 50 --nostream | grep -c 'schedule_job.scheduler_started\|schedule_job.run'`). If both counts are 0 but `/health` is ok, check that run directly: `curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8000/schedules/run-now` answers a report with `"status": "completed"`.
 
    **Tokens (as in phase 2a step 2).** With `ACCOUNTING_API_TOKENS` unset, the header is ignored. When it is set (#42), export `TOKEN` to one of its tokens first. Without it, every `/schedules/*` route answers 401, `run-now` included. `/health` needs no token.
 
@@ -140,7 +154,7 @@ Revision `c4e8b2f1a7d3` (down revision `7b1e4a2c9d05`):
 
    A second import changes nothing: 0 periods are created, deleted or adopted.
 
-   An import waits up to 30 s for running schedule writes and is refused after that (409 `import already running`); run it again.
+   An import waits up to 30 s for running schedule writes and is refused after that: the CLI prints `import already running` on stderr and exits 1 (`ImportAlreadyRunningError`; through the API the same refusal is HTTP 409). Nothing was imported; run it again.
 
    Delete both JSON files after reading them: `rm -f ~/backups/home-hub-schedules/moze-schedules-*.json`.
 
