@@ -86,7 +86,7 @@ Reads
 - `GET /account-groups`, `GET /categories?kind=`, `GET /projects`, `GET /counterparties` (with `open_amounts` per currency)
 - `GET /preference`, `GET /fx-rate?date=&base=&quote=` (for today or a future date, or a date whose release is
   missing, the latest available release; `rate_date` names the release the rate comes from)
-- `GET /imports/latest` (reports `kind`: `moze_csv` or `moze_backup`), `GET /imports/schedules?kind=period|installment|skipped_record`
+- `GET /imports/latest` (reports `kind`: `moze_csv` or `moze_backup`); MOZE's schedules are read through `/schedules/*` (see Schedules)
 
 Writes (every write sets `source = 'manual'`; amounts are unsigned with at most 4 decimals; 422 names the field, 409 is a conflict or `locked_until_cutover`)
 
