@@ -56,4 +56,4 @@ MOZE generates the owner's loan repayments, recurring transfers and subscription
 21. **立即執行 (run-now)** has no extra password; it is protected like the rest of the app: Tailscale-only access plus, when `ACCOUNTING_API_TOKENS` is set, the bearer-token auth of #42 that covers every `/schedules/*` endpoint.
 22. **The settings page's 分期 / 週期 list** becomes a link to 提醒中心 › 借還款追蹤 › 週期／分期.
 23. **Switching mode never posts a backlog** (see 2); only 補入帳至今天 does.
-24. 每期金額可調整；調整時詢問套用範圖：僅這一期／這一期與之後／全部週期。已入帳、已略過的期數不變；匯入的排程在 cutover 前也可以這樣調金額（規則仍鎖）。有總額的分期調整後，最後一期以「總額 − 其他各期實際金額」補足，超過總額則拒絕。
+24. 每期金額可調整；調整時詢問套用範圍：僅這一期／這一期與之後／全部週期。已入帳、已略過的期數不變；匯入的排程在 cutover 前也可以這樣調金額（規則仍鎖）。有總額的分期調整後，最後一期以「總額 − 其他各期實際金額」補足，超過總額則拒絕。

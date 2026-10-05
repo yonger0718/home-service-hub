@@ -53,7 +53,7 @@ export class ScheduleSheetComponent {
   readonly error = signal<string | null>(null);
   readonly confirm = signal<SheetConfirm>(null);
   readonly today = signal(todayIso());
-  /** 調整 (proposal decision 24): the pending period whose amounts are open, the draft, and the 套用範圖 question. */
+  /** 調整 (proposal decision 24): the pending period whose amounts are open, the draft, and the 套用範圍 question. */
   readonly editingId = signal<number | null>(null);
   readonly editAmounts = signal<string[]>([]);
   readonly askScope = signal(false);
@@ -82,6 +82,8 @@ export class ScheduleSheetComponent {
 
   constructor() {
     inject(DestroyRef).onDestroy(() => this.destroyed.set(true));
+    // Focus the sheet as soon as it renders (before the load answers), so Esc closes it and page shortcuts stay quiet.
+    focusSheetField(this.host.nativeElement, '.sheet', this.injector);
     effect(() => {
       const id = this.definitionId();
       untracked(() => this.load(id));
@@ -124,12 +126,19 @@ export class ScheduleSheetComponent {
     });
   }
 
-  /** One action; on success the sheet reloads (or `after` runs), and the service bump reloads the reminder centre. */
+  /**
+   * One action; on success the sheet reloads (or `after` runs), and the service bump reloads the reminder centre.
+   * The request is not cancelled when the sheet closes (the write and its bump still land), but a destroyed sheet
+   * ignores the answer: no emit, no reload, no focus work.
+   */
   private act(request: Observable<unknown>, after?: () => void): void {
     this.busy.set(true);
     this.error.set(null);
     request.subscribe({
       next: () => {
+        if (this.destroyed()) {
+          return;
+        }
         this.busy.set(false);
         this.confirm.set(null);
         if (after) {
@@ -139,6 +148,11 @@ export class ScheduleSheetComponent {
         }
       },
       error: (error: unknown) => {
+        if (this.destroyed()) {
+          // import_running still shows the page toast; nothing else of a closed sheet is touched.
+          scheduleActionError(error, this.toast);
+          return;
+        }
         this.busy.set(false);
         this.error.set(scheduleActionError(error, this.toast));
         this.keepFocusInside();
@@ -219,33 +233,49 @@ export class ScheduleSheetComponent {
     }
   }
 
-  /** 儲存: nothing changed → close without a request; a changed amount → ask 套用範圖 before anything is sent. */
+  /** 儲存: nothing changed → close without a request; a changed amount → ask 套用範圍 before anything is sent. */
   saveEdit(): void {
-    const period = this.pending().find(item => item.id === this.editingId());
-    if (!period) {
-      return;
-    }
-    const amounts = this.editAmounts();
-    if (amounts.some(amount => !/^\d+(\.\d{1,4})?$/.test(amount))) {
-      this.error.set('金額格式不正確');
-      return;
-    }
-    this.error.set(null);
-    if (amounts.every((amount, index) => Number(amount) === Number(period.amounts[index]))) {
-      this.cancelEdit();
+    if (this.checkedAmounts() === null) {
       return;
     }
     this.askScope.set(true);
     focusSheetField(this.host.nativeElement, '.scope-sheet .scope-this', this.injector);
   }
 
-  /** 僅這一期 / 這一期與之後 / 全部週期 → `PUT …/instances/{id}` with `scope`; the sheet then reloads. */
+  /**
+   * The draft amounts when they are well-formed and differ from the period's; else null, after showing
+   * `金額格式不正確` (malformed) or closing the editor (unchanged, nothing sent).
+   */
+  private checkedAmounts(): string[] | null {
+    const period = this.pending().find(item => item.id === this.editingId());
+    if (!period) {
+      return null;
+    }
+    const amounts = this.editAmounts();
+    if (amounts.some(amount => !/^\d+(\.\d{1,4})?$/.test(amount))) {
+      this.askScope.set(false);
+      this.error.set('金額格式不正確');
+      return null;
+    }
+    this.error.set(null);
+    if (amounts.every((amount, index) => Number(amount) === Number(period.amounts[index]))) {
+      this.cancelEdit();
+      return null;
+    }
+    return amounts;
+  }
+
+  /**
+   * 僅這一期 / 這一期與之後 / 全部週期 → `PUT …/instances/{id}` with `scope`; the sheet then reloads. The draft is
+   * checked again (it may have changed while the question was open).
+   */
   applyScope(scope: ScheduleAmountScope): void {
     const id = this.editingId();
-    if (id === null) {
+    const amounts = id === null ? null : this.checkedAmounts();
+    if (id === null || amounts === null) {
       return;
     }
-    this.act(this.accounting.updateScheduleInstance(id, { amounts: this.editAmounts(), scope }), () => {
+    this.act(this.accounting.updateScheduleInstance(id, { amounts, scope }), () => {
       this.cancelEdit();
       this.load(this.definitionId());
     });
@@ -256,7 +286,7 @@ export class ScheduleSheetComponent {
   }
 
   /**
-   * Handled at the host so the page never sees the key. Esc closes, in order: the 套用範圖 question (nothing is saved),
+   * Handled at the host so the page never sees the key. Esc closes, in order: the 套用範圍 question (nothing is saved),
    * the period editor, an open confirmation, the sheet. ⏎ in an amount field saves the period.
    */
   onKeydown(event: KeyboardEvent): void {

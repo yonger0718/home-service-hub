@@ -831,6 +831,23 @@ describe('AccountingRemindersComponent', () => {
       flushLoad([], [], [], [], []);
     });
 
+    it('sends one catch-up for a double click on 重試', () => {
+      const failing = makeDefinition({ id: 14, failing: { instance_id: 5, due_date: '2026-10-01', last_error: 'lines[0].account_id: 帳戶已封存' } });
+      const { fixture, el } = render([], [], [], [], [failing]);
+      tab(el, '借還款追蹤').click();
+      fixture.detectChanges();
+      const retry = el.querySelector('.schedule-failing .retry') as HTMLButtonElement;
+      retry.click();
+      fixture.detectChanges();
+      expect(retry.disabled).toBe(true);
+      retry.click();
+      const reqs = http.match(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions/14/catch-up');
+      expect(reqs.length).toBe(1);
+      reqs[0].flush({ posted: [5], failed: null, definition: failing });
+      fixture.detectChanges();
+      flushLoad([], [], [], [], []);
+    });
+
     it('opens the manage sheet from a row and shows 已暫停 after a pause', () => {
       // Spec "Pause from the sheet".
       const { fixture, el } = render([], [], [], [], [LOAN]);

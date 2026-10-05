@@ -30,7 +30,7 @@
               </div>
               @if (askScope()) {
                 <div class="scope-sheet" role="dialog" aria-modal="true" aria-labelledby="scope-sheet-title">
-                  <h4 id="scope-sheet-title">套用範圖</h4>
+                  <h4 id="scope-sheet-title">套用範圍</h4>
                   <div class="btnrow scope-actions">
                     <button type="button" class="scope-this" [disabled]="busy()" (click)="applyScope('this')">僅這一期</button>
                     <button type="button" class="scope-following" [disabled]="busy()" (click)="applyScope('following')">這一期與之後</button>

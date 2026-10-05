@@ -32,7 +32,7 @@
 - **Logs and reports** carry ids, counts and error classes only — never names, amounts or counterparties (the import report's `loan_remainder_check`, `amount_differs` and `past_records_amount_differs.lines` are the only owner-facing lists with amounts, as the spec requires; amount differences are reported per line, never as period totals — Multica R-F5).
 - **Owner data rule.** Tests build synthetic rows only. `~/workspace/moze-backup/MOZE_4.0.zip` is read only by Task 28's acceptance script against the disposable database `accounting_schedules_verify`, printing aggregates; nothing from it is committed or printed row by row. No step touches the production `accounting_db`.
 - **Frontend.** Every page usable at 390 px without horizontal page scroll; tone tokens only (`var(--tone-neg, var(--c-red))`, `var(--tone-pos, var(--c-green))`, `var(--app-state-warning-bg)`, `var(--app-text-muted)`, `var(--app-border)`, `var(--app-primary)`); keyboard/IME contract: every key handler starts with `isHandledKey(event)`, sheets use `sheetKeyAction` (Esc closes and is marked handled, ⏎ in a field confirms, ⏎ on a button clicks natively), inline confirmations close on Esc; every load that can be superseded carries a request id and drops older answers; a 409 `import_running` from any schedule action (and an entry delete that touches a period) shows the toast `匯入進行中，請稍後再試` and leaves the page unchanged.
-- **Copy (verbatim).** `單次` `週期` `分期`; `每 N 天|週|月|年`; `起始日`; `結束` `無限期` `N 次` `日期`; `入帳方式` `自動入帳` `提醒入帳`; `總額` `期數` `首次還款日` `每期金額` `利息` `還款帳戶`; footers `週期：#1 / 無限期（每月 / 22號）`, `週期：#1 / 12（每月 / 22號）`, `分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）`; `排程不支援`; `編輯這一筆` `編輯整個排程`; `待完成交易` `已到期` `即將到來` `已逾期 N 天` `今天` `重試` `入帳` `略過` `略過這一期？剩餘不變` `補入帳至今天` `部分入帳` `重新入帳` `保留部分`; period amount scope sheet `套用範圖` with `僅這一期` `這一期與之後` `全部週期`; `週期／分期` `已結束` `下期 11/09` `已入帳 k / N` `剩餘` `自動` `提醒` `已暫停` `需檢查`; `暫停` `繼續` `略過期間的 N 期` `補入帳` `結束後未入帳的 N 期將刪除` `刪除`; `剩餘 −$275,001 · 已還 $24,999 · 下期 02/09`; pills `週期 #k/N`, `週期 #k`, `分期 #k/N`, badge `部分`; delete notes `同期的 利息 −$620 會保留，此期標示為部分入帳`, `此期將回到待完成交易`, `此期將標示為略過`; toast `匯入進行中，請稍後再試`; bell aria-label `提醒中心，N 項`; create then catch-up (Task 22, Multica R-F2) `排程已建立，入帳未完成；按 ✓ 重試入帳`, toast `排程已建立；這一期入帳失敗，請到待完成交易處理`; import report (Task 27, R-A3) `待入帳金額與 MOZE 不同 N 期`, `保留待入帳 N 期`, item line `<名稱> 第 k 期 <日期>：HomeHub $<金額> / MOZE $<金額>`.
+- **Copy (verbatim).** `單次` `週期` `分期`; `每 N 天|週|月|年`; `起始日`; `結束` `無限期` `N 次` `日期`; `入帳方式` `自動入帳` `提醒入帳`; `總額` `期數` `首次還款日` `每期金額` `利息` `還款帳戶`; footers `週期：#1 / 無限期（每月 / 22號）`, `週期：#1 / 12（每月 / 22號）`, `分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）`; `排程不支援`; `編輯這一筆` `編輯整個排程`; `待完成交易` `已到期` `即將到來` `已逾期 N 天` `今天` `重試` `入帳` `略過` `略過這一期？剩餘不變` `補入帳至今天` `部分入帳` `重新入帳` `保留部分`; period amount scope sheet `套用範圍` with `僅這一期` `這一期與之後` `全部週期`; `週期／分期` `已結束` `下期 11/09` `已入帳 k / N` `剩餘` `自動` `提醒` `已暫停` `需檢查`; `暫停` `繼續` `略過期間的 N 期` `補入帳` `結束後未入帳的 N 期將刪除` `刪除`; `剩餘 −$275,001 · 已還 $24,999 · 下期 02/09`; pills `週期 #k/N`, `週期 #k`, `分期 #k/N`, badge `部分`; delete notes `同期的 利息 −$620 會保留，此期標示為部分入帳`, `此期將回到待完成交易`, `此期將標示為略過`; toast `匯入進行中，請稍後再試`; bell aria-label `提醒中心，N 項`; create then catch-up (Task 22, Multica R-F2) `排程已建立，入帳未完成；按 ✓ 重試入帳`, toast `排程已建立；這一期入帳失敗，請到待完成交易處理`; import report (Task 27, R-A3) `待入帳金額與 MOZE 不同 N 期`, `保留待入帳 N 期`, item line `<名稱> 第 k 期 <日期>：HomeHub $<金額> / MOZE $<金額>`.
 - Commit after every task with a Conventional Commits subject and the trailer `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ## Review Focus
@@ -393,7 +393,7 @@ Review reasons: `interval_mismatch`, `loan_missing`, `same_date`, `seq_conflict`
 
 `schedule-math.ts`: `IMPORT_RUNNING_TOAST`, `isImportRunning(err)`, `addMonthsIso(iso, months, dayOfMonth?)`, `occurrenceDate(rule, k)`, `nextOccurrences(rule, count, after?)`, `intervalLabel(unit, n)`, `ruleDayLabel(rule)`, `recurringFooter(rule, times)`, `splitInstallment(total, times, currency)`, `installmentFooter(total, times, firstDate, currency)`, `ruleSummary(definition)`, `scheduleProgress(definition)`, `schedulePill(link)`, interface `ScheduleRule { interval_unit; interval_n; anchor_date; day_of_month }`.
 
-Components: `app-accounting-toast` (`AccountingToastService.show(text, ms = 3000)`, `message` signal); `app-schedule-tabs` (inputs `kind` (`FormKind`, required), `entryDate` (required), `amount` (number | null), `currency`, `accounts`, `accountId` (the form's account, the 還款帳戶 default), `disabled` (the form's locked / saving state), `definitionMode`, `errors` (field → message, for the 每期金額 / 利息 slots); `draft` model `ScheduleDraft` (required, from `schedule-tabs/schedule-draft.ts`); `<ng-content>` is the 單次 panel); `app-schedule-sheet` (`definitionId` input; `(closed)` output; 調整 on each listed period with the `套用範圖` scope sheet, Task 24). Routes: no new route; definition mode is `/accounting/entry?schedule=<id>`; the reminder centre reads `?tab=all|cards|debts|pending`, `?schedule=<id>` (opens the sheet) and the fragment `schedules`.
+Components: `app-accounting-toast` (`AccountingToastService.show(text, ms = 3000)`, `message` signal); `app-schedule-tabs` (inputs `kind` (`FormKind`, required), `entryDate` (required), `amount` (number | null), `currency`, `accounts`, `accountId` (the form's account, the 還款帳戶 default), `disabled` (the form's locked / saving state), `definitionMode`, `errors` (field → message, for the 每期金額 / 利息 slots); `draft` model `ScheduleDraft` (required, from `schedule-tabs/schedule-draft.ts`); `<ng-content>` is the 單次 panel); `app-schedule-sheet` (`definitionId` input; `(closed)` output; 調整 on each listed period with the `套用範圍` scope sheet, Task 24). Routes: no new route; definition mode is `/accounting/entry?schedule=<id>`; the reminder centre reads `?tab=all|cards|debts|pending`, `?schedule=<id>` (opens the sheet) and the fragment `schedules`.
 
 ## Task Index
 
@@ -6022,7 +6022,7 @@ class InstanceUpdateIn(BaseModel):
 
     due_date: date | None = None
     amounts: list[NonNegativeMoney] | None = None
-    # 套用範圖 (proposal decision 24): 僅這一期 / 這一期與之後 / 全部週期
+    # 套用範圍 (proposal decision 24): 僅這一期 / 這一期與之後 / 全部週期
     scope: Literal["this", "following", "all"] = "this"
 ```
 
@@ -14962,11 +14962,11 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `updateScheduleInstance` (Task 20; `scope` added here, Task 12's `InstanceUpdateIn.scope`), `getScheduleDefinitions`, `getScheduleDefinition`, `pauseSchedule`, `resumeSchedule`, `endSchedule`, `setScheduleMode`, `catchUpSchedule`, `deleteScheduleDefinition` (Task 20); `ruleSummary`, `scheduleProgress` (Task 20); `AccountingToastService`, `scheduleActionError`; `sheetKeyAction`, `focusSheetField` (`accounting-ui.ts`); `../../sheet.scss`; `makeDefinition`, `makeInstance`.
-- Produces: `DefinitionRow` (`id, icon, color, name, nextText, progress, remainingText, modeBadge, paused, needsCheck, failing`), `definitionRows(definitions) -> { active: DefinitionRow[]; ended: DefinitionRow[] }`; `ScheduleSheetComponent` (`app-schedule-sheet`, input `definitionId`, output `closed`; 調整 / 儲存 on each listed period and the `套用範圖` scope sheet); `ScheduleAmountScope`; the reminder centre opens the sheet from a row or from `?schedule=<id>` and scrolls to `#schedules` for the fragment `schedules`.
+- Produces: `DefinitionRow` (`id, icon, color, name, nextText, progress, remainingText, modeBadge, paused, needsCheck, failing`), `definitionRows(definitions) -> { active: DefinitionRow[]; ended: DefinitionRow[] }`; `ScheduleSheetComponent` (`app-schedule-sheet`, input `definitionId`, output `closed`; 調整 / 儲存 on each listed period and the `套用範圍` scope sheet); `ScheduleAmountScope`; the reminder centre opens the sheet from a row or from `?schedule=<id>` and scrolls to `#schedules` for the fragment `schedules`.
 
 Rules (spec "週期／分期 section"): below the counterparties of 借還款追蹤 (that tab only), every definition that is not ended, ordered by next due date (the server's order): icon, name, `下期 11/09`, `已入帳 k / N` (or the interval when unlimited), `剩餘 −$275,001` / `剩餘 $6,667`, badge 自動 or 提醒, 已暫停 when paused, 需檢查 when `needs_check`, and the failing period's error with 重試 (`catch-up`). A collapsed 已結束 row lists ended definitions (with 需檢查). The sheet shows the rule summary (`每月 9 號 · 36 期 · 自 2026/11/09`), the next three periods, 暫停 / 繼續 (繼續 asks `略過期間的 N 期` / `補入帳` when paused periods are overdue and sends `backlog`), 入帳方式 自動入帳 / 提醒入帳, 補入帳至今天 (when something is overdue and the schedule is not paused), 編輯 (`/accounting/entry?schedule=<id>`), 結束 (inline confirm `結束後未入帳的 N 期將刪除`) and 刪除 only while nothing was posted. Esc closes an open confirmation first, then the sheet; the overlay closes it; a request id drops a stale load; `import_running` shows the toast.
 
-Period amounts (spec "週期／分期 section", "Instance amount edit scope", proposal decision 24): each listed pending period has 調整, which opens its amounts (one field per template line, labelled 每期金額, or 利息 for an `interest` line, pre-filled with the instance's `amounts`) with 取消 / 儲存. 儲存 with every amount unchanged closes the editor and sends nothing; an amount that is not an unsigned decimal with at most 4 decimals shows `金額格式不正確`; otherwise a sheet titled `套用範圖` asks `僅這一期` / `這一期與之後` / `全部週期` (focus on `僅這一期`), each sending `PUT …/instances/{id}` with `{ amounts, scope: 'this' | 'following' | 'all' }`, after which the sheet reloads (the service bump reloads the reminder centre). Keys follow `sheetKeyAction`: Esc closes the scope question first (cancel: nothing saved, focus back on 儲存), then the editor, then an open confirmation, then the sheet; ⏎ in an amount field saves. Imported definitions before cutover take these edits too (amounts are not rule fields; 編輯 still opens the lock banner).
+Period amounts (spec "週期／分期 section", "Instance amount edit scope", proposal decision 24): each listed pending period has 調整, which opens its amounts (one field per template line, labelled 每期金額, or 利息 for an `interest` line, pre-filled with the instance's `amounts`) with 取消 / 儲存. 儲存 with every amount unchanged closes the editor and sends nothing; an amount that is not an unsigned decimal with at most 4 decimals shows `金額格式不正確`; otherwise a sheet titled `套用範圍` asks `僅這一期` / `這一期與之後` / `全部週期` (focus on `僅這一期`), each sending `PUT …/instances/{id}` with `{ amounts, scope: 'this' | 'following' | 'all' }`, after which the sheet reloads (the service bump reloads the reminder centre). Keys follow `sheetKeyAction`: Esc closes the scope question first (cancel: nothing saved, focus back on 儲存), then the editor, then an open confirmation, then the sheet; ⏎ in an amount field saves. Imported definitions before cutover take these edits too (amounts are not rule fields; 編輯 still opens the lock banner).
 
 - [ ] 24.1 Write the failing tests. Append to `frontend/src/app/components/accounting/reminders/schedule-queue.spec.ts` (add `makeDefinition` to its fixtures import and `definitionRows` to its `./schedule-queue` import):
 
@@ -15144,7 +15144,7 @@ describe('ScheduleSheetComponent', () => {
     expect(closed).toHaveBeenCalledTimes(2);
   });
 
-  describe('period amounts and 套用範圖 (proposal decision 24)', () => {
+  describe('period amounts and 套用範圍 (proposal decision 24)', () => {
     function openEditor(el: HTMLElement): HTMLInputElement {
       click(el, '.next-period .period-edit');
       return el.querySelector('.period-editor input') as HTMLInputElement;
@@ -15156,7 +15156,7 @@ describe('ScheduleSheetComponent', () => {
       fixture.detectChanges();
     }
 
-    it('asks 套用範圖 only when an amount changed', () => {
+    it('asks 套用範圍 only when an amount changed', () => {
       const el = render(detail());
       openEditor(el);
       click(el, '.period-save');
@@ -15165,7 +15165,7 @@ describe('ScheduleSheetComponent', () => {
       http.expectNone(r => r.method === 'PUT');
       type(openEditor(el), '420');
       click(el, '.period-save');
-      expect(text(el.querySelector('.scope-sheet h4'))).toBe('套用範圖');
+      expect(text(el.querySelector('.scope-sheet h4'))).toBe('套用範圍');
       expect(Array.from(el.querySelectorAll('.scope-sheet button')).map(text)).toEqual(['僅這一期', '這一期與之後', '全部週期']);
       http.expectNone(r => r.method === 'PUT');
     });
@@ -15365,7 +15365,7 @@ export function definitionRows(definitions: ScheduleDefinition[]): { active: Def
 - [ ] 24.4 The scope in the service. In `frontend/src/app/models/accounting.model.ts` add, below `ScheduleActor`,
 
 ```typescript
-/** `PUT /schedules/instances/{id}` `scope` (套用範圖): 僅這一期 / 這一期與之後 / 全部週期. */
+/** `PUT /schedules/instances/{id}` `scope` (套用範圍): 僅這一期 / 這一期與之後 / 全部週期. */
 export type ScheduleAmountScope = 'this' | 'following' | 'all';
 ```
 
@@ -15428,7 +15428,7 @@ export class ScheduleSheetComponent {
   readonly error = signal<string | null>(null);
   readonly confirm = signal<SheetConfirm>(null);
   readonly today = signal(todayIso());
-  /** 調整 (proposal decision 24): the pending period whose amounts are open, the draft, and the 套用範圖 question. */
+  /** 調整 (proposal decision 24): the pending period whose amounts are open, the draft, and the 套用範圍 question. */
   readonly editingId = signal<number | null>(null);
   readonly editAmounts = signal<string[]>([]);
   readonly askScope = signal(false);
@@ -15571,7 +15571,7 @@ export class ScheduleSheetComponent {
     this.editingId.set(null);
   }
 
-  /** 儲存: nothing changed → close without a request; a changed amount → ask 套用範圖 before anything is sent. */
+  /** 儲存: nothing changed → close without a request; a changed amount → ask 套用範圍 before anything is sent. */
   saveEdit(): void {
     const period = this.pending().find(item => item.id === this.editingId());
     if (!period) {
@@ -15608,7 +15608,7 @@ export class ScheduleSheetComponent {
   }
 
   /**
-   * Handled at the host so the page never sees the key. Esc closes, in order: the 套用範圖 question (nothing is saved),
+   * Handled at the host so the page never sees the key. Esc closes, in order: the 套用範圍 question (nothing is saved),
    * the period editor, an open confirmation, the sheet. ⏎ in an amount field saves the period.
    */
   onKeydown(event: KeyboardEvent): void {
@@ -15671,7 +15671,7 @@ export class ScheduleSheetComponent {
               </div>
               @if (askScope()) {
                 <div class="scope-sheet" role="dialog" aria-modal="true" aria-labelledby="scope-sheet-title">
-                  <h4 id="scope-sheet-title">套用範圖</h4>
+                  <h4 id="scope-sheet-title">套用範圍</h4>
                   <div class="btnrow scope-actions">
                     <button type="button" class="scope-this" [disabled]="busy()" (click)="applyScope('this')">僅這一期</button>
                     <button type="button" class="scope-following" [disabled]="busy()" (click)="applyScope('following')">這一期與之後</button>
@@ -15778,7 +15778,7 @@ export class ScheduleSheetComponent {
   }
 }
 
-/* 套用範圖: three buttons that wrap at 390 px. */
+/* 套用範圍: three buttons that wrap at 390 px. */
 .scope-sheet {
   border-top: 1px solid var(--app-border);
   padding-top: 6px;
@@ -16140,7 +16140,7 @@ Expected: every spec under `reminders/` passes (schedule-queue 5, schedule-sheet
 cd /home/opc/workspace/home-hub-schedules
 git add frontend/src/app/components/accounting/reminders frontend/src/app/models/accounting.model.ts \
   frontend/src/app/services/accounting.service.ts
-git commit -m "feat(frontend): 週期／分期 section and manage sheet (period amounts with 套用範圖) under 借還款追蹤
+git commit -m "feat(frontend): 週期／分期 section and manage sheet (period amounts with 套用範圍) under 借還款追蹤
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -17913,7 +17913,7 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Repost a repayment with a corrected amount | 12; 8 — `test_delete_period_entries_locks_the_loan_in_the_same_statement_and_keeps_it`; 19 — `test_repost_waits_for_a_delete_of_its_entry`, `test_loan_delete_waits_for_a_repost_on_an_ended_definition` |
 | Accept a partial period | 12 |
 | Date edit onto a posted day refused | 12 — `test_date_edit_onto_a_posted_day_refused`, `test_date_edit_onto_another_pending_period_refused`; posting failures of any class: `test_post_records_any_error_and_answers_409` |
-| **Instance amount edit scope** | 12 (`_apply_amount_scope`; `test_following_replaces_the_edited_periods_own_override_and_keeps_later_owner_edits`, `test_installment_scope_keeps_the_last_period_remainder`), 17 (re-import keeps the owner's template amounts), 24 (SPA `套用範圖`) |
+| **Instance amount edit scope** | 12 (`_apply_amount_scope`; `test_following_replaces_the_edited_periods_own_override_and_keeps_later_owner_edits`, `test_installment_scope_keeps_the_last_period_remainder`), 17 (re-import keeps the owner's template amounts), 24 (SPA `套用範圍`) |
 | Only this period by default | 12 — `test_only_this_period_by_default` |
 | This period and the following ones keep the old price before | 12 — `test_this_period_and_the_following_ones_keep_the_old_price_before` |
 | All periods keep other owner edits | 12 — `test_all_periods_keep_other_owner_edits` |
@@ -18024,7 +18024,7 @@ Every requirement and scenario of the four spec files, with the task (and test) 
 | Post from the queue | 23 |
 | Catch-up offered for a backlog | 23 |
 | **週期／分期 section** | 24 |
-| Price change from this period on | 24 — `asks 套用範圖 only when an amount changed`, `sends scope following from .scope-following` (and `this` / `all`) |
+| Price change from this period on | 24 — `asks 套用範圍 only when an amount changed`, `sends scope following from .scope-following` (and `this` / `all`) |
 | Scope question cancelled | 24 — `focuses 僅這一期, and Esc cancels without saving or closing the sheet` |
 | Loan row | 24 (and `does not say 目前沒有待處理項目 on 借還款追蹤 while schedules are listed`) |
 | Ended loan still open needs a check | 24 |

@@ -245,6 +245,8 @@ export class AccountingRemindersComponent {
   readonly sheetId = signal<number | null>(null);
   /** A failed 重試 on a 週期／分期 row (the 待完成交易 error line is not shown on 借還款追蹤). */
   readonly scheduleError = signal<string | null>(null);
+  /** Definitions whose 重試 (catch-up) is in flight: their 重試 is disabled, so a double click sends one request. */
+  readonly retryingDefinitions = signal<ReadonlySet<number>>(new Set());
   readonly scheduleRows = computed(() => definitionRows(this.definitions()));
   private scrollToSchedules = false;
   /** 借還款追蹤 filters: kept while the page is open, applied on that tab only. */
@@ -574,9 +576,29 @@ export class AccountingRemindersComponent {
 
   /** 重試 on a failing definition row: 補入帳至今天 posts the failing period (and the ones after it) again. */
   retryDefinition(row: DefinitionRow): void {
+    if (this.retryingDefinitions().has(row.id)) {
+      return;
+    }
+    this.setRetrying(row.id, true);
     this.scheduleError.set(null);
     this.accounting.catchUpSchedule(row.id).subscribe({
-      error: (error: unknown) => this.scheduleError.set(scheduleActionError(error, this.toast)),
+      next: () => this.setRetrying(row.id, false),
+      error: (error: unknown) => {
+        this.setRetrying(row.id, false);
+        this.scheduleError.set(scheduleActionError(error, this.toast));
+      },
+    });
+  }
+
+  private setRetrying(id: number, on: boolean): void {
+    this.retryingDefinitions.update(current => {
+      const next = new Set(current);
+      if (on) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
     });
   }
 

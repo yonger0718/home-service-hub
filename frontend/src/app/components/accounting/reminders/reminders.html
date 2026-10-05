@@ -126,7 +126,7 @@
         @if (row.failing; as failing) {
           <div class="schedule-failing" role="alert">
             <span class="msg">{{ failing.text }}</span>
-            <button type="button" class="retry" (click)="retryDefinition(row)">重試</button>
+            <button type="button" class="retry" [disabled]="retryingDefinitions().has(row.id)" (click)="retryDefinition(row)">重試</button>
           </div>
         }
       } @empty {

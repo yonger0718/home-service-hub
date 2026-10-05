@@ -222,7 +222,38 @@ describe('ScheduleSheetComponent', () => {
     http.expectNone(r => r.method === 'PUT');
   });
 
-  describe('period amounts and 套用範圖 (proposal decision 24)', () => {
+  it('focuses the sheet before the load answers, so Esc closes it at once', async () => {
+    fixture = TestBed.createComponent(ScheduleSheetComponent);
+    fixture.componentRef.setInput('definitionId', 5);
+    const closed = vi.fn();
+    fixture.componentInstance.closed.subscribe(closed);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(document.activeElement).toBe(el.querySelector('.sheet'));
+    });
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(closed).toHaveBeenCalledTimes(1);
+    http.expectOne('/api/accounting/schedules/definitions/5').flush(detail());
+  });
+
+  it('ignores an action answer that lands after the sheet closed', () => {
+    const el = render(detail({ posted_count: 0 }));
+    const closed = vi.fn();
+    fixture.componentInstance.closed.subscribe(closed);
+    click(el, '.sheet-delete');
+    click(el, '.sheet-delete');
+    const req = http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/schedules/definitions/5');
+    (el.querySelector('.overlay') as HTMLElement).click();
+    expect(closed).toHaveBeenCalledTimes(1);
+    fixture.destroy();
+    expect(() => req.flush(null)).not.toThrow();
+    expect(closed).toHaveBeenCalledTimes(1);
+    // No reload of a destroyed sheet (http.verify in afterEach).
+  });
+
+  describe('period amounts and 套用範圍 (proposal decision 24)', () => {
     function openEditor(el: HTMLElement): HTMLInputElement {
       click(el, '.next-period .period-edit');
       return el.querySelector('.period-editor input') as HTMLInputElement;
@@ -234,7 +265,7 @@ describe('ScheduleSheetComponent', () => {
       fixture.detectChanges();
     }
 
-    it('asks 套用範圖 only when an amount changed', () => {
+    it('asks 套用範圍 only when an amount changed', () => {
       const el = render(detail());
       openEditor(el);
       click(el, '.period-save');
@@ -243,7 +274,7 @@ describe('ScheduleSheetComponent', () => {
       http.expectNone(r => r.method === 'PUT');
       type(openEditor(el), '420');
       click(el, '.period-save');
-      expect(text(el.querySelector('.scope-sheet h4'))).toBe('套用範圖');
+      expect(text(el.querySelector('.scope-sheet h4'))).toBe('套用範圍');
       expect(Array.from(el.querySelectorAll('.scope-sheet button')).map(text)).toEqual(['僅這一期', '這一期與之後', '全部週期']);
       http.expectNone(r => r.method === 'PUT');
     });
@@ -269,6 +300,30 @@ describe('ScheduleSheetComponent', () => {
         expect(el.querySelector('.period-editor')).toBeNull();
       });
     }
+
+    it('checks the draft again before sending: reverted to the period amount sends nothing', () => {
+      const el = render(detail());
+      const input = openEditor(el);
+      type(input, '420');
+      click(el, '.period-save');
+      expect(el.querySelector('.scope-sheet')).not.toBeNull();
+      type(el.querySelector('.period-editor input') as HTMLInputElement, '390');
+      click(el, '.scope-all');
+      http.expectNone(r => r.method === 'PUT');
+      expect(el.querySelector('.scope-sheet')).toBeNull();
+      expect(el.querySelector('.period-editor')).toBeNull();
+    });
+
+    it('checks the draft again before sending: malformed shows 金額格式不正確', () => {
+      const el = render(detail());
+      type(openEditor(el), '420');
+      click(el, '.period-save');
+      type(el.querySelector('.period-editor input') as HTMLInputElement, '4.20001');
+      click(el, '.scope-this');
+      http.expectNone(r => r.method === 'PUT');
+      expect(text(el.querySelector('.form-error'))).toBe('金額格式不正確');
+      expect(el.querySelector('.scope-sheet')).toBeNull();
+    });
 
     it('focuses 僅這一期, and Esc cancels without saving or closing the sheet', async () => {
       // Spec "Scope question cancelled".

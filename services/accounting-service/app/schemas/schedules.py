@@ -87,7 +87,7 @@ class InstanceUpdateIn(BaseModel):
 
     due_date: date | None = None
     amounts: list[NonNegativeMoney] | None = None
-    # 套用範圖 (proposal decision 24): 僅這一期 / 這一期與之後 / 全部週期
+    # 套用範圍 (proposal decision 24): 僅這一期 / 這一期與之後 / 全部週期
     scope: Literal["this", "following", "all"] = "this"
 
 
