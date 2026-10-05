@@ -44,7 +44,7 @@
   gap: 2px 10px;
   grid-template-areas: 'ico name amt' 'ico sub pills';
   grid-template-columns: 40px minmax(0, 1fr) auto;
-  padding: 7px 0;
+  padding: var(--row-py) 0;
   text-decoration: none;
 }
 
@@ -56,9 +56,9 @@
   display: flex;
   font-size: 1.15rem;
   grid-area: ico;
-  height: 38px;
+  height: var(--ico-size);
   justify-content: center;
-  width: 38px;
+  width: var(--ico-size);
 }
 
 .name { font-weight: 700; grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

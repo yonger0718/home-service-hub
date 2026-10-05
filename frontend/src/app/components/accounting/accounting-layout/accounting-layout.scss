@@ -15,9 +15,9 @@
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-  /* viewport minus the 60px shell header and .hub-page's vertical padding */
-  height: calc(100dvh - 60px - 4.5rem);
-  min-height: 480px;
+  /* viewport minus the shell header and .hub-page's vertical padding (both compact on short screens) */
+  height: calc(100dvh - var(--chrome-header) - var(--page-pad-y) - var(--page-pad-b));
+  min-height: 360px;
 }
 
 .pane {

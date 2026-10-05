@@ -25,7 +25,7 @@
   border-bottom: 1px solid var(--app-border);
   display: grid;
   grid-template-columns: 1fr auto 1fr;
-  height: 60px;
+  height: var(--chrome-header);
   padding: 0 1.5rem;
   position: sticky;
   top: 0;
@@ -55,7 +55,22 @@
 
 .hub-page {
   flex: 1;
-  padding: 1.5rem 1.75rem 3rem;
+  padding: var(--page-pad-y) 1.75rem var(--page-pad-b);
+}
+
+/* Compact height, panes mode (≥1024px): the layout is exactly one viewport tall, so the
+   accounting panes do the scrolling; other pages scroll inside .hub-main. */
+@media (min-width: 1024px) and (max-height: 820px) {
+  .hub-layout {
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .hub-main {
+    min-height: 0;
+    overflow-y: auto;
+  }
 }
 
 @media (max-width: 759.98px) {

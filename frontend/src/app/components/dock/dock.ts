@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 
+import { LayoutModeService } from '../../services/layout-mode.service';
 import { NAV_GROUPS } from '../shell/navigation';
 
 @Component({
@@ -9,9 +10,11 @@ import { NAV_GROUPS } from '../shell/navigation';
   templateUrl: './dock.html',
   styleUrl: './dock.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '[class.compact]': 'layout.compactHeight()' },
 })
 export class DockComponent {
   readonly activeId = input.required<string>();
+  protected readonly layout = inject(LayoutModeService);
   protected readonly groups = NAV_GROUPS;
   protected readonly logoAlt = 'Home Hub';
 

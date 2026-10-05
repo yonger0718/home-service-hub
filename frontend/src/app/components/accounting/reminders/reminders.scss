@@ -92,7 +92,7 @@
   gap: 2px 10px;
   grid-template-columns: 40px minmax(0, 1fr) auto;
   min-width: 0;
-  padding: 8px 0;
+  padding: calc(var(--row-py) + 1px) 0;
   text-align: left;
   width: 100%;
 
@@ -108,9 +108,9 @@
     display: flex;
     font-size: 1.1rem;
     grid-area: ico;
-    height: 38px;
+    height: var(--ico-size);
     justify-content: center;
-    width: 38px;
+    width: var(--ico-size);
   }
 
   > .name {
@@ -291,7 +291,7 @@
   grid-template-areas: 'ico name due' 'ico lines total' 'ico error error' 'ico actions actions';
   grid-template-columns: 40px minmax(0, 1fr) auto;
   min-width: 0;
-  padding: 8px 0;
+  padding: calc(var(--row-py) + 1px) 0;
 
   > .ico {
     align-items: center;
@@ -299,9 +299,9 @@
     display: flex;
     font-size: 1.1rem;
     grid-area: ico;
-    height: 38px;
+    height: var(--ico-size);
     justify-content: center;
-    width: 38px;
+    width: var(--ico-size);
   }
 
   > .name {
@@ -427,7 +427,7 @@
   grid-template-areas: 'ico name next' 'ico facts facts';
   grid-template-columns: 40px minmax(0, 1fr) auto;
   min-width: 0;
-  padding: 8px 0;
+  padding: calc(var(--row-py) + 1px) 0;
   text-align: left;
   width: 100%;
 
@@ -442,9 +442,9 @@
     display: flex;
     font-size: 1.1rem;
     grid-area: ico;
-    height: 38px;
+    height: var(--ico-size);
     justify-content: center;
-    width: 38px;
+    width: var(--ico-size);
   }
 
   > .name {

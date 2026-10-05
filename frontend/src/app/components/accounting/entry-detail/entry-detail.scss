@@ -10,7 +10,7 @@
   flex-direction: column;
   gap: 4px;
   margin: 4px 0 12px;
-  padding: 18px 14px 14px;
+  padding: var(--dhead-py) 14px 14px;
   position: relative;
 
   .ico {
@@ -257,4 +257,15 @@
   align-self: center;
   flex: 1 1 12em;
   margin: 0;
+}
+
+/* Compact height (13-inch laptops): a shorter coloured head and less trailing space. */
+@media (min-width: 760px) and (max-height: 820px) {
+  .entry-detail { padding-bottom: 2.5rem; }
+
+  .dhead {
+    padding: var(--dhead-py) 14px 10px;
+
+    .ico { height: 44px; width: 44px; }
+  }
 }

@@ -123,6 +123,25 @@
   --p-primary-contrast-color: #fff !important;
   --p-primary-hover-color: var(--app-primary-hover) !important;
   --p-primary-active-color: var(--app-primary-press) !important;
+
+  /* ---- Layout density (compact on short desktop screens, below) ---------- */
+  --chrome-header: 60px;  /* shell header height */
+  --page-pad-y: 1.5rem;   /* .hub-page top padding */
+  --page-pad-b: 3rem;     /* .hub-page bottom padding */
+  --row-py: 7px;          /* list row vertical padding */
+  --ico-size: 38px;       /* list row icon circle */
+  --dhead-py: 18px;       /* entry detail head top padding */
+}
+
+/* Compact height: 13-inch laptops (≈1280×800 / 1440×900) fit the accounting panes without page scroll. */
+@media (min-width: 760px) and (max-height: 820px) {
+  :root {
+    --page-pad-y: 0.75rem;
+    --page-pad-b: 1rem;
+    --row-py: 4px;
+    --ico-size: 32px;
+    --dhead-py: 10px;
+  }
 }
 
 /* ==========================================================================

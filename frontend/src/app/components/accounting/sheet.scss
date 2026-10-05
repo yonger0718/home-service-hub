@@ -161,3 +161,10 @@ h3 {
     }
   }
 }
+
+/* Compact height (13-inch laptops): shorter key/value rows. */
+@media (min-width: 760px) and (max-height: 820px) {
+  .kv > div {
+    min-height: 38px;
+  }
+}
