@@ -7,6 +7,8 @@ export type LayoutMode = 'phone' | 'sheet' | 'panes';
 
 export const PHONE_QUERY = '(max-width: 759.98px)';
 export const PANES_QUERY = '(min-width: 1024px)';
+/** Short desktop screens (13-inch laptops, ≈800–900 px tall): the shell switches to its compact density. */
+export const COMPACT_QUERY = '(max-height: 820px)';
 
 export type MatchMediaFn = (query: string) => MediaQueryList;
 
@@ -25,16 +27,22 @@ export class LayoutModeService {
   private readonly window = inject(DOCUMENT).defaultView;
   private readonly measured = signal<LayoutMode>(this.measure());
   private readonly forced = signal<LayoutMode | null>(null);
+  private readonly measuredCompact = signal(this.measureCompact());
 
   readonly mode = computed(() => this.forced() ?? this.measured());
+  /** True when the viewport is at most 820 px tall. */
+  readonly compactHeight = this.measuredCompact.asReadonly();
 
   constructor() {
     const matchMedia = this.matchMedia;
     if (!matchMedia) {
       return;
     }
-    const queries = [matchMedia(PHONE_QUERY), matchMedia(PANES_QUERY)];
-    const update = () => this.measured.set(this.measure());
+    const queries = [matchMedia(PHONE_QUERY), matchMedia(PANES_QUERY), matchMedia(COMPACT_QUERY)];
+    const update = () => {
+      this.measured.set(this.measure());
+      this.measuredCompact.set(this.measureCompact());
+    };
     queries.forEach(query => query.addEventListener('change', update));
     inject(DestroyRef).onDestroy(() => queries.forEach(query => query.removeEventListener('change', update)));
   }
@@ -53,6 +61,13 @@ export class LayoutModeService {
     }
     const width = this.window?.innerWidth ?? 1024;
     return width < 760 ? 'phone' : width >= 1024 ? 'panes' : 'sheet';
+  }
+
+  private measureCompact(): boolean {
+    if (this.matchMedia) {
+      return this.matchMedia(COMPACT_QUERY).matches;
+    }
+    return (this.window?.innerHeight ?? 900) <= 820;
   }
 }
 

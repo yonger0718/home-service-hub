@@ -234,3 +234,15 @@
   text-align: center;
   top: -2px;
 }
+
+/* Compact height (13-inch laptops): tighter month bar and totals card. */
+@media (min-width: 760px) and (max-height: 820px) {
+  .monthbar {
+    padding: 2px 0;
+  }
+
+  .sum {
+    margin: 2px 0 6px;
+    padding: 6px 10px;
+  }
+}

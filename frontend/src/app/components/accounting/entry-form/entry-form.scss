@@ -393,3 +393,10 @@
   white-space: nowrap;
   width: 1px;
 }
+
+/* Compact height (13-inch laptops): shorter form rows. */
+@media (min-width: 760px) and (max-height: 820px) {
+  .topbar { min-height: 40px; }
+  .tile { min-height: 38px; }
+  .note { min-height: 40px; }
+}

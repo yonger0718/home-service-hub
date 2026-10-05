@@ -13,7 +13,7 @@
     'ico name amt'
     'ico sub pills';
   grid-template-columns: 40px minmax(0, 1fr) auto;
-  padding: 7px 0;
+  padding: var(--row-py) 0;
   text-align: left;
   width: 100%;
 
@@ -45,9 +45,9 @@
   display: flex;
   font-size: 1.15rem;
   grid-area: ico;
-  height: 38px;
+  height: var(--ico-size);
   justify-content: center;
-  width: 38px;
+  width: var(--ico-size);
 }
 
 .name {

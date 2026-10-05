@@ -58,7 +58,7 @@
   gap: 1px 10px;
   grid-template-areas: 'ico name bal' 'ico meta bal' 'ico due due';
   grid-template-columns: 40px minmax(0, 1fr) auto;
-  padding: 8px 0;
+  padding: calc(var(--row-py) + 1px) 0;
   text-decoration: none;
 }
 
@@ -71,9 +71,9 @@
   display: flex;
   font-size: 1.1rem;
   grid-area: ico;
-  height: 38px;
+  height: var(--ico-size);
   justify-content: center;
-  width: 38px;
+  width: var(--ico-size);
 }
 
 .name { font-weight: 800; grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

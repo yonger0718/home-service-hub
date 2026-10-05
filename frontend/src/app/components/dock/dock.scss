@@ -8,8 +8,13 @@
   flex-direction: column;
   height: 100vh;
   left: 0;
+  /* The dock is its own scroll container: when the nav is taller than the viewport it scrolls
+     here (and the wheel stays here) instead of being clipped. dock.spec.ts checks the structure. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1.5rem 0;
   position: fixed;
+  scrollbar-width: thin;
   top: 0;
   width: 72px;
   z-index: 1000;
@@ -20,6 +25,7 @@
   border-radius: var(--radius-md);
   box-shadow: var(--app-card-shadow);
   display: flex;
+  flex: none;
   height: 40px;
   justify-content: center;
   margin-bottom: 1.5rem;
@@ -36,9 +42,16 @@
 .dock-nav {
   align-items: center;
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 0.5rem;
+  min-height: 0;
   width: 100%;
+
+  /* Items and dividers keep their size; overflow scrolls the dock instead of squashing them. */
+  > * {
+    flex-shrink: 0;
+  }
 }
 
 .dock-divider {
@@ -87,6 +100,31 @@
 
     i {
       font-size: 1rem;
+    }
+  }
+}
+
+/* Compact height (13-inch laptops): smaller items so the whole nav usually fits. */
+@media (min-width: 760px) and (max-height: 820px) {
+  .hub-dock {
+    padding: 0.75rem 0;
+  }
+
+  .dock-logo {
+    margin-bottom: 0.75rem;
+  }
+
+  .dock-nav {
+    gap: 0.35rem;
+  }
+
+  .dock-item {
+    height: 38px;
+    width: 38px;
+
+    &.sub {
+      height: 32px;
+      width: 32px;
     }
   }
 }

@@ -76,3 +76,10 @@
     }
   }
 }
+
+/* Compact height (13-inch laptops): shorter keys. */
+@media (min-width: 760px) and (max-height: 820px) {
+  .keypad button {
+    height: 38px;
+  }
+}

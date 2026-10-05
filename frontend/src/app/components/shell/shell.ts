@@ -2,6 +2,8 @@ import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@a
 import { Router, RouterOutlet, NavigationEnd } from '@angular/router';
 import { filter } from 'rxjs';
 
+import { LayoutModeService } from '../../services/layout-mode.service';
+
 import { DockComponent } from '../dock/dock';
 import { MobileNavComponent } from '../mobile-nav/mobile-nav';
 import { navItemForUrl } from './navigation';
@@ -16,6 +18,7 @@ import { navItemForUrl } from './navigation';
 export class ShellComponent {
   private readonly router = inject(Router);
   private readonly currentUrl = signal(this.router.url || '/');
+  protected readonly layout = inject(LayoutModeService);
 
   protected readonly activeItem = computed(() => navItemForUrl(this.currentUrl()));
   protected readonly title = computed(() => this.activeItem().title);
