@@ -500,3 +500,22 @@ def test_definition_put_materialises_posted_amounts_before_template_change(clien
     effective = [Decimal((row.amount_override or ["3000"])[0]) for row in rows]
     assert effective == [Decimal(2500), Decimal(3000), Decimal(3000), Decimal(1500)]
     assert sum(effective) == Decimal(10000)
+
+
+def test_edit_end_date_before_the_normalised_anchor_is_422(client, db_session, seed, today):
+    # Final review B2: 起始日 09-20 with day 15 normalises the anchor to 10-15; an end_date of 09-30 lies before it, so
+    # the edit answers 422 end_date (as create does) instead of a check-constraint 500.
+    today(date(2026, 9, 18))
+    card = seed.account("範例卡")
+    definition = seed.definition([seed.line("expense", card, "390")], name="訂閱", anchor=date(2026, 9, 20))
+    db_session.commit()
+
+    response = client.put(
+        f"/schedules/definitions/{definition.id}",
+        json={"name": "訂閱", "template": {"lines": [_line("expense", card, "390")]}, "interval_unit": "month",
+              "anchor_date": "2026-09-20", "day_of_month": 15, "end_date": "2026-09-30"},
+    )
+
+    assert response.status_code == 422 and _fields(response) == {"end_date"}
+    db_session.refresh(definition)
+    assert (definition.anchor_date, definition.end_date) == (date(2026, 9, 20), None)

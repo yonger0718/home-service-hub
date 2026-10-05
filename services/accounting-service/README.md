@@ -88,7 +88,7 @@ Reads
   missing, the latest available release; `rate_date` names the release the rate comes from)
 - `GET /imports/latest` (reports `kind`: `moze_csv` or `moze_backup`); MOZE's schedules are read through `/schedules/*` (see Schedules)
 
-Writes (every write sets `source = 'manual'`; amounts are unsigned with at most 4 decimals; 422 names the field, 409 is a conflict or `locked_until_cutover`)
+Writes (every new row gets `source = 'manual'`, and an edit of a schedule-posted row keeps `source = 'schedule'`; amounts are unsigned with at most 4 decimals; 422 names the field, 409 is a conflict or `locked_until_cutover`)
 
 - `POST /entries` (expense, income, receivable, payable; optional `fee` / `discount` children, FX fields, `reward_rule_ids`; the response may carry `proposed_fee`), `PUT /entries/{id}`, `DELETE /entries/{id}`
 - `POST /entries/{id}/settle` (收款 / 還款, same currency, at most the open amount), `POST /entries/{id}/refund` (expense only, same currency, at most the unrefunded amount)

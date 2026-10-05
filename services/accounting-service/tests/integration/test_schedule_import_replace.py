@@ -187,6 +187,67 @@ def test_owner_edited_period_whose_record_turned_past_is_booked_once(db_session,
     assert (again["schedules"]["past_records_already_posted"], again["schedules"]["past_records_owner_pending"]) == (1, [])
 
 
+def test_homehub_posted_period_whose_record_moved_is_matched_by_seq(db_session, backup, today):
+    # Final review B1: the job posted a HomeHub-generated period (no moze_id); MOZE's record for that occurrence sits on
+    # another date. It matches no instance by moze_id / record id / date, so the instance of the same seq (posted by
+    # auto, not linked) covers it: one entry, the instance stays posted and is linked, the report lists it.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _owner_period_data(backup, "2026-10-01T17:00:37"))
+    definition = db_session.scalar(select(ScheduleDefinition).where(ScheduleDefinition.moze_id == "PER-M"))
+    generation.generate(db_session, definition, date(2026, 10, 3))
+    generated = db_session.scalar(
+        select(ScheduleInstance).where(ScheduleInstance.definition_id == definition.id, ScheduleInstance.seq == 3)
+    )
+    assert (generated.moze_id, generated.due_date) == (None, date(2026, 11, 9))
+    today(date(2026, 11, 9))
+    assert posting.post_instance(db_session, generated.id, actor="auto", job=True, today=date(2026, 11, 9)).outcome == "posted"
+    db_session.commit()
+    posted_ids = [entry.id for entry in _schedule_entries(db_session)]
+    today(date(2026, 11, 12))
+    data = backup.data(
+        exported_at="2026-11-12T17:00:00", accounts=[backup.account("A-WALLET", "錢包")],
+        periods=[backup.period("PER-M", unit=2, days=9, start="2026-10-09T00:00:00")],
+        records=[_rec(backup, key, day, eventID="PER-M")
+                 for key, day in (("R-SEP", "2026-09-09"), ("R", "2026-10-09"), ("R-NOV", "2026-11-10"))],
+    )
+
+    summary = _import_backup(db_session, data)
+
+    assert _by_moze_id(db_session, "R-NOV") is None
+    assert [entry.id for entry in _schedule_entries(db_session)] == posted_ids
+    db_session.expire_all()
+    row = db_session.get(ScheduleInstance, generated.id)
+    assert (row.status, row.acted_by, row.moze_id, row.moze_record_ids) == ("posted", "auto", "R-NOV", ["R-NOV"])
+    assert summary["schedules"]["past_records_matched_by_seq"] == {
+        "count": 1,
+        "items": [{"definition_id": definition.id, "seq": 3, "date": "2026-11-10", "due_date": "2026-11-09"}],
+    }
+    assert summary["schedules"]["past_records_already_posted"] == 1
+
+
+def test_homehub_posted_period_whose_record_is_disabled_is_no_stand_in(db_session, backup, today, monkeypatch):
+    # Final review B4: HomeHub posted the period; MOZE's record for it is now disabled, so MOZE does not count it. The
+    # schedule entry is not a stand-in in moze_part, and a strict compared import passes.
+    today(date(2026, 10, 3))
+    _import_backup(db_session, _owner_period_data(backup, "2026-10-01T17:00:37"))
+    instance = db_session.scalar(select(ScheduleInstance).where(ScheduleInstance.moze_id == "R"))
+    assert posting.post_instance(db_session, instance.id, actor="auto", job=True, today=date(2026, 10, 9)).outcome == "posted"
+    db_session.commit()
+    today(date(2026, 10, 12))
+    monkeypatch.setattr(moze_backup_import_service, "balance_info_key", lambda account: "1" if account["balanceInfo"] else None)
+    data = _owner_period_data(backup, "2026-10-12T17:00:00")
+    data.accounts[0]["balanceInfo"] = {"1": Decimal("-100")}
+    next(record for record in data.records if record["identifier"] == "R")["isEnabled"] = False
+
+    summary = _import_backup(db_session, data, strict=True)
+
+    assert _by_moze_id(db_session, "R") is None
+    wallet = summary["accounts"][0]
+    assert (Decimal(wallet["moze_part"]), Decimal(wallet["difference"])) == (Decimal("-100"), Decimal("0"))
+    db_session.expire_all()
+    assert db_session.get(ScheduleInstance, instance.id).status == "posted"
+
+
 def test_loan_link_survives_the_full_replace(db_session, backup, today):
     # Spec "Loan link survives the full replace".
     _post_first_loan_period(db_session, backup, today)

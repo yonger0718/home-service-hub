@@ -53,6 +53,7 @@ class Covered:
     moze_lines: tuple[tuple[str, str | None], ...]
     day: date
     account_amounts: tuple[tuple[str, str, Decimal], ...] = ()  # (record id, MOZE account id, signed total)
+    by_seq: bool = False  # matched only by its position (_seq_match): reported as past_records_matched_by_seq
 
 
 def _jsonable(value):
@@ -80,6 +81,9 @@ def new_report(mapped: MapResult) -> dict:
         # per line (R-F5): count / instance_ids of posted periods with a differing line, `lines` the items (owner-facing)
         "past_records_amount_differs": {"count": 0, "instance_ids": [], "lines": []},
         "past_records_owner_pending": [],  # R-F1: {definition_id, seq, date} of suppressed records held by the owner
+        # final review B1: past records covered by the HomeHub-acted, unlinked instance of the same seq (MOZE's record
+        # sits on another date); items {definition_id, seq, date (the record's), due_date (the instance's)}
+        "past_records_matched_by_seq": {"count": 0, "items": []},
         "relinked": {"templates": 0, "settlements": 0},
         "review": list(mapped.review),
         # per line (R-F5, R-A2): pending periods whose amounts the import keeps (template_owner_edited definitions,
@@ -148,6 +152,22 @@ def _find(rows: list[ScheduleInstance], mapped: MappedInstance) -> tuple[Schedul
         return row, False
     row = _adoptable(rows, mapped.day)
     return row, row is not None
+
+
+def _seq_match(rows: list[ScheduleInstance], mapped: MappedInstance) -> ScheduleInstance | None:
+    """Final review B1: a past record that _find matched to no row falls back to the row of the same seq when HomeHub
+    alone decided it — not linked to MOZE yet (moze_id NULL), posted or skipped by auto / owner. MOZE's record for the
+    occurrence sits on another date; without this the record would be imported beside HomeHub's booking."""
+    if not mapped.past or mapped.seq is None:
+        return None
+    return next(
+        (
+            row for row in rows
+            if row.seq == mapped.seq and row.moze_id is None and row.status in ("posted", "skipped")
+            and row.acted_by in ("auto", "owner")
+        ),
+        None,
+    )
 
 
 def _moze_lines(template: dict, amounts: list, records: list[dict]) -> tuple[tuple[str, str | None], ...]:
@@ -251,6 +271,10 @@ def covered_records(session: Session, mapped: MapResult) -> dict[str, Covered]:
             if not item.past:
                 continue
             row, _ = _find(rows, item)
+            by_seq = False
+            if row is None:
+                row = _seq_match(rows, item)
+                by_seq = row is not None
             if row is None:
                 continue
             kept_posted = row.status == "posted" and row.acted_by in ("auto", "owner")
@@ -264,7 +288,7 @@ def covered_records(session: Session, mapped: MapResult) -> dict[str, Covered]:
                     for record in item.records
                 )
                 for record_id in item.record_ids:
-                    covered[record_id] = Covered(row.id, status, moze_lines, item.day, account_amounts)
+                    covered[record_id] = Covered(row.id, status, moze_lines, item.day, account_amounts, by_seq)
     return covered
 
 
@@ -302,9 +326,17 @@ def template_usage(session: Session) -> dict[str, set[int]]:
     return usage
 
 
-def stand_in_entry_ids(session: Session, covered: dict[str, Covered]) -> set[int]:
-    """The schedule entries standing in for records skipped as already posted (balance comparison, D37)."""
-    instance_ids = {item.instance_id for item in covered.values() if item.status == "posted"}
+def stand_in_entry_ids(
+    session: Session, covered: dict[str, Covered], uncounted: Collection[str] = frozenset()
+) -> set[int]:
+    """The schedule entries standing in for records skipped as already posted (balance comparison, D37). Final review
+    B4: an instance whose covered records are all in `uncounted` (disabled in MOZE: MOZE does not count them) stands
+    in for nothing, so its HomeHub entries stay out of `moze_part`."""
+    counted: dict[int, bool] = {}
+    for record_id, item in covered.items():
+        if item.status == "posted":
+            counted[item.instance_id] = counted.get(item.instance_id, False) or record_id not in uncounted
+    instance_ids = {instance_id for instance_id, any_counted in counted.items() if any_counted}
     if not instance_ids:
         return set()
     rows = session.scalars(select(ScheduleInstance.posted_entry_ids).where(ScheduleInstance.id.in_(instance_ids)))
@@ -522,6 +554,14 @@ def _apply_instances(session: Session, definition: ScheduleDefinition, mapped: M
             amounts = template_amounts(definition.template)
         moze_lines = _moze_lines(definition.template, amounts, item.records if realign_from is None else [])
         row, adopted = _find(rows, item)
+        if row is None and (by_seq := _seq_match(rows, item)) is not None:
+            # B1: the HomeHub-acted period of the same seq covered this record (covered_records); link it, keep it
+            by_seq.moze_id, by_seq.moze_record_ids = item.moze_id, list(item.record_ids)
+            by_seq.moze_payload = _jsonable(item.records)
+            matched.add(by_seq.id)
+            counters["kept"] += 1
+            session.flush()
+            continue
         if row is None:
             if any(other.seq == item.seq for other in rows):
                 report["review"].append({"moze_id": item.moze_id, "reason": "seq_conflict"})
@@ -749,6 +789,15 @@ def apply_schedules(
             report["past_records_owner_pending"].append(
                 {"definition_id": row.definition_id, "seq": row.seq, "date": row.due_date.isoformat()}
             )
+    matched_by_seq = report["past_records_matched_by_seq"]
+    for instance_id, day in sorted({(item.instance_id, item.day) for item in covered.values() if item.by_seq}):
+        row = session.get(ScheduleInstance, instance_id)
+        if row is not None:
+            matched_by_seq["items"].append({
+                "definition_id": row.definition_id, "seq": row.seq, "date": day.isoformat(),
+                "due_date": row.due_date.isoformat(),
+            })
+    matched_by_seq["count"] = len(matched_by_seq["items"])
     _amount_differs(session, covered, report)
     return report  # loan_check runs after restore_links (Task 18 wiring)
 

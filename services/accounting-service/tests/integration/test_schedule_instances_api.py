@@ -578,3 +578,15 @@ def test_reopen_clears_a_misaligned_override(client, db_session, seed, today):
 
     assert (_row(db_session, pinned.id).status, _row(db_session, pinned.id).amount_override) == ("pending", None)
     assert (_row(db_session, skipped.id).status, _row(db_session, skipped.id).amount_override) == ("pending", ["400"])
+
+
+def test_instance_edit_without_fields_is_422_and_leaves_the_row(client, db_session, seed, loan, today):
+    # Final review B3: scope `this` with neither due_date nor amounts changes nothing — 422, never edited_by_owner.
+    today(date(2026, 10, 3))
+    instance = seed.instance(loan.definition, 1, date(2026, 11, 9))
+    db_session.commit()
+    response = client.put(f"/schedules/instances/{instance.id}", json={})
+    assert response.status_code == 422
+    assert "金額" not in str(response.json())
+    row = _row(db_session, instance.id)
+    assert (row.edited_by_owner, row.amount_override, row.due_date) == (False, None, date(2026, 11, 9))

@@ -138,6 +138,16 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
     if definition.kind != "installment":
         total = None
     _check_total(definition.kind, template, payload.times, total)
+    # R-F3: occurrences are always computed from the rule anchor, which an edit never rebases implicitly. Only a
+    # different anchor_date moves it; a month / year rule sent without day_of_month then takes the new anchor's day.
+    unit, n, day_of_month = payload.interval_unit, payload.interval_n, payload.day_of_month
+    anchor_changed = payload.anchor_date != definition.anchor_date
+    if anchor_changed and day_of_month is None and unit in ("month", "year"):
+        day_of_month = payload.anchor_date.day
+    base = payload.anchor_date if anchor_changed else definition.anchor_date
+    anchor = rules.normalize_anchor(base, unit, n, day_of_month)  # occurrence 0; keeps a 31st / 02-29 anchor as is
+    if payload.end_date is not None and payload.end_date < anchor:
+        raise ValidationError("end_date", "結束日期不可早於第一期")  # against the normalised anchor, as create does
 
     doomed = [row for row in instances if row.status == "pending" and row.due_date >= tomorrow]
     remaining = [row for row in instances if row not in doomed]
@@ -167,14 +177,6 @@ def update_definition(db: Session, definition_id: int, payload: DefinitionUpdate
     if payload.posting_mode is not None:
         _set_mode(definition, payload.posting_mode, today)
 
-    # R-F3: occurrences are always computed from the rule anchor, which an edit never rebases implicitly. Only a
-    # different anchor_date moves it; a month / year rule sent without day_of_month then takes the new anchor's day.
-    unit, n, day_of_month = payload.interval_unit, payload.interval_n, payload.day_of_month
-    anchor_changed = payload.anchor_date != definition.anchor_date
-    if anchor_changed and day_of_month is None and unit in ("month", "year"):
-        day_of_month = payload.anchor_date.day
-    base = payload.anchor_date if anchor_changed else definition.anchor_date
-    anchor = rules.normalize_anchor(base, unit, n, day_of_month)  # occurrence 0; keeps a 31st / 02-29 anchor as is
     definition.anchor_date, definition.day_of_month = anchor, day_of_month  # first_seq is kept
     k = rules.first_index_on_or_after(anchor, unit, n, day_of_month, tomorrow)
     # The same bound generation uses: generate() continues strictly after the latest rule_date, and an owner may
@@ -347,6 +349,8 @@ def update_instance(db: Session, instance_id: int, payload: InstanceUpdateIn) ->
     if payload.scope != "this":
         _apply_amount_scope(db, instance_id, payload)
         return
+    if payload.amounts is None and payload.due_date is None:
+        raise ValidationError("scope", "沒有要修改的欄位")  # an empty edit never marks the period owner-edited
     definition, instance = _instance_locked(db, instance_id)
     if instance.status != "pending":
         raise ConflictError("只有待入帳的期別可以修改")

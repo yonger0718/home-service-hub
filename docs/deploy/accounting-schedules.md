@@ -121,6 +121,8 @@ Revision `c4e8b2f1a7d3` (down revision `7b1e4a2c9d05`):
 
    The log check relies on INFO-level application logs reaching pm2. The OTel setup of `shared_lib` (required at start-up) puts the root logger at INFO with a stream handler, so they do. A `schedule_job.scheduler_started` line also proves the scheduler is on (`npx pm2 logs accounting-service --lines 50 --nostream | grep -c 'schedule_job.scheduler_started\|schedule_job.run'`). If both counts are 0 but `/health` is ok, check that run directly: `curl -s -X POST -H "Authorization: Bearer $TOKEN" http://localhost:8000/schedules/run-now` answers a report with `"status": "completed"`.
 
+   The job's structured fields (`extra=`: definition / instance ids, error classes and stack frames of a failed run) reach OTel / Loki only; pm2 stdout shows the message line without them, so look a failure up in Grafana (Loki) by its message.
+
    **Tokens (as in phase 2a step 2).** With `ACCOUNTING_API_TOKENS` unset, the header is ignored. When it is set (#42), export `TOKEN` to one of its tokens first. Without it, every `/schedules/*` route answers 401, `run-now` included. `/health` needs no token.
 
    **SPA.** Build and publish it as in step 3 of the phase 2a runbook: `cd frontend && npm run build`, then publish `frontend/dist/inventory-ui/browser` with the production publisher.
