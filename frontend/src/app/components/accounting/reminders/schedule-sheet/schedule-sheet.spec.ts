@@ -145,6 +145,31 @@ describe('ScheduleSheetComponent', () => {
     expect(closed).toHaveBeenCalledTimes(2);
   });
 
+  it('offers neither 編輯 nor 入帳方式 changes for an ended schedule', () => {
+    // Final review F3: an ended definition answers 409 definition_ended to a PUT and to …/mode.
+    const el = render(detail({ status: 'ended', instances: [] }));
+    expect(el.querySelector('.sheet-edit')).toBeNull();
+    const modes = Array.from(el.querySelectorAll<HTMLButtonElement>('.sheet-mode'));
+    expect(modes.length).toBe(2);
+    expect(modes.every(button => button.disabled)).toBe(true);
+    fixture.componentInstance.setMode('confirm');
+    http.expectNone(r => r.url.endsWith('/mode'));
+  });
+
+  it('shows 金額格式不正確 for an empty amount and sends nothing', () => {
+    // Final review F5: the period editor validates with the shared amount parser.
+    const el = render(detail());
+    click(el, '.next-period .period-edit');
+    const input = el.querySelector('.period-editor input') as HTMLInputElement;
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    click(el, '.period-save');
+    expect(text(el.querySelector('.form-error'))).toBe('金額格式不正確');
+    expect(el.querySelector('.scope-sheet')).toBeNull();
+    http.expectNone(r => r.method === 'PUT');
+  });
+
   it('moves focus into the sheet once loaded', async () => {
     const el = render(detail());
     await vi.waitFor(() => {
@@ -213,7 +238,7 @@ describe('ScheduleSheetComponent', () => {
     const el = render(detail());
     click(el, '.next-period .period-edit');
     const input = el.querySelector('.period-editor input') as HTMLInputElement;
-    input.value = '4.12345';
+    input.value = '4.1.2';
     input.dispatchEvent(new Event('input'));
     fixture.detectChanges();
     click(el, '.period-save');
@@ -318,7 +343,7 @@ describe('ScheduleSheetComponent', () => {
       const el = render(detail());
       type(openEditor(el), '420');
       click(el, '.period-save');
-      type(el.querySelector('.period-editor input') as HTMLInputElement, '4.20001');
+      type(el.querySelector('.period-editor input') as HTMLInputElement, 'abc');
       click(el, '.scope-this');
       http.expectNone(r => r.method === 'PUT');
       expect(text(el.querySelector('.form-error'))).toBe('金額格式不正確');

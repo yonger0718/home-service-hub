@@ -28,7 +28,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
 import { NO_ENTER_SAVE_TAGS, colorOf, fxConversionLine, iconOf, isHandledKey, leavePage } from '../accounting-ui';
-import { amountString, parseAmountText } from '../amount-text';
+import { amountString, parseAmountFields, parseAmountText } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
@@ -537,7 +537,7 @@ export class EntryDetailComponent implements OnInit {
   editSchedule(): void {
     const link = this.scheduleLink();
     const definition = this.scheduleDefinition();
-    if (!link || !definition || definition.locked) {
+    if (!link || !definition || definition.locked || definition.status === 'ended') {
       return;
     }
     this.router.navigate(['/accounting/entry'], { queryParams: { schedule: link.definition_id } });
@@ -554,12 +554,17 @@ export class EntryDetailComponent implements OnInit {
     if (!detail || !link || this.busy() || this.repostLines().length === 0) {
       return;
     }
+    const amounts = parseAmountFields(this.repostAmounts(), this.repostLines().map(line => line.currency));
+    if (amounts === null) {
+      this.formError.set('金額格式不正確');
+      return;
+    }
     const id = detail.id;
     const position = Math.max(link.posted_entry_ids.indexOf(id), 0);
     this.busy.set(true);
     this.formError.set(null);
     this.service
-      .repostScheduleInstance(link.instance_id, this.repostAmounts())
+      .repostScheduleInstance(link.instance_id, amounts)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: instance => {

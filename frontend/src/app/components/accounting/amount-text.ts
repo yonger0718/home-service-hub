@@ -17,3 +17,24 @@ export function amountString(value: number, currency: string): string {
   const fixed = Math.abs(value).toFixed(decimals);
   return decimals > 0 ? fixed.replace(/\.?0+$/, '') : fixed;
 }
+
+/**
+ * A period's amount fields (one per template line, in each line's currency) → API strings, or null when any field is
+ * empty or invalid (`金額格式不正確`). A literal zero stays allowed: a line of a period may be 0 (e.g. no interest).
+ */
+export function parseAmountFields(texts: readonly string[], currencies: readonly string[]): string[] | null {
+  const result: string[] = [];
+  for (const [index, text] of texts.entries()) {
+    const currency = currencies[index] ?? 'TWD';
+    if (/^0+(\.0+)?$/.test(text.trim())) {
+      result.push('0');
+      continue;
+    }
+    const value = parseAmountText(text, currency);
+    if (value === null) {
+      return null;
+    }
+    result.push(amountString(value, currency));
+  }
+  return result;
+}

@@ -296,6 +296,13 @@ export function draftFromDefinition(definition: ScheduleDefinition): ScheduleFor
   const interest = rest.find(item => item.kind === 'interest') ?? null;
   const installment = definition.kind === 'installment';
   const base = defaultDraft(definition.anchor_date);
+  // 每期金額 equal to the automatic split hydrates as automatic (''), so a changed 期數 / 總額 re-splits it.
+  const automatic =
+    installment &&
+    definition.total_amount !== null &&
+    definition.times !== null &&
+    definition.times >= 2 &&
+    Number(first.amount) === splitInstallment(Number(definition.total_amount), definition.times, first.currency).perPeriod;
   const draft: ScheduleDraft = {
     ...base,
     tab: installment ? 'installment' : 'recurring',
@@ -311,7 +318,7 @@ export function draftFromDefinition(definition: ScheduleDefinition): ScheduleFor
     periods: definition.times ?? base.periods,
     firstDate: definition.anchor_date,
     firstTouched: true,
-    perPeriod: first.amount,
+    perPeriod: automatic ? '' : first.amount,
     interest: interest?.amount ?? '',
     repayAccountId: first.kind === 'repayment' ? first.account_id : null,
   };

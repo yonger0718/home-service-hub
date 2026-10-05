@@ -44,9 +44,12 @@ export const SCHEDULE_TABS: readonly { tab: ScheduleTab; label: string }[] = [
   { tab: 'installment', label: '分期' },
 ];
 
-/** 分期 only for 支出 and 應付款項; 轉帳, 收入 and 應收款項 get 週期; 系統 (餘額調整) stays 單次. */
-export function tabsFor(kind: FormKind): ScheduleTab[] {
-  if (kind === 'system') {
+/**
+ * 分期 only for 支出 and 應付款項; 轉帳, 收入 and 應收款項 get 週期; 系統 (餘額調整) stays 單次. Editing an existing
+ * entry (/entries/:id/edit, also 編輯這一筆 of a schedule entry) edits that one record: 單次 only.
+ */
+export function tabsFor(kind: FormKind, options: { editing?: boolean } = {}): ScheduleTab[] {
+  if (kind === 'system' || options.editing) {
     return ['single'];
   }
   return kind === 'expense' || kind === 'payable' ? ['single', 'recurring', 'installment'] : ['single', 'recurring'];

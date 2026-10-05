@@ -115,7 +115,19 @@ describe('schedule-save', () => {
     });
     const state = draftFromDefinition(loan);
     expect([state.kind, state.amount, state.accountId, state.loanEntryId, state.name]).toEqual(['payable', '300000', 1, 4021, '信貸 每月還款']);
-    expect(state.draft).toMatchObject({ tab: 'installment', periods: 36, firstDate: '2026-11-09', perPeriod: '8333', interest: '620', repayAccountId: 1 });
+    // 8333 is floor(300000 ÷ 36): 每期金額 hydrates as automatic (''), so a changed 期數 / 總額 re-splits it.
+    expect(state.draft).toMatchObject({ tab: 'installment', periods: 36, firstDate: '2026-11-09', perPeriod: '', interest: '620', repayAccountId: 1 });
+  });
+
+  it('keeps a stored 每期金額 that is not the automatic split', () => {
+    const line = { ...makeDefinition().template.lines[0], kind: 'expense' as const, amount: '9000.0000' };
+    const card = makeDefinition({
+      kind: 'installment', anchor_date: '2026-11-03', times: 3, total_amount: '25000.0000',
+      template: { lines: [line], description: null, tags: [] },
+    });
+    expect(draftFromDefinition(card).draft.perPeriod).toBe('9000.0000');
+    const split = makeDefinition({ ...card, template: { lines: [{ ...line, amount: '8333.0000' }], description: null, tags: [] } });
+    expect(draftFromDefinition(split).draft.perPeriod).toBe('');
   });
 
   it('decides the catch-up and strips kind and loan for an update', () => {

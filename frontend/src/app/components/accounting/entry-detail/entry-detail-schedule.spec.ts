@@ -186,6 +186,36 @@ describe('EntryDetailComponent schedules', () => {
     expect(text(locked.el.querySelector('.scope-locked'))).toBe('MOZE 匯入資料，切換後可編輯');
   });
 
+  it('offers no 編輯整個排程 for an ended schedule', () => {
+    // Final review F3: an ended definition cannot be edited (PUT answers 409 definition_ended).
+    const { fixture, el } = render(REPAYMENT);
+    click(fixture, '.action-edit');
+    http.expectOne('/api/accounting/schedules/definitions/12').flush({ ...DEFINITION, status: 'ended' });
+    fixture.detectChanges();
+    const all = el.querySelector('.scope-all') as HTMLButtonElement | null;
+    expect(all === null || all.disabled).toBe(true);
+    fixture.componentInstance.editSchedule();
+    expect(navigate).not.toHaveBeenCalledWith(['/accounting/entry'], { queryParams: { schedule: 12 } });
+  });
+
+  for (const bad of ['', 'abc']) {
+    it(`refuses a repost with an ${bad ? 'invalid' : 'empty'} amount and sends nothing`, () => {
+      // Final review F5: the repost panel validates every amount before sending.
+      const { fixture, el } = render(REPAYMENT);
+      click(fixture, '.action-edit');
+      http.expectOne('/api/accounting/schedules/definitions/12').flush(DEFINITION);
+      fixture.detectChanges();
+      click(fixture, '.scope-one');
+      const input = el.querySelectorAll<HTMLInputElement>('.repost-amount')[1];
+      input.value = bad;
+      input.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      click(fixture, '.repost-submit');
+      http.expectNone('/api/accounting/schedules/instances/77/repost');
+      expect(text(el.querySelector('.repost-form .form-error'))).toBe('金額格式不正確');
+    });
+  }
+
   it("words what deleting does to the entry's period", () => {
     // Spec "Deleting a MOZE-booked period's last entry" and the 部分入帳 wording.
     const partial = render(REPAYMENT);

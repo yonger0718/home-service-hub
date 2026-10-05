@@ -35,6 +35,12 @@ describe('http error helpers', () => {
     expect(writeErrorMessage(httpError(409, { detail: 'locked_until_cutover' }))).toBe('MOZE 匯入資料，切換後可編輯');
     expect(writeErrorMessage(httpError(409, { detail: 'definition_ended' }))).toBe('排程已結束，無法編輯');
     expect(writeErrorMessage(httpError(409, { code: 'conflict', message: 'definition_ended' }))).toBe('排程已結束，無法編輯');
+    // Final review F4: the posting race codes read in Chinese.
+    expect(writeErrorMessage(httpError(409, { detail: 'already_posted' }))).toBe('此期已入帳');
+    expect(writeErrorMessage(httpError(409, { detail: 'skipped' }))).toBe('此期已略過');
+    expect(writeErrorMessage(httpError(409, { detail: 'definition_changed' }))).toBe('排程剛變更，請重試');
+    expect(writeErrorMessage(httpError(409, { detail: 'busy' }))).toBe('排程工作正在執行，請稍後再試');
+    expect(writeErrorMessage(httpError(409, { code: 'conflict', message: 'already_posted' }))).toBe('此期已入帳');
     expect(
       writeErrorMessage(httpError(409, { code: 'conflict', message: 'account has entries; archive it instead (is_archived)', trace_id: 't-2' })),
     ).toBe('account has entries; archive it instead (is_archived)');

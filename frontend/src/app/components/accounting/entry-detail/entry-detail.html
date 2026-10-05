@@ -193,7 +193,7 @@
           @if (scheduleDefinition()?.locked) {
             <p class="scope-locked">MOZE 匯入資料，切換後可編輯</p>
           } @else {
-            <button type="button" class="scope-all" [disabled]="!scheduleDefinition()" (click)="editSchedule()">編輯整個排程</button>
+            <button type="button" class="scope-all" [disabled]="!scheduleDefinition() || scheduleDefinition()?.status === 'ended'" (click)="editSchedule()">編輯整個排程</button>
           }
         </div>
         @if (formError()) {

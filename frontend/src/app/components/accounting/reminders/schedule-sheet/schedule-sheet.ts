@@ -20,6 +20,7 @@ import { ScheduleAmountScope, ScheduleDefinitionDetail, SchedulePostingMode } fr
 import { AccountingService } from '../../../../services/accounting.service';
 import { AccountingToastService, scheduleActionError } from '../../accounting-toast';
 import { focusSheetField, sheetKeyAction } from '../../accounting-ui';
+import { parseAmountFields } from '../../amount-text';
 import { shortDate, todayIso } from '../../dates';
 import { formatSigned } from '../../format';
 import { ruleSummary } from '../../schedule-math';
@@ -175,7 +176,8 @@ export class ScheduleSheetComponent {
   }
 
   setMode(mode: SchedulePostingMode): void {
-    if (this.definition()?.posting_mode !== mode) {
+    const definition = this.definition();
+    if (definition && definition.status !== 'ended' && definition.posting_mode !== mode) {
       this.act(this.accounting.setScheduleMode(this.definitionId(), mode));
     }
   }
@@ -185,6 +187,9 @@ export class ScheduleSheetComponent {
   }
 
   edit(): void {
+    if (this.definition()?.status === 'ended') {
+      return; // an ended definition is not editable (PUT answers 409 definition_ended)
+    }
     const id = this.definitionId();
     this.closed.emit();
     void this.router.navigate(['/accounting/entry'], { queryParams: { schedule: id } });
@@ -251,8 +256,9 @@ export class ScheduleSheetComponent {
     if (!period) {
       return null;
     }
-    const amounts = this.editAmounts();
-    if (amounts.some(amount => !/^\d+(\.\d{1,4})?$/.test(amount))) {
+    const currencies = (this.definition()?.template.lines ?? []).map(line => line.currency);
+    const amounts = parseAmountFields(this.editAmounts(), currencies);
+    if (amounts === null) {
       this.askScope.set(false);
       this.error.set('金額格式不正確');
       return null;

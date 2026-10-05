@@ -2,7 +2,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { describe, expect, it } from 'vitest';
 
 import { makeAccount } from '../testing/fixtures';
-import { ScheduleDraft, defaultDraft } from './schedule-draft';
+import { ScheduleDraft, defaultDraft, tabsFor } from './schedule-draft';
 import { ScheduleTabsComponent } from './schedule-tabs';
 
 const ACCOUNTS = [makeAccount({ id: 1, name: '薪轉' }), makeAccount({ id: 2, name: '範例卡' })];
@@ -14,6 +14,7 @@ interface Setup {
   accountId?: number | null;
   errors?: Record<string, string>;
   definitionMode?: boolean;
+  editing?: boolean;
   draft?: ScheduleDraft;
 }
 
@@ -29,6 +30,7 @@ function render(setup: Setup = {}): { fixture: ComponentFixture<ScheduleTabsComp
   ref.setInput('accountId', setup.accountId ?? 1);
   ref.setInput('errors', setup.errors ?? {});
   ref.setInput('definitionMode', setup.definitionMode ?? false);
+  ref.setInput('editing', setup.editing ?? false);
   ref.setInput('draft', setup.draft ?? defaultDraft(setup.entryDate ?? '2026-10-22'));
   fixture.detectChanges();
   return { fixture, el: fixture.nativeElement as HTMLElement };
@@ -77,6 +79,15 @@ describe('ScheduleTabsComponent', () => {
     // A separate test: render() configures TestBed, which cannot be configured again once a component exists.
     const { el } = render({ definitionMode: true, draft: { ...defaultDraft('2026-10-22'), tab: 'recurring' } });
     expect(labels(el)).toEqual(['週期', '分期']);
+  });
+
+  it('offers only 單次 while editing an entry', () => {
+    // Final review F1: an entry edit edits that one record; it never becomes a schedule.
+    expect(tabsFor('expense', { editing: true })).toEqual(['single']);
+    expect(tabsFor('expense')).toEqual(['single', 'recurring', 'installment']);
+    const { fixture, el } = render({ editing: true, draft: { ...defaultDraft('2026-10-22'), tab: 'recurring' } });
+    expect(labels(el)).toEqual(['單次']);
+    expect(fixture.componentInstance.draft().tab).toBe('single');
   });
 
   it('starts 週期 at 每 1 月 from the entry date, 無限期, 自動入帳, with the MOZE footer', () => {

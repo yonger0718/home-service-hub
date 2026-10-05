@@ -65,8 +65,8 @@
         <div>
           <span class="k">入帳方式</span>
           <span class="v sheet-modes" role="radiogroup" aria-label="入帳方式">
-            <button type="button" role="radio" class="sheet-mode" data-mode="auto" [attr.aria-checked]="d.posting_mode === 'auto'" [disabled]="busy()" (click)="setMode('auto')">自動入帳</button>
-            <button type="button" role="radio" class="sheet-mode" data-mode="confirm" [attr.aria-checked]="d.posting_mode === 'confirm'" [disabled]="busy()" (click)="setMode('confirm')">提醒入帳</button>
+            <button type="button" role="radio" class="sheet-mode" data-mode="auto" [attr.aria-checked]="d.posting_mode === 'auto'" [disabled]="busy() || d.status === 'ended'" (click)="setMode('auto')">自動入帳</button>
+            <button type="button" role="radio" class="sheet-mode" data-mode="confirm" [attr.aria-checked]="d.posting_mode === 'confirm'" [disabled]="busy() || d.status === 'ended'" (click)="setMode('confirm')">提醒入帳</button>
           </span>
         </div>
       </div>
@@ -83,8 +83,8 @@
         @if (d.status !== 'paused' && overdue() > 0) {
           <button type="button" class="sheet-catch-up" [disabled]="busy()" (click)="catchUp()">補入帳至今天</button>
         }
-        <button type="button" class="sheet-edit" (click)="edit()">編輯</button>
         @if (d.status !== 'ended') {
+          <button type="button" class="sheet-edit" (click)="edit()">編輯</button>
           <button type="button" class="danger sheet-end" [disabled]="busy()" (click)="end()">{{ confirm() === 'end' ? '確定結束' : '結束' }}</button>
         }
         @if (canDelete()) {

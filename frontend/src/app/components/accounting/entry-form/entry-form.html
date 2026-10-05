@@ -261,6 +261,7 @@
           [accountId]="accountId()"
           [disabled]="locked() || definitionLocked() || definitionReadOnly() || createdScheduleId() !== null"
           [definitionMode]="scheduleId() !== null"
+          [editing]="editing()"
           [errors]="fieldErrors()"
           [(draft)]="scheduleDraft"
         >

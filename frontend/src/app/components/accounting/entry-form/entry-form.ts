@@ -250,7 +250,8 @@ export class EntryFormComponent implements OnInit {
   readonly definitionReadOnly = signal(false);
   /** Server 422 field errors of the last schedule save, shown beside their fields. */
   readonly fieldErrors = signal<Record<string, string>>({});
-  readonly scheduling = computed(() => this.scheduleDraft().tab !== 'single');
+  /** 週期 / 分期 chosen; never while editing an entry (that edits the one record: 單次 only, final review F1). */
+  readonly scheduling = computed(() => this.scheduleDraft().tab !== 'single' && !this.editing());
   /** The payable a loan definition repays (definition mode). */
   private loanEntryId: number | null = null;
   private definitionRequest = 0;
@@ -1066,7 +1067,8 @@ export class EntryFormComponent implements OnInit {
       return;
     }
     this.error.set(null);
-    if (this.scheduling() || this.scheduleId() !== null) {
+    // An entry edit never becomes a schedule, whatever the draft says (final review F1).
+    if (this.scheduleId() !== null || (this.scheduling() && !this.editing())) {
       this.saveSchedule(continuous && this.scheduleId() === null);
       return;
     }

@@ -39,6 +39,8 @@ export class ScheduleTabsComponent {
   readonly disabled = input(false);
   /** 編輯整個排程: the definition's own tab only (no 單次). */
   readonly definitionMode = input(false);
+  /** Editing an existing entry: 單次 only (tabsFor). */
+  readonly editing = input(false);
   /** Server field errors (`fieldErrors()`), shown beside the field they name. */
   readonly errors = input<Record<string, string>>({});
   readonly draft = model.required<ScheduleDraft>();
@@ -46,7 +48,7 @@ export class ScheduleTabsComponent {
   readonly units = UNITS;
   readonly accountLabel = accountLabel;
   readonly tabs = computed(() => {
-    const allowed = tabsFor(this.kind());
+    const allowed = tabsFor(this.kind(), { editing: this.editing() && !this.definitionMode() });
     return SCHEDULE_TABS.filter(option => allowed.includes(option.tab) && !(this.definitionMode() && option.tab === 'single'));
   });
   readonly rule = computed<ScheduleRule>(() => {
