@@ -122,8 +122,60 @@ function recurringLine(values: ScheduleFormValues, common: Partial<ScheduleLineI
   });
 }
 
-/** The `POST /schedules/definitions` body for the 週期 / 分期 tab (spec "Entry form schedule tabs"). */
-export function buildDefinitionInput(values: ScheduleFormValues): ScheduleDefinitionInput {
+/** What `buildDefinitionInput` keeps from the definition being edited (編輯整個排程). */
+export interface DefinitionBuildOptions {
+  /** The loaded definition: fields the form does not expose are carried over from it instead of reset. */
+  original?: ScheduleDefinition | null;
+}
+
+const LINE_INPUT_KEYS: readonly (keyof ScheduleLineInput)[] = [
+  'kind', 'account_id', 'to_account_id', 'to_amount', 'counterparty_id', 'category_id', 'project_id', 'amount', 'currency',
+  'loan_entry_id', 'name', 'merchant',
+];
+
+/** The keys of a built line the form actually edits; every other key comes from the loaded line. */
+function formOwnedKeys(built: ScheduleLineInput, index: number, values: ScheduleFormValues): readonly (keyof ScheduleLineInput)[] {
+  if (index > 0 && built.kind === 'interest') {
+    return ['kind', 'account_id', 'amount', 'currency']; // 分期's 利息 field: only its amount (on the main line's account)
+  }
+  if (built.kind === 'repayment' && values.loanEntryId !== null) {
+    return LINE_INPUT_KEYS.filter(key => key !== 'counterparty_id'); // a loan's payable is fixed: no 對象 is resolved
+  }
+  return LINE_INPUT_KEYS;
+}
+
+/** Each built line over the loaded line of the same index and kind, so unexposed fields survive an edit (R1). */
+function mergeLines(lines: ScheduleLineInput[], values: ScheduleFormValues, original: ScheduleDefinition | null): ScheduleLineInput[] {
+  if (!original) {
+    return lines;
+  }
+  return lines.map((built, index) => {
+    const loaded = original.template.lines[index];
+    if (!loaded || loaded.kind !== built.kind) {
+      return built;
+    }
+    const merged = {} as Record<keyof ScheduleLineInput, unknown>;
+    for (const key of LINE_INPUT_KEYS) {
+      merged[key] = loaded[key];
+    }
+    for (const key of formOwnedKeys(built, index, values)) {
+      merged[key] = built[key];
+    }
+    return merged as unknown as ScheduleLineInput;
+  });
+}
+
+/**
+ * The `POST /schedules/definitions` body for the 週期 / 分期 tab (spec "Entry form schedule tabs"). In definition mode
+ * pass the loaded definition as `original`: an installment keeps its `end_date` (the form has no 結束 for 分期) and
+ * every line field the form does not edit (e.g. the 利息 line's category / project / merchant / name) is kept.
+ */
+export function buildDefinitionInput(values: ScheduleFormValues, options: DefinitionBuildOptions = {}): ScheduleDefinitionInput {
+  const input = buildFromForm(values, options.original ?? null);
+  return { ...input, template: { ...input.template, lines: mergeLines(input.template.lines, values, options.original ?? null) } };
+}
+
+function buildFromForm(values: ScheduleFormValues, original: ScheduleDefinition | null): ScheduleDefinitionInput {
   const { draft } = values;
   const typedName = values.name.trim();
   const name = typedName || values.categoryName || KIND_NAMES[values.kind] || '排程';
@@ -180,7 +232,7 @@ export function buildDefinitionInput(values: ScheduleFormValues): ScheduleDefini
     anchor_date: draft.firstDate,
     day_of_month: draft.dayOfMonth,
     times: draft.periods,
-    end_date: null,
+    end_date: original?.kind === 'installment' ? original.end_date : null,
     total_amount: totalText,
     posting_mode: draft.mode,
   };

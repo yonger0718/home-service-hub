@@ -144,9 +144,14 @@ export class ScheduleTabsComponent {
     this.patch({ unit: value as ScheduleIntervalUnit });
   }
 
+  /**
+   * An explicit 起始日 also replaces the rule day (R3): a month / year rule takes the chosen date's day (a definition's
+   * hydrated day_of_month, e.g. 31, would otherwise keep moving the first occurrence); a day / week rule has none.
+   */
   setStart(value: string): void {
     if (value) {
-      this.patch({ start: value, startTouched: true });
+      const monthly = this.draft().unit === 'month' || this.draft().unit === 'year';
+      this.patch({ start: value, startTouched: true, dayOfMonth: monthly ? dayOf(value) : null });
     }
   }
 
@@ -192,9 +197,10 @@ export class ScheduleTabsComponent {
     element.value = String(value);
   }
 
+  /** An explicit 首次還款日 also replaces the rule day (R3): 分期 is monthly, so it takes the chosen date's day. */
   setFirst(value: string): void {
     if (value) {
-      this.patch({ firstDate: value, firstTouched: true });
+      this.patch({ firstDate: value, firstTouched: true, dayOfMonth: dayOf(value) });
     }
   }
 
@@ -209,4 +215,9 @@ export class ScheduleTabsComponent {
   setRepay(value: string): void {
     this.patch({ repayAccountId: value ? Number(value) : null });
   }
+}
+
+/** The day of month of an ISO date (YYYY-MM-DD). */
+function dayOf(iso: string): number {
+  return Number(iso.slice(8, 10));
 }

@@ -1,6 +1,8 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { describe, expect, it } from 'vitest';
 
+import { buildDefinitionInput } from '../entry-form/schedule-save';
+import { nextOccurrences } from '../schedule-math';
 import { makeAccount } from '../testing/fixtures';
 import { ScheduleDraft, defaultDraft, tabsFor } from './schedule-draft';
 import { ScheduleTabsComponent } from './schedule-tabs';
@@ -187,5 +189,43 @@ describe('ScheduleTabsComponent', () => {
     set(fixture, '.sched-end', 'date', 'change');
     set(fixture, '.sched-end-date', '2027-01-31', 'change');
     expect(text(el.querySelector('.schedule-footer'))).toBe('週期：#1 / 至 2027/01/31（每月 / 22號）');
+  });
+
+  describe('R3: an explicit date change replaces the hidden rule day', () => {
+    const hydrated = (overrides: Partial<ScheduleDraft>): ScheduleDraft => ({
+      ...defaultDraft('2026-10-31'), start: '2026-10-31', startTouched: true, firstDate: '2026-10-31', firstTouched: true,
+      dayOfMonth: 31, ...overrides,
+    });
+    const payload = (draft: ScheduleDraft) =>
+      buildDefinitionInput({
+        kind: 'expense', draft, name: '', merchant: '', description: '', tags: [], projectId: null, categoryId: 41,
+        categoryName: '房租', account: ACCOUNTS[0], amount: 900, counterpartyId: null, transfer: null, transferFrom: null,
+        transferTo: null, repayAccount: null, entryDate: '2026-10-03', loanEntryId: null,
+      });
+
+    it('週期: a monthly 31st definition keeps 31 until 起始日 is chosen, then takes the new day', () => {
+      const { fixture, el } = render({ definitionMode: true, draft: hydrated({ tab: 'recurring', unit: 'month' }) });
+      expect(text(el.querySelector('.schedule-footer'))).toContain('31號');
+      set(fixture, '.sched-start', '2026-11-15', 'change');
+      const draft = fixture.componentInstance.draft();
+      expect(draft.dayOfMonth).toBe(15);
+      expect(payload(draft)).toMatchObject({ anchor_date: '2026-11-15', day_of_month: 15 });
+      expect(nextOccurrences(fixture.componentInstance.rule(), 1)[0]).toBe('2026-11-15');
+      expect(text(el.querySelector('.schedule-footer'))).toContain('15號');
+    });
+
+    it('週期 by week: choosing 起始日 clears the rule day', () => {
+      const { fixture } = render({ definitionMode: true, draft: hydrated({ tab: 'recurring', unit: 'week' }) });
+      set(fixture, '.sched-start', '2026-11-15', 'change');
+      expect(fixture.componentInstance.draft().dayOfMonth).toBeNull();
+    });
+
+    it('分期: choosing 首次還款日 takes its day', () => {
+      const { fixture } = render({ definitionMode: true, amount: 27000, draft: hydrated({ tab: 'installment', periods: 3 }) });
+      set(fixture, '.sched-first', '2026-11-15', 'change');
+      const draft = fixture.componentInstance.draft();
+      expect(draft.dayOfMonth).toBe(15);
+      expect(payload(draft)).toMatchObject({ anchor_date: '2026-11-15', day_of_month: 15 });
+    });
   });
 });

@@ -216,6 +216,61 @@ describe('EntryDetailComponent schedules', () => {
     });
   }
 
+  describe('R2: repost after the template line count changed', () => {
+    const line = makeDefinition().template.lines[0];
+    const EXPENSE = makeEntryDetail({
+      id: 42, kind: 'expense', amount: '-9000.0000', name: '手機分期', account_id: 1, account_name: '薪轉',
+      schedule: link({ definition_id: 12, instance_id: 77, posted_entry_ids: [42, 43] }),
+      // a grouped period (expense + interest): 編輯這一筆 opens the repost panel, never the entry form
+      group: { id: 5, kind: 'installment', name: '手機分期 #1/3', merchant: null, description: null, count: 2, total: '-9120.0000', currency: 'TWD' },
+      group_members: [makeEntry({ id: 42, kind: 'expense', amount: '-9000.0000' }), makeEntry({ id: 43, kind: 'interest', amount: '-120.0000' })],
+    });
+    function definitionWith(lines: (typeof line)[], amounts: string[]) {
+      return {
+        ...makeDefinition({ id: 12, kind: 'installment', name: '手機分期', times: 3, total_amount: '27000', template: { lines, description: null, tags: [] } }),
+        instances: [makeInstance({ id: 77, definition_id: 12, status: 'posted', amounts, posted_entry_ids: [42] })],
+      };
+    }
+    function openRepost(definition: object) {
+      const rendered = render(EXPENSE);
+      click(rendered.fixture, '.action-edit');
+      http.expectOne('/api/accounting/schedules/definitions/12').flush(definition);
+      rendered.fixture.detectChanges();
+      if (rendered.el.querySelector('.scope-one')) {
+        click(rendered.fixture, '.scope-one');
+      }
+      return rendered;
+    }
+
+    it('interest removed after posting: one field, one amount sent', () => {
+      // The period was posted as [9000, 120] and pinned; the definition now has the expense line only.
+      const { fixture, el } = openRepost(definitionWith([{ ...line, account_id: 1, amount: '9000' }], ['9000', '120']));
+      const inputs = Array.from(el.querySelectorAll<HTMLInputElement>('.repost-amount'));
+      expect(inputs.map(input => input.value)).toEqual(['9000']);
+      click(fixture, '.repost-submit');
+      const req = http.expectOne('/api/accounting/schedules/instances/77/repost');
+      expect(req.request.body).toEqual({ amounts: ['9000'] });
+      req.flush(makeInstance({ id: 77, status: 'posted', posted_entry_ids: [201] }));
+    });
+
+    it('interest added after posting: two fields, the new one empty and required', () => {
+      const lines = [{ ...line, account_id: 1, amount: '9000' }, { ...line, kind: 'interest' as const, account_id: 1, amount: '120' }];
+      const { fixture, el } = openRepost(definitionWith(lines, ['9000']));
+      const inputs = Array.from(el.querySelectorAll<HTMLInputElement>('.repost-amount'));
+      expect(inputs.map(input => input.value)).toEqual(['9000', '']);
+      click(fixture, '.repost-submit');
+      http.expectNone('/api/accounting/schedules/instances/77/repost');
+      expect(text(el.querySelector('.repost-form .form-error'))).toBe('金額格式不正確');
+      inputs[1].value = '120';
+      inputs[1].dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      click(fixture, '.repost-submit');
+      const req = http.expectOne('/api/accounting/schedules/instances/77/repost');
+      expect(req.request.body).toEqual({ amounts: ['9000', '120'] });
+      req.flush(makeInstance({ id: 77, status: 'posted', posted_entry_ids: [201, 202] }));
+    });
+  });
+
   it("words what deleting does to the entry's period", () => {
     // Spec "Deleting a MOZE-booked period's last entry" and the 部分入帳 wording.
     const partial = render(REPAYMENT);

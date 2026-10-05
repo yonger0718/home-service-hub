@@ -138,3 +138,18 @@ export function scheduleProgress(rule: RuleWithTimes & Pick<ScheduleDefinition, 
 export function schedulePill(link: Pick<EntryScheduleLink, 'kind' | 'seq' | 'times'>): string {
   return `${link.kind === 'installment' ? '分期' : '週期'} #${link.seq}${link.times === null ? '' : `/${link.times}`}`;
 }
+
+/**
+ * A period's repost draft aligned with the CURRENT template lines (R2): one field per line. A posted period keeps the
+ * amounts it was posted with (pinned on a later definition edit), which may be longer or shorter than the template
+ * now. The pinned amount of index i is kept for line i (the API returns amounts only, not the pinned lines' kinds; the
+ * shapes the entry form writes keep the main line first and 利息 after it, so the same index is the same line);
+ * an extra pinned amount is dropped and a line added since is '' for the owner to fill (an empty field is refused
+ * as 金額格式不正確 before sending).
+ */
+export function alignedRepostAmounts(pinned: readonly string[] | null, lines: readonly { amount: string }[]): string[] {
+  if (pinned === null) {
+    return lines.map(line => line.amount);
+  }
+  return lines.map((_, index) => pinned[index] ?? '');
+}

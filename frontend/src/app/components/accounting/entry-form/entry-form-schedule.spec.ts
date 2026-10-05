@@ -371,6 +371,40 @@ describe('EntryFormComponent schedules', () => {
     expect(left()).toBe(true);
   });
 
+  it('keeps an installment cutoff and the interest line metadata on an unchanged PUT (R1)', async () => {
+    const line = makeDefinition().template.lines[0];
+    const definition = makeDefinition({
+      id: 6, kind: 'installment', name: '手機分期', anchor_date: '2026-11-03', times: 3, end_date: '2026-12-03', total_amount: '27000',
+      template: {
+        lines: [
+          { ...line, name: '手機分期', amount: '9000' },
+          { ...line, kind: 'interest', amount: '120', category_id: 61, project_id: 7, merchant: '範例銀行', name: '分期利息' },
+        ],
+        description: null,
+        tags: [],
+      },
+    });
+    const { el } = await open('/accounting/entry?schedule=6');
+    respond('/api/accounting/schedules/definitions/6', { ...definition, instances: [] });
+    respond('/api/accounting/categories', [STREAMING]);
+    flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    (el.querySelector('button.save') as HTMLButtonElement).click();
+    settle();
+    const req = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/schedules/definitions/6');
+    expect(req.request.body).toMatchObject({
+      end_date: '2026-12-03', times: 3, total_amount: '27000',
+      template: {
+        lines: [
+          { kind: 'expense', account_id: 2, amount: '9000', category_id: 41 },
+          { kind: 'interest', account_id: 2, amount: '120', category_id: 61, project_id: 7, merchant: '範例銀行', name: '分期利息' },
+        ],
+      },
+    });
+    req.flush(definition);
+    settle();
+  });
+
   it('refuses to save when the definition failed to load', async () => {
     const { el } = await open('/accounting/entry?schedule=5');
     httpMock

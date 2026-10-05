@@ -11,6 +11,7 @@ import {
   formCanRepresent,
   shouldCatchUp,
 } from './schedule-save';
+import { ScheduleDefinition } from '../../../models/accounting.model';
 
 const PAY = makeAccount({ id: 1, name: '薪轉' });
 const CARD = makeAccount({ id: 2, name: '範例卡' });
@@ -152,5 +153,64 @@ describe('schedule-save', () => {
     expect(formCanRepresent(withLines('installment', [{ ...base, kind: 'collection', loan_entry_id: 4021 }], { times: 36 }))).toBe(false);
     expect(formCanRepresent(withLines('installment', [{ ...base, kind: 'repayment', loan_entry_id: 4021 }, interest], { times: 36 }))).toBe(true);
     expect(formCanRepresent(withLines('recurring', [base, interest]))).toBe(false);
+  });
+
+  describe('R1: a no-op 編輯整個排程 round trip keeps every field', () => {
+    const ACCOUNTS = [PAY, CARD, BROKER, YEN];
+    const lineOf = makeDefinition().template.lines[0];
+
+    /** The entry form's values exactly as hydrated from the definition (nothing touched). */
+    function roundTrip(definition: ScheduleDefinition) {
+      const state = draftFromDefinition(definition);
+      const repay = state.draft.repayAccountId;
+      const input = buildDefinitionInput(
+        {
+          kind: state.kind, draft: state.draft, name: state.name, merchant: state.merchant, description: state.description,
+          tags: state.tags, projectId: state.projectId, categoryId: state.categoryId, categoryName: null,
+          account: ACCOUNTS.find(account => account.id === state.accountId) ?? null, amount: Number(state.amount),
+          counterpartyId: null, transfer: null, transferFrom: null, transferTo: null,
+          repayAccount: repay === null ? null : (ACCOUNTS.find(account => account.id === repay) ?? null),
+          entryDate: '2026-10-03', loanEntryId: state.loanEntryId,
+        },
+        { original: definition },
+      );
+      return definitionUpdateFrom(input);
+    }
+
+    function loadedFields(definition: ScheduleDefinition) {
+      const strip = ({ account_name: _a, to_account_name: _t, category: _c, counterparty: _p, ...line }: typeof lineOf) => line;
+      return {
+        name: definition.name,
+        template: { lines: definition.template.lines.map(strip), description: definition.template.description, tags: definition.template.tags },
+        interval_unit: definition.interval_unit, interval_n: definition.interval_n, anchor_date: definition.anchor_date,
+        day_of_month: definition.day_of_month, times: definition.times, end_date: definition.end_date,
+        total_amount: definition.total_amount, posting_mode: definition.posting_mode,
+      };
+    }
+
+    it('keeps a 3-period installment cutoff (end_date)', () => {
+      const card = makeDefinition({
+        kind: 'installment', name: '手機分期', anchor_date: '2026-11-03', times: 3, end_date: '2026-12-03', total_amount: '27000',
+        template: { lines: [{ ...lineOf, kind: 'expense', name: '手機分期', amount: '9000' }], description: null, tags: [] },
+      });
+      expect(formCanRepresent(card)).toBe(true);
+      expect(roundTrip(card)).toEqual(loadedFields(card));
+    });
+
+    it('keeps the interest line category / project / merchant / name', () => {
+      const loan = makeDefinition({
+        kind: 'installment', name: '信貸', anchor_date: '2026-11-09', times: 36, total_amount: '300000',
+        template: {
+          lines: [
+            { ...lineOf, kind: 'repayment', account_id: 1, amount: '8333', loan_entry_id: 4021, category_id: 50, counterparty_id: 9, name: '信貸' },
+            { ...lineOf, kind: 'interest', account_id: 1, amount: '620', category_id: 61, project_id: 7, merchant: '範例銀行', name: '信貸利息' },
+          ],
+          description: '每月 9 日',
+          tags: ['貸款'],
+        },
+      });
+      expect(formCanRepresent(loan)).toBe(true);
+      expect(roundTrip(loan)).toEqual(loadedFields(loan));
+    });
   });
 });

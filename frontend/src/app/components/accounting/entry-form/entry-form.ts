@@ -254,6 +254,8 @@ export class EntryFormComponent implements OnInit {
   readonly scheduling = computed(() => this.scheduleDraft().tab !== 'single' && !this.editing());
   /** The payable a loan definition repays (definition mode). */
   private loanEntryId: number | null = null;
+  /** Definition mode: the definition as loaded; a save keeps the fields the form does not expose (R1). */
+  private loadedDefinition: ScheduleDefinition | null = null;
   private definitionRequest = 0;
   /** R-F2: a definition this form created whose catch-up has not completed; ✓ then retries the catch-up only. */
   readonly createdScheduleId = signal<number | null>(null);
@@ -525,6 +527,7 @@ export class EntryFormComponent implements OnInit {
     this.editing.set(id !== null);
     ++this.definitionRequest;
     this.loanEntryId = null;
+    this.loadedDefinition = null;
     this.definitionLocked.set(false);
     this.definitionReadOnly.set(false);
     this.definitionLoaded.set(false);
@@ -1173,6 +1176,7 @@ export class EntryFormComponent implements OnInit {
     }
     this.originalAccountId.set(form.accountId);
     this.loanEntryId = form.loanEntryId;
+    this.loadedDefinition = definition;
     this.kind.set(form.kind);
     this.scheduleDraft.set(form.draft);
     this.name.set(form.name);
@@ -1225,7 +1229,7 @@ export class EntryFormComponent implements OnInit {
           repayAccount: repayId === null ? null : (this.accounts().find(account => account.id === repayId) ?? null),
           entryDate: this.entryDate(),
           loanEntryId: this.loanEntryId,
-        }),
+        }, { original: definitionId !== null ? this.loadedDefinition : null }),
       ),
       switchMap(input =>
         definitionId !== null

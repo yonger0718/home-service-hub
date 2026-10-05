@@ -32,7 +32,7 @@ import { amountString, parseAmountFields, parseAmountText } from '../amount-text
 import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
-import { schedulePill } from '../schedule-math';
+import { alignedRepostAmounts, schedulePill } from '../schedule-math';
 
 const FX_SOURCE_LABELS: Record<string, string> = {
   fx_api: '線上匯率',
@@ -502,7 +502,7 @@ export class EntryDetailComponent implements OnInit {
           }
           this.scheduleDefinition.set(definition);
           const instance = definition.instances.find(item => item.id === link.instance_id);
-          this.repostAmounts.set(instance ? [...instance.amounts] : definition.template.lines.map(line => line.amount));
+          this.repostAmounts.set(alignedRepostAmounts(instance?.amounts ?? null, definition.template.lines));
           if (this.panel() === 'repost') {
             this.focusInPanel('.repost-amount');
           }
@@ -554,7 +554,12 @@ export class EntryDetailComponent implements OnInit {
     if (!detail || !link || this.busy() || this.repostLines().length === 0) {
       return;
     }
-    const amounts = parseAmountFields(this.repostAmounts(), this.repostLines().map(line => line.currency));
+    // one amount per current template line, never a stale pinned extra (R2)
+    const lines = this.repostLines();
+    const amounts = parseAmountFields(
+      lines.map(line => this.repostAmounts()[line.index] ?? ''),
+      lines.map(line => line.currency),
+    );
     if (amounts === null) {
       this.formError.set('金額格式不正確');
       return;
