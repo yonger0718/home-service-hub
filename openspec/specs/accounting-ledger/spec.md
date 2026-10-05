@@ -104,7 +104,7 @@ The system SHALL persist every money movement in a `ledger_entry` table with the
 - `category_id` (FK, nullable)
 - `project_id` (FK, nullable)
 - `name`, `merchant` (VARCHAR(128), nullable)
-- `counterparty_id` (FK → `counterparty.id`, nullable; required for `receivable` and `payable`)
+- `counterparty_id` (FK → `counterparty.id`, nullable; required for `receivable` and `payable`; allowed on an `interest` entry, which carries the loan's counterparty when a schedule posts it for a loan; not set on other kinds)
 - `description` (TEXT, nullable)
 - `tags` (TEXT[], default empty)
 - `parent_entry_id` (FK → `ledger_entry.id`, nullable; used by fee and discount children)
@@ -116,7 +116,7 @@ The system SHALL persist every money movement in a `ledger_entry` table with the
 - `reward_rule_id` (FK → `reward_rule.id`, nullable) and `reward_source_entry_id` (FK → `ledger_entry.id`, nullable): set on `reward` entries
 - `invoice_number` (VARCHAR(16), nullable) and `invoice_random` (VARCHAR(8), nullable)
 - `needs_review` (BOOLEAN, default FALSE)
-- `source` (enum: `moze_import`, `moze_backup`, `manual`, `hermes`, `rule`)
+- `source` (enum: `moze_import`, `moze_backup`, `manual`, `hermes`, `rule`, `schedule`)
 - `import_run_id` (FK → `import_run.id`, nullable)
 - `moze_id` (VARCHAR(64), UNIQUE, nullable)
 - `seq` (BIGINT, NOT NULL, UNIQUE; insertion order, assigned from a sequence)
@@ -150,6 +150,10 @@ The free-text `counterparty` column of phase 1 SHALL be removed; the migration S
 - **GIVEN** phase 1 entries with `counterparty = 'Alan'` on 3 rows
 - **WHEN** the migration runs
 - **THEN** one `counterparty` row named `Alan` SHALL exist and the 3 entries SHALL reference it
+
+#### Scenario: Loan interest names the lender
+- **WHEN** a schedule posts the interest of a loan from 範例銀行
+- **THEN** the `interest` entry SHALL have `counterparty_id` = 範例銀行
 
 ### Requirement: Canonical entry order
 
@@ -406,4 +410,30 @@ When a write request carries `original_currency` different from the account curr
 - **GIVEN** the JPY→TWD rate for 2026-10-02 is cached as `0.2163`
 - **WHEN** `GET /api/accounting/fx-rate?date=2026-10-02&base=JPY&quote=TWD` is called
 - **THEN** it SHALL return `0.2163` without a network request
+
+### Requirement: Schedule-sourced entries
+
+The `entry_source` enum SHALL gain the value `schedule`, added by a migration after `7b1e4a2c9d05` with `ALTER TYPE entry_source ADD VALUE IF NOT EXISTS 'schedule'` executed inside an Alembic `autocommit_block`. Entries written by posting a schedule instance SHALL carry `source = 'schedule'`, `moze_id = NULL` and `import_run_id = NULL`. They SHALL be treated like manual rows: editable at all times (not subject to `locked_until_cutover`), and never deleted or changed by either importer, except that the backup importer re-points their `settles_entry_id` to the re-created MOZE entry (see the backup import spec, "Schedule definitions and instances from the backup"). `PUT /api/accounting/entries/{id}` and `PUT /api/accounting/transfers/{transfer_group_id}` SHALL accept them under the same rules as manual entries.
+
+Deleting any entry that a `posted` schedule instance lists SHALL follow "Deleting entries of a posted period" in the schedules spec (only that entry, with its children and transfer pair, is deleted; the instance becomes partial, or `pending` / `skipped` when nothing remains). Deleting a `payable` or `receivable` original that a definition which is not `ended` references as `loan_entry_id` SHALL be refused with HTTP 409 naming the definition. `PUT /api/accounting/splits/{group_id}` on a group whose members a `posted` instance lists SHALL be refused with HTTP 409 naming the instance. The downgrade of the migration SHALL refuse while any `schedule` entry exists.
+
+#### Scenario: Schedule entry survives a backup import
+- **GIVEN** a `schedule` expense of `−390` posted on 2026-10-22
+- **WHEN** a backup import runs
+- **THEN** the entry SHALL still exist unchanged
+
+#### Scenario: Schedule entry editable before cutover
+- **GIVEN** `ACCOUNTING_IMPORT_LOCKED = false` and a `schedule` expense
+- **WHEN** its name is changed with `PUT /api/accounting/entries/{id}`
+- **THEN** the update SHALL succeed
+
+#### Scenario: Deleting one leg of a scheduled transfer
+- **GIVEN** a scheduled transfer posted on 2026-10-05 as the only line of its period
+- **WHEN** its `transfer_in` leg is deleted
+- **THEN** both legs SHALL be deleted and the instance SHALL be `pending` with `reopened_at` set
+
+#### Scenario: Split edit on a scheduled group refused
+- **GIVEN** the `installment` group `信貸 每月還款 #1/36` listed by a posted instance
+- **WHEN** `PUT /api/accounting/splits/{group_id}` is called
+- **THEN** the response SHALL be HTTP 409 naming the instance
 
