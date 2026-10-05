@@ -73,6 +73,7 @@ def new_report(mapped: MapResult) -> dict:
         "instances": dict.fromkeys(INSTANCE_COUNTERS, 0),
         "records_mapped": mapped.records_mapped,
         "rewards_ignored": mapped.rewards_ignored,
+        "artifact_records": mapped.artifact_records,  # MOZE's disabled extra record of a finite series, dropped (D37)
         "unsupported_types": dict(sorted(mapped.unsupported_types.items())),
         "past_records_already_posted": 0,
         "past_records_already_skipped": 0,

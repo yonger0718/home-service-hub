@@ -81,6 +81,8 @@ class MapResult:
     records_mapped: int = 0
     rewards_ignored: int = 0
     unsupported_types: Counter = field(default_factory=Counter)
+    # Records of MOZE's single disabled extra group of a finite period (R3 re-ruling): dropped, only counted.
+    artifact_records: int = 0
     review: list[dict] = field(default_factory=list)
     # Past records without a definition, as `record:<id>` singles. Ordinary entries — unless HomeHub already holds
     # that record:<id> definition (a single future record of an earlier import that has turned past); the importer
@@ -264,13 +266,22 @@ def _in_phase(day: date, unit: str, days: int, day_of_month: int | None) -> bool
     return day_of_month is not None and day.day == min(day_of_month, rules.days_in_month(day.year, day.month))
 
 
-def _period_total(period: dict) -> int | None:
-    """Total periods of a finite MOZE period: `startIndex + times` (ruling R3; design D37). On the real backup that
-    identity holds for 9 of the 10 finite periods (the tenth is not generated yet); `times` alone counts the repeats
-    after the first record. None for an endless period (times 0)."""
-    if period["times"] == 0:
+def _finite_artifact(groups: list[list[dict]], anchor: date, unit: str, day_of_month: int | None, times: int):
+    """MOZE's bookkeeping artifact of a finite series (R3 re-ruling; design D37): its single disabled extra group, on
+    the date of another group or after the series' last occurrence (Task 28: every real finite series has exactly one
+    — on the last period's date in 2, far after the end in 7). Returned only when it is the one extra and disabled; a
+    second extra or an enabled record past the end keeps the interval_mismatch / same_date handling."""
+    if not times:
         return None
-    return period["times"] + period.get("startIndex", 0)
+    last = rules.occurrence(anchor, unit, 1, times - 1, day_of_month)
+    per_day = Counter(_day(group[0]) for group in groups)
+    extras = [
+        group for group in groups
+        if _day(group[0]) > last or (per_day[_day(group[0])] > 1 and not _enabled(group))
+    ]
+    if len(extras) == 1 and not _enabled(extras[0]):
+        return extras[0]
+    return None
 
 
 def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: date, result: MapResult) -> MappedDefinition | None:
@@ -294,6 +305,10 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
         # Ruling R4 (Task 28): startDate may lie before the first record (the real backup has one 42 months early)
         # or after it; only its phase is checked — the rule's weekday, or its clamped day of month.
         review = "interval_mismatch"
+    artifact = _finite_artifact(groups, anchor, unit, day_of_month, period["times"])
+    if artifact is not None:
+        groups = [group for group in groups if group is not artifact]
+        result.artifact_records += len(artifact)
     primary_is_transfer = groups[0][0]["type"] == TRANSFER_TYPE
     if period["type"] in (0, 1) and (period["type"] == 1) != primary_is_transfer:
         review = "interval_mismatch"  # spec: type 1 periods generate transfers, type 0 ordinary records
@@ -303,7 +318,7 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
     definition = MappedDefinition(
         moze_id=period["identifier"], kind="recurring", source="period", name=_name(groups[0], data, "週期"),
         interval_unit=unit, interval_n=1, anchor_date=anchor, day_of_month=day_of_month,
-        times=_period_total(period), total_amount=None, remainder=None, lines=lines,
+        times=None if period["times"] == 0 else period["times"], total_amount=None, remainder=None, lines=lines,
         review_reason=review, payload=period,
     )
 
@@ -316,8 +331,8 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
         definition.times is not None and definition.review_reason is None
         and max(item.seq for item in definition.instances) > definition.times
     ):
-        # A record beyond the series' end (Task 28: one disabled group far after the last period of 7 real finite
-        # series): keep it, numbered by position like any off-rule series, and never roll the definition forward.
+        # A record beyond the series' end that is not MOZE's single disabled artifact (a second extra, or an
+        # enabled record): keep it, numbered by position like any off-rule series, and never roll it forward.
         definition.review_reason = "interval_mismatch"
         _number_by_position(definition)
     if definition.times is not None and definition.review_reason is not None:
@@ -372,15 +387,15 @@ def _point_at_enabled_loan(lines: list[MappedLine], origins: list[list[dict]]) -
 def _map_installment(
     installment: dict, records: list[dict], data: BackupData, cutoff: date, result: MapResult
 ) -> MappedDefinition | None:
-    groups, origins = record_groups(records, data), []
+    # The origin (ruling R2) is set aside whether or not dateInfo is present, so a loan's type-4 pair is never a
+    # period and its lines always name the enabled payable.
+    groups, origins = _split_origin(installment, record_groups(records, data))
+    for origin in origins:
+        if _day(origin[0]) > cutoff and _enabled(origin):
+            result.definitions.append(_map_single(origin, data, cutoff))  # a future origin stays one entry
     dates = [value.date() for value in installment["dateInfo"]]
     if groups and not dates:
-        # MOZE leaves dateInfo empty (14 of 14 real installments, Task 28): the dates come from the record groups
-        # once the origin is set aside (ruling R2).
-        groups, origins = _split_origin(installment, groups)
-        for origin in origins:
-            if _day(origin[0]) > cutoff and all(record["isEnabled"] for record in origin):
-                result.definitions.append(_map_single(origin, data, cutoff))  # a future origin stays one entry
+        # MOZE leaves dateInfo empty (14 of 14 real installments, Task 28): the dates come from the record groups.
         dates = sorted(_day(group[0]) for group in groups)
     if not groups or not dates:
         result.review.append({"moze_id": installment["identifier"], "reason": "no_records"})

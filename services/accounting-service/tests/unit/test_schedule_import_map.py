@@ -384,35 +384,60 @@ def test_installment_without_records_or_dates_is_still_no_records(backup):
     assert (result.definitions, result.review) == ([], [{"moze_id": "INS-E", "reason": "no_records"}])
 
 
-def test_finite_period_total_is_start_index_plus_times(backup):
-    # R3: MOZE's `times` counts the repeats after the first record; the series has startIndex + times periods.
-    days = [rules.add_months(date(2026, 10, 3), k) for k in range(4)]
-    data = backup.data(
+def _finite(backup, days, *, times=3, enabled=None, identifier="PER-F"):
+    enabled = enabled or [True] * len(days)
+    return backup.data(
         accounts=_accounts(backup),
-        periods=[backup.period("PER-F", unit=2, days=3, times=3, startIndex=1, start="2026-10-03T00:00:00")],
-        records=[_rec(backup, f"R-{k}", day.isoformat(), eventID="PER-F") for k, day in enumerate(days)],
-    )
-    [definition] = map_schedules(data).definitions
-    assert (definition.times, [item.seq for item in definition.instances], definition.review_reason) == (
-        4, [1, 2, 3, 4], None,
-    )
-
-
-def test_record_beyond_the_series_end_flags_the_period(backup):
-    # Task 28: a disabled record far after a finite series' last period. Kept, numbered by position, paused.
-    days = [rules.add_months(date(2026, 1, 3), k) for k in range(3)] + [date(2028, 6, 3)]
-    data = backup.data(
-        accounts=_accounts(backup),
-        periods=[backup.period("PER-G", unit=2, days=3, times=3, startIndex=1, start="2026-01-03T00:00:00")],
+        periods=[backup.period(identifier, unit=2, days=3, times=times, startIndex=1, start="2026-01-03T00:00:00")],
         records=[
-            _rec(backup, f"R-{k}", day.isoformat(), eventID="PER-G", isEnabled=k < 3) for k, day in enumerate(days)
+            _rec(backup, f"R-{k}", day.isoformat(), eventID=identifier, isEnabled=flag)
+            for k, (day, flag) in enumerate(zip(days, enabled))
         ],
     )
-    result = map_schedules(data)
+
+
+def test_finite_period_total_is_times(backup):
+    # R3 re-ruling: MOZE's `times` is the period count (startIndex is not added).
+    days = [rules.add_months(date(2026, 1, 3), k) for k in range(3)]
+    [definition] = map_schedules(_finite(backup, days)).definitions
+    assert (definition.times, [item.seq for item in definition.instances], definition.review_reason) == (
+        3, [1, 2, 3], None,
+    )
+
+
+def test_disabled_artifact_far_after_the_end_is_dropped(backup):
+    # R3 re-ruling: the single disabled extra group of a finite series is MOZE bookkeeping — dropped, counted only.
+    days = [rules.add_months(date(2026, 1, 3), k) for k in range(3)] + [date(2028, 6, 3)]
+    result = map_schedules(_finite(backup, days, enabled=[True, True, True, False]))
     [definition] = result.definitions
-    assert (definition.review_reason, definition.times) == ("interval_mismatch", 4)
-    assert [(item.seq, item.enabled) for item in definition.instances] == [(1, True), (2, True), (3, True), (4, False)]
-    assert {"moze_id": "PER-G", "reason": "interval_mismatch"} in result.review
+    assert (definition.times, definition.review_reason, result.artifact_records) == (3, None, 1)
+    assert [(item.seq, item.moze_id) for item in definition.instances] == [(1, "R-0"), (2, "R-1"), (3, "R-2")]
+    assert result.review == []
+
+
+def test_disabled_artifact_on_the_last_date_is_dropped(backup):
+    days = [rules.add_months(date(2026, 1, 3), k) for k in range(3)] + [date(2026, 3, 3)]
+    result = map_schedules(_finite(backup, days, enabled=[True, True, True, False]))
+    [definition] = result.definitions
+    assert (definition.times, definition.review_reason, result.artifact_records) == (3, None, 1)
+    assert [item.moze_id for item in definition.instances] == ["R-0", "R-1", "R-2"]
+    assert result.review == []
+
+
+def test_two_extras_past_the_end_keep_the_mismatch(backup):
+    days = [rules.add_months(date(2026, 1, 3), k) for k in range(3)] + [date(2028, 6, 3), date(2028, 7, 3)]
+    result = map_schedules(_finite(backup, days, enabled=[True, True, True, False, False]))
+    [definition] = result.definitions
+    assert (definition.review_reason, definition.times, result.artifact_records) == ("interval_mismatch", 5, 0)
+    assert [item.seq for item in definition.instances] == [1, 2, 3, 4, 5]
+
+
+def test_enabled_record_past_the_end_keeps_the_mismatch(backup):
+    days = [rules.add_months(date(2026, 1, 3), k) for k in range(3)] + [date(2028, 6, 3)]
+    result = map_schedules(_finite(backup, days))
+    [definition] = result.definitions
+    assert (definition.review_reason, definition.times, result.artifact_records) == ("interval_mismatch", 4, 0)
+    assert {"moze_id": "PER-F", "reason": "interval_mismatch"} in result.review
 
 
 @pytest.mark.parametrize(("start", "review"), [
@@ -451,3 +476,24 @@ def test_same_date_keeps_the_enabled_group(backup):
     result = map_schedules(data)
     assert [(item.moze_id, item.enabled) for item in result.definitions[0].instances] == [("R-B", True)]
     assert {"moze_id": "R-A", "reason": "same_date"} in result.review
+
+
+def test_loan_with_date_info_also_sets_its_payables_aside(backup):
+    # R3 re-ruling item 3: origin and the enabled-loan re-point run when dateInfo is present too.
+    days = [rules.add_months(date(2026, 9, 9), k) for k in range(3)]
+    records = [
+        _rec(backup, "R-LOAN", "2026-08-20", type_=4, price=30000, eventID="INS-L", isEnabled=False),
+        _rec(backup, "R-LOAN2", "2026-08-20", type_=4, price=30000, eventID="INS-L"),
+    ]
+    records += [
+        _rec(backup, f"R-REP{k}", day.isoformat(), type_=6, price=-10000, eventID="INS-L", relatedID="R-LOAN")
+        for k, day in enumerate(days)
+    ]
+    installment = backup.installment(
+        "INS-L", day_of_month=9, times=3, total=30000, dates=[f"{day.isoformat()}T00:00:00" for day in days],
+    )
+    result = map_schedules(backup.data(accounts=_accounts(backup), installments=[installment], records=records))
+    [definition] = result.definitions
+    assert [(line.kind, line.related) for line in definition.lines] == [("repayment", "R-LOAN2")]
+    assert [item.moze_id for item in definition.instances] == ["R-REP0", "R-REP1", "R-REP2"]
+    assert (definition.review_reason, result.review) == (None, [])
