@@ -81,7 +81,7 @@ describe('summarizeReport', () => {
     });
     expect(view.schedules).toEqual({
       recurring: 11, installment: 14, single: 0, recordsMapped: 534, rewardsIgnored: 63, alreadyPosted: 2, alreadySkipped: 1,
-      amountDiffers: 1, review: 1, ownerPending: 0, pendingAmountDiffers: 0, pastAmountLines: [], pendingAmountLines: [],
+      amountDiffers: 1, review: 1, ownerPending: 0, pendingAmountDiffers: 0, pastAmountLines: [], pendingAmountLines: [], amountLines: [],
       ownerPendingLines: [], dependantsSuppressed: 0, dependantLines: [], reviewLines: [{ mozeId: 'P-1', label: '間隔與記錄不符' }],
     });
     expect(summarizeReport({ summary: {} }).schedules).toBeNull();
@@ -108,7 +108,7 @@ describe('summarizeReport', () => {
     expect(view.schedules?.pendingAmountDiffers).toBe(1);
     expect(view.schedules?.amountDiffers).toBe(0);
     expect(view.schedules?.pendingAmountLines).toEqual([
-      { name: 'Netflix', seq: 3, date: '2026-10-05', kind: 'expense', amount: '120', mozeAmount: '100' },
+      { definitionId: 7, name: 'Netflix', seq: 3, date: '2026-10-05', kind: 'expense', amount: '120', mozeAmount: '100' },
     ]);
   });
 

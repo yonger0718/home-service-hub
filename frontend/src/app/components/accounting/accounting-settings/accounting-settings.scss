@@ -103,3 +103,10 @@ summary.srow::-webkit-details-marker { display: none; }
     outline-offset: 1px;
   }
 }
+
+.schedule-amount-lines li,
+.schedule-pending-lines li,
+.schedule-dependant-lines li,
+.schedule-review-lines li {
+  overflow-wrap: anywhere;
+}

@@ -82,6 +82,8 @@ export interface ScheduleReportView {
   pendingAmountDiffers: number;
   pastAmountLines: ScheduleAmountLineView[];
   pendingAmountLines: ScheduleAmountLineView[];
+  /** past + pending lines in one list, for display. */
+  amountLines: ScheduleAmountLineView[];
   ownerPendingLines: { definitionId: number; seq: number; date: string }[];
   dependantsSuppressed: number;
   dependantLines: { mozeId: string; parentMozeId: string; type: number }[];
@@ -89,6 +91,7 @@ export interface ScheduleReportView {
 }
 
 export interface ScheduleAmountLineView {
+  definitionId: number;
   name: string;
   seq: number;
   date: string;
@@ -117,7 +120,7 @@ function amountLines(value: unknown): ScheduleAmountLineView[] {
   return list(value).map(item => {
     const row = record(item);
     return {
-      name: String(row['name'] ?? ''), seq: Number(row['seq']) || 0, date: String(row['date'] ?? ''),
+      definitionId: Number(row['definition_id']) || 0, name: String(row['name'] ?? ''), seq: Number(row['seq']) || 0, date: String(row['date'] ?? ''),
       kind: String(row['kind'] ?? ''), amount: String(row['amount'] ?? ''), mozeAmount: String(row['moze_amount'] ?? ''),
     };
   });
@@ -132,6 +135,7 @@ function scheduleView(value: unknown): ScheduleReportView | null {
   const ownerPending = list(block['past_records_owner_pending']).map(record);
   const dependants = record(block['dependants_suppressed']);
   const pending = amountLines(block['amount_differs']);
+  const past = amountLines(record(block['past_records_amount_differs'])['lines']);
   return {
     recurring: created('recurring'),
     installment: created('installment'),
@@ -143,9 +147,10 @@ function scheduleView(value: unknown): ScheduleReportView | null {
     amountDiffers: Number(record(block['past_records_amount_differs'])['count']) || 0,
     review: list(block['review']).length,
     ownerPending: ownerPending.length,
-    pendingAmountDiffers: new Set(pending.map(line => `${line.name}#${line.seq}`)).size,
-    pastAmountLines: amountLines(record(block['past_records_amount_differs'])['lines']),
+    pendingAmountDiffers: new Set(pending.map(line => `${line.definitionId}#${line.seq}`)).size,
+    pastAmountLines: past,
     pendingAmountLines: pending,
+    amountLines: [...past, ...pending],
     ownerPendingLines: ownerPending.map(row => ({
       definitionId: Number(row['definition_id']) || 0, seq: Number(row['seq']) || 0, date: String(row['date'] ?? ''),
     })),

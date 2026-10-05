@@ -227,9 +227,9 @@
               <span class="import-error">；待檢查 {{ s.review }} 筆</span>
             }
           </p>
-          @if (s.pastAmountLines.length || s.pendingAmountLines.length) {
+          @if (s.amountLines.length) {
             <ul class="schedule-amount-lines">
-              @for (line of s.pastAmountLines.concat(s.pendingAmountLines); track $index) {
+              @for (line of s.amountLines; track $index) {
                 <li>{{ line.name }} 第 {{ line.seq }} 期 {{ line.date }}：HomeHub ${{ line.amount }} / MOZE ${{ line.mozeAmount }}</li>
               }
             </ul>
