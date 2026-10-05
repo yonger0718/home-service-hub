@@ -19,6 +19,7 @@ MOZE_LINE_KINDS: dict[int, str] = {
 REWARD_TYPE = 14
 TRANSFER_TYPE = 2
 INTEREST_TYPE = 15
+LOAN_TYPE = 4  # payable: a loan installment's origin (ruling R2)
 SETTLING_TYPES = (5, 6)
 INSTALLMENT_PRIMARY_TYPES = (6, 0)
 
@@ -227,9 +228,15 @@ def _instance(group: list[dict], lines: list[MappedLine], seq: int | None, cutof
     )
 
 
+def _enabled(group: list[dict]) -> bool:
+    return all(record["isEnabled"] for record in group)
+
+
 def _add_instances(definition: MappedDefinition, groups, seq_of, cutoff: date, result: MapResult) -> None:
     seen: set[date] = set()
-    for group in groups:
+    # On a shared date the enabled group is the period (Task 28: MOZE keeps a disabled copy beside the last period of
+    # 3 real series); the other is reviewed as same_date.
+    for group in sorted(groups, key=lambda item: (_day(item[0]), not _enabled(item))):
         day = _day(group[0])
         seq = seq_of(day)
         if seq is None and definition.source == "installment":
@@ -243,8 +250,27 @@ def _add_instances(definition: MappedDefinition, groups, seq_of, cutoff: date, r
         seen.add(day)
         definition.instances.append(_instance(group, definition.lines, seq, cutoff))
     if definition.review_reason == "interval_mismatch" and definition.source == "period":
-        for position, item in enumerate(definition.instances, start=1):
-            item.seq = position  # off-rule dates: keep every period, numbered by position (the definition is paused)
+        _number_by_position(definition)
+
+
+def _number_by_position(definition: MappedDefinition) -> None:
+    for position, item in enumerate(definition.instances, start=1):
+        item.seq = position  # off-rule dates: keep every period, numbered by position (the definition is paused)
+
+
+def _in_phase(day: date, unit: str, days: int, day_of_month: int | None) -> bool:
+    if unit == "week":
+        return moze_weekday(day) == days
+    return day_of_month is not None and day.day == min(day_of_month, rules.days_in_month(day.year, day.month))
+
+
+def _period_total(period: dict) -> int | None:
+    """Total periods of a finite MOZE period: `startIndex + times` (ruling R3; design D37). On the real backup that
+    identity holds for 9 of the 10 finite periods (the tenth is not generated yet); `times` alone counts the repeats
+    after the first record. None for an endless period (times 0)."""
+    if period["times"] == 0:
+        return None
+    return period["times"] + period.get("startIndex", 0)
 
 
 def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: date, result: MapResult) -> MappedDefinition | None:
@@ -264,7 +290,9 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
         if day_of_month is None or anchor.day != min(day_of_month, rules.days_in_month(anchor.year, anchor.month)):
             review = "interval_mismatch"
     start = period["startDate"].date() if period["startDate"] else None
-    if start is not None and rules.occurrence_index(anchor, unit, 1, day_of_month, start) is None:
+    if start is not None and review is None and not _in_phase(start, unit, period["days"], day_of_month):
+        # Ruling R4 (Task 28): startDate may lie before the first record (the real backup has one 42 months early)
+        # or after it; only its phase is checked — the rule's weekday, or its clamped day of month.
         review = "interval_mismatch"
     primary_is_transfer = groups[0][0]["type"] == TRANSFER_TYPE
     if period["type"] in (0, 1) and (period["type"] == 1) != primary_is_transfer:
@@ -275,7 +303,7 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
     definition = MappedDefinition(
         moze_id=period["identifier"], kind="recurring", source="period", name=_name(groups[0], data, "週期"),
         interval_unit=unit, interval_n=1, anchor_date=anchor, day_of_month=day_of_month,
-        times=None if period["times"] == 0 else period["times"], total_amount=None, remainder=None, lines=lines,
+        times=_period_total(period), total_amount=None, remainder=None, lines=lines,
         review_reason=review, payload=period,
     )
 
@@ -284,6 +312,16 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
         return None if index is None else index + 1
 
     _add_instances(definition, groups, seq_of, cutoff, result)
+    if (
+        definition.times is not None and definition.review_reason is None
+        and max(item.seq for item in definition.instances) > definition.times
+    ):
+        # A record beyond the series' end (Task 28: one disabled group far after the last period of 7 real finite
+        # series): keep it, numbered by position like any off-rule series, and never roll the definition forward.
+        definition.review_reason = "interval_mismatch"
+        _number_by_position(definition)
+    if definition.times is not None and definition.review_reason is not None:
+        definition.times = max(definition.times, len(definition.instances))  # seqs by position never pass times
     if definition.times is not None and definition.instances and definition.review_reason is None:
         # MOZE pre-generates a finite series. Seqs count from the earliest record still in the backup, so when MOZE
         # deleted early records the rebased seqs end below `times`: never let HomeHub generate past MOZE's last
@@ -294,11 +332,56 @@ def _map_period(period: dict, records: list[dict], data: BackupData, cutoff: dat
     return definition
 
 
+def _split_origin(installment: dict, groups: list[list[dict]]) -> tuple[list[list[dict]], list[list[dict]]]:
+    """(period groups, origin groups) of an installment without dateInfo (ruling R2). The origin is not a period: a
+    loan's type-4 payable records (the loan itself, which its repayments name by relatedID), or else the group that
+    shares a date with another group and whose |total| equals the installment's total (the purchase or lent sum MOZE
+    keeps beside the first period). Origins stay ordinary entries."""
+    loan = [group for group in groups if any(record["type"] == LOAN_TYPE for record in group)]
+    if loan:
+        return [group for group in groups if not any(group is item for item in loan)], loan
+    total = abs(Decimal(str(installment["total"])))
+    per_day = Counter(_day(group[0]) for group in groups)
+    origin = next(
+        (
+            group for group in groups
+            if per_day[_day(group[0])] > 1 and total > 0
+            and abs(sum((Decimal(str(record["total"])) for record in group), Decimal(0))) == total
+        ),
+        None,
+    )
+    if origin is None:
+        return groups, []
+    return [group for group in groups if group is not origin], [origin]
+
+
+def _point_at_enabled_loan(lines: list[MappedLine], origins: list[list[dict]]) -> None:
+    """MOZE keeps a loan as two type-4 records — one enabled (the payable it books) and a disabled copy — and the
+    repayments' relatedID names the disabled copy, which the importer never makes an entry (Task 28: 3 of 3 loans).
+    A repayment / collection line naming a disabled origin record takes the enabled one instead."""
+    records = [record for group in origins for record in group if record["type"] == LOAN_TYPE]
+    enabled = [record["identifier"] for record in records if record["isEnabled"]]
+    disabled = {record["identifier"] for record in records if not record["isEnabled"]}
+    if len(enabled) != 1:
+        return
+    for line in lines:
+        if line.related in disabled:
+            line.related = enabled[0]
+
+
 def _map_installment(
     installment: dict, records: list[dict], data: BackupData, cutoff: date, result: MapResult
 ) -> MappedDefinition | None:
-    groups = record_groups(records, data)
+    groups, origins = record_groups(records, data), []
     dates = [value.date() for value in installment["dateInfo"]]
+    if groups and not dates:
+        # MOZE leaves dateInfo empty (14 of 14 real installments, Task 28): the dates come from the record groups
+        # once the origin is set aside (ruling R2).
+        groups, origins = _split_origin(installment, groups)
+        for origin in origins:
+            if _day(origin[0]) > cutoff and all(record["isEnabled"] for record in origin):
+                result.definitions.append(_map_single(origin, data, cutoff))  # a future origin stays one entry
+        dates = sorted(_day(group[0]) for group in groups)
     if not groups or not dates:
         result.review.append({"moze_id": installment["identifier"], "reason": "no_records"})
         return None
@@ -311,13 +394,15 @@ def _map_installment(
     if _mixed_or_in_leg_only(groups):
         review = "interval_mismatch"
     first = next((group for group in groups if group[0]["type"] in INSTALLMENT_PRIMARY_TYPES), groups[0])
+    lines = _union_lines([first, *(group for group in groups if group is not first)])
+    _point_at_enabled_loan(lines, origins)
     total = abs(Decimal(str(installment["total"])))
     definition = MappedDefinition(
         moze_id=installment["identifier"], kind="installment" if installment["times"] >= 2 else "recurring",
         source="installment", name=_name(first, data, "分期"), interval_unit="month", interval_n=1,
         anchor_date=anchor, day_of_month=day_of_month, times=installment["times"],
         total_amount=total if total > 0 else None, remainder=abs(Decimal(str(installment["remainder"]))),
-        lines=_union_lines([first, *(group for group in groups if group is not first)]), review_reason=review,
+        lines=lines, review_reason=review,
         payload=installment,
     )
     positions = {day: index + 1 for index, day in reversed(list(enumerate(dates)))}

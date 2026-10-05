@@ -278,6 +278,9 @@ KEYPAD_MAP: dict[int, str] = {1: "calculator", 0: "phone"}
 # Field types: str, str? (nullable), num (Decimal), int, bool, dt (datetime), dt?, list, dict, dates
 S, SN, NUM, INT, BOOL, DT, DTN, LIST, DICT = "str", "str?", "num", "int", "bool", "dt", "dt?", "list", "dict"
 DATES = "dates"  # AHInstallment.dateInfo: a list, or an object keyed "0", "1", … — normalised to a list of datetimes
+# A schedule rule integer: an int, or a digit string (MOZE stores AHPeriod.days as a Realm string; Task 28 found it a
+# digit string in every real period) — normalised to an int. A non-digit string is refused like any non-integer.
+DIGITS = "digits"
 
 CLASS_FIELDS: dict[str, dict[str, str]] = {
     "AHAccount": {
@@ -323,9 +326,13 @@ CLASS_FIELDS: dict[str, dict[str, str]] = {
     "AHBonusRewardSharing": {"identifier": S, "bonusRewards": LIST},
     "AHCreditSharing": {"identifier": S, "accounts": LIST},
     "AHCurrencyConversion": {"recordID": S, "exchangeRate": NUM, "baseCurrencyCode": S, "targetCurrencyCode": S},
-    "AHPeriod": {"identifier": S, "unit": INT, "days": INT, "times": INT, "type": INT, "startDate": DTN},
+    "AHPeriod": {
+        "identifier": S, "unit": INT, "days": DIGITS, "times": DIGITS, "type": INT, "startDate": DTN,
+        "count": DIGITS, "startIndex": DIGITS,
+    },
     "AHInstallment": {
-        "identifier": S, "dayOfMonth": INT, "dateInfo": DATES, "times": INT, "total": NUM, "remainder": NUM,
+        "identifier": S, "dayOfMonth": DIGITS, "dateInfo": DATES, "times": DIGITS, "total": NUM, "remainder": NUM,
+        "count": DIGITS, "startIndex": DIGITS,
     },
     "AHPreference": {
         "expenseIncomeColor": INT, "numberPadType": INT, "firstWeekday": INT, "mainCurrency": SN,
@@ -354,6 +361,11 @@ CLASS_ATTRS: dict[str, str] = {
 }
 OPTIONAL_CLASSES = ("AHBonusRewardSharing", "AHCreditSharing", "AHPeriod", "AHInstallment", "AHAppConfig")
 PRIMARY_KEYS = {"AHCurrencyConversion": "recordID"}
+# Fields validated when present but not required (older converter output and test documents omit them).
+OPTIONAL_FIELDS: dict[str, frozenset[str]] = {
+    "AHPeriod": frozenset({"count", "startIndex"}),
+    "AHInstallment": frozenset({"count", "startIndex"}),
+}
 
 
 @dataclass(frozen=True)
@@ -429,6 +441,11 @@ def _normalise(value: Any, kind: str, where: str, field: str) -> Any:
         return value
     if base == "bool" and isinstance(value, bool):
         return value
+    if base == "digits":
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
+            return int(value.strip())
     if base == "num" and isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
         return value if isinstance(value, Decimal) else Decimal(str(value))
     if base == "dt" and (parsed := _datetime(value)) is not None:
@@ -448,7 +465,7 @@ def _normalise(value: Any, kind: str, where: str, field: str) -> Any:
             parsed_items = [_datetime(item) for item in items]
             if all(item is not None for item in parsed_items):
                 return parsed_items
-    expected = {"str": "a string", "int": "an integer", "bool": "a boolean", "num": "a number",
+    expected = {"str": "a string", "int": "an integer", "digits": "an integer", "bool": "a boolean", "num": "a number",
                 "dt": "an ISO date-time", "list": "a list", "dict": "an object",
                 "dates": "a list of ISO date-times"}[base]
     raise MozeImportError(f"{where}: field '{field}' must be {expected}{' or null' if nullable else ''}")
@@ -464,12 +481,14 @@ def _rows(name: str, raw: Any) -> list[dict]:
         if not isinstance(row, dict):
             raise MozeImportError(f"{name} row {index}: not an object")
         where = f"{name} '{row[key]}'" if isinstance(row.get(key), str) else f"{name} row {index}"
+        optional = OPTIONAL_FIELDS.get(name, frozenset())
         for field in fields:
-            if field not in row:
+            if field not in row and field not in optional:
                 raise MozeImportError(f"{where}: missing field '{field}'")
         normalised = dict(row)
         for field, kind in fields.items():
-            normalised[field] = _normalise(row[field], kind, where, field)
+            if field in row:
+                normalised[field] = _normalise(row[field], kind, where, field)
         _check_lengths(name, normalised, where)
         if key in normalised:
             if normalised[key] in seen:
