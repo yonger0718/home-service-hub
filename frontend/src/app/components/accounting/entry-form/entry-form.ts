@@ -577,16 +577,35 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.registry.unregister(this);
   }
 
+  private discardPromptActive = false;
+  private discardOpener: HTMLElement | null = null;
+
   /** DirtyAware: the strip is rendered from `registry.promptOpen()`; 留下 takes the focus. */
   showDiscardPrompt(): void {
+    if (!this.discardPromptActive) {
+      this.discardOpener = this.host.nativeElement.ownerDocument.activeElement as HTMLElement | null;
+      this.discardPromptActive = true;
+    }
     afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>('.discard-stay')?.focus(), {
       injector: this.injector,
     });
   }
 
+  restoreDiscardFocus(): void {
+    const opener = this.discardOpener;
+    this.clearDiscardFocus();
+    restoreOverlayFocus(opener, this.host.nativeElement);
+  }
+
+  private clearDiscardFocus(): void {
+    this.discardPromptActive = false;
+    this.discardOpener = null;
+  }
+
   /** Resets the form for a navigation; returns the record to load (edit or copy), or null for a blank record. */
   private start(id: string | null, kindParam: string | null, copyParam: string | null, scheduleParam: string | null = null): EntryTarget | null {
     this.baseline.set(null);
+    this.clearDiscardFocus();
     this.registry.clearPending();
     this.resetFields();
     this.related.set(NO_RELATED);
@@ -621,6 +640,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
 
   /** Takes the clean snapshot after the next render, once child effects (schedule dates, transfer legs) settled. */
   private markClean(): void {
+    this.clearDiscardFocus();
     this.registry.clearPending();
     this.baseline.set(null);
     this.transferPanel()?.markClean();

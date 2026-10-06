@@ -5,6 +5,8 @@ import { Injectable, signal } from '@angular/core';
 export interface DirtyAware {
   isDirty(): boolean;
   showDiscardPrompt(): void;
+  /** DOM forms return focus after 留下; non-DOM consumers need no focus hook. */
+  restoreDiscardFocus?(): void;
 }
 
 /**
@@ -55,7 +57,9 @@ export class DirtyFormRegistry {
 
   /** 留下: keep the draft. */
   cancelDiscard(): void {
+    const restore = this.prompting();
     this.clearPending();
+    if (restore) this.form?.restoreDiscardFocus?.();
   }
 
   /** A save (or save-and-continue) succeeded: nothing is left to discard. */

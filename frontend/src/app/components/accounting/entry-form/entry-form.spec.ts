@@ -1593,4 +1593,44 @@ describe('EntryFormComponent', () => {
     expect(el.querySelector('app-fee-sheet')).toBeNull();
   });
 
+  it('留下 restores the original prompt opener across repeated close requests; subsequent Tab/Esc starts inside the form', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    typeInto(el, '.name-input', '未儲存');
+    const opener = el.querySelector<HTMLInputElement>('.name-input')!; opener.focus();
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const pending = vi.fn(); registry.requestClose(pending); settle();
+    expect(document.activeElement).toBe(el.querySelector('.discard-stay'));
+    registry.requestClose(pending); settle();
+    (document.activeElement as HTMLButtonElement).click(); settle();
+    expect(registry.promptOpen()).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    expect(opener.value).toBe('未儲存');
+    registry.confirmDiscard(); expect(pending).not.toHaveBeenCalled();
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    const keys = vi.spyOn(form, 'onKeydown');
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(tab); settle();
+    expect(keys).toHaveBeenCalledWith(tab);
+    expect(tab.target).toBe(opener);
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+    expect(el.querySelector('.discard-strip')).not.toBeNull();
+    expect(left()).toBe(false);
+    (el.querySelector('.discard-stay') as HTMLButtonElement).click(); settle();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('留下 falls back to the first form control when the saved opener was removed', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    typeInto(el, '.name-input', '未儲存');
+    const opener = el.querySelector<HTMLInputElement>('.name-input')!; opener.focus();
+    TestBed.inject(DirtyFormRegistry).requestClose(vi.fn()); settle(); opener.remove();
+    (document.activeElement as HTMLButtonElement).click(); settle();
+    expect(document.activeElement).toBe(el.querySelector('.topbar .cancel'));
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+    expect(el.querySelector('.discard-strip')).not.toBeNull(); expect(left()).toBe(false);
+    (el.querySelector('.discard-leave') as HTMLButtonElement).click(); settle(); expect(left()).toBe(true);
+  });
+
 });

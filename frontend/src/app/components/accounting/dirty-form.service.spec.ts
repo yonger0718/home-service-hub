@@ -63,4 +63,18 @@ describe('DirtyFormRegistry', () => {
     registry().requestClose(run);
     expect(run).toHaveBeenCalledTimes(1);
   });
+  it('restores form focus only when cancelling an open discard prompt', () => {
+    const dirty = { ...form(true), restoreDiscardFocus: vi.fn() };
+    registry().register(dirty);
+    registry().cancelDiscard();
+    expect(dirty.restoreDiscardFocus).not.toHaveBeenCalled();
+    registry().requestClose(vi.fn());
+    registry().confirmDiscard();
+    expect(dirty.restoreDiscardFocus).not.toHaveBeenCalled();
+    registry().requestClose(vi.fn());
+    registry().cancelDiscard();
+    expect(dirty.restoreDiscardFocus).toHaveBeenCalledTimes(1);
+    expect(registry().promptOpen()).toBe(false);
+  });
+
 });
