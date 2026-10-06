@@ -778,6 +778,10 @@ export class EntryFormComponent implements OnInit {
       return;
     }
     this.kind.set(kind);
+    if (!this.eventTabEnabled(this.scheduleDraft().tab)) {
+      // The system branch has no schedule component to normalize its tab; use the same transition here.
+      this.selectEventTab('single');
+    }
     this.category.set(null);
     this.error.set(null);
   }

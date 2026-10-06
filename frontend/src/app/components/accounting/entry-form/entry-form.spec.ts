@@ -1168,6 +1168,35 @@ describe('EntryFormComponent', () => {
     settle();
   });
 
+  it.each(['週期', '分期'])('normalizes %s to 單次 when switching to system and saves a balance adjustment', async eventType => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.event-tab', eventType);
+    const anchor = el.querySelector<HTMLInputElement>(eventType === '分期' ? '.sched-first' : '.sched-start')!;
+    anchor.value = eventType === '分期' ? '2026-11-19' : '2026-10-15';
+    anchor.dispatchEvent(new Event('change')); settle();
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.fieldErrors.set({ times: '分期至少 2 期' });
+    form.error.set('排程欄位有誤'); settle();
+    tap(el, '.kind-tab', '系統');
+    const tabs = Array.from(el.querySelectorAll<HTMLButtonElement>('.event-tab'));
+    expect(tabs.map(tab => tab.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false']);
+    expect(tabs.map(tab => tab.getAttribute('aria-disabled'))).toEqual([null, 'true', 'true']);
+    expect(tabs.map(tab => tab.getAttribute('tabindex'))).toEqual(['0', '-1', '-1']);
+    expect(form.scheduleDraft().tab).toBe('single');
+    expect(form.scheduleDraft().dayOfMonth).toBe(eventType === '分期' ? 2 : 15);
+    expect(form.fieldErrors()).toEqual({});
+    expect(el.querySelector('.form-error')).toBeNull();
+    expect(el.querySelector('app-schedule-tabs')).toBeNull();
+    keys(el, '2', '5', '0', '✓');
+    const write = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/balance-adjustments');
+    expect(write.request.body).toEqual({ account_id: 1, target_balance: '250', entry_date: '2026-10-02', entry_time: '14:42', description: null });
+    httpMock.expectNone(r => r.url === '/api/accounting/schedules/definitions');
+    write.flush(makeEntryDetail({ id: 99, kind: 'balance_adjustment', account_id: 1, category_id: null }));
+    settle(); expect(left()).toBe(true);
+  });
+
   it.each([false, true])('renders the shared system tile in component editing state %s without adding schedule fields', async editing => {
     const { el } = await open('/accounting/entry?kind=system');
     for (const request of httpMock.match(r => r.url === '/api/accounting/categories')) if (!request.cancelled) request.flush([]);
