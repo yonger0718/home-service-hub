@@ -148,7 +148,6 @@
           [categories]="categories()"
           [(selected)]="category"
           [amount]="stripAmount()"
-          [variant]="isPhone() ? 'grid' : 'bar'"
           [splittable]="false"
           (picked)="onCategoryPicked($event)"
         />
