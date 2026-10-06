@@ -55,6 +55,7 @@ function openPanel(fixture: ComponentFixture<AccountPickerComponent>): HTMLEleme
 describe('AccountPickerComponent', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     localStorage.removeItem(RECENT_ACCOUNTS_KEY);
   });
 
@@ -294,6 +295,61 @@ describe('AccountPickerComponent', () => {
     expect(key(search, 'Enter').defaultPrevented).toBe(true);
     fixture.detectChanges();
     expect(picker.value()).toBe(103);
+  });
+
+  it('places a tall fixed popover below a mid-height 820px trigger before clamping its height, and flips near the bottom', () => {
+    vi.stubGlobal('innerHeight', 820);
+    vi.stubGlobal('innerWidth', 760);
+    // jsdom has no layout; supply only the panel's content measurement.
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(600);
+    const { fixture, el } = render({ mode: 'sheet', accounts: many(10) });
+    const trigger = el.querySelector('.acct-trigger')!;
+    const rect = (top: number) => ({ top, bottom: top + 40, left: 40, right: 240,
+      width: 200, height: 40, x: 40, y: top, toJSON: () => ({}) }) as DOMRect;
+    const bounds = vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue(rect(500));
+    let panel = openPanel(fixture);
+    fixture.detectChanges();
+    expect(panel.style.position).toBe('fixed');
+    expect(panel.style.top).toBe('544px');
+    expect(panel.style.bottom).toBe('');
+    expect(panel.style.left).toBe('40px');
+    expect(panel.style.width).toBe('260px');
+    const css = getComputedStyle(panel);
+    const extras = [css.paddingTop, css.paddingBottom, css.borderTopWidth, css.borderBottomWidth]
+      .reduce((sum, value) => sum + (parseFloat(value) || 0), 0);
+    expect(parseFloat(panel.style.top) + parseFloat(panel.style.maxHeight) + extras).toBeLessThanOrEqual(812);
+    fixture.componentInstance.close();
+    fixture.detectChanges();
+    bounds.mockReturnValue(rect(760));
+    panel = openPanel(fixture);
+    fixture.detectChanges();
+    expect(panel.style.top).toBe('');
+    expect(panel.style.bottom).toBe('64px');
+    expect(parseFloat(panel.style.maxHeight) + extras).toBeLessThanOrEqual(748);
+    vi.unstubAllGlobals();
+  });
+
+  it('repositions on resize and closes on ancestor-pane scroll, while panel scrolling stays open', () => {
+    vi.stubGlobal('innerHeight', 820);
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(600);
+    const { fixture, el } = render({ mode: 'sheet', accounts: many(10) });
+    const trigger = el.querySelector('.acct-trigger')!;
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({ top: 500, bottom: 540,
+      left: 40, right: 240, width: 200, height: 40 } as DOMRect);
+    const panel = openPanel(fixture);
+    fixture.detectChanges();
+    expect(panel.style.top).toBe('544px');
+    vi.stubGlobal('innerHeight', 620);
+    window.dispatchEvent(new Event('resize'));
+    fixture.detectChanges();
+    expect(panel.style.top).toBe('');
+    expect(panel.style.bottom).toBe('124px');
+    panel.dispatchEvent(new Event('scroll'));
+    expect(fixture.componentInstance.open()).toBe(true);
+    el.parentElement!.dispatchEvent(new Event('scroll'));
+    fixture.detectChanges();
+    expect(el.querySelector('.acct-panel')).toBeNull();
+    vi.unstubAllGlobals();
   });
 
 });
