@@ -187,6 +187,55 @@ export function focusSheetField(host: HTMLElement, selector: string, injector: I
   afterNextRender(() => host.querySelector<HTMLElement>(selector)?.focus(), { injector });
 }
 
+// ---- focus containment ----------------------------------------------------------------------------------------
+
+/** Root attribute of an overlay (picker, fee / fx sheet, 新增拆帳行): it traps its own Tab; outer traps skip it. */
+export const OVERLAY_ATTR = 'data-overlay';
+
+export const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]',
+].join(',');
+
+/** Elements Tab can reach inside `container`, in DOM order (no negative tabindex, nothing inert or disabled). */
+export function focusables(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    element => element.tabIndex >= 0 && !element.hidden && !element.closest('[inert]') && !element.matches(':disabled'),
+  );
+}
+
+/**
+ * Tab / Shift+Tab wraps between the first and last focusable element of `container` (focus outside it is pulled in;
+ * an empty container keeps focus on itself). Returns true, with the event default-prevented, when it moved focus;
+ * a Tab between two inner elements is left to the browser. Handled keys and IME commits are ignored.
+ */
+export function trapFocus(container: HTMLElement, event: KeyboardEvent): boolean {
+  if (event.key !== 'Tab' || isHandledKey(event)) {
+    return false;
+  }
+  const items = focusables(container);
+  if (items.length === 0) {
+    event.preventDefault();
+    container.focus();
+    return true;
+  }
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = container.ownerDocument.activeElement as HTMLElement | null;
+  const inside = !!active && container.contains(active);
+  const atEdge = event.shiftKey ? active === first || active === container : active === last;
+  if (!inside || atEdge) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+    return true;
+  }
+  return false;
+}
+
 // ---- accounts and navigation ----------------------------------------------------------------------------------
 
 /** Select label of an account; an archived one (kept selectable for the record being edited) says so. */

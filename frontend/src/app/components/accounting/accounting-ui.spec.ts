@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   KIND_PILLS,
   NO_ENTER_SAVE_TAGS,
+  FOCUSABLE_SELECTOR, focusables, trapFocus,
   accountLabel,
   colorOf,
   contrastRatio,
@@ -67,6 +68,76 @@ describe('accounting-ui', () => {
     expect(textOn('#fff')).toBe('#1d1c1a');
     expect(textOn(null)).toBeNull();
     expect(textOn('var(--app-surface-soft)')).toBeNull();
+  });
+
+  describe('trapFocus', () => {
+    function build(): { box: HTMLElement; first: HTMLButtonElement; middle: HTMLInputElement; last: HTMLButtonElement } {
+      const box = document.createElement('div');
+      box.innerHTML = `
+        <button class="first">a</button>
+        <button disabled>skip</button>
+        <input class="middle" />
+        <div tabindex="-1">skip</div>
+        <span inert><button>skip</button></span>
+        <button class="last">b</button>`;
+      document.body.appendChild(box);
+      return {
+        box,
+        first: box.querySelector('.first')!,
+        middle: box.querySelector('.middle')!,
+        last: box.querySelector('.last')!,
+      };
+    }
+
+    const tab = (shiftKey = false) => new KeyboardEvent('keydown', { key: 'Tab', shiftKey, cancelable: true });
+
+    it('lists only reachable focusables', () => {
+      const { box, first, middle, last } = build();
+      expect(FOCUSABLE_SELECTOR).toContain('button:not([disabled])');
+      expect(focusables(box)).toEqual([first, middle, last]);
+      box.remove();
+    });
+
+    it('wraps Tab from the last to the first and Shift+Tab from the first to the last', () => {
+      const { box, first, middle, last } = build();
+      last.focus();
+      const forward = tab();
+      expect(trapFocus(box, forward)).toBe(true);
+      expect(forward.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(first);
+
+      const back = tab(true);
+      expect(trapFocus(box, back)).toBe(true);
+      expect(document.activeElement).toBe(last);
+
+      middle.focus();
+      const inner = tab();
+      expect(trapFocus(box, inner)).toBe(false);
+      expect(inner.defaultPrevented).toBe(false);
+      box.remove();
+    });
+
+    it('pulls focus back in from outside, ignores other keys and handled events, and holds an empty container', () => {
+      const { box, first } = build();
+      const outside = document.createElement('button');
+      document.body.appendChild(outside);
+      outside.focus();
+      expect(trapFocus(box, tab())).toBe(true);
+      expect(document.activeElement).toBe(first);
+
+      expect(trapFocus(box, new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }))).toBe(false);
+      const handled = tab();
+      handled.preventDefault();
+      expect(trapFocus(box, handled)).toBe(false);
+
+      const empty = document.createElement('div');
+      empty.tabIndex = -1;
+      document.body.appendChild(empty);
+      const held = tab();
+      expect(trapFocus(empty, held)).toBe(true);
+      expect(document.activeElement).toBe(empty);
+      [box, outside, empty].forEach(node => node.remove());
+    });
   });
 
 });
