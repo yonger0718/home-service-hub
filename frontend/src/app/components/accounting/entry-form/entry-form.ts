@@ -4,7 +4,10 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  Injector,
+  afterNextRender,
   OnInit,
+  OnDestroy,
   computed,
   inject,
   signal,
@@ -47,8 +50,9 @@ import {
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingToastService } from '../accounting-toast';
-import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey } from '../accounting-ui';
+import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-ui';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { evaluateAmount, prettyExpression, roundHalfAway } from '../amount-math';
 import { CategoryPickerComponent } from '../category-picker/category-picker';
@@ -140,6 +144,15 @@ interface LoadedEntry extends EntryLoad {
   related: RelatedLoad;
 }
 
+/** The schedule part of the unsaved-input key: dates that still follow the entry date, and the rule day, are derived. */
+export function scheduleDraftKey(draft: ScheduleDraft): unknown {
+  if (draft.tab === 'single') {
+    return 'single';
+  }
+  const { start, firstDate, dayOfMonth: _day, dayHydrated: _hydrated, ...rest } = draft;
+  return { ...rest, start: draft.startTouched ? start : null, firstDate: draft.firstTouched ? firstDate : null };
+}
+
 /**
  * `/accounting/entry` and `/accounting/entries/:id/edit` (spec "Entry page", mockups `s-entry`, `d-entry`).
  *
@@ -168,12 +181,14 @@ interface LoadedEntry extends EntryLoad {
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onKeydown($event)' },
 })
-export class EntryFormComponent implements OnInit {
+export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   private readonly accounting = inject(AccountingService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly location = inject(Location);
   private readonly destroyRef = inject(DestroyRef);
+  protected readonly registry = inject(DirtyFormRegistry);
+  private readonly injector = inject(Injector);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly layoutMode = inject(LayoutModeService);
 
@@ -253,6 +268,42 @@ export class EntryFormComponent implements OnInit {
   readonly fieldErrors = signal<Record<string, string>>({});
   /** 週期 / 分期 chosen; never while editing an entry (that edits the one record: 單次 only, final review F1). */
   readonly scheduling = computed(() => this.scheduleDraft().tab !== 'single' && !this.editing());
+  /** Serialised draft as the save would read it; derived values (auto rule ids, defaulted dates) are left out. */
+  private readonly formState = computed(() =>
+    JSON.stringify([
+      this.kind(),
+      this.accountId(),
+      this.projectId(),
+      this.category()?.id ?? this.pendingCategoryId,
+      this.amountExpr(),
+      this.targetExpr(),
+      this.name(),
+      this.merchant(),
+      this.counterpartyName(),
+      this.entryDate(),
+      this.entryTime(),
+      this.postedDate(),
+      this.invoiceNumber(),
+      this.invoiceRandom(),
+      this.description(),
+      this.tags(),
+      this.rulesTouched() ? [...this.ruleIds()].sort((a, b) => a - b) : null,
+      this.fx(),
+      this.fee(),
+      this.discount(),
+      this.members(),
+      scheduleDraftKey(this.scheduleDraft()),
+      this.kind() === 'transfer' ? (this.transferPanel()?.draftKey() ?? null) : null,
+    ]),
+  );
+  /** Snapshot of `formState` once the record (or blank form) has rendered; null while loading. */
+  private readonly baseline = signal<string | null>(null);
+  /** The draft differs from what was loaded (spec §4.3). */
+  readonly isDirty = computed(() => {
+    const baseline = this.baseline();
+    return baseline !== null && baseline !== this.formState();
+  });
+
   readonly eventTabs = SCHEDULE_TABS;
   /** Enabled 事件類型 tabs: a definition keeps its own kind; otherwise `tabsFor` (editing → 單次 only). */
   readonly enabledEventTabs = computed<ScheduleTab[]>(() =>
@@ -269,7 +320,7 @@ export class EntryFormComponent implements OnInit {
   /** Definition mode: the definition of the current navigation has been applied (else ✓ has no target). */
   private readonly definitionLoaded = signal(false);
 
-  private rulesTouched = false;
+  private readonly rulesTouched = signal(false);
   /** Bumped by every `load()`; a response carrying an older value is dropped. */
   private loadId = 0;
   /** The one entry point of the load sequence (see the class comment). */
@@ -432,7 +483,7 @@ export class EntryFormComponent implements OnInit {
       )
       .subscribe(detail => {
         this.accountDetail.set(detail);
-        if (!this.rulesTouched) {
+        if (!this.rulesTouched()) {
           this.ruleIds.set(this.basicRuleIds());
         }
       });
@@ -463,9 +514,12 @@ export class EntryFormComponent implements OnInit {
       .pipe(takeUntilDestroyed())
       .subscribe(([params, query]) => {
         const schedule = query.get('schedule');
-        this.load(this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule));
+        const target = this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule);
+        this.load(target);
         if (schedule !== null) {
           this.loadDefinition(Number(schedule));
+        } else if (target === null) {
+          this.markClean();
         }
       });
 
@@ -478,6 +532,7 @@ export class EntryFormComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    this.registry.register(this);
     forkJoin({
       // Archived accounts too, so an edited record on an archived account still shows (and keeps) it.
       accounts: this.accounting.getAccounts(true),
@@ -518,8 +573,40 @@ export class EntryFormComponent implements OnInit {
     }
   }
 
+  ngOnDestroy(): void {
+    this.registry.unregister(this);
+  }
+
+  private discardPromptActive = false;
+  private discardOpener: HTMLElement | null = null;
+
+  /** DirtyAware: the strip is rendered from `registry.promptOpen()`; 留下 takes the focus. */
+  showDiscardPrompt(): void {
+    if (!this.discardPromptActive) {
+      this.discardOpener = this.host.nativeElement.ownerDocument.activeElement as HTMLElement | null;
+      this.discardPromptActive = true;
+    }
+    afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>('.discard-stay')?.focus(), {
+      injector: this.injector,
+    });
+  }
+
+  restoreDiscardFocus(): void {
+    const opener = this.discardOpener;
+    this.clearDiscardFocus();
+    restoreOverlayFocus(opener, this.host.nativeElement);
+  }
+
+  private clearDiscardFocus(): void {
+    this.discardPromptActive = false;
+    this.discardOpener = null;
+  }
+
   /** Resets the form for a navigation; returns the record to load (edit or copy), or null for a blank record. */
   private start(id: string | null, kindParam: string | null, copyParam: string | null, scheduleParam: string | null = null): EntryTarget | null {
+    this.baseline.set(null);
+    this.clearDiscardFocus();
+    this.registry.clearPending();
     this.resetFields();
     this.related.set(NO_RELATED);
     this.feeProposal.set(null);
@@ -551,6 +638,16 @@ export class EntryFormComponent implements OnInit {
     return null;
   }
 
+  /** Takes the clean snapshot after the next render, once child effects (schedule dates, transfer legs) settled. */
+  private markClean(): void {
+    this.clearDiscardFocus();
+    this.registry.clearPending();
+    this.baseline.set(null);
+    this.transferPanel()?.markClean();
+    afterNextRender(() => this.baseline.set(this.formState()), { injector: this.injector });
+  }
+
+
   private resetFields(): void {
     this.notice.set(null);
     this.category.set(null);
@@ -568,7 +665,7 @@ export class EntryFormComponent implements OnInit {
     this.description.set('');
     this.tags.set([]);
     this.ruleIds.set([]);
-    this.rulesTouched = false;
+    this.rulesTouched.set(false);
     this.fx.set(null);
     this.fee.set(null);
     this.discount.set(null);
@@ -652,6 +749,7 @@ export class EntryFormComponent implements OnInit {
       this.loadedDates = null;
     }
     this.loading.set(false);
+    this.markClean();
   }
 
   private applyDetail(detail: EntryDetail, copy: boolean): void {
@@ -677,7 +775,7 @@ export class EntryFormComponent implements OnInit {
       this.kind.set('transfer');
       return;
     }
-    this.rulesTouched = true;
+    this.rulesTouched.set(true);
     this.kind.set(detail.kind as WritableEntryKind);
     const archived = this.accounts().find(account => account.id === detail.account_id)?.is_archived ?? false;
     this.accountId.set(detail.account_id);
@@ -809,7 +907,7 @@ export class EntryFormComponent implements OnInit {
   setAccount(value: string): void {
     this.moveToAccount(value ? Number(value) : null);
     if (this.entryId() === null) {
-      this.rulesTouched = false;
+      this.rulesTouched.set(false);
     }
   }
 
@@ -849,7 +947,7 @@ export class EntryFormComponent implements OnInit {
   }
 
   toggleRule(id: number): void {
-    this.rulesTouched = true;
+    this.rulesTouched.set(true);
     this.ruleIds.update(ids => (ids.includes(id) ? ids.filter(other => other !== id) : [...ids, id]));
   }
 
@@ -921,7 +1019,9 @@ export class EntryFormComponent implements OnInit {
     return false;
   }
 
-  openSheet(sheet: 'fx' | 'fee'): void {
+  private sheetOpener: HTMLElement | null = null;
+
+  openSheet(sheet: 'fx' | 'fee', event?: Event): void {
     if (this.locked()) {
       return;
     }
@@ -929,11 +1029,18 @@ export class EntryFormComponent implements OnInit {
       this.error.set('請先選擇帳戶');
       return;
     }
+    this.sheetOpener = (event?.currentTarget ?? this.host.nativeElement.ownerDocument.activeElement) as HTMLElement | null;
     this.sheet.set(sheet);
   }
 
-  onFxClosed(): void {
+  closeSheet(): void {
     this.sheet.set(null);
+    restoreOverlayFocus(this.sheetOpener, this.host.nativeElement);
+    this.sheetOpener = null;
+  }
+
+  onFxClosed(): void {
+    this.closeSheet();
     const fx = this.fx();
     if (fx?.original_amount) {
       this.amountExpr.set(fx.original_amount);
@@ -1022,7 +1129,7 @@ export class EntryFormComponent implements OnInit {
       // Marked handled so the accounting layout's document-level Esc does not also close its sheet.
       event.preventDefault();
       if (this.sheet()) {
-        this.sheet.set(null);
+        this.closeSheet();
       } else {
         this.cancel();
       }
@@ -1234,6 +1341,7 @@ export class EntryFormComponent implements OnInit {
     this.pendingCategoryId = form.categoryId;
     this.resolvePendingCategory();
     this.transferEdit.set(form.transfer);
+    this.markClean();
   }
 
   /** 週期 / 分期: create (then catch-up when it starts today, 自動入帳) or, in definition mode, PUT the definition. */
@@ -1287,6 +1395,7 @@ export class EntryFormComponent implements OnInit {
     request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: catchUpId => {
         this.saving.set(false);
+        this.markClean();
         if (catchUpId !== null) {
           this.createdScheduleId.set(catchUpId); // creation is complete from here on (R-F2)
           this.runCatchUp(catchUpId, keepGoing);
@@ -1347,6 +1456,7 @@ export class EntryFormComponent implements OnInit {
     request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: result => {
         this.saving.set(false);
+        this.markClean();
         done(result);
       },
       error: (error: unknown) => {
@@ -1410,6 +1520,7 @@ export class EntryFormComponent implements OnInit {
   }
 
   private finish(keepGoing: boolean): void {
+    this.markClean();
     if (keepGoing) {
       this.continueEntry();
     } else {
@@ -1435,11 +1546,19 @@ export class EntryFormComponent implements OnInit {
       clearTimeout(this.flashTimer);
     }
     this.flashTimer = setTimeout(() => this.savedFlash.set(false), FLASH_MS);
+    this.markClean();
   }
 
+  /** ✕, Esc and the cancel shortcut: a dirty draft first asks 放棄未儲存的內容？ (DirtyFormRegistry). */
   cancel(): void {
+    this.registry.requestClose(() => this.doCancel());
+  }
+
+  private doCancel(): void {
+    this.markClean();
     this.leave();
   }
+
 
   /** Back to the page the owner came from; to the timeline when the form was opened directly. */
   private leave(): void {

@@ -56,7 +56,7 @@
     border-radius: var(--radius-sheet) 0 0 var(--radius-sheet);
     bottom: 0;
     box-shadow: var(--app-raised-shadow);
-    padding-top: 44px;
+    padding-top: 56px;
     position: fixed;
     right: 0;
     top: 0;
@@ -82,6 +82,31 @@
   z-index: 1001;
 }
 
+.sheet-grip {
+  height: 0;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+
+  &--active {
+    height: 56px;
+    touch-action: pan-y;
+    z-index: 1;
+  }
+}
+
+.sheet-handle {
+  background: var(--app-border);
+  border-radius: 2px;
+  height: 4px;
+  left: 50%;
+  position: absolute;
+  top: 8px;
+  transform: translateX(-50%);
+  width: 36px;
+}
+
 .sheet-close {
   background: var(--app-surface-soft);
   border: 0;
@@ -92,9 +117,10 @@
   height: 32px;
   position: absolute;
   right: 12px;
-  top: 8px;
+  top: 12px;
   width: 32px;
 }
+
 
 .fab {
   align-items: center;

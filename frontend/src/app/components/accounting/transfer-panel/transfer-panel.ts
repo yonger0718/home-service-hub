@@ -20,7 +20,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { amountString, parseAmountText } from '../amount-text';
 import { TransferCommon, TransferEdit, buildTransferInput, transferRateLabel } from '../entry-form/transfer-math';
-import { accountLabel, focusSheetField, isHandledKey, sheetKeyAction } from '../accounting-ui';
+import { accountLabel, focusSheetField, isHandledKey, sheetKeyAction, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { currencyDecimals, formatMoney } from '../format';
 
 export type TransferSide = 'out' | 'in';
@@ -57,6 +57,7 @@ export class TransferPanelComponent implements OnInit {
   private layout = inject(LayoutModeService);
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
   private injector = inject(Injector);
+  private opener: HTMLElement | null = null;
 
   readonly accounts = input<LedgerAccount[]>([]);
   readonly locked = input(false);
@@ -69,6 +70,7 @@ export class TransferPanelComponent implements OnInit {
   readonly saveRequested = output<boolean>();
 
   readonly categories = signal<CategoryNode[]>([]);
+  readonly categoryTouched = signal(false);
   readonly categoryId = signal<number | null>(null);
   readonly fromId = signal<number | null>(null);
   readonly toId = signal<number | null>(null);
@@ -117,6 +119,21 @@ export class TransferPanelComponent implements OnInit {
   readonly rateLabel = computed(() =>
     transferRateLabel(this.outAmount(), this.inAmount(), this.from()?.currency ?? '', this.to()?.currency ?? ''),
   );
+  /** Defaults and hydrated categories are derived; explicit category choices belong to the draft. */
+  readonly draftKey = computed(() => JSON.stringify([
+    this.fromId(), this.toId(), this.outText(), this.inText(), this.children(),
+    this.categoryTouched() ? this.categoryId() : null,
+  ]));
+
+  selectCategory(id: number): void {
+    this.categoryTouched.set(true);
+    this.categoryId.set(id);
+  }
+
+  markClean(): void {
+    this.categoryTouched.set(false);
+  }
+
   readonly phone = computed(() => this.layout.mode() === 'phone');
   readonly showKeypad = computed(() => this.phone() && this.activeSide() !== null && !this.locked());
   readonly activeText = computed(() => (this.activeSide() === 'in' ? this.inText() : this.outText()));
@@ -215,8 +232,10 @@ export class TransferPanelComponent implements OnInit {
 
   /** While the fee sheet is open, ⏎ / Esc anywhere in the panel close it (see `sheetKeyAction`); the form never sees them. */
   onHostKeydown(event: KeyboardEvent): void {
+    const dialog = this.host.nativeElement.querySelector<HTMLElement>('.sheet');
+    if (this.sheet() && event.key === 'Tab' && dialog) { trapFocus(dialog, event); return; }
     if (this.sheet() && sheetKeyAction(event, this.host.nativeElement.querySelector('.sheet'))) {
-      this.sheet.set(null);
+      this.closeSheet();
     }
   }
 
@@ -238,9 +257,16 @@ export class TransferPanelComponent implements OnInit {
   openSheet(side: TransferSide, event: Event): void {
     event.stopPropagation();
     if (!this.locked()) {
+      this.opener = (event.currentTarget ?? this.host.nativeElement.ownerDocument.activeElement) as HTMLElement | null;
       this.sheet.set(side);
       focusSheetField(this.host.nativeElement, '.fee-input', this.injector);
     }
+  }
+
+  closeSheet(): void {
+    this.sheet.set(null);
+    if (this.opener) restoreOverlayFocus(this.opener, this.host.nativeElement);
+    this.opener = null;
   }
 
   setChild(side: TransferSide, field: keyof SideChildren, value: string): void {
@@ -264,10 +290,11 @@ export class TransferPanelComponent implements OnInit {
 
   /** 連續記帳: a fresh transfer between the same accounts in the same category. */
   reset(): void {
+    this.markClean();
     this.outText.set('');
     this.inText.set('');
     this.children.set({ out: EMPTY_CHILDREN, in: EMPTY_CHILDREN });
-    this.sheet.set(null);
+    this.closeSheet();
     this.activeSide.set(null);
     this.error.set(null);
   }

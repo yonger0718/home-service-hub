@@ -13,6 +13,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService } from '../accounting-toast';
 import { FxValue } from '../fx-sheet/fx-sheet';
 import { makeAccount, makeAccountDetail, makeCategory, makeDefinition, makePreference } from '../testing/fixtures';
+import { DirtyFormRegistry } from '../dirty-form.service';
 import { EntryFormComponent } from './entry-form';
 
 @Component({ template: '' })
@@ -138,6 +139,17 @@ describe('EntryFormComponent schedules', () => {
     return opened;
   }
 
+
+  function pendingClose(): () => void {
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(true);
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const run = vi.fn(); registry.requestClose(run); settle();
+    expect(registry.promptOpen()).toBe(true);
+    return () => { expect(registry.promptOpen()).toBe(false); registry.confirmDiscard();
+      expect(run).not.toHaveBeenCalled(); expect(form.isDirty()).toBe(false); };
+  }
+
   function definitionRequest() {
     return httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions');
   }
@@ -156,8 +168,10 @@ describe('EntryFormComponent schedules', () => {
       end_date: null, posting_mode: 'auto', loan: null,
       template: { lines: [{ kind: 'expense', account_id: 2, amount: '390', currency: 'TWD', category_id: 41 }] },
     });
+    const cleared = pendingClose();
     req.flush(makeDefinition({ id: 9 }));
     settle();
+    cleared();
     httpMock.expectNone(r => r.url.endsWith('/catch-up'));
     httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/entries');
     expect(left()).toBe(true);
@@ -166,8 +180,10 @@ describe('EntryFormComponent schedules', () => {
   it('catches up when the start is today and posting is automatic', async () => {
     const { el, left } = await netflix(null);
     keys(el, '✓');
+    const cleared = pendingClose();
     definitionRequest().flush(makeDefinition({ id: 9, anchor_date: '2026-10-03' }));
     settle();
+    cleared();
     httpMock
       .expectOne(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions/9/catch-up')
       .flush({ posted: [31], failed: null, definition: makeDefinition({ id: 9 }) });
@@ -371,8 +387,10 @@ describe('EntryFormComponent schedules', () => {
     });
     expect(req.request.body).not.toHaveProperty('kind');
     expect(req.request.body).not.toHaveProperty('loan');
+    const cleared = pendingClose();
     req.flush(makeDefinition({ id: 5, name: 'Netflix 家庭' }));
     settle();
+    cleared();
     expect(left()).toBe(true);
   });
 

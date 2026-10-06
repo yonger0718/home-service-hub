@@ -10,6 +10,7 @@ import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { makeEntryDetail, makePreference } from '../testing/fixtures';
+import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingLayoutComponent } from './accounting-layout';
 
 async function start(mode: LayoutMode, url: string): Promise<RouterTestingHarness> {
@@ -353,20 +354,192 @@ describe('AccountingLayoutComponent', () => {
     expect(navigate).not.toHaveBeenCalled();
     expect(router.url).toBe('/accounting');
   });
-  it('closes the sheet with a swipe to the right, not with a short drag', async () => {
+  it('closes the sheet only on a horizontal swipe that starts on the grip', async () => {
     const harness = await start('sheet', '/accounting');
     await find(harness, LIST);
     const router = TestBed.inject(Router);
     await router.navigateByUrl('/accounting/entries/5');
     const sheet = await find(harness, '.detail-pane.open');
-    const swipe = (from: number, to: number) => {
-      sheet.dispatchEvent(new MouseEvent('pointerdown', { clientX: from, bubbles: true }));
-      sheet.dispatchEvent(new MouseEvent('pointerup', { clientX: to, bubbles: true }));
+    const grip = await find(harness, '.sheet-grip');
+    expect(grip.querySelector('.sheet-close')).not.toBeNull();
+    const swipe = (on: Element, dx: number, dy: number) => {
+      on.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+      on.dispatchEvent(new MouseEvent('pointermove', { clientX: 100 + dx, clientY: 20 + dy, bubbles: true }));
+      on.dispatchEvent(new MouseEvent('pointerup', { clientX: 100 + dx, clientY: 20 + dy, bubbles: true }));
     };
 
-    swipe(100, 150);
+    // Anywhere else in the pane (a text field of the page) never closes.
+    const field = document.createElement('input');
+    sheet.appendChild(field);
+    swipe(field, 100, 10);
+    swipe(sheet, 100, 10);
+    swipe(grip, 50, 0);
+    swipe(grip, 100, 60);
+    const control = document.createElement('button'); grip.appendChild(control);
+    swipe(control, 100, 10); control.remove();
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointermove', { clientX: 200, clientY: 80, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 20, bubbles: true }));
+    harness.detectChanges();
     expect(router.url).toBe('/accounting/entries/5');
-    swipe(100, 200);
+
+    // A cancelled pointer never closes either.
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointercancel', { bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 20, bubbles: true }));
+    expect(router.url).toBe('/accounting/entries/5');
+
+    swipe(grip, 100, 10);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    field.remove();
+  });
+
+  it('keeps a grip without handle or ✕ in the two-pane layout and never swipes there', async () => {
+    const harness = await start('panes', '/accounting/entries/5');
+    await find(harness, PANE_PAGE);
+    const grip = await find(harness, '.sheet-grip');
+    expect(grip.classList).not.toContain('sheet-grip--active');
+    expect(grip.querySelector('.sheet-close')).toBeNull();
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 300, clientY: 20, bubbles: true }));
+    expect(TestBed.inject(Router).url).toBe('/accounting/entries/5');
+  });
+
+  it('makes the list and the dock inert while the sheet is open, and only then', async () => {
+    const dock = document.createElement('app-dock');
+    document.body.appendChild(dock);
+    const harness = await start('sheet', '/accounting');
+    const list = harness.routeNativeElement!.querySelector('.list-pane')!;
+    await find(harness, LIST);
+    expect(list.hasAttribute('inert')).toBe(false);
+
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    await find(harness, '.detail-pane.open');
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(list.hasAttribute('inert')).toBe(true);
+      expect(dock.hasAttribute('inert')).toBe(true);
+    });
+    expect(harness.routeNativeElement!.querySelector('.sheet-backdrop')!.getAttribute('aria-hidden')).toBe('true');
+
+    await router.navigateByUrl('/accounting');
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(list.hasAttribute('inert')).toBe(false);
+      expect(dock.hasAttribute('inert')).toBe(false);
+    });
+    dock.remove();
+  });
+
+  it('wraps Tab inside the sheet: from the last focusable to ✕ and back with Shift+Tab', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    await TestBed.inject(Router).navigateByUrl('/accounting/entries/5');
+    const pane = await find(harness, '.detail-pane.open');
+    const closeButton = await find(harness, '.sheet-close') as HTMLButtonElement;
+    const last = document.createElement('button');
+    last.textContent = '最後';
+    pane.appendChild(last);
+
+    last.focus();
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closeButton);
+
+    const back = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(back);
+    expect(document.activeElement).toBe(last);
+
+    // An overlay inside the pane traps its own Tab: the pane leaves it alone.
+    const overlay = document.createElement('div');
+    overlay.setAttribute('data-overlay', '');
+    const inner = document.createElement('button');
+    overlay.appendChild(inner);
+    pane.appendChild(overlay);
+    inner.focus();
+    const overlayTab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(overlayTab);
+    expect(overlayTab.defaultPrevented).toBe(false);
+    [last, overlay].forEach(node => node.remove());
+  });
+
+
+  it('removes inert from the retained list and dock when destroyed with a sheet open', async () => {
+    const dock = document.createElement('app-dock'); document.body.appendChild(dock);
+    try {
+      const harness = await start('sheet', '/accounting/entries/5');
+      const list = await find(harness, '.list-pane');
+      await find(harness, '.detail-pane.open');
+      harness.detectChanges();
+      expect(list.hasAttribute('inert')).toBe(true);
+      expect(dock.hasAttribute('inert')).toBe(true);
+      harness.fixture.destroy();
+      expect(list.hasAttribute('inert')).toBe(false);
+      expect(dock.hasAttribute('inert')).toBe(false);
+    } finally { dock.remove(); }
+  });
+
+  it('asks a dirty registered form before ✕, backdrop, Esc or swipe closes the sheet', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    await find(harness, '.detail-pane.open');
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const form = { isDirty: () => true, showDiscardPrompt: vi.fn() };
+    registry.register(form);
+
+    const close = await find(harness, '.sheet-close') as HTMLButtonElement;
+    const backdrop = await find(harness, '.sheet-backdrop') as HTMLElement;
+    const grip = await find(harness, '.sheet-grip');
+    close.click();
+    backdrop.click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 20, bubbles: true }));
+    expect(form.showDiscardPrompt).toHaveBeenCalledTimes(4);
+    expect(router.url).toBe('/accounting/entries/5');
+
+    registry.cancelDiscard();
+    harness.detectChanges();
+    expect(router.url).toBe('/accounting/entries/5');
+    expect(harness.routeNativeElement!.querySelector('.detail-pane.open')).not.toBeNull();
+
+    (await find(harness, '.sheet-close') as HTMLButtonElement).click();
+    registry.confirmDiscard();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    registry.unregister(form);
+  });
+
+  it.each(['mouse', 'touch'])('does not capture a %s tap on ✕, while a grip swipe captures and closes', async pointerType => {
+    const harness = await start('sheet', '/accounting/entries/5');
+    const router = TestBed.inject(Router);
+    const grip = await find(harness, '.sheet-grip') as HTMLElement;
+    const close = await find(harness, '.sheet-close') as HTMLButtonElement;
+    const capture = vi.fn();
+    Object.defineProperty(grip, 'setPointerCapture', { configurable: true, value: capture });
+    const pointer = (target: HTMLElement, type: string, x: number) => {
+      const event = new MouseEvent(type, { clientX: x, clientY: 20, bubbles: true });
+      Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: pointerType } });
+      target.dispatchEvent(event);
+    };
+    pointer(close, 'pointerdown', 100);
+    pointer(close, 'pointerup', 100);
+    expect(capture).not.toHaveBeenCalled();
+    // DOM click alone cannot emulate capture retargeting; the capture assertion guards that browser prerequisite.
+    close.click();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    await router.navigateByUrl('/accounting/entries/5');
+    const reopened = await find(harness, '.sheet-grip') as HTMLElement;
+    const swipeCapture = vi.fn();
+    Object.defineProperty(reopened, 'setPointerCapture', { configurable: true, value: swipeCapture });
+    pointer(reopened, 'pointerdown', 100);
+    expect(swipeCapture).toHaveBeenCalledWith(1);
+    pointer(reopened, 'pointermove', 200);
+    pointer(reopened, 'pointerup', 200);
     await vi.waitFor(() => expect(router.url).toBe('/accounting'));
   });
+
 });

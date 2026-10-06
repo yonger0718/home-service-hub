@@ -3,6 +3,9 @@ import {
   Component,
   DestroyRef,
   OnInit,
+  ElementRef,
+  Injector,
+  afterNextRender,
   computed,
   effect,
   inject,
@@ -16,6 +19,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
 import { LedgerAccount } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { focusables, isHandledKey, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { roundHalfAway } from '../amount-math';
 import { currencyDecimals, formatNumber } from '../format';
 
@@ -49,8 +53,13 @@ function parseNumber(text: string): number {
   templateUrl: './fx-sheet.html',
   styleUrls: ['../sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(keydown)': 'onHostKeydown($event)' },
 })
 export class FxSheetComponent implements OnInit {
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
+  private opener: HTMLElement | null = null;
+
   private readonly accounting = inject(AccountingService);
   private readonly destroyRef = inject(DestroyRef);
   /** Bumped per rate request; an answer for an older request (another currency or date) is dropped. */
@@ -118,6 +127,11 @@ export class FxSheetComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    this.opener = this.host.nativeElement.ownerDocument.activeElement as HTMLElement | null;
+    afterNextRender(() => {
+      const dialog = this.dialog();
+      if (dialog) focusables(dialog)[0]?.focus();
+    }, { injector: this.injector });
     this.initialized = true;
     const value = this.value();
     this.currency.set(value?.original_currency ?? this.account().currency);
@@ -176,6 +190,7 @@ export class FxSheetComponent implements OnInit {
   confirm(): void {
     if (!this.isForeign()) {
       this.value.set(null);
+      restoreOverlayFocus(this.opener, this.host.nativeElement);
       this.closed.emit();
       return;
     }
@@ -192,10 +207,12 @@ export class FxSheetComponent implements OnInit {
       manual: this.useOnline() ? null : this.manual(),
       rate_date: this.rateDate(),
     });
+    restoreOverlayFocus(this.opener, this.host.nativeElement);
     this.closed.emit();
   }
 
   cancel(): void {
+    restoreOverlayFocus(this.opener, this.host.nativeElement);
     this.closed.emit();
   }
 
@@ -230,4 +247,24 @@ export class FxSheetComponent implements OnInit {
   private rateKey(): string {
     return `${this.currency()}|${this.entryDate()}|${this.account().currency}`;
   }
+  private dialog(): HTMLElement | null {
+    return this.host.nativeElement.querySelector<HTMLElement>('.sheet');
+  }
+
+  /** Overlay contract (spec §3.1): Esc closes only this sheet, marked handled; Tab stays inside it. */
+  onHostKeydown(event: KeyboardEvent): void {
+    if (isHandledKey(event)) {
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.cancel();
+      return;
+    }
+    const dialog = this.dialog();
+    if (event.key === 'Tab' && dialog) {
+      trapFocus(dialog, event);
+    }
+  }
+
 }

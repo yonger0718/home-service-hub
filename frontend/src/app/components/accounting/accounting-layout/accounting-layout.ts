@@ -2,6 +2,7 @@ import { DOCUMENT, NgComponentOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   Injector,
   Type,
@@ -21,7 +22,8 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
 import { AccountingToastComponent } from '../accounting-toast';
-import { isHandledKey } from '../accounting-ui';
+import { DirtyFormRegistry } from '../dirty-form.service';
+import { isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
 export interface LayoutRouteState {
@@ -54,6 +56,11 @@ const REMINDERS_URL = /^\/accounting\/reminders(?:\/|$)/;
 const PASSBOOK_URL = /^\/accounting\/accounts\/(\d+)(?:\/entries\/\d+)?$/;
 const FORM_URL = /^\/accounting\/(?:entry|entries\/\d+\/edit)(?:[/?#]|$)/;
 const SWIPE_CLOSE_PX = 80;
+/** A swipe that drifts more than this vertically is a scroll, not a close. */
+const SWIPE_MAX_DY = 40;
+/** Pointers starting on a control never begin a swipe (✕ itself may). */
+const SWIPE_IGNORE = 'input, textarea, select, button:not(.sheet-close), [contenteditable], .keypad';
+
 
 /**
  * Host of every `/accounting` route (design D22): one screen per route on phones; on wider screens the list
@@ -75,12 +82,16 @@ const SWIPE_CLOSE_PX = 80;
   },
 })
 export class AccountingLayoutComponent {
+  private readonly registry = inject(DirtyFormRegistry);
   private readonly router = inject(Router);
   private readonly layoutMode = inject(LayoutModeService);
   private readonly document = inject(DOCUMENT);
   private readonly injector = inject(Injector);
   private readonly shortcuts = inject(AccountingShortcutsService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly listPane = viewChild<ElementRef<HTMLElement>>('listPane');
+  private readonly detailPane = viewChild<ElementRef<HTMLElement>>('detailPane');
+
   private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
   private readonly accounting = inject(AccountingService);
 
@@ -107,7 +118,8 @@ export class AccountingLayoutComponent {
   readonly showFab = computed(() => this.mode() !== 'phone' && !FORM_URL.test(this.url()));
 
   private wasPhone: boolean | null = null;
-  private swipeStartX: number | null = null;
+  private swipe: { x: number; y: number } | null = null;
+
   /** Element focused before the sheet opened; focus returns there when it closes. */
   private focusBeforeSheet: HTMLElement | null = null;
 
@@ -159,12 +171,58 @@ export class AccountingLayoutComponent {
 
     effect(() => {
       const open = this.sheetOpen();
-      untracked(() => (open ? this.focusSheet() : this.restoreFocus()));
+      const list = this.listPane()?.nativeElement;
+      untracked(() => {
+        // Remove inert before returning focus to a list/dock opener.
+        this.setOutsideInert(open, list);
+        open ? this.focusSheet() : this.restoreFocus();
+      });
     });
+    inject(DestroyRef).onDestroy(() => this.setOutsideInert(false));
   }
 
-  /** Close the pane / sheet: back to the list's own URL. */
+  private inertList: HTMLElement | null = null;
+  private inertDock: HTMLElement | null = null;
+
+  /** Remember the actual nodes: view queries may be gone by destruction or a layout mode switch. */
+  private setOutsideInert(inert: boolean, list?: HTMLElement): void {
+    const dock = inert ? this.document.querySelector<HTMLElement>('app-dock') : null;
+    if (!inert || this.inertList !== list) this.inertList?.removeAttribute('inert');
+    if (!inert || this.inertDock !== dock) this.inertDock?.removeAttribute('inert');
+    if (inert) {
+      list?.setAttribute('inert', '');
+      dock?.setAttribute('inert', '');
+      this.inertList = list ?? null;
+      this.inertDock = dock;
+    } else {
+      list?.removeAttribute('inert');
+      this.inertList = null;
+      this.inertDock = null;
+    }
+  }
+
+  /** Tab / Shift+Tab wraps inside the open sheet; an overlay inside it (data-overlay) traps its own Tab. */
+  onPaneKeydown(event: KeyboardEvent): void {
+    if (!this.sheetOpen() || event.key !== 'Tab' || isHandledKey(event)) {
+      return;
+    }
+    if ((event.target as Element | null)?.closest?.(`[${OVERLAY_ATTR}]`)) {
+      return;
+    }
+    const pane = this.detailPane()?.nativeElement;
+    if (pane) {
+      trapFocus(pane, event);
+    }
+  }
+
+
+  /** Close the pane / sheet (✕, backdrop, swipe, Esc): a dirty entry form first asks 放棄未儲存的內容？. */
   close(): void {
+    this.registry.requestClose(() => this.navigateClose());
+  }
+
+  /** Back to the list's own URL. */
+  private navigateClose(): void {
     const passbook = PASSBOOK_URL.exec(this.url().split(/[?#]/)[0]);
     if (passbook && this.selectedEntryId() !== null) {
       void this.router.navigateByUrl(`/accounting/accounts/${passbook[1]}`);
@@ -172,6 +230,7 @@ export class AccountingLayoutComponent {
     }
     void this.router.navigateByUrl(this.listKey() === 'accounts' ? '/accounting/accounts' : '/accounting');
   }
+
 
   /**
    * Escape closes the sheet; marked handled so global shortcuts skip it. An Escape already handled, or one that is part
@@ -258,14 +317,43 @@ export class AccountingLayoutComponent {
     }
   }
 
-  onPanePointerDown(event: PointerEvent): void {
-    this.swipeStartX = this.mode() === 'sheet' ? event.clientX : null;
+  /** Swipe-to-close starts only on the grip, only in the 760–1023 px sheet (spec §4.1). */
+  onGripPointerDown(event: PointerEvent): void {
+    const target = event.target as Element | null;
+    if (!this.sheetOpen() || target?.closest(SWIPE_IGNORE)) {
+      this.swipe = null;
+      return;
+    }
+    this.swipe = { x: event.clientX, y: event.clientY };
+    const grip = event.currentTarget as HTMLElement | null;
+    // Capture would retarget the button's following click to the grip, swallowing a plain tap on ✕.
+    if (typeof event.pointerId === 'number' && !target?.closest('.sheet-close')) {
+      grip?.setPointerCapture?.(event.pointerId);
+    }
   }
 
-  onPanePointerUp(event: PointerEvent): void {
-    if (this.swipeStartX !== null && event.clientX - this.swipeStartX > SWIPE_CLOSE_PX) {
+  onGripPointerMove(event: PointerEvent): void {
+    if (this.swipe && Math.abs(event.clientY - this.swipe.y) >= SWIPE_MAX_DY) {
+      // Clearly vertical: a scroll, not a close.
+      this.swipe = null;
+    }
+  }
+
+  onGripPointerUp(event: PointerEvent): void {
+    const swipe = this.swipe;
+    this.swipe = null;
+    if (!swipe || !this.sheetOpen()) {
+      return;
+    }
+    const dx = event.clientX - swipe.x;
+    const dy = event.clientY - swipe.y;
+    if (dx > SWIPE_CLOSE_PX && Math.abs(dy) < SWIPE_MAX_DY) {
       this.close();
     }
-    this.swipeStartX = null;
   }
+
+  onGripPointerCancel(): void {
+    this.swipe = null;
+  }
+
 }

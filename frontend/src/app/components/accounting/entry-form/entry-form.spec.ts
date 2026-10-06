@@ -12,8 +12,10 @@ import { MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'v
 import { EntryDetail, Project } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
-import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetail, makePreference } from '../testing/fixtures';
+import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetail, makePreference, makeRule } from '../testing/fixtures';
 import { EntryDetailComponent } from '../entry-detail/entry-detail';
+import { DirtyFormRegistry } from '../dirty-form.service';
+import { emptyEntryInput } from './entry-save';
 import { EntryFormComponent, NO_RELATED, RelatedLoad } from './entry-form';
 
 /** Stands in for the timeline so the form's real `navigateByUrl('/accounting')` (leave()) has somewhere to land. */
@@ -139,6 +141,23 @@ describe('EntryFormComponent', () => {
     return { el, left };
   }
 
+
+  function pendingClose(): () => void {
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(true);
+    const run = vi.fn();
+    const registry = TestBed.inject(DirtyFormRegistry);
+    registry.requestClose(run); settle();
+    expect(registry.promptOpen()).toBe(true);
+    expect(run).not.toHaveBeenCalled();
+    return () => {
+      expect(registry.promptOpen()).toBe(false);
+      registry.confirmDiscard();
+      expect(run).not.toHaveBeenCalled();
+      expect(form.isDirty()).toBe(false);
+    };
+  }
+
   function tap(el: HTMLElement, selector: string, label: string): void {
     const target = Array.from(el.querySelectorAll<HTMLElement>(selector)).find(node => node.textContent?.includes(label));
     if (!target) {
@@ -185,9 +204,11 @@ describe('EntryFormComponent', () => {
       tags: [],
       reward_rule_ids: [],
     });
+    const cleared = pendingClose();
     req.flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
     settle();
 
+    cleared();
     expect(left()).toBe(true);
     expect(JSON.parse(localStorage.getItem('hh.accounting.lastUse.12')!)).toEqual({ account_id: 2, project_id: 5 });
   });
@@ -293,13 +314,18 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '飲食');
     tap(el, '.cat', '午餐');
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
     keys(el, '1', '1', '6', '6', '✓');
+    expect(form.isDirty()).toBe(true);
 
+    const cleared = pendingClose();
     httpMock
       .expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
       .flush(makeEntryDetail({ id: 99, amount: '-1166.0000', proposed_fee: '17.0000' }));
     settle();
+    cleared();
     expect(left()).toBe(false);
+    expect(form.isDirty()).toBe(false);
     expect(text(el.querySelector('.fee-prompt .add-fee'))).toBe('＋ 國外交易手續費 −$17');
 
     (el.querySelector('.fee-prompt .add-fee') as HTMLButtonElement).click();
@@ -395,8 +421,10 @@ describe('EntryFormComponent', () => {
     settle();
 
     httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions');
+    const cleared = pendingClose();
     httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/9').flush(makeEntryDetail({ id: 9 }));
     settle();
+    cleared();
     expect(left()).toBe(true);
   });
 
@@ -697,8 +725,10 @@ describe('EntryFormComponent', () => {
       entry_time: '14:42',
       reward_rule_ids: [],
     });
+    const cleared = pendingClose();
     req.flush({ transfer_group_id: 'g-1', out_entry_id: 1, in_entry_id: 2 });
     settle();
+    cleared();
     expect(left()).toBe(true);
   });
 
@@ -731,9 +761,11 @@ describe('EntryFormComponent', () => {
     const out = el.querySelector('app-transfer-panel .out-amount') as HTMLInputElement;
     out.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
     settle();
+    const cleared = pendingClose();
     httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/transfers').flush({});
     settle();
 
+    cleared();
     expect(left()).toBe(false);
     expect(text(el.querySelector('.kind-tab.on'))).toBe('轉帳');
     expect((el.querySelector('app-transfer-panel .out-amount') as HTMLInputElement).value).toBe('');
@@ -1023,8 +1055,12 @@ describe('EntryFormComponent', () => {
     const body = put.request.body.members;
     expect(body.map((line: { amount: string }) => line.amount)).toEqual(['200', '120']);
     expect(body[1]).toMatchObject({ kind: 'receivable', counterparty_id: 5, description: '代墊 Alan', entry_date: '2026-09-30' });
+    expect(form.isDirty()).toBe(true);
+    const cleared = pendingClose();
     put.flush({ group_id: 4, member_ids: [21, 22] });
     settle();
+    cleared();
+    expect(form.isDirty()).toBe(false);
     await Promise.all(navigate!.mock.results.map(result => result.value));
 
     expect(navigate).toHaveBeenCalledWith('/accounting/entries/22', { replaceUrl: true, state: { closeTo: 'list' } });
@@ -1193,8 +1229,9 @@ describe('EntryFormComponent', () => {
     const write = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/balance-adjustments');
     expect(write.request.body).toEqual({ account_id: 1, target_balance: '250', entry_date: '2026-10-02', entry_time: '14:42', description: null });
     httpMock.expectNone(r => r.url === '/api/accounting/schedules/definitions');
+    const cleared = pendingClose();
     write.flush(makeEntryDetail({ id: 99, kind: 'balance_adjustment', account_id: 1, category_id: null }));
-    settle(); expect(left()).toBe(true);
+    settle(); cleared(); expect(left()).toBe(true);
   });
 
   it.each([false, true])('renders the shared system tile in component editing state %s without adding schedule fields', async editing => {
@@ -1225,6 +1262,399 @@ describe('EntryFormComponent', () => {
     form.save(false); settle();
     expect(text(el.querySelector('.form-error'))).toBe('餘額調整請在明細頁處理');
     httpMock.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+  });
+
+  describe('unsaved input', () => {
+    it('is clean after load, dirty after typing a name, clean again after save-and-continue and after save', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      expect(form.isDirty()).toBe(false);
+
+      typeInto(el, '.name-input', '午餐');
+      expect(form.isDirty()).toBe(true);
+
+      tap(el, '.cat', '飲食');
+      tap(el, '.cat', '午餐');
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      keys(el, '1', '7', '0');
+      form.save(true);
+      settle();
+      httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+        .flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
+      settle();
+      expect(left()).toBe(false);
+      expect(form.isDirty()).toBe(false);
+
+      typeInto(el, '.name-input', '晚餐');
+      keys(el, '2', '0', '0');
+      expect(form.isDirty()).toBe(true);
+      form.save(false);
+      settle();
+      httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+        .flush(makeEntryDetail({ id: 100, amount: '-200.0000', account_id: 2, category_id: 12 }));
+      settle();
+      expect(left()).toBe(true);
+      expect(form.isDirty()).toBe(false);
+    });
+
+    it('is clean right after an edit loads, even once its category and account detail arrive', async () => {
+      const { el } = await open('/accounting/entries/9/edit');
+      respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, category_id: 12, amount: '-170.0000' }));
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      expect(form.isDirty()).toBe(false);
+      typeInto(el, '.name-input', '改名');
+      expect(form.isDirty()).toBe(true);
+    });
+
+    it('is clean after a transfer form loads and dirty once an amount is typed', async () => {
+      const { el } = await open('/accounting/entry?kind=transfer');
+      respondTransferCategories();
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      expect(form.isDirty()).toBe(false);
+      typeInto(el, 'app-transfer-panel .out-amount', '3000');
+      expect(form.isDirty()).toBe(true);
+    });
+  });
+
+  it('keeps an existing transfer clean when its categories arrive late, but tracks a category-only choice', async () => {
+    const { el } = await open('/accounting/entries/8/edit');
+    const inLeg = makeEntryDetail({ id: 8, kind: 'transfer_in', account_id: 2, amount: '5000.0000', category_id: 40,
+      transfer_group_id: 'g-7', transfer_counterpart: makeEntry({ id: 7, kind: 'transfer_out', account_id: 1 }) });
+    respond('/api/accounting/entries/8', inLeg);
+    respond('/api/accounting/entries/7', { ...inLeg, id: 7, kind: 'transfer_out', account_id: 1, amount: '-5000.0000' });
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(false);
+    respond('/api/accounting/categories', [makeCategory({ id: 40, kind: 'transfer_out', name: '轉帳' }),
+      makeCategory({ id: 41, kind: 'transfer_out', name: '儲蓄' })]);
+    expect(form.isDirty()).toBe(false);
+    tap(el, 'app-transfer-panel .cat', '儲蓄');
+    expect(form.isDirty()).toBe(true);
+    form.save(false); settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/transfers/g-7');
+    expect(put.request.body.category_id).toBe(41);
+    const cleared = pendingClose();
+    put.flush({}); settle();
+    cleared();
+    expect(form.isDirty()).toBe(false);
+  });
+
+  it('excludes a new transfer category default arriving after the clean snapshot', async () => {
+    await open('/accounting/entry?kind=transfer');
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(false);
+    respondTransferCategories();
+    expect(form.isDirty()).toBe(false);
+  });
+
+  it('keeps unsaved input dirty after a write fails', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食'); tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    keys(el, '1', '7', '0');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(true);
+    form.save(false); settle();
+    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+      .flush({}, { status: 500, statusText: 'Failed' }); settle();
+    expect(form.isDirty()).toBe(true);
+    expect(left()).toBe(false);
+  });
+
+    it('asks before ✕ or Esc drops a dirty draft on a phone; 留下 keeps it, 放棄 leaves', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      typeInto(el, '.name-input', '午餐');
+
+      el.querySelector('.entry-form')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      settle();
+      const strip = el.querySelector('.discard-strip')!;
+      expect(text(strip)).toContain('放棄未儲存的內容？');
+      expect(strip.getAttribute('role')).toBe('alertdialog');
+      expect(document.activeElement).toBe(el.querySelector('.discard-stay'));
+      expect(left()).toBe(false);
+
+      (el.querySelector('.discard-stay') as HTMLButtonElement).click();
+      settle();
+      expect(el.querySelector('.discard-strip')).toBeNull();
+      expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('午餐');
+
+      (el.querySelector('.topbar .cancel') as HTMLButtonElement).click();
+      settle();
+      expect(el.querySelector('.discard-strip')).not.toBeNull();
+      (el.querySelector('.discard-leave') as HTMLButtonElement).click();
+      settle();
+      expect(left()).toBe(true);
+    });
+
+    it('leaves without asking after save-and-continue', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      tap(el, '.cat', '飲食');
+      tap(el, '.cat', '午餐');
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      keys(el, '1', '7', '0');
+      el.querySelector('.entry-form')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }));
+      settle();
+      const cleared = pendingClose();
+      httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+        .flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
+      settle();
+
+      cleared();
+      el.querySelector('.entry-form')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      settle();
+      expect(el.querySelector('.discard-strip')).toBeNull();
+      expect(left()).toBe(true);
+    });
+
+    it('shows the strip when the layout asks to close the sheet over a dirty draft', async () => {
+      const { el } = await open('/accounting/entry', 'sheet');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      typeInto(el, '.name-input', '午餐');
+      const run = vi.fn();
+
+      TestBed.inject(DirtyFormRegistry).requestClose(run);
+      settle();
+      expect(el.querySelector('.discard-strip')).not.toBeNull();
+      expect(run).not.toHaveBeenCalled();
+      (el.querySelector('.discard-leave') as HTMLButtonElement).click();
+      settle();
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not prompt when the pane moves to another record, and the new record starts clean', async () => {
+      const { el, left } = await open('/accounting/entries/9/edit', 'sheet');
+      respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, category_id: 12, amount: '-170.0000' }));
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      typeInto(el, '.name-input', '改名');
+      const pending = vi.fn();
+      TestBed.inject(DirtyFormRegistry).requestClose(pending); settle();
+      expect(el.querySelector('.discard-strip')).not.toBeNull();
+
+      await harness.navigateByUrl('/accounting/entries/10/edit');
+      settle();
+      respond('/api/accounting/entries/10', makeEntryDetail({ id: 10, account_id: 2, category_id: 12, amount: '-80.0000' }));
+      httpMock.match(r => r.url === '/api/accounting/accounts/2').forEach(req => req.flush(makeAccountDetail({ id: 2 })));
+      settle();
+
+      const current = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      expect(harness.routeNativeElement!.querySelector('.discard-strip')).toBeNull();
+      expect(left()).toBe(false);
+      expect(current.isDirty()).toBe(false);
+      expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(false);
+      TestBed.inject(DirtyFormRegistry).confirmDiscard();
+      expect(pending).not.toHaveBeenCalled();
+    });
+
+  it('guards a category-only edit of an existing transfer: stay retains the choice and discard leaves', async () => {
+    const { el, left } = await open('/accounting/entries/8/edit');
+    const inLeg = makeEntryDetail({ id: 8, kind: 'transfer_in', account_id: 2, amount: '5000.0000', category_id: 40,
+      transfer_group_id: 'g-7', transfer_counterpart: makeEntry({ id: 7, kind: 'transfer_out', account_id: 1 }) });
+    respond('/api/accounting/entries/8', inLeg);
+    respond('/api/accounting/entries/7', { ...inLeg, id: 7, kind: 'transfer_out', account_id: 1, amount: '-5000.0000' });
+    respond('/api/accounting/categories', [makeCategory({ id: 40, kind: 'transfer_out', name: '轉帳' }),
+      makeCategory({ id: 41, kind: 'transfer_out', name: '儲蓄' })]);
+    tap(el, 'app-transfer-panel .cat', '儲蓄');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(true);
+    (el.querySelector('.topbar .cancel') as HTMLButtonElement).click(); settle();
+    expect(el.querySelector('.discard-strip')).not.toBeNull();
+    expect(left()).toBe(false);
+    (el.querySelector('.discard-stay') as HTMLButtonElement).click(); settle();
+    expect(el.querySelector('app-transfer-panel .cat.on')?.textContent).toContain('儲蓄');
+    expect(form.isDirty()).toBe(true);
+    (el.querySelector('.topbar .cancel') as HTMLButtonElement).click(); settle();
+    (el.querySelector('.discard-leave') as HTMLButtonElement).click(); settle();
+    expect(left()).toBe(true);
+  });
+
+  it('clears a pending close and the snapshot after creating split entries', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食'); tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 })); keys(el, '1', '7', '0');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.members.set([emptyEntryInput({ kind: 'expense', account_id: 2, amount: '50' })]); settle();
+    form.save(false); settle();
+    const cleared = pendingClose();
+    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/splits').flush({ group_id: 6, member_ids: [31, 32] });
+    settle(); cleared();
+  });
+
+    for (const overlay of [
+      { name: 'fee', open: '.fee-open', host: 'app-fee-sheet' },
+      { name: 'fx', open: 'button.cur', host: 'app-fx-sheet' },
+    ]) {
+      it(`Esc closes only the ${overlay.name} sheet; the next Esc asks about the dirty draft`, async () => {
+        const { el, left } = await open('/accounting/entry');
+        respond('/api/accounting/categories', [FOOD]);
+        respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+        typeInto(el, '.name-input', '午餐');
+        const opener = el.querySelector(overlay.open) as HTMLButtonElement;
+        opener.focus(); opener.click();
+        settle();
+        expect(el.querySelector(overlay.host)).not.toBeNull();
+
+        el.querySelector(`${overlay.host} .sheet`)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        settle();
+        expect(el.querySelector(overlay.host)).toBeNull();
+        expect(el.querySelector('.discard-strip')).toBeNull();
+        expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('午餐');
+        expect(left()).toBe(false);
+
+        expect(document.activeElement).toBe(opener);
+        document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        settle();
+        expect(el.querySelector('.discard-strip')).not.toBeNull();
+        expect(left()).toBe(false);
+        (el.querySelector('.discard-leave') as HTMLButtonElement).click();
+        settle();
+        expect(left()).toBe(true);
+      });
+    }
+
+    it('with a clean draft, Esc closes the fee sheet and the next Esc cancels the form', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const opener = el.querySelector('.fee-open') as HTMLButtonElement; opener.focus(); opener.click();
+      settle();
+      el.querySelector('app-fee-sheet .sheet')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      settle();
+      expect(left()).toBe(false);
+      expect(document.activeElement).toBe(opener);
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      settle();
+      expect(left()).toBe(true);
+    });
+
+  for (const overlay of [
+    { name: 'split', route: '/accounting/entry', opener: 'app-split-lines .add', host: 'app-split-lines', modal: '.overlay' },
+    { name: 'transfer fee', route: '/accounting/entry?kind=transfer', opener: 'app-transfer-panel .out-tile .plus', host: 'app-transfer-panel', modal: '.overlay' },
+  ]) {
+    it(`contains Tab in ${overlay.name}, restores its opener, and sends the next Esc to the dirty form`, async () => {
+      const { el, left } = await open(overlay.route);
+      if (overlay.name === 'split') respond('/api/accounting/categories', [FOOD]); else respondTransferCategories();
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      typeInto(el, '.name-input', '未儲存');
+      if (overlay.name === 'split') {
+        tap(el, '.cat', '飲食'); tap(el, '.cat', '午餐');
+        respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      }
+      const opener = el.querySelector<HTMLButtonElement>(overlay.opener)!;
+      opener.focus(); opener.click(); settle();
+      if (overlay.name === 'split') {
+        respond('/api/accounting/categories', [FOOD]);
+        respond('/api/accounting/counterparties', []);
+      }
+      const modal = el.querySelector(`${overlay.host} ${overlay.modal}`)!;
+      expect(modal.hasAttribute('data-overlay')).toBe(true);
+      const controls = Array.from(modal.querySelectorAll<HTMLElement>('button, input, select')).filter(control => !(control as HTMLButtonElement).disabled);
+      controls.at(-1)!.focus();
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      document.activeElement!.dispatchEvent(tab); settle();
+      expect(tab.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(controls[0]);
+      const back = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+      document.activeElement!.dispatchEvent(back); settle();
+      expect(back.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(controls.at(-1));
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+      expect(el.querySelector(`${overlay.host} ${overlay.modal}`)).toBeNull();
+      expect(document.activeElement).toBe(opener);
+      expect(el.querySelector('.discard-strip')).toBeNull();
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+      expect(el.querySelector('.discard-strip')).not.toBeNull();
+      expect(left()).toBe(false);
+      (el.querySelector('.discard-leave') as HTMLButtonElement).click(); settle();
+      expect(left()).toBe(true);
+    });
+  }
+
+  it('restores fee sheet focus to the first form control when the opener is removed', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const opener = el.querySelector<HTMLButtonElement>('.fee-open')!;
+    opener.focus(); opener.click(); settle(); opener.remove();
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+    expect(document.activeElement).toBe(el.querySelector('.topbar .cancel'));
+    expect(el.querySelector('app-fee-sheet')).toBeNull();
+  });
+
+  it('留下 restores the original prompt opener across repeated close requests; subsequent Tab/Esc starts inside the form', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    typeInto(el, '.name-input', '未儲存');
+    const opener = el.querySelector<HTMLInputElement>('.name-input')!; opener.focus();
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const pending = vi.fn(); registry.requestClose(pending); settle();
+    expect(document.activeElement).toBe(el.querySelector('.discard-stay'));
+    registry.requestClose(pending); settle();
+    (document.activeElement as HTMLButtonElement).click(); settle();
+    expect(registry.promptOpen()).toBe(false);
+    expect(document.activeElement).toBe(opener);
+    expect(opener.value).toBe('未儲存');
+    registry.confirmDiscard(); expect(pending).not.toHaveBeenCalled();
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    const keys = vi.spyOn(form, 'onKeydown');
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(tab); settle();
+    expect(keys).toHaveBeenCalledWith(tab);
+    expect(tab.target).toBe(opener);
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+    expect(el.querySelector('.discard-strip')).not.toBeNull();
+    expect(left()).toBe(false);
+    (el.querySelector('.discard-stay') as HTMLButtonElement).click(); settle();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('留下 falls back to the first form control when the saved opener was removed', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    typeInto(el, '.name-input', '未儲存');
+    const opener = el.querySelector<HTMLInputElement>('.name-input')!; opener.focus();
+    TestBed.inject(DirtyFormRegistry).requestClose(vi.fn()); settle(); opener.remove();
+    (document.activeElement as HTMLButtonElement).click(); settle();
+    expect(document.activeElement).toBe(el.querySelector('.topbar .cancel'));
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+    expect(el.querySelector('.discard-strip')).not.toBeNull(); expect(left()).toBe(false);
+    (el.querySelector('.discard-leave') as HTMLButtonElement).click(); settle(); expect(left()).toBe(true);
+  });
+
+  it('an edited record stays clean when a reward rule is turned off then on in a different ID order', async () => {
+    const rules = [makeRule({ id: 11, account_id: 2, name: '規則 A' }), makeRule({ id: 12, account_id: 2, name: '規則 B' })];
+    const { el } = await open('/accounting/entries/9/edit');
+    respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, amount: '-170.0000', rules }));
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2, reward_rules: rules }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(false);
+    tap(el, '.rule-chip', '規則 A'); expect(form.isDirty()).toBe(true);
+    tap(el, '.rule-chip', '規則 A');
+    expect(form.ruleIds()).toEqual([12, 11]);
+    expect(form.isDirty()).toBe(false);
+  });
+
+  it('preserves the new-form distinction between automatic basic rules and a manual selection', async () => {
+    const rules = [makeRule({ id: 11, name: '規則 A', is_basic: true }), makeRule({ id: 12, name: '規則 B', is_basic: true })];
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1, reward_rules: rules }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.ruleIds()).toEqual([11, 12]); expect(form.isDirty()).toBe(false);
+    tap(el, '.rule-chip', '規則 A'); tap(el, '.rule-chip', '規則 A');
+    expect(form.ruleIds()).toEqual([12, 11]);
+    expect(form.isDirty()).toBe(true);
   });
 
 });

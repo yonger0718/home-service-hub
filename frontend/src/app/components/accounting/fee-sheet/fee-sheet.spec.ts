@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ChildInput } from '../../../models/accounting.model';
 import { FeeSheetComponent } from './fee-sheet';
@@ -51,4 +51,25 @@ describe('FeeSheetComponent', () => {
     expect(component.fee()).toBeNull();
     expect(component.discount()).toEqual({ amount: '50', name: null });
   });
+  it('closes on Esc as a handled key and keeps Tab inside the sheet', () => {
+    const { fixture, el, component } = render();
+    const closed = vi.fn();
+    component.closed.subscribe(closed);
+    expect(el.querySelector('.overlay')!.hasAttribute('data-overlay')).toBe(true);
+    expect(el.querySelector('.sheet')!.contains(document.activeElement)).toBe(true);
+
+    const confirm = el.querySelector<HTMLButtonElement>('.sheet-confirm')!;
+    confirm.focus();
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    confirm.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(el.querySelector('.sheet')!.contains(document.activeElement)).toBe(true);
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    el.querySelector('.fee-amount')!.dispatchEvent(escape);
+    fixture.detectChanges();
+    expect(escape.defaultPrevented).toBe(true);
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
 });

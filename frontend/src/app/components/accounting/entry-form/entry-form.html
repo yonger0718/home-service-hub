@@ -20,6 +20,16 @@
       (click)="onSaveClick()"
     >✓</button>
   </header>
+  @if (registry.promptOpen()) {
+    <div class="discard-strip" role="alertdialog" aria-label="放棄未儲存的內容？">
+      <span>放棄未儲存的內容？</span>
+      <span class="discard-actions">
+        <button type="button" class="discard-stay" (click)="registry.cancelDiscard()">留下</button>
+        <button type="button" class="discard-leave" (click)="registry.confirmDiscard()">放棄</button>
+      </span>
+    </div>
+  }
+
 
   <app-lock-banner [locked]="locked() || definitionLocked()" />
   @if (savedFlash()) {
@@ -158,7 +168,7 @@
               <span class="cur">{{ accountCurrency() }}</span>
             } @else {
               <!-- also on 週期 / 分期 while a rate is set: the FX sheet is where the owner removes it -->
-              <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx')">{{ entryCurrency() }}</button>
+              <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx', $event)">{{ entryCurrency() }}</button>
             }
             @if (isPhone()) {
               <span class="amount-value">{{ amountText() }}</span>
@@ -175,7 +185,7 @@
               />
             }
             @if (!scheduling()) {
-              <button type="button" class="plus fee-open" aria-label="手續費與折扣" (click)="openSheet('fee')">+</button>
+              <button type="button" class="plus fee-open" aria-label="手續費與折扣" (click)="openSheet('fee', $event)">+</button>
             }
           </div>
         }
@@ -350,7 +360,7 @@
       [kind]="kind()"
       [(fee)]="fee"
       [(discount)]="discount"
-      (closed)="sheet.set(null)"
+      (closed)="closeSheet()"
     />
   }
 </div>
