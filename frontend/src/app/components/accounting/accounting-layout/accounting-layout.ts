@@ -2,6 +2,7 @@ import { DOCUMENT, NgComponentOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   Injector,
   Type,
@@ -21,7 +22,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
 import { AccountingToastComponent } from '../accounting-toast';
-import { isHandledKey } from '../accounting-ui';
+import { isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
 export interface LayoutRouteState {
@@ -86,6 +87,9 @@ export class AccountingLayoutComponent {
   private readonly injector = inject(Injector);
   private readonly shortcuts = inject(AccountingShortcutsService);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly listPane = viewChild<ElementRef<HTMLElement>>('listPane');
+  private readonly detailPane = viewChild<ElementRef<HTMLElement>>('detailPane');
+
   private readonly closeButton = viewChild<ElementRef<HTMLButtonElement>>('closeButton');
   private readonly accounting = inject(AccountingService);
 
@@ -165,9 +169,50 @@ export class AccountingLayoutComponent {
 
     effect(() => {
       const open = this.sheetOpen();
-      untracked(() => (open ? this.focusSheet() : this.restoreFocus()));
+      const list = this.listPane()?.nativeElement;
+      untracked(() => {
+        // Remove inert before returning focus to a list/dock opener.
+        this.setOutsideInert(open, list);
+        open ? this.focusSheet() : this.restoreFocus();
+      });
     });
+    inject(DestroyRef).onDestroy(() => this.setOutsideInert(false));
   }
+
+  private inertList: HTMLElement | null = null;
+  private inertDock: HTMLElement | null = null;
+
+  /** Remember the actual nodes: view queries may be gone by destruction or a layout mode switch. */
+  private setOutsideInert(inert: boolean, list?: HTMLElement): void {
+    const dock = inert ? this.document.querySelector<HTMLElement>('app-dock') : null;
+    if (!inert || this.inertList !== list) this.inertList?.removeAttribute('inert');
+    if (!inert || this.inertDock !== dock) this.inertDock?.removeAttribute('inert');
+    if (inert) {
+      list?.setAttribute('inert', '');
+      dock?.setAttribute('inert', '');
+      this.inertList = list ?? null;
+      this.inertDock = dock;
+    } else {
+      list?.removeAttribute('inert');
+      this.inertList = null;
+      this.inertDock = null;
+    }
+  }
+
+  /** Tab / Shift+Tab wraps inside the open sheet; an overlay inside it (data-overlay) traps its own Tab. */
+  onPaneKeydown(event: KeyboardEvent): void {
+    if (!this.sheetOpen() || event.key !== 'Tab' || isHandledKey(event)) {
+      return;
+    }
+    if ((event.target as Element | null)?.closest?.(`[${OVERLAY_ATTR}]`)) {
+      return;
+    }
+    const pane = this.detailPane()?.nativeElement;
+    if (pane) {
+      trapFocus(pane, event);
+    }
+  }
+
 
   /** Close the pane / sheet: back to the list's own URL. */
   close(): void {

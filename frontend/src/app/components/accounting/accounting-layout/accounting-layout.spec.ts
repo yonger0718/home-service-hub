@@ -404,4 +404,80 @@ describe('AccountingLayoutComponent', () => {
     expect(TestBed.inject(Router).url).toBe('/accounting/entries/5');
   });
 
+  it('makes the list and the dock inert while the sheet is open, and only then', async () => {
+    const dock = document.createElement('app-dock');
+    document.body.appendChild(dock);
+    const harness = await start('sheet', '/accounting');
+    const list = harness.routeNativeElement!.querySelector('.list-pane')!;
+    await find(harness, LIST);
+    expect(list.hasAttribute('inert')).toBe(false);
+
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    await find(harness, '.detail-pane.open');
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(list.hasAttribute('inert')).toBe(true);
+      expect(dock.hasAttribute('inert')).toBe(true);
+    });
+    expect(harness.routeNativeElement!.querySelector('.sheet-backdrop')!.getAttribute('aria-hidden')).toBe('true');
+
+    await router.navigateByUrl('/accounting');
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(list.hasAttribute('inert')).toBe(false);
+      expect(dock.hasAttribute('inert')).toBe(false);
+    });
+    dock.remove();
+  });
+
+  it('wraps Tab inside the sheet: from the last focusable to ✕ and back with Shift+Tab', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    await TestBed.inject(Router).navigateByUrl('/accounting/entries/5');
+    const pane = await find(harness, '.detail-pane.open');
+    const closeButton = await find(harness, '.sheet-close') as HTMLButtonElement;
+    const last = document.createElement('button');
+    last.textContent = '最後';
+    pane.appendChild(last);
+
+    last.focus();
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(closeButton);
+
+    const back = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(back);
+    expect(document.activeElement).toBe(last);
+
+    // An overlay inside the pane traps its own Tab: the pane leaves it alone.
+    const overlay = document.createElement('div');
+    overlay.setAttribute('data-overlay', '');
+    const inner = document.createElement('button');
+    overlay.appendChild(inner);
+    pane.appendChild(overlay);
+    inner.focus();
+    const overlayTab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(overlayTab);
+    expect(overlayTab.defaultPrevented).toBe(false);
+    [last, overlay].forEach(node => node.remove());
+  });
+
+
+  it('removes inert from the retained list and dock when destroyed with a sheet open', async () => {
+    const dock = document.createElement('app-dock'); document.body.appendChild(dock);
+    try {
+      const harness = await start('sheet', '/accounting/entries/5');
+      const list = await find(harness, '.list-pane');
+      await find(harness, '.detail-pane.open');
+      harness.detectChanges();
+      expect(list.hasAttribute('inert')).toBe(true);
+      expect(dock.hasAttribute('inert')).toBe(true);
+      harness.fixture.destroy();
+      expect(list.hasAttribute('inert')).toBe(false);
+      expect(dock.hasAttribute('inert')).toBe(false);
+    } finally { dock.remove(); }
+  });
+
 });
