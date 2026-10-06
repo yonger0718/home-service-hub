@@ -184,7 +184,9 @@ describe('AccountPickerComponent', () => {
     const desk = render({ mode: 'sheet' });
     openPanel(desk.fixture);
     expect(desk.el.querySelector('.acct-popover.acct-panel[data-overlay]')).not.toBeNull();
-  });  function key(target: Element, name: string, init: KeyboardEventInit = {}): KeyboardEvent {
+  });
+
+  function key(target: Element, name: string, init: KeyboardEventInit = {}): KeyboardEvent {
     const event = new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...init });
     target.dispatchEvent(event);
     return event;
@@ -350,6 +352,28 @@ describe('AccountPickerComponent', () => {
     fixture.detectChanges();
     expect(el.querySelector('.acct-panel')).toBeNull();
     vi.unstubAllGlobals();
+  });
+
+  it('focuses the current filtered result on first Down from search, then advances from the row', () => {
+    const { fixture, picker } = render({ accounts: many(10) });
+    const panel = openPanel(fixture);
+    const search = panel.querySelector<HTMLInputElement>('.acct-search')!;
+    search.value = '帳戶';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    expect(picker.options().length).toBe(10);
+    expect(picker.activeId()).toBe(100);
+    expect(key(search, 'ArrowDown', { isComposing: true }).defaultPrevented).toBe(false);
+    expect(key(search, 'Enter', { keyCode: 229 }).defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(search);
+    expect(picker.value()).toBeNull();
+    expect(key(search, 'ArrowDown').defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    expect(document.activeElement).toBe(panel.querySelector('.acct-option[data-account-id="100"]'));
+    expect(picker.activeId()).toBe(100);
+    key(document.activeElement!, 'ArrowDown'); fixture.detectChanges();
+    expect(document.activeElement).toBe(panel.querySelector('.acct-option[data-account-id="101"]'));
+    expect(picker.activeId()).toBe(101);
   });
 
 });

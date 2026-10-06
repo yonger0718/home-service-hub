@@ -191,7 +191,7 @@ export class AccountPickerComponent {
       case 'ArrowDown':
       case 'ArrowUp':
         event.preventDefault();
-        this.move(event.key === 'ArrowDown' ? 1 : -1);
+        this.move(event.key === 'ArrowDown' ? 1 : -1, event.key === 'ArrowDown' && target?.matches('.acct-search') === true);
         return;
       case 'Enter': {
         if (target?.tagName === 'BUTTON') {
@@ -208,13 +208,13 @@ export class AccountPickerComponent {
     }
   }
 
-  private move(delta: 1 | -1): void {
+  private move(delta: 1 | -1, focusCurrent = false): void {
     const options = this.options();
     if (options.length === 0) {
       return;
     }
     const index = options.findIndex(account => account.id === this.activeId());
-    const next = options[index === -1 ? 0 : (index + delta + options.length) % options.length];
+    const next = options[index === -1 ? 0 : focusCurrent ? index : (index + delta + options.length) % options.length];
     this.activeId.set(next.id);
     afterNextRender(() => this.optionElement(next.id)?.focus(), { injector: this.injector });
   }

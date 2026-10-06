@@ -1,3 +1,4 @@
+import { TransferPanelComponent } from '../transfer-panel/transfer-panel';
 import { By } from '@angular/platform-browser';
 import { AccountPickerComponent } from '../account-picker/account-picker';
 import { RECENT_ACCOUNTS_KEY } from '../account-picker/recent-accounts';
@@ -736,6 +737,8 @@ describe('EntryFormComponent', () => {
       reward_rule_ids: [],
     });
     const cleared = pendingClose();
+    const panel = harness.routeDebugElement!.query(By.directive(TransferPanelComponent)).componentInstance as TransferPanelComponent;
+    panel.fromId.set(2); panel.toId.set(1); settle();
     req.flush({ transfer_group_id: 'g-1', out_entry_id: 1, in_entry_id: 2 });
     settle();
     expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([1, 2]);
@@ -1713,8 +1716,12 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '午餐');
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
     keys(el, '1', '7', '0', '✓');
-    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
-      .flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
+    const request = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries');
+    expect(request.request.body.account_id).toBe(2);
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.accountId.set(1); settle();
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    request.flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
     settle();
     expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([2]);
   });
@@ -1829,6 +1836,22 @@ describe('EntryFormComponent', () => {
       expect(text(el.querySelector('.discard-strip'))).toContain('放棄未儲存的內容？');
       expect(left()).toBe(false);
     });
+  });
+
+  it('remembers the submitted balance-adjustment account despite state changing during its write', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.kind-tab', '系統');
+    keys(el, '2', '5', '0', '✓');
+    const request = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/balance-adjustments');
+    expect(request.request.body.account_id).toBe(1);
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.accountId.set(2); settle();
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    request.flush(makeEntryDetail({ id: 99, kind: 'balance_adjustment', account_id: 1, category_id: null }));
+    settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([1]);
   });
 
 });

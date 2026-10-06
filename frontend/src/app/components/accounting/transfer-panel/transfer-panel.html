@@ -9,7 +9,6 @@
 
   <div class="xfer">
     <div class="acc acc-from">
-      <span class="ico">{{ from()?.icon ?? '🏦' }}</span>
       <app-account-picker
         class="from-picker"
         label="轉出帳戶"
@@ -23,7 +22,6 @@
     </div>
     <button type="button" class="swap" aria-label="交換帳戶" [disabled]="locked()" (click)="swap()">⇄</button>
     <div class="acc acc-to">
-      <span class="ico">{{ to()?.icon ?? '🏦' }}</span>
       <app-account-picker
         class="to-picker"
         label="轉入帳戶"
