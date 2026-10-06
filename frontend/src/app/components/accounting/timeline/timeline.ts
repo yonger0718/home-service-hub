@@ -628,7 +628,6 @@ export class LedgerTimelineComponent implements OnInit {
           if (reset) {
             // The rows on screen belong to the previous month / filter: never show them beside the error.
             this.entries.set([]);
-            this.total.set(null);
           }
           this.total.set(null);
           this.loadError.set(true);

@@ -46,6 +46,20 @@ const PANE_PAGE = '.detail-pane router-outlet + :not(.pane-empty)';
 const SCREEN = ':scope > router-outlet + :not(.fab)';
 
 describe('AccountingLayoutComponent', () => {
+  it('sets a scoped .72rem minimum for captions inherited by calendar and keypad', async () => {
+    const harness = await start('phone', '/accounting');
+    harness.detectChanges();
+    const host = harness.routeNativeElement!;
+    const hostAttribute = Array.from(host.attributes).find(attribute => attribute.name.startsWith('_nghost-'))!.name;
+    const installedStyle = Array.from(document.querySelectorAll('style')).find(style =>
+      style.textContent?.includes(`[${hostAttribute}]`),
+    )!;
+    // Sass emits @charset for this stylesheet's Chinese comments. jsdom ignores the first rule after it;
+    // browsers ignore this encoding directive in style elements. Normalize only this installed test style.
+    installedStyle.textContent = installedStyle.textContent!.replace(/^@charset [^;]+;\s*/, '');
+    expect(getComputedStyle(host).getPropertyValue('--fs-micro').trim()).toBe('0.72rem');
+  });
+
   it('keeps the list and updates the URL when a row is selected at 1280px', async () => {
     const harness = await start('panes', '/accounting');
     const list = await find(harness, LIST);

@@ -559,6 +559,19 @@ describe('LedgerTimelineComponent', () => {
     expect(text(el.querySelector('.sum-expense'))).toBe('−$100');
   });
 
+  it('never clips the three summary figures; they may wrap instead', () => {
+    const { fixture, el } = render('phone');
+    flushSummary('2026-10', { expense: '-1234567', income: '7654321', net: '6419754' });
+    flushEntries([]);
+    fixture.detectChanges();
+    const figure = el.querySelector('.sum-expense')!;
+    const style = getComputedStyle(figure);
+    expect(style.whiteSpace).toBe('nowrap'); // the component stylesheet is applied
+    expect(style.overflow).toBe('visible');
+    expect(style.textOverflow).not.toBe('ellipsis');
+    expect(getComputedStyle(el.querySelector('.sum small')!).fontSize).toBe('0.72rem');
+  });
+
   describe('calendar view', () => {
     it('offers 重試 when the daily figures fail, without touching the day list', () => {
       localStorage.setItem(VIEW_KEY, 'calendar');

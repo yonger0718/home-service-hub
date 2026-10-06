@@ -133,4 +133,11 @@ describe('CalendarMonthComponent', () => {
       expect(render().el.querySelectorAll('.due-badge, .cell.closing, .cell.due').length).toBe(0);
     });
   });
+  it('uses a .72rem caption fallback when rendered outside the accounting layout', () => {
+    const { el, cell } = render();
+    // jsdom exposes the custom-property expression; real-browser checks verify its inherited computed value.
+    expect(getComputedStyle(el.querySelector('.weekdays span')!).fontSize).toBe('var(--fs-micro, 0.72rem)');
+    expect(getComputedStyle(cell('2026-10-02').querySelector('.fig')!).fontSize).toBe('var(--fs-micro, 0.72rem)');
+  });
+
 });

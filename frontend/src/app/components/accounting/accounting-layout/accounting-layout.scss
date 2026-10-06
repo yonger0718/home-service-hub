@@ -1,4 +1,5 @@
 :host {
+  --fs-micro: 0.72rem;
   /* 支出收入顏色 (preference): every accounting page colours negative / positive amounts with these. */
   --tone-neg: var(--c-red);
   --tone-pos: var(--c-green);

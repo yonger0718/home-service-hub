@@ -1,6 +1,6 @@
 .accounting-settings { display: flex; flex-direction: column; max-width: 44rem; min-width: 0; }
 h2 { font-size: 1.15rem; font-weight: 800; margin: 0 0 4px; }
-.lbl { color: var(--app-text-muted); font-size: 0.7rem; font-weight: 800; letter-spacing: 0.06em; margin: 14px 0 4px; }
+.lbl { color: var(--app-text-muted); font-size: 0.72rem; font-weight: 800; letter-spacing: 0.06em; margin: 14px 0 4px; }
 
 .srow {
   align-items: center;
@@ -84,7 +84,7 @@ summary.srow::-webkit-details-marker { display: none; }
   ul { margin: 0; padding-left: 1.2rem; }
 }
 
-.pill { border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-muted); font-size: 0.65rem; font-weight: 700; padding: 0 6px; }
+.pill { border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-muted); font-size: 0.72rem; font-weight: 700; padding: 0 6px; }
 .amount { font-variant-numeric: tabular-nums; font-weight: 700; }
 .muted { color: var(--app-text-muted); font-size: 0.8rem; }
 .data-message, .import-error { color: var(--app-danger); font-size: 0.85rem; }

@@ -76,7 +76,8 @@
         [value]="query()"
         (input)="onQueryInput($any($event.target).value)"
         (keydown)="onQueryKeydown($event)"
-      />    </div>
+      />
+    </div>
   }
 
   <ng-template #rowTemplate let-row>
