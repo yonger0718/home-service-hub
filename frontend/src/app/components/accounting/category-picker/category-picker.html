@@ -39,19 +39,21 @@
 } @else {
   <div class="catbar" role="listbox" aria-label="類別">
     @for (main of mains(); track main.id) {
-      <button type="button" [class.on]="isSelectedMain(main)" (click)="tapMain(main)">
+      <button type="button" role="option" [attr.data-category-id]="main.id" [attr.aria-selected]="isSelectedMain(main)" [attr.aria-expanded]="visibleChildren(main).length ? barParent()?.id === main.id : null" [class.on]="isSelectedMain(main)" (click)="tapMain(main)">
         <i class="dot" [style.background]="colorOf(main)">{{ iconOf(main) }}</i>{{ chipLabel(main) }}
       </button>
     }
   </div>
   @if (barParent(); as parent) {
     @if (visibleChildren(parent).length) {
-      <select class="subselect" aria-label="子類別" (change)="pickChildById(parent, $any($event.target).value)">
-        <option value="">選擇子類別</option>
+      <div class="subbar" role="listbox" [attr.aria-label]="parent.name + ' 子類別'">
         @for (child of visibleChildren(parent); track child.id) {
-          <option [value]="child.id" [selected]="selected()?.id === child.id">{{ child.name }}</option>
+          <button type="button" role="option" [class.on]="selected()?.id === child.id"
+            [attr.aria-selected]="selected()?.id === child.id" (click)="pick(child)">
+            <i class="dot" [style.background]="colorOf(parent)">{{ iconOf(child) }}</i>{{ child.name }}
+          </button>
         }
-      </select>
+      </div>
     }
   }
 }

@@ -105,7 +105,8 @@
   }
 }
 
-.catbar {
+.catbar,
+.subbar {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -123,6 +124,14 @@
     font-weight: 700;
     gap: 4px;
     padding: 3px 9px 3px 4px;
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+
+    &:focus-visible {
+      outline: 2px solid var(--app-primary);
+      outline-offset: 2px;
+    }
 
     &.on {
       outline: 2px solid var(--app-primary);
@@ -131,6 +140,7 @@
 
   .dot {
     border-radius: 50%;
+    flex-shrink: 0;
     display: inline-block;
     font-size: 0.72rem;
     font-style: normal;
@@ -141,14 +151,15 @@
   }
 }
 
-.subselect {
-  background: var(--app-surface-soft);
-  border: 1px solid var(--app-border);
-  border-radius: var(--radius-sm);
-  color: var(--app-text);
-  font: inherit;
-  font-size: 0.85rem;
+.subbar {
   margin-top: 8px;
-  min-height: 34px;
-  padding: 4px 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catbar, .subbar {
+    &, button {
+      animation: none;
+      transition: none;
+    }
+  }
 }
