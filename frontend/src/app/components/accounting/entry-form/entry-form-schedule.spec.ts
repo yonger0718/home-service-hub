@@ -1,3 +1,4 @@
+import { RECENT_ACCOUNTS_KEY } from '../account-picker/recent-accounts';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Location } from '@angular/common';
@@ -173,9 +174,14 @@ describe('EntryFormComponent schedules', () => {
       template: { lines: [{ kind: 'expense', account_id: 2, amount: '390', currency: 'TWD', category_id: 41 }] },
     });
     const cleared = pendingClose();
+    // Capture the account used by the submitted definition, even if component state changes in flight.
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.accountId.set(1); settle();
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     req.flush(makeDefinition({ id: 9 }));
     settle();
     cleared();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([2]);
     httpMock.expectNone(r => r.url.endsWith('/catch-up'));
     httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/entries');
     expect(left()).toBe(true);
@@ -210,11 +216,13 @@ describe('EntryFormComponent schedules', () => {
     expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
     expect(text(el.querySelector('.form-error'))).toBe('排程已建立，入帳未完成；按 ✓ 重試入帳');
 
+    localStorage.setItem(RECENT_ACCOUNTS_KEY, '[3]');
     keys(el, '✓');
     httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions');
     catchUpRequest().flush({ posted: [31], failed: null, definition: makeDefinition({ id: 9 }) });
     settle();
     expect(left()).toBe(true);
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([3]);
   });
 
   it('keeps the form disabled after a failed catch-up and retries it after a network error', async () => {
@@ -326,6 +334,8 @@ describe('EntryFormComponent schedules', () => {
       kind: 'transfer', account_id: 1, to_account_id: 3, amount: '15000', to_amount: null, category_id: 60,
     });
     expect(req.request.body.anchor_date).toBe('2026-11-05');
+    req.flush(makeDefinition({ id: 9 })); settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([1, 3]);
   });
 
   it('creates a new loan with interest in one request', async () => {
@@ -399,6 +409,7 @@ describe('EntryFormComponent schedules', () => {
     req.flush(makeDefinition({ id: 5, name: 'Netflix 家庭' }));
     settle();
     cleared();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([2]);
     expect(left()).toBe(true);
   });
 
@@ -583,6 +594,17 @@ describe('EntryFormComponent schedules', () => {
     expect(eventTab(el, '週期').getAttribute('aria-selected')).toBe('true');
     expect(eventTab(el, '單次').getAttribute('aria-disabled')).toBe('true');
     expect(eventTab(el, '分期').getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('keeps recent accounts unchanged and the draft dirty when definition saving fails', async () => {
+    const { el, left } = await netflix('2026-10-22');
+    localStorage.setItem(RECENT_ACCOUNTS_KEY, '[3]');
+    keys(el, '✓');
+    definitionRequest().flush({ detail: 'failed' }, { status: 500, statusText: 'Server Error' });
+    settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([3]);
+    expect((harness.routeDebugElement!.componentInstance as EntryFormComponent).isDirty()).toBe(true);
+    expect(left()).toBe(false);
   });
 
 });

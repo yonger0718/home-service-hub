@@ -1360,6 +1360,10 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (this.kind() === 'transfer' && !transfer) {
       return; // the panel shows its own message
     }
+    // Remember the submitted accounts only at definition success, even before a catch-up completes.
+    const recentAccountIds = this.kind() === 'transfer'
+      ? [panel?.fromId(), panel?.toId()]
+      : [this.accountId()];
     const repayId = this.scheduleDraft().repayAccountId;
     const counterparty: Observable<number | null> = this.isParty() && this.loanEntryId === null
       ? resolveCounterpartyId(this.accounting, this.counterpartyName(), this.counterparties(), party =>
@@ -1401,6 +1405,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.saving.set(true);
     request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: catchUpId => {
+        rememberRecentAccounts(recentAccountIds);
         this.saving.set(false);
         this.markClean();
         if (catchUpId !== null) {
