@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { describe, expect, it } from 'vitest';
 
+import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { CategoryNode } from '../../../models/accounting.model';
 import { makeCategory } from '../testing/fixtures';
 import { CategoryPickerComponent } from './category-picker';
@@ -15,8 +16,9 @@ const CLOTHES = makeCategory({ id: 41, parent_id: 4, name: '衣物' });
 const SHOPPING = makeCategory({ id: 4, name: '購物', icon: '🛍️', color: '#cc7676', children: [CLOTHES] });
 const TREE: CategoryNode[] = [FOOD, BUS, HIDDEN_MAIN, SHOPPING];
 
-function render(inputs: Record<string, unknown> = {}) {
+function render(inputs: Record<string, unknown> = {}, mode: LayoutMode = 'panes') {
   TestBed.configureTestingModule({ imports: [CategoryPickerComponent] });
+  TestBed.inject(LayoutModeService).set(mode);
   const fixture = TestBed.createComponent(CategoryPickerComponent);
   fixture.componentRef.setInput('kind', 'expense');
   fixture.componentRef.setInput('categories', TREE);
@@ -99,151 +101,213 @@ describe('CategoryPickerComponent', () => {
     expect(el.querySelector('.strip .add')).toBeNull();
   });
 
-  it('reopens the grid at the sub level from the strip and returns to the mains on reset', () => {
+  it('reopens the grid at the main level from the strip and returns to the mains on reset', () => {
     const { el, tap, component, fixture } = render();
     tap('.cat', '飲食');
     tap('.cat', '午餐');
 
     tap('.strip .sel', '午餐');
-    expect(labels(el, '.grid .cat')).toEqual(['‹返回', '🍜午餐', '🍜晚餐']);
+    expect(labels(el, '.grid .cat')).toEqual(['🍜飲食', '🚌交通', '🛍️購物']);
 
     component.selected.set(null);
     fixture.detectChanges();
     expect(labels(el, '.grid .cat')[0]).toBe('🍜飲食');
   });
 
-  describe('bar', () => {
-    function key(target: Element, key: string, extra: KeyboardEventInit = {}) {
-      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...extra });
-      target.dispatchEvent(event);
-      return event;
-    }
 
-    it('toggles and rapidly switches visible child chips with parent-colour dots', () => {
-      const { el, tap } = render({ variant: 'bar' });
-      tap('.catbar button', '飲食');
-      expect(el.querySelector('select.subselect')).toBeNull();
-      expect(el.querySelector('.subbar')?.getAttribute('role')).toBe('listbox');
-      expect(el.querySelector('.subbar')?.getAttribute('aria-label')).toBe('飲食 子類別');
-      expect(labels(el, '.subbar button')).toEqual(['🍜午餐', '🍜晚餐']);
-      expect((el.querySelector('.subbar .dot') as HTMLElement).style.background).toBe('rgb(240, 205, 146)');
-      tap('.catbar button', '飲食');
-      expect(el.querySelector('.subbar')).toBeNull();
-      tap('.catbar button', '飲食');
-      tap('.catbar button', '購物');
-      expect(labels(el, '.subbar button')).toEqual(['🛍️衣物']);
-      tap('.catbar button', '飲食');
-      expect(labels(el, '.subbar button')).toEqual(['🍜午餐', '🍜晚餐']);
+  for (const mode of ['phone', 'panes', 'sheet'] as const) {
+    it('uses only the grid flow in ' + mode, () => {
+      const { el, tap } = render({}, mode);
+      expect(el.querySelector('.grid')).not.toBeNull();
+      expect(el.querySelector('.catbar, .subbar, select')).toBeNull();
+      tap('.cat', '飲食');
+      expect(el.querySelector('.catbar, .subbar, select')).toBeNull();
+      tap('.cat', '午餐');
+      expect(el.querySelector('.strip .add')).not.toBeNull();
+      expect(el.querySelector('.strip .hint')?.textContent).toContain('拆帳');
     });
+  }
 
-    it('emits the original child, marks it and stays expanded until toggled', () => {
-      const { el, tap, component } = render({ variant: 'bar' });
-      const picked: CategoryNode[] = [];
-      component.picked.subscribe(node => picked.push(node));
-      tap('.catbar button', '購物');
-      tap('.subbar button', '衣物');
-      expect(picked).toEqual([CLOTHES]);
-      expect(picked[0]).toBe(CLOTHES);
-      expect(component.selected()).toBe(CLOTHES);
-      expect(el.querySelector('.subbar button.on')?.getAttribute('aria-selected')).toBe('true');
-      expect(labels(el, '.catbar button.on')).toEqual(['🛍️購物 › 衣物']);
-      tap('.catbar button', '購物');
-      expect(el.querySelector('.subbar')).toBeNull();
+  it('initializes a child strip and synchronizes selected input and reset', () => {
+    const { el, fixture, tap } = render({ selected: DINNER });
+    expect(el.querySelector('.strip .sel b')?.textContent).toBe('晚餐');
+    fixture.componentRef.setInput('selected', CLOTHES);
+    fixture.detectChanges();
+    expect(el.querySelector('.strip .sel b')?.textContent).toBe('衣物');
+    fixture.componentRef.setInput('selected', BUS);
+    fixture.detectChanges();
+    expect(el.querySelector('.strip .sel b')?.textContent).toBe('交通');
+    tap('.sel', '交通');
+    tap('.cat', '飲食');
+    fixture.componentRef.setInput('selected', null);
+    fixture.detectChanges();
+    expect(el.querySelector('.back')).toBeNull();
+    expect(el.querySelector('.cat.on')).toBeNull();
+  });
+
+  it('emits the original main when every child is hidden', () => {
+    const hiddenOnly = makeCategory({ id: 5, name: '隱藏子類', children: [SECRET] });
+    const { tap, component } = render({ categories: [...TREE, hiddenOnly] });
+    const picked: CategoryNode[] = [];
+    component.picked.subscribe(node => picked.push(node));
+    tap('.cat', '隱藏子類');
+    expect(picked[0]).toBe(hiddenOnly);
+  });
+
+  function key(target: Element, key: string, extra: KeyboardEventInit = {}) {
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...extra });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  it('moves one tile horizontally and one measured row vertically, including after resizing', () => {
+    const categories = Array.from({ length: 9 }, (_, i) => makeCategory({ id: 100 + i }));
+    const { el } = render({ categories });
+    const buttons = Array.from(el.querySelectorAll<HTMLButtonElement>('.cat'));
+    let columns = 3;
+    buttons.forEach((button, i) => {
+      button.getBoundingClientRect = () => ({ top: Math.floor(i / columns) * 60 }) as DOMRect;
     });
+    buttons[0].focus();
+    expect(key(buttons[0], 'ArrowRight').defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(buttons[1]);
+    key(buttons[1], 'ArrowLeft');
+    expect(document.activeElement).toBe(buttons[0]);
+    key(buttons[0], 'ArrowDown');
+    expect(document.activeElement).toBe(buttons[3]);
+    key(buttons[3], 'ArrowUp');
+    expect(document.activeElement).toBe(buttons[0]);
+    columns = 4;
+    key(buttons[0], 'ArrowDown');
+    expect(document.activeElement).toBe(buttons[4]);
+    key(buttons[8], 'ArrowDown');
+    expect(document.activeElement).toBe(buttons[8]);
+  });
 
-    it('initializes and synchronizes selected input including reset and direct main', () => {
-      const { el, tap, fixture } = render({ variant: 'bar', selected: DINNER });
-      expect(labels(el, '.subbar button.on')).toEqual(['🍜晚餐']);
-      tap('.catbar button', '飲食');
-      fixture.componentRef.setInput('selected', CLOTHES);
-      fixture.detectChanges();
-      expect(labels(el, '.subbar button.on')).toEqual(['🛍️衣物']);
-      fixture.componentRef.setInput('selected', BUS);
-      fixture.detectChanges();
-      expect(el.querySelector('.subbar')).toBeNull();
-      fixture.componentRef.setInput('selected', null);
-      fixture.detectChanges();
-      expect(el.querySelector('.catbar button.on')).toBeNull();
-    });
-
-    it('picks childless and all-hidden-child mains directly', () => {
-      const hiddenOnly = makeCategory({ id: 5, name: '隱藏子類', children: [SECRET] });
-      const { el, tap, component } = render({ variant: 'bar', selected: BUS, categories: [...TREE, hiddenOnly] });
-      const picked: CategoryNode[] = [];
-      component.picked.subscribe(node => picked.push(node));
-      tap('.catbar button', '飲食');
-      tap('.catbar button', '交通');
-      expect(el.querySelector('.subbar')).toBeNull();
-      tap('.catbar button', '隱藏子類');
-      expect(picked).toEqual([BUS, hiddenOnly]);
-    });
-
-    it('moves horizontally, down to first/selected child and up to parent', () => {
-      const { el, fixture } = render({ variant: 'bar' });
-      const mains = el.querySelectorAll<HTMLButtonElement>('.catbar button');
-      mains[0].focus();
-      key(mains[0], 'ArrowRight');
-      expect(document.activeElement).toBe(mains[1]);
-      key(mains[1], 'ArrowLeft');
-      expect(document.activeElement).toBe(mains[0]);
-      expect(key(mains[0], 'ArrowDown').defaultPrevented).toBe(true);
-      const children = el.querySelectorAll<HTMLButtonElement>('.subbar button');
-      expect(document.activeElement).toBe(children[0]);
-      key(children[0], 'ArrowRight');
-      expect(document.activeElement).toBe(children[1]);
-      key(children[1], 'ArrowLeft');
-      expect(document.activeElement).toBe(children[0]);
-      key(children[0], 'ArrowUp');
-      expect(document.activeElement).toBe(mains[0]);
-      fixture.componentRef.setInput('selected', DINNER);
-      fixture.detectChanges();
-      key(mains[0], 'ArrowDown');
-      expect(document.activeElement).toBe(children[1]);
-    });
-
-    it('handles Enter/Space before bubbling and Esc restores focus without clearing selection', () => {
-      const { el, fixture, component } = render({ variant: 'bar' });
-      const unhandled: string[] = [];
-      el.parentElement!.addEventListener('keydown', event => {
-        if (!event.defaultPrevented) unhandled.push(event.key);
+  it.each([[347, 5], [500, 7], [560, 8]])(
+    'fits %ipx containers into %i columns and navigates one row', (width, expectedColumns) => {
+      const categories = Array.from({ length: 18 }, (_, i) => makeCategory({ id: 100 + i }));
+      const { el } = render({ categories });
+      const grid = el.querySelector<HTMLElement>('.grid')!;
+      grid.style.width = width + 'px';
+      // jsdom drops this valid nested min() declaration from CSSOM. Inspect
+      // Angular's actual injected stylesheet text, scoped to this grid element.
+      const rules = Array.from(document.querySelectorAll('style')).flatMap(style =>
+        Array.from((style.textContent ?? '').matchAll(/([^{}]+)\{([^{}]*)\}/g)),
+      );
+      const gridRules = rules.filter(([, selector, body]) =>
+        /^\s*\.grid(?:\[[^\]]+\])?\s*$/.test(selector) &&
+        grid.matches(selector.trim()) && body.includes('grid-template-columns'),
+      );
+      expect(gridRules).toHaveLength(1);
+      const body = gridRules[0][2];
+      const tracks = body.match(/grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(min\(100%,\s*(\d+)px\),\s*1fr\)\)\s*;/);
+      const spacing = body.match(/(?:^|;)\s*gap:\s*\d+px\s+(\d+)px\s*;/);
+      expect(tracks).not.toBeNull();
+      expect(spacing).not.toBeNull();
+      const minimum = Number(tracks![1]);
+      const gap = Number(spacing![1]);
+      const columns = Math.floor((width + gap) / (minimum + gap));
+      expect(columns).toBe(expectedColumns);
+      const buttons = Array.from(grid.querySelectorAll<HTMLButtonElement>('.cat'));
+      buttons.forEach((button, i) => {
+        button.getBoundingClientRect = () => ({ top: Math.floor(i / columns) * 60 }) as DOMRect;
       });
+      buttons[0].focus();
+      expect(key(buttons[0], 'ArrowDown').defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(buttons[expectedColumns]);
+      key(buttons[expectedColumns], 'ArrowUp');
+      expect(document.activeElement).toBe(buttons[0]);
+    },
+  );
+
+  it('collapses a reopened main grid on Escape without changing selection or cancelling the form', () => {
+    const { el, tap, component, fixture } = render({ selected: DINNER });
+    const picked: CategoryNode[] = [];
+    component.picked.subscribe(node => picked.push(node));
+    const unhandled: string[] = [];
+    const listener = (event: KeyboardEvent) => {
+      if (!event.defaultPrevented) unhandled.push(event.key);
+    };
+    el.parentElement!.addEventListener('keydown', listener);
+    tap('.sel', '晚餐');
+    const main = document.activeElement!;
+    expect(key(main, 'Escape', { isComposing: true }).defaultPrevented).toBe(false);
+    expect(component.reopened()).toBe(true);
+    unhandled.length = 0;
+    expect(key(main, 'Escape').defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    expect(el.querySelector('.grid')).toBeNull();
+    expect(document.activeElement).toBe(el.querySelector('.strip .sel'));
+    expect(component.selected()).toBe(DINNER);
+    expect(picked).toEqual([]);
+    expect(unhandled).toEqual([]);
+    el.parentElement!.removeEventListener('keydown', listener);
+  });
+
+  it('leaves main-grid Escape unhandled when there is no selection', () => {
+    const { el, component } = render();
+    expect(key(el.querySelector('.cat')!, 'Escape').defaultPrevented).toBe(false);
+    expect(el.querySelector('.grid')).not.toBeNull();
+    expect(component.selected()).toBeNull();
+  });
+
+  for (const activation of ['Enter', ' ']) {
+    it('picks exactly once with ' + activation + ' and prevents form save', () => {
+      const { el, fixture, component } = render();
+      const unhandled: string[] = [];
+      const listener = (event: KeyboardEvent) => {
+        if (!event.defaultPrevented) unhandled.push(event.key);
+      };
+      el.parentElement!.addEventListener('keydown', listener);
       const picked: CategoryNode[] = [];
       component.picked.subscribe(node => picked.push(node));
-      const main = el.querySelector<HTMLButtonElement>('.catbar button')!;
-      expect(key(main, 'Enter').defaultPrevented).toBe(true);
+      expect(key(el.querySelector('.cat')!, activation).defaultPrevented).toBe(true);
       fixture.detectChanges();
-      const children = el.querySelectorAll<HTMLButtonElement>('.subbar button');
-      children[0].focus();
-      expect(key(children[0], 'Enter').defaultPrevented).toBe(true);
+      const child = el.querySelector<HTMLButtonElement>('.cat:not(.back)')!;
+      expect(document.activeElement).toBe(child);
+      expect(key(child, activation, { repeat: true }).defaultPrevented).toBe(true);
+      expect(picked).toEqual([]);
+      expect(key(child, activation).defaultPrevented).toBe(true);
       fixture.detectChanges();
       expect(picked).toEqual([LUNCH]);
-      expect(key(children[1], ' ').defaultPrevented).toBe(true);
-      fixture.detectChanges();
-      expect(picked).toEqual([LUNCH, DINNER]);
-      expect(key(children[1], 'Escape').defaultPrevented).toBe(true);
-      fixture.detectChanges();
-      expect(el.querySelector('.subbar')).toBeNull();
-      expect(document.activeElement).toBe(main);
-      expect(component.selected()).toBe(DINNER);
+      expect(picked[0]).toBe(LUNCH);
       expect(unhandled).toEqual([]);
-      expect(key(main, 'Escape').defaultPrevented).toBe(false);
+      el.parentElement!.removeEventListener('keydown', listener);
     });
+  }
 
-    it('ignores handled keys and IME and preserves main focus when collapsing', () => {
-      const { el, fixture } = render({ variant: 'bar', selected: LUNCH });
-      const main = el.querySelector<HTMLButtonElement>('.catbar button')!;
-      expect(key(main, 'Escape', { isComposing: true }).defaultPrevented).toBe(false);
-      expect(key(main, 'Enter', { keyCode: 229 }).defaultPrevented).toBe(false);
-      const handled = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-      handled.preventDefault();
-      main.dispatchEvent(handled);
-      fixture.detectChanges();
-      expect(el.querySelector('.subbar')).not.toBeNull();
-      main.focus();
-      key(main, ' ');
-      fixture.detectChanges();
-      expect(el.querySelector('.subbar')).toBeNull();
-      expect(document.activeElement).toBe(main);
-    });
+  it('focuses the selected child and restores parent focus with back and child Escape only', () => {
+    const { el, tap, fixture } = render({ selected: DINNER });
+    tap('.sel', '晚餐');
+    tap('.cat', '飲食');
+    expect(document.activeElement?.textContent).toContain('晚餐');
+    expect(key(document.activeElement!, 'Escape').defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    const parent = el.querySelector<HTMLButtonElement>('[data-category-id="1"]')!;
+    expect(document.activeElement).toBe(parent);
+    expect(key(parent, 'Escape').defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    expect(document.activeElement).toBe(el.querySelector('.strip .sel'));
+    tap('.sel', '晚餐');
+    tap('.cat', '飲食');
+    tap('.back', '返回');
+    expect(document.activeElement?.getAttribute('data-category-id')).toBe('1');
+  });
+
+  it('ignores already handled and IME keys', () => {
+    const { el, tap, fixture } = render();
+    const main = el.querySelector('.cat')!;
+    key(main, 'Enter', { isComposing: true });
+    key(main, 'Enter', { keyCode: 229 });
+    expect(el.querySelector('.back')).toBeNull();
+    tap('.cat', '飲食');
+    const child = el.querySelector('.cat:not(.back)')!;
+    expect(key(child, 'Escape', { isComposing: true }).defaultPrevented).toBe(false);
+    const handled = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    handled.preventDefault();
+    child.dispatchEvent(handled);
+    fixture.detectChanges();
+    expect(el.querySelector('.back')).not.toBeNull();
   });
 });
