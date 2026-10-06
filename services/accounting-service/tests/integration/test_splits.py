@@ -153,7 +153,10 @@ def test_update_replaces_members_and_group_fields(client, db_session, seed):
 
     assert response.status_code == 200
     members = _members(db_session, group_id)
-    assert response.json() == {"group_id": group_id, "member_ids": [m.id for m in members]}
+    assert response.json() == {
+        "group_id": group_id, "member_ids": [m.id for m in members],
+        "members": [{"id": m.id, "client_key": None} for m in members],
+    }
     assert not set(old_ids) & {m.id for m in members}
     assert [(m.account_id, m.amount, m.entry_date) for m in members] == [(card_id, Decimal("-70"), date(2026, 9, 5))]
     group = db_session.get(EntryGroup, group_id)
@@ -463,3 +466,37 @@ def test_split_group_merchant_and_description_round_trip_through_entry_detail(cl
     group = client.get(f"/entries/{member_id}").json()["group"]
 
     assert (group["name"], group["merchant"], group["description"], group["count"]) == ("聚餐", "鼎泰豐", "生日", 2)
+
+
+def test_post_needs_two_new_members(client, db_session, seed):
+    wallet = seed.account()
+    db_session.commit()
+
+    single = client.post("/splits", json=_split(_member(wallet)))
+    with_id = client.post("/splits", json=_split(_member(wallet, id=1), _member(wallet)))
+    with_keep = client.post("/splits", json=_split(_member(wallet), {"id": 1, "keep": True}))
+    too_many = client.post("/splits", json=_split(*[_member(wallet) for _ in range(51)]))
+
+    assert [(r.status_code, r.json()["detail"][0]["loc"]) for r in (single, with_id, with_keep, too_many)] == [
+        (422, ["members"]), (422, ["members.0.id"]), (422, ["members.1.keep"]), (422, ["members"]),
+    ]
+    db_session.expire_all()
+    assert db_session.scalars(select(EntryGroup)).all() == []
+    assert db_session.scalars(select(LedgerEntry)).all() == []
+
+
+def test_post_echoes_client_keys_in_request_order(client, db_session, seed):
+    wallet = seed.account()
+    db_session.commit()
+
+    response = client.post(
+        "/splits", json=_split(_member(wallet, client_key="k-a"), _member(wallet, amount="50", client_key="k-b"))
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert set(body) == {"group_id", "member_ids", "members"}
+    assert body["members"] == [
+        {"id": body["member_ids"][0], "client_key": "k-a"}, {"id": body["member_ids"][1], "client_key": "k-b"},
+    ]
+    assert [m.id for m in _members(db_session, body["group_id"])] == body["member_ids"]

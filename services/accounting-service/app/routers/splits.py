@@ -12,9 +12,9 @@ router = APIRouter(prefix="/splits", tags=["Splits"])
 @router.post("", response_model=SplitOut, status_code=201)
 def post_split(payload: SplitIn, db: Session = Depends(get_db)):
     with service_errors():
-        group_id = split_service.create_split(db, payload)
+        result = split_service.create_split_result(db, payload)
     db.commit()
-    return {"group_id": group_id, "member_ids": split_service.member_ids(db, group_id)}
+    return result.out()
 
 
 @router.put("/{group_id}", response_model=SplitOut)
@@ -22,7 +22,8 @@ def put_split(group_id: int, payload: SplitIn, db: Session = Depends(get_db)):
     with service_errors():
         split_service.update_split(db, group_id, payload)
     db.commit()
-    return {"group_id": group_id, "member_ids": split_service.member_ids(db, group_id)}
+    ids = split_service.member_ids(db, group_id)  # replaced by the upsert's own result in Task 4
+    return split_service.SplitResult(group_id, list(zip(ids, [m.client_key for m in payload.members]))).out()
 
 
 @router.delete("/{group_id}", status_code=204)

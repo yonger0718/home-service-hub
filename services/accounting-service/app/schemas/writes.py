@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
 
 from .ledger import EntryDetailOut, EntryKind
 
@@ -69,10 +69,46 @@ class EntryUpdateIn(EntryIn):
     pass
 
 
-class SplitMemberIn(EntryIn):
-    """A split member; entry_date, entry_time, posted_date, project_id and tags default to the group's."""
+MAX_SPLIT_MEMBERS = 50  # POST /splits and convert; PUT /splits/{id} allows max(50, the group's current member count)
+ClientKey = Annotated[str, Field(min_length=1, max_length=64)]
 
+
+class SplitMemberIn(EntryIn):
+    """A full split member. `id` names an existing member (PUT /splits/{id} upsert, the convert anchor); without
+    it the member is new. `client_key` is echoed in the response and never stored. entry_date, entry_time,
+    posted_date, project_id and tags default to the group's when omitted (split_service.member_payload)."""
+
+    id: Int32 | None = None
+    client_key: ClientKey | None = None
     entry_date: date | None = None
+
+
+class SplitKeepIn(BaseModel):
+    """A metadata-only reference to an existing member (the only form a protected member accepts). Omitted fields
+    stay as stored; sent fields, `null` and `[]` included, are applied. Amount, kind, account, category,
+    counterparty, FX, fee / discount, rule, merchant, invoice and date fields are refused (extra="forbid")."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: Int32
+    keep: Literal[True]
+    client_key: ClientKey | None = None
+    name: ShortText | None = None
+    project_id: Int32 | None = None
+    tags: list[str] | None = None
+    description: str | None = None
+
+
+def _member_form(value) -> str:
+    """Discriminator of SplitIn.members: `keep: true` selects SplitKeepIn, anything else a full member."""
+    keep = value.get("keep") if isinstance(value, dict) else getattr(value, "keep", None)
+    return "keep" if keep is True else "full"
+
+
+SplitMemberItem = Annotated[
+    Annotated[SplitMemberIn, Tag("full")] | Annotated[SplitKeepIn, Tag("keep")],
+    Discriminator(_member_form),
+]
 
 
 class TransferIn(BaseModel):
@@ -97,6 +133,10 @@ class TransferIn(BaseModel):
 
 
 class SplitIn(BaseModel):
+    """Body of POST /splits, PUT /splits/{id} and PUT /entries/{id}/split. Group fields plus 1+ members; the
+    per-operation cardinality (POST >= 2 without ids, PUT <= max(50, current), convert: exactly the anchor with an
+    id) is checked by split_service before any database read that could 404."""
+
     name: ShortText | None = None
     merchant: ShortText | None = None
     description: str | None = None
@@ -105,7 +145,17 @@ class SplitIn(BaseModel):
     posted_date: date | None = None
     project_id: Int32 | None = None
     tags: list[str] = []
-    members: list[SplitMemberIn] = Field(min_length=1)
+    members: list[SplitMemberItem] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _distinct_ids_and_client_keys(self) -> "SplitIn":
+        ids = [member.id for member in self.members if member.id is not None]
+        if len(ids) != len(set(ids)):
+            raise ValueError("members: duplicate id")
+        keys = [member.client_key for member in self.members if member.client_key is not None]
+        if len(keys) != len(set(keys)):
+            raise ValueError("members: duplicate client_key")
+        return self
 
 
 class SettleIn(BaseModel):
@@ -211,6 +261,15 @@ class TransferOut(BaseModel):
     in_entry_id: int
 
 
+class SplitMemberRefOut(BaseModel):
+    id: int
+    client_key: str | None
+
+
 class SplitOut(BaseModel):
-    group_id: int
+    """Every split write (POST /splits, PUT /splits/{id} incl. dissolve, PUT /entries/{id}/split): ids and client
+    keys in request order; group_id is null after a dissolve."""
+
+    group_id: int | None
     member_ids: list[int]
+    members: list[SplitMemberRefOut]
