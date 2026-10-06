@@ -63,14 +63,15 @@
         }
       </select>
       <input
+        #queryInput
         class="chip tag filter-q"
         type="search"
         placeholder="⌕ 搜尋名稱 / 商家 / 備註"
         aria-label="搜尋名稱、商家或備註"
         [value]="query()"
-        (change)="setQuery($any($event.target).value)"
-      />
-    </div>
+        (input)="onQueryInput($any($event.target).value)"
+        (keydown)="onQueryKeydown($event)"
+      />    </div>
   }
 
   <ng-template #rowTemplate let-row>

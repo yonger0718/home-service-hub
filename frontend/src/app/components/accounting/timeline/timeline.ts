@@ -37,13 +37,16 @@ import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
-import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
+import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
 
 export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
 export const CALENDAR_DAY_LIMIT = 500;
 export const TIMELINE_VIEW_KEY = 'hh.accounting.timelineView';
+/** The search field commits this long after the last keystroke (Enter commits at once). */
+export const QUERY_DEBOUNCE_MS = 300;
+
 
 export type TimelineView = 'list' | 'calendar';
 
@@ -305,6 +308,9 @@ export class LedgerTimelineComponent implements OnInit {
   private summaryRequestId = 0;
   private dailyRequestId = 0;
   private dayRequestId = 0;
+  private queryTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
+
   private readonly bills = inject(BillingService);
 
   readonly preference = signal<Preference | null>(null);
@@ -547,6 +553,7 @@ export class LedgerTimelineComponent implements OnInit {
       observer.observe(element);
       onCleanup(() => observer.disconnect());
     });
+    inject(DestroyRef).onDestroy(() => this.clearQueryTimer());
   }
 
   ngOnInit(): void {
@@ -776,7 +783,45 @@ export class LedgerTimelineComponent implements OnInit {
     this.query.set(value.trim());
   }
 
+  onQueryInput(value: string): void {
+    this.clearQueryTimer();
+    this.queryTimer = setTimeout(() => {
+      this.queryTimer = null;
+      this.setQuery(value);
+    }, QUERY_DEBOUNCE_MS);
+  }
+
+  /** Enter commits now; Esc empties a field that has text and stops there (an empty field lets Esc through). */
+  onQueryKeydown(event: KeyboardEvent): void {
+    if (isHandledKey(event)) {
+      return;
+    }
+    const input = event.target as HTMLInputElement;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      this.clearQueryTimer();
+      this.setQuery(input.value);
+    } else if (event.key === 'Escape' && input.value !== '') {
+      event.stopPropagation();
+      this.clearQueryTimer();
+      input.value = '';
+      this.setQuery('');
+    }
+  }
+
+  private clearQueryTimer(): void {
+    if (this.queryTimer !== null) {
+      clearTimeout(this.queryTimer);
+      this.queryTimer = null;
+    }
+  }
+
   clearFilters(): void {
+    this.clearQueryTimer();
+    const input = this.queryInput()?.nativeElement;
+    if (input) {
+      input.value = '';
+    }
     this.accountFilter.set(null);
     this.kindFilter.set(null);
     this.query.set('');

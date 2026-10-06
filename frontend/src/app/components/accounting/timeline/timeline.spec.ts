@@ -384,6 +384,62 @@ describe('LedgerTimelineComponent', () => {
     });
   });
 
+    it('searches 300 ms after the last keystroke and at once on Enter', () => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      vi.setSystemTime(new Date(2026, 9, 2, 12, 0, 0));
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      const input = el.querySelector('.filter-q') as HTMLInputElement;
+
+      input.value = '午';
+      input.dispatchEvent(new Event('input'));
+      vi.advanceTimersByTime(200);
+      input.value = '午餐 ';
+      input.dispatchEvent(new Event('input'));
+      vi.advanceTimersByTime(299);
+      fixture.detectChanges();
+      expectNoEntryPage();
+      vi.advanceTimersByTime(1);
+      fixture.detectChanges();
+      expect(flushEntries([]).request.params.get('q')).toBe('午餐');
+
+      input.value = '拉麵';
+      input.dispatchEvent(new Event('input'));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+      expect(flushEntries([]).request.params.get('q')).toBe('拉麵');
+      vi.advanceTimersByTime(300);
+      fixture.detectChanges();
+      expectNoEntryPage();
+    });
+
+    it('clears a typed search on Esc without letting the key reach the page, and lets Esc through when empty', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      fixture.componentInstance.setQuery('午餐');
+      fixture.detectChanges();
+      flushEntries([]);
+      fixture.detectChanges();
+      const outer = vi.fn();
+      document.addEventListener('keydown', outer);
+      const input = el.querySelector('.filter-q') as HTMLInputElement;
+      input.value = '午餐';
+
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+      expect(outer).not.toHaveBeenCalled();
+      expect(input.value).toBe('');
+      expect(flushEntries([]).request.params.has('q')).toBe(false);
+
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      expect(outer).toHaveBeenCalledTimes(1);
+      document.removeEventListener('keydown', outer);
+    });
+
   describe('calendar view', () => {
     const OCT: Partial<DailySummary> = {
       days: [
