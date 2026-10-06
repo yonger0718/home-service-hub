@@ -1735,5 +1735,100 @@ describe('EntryFormComponent', () => {
     settle();
     expect(left()).toBe(true);
   });
+  describe('picker Esc order', () => {
+    function escape(target: Element): KeyboardEvent {
+      const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      settle();
+      return event;
+    }
+
+    it('Esc closes only the picker; the next Esc asks about a dirty draft, and only 放棄 leaves', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      typeInto(el, '.name-input', '午餐');
+      (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+      settle();
+
+      escape(el.querySelector('.account-picker .acct-panel')!);
+      expect(el.querySelector('.account-picker .acct-panel')).toBeNull();
+      expect(el.querySelector('.discard-strip')).toBeNull();
+      expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('午餐');
+      expect(left()).toBe(false);
+
+      expect(document.activeElement).toBe(el.querySelector('.account-picker .acct-trigger'));
+      escape(document.activeElement!);
+      expect(text(el.querySelector('.discard-strip'))).toContain('放棄未儲存的內容？');
+      expect(left()).toBe(false);
+      (el.querySelector('.discard-leave') as HTMLButtonElement).click();
+      settle();
+      expect(left()).toBe(true);
+    });
+
+    it('with a clean draft, Esc closes the picker and the next Esc cancels the form', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+      settle();
+      escape(el.querySelector('.account-picker .acct-panel')!);
+      expect(left()).toBe(false);
+      expect(document.activeElement).toBe(el.querySelector('.account-picker .acct-trigger'));
+      escape(document.activeElement!);
+      expect(left()).toBe(true);
+    });
+
+    it('⏎ on a picker row chooses the account and never saves the entry', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      tap(el, '.cat', '飲食');
+      tap(el, '.cat', '午餐');
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      keys(el, '1', '7', '0');
+      (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+      settle();
+      const row = el.querySelector('.account-picker .acct-option[data-account-id="1"]') as HTMLElement;
+      row.focus();
+      row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      settle();
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      httpMock.expectNone(r => r.method === 'POST');
+      expect(left()).toBe(false);
+      expect(el.querySelector('.account-picker .acct-trigger')!.getAttribute('data-value')).toBe('1');
+    });
+
+    it('from the 新增拆帳行 modal: picker, then modal, then the discard prompt', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      tap(el, '.cat', '飲食');
+      tap(el, '.cat', '午餐'); // a picked category makes the draft dirty
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      (el.querySelector('app-split-lines .add') as HTMLButtonElement).click();
+      settle();
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/counterparties', []);
+      (el.querySelector('app-split-lines .line-account .acct-trigger') as HTMLButtonElement).click();
+      settle();
+
+      escape(el.querySelector('app-split-lines .line-account .acct-panel')!);
+      expect(el.querySelector('app-split-lines .line-account .acct-panel')).toBeNull();
+      expect(el.querySelector('app-split-lines .sheet')).not.toBeNull();
+
+      expect(document.activeElement).toBe(el.querySelector('app-split-lines .line-account .acct-trigger'));
+      escape(document.activeElement!);
+      expect(el.querySelector('app-split-lines .sheet')).toBeNull();
+      expect(el.querySelectorAll('app-split-lines .member').length).toBe(0);
+      expect(el.querySelector('.discard-strip')).toBeNull();
+      expect((harness.routeDebugElement!.componentInstance as EntryFormComponent).category()?.id).toBe(12);
+
+      expect(document.activeElement).toBe(el.querySelector('app-split-lines .add'));
+      escape(document.activeElement!);
+      expect(text(el.querySelector('.discard-strip'))).toContain('放棄未儲存的內容？');
+      expect(left()).toBe(false);
+    });
+  });
 
 });
