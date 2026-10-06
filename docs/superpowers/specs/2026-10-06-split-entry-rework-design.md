@@ -1,150 +1,198 @@
-# Split (多類別) entry rework — design
+# Split (多類別) entry rework — design (v2)
 
-Date: 2026-10-06 · Base: `main` @ 4e301e2 · Owner decisions: option B (MOZE-style parent bubble; everything per child except what the parent must own), convert an existing single entry into a split in this round.
+Date: 2026-10-06 · Base: `main` @ 4e301e2 · v2 folds in the AGENT-66 spec review (R1–R13). Owner decisions: option B (MOZE-style parent bubble; everything per child except what the parent must own), convert an existing single entry into a split in this round.
 
-Sources: MOZE docs §2.1/§2.9/§6.2 (feature digest), the owner's review of the first proposal (seven points, 2026-10-06), fact sheet of the current split implementation (split-lines, entry-save, split_service).
+Sources: MOZE docs §2.1/§2.9/§6.2 (feature digest), the owner's seven-point review, AGENT-66 review (`split-spec-review-d33104c.md`), fact sheet of the current split implementation.
 
 ## Goals
 
 1. One input method for every line of a record: the same category grid, keypad, tiles and pickers edit whichever child bubble is selected. No separate "新增拆帳行" modal, no `<select>`.
-2. A split is a parent with N equal children. Children own their own category, kind, amount, account, counterparty, name, project, tags, fee/discount, FX, reward rules and notes; the parent owns merchant, date/time/posted date, group name and group notes.
-3. Saving is atomic and id-stable: an existing single entry can become a split at save time without losing its id; editing a split never recreates untouched members.
-4. Old splits round-trip without silent data loss (differing member dates or notes stay as they are unless the user changes them).
+2. A split is a parent with N equal children. Children own category, kind, amount, account, counterparty, name, project, tags, fee/discount, FX, reward rules and notes; the parent owns merchant, date/time/posted date, group name and group notes.
+3. Saving is atomic and id-stable: an existing single entry becomes a split at save time without losing its id; editing a split never recreates untouched members; protected members (settlements, refunds, transfer legs, system rows, originals referenced by settlements/refunds, loans referenced by a live schedule) can only change metadata.
+4. Old splits round-trip without silent loss: per-member dates, times, merchants, notes and attached rules stay as stored unless the user changes that field.
 
-Non-goals: parent-to-child sync preferences (MOZE §2.9), e-invoice import to splits, reordering children, per-child dates, 多筆收還款, MOZE's "2個帳戶" card art.
+Non-goals: parent-to-child sync preferences (MOZE §2.9), e-invoice import to splits, reordering children, per-child dates, 多筆收還款, card art; widening `EditableKind`.
 
 ## Global constraints
 
-- Frontend: Angular 21 standalone + signals, Vitest; backend: FastAPI + SQLAlchemy 2.0 + Alembic (no schema change in this design); all strings 繁體中文, noun 記錄.
-- Accepted contracts untouched: schedules (`openspec/specs/accounting-schedules`), the dirty-form registry and overlay Esc contract (UX refinement PR-2), the account picker (PR-3), the category drill-in grid (PR-5).
+- Frontend: Angular 21 standalone + signals, Vitest; backend: FastAPI + SQLAlchemy 2.0 + Alembic. **No schema migration** in this design; `SplitOut.group_id` becomes nullable (API change, listed in §1.6).
+- Accepted contracts untouched: schedules (`openspec/specs/accounting-schedules`, incl. D29/D32/D33 lock order and loan references), the dirty-form registry and overlay Esc contract (UX refinement PR-2), the account picker (PR-3), the category drill-in grid incl. its Esc contract (PR-5: child grid → main grid; reopened main with a selection → strip + focus; unselected main → form).
 - Backend changes ship first in their own PR (owner's session; Multica cannot reach Postgres); the frontend PR (Multica) targets the merged API.
-- Every behaviour below has a test: backend `tests/integration/test_splits.py` (+ new file for conversion), frontend component specs. `cd frontend && npm test -- --watch=false` and `pytest` green; `npx ng build` green.
-- Checked at 390×844, 760×820, 1280×800.
+- Every rule below has a test (§1.8, §2.11). `pytest` (incl. Postgres integration), `cd frontend && npm test -- --watch=false`, `npx ng build` green. Checked at 390×844, 760×820, 1280×800.
+- Terms: **anchor** = the existing entry being converted; **protected member** = §1.2; **empty** (for copy rules) = `null` or whitespace-only after trim; **editable kinds** = `EditableKind` (expense, income, receivable, payable).
 
 ## 1. Data and API contract (backend, PR-B)
 
 ### 1.1 Storage (unchanged schema)
 
 - `EntryGroup(kind='split')` holds `name`, `merchant`, `description` — the parent's 整筆名稱／商家／整筆備註.
-- Every member is a `ledger_entry` with `entry_group_id`. Date, time and posted date live on members; the parent date is "the value written to every member".
-- Invoice stays per member (no parent invoice).
+- Every member is a `ledger_entry` with `ledger_entry.group_id` (`models/ledger.py:263`). Dates, times, posted dates, merchant, description, invoice and reward links live on members; the parent date is "the value written to every member". Legacy per-member `merchant` values are preserved verbatim unless that member is re-sent with a different value.
+- No parent invoice.
 
-### 1.2 `SplitIn` / `SplitMemberIn` (schemas/writes.py)
+### 1.2 Protected members
 
-- `SplitMemberIn` gains `id: int | None = None` (an existing member to update in place) and `client_key: str | None = None` (echoed back for the client; not stored).
-- Members always send explicit `project_id` (nullable), `tags` (list, may be empty), `entry_date`, `entry_time`, `posted_date`, `description`. The server-side inheritance in `member_payloads()` for omitted fields stays for other callers; this frontend never relies on it. `null` and `[]` are values, not "inherit".
-- `members` min length 1 (dissolve case, §1.4).
+A current member is **protected** when any of: `is_settlement` (a 收還款 row, including imported/orphan ones without `settles_entry_id`); `refunds_entry_id` set (a refund row); a transfer leg; `kind='system'`; `has_settlements_or_refunds(entry)` (an original referenced by a settlement/refund); a loan referenced by a live schedule definition (`schedule_entry_hooks.assert_not_referenced` would refuse its delete). The `protected` flag and the reason code are returned on read (`GET /entries/{id}` already exposes kind/settlement flags; the group member list in `EntryDetailOut.group_members` gains `protected: bool`, `protected_reason: str | null`).
 
-### 1.3 `PUT /splits/{group_id}` becomes upsert
+### 1.3 Payload (`schemas/writes.py`)
 
-In one transaction, under the existing locks (group FOR UPDATE → members FOR UPDATE) and the existing refusals (scheduled group, locked group):
-1. Validate every member with `prepare_entry` (errors keyed `members.{i}.{field}` as today).
-2. Partition: `keep` = members with an `id` that belongs to this group; `new` = members without `id`; `drop` = current members whose id is not in the request. An `id` from another group or unknown → 404 `member_not_found`.
-3. **Protected members** (have settlements/refunds, or are transfer legs / system entries): must appear in `keep` with the same `kind`, `amount`, `account_id`, `category_id`, `counterparty_id`, `original_amount/currency/fx_rate` as stored, else 409 `member_locked`; dropping one → 409 `member_locked`. Their other fields (name, tags, project, description, dates) may change.
-4. `drop` → `delete_entries_cascade`; `keep` → update in place (children such as fee/discount rows are replaced, reward rows recomputed as for a single-entry update); `new` → `insert_prepared(..., group_id)`.
-5. Group fields updated from the payload.
-6. Response `{group_id, member_ids}` with `member_ids` in **request order**, plus `members: [{id, client_key}]`.
+- `SplitMemberIn(EntryIn)` gains `id: int | None = None`, `client_key: str | None = None` (≤ 64 chars, echoed, not stored). Editable kinds only, as today.
+- New `SplitKeepIn`: `{id: int, keep: Literal[true], name?, project_id?, tags?, description?, client_key?}` — a metadata-only reference to an existing member. No financial, kind, account, category, counterparty, FX, fee/discount, rule or date fields. Fields omitted are left unchanged; fields sent (incl. `null`/`[]`) are applied.
+- `SplitIn.members: list[SplitMemberIn | SplitKeepIn]` (discriminated by `keep`), min 1, max 50. Group fields as today.
+- Rules enforced at schema/validation level (422 unless noted): duplicate `id` → 422; duplicate non-null `client_key` → 422; `POST /splits`: ≥ 2 members and no member may carry `id` or `keep`; `PUT /splits/{gid}`: ≥ 1; `PUT /entries/{id}/split`: exactly one member with `id == entry_id` (the anchor, a full `SplitMemberIn`), every other member without `id`, total ≥ 2.
+- Members send every per-member field explicitly: `project_id` (nullable), `tags` (list, may be `[]`), `description`, `entry_date`, `entry_time`, `posted_date`. `null`/`[]` are values. Server-side inheritance in `member_payloads()` stays only for callers that omit fields; this frontend never omits them.
 
-`remember_all_defaults` runs for new and changed members as today.
+### 1.4 Transaction order (applies to create, upsert, convert, dissolve)
 
-### 1.4 Dissolve
+1. **Resolve FX first** for every full member (`prepare_entry` / `_prepare_all` as today) — this may commit the session (`fx_rate_service.py:159-162, :208`) and is therefore done **before any lock or ledger write**.
+2. **Lock** in the fixed order: the group row FOR UPDATE (convert: the anchor entry FOR UPDATE; dissolve-by-delete: see §1.7), then its members by id ascending FOR UPDATE, then the schedule hooks' rows per the accepted order.
+3. **Re-read and re-validate inside the lock**: group kind/editability/import lock; membership (every `id` in the payload belongs to this group, else 404 `member_not_found`); protected set (§1.2) recomputed from locked rows; convert refusals (§1.6) recomputed on the locked anchor.
+4. **Write** (delete/update/insert) with no helper that commits; one commit at the end. Any failure → rollback, nothing persisted.
 
-`PUT /splits/{gid}` with exactly one member (its `id` must be an existing member) dissolves the group in the same transaction: the member keeps its id and is updated from the payload; `group.name/merchant/description` are copied onto the member **only where the member's own field is empty** (the frontend shows the warning in §2.7 when both are set); the group row is deleted. Response `{group_id: null, member_ids: [id]}`. A dissolve on a protected member follows §1.3 rule 3.
+### 1.5 `PUT /splits/{group_id}` — upsert by member id
 
-### 1.5 Convert a single entry: `PUT /entries/{entry_id}/split`
+Partition after step 3: `keep_full` (full members with `id`), `keep_meta` (`SplitKeepIn`), `new` (no `id`), `drop` (current members absent from the payload).
 
-Body = `SplitIn` whose members include exactly one member with `id == entry_id` (the entry being converted; its draft values apply) and ≥1 member without `id`. In one transaction: refuse when the entry is already in any group (409 `already_grouped`), is a transfer leg / system entry / schedule-generated (409 `kind_not_splittable`), has settlements or refunds (409 `entry_locked`), or the ledger is import-locked; otherwise create `EntryGroup(kind='split', …)`, attach and update the existing entry in place, insert the others. Response as §1.3. Nothing is written on failure; a retry after a success hits `already_grouped`.
+- A protected member must be in `keep_meta`; sent as a full member or dropped → 409 `member_locked` (reason in `detail`). A non-protected member may be sent either way.
+- `drop`: for each, `assert_not_referenced(loan_entry_id=id)` (same refusal as single delete) then `delete_entries_cascade`.
+- `keep_full`: update in place like a single-entry update (`_apply` + fee/discount/rule-link rebuild, `check_rules(..., attached=<its current links>)` so a rule disabled/expired after import still round-trips). Reward **ledger rows** are never touched by this endpoint. A `keep_full` member whose financial fields, FX inputs, category, counterparty and dates are all unchanged is a no-op for FX/fee/discount (no re-resolution).
+- `keep_meta`: apply only the sent metadata fields.
+- `new`: `insert_prepared(..., group_id)`.
+- Group fields from the payload. `remember_all_defaults` for `new` and changed `keep_full`.
+- Scheduled-group guard (`assert_group_not_scheduled`) and `assert_editable` as today; a referenced loan in `keep_full` may not change kind, currency or account (409 `member_locked`).
+- Response §1.6.
 
-### 1.6 Delete
+### 1.6 Responses, cardinality, errors, dissolve, convert
 
-`DELETE /splits/{gid}` unchanged (whole group). Deleting one member through `DELETE /entries/{id}` stays as today; when the group would be left with one member the server dissolves it (same copy rule as §1.4) so a one-member group never persists.
+**Response (all four operations)**: `{group_id: int | null, member_ids: int[], members: [{id: int, client_key: str | null}]}` — `member_ids`/`members` in **request order**; `SplitOut.group_id` becomes nullable.
 
-### 1.7 Backend tests (test_splits.py + test_split_convert.py)
+**Dissolve** = `PUT /splits/{gid}` with exactly one member, which must be an existing member of the group (`id` required; full or keep form): after the member update, copy the **payload's** group `name`, `merchant`, `description` onto the member **field by field where the member's resulting value is empty**; detach (`group_id = NULL`, flush); delete the group row. `group_id: null` in the response. Only `kind='split'` groups dissolve; installment/transfer groups never do.
 
-Upsert: keep/new/drop in one call, ids stable, order of `member_ids`; unknown/foreign id → 404; protected member dropped → 409; protected member changed amount → 409; protected member name change → 200; dissolve copies name only into empty field; dissolve on last member keeps id; convert happy path keeps entry id and returns new ids; convert refusals (already grouped, transfer, system, scheduled, settled, import-locked); convert retry → 409 `already_grouped` with no duplicate group; concurrency: two PUTs on the same group serialize; `DELETE /entries/{id}` leaving one member dissolves.
+**Convert** = `PUT /entries/{entry_id}/split` with a `SplitIn` per §1.3. Refusals (checked before and again inside the anchor lock): anchor already in any group → 409 `already_grouped`; anchor protected (§1.2) or not an editable kind → 409 `entry_locked`; anchor schedule-generated (`source='schedule'`) → 409 `kind_not_splittable`; ledger import-locked → 409 `import_running`. Then: create `EntryGroup(kind='split', …)`, attach and update the anchor in place (its id is stable), insert the others. A retry after success → 409 `already_grouped`; two concurrent converts of the same entry: one succeeds, the other 409.
+
+**Error precedence**: schema/cardinality 422 → group/member 404 → state 409 (`already_grouped`, `entry_locked`, `member_locked`, `import_running`, `group_scheduled`, `group_locked`) → member validation 422 keyed `members.{i}.{field}`. One HTTP error per request; nothing written on error.
+
+**`DELETE /splits/{gid}`** unchanged (whole group; refuses as today).
+
+### 1.7 `DELETE /entries/{id}` auto-dissolve
+
+Before locking anything, determine the affected top-level set: the entry, its transfer pair (if any), and, when the entry is in a `split` group, every member of that group. Lock them by id ascending (plus the schedule hook rows per D32/D33), re-read membership, run today's refusals (referenced loan, scheduled period semantics incl. `is_partial`/reopen unchanged). If after the delete exactly one member remains in a `split` group: apply the dissolve copy (group name/merchant/description → survivor's empty fields), detach the survivor, delete the group — in the same transaction. Groups of other kinds are untouched. A transfer pair whose legs sit in different groups is handled leg by leg under the same lock set.
+
+### 1.8 Backend tests (`tests/integration/test_splits.py`, new `test_split_convert.py`, `test_split_dissolve.py`)
+
+- Upsert: keep_full/keep_meta/new/drop in one call; ids stable; `member_ids` order; unknown/foreign id → 404; duplicate id / duplicate client_key → 422; protected member as full → 409; protected dropped → 409; protected via `SplitKeepIn` with name change → 200 and signed amount/flags/links/counterpart/balances unchanged (imported transfer, system, refund, settlement incl. orphan); referenced loan drop → 409, its kind/currency change → 409; attached disabled/expired rule round-trips on keep_full, same rule rejected on new; untouched keep_full does not re-resolve FX; reward ledger rows untouched; cold-cache FX + concurrent PUT/PUT and PUT/settle serialize correctly (locks taken after FX commit).
+- Convert: happy path keeps anchor id; invalid second member or FX failure → anchor unchanged, no group; already_grouped / entry_locked (transfer, system, settlement, refunded original, orphan settlement) / kind_not_splittable / import_running; retry → 409 with no duplicate group; concurrent converts → one wins; convert vs delete/update of the anchor interleaving.
+- Dissolve: via PUT single member (full and keep forms); copy only into empty fields, field by field, from the payload's parent values; `group_id: null`; survivor protected → §1.5 rules apply.
+- DELETE auto-dissolve: survivor fields/links intact; race with survivor PUT, another DELETE, group PUT — no deadlock, no dangling FK; scheduled multi-member period delete keeps partial/reopen semantics; installment group not dissolved.
+- POST: single member → 422; member with id → 422; response envelope incl. `response_model` serialization for all four operations.
 
 ## 2. Frontend model and flow (PR-6, Multica)
 
 ### 2.1 State (`entry-form`)
 
 ```ts
-interface ChildDraft { key: string /* uuid */; id: number | null; kind; categoryId; amountExpr; accountId; counterpartyName; name; projectId; tags; description; fee; discount; fx; ruleIds; invoice; locked: boolean }
-children = signal<ChildDraft[]>([])      // length ≥ 1
-selected = signal<string | 'parent'>(key) // which bubble the tiles edit
-parent = { name, merchant, description, entryDate, entryTime, postedDate, dateTouched: boolean }
+interface ChildDraft {
+  key: string;                 // uuid, UI identity; never sent except as client_key
+  id: number | null;           // persisted member id
+  protected: boolean; protectedReason: string | null;
+  // editable (editable kinds only; protected children expose only name/project/tags/description)
+  kind; categoryId; amountExpr; accountId; counterpartyName; name; projectId; tags; description;
+  fee; discount; fx; ruleIds; invoice;
+  // per-child provenance (loaded values, never merged across children)
+  loaded: { entryDate; entryTime /* raw string as received */; postedDate; merchant; attachedRuleIds; originalAccountId; source } | null;
+  rulesTouched: boolean; pendingCategoryId: number | null; generation: number; // async ownership
+}
+children = signal<ChildDraft[]>([])             // length ≥ 1
+selected = signal<string | 'parent'>(key)
+parent = { name; merchant; description; entryDate; entryTime; postedDate; dateTouched: boolean }
 ```
 
-- A single-child form (`children().length === 1`) is today's single-entry form; no parent bubble, the parent fields render inline as now (date/time/merchant/notes tiles) and save as a plain entry.
-- `isSplit = computed(() => children().length >= 2)`.
-- All existing per-entry signals (`amountExpr`, `accountId`, `category`, `fx`, `fee`, `discount`, `ruleIds`, …) become **views over the selected child** (read from and write to `children()[selectedIndex]`), so the keypad, amount tile, category picker, account picker, fee/fx sheets and reward chips keep their current bindings.
-- `DirtyFormRegistry` snapshot = serialised `{parent, children}` (keys excluded).
+- Single child = today's single-entry form (no parent bubble; merchant/date/time tiles inline; saves as a plain entry). `isSplit = children().length ≥ 2`.
+- The existing per-entry signals (`amountExpr`, `accountId`, `category`, `fx`, `fee`, `discount`, `ruleIds`, `pendingCategoryId`, `rulesTouched`, `originalAccountId`, …) become **views over the selected child**; in parent mode they are inert (no writes; the keypad is hidden and `↵`/pending commits are flushed to the previously selected child before the switch).
+- **Async ownership**: every callback that writes a draft (account detail → rule defaults, category prefill, FX resolution, fee/fx sheets, keypad commit, counterparty create) carries the child's `key` and the child's `generation` at request time; a result whose key no longer exists or whose generation is stale is dropped. Children sharing account/kind are never disambiguated by value.
+- **Dirty snapshot** (`DirtyFormRegistry`): `{parent, children (without key/generation/selection), scheduleDraftKey, transferPanel.draftKey, targetExpr}` — the mode-specific parts of today's snapshot stay; only the single-entry/members part is replaced. Baseline/pending-discard clearing rules unchanged (load complete, successful save, save-and-continue). Switching bubbles does not dirty; async defaults do not dirty.
 
-### 2.2 Bubble strip (`category-picker` strip, extended)
+### 2.2 Mode matrix
 
-- Single child: `[selected category bubble] [＋]` (today's strip plus the ＋ that used to be `splittable`).
-- Split: `[多類別 <net> (N)] [child bubbles…] [＋]`, horizontally scrollable, selected bubble outlined. Child bubble = category icon/colour, category name (or kind label), signed amount; a child with no category yet shows a dashed bubble "未選類別".
-- ＋ → `addChild()`: pushes `{kind: prev.kind, accountId: prev.accountId, everything else empty}`, selects it, opens the category grid (drill-in) for it. After the pick the grid collapses to the strip and focus goes to the amount tile (keypad on phone).
+| Form mode | ＋ (add child) | Kind tabs | Event type row |
+|---|---|---|---|
+| New record, single, editable kind, 單次 | enabled | all | shown |
+| New record, 週期／分期 selected | hidden | all | shown |
+| Definition edit (`?schedule=`) | hidden | per today | shown (today's rules) |
+| Edit existing single: editable kind, not protected, not schedule-generated, not import-locked | enabled | per today | shown |
+| Edit existing single: transfer / 系統 / schedule-generated / protected / import-locked | hidden, hint on the strip 「此記錄不能拆帳」 | per today | per today |
+| Split (≥2 children), child selected | enabled | act on **and show** the selected child's kind; 轉帳 and 系統 disabled | hidden |
+| Split, parent selected | enabled (new child inherits the last child's kind/account) | hidden | hidden |
+| Split, protected child selected | enabled | shown disabled (reason hint) | hidden |
+
+Switching kind on a child whose category belongs to another kind clears its category and reopens the grid for it.
+
+### 2.3 Bubble strip (`category-picker` strip, extended)
+
+- Single child: `[selected category bubble] [＋]` (today's strip; `splittable`/`addLine` removed in favour of this ＋).
+- Split: `[多類別 <net> (N)] [child bubbles…] [＋]`, horizontally scrollable, selected bubble outlined. Child bubble = category icon/colour, category name (or kind label), signed amount; no category yet → dashed 「未選類別」; protected → lock glyph.
+- ＋ → `addChild()`: pushes `{kind: prev.kind, accountId: prev.accountId, everything else empty}` where `prev` = the selected child, or the last child in parent mode; selects it; opens the category grid (drill-in) for it; after the pick the grid collapses and focus goes to the amount tile (keypad on phone). The category last-use prefill (`hh.accounting.lastUse.<categoryId>`) is **not applied to children**; it keeps driving a single-mode record only.
 - Tapping a child bubble selects it; tapping the parent bubble selects `'parent'`.
-- Removing a child: a「移除此項」button in the child's tile area (not on the bubble) → removes it and selects the previous child; disabled when it is the last child or the child is `locked`.
-- When a split drops to one child the form returns to single mode visually; if that child has a persisted `id` inside a group, saving performs the dissolve (§1.4) and the parent card shows the merge warning (§2.7) when both names are set.
+- Removing a child: 「移除此項」in the child's tile area. Disabled (with hint) when it is the last child, the child is protected, the child is the **anchor** of a convert (editing an existing single entry: that child cannot be removed or replaced), or removing it would leave an existing group with no persisted member (at least one child with `id` must remain while `groupId` is set). After removal the previous child is selected (the first when none).
+- A split that drops to one child renders single mode; if `groupId` is set the save dissolves (§2.7) and the single layout shows the per-field notice (§2.8).
 
-### 2.3 Child mode (a child bubble selected)
+### 2.4 Child mode
 
-Tiles: 金額 (keypad), 名稱, 帳戶 (picker), 專案, 對象 (應收／應付 only), 發票, 標籤 chips, 備註 (this child), fee/discount chips, FX, reward rules — exactly today's single-entry tiles minus merchant/date/time. The 記錄類型 tabs act on the selected child (the first child's kind is what the top tabs show; switching kind on a child re-validates its category). Event type (單次／週期／分期) is shown only in single mode; a split is always 單次 (the row renders disabled with the hint 拆帳不支援週期／分期 when `isSplit`).
+Tiles: 金額 (keypad), 名稱, 帳戶 (picker), 專案, 對象 (應收／應付 only), 發票, 標籤 chips, 備註 (this child), fee/discount chips, FX, reward rules — today's single-entry tiles minus merchant/date/time. A protected child shows its financial tiles read-only with the reason (e.g. 「已有收還款，金額與帳戶不可更改」) and editable 名稱／專案／標籤／備註 only.
 
-### 2.4 Parent mode (`selected === 'parent'`)
+### 2.5 Parent mode
 
-- Parent card: net per currency over child base amounts (sum of signed amounts; fee/discount/rewards excluded), one line per currency; `N 項 · M 個帳戶`; `預估回饋 <sum>` line when any child has rule rewards. Read-only.
-- Tiles: 商家, 日期, 時間, 入帳日, 整筆名稱, 整筆備註, and the 刪除整組 action when editing. Keypad hidden.
-- `dateTouched` becomes true the first time the user changes 日期／時間／入帳日 in this session.
+- Parent card (read-only): net per currency over children's base amounts (signed by kind; fee/discount/rewards excluded), one line per currency; `N 項 · M 個帳戶`; 「預估回饋」 per currency when any child has rule rewards (estimate from rules; existing reward ledger rows are not part of this estimate).
+- Tiles: 商家, 日期, 時間, 入帳日, 整筆名稱, 整筆備註; 刪除整組 when editing. Keypad hidden. `dateTouched` turns true on the first change to 日期／時間／入帳日.
 
-### 2.5 Load (edit an existing split; entry-detail 編輯 on any member)
+### 2.6 Load (edit an existing split)
 
-- Fetch all members; build `children` in `group_members` order with `id`, `locked` (settlement/refund/transfer/system), and the opened member selected.
-- Parent tiles from the group (name/merchant/description) and from the **first member's** dates; `dateTouched=false`. If members' dates differ, the parent date tile shows the first member's date with the caption「子項日期不一致」.
-- Per-child description/tags/project come from each member; nothing is merged.
+- Fetch all members; `children` in `group_members` order with `id`, `protected`/reason, `loaded` provenance (dates, raw `entry_time`, merchant, attached rule ids, original account, source); the opened member selected; `rulesTouched=true` for loaded children (as today's edit).
+- Parent tiles from the group (name/merchant/description) and from the **first member's** dates; `dateTouched=false`. If members' dates/times differ: caption 「子項日期不一致」 on the parent date tile.
+- Per-child merchant: shown read-only under 備註 as 「商家（此項）」 only when non-empty; sent back unchanged.
 
-### 2.6 Save (`planEntrySave` → `toSplitInput`)
+### 2.7 Save plan (`planEntrySave` → `toSplitInput`)
 
-- Single child, no `groupId` → today's create/update entry.
-- Single child with `groupId` (dropped to one) → `PUT /splits/{gid}` with one member (dissolve).
-- ≥2 children, no `groupId`, new record → `POST /splits`.
-- ≥2 children, no `groupId`, editing an existing single entry (`entryId`) → `PUT /entries/{entryId}/split`; the converted entry is the child whose `id === entryId`.
-- ≥2 children with `groupId` → `PUT /splits/{gid}` (upsert) with each child's `id` (null for new).
-- Member payload: every field explicit — `project_id` (null ok), `tags` (list), `description`, `entry_date/entry_time/posted_date` = parent values when `dateTouched` or when the member is new; otherwise the member's own loaded dates. `client_key` sent; the response maps new ids back by `client_key`.
-- After save: navigate to the member that was selected (by id from the response); `rememberEntryUse` only for the single-entry path (last-use prefill is not updated from children); recent accounts updated with every child's account.
-- Failed save keeps the draft and dirty state; errors `members.{i}.{field}` map back to the child by index → key and select that child, showing the field error on its tile.
+| State | Call |
+|---|---|
+| 1 child, no `groupId`, new or existing single | today's create/update entry |
+| 1 child, `groupId` set (dropped to one) | `PUT /splits/{gid}` with that member (dissolve); never reachable without a persisted member (§2.3) |
+| ≥2 children, new record | `POST /splits` (no ids) |
+| ≥2 children, editing existing single (`entryId`) | `PUT /entries/{entryId}/split`; the anchor is the child with `id === entryId` (always present, §2.3) |
+| ≥2 children, `groupId` set | `PUT /splits/{gid}`: protected children as `SplitKeepIn` (metadata only), others full with their `id`, new ones without |
 
-### 2.7 Guards and notices
+Member payload: every per-member field explicit; `entry_date/entry_time/posted_date` = parent values when `dateTouched` or the child is new, else the child's `loaded` raw values (the raw `entry_time` string is re-sent unchanged; no minute truncation); `merchant` = `loaded.merchant` (children never edit it); `client_key` = `key`. Group fields from `parent`.
 
-- ＋ disabled (with tooltip/hint) when: editing a transfer, 系統 record, schedule-generated entry, or an entry with settlements/refunds; or when `locked()`/import-locked.
-- Dropping to one child while the group has a name/merchant/description and the remaining child has its own non-empty name → parent card line「整筆名稱「X」將不保留」(same for merchant/備註) until saved or undone.
-- Esc contract unchanged: picker/sheet → form cancel → discard prompt. In parent mode Esc behaves like child mode.
-- Switching kind on a child whose category belongs to another kind clears the category and reopens the grid.
+After save: ids mapped back by `client_key`; navigate to the selected child's id, or the first member when the parent was selected (dissolve → the survivor id). `rememberEntryUse` only on the single-entry path; recent accounts updated with every child's account. Failed save keeps draft + dirty; `members.{i}.{field}` → child by index → `key`, select it, show the field error.
 
-### 2.8 Removal of old code
+### 2.8 Notices and guards
 
-`split-lines/*` (component, modal, spec) deleted; `category-picker` `splittable`/`addLine` replaced by the strip's ＋ described in §2.2; `entry-save.ts` `toSplitInput` rewritten to the explicit-field contract; `members`/`splitGroup` signals replaced by `children`/`parent`.
+- Dissolve notice (single layout, above the tiles, one line per field): 「整筆名稱「X」將不保留」／「整筆商家「X」將不保留」／「整筆備註將不保留」 when the payload's parent value is non-empty **and** the surviving child's own value is non-empty (copy would be skipped). Until saved or undone.
+- ＋ availability per §2.2 with hints.
+- Esc contract unchanged (PR-2, PR-5): picker child grid → main grid; reopened main with a selection → strip; sheets/overlays → form `cancel()` → discard prompt. Parent mode behaves like child mode.
 
-### 2.9 Timeline and detail
+### 2.9 Removal of old code
 
-- Timeline: one row per group (unchanged); the row's title = group name, else `多類別`; badge N (existing `groupCount`).
-- Entry detail of a member: adds a parent card at the top (多類別 · net · N 項 · M 個帳戶 · merchant · date) with the child list (each child's icon, name/category, amount, account; the open one highlighted); existing per-member actions stay; 編輯 opens the form with that child selected.
+`split-lines/*` deleted; `category-picker` `splittable`/`addLine` replaced by §2.3; `entry-save.ts` `toSplitInput` rewritten to the explicit-field contract (no `?? shared.project_id`); `members`/`splitGroup` signals replaced by `children`/`parent`; `entryInputFromDetail` extended to fill `loaded` provenance.
 
-### 2.10 Frontend tests
+### 2.10 Timeline and detail
 
-entry-form: ＋ creates a child with previous kind/account and opens the grid; picking a category selects the new child and focuses the amount; keypad writes the selected child only; switching bubbles swaps tile values; parent mode shows per-currency net, N and M, hides the keypad; remove child re-selects previous and is disabled on the last/locked child; drop-to-one shows the merge warning when both names set; save plans: single → entry, 2 new → POST /splits, existing single + ＋ → PUT /entries/{id}/split with the converted child's id, existing group → PUT /splits with ids, dropped to one → dissolve; explicit `project_id: null` and `tags: []` sent; untouched parent date re-sends each member's own date, touched date unifies; `members.1.amount` error selects child 2; ＋ disabled for transfer/system/scheduled/settled; dirty snapshot includes children; Esc order picker → form → discard. category-picker: strip renders parent/child/＋ bubbles, selection outline, dashed 未選類別. entry-detail: parent card and child list; 編輯 opens with the child selected. timeline: title fallback 多類別.
+- Timeline: one row per group (unchanged); title = group name, else 「多類別」; badge N.
+- Entry detail of a member: parent card at the top (多類別 · net per currency · N 項 · M 個帳戶 · 商家 · 日期) + child list (icon, name/category, amount, account, lock glyph when protected; the open one highlighted); existing per-member actions; 編輯 opens the form with that child selected. `group_members` carries `protected`/`protected_reason` (§1.2).
+
+### 2.11 Frontend tests
+
+entry-form: ＋ creates a child with previous kind/account and opens the grid; picking selects the new child and focuses the amount; keypad writes only the selected child, pending `↵`/commit flushed before a switch; bubble switch swaps tile values and does not dirty; parent mode: per-currency net, N, M, keypad hidden, kind tabs hidden; remove: re-selects previous; disabled on last / protected / anchor / last persisted member; drop-to-one shows per-field notices; save plan for all five rows incl. anchor present in convert, protected sent as keep; explicit `project_id: null`, `tags: []`; untouched parent date re-sends each child's raw date/time, touched unifies, one touched field only; `members.1.amount` → child 2 selected; mode matrix: ＋ hidden for recurring/installment draft, definition edit, transfer, system, schedule-generated, protected, import-locked; split → 轉帳/系統 tabs disabled; tabs show the selected child's kind with mixed kinds; async: stale account/category/FX responses after switch or removal are dropped (same account/kind children, interleaved responses, parent-mode pending commit), changing child A's account does not clear B's FX/fee/rules; two archived originals; dirty: schedule-only / transfer-leg-only / target-only edits still prompt; save failure stays dirty; success and save-and-continue clear. category-picker: strip bubbles, outline, dashed 未選類別, lock glyph; PR-5 Esc contract regression (child grid → main; reopened main → strip + focus; unselected main → form). account-picker regression: archived/exclude/focus-return unchanged. entry-detail: parent card, child list, 編輯 selects the child. timeline: title fallback.
 
 ## 3. Delivery
 
-- **PR-B (backend, owner's session)**: §1 with tests; no frontend change; `openspec` ledger spec updated for the upsert/dissolve/convert rules.
+- **PR-B (backend, owner's session)**: §1 with §1.8 tests; `openspec/specs/accounting-ledger` updated for upsert/dissolve/convert/protected rules and the nullable `group_id`; no frontend change.
 - **PR-6 (frontend, Multica via lead-astra)**: §2 after PR-B is merged; branch from main; same rules as AGENT-61/62/64.
-- Demo preview and 4300 refresh before release; release as a frontend publish + backend restart (the backend PR adds routes; no migration).
+- Release: backend restart (new routes, no migration) + frontend publish; demo preview and 4300 refresh first.
 
-## Review focus
+## Review focus (each pinned to a test above)
 
-1. Editing an old split whose members have different dates, then changing only a child's amount: every member must keep its own date (no unification).
-2. Convert-then-fail: `PUT /entries/{id}/split` with an invalid second member must leave the entry ungrouped and unchanged.
-3. Upsert with a protected member listed unchanged and another member dropped must succeed; the same call with the protected member's amount changed must 409 and write nothing.
-4. The keypad after a bubble switch must target the newly selected child (no write to the previous child from a pending `↵`/debounce).
-5. A new child added while the category request for the previous child is still in flight must not receive that category (clientKey routing).
+1. Old split with differing member dates, change one child's amount only → every member keeps its own date/time (§1.8 keep_full no-op, §2.11 untouched dates).
+2. `PUT /entries/{id}/split` with an invalid second member, or an FX failure → anchor unchanged, no group (§1.8 convert).
+3. Upsert with a protected member as `SplitKeepIn` and another member dropped → 200; the same protected member sent as a full member → 409 and nothing written (§1.8).
+4. Keypad after a bubble switch targets the new child; pending commit flushed to the old one (§2.11 async).
+5. A category/account response for a removed or replaced child is dropped by key + generation (§2.11 async).
