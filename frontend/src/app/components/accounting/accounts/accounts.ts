@@ -1,7 +1,11 @@
 import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import { catchError, forkJoin, of } from 'rxjs';
+import { Observable, catchError, forkJoin, map, of } from 'rxjs';
+import { SkeletonComponent } from '../skeleton/skeleton';
+
+interface ImportLookup { ok: boolean; v: ImportRun | null; }
+
 
 import { ImportRun, LedgerAccount } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -106,7 +110,7 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
 @Component({
   selector: 'app-accounting-accounts',
   standalone: true,
-  imports: [DatePipe, NgTemplateOutlet, RouterLink],
+  imports: [DatePipe, NgTemplateOutlet, RouterLink, SkeletonComponent],
   templateUrl: './accounts.html',
   styleUrl: './accounts.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -114,13 +118,17 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
 export class AccountingAccountsComponent {
   private accountingService = inject(AccountingService);
   private readonly bills = inject(BillingService);
-  private requestId = 0;
+  /** Guards the page load (accounts + preference). */
+  private accountsRequestId = 0;
+  /** Guards the import lookup; an import 重試 bumps only this one (spec §1.3). */
+  private importRequestId = 0;
 
   readonly accounts = signal<LedgerAccount[]>([]);
   readonly latestImport = signal<ImportRun | null>(null);
   readonly mainCurrency = signal('TWD');
   readonly loaded = signal(false);
   readonly loadError = signal(false);
+  readonly importError = signal(false);
   readonly collapsed = signal<ReadonlySet<string>>(new Set());
   readonly archivedOpen = signal(false);
   readonly archived = signal<LedgerAccount[] | null>(null);
@@ -178,19 +186,22 @@ export class AccountingAccountsComponent {
   }
 
   private load(): void {
-    const id = ++this.requestId;
+    const id = ++this.accountsRequestId;
+    const importId = ++this.importRequestId;
     this.today.set(todayIso());
     forkJoin({
       accounts: this.accountingService.getAccounts(),
-      latest: this.accountingService.getLatestImport(),
+      latest: this.importLookup(),
       preference: this.accountingService.getPreference().pipe(catchError(() => of(null))),
     }).subscribe({
       next: ({ accounts, latest, preference }) => {
-        if (id !== this.requestId) {
+        if (importId === this.importRequestId) {
+          this.applyImport(latest);
+        }
+        if (id !== this.accountsRequestId) {
           return;
         }
         this.accounts.set(accounts);
-        this.latestImport.set(latest);
         this.mainCurrency.set(preference?.main_currency ?? 'TWD');
         this.loadError.set(false);
         this.loaded.set(true);
@@ -202,13 +213,43 @@ export class AccountingAccountsComponent {
         }
       },
       error: () => {
-        if (id !== this.requestId) {
+        if (id !== this.accountsRequestId) {
           return;
         }
         this.loadError.set(true);
         this.loaded.set(true);
       },
     });
+  }
+
+  /** `GET /imports/latest` that never fails the page: 404 → `{ok: true, v: null}`, any error → `{ok: false}`. */
+  private importLookup(): Observable<ImportLookup> {
+    return this.accountingService.getLatestImport().pipe(
+      map((v): ImportLookup => ({ ok: true, v })),
+      catchError(() => of<ImportLookup>({ ok: false, v: null })),
+    );
+  }
+
+  private applyImport(result: ImportLookup): void {
+    this.latestImport.set(result.v);
+    this.importError.set(!result.ok);
+  }
+
+  /** The import panel's 重試: only the import lookup, so an accounts reload in flight stays valid. */
+  retryImport(): void {
+    const importId = ++this.importRequestId;
+    this.importLookup().subscribe(result => {
+      if (importId === this.importRequestId) {
+        this.applyImport(result);
+      }
+    });
+  }
+
+  /** The whole-page 重試 after `帳戶讀取失敗`. */
+  retry(): void {
+    this.loadError.set(false);
+    this.loaded.set(false);
+    this.load();
   }
 
   private archivedRequest = 0;
