@@ -144,15 +144,6 @@ interface LoadedEntry extends EntryLoad {
   related: RelatedLoad;
 }
 
-/**
- * `/accounting/entry` and `/accounting/entries/:id/edit` (spec "Entry page", mockups `s-entry`, `d-entry`).
- *
- * Load sequencing rule: every record load — route navigation, `?copy=`, a refetch after an action (`reload()`), a
- * reset for 連續記帳 — goes through `load()`, which bumps `loadId` and feeds the single `switchMap` sequence
- * `getEntry` → `loadRelated`. Nothing subscribes to `getEntry` or a related load on its own. `loading()` stays true
- * until both stages of the latest load have answered; an answer from either stage carrying an older `loadId` is
- * dropped.
- */
 /** The schedule part of the unsaved-input key: dates that still follow the entry date, and the rule day, are derived. */
 export function scheduleDraftKey(draft: ScheduleDraft): unknown {
   if (draft.tab === 'single') {
@@ -162,7 +153,15 @@ export function scheduleDraftKey(draft: ScheduleDraft): unknown {
   return { ...rest, start: draft.startTouched ? start : null, firstDate: draft.firstTouched ? firstDate : null };
 }
 
-
+/**
+ * `/accounting/entry` and `/accounting/entries/:id/edit` (spec "Entry page", mockups `s-entry`, `d-entry`).
+ *
+ * Load sequencing rule: every record load — route navigation, `?copy=`, a refetch after an action (`reload()`), a
+ * reset for 連續記帳 — goes through `load()`, which bumps `loadId` and feeds the single `switchMap` sequence
+ * `getEntry` → `loadRelated`. Nothing subscribes to `getEntry` or a related load on its own. `loading()` stays true
+ * until both stages of the latest load have answered; an answer from either stage carrying an older `loadId` is
+ * dropped.
+ */
 @Component({
   selector: 'app-entry-form',
   standalone: true,
@@ -574,7 +573,6 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     }
   }
 
-  /** Resets the form for a navigation; returns the record to load (edit or copy), or null for a blank record. */
   ngOnDestroy(): void {
     this.registry.unregister(this);
   }
@@ -586,7 +584,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     });
   }
 
-
+  /** Resets the form for a navigation; returns the record to load (edit or copy), or null for a blank record. */
   private start(id: string | null, kindParam: string | null, copyParam: string | null, scheduleParam: string | null = null): EntryTarget | null {
     this.baseline.set(null);
     this.registry.clearPending();

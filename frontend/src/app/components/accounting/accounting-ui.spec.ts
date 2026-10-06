@@ -98,6 +98,43 @@ describe('accounting-ui', () => {
       box.remove();
     });
 
+    it('excludes CSS-hidden ancestors and inherited invisible controls, while honoring visible overrides', () => {
+      const { box, first, middle, last } = build();
+      const styles = document.createElement('style');
+      styles.textContent = `.focus-test-none { display: none; }
+        .focus-test-invisible { visibility: hidden; }
+        .focus-test-collapse { visibility: collapse; }
+        .focus-test-visible { visibility: visible; }`;
+      document.head.appendChild(styles);
+      const extra = document.createElement('div');
+      extra.innerHTML = `<div class="focus-test-none"><button>CSS hidden descendant</button></div>
+        <button hidden>HTML hidden</button><div hidden><input /></div>
+        <div class="focus-test-collapse"><button>collapsed descendant</button></div>
+        <div class="focus-test-invisible"><button>invisible descendant</button>
+          <button class="focus-test-visible">visible override</button></div>`;
+      box.appendChild(extra);
+      try {
+        expect(focusables(box)).toEqual([first, middle, last, extra.querySelector('.focus-test-visible')]);
+      } finally { box.remove(); styles.remove(); }
+    });
+
+    it('wraps at the last visible control when the final DOM control has a display:none ancestor', () => {
+      const { box, first, last } = build();
+      const hidden = document.createElement('div');
+      hidden.style.display = 'none'; hidden.innerHTML = '<button>hidden final control</button>';
+      box.appendChild(hidden);
+      try {
+        last.focus();
+        const forward = tab();
+        expect(trapFocus(box, forward)).toBe(true);
+        expect(forward.defaultPrevented).toBe(true);
+        expect(document.activeElement).toBe(first);
+        const back = tab(true);
+        expect(trapFocus(box, back)).toBe(true);
+        expect(document.activeElement).toBe(last);
+      } finally { box.remove(); }
+    });
+
     it('wraps Tab from the last to the first and Shift+Tab from the first to the last', () => {
       const { box, first, middle, last } = build();
       last.focus();

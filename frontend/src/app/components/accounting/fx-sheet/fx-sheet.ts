@@ -191,7 +191,7 @@ export class FxSheetComponent implements OnInit {
     if (!this.isForeign()) {
       this.value.set(null);
       restoreOverlayFocus(this.opener, this.host.nativeElement);
-    this.closed.emit();
+      this.closed.emit();
       return;
     }
     const original = parseNumber(this.original());

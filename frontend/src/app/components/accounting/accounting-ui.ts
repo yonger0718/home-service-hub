@@ -201,10 +201,22 @@ export const FOCUSABLE_SELECTOR = [
   '[tabindex]',
 ].join(',');
 
-/** Elements Tab can reach inside `container`, in DOM order (no negative tabindex, nothing inert or disabled). */
+/** CSS visibility is inherited but can be overridden; display:none hides every descendant. */
+function renderedForFocus(element: HTMLElement): boolean {
+  const view = element.ownerDocument.defaultView;
+  const visibility = view?.getComputedStyle(element).visibility;
+  if (visibility === 'hidden' || visibility === 'collapse') return false;
+  for (let ancestor: Element | null = element; ancestor; ancestor = ancestor.parentElement) {
+    if (ancestor.hasAttribute('hidden') || view?.getComputedStyle(ancestor).display === 'none') return false;
+  }
+  return true;
+}
+
+/** Elements Tab can reach inside `container`, in DOM order (no negative tabindex, nothing hidden, inert or disabled). */
 export function focusables(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
-    element => element.tabIndex >= 0 && !element.hidden && !element.closest('[inert]') && !element.matches(':disabled'),
+    element => element.tabIndex >= 0 && !element.hidden && !element.closest('[inert]') &&
+      !element.matches(':disabled') && renderedForFocus(element),
   );
 }
 
