@@ -841,8 +841,17 @@ export class LedgerTimelineComponent implements OnInit {
     this.query.set(value.trim());
   }
 
-  onQueryInput(value: string): void {
+  onQueryCompositionStart(): void {
     this.clearQueryTimer();
+  }
+
+  /** Keep IME candidates out of committed filters; compositionend schedules the final DOM value too. */
+  onQueryInput(event: Event): void {
+    this.clearQueryTimer();
+    if ((event as InputEvent).isComposing) {
+      return;
+    }
+    const value = (event.target as HTMLInputElement).value;
     this.queryTimer = setTimeout(() => {
       this.queryTimer = null;
       this.setQuery(value);

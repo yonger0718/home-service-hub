@@ -481,6 +481,66 @@ describe('LedgerTimelineComponent', () => {
     });
   });
 
+    it('cancels pending search at composition start and debounces only the committed composition', () => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10'); flushEntries([]); fixture.detectChanges();
+      const input = el.querySelector<HTMLInputElement>('.filter-q')!;
+      input.value = '午'; input.dispatchEvent(new InputEvent('input'));
+      vi.advanceTimersByTime(200);
+      input.dispatchEvent(new CompositionEvent('compositionstart'));
+      vi.advanceTimersByTime(400); fixture.detectChanges();
+      expectNoEntryPage();
+      input.value = '午ㄘ';
+      input.dispatchEvent(new InputEvent('input', { isComposing: true }));
+      for (const key of ['Enter', 'Escape']) {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key, isComposing: true, bubbles: true, cancelable: true }));
+      }
+      vi.advanceTimersByTime(400); fixture.detectChanges();
+      expectNoEntryPage();
+      expect(input.value).toBe('午ㄘ');
+      input.value = '午餐 ';
+      input.dispatchEvent(new CompositionEvent('compositionend', { data: '餐' }));
+      vi.advanceTimersByTime(299); fixture.detectChanges();
+      expectNoEntryPage();
+      vi.advanceTimersByTime(1); fixture.detectChanges();
+      expect(flushEntries([]).request.params.get('q')).toBe('午餐');
+      vi.advanceTimersByTime(300); fixture.detectChanges();
+      expectNoEntryPage();
+      expect(input.value).toBe('午餐 ');
+    });
+
+    it('cancels a pending timer when a composing input arrives without compositionstart', () => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10'); flushEntries([]); fixture.detectChanges();
+      const input = el.querySelector<HTMLInputElement>('.filter-q')!;
+      input.value = '午'; input.dispatchEvent(new InputEvent('input'));
+      vi.advanceTimersByTime(200);
+      input.value = '午ㄘ'; input.dispatchEvent(new InputEvent('input', { isComposing: true }));
+      vi.advanceTimersByTime(400); fixture.detectChanges();
+      expectNoEntryPage();
+      expect(fixture.componentInstance.query()).toBe('');
+    });
+
+    it('preserves raw search text and caret after committing the trimmed query', () => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10'); flushEntries([]); fixture.detectChanges();
+      const input = el.querySelector<HTMLInputElement>('.filter-q')!;
+      input.value = ' 午餐 '; input.setSelectionRange(2, 2);
+      input.dispatchEvent(new InputEvent('input'));
+      vi.advanceTimersByTime(300); fixture.detectChanges();
+      expect(flushEntries([]).request.params.get('q')).toBe('午餐');
+      fixture.detectChanges();
+      expect(input.value).toBe(' 午餐 ');
+      expect(input.selectionStart).toBe(2);
+      expect(input.selectionEnd).toBe(2);
+      el.querySelector<HTMLButtonElement>('.clear-filters')!.click(); fixture.detectChanges();
+      flushEntries([]); fixture.detectChanges();
+      expect(input.value).toBe('');
+    });
+
     it('searches 300 ms after the last keystroke and at once on Enter', () => {
       vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
       vi.setSystemTime(new Date(2026, 9, 2, 12, 0, 0));
