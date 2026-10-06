@@ -124,6 +124,11 @@ export class CategoryPickerComponent {
     if (event.key === 'Escape' && this.openParent()) {
       event.preventDefault();
       this.back();
+    } else if (event.key === 'Escape' && this.reopened() && this.selected()) {
+      event.preventDefault();
+      this.reopened.set(false);
+      this.cdr.detectChanges();
+      host.querySelector<HTMLButtonElement>('.strip .sel')?.focus();
     } else if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       if (!event.repeat) button.click();

@@ -184,6 +184,74 @@ describe('CategoryPickerComponent', () => {
     expect(document.activeElement).toBe(buttons[8]);
   });
 
+  it.each([[347, 5], [500, 7], [560, 8]])(
+    'fits %ipx containers into %i columns and navigates one row', (width, expectedColumns) => {
+      const categories = Array.from({ length: 18 }, (_, i) => makeCategory({ id: 100 + i }));
+      const { el } = render({ categories });
+      const grid = el.querySelector<HTMLElement>('.grid')!;
+      grid.style.width = width + 'px';
+      // jsdom drops this valid nested min() declaration from CSSOM. Inspect
+      // Angular's actual injected stylesheet text, scoped to this grid element.
+      const rules = Array.from(document.querySelectorAll('style')).flatMap(style =>
+        Array.from((style.textContent ?? '').matchAll(/([^{}]+)\{([^{}]*)\}/g)),
+      );
+      const gridRules = rules.filter(([, selector, body]) =>
+        /^\s*\.grid(?:\[[^\]]+\])?\s*$/.test(selector) &&
+        grid.matches(selector.trim()) && body.includes('grid-template-columns'),
+      );
+      expect(gridRules).toHaveLength(1);
+      const body = gridRules[0][2];
+      const tracks = body.match(/grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(min\(100%,\s*(\d+)px\),\s*1fr\)\)\s*;/);
+      const spacing = body.match(/(?:^|;)\s*gap:\s*\d+px\s+(\d+)px\s*;/);
+      expect(tracks).not.toBeNull();
+      expect(spacing).not.toBeNull();
+      const minimum = Number(tracks![1]);
+      const gap = Number(spacing![1]);
+      const columns = Math.floor((width + gap) / (minimum + gap));
+      expect(columns).toBe(expectedColumns);
+      const buttons = Array.from(grid.querySelectorAll<HTMLButtonElement>('.cat'));
+      buttons.forEach((button, i) => {
+        button.getBoundingClientRect = () => ({ top: Math.floor(i / columns) * 60 }) as DOMRect;
+      });
+      buttons[0].focus();
+      expect(key(buttons[0], 'ArrowDown').defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(buttons[expectedColumns]);
+      key(buttons[expectedColumns], 'ArrowUp');
+      expect(document.activeElement).toBe(buttons[0]);
+    },
+  );
+
+  it('collapses a reopened main grid on Escape without changing selection or cancelling the form', () => {
+    const { el, tap, component, fixture } = render({ selected: DINNER });
+    const picked: CategoryNode[] = [];
+    component.picked.subscribe(node => picked.push(node));
+    const unhandled: string[] = [];
+    const listener = (event: KeyboardEvent) => {
+      if (!event.defaultPrevented) unhandled.push(event.key);
+    };
+    el.parentElement!.addEventListener('keydown', listener);
+    tap('.sel', '晚餐');
+    const main = document.activeElement!;
+    expect(key(main, 'Escape', { isComposing: true }).defaultPrevented).toBe(false);
+    expect(component.reopened()).toBe(true);
+    unhandled.length = 0;
+    expect(key(main, 'Escape').defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    expect(el.querySelector('.grid')).toBeNull();
+    expect(document.activeElement).toBe(el.querySelector('.strip .sel'));
+    expect(component.selected()).toBe(DINNER);
+    expect(picked).toEqual([]);
+    expect(unhandled).toEqual([]);
+    el.parentElement!.removeEventListener('keydown', listener);
+  });
+
+  it('leaves main-grid Escape unhandled when there is no selection', () => {
+    const { el, component } = render();
+    expect(key(el.querySelector('.cat')!, 'Escape').defaultPrevented).toBe(false);
+    expect(el.querySelector('.grid')).not.toBeNull();
+    expect(component.selected()).toBeNull();
+  });
+
   for (const activation of ['Enter', ' ']) {
     it('picks exactly once with ' + activation + ' and prevents form save', () => {
       const { el, fixture, component } = render();
@@ -218,7 +286,10 @@ describe('CategoryPickerComponent', () => {
     fixture.detectChanges();
     const parent = el.querySelector<HTMLButtonElement>('[data-category-id="1"]')!;
     expect(document.activeElement).toBe(parent);
-    expect(key(parent, 'Escape').defaultPrevented).toBe(false);
+    expect(key(parent, 'Escape').defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    expect(document.activeElement).toBe(el.querySelector('.strip .sel'));
+    tap('.sel', '晚餐');
     tap('.cat', '飲食');
     tap('.back', '返回');
     expect(document.activeElement?.getAttribute('data-category-id')).toBe('1');

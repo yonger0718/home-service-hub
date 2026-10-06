@@ -6,7 +6,7 @@
 .grid {
   display: grid;
   gap: 10px 4px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 116px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 64px), 1fr));
   padding: 6px 0 8px;
 }
 
