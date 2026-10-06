@@ -326,7 +326,8 @@ export class AccountingLayoutComponent {
     }
     this.swipe = { x: event.clientX, y: event.clientY };
     const grip = event.currentTarget as HTMLElement | null;
-    if (typeof event.pointerId === 'number') {
+    // Capture would retarget the button's following click to the grip, swallowing a plain tap on ✕.
+    if (typeof event.pointerId === 'number' && !target?.closest('.sheet-close')) {
       grip?.setPointerCapture?.(event.pointerId);
     }
   }

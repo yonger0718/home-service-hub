@@ -513,4 +513,33 @@ describe('AccountingLayoutComponent', () => {
     registry.unregister(form);
   });
 
+  it.each(['mouse', 'touch'])('does not capture a %s tap on ✕, while a grip swipe captures and closes', async pointerType => {
+    const harness = await start('sheet', '/accounting/entries/5');
+    const router = TestBed.inject(Router);
+    const grip = await find(harness, '.sheet-grip') as HTMLElement;
+    const close = await find(harness, '.sheet-close') as HTMLButtonElement;
+    const capture = vi.fn();
+    Object.defineProperty(grip, 'setPointerCapture', { configurable: true, value: capture });
+    const pointer = (target: HTMLElement, type: string, x: number) => {
+      const event = new MouseEvent(type, { clientX: x, clientY: 20, bubbles: true });
+      Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: pointerType } });
+      target.dispatchEvent(event);
+    };
+    pointer(close, 'pointerdown', 100);
+    pointer(close, 'pointerup', 100);
+    expect(capture).not.toHaveBeenCalled();
+    // DOM click alone cannot emulate capture retargeting; the capture assertion guards that browser prerequisite.
+    close.click();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    await router.navigateByUrl('/accounting/entries/5');
+    const reopened = await find(harness, '.sheet-grip') as HTMLElement;
+    const swipeCapture = vi.fn();
+    Object.defineProperty(reopened, 'setPointerCapture', { configurable: true, value: swipeCapture });
+    pointer(reopened, 'pointerdown', 100);
+    expect(swipeCapture).toHaveBeenCalledWith(1);
+    pointer(reopened, 'pointermove', 200);
+    pointer(reopened, 'pointerup', 200);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+  });
+
 });
