@@ -283,6 +283,38 @@ describe('TransferPanelComponent', () => {
     expect(el.querySelector<HTMLSelectElement>('.from-select')!.value).toBe('1');
     expect(el.querySelectorAll('.from-select option').length).toBe(2);
   });
+  it('excludes async category defaults from the draft but includes explicit choices and resets them after clean', async () => {
+    const fixture = TestBed.createComponent(TransferPanelComponent);
+    fixture.componentRef.setInput('accounts', [account(1, '主帳戶', 'TWD', '0'), account(2, '儲蓄', 'TWD', '0')]);
+    fixture.detectChanges();
+    const panel = fixture.componentInstance;
+    const clean = panel.draftKey();
+    expect(panel.categoryTouched()).toBe(false);
+    http.expectOne(r => r.url === '/api/accounting/categories').flush([category(30, '轉帳', '⇄'), category(31, '提款', '🏧')]);
+    fixture.detectChanges();
+    expect(panel.categoryId()).toBe(30);
+    expect(panel.draftKey()).toBe(clean);
+    (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('.cat')[1].click();
+    fixture.detectChanges();
+    expect(panel.categoryTouched()).toBe(true);
+    expect(panel.draftKey()).not.toBe(clean);
+    panel.markClean();
+    expect(panel.categoryTouched()).toBe(false);
+    expect(panel.draftKey()).toBe(clean);
+    expect(panel.categoryId()).toBe(31);
+    type(fixture, '.out-amount', '100');
+    expect(panel.draftKey()).not.toBe(clean);
+  });
+
+  it('hydrates a saved transfer category without treating it as a user selection', async () => {
+    const fixture = await render([account(1, '主帳戶', 'TWD', '0'), account(2, '儲蓄', 'TWD', '0')]);
+    fixture.componentRef.setInput('edit', { groupId: 'g1', out: { account_id: 1, category_id: 31, amount: '-100', children: [] },
+      in: { account_id: 2, category_id: 31, amount: '100', children: [] } });
+    fixture.detectChanges();
+    expect(fixture.componentInstance.categoryId()).toBe(31);
+    expect(fixture.componentInstance.categoryTouched()).toBe(false);
+  });
+
 });
 
 describe('TransferPanelComponent without categories', () => {
@@ -306,4 +338,5 @@ describe('TransferPanelComponent without categories', () => {
     expect(el.querySelector('.transfer-error')?.textContent).toContain('轉帳類別讀取失敗');
     http.verify();
   });
+
 });

@@ -69,6 +69,7 @@ export class TransferPanelComponent implements OnInit {
   readonly saveRequested = output<boolean>();
 
   readonly categories = signal<CategoryNode[]>([]);
+  readonly categoryTouched = signal(false);
   readonly categoryId = signal<number | null>(null);
   readonly fromId = signal<number | null>(null);
   readonly toId = signal<number | null>(null);
@@ -117,6 +118,21 @@ export class TransferPanelComponent implements OnInit {
   readonly rateLabel = computed(() =>
     transferRateLabel(this.outAmount(), this.inAmount(), this.from()?.currency ?? '', this.to()?.currency ?? ''),
   );
+  /** Defaults and hydrated categories are derived; explicit category choices belong to the draft. */
+  readonly draftKey = computed(() => JSON.stringify([
+    this.fromId(), this.toId(), this.outText(), this.inText(), this.children(),
+    this.categoryTouched() ? this.categoryId() : null,
+  ]));
+
+  selectCategory(id: number): void {
+    this.categoryTouched.set(true);
+    this.categoryId.set(id);
+  }
+
+  markClean(): void {
+    this.categoryTouched.set(false);
+  }
+
   readonly phone = computed(() => this.layout.mode() === 'phone');
   readonly showKeypad = computed(() => this.phone() && this.activeSide() !== null && !this.locked());
   readonly activeText = computed(() => (this.activeSide() === 'in' ? this.inText() : this.outText()));
@@ -264,6 +280,7 @@ export class TransferPanelComponent implements OnInit {
 
   /** 連續記帳: a fresh transfer between the same accounts in the same category. */
   reset(): void {
+    this.markClean();
     this.outText.set('');
     this.inText.set('');
     this.children.set({ out: EMPTY_CHILDREN, in: EMPTY_CHILDREN });

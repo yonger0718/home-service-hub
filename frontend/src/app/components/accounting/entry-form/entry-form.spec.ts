@@ -293,13 +293,16 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '飲食');
     tap(el, '.cat', '午餐');
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
     keys(el, '1', '1', '6', '6', '✓');
+    expect(form.isDirty()).toBe(true);
 
     httpMock
       .expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
       .flush(makeEntryDetail({ id: 99, amount: '-1166.0000', proposed_fee: '17.0000' }));
     settle();
     expect(left()).toBe(false);
+    expect(form.isDirty()).toBe(false);
     expect(text(el.querySelector('.fee-prompt .add-fee'))).toBe('＋ 國外交易手續費 −$17');
 
     (el.querySelector('.fee-prompt .add-fee') as HTMLButtonElement).click();
@@ -1023,8 +1026,10 @@ describe('EntryFormComponent', () => {
     const body = put.request.body.members;
     expect(body.map((line: { amount: string }) => line.amount)).toEqual(['200', '120']);
     expect(body[1]).toMatchObject({ kind: 'receivable', counterparty_id: 5, description: '代墊 Alan', entry_date: '2026-09-30' });
+    expect(form.isDirty()).toBe(true);
     put.flush({ group_id: 4, member_ids: [21, 22] });
     settle();
+    expect(form.isDirty()).toBe(false);
     await Promise.all(navigate!.mock.results.map(result => result.value));
 
     expect(navigate).toHaveBeenCalledWith('/accounting/entries/22', { replaceUrl: true, state: { closeTo: 'list' } });
@@ -1225,6 +1230,108 @@ describe('EntryFormComponent', () => {
     form.save(false); settle();
     expect(text(el.querySelector('.form-error'))).toBe('餘額調整請在明細頁處理');
     httpMock.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+  });
+
+  describe('unsaved input', () => {
+    it('is clean after load, dirty after typing a name, clean again after save-and-continue and after save', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      expect(form.isDirty()).toBe(false);
+
+      typeInto(el, '.name-input', '午餐');
+      expect(form.isDirty()).toBe(true);
+
+      tap(el, '.cat', '飲食');
+      tap(el, '.cat', '午餐');
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      keys(el, '1', '7', '0');
+      form.save(true);
+      settle();
+      httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+        .flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
+      settle();
+      expect(left()).toBe(false);
+      expect(form.isDirty()).toBe(false);
+
+      typeInto(el, '.name-input', '晚餐');
+      keys(el, '2', '0', '0');
+      expect(form.isDirty()).toBe(true);
+      form.save(false);
+      settle();
+      httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+        .flush(makeEntryDetail({ id: 100, amount: '-200.0000', account_id: 2, category_id: 12 }));
+      settle();
+      expect(left()).toBe(true);
+      expect(form.isDirty()).toBe(false);
+    });
+
+    it('is clean right after an edit loads, even once its category and account detail arrive', async () => {
+      const { el } = await open('/accounting/entries/9/edit');
+      respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, category_id: 12, amount: '-170.0000' }));
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      expect(form.isDirty()).toBe(false);
+      typeInto(el, '.name-input', '改名');
+      expect(form.isDirty()).toBe(true);
+    });
+
+    it('is clean after a transfer form loads and dirty once an amount is typed', async () => {
+      const { el } = await open('/accounting/entry?kind=transfer');
+      respondTransferCategories();
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      expect(form.isDirty()).toBe(false);
+      typeInto(el, 'app-transfer-panel .out-amount', '3000');
+      expect(form.isDirty()).toBe(true);
+    });
+  });
+
+  it('keeps an existing transfer clean when its categories arrive late, but tracks a category-only choice', async () => {
+    const { el } = await open('/accounting/entries/8/edit');
+    const inLeg = makeEntryDetail({ id: 8, kind: 'transfer_in', account_id: 2, amount: '5000.0000', category_id: 40,
+      transfer_group_id: 'g-7', transfer_counterpart: makeEntry({ id: 7, kind: 'transfer_out', account_id: 1 }) });
+    respond('/api/accounting/entries/8', inLeg);
+    respond('/api/accounting/entries/7', { ...inLeg, id: 7, kind: 'transfer_out', account_id: 1, amount: '-5000.0000' });
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(false);
+    respond('/api/accounting/categories', [makeCategory({ id: 40, kind: 'transfer_out', name: '轉帳' }),
+      makeCategory({ id: 41, kind: 'transfer_out', name: '儲蓄' })]);
+    expect(form.isDirty()).toBe(false);
+    tap(el, 'app-transfer-panel .cat', '儲蓄');
+    expect(form.isDirty()).toBe(true);
+    form.save(false); settle();
+    const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/transfers/g-7');
+    expect(put.request.body.category_id).toBe(41);
+    put.flush({}); settle();
+    expect(form.isDirty()).toBe(false);
+  });
+
+  it('excludes a new transfer category default arriving after the clean snapshot', async () => {
+    await open('/accounting/entry?kind=transfer');
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(false);
+    respondTransferCategories();
+    expect(form.isDirty()).toBe(false);
+  });
+
+  it('keeps unsaved input dirty after a write fails', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食'); tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    keys(el, '1', '7', '0');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(true);
+    form.save(false); settle();
+    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+      .flush({}, { status: 500, statusText: 'Failed' }); settle();
+    expect(form.isDirty()).toBe(true);
+    expect(left()).toBe(false);
   });
 
 });

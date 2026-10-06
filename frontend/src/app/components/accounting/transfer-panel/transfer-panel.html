@@ -1,7 +1,7 @@
 <div class="transfer-panel">
   <div class="grid xfer-categories">
     @for (cat of categories(); track cat.id) {
-      <button type="button" class="cat" [class.on]="categoryId() === cat.id" [disabled]="locked()" (click)="categoryId.set(cat.id)">
+      <button type="button" class="cat" [class.on]="categoryId() === cat.id" [disabled]="locked()" (click)="selectCategory(cat.id)">
         <span class="ico" [style.background]="cat.color ?? '#d4823b'">{{ cat.icon ?? '⇄' }}</span>{{ cat.name }}
       </button>
     }
