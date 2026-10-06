@@ -144,7 +144,7 @@
   justify-content: center;
 }
 
-.empty-primary {
+.empty-state .empty-primary {
   background: var(--app-primary);
   border-radius: var(--radius-pill);
   color: var(--app-on-primary, #fff);
@@ -153,7 +153,7 @@
   text-decoration: none;
 }
 
-.empty-secondary {
+.empty-state .empty-secondary {
   border: 1px solid var(--app-border);
   border-radius: var(--radius-pill);
   color: var(--app-text);
