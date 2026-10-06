@@ -46,4 +46,10 @@ describe('pickerGroups', () => {
     expect(names(pickerGroups(ACCOUNTS, null, { ...filter, query: '信用' }))).toEqual([['信用卡', ['玉山 UNI']]]);
     expect(pickerGroups(ACCOUNTS, null, { ...filter, query: 'zzz' })).toEqual([]);
   });
+  it('keeps API group order when excluded or searched accounts hide the first member', () => {
+    const accounts = [...ACCOUNTS, makeAccount({ id: 6, name: '零錢', group_name: '現金' })];
+    expect(pickerGroups(accounts, null, { allowArchived: false, exclude: [1], query: '' }).map(g => g.name))
+      .toEqual(['現金', '信用卡', '銀行', '未分組']);
+  });
+
 });

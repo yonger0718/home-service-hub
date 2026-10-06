@@ -47,7 +47,7 @@ export function pickerGroups(accounts: LedgerAccount[], groups: AccountGroup[] |
     ? [...groups].sort((a, b) => a.sort_order - b.sort_order).map(group => ({ key: `g${group.id}`, name: group.name }))
     : [];
   if (!groups) {
-    for (const account of open) {
+    for (const account of accounts.filter(account => !account.is_archived)) {
       const key = keyOf(account);
       if (key !== 'none' && !order.some(entry => entry.key === key)) {
         order.push({ key, name: account.group_name! });

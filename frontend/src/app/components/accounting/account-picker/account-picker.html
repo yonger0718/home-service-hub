@@ -1,0 +1,84 @@
+<!-- frontend/src/app/components/accounting/account-picker/account-picker.html -->
+<button
+  #trigger
+  type="button"
+  class="acct-trigger"
+  [class.empty]="!selected()"
+  aria-haspopup="dialog"
+  [attr.aria-expanded]="open()"
+  [attr.aria-label]="triggerLabel()"
+  [attr.data-value]="value()"
+  [disabled]="disabled()"
+  (click)="toggle()"
+>
+  @if (selected(); as account) {
+    <span class="acct-ico" aria-hidden="true">{{ account.icon ?? '🏦' }}</span>
+    <span class="acct-name">{{ account.name }}</span>
+    @if (!compact()) {
+      <span class="acct-trigger-balance">· {{ balanceText(account) }}</span>
+    }
+  } @else {
+    <span class="acct-name">選擇帳戶</span>
+  }
+  <span class="acct-caret" aria-hidden="true">▾</span>
+</button>
+
+@if (open()) {
+  @if (phone()) {
+    <div class="overlay" data-overlay (click)="close()">
+      <div #panel class="sheet acct-panel" role="dialog" aria-modal="true" [attr.aria-label]="label()" tabindex="-1" (click)="$event.stopPropagation()">
+        <div class="grab"></div>
+        <h3>{{ label() }}</h3>
+        <ng-container *ngTemplateOutlet="body" />
+      </div>
+    </div>
+  } @else {
+    <div #panel class="acct-popover acct-panel" data-overlay role="dialog" [attr.aria-label]="label()" tabindex="-1" [style]="popoverStyle()">
+      <ng-container *ngTemplateOutlet="body" />
+    </div>
+  }
+}
+
+<ng-template #body>
+  @if (showSearch()) {
+    <input class="acct-search" type="search" placeholder="搜尋帳戶" aria-label="搜尋帳戶" [value]="query()" (input)="onSearch($any($event.target).value)" />
+  }
+  @if (recentAccounts().length > 0) {
+    <div class="acct-recent" role="group" aria-label="最近使用">
+      <span class="acct-recent-label">最近使用</span>
+      @for (account of recentAccounts(); track account.id) {
+        <button type="button" class="acct-recent-chip" [attr.data-account-id]="account.id" (click)="choose(account.id)">
+          {{ account.icon ?? '🏦' }} {{ account.name }}
+        </button>
+      }
+    </div>
+  }
+  <div class="acct-list" role="listbox" [attr.aria-label]="label()">
+    @for (group of groupList(); track group.key) {
+      <div class="acct-group" role="group" [attr.aria-label]="group.name">
+        <div class="acct-group-name" aria-hidden="true">{{ group.name }}</div>
+        @for (account of group.accounts; track account.id) {
+          <div
+            class="acct-option"
+            role="option"
+            [class.active]="account.id === activeId()"
+            [attr.data-account-id]="account.id"
+            [attr.aria-selected]="account.id === value()"
+            [attr.tabindex]="account.id === activeId() ? 0 : -1"
+            (click)="choose(account.id)"
+          >
+            <span class="acct-ico" aria-hidden="true">{{ account.icon ?? '🏦' }}</span>
+            <span class="acct-name">{{ account.name }}</span>
+            <span class="acct-currency">{{ account.currency }}</span>
+            <span class="acct-balance" [class.neg]="+account.balance < 0">{{ balanceText(account) }}</span>
+            @if (account.id === value()) {
+              <span class="acct-check" aria-hidden="true">✓</span>
+            }
+          </div>
+        }
+      </div>
+    } @empty {
+      <p class="acct-empty">沒有符合的帳戶</p>
+    }
+  </div>
+</ng-template>
