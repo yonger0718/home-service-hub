@@ -103,14 +103,18 @@
     @if (isSystem()) {
       <p class="lbl">餘額調整</p>
       <div class="tiles">
-        <label class="tile wide">
+        <div class="tile wide account-tile">
           <span class="cap">帳戶</span>
-          <select class="account-select" (change)="setAccount($any($event.target).value)">
-            @for (option of accountOptions(); track option.id) {
-              <option [value]="option.id" [selected]="option.id === accountId()">{{ accountLabel(option) }}</option>
-            }
-          </select>
-        </label>
+          <app-account-picker
+            class="account-picker system-account"
+            label="帳戶"
+            [accounts]="accountOptions()"
+            [value]="accountId()"
+            [allowArchived]="editing() || scheduleId() !== null"
+            (valueChange)="chooseAccount($event)"
+          />
+        </div>
+
         <div class="tile wide current-balance"><span class="cap">當前餘額</span><span>{{ currentBalance() }}</span></div>
         <div class="tile amount wide target-tile" [class.invalid]="amountError()">
           <span class="cur">{{ accountCurrency() }}</span>
@@ -196,15 +200,18 @@
         </div>
 
         @if (kind() !== 'transfer') {
-          <label class="tile">
-            <span class="sr-only">帳戶</span>
-            <select class="account-select" (change)="setAccount($any($event.target).value)">
-              @for (option of accountOptions(); track option.id) {
-                <option [value]="option.id" [selected]="option.id === accountId()">{{ accountLabel(option) }}</option>
-              }
-            </select>
-          </label>
+          <div class="tile account-tile">
+            <app-account-picker
+              class="account-picker"
+              label="帳戶"
+              [accounts]="accountOptions()"
+              [value]="accountId()"
+              [allowArchived]="editing() || scheduleId() !== null"
+              (valueChange)="chooseAccount($event)"
+            />
+          </div>
         }
+
         <label class="tile">
           <span class="sr-only">專案</span>
           <select class="project-select" (change)="setProject($any($event.target).value)">

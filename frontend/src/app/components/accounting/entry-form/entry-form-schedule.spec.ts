@@ -129,7 +129,11 @@ describe('EntryFormComponent schedules', () => {
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     tap(el, '.cat', '娛樂');
     tap(el, '.cat', 'Netflix');
-    set(el, '.account-select', '2', 'change');
+    (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+    settle();
+    (el.querySelector('.account-picker .acct-option[data-account-id="2"]') as HTMLElement).click();
+    settle();
+
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2, name: '範例卡' }));
     keys(el, '3', '9', '0');
     tap(el, '.schedule-tab', '週期');
@@ -470,9 +474,9 @@ describe('EntryFormComponent schedules', () => {
     flushAll('/api/accounting/categories', [STREAMING]);
     flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     flushAll('/api/accounting/accounts/4', makeAccountDetail({ id: 4 }));
-    const select = el.querySelector('.account-select') as HTMLSelectElement;
-    expect(select.value).toBe('4');
-    expect(text(select.selectedOptions[0])).toContain('舊卡');
+    const trigger = el.querySelector('.account-picker .acct-trigger')!;
+    expect(trigger.getAttribute('data-value')).toBe('4');
+    expect(text(trigger)).toContain('舊卡');
   });
 
   it('shows the lock banner for an imported definition before cutover', async () => {

@@ -1,3 +1,5 @@
+import { AccountPickerComponent } from '../account-picker/account-picker';
+import { rememberRecentAccounts } from '../account-picker/recent-accounts';
 import { Location, NgTemplateOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
@@ -165,7 +167,7 @@ export function scheduleDraftKey(draft: ScheduleDraft): unknown {
 @Component({
   selector: 'app-entry-form',
   standalone: true,
-  imports: [
+  imports: [AccountPickerComponent,
     NgTemplateOutlet,
     LockBannerComponent,
     CategoryPickerComponent,
@@ -904,8 +906,8 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     }
   }
 
-  setAccount(value: string): void {
-    this.moveToAccount(value ? Number(value) : null);
+  chooseAccount(id: number | null): void {
+    this.moveToAccount(id);
     if (this.entryId() === null) {
       this.rulesTouched.set(false);
     }
@@ -1245,7 +1247,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
         entry_time: this.entryTime() || null,
         description: this.description().trim() || null,
       });
-      this.write(request, () => this.finish(keepGoing));
+      this.write(request, () => { rememberRecentAccounts([this.accountId()]); this.finish(keepGoing); });
       return;
     }
     const group = this.splitGroup ? { ...this.splitGroup, dateChanged: this.datesKey() !== this.loadedDates } : null;
@@ -1274,6 +1276,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           ? plan.input
           : (plan.input.members[plan.kind === 'update-split' ? plan.index : 0] as EntryInput);
       rememberEntryUse(input, this.amount());
+      rememberRecentAccounts([input.account_id]);
       if (detail?.proposed_fee && Number(detail.proposed_fee) > 0 && !input.fee) {
         this.feeProposal.set({ entryId: detail.id, amount: detail.proposed_fee, input, continuous: keepGoing });
         return;

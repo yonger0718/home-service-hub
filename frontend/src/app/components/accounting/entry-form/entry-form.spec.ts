@@ -1,3 +1,6 @@
+import { By } from '@angular/platform-browser';
+import { AccountPickerComponent } from '../account-picker/account-picker';
+import { RECENT_ACCOUNTS_KEY } from '../account-picker/recent-accounts';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Location } from '@angular/common';
@@ -222,7 +225,7 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '飲食');
     tap(el, '.cat', '午餐');
 
-    expect((el.querySelector('.account-select') as HTMLSelectElement).value).toBe('1');
+    expect(pickerValue(el)).toBe('1');
     expect((el.querySelector('.project-select') as HTMLSelectElement).value).toBe('');
   });
 
@@ -277,7 +280,7 @@ describe('EntryFormComponent', () => {
     expect(text(el.querySelector('.grid .cat'))).toContain('薪水');
     expect(text(el.querySelector('.amount-value'))).toBe('0');
     expect(text(el.querySelector('.kind-tab.on'))).toBe('收入');
-    expect((el.querySelector('.account-select') as HTMLSelectElement).value).toBe('2');
+    expect(pickerValue(el)).toBe('2');
     expect((el.querySelector('.date-input') as HTMLInputElement).value).toBe('2026-09-30');
     expect(el.querySelector('.saved-flash')).not.toBeNull();
   });
@@ -372,7 +375,7 @@ describe('EntryFormComponent', () => {
 
     expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('晚餐');
     expect(text(el.querySelector('.amount-value'))).toBe('250');
-    expect((el.querySelector('.account-select') as HTMLSelectElement).value).toBe('2');
+    expect(pickerValue(el)).toBe('2');
 
     // Two refetches through load(): the first one's late answer is ignored.
     const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
@@ -478,9 +481,14 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/categories', [FOOD]);
     respond('/api/accounting/accounts/3', makeAccountDetail({ id: 3, name: '舊卡', is_archived: true }));
 
-    const select = el.querySelector('.account-select') as HTMLSelectElement;
-    expect(Array.from(select.options).map(option => option.textContent?.trim())).toEqual(['錢包', '玉山 UNI', '舊卡（已封存）']);
-    expect(select.value).toBe('3');
+    (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+    settle();
+    expect(Array.from(el.querySelectorAll('.account-picker .acct-option .acct-name')).map(node => text(node))).toEqual(['錢包', '玉山 UNI', '舊卡']);
+    expect(Array.from(el.querySelectorAll('.account-picker .acct-group-name')).map(node => text(node))).toEqual(['未分組', '已封存']);
+    expect(pickerValue(el)).toBe('3');
+    (el.querySelector('.account-picker .acct-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    settle();
+
 
     // A new record never offers the archived account (the preference is cached, so it is not requested again).
     // Real navigation to a different route config: the edit form is destroyed and a fresh form issues accounts,
@@ -494,8 +502,10 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
 
     const fresh = harness.routeNativeElement as HTMLElement;
-    const options = Array.from((fresh.querySelector('.account-select') as HTMLSelectElement).options);
-    expect(options.map(option => option.textContent?.trim())).toEqual(['錢包', '玉山 UNI']);
+    (fresh.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+    settle();
+    expect(Array.from(fresh.querySelectorAll('.account-picker .acct-option .acct-name')).map(node => text(node))).toEqual(['錢包', '玉山 UNI']);
+
   });
 
   it('cancels on Esc unless the Esc was already handled', async () => {
@@ -706,7 +716,7 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
 
     expect(el.querySelector('app-category-picker')).toBeNull();
-    expect(el.querySelector('.account-select')).toBeNull();
+    expect(el.querySelector('.account-picker')).toBeNull();
     typeInto(el, 'app-transfer-panel .out-amount', '3000');
     typeInto(el, '.name-input', ' 繳卡費 ');
     expect((el.querySelector('app-transfer-panel .in-amount') as HTMLInputElement).value).toBe('3000');
@@ -895,12 +905,10 @@ describe('EntryFormComponent', () => {
   }
 
   function chooseAccount(el: HTMLElement, id: number): void {
-    const select = el.querySelector('.account-select') as HTMLSelectElement;
-    select.value = String(id);
-    select.dispatchEvent(new Event('change'));
-    settle();
+    pick(el, id);
     respond(`/api/accounting/accounts/${id}`, makeAccountDetail({ id }));
   }
+
 
   it('drops a fixed FX conversion (and the fee) when the account moves to the original currency', async () => {
     const { el } = await open('/accounting/entry', 'phone', FX_ACCOUNTS);
@@ -1655,6 +1663,76 @@ describe('EntryFormComponent', () => {
     tap(el, '.rule-chip', '規則 A'); tap(el, '.rule-chip', '規則 A');
     expect(form.ruleIds()).toEqual([12, 11]);
     expect(form.isDirty()).toBe(true);
+  });
+  function pickerValue(el: HTMLElement, selector = '.account-picker'): string | null {
+    return el.querySelector(`${selector} .acct-trigger`)!.getAttribute('data-value');
+  }
+
+  function pick(el: HTMLElement, id: number, selector = '.account-picker'): void {
+    (el.querySelector(`${selector} .acct-trigger`) as HTMLButtonElement).click();
+    settle();
+    (el.querySelector(`${selector} .acct-option[data-account-id="${id}"]`) as HTMLElement).click();
+    settle();
+  }
+  it('passes the open accounts and the chosen account to the picker, and its choice moves the record', async () => {
+    const { el } = await open('/accounting/entry', 'panes');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const picker = harness.routeDebugElement!.query(By.css('app-account-picker.account-picker')).componentInstance as AccountPickerComponent;
+    expect(picker.accounts().map(account => account.id)).toEqual([1, 2]);
+    expect(picker.value()).toBe(1);
+    expect(picker.label()).toBe('帳戶');
+    expect(picker.allowArchived()).toBe(false);
+
+    picker.choose(2);
+    settle();
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.accountId()).toBe(2);
+    expect(pickerValue(el)).toBe('2');
+  });
+
+  it('uses the picker for the 餘額調整 account too', async () => {
+    const { el } = await open('/accounting/entry?kind=system');
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    expect(el.querySelector('.account-picker.system-account')).not.toBeNull();
+    pick(el, 2, '.system-account');
+    const initialCategories = httpMock.match(r => r.url === '/api/accounting/categories');
+    expect(initialCategories).toHaveLength(1);
+    expect(initialCategories[0].cancelled).toBe(true);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect(text(el.querySelector('.current-balance'))).toContain('−$27,218');
+  });
+
+  it('remembers the saved account as recent', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    keys(el, '1', '7', '0', '✓');
+    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+      .flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
+    settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([2]);
+  });
+
+  it('still saves when storage is blocked', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    keys(el, '1', '7', '0', '✓');
+    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+      .flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
+    settle();
+    expect(left()).toBe(true);
   });
 
 });
