@@ -630,6 +630,16 @@ def get_entry_detail(db: Session, entry_id: int) -> dict | None:
 
     detail["children"] = rows(LedgerEntry.parent_entry_id == entry.id)
     detail["group_members"] = rows(LedgerEntry.group_id == entry.group_id) if entry.group_id else []
+    if detail["group_members"]:
+        from .split_protection import protected_reasons  # lazy: split_protection → entry_write_service → this module
+
+        member_rows = db.scalars(
+            select(LedgerEntry).where(LedgerEntry.id.in_([member["id"] for member in detail["group_members"]]))
+        )
+        reasons = protected_reasons(db, member_rows)
+        for member in detail["group_members"]:
+            member["protected_reason"] = reasons[member["id"]]
+            member["protected"] = reasons[member["id"]] is not None
     detail["transfer_counterpart"] = (
         one(LedgerEntry.transfer_group_id == entry.transfer_group_id, LedgerEntry.id != entry.id)
         if entry.transfer_group_id

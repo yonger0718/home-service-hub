@@ -1,6 +1,7 @@
 import queue
 import threading
 import time
+import uuid
 from datetime import date, datetime, timezone
 from datetime import time as dt_time
 from decimal import Decimal
@@ -182,3 +183,60 @@ def make_instance(
     session.add(instance)
     session.flush()
     return instance
+
+
+# Split rework §1.2: every shape of protected member, keyed by test case → expected protected_reason.
+PROTECTED_REASONS = {
+    "settlement": "settlement",
+    "orphan_settlement": "settlement",
+    "orphan_refund": "refund",
+    "transfer": "transfer",
+    "fee": "system",
+    "discount": "system",
+    "reward": "system",
+    "interest": "system",
+    "balance_adjustment": "system",
+    "settled_original": "settled_original",
+    "refunded_original": "settled_original",
+    "scheduled_loan": "scheduled_loan",
+}
+SYSTEM_AMOUNTS = {"fee": "-15", "discount": "5", "reward": "3", "interest": "-20", "balance_adjustment": "-8"}
+
+
+def make_protected_member(seed, case: str, account: Account, group_id: int | None) -> LedgerEntry:
+    """One protected row of the named shape on `account`, in group `group_id` (None: ungrouped, a convert anchor).
+    Synthetic rows only; the rows it links to (originals, counterparts, settlements, refunds, the definition) are
+    outside the group."""
+    party = seed.counterparty(f"對象-{case}")
+    if case == "settlement":
+        lent = seed.entry(account, "-300", kind="receivable", counterparty_id=party.id)
+        return seed.entry(account, "200", kind="receivable", counterparty_id=party.id, is_settlement=True,
+                          settles_entry_id=lent.id, group_id=group_id)
+    if case == "orphan_settlement":  # imported collection whose original is gone: no settles_entry_id
+        return seed.entry(account, "200", kind="receivable", counterparty_id=party.id, is_settlement=True,
+                          group_id=group_id)
+    if case == "orphan_refund":  # the refunded source was deleted: refunds_entry_id is NULL
+        return seed.entry(account, "50", kind="refund", group_id=group_id)
+    if case == "transfer":
+        other = seed.account(f"轉入-{case}")
+        pair = uuid.uuid4()
+        leg = seed.entry(account, "-100", kind="transfer_out", transfer_group_id=pair, group_id=group_id)
+        seed.entry(other, "100", kind="transfer_in", transfer_group_id=pair)
+        return leg
+    if case in SYSTEM_AMOUNTS:
+        return seed.entry(account, SYSTEM_AMOUNTS[case], kind=case, group_id=group_id)
+    if case == "settled_original":
+        original = seed.entry(account, "-300", kind="receivable", counterparty_id=party.id, group_id=group_id)
+        seed.entry(account, "100", kind="receivable", counterparty_id=party.id, is_settlement=True,
+                   settles_entry_id=original.id)
+        return original
+    if case == "refunded_original":
+        original = seed.entry(account, "-80", group_id=group_id)
+        seed.entry(account, "30", kind="refund", refunds_entry_id=original.id)
+        return original
+    if case == "scheduled_loan":
+        loan = seed.entry(account, "1000", kind="payable", counterparty_id=party.id, group_id=group_id)
+        seed.definition([seed.line("repayment", account, "100", loan_entry_id=loan.id)], kind="installment",
+                        name=f"分期-{case}", times=10)
+        return loan
+    raise ValueError(f"unknown protected case {case!r}")

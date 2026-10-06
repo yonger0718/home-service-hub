@@ -173,10 +173,21 @@ class EntryPage(BaseModel):
     offset: int
 
 
+ProtectedReason = Literal["settlement", "refund", "transfer", "system", "settled_original", "scheduled_loan"]
+
+
+class GroupMemberOut(EntryOut):
+    """A member of the entry's group with the split rework's protection flag (§1.2): a protected member only takes
+    metadata (name, project, tags, description) in a split write."""
+
+    protected: bool
+    protected_reason: ProtectedReason | None
+
+
 class EntryDetailOut(EntryOut):
     invoice_random: str | None
     children: list[EntryOut]
-    group_members: list[EntryOut]
+    group_members: list[GroupMemberOut]
     transfer_counterpart: EntryOut | None
     settles: EntryOut | None
     settled_by: list[EntryOut]
