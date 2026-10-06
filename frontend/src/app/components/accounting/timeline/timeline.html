@@ -127,36 +127,50 @@
           </div>
         }
         @if (dayError()) {
-          <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
-        }
-        @for (row of dayRows(); track row.key) {
-          <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
-        } @empty {
-          @if (!dayLoading() && !dayError()) {
-            <p class="empty">這天沒有紀錄</p>
+          <div class="load-error-block">
+            <p class="load-error">記錄讀取失敗</p>
+            <button type="button" class="retry day-retry" (click)="retryDay()">重試</button>
+          </div>
+        } @else if (dayLoading() && dayEntries().length === 0) {
+          <app-skeleton rows="3" />
+        } @else {
+          @for (row of dayRows(); track row.key) {
+            <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+          } @empty {
+            <p class="empty">{{ filtersActive() ? '這天沒有符合條件的記錄' : '這天沒有記錄' }}</p>
           }
         }
       </div>
     }
   } @else {
     @if (loadError()) {
-      <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
-    }
-
-    @for (day of days(); track day.date) {
-      <div class="day"><span>{{ day.label }}</span><b>{{ formatSigned(day.net, mainCurrency()) }}</b></div>
-      @for (row of day.rows; track row.key) {
-        <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+      <div class="load-error-block">
+        <p class="load-error">記錄讀取失敗</p>
+        <button type="button" class="retry list-retry" (click)="load(true)">重試</button>
+      </div>
+    } @else if (loading() && entries().length === 0) {
+      <app-skeleton rows="3" />
+    } @else {
+      @for (day of days(); track day.date) {
+        <div class="day"><span>{{ day.label }}</span><b>{{ formatSigned(day.net, mainCurrency()) }}</b></div>
+        @for (row of day.rows; track row.key) {
+          <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+        }
+      } @empty {
+        @if (filtersActive()) {
+          <div class="empty-filtered">
+            <p class="empty">沒有符合條件的記錄</p>
+            <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
+          </div>
+        } @else {
+          <p class="empty">這個月沒有記錄</p>
+        }
       }
-    } @empty {
-      @if (!loading() && !loadError()) {
-        <p class="empty">這個月沒有紀錄</p>
-      }
-    }
 
-    @if (hasMore()) {
-      <div #sentinel class="sentinel" aria-hidden="true"></div>
-      <button type="button" class="more" [disabled]="loading()" (click)="loadMore()">載入更多</button>
+      @if (hasMore()) {
+        <div #sentinel class="sentinel" aria-hidden="true"></div>
+        <button type="button" class="more" [disabled]="loading()" (click)="loadMore()">載入更多</button>
+      }
     }
   }
 </section>

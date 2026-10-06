@@ -34,6 +34,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../billing/billing-math';
 import { BillState, BillingService, billKey } from '../billing/billing.service';
+import { SkeletonComponent } from '../skeleton/skeleton';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
@@ -293,7 +294,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [CalendarMonthComponent, NgTemplateOutlet],
+  imports: [CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent],
   templateUrl: './timeline.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -308,6 +309,10 @@ export class LedgerTimelineComponent implements OnInit {
   private summaryRequestId = 0;
   private dailyRequestId = 0;
   private dayRequestId = 0;
+  /** Filters of the rows on screen; a reset load for another key clears them (skeleton), the same key keeps them. */
+  private listKey: string | null = null;
+  private dayKey: string | null = null;
+
   private queryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
 
@@ -326,7 +331,7 @@ export class LedgerTimelineComponent implements OnInit {
   readonly entries = signal<LedgerEntry[]>([]);
   /** `total` of the current filters' `/entries` page; null while that page is in flight or after it failed. */
   readonly total = signal<number | null>(null);
-  readonly loading = signal(false);
+  readonly loading = signal(true);
   readonly loadError = signal(false);
   readonly accountFilter = signal<number | null>(null);
   readonly kindFilter = signal<EntryKind | null>(null);
@@ -569,15 +574,24 @@ export class LedgerTimelineComponent implements OnInit {
     });
   }
 
+  private filterKey(scope: string): string {
+    return [scope, this.accountFilter(), this.kindFilter(), this.query(), this.hideRewards()].join('|');
+  }
+
   load(reset: boolean): void {
     const id = ++this.requestId;
     const { from, to } = monthRange(this.month());
     const offset = reset ? 0 : this.entries().length;
-    // On a reset the old rows stay until the new page lands (no empty flash, scroll kept).
     this.loading.set(true);
     this.loadError.set(false);
     if (reset) {
-      // Never show the previous filters' count while this page is in flight.
+      // Another month / filter: the old rows are not this list, so the skeleton replaces them. The same key (a
+      // refresh after an entry write or a preference save) keeps them until the new page lands.
+      const key = this.filterKey(this.month());
+      if (key !== this.listKey) {
+        this.entries.set([]);
+        this.listKey = key;
+      }
       this.total.set(null);
     }
     const account = this.accountFilter();
@@ -610,6 +624,7 @@ export class LedgerTimelineComponent implements OnInit {
             this.entries.set([]);
             this.total.set(null);
           }
+          this.total.set(null);
           this.loadError.set(true);
           this.loading.set(false);
         },
@@ -639,6 +654,7 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   private clearList(): void {
+    this.listKey = null;
     ++this.requestId;
     this.entries.set([]);
     this.total.set(null);
@@ -671,6 +687,11 @@ export class LedgerTimelineComponent implements OnInit {
     const id = ++this.dayRequestId;
     this.dayLoading.set(true);
     this.dayError.set(false);
+    const key = this.filterKey(date);
+    if (key !== this.dayKey) {
+      this.dayEntries.set([]);
+      this.dayKey = key;
+    }
     const account = this.accountFilter();
     this.accounting
       .getAllEntries({
@@ -701,10 +722,18 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   private clearDay(): void {
+    this.dayKey = null;
     ++this.dayRequestId;
     this.dayEntries.set([]);
     this.dayLoading.set(false);
     this.dayError.set(false);
+  }
+
+  retryDay(): void {
+    const day = this.selectedDay();
+    if (day) {
+      this.loadDay(day);
+    }
   }
 
   private loadQueue(): void {

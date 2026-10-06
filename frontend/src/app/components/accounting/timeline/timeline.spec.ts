@@ -277,7 +277,7 @@ describe('LedgerTimelineComponent', () => {
     expect(flushEntries([]).request.params.get('hide_rewards')).toBe('true');
   });
 
-  it('keeps the current rows on screen while a refresh is in flight', () => {
+  it('replaces the rows with the skeleton while another month loads', () => {
     const { fixture, el } = render();
     flushSummary('2026-10');
     flushEntries([makeEntry({ id: 1, name: '午餐' })]);
@@ -285,15 +285,36 @@ describe('LedgerTimelineComponent', () => {
 
     (el.querySelector('.month-next') as HTMLButtonElement).click();
     fixture.detectChanges();
-    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['午餐']);
+    expect(el.querySelectorAll('.row').length).toBe(0);
+    expect(el.querySelector('app-skeleton')).not.toBeNull();
+    expect(el.querySelector('.empty')).toBeNull();
 
     flushSummary('2026-11');
     flushEntries([makeEntry({ id: 2, entry_date: '2026-11-01', name: '捷運' })]);
     fixture.detectChanges();
     expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['捷運']);
+    expect(el.querySelector('app-skeleton')).toBeNull();
   });
 
-  it("clears the previous month's rows when the reset load fails, keeping the error", () => {
+  it('keeps the current rows on screen while the same month refreshes after an entry write', () => {
+    const { fixture, el } = render();
+    flushSummary('2026-10');
+    flushEntries([makeEntry({ id: 1, name: '午餐' })]);
+    fixture.detectChanges();
+
+    TestBed.inject(AccountingService).deleteEntry(99).subscribe();
+    httpMock!.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
+    fixture.detectChanges();
+    flushCounterparties();
+    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['午餐']);
+    expect(el.querySelector('app-skeleton')).toBeNull();
+
+    flushSummary('2026-10');
+    flushEntries([makeEntry({ id: 3, name: '晚餐' })]);
+    fixture.detectChanges();
+    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['晚餐']);
+  });
+  it('shows 記錄讀取失敗 with 重試 instead of rows or empty text, and 重試 reloads page 1', () => {
     const { fixture, el } = render();
     flushSummary('2026-10');
     flushEntries([makeEntry({ id: 1, name: '午餐' })]);
@@ -306,7 +327,83 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
 
     expect(el.querySelectorAll('.row').length).toBe(0);
-    expect(el.querySelector('.load-error')).not.toBeNull();
+    expect(text(el.querySelector('.load-error'))).toBe('記錄讀取失敗');
+    expect(el.querySelector('.empty')).toBeNull();
+    expect(el.querySelector('app-skeleton')).toBeNull();
+
+    (el.querySelector('.list-retry') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(el.querySelector('app-skeleton')).not.toBeNull();
+    const req = flushEntries([makeEntry({ id: 2, entry_date: '2026-11-01', name: '捷運' })]);
+    fixture.detectChanges();
+    expect(req.request.params.get('offset')).toBe('0');
+    expect(el.querySelector('.load-error')).toBeNull();
+    expect(Array.from(el.querySelectorAll('.row .name')).map(text)).toEqual(['捷運']);
+  });
+  it('shows the skeleton, not the empty text, while the first page loads', () => {
+    const { fixture, el } = render();
+    const skeleton = el.querySelector('app-skeleton');
+    expect(skeleton).not.toBeNull();
+    expect(skeleton!.getAttribute('aria-busy')).toBe('true');
+    expect(skeleton!.getAttribute('aria-label')).toBe('載入中');
+    expect(el.querySelector('.empty')).toBeNull();
+
+    flushSummary('2026-10');
+    flushEntries([]);
+    fixture.detectChanges();
+    expect(el.querySelector('app-skeleton')).toBeNull();
+    expect(text(el.querySelector('.empty'))).toBe('這個月沒有記錄');
+  });
+
+  it('says 沒有符合條件的記錄 with 清除篩選 when the filters match nothing', () => {
+    const { fixture, el } = render('sheet');
+    flushSummary('2026-10');
+    flushEntries([makeEntry({ id: 1 })]);
+    fixture.detectChanges();
+    fixture.componentInstance.setKind('income');
+    fixture.detectChanges();
+    flushEntries([], 0);
+    fixture.detectChanges();
+
+    expect(text(el.querySelector('.empty'))).toBe('沒有符合條件的記錄');
+    expect(el.querySelector('.empty-filtered .clear-filters')).not.toBeNull();
+  });
+
+  it('ignores a late page for the previous filters and shows the empty text only for the current ones', () => {
+    const { fixture, el } = render('sheet');
+    flushSummary('2026-10');
+    flushEntries([makeEntry({ id: 1 })]);
+    fixture.detectChanges();
+
+    fixture.componentInstance.setKind('income');
+    fixture.detectChanges();
+    const stale = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+    fixture.componentInstance.setKind('expense');
+    fixture.detectChanges();
+    const current = httpMock!.expectOne(r => r.url === '/api/accounting/entries');
+    expect(current.request.params.get('kind')).toBe('expense');
+
+    stale.flush({ items: [], total: 0, limit: 50, offset: 0 });
+    fixture.detectChanges();
+    expect(el.querySelector('.empty')).toBeNull();
+    expect(el.querySelector('app-skeleton')).not.toBeNull();
+    expect(text(el.querySelector('.match-count'))).toBe('符合條件 — 筆');
+
+    current.flush({ items: [], total: 0, limit: 50, offset: 0 });
+    fixture.detectChanges();
+    expect(text(el.querySelector('.empty'))).toBe('沒有符合條件的記錄');
+    expect(text(el.querySelector('.match-count'))).toBe('符合條件 0 筆');
+  });
+  it('shows an unknown match count when pagination fails', () => {
+    const { fixture, el } = render('sheet');
+    flushSummary('2026-10'); flushEntries([]); fixture.detectChanges();
+    fixture.componentInstance.setKind('expense'); fixture.detectChanges();
+    flushEntries([makeEntry({ id: 1 })], 100); fixture.detectChanges();
+    fixture.componentInstance.loadMore();
+    httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(text(el.querySelector('.match-count'))).toBe('符合條件 — 筆');
+    expect(el.querySelector('.row')).toBeNull();
   });
 
   describe('filters and month totals', () => {
@@ -441,6 +538,39 @@ describe('LedgerTimelineComponent', () => {
     });
 
   describe('calendar view', () => {
+    it('shows the day skeleton, then 這天沒有記錄 or 這天沒有符合條件的記錄', () => {
+      const { fixture, el } = renderCalendar();
+      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      expect(el.querySelector('.day-entries app-skeleton')).not.toBeNull();
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.day-entries .empty'))).toBe('這天沒有記錄');
+
+      fixture.componentInstance.setKind('expense');
+      fixture.detectChanges();
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.day-entries .empty'))).toBe('這天沒有符合條件的記錄');
+    });
+
+    it('shows 記錄讀取失敗 with 重試 for a failed day and reloads that day', () => {
+      const { fixture, el } = renderCalendar();
+      (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(text(el.querySelector('.day-entries .load-error'))).toBe('記錄讀取失敗');
+      expect(el.querySelector('.day-entries .empty')).toBeNull();
+
+      (el.querySelector('.day-retry') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const req = flushEntries([makeEntry({ id: 9, entry_date: '2026-10-05' })]);
+      fixture.detectChanges();
+      expect(req.request.params.get('date_from')).toBe('2026-10-05');
+      expect(el.querySelectorAll('.day-entries .row').length).toBe(1);
+    });
+
     const OCT: Partial<DailySummary> = {
       days: [
         { date: '2026-10-02', expense: '-1234.0000', income: '500.0000', count: 3 },
