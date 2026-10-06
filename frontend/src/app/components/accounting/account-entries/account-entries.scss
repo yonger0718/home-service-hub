@@ -86,3 +86,25 @@
 .pos { color: var(--tone-pos, var(--c-green)); }
 .load-error { color: var(--app-danger); }
 .entries-empty { color: var(--app-text-muted); padding: 1rem 0; text-align: center; }
+
+.load-error-block {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 1.5rem 0;
+
+  .load-error { margin: 0; }
+}
+
+.retry {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 3px 10px;
+}
