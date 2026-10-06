@@ -31,6 +31,7 @@ export class CalendarMonthComponent {
   /** `YYYY-MM`. */
   readonly month = input.required<string>();
   readonly days = input<DailySummaryDay[]>([]);
+  readonly loading = input(false);
   readonly currency = input('TWD');
   /** `Preference.week_start`: 0 = Sunday first, 1 = Monday first. */
   readonly weekStart = input(0);

@@ -19,16 +19,21 @@
     </div>
   </div>
 
-  @if (summary(); as s) {
-    <div class="sum">
-      @if (filtersActive()) {
-        <small class="sum-scope">全月 · 未套篩選</small>
-      }
-      <div><small>支出</small><b class="neg sum-expense">{{ expenseText(s) }}</b></div>
-      <div><small>收入</small><b class="pos sum-income">{{ incomeText(s) }}</b></div>
-      <div><small>結餘</small><b class="sum-net">{{ formatSigned(s.net, s.currency) }}</b></div>
-    </div>
-  }
+  <div class="sum" [attr.aria-busy]="summaryLoading() ? 'true' : null">
+    @if (filtersActive()) {
+      <small class="sum-scope">全月 · 未套篩選</small>
+    }
+    @if (summaryError()) {
+      <p class="sum-error">
+        摘要讀取失敗
+        <button type="button" class="retry sum-retry" (click)="retrySummary()">重試</button>
+      </p>
+    } @else {
+      <div><small>支出</small><b class="neg sum-expense">{{ summary() ? expenseText(summary()!) : '—' }}</b></div>
+      <div><small>收入</small><b class="pos sum-income">{{ summary() ? incomeText(summary()!) : '—' }}</b></div>
+      <div><small>結餘</small><b class="sum-net">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</b></div>
+    }
+  </div>
   @if (filtersActive()) {
     @if (view() === 'list') {
       <div class="match-row">
@@ -96,7 +101,18 @@
   </ng-template>
 
   @if (view() === 'calendar') {
+    @if (dailyError()) {
+      <p class="load-error daily-error">
+        每日摘要讀取失敗
+        <button type="button" class="retry daily-retry" (click)="retryDaily()">重試</button>
+      </p>
+    }
+    @if (dailyLoading() && daily()) {
+      <p class="daily-updating" role="status">更新中</p>
+    }
     <app-calendar-month
+      [attr.aria-busy]="dailyLoading() ? 'true' : null"
+      [loading]="dailyLoading() && !daily()"
       [month]="month()"
       [days]="daily()?.days ?? []"
       [currency]="daily()?.currency ?? mainCurrency()"

@@ -299,3 +299,20 @@
     margin: 0;
   }
 }
+
+.sum-error {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  font-size: var(--fs-sm);
+  gap: 8px;
+  grid-column: 1 / -1;
+  justify-content: center;
+  margin: 0;
+}
+
+.daily-error {
+  margin: 0 0 8px;
+}
+
+.daily-updating { color: var(--app-text-muted); font-size: 0.72rem; margin: 0 0 8px; }

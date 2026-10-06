@@ -537,7 +537,83 @@ describe('LedgerTimelineComponent', () => {
       document.removeEventListener('keydown', outer);
     });
 
+  it('keeps the totals block with — while the summary loads and offers 重試 when it fails', () => {
+    const { fixture, el } = render();
+    flushEntries([]);
+    fixture.detectChanges();
+    const sum = el.querySelector('.sum')!;
+    expect(sum.getAttribute('aria-busy')).toBe('true');
+    expect([text(el.querySelector('.sum-expense')), text(el.querySelector('.sum-income')), text(el.querySelector('.sum-net'))]).toEqual(['—', '—', '—']);
+
+    httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelector('.sum')).not.toBeNull();
+    expect(text(el.querySelector('.sum-error'))).toContain('摘要讀取失敗');
+    expect(el.querySelector('.empty')).not.toBeNull();
+
+    (el.querySelector('.sum-retry') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    flushSummary('2026-10', { expense: '-100' });
+    fixture.detectChanges();
+    expect(el.querySelector('.sum-error')).toBeNull();
+    expect(text(el.querySelector('.sum-expense'))).toBe('−$100');
+  });
+
   describe('calendar view', () => {
+    it('offers 重試 when the daily figures fail, without touching the day list', () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture, el } = render('phone');
+      flushSummary('2026-10');
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary/daily').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(text(el.querySelector('.daily-error'))).toContain('每日摘要讀取失敗');
+
+      (el.querySelector('.daily-retry') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushDaily('2026-10', OCT);
+      fixture.detectChanges();
+      expect(el.querySelector('.daily-error')).toBeNull();
+      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
+    });
+
+    it('shows busy daily placeholders and drops previous month figures while ignoring late summary responses', () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture, el } = render('phone');
+      expect(el.querySelector('app-calendar-month')!.getAttribute('aria-busy')).toBe('true');
+      expect(el.querySelectorAll('.daily-placeholder').length).toBeGreaterThan(0);
+      flushSummary('2026-10'); flushDaily('2026-10', OCT); fixture.detectChanges();
+      fixture.componentInstance.moveMonth(1); fixture.detectChanges();
+      const oldSummary = httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary');
+      const oldDaily = httpMock!.expectOne(r => r.url === '/api/accounting/entries/summary/daily');
+      expect(el.querySelector('.exp')).toBeNull();
+      expect(el.querySelectorAll('.daily-placeholder').length).toBeGreaterThan(0);
+      fixture.componentInstance.moveMonth(1); fixture.detectChanges();
+      flushSummary('2026-12', { expense: '-900' });
+      flushDaily('2026-12', { days: [{ date: '2026-12-02', expense: '-900', income: '0', count: 1 }] });
+      oldSummary.flush('boom', { status: 500, statusText: 'Server Error' });
+      oldDaily.flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(text(el.querySelector('.sum-expense'))).toBe('−$900');
+      expect(text(el.querySelector('button.cell[data-date="2026-12-02"] .exp'))).toBe('900');
+      expect(el.querySelector('.daily-error')).toBeNull();
+      expect(el.querySelector('.sum-error')).toBeNull();
+      expect(el.querySelector('.daily-placeholder')).toBeNull();
+    });
+
+    it('keeps same-month daily numbers with 更新中 until a fresh daily summary arrives', () => {
+      const { fixture, el } = renderCalendar();
+      TestBed.inject(AccountingService).deleteEntry(99).subscribe();
+      httpMock!.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
+      fixture.detectChanges(); flushCounterparties();
+      expect(text(el.querySelector('button.cell[data-date="2026-10-02"] .exp'))).toBe('1,234');
+      expect(text(el.querySelector('.daily-updating'))).toBe('更新中');
+      expect(el.querySelector('app-calendar-month')!.getAttribute('aria-busy')).toBe('true');
+      expect(el.querySelector('.daily-placeholder')).toBeNull();
+      flushSummary('2026-10'); flushDaily('2026-10'); fixture.detectChanges();
+      expect(el.querySelector('.daily-updating')).toBeNull();
+      expect(el.querySelector('app-calendar-month')!.getAttribute('aria-busy')).toBeNull();
+    });
+
     it('shows the day skeleton, then 這天沒有記錄 or 這天沒有符合條件的記錄', () => {
       const { fixture, el } = renderCalendar();
       (el.querySelector('button.cell[data-date="2026-10-05"]') as HTMLButtonElement).click();

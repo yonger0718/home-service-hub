@@ -328,6 +328,9 @@ export class LedgerTimelineComponent implements OnInit {
   private queueRequestId = 0;
   readonly month = signal(currentMonth());
   readonly summary = signal<MonthSummary | null>(null);
+  readonly summaryLoading = signal(true);
+  readonly summaryError = signal(false);
+
   readonly entries = signal<LedgerEntry[]>([]);
   /** `total` of the current filters' `/entries` page; null while that page is in flight or after it failed. */
   readonly total = signal<number | null>(null);
@@ -339,6 +342,9 @@ export class LedgerTimelineComponent implements OnInit {
   readonly filtersOpen = signal(false);
   readonly view = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
   readonly daily = signal<DailySummary | null>(null);
+  readonly dailyLoading = signal(false);
+  readonly dailyError = signal(false);
+
   readonly selectedDay = signal<string | null>(null);
   readonly dayEntries = signal<LedgerEntry[]>([]);
   readonly dayLoading = signal(false);
@@ -639,18 +645,28 @@ export class LedgerTimelineComponent implements OnInit {
 
   private loadSummary(month: string): void {
     const id = ++this.summaryRequestId;
+    this.summary.set(null);
+    this.summaryLoading.set(true);
+    this.summaryError.set(false);
     this.accounting.getMonthSummary(month).subscribe({
       next: summary => {
         if (id === this.summaryRequestId) {
           this.summary.set(summary);
+          this.summaryLoading.set(false);
         }
       },
       error: () => {
         if (id === this.summaryRequestId) {
           this.summary.set(null);
+          this.summaryError.set(true);
+          this.summaryLoading.set(false);
         }
       },
     });
+  }
+
+  retrySummary(): void {
+    this.loadSummary(this.month());
   }
 
   private clearList(): void {
@@ -664,23 +680,37 @@ export class LedgerTimelineComponent implements OnInit {
 
   private loadDaily(month: string): void {
     const id = ++this.dailyRequestId;
+    if (this.daily()?.month !== month) {
+      this.daily.set(null);
+    }
+    this.dailyLoading.set(true);
+    this.dailyError.set(false);
     this.accounting.getDailySummary(month).subscribe({
       next: daily => {
         if (id === this.dailyRequestId) {
           this.daily.set(daily);
+          this.dailyLoading.set(false);
         }
       },
       error: () => {
         if (id === this.dailyRequestId) {
           this.daily.set(null);
+          this.dailyError.set(true);
+          this.dailyLoading.set(false);
         }
       },
     });
   }
 
+  retryDaily(): void {
+    this.loadDaily(this.month());
+  }
+
   private dropDaily(): void {
     ++this.dailyRequestId;
     this.daily.set(null);
+    this.dailyLoading.set(false);
+    this.dailyError.set(false);
   }
 
   private loadDay(date: string): void {
