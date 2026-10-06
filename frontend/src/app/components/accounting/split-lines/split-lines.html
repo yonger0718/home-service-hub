@@ -44,12 +44,16 @@
         </div>
         <div>
           <span class="k">帳戶<span class="sub2">預設同主記錄，可改</span></span>
-          <select class="v line-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
-            @for (account of activeAccounts(); track account.id) {
-              <option [value]="account.id" [selected]="account.id === draftAccountId()">{{ account.name }}</option>
-            }
-          </select>
+          <app-account-picker
+            class="v line-account"
+            label="帳戶"
+            [compact]="true"
+            [accounts]="activeAccounts()"
+            [value]="draftAccountId()"
+            (valueChange)="setAccount($event)"
+          />
         </div>
+
         @if (needsCounterparty()) {
           <div>
             <span class="k">對象（應收/應付）</span>
