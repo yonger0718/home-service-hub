@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, effect, input, model, untracked } from '@angular/core';
 
 import { LedgerAccount, ScheduleIntervalUnit, SchedulePostingMode } from '../../../models/accounting.model';
-import { accountLabel } from '../accounting-ui';
+import { AccountPickerComponent } from '../account-picker/account-picker';
 import { FormKind } from '../entry-form/entry-draft';
 import { formatMoney, formatNumber } from '../format';
 import { ScheduleRule, addMonthsIso, installmentFooter, recurringFooter, splitInstallment } from '../schedule-math';
@@ -23,6 +23,7 @@ const COUNT_MINIMUMS: Record<CountField, number> = { every: 1, endTimes: 1, peri
 @Component({
   selector: 'app-schedule-tabs',
   standalone: true,
+  imports: [AccountPickerComponent],
   templateUrl: './schedule-tabs.html',
   styleUrl: './schedule-tabs.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -49,7 +50,6 @@ export class ScheduleTabsComponent {
   readonly draft = model.required<ScheduleDraft>();
 
   readonly units = UNITS;
-  readonly accountLabel = accountLabel;
   readonly tabs = computed(() => {
     const allowed = tabsFor(this.kind(), { editing: this.editing() && !this.definitionMode() });
     return SCHEDULE_TABS.filter(option => allowed.includes(option.tab) && !(this.definitionMode() && option.tab === 'single'));
@@ -229,7 +229,7 @@ export class ScheduleTabsComponent {
     this.patch({ interest: value.trim() });
   }
 
-  setRepay(value: string): void {
-    this.patch({ repayAccountId: value ? Number(value) : null });
+  setRepay(id: number | null): void {
+    this.patch({ repayAccountId: id });
   }
 }

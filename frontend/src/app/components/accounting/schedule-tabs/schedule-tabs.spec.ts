@@ -1,3 +1,5 @@
+import { By } from '@angular/platform-browser';
+import { AccountPickerComponent } from '../account-picker/account-picker';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { describe, expect, it } from 'vitest';
 
@@ -134,10 +136,14 @@ describe('ScheduleTabsComponent', () => {
   it('offers 還款帳戶 for 應付款項, defaulting to the entry account', () => {
     const { fixture, el } = render({ kind: 'payable', amount: 300000 });
     tab(fixture, '分期');
-    const repay = el.querySelector('.sched-repay') as HTMLSelectElement;
-    expect(repay.value).toBe('1');
-    set(fixture, '.sched-repay', '2', 'change');
+    const repay = fixture.debugElement.query(By.css('app-account-picker.sched-repay')).componentInstance as AccountPickerComponent;
+    expect(repay.value()).toBe(1);
+    expect(repay.label()).toBe('還款帳戶');
+    expect(el.querySelector('.sched-repay .acct-trigger')!.getAttribute('aria-label')).toBe('還款帳戶：薪轉');
+    repay.choose(2);
+    fixture.detectChanges();
     expect(fixture.componentInstance.draft().repayAccountId).toBe(2);
+
   });
 
   it('moves the start and the first repayment with the entry date until they are edited', () => {

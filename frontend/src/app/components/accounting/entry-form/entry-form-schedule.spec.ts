@@ -342,7 +342,7 @@ describe('EntryFormComponent schedules', () => {
     set(el, '.sched-first', '2026-11-09', 'change');
     expect((el.querySelector('.sched-per') as HTMLInputElement).value).toBe('8,333');
     set(el, '.sched-interest', '620');
-    expect((el.querySelector('.sched-repay') as HTMLSelectElement).value).toBe('1');
+    expect(el.querySelector('.sched-repay .acct-trigger')!.getAttribute('data-value')).toBe('1');
     keys(el, '✓');
     const req = definitionRequest();
     expect(req.request.body).toMatchObject({
