@@ -1,4 +1,5 @@
 <div class="schedule-tabs">
+  @if (showTabs()) {
   <div class="sched-tablist" role="tablist" aria-label="進階設定">
     @for (option of tabs(); track option.tab) {
       <button
@@ -13,6 +14,7 @@
     }
   </div>
 
+  }
   @switch (draft().tab) {
     @case ('single') {
       <ng-content />
@@ -129,6 +131,6 @@
   }
 
   @if (footer()) {
-    <p class="schedule-footer">{{ footer() }}</p>
+    <p class="schedule-footer event-summary">{{ footer() }}</p>
   }
 </div>

@@ -39,6 +39,27 @@
     </div>
   }
 
+  <ng-template #eventType>
+        <div class="tile wide event-type">
+          <span class="cap">事件類型</span>
+          <div class="event-tabs" role="tablist" aria-label="事件類型" (keydown)="onEventTabKeydown($event)">
+            @for (option of eventTabs; track option.tab) {
+              <button
+                type="button"
+                role="tab"
+                class="schedule-tab event-tab"
+                [class.on]="scheduleDraft().tab === option.tab"
+                [attr.data-tab]="option.tab"
+                [attr.aria-selected]="scheduleDraft().tab === option.tab"
+                [attr.aria-disabled]="eventTabEnabled(option.tab) ? null : 'true'"
+                [attr.tabindex]="scheduleDraft().tab === option.tab ? 0 : -1"
+                (click)="selectEventTab(option.tab)"
+              >{{ option.label }}</button>
+            }
+          </div>
+        </div>
+  </ng-template>
+
   <fieldset class="content" [disabled]="locked() || definitionLocked() || definitionReadOnly() || loading() || createdScheduleId() !== null">
     <div class="kinds" role="tablist" aria-label="記錄類型">
       @for (tab of kinds; track tab.kind) {
@@ -100,6 +121,7 @@
           <span class="cap">日期</span>
           <input type="date" class="date-input" [value]="entryDate()" (change)="entryDate.set($any($event.target).value)" />
         </label>
+        <ng-container *ngTemplateOutlet="eventType" />
       </div>
       <textarea class="note" placeholder="備註" aria-label="備註" [value]="description()" (input)="description.set($any($event.target).value)"></textarea>
     } @else {
@@ -211,6 +233,28 @@
           <span class="sr-only">時間</span>
           <input type="time" class="time-input" [value]="entryTime()" (change)="entryTime.set($any($event.target).value)" />
         </label>
+        <ng-container *ngTemplateOutlet="eventType" />
+        <div class="schedule-block">
+          <app-schedule-tabs
+            [kind]="kind()"
+            [entryDate]="entryDate()"
+            [amount]="amount()"
+            [currency]="accountCurrency()"
+            [accounts]="accountOptions()"
+            [accountId]="accountId()"
+            [disabled]="locked() || definitionLocked() || definitionReadOnly() || createdScheduleId() !== null"
+            [definitionMode]="scheduleId() !== null"
+            [editing]="editing()"
+            [errors]="fieldErrors()"
+            [showTabs]="false"
+            [(draft)]="scheduleDraft"
+          >
+            <label class="adv-row">
+              <span>入帳日</span>
+              <input type="date" class="posted-input" [value]="postedDate() || entryDate()" (change)="postedDate.set($any($event.target).value)" />
+            </label>
+          </app-schedule-tabs>
+        </div>
         @if (scheduling()) {
           <p class="tile wide schedule-unsupported">排程不支援</p>
         }
@@ -250,27 +294,7 @@
 
       <textarea class="note" placeholder="備註" aria-label="備註" [value]="description()" (input)="description.set($any($event.target).value)"></textarea>
 
-      <details class="advanced" [open]="scheduling() || scheduleId() !== null">
-        <summary>進階</summary>
-        <app-schedule-tabs
-          [kind]="kind()"
-          [entryDate]="entryDate()"
-          [amount]="amount()"
-          [currency]="accountCurrency()"
-          [accounts]="accountOptions()"
-          [accountId]="accountId()"
-          [disabled]="locked() || definitionLocked() || definitionReadOnly() || createdScheduleId() !== null"
-          [definitionMode]="scheduleId() !== null"
-          [editing]="editing()"
-          [errors]="fieldErrors()"
-          [(draft)]="scheduleDraft"
-        >
-          <label class="adv-row">
-            <span>入帳日</span>
-            <input type="date" class="posted-input" [value]="postedDate() || entryDate()" (change)="postedDate.set($any($event.target).value)" />
-          </label>
-        </app-schedule-tabs>
-      </details>
+
     }
   </fieldset>
 

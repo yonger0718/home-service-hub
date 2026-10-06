@@ -10,6 +10,7 @@ import { ScheduleTabsComponent } from './schedule-tabs';
 const ACCOUNTS = [makeAccount({ id: 1, name: '薪轉' }), makeAccount({ id: 2, name: '範例卡' })];
 
 interface Setup {
+  showTabs?: boolean;
   kind?: string;
   entryDate?: string;
   amount?: number | null;
@@ -33,6 +34,7 @@ function render(setup: Setup = {}): { fixture: ComponentFixture<ScheduleTabsComp
   ref.setInput('errors', setup.errors ?? {});
   ref.setInput('definitionMode', setup.definitionMode ?? false);
   ref.setInput('editing', setup.editing ?? false);
+  ref.setInput('showTabs', setup.showTabs ?? true);
   ref.setInput('draft', setup.draft ?? defaultDraft(setup.entryDate ?? '2026-10-22'));
   fixture.detectChanges();
   return { fixture, el: fixture.nativeElement as HTMLElement };
@@ -278,4 +280,11 @@ describe('ScheduleTabsComponent', () => {
       expect(fixture.componentInstance.draft().dayOfMonth).toBe(31);
     });
   });
+  it('renders no tablist of its own when the host shows the tabs', () => {
+    const { el } = render({ showTabs: false, draft: { ...defaultDraft('2026-10-22'), tab: 'recurring' } });
+    expect(el.querySelector('[role="tablist"]')).toBeNull();
+    expect(el.querySelector('.sched-start')).not.toBeNull();
+    expect(el.querySelector('.schedule-footer')!.classList).toContain('event-summary');
+  });
+
 });
