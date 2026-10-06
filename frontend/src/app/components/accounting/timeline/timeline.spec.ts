@@ -309,6 +309,81 @@ describe('LedgerTimelineComponent', () => {
     expect(el.querySelector('.load-error')).not.toBeNull();
   });
 
+  describe('filters and month totals', () => {
+    it('labels the totals 全月 · 未套篩選 and shows the filtered match count while a filter is active', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10', { expense: '-5000', net: '-5000' });
+      flushEntries([makeEntry({ id: 1 })]);
+      fixture.detectChanges();
+      expect(el.querySelector('.sum-scope')).toBeNull();
+      expect(el.querySelector('.match-row')).toBeNull();
+
+      fixture.componentInstance.setKind('expense');
+      fixture.detectChanges();
+      expect(text(el.querySelector('.sum-scope'))).toBe('全月 · 未套篩選');
+      // In flight: never the previous filters' count.
+      expect(text(el.querySelector('.match-count'))).toBe('符合條件 — 筆');
+
+      flushEntries([makeEntry({ id: 1 }), makeEntry({ id: 2 })], 12);
+      fixture.detectChanges();
+      expect(text(el.querySelector('.match-count'))).toBe('符合條件 12 筆');
+      expect(text(el.querySelector('.sum-expense'))).toBe('−$5,000');
+      expect(el.querySelector('.clear-filters')!.getAttribute('aria-label')).toBe('清除篩選');
+    });
+
+    it('shows — as the match count when the filtered page fails', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([makeEntry({ id: 1 })], 1);
+      fixture.detectChanges();
+
+      fixture.componentInstance.setQuery('午餐');
+      fixture.detectChanges();
+      httpMock!.expectOne(r => r.url === '/api/accounting/entries').flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(text(el.querySelector('.match-count'))).toBe('符合條件 — 筆');
+    });
+
+    it('clears the account, kind and query filters from 清除篩選', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+
+      const timeline = fixture.componentInstance;
+      timeline.setAccount('7');
+      timeline.setKind('expense');
+      timeline.setQuery('午餐');
+      fixture.detectChanges();
+      flushEntries([], 0);
+      fixture.detectChanges();
+
+      (el.querySelector('.clear-filters') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const req = flushEntries([]);
+      expect(req.request.params.has('account_id')).toBe(false);
+      expect(req.request.params.has('kind')).toBe(false);
+      expect(req.request.params.has('q')).toBe(false);
+      fixture.detectChanges();
+      expect(timeline.filtersActive()).toBe(false);
+      expect(el.querySelector('.match-row')).toBeNull();
+      expect(el.querySelector('.sum-scope')).toBeNull();
+    });
+
+    it('shows the scope label and 清除篩選 without a count in the calendar view', () => {
+      localStorage.setItem(VIEW_KEY, 'calendar');
+      const { fixture, el } = render('phone');
+      flushSummary('2026-10');
+      flushDaily('2026-10');
+      fixture.componentInstance.setKind('expense');
+      fixture.detectChanges();
+
+      expect(text(el.querySelector('.sum-scope'))).toBe('全月 · 未套篩選');
+      expect(el.querySelector('.match-count')).toBeNull();
+      expect(el.querySelector('.match-row--calendar .clear-filters')).not.toBeNull();
+    });
+  });
+
   describe('calendar view', () => {
     const OCT: Partial<DailySummary> = {
       days: [

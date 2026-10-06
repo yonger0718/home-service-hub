@@ -21,10 +21,25 @@
 
   @if (summary(); as s) {
     <div class="sum">
+      @if (filtersActive()) {
+        <small class="sum-scope">全月 · 未套篩選</small>
+      }
       <div><small>支出</small><b class="neg sum-expense">{{ expenseText(s) }}</b></div>
       <div><small>收入</small><b class="pos sum-income">{{ incomeText(s) }}</b></div>
       <div><small>結餘</small><b class="sum-net">{{ formatSigned(s.net, s.currency) }}</b></div>
     </div>
+  }
+  @if (filtersActive()) {
+    @if (view() === 'list') {
+      <div class="match-row">
+        <span class="match-count">符合條件 {{ total() ?? '—' }} 筆</span>
+        <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
+      </div>
+    } @else {
+      <div class="match-row match-row--calendar">
+        <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
+      </div>
+    }
   }
   @if (view() === 'list' && upcomingBills().length > 0) {
     <button type="button" class="bill-banner" (click)="openUpcoming()">近 7 天有 {{ upcomingBills().length }} 筆繳費到期</button>
@@ -36,13 +51,13 @@
   @if (!isPhone() || filtersOpen()) {
     <div class="chips filters">
       <select class="chip tag filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
-        <option value="">全部帳戶</option>
+        <option value="" [selected]="accountFilter() === null">全部帳戶</option>
         @for (account of accounts(); track account.id) {
           <option [value]="account.id" [selected]="accountFilter() === account.id">{{ account.name }}</option>
         }
       </select>
       <select class="chip tag filter-kind" aria-label="類型" (change)="setKind($any($event.target).value)">
-        <option value="">全部類型</option>
+        <option value="" [selected]="kindFilter() === null">全部類型</option>
         @for (option of kindOptions; track option.kind) {
           <option [value]="option.kind" [selected]="kindFilter() === option.kind">{{ option.label }}</option>
         }

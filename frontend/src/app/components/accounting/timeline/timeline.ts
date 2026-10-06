@@ -318,7 +318,8 @@ export class LedgerTimelineComponent implements OnInit {
   readonly month = signal(currentMonth());
   readonly summary = signal<MonthSummary | null>(null);
   readonly entries = signal<LedgerEntry[]>([]);
-  readonly total = signal(0);
+  /** `total` of the current filters' `/entries` page; null while that page is in flight or after it failed. */
+  readonly total = signal<number | null>(null);
   readonly loading = signal(false);
   readonly loadError = signal(false);
   readonly accountFilter = signal<number | null>(null);
@@ -333,11 +334,15 @@ export class LedgerTimelineComponent implements OnInit {
   readonly dayError = signal(false);
   readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
 
+  /** Any list filter set: the month totals are then labelled as unfiltered (spec §1.1). */
+  readonly filtersActive = computed(
+    () => this.accountFilter() !== null || this.kindFilter() !== null || this.query() !== '',
+  );
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   readonly mainCurrency = computed(() => this.preference()?.main_currency ?? DEFAULT_PREFERENCE.main_currency);
   readonly hideRewards = computed(() => this.preference()?.hide_rewards_on_timeline ?? false);
   readonly days = computed(() => buildDays(this.entries(), this.mainCurrency(), this.hideRewards()));
-  readonly hasMore = computed(() => this.entries().length < this.total());
+  readonly hasMore = computed(() => this.entries().length < (this.total() ?? 0));
   readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
   readonly monthText = computed(() => monthLabel(this.month()));
   readonly weekStart = computed(() => this.preference()?.week_start ?? DEFAULT_PREFERENCE.week_start);
@@ -564,6 +569,10 @@ export class LedgerTimelineComponent implements OnInit {
     // On a reset the old rows stay until the new page lands (no empty flash, scroll kept).
     this.loading.set(true);
     this.loadError.set(false);
+    if (reset) {
+      // Never show the previous filters' count while this page is in flight.
+      this.total.set(null);
+    }
     const account = this.accountFilter();
     this.accounting
       .getAllEntries({
@@ -592,7 +601,7 @@ export class LedgerTimelineComponent implements OnInit {
           if (reset) {
             // The rows on screen belong to the previous month / filter: never show them beside the error.
             this.entries.set([]);
-            this.total.set(0);
+            this.total.set(null);
           }
           this.loadError.set(true);
           this.loading.set(false);
@@ -625,7 +634,7 @@ export class LedgerTimelineComponent implements OnInit {
   private clearList(): void {
     ++this.requestId;
     this.entries.set([]);
-    this.total.set(0);
+    this.total.set(null);
     this.loading.set(false);
     this.loadError.set(false);
   }
@@ -766,6 +775,13 @@ export class LedgerTimelineComponent implements OnInit {
   setQuery(value: string): void {
     this.query.set(value.trim());
   }
+
+  clearFilters(): void {
+    this.accountFilter.set(null);
+    this.kindFilter.set(null);
+    this.query.set('');
+  }
+
 
   toggleFilters(): void {
     this.filtersOpen.update(open => !open);
