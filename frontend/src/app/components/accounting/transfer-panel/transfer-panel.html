@@ -84,7 +84,7 @@
   <p class="foot">同幣別轉帳匯率固定 1.00；跨幣別記兩邊金額，匯率自動算</p>
 
   @if (sheet(); as side) {
-    <div class="overlay" (click)="sheet.set(null)">
+    <div class="overlay" data-overlay (click)="closeSheet()">
       <div class="sheet" role="dialog" aria-modal="true" [attr.aria-label]="side === 'out' ? '轉出手續費與折扣' : '轉入手續費與折扣'" (click)="$event.stopPropagation()">
         <div class="grab"></div>
         <h3>{{ side === 'out' ? '轉出' : '轉入' }}</h3>
@@ -99,7 +99,7 @@
             <input class="v discount-input" inputmode="decimal" aria-label="折扣" [value]="children()[side].discount" (input)="setChild(side, 'discount', $any($event.target).value)" />
           </div>
         </div>
-        <div class="btnrow"><button type="button" class="pri" (click)="sheet.set(null)">確定</button></div>
+        <div class="btnrow"><button type="button" class="pri" (click)="closeSheet()">確定</button></div>
       </div>
     </div>
   }

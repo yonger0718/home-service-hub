@@ -20,7 +20,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { amountString, parseAmountText } from '../amount-text';
 import { TransferCommon, TransferEdit, buildTransferInput, transferRateLabel } from '../entry-form/transfer-math';
-import { accountLabel, focusSheetField, isHandledKey, sheetKeyAction } from '../accounting-ui';
+import { accountLabel, focusSheetField, isHandledKey, sheetKeyAction, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { currencyDecimals, formatMoney } from '../format';
 
 export type TransferSide = 'out' | 'in';
@@ -57,6 +57,7 @@ export class TransferPanelComponent implements OnInit {
   private layout = inject(LayoutModeService);
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
   private injector = inject(Injector);
+  private opener: HTMLElement | null = null;
 
   readonly accounts = input<LedgerAccount[]>([]);
   readonly locked = input(false);
@@ -231,8 +232,10 @@ export class TransferPanelComponent implements OnInit {
 
   /** While the fee sheet is open, ⏎ / Esc anywhere in the panel close it (see `sheetKeyAction`); the form never sees them. */
   onHostKeydown(event: KeyboardEvent): void {
+    const dialog = this.host.nativeElement.querySelector<HTMLElement>('.sheet');
+    if (this.sheet() && event.key === 'Tab' && dialog) { trapFocus(dialog, event); return; }
     if (this.sheet() && sheetKeyAction(event, this.host.nativeElement.querySelector('.sheet'))) {
-      this.sheet.set(null);
+      this.closeSheet();
     }
   }
 
@@ -254,9 +257,16 @@ export class TransferPanelComponent implements OnInit {
   openSheet(side: TransferSide, event: Event): void {
     event.stopPropagation();
     if (!this.locked()) {
+      this.opener = (event.currentTarget ?? this.host.nativeElement.ownerDocument.activeElement) as HTMLElement | null;
       this.sheet.set(side);
       focusSheetField(this.host.nativeElement, '.fee-input', this.injector);
     }
+  }
+
+  closeSheet(): void {
+    this.sheet.set(null);
+    if (this.opener) restoreOverlayFocus(this.opener, this.host.nativeElement);
+    this.opener = null;
   }
 
   setChild(side: TransferSide, field: keyof SideChildren, value: string): void {
@@ -284,7 +294,7 @@ export class TransferPanelComponent implements OnInit {
     this.outText.set('');
     this.inText.set('');
     this.children.set({ out: EMPTY_CHILDREN, in: EMPTY_CHILDREN });
-    this.sheet.set(null);
+    this.closeSheet();
     this.activeSide.set(null);
     this.error.set(null);
   }

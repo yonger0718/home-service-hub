@@ -1493,4 +1493,104 @@ describe('EntryFormComponent', () => {
     settle(); cleared();
   });
 
+    for (const overlay of [
+      { name: 'fee', open: '.fee-open', host: 'app-fee-sheet' },
+      { name: 'fx', open: 'button.cur', host: 'app-fx-sheet' },
+    ]) {
+      it(`Esc closes only the ${overlay.name} sheet; the next Esc asks about the dirty draft`, async () => {
+        const { el, left } = await open('/accounting/entry');
+        respond('/api/accounting/categories', [FOOD]);
+        respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+        typeInto(el, '.name-input', '午餐');
+        const opener = el.querySelector(overlay.open) as HTMLButtonElement;
+        opener.focus(); opener.click();
+        settle();
+        expect(el.querySelector(overlay.host)).not.toBeNull();
+
+        el.querySelector(`${overlay.host} .sheet`)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        settle();
+        expect(el.querySelector(overlay.host)).toBeNull();
+        expect(el.querySelector('.discard-strip')).toBeNull();
+        expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('午餐');
+        expect(left()).toBe(false);
+
+        expect(document.activeElement).toBe(opener);
+        document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        settle();
+        expect(el.querySelector('.discard-strip')).not.toBeNull();
+        expect(left()).toBe(false);
+        (el.querySelector('.discard-leave') as HTMLButtonElement).click();
+        settle();
+        expect(left()).toBe(true);
+      });
+    }
+
+    it('with a clean draft, Esc closes the fee sheet and the next Esc cancels the form', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const opener = el.querySelector('.fee-open') as HTMLButtonElement; opener.focus(); opener.click();
+      settle();
+      el.querySelector('app-fee-sheet .sheet')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      settle();
+      expect(left()).toBe(false);
+      expect(document.activeElement).toBe(opener);
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      settle();
+      expect(left()).toBe(true);
+    });
+
+  for (const overlay of [
+    { name: 'split', route: '/accounting/entry', opener: 'app-split-lines .add', host: 'app-split-lines', modal: '.overlay' },
+    { name: 'transfer fee', route: '/accounting/entry?kind=transfer', opener: 'app-transfer-panel .out-tile .plus', host: 'app-transfer-panel', modal: '.overlay' },
+  ]) {
+    it(`contains Tab in ${overlay.name}, restores its opener, and sends the next Esc to the dirty form`, async () => {
+      const { el, left } = await open(overlay.route);
+      if (overlay.name === 'split') respond('/api/accounting/categories', [FOOD]); else respondTransferCategories();
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      typeInto(el, '.name-input', '未儲存');
+      if (overlay.name === 'split') {
+        tap(el, '.cat', '飲食'); tap(el, '.cat', '午餐');
+        respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      }
+      const opener = el.querySelector<HTMLButtonElement>(overlay.opener)!;
+      opener.focus(); opener.click(); settle();
+      if (overlay.name === 'split') {
+        respond('/api/accounting/categories', [FOOD]);
+        respond('/api/accounting/counterparties', []);
+      }
+      const modal = el.querySelector(`${overlay.host} ${overlay.modal}`)!;
+      expect(modal.hasAttribute('data-overlay')).toBe(true);
+      const controls = Array.from(modal.querySelectorAll<HTMLElement>('button, input, select')).filter(control => !(control as HTMLButtonElement).disabled);
+      controls.at(-1)!.focus();
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      document.activeElement!.dispatchEvent(tab); settle();
+      expect(tab.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(controls[0]);
+      const back = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+      document.activeElement!.dispatchEvent(back); settle();
+      expect(back.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(controls.at(-1));
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+      expect(el.querySelector(`${overlay.host} ${overlay.modal}`)).toBeNull();
+      expect(document.activeElement).toBe(opener);
+      expect(el.querySelector('.discard-strip')).toBeNull();
+      document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+      expect(el.querySelector('.discard-strip')).not.toBeNull();
+      expect(left()).toBe(false);
+      (el.querySelector('.discard-leave') as HTMLButtonElement).click(); settle();
+      expect(left()).toBe(true);
+    });
+  }
+
+  it('restores fee sheet focus to the first form control when the opener is removed', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const opener = el.querySelector<HTMLButtonElement>('.fee-open')!;
+    opener.focus(); opener.click(); settle(); opener.remove();
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+    expect(document.activeElement).toBe(el.querySelector('.topbar .cancel'));
+    expect(el.querySelector('app-fee-sheet')).toBeNull();
+  });
+
 });

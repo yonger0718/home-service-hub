@@ -236,6 +236,16 @@ export function trapFocus(container: HTMLElement, event: KeyboardEvent): boolean
   return false;
 }
 
+/** Restore an overlay's opener, or the first form control when route/render changes removed it. */
+export function restoreOverlayFocus(opener: HTMLElement | null, host: HTMLElement): void {
+  if (opener?.isConnected && opener !== host.ownerDocument.body) {
+    opener.focus();
+    return;
+  }
+  const form = host.closest<HTMLElement>('.entry-form') ?? host;
+  focusables(form)[0]?.focus();
+}
+
 // ---- accounts and navigation ----------------------------------------------------------------------------------
 
 /** Select label of an account; an archived one (kept selectable for the record being edited) says so. */

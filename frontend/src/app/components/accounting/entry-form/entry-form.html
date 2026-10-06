@@ -168,7 +168,7 @@
               <span class="cur">{{ accountCurrency() }}</span>
             } @else {
               <!-- also on 週期 / 分期 while a rate is set: the FX sheet is where the owner removes it -->
-              <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx')">{{ entryCurrency() }}</button>
+              <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx', $event)">{{ entryCurrency() }}</button>
             }
             @if (isPhone()) {
               <span class="amount-value">{{ amountText() }}</span>
@@ -185,7 +185,7 @@
               />
             }
             @if (!scheduling()) {
-              <button type="button" class="plus fee-open" aria-label="手續費與折扣" (click)="openSheet('fee')">+</button>
+              <button type="button" class="plus fee-open" aria-label="手續費與折扣" (click)="openSheet('fee', $event)">+</button>
             }
           </div>
         }
@@ -360,7 +360,7 @@
       [kind]="kind()"
       [(fee)]="fee"
       [(discount)]="discount"
-      (closed)="sheet.set(null)"
+      (closed)="closeSheet()"
     />
   }
 </div>

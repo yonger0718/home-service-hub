@@ -15,7 +15,7 @@ import { CategoryNode, Counterparty, EntryInput, LedgerAccount } from '../../../
 import { AccountingService } from '../../../services/accounting.service';
 import { amountString, parseAmountText } from '../amount-text';
 import { emptyEntryInput, resolveCounterpartyId } from '../entry-form/entry-save';
-import { CategoryIconSource, colorOf, focusSheetField, iconOf, sheetKeyAction } from '../accounting-ui';
+import { CategoryIconSource, colorOf, focusSheetField, iconOf, sheetKeyAction, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { formatMoney } from '../format';
 
 export type SplitKind = 'expense' | 'income' | 'receivable' | 'payable';
@@ -62,6 +62,7 @@ export class SplitLinesComponent {
   private service = inject(AccountingService);
   private host = inject<ElementRef<HTMLElement>>(ElementRef);
   private injector = inject(Injector);
+  private opener: HTMLElement | null = null;
 
   readonly members = model<EntryInput[]>([]);
   readonly accounts = input<LedgerAccount[]>([]);
@@ -103,10 +104,11 @@ export class SplitLinesComponent {
     return this.categories()[kind] ?? this.loaded()[kind] ?? [];
   }
 
-  openSheet(): void {
+  openSheet(event?: Event): void {
     if (this.disabled()) {
       return;
     }
+    this.opener = (event?.currentTarget ?? this.host.nativeElement.ownerDocument.activeElement) as HTMLElement | null;
     this.draftKind.set('expense');
     this.draftCategoryId.set(null);
     this.draftAmount.set('');
@@ -127,6 +129,12 @@ export class SplitLinesComponent {
     }
     this.open.set(true);
     focusSheetField(this.host.nativeElement, '.line-amount', this.injector);
+  }
+
+  closeSheet(): void {
+    this.open.set(false);
+    if (this.opener) restoreOverlayFocus(this.opener, this.host.nativeElement);
+    this.opener = null;
   }
 
   setKind(kind: SplitKind): void {
@@ -187,7 +195,7 @@ export class SplitLinesComponent {
       this.members.update(list => [...list, line]);
       this.adding.set(false);
       this.error.set(null);
-      this.open.set(false);
+      this.closeSheet();
     };
     if (!this.needsCounterparty()) {
       finish(null);
@@ -216,11 +224,13 @@ export class SplitLinesComponent {
     if (!this.open()) {
       return;
     }
-    const action = sheetKeyAction(event, this.host.nativeElement.querySelector('.sheet'));
+    const dialog = this.host.nativeElement.querySelector<HTMLElement>('.sheet');
+    if (event.key === 'Tab' && dialog) { trapFocus(dialog, event); return; }
+    const action = sheetKeyAction(event, dialog);
     if (action === 'confirm') {
       this.add();
     } else if (action === 'close') {
-      this.open.set(false);
+      this.closeSheet();
     }
   }
 

@@ -1,7 +1,7 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeAccount } from '../testing/fixtures';
 import { FxSheetComponent, FxValue } from './fx-sheet';
@@ -145,4 +145,15 @@ describe('FxSheetComponent', () => {
     expect(component.rate()).toBe('32.4');
     expect(component.rateDate()).toBe('2026-09-30');
   });
+  it('closes on Esc as a handled key and marks its overlay', () => {
+    const { fixture, el } = render(null);
+    const closed = vi.fn();
+    fixture.componentInstance.closed.subscribe(closed);
+    expect(el.querySelector('.overlay')!.hasAttribute('data-overlay')).toBe(true);
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    el.querySelector('.sheet')!.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
 });

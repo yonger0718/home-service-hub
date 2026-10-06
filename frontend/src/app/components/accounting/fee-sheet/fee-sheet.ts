@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, input, model, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, ElementRef, Injector, afterNextRender, inject, computed, input, model, output, signal } from '@angular/core';
 
 import { ChildInput, ENTRY_KIND_LABELS, EntryKind } from '../../../models/accounting.model';
+import { focusables, isHandledKey, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { roundHalfAway } from '../amount-math';
 import { currencyDecimals, formatNumber } from '../format';
 
@@ -16,8 +17,13 @@ function positive(text: string): number {
   templateUrl: './fee-sheet.html',
   styleUrls: ['../sheet.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { '(keydown)': 'onHostKeydown($event)' },
 })
 export class FeeSheetComponent implements OnInit {
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly injector = inject(Injector);
+  private opener: HTMLElement | null = null;
+
   /** Signed main amount in the account currency (−1166 for an expense). */
   readonly amount = input.required<number>();
   readonly currency = input.required<string>();
@@ -38,6 +44,11 @@ export class FeeSheetComponent implements OnInit {
   readonly formatNumber = formatNumber;
 
   ngOnInit(): void {
+    this.opener = this.host.nativeElement.ownerDocument.activeElement as HTMLElement | null;
+    afterNextRender(() => {
+      const dialog = this.dialog();
+      if (dialog) focusables(dialog)[0]?.focus();
+    }, { injector: this.injector });
     this.feeText.set(this.fee()?.amount ?? '');
     this.feeName.set(this.fee()?.name ?? '');
     this.discountText.set(this.discount()?.amount ?? '');
@@ -47,10 +58,12 @@ export class FeeSheetComponent implements OnInit {
   confirm(): void {
     this.fee.set(this.child(this.feeText(), this.feeName()));
     this.discount.set(this.child(this.discountText(), this.discountName()));
+    restoreOverlayFocus(this.opener, this.host.nativeElement);
     this.closed.emit();
   }
 
   cancel(): void {
+    restoreOverlayFocus(this.opener, this.host.nativeElement);
     this.closed.emit();
   }
 
@@ -61,4 +74,24 @@ export class FeeSheetComponent implements OnInit {
     }
     return { amount: String(roundHalfAway(amount, currencyDecimals(this.currency()))), name: name.trim() || null };
   }
+  private dialog(): HTMLElement | null {
+    return this.host.nativeElement.querySelector<HTMLElement>('.sheet');
+  }
+
+  /** Overlay contract (spec §3.1): Esc closes only this sheet, marked handled; Tab stays inside it. */
+  onHostKeydown(event: KeyboardEvent): void {
+    if (isHandledKey(event)) {
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.cancel();
+      return;
+    }
+    const dialog = this.dialog();
+    if (event.key === 'Tab' && dialog) {
+      trapFocus(dialog, event);
+    }
+  }
+
 }

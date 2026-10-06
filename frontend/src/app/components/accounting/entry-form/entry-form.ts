@@ -52,7 +52,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingToastService } from '../accounting-toast';
-import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey } from '../accounting-ui';
+import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-ui';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { evaluateAmount, prettyExpression, roundHalfAway } from '../amount-math';
 import { CategoryPickerComponent } from '../category-picker/category-picker';
@@ -1001,7 +1001,9 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     return false;
   }
 
-  openSheet(sheet: 'fx' | 'fee'): void {
+  private sheetOpener: HTMLElement | null = null;
+
+  openSheet(sheet: 'fx' | 'fee', event?: Event): void {
     if (this.locked()) {
       return;
     }
@@ -1009,11 +1011,18 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       this.error.set('請先選擇帳戶');
       return;
     }
+    this.sheetOpener = (event?.currentTarget ?? this.host.nativeElement.ownerDocument.activeElement) as HTMLElement | null;
     this.sheet.set(sheet);
   }
 
-  onFxClosed(): void {
+  closeSheet(): void {
     this.sheet.set(null);
+    restoreOverlayFocus(this.sheetOpener, this.host.nativeElement);
+    this.sheetOpener = null;
+  }
+
+  onFxClosed(): void {
+    this.closeSheet();
     const fx = this.fx();
     if (fx?.original_amount) {
       this.amountExpr.set(fx.original_amount);
@@ -1102,7 +1111,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       // Marked handled so the accounting layout's document-level Esc does not also close its sheet.
       event.preventDefault();
       if (this.sheet()) {
-        this.sheet.set(null);
+        this.closeSheet();
       } else {
         this.cancel();
       }

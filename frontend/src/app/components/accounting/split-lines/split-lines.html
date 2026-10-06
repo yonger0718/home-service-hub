@@ -9,14 +9,14 @@
       <button type="button" class="member-remove" aria-label="移除拆帳行" [disabled]="disabled()" (click)="remove($index)">✕</button>
     </div>
   }
-  <button type="button" class="add" aria-label="新增拆帳行" [disabled]="disabled()" (click)="openSheet()">+</button>
+  <button type="button" class="add" aria-label="新增拆帳行" [disabled]="disabled()" (click)="openSheet($event)">+</button>
   @if (members().length === 0) {
     <span class="hint">拆帳：每行可用不同類別、帳戶</span>
   }
 </div>
 
 @if (open()) {
-  <div class="overlay" (click)="open.set(false)">
+  <div class="overlay" data-overlay (click)="closeSheet()">
     <div class="sheet" role="dialog" aria-modal="true" aria-label="新增拆帳行" (click)="$event.stopPropagation()">
       <div class="grab"></div>
       <h3>新增拆帳行</h3>
@@ -66,7 +66,7 @@
         <p class="line-error" role="alert">{{ error() }}</p>
       }
       <div class="btnrow">
-        <button type="button" (click)="open.set(false)">取消</button>
+        <button type="button" (click)="closeSheet()">取消</button>
         <button type="button" class="pri line-add" [disabled]="adding()" (click)="add()">加入</button>
       </div>
     </div>

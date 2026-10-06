@@ -1,4 +1,4 @@
-<div class="overlay" (click)="cancel()">
+<div class="overlay" data-overlay (click)="cancel()">
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="fee-title" (click)="$event.stopPropagation()">
     <div class="grab"></div>
     <h3 id="fee-title">{{ title() }}</h3>
