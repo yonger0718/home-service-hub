@@ -1236,7 +1236,11 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       const groupId = targetId === null ? null : (this.transferEdit()?.groupId ?? null);
       // null: the panel shows its own validation message.
       const request = this.transferPanel()?.submit(transferCommonFrom(this.sharedFields()), groupId) ?? null;
-      this.write(request, () => this.finish(keepGoing));
+      this.write(request, () => {
+        const panel = this.transferPanel();
+        rememberRecentAccounts([panel?.fromId(), panel?.toId()]);
+        this.finish(keepGoing);
+      });
       return;
     }
     if (this.isSystem()) {

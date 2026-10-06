@@ -1,3 +1,4 @@
+import { AccountPickerComponent } from '../account-picker/account-picker';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -20,7 +21,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { amountString, parseAmountText } from '../amount-text';
 import { TransferCommon, TransferEdit, buildTransferInput, transferRateLabel } from '../entry-form/transfer-math';
-import { accountLabel, focusSheetField, isHandledKey, sheetKeyAction, trapFocus, restoreOverlayFocus } from '../accounting-ui';
+import { focusSheetField, isHandledKey, sheetKeyAction, trapFocus, restoreOverlayFocus } from '../accounting-ui';
 import { currencyDecimals, formatMoney } from '../format';
 
 export type TransferSide = 'out' | 'in';
@@ -46,7 +47,7 @@ function childrenFrom(children: LedgerEntry[] | undefined): SideChildren {
 @Component({
   selector: 'app-transfer-panel',
   standalone: true,
-  imports: [AmountKeypadComponent],
+  imports: [AmountKeypadComponent, AccountPickerComponent],
   templateUrl: './transfer-panel.html',
   styleUrls: ['../sheet.scss', './transfer-panel.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -81,6 +82,15 @@ export class TransferPanelComponent implements OnInit {
   readonly activeSide = signal<TransferSide | null>(null);
   readonly error = signal<string | null>(null);
   private readonly categoriesFailed = signal(false);
+
+  readonly fromExclude = computed(() => {
+    const id = this.toId();
+    return id === null ? [] : [id];
+  });
+  readonly toExclude = computed(() => {
+    const id = this.fromId();
+    return id === null ? [] : [id];
+  });
 
   readonly activeAccounts = computed(() => this.accounts().filter(account => !account.is_archived));
   /** Select options: open accounts, plus an archived leg of the transfer being edited. */
@@ -144,7 +154,6 @@ export class TransferPanelComponent implements OnInit {
   });
 
   readonly formatMoney = formatMoney;
-  readonly accountLabel = accountLabel;
 
   constructor() {
     effect(() => {
@@ -182,12 +191,12 @@ export class TransferPanelComponent implements OnInit {
     });
   }
 
-  setFrom(value: string): void {
-    this.fromId.set(Number(value));
+  setFrom(id: number | null): void {
+    this.fromId.set(id);
   }
 
-  setTo(value: string): void {
-    this.toId.set(Number(value));
+  setTo(id: number | null): void {
+    this.toId.set(id);
   }
 
   setText(side: TransferSide, value: string): void {

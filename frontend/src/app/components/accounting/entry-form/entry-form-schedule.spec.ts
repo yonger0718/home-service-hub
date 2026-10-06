@@ -308,7 +308,11 @@ describe('EntryFormComponent schedules', () => {
     const { el } = await open('/accounting/entry?kind=transfer');
     respond('/api/accounting/categories', [MOVE]);
     flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
-    set(el, '.to-select', '3', 'change');
+    (el.querySelector('.to-picker .acct-trigger') as HTMLButtonElement).click();
+    settle();
+    (el.querySelector('.to-picker .acct-option[data-account-id="3"]') as HTMLElement).click();
+    settle();
+
     set(el, '.out-amount', '15000');
     expect(Array.from(el.querySelectorAll('.schedule-tab')).map(text)).toEqual(['單次', '週期', '分期']);
     expect(eventTab(el, '分期').getAttribute('aria-disabled')).toBe('true');

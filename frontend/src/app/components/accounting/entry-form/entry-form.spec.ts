@@ -738,6 +738,7 @@ describe('EntryFormComponent', () => {
     const cleared = pendingClose();
     req.flush({ transfer_group_id: 'g-1', out_entry_id: 1, in_entry_id: 2 });
     settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([1, 2]);
     cleared();
     expect(left()).toBe(true);
   });
@@ -800,7 +801,7 @@ describe('EntryFormComponent', () => {
     expect(text(el.querySelector('.kind-tab.on'))).toBe('轉帳');
     const tabs = Array.from(el.querySelectorAll<HTMLButtonElement>('.kind-tab'));
     expect(tabs.filter(tab => tab.disabled).map(tab => text(tab))).toEqual(['支出', '收入', '應收款項', '應付款項', '系統']);
-    expect((el.querySelector('app-transfer-panel .from-select') as HTMLSelectElement).value).toBe('1');
+    expect(el.querySelector('app-transfer-panel .from-picker .acct-trigger')!.getAttribute('data-value')).toBe('1');
     expect((el.querySelector('app-transfer-panel .out-amount') as HTMLInputElement).value).toBe('5000');
     expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('繳卡費');
 

@@ -1,3 +1,5 @@
+import { By } from '@angular/platform-browser';
+import { AccountPickerComponent } from '../account-picker/account-picker';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
@@ -68,9 +70,13 @@ describe('TransferPanelComponent', () => {
 
     expect(Array.from(el.querySelectorAll('.cat')).map(b => b.textContent?.trim().slice(-2))).toEqual(['轉帳', '提款', '存款', '兌換', '儲值']);
     expect(el.querySelector('.cat.on')?.textContent).toContain('轉帳');
-    expect(el.querySelector<HTMLSelectElement>('.from-select')!.value).toBe('1');
-    expect(el.querySelector<HTMLSelectElement>('.to-select')!.value).toBe('2');
-    expect(el.querySelector('.acc-from .acc-balance')?.textContent).toContain('398,071');
+    expect(picker(fixture, 'from').value()).toBe(1);
+    expect(picker(fixture, 'to').value()).toBe(2);
+    expect(el.querySelector('.from-picker .acct-trigger')?.textContent).toContain('398,071');
+    expect(el.querySelector('.acc-balance')).toBeNull();
+    expect(picker(fixture, 'from').exclude()).toEqual([2]);
+    expect(picker(fixture, 'to').exclude()).toEqual([1]);
+
   });
 
   it('derives the rate from both amounts and posts a cross-currency transfer', async () => {
@@ -112,7 +118,8 @@ describe('TransferPanelComponent', () => {
     el.querySelector<HTMLButtonElement>('.swap')!.click();
     fixture.detectChanges();
 
-    expect(el.querySelector<HTMLSelectElement>('.from-select')!.value).toBe('2');
+    expect(picker(fixture, 'from').value()).toBe(2);
+    expect(picker(fixture, 'from').exclude()).toEqual([1]);
     expect(el.querySelector<HTMLInputElement>('.out-amount')!.value).toBe('46200');
     expect(el.querySelector('.rate-value')?.textContent?.trim()).toBe('0.216450');
   });
@@ -156,9 +163,7 @@ describe('TransferPanelComponent', () => {
 
   it('refuses the same account on both sides', async () => {
     const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(2, '日幣現金', 'JPY', '53635')]);
-    const select = (fixture.nativeElement as HTMLElement).querySelector<HTMLSelectElement>('.to-select')!;
-    select.value = '1';
-    select.dispatchEvent(new Event('change'));
+    fixture.componentInstance.setTo(1);
     type(fixture, '.out-amount', '100');
 
     expect(fixture.componentInstance.submit(COMMON, null)).toBeNull();
@@ -225,10 +230,10 @@ describe('TransferPanelComponent', () => {
     type(fixture, '.out-amount', '10000');
     panel.setChild('out', 'fee', '15');
     panel.categoryId.set(33);
-    panel.setTo('1');
+    panel.setTo(1);
     expect(panel.submit(COMMON, null)).toBeNull();
 
-    panel.setTo('2');
+    panel.setTo(2);
     panel.reset();
     fixture.detectChanges();
 
@@ -266,10 +271,12 @@ describe('TransferPanelComponent', () => {
     fixture.componentRef.setInput('edit', { groupId: 'g-4', out, in: inn });
     fixture.detectChanges();
     const el = fixture.nativeElement as HTMLElement;
-    const from = el.querySelector<HTMLSelectElement>('.from-select')!;
-    expect(from.value).toBe('4');
-    expect(from.selectedOptions[0].textContent).toContain('舊帳戶（已封存）');
-    expect(Array.from(el.querySelector<HTMLSelectElement>('.to-select')!.options).map(o => o.value)).toEqual(['1', '3', '4']);
+    const from = picker(fixture, 'from');
+    expect(from.value()).toBe(4);
+    expect(from.allowArchived()).toBe(true);
+    expect(el.querySelector('.from-picker .acct-trigger')?.textContent).toContain('舊帳戶');
+    expect(picker(fixture, 'to').accounts().map(account => account.id)).toEqual([1, 3, 4]);
+
   });
 
   it('moves a copied archived leg to an open account', async () => {
@@ -280,8 +287,9 @@ describe('TransferPanelComponent', () => {
     fixture.componentRef.setInput('edit', { groupId: 'g-4', out, in: inn });
     fixture.detectChanges();
     const el = fixture.nativeElement as HTMLElement;
-    expect(el.querySelector<HTMLSelectElement>('.from-select')!.value).toBe('1');
-    expect(el.querySelectorAll('.from-select option').length).toBe(2);
+    expect(picker(fixture, 'from').value()).toBe(1);
+    expect(picker(fixture, 'from').accounts().map(account => account.id)).toEqual([1, 3]);
+
   });
   it('excludes async category defaults from the draft but includes explicit choices and resets them after clean', async () => {
     const fixture = TestBed.createComponent(TransferPanelComponent);
@@ -313,6 +321,25 @@ describe('TransferPanelComponent', () => {
     fixture.detectChanges();
     expect(fixture.componentInstance.categoryId()).toBe(31);
     expect(fixture.componentInstance.categoryTouched()).toBe(false);
+  });
+  function picker(fixture: ComponentFixture<TransferPanelComponent>, side: 'from' | 'to'): AccountPickerComponent {
+    return fixture.debugElement.query(By.css(`app-account-picker.${side}-picker`)).componentInstance as AccountPickerComponent;
+  }
+  it('never offers the other leg and follows a swap', async () => {
+    const fixture = await render([account(1, '國泰主帳戶', 'TWD', '398071'), account(3, '玉山銀行', 'TWD', '702730'), account(5, '錢包', 'TWD', '100')]);
+    const el = fixture.nativeElement as HTMLElement;
+    el.querySelector<HTMLButtonElement>('.to-picker .acct-trigger')!.click();
+    fixture.detectChanges();
+    expect(Array.from(el.querySelectorAll('.to-picker .acct-option')).map(row => row.getAttribute('data-account-id'))).toEqual(['3', '5']);
+    el.querySelector<HTMLElement>('.to-picker .acct-option[data-account-id="5"]')!.click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.toId()).toBe(5);
+    expect(picker(fixture, 'from').exclude()).toEqual([5]);
+
+    el.querySelector<HTMLButtonElement>('.swap')!.click();
+    fixture.detectChanges();
+    expect(picker(fixture, 'from').exclude()).toEqual([1]);
+    expect(picker(fixture, 'to').exclude()).toEqual([5]);
   });
 
 });
