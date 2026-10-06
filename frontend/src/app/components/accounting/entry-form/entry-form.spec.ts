@@ -167,6 +167,7 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '飲食');
     tap(el, '.cat', '午餐');
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2, name: '玉山 UNI' }));
+    expect(el.querySelector('.event-hint')).toBeNull();
     keys(el, '1', '7', '0', '✓');
 
     const req = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries');
@@ -386,6 +387,8 @@ describe('EntryFormComponent', () => {
       .map(node => text(node));
     expect(tabs).toEqual(['單次', '週期', '分期']);
     expect(disabled).toEqual(['週期', '分期']);
+    expect(text(el.querySelector('.event-hint'))).toBe('要改週期／分期，請到提醒中心的排程管理');
+
     const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
     form.scheduleDraft.update(draft => ({ ...draft, tab: 'recurring' }));
     form.save(false);
@@ -1179,6 +1182,7 @@ describe('EntryFormComponent', () => {
     expect(el.querySelector('app-schedule-tabs')).toBeNull();
     expect(el.querySelector('.posted-input')).toBeNull();
     expect(el.querySelectorAll('.event-type').length).toBe(1);
+    expect(text(el.querySelector('.event-hint'))).toBe(editing ? '要改週期／分期，請到提醒中心的排程管理' : '');
   });
 
   it('preserves the unsupported balance_adjustment edit route and refuses a write', async () => {

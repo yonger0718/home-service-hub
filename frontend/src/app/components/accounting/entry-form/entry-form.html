@@ -58,6 +58,9 @@
             }
           </div>
         </div>
+    @if (editing()) {
+      <p class="tile wide event-hint">要改週期／分期，請到提醒中心的排程管理</p>
+    }
   </ng-template>
 
   <fieldset class="content" [disabled]="locked() || definitionLocked() || definitionReadOnly() || loading() || createdScheduleId() !== null">
@@ -256,7 +259,7 @@
           </app-schedule-tabs>
         </div>
         @if (scheduling()) {
-          <p class="tile wide schedule-unsupported">排程不支援</p>
+          <p class="tile wide schedule-unsupported" aria-live="polite">週期／分期不含：手續費、拆帳、外幣、發票</p>
         }
         @if (kind() !== 'transfer' && !scheduling()) {
           <div class="tile invoice-tile">

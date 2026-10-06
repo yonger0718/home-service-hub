@@ -259,7 +259,11 @@ describe('EntryFormComponent schedules', () => {
     expect(el.querySelector('.fee-open')).toBeNull();
     expect(el.querySelector('.invoice-tile')).toBeNull();
     expect(el.querySelector('app-split-lines')).toBeNull();
-    expect(text(el.querySelector('.schedule-unsupported'))).toBe('排程不支援');
+    const unsupported = el.querySelector('.tile.wide.schedule-unsupported')!;
+    expect(text(unsupported)).toBe('週期／分期不含：手續費、拆帳、外幣、發票');
+    expect(unsupported.getAttribute('aria-live')).toBe('polite');
+    tap(el, '.event-tab', '單次');
+    expect(el.querySelector('.schedule-unsupported')).toBeNull();
   });
 
   it('keeps the currency pill while a rate is set, so the owner can remove it on 週期', async () => {
