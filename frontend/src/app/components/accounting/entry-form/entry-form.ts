@@ -287,7 +287,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       this.invoiceRandom(),
       this.description(),
       this.tags(),
-      this.rulesTouched() ? this.ruleIds() : null,
+      this.rulesTouched() ? [...this.ruleIds()].sort((a, b) => a - b) : null,
       this.fx(),
       this.fee(),
       this.discount(),

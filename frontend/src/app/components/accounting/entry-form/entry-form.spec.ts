@@ -12,7 +12,7 @@ import { MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'v
 import { EntryDetail, Project } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
-import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetail, makePreference } from '../testing/fixtures';
+import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetail, makePreference, makeRule } from '../testing/fixtures';
 import { EntryDetailComponent } from '../entry-detail/entry-detail';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { emptyEntryInput } from './entry-save';
@@ -1631,6 +1631,30 @@ describe('EntryFormComponent', () => {
     document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
     expect(el.querySelector('.discard-strip')).not.toBeNull(); expect(left()).toBe(false);
     (el.querySelector('.discard-leave') as HTMLButtonElement).click(); settle(); expect(left()).toBe(true);
+  });
+
+  it('an edited record stays clean when a reward rule is turned off then on in a different ID order', async () => {
+    const rules = [makeRule({ id: 11, account_id: 2, name: '規則 A' }), makeRule({ id: 12, account_id: 2, name: '規則 B' })];
+    const { el } = await open('/accounting/entries/9/edit');
+    respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, amount: '-170.0000', rules }));
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2, reward_rules: rules }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.isDirty()).toBe(false);
+    tap(el, '.rule-chip', '規則 A'); expect(form.isDirty()).toBe(true);
+    tap(el, '.rule-chip', '規則 A');
+    expect(form.ruleIds()).toEqual([12, 11]);
+    expect(form.isDirty()).toBe(false);
+  });
+
+  it('preserves the new-form distinction between automatic basic rules and a manual selection', async () => {
+    const rules = [makeRule({ id: 11, name: '規則 A', is_basic: true }), makeRule({ id: 12, name: '規則 B', is_basic: true })];
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]); respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1, reward_rules: rules }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.ruleIds()).toEqual([11, 12]); expect(form.isDirty()).toBe(false);
+    tap(el, '.rule-chip', '規則 A'); tap(el, '.rule-chip', '規則 A');
+    expect(form.ruleIds()).toEqual([12, 11]);
+    expect(form.isDirty()).toBe(true);
   });
 
 });
