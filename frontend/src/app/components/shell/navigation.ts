@@ -50,9 +50,9 @@ export const NAV_GROUPS: NavGroup[] = [
     icon: 'pi-wallet',
     defaultPath: '/accounting',
     items: [
-      { id: 'accounting-timeline', path: '/accounting', icon: 'pi-list', label: '紀錄', title: '記帳紀錄', group: 'accounting', exact: true },
+      { id: 'accounting-timeline', path: '/accounting', icon: 'pi-list', label: '記錄', title: '記帳記錄', group: 'accounting', exact: true },
       { id: 'accounting', path: '/accounting/accounts', icon: 'pi-wallet', label: '帳戶', title: '記帳帳戶', group: 'accounting', sub: true },
-      { id: 'accounting-settings', path: '/accounting/settings', icon: 'pi-sliders-h', label: '設定', title: '記帳設定', group: 'accounting', sub: true, exact: true },
+      { id: 'accounting-settings', path: '/accounting/settings', icon: 'pi-sliders-h', label: '記帳設定', title: '記帳設定', group: 'accounting', sub: true, exact: true },
     ],
   },
   {

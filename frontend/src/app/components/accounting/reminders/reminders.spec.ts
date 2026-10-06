@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Counterparty, LedgerAccount, LedgerEntry, ScheduleDefinition, ScheduleInstance } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService } from '../accounting-toast';
 import { makeAccount, makeDefinition, makeEntry, makeInstance } from '../testing/fixtures';
 import { AccountingRemindersComponent } from './reminders';
@@ -121,7 +122,9 @@ describe('AccountingRemindersComponent', () => {
   }
 
   it('lists cards with something left to pay, soonest due first, with the countdown wording', () => {
+    TestBed.inject(LayoutModeService).set('phone');
     const { fixture, el } = render([WALLET, SOON, TOMORROW, LATE, TODAY, FAR]);
+    expect(el.querySelector('.back-link')?.getAttribute('aria-label')).toBe('返回記錄');
     // FAR falls due 57 days away: never asked for.
     http.expectNone(r => r.url.startsWith('/api/accounting/accounts/14/'));
     flushBill(9, '-12345.0000', ['5000.0000']);

@@ -42,7 +42,7 @@ describe('schedule-math', () => {
   });
 
   it('writes the 分期 footer', () => {
-    expect(installmentFooter(10000, 3, '2026-11-03', 'TWD')).toBe('分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）');
+    expect(installmentFooter(10000, 3, '2026-11-03', 'TWD')).toBe('分期：#1 / 3（$10,000） 首期入帳日將從 2026/11/03 開始（3 期）');
   });
 
   it('summarises a rule and its progress', () => {

@@ -114,7 +114,7 @@ export function splitInstallment(total: number, times: number, currency: string)
 
 /** MOZE's 分期 footer: `分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）`. */
 export function installmentFooter(total: number, times: number, firstDate: string, currency: string): string {
-  return `分期：#1 / ${times}（${formatMoney(total, currency)}） 首次還款日將從 ${slashDate(firstDate)} 開始進行（${times} 期）`;
+  return `分期：#1 / ${times}（${formatMoney(total, currency)}） 首期入帳日將從 ${slashDate(firstDate)} 開始（${times} 期）`;
 }
 
 type RuleWithTimes = ScheduleRule & Pick<ScheduleDefinition, 'times'>;

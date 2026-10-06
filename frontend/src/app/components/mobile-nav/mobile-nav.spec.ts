@@ -33,11 +33,11 @@ describe('MobileNavComponent', () => {
     expect(plus.getAttribute('aria-label')).toBe('新增記錄');
   });
 
-  it('shows the accounting sub-nav 紀錄 / 帳戶 / 設定', () => {
+  it('shows the accounting sub-nav 記錄 / 帳戶 / 記帳設定', () => {
     const el = render('accounting-timeline', 'accounting');
 
     const links = Array.from(el.querySelectorAll('.m-subnav a'));
-    expect(links.map(a => a.textContent?.trim())).toEqual(['紀錄', '帳戶', '設定']);
+    expect(links.map(a => a.textContent?.trim())).toEqual(['記錄', '帳戶', '記帳設定']);
     expect(links.map(a => a.getAttribute('href'))).toEqual(['/accounting', '/accounting/accounts', '/accounting/settings']);
     expect(links[0].getAttribute('aria-current')).toBe('page');
   });

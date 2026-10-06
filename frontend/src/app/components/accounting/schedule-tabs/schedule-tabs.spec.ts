@@ -126,7 +126,8 @@ describe('ScheduleTabsComponent', () => {
     set(fixture, '.sched-periods', '3');
     expect((el.querySelector('.sched-per') as HTMLInputElement).value).toBe('3,333');
     expect(text(el.querySelector('.sched-total'))).toBe('$10,000');
-    expect(text(el.querySelector('.schedule-footer'))).toBe('分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）');
+    expect(text(el.querySelector('.schedule-footer'))).toBe('分期：#1 / 3（$10,000） 首期入帳日將從 2026/11/03 開始（3 期）');
+    expect(text(el.querySelector('.sched-first')!.closest('.sched-row')!.querySelector('.sched-label'))).toBe('首期入帳日');
     expect(el.querySelector('.sched-repay')).toBeNull();
   });
 
