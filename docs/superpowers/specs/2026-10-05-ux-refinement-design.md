@@ -126,7 +126,7 @@ Output: `valueChange: number | null`.
 
 Trigger (always rendered): a button `.acct-trigger` showing `[icon] name · balance` (`formatMoney(balance, currency)`; credit accounts show `可用 {available_credit}` when present). Empty value shows `選擇帳戶`. `aria-haspopup="dialog"`, `aria-expanded`.
 
-Panel: on `phone` mode a bottom sheet (reuse the fee/fx sheet pattern and `sheetKeyAction`); on `sheet`/`panes` a popover anchored under the trigger (`position: absolute`, max-height 60vh, scrollable). Contents, top to bottom:
+Panel: on `phone` mode a bottom sheet (reuse the fee/fx sheet pattern and `sheetKeyAction`); on `sheet`/`panes` a popover anchored under the trigger (`position: fixed`, placed from the trigger's bounding rect so the pane's `overflow` cannot clip it, flipping above the trigger when there is not enough room below; max-height 60vh, scrollable). Contents, top to bottom:
 1. Search input (`placeholder="搜尋帳戶"`, autofocus on desktop, not on phone) — rendered only when the visible account count ≥ 8. Filters by name substring (case-insensitive) and by group name.
 2. `最近使用` row of up to 4 chips, from `localStorage` key `hh.accounting.recentAccounts` (array of ids, most recent first, max 8 stored). Updated by the host on successful save (entry-form `save()` success path: the entry's account id; transfer: both legs). Hidden when empty or when searching.
 3. Groups in `AccountGroup.sort_order`, each with a header (group name, or `未分組`) and rows: `[icon] name` left, `currency badge` + `balance` right (`.acct-balance`, tabular numerals, `.72rem` minimum). Archived accounts (if allowed) under `已封存` last. The selected row has `aria-selected="true"` and a check mark.
