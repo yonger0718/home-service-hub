@@ -1,3 +1,4 @@
+import { RECENT_ACCOUNTS_KEY } from '../account-picker/recent-accounts';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Location } from '@angular/common';
@@ -129,7 +130,11 @@ describe('EntryFormComponent schedules', () => {
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     tap(el, '.cat', '娛樂');
     tap(el, '.cat', 'Netflix');
-    set(el, '.account-select', '2', 'change');
+    (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+    settle();
+    (el.querySelector('.account-picker .acct-option[data-account-id="2"]') as HTMLElement).click();
+    settle();
+
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2, name: '範例卡' }));
     keys(el, '3', '9', '0');
     tap(el, '.schedule-tab', '週期');
@@ -169,9 +174,14 @@ describe('EntryFormComponent schedules', () => {
       template: { lines: [{ kind: 'expense', account_id: 2, amount: '390', currency: 'TWD', category_id: 41 }] },
     });
     const cleared = pendingClose();
+    // Capture the account used by the submitted definition, even if component state changes in flight.
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.accountId.set(1); settle();
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     req.flush(makeDefinition({ id: 9 }));
     settle();
     cleared();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([2]);
     httpMock.expectNone(r => r.url.endsWith('/catch-up'));
     httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/entries');
     expect(left()).toBe(true);
@@ -206,11 +216,13 @@ describe('EntryFormComponent schedules', () => {
     expect(TestBed.inject(AccountingToastService).message()).toBe('匯入進行中，請稍後再試');
     expect(text(el.querySelector('.form-error'))).toBe('排程已建立，入帳未完成；按 ✓ 重試入帳');
 
+    localStorage.setItem(RECENT_ACCOUNTS_KEY, '[3]');
     keys(el, '✓');
     httpMock.expectNone(r => r.method === 'POST' && r.url === '/api/accounting/schedules/definitions');
     catchUpRequest().flush({ posted: [31], failed: null, definition: makeDefinition({ id: 9 }) });
     settle();
     expect(left()).toBe(true);
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([3]);
   });
 
   it('keeps the form disabled after a failed catch-up and retries it after a network error', async () => {
@@ -304,7 +316,11 @@ describe('EntryFormComponent schedules', () => {
     const { el } = await open('/accounting/entry?kind=transfer');
     respond('/api/accounting/categories', [MOVE]);
     flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
-    set(el, '.to-select', '3', 'change');
+    (el.querySelector('.to-picker .acct-trigger') as HTMLButtonElement).click();
+    settle();
+    (el.querySelector('.to-picker .acct-option[data-account-id="3"]') as HTMLElement).click();
+    settle();
+
     set(el, '.out-amount', '15000');
     expect(Array.from(el.querySelectorAll('.schedule-tab')).map(text)).toEqual(['單次', '週期', '分期']);
     expect(eventTab(el, '分期').getAttribute('aria-disabled')).toBe('true');
@@ -318,6 +334,8 @@ describe('EntryFormComponent schedules', () => {
       kind: 'transfer', account_id: 1, to_account_id: 3, amount: '15000', to_amount: null, category_id: 60,
     });
     expect(req.request.body.anchor_date).toBe('2026-11-05');
+    req.flush(makeDefinition({ id: 9 })); settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([1, 3]);
   });
 
   it('creates a new loan with interest in one request', async () => {
@@ -334,7 +352,7 @@ describe('EntryFormComponent schedules', () => {
     set(el, '.sched-first', '2026-11-09', 'change');
     expect((el.querySelector('.sched-per') as HTMLInputElement).value).toBe('8,333');
     set(el, '.sched-interest', '620');
-    expect((el.querySelector('.sched-repay') as HTMLSelectElement).value).toBe('1');
+    expect(el.querySelector('.sched-repay .acct-trigger')!.getAttribute('data-value')).toBe('1');
     keys(el, '✓');
     const req = definitionRequest();
     expect(req.request.body).toMatchObject({
@@ -391,6 +409,7 @@ describe('EntryFormComponent schedules', () => {
     req.flush(makeDefinition({ id: 5, name: 'Netflix 家庭' }));
     settle();
     cleared();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([2]);
     expect(left()).toBe(true);
   });
 
@@ -470,9 +489,9 @@ describe('EntryFormComponent schedules', () => {
     flushAll('/api/accounting/categories', [STREAMING]);
     flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     flushAll('/api/accounting/accounts/4', makeAccountDetail({ id: 4 }));
-    const select = el.querySelector('.account-select') as HTMLSelectElement;
-    expect(select.value).toBe('4');
-    expect(text(select.selectedOptions[0])).toContain('舊卡');
+    const trigger = el.querySelector('.account-picker .acct-trigger')!;
+    expect(trigger.getAttribute('data-value')).toBe('4');
+    expect(text(trigger)).toContain('舊卡');
   });
 
   it('shows the lock banner for an imported definition before cutover', async () => {
@@ -575,6 +594,17 @@ describe('EntryFormComponent schedules', () => {
     expect(eventTab(el, '週期').getAttribute('aria-selected')).toBe('true');
     expect(eventTab(el, '單次').getAttribute('aria-disabled')).toBe('true');
     expect(eventTab(el, '分期').getAttribute('aria-disabled')).toBe('true');
+  });
+
+  it('keeps recent accounts unchanged and the draft dirty when definition saving fails', async () => {
+    const { el, left } = await netflix('2026-10-22');
+    localStorage.setItem(RECENT_ACCOUNTS_KEY, '[3]');
+    keys(el, '✓');
+    definitionRequest().flush({ detail: 'failed' }, { status: 500, statusText: 'Server Error' });
+    settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([3]);
+    expect((harness.routeDebugElement!.componentInstance as EntryFormComponent).isDirty()).toBe(true);
+    expect(left()).toBe(false);
   });
 
 });

@@ -1,3 +1,7 @@
+import { TransferPanelComponent } from '../transfer-panel/transfer-panel';
+import { By } from '@angular/platform-browser';
+import { AccountPickerComponent } from '../account-picker/account-picker';
+import { RECENT_ACCOUNTS_KEY } from '../account-picker/recent-accounts';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { Location } from '@angular/common';
@@ -222,7 +226,7 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '飲食');
     tap(el, '.cat', '午餐');
 
-    expect((el.querySelector('.account-select') as HTMLSelectElement).value).toBe('1');
+    expect(pickerValue(el)).toBe('1');
     expect((el.querySelector('.project-select') as HTMLSelectElement).value).toBe('');
   });
 
@@ -277,7 +281,7 @@ describe('EntryFormComponent', () => {
     expect(text(el.querySelector('.grid .cat'))).toContain('薪水');
     expect(text(el.querySelector('.amount-value'))).toBe('0');
     expect(text(el.querySelector('.kind-tab.on'))).toBe('收入');
-    expect((el.querySelector('.account-select') as HTMLSelectElement).value).toBe('2');
+    expect(pickerValue(el)).toBe('2');
     expect((el.querySelector('.date-input') as HTMLInputElement).value).toBe('2026-09-30');
     expect(el.querySelector('.saved-flash')).not.toBeNull();
   });
@@ -372,7 +376,7 @@ describe('EntryFormComponent', () => {
 
     expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('晚餐');
     expect(text(el.querySelector('.amount-value'))).toBe('250');
-    expect((el.querySelector('.account-select') as HTMLSelectElement).value).toBe('2');
+    expect(pickerValue(el)).toBe('2');
 
     // Two refetches through load(): the first one's late answer is ignored.
     const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
@@ -478,9 +482,14 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/categories', [FOOD]);
     respond('/api/accounting/accounts/3', makeAccountDetail({ id: 3, name: '舊卡', is_archived: true }));
 
-    const select = el.querySelector('.account-select') as HTMLSelectElement;
-    expect(Array.from(select.options).map(option => option.textContent?.trim())).toEqual(['錢包', '玉山 UNI', '舊卡（已封存）']);
-    expect(select.value).toBe('3');
+    (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+    settle();
+    expect(Array.from(el.querySelectorAll('.account-picker .acct-option .acct-name')).map(node => text(node))).toEqual(['錢包', '玉山 UNI', '舊卡']);
+    expect(Array.from(el.querySelectorAll('.account-picker .acct-group-name')).map(node => text(node))).toEqual(['未分組', '已封存']);
+    expect(pickerValue(el)).toBe('3');
+    (el.querySelector('.account-picker .acct-panel') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    settle();
+
 
     // A new record never offers the archived account (the preference is cached, so it is not requested again).
     // Real navigation to a different route config: the edit form is destroyed and a fresh form issues accounts,
@@ -494,8 +503,10 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
 
     const fresh = harness.routeNativeElement as HTMLElement;
-    const options = Array.from((fresh.querySelector('.account-select') as HTMLSelectElement).options);
-    expect(options.map(option => option.textContent?.trim())).toEqual(['錢包', '玉山 UNI']);
+    (fresh.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+    settle();
+    expect(Array.from(fresh.querySelectorAll('.account-picker .acct-option .acct-name')).map(node => text(node))).toEqual(['錢包', '玉山 UNI']);
+
   });
 
   it('cancels on Esc unless the Esc was already handled', async () => {
@@ -706,7 +717,7 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
 
     expect(el.querySelector('app-category-picker')).toBeNull();
-    expect(el.querySelector('.account-select')).toBeNull();
+    expect(el.querySelector('.account-picker')).toBeNull();
     typeInto(el, 'app-transfer-panel .out-amount', '3000');
     typeInto(el, '.name-input', ' 繳卡費 ');
     expect((el.querySelector('app-transfer-panel .in-amount') as HTMLInputElement).value).toBe('3000');
@@ -726,8 +737,11 @@ describe('EntryFormComponent', () => {
       reward_rule_ids: [],
     });
     const cleared = pendingClose();
+    const panel = harness.routeDebugElement!.query(By.directive(TransferPanelComponent)).componentInstance as TransferPanelComponent;
+    panel.fromId.set(2); panel.toId.set(1); settle();
     req.flush({ transfer_group_id: 'g-1', out_entry_id: 1, in_entry_id: 2 });
     settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([1, 2]);
     cleared();
     expect(left()).toBe(true);
   });
@@ -790,7 +804,7 @@ describe('EntryFormComponent', () => {
     expect(text(el.querySelector('.kind-tab.on'))).toBe('轉帳');
     const tabs = Array.from(el.querySelectorAll<HTMLButtonElement>('.kind-tab'));
     expect(tabs.filter(tab => tab.disabled).map(tab => text(tab))).toEqual(['支出', '收入', '應收款項', '應付款項', '系統']);
-    expect((el.querySelector('app-transfer-panel .from-select') as HTMLSelectElement).value).toBe('1');
+    expect(el.querySelector('app-transfer-panel .from-picker .acct-trigger')!.getAttribute('data-value')).toBe('1');
     expect((el.querySelector('app-transfer-panel .out-amount') as HTMLInputElement).value).toBe('5000');
     expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('繳卡費');
 
@@ -895,12 +909,10 @@ describe('EntryFormComponent', () => {
   }
 
   function chooseAccount(el: HTMLElement, id: number): void {
-    const select = el.querySelector('.account-select') as HTMLSelectElement;
-    select.value = String(id);
-    select.dispatchEvent(new Event('change'));
-    settle();
+    pick(el, id);
     respond(`/api/accounting/accounts/${id}`, makeAccountDetail({ id }));
   }
+
 
   it('drops a fixed FX conversion (and the fee) when the account moves to the original currency', async () => {
     const { el } = await open('/accounting/entry', 'phone', FX_ACCOUNTS);
@@ -1655,6 +1667,191 @@ describe('EntryFormComponent', () => {
     tap(el, '.rule-chip', '規則 A'); tap(el, '.rule-chip', '規則 A');
     expect(form.ruleIds()).toEqual([12, 11]);
     expect(form.isDirty()).toBe(true);
+  });
+  function pickerValue(el: HTMLElement, selector = '.account-picker'): string | null {
+    return el.querySelector(`${selector} .acct-trigger`)!.getAttribute('data-value');
+  }
+
+  function pick(el: HTMLElement, id: number, selector = '.account-picker'): void {
+    (el.querySelector(`${selector} .acct-trigger`) as HTMLButtonElement).click();
+    settle();
+    (el.querySelector(`${selector} .acct-option[data-account-id="${id}"]`) as HTMLElement).click();
+    settle();
+  }
+  it('passes the open accounts and the chosen account to the picker, and its choice moves the record', async () => {
+    const { el } = await open('/accounting/entry', 'panes');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const picker = harness.routeDebugElement!.query(By.css('app-account-picker.account-picker')).componentInstance as AccountPickerComponent;
+    expect(picker.accounts().map(account => account.id)).toEqual([1, 2]);
+    expect(picker.value()).toBe(1);
+    expect(picker.label()).toBe('帳戶');
+    expect(picker.allowArchived()).toBe(false);
+
+    picker.choose(2);
+    settle();
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.accountId()).toBe(2);
+    expect(pickerValue(el)).toBe('2');
+  });
+
+  it('uses the picker for the 餘額調整 account too', async () => {
+    const { el } = await open('/accounting/entry?kind=system');
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    expect(el.querySelector('.account-picker.system-account')).not.toBeNull();
+    pick(el, 2, '.system-account');
+    const initialCategories = httpMock.match(r => r.url === '/api/accounting/categories');
+    expect(initialCategories).toHaveLength(1);
+    expect(initialCategories[0].cancelled).toBe(true);
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect(text(el.querySelector('.current-balance'))).toContain('−$27,218');
+  });
+
+  it('remembers the saved account as recent', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    keys(el, '1', '7', '0', '✓');
+    const request = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries');
+    expect(request.request.body.account_id).toBe(2);
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.accountId.set(1); settle();
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    request.flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
+    settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([2]);
+  });
+
+  it('still saves when storage is blocked', async () => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    keys(el, '1', '7', '0', '✓');
+    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries')
+      .flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
+    settle();
+    expect(left()).toBe(true);
+  });
+  describe('picker Esc order', () => {
+    function escape(target: Element): KeyboardEvent {
+      const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      settle();
+      return event;
+    }
+
+    it('Esc closes only the picker; the next Esc asks about a dirty draft, and only 放棄 leaves', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      typeInto(el, '.name-input', '午餐');
+      (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+      settle();
+
+      escape(el.querySelector('.account-picker .acct-panel')!);
+      expect(el.querySelector('.account-picker .acct-panel')).toBeNull();
+      expect(el.querySelector('.discard-strip')).toBeNull();
+      expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('午餐');
+      expect(left()).toBe(false);
+
+      expect(document.activeElement).toBe(el.querySelector('.account-picker .acct-trigger'));
+      escape(document.activeElement!);
+      expect(text(el.querySelector('.discard-strip'))).toContain('放棄未儲存的內容？');
+      expect(left()).toBe(false);
+      (el.querySelector('.discard-leave') as HTMLButtonElement).click();
+      settle();
+      expect(left()).toBe(true);
+    });
+
+    it('with a clean draft, Esc closes the picker and the next Esc cancels the form', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+      settle();
+      escape(el.querySelector('.account-picker .acct-panel')!);
+      expect(left()).toBe(false);
+      expect(document.activeElement).toBe(el.querySelector('.account-picker .acct-trigger'));
+      escape(document.activeElement!);
+      expect(left()).toBe(true);
+    });
+
+    it('⏎ on a picker row chooses the account and never saves the entry', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      tap(el, '.cat', '飲食');
+      tap(el, '.cat', '午餐');
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      keys(el, '1', '7', '0');
+      (el.querySelector('.account-picker .acct-trigger') as HTMLButtonElement).click();
+      settle();
+      const row = el.querySelector('.account-picker .acct-option[data-account-id="1"]') as HTMLElement;
+      row.focus();
+      row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      settle();
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      httpMock.expectNone(r => r.method === 'POST');
+      expect(left()).toBe(false);
+      expect(el.querySelector('.account-picker .acct-trigger')!.getAttribute('data-value')).toBe('1');
+    });
+
+    it('from the 新增拆帳行 modal: picker, then modal, then the discard prompt', async () => {
+      const { el, left } = await open('/accounting/entry');
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      tap(el, '.cat', '飲食');
+      tap(el, '.cat', '午餐'); // a picked category makes the draft dirty
+      respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+      (el.querySelector('app-split-lines .add') as HTMLButtonElement).click();
+      settle();
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/counterparties', []);
+      (el.querySelector('app-split-lines .line-account .acct-trigger') as HTMLButtonElement).click();
+      settle();
+
+      escape(el.querySelector('app-split-lines .line-account .acct-panel')!);
+      expect(el.querySelector('app-split-lines .line-account .acct-panel')).toBeNull();
+      expect(el.querySelector('app-split-lines .sheet')).not.toBeNull();
+
+      expect(document.activeElement).toBe(el.querySelector('app-split-lines .line-account .acct-trigger'));
+      escape(document.activeElement!);
+      expect(el.querySelector('app-split-lines .sheet')).toBeNull();
+      expect(el.querySelectorAll('app-split-lines .member').length).toBe(0);
+      expect(el.querySelector('.discard-strip')).toBeNull();
+      expect((harness.routeDebugElement!.componentInstance as EntryFormComponent).category()?.id).toBe(12);
+
+      expect(document.activeElement).toBe(el.querySelector('app-split-lines .add'));
+      escape(document.activeElement!);
+      expect(text(el.querySelector('.discard-strip'))).toContain('放棄未儲存的內容？');
+      expect(left()).toBe(false);
+    });
+  });
+
+  it('remembers the submitted balance-adjustment account despite state changing during its write', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.kind-tab', '系統');
+    keys(el, '2', '5', '0', '✓');
+    const request = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/balance-adjustments');
+    expect(request.request.body.account_id).toBe(1);
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.accountId.set(2); settle();
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    request.flush(makeEntryDetail({ id: 99, kind: 'balance_adjustment', account_id: 1, category_id: null }));
+    settle();
+    expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([1]);
   });
 
 });

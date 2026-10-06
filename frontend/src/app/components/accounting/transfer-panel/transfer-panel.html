@@ -8,29 +8,32 @@
   </div>
 
   <div class="xfer">
-    <label class="acc acc-from">
-      <span class="ico">{{ from()?.icon ?? '🏦' }}</span>
-      <select class="acc-select from-select" aria-label="轉出帳戶" [disabled]="locked()" (change)="setFrom($any($event.target).value)">
-        @for (account of legOptions(); track account.id) {
-          <option [value]="account.id" [selected]="account.id === fromId()">{{ accountLabel(account) }}</option>
-        }
-      </select>
-      @if (from(); as f) {
-        <small class="acc-balance">{{ formatMoney(f.balance, f.currency) }}</small>
-      }
-    </label>
+    <div class="acc acc-from">
+      <app-account-picker
+        class="from-picker"
+        label="轉出帳戶"
+        [accounts]="legOptions()"
+        [value]="fromId()"
+        [exclude]="fromExclude()"
+        [allowArchived]="keepArchived()"
+        [disabled]="locked()"
+        (valueChange)="setFrom($event)"
+      />
+    </div>
     <button type="button" class="swap" aria-label="交換帳戶" [disabled]="locked()" (click)="swap()">⇄</button>
-    <label class="acc acc-to">
-      <span class="ico">{{ to()?.icon ?? '🏦' }}</span>
-      <select class="acc-select to-select" aria-label="轉入帳戶" [disabled]="locked()" (change)="setTo($any($event.target).value)">
-        @for (account of legOptions(); track account.id) {
-          <option [value]="account.id" [selected]="account.id === toId()">{{ accountLabel(account) }}</option>
-        }
-      </select>
-      @if (to(); as t) {
-        <small class="acc-balance">{{ formatMoney(t.balance, t.currency) }}</small>
-      }
-    </label>
+    <div class="acc acc-to">
+      <app-account-picker
+        class="to-picker"
+        label="轉入帳戶"
+        [accounts]="legOptions()"
+        [value]="toId()"
+        [exclude]="toExclude()"
+        [allowArchived]="keepArchived()"
+        [disabled]="locked()"
+        (valueChange)="setTo($event)"
+      />
+    </div>
+
   </div>
 
   <div class="tiles">

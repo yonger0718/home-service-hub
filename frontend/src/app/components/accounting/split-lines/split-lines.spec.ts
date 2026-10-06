@@ -1,16 +1,19 @@
+import { By } from '@angular/platform-browser';
+import { AccountPickerComponent } from '../account-picker/account-picker';
+import { makeAccount } from '../testing/fixtures';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { CategoryNode, Counterparty, LedgerAccount } from '../../../models/accounting.model';
+import { CategoryNode, Counterparty } from '../../../models/accounting.model';
 import { emptyEntryInput } from '../entry-form/entry-save';
 import { SplitLinesComponent } from './split-lines';
 
 const ACCOUNTS = [
-  { id: 1, name: '玉山 UNI', currency: 'TWD', is_archived: false },
-  { id: 7, name: '錢包', currency: 'TWD', is_archived: false },
-] as unknown as LedgerAccount[];
+  makeAccount({ id: 1, name: '玉山 UNI' }),
+  makeAccount({ id: 7, name: '錢包' }),
+];
 
 const RECEIVABLE_TREE = [
   { id: 50, kind: 'receivable', parent_id: null, name: '應收款項', icon: '🤝', color: '#84dccf', is_hidden: false,
@@ -57,7 +60,8 @@ describe('SplitLinesComponent', () => {
     const sheet = el.querySelector('.sheet')!;
     expect(sheet.querySelector('h3')?.textContent).toBe('新增拆帳行');
     expect(Array.from(sheet.querySelectorAll('.k')).map(k => k.textContent?.trim().slice(0, 2))).toEqual(['類型', '類別', '金額', '帳戶']);
-    expect(el.querySelector<HTMLSelectElement>('.line-account')!.value).toBe('1');
+    expect(linePicker().value()).toBe(1);
+    expect(linePicker().compact()).toBe(true);
   });
 
   it('adds a 代付 receivable line for an existing counterparty', () => {
@@ -69,7 +73,7 @@ describe('SplitLinesComponent', () => {
 
     setValue('.line-category', '51', 'change');
     setValue('.line-amount', '180');
-    setValue('.line-account', '7', 'change');
+    linePicker().choose(7); fixture.detectChanges();
     setValue('.line-counterparty', 'Alan');
     el.querySelector<HTMLButtonElement>('.line-add')!.click();
     fixture.detectChanges();
@@ -223,4 +227,51 @@ describe('SplitLinesComponent', () => {
     fixture.detectChanges();
     expect(el.querySelector('.line-error')).toBeNull();
   });
+
+  function linePicker(): AccountPickerComponent {
+    return fixture.debugElement.query(By.css('app-account-picker.line-account')).componentInstance as AccountPickerComponent;
+  }
+  it('closes only the picker on Esc, then the modal on the next Esc', () => {
+    openSheet();
+    el.querySelector<HTMLButtonElement>('.line-account .acct-trigger')!.click();
+    fixture.detectChanges();
+    const first = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    el.querySelector('.line-account .acct-panel')!.dispatchEvent(first);
+    fixture.detectChanges();
+    expect(first.defaultPrevented).toBe(true);
+    expect(el.querySelector('.line-account .acct-panel')).toBeNull();
+    expect(el.querySelector('.sheet')).not.toBeNull();
+
+    const second = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(second);
+    fixture.detectChanges();
+    expect(second.defaultPrevented).toBe(true);
+    expect(el.querySelector('.sheet')).toBeNull();
+  });
+
+  it('chooses with ⏎ in the picker without adding the line', () => {
+    openSheet();
+    setValue('.line-amount', '100');
+    el.querySelector<HTMLButtonElement>('.line-account .acct-trigger')!.click();
+    fixture.detectChanges();
+    const row = el.querySelector<HTMLElement>('.line-account .acct-option[data-account-id="7"]')!;
+    row.focus();
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    fixture.detectChanges();
+    expect(linePicker().value()).toBe(7);
+    expect(fixture.componentInstance.members()).toEqual([]);
+    expect(el.querySelector('.sheet')).not.toBeNull();
+  });
+
+  it('marks the modal as an overlay and keeps Tab inside it', () => {
+    openSheet();
+    expect(el.querySelector('.overlay')!.hasAttribute('data-overlay')).toBe(true);
+    const add = el.querySelector<HTMLButtonElement>('.line-add')!;
+    add.focus();
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    add.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(el.querySelector('.sheet')!.contains(document.activeElement)).toBe(true);
+  });
+
 });

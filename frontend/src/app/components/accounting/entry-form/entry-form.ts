@@ -1,3 +1,5 @@
+import { AccountPickerComponent } from '../account-picker/account-picker';
+import { rememberRecentAccounts } from '../account-picker/recent-accounts';
 import { Location, NgTemplateOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
@@ -165,7 +167,7 @@ export function scheduleDraftKey(draft: ScheduleDraft): unknown {
 @Component({
   selector: 'app-entry-form',
   standalone: true,
-  imports: [
+  imports: [AccountPickerComponent,
     NgTemplateOutlet,
     LockBannerComponent,
     CategoryPickerComponent,
@@ -904,8 +906,8 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     }
   }
 
-  setAccount(value: string): void {
-    this.moveToAccount(value ? Number(value) : null);
+  chooseAccount(id: number | null): void {
+    this.moveToAccount(id);
     if (this.entryId() === null) {
       this.rulesTouched.set(false);
     }
@@ -1233,11 +1235,17 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (this.kind() === 'transfer') {
       const groupId = targetId === null ? null : (this.transferEdit()?.groupId ?? null);
       // null: the panel shows its own validation message.
-      const request = this.transferPanel()?.submit(transferCommonFrom(this.sharedFields()), groupId) ?? null;
-      this.write(request, () => this.finish(keepGoing));
+      const panel = this.transferPanel();
+      const submittedIds = [panel?.fromId(), panel?.toId()];
+      const request = panel?.submit(transferCommonFrom(this.sharedFields()), groupId) ?? null;
+      this.write(request, () => {
+        rememberRecentAccounts(submittedIds);
+        this.finish(keepGoing);
+      });
       return;
     }
     if (this.isSystem()) {
+      const submittedIds = [this.accountId()];
       const request = this.accounting.createBalanceAdjustment({
         account_id: this.account()!.id,
         target_balance: String(this.target()),
@@ -1245,7 +1253,10 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
         entry_time: this.entryTime() || null,
         description: this.description().trim() || null,
       });
-      this.write(request, () => this.finish(keepGoing));
+      this.write(request, () => {
+        rememberRecentAccounts(submittedIds);
+        this.finish(keepGoing);
+      });
       return;
     }
     const group = this.splitGroup ? { ...this.splitGroup, dateChanged: this.datesKey() !== this.loadedDates } : null;
@@ -1274,6 +1285,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           ? plan.input
           : (plan.input.members[plan.kind === 'update-split' ? plan.index : 0] as EntryInput);
       rememberEntryUse(input, this.amount());
+      rememberRecentAccounts([input.account_id]);
       if (detail?.proposed_fee && Number(detail.proposed_fee) > 0 && !input.fee) {
         this.feeProposal.set({ entryId: detail.id, amount: detail.proposed_fee, input, continuous: keepGoing });
         return;
@@ -1353,6 +1365,10 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (this.kind() === 'transfer' && !transfer) {
       return; // the panel shows its own message
     }
+    // Remember the submitted accounts only at definition success, even before a catch-up completes.
+    const recentAccountIds = this.kind() === 'transfer'
+      ? [panel?.fromId(), panel?.toId()]
+      : [this.accountId()];
     const repayId = this.scheduleDraft().repayAccountId;
     const counterparty: Observable<number | null> = this.isParty() && this.loanEntryId === null
       ? resolveCounterpartyId(this.accounting, this.counterpartyName(), this.counterparties(), party =>
@@ -1394,6 +1410,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.saving.set(true);
     request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
       next: catchUpId => {
+        rememberRecentAccounts(recentAccountIds);
         this.saving.set(false);
         this.markClean();
         if (catchUpId !== null) {

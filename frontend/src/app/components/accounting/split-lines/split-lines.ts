@@ -1,3 +1,4 @@
+import { AccountPickerComponent } from '../account-picker/account-picker';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -53,6 +54,7 @@ function flatten(tree: CategoryNode[], kind: SplitKind): CategoryOption[] {
 @Component({
   selector: 'app-split-lines',
   standalone: true,
+  imports: [AccountPickerComponent],
   templateUrl: './split-lines.html',
   styleUrls: ['../sheet.scss', './split-lines.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -147,8 +149,8 @@ export class SplitLinesComponent {
     this.draftCategoryId.set(value ? Number(value) : null);
   }
 
-  setAccount(value: string): void {
-    this.draftAccountId.set(Number(value));
+  setAccount(id: number | null): void {
+    this.draftAccountId.set(id);
   }
 
   private ensureCategories(kind: SplitKind): void {
@@ -219,7 +221,7 @@ export class SplitLinesComponent {
     });
   }
 
-  /** While the sheet is open: ⏎ in a sheet field adds the line, Esc anywhere closes it (see `sheetKeyAction`). */
+  /** Handles only unhandled sheet keys: Enter adds, Esc closes this modal, and Tab stays inside. */
   onHostKeydown(event: KeyboardEvent): void {
     if (!this.open()) {
       return;

@@ -52,20 +52,9 @@
   min-width: 0;
   text-align: center;
 
-  .ico { background: var(--app-surface-soft); font-size: 1.4rem; height: 50px; width: 50px; }
-  small { color: var(--app-text-muted); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
 }
 
-.acc-select {
-  background: none;
-  border: 0;
-  color: var(--app-text);
-  font: inherit;
-  font-size: 0.85rem;
-  font-weight: 800;
-  max-width: 100%;
-  text-align: center;
-}
+.acc app-account-picker { max-width: 100%; }
 
 .swap {
   background: none;

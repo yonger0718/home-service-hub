@@ -1,0 +1,155 @@
+// frontend/src/app/components/accounting/account-picker/account-picker.scss
+:host {
+  display: block;
+  min-width: 0;
+  position: relative;
+}
+
+.acct-trigger {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: var(--app-text);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 4px;
+  justify-content: center;
+  max-width: 100%;
+  min-height: 30px;
+  min-width: 0;
+  padding: 2px 4px;
+  width: 100%;
+
+  &.empty .acct-name {
+    color: var(--app-text-muted);
+  }
+
+  &:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+}
+
+.acct-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acct-trigger-balance {
+  color: var(--app-text-muted);
+  flex: none;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.acct-caret {
+  color: var(--app-text-muted);
+  flex: none;
+  font-size: 0.72rem;
+}
+
+.acct-popover {
+  box-sizing: content-box;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--app-raised-shadow);
+  overflow-y: auto;
+  padding: 6px;
+  z-index: 1200;
+}
+
+.acct-search {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-sm);
+  color: var(--app-text);
+  font: inherit;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  width: 100%;
+}
+
+.acct-recent {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.acct-recent-label,
+.acct-group-name {
+  color: var(--app-text-muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.acct-recent-chip {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 3px 9px;
+}
+
+.acct-group-name {
+  padding: 8px 6px 2px;
+}
+
+.acct-option {
+  align-items: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  min-height: 40px;
+  padding: 4px 6px;
+
+  &.active,
+  &:hover,
+  &:focus {
+    background: var(--app-surface-soft);
+    outline: none;
+  }
+
+  &[aria-selected='true'] {
+    font-weight: 700;
+  }
+}
+
+.acct-currency {
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-text-muted);
+  font-size: 0.72rem;
+  padding: 0 6px;
+}
+
+.acct-balance {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+
+  &.neg {
+    color: var(--tone-neg, var(--c-red));
+  }
+}
+
+.acct-check {
+  color: var(--app-primary);
+}
+
+.acct-empty {
+  color: var(--app-text-muted);
+  margin: 12px 0;
+  text-align: center;
+}

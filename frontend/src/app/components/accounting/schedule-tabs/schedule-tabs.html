@@ -110,15 +110,20 @@
           }
         </label>
         @if (kind() === 'payable') {
-          <label class="sched-row">
+          <div class="sched-row">
             <span class="sched-label">還款帳戶</span>
-            <select class="sched-repay" [disabled]="disabled()" (change)="setRepay($any($event.target).value)">
-              @for (account of repayOptions(); track account.id) {
-                <option [value]="account.id" [selected]="account.id === repayValue()">{{ accountLabel(account) }}</option>
-              }
-            </select>
-          </label>
+            <app-account-picker
+              class="sched-repay"
+              label="還款帳戶"
+              [accounts]="repayOptions()"
+              [value]="repayValue()"
+              [allowArchived]="true"
+              [disabled]="disabled()"
+              (valueChange)="setRepay($event)"
+            />
+          </div>
         }
+
         <div class="sched-row">
           <span class="sched-label">入帳方式</span>
           <span class="sched-modes" role="radiogroup" aria-label="入帳方式">
