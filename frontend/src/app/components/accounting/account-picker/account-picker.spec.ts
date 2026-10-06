@@ -183,5 +183,117 @@ describe('AccountPickerComponent', () => {
     const desk = render({ mode: 'sheet' });
     openPanel(desk.fixture);
     expect(desk.el.querySelector('.acct-popover.acct-panel[data-overlay]')).not.toBeNull();
+  });  function key(target: Element, name: string, init: KeyboardEventInit = {}): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(event);
+    return event;
+  }
+
+  it('focuses the search box on desktop, the selected row without one, and never the search box on a phone', () => {
+    const desk = render({ accounts: [...many(7), BANK], value: 3 });
+    openPanel(desk.fixture);
+    expect(document.activeElement).toBe(desk.el.querySelector('.acct-search'));
+    TestBed.resetTestingModule();
+
+    const small = render({ value: 3 });
+    openPanel(small.fixture);
+    expect(document.activeElement).toBe(small.el.querySelector('.acct-option[data-account-id="3"]'));
+    TestBed.resetTestingModule();
+
+    const phone = render({ accounts: [...many(7), BANK], value: 3, mode: 'phone' });
+    openPanel(phone.fixture);
+    expect(document.activeElement).toBe(phone.el.querySelector('.acct-option[data-account-id="3"]'));
   });
+
+  it('focuses the panel itself when nothing can be offered', () => {
+    const { fixture, el } = render({ exclude: [1, 2, 3, 4] });
+    const panel = openPanel(fixture);
+    expect(text(panel.querySelector('.acct-empty'))).toBe('沒有符合的帳戶');
+    expect(document.activeElement).toBe(el.querySelector('.acct-panel'));
+  });
+
+  it('moves with ↑ / ↓ and selects with ⏎ as handled keys', () => {
+    const { fixture, el, picker } = render({ value: 1 });
+    const panel = openPanel(fixture);
+    const down = key(document.activeElement!, 'ArrowDown');
+    fixture.detectChanges();
+    expect(down.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(panel.querySelector('.acct-option[data-account-id="4"]'));
+    key(document.activeElement!, 'ArrowUp');
+    fixture.detectChanges();
+    key(document.activeElement!, 'ArrowUp');
+    fixture.detectChanges();
+    expect(document.activeElement).toBe(panel.querySelector('.acct-option[data-account-id="3"]')); // wraps to the last row
+
+    const enter = key(document.activeElement!, 'Enter');
+    fixture.detectChanges();
+    expect(enter.defaultPrevented).toBe(true);
+    expect(picker.value()).toBe(3);
+    expect(el.querySelector('.acct-panel')).toBeNull();
+    expect(document.activeElement).toBe(el.querySelector('.acct-trigger'));
+  });
+
+  it('closes on Esc without a change, as a handled key, focus back on the trigger', () => {
+    const { fixture, el, picker } = render({ value: 1 });
+    openPanel(fixture);
+    key(document.activeElement!, 'ArrowDown');
+    fixture.detectChanges();
+    const escape = key(document.activeElement!, 'Escape');
+    fixture.detectChanges();
+    expect(escape.defaultPrevented).toBe(true);
+    expect(picker.value()).toBe(1);
+    expect(el.querySelector('.acct-panel')).toBeNull();
+    expect(document.activeElement).toBe(el.querySelector('.acct-trigger'));
+  });
+
+  it('keeps Tab inside the panel', () => {
+    localStorage.setItem(RECENT_ACCOUNTS_KEY, JSON.stringify([2]));
+    const { fixture, el } = render({ accounts: [...many(7), WALLET, CARD], value: 1 });
+    const panel = openPanel(fixture);
+    const row = panel.querySelector<HTMLElement>('.acct-option[data-account-id="1"]')!;
+    row.focus();
+    const tab = key(row, 'Tab');
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(el.querySelector('.acct-search'));
+    const back = key(document.activeElement!, 'Tab', { shiftKey: true });
+    expect(back.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(row);
+  });
+
+  it('synchronizes the active row on focusin and Enter uses its event-target account', () => {
+    const { fixture, picker } = render({ value: 1 });
+    const panel = openPanel(fixture);
+    const row = panel.querySelector<HTMLElement>('.acct-option[data-account-id="2"]')!;
+    row.focus();
+    fixture.detectChanges();
+    expect(picker.activeId()).toBe(2);
+    expect(row.tabIndex).toBe(0);
+    // A stale active signal must not override the row actually receiving Enter.
+    picker.activeId.set(3);
+    const enter = key(row, 'Enter');
+    fixture.detectChanges();
+    expect(enter.defaultPrevented).toBe(true);
+    expect(picker.value()).toBe(2);
+  });
+
+  it('Enter in search chooses the active result; chips keep their native Enter click', () => {
+    localStorage.setItem(RECENT_ACCOUNTS_KEY, '[2]');
+    const { fixture, picker } = render({ accounts: [...many(7), WALLET, CARD] });
+    const panel = openPanel(fixture);
+    const chip = panel.querySelector<HTMLElement>('.acct-recent-chip')!;
+    expect(key(chip, 'Enter').defaultPrevented).toBe(false);
+    chip.click();
+    fixture.detectChanges();
+    expect(picker.value()).toBe(2);
+    openPanel(fixture);
+    const search = fixture.nativeElement.querySelector('.acct-search') as HTMLInputElement;
+    search.value = '帳戶3';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    expect(picker.activeId()).toBe(103);
+    expect(key(search, 'Enter').defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    expect(picker.value()).toBe(103);
+  });
+
 });

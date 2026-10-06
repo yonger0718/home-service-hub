@@ -167,15 +167,60 @@ export class AccountPickerComponent {
     }
   }
 
-  /** Overlay keyboard contract; completed in Task 4. */
+  /**
+   * Overlay keyboard contract (spec §3.1): every key handled here is marked handled, so the split-lines modal, the
+   * entry form (⏎ save, Esc cancel) and the layout (Esc, shortcuts) leave it alone. Esc closes only the picker.
+   */
   onHostKeydown(event: KeyboardEvent): void {
     if (!this.open() || isHandledKey(event)) {
       return;
     }
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      this.close();
+    const panel = this.panel()?.nativeElement;
+    if (!panel) {
+      return;
     }
+    const target = event.target as HTMLElement | null;
+    switch (event.key) {
+      case 'Escape':
+        event.preventDefault();
+        this.close();
+        return;
+      case 'Tab':
+        trapFocus(panel, event);
+        return;
+      case 'ArrowDown':
+      case 'ArrowUp':
+        event.preventDefault();
+        this.move(event.key === 'ArrowDown' ? 1 : -1);
+        return;
+      case 'Enter': {
+        if (target?.tagName === 'BUTTON') {
+          return; // a 最近使用 chip: its native click chooses (no form handler saves on a BUTTON)
+        }
+        event.preventDefault();
+        const row = target?.closest<HTMLElement>('.acct-option[data-account-id]');
+        const id = row ? Number(row.dataset['accountId']) : this.activeId();
+        if (id !== null) {
+          this.choose(id);
+        }
+        return;
+      }
+    }
+  }
+
+  private move(delta: 1 | -1): void {
+    const options = this.options();
+    if (options.length === 0) {
+      return;
+    }
+    const index = options.findIndex(account => account.id === this.activeId());
+    const next = options[index === -1 ? 0 : (index + delta + options.length) % options.length];
+    this.activeId.set(next.id);
+    afterNextRender(() => this.optionElement(next.id)?.focus(), { injector: this.injector });
+  }
+
+  onOptionFocus(id: number): void {
+    this.activeId.set(id);
   }
 
   private firstActive(): number | null {

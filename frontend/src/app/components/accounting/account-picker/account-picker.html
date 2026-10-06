@@ -66,6 +66,7 @@
             [attr.aria-selected]="account.id === value()"
             [attr.tabindex]="account.id === activeId() ? 0 : -1"
             (click)="choose(account.id)"
+            (focusin)="onOptionFocus(account.id)"
           >
             <span class="acct-ico" aria-hidden="true">{{ account.icon ?? '🏦' }}</span>
             <span class="acct-name">{{ account.name }}</span>
