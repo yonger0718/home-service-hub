@@ -7,6 +7,7 @@ import {
   Injector,
   afterNextRender,
   OnInit,
+  OnDestroy,
   computed,
   inject,
   signal,
@@ -49,6 +50,7 @@ import {
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
+import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingToastService } from '../accounting-toast';
 import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey } from '../accounting-ui';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
@@ -180,12 +182,13 @@ export function scheduleDraftKey(draft: ScheduleDraft): unknown {
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { '(keydown)': 'onKeydown($event)' },
 })
-export class EntryFormComponent implements OnInit {
+export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   private readonly accounting = inject(AccountingService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
   private readonly location = inject(Location);
   private readonly destroyRef = inject(DestroyRef);
+  protected readonly registry = inject(DirtyFormRegistry);
   private readonly injector = inject(Injector);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly layoutMode = inject(LayoutModeService);
@@ -530,6 +533,7 @@ export class EntryFormComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    this.registry.register(this);
     forkJoin({
       // Archived accounts too, so an edited record on an archived account still shows (and keeps) it.
       accounts: this.accounting.getAccounts(true),
@@ -571,8 +575,21 @@ export class EntryFormComponent implements OnInit {
   }
 
   /** Resets the form for a navigation; returns the record to load (edit or copy), or null for a blank record. */
+  ngOnDestroy(): void {
+    this.registry.unregister(this);
+  }
+
+  /** DirtyAware: the strip is rendered from `registry.promptOpen()`; 留下 takes the focus. */
+  showDiscardPrompt(): void {
+    afterNextRender(() => this.host.nativeElement.querySelector<HTMLElement>('.discard-stay')?.focus(), {
+      injector: this.injector,
+    });
+  }
+
+
   private start(id: string | null, kindParam: string | null, copyParam: string | null, scheduleParam: string | null = null): EntryTarget | null {
     this.baseline.set(null);
+    this.registry.clearPending();
     this.resetFields();
     this.related.set(NO_RELATED);
     this.feeProposal.set(null);
@@ -606,6 +623,7 @@ export class EntryFormComponent implements OnInit {
 
   /** Takes the clean snapshot after the next render, once child effects (schedule dates, transfer legs) settled. */
   private markClean(): void {
+    this.registry.clearPending();
     this.baseline.set(null);
     this.transferPanel()?.markClean();
     afterNextRender(() => this.baseline.set(this.formState()), { injector: this.injector });
@@ -1504,9 +1522,16 @@ export class EntryFormComponent implements OnInit {
     this.markClean();
   }
 
+  /** ✕, Esc and the cancel shortcut: a dirty draft first asks 放棄未儲存的內容？ (DirtyFormRegistry). */
   cancel(): void {
+    this.registry.requestClose(() => this.doCancel());
+  }
+
+  private doCancel(): void {
+    this.markClean();
     this.leave();
   }
+
 
   /** Back to the page the owner came from; to the timeline when the form was opened directly. */
   private leave(): void {

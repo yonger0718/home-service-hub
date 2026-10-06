@@ -20,6 +20,16 @@
       (click)="onSaveClick()"
     >✓</button>
   </header>
+  @if (registry.promptOpen()) {
+    <div class="discard-strip" role="alertdialog" aria-label="放棄未儲存的內容？">
+      <span>放棄未儲存的內容？</span>
+      <span class="discard-actions">
+        <button type="button" class="discard-stay" (click)="registry.cancelDiscard()">留下</button>
+        <button type="button" class="discard-leave" (click)="registry.confirmDiscard()">放棄</button>
+      </span>
+    </div>
+  }
+
 
   <app-lock-banner [locked]="locked() || definitionLocked()" />
   @if (savedFlash()) {
