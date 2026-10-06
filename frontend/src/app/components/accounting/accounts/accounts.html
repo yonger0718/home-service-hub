@@ -4,7 +4,12 @@
     <a class="add-account" routerLink="/accounting/accounts/new" aria-label="新增帳戶">+</a>
   </header>
 
-  @if (latestImport(); as run) {
+  @if (importError()) {
+    <p class="import-status import-status--failed import-error">
+      匯入狀態無法取得
+      <button type="button" class="retry import-retry" (click)="retryImport()">重試</button>
+    </p>
+  } @else if (latestImport(); as run) {
     <p class="import-status" [class.import-status--failed]="run.status === 'failed'">
       最近匯入 {{ run.started_at | date: 'yyyy-MM-dd HH:mm' }} · {{ statusLabel(run) }} · 待確認 {{ reviewCount() }} 筆
     </p>
@@ -32,15 +37,23 @@
   </ng-template>
 
   @if (loadError()) {
-    <p class="load-error">帳戶讀取失敗，請稍後再試。</p>
-  } @else if (loaded() && accounts().length === 0) {
-    <div class="empty-state">
-      <i class="pi pi-upload"></i>
-      <h4>尚未匯入 MOZE 資料</h4>
-      <p>請在記帳設定上傳 MOZE 備份 (.zip)，先試算再匯入。</p>
-      <a routerLink="/accounting/settings">前往記帳設定</a>
+    <div class="load-error-block">
+      <p class="load-error">帳戶讀取失敗，請稍後再試。</p>
+      <button type="button" class="retry accounts-retry" (click)="retry()">重試</button>
     </div>
-  } @else if (loaded()) {
+  } @else if (!loaded()) {
+    <app-skeleton rows="3" />
+  } @else if (accounts().length === 0) {
+    <div class="empty-state">
+      <i class="pi pi-wallet" aria-hidden="true"></i>
+      <h4>還沒有帳戶</h4>
+      <p>新增帳戶開始記帳，或上傳 MOZE 備份匯入。</p>
+      <div class="empty-actions">
+        <a class="empty-primary" routerLink="/accounting/accounts/new">新增帳戶</a>
+        <a class="empty-secondary" routerLink="/accounting/settings">前往記帳設定</a>
+      </div>
+    </div>
+  } @else {
     <div class="nw">
       <small>總額 {{ mainCurrency() }}</small>
       <b class="total-amount" [class.neg]="total() < 0">{{ formatMoney(total(), mainCurrency()) }}</b>

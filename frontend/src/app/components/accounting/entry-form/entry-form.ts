@@ -1,4 +1,4 @@
-import { Location } from '@angular/common';
+import { Location, NgTemplateOutlet } from '@angular/common';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -59,7 +59,7 @@ import { fieldErrors, writeErrorMessage } from '../http-errors';
 import { AccountingShortcutsService } from '../keyboard-shortcuts';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { IMPORT_RUNNING_TOAST, isImportRunning } from '../schedule-math';
-import { ScheduleDraft, defaultDraft } from '../schedule-tabs/schedule-draft';
+import { SCHEDULE_TABS, ScheduleDraft, ScheduleTab, defaultDraft, ruleDayFor, tabsFor } from '../schedule-tabs/schedule-draft';
 import { ScheduleTabsComponent } from '../schedule-tabs/schedule-tabs';
 import { SplitLinesComponent } from '../split-lines/split-lines';
 import { TransferPanelComponent } from '../transfer-panel/transfer-panel';
@@ -153,6 +153,7 @@ interface LoadedEntry extends EntryLoad {
   selector: 'app-entry-form',
   standalone: true,
   imports: [
+    NgTemplateOutlet,
     LockBannerComponent,
     CategoryPickerComponent,
     AmountKeypadComponent,
@@ -252,6 +253,12 @@ export class EntryFormComponent implements OnInit {
   readonly fieldErrors = signal<Record<string, string>>({});
   /** 週期 / 分期 chosen; never while editing an entry (that edits the one record: 單次 only, final review F1). */
   readonly scheduling = computed(() => this.scheduleDraft().tab !== 'single' && !this.editing());
+  readonly eventTabs = SCHEDULE_TABS;
+  /** Enabled 事件類型 tabs: a definition keeps its own kind; otherwise `tabsFor` (editing → 單次 only). */
+  readonly enabledEventTabs = computed<ScheduleTab[]>(() =>
+    this.scheduleId() !== null ? [this.scheduleDraft().tab] : tabsFor(this.kind(), { editing: this.editing() }),
+  );
+
   /** The payable a loan definition repays (definition mode). */
   private loanEntryId: number | null = null;
   /** Definition mode: the definition as loaded; a save keeps the fields the form does not expose (R1). */
@@ -733,11 +740,48 @@ export class EntryFormComponent implements OnInit {
 
   readonly accountLabel = accountLabel;
 
+  eventTabEnabled(tab: ScheduleTab): boolean {
+    return this.enabledEventTabs().includes(tab);
+  }
+
+  /** As the old 進階 tabs did (rule day re-derived); schedule-only errors go with the old tab. */
+  selectEventTab(tab: ScheduleTab): void {
+    if (!this.eventTabEnabled(tab) || tab === this.scheduleDraft().tab) {
+      return;
+    }
+    this.scheduleDraft.update(draft => {
+      const next = { ...draft, tab };
+      return { ...next, dayOfMonth: ruleDayFor(next) };
+    });
+    this.fieldErrors.set({});
+    this.error.set(null);
+  }
+
+  /** ← / → move focus between enabled tabs; Space / ⏎ press the focused tab (native button). */
+  onEventTabKeydown(event: KeyboardEvent): void {
+    if ((event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') || isHandledKey(event)) {
+      return;
+    }
+    event.preventDefault();
+    const enabled = SCHEDULE_TABS.map(option => option.tab).filter(tab => this.eventTabEnabled(tab));
+    if (enabled.length === 0) {
+      return;
+    }
+    const current = ((event.target as HTMLElement).dataset['tab'] as ScheduleTab | undefined) ?? this.scheduleDraft().tab;
+    const index = Math.max(0, enabled.indexOf(current));
+    const next = enabled[(index + (event.key === 'ArrowRight' ? 1 : enabled.length - 1)) % enabled.length];
+    this.host.nativeElement.querySelector<HTMLElement>(`.event-tab[data-tab="${next}"]`)?.focus();
+  }
+
   selectKind(kind: FormKind): void {
     if (kind === this.kind() || this.tabDisabled(kind)) {
       return;
     }
     this.kind.set(kind);
+    if (!this.eventTabEnabled(this.scheduleDraft().tab)) {
+      // The system branch has no schedule component to normalize its tab; use the same transition here.
+      this.selectEventTab('single');
+    }
     this.category.set(null);
     this.error.set(null);
   }

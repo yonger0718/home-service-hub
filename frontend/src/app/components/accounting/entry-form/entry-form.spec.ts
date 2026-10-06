@@ -167,6 +167,7 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '飲食');
     tap(el, '.cat', '午餐');
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2, name: '玉山 UNI' }));
+    expect(el.querySelector('.event-hint')).toBeNull();
     keys(el, '1', '7', '0', '✓');
 
     const req = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries');
@@ -381,8 +382,13 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
 
     const tabs = Array.from(el.querySelectorAll('.schedule-tab')).map(node => text(node));
-    expect(tabs).not.toContain('週期');
-    expect(tabs).not.toContain('分期');
+    const disabled = Array.from(el.querySelectorAll('.event-tab'))
+      .filter(node => node.getAttribute('aria-disabled') === 'true')
+      .map(node => text(node));
+    expect(tabs).toEqual(['單次', '週期', '分期']);
+    expect(disabled).toEqual(['週期', '分期']);
+    expect(text(el.querySelector('.event-hint'))).toBe('要改週期／分期，請到提醒中心的排程管理');
+
     const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
     form.scheduleDraft.update(draft => ({ ...draft, tab: 'recurring' }));
     form.save(false);
@@ -517,7 +523,7 @@ describe('EntryFormComponent', () => {
     expect(form.preference().keypad_layout).toBe(changed.keypad_layout);
   });
 
-  it('does not save on ⏎ while an IME candidate is committed (keyCode 229) or on the 進階 summary', async () => {
+  it('does not save on ⏎ while an IME candidate is committed (keyCode 229) or on an 事件類型 tab', async () => {
     const { el, left } = await open('/accounting/entry');
     respond('/api/accounting/categories', [FOOD]);
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
@@ -531,7 +537,7 @@ describe('EntryFormComponent', () => {
       new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true }),
     );
     settle();
-    el.querySelector('.advanced summary')!.dispatchEvent(
+    el.querySelector('.event-tab')!.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
     );
     settle();
@@ -1142,4 +1148,83 @@ describe('EntryFormComponent', () => {
     expect(el.querySelector('.topbar .cancel')).toBeNull();
     expect(el.querySelector('.topbar .save')).not.toBeNull();
   });
+  it('still shows 入帳日 for a new single entry and sends posted_date', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '飲食');
+    tap(el, '.cat', '午餐');
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    keys(el, '1', '7', '0');
+    const posted = el.querySelector('.event-type ~ .schedule-block .posted-input') as HTMLInputElement;
+    expect(posted).not.toBeNull();
+    posted.value = '2026-10-05';
+    posted.dispatchEvent(new Event('change'));
+    settle();
+    keys(el, '✓');
+    const req = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/entries');
+    expect(req.request.body).toMatchObject({ entry_date: '2026-10-02', posted_date: '2026-10-05' });
+    req.flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
+    settle();
+  });
+
+  it.each(['週期', '分期'])('normalizes %s to 單次 when switching to system and saves a balance adjustment', async eventType => {
+    const { el, left } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.event-tab', eventType);
+    const anchor = el.querySelector<HTMLInputElement>(eventType === '分期' ? '.sched-first' : '.sched-start')!;
+    anchor.value = eventType === '分期' ? '2026-11-19' : '2026-10-15';
+    anchor.dispatchEvent(new Event('change')); settle();
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.fieldErrors.set({ times: '分期至少 2 期' });
+    form.error.set('排程欄位有誤'); settle();
+    tap(el, '.kind-tab', '系統');
+    const tabs = Array.from(el.querySelectorAll<HTMLButtonElement>('.event-tab'));
+    expect(tabs.map(tab => tab.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false']);
+    expect(tabs.map(tab => tab.getAttribute('aria-disabled'))).toEqual([null, 'true', 'true']);
+    expect(tabs.map(tab => tab.getAttribute('tabindex'))).toEqual(['0', '-1', '-1']);
+    expect(form.scheduleDraft().tab).toBe('single');
+    expect(form.scheduleDraft().dayOfMonth).toBe(eventType === '分期' ? 2 : 15);
+    expect(form.fieldErrors()).toEqual({});
+    expect(el.querySelector('.form-error')).toBeNull();
+    expect(el.querySelector('app-schedule-tabs')).toBeNull();
+    keys(el, '2', '5', '0', '✓');
+    const write = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/balance-adjustments');
+    expect(write.request.body).toEqual({ account_id: 1, target_balance: '250', entry_date: '2026-10-02', entry_time: '14:42', description: null });
+    httpMock.expectNone(r => r.url === '/api/accounting/schedules/definitions');
+    write.flush(makeEntryDetail({ id: 99, kind: 'balance_adjustment', account_id: 1, category_id: null }));
+    settle(); expect(left()).toBe(true);
+  });
+
+  it.each([false, true])('renders the shared system tile in component editing state %s without adding schedule fields', async editing => {
+    const { el } = await open('/accounting/entry?kind=system');
+    for (const request of httpMock.match(r => r.url === '/api/accounting/categories')) if (!request.cancelled) request.flush([]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.editing.set(editing); settle();
+    const tabs = Array.from(el.querySelectorAll<HTMLButtonElement>('.event-tab'));
+    expect(tabs.map(text)).toEqual(['單次', '週期', '分期']);
+    expect(tabs.map(tab => tab.getAttribute('aria-disabled'))).toEqual([null, 'true', 'true']);
+    tabs[1].click(); settle();
+    expect(tabs[0].getAttribute('aria-selected')).toBe('true');
+    expect(el.querySelector('app-schedule-tabs')).toBeNull();
+    expect(el.querySelector('.posted-input')).toBeNull();
+    expect(el.querySelectorAll('.event-type').length).toBe(1);
+    expect(text(el.querySelector('.event-hint'))).toBe(editing ? '要改週期／分期，請到提醒中心的排程管理' : '');
+  });
+
+  it('preserves the unsupported balance_adjustment edit route and refuses a write', async () => {
+    const { el } = await open('/accounting/entries/9/edit');
+    respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, kind: 'balance_adjustment', account_id: 1, category_id: null }));
+    for (const request of httpMock.match(r => r.url === '/api/accounting/categories')) if (!request.cancelled) request.flush([]);
+    settle();
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.unsupported()).toBe('餘額調整請在明細頁處理');
+    expect(el.querySelector('.target-tile')).toBeNull();
+    form.save(false); settle();
+    expect(text(el.querySelector('.form-error'))).toBe('餘額調整請在明細頁處理');
+    httpMock.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+  });
+
 });

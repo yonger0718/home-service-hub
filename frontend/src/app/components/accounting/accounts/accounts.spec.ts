@@ -321,10 +321,16 @@ describe('AccountingAccountsComponent', () => {
     expect(status).toContain('待確認 2 筆');
   });
 
-  it('links the empty state to the settings page', () => {
+  it('offers 新增帳戶 and 前往記帳設定 when there are no accounts', () => {
     const el = render([], null).nativeElement as HTMLElement;
-    expect(el.querySelector('.empty-state')?.textContent).toContain('尚未匯入 MOZE 資料');
-    expect(el.querySelector('.empty-state a')?.getAttribute('href')).toBe('/accounting/settings');
+    const empty = el.querySelector('.empty-state')!;
+    expect(empty.querySelector('h4')?.textContent?.trim()).toBe('還沒有帳戶');
+    expect(empty.querySelector('p')?.textContent?.trim()).toBe('新增帳戶開始記帳，或上傳 MOZE 備份匯入。');
+    const links = Array.from(empty.querySelectorAll('a'));
+    expect(links.map(a => [a.textContent?.trim(), a.getAttribute('href')])).toEqual([
+      ['新增帳戶', '/accounting/accounts/new'],
+      ['前往記帳設定', '/accounting/settings'],
+    ]);
   });
 
   it('reloads the account list when accountsChanged bumps', () => {
@@ -415,4 +421,111 @@ describe('AccountingAccountsComponent', () => {
     expect(headers.map(h => h.querySelector('b')?.textContent?.trim())).toEqual(['+$3,070', '—']);
     expect(headers.map(h => h.querySelector('.partial-hint')?.textContent?.trim() ?? null)).toEqual(['部分帳戶未換算', '部分帳戶未換算']);
   });
+  const PREFERENCE_BODY = {
+    expense_income_colors: 'red_green', keypad_layout: 'calculator', week_start: 0, main_currency: 'TWD',
+    hide_rewards_on_timeline: false, abbreviate_totals: true,
+  };
+  const ACCOUNTS_GET = (r: { url: string; urlWithParams: string; method: string }) =>
+    r.method === 'GET' && r.url === '/api/accounting/accounts' && !r.urlWithParams.includes('include_archived=true');
+
+  it('shows the skeleton until the first load answers', () => {
+    const fixture = TestBed.createComponent(AccountingAccountsComponent);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('app-skeleton')).not.toBeNull();
+    http.expectOne(ACCOUNTS_GET).flush(ACCOUNTS);
+    http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+    http.expectOne('/api/accounting/preference').flush(PREFERENCE_BODY);
+    fixture.detectChanges();
+    flushBills();
+    fixture.detectChanges();
+    expect(el.querySelector('app-skeleton')).toBeNull();
+    expect(rows(el).length).toBeGreaterThan(0);
+  });
+
+  it('shows nothing for a 404 and 匯入狀態無法取得 with 重試 for a failed lookup, keeping the list', () => {
+    const fixture = TestBed.createComponent(AccountingAccountsComponent);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    http.expectOne(ACCOUNTS_GET).flush(ACCOUNTS);
+    http.expectOne('/api/accounting/imports/latest').flush('boom', { status: 500, statusText: 'Server Error' });
+    http.expectOne('/api/accounting/preference').flush(PREFERENCE_BODY);
+    fixture.detectChanges();
+    flushBills();
+    fixture.detectChanges();
+
+    expect(el.querySelector('.import-error')?.textContent).toContain('匯入狀態無法取得');
+    expect(rows(el).length).toBeGreaterThan(0);
+
+    el.querySelector<HTMLButtonElement>('.import-retry')!.click();
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/imports/latest').flush({ detail: 'none' }, { status: 404, statusText: 'Not Found' });
+    fixture.detectChanges();
+    expect(el.querySelector('.import-error')).toBeNull();
+    expect(el.querySelector('.import-status')).toBeNull();
+  });
+
+  it('keeps an in-flight accounts reload when the import is retried, and drops the older import failure', () => {
+    const fixture = TestBed.createComponent(AccountingAccountsComponent);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    http.expectOne(ACCOUNTS_GET).flush(ACCOUNTS);
+    http.expectOne('/api/accounting/imports/latest').flush('boom', { status: 500, statusText: 'Server Error' });
+    http.expectOne('/api/accounting/preference').flush(PREFERENCE_BODY);
+    fixture.detectChanges();
+    flushBills();
+    fixture.detectChanges();
+
+    // An accounts reload (entry write elsewhere) is in flight…
+    const service = TestBed.inject(AccountingService);
+    service.deleteEntry(99).subscribe();
+    http.expectOne(r => r.method === 'DELETE' && r.url === '/api/accounting/entries/99').flush(null);
+    fixture.detectChanges();
+    const reload = http.expectOne(ACCOUNTS_GET);
+
+    // …when the owner retries the import lookup.
+    el.querySelector<HTMLButtonElement>('.import-retry')!.click();
+    fixture.detectChanges();
+    const [olderImport, newerImport] = http.match('/api/accounting/imports/latest');
+    newerImport.flush(LATEST);
+    reload.flush([account({ id: 1, name: '錢包', balance: '9999', balance_main: '9999' }), ...ACCOUNTS.slice(1)]);
+    olderImport.flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    flushBills();
+    fixture.detectChanges();
+
+    expect(el.querySelector('.import-error')).toBeNull();
+    expect(el.querySelector('.import-status')?.textContent).toContain('成功');
+    expect(rows(el)[0].querySelector('.bal')?.textContent?.trim()).toBe('$9,999');
+  });
+
+  it('offers 重試 on a failed account list and reloads it', () => {
+    const fixture = TestBed.createComponent(AccountingAccountsComponent);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    http.expectOne(ACCOUNTS_GET).flush('boom', { status: 500, statusText: 'Server Error' });
+    for (const pending of http.match('/api/accounting/imports/latest')) {
+      if (!pending.cancelled) pending.flush(LATEST);
+    }
+    for (const pending of http.match('/api/accounting/preference')) {
+      if (!pending.cancelled) pending.flush(PREFERENCE_BODY);
+    }
+    fixture.detectChanges();
+    expect(el.querySelector('.load-error')?.textContent).toContain('帳戶讀取失敗');
+
+    el.querySelector<HTMLButtonElement>('.accounts-retry')!.click();
+    fixture.detectChanges();
+    expect(el.querySelector('app-skeleton')).not.toBeNull();
+    http.expectOne(ACCOUNTS_GET).flush(ACCOUNTS);
+    http.expectOne('/api/accounting/imports/latest').flush(LATEST);
+    for (const pending of http.match('/api/accounting/preference')) {
+      pending.flush(PREFERENCE_BODY);
+    }
+    fixture.detectChanges();
+    flushBills();
+    fixture.detectChanges();
+    expect(el.querySelector('.load-error')).toBeNull();
+    expect(rows(el).length).toBeGreaterThan(0);
+  });
+
 });

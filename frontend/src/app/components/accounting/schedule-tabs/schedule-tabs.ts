@@ -43,6 +43,9 @@ export class ScheduleTabsComponent {
   readonly editing = input(false);
   /** Server field errors (`fieldErrors()`), shown beside the field they name. */
   readonly errors = input<Record<string, string>>({});
+  /** False when the host renders the 單次／週期／分期 tabs itself (the entry form's 事件類型 tile). */
+  readonly showTabs = input(true);
+
   readonly draft = model.required<ScheduleDraft>();
 
   readonly units = UNITS;

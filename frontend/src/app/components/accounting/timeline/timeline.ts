@@ -34,16 +34,20 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../billing/billing-math';
 import { BillState, BillingService, billKey } from '../billing/billing.service';
+import { SkeletonComponent } from '../skeleton/skeleton';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
-import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
+import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
 import { displayTitle, formatMoney, formatSigned } from '../format';
 
 export const TIMELINE_PAGE_SIZE = 50;
 /** One day's entries in the 日曆 view are read in a single request. */
 export const CALENDAR_DAY_LIMIT = 500;
 export const TIMELINE_VIEW_KEY = 'hh.accounting.timelineView';
+/** The search field commits this long after the last keystroke (Enter commits at once). */
+export const QUERY_DEBOUNCE_MS = 300;
+
 
 export type TimelineView = 'list' | 'calendar';
 
@@ -290,7 +294,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [CalendarMonthComponent, NgTemplateOutlet],
+  imports: [CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent],
   templateUrl: './timeline.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -305,6 +309,13 @@ export class LedgerTimelineComponent implements OnInit {
   private summaryRequestId = 0;
   private dailyRequestId = 0;
   private dayRequestId = 0;
+  /** Filters of the rows on screen; a reset load for another key clears them (skeleton), the same key keeps them. */
+  private listKey: string | null = null;
+  private dayKey: string | null = null;
+
+  private queryTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
+
   private readonly bills = inject(BillingService);
 
   readonly preference = signal<Preference | null>(null);
@@ -317,9 +328,13 @@ export class LedgerTimelineComponent implements OnInit {
   private queueRequestId = 0;
   readonly month = signal(currentMonth());
   readonly summary = signal<MonthSummary | null>(null);
+  readonly summaryLoading = signal(true);
+  readonly summaryError = signal(false);
+
   readonly entries = signal<LedgerEntry[]>([]);
-  readonly total = signal(0);
-  readonly loading = signal(false);
+  /** `total` of the current filters' `/entries` page; null while that page is in flight or after it failed. */
+  readonly total = signal<number | null>(null);
+  readonly loading = signal(true);
   readonly loadError = signal(false);
   readonly accountFilter = signal<number | null>(null);
   readonly kindFilter = signal<EntryKind | null>(null);
@@ -327,17 +342,24 @@ export class LedgerTimelineComponent implements OnInit {
   readonly filtersOpen = signal(false);
   readonly view = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
   readonly daily = signal<DailySummary | null>(null);
+  readonly dailyLoading = signal(false);
+  readonly dailyError = signal(false);
+
   readonly selectedDay = signal<string | null>(null);
   readonly dayEntries = signal<LedgerEntry[]>([]);
   readonly dayLoading = signal(false);
   readonly dayError = signal(false);
   readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
 
+  /** Any list filter set: the month totals are then labelled as unfiltered (spec §1.1). */
+  readonly filtersActive = computed(
+    () => this.accountFilter() !== null || this.kindFilter() !== null || this.query() !== '',
+  );
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   readonly mainCurrency = computed(() => this.preference()?.main_currency ?? DEFAULT_PREFERENCE.main_currency);
   readonly hideRewards = computed(() => this.preference()?.hide_rewards_on_timeline ?? false);
   readonly days = computed(() => buildDays(this.entries(), this.mainCurrency(), this.hideRewards()));
-  readonly hasMore = computed(() => this.entries().length < this.total());
+  readonly hasMore = computed(() => this.entries().length < (this.total() ?? 0));
   readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
   readonly monthText = computed(() => monthLabel(this.month()));
   readonly weekStart = computed(() => this.preference()?.week_start ?? DEFAULT_PREFERENCE.week_start);
@@ -542,6 +564,7 @@ export class LedgerTimelineComponent implements OnInit {
       observer.observe(element);
       onCleanup(() => observer.disconnect());
     });
+    inject(DestroyRef).onDestroy(() => this.clearQueryTimer());
   }
 
   ngOnInit(): void {
@@ -557,13 +580,26 @@ export class LedgerTimelineComponent implements OnInit {
     });
   }
 
+  private filterKey(scope: string): string {
+    return [scope, this.accountFilter(), this.kindFilter(), this.query(), this.hideRewards()].join('|');
+  }
+
   load(reset: boolean): void {
     const id = ++this.requestId;
     const { from, to } = monthRange(this.month());
     const offset = reset ? 0 : this.entries().length;
-    // On a reset the old rows stay until the new page lands (no empty flash, scroll kept).
     this.loading.set(true);
     this.loadError.set(false);
+    if (reset) {
+      // Another month / filter: the old rows are not this list, so the skeleton replaces them. The same key (a
+      // refresh after an entry write or a preference save) keeps them until the new page lands.
+      const key = this.filterKey(this.month());
+      if (key !== this.listKey) {
+        this.entries.set([]);
+        this.listKey = key;
+      }
+      this.total.set(null);
+    }
     const account = this.accountFilter();
     this.accounting
       .getAllEntries({
@@ -592,8 +628,8 @@ export class LedgerTimelineComponent implements OnInit {
           if (reset) {
             // The rows on screen belong to the previous month / filter: never show them beside the error.
             this.entries.set([]);
-            this.total.set(0);
           }
+          this.total.set(null);
           this.loadError.set(true);
           this.loading.set(false);
         },
@@ -608,53 +644,83 @@ export class LedgerTimelineComponent implements OnInit {
 
   private loadSummary(month: string): void {
     const id = ++this.summaryRequestId;
+    this.summary.set(null);
+    this.summaryLoading.set(true);
+    this.summaryError.set(false);
     this.accounting.getMonthSummary(month).subscribe({
       next: summary => {
         if (id === this.summaryRequestId) {
           this.summary.set(summary);
+          this.summaryLoading.set(false);
         }
       },
       error: () => {
         if (id === this.summaryRequestId) {
           this.summary.set(null);
+          this.summaryError.set(true);
+          this.summaryLoading.set(false);
         }
       },
     });
   }
 
+  retrySummary(): void {
+    this.loadSummary(this.month());
+  }
+
   private clearList(): void {
+    this.listKey = null;
     ++this.requestId;
     this.entries.set([]);
-    this.total.set(0);
+    this.total.set(null);
     this.loading.set(false);
     this.loadError.set(false);
   }
 
   private loadDaily(month: string): void {
     const id = ++this.dailyRequestId;
+    if (this.daily()?.month !== month) {
+      this.daily.set(null);
+    }
+    this.dailyLoading.set(true);
+    this.dailyError.set(false);
     this.accounting.getDailySummary(month).subscribe({
       next: daily => {
         if (id === this.dailyRequestId) {
           this.daily.set(daily);
+          this.dailyLoading.set(false);
         }
       },
       error: () => {
         if (id === this.dailyRequestId) {
           this.daily.set(null);
+          this.dailyError.set(true);
+          this.dailyLoading.set(false);
         }
       },
     });
   }
 
+  retryDaily(): void {
+    this.loadDaily(this.month());
+  }
+
   private dropDaily(): void {
     ++this.dailyRequestId;
     this.daily.set(null);
+    this.dailyLoading.set(false);
+    this.dailyError.set(false);
   }
 
   private loadDay(date: string): void {
     const id = ++this.dayRequestId;
     this.dayLoading.set(true);
     this.dayError.set(false);
+    const key = this.filterKey(date);
+    if (key !== this.dayKey) {
+      this.dayEntries.set([]);
+      this.dayKey = key;
+    }
     const account = this.accountFilter();
     this.accounting
       .getAllEntries({
@@ -685,10 +751,18 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   private clearDay(): void {
+    this.dayKey = null;
     ++this.dayRequestId;
     this.dayEntries.set([]);
     this.dayLoading.set(false);
     this.dayError.set(false);
+  }
+
+  retryDay(): void {
+    const day = this.selectedDay();
+    if (day) {
+      this.loadDay(day);
+    }
   }
 
   private loadQueue(): void {
@@ -766,6 +840,60 @@ export class LedgerTimelineComponent implements OnInit {
   setQuery(value: string): void {
     this.query.set(value.trim());
   }
+
+  onQueryCompositionStart(): void {
+    this.clearQueryTimer();
+  }
+
+  /** Keep IME candidates out of committed filters; compositionend schedules the final DOM value too. */
+  onQueryInput(event: Event): void {
+    this.clearQueryTimer();
+    if ((event as InputEvent).isComposing) {
+      return;
+    }
+    const value = (event.target as HTMLInputElement).value;
+    this.queryTimer = setTimeout(() => {
+      this.queryTimer = null;
+      this.setQuery(value);
+    }, QUERY_DEBOUNCE_MS);
+  }
+
+  /** Enter commits now; Esc empties a field that has text and stops there (an empty field lets Esc through). */
+  onQueryKeydown(event: KeyboardEvent): void {
+    if (isHandledKey(event)) {
+      return;
+    }
+    const input = event.target as HTMLInputElement;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      this.clearQueryTimer();
+      this.setQuery(input.value);
+    } else if (event.key === 'Escape' && input.value !== '') {
+      event.stopPropagation();
+      this.clearQueryTimer();
+      input.value = '';
+      this.setQuery('');
+    }
+  }
+
+  private clearQueryTimer(): void {
+    if (this.queryTimer !== null) {
+      clearTimeout(this.queryTimer);
+      this.queryTimer = null;
+    }
+  }
+
+  clearFilters(): void {
+    this.clearQueryTimer();
+    const input = this.queryInput()?.nativeElement;
+    if (input) {
+      input.value = '';
+    }
+    this.accountFilter.set(null);
+    this.kindFilter.set(null);
+    this.query.set('');
+  }
+
 
   toggleFilters(): void {
     this.filtersOpen.update(open => !open);

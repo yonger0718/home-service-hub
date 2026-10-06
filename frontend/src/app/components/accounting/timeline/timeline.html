@@ -19,12 +19,32 @@
     </div>
   </div>
 
-  @if (summary(); as s) {
-    <div class="sum">
-      <div><small>支出</small><b class="neg sum-expense">{{ expenseText(s) }}</b></div>
-      <div><small>收入</small><b class="pos sum-income">{{ incomeText(s) }}</b></div>
-      <div><small>結餘</small><b class="sum-net">{{ formatSigned(s.net, s.currency) }}</b></div>
-    </div>
+  <div class="sum" [attr.aria-busy]="summaryLoading() ? 'true' : null">
+    @if (filtersActive()) {
+      <small class="sum-scope">全月 · 未套篩選</small>
+    }
+    @if (summaryError()) {
+      <p class="sum-error">
+        摘要讀取失敗
+        <button type="button" class="retry sum-retry" (click)="retrySummary()">重試</button>
+      </p>
+    } @else {
+      <div><small>支出</small><b class="neg sum-expense">{{ summary() ? expenseText(summary()!) : '—' }}</b></div>
+      <div><small>收入</small><b class="pos sum-income">{{ summary() ? incomeText(summary()!) : '—' }}</b></div>
+      <div><small>結餘</small><b class="sum-net">{{ summary() ? formatSigned(summary()!.net, summary()!.currency) : '—' }}</b></div>
+    }
+  </div>
+  @if (filtersActive()) {
+    @if (view() === 'list') {
+      <div class="match-row">
+        <span class="match-count">符合條件 {{ total() ?? '—' }} 筆</span>
+        <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
+      </div>
+    } @else {
+      <div class="match-row match-row--calendar">
+        <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
+      </div>
+    }
   }
   @if (view() === 'list' && upcomingBills().length > 0) {
     <button type="button" class="bill-banner" (click)="openUpcoming()">近 7 天有 {{ upcomingBills().length }} 筆繳費到期</button>
@@ -36,24 +56,27 @@
   @if (!isPhone() || filtersOpen()) {
     <div class="chips filters">
       <select class="chip tag filter-account" aria-label="帳戶" (change)="setAccount($any($event.target).value)">
-        <option value="">全部帳戶</option>
+        <option value="" [selected]="accountFilter() === null">全部帳戶</option>
         @for (account of accounts(); track account.id) {
           <option [value]="account.id" [selected]="accountFilter() === account.id">{{ account.name }}</option>
         }
       </select>
       <select class="chip tag filter-kind" aria-label="類型" (change)="setKind($any($event.target).value)">
-        <option value="">全部類型</option>
+        <option value="" [selected]="kindFilter() === null">全部類型</option>
         @for (option of kindOptions; track option.kind) {
           <option [value]="option.kind" [selected]="kindFilter() === option.kind">{{ option.label }}</option>
         }
       </select>
       <input
+        #queryInput
         class="chip tag filter-q"
         type="search"
         placeholder="⌕ 搜尋名稱 / 商家 / 備註"
         aria-label="搜尋名稱、商家或備註"
-        [value]="query()"
-        (change)="setQuery($any($event.target).value)"
+        (compositionstart)="onQueryCompositionStart()"
+        (compositionend)="onQueryInput($event)"
+        (input)="onQueryInput($event)"
+        (keydown)="onQueryKeydown($event)"
       />
     </div>
   }
@@ -80,7 +103,18 @@
   </ng-template>
 
   @if (view() === 'calendar') {
+    @if (dailyError()) {
+      <p class="load-error daily-error">
+        每日摘要讀取失敗
+        <button type="button" class="retry daily-retry" (click)="retryDaily()">重試</button>
+      </p>
+    }
+    @if (dailyLoading() && daily()) {
+      <p class="daily-updating" role="status">更新中</p>
+    }
     <app-calendar-month
+      [attr.aria-busy]="dailyLoading() ? 'true' : null"
+      [loading]="dailyLoading() && !daily()"
       [month]="month()"
       [days]="daily()?.days ?? []"
       [currency]="daily()?.currency ?? mainCurrency()"
@@ -111,36 +145,50 @@
           </div>
         }
         @if (dayError()) {
-          <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
-        }
-        @for (row of dayRows(); track row.key) {
-          <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
-        } @empty {
-          @if (!dayLoading() && !dayError()) {
-            <p class="empty">這天沒有紀錄</p>
+          <div class="load-error-block">
+            <p class="load-error">記錄讀取失敗</p>
+            <button type="button" class="retry day-retry" (click)="retryDay()">重試</button>
+          </div>
+        } @else if (dayLoading() && dayEntries().length === 0) {
+          <app-skeleton rows="3" />
+        } @else {
+          @for (row of dayRows(); track row.key) {
+            <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+          } @empty {
+            <p class="empty">{{ filtersActive() ? '這天沒有符合條件的記錄' : '這天沒有記錄' }}</p>
           }
         }
       </div>
     }
   } @else {
     @if (loadError()) {
-      <p class="load-error">紀錄讀取失敗，請稍後再試。</p>
-    }
-
-    @for (day of days(); track day.date) {
-      <div class="day"><span>{{ day.label }}</span><b>{{ formatSigned(day.net, mainCurrency()) }}</b></div>
-      @for (row of day.rows; track row.key) {
-        <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+      <div class="load-error-block">
+        <p class="load-error">記錄讀取失敗</p>
+        <button type="button" class="retry list-retry" (click)="load(true)">重試</button>
+      </div>
+    } @else if (loading() && entries().length === 0) {
+      <app-skeleton rows="3" />
+    } @else {
+      @for (day of days(); track day.date) {
+        <div class="day"><span>{{ day.label }}</span><b>{{ formatSigned(day.net, mainCurrency()) }}</b></div>
+        @for (row of day.rows; track row.key) {
+          <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
+        }
+      } @empty {
+        @if (filtersActive()) {
+          <div class="empty-filtered">
+            <p class="empty">沒有符合條件的記錄</p>
+            <button type="button" class="clear-filters" aria-label="清除篩選" (click)="clearFilters()">清除篩選</button>
+          </div>
+        } @else {
+          <p class="empty">這個月沒有記錄</p>
+        }
       }
-    } @empty {
-      @if (!loading() && !loadError()) {
-        <p class="empty">這個月沒有紀錄</p>
-      }
-    }
 
-    @if (hasMore()) {
-      <div #sentinel class="sentinel" aria-hidden="true"></div>
-      <button type="button" class="more" [disabled]="loading()" (click)="loadMore()">載入更多</button>
+      @if (hasMore()) {
+        <div #sentinel class="sentinel" aria-hidden="true"></div>
+        <button type="button" class="more" [disabled]="loading()" (click)="loadMore()">載入更多</button>
+      }
     }
   }
 </section>

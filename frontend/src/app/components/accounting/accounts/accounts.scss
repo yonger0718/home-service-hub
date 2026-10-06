@@ -25,7 +25,7 @@
   margin: 4px 0;
   padding: 10px 12px;
 
-  small { color: var(--app-text-muted); font-size: 0.7rem; font-weight: 700; }
+  small { color: var(--app-text-muted); font-size: 0.72rem; font-weight: 700; }
   b { display: block; font-size: 1.5rem; font-variant-numeric: tabular-nums; }
   .totals-line { color: var(--app-text-muted); font-size: 0.72rem; }
 }
@@ -47,7 +47,7 @@
 
   b { color: var(--app-text); font-variant-numeric: tabular-nums; }
   .grp-total { align-items: baseline; display: flex; gap: 6px; min-width: 0; }
-  .partial-hint { font-size: 0.62rem; font-weight: 700; white-space: nowrap; }
+  .partial-hint { font-size: 0.72rem; font-weight: 700; white-space: nowrap; }
 }
 
 .acc-row {
@@ -87,14 +87,14 @@
   background: var(--app-primary-soft);
   border-radius: 4px;
   color: var(--app-primary);
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   font-weight: 800;
   margin-left: 4px;
   padding: 0 4px;
   vertical-align: middle;
 }
 
-.pill { border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-muted); font-size: 0.62rem; font-weight: 700; padding: 0 6px; white-space: nowrap; }
+.pill { border: 1px solid var(--app-border); border-radius: 999px; color: var(--app-text-muted); font-size: 0.72rem; font-weight: 700; padding: 0 6px; white-space: nowrap; }
 .pill.rv { background: var(--app-primary-soft); border-color: transparent; color: var(--app-primary); }
 .pill.warn { background: var(--app-state-warning-bg); border-color: transparent; color: var(--app-text); }
 .pill.warn.overdue { color: var(--tone-neg, var(--c-red)); }
@@ -107,4 +107,57 @@
   text-align: center;
 
   a { color: var(--app-primary); font-weight: 700; }
+}
+
+.import-error {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.load-error-block {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 1.5rem 0;
+
+  .load-error { margin: 0; }
+}
+
+.retry {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 3px 10px;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.empty-state .empty-primary {
+  background: var(--app-primary);
+  border-radius: var(--radius-pill);
+  color: var(--app-on-primary, #fff);
+  font-weight: 700;
+  padding: 6px 14px;
+  text-decoration: none;
+}
+
+.empty-state .empty-secondary {
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-text);
+  font-weight: 700;
+  padding: 6px 14px;
+  text-decoration: none;
 }

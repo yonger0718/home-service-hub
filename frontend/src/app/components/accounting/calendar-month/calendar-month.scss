@@ -26,7 +26,7 @@
 
 .weekdays span {
   color: var(--app-text-muted);
-  font-size: var(--fs-micro, 0.7rem);
+  font-size: var(--fs-micro, 0.72rem);
   font-weight: 700;
   padding: 2px 0;
   text-align: center;
@@ -87,7 +87,7 @@
 }
 
 .fig {
-  font-size: var(--fs-micro, 0.7rem);
+  font-size: var(--fs-micro, 0.72rem);
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   overflow: hidden;
@@ -97,7 +97,7 @@
 
 /* Pinned top-right over the day number's row, so it never takes room from the figures (≈ 50 px cells at 390 px). */
 .due-badge {
-  font-size: var(--fs-micro, 0.7rem);
+  font-size: var(--fs-micro, 0.72rem);
   font-variant-numeric: tabular-nums;
   font-weight: 800;
   line-height: 1;

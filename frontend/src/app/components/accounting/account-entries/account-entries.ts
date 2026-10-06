@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { SkeletonComponent } from '../skeleton/skeleton';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { AccountDetail, AccountPeriodSummary, ENTRY_KIND_LABELS, EntryKind, LedgerEntry } from '../../../models/accounting.model';
@@ -15,7 +16,7 @@ export const PAGE_SIZE = 200;
 @Component({
   selector: 'app-accounting-account-entries',
   standalone: true,
-  imports: [RouterLink],
+  imports: [RouterLink, SkeletonComponent],
   templateUrl: './account-entries.html',
   styleUrls: ['../filters.scss', './account-entries.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -37,7 +38,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
   readonly currency = computed(() => this.periodSummary()?.currency ?? this.account()?.currency ?? 'TWD');
   readonly entries = signal<LedgerEntry[]>([]);
   readonly total = signal(0);
-  readonly loading = signal(false);
+  readonly loading = signal(true);
   readonly loadError = signal(false);
   readonly kind = signal<EntryKind | null>(null);
   readonly q = signal<string | null>(null);
@@ -106,6 +107,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
       this.entries.set([]);
       this.total.set(0);
       this.loadError.set(false);
+      this.loading.set(true);
       this.loadAccount();
     });
   }
@@ -125,9 +127,21 @@ export class AccountingAccountEntriesComponent implements OnInit {
       error: () => {
         if (accountId === this.accountId()) {
           this.loadError.set(true);
+          this.loading.set(false);
         }
       },
     });
+  }
+
+  /** 重試: page 1 of the current filters, or the account itself when it never arrived. */
+  retry(): void {
+    if (this.account()) {
+      this.load(true);
+    } else {
+      this.loadError.set(false);
+      this.loading.set(true);
+      this.loadAccount();
+    }
   }
 
   private loadSummary(accountId: number, period: Period): void {

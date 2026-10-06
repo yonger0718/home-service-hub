@@ -1,4 +1,5 @@
 <div class="schedule-tabs">
+  @if (showTabs()) {
   <div class="sched-tablist" role="tablist" aria-label="進階設定">
     @for (option of tabs(); track option.tab) {
       <button
@@ -13,6 +14,7 @@
     }
   </div>
 
+  }
   @switch (draft().tab) {
     @case ('single') {
       <ng-content />
@@ -87,7 +89,7 @@
           }
         </label>
         <label class="sched-row">
-          <span class="sched-label">首次還款日</span>
+          <span class="sched-label">首期入帳日</span>
           <input class="sched-first" type="date" [value]="draft().firstDate" [disabled]="disabled()" (change)="setFirst($any($event.target).value)" />
           @if (error('anchor_date'); as message) {
             <small class="field-error" data-field="anchor_date">{{ message }}</small>
@@ -129,6 +131,6 @@
   }
 
   @if (footer()) {
-    <p class="schedule-footer">{{ footer() }}</p>
+    <p class="schedule-footer event-summary">{{ footer() }}</p>
   }
 </div>

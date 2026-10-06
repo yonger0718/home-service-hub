@@ -5,7 +5,7 @@
 .dhead {
   align-items: center;
   border-radius: var(--radius-lg, 1rem);
-  color: #151821;
+  color: var(--app-text);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -89,7 +89,7 @@
 
   div:nth-child(3n) { border-right: 0; }
   div:nth-last-child(-n + 3) { border-bottom: 0; }
-  small { color: var(--app-text-muted); font-size: 0.65rem; font-weight: 700; }
+  small { color: var(--app-text-muted); font-size: 0.72rem; font-weight: 700; }
   b { font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 
@@ -173,7 +173,7 @@
     display: flex;
     flex-direction: column;
     font: inherit;
-    font-size: 0.68rem;
+    font-size: 0.72rem;
     font-weight: 700;
     gap: 2px;
     padding: 4px 0;

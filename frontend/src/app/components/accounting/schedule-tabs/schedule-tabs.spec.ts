@@ -10,6 +10,7 @@ import { ScheduleTabsComponent } from './schedule-tabs';
 const ACCOUNTS = [makeAccount({ id: 1, name: '薪轉' }), makeAccount({ id: 2, name: '範例卡' })];
 
 interface Setup {
+  showTabs?: boolean;
   kind?: string;
   entryDate?: string;
   amount?: number | null;
@@ -33,6 +34,7 @@ function render(setup: Setup = {}): { fixture: ComponentFixture<ScheduleTabsComp
   ref.setInput('errors', setup.errors ?? {});
   ref.setInput('definitionMode', setup.definitionMode ?? false);
   ref.setInput('editing', setup.editing ?? false);
+  ref.setInput('showTabs', setup.showTabs ?? true);
   ref.setInput('draft', setup.draft ?? defaultDraft(setup.entryDate ?? '2026-10-22'));
   fixture.detectChanges();
   return { fixture, el: fixture.nativeElement as HTMLElement };
@@ -124,7 +126,8 @@ describe('ScheduleTabsComponent', () => {
     set(fixture, '.sched-periods', '3');
     expect((el.querySelector('.sched-per') as HTMLInputElement).value).toBe('3,333');
     expect(text(el.querySelector('.sched-total'))).toBe('$10,000');
-    expect(text(el.querySelector('.schedule-footer'))).toBe('分期：#1 / 3（$10,000） 首次還款日將從 2026/11/03 開始進行（3 期）');
+    expect(text(el.querySelector('.schedule-footer'))).toBe('分期：#1 / 3（$10,000） 首期入帳日將從 2026/11/03 開始（3 期）');
+    expect(text(el.querySelector('.sched-first')!.closest('.sched-row')!.querySelector('.sched-label'))).toBe('首期入帳日');
     expect(el.querySelector('.sched-repay')).toBeNull();
   });
 
@@ -278,4 +281,11 @@ describe('ScheduleTabsComponent', () => {
       expect(fixture.componentInstance.draft().dayOfMonth).toBe(31);
     });
   });
+  it('renders no tablist of its own when the host shows the tabs', () => {
+    const { el } = render({ showTabs: false, draft: { ...defaultDraft('2026-10-22'), tab: 'recurring' } });
+    expect(el.querySelector('[role="tablist"]')).toBeNull();
+    expect(el.querySelector('.sched-start')).not.toBeNull();
+    expect(el.querySelector('.schedule-footer')!.classList).toContain('event-summary');
+  });
+
 });

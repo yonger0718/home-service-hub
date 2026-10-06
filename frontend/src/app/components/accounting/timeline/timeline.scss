@@ -48,31 +48,32 @@
 .sum {
   background: var(--app-surface-soft);
   border-radius: var(--radius-md);
-  display: grid;
-  gap: 4px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   margin: 4px 0 10px;
   padding: 10px 12px;
 
-  div {
+  > div {
     display: flex;
+    flex: 1 1 6.5rem;
     flex-direction: column;
     gap: 1px;
-    min-width: 0;
+    min-width: min-content;
   }
 
   small {
     color: var(--app-text-muted);
-    font-size: 0.7rem;
+    font-size: 0.72rem;
     font-weight: 700;
     letter-spacing: 0.04em;
   }
 
+  /* Never clipped: a figure that does not fit moves the row onto two lines (spec review focus 5). */
   b {
     font-size: 0.95rem;
     font-variant-numeric: tabular-nums;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow: visible;
     white-space: nowrap;
   }
 }
@@ -224,7 +225,7 @@
   background: var(--c-red);
   border-radius: var(--radius-pill);
   color: #fff;
-  font-size: 0.58rem;
+  font-size: 0.72rem;
   font-weight: 800;
   line-height: 1;
   min-width: 14px;
@@ -246,3 +247,73 @@
     padding: 6px 10px;
   }
 }
+
+.sum-scope {
+  color: var(--app-text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  flex: 1 1 100%;
+  letter-spacing: 0.04em;
+}
+
+.match-row {
+  align-items: center;
+  display: flex;
+  font-size: 0.8rem;
+  gap: 8px;
+  justify-content: space-between;
+  margin: -4px 0 10px;
+
+  &--calendar {
+    justify-content: flex-end;
+  }
+}
+
+.match-count {
+  color: var(--app-text-muted);
+  font-weight: 700;
+}
+
+.clear-filters,
+.retry {
+  background: var(--app-surface-soft);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--app-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 3px 10px;
+}
+
+.load-error-block,
+.empty-filtered {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 2rem 0;
+
+  .empty,
+  .load-error {
+    margin: 0;
+  }
+}
+
+.sum-error {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  font-size: var(--fs-sm);
+  gap: 8px;
+  flex: 1 1 100%;
+  justify-content: center;
+  margin: 0;
+}
+
+.daily-error {
+  margin: 0 0 8px;
+}
+
+.daily-updating { color: var(--app-text-muted); font-size: 0.72rem; margin: 0 0 8px; }

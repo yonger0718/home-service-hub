@@ -259,7 +259,11 @@ describe('EntryFormComponent schedules', () => {
     expect(el.querySelector('.fee-open')).toBeNull();
     expect(el.querySelector('.invoice-tile')).toBeNull();
     expect(el.querySelector('app-split-lines')).toBeNull();
-    expect(text(el.querySelector('.schedule-unsupported'))).toBe('排程不支援');
+    const unsupported = el.querySelector('.tile.wide.schedule-unsupported')!;
+    expect(text(unsupported)).toBe('週期／分期不含：手續費、拆帳、外幣、發票');
+    expect(unsupported.getAttribute('aria-live')).toBe('polite');
+    tap(el, '.event-tab', '單次');
+    expect(el.querySelector('.schedule-unsupported')).toBeNull();
   });
 
   it('keeps the currency pill while a rate is set, so the owner can remove it on 週期', async () => {
@@ -286,7 +290,8 @@ describe('EntryFormComponent schedules', () => {
     flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
     set(el, '.to-select', '3', 'change');
     set(el, '.out-amount', '15000');
-    expect(Array.from(el.querySelectorAll('.schedule-tab')).map(text)).toEqual(['單次', '週期']);
+    expect(Array.from(el.querySelectorAll('.schedule-tab')).map(text)).toEqual(['單次', '週期', '分期']);
+    expect(eventTab(el, '分期').getAttribute('aria-disabled')).toBe('true');
     tap(el, '.schedule-tab', '週期');
     expect(el.querySelector('app-transfer-panel .plus')).toBeNull();
     set(el, '.sched-start', '2026-11-05', 'change');
@@ -472,4 +477,86 @@ describe('EntryFormComponent schedules', () => {
     expect(text(el.querySelector('.schedule-tab.on'))).toBe('單次');
     expect(el.querySelector('.saved-flash')).not.toBeNull();
   });
+  function eventTab(el: HTMLElement, label: string): HTMLButtonElement {
+    return Array.from(el.querySelectorAll<HTMLButtonElement>('.event-type .event-tab')).find(tab => text(tab) === label)!;
+  }
+
+  it('renders 事件類型 as a full-width tab list between 時間 and the invoice, without a 進階 fold', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [STREAMING]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const tile = el.querySelector('.tile.wide.event-type')!;
+    const list = tile.querySelector('[role="tablist"]')!;
+    expect(list.getAttribute('aria-label')).toBe('事件類型');
+    expect(Array.from(list.querySelectorAll('[role="tab"]')).map(text)).toEqual(['單次', '週期', '分期']);
+    expect(eventTab(el, '單次').getAttribute('aria-selected')).toBe('true');
+    expect(el.querySelector('.advanced')).toBeNull();
+    expect(el.querySelector('app-schedule-tabs [role="tablist"]')).toBeNull();
+    const tiles = Array.from(el.querySelector('.tiles')!.children);
+    expect(tiles.indexOf(tile)).toBeGreaterThan(tiles.indexOf(el.querySelector('.time-input')!.closest('.tile')!));
+    expect(tiles.indexOf(tile)).toBeLessThan(tiles.indexOf(el.querySelector('.invoice-tile')!));
+  });
+
+  it('keeps 分期 visible but disabled for 轉帳 and ignores a click on it', async () => {
+    const { el } = await open('/accounting/entry?kind=transfer');
+    respond('/api/accounting/categories', [MOVE]);
+    flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const installment = eventTab(el, '分期');
+    expect(installment.getAttribute('aria-disabled')).toBe('true');
+    expect(installment.getAttribute('tabindex')).toBe('-1');
+    installment.click();
+    settle();
+    expect(eventTab(el, '單次').getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('moves between enabled tabs with ← / → and never saves on ⏎ there', async () => {
+    const { el, left } = await open('/accounting/entry?kind=transfer');
+    respond('/api/accounting/categories', [MOVE]);
+    flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const single = eventTab(el, '單次');
+    single.focus();
+    single.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(eventTab(el, '週期'));
+    eventTab(el, '週期').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(single); // 分期 is skipped
+    single.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    settle();
+    httpMock.expectNone(r => r.method === 'POST');
+    expect(left()).toBe(false);
+  });
+
+  it('restores the hidden tiles and clears schedule errors when 分期 goes back to 單次', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/categories', [STREAMING]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    tap(el, '.cat', '娛樂');
+    tap(el, '.cat', 'Netflix');
+    tap(el, '.event-tab', '分期');
+    expect(el.querySelector('.fee-open')).toBeNull();
+    expect(el.querySelector('.invoice-tile')).toBeNull();
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    form.fieldErrors.set({ times: '分期至少 2 期' });
+    form.error.set('分期至少 2 期');
+    settle();
+    expect(el.querySelector('.field-error[data-field="times"]')).not.toBeNull();
+
+    tap(el, '.event-tab', '單次');
+    expect(el.querySelector('.fee-open')).not.toBeNull();
+    expect(el.querySelector('.invoice-tile')).not.toBeNull();
+    expect(el.querySelector('.field-error')).toBeNull();
+    expect(el.querySelector('.form-error')).toBeNull();
+    expect(form.fieldErrors()).toEqual({});
+  });
+
+  it('shows the definition kind selected with the other tabs disabled in definition mode', async () => {
+    const { el } = await open('/accounting/entry?schedule=5');
+    respond('/api/accounting/schedules/definitions/5', { ...makeDefinition({ id: 5 }), instances: [] });
+    respond('/api/accounting/categories', [STREAMING]);
+    flushAll('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    flushAll('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect(eventTab(el, '週期').getAttribute('aria-selected')).toBe('true');
+    expect(eventTab(el, '單次').getAttribute('aria-disabled')).toBe('true');
+    expect(eventTab(el, '分期').getAttribute('aria-disabled')).toBe('true');
+  });
+
 });

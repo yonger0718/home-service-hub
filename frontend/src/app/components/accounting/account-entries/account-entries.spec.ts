@@ -405,4 +405,49 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     const el = fixture.nativeElement as HTMLElement;
     expect(el.querySelector('.schedule-pill')?.textContent?.trim()).toBe('週期 #25');
   });
+  it('shows the skeleton, then 記錄讀取失敗 with 重試 instead of rows and empty text, and retries page 1', () => {
+    const fixture = TestBed.createComponent(AccountingAccountEntriesComponent);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('app-skeleton')).not.toBeNull();
+    expect(el.querySelector('.lbl')?.textContent?.trim()).toBe('本期記錄');
+
+    http.expectOne('/api/accounting/accounts/7').flush(ACCOUNT);
+    fixture.detectChanges();
+    expectSummary('2026-09-16', '2026-10-15').flush(SUMMARY);
+    expectEntries().flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+
+    expect(el.querySelector('.load-error')?.textContent?.trim()).toBe('記錄讀取失敗');
+    expect(el.querySelector('.entries-empty')).toBeNull();
+    expect(el.querySelector('app-skeleton')).toBeNull();
+    expect(el.querySelector('.lbl')?.textContent?.trim()).toBe('本期記錄');
+
+    el.querySelector<HTMLButtonElement>('.entries-retry')!.click();
+    fixture.detectChanges();
+    expectEntries().flush(page(PERIOD));
+    fixture.detectChanges();
+    expect(el.querySelector('.load-error')).toBeNull();
+    expect(el.querySelectorAll('.entry').length).toBe(4);
+    expect(el.querySelector('.lbl')?.textContent?.trim()).toBe('本期記錄 (4)');
+  });
+
+  it('retries the account itself when it failed to load', () => {
+    const fixture = TestBed.createComponent(AccountingAccountEntriesComponent);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    http.expectOne('/api/accounting/accounts/7').flush('boom', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelector('.load-error')).not.toBeNull();
+
+    el.querySelector<HTMLButtonElement>('.entries-retry')!.click();
+    fixture.detectChanges();
+    http.expectOne('/api/accounting/accounts/7').flush(ACCOUNT);
+    expectEntries().flush(page([]));
+    fixture.detectChanges();
+    expectSummary('2026-09-16', '2026-10-15').flush(SUMMARY);
+    fixture.detectChanges();
+    expect(el.querySelector('.entries-empty')?.textContent?.trim()).toBe('沒有符合條件的記錄');
+  });
+
 });

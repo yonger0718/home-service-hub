@@ -111,14 +111,15 @@ describe('accounting routes', () => {
 });
 
 describe('accounting navigation', () => {
-  it('points the accounting sub-nav at 紀錄, 帳戶 and 設定', () => {
+  it('points the accounting sub-nav at 記錄, 帳戶 and 記帳設定', () => {
     const accounting = NAV_GROUPS.find(group => group.id === 'accounting')!;
     expect(accounting.defaultPath).toBe('/accounting');
     expect(accounting.items.map(item => [item.label, item.path])).toEqual([
-      ['紀錄', '/accounting'],
+      ['記錄', '/accounting'],
       ['帳戶', '/accounting/accounts'],
-      ['設定', '/accounting/settings'],
+      ['記帳設定', '/accounting/settings'],
     ]);
+    expect(accounting.items[0].title).toBe('記帳記錄');
   });
 
   it('keeps the global settings page reachable as its own group', () => {
@@ -127,14 +128,14 @@ describe('accounting navigation', () => {
   });
 
   const HIGHLIGHT: [string, string][] = [
-    ['/accounting', '紀錄'],
-    ['/accounting/entry', '紀錄'],
-    ['/accounting/entries/9', '紀錄'],
+    ['/accounting', '記錄'],
+    ['/accounting/entry', '記錄'],
+    ['/accounting/entries/9', '記錄'],
     ['/accounting/accounts', '帳戶'],
     ['/accounting/accounts/5', '帳戶'],
     ['/accounting/accounts/5/settings', '帳戶'],
     ['/accounting/accounts/5/entries/9', '帳戶'],
-    ['/accounting/settings', '設定'],
+    ['/accounting/settings', '記帳設定'],
   ];
 
   for (const [url, label] of HIGHLIGHT) {
