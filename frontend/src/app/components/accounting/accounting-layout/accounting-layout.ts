@@ -54,6 +54,11 @@ const REMINDERS_URL = /^\/accounting\/reminders(?:\/|$)/;
 const PASSBOOK_URL = /^\/accounting\/accounts\/(\d+)(?:\/entries\/\d+)?$/;
 const FORM_URL = /^\/accounting\/(?:entry|entries\/\d+\/edit)(?:[/?#]|$)/;
 const SWIPE_CLOSE_PX = 80;
+/** A swipe that drifts more than this vertically is a scroll, not a close. */
+const SWIPE_MAX_DY = 40;
+/** Pointers starting on a control never begin a swipe (✕ itself may). */
+const SWIPE_IGNORE = 'input, textarea, select, button:not(.sheet-close), [contenteditable], .keypad';
+
 
 /**
  * Host of every `/accounting` route (design D22): one screen per route on phones; on wider screens the list
@@ -107,7 +112,8 @@ export class AccountingLayoutComponent {
   readonly showFab = computed(() => this.mode() !== 'phone' && !FORM_URL.test(this.url()));
 
   private wasPhone: boolean | null = null;
-  private swipeStartX: number | null = null;
+  private swipe: { x: number; y: number } | null = null;
+
   /** Element focused before the sheet opened; focus returns there when it closes. */
   private focusBeforeSheet: HTMLElement | null = null;
 
@@ -258,14 +264,42 @@ export class AccountingLayoutComponent {
     }
   }
 
-  onPanePointerDown(event: PointerEvent): void {
-    this.swipeStartX = this.mode() === 'sheet' ? event.clientX : null;
+  /** Swipe-to-close starts only on the grip, only in the 760–1023 px sheet (spec §4.1). */
+  onGripPointerDown(event: PointerEvent): void {
+    const target = event.target as Element | null;
+    if (!this.sheetOpen() || target?.closest(SWIPE_IGNORE)) {
+      this.swipe = null;
+      return;
+    }
+    this.swipe = { x: event.clientX, y: event.clientY };
+    const grip = event.currentTarget as HTMLElement | null;
+    if (typeof event.pointerId === 'number') {
+      grip?.setPointerCapture?.(event.pointerId);
+    }
   }
 
-  onPanePointerUp(event: PointerEvent): void {
-    if (this.swipeStartX !== null && event.clientX - this.swipeStartX > SWIPE_CLOSE_PX) {
+  onGripPointerMove(event: PointerEvent): void {
+    if (this.swipe && Math.abs(event.clientY - this.swipe.y) >= SWIPE_MAX_DY) {
+      // Clearly vertical: a scroll, not a close.
+      this.swipe = null;
+    }
+  }
+
+  onGripPointerUp(event: PointerEvent): void {
+    const swipe = this.swipe;
+    this.swipe = null;
+    if (!swipe || !this.sheetOpen()) {
+      return;
+    }
+    const dx = event.clientX - swipe.x;
+    const dy = event.clientY - swipe.y;
+    if (dx > SWIPE_CLOSE_PX && Math.abs(dy) < SWIPE_MAX_DY) {
       this.close();
     }
-    this.swipeStartX = null;
   }
+
+  onGripPointerCancel(): void {
+    this.swipe = null;
+  }
+
 }

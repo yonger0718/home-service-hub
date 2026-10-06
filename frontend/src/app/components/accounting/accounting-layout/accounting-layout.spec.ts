@@ -353,20 +353,55 @@ describe('AccountingLayoutComponent', () => {
     expect(navigate).not.toHaveBeenCalled();
     expect(router.url).toBe('/accounting');
   });
-  it('closes the sheet with a swipe to the right, not with a short drag', async () => {
+  it('closes the sheet only on a horizontal swipe that starts on the grip', async () => {
     const harness = await start('sheet', '/accounting');
     await find(harness, LIST);
     const router = TestBed.inject(Router);
     await router.navigateByUrl('/accounting/entries/5');
     const sheet = await find(harness, '.detail-pane.open');
-    const swipe = (from: number, to: number) => {
-      sheet.dispatchEvent(new MouseEvent('pointerdown', { clientX: from, bubbles: true }));
-      sheet.dispatchEvent(new MouseEvent('pointerup', { clientX: to, bubbles: true }));
+    const grip = await find(harness, '.sheet-grip');
+    expect(grip.querySelector('.sheet-close')).not.toBeNull();
+    const swipe = (on: Element, dx: number, dy: number) => {
+      on.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+      on.dispatchEvent(new MouseEvent('pointermove', { clientX: 100 + dx, clientY: 20 + dy, bubbles: true }));
+      on.dispatchEvent(new MouseEvent('pointerup', { clientX: 100 + dx, clientY: 20 + dy, bubbles: true }));
     };
 
-    swipe(100, 150);
+    // Anywhere else in the pane (a text field of the page) never closes.
+    const field = document.createElement('input');
+    sheet.appendChild(field);
+    swipe(field, 100, 10);
+    swipe(sheet, 100, 10);
+    swipe(grip, 50, 0);
+    swipe(grip, 100, 60);
+    const control = document.createElement('button'); grip.appendChild(control);
+    swipe(control, 100, 10); control.remove();
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointermove', { clientX: 200, clientY: 80, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 20, bubbles: true }));
+    harness.detectChanges();
     expect(router.url).toBe('/accounting/entries/5');
-    swipe(100, 200);
+
+    // A cancelled pointer never closes either.
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointercancel', { bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 20, bubbles: true }));
+    expect(router.url).toBe('/accounting/entries/5');
+
+    swipe(grip, 100, 10);
     await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    field.remove();
   });
+
+  it('keeps a grip without handle or ✕ in the two-pane layout and never swipes there', async () => {
+    const harness = await start('panes', '/accounting/entries/5');
+    await find(harness, PANE_PAGE);
+    const grip = await find(harness, '.sheet-grip');
+    expect(grip.classList).not.toContain('sheet-grip--active');
+    expect(grip.querySelector('.sheet-close')).toBeNull();
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 300, clientY: 20, bubbles: true }));
+    expect(TestBed.inject(Router).url).toBe('/accounting/entries/5');
+  });
+
 });
