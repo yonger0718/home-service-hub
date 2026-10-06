@@ -10,6 +10,7 @@ import { routes } from '../../../app.routes';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { makeEntryDetail, makePreference } from '../testing/fixtures';
+import { DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingLayoutComponent } from './accounting-layout';
 
 async function start(mode: LayoutMode, url: string): Promise<RouterTestingHarness> {
@@ -478,6 +479,38 @@ describe('AccountingLayoutComponent', () => {
       expect(list.hasAttribute('inert')).toBe(false);
       expect(dock.hasAttribute('inert')).toBe(false);
     } finally { dock.remove(); }
+  });
+
+  it('asks a dirty registered form before ✕, backdrop, Esc or swipe closes the sheet', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    await find(harness, '.detail-pane.open');
+    const registry = TestBed.inject(DirtyFormRegistry);
+    const form = { isDirty: () => true, showDiscardPrompt: vi.fn() };
+    registry.register(form);
+
+    const close = await find(harness, '.sheet-close') as HTMLButtonElement;
+    const backdrop = await find(harness, '.sheet-backdrop') as HTMLElement;
+    const grip = await find(harness, '.sheet-grip');
+    close.click();
+    backdrop.click();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 20, bubbles: true }));
+    expect(form.showDiscardPrompt).toHaveBeenCalledTimes(4);
+    expect(router.url).toBe('/accounting/entries/5');
+
+    registry.cancelDiscard();
+    harness.detectChanges();
+    expect(router.url).toBe('/accounting/entries/5');
+    expect(harness.routeNativeElement!.querySelector('.detail-pane.open')).not.toBeNull();
+
+    (await find(harness, '.sheet-close') as HTMLButtonElement).click();
+    registry.confirmDiscard();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    registry.unregister(form);
   });
 
 });

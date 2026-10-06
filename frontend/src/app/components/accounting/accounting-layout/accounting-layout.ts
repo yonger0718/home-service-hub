@@ -22,6 +22,7 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { ACCOUNTING_PAGES, AccountingListKey } from '../accounting-pages';
 import { AccountingToastComponent } from '../accounting-toast';
+import { DirtyFormRegistry } from '../dirty-form.service';
 import { isHandledKey, trapFocus, OVERLAY_ATTR } from '../accounting-ui';
 import { AccountingShortcutsService, resolveShortcut } from '../keyboard-shortcuts';
 
@@ -81,6 +82,7 @@ const SWIPE_IGNORE = 'input, textarea, select, button:not(.sheet-close), [conten
   },
 })
 export class AccountingLayoutComponent {
+  private readonly registry = inject(DirtyFormRegistry);
   private readonly router = inject(Router);
   private readonly layoutMode = inject(LayoutModeService);
   private readonly document = inject(DOCUMENT);
@@ -214,8 +216,13 @@ export class AccountingLayoutComponent {
   }
 
 
-  /** Close the pane / sheet: back to the list's own URL. */
+  /** Close the pane / sheet (✕, backdrop, swipe, Esc): a dirty entry form first asks 放棄未儲存的內容？. */
   close(): void {
+    this.registry.requestClose(() => this.navigateClose());
+  }
+
+  /** Back to the list's own URL. */
+  private navigateClose(): void {
     const passbook = PASSBOOK_URL.exec(this.url().split(/[?#]/)[0]);
     if (passbook && this.selectedEntryId() !== null) {
       void this.router.navigateByUrl(`/accounting/accounts/${passbook[1]}`);
@@ -223,6 +230,7 @@ export class AccountingLayoutComponent {
     }
     void this.router.navigateByUrl(this.listKey() === 'accounts' ? '/accounting/accounts' : '/accounting');
   }
+
 
   /**
    * Escape closes the sheet; marked handled so global shortcuts skip it. An Escape already handled, or one that is part
