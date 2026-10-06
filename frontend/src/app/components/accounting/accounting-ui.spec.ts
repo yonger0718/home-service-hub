@@ -5,6 +5,8 @@ import {
   NO_ENTER_SAVE_TAGS,
   accountLabel,
   colorOf,
+  contrastRatio,
+  textOn,
   fxConversionLine,
   fxLine,
   iconOf,
@@ -57,4 +59,14 @@ describe('accounting-ui', () => {
     expect(isHandledKey(new KeyboardEvent('keydown', { key: 'Enter' }))).toBe(false);
     expect([...NO_ENTER_SAVE_TAGS].sort()).toEqual(['A', 'BUTTON', 'SELECT', 'SUMMARY', 'TEXTAREA']);
   });
+  it('picks the readable header text for a category colour (WCAG contrast)', () => {
+    expect(contrastRatio('#d4823b', '#1d1c1a')).toBeCloseTo(5.72, 2);
+    expect(contrastRatio('#d4823b', '#ffffff')).toBeCloseTo(2.98, 2);
+    expect(textOn('#d4823b')).toBe('#1d1c1a');
+    expect(textOn('#2b2d42')).toBe('#ffffff');
+    expect(textOn('#fff')).toBe('#1d1c1a');
+    expect(textOn(null)).toBeNull();
+    expect(textOn('var(--app-surface-soft)')).toBeNull();
+  });
+
 });

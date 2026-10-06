@@ -40,6 +40,50 @@ export function colorOf(source: EntryIconSource | CategoryIconSource): string {
   return (isEntry(source) ? source.category_color : source.color) ?? 'var(--app-surface-soft)';
 }
 
+// ---- header text contrast -------------------------------------------------------------------------------------
+
+const DARK_TEXT = '#1d1c1a';
+const LIGHT_TEXT = '#ffffff';
+
+function channel(value: number): number {
+  const s = value / 255;
+  return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+}
+
+/** WCAG relative luminance of `#rgb` / `#rrggbb`; null for anything else (CSS variables, names). */
+function luminance(color: string): number | null {
+  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+  if (!match) {
+    return null;
+  }
+  const hex = match[1].length === 3 ? [...match[1]].map(digit => digit + digit).join('') : match[1];
+  const [r, g, b] = [0, 2, 4].map(index => parseInt(hex.slice(index, index + 2), 16));
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+/** WCAG contrast ratio of two hex colours; null when either is not a hex colour. */
+export function contrastRatio(a: string, b: string): number | null {
+  const la = luminance(a);
+  const lb = luminance(b);
+  if (la === null || lb === null) {
+    return null;
+  }
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/** Text colour for a category-coloured header: the higher-contrast of dark / white (ties → dark); null → theme. */
+export function textOn(bg: string | null): string | null {
+  if (!bg) {
+    return null;
+  }
+  const dark = contrastRatio(bg, DARK_TEXT);
+  const light = contrastRatio(bg, LIGHT_TEXT);
+  if (dark === null || light === null) {
+    return null;
+  }
+  return dark >= light ? DARK_TEXT : LIGHT_TEXT;
+}
+
 // ---- foreign-currency lines -----------------------------------------------------------------------------------
 
 type FxSource = Pick<LedgerEntry, 'amount' | 'currency' | 'original_amount' | 'original_currency' | 'fx_rate'>;

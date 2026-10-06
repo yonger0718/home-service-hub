@@ -11,7 +11,7 @@
   @if (detail(); as d) {
     <app-lock-banner [locked]="d.locked" />
 
-    <div class="dhead" [style.background]="colorOf(d)">
+    <div class="dhead" [style.background]="colorOf(d)" [style.color]="textOn(d.category_color)">
       @if (!inSheet()) {
         <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
       }
@@ -55,7 +55,8 @@
       <div><small>{{ debtKind() ? '對象' : '商家' }}</small><b>{{ (debtKind() ? d.counterparty : d.merchant) || '—' }}</b></div>
       <div><small>日期</small><b>{{ slashDate(d.entry_date) }}</b></div>
       <div><small>專案</small><b>{{ d.project || '—' }}</b></div>
-      <div><small>類型</small><b>{{ kindLabel(d.kind) }}</b></div>
+      <div><small>交易類型</small><b>{{ kindLabel(d.kind) }}</b></div>
+      <div><small>事件類型</small><b>{{ eventKindLabel(d) }}</b></div>
       <div><small>時間</small><b>{{ d.entry_time ? d.entry_time.slice(0, 5) : '—' }}</b></div>
     </div>
     @if (d.posted_date && d.posted_date !== d.entry_date) {

@@ -27,7 +27,7 @@ import {
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
-import { NO_ENTER_SAVE_TAGS, colorOf, fxConversionLine, iconOf, isHandledKey, leavePage } from '../accounting-ui';
+import { NO_ENTER_SAVE_TAGS, textOn, colorOf, fxConversionLine, iconOf, isHandledKey, leavePage } from '../accounting-ui';
 import { amountString, parseAmountFields, parseAmountText } from '../amount-text';
 import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
@@ -210,6 +210,7 @@ export class EntryDetailComponent implements OnInit {
   });
   readonly iconOf = iconOf;
   readonly colorOf = colorOf;
+  readonly textOn = textOn;
   /** 應收 / 應付 kind, including the 收款 / 還款 rows that settle one (the grid shows 對象 for all of them). */
   readonly debtKind = computed(() => {
     const kind = this.detail()?.kind;
@@ -444,6 +445,12 @@ export class EntryDetailComponent implements OnInit {
 
   kindLabel(kind: EntryKind): string {
     return this.kindLabels[kind];
+  }
+
+  /** 事件類型 of the entry: the schedule that wrote it, else 單次. */
+  eventKindLabel(detail: EntryDetail): '單次' | '週期' | '分期' {
+    const kind = detail.schedule?.kind;
+    return kind === 'recurring' ? '週期' : kind === 'installment' ? '分期' : '單次';
   }
 
   edit(): void {

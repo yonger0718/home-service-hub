@@ -483,4 +483,21 @@ describe('EntryDetailComponent', () => {
     const fixture = render(RECEIVABLE);
     expect(el(fixture).querySelector('.close')).toBeNull();
   });
+  it('splits 類型 into 交易類型 and 事件類型 and colours the header text for contrast', () => {
+    const fixture = render(RECEIVABLE);
+    const cells = Array.from(el(fixture).querySelectorAll('.dgrid > div')).map(cell => [
+      cell.querySelector('small')?.textContent?.trim(),
+      cell.querySelector('b')?.textContent?.trim(),
+    ]);
+    expect(cells).toContainEqual(['交易類型', '應收款項']);
+    expect(cells).toContainEqual(['事件類型', '單次']);
+    expect(cells.some(([label]) => label === '類型')).toBe(false);
+    const head = el(fixture).querySelector<HTMLElement>('.dhead')!;
+    expect(['rgb(29, 28, 26)', '#1d1c1a']).toContain(head.style.color);
+
+    const component = fixture.componentInstance;
+    expect(component.eventKindLabel({ ...RECEIVABLE, schedule: { kind: 'recurring' } } as unknown as EntryDetail)).toBe('週期');
+    expect(component.eventKindLabel({ ...RECEIVABLE, schedule: { kind: 'installment' } } as unknown as EntryDetail)).toBe('分期');
+  });
+
 });
