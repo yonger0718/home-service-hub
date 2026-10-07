@@ -820,3 +820,24 @@ def test_a_parent_date_change_only_reaches_full_members(client, db_session, seed
     db_session.expire_all()
     assert db_session.get(LedgerEntry, plain_id).entry_date == date(2026, 9, 5)
     assert db_session.get(LedgerEntry, collection_id).entry_date == DAY
+
+
+def test_dropping_a_member_a_schedule_references_by_loan_entry_id_is_refused(client, db_session, seed):
+    # Spec §1.5 drop: assert_not_referenced(loan_entry_id=id) like a single delete. The member is an expense, so
+    # protected_reason (kind-gated to receivable / payable) does not catch it; the drop guard does.
+    wallet = seed.account()
+    group = seed.group()
+    kept = seed.entry(wallet, "-100", group_id=group.id)
+    referenced = seed.entry(wallet, "-40", group_id=group.id)
+    extra = seed.entry(wallet, "-10", group_id=group.id)
+    seed.definition([seed.line("repayment", wallet, "10", loan_entry_id=referenced.id)], kind="installment",
+                    name="分期-非借貸", times=10)
+    db_session.commit()
+    group_id, kept_id, extra_id = group.id, kept.id, extra.id
+    before = _ledger(db_session)
+
+    response = client.put(f"/splits/{group_id}", json=_split(_echo(kept, amount="120"), _keep(extra_id)))
+
+    assert response.status_code == 409, response.text
+    assert response.json()["message"] == "排程「分期-非借貸」仍在使用，請先結束排程"
+    assert _ledger(db_session) == before

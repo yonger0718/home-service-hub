@@ -347,6 +347,8 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
     # 4. re-read and re-validate inside the locks
     _revalidate(db, group, group_id, locked, before_ids, protected, members)
     # 5. write: no helper below commits
+    for entry_id in drop_ids:  # §1.5: the same refusal as a single delete; not kind-gated like SCHEDULED_LOAN
+        schedule_entry_hooks.assert_not_referenced(db, loan_entry_id=entry_id)
     delete_entries_cascade(db, drop_ids)  # expires the session; rows are re-read below under the held locks
     for member in members:
         if member.action == "new":
