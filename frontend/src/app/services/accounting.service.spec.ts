@@ -13,6 +13,7 @@ import {
   RefundInput,
   SettleInput,
   SplitInput,
+  SplitResult,
   TransferInput,
 } from '../models/accounting.model';
 import { makeAccount, makeEntry, makePreference } from '../components/accounting/testing/fixtures';
@@ -72,7 +73,10 @@ const SPLIT_INPUT: SplitInput = {
   posted_date: null,
   project_id: null,
   tags: [],
-  members: [{ ...ENTRY_INPUT }, { ...ENTRY_INPUT, kind: 'receivable', amount: '180', counterparty_id: 4 }],
+  members: [
+    { ...ENTRY_INPUT, client_key: 'a' },
+    { ...ENTRY_INPUT, kind: 'receivable', amount: '180', counterparty_id: 4, client_key: 'b' },
+  ],
 };
 
 const SETTLE_INPUT: SettleInput = { account_id: 1, amount: '200', entry_date: '2026-10-02', entry_time: null, description: null };
@@ -152,6 +156,10 @@ const CASES: Case[] = [
   },
   { name: 'createSplit', call: s => s.createSplit(SPLIT_INPUT), method: 'POST', url: `${API}/splits`, body: SPLIT_INPUT },
   { name: 'updateSplit', call: s => s.updateSplit(4, SPLIT_INPUT), method: 'PUT', url: `${API}/splits/4`, body: SPLIT_INPUT },
+  {
+    name: 'convertEntryToSplit', call: s => s.convertEntryToSplit(7, SPLIT_INPUT),
+    method: 'PUT', url: `${API}/entries/7/split`, body: SPLIT_INPUT,
+  },
   { name: 'deleteSplit', call: s => s.deleteSplit(4), method: 'DELETE', url: `${API}/splits/4` },
   { name: 'settleEntry', call: s => s.settleEntry(9, SETTLE_INPUT), method: 'POST', url: `${API}/entries/9/settle`, body: SETTLE_INPUT },
   { name: 'refundEntry', call: s => s.refundEntry(9, REFUND_INPUT), method: 'POST', url: `${API}/entries/9/refund`, body: REFUND_INPUT },
@@ -340,6 +348,16 @@ describe('AccountingService', () => {
     httpMock.expectOne('/api/accounting/preference').flush(makePreference());
     expect(service.preferenceChanged()).toBe(before + 1);
     expect(service.entriesChanged()).toBe(entries);
+  });
+
+  it('serializes nullable group id and client keys for dissolve', () => {
+    const result: SplitResult = { group_id: null, member_ids: [7], members: [{ id: 7, client_key: 'a' }] };
+    let received: SplitResult | undefined;
+    service.updateSplit(4, SPLIT_INPUT).subscribe(value => (received = value));
+    const req = httpMock.expectOne(`${API}/splits/4`);
+    expect(req.request.method).toBe('PUT');
+    req.flush(result);
+    expect(received).toEqual(result);
   });
 
   it('bumps entriesChanged after an entry write succeeds, not before', () => {

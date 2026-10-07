@@ -9,6 +9,7 @@ import {
   RewardRule,
   ScheduleDefinition,
   ScheduleInstance,
+  SplitGroupMember,
 } from '../../../models/accounting.model';
 
 /** Synthetic DTO factories for specs. Every field has a neutral default; pass only what the test is about. */
@@ -123,6 +124,11 @@ export function makeEntry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
     locked: false,
     ...overrides,
   };
+}
+
+/** A `group_members` row; unprotected unless the test says otherwise. */
+export function makeGroupMember(overrides: Partial<SplitGroupMember> = {}): SplitGroupMember {
+  return { ...makeEntry(), protected: false, protected_reason: null, ...overrides };
 }
 
 export function makeEntryDetail(overrides: Partial<EntryDetail> = {}): EntryDetail {

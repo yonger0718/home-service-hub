@@ -16,7 +16,7 @@ import { MockInstance, afterEach, beforeEach, describe, expect, it, vi } from 'v
 import { EntryDetail, Project } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
-import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetail, makePreference, makeRule } from '../testing/fixtures';
+import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetail, makeGroupMember, makePreference, makeRule } from '../testing/fixtures';
 import { EntryDetailComponent } from '../entry-detail/entry-detail';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { emptyEntryInput } from './entry-save';
@@ -55,7 +55,7 @@ const SPLIT_SEVEN = makeEntryDetail({
   name: '聚餐',
   amount: '-200.0000',
   group: SPLIT_GROUP,
-  group_members: [makeEntry({ id: 7 }), makeEntry({ id: 8 })],
+  group_members: [makeGroupMember({ id: 7 }), makeGroupMember({ id: 8 })],
 });
 const SPLIT_EIGHT = makeEntryDetail({ id: 8, account_id: 2, category_id: 12, name: '代墊', amount: '-100.0000', group: SPLIT_GROUP });
 
@@ -1030,7 +1030,7 @@ describe('EntryFormComponent', () => {
 
   it('edits split member 2 keeping the group fields and member order, then lands on its new id', async () => {
     const group = { ...SPLIT_GROUP, name: '聚餐', merchant: '鼎泰豐', description: '週五聚餐' };
-    const members = [makeEntry({ id: 7 }), makeEntry({ id: 8 })];
+    const members = [makeGroupMember({ id: 7 }), makeGroupMember({ id: 8 })];
     const shared = { entry_date: '2026-09-30', entry_time: '19:00:00', posted_date: '2026-09-30', group, group_members: members };
     const seven = { ...SPLIT_SEVEN, ...shared, merchant: '鼎泰豐' };
     const eight = makeEntryDetail({
@@ -1085,7 +1085,7 @@ describe('EntryFormComponent', () => {
       ROUTES.map(route => (route.path === 'accounting/entries/:id' ? { ...route, component: EntryDetailComponent } : route)),
     );
     const group = { ...SPLIT_GROUP, name: '聚餐' };
-    const members = [makeEntry({ id: 7 }), makeEntry({ id: 8 })];
+    const members = [makeGroupMember({ id: 7 }), makeGroupMember({ id: 8 })];
     const { el } = await open('/accounting/entries/8/edit');
     respond('/api/accounting/entries/8', { ...SPLIT_EIGHT, group, group_members: members });
     respond('/api/accounting/entries/7', { ...SPLIT_SEVEN, group, group_members: members });
@@ -1112,7 +1112,7 @@ describe('EntryFormComponent', () => {
 
   it("uses the edited line's date for the whole split when the owner changed it", async () => {
     const group = { ...SPLIT_GROUP, name: '聚餐', merchant: null, description: null };
-    const members = [makeEntry({ id: 7 }), makeEntry({ id: 8 })];
+    const members = [makeGroupMember({ id: 7 }), makeGroupMember({ id: 8 })];
     const shared = { entry_date: '2026-09-30', entry_time: null, posted_date: '2026-09-30', group, group_members: members };
     const { el } = await open('/accounting/entries/8/edit');
     respond('/api/accounting/entries/8', { ...SPLIT_EIGHT, ...shared });

@@ -8,6 +8,7 @@ import {
   LedgerAccount,
   LedgerEntry,
   SplitInput,
+  SplitMemberInput,
   WritableEntryKind,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -134,12 +135,15 @@ export function emptyEntryInput(fields: Partial<EntryInput> & Pick<EntryInput, '
   };
 }
 
+/** Full members only (Task 1 compatibility until the split draft serializer replaces this module's plan). */
+type LegacySplitInput = Omit<SplitInput, 'members'> & { members: SplitMemberInput[] };
+
 export type EntrySavePlan =
   | { kind: 'create'; input: EntryInput }
   | { kind: 'update'; id: number; input: EntryInput }
-  | { kind: 'create-split'; input: SplitInput }
+  | { kind: 'create-split'; input: LegacySplitInput }
   /** `index`: position of the edited line in `input.members` (and in the response's `member_ids`). */
-  | { kind: 'update-split'; groupId: number; index: number; input: SplitInput };
+  | { kind: 'update-split'; groupId: number; index: number; input: LegacySplitInput };
 
 /** The loaded split group an edited member belongs to. */
 export interface SplitGroupFields {
@@ -164,16 +168,17 @@ function editedIndex(group: SplitGroupFields | null, extraCount: number): number
  * are the primary (first) member's unless the owner changed them on the edited line. Every member gets the shared
  * date, time and posting date, and (when unset) the shared project.
  */
-export function toSplitInput(edited: EntryInput, extra: EntryInput[], group: SplitGroupFields | null = null): SplitInput {
+export function toSplitInput(edited: EntryInput, extra: EntryInput[], group: SplitGroupFields | null = null): LegacySplitInput {
   const lines = [...extra];
   lines.splice(editedIndex(group, extra.length), 0, edited);
   const shared = group === null || group.dateChanged ? edited : lines[0];
-  const members = lines.map(line => ({
+  const members = lines.map((line, index) => ({
     ...line,
     entry_date: shared.entry_date,
     entry_time: shared.entry_time,
     posted_date: shared.posted_date,
     project_id: line.project_id ?? shared.project_id,
+    client_key: String(index),
   }));
   return {
     name: group ? group.name : edited.name,

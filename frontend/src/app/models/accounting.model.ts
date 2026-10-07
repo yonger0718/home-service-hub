@@ -190,7 +190,8 @@ export interface LedgerEntry {
 export interface EntryDetail extends LedgerEntry {
   invoice_random: string | null;
   children: LedgerEntry[];
-  group_members: LedgerEntry[];
+  /** Split members carry the server's protection flag (one predicate for the read flag and the write guard). */
+  group_members: SplitGroupMember[];
   transfer_counterpart: LedgerEntry | null;
   settles: LedgerEntry | null;
   settled_by: LedgerEntry[];
@@ -311,6 +312,27 @@ export interface TransferInput {
   reward_rule_ids: number[];
 }
 
+/** A full split member: an entry payload, with `id` when it updates an existing member in place. */
+export type SplitMemberInput = EntryInput & { id?: number; client_key: string };
+
+/** A protected (or untouched) existing member: only these metadata fields may change. */
+export interface SplitKeepInput {
+  id: number;
+  keep: true;
+  client_key: string;
+  name?: string | null;
+  project_id?: number | null;
+  tags?: string[];
+  description?: string | null;
+}
+
+/** A row of `EntryDetail.group_members`. */
+export interface SplitGroupMember extends LedgerEntry {
+  protected: boolean;
+  /** `settlement`, `refund`, `transfer`, `system`, `settled_original`, `scheduled_loan`, or null. */
+  protected_reason: string | null;
+}
+
 export interface SplitInput {
   name: string | null;
   merchant: string | null;
@@ -320,8 +342,14 @@ export interface SplitInput {
   posted_date: string | null;
   project_id: number | null;
   tags: string[];
-  /** Member date, time, posting date, project and tags default to the group's when omitted. */
-  members: Array<Omit<EntryInput, 'entry_date'> & { entry_date?: string }>;
+  members: Array<SplitMemberInput | SplitKeepInput>;
+}
+
+/** Every split write's answer, in request order; `group_id` is null after a dissolve. */
+export interface SplitResult {
+  group_id: number | null;
+  member_ids: number[];
+  members: Array<{ id: number; client_key: string | null }>;
 }
 
 export interface SettleInput {
