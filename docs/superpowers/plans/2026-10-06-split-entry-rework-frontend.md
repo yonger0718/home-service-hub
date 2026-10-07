@@ -6,9 +6,9 @@
 
 **Tech Stack:** Angular 21 standalone/signals, RxJS, existing Vitest/HttpTestingController/RouterTestingHarness; no new dependencies.
 
-**Spec:** Binding v4, precedence update at [`f19e1fb`](https://github.com/yonger0718/home-service-hub/blob/f19e1fb/docs/superpowers/specs/2026-10-06-split-entry-rework-design.md), §2; HTTP contracts §1.3/§1.5/§1.6. Spec remains on its own branch and is not copied or edited here.
+**Spec:** Binding v4, precedence update at [`f19e1fb`](https://github.com/yonger0718/home-service-hub/blob/f19e1fb/docs/superpowers/specs/2026-10-06-split-entry-rework-design.md), §2; HTTP contracts §1.3/§1.5/§1.6. Final API authority: [`abf1365:openspec/specs/accounting-ledger/spec.md`](https://github.com/yonger0718/home-service-hub/blob/abf1365/openspec/specs/accounting-ledger/spec.md), requirements Split endpoint, Protected split members, Split upsert by member id, Dissolving a split, Converting an entry into a split, Deleting a member dissolves a one-member split, and Split write phases/errors/lock order. Both spec files remain on their own branches and are not copied or edited here.
 
-**Base / branch:** `main` @ `4e301e24a1c2852258fbced2d98ec0745a2a337c` → `feat/split-entry-rework-fe`. Anchors below refer to this base and include symbols to survive line movement. This commit contains only this plan. Do not execute its implementation steps before the owner's plan review clears (P1 blocks; P2/P3 proceed). PR-B has completed all 10 tasks and is in final whole-branch review (owner update); it must land before frontend delivery. Use contract HTTP mocks until the demo exposes the new routes.
+**Base / branch:** `main` @ `4e301e24a1c2852258fbced2d98ec0745a2a337c` → `feat/split-entry-rework-fe`. Anchors below refer to this base and include symbols to survive line movement. This commit contains only this plan. Do not execute its implementation steps before the owner's plan review clears (P1 blocks; P2/P3 proceed). PR-B is open as [#55](https://github.com/yonger0718/home-service-hub/pull/55), with final API contract at `feat/split-upsert-api` @ `abf1365`; it must land before frontend delivery. Use contract HTTP mocks until the demo exposes the new routes.
 
 **Owner / risk / budget:** lead-astra owns the plan and integration; medium/high regression risk (financial payload preservation, not backend transaction implementation). Implementation author and a capable non-author reviewer must be assigned after approval using the existing workspace routing/capacity rules. No second Lead, nested agents, added capacity or paid fallback. `budget_ref=unknown`; run/usage source unavailable = `null`.
 
@@ -213,6 +213,7 @@ export interface ChildDraft {
     attachedRuleIds: number[]; originalAccountId: number; source: string;
     signedAmount: string; signedBase: string | null; isSettlement: boolean; kind: EntryKind;
     currency: string;
+    onlineFx?: { originalAmount: string; originalCurrency: string; amountExpr: string };
   } | null;
   rulesTouched: boolean; pendingCategoryId: number | null; generation: number;
   // Derived presentation/default data; excluded from dirty identity.
@@ -404,8 +405,12 @@ export function fullChild(c: ChildDraft, p: ParentDraft, accounts: readonly Ledg
   if (c.protected || !isWritableKind(c.kind)) throw new Error('受保護子項只可更新備註資料');
   const account = accounts.find(a => a.id === c.accountId);
   if (!account) throw new Error('請選擇帳戶');
-  const amount = evalOrNull(c.amountExpr, currencyDecimals(c.fx?.original_currency ?? account.currency));
-  if (amount === null || amount <= 0) throw new Error('請輸入有效金額');
+  const original = c.loaded?.onlineFx;
+  const unchangedOriginal = c.fx?.use_online && original &&
+    c.amountExpr === original.amountExpr && c.fx.original_currency === original.originalCurrency;
+  const amount = unchangedOriginal && original ? Number(original.originalAmount)
+    : evalOrNull(c.amountExpr, currencyDecimals(c.fx?.original_currency ?? account.currency));
+  if (amount === null || !Number.isFinite(amount) || amount <= 0) throw new Error('請輸入有效金額');
   const fx = c.fx;
   const manual = fx?.manual === 'amount' ? fx.amount : fx?.manual === 'rate' ? fx.fx_rate : null;
   if (fx && !fx.use_online && (!manual?.trim() || !Number.isFinite(Number(manual)) || Number(manual) <= 0))
@@ -420,7 +425,10 @@ export function fullChild(c: ChildDraft, p: ParentDraft, accounts: readonly Ledg
     fee: c.fee, discount: c.discount, ruleIds: permittedRuleIds(c, dates.entryDate),
   });
   const party = c.kind === 'receivable' || c.kind === 'payable';
-  return { ...input, entry_date: dates.entryDate, entry_time: dates.entryTime,
+  return { ...input,
+    ...(c.fx?.use_online ? { amount: null, fx_rate: null } : {}),
+    ...(unchangedOriginal && original ? { original_amount: original.originalAmount, original_currency: original.originalCurrency } : {}),
+    entry_date: dates.entryDate, entry_time: dates.entryTime,
     posted_date: parentDates ? normalizePosted(dates.entryDate, dates.postedDate) : dates.postedDate,
     merchant: single ? (party ? null : p.merchant.trim() || null) : c.loaded?.merchant ?? null };
 }
@@ -611,6 +619,9 @@ setCategory(node: CategoryNode | null): void {
 private flushChild(owner: Owner): boolean {
   const c = this.children().find(c => c.key === owner.key);
   if (!c || c.protected || !c.amountExpr.trim()) return true;
+  // Loaded online input must not be re-rounded merely by switching or saving metadata.
+  if (c.fx?.use_online && c.loaded?.onlineFx?.amountExpr === c.amountExpr &&
+      c.loaded.onlineFx.originalCurrency === c.fx.original_currency) return true;
   const account = this.accounts().find(a => a.id === c.accountId);
   const value = evalOrNull(c.amountExpr, currencyDecimals(c.fx?.original_currency ?? account?.currency ?? this.preference().main_currency));
   if (value === null) { this.amountError.set(true); return false; }
@@ -810,7 +821,10 @@ export function childFromDetail(d: EntryDetail, flag: Pick<SplitGroupMember, 'pr
     invoice: { number: d.invoice_number ?? '', random: d.invoice_random ?? '' },
     loaded: { entryDate: d.entry_date, entryTime: d.entry_time, postedDate: d.posted_date, merchant: d.merchant,
       attachedRuleIds: d.rules.map(r => r.id), originalAccountId: d.account_id, source: d.source,
-      signedAmount: d.amount, signedBase: d.currency === mainCurrency ? d.amount : null,
+      onlineFx: d.fx_source === 'fx_api' && d.original_amount !== null && d.original_currency !== null
+      ? { originalAmount: d.original_amount.replace(/^[+-]/, ''), originalCurrency: d.original_currency,
+          amountExpr: fx?.original_amount ?? '' } : undefined,
+    signedAmount: d.amount, signedBase: d.currency === mainCurrency ? d.amount : null,
       isSettlement: d.is_settlement, kind: d.kind, currency: d.currency },
   };
 }
@@ -853,7 +867,7 @@ export function feeAndDiscountFromDetail(detail: EntryDetail): { fee: ChildInput
 }
 ```
 
-- [ ] **Step 3 — apply after all GETs:** In `applyLoaded`, before old `applyDetail`, branch on `!copy && group.kind==='split'`. Use the block below; otherwise initialize one `childFromDetail` and parent from the single record, retaining existing transfer copy/definition paths. The single **conversion-only** predicate is `is_settlement || !isWritableKind(kind) || transfer_group_id !== null || settled_by.length>0 || refunded_by.length>0 || loan_schedule != null`; store its hint in `convertBlockedReason`, keep single `ChildDraft.protected=false`, and let the server remain authoritative at convert. A locked single cannot add. Copies clear `id`, `loaded`, attached rules according to today's copy behavior, and anchor/group ids; they never accidentally convert their source.
+- [ ] **Step 3 — apply after all GETs:** In `applyLoaded`, before old `applyDetail`, branch on `!copy && group.kind==='split'`. Use the block below; otherwise initialize one `childFromDetail` and parent from the single record, retaining existing transfer copy/definition paths. The single **conversion-only** predicate is `is_settlement || !isWritableKind(kind) || transfer_group_id !== null || settled_by.length>0 || refunded_by.length>0 || loan_schedule != null || source==='schedule' || schedule?.posted_entry_ids.includes(id)`; store its hint in `convertBlockedReason`, keep single `ChildDraft.protected=false`, and let the server remain authoritative at convert. A locked single cannot add. Copies clear `id`, `loaded`, attached rules according to today's copy behavior, and anchor/group ids; they never accidentally convert their source.
 
 ```ts
 if (!loaded.copy && loaded.detail.group?.kind === 'split') {
@@ -1331,7 +1345,7 @@ private saveChildren(continuous: boolean): void {
 }
 ```
 
-Add `saveResponseInvalid=signal(false)` and include it in save-disabled/guard conditions; explicit reload clears it. The UI reload action must go through DirtyFormRegistry if draft is dirty. Read the implemented §1.6 order at `f19e1fb`: schema 422 → group 404 → group_scheduled 409 → not-a-split 404 → locked_until_cutover 409 → DB-dependent cardinality 422 → member_not_found 404 → member_locked 409 → member validation 422 → retry 409; convert missing entry 404 → already_grouped/entry_locked/kind_not_splittable 409 → members 422. Do not invent client-side precedence or a group_locked response contract. `409 retry`, `member_locked`, `already_grouped`, `entry_locked`, `kind_not_splittable`, `import_running`, `group_scheduled`, `locked_until_cutover` keep the draft and use translated `writeErrorMessage` messages (Task 7 revision below); never automatically resubmit a convert or silently reload away edits. Complete cancellation uses `finalize` guarded by `loadId` to reset saving after EMPTY/destroy. Do not call existing `write` here: it marks clean before mapping results and cannot route child errors.
+Add `saveResponseInvalid=signal(false)` and include it in save-disabled/guard conditions; explicit reload clears it. The UI reload action must go through DirtyFormRegistry if draft is dirty. Read the implemented §1.6 order at `f19e1fb`: schema 422 → group 404 → group_scheduled 409 → not-a-split 404 → locked_until_cutover 409 → DB-dependent cardinality 422 → member_not_found 404 → member_locked 409 → member validation 422 → retry 409; the final `abf1365` convert order is request schema/cardinality 422 → missing entry 404 → already_grouped 409 → entry_locked 409 → kind_not_splittable 409 (schedule source OR listed by a posted period) → locked_until_cutover 409 → member validation 422 → retry 409. Do not invent client-side precedence or a group_locked response contract. `409 retry`, `member_locked`, `already_grouped`, `entry_locked`, `kind_not_splittable`, `import_running`, `group_scheduled`, `locked_until_cutover` keep the draft and use translated `writeErrorMessage` messages (Task 7 revision below); never automatically resubmit a convert or silently reload away edits. Complete cancellation uses `finalize` guarded by `loadId` to reset saving after EMPTY/destroy. Do not call existing `write` here: it marks clean before mapping results and cannot route child errors.
 
 Counterparty creation before the atomic entry write is already the single-entry contract; this plan does not claim rollback of a newly created counterparty if the subsequent split fails. The callback is owner/load-bound and cannot mutate another child's draft.
 
@@ -1719,7 +1733,8 @@ The following code belongs to the named tasks above. Review revision R1 addition
 if (isWritableKind(loaded.detail.kind)) {
   const d = loaded.detail;
   const convertBlocked = d.is_settlement || d.transfer_group_id !== null || d.settled_by.length > 0 ||
-    d.refunded_by.length > 0 || d.loan_schedule != null;
+    d.refunded_by.length > 0 || d.loan_schedule != null || d.source === 'schedule' ||
+    (d.schedule?.posted_entry_ids.includes(d.id) ?? false);
   this.convertBlockedReason.set(!loaded.copy && convertBlocked ? '此記錄不能拆帳' : null);
   let c = childFromDetail(d, { protected: false, protected_reason: null }, this.preference().main_currency);
   if (loaded.copy) c = { ...c, id: null, loaded: null, protected: false, protectedReason: null,
@@ -2222,3 +2237,111 @@ it('child account picker Escape restores trigger; next Escape prompts the dirty 
 | 19 · P3 | fixed | union loc normalization; no duplicate split sibling related rows; dissolve parent fields asserted; mixedDates/member merchant tests; childFromDetail naming deviation explicit |
 
 No disagreements. P1 re-review remains an owner gate. This table records changes to the plan, not implementation/test execution; compile and full application tests remain mandatory at implementation commits.
+
+## PR-B final contract alignment — abf1365
+
+Owner update: AGENT-67 comment `01a11415-6fe8-7dd9-8b1e-4a6bd5ba8d03`. API reference is PR #55 at `abf1365`, not a claim that it has merged. This amendment adds no backend/spec edits and does not clear the owner's P1 re-review gate.
+
+### Tasks 3 / 5: unchanged payload is a wire invariant
+
+`entry_time` is the exact loaded string, including seconds/fractional seconds, until the owner changes parent dates. Online rows (`fx_source='fx_api'`) always send `amount:null`, `fx_rate:null`; a cached display quote must not turn them into manual FX. If original amount/currency are untouched, retain their loaded unsigned value even when it has more decimal places than the usual input currency precision. `loaded.onlineFx` captures that provenance; `flushChild` does not round it just because of selection/save. A user-edited original amount follows the existing expression validation. This is frontend payload evidence only; PR-B owns the unchanged/meta/financial classification and absence of FX/write side effects.
+
+Add to Task 3 `split-save.spec.ts` with its existing imports/fixtures:
+
+```ts
+it('re-sends unchanged online FX and raw seconds for no-op and metadata-only upsert', () => {
+  const d = makeEntryDetail({ id: 7, account_id: 1, amount: '-370.3680',
+    original_amount: '-12.3456', original_currency: 'USD', fx_source: 'fx_api', fx_rate: '30.0000',
+    entry_date: '2026-10-01', posted_date: '2026-10-01', entry_time: '19:00:37.125' });
+  const c = childFromDetail(d, { protected: false, protected_reason: null }, 'TWD');
+  const p = { ...parent(), entryDate: d.entry_date, entryTime: d.entry_time, postedDate: null };
+  for (const name of [c.name, 'metadata only']) {
+    c.name = name;
+    const input = toSplitInput([c], p, accounts, parties).members[0];
+    expect(input).toMatchObject({ id: 7, name: name.trim() || null,
+      entry_time: '19:00:37.125', posted_date: '2026-10-01',
+      amount: null, fx_rate: null, original_amount: '12.3456', original_currency: 'USD' });
+  }
+});
+```
+
+Add to Task 9 harness to check the actual PUT body and `flushChild`, not only the pure serializer:
+
+```ts
+it('metadata PUT retains online wire mode and exact original quantity/time', async () => {
+  seedGroup(makeEntryDetail({ id: 7, amount: '-370.3680', original_amount: '-12.3456',
+    original_currency: 'USD', fx_source: 'fx_api', fx_rate: '30', entry_time: '19:00:37.125' }),
+    makeEntryDetail({ id: 8 }));
+  await open('/accounting/entries/7/edit'); form.name.set('metadata only'); form.save(false);
+  const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/splits/4'));
+  expect(req.request.body.members[0]).toMatchObject({ id: 7, entry_time: '19:00:37.125',
+    amount: null, fx_rate: null, original_amount: '12.3456', original_currency: 'USD' });
+  req.flush({ code: 'CONFLICT', message: 'retry: member changed before lock', trace_id: 'test' },
+    { status: 409, statusText: 'Conflict' }); settle();
+  expect(form.isDirty()).toBe(true);
+  expect(form.error()).toBe('記錄剛被更新，請重新載入後再試');
+});
+```
+
+### Task 7: shared-lib envelope and code-prefix translation
+
+For 404/409 read the business code from `message`, not the generic HTTP category in `code`. `message` may be the bare business code or `<code>: <detail>` (PR-B `services/errors.py:CodedConflictError`). Replace the exact-string conflict lookup in `writeErrorMessage` with this block; retain existing 422 parsing, network fallback and the earlier `isImportRunning` check. `detail` string fallback remains only for compatibility with existing schedule tests. Do not match arbitrary partial names such as `retrying`.
+
+```ts
+const message = typeof body?.message === 'string' ? body.message :
+  typeof detail === 'string' ? detail : null;
+const messageCode = message?.split(':', 1)[0].trim();
+if (err.status === 409 && messageCode === 'locked_until_cutover') return 'MOZE 匯入資料，切換後可編輯';
+if (err.status === 409 && messageCode && Object.hasOwn(CONFLICT_MESSAGES, messageCode))
+  return CONFLICT_MESSAGES[messageCode];
+if (err.status === 404 && messageCode === 'member_not_found') return '找不到群組中的子項，請重新載入';
+```
+
+Add to `http-errors.spec.ts` (same imported `HttpErrorResponse` / `writeErrorMessage`):
+
+```ts
+it.each([
+  [409, 'retry: member 7 changed', '記錄剛被更新，請重新載入後再試'],
+  [409, 'member_locked: member 7 (settlement)', '子項已受保護，請重新載入後再試'],
+  [409, 'already_grouped: entry 7 belongs to group 4', '此記錄已屬於群組，請重新載入'],
+  [409, 'kind_not_splittable: entry 7 is listed by a posted schedule period', '此記錄類型不能拆帳'],
+  [404, 'member_not_found: member 7', '找不到群組中的子項，請重新載入'],
+])('reads message prefix for HTTP %i: %s', (status, message, expected) => {
+  expect(writeErrorMessage(new HttpErrorResponse({ status,
+    error: { code: status === 404 ? 'NOT_FOUND' : 'CONFLICT', message, trace_id: 'test' } }))).toBe(expected);
+});
+it('does not treat an arbitrary prefix as a known conflict code', () => {
+  expect(writeErrorMessage(new HttpErrorResponse({ status: 409,
+    error: { code: 'CONFLICT', message: 'retrying is unavailable', trace_id: 'test' } }))).toBe('retrying is unavailable');
+});
+```
+
+### Task 5 / 9: posted-period membership blocks convert regardless of source
+
+The single-load `convertBlockedReason` predicate now includes `d.schedule?.posted_entry_ids.includes(d.id)`. The read DTO's schedule link describes the posted period; a MOZE/import-booked row may have `source!='schedule'`. Do not set single `protected=true` or block existing single editing because of this membership. If the link is absent or becomes stale, the server's `409 kind_not_splittable` remains authoritative; preserve dirty draft and show its translated message without retrying or creating another split.
+
+Add to Task 9's form harness:
+
+```ts
+it('hides convert for an import-booked posted period without protecting single editing', async () => {
+  entries.set(7, makeEntryDetail({ id: 7, source: 'moze_backup', locked: false,
+    schedule: { definition_id: 12, instance_id: 77, kind: 'recurring', seq: 1, times: null,
+      name: '每月支出', is_partial: false, acted_by: 'import', posted_entry_ids: [7] } }));
+  await open('/accounting/entries/7/edit');
+  expect(form.children()[0].protected).toBe(false);
+  expect(form.addState().visible).toBe(false);
+  form.addChild(); expect(form.children()).toHaveLength(1);
+});
+it('keeps convert draft on authoritative posted-period refusal and does not retry', async () => {
+  entries.set(7, makeEntryDetail({ id: 7, source: 'manual', schedule: null }));
+  await open('/accounting/entries/7/edit'); form.addChild(); settle(); fill('20'); form.save(false);
+  http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7/split')).flush({
+    code: 'CONFLICT', message: 'kind_not_splittable: entry 7 is listed by a posted schedule period', trace_id: 'test',
+  }, { status: 409, statusText: 'Conflict' }); settle();
+  expect(form.children()).toHaveLength(2); expect(form.isDirty()).toBe(true);
+  expect(form.error()).toBe('此記錄類型不能拆帳');
+  http.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+});
+```
+
+Acceptance additions: Tasks 3/9 wire-body tests pin unchanged raw time and online-FX inputs; Task 7 error tests pin 404/409 `message` prefix parsing; Tasks 5/9 distinguish schedule source from posted-period membership. These extend, rather than replace, the 19 R1 dispositions and existing human plan-review gate.
