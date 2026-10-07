@@ -115,7 +115,10 @@ export class AccountingLayoutComponent {
   /** 760–1023 px with a page in the pane: the right-hand sheet is a modal dialog. */
   readonly sheetOpen = computed(() => this.mode() === 'sheet' && this.paneOpen());
 
-  readonly showFab = computed(() => this.mode() !== 'phone' && !FORM_URL.test(this.url()));
+  /** The entry form (new / edit) is on screen; it carries its own ✕. */
+  readonly formOpen = computed(() => FORM_URL.test(this.url()));
+
+  readonly showFab = computed(() => this.mode() !== 'phone' && !this.formOpen());
 
   private wasPhone: boolean | null = null;
   private swipe: { x: number; y: number } | null = null;
@@ -177,6 +180,23 @@ export class AccountingLayoutComponent {
         this.setOutsideInert(open, list);
         open ? this.focusSheet() : this.restoreFocus();
       });
+    });
+    // Detail → form inside an open sheet removes the focused grip ✕: move focus to the form's own ✕ so it stays in the
+    // dialog (the opener saved by focusSheet is kept).
+    effect(() => {
+      if (this.sheetOpen() && this.formOpen()) {
+        afterNextRender(
+          {
+            write: () => {
+              const pane = this.detailPane()?.nativeElement;
+              if (pane && !pane.contains(this.document.activeElement)) {
+                pane.querySelector<HTMLElement>('[data-pane-close]')?.focus();
+              }
+            },
+          },
+          { injector: this.injector },
+        );
+      }
     });
     inject(DestroyRef).onDestroy(() => this.setOutsideInert(false));
   }
@@ -288,7 +308,10 @@ export class AccountingLayoutComponent {
     }
     const path = this.router.url.split(/[?#]/)[0];
     const current = ENTRY_URL.exec(path)?.[1];
-    const index = rows.findIndex(row => row.dataset['entryId'] === current);
+    // A group row stands for every member on the page (`data-member-ids`), as its highlight does.
+    const index = rows.findIndex(
+      row => row.dataset['entryId'] === current || (current !== undefined && (row.dataset['memberIds'] ?? '').split(' ').includes(current)),
+    );
     const next = rows[index === -1 ? 0 : Math.min(rows.length - 1, Math.max(0, index + delta))];
     next.scrollIntoView?.({ block: 'nearest' });
     const id = Number(next.dataset['entryId']);
@@ -306,7 +329,17 @@ export class AccountingLayoutComponent {
     if (!this.focusBeforeSheet && active instanceof HTMLElement && active !== this.document.body) {
       this.focusBeforeSheet = active;
     }
-    afterNextRender({ write: () => this.closeButton()?.nativeElement.focus() }, { injector: this.injector });
+    // The grip's ✕, else the page's own ✕ (`data-pane-close`, the entry form's header).
+    afterNextRender(
+      {
+        write: () =>
+          (
+            this.closeButton()?.nativeElement ??
+            this.detailPane()?.nativeElement.querySelector<HTMLElement>('[data-pane-close]')
+          )?.focus(),
+      },
+      { injector: this.injector },
+    );
   }
 
   private restoreFocus(): void {

@@ -1,5 +1,6 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting, TestRequest } from '@angular/common/http/testing';
+import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, ParamMap, convertToParamMap, provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
@@ -7,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountDetail, AccountPeriodSummary, EntryPage, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { AccountingAccountEntriesComponent, PAGE_SIZE } from './account-entries';
 
 const ACCOUNT = {
@@ -40,8 +42,11 @@ const SUMMARY: AccountPeriodSummary = {
 describe('AccountingAccountEntriesComponent (passbook)', () => {
   let http: HttpTestingController;
   let params: BehaviorSubject<ParamMap>;
+  /** The wide layout's routed entry (`/accounting/accounts/7/entries/:eid`). */
+  const layout = { selectedEntryId: signal<number | null>(null) };
 
   beforeEach(async () => {
+    layout.selectedEntryId.set(null);
     params = new BehaviorSubject(convertToParamMap({ id: '7' }));
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 10, 0));
@@ -53,6 +58,7 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
         provideRouter([]),
         // Pane components are reused across :id changes (Task 21), so the page reads `paramMap` as an observable.
         { provide: ActivatedRoute, useValue: { paramMap: params } },
+        { provide: AccountingLayoutComponent, useValue: layout },
       ],
     }).compileComponents();
     http = TestBed.inject(HttpTestingController);
@@ -160,6 +166,21 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     }
     expect(rows[0].querySelector('.passbook')?.textContent?.trim()).toBe('−$4,905');
     expect(rows[0].querySelector('.amount-value')?.textContent?.trim()).toBe('−$2,569');
+  });
+
+  it('marks the row of the entry open in the pane, the first row included', () => {
+    const fixture = render(page(PERIOD));
+    const el = fixture.nativeElement as HTMLElement;
+    const current = () => Array.from(el.querySelectorAll('.entry')).map(row => row.getAttribute('aria-current'));
+
+    expect(current()).toEqual([null, null, null, null]);
+    layout.selectedEntryId.set(1);
+    fixture.detectChanges();
+    expect(current()).toEqual(['true', null, null, null]);
+    expect(el.querySelector('.entry')!.classList).toContain('sel');
+    layout.selectedEntryId.set(3);
+    fixture.detectChanges();
+    expect(current()).toEqual([null, null, 'true', null]);
   });
 
   it('renders icon, name, merchant and tags, pills and a link to the detail', () => {

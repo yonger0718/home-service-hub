@@ -82,8 +82,8 @@
   }
 
   <ng-template #rowTemplate let-row>
-    <button type="button" class="row" [class.sel]="row.entryId === selectedId()" [attr.data-entry-id]="row.entryId"
-      [attr.aria-current]="row.entryId === selectedId() ? 'true' : null"
+    <button type="button" class="row" [class.sel]="isCurrent(row)" [attr.data-entry-id]="row.entryId" [attr.data-member-ids]="row.memberIds.join(' ')"
+      [attr.aria-current]="isCurrent(row) ? 'true' : null"
       (click)="open(row)">
       @if (row.folder; as folder) {
         <app-split-folder size="row" [icons]="folder.icons" [count]="folder.count" />

@@ -116,8 +116,9 @@
 
 /*
  * The entry form's children: one scrolling row of vertical bubbles (circle, name, amount). The parent is a folder
- * tile with its children's icons; the selected bubble's circle / tile carries the ring, an uncategorised child is a
- * dashed circle and a protected one a lock on the circle's corner.
+ * tile with its children's icons, pinned at the row's start so scrolling to a later child never takes it out of reach;
+ * the selected bubble's circle / tile carries the ring, an uncategorised child is a dashed circle and a protected one a
+ * lock on the circle's corner.
  */
 .strip.bubbles {
   align-items: flex-start;
@@ -125,7 +126,15 @@
   gap: 0.5rem;
   overflow-x: auto;
   padding: 0.55rem 0.4rem 0.35rem;
+  position: relative;
   scrollbar-width: thin;
+
+  .sel.parent-bubble {
+    background: var(--app-surface);
+    left: 0;
+    position: sticky;
+    z-index: 1;
+  }
 
   .sel,
   .add {
@@ -141,6 +150,7 @@
     min-width: 3.5rem;
     padding: 0 0.15rem;
     text-align: center;
+    touch-action: manipulation;
     width: auto;
   }
 

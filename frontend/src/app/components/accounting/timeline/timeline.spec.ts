@@ -287,6 +287,75 @@ describe('LedgerTimelineComponent', () => {
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1]);
   });
 
+  it('marks the first row once its entry is opened, and moves the mark with the routed entry', () => {
+    const layout = { selectedEntryId: signal<number | null>(null) };
+    localStorage.setItem(VIEW_KEY, 'list');
+    const { fixture, el } = render('panes', makePreference(), [{ provide: AccountingLayoutComponent, useValue: layout }]);
+    flushSummary('2026-10');
+    flushEntries([makeEntry({ id: 1, name: '午餐' }), makeEntry({ id: 2, name: '捷運' }), makeEntry({ id: 3, name: '早餐' })]);
+    fixture.detectChanges();
+    const current = () => Array.from(el.querySelectorAll('.row')).map(row => row.getAttribute('aria-current'));
+
+    expect(current()).toEqual([null, null, null]);
+    layout.selectedEntryId.set(1);
+    fixture.detectChanges();
+    expect(current()).toEqual(['true', null, null]);
+    expect(el.querySelector('.row')!.classList).toContain('sel');
+    layout.selectedEntryId.set(3);
+    fixture.detectChanges();
+    expect(current()).toEqual([null, null, 'true']);
+  });
+
+  it('marks a group row when the routed entry is any of its members on the page; single rows stay by id', () => {
+    const group = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 3, total: '-30', currency: 'TWD' };
+    const layout = { selectedEntryId: signal<number | null>(null) };
+    localStorage.setItem(VIEW_KEY, 'list');
+    const { fixture, el } = render('panes', makePreference(), [{ provide: AccountingLayoutComponent, useValue: layout }]);
+    flushSummary('2026-10');
+    // Newest first: the group's row takes its first-seen member (9) as `entryId`; 7 and 8 come later on the page.
+    flushEntries([
+      makeEntry({ id: 9, group }),
+      makeEntry({ id: 5, name: '午餐' }),
+      makeEntry({ id: 8, group }),
+      makeEntry({ id: 7, group }),
+    ]);
+    fixture.detectChanges();
+    const rows = () => Array.from(el.querySelectorAll<HTMLElement>('.row'));
+    expect(rows().map(row => row.dataset['entryId'])).toEqual(['9', '5']);
+    // ↑ / ↓ in the layout find the current row through these, as the highlight does.
+    expect(rows().map(row => row.dataset['memberIds'])).toEqual(['9 8 7', '5']);
+
+    for (const member of [9, 8, 7]) {
+      layout.selectedEntryId.set(member);
+      fixture.detectChanges();
+      expect(rows().map(row => row.getAttribute('aria-current'))).toEqual(['true', null]);
+      expect(rows()[0].classList).toContain('sel');
+    }
+    layout.selectedEntryId.set(5);
+    fixture.detectChanges();
+    expect(rows().map(row => row.getAttribute('aria-current'))).toEqual([null, 'true']);
+    // A member not on the page (the group has 3 here; any other id) marks nothing.
+    layout.selectedEntryId.set(6);
+    fixture.detectChanges();
+    expect(rows().map(row => row.getAttribute('aria-current'))).toEqual([null, null]);
+  });
+
+  it('gives group rows the ids of their members on the page and single / transfer rows their own id', () => {
+    const group = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 5, total: '-30', currency: 'TWD' };
+    const rows = buildDays(
+      [
+        makeEntry({ id: 9, group }),
+        makeEntry({ id: 5 }),
+        makeEntry({ id: 3, kind: 'transfer_out', amount: '-10.0000', transfer_group_id: 't-1' }),
+        makeEntry({ id: 4, kind: 'transfer_in', amount: '10.0000', transfer_group_id: 't-1' }),
+        makeEntry({ id: 8, group }),
+      ],
+      'TWD',
+      false,
+    ).flatMap(day => day.rows);
+    expect(rows.map(row => [row.entryId, row.memberIds])).toEqual([[9, [9, 8]], [5, [5]], [3, [3]]]);
+  });
+
   it('loads the next page from the 載入更多 fallback', () => {
     const { fixture, el } = render();
     flushSummary('2026-10');

@@ -31,7 +31,10 @@
       >
         @if (sheetOpen()) {
           <span class="sheet-handle" aria-hidden="true"></span>
-          <button #closeButton type="button" class="sheet-close" aria-label="關閉" (click)="close()">✕</button>
+          <!-- The entry form draws its own ✕ in its header: one visible ✕ per sheet. -->
+          @if (!formOpen()) {
+            <button #closeButton type="button" class="sheet-close" aria-label="關閉" (click)="close()">✕</button>
+          }
         }
       </div>
       <router-outlet name="pane" />

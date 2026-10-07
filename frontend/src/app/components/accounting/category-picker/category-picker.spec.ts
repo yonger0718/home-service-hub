@@ -134,6 +134,34 @@ describe('CategoryPickerComponent', () => {
   const rgb = (hex: string) =>
     'rgb(' + [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(', ') + ')';
 
+  it('pins the parent tile at the strip start and reveals a child clear of it, never scrolling for the parent', () => {
+    const { el, fixture } = render({ bubbles: children(5), parentText: '多類別 TWD −$50 (5)', activeBubble: 'k0' }, 'phone');
+    const strip = el.querySelector<HTMLElement>('.strip.bubbles')!;
+    const parent = strip.querySelector<HTMLElement>('[data-bubble="parent"]')!;
+    expect(getComputedStyle(parent).position).toBe('sticky');
+    expect(getComputedStyle(parent).left).toBe('0px');
+    // jsdom has no layout: a 200 px strip, an 80 px tile, then 56 px bubbles every 64 px.
+    let scrollLeft = 0;
+    Object.defineProperty(strip, 'clientWidth', { value: 200 });
+    Object.defineProperty(strip, 'scrollLeft', { get: () => scrollLeft, set: value => (scrollLeft = value) });
+    Object.defineProperty(parent, 'offsetWidth', { value: 80 });
+    strip.querySelectorAll<HTMLElement>('[data-bubble^="k"]').forEach((bubble, i) => {
+      Object.defineProperty(bubble, 'offsetLeft', { value: 88 + i * 64 });
+      Object.defineProperty(bubble, 'offsetWidth', { value: 56 });
+    });
+    const select = (key: string) => {
+      fixture.componentRef.setInput('activeBubble', key);
+      fixture.detectChanges();
+    };
+
+    select('k4');
+    expect(scrollLeft).toBe(88 + 4 * 64 + 56 - 200 + 8);
+    select('k1');
+    expect(scrollLeft).toBe(88 + 64 - 80 - 8);
+    select('parent');
+    expect(scrollLeft).toBe(64);
+  });
+
   it.each([1, 2, 3, 4])('draws every child of a %i-child split in the folder tile', count => {
     const bubbles = children(count);
     const { el } = render({ bubbles, parentText: `多類別 TWD −$10 (${count})`, activeBubble: 'k0' });
