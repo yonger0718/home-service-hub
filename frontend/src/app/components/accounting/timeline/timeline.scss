@@ -16,6 +16,19 @@ app-split-folder {
   grid-area: ico;
 }
 
+/* The folder tile is decorative (aria-hidden); a split row's member count is read from this instead. */
+.sr-only {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 .missing-rates {
   background: var(--app-state-warning-bg);
   border-radius: var(--radius-sm);

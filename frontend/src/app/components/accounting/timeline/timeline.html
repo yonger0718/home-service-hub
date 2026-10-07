@@ -91,6 +91,9 @@
         <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
       }
       <span class="name">{{ row.title }}@if (row.groupCount && !row.folder) {<span class="badge">{{ row.groupCount }}</span>}</span>
+      @if (row.folder; as folder) {
+        <span class="sr-only">共 {{ folder.count }} 項</span>
+      }
       <span class="sub">{{ row.sub }}</span>
       <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">
         {{ row.amountText }}

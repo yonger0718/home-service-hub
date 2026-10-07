@@ -214,6 +214,28 @@ describe('LedgerTimelineComponent', () => {
     }
   });
 
+  it('reads a split row\'s full member count from screen-reader text outside the hidden folder', () => {
+    const { fixture, el } = render();
+    flushSummary('2026-10');
+    const split = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 5, total: '-500.0000', currency: 'TWD' };
+    const installment = { ...split, id: 5, kind: 'installment' as const, count: 12 };
+    flushEntries([
+      makeEntry({ id: 40, group: split, category_icon: '🍜', category_color: '#f0cd92' }),
+      makeEntry({ id: 50, name: '手機', group: installment, category_icon: '📱', category_color: '#cc7676' }),
+    ], 50);
+    fixture.detectChanges();
+
+    const [row, plain] = Array.from(el.querySelectorAll<HTMLElement>('.row'));
+    const label = row.querySelector<HTMLElement>(':scope > .sr-only')!;
+    expect(text(label)).toBe('共 5 項');
+    expect(label.closest('[aria-hidden="true"]')).toBeNull();
+    expect(row.textContent).toContain('共 5 項');
+    expect(row.querySelector('app-split-folder')?.getAttribute('aria-hidden')).toBe('true');
+    expect(row.querySelector('.name .badge')).toBeNull();
+    expect(plain.querySelector('.sr-only')).toBeNull();
+    expect(text(plain.querySelector('.name .badge'))).toBe('12');
+  });
+
   it('nets each day in the main currency and shows a transfer pair as one neutral row', () => {
     const { fixture, el } = render();
     flushSummary('2026-10');
