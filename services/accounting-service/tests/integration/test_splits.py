@@ -841,3 +841,198 @@ def test_dropping_a_member_a_schedule_references_by_loan_entry_id_is_refused(cli
     assert response.status_code == 409, response.text
     assert response.json()["message"] == "排程「分期-非借貸」仍在使用，請先結束排程"
     assert _ledger(db_session) == before
+
+
+def test_schema_422_comes_before_a_missing_group(client, db_session, seed):
+    wallet = seed.account()
+    db_session.commit()
+
+    response = client.put("/splits/999999", json=_split(_member(wallet, client_key="x"), _member(wallet, client_key="x")))
+
+    assert response.status_code == 422
+
+
+def test_a_foreign_member_id_is_404_before_member_validation(client, db_session, seed):
+    wallet_id, group_id, [first_id, second_id] = _two_member_split(db_session, seed)
+    other = ss.create_split(db_session, SplitIn(**_split(
+        {"account_id": wallet_id, "kind": "expense", "amount": "1"}, {"account_id": wallet_id, "kind": "expense", "amount": "2"},
+    )))
+    db_session.commit()
+    foreign_id = ss.member_ids(db_session, other)[0]
+
+    response = client.put(f"/splits/{group_id}", json=_split(
+        {"id": foreign_id, "account_id": 999999, "kind": "expense", "amount": "1"}, _keep(second_id),
+    ))
+
+    assert response.status_code == 404 and response.json()["message"].startswith("member_not_found")
+
+
+def test_member_locked_409_comes_before_member_validation(client, db_session, seed):
+    wallet = seed.account()
+    alan = seed.counterparty("Alan")
+    group = seed.group()
+    plain = seed.entry(wallet, "-100", group_id=group.id)
+    collection = seed.entry(wallet, "200", kind="receivable", counterparty_id=alan.id, is_settlement=True, group_id=group.id)
+    db_session.commit()
+
+    response = client.put(f"/splits/{group.id}", json=_split(
+        {"id": collection.id, "account_id": wallet.id, "kind": "receivable", "amount": "200", "counterparty_id": alan.id},
+        {"id": plain.id, "account_id": wallet.id, "kind": "receivable", "amount": "100"},  # no counterparty: a 422 later
+    ))
+
+    assert response.status_code == 409 and response.json()["message"].startswith("member_locked")
+
+
+def test_a_scheduled_group_is_409_before_an_unknown_member(client, db_session, seed):
+    card = seed.account("範例卡")
+    group = seed.group(name="串流組合 #1")
+    first = seed.entry(card, "-390", group_id=group.id, source="schedule")
+    second = seed.entry(card, "-149", group_id=group.id, source="schedule")
+    bundle = seed.definition([seed.line("expense", card, "390"), seed.line("expense", card, "149")], name="串流組合")
+    instance = seed.instance(bundle, 1, date(2026, 10, 22), status="posted", entries=[first, second])
+    db_session.commit()
+
+    response = client.put(f"/splits/{group.id}", json=_split(_keep(999999), _keep(second.id)))
+
+    assert response.status_code == 409
+    assert response.json()["message"].startswith("group_scheduled") and str(instance.id) in response.json()["message"]
+
+
+def test_membership_change_between_read_and_lock_is_409_retry(client, pg_engine, db_session, seed, monkeypatch):
+    wallet_id, group_id, [first_id, second_id] = _two_member_split(db_session, seed)
+    original = ss._prepare
+
+    def prepare_then_add_a_member(db, members, http_get):
+        original(db, members, http_get)
+        with sessionmaker(bind=pg_engine)() as other:  # another request adds a member before this one locks
+            other.add(LedgerEntry(account_id=wallet_id, kind="expense", amount=Decimal("-1"), currency="TWD",
+                                  entry_date=DAY, posted_date=DAY, source="manual", group_id=group_id))
+            other.commit()
+
+    monkeypatch.setattr(ss, "_prepare", prepare_then_add_a_member)
+
+    response = client.put(f"/splits/{group_id}", json=_split(_keep(first_id, name="改名"), _keep(second_id)))
+
+    assert response.status_code == 409 and response.json()["message"].startswith("retry")
+    assert [m.name for m in _members(db_session, group_id)] == [None, None, None]
+
+
+def test_convert_cardinality_422_comes_before_a_missing_entry(client, db_session, seed):
+    wallet = seed.account()
+    db_session.commit()
+
+    response = client.put("/entries/999999/split", json=_split({"id": 999999, "account_id": wallet.id, "kind": "expense", "amount": "1"}))
+
+    assert (response.status_code, response.json()["detail"][0]["loc"]) == (422, ["members"])
+
+
+def test_put_accepts_an_imported_group_over_fifty_but_never_grows_it(client, db_session, seed):
+    wallet = seed.account()
+    group = seed.group()
+    rows = [seed.entry(wallet, "-1", group_id=group.id) for _ in range(51)]
+    db_session.commit()
+    group_id, ids = group.id, [row.id for row in rows]
+
+    same = client.put(f"/splits/{group_id}", json=_split(*[_keep(entry_id) for entry_id in ids]))
+    grown = client.put(f"/splits/{group_id}", json=_split(*[_keep(entry_id) for entry_id in ids], _member(wallet)))
+
+    assert same.status_code == 200, same.text
+    assert (grown.status_code, grown.json()["detail"][0]["loc"]) == (422, ["members"])
+    assert len(_members(db_session, group_id)) == 51
+
+
+def test_all_four_split_writes_answer_the_same_envelope(client, db_session, seed):
+    wallet = seed.account()
+    anchor = seed.entry(wallet, "-100")
+    db_session.commit()
+    wallet_id, anchor_id = wallet.id, anchor.id
+
+    created = client.post("/splits", json=_split(_member(wallet, client_key="a"), _member(wallet, amount="50", client_key="b")))
+    group_id = created.json()["group_id"]
+    first_id, second_id = created.json()["member_ids"]
+    upserted = client.put(f"/splits/{group_id}", json=_split(
+        _keep(first_id, client_key="a"), _keep(second_id), _member(wallet, amount="5", client_key="c"),
+    ))
+    dissolved = client.put(f"/splits/{group_id}", json=_split(_keep(first_id, client_key="a")))
+    converted = client.put(f"/entries/{anchor_id}/split", json=_split(
+        {"id": anchor_id, "account_id": wallet_id, "kind": "expense", "amount": "100", "client_key": "x"},
+        _member(wallet, amount="1"),
+    ))
+
+    for response, status in ((created, 201), (upserted, 200), (dissolved, 200), (converted, 200)):
+        assert response.status_code == status, response.text
+        body = response.json()
+        assert set(body) == {"group_id", "member_ids", "members"}
+        assert [member["id"] for member in body["members"]] == body["member_ids"]
+    assert [m["client_key"] for m in upserted.json()["members"]] == ["a", None, "c"]
+    assert upserted.json()["member_ids"][:2] == [first_id, second_id]
+    assert dissolved.json() == {"group_id": None, "member_ids": [first_id], "members": [{"id": first_id, "client_key": "a"}]}
+    assert converted.json()["member_ids"][0] == anchor_id and converted.json()["group_id"] is not None
+
+
+def test_cold_fx_cache_put_takes_its_locks_after_the_fx_commit(pg_engine, db_session, seed, fake_http, today):
+    # Review Focus 4: the first PUT fetches and commits a rate (fx cache) and only then locks; race() proves it still
+    # holds the group lock afterwards (the second PUT must wait), which a lock taken before the commit would not.
+    today(date(2026, 10, 6))
+    wallet_id, group_id, [first_id, second_id] = _two_member_split(db_session, seed)
+    http = fake_http({"currency-api@2026-09-01/v1/currencies/jpy.json": (200, {"date": "2026-09-01", "jpy": {"twd": 0.2}})})
+    with_fx = _split(_keep(first_id), _keep(second_id),
+                     {"account_id": wallet_id, "kind": "expense", "amount": None, "original_amount": "1000", "original_currency": "JPY"})
+    rename = _split(_keep(first_id, name="改名"), _keep(second_id))
+
+    result = race(
+        pg_engine,
+        lambda db: ss.update_split(db, group_id, SplitIn(**with_fx), http_get=http),
+        lambda db: ss.update_split(db, group_id, SplitIn(**rename)),
+    )
+
+    assert len(http.calls) == 1
+    assert isinstance(result, CodedConflictError) and result.code == RETRY  # a member was added under the second PUT
+    members = _members(db_session, group_id)
+    assert [(m.amount, m.fx_source, m.name) for m in members] == [
+        (Decimal("-100"), None, None), (Decimal("-50"), None, None), (Decimal("-200"), "fx_api", None),
+    ]
+
+
+def _split_with_a_loan(db_session, seed) -> tuple[int, int, int, int, int]:
+    wallet = seed.account("錢包", opening="1000")
+    alan = seed.counterparty("Alan")
+    db_session.commit()
+    group_id = ss.create_split(db_session, SplitIn(**_split(
+        _member(wallet, kind="receivable", amount="300", counterparty_id=alan.id), _member(wallet, amount="50"),
+    )))
+    db_session.commit()
+    lent_id, meal_id = ss.member_ids(db_session, group_id)
+    return wallet.id, alan.id, group_id, lent_id, meal_id
+
+
+def test_split_put_then_settle_keeps_the_settlement_on_the_same_member(pg_engine, db_session, seed):
+    wallet_id, alan_id, group_id, lent_id, meal_id = _split_with_a_loan(db_session, seed)
+    body = _split(
+        {"id": lent_id, "account_id": wallet_id, "kind": "receivable", "amount": "300", "counterparty_id": alan_id, "name": "代墊"},
+        {"id": meal_id, "account_id": wallet_id, "kind": "expense", "amount": "60"},
+    )
+    settle = SettleIn(account_id=wallet_id, amount="100", entry_date=DAY)
+
+    result = race(pg_engine, lambda db: ss.update_split(db, group_id, SplitIn(**body)), lambda db: st.settle(db, lent_id, settle))
+
+    assert result == "committed"
+    db_session.expire_all()
+    [collection] = db_session.scalars(select(LedgerEntry).where(LedgerEntry.settles_entry_id == lent_id)).all()
+    lent = db_session.get(LedgerEntry, lent_id)
+    assert (collection.amount, lent.name, lent.amount) == (Decimal("100"), "代墊", Decimal("-300"))
+
+
+def test_settle_then_split_put_of_that_member_retries(pg_engine, db_session, seed):
+    wallet_id, alan_id, group_id, lent_id, meal_id = _split_with_a_loan(db_session, seed)
+    body = _split(
+        {"id": lent_id, "account_id": wallet_id, "kind": "receivable", "amount": "350", "counterparty_id": alan_id},
+        _keep(meal_id),
+    )
+    settle = SettleIn(account_id=wallet_id, amount="100", entry_date=DAY)
+
+    result = race(pg_engine, lambda db: st.settle(db, lent_id, settle), lambda db: ss.update_split(db, group_id, SplitIn(**body)))
+
+    assert isinstance(result, CodedConflictError) and result.code == RETRY  # the member became protected under the PUT
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, lent_id).amount == Decimal("-300")
