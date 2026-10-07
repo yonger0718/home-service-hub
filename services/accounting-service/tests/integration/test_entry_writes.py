@@ -598,9 +598,9 @@ def test_concurrent_deletes_of_both_transfer_legs_reach_the_lock_together(pg_eng
     barrier = threading.Barrier(2)
     original = ews.locked_with_legs
 
-    def lock_together(db, entry_id, transfer_group_id):
+    def lock_together(db, entry_id, transfer_group_id, also_ids=()):
         barrier.wait(timeout=5)
-        return original(db, entry_id, transfer_group_id)
+        return original(db, entry_id, transfer_group_id, also_ids)
 
     monkeypatch.setattr(ews, "locked_with_legs", lock_together)
     factory = sessionmaker(bind=pg_engine, autoflush=False)
