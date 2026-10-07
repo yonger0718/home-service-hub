@@ -11,8 +11,10 @@ import {
   OnInit,
   OnDestroy,
   computed,
+  effect,
   inject,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed, toObservable } from '@angular/core/rxjs-interop';
@@ -24,13 +26,15 @@ import {
   catchError,
   combineLatest,
   defaultIfEmpty,
-  distinctUntilChanged,
   filter,
+  finalize,
   forkJoin,
   map,
   of,
+  shareReplay,
   skip,
   switchMap,
+  Subscription,
   takeLast,
   tap,
 } from 'rxjs';
@@ -47,17 +51,19 @@ import {
   LedgerAccount,
   Preference,
   Project,
+  RewardRule,
   ScheduleDefinition,
-  WritableEntryKind,
+  SplitResult,
+  defaultCategoryIcon,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { DirtyAware, DirtyFormRegistry } from '../dirty-form.service';
 import { AccountingToastService } from '../accounting-toast';
-import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey, restoreOverlayFocus } from '../accounting-ui';
+import { NO_ENTER_SAVE_TAGS, accountLabel, isHandledKey, restoreOverlayFocus, trapFocus } from '../accounting-ui';
 import { AmountKeypadComponent } from '../amount-keypad/amount-keypad';
 import { evaluateAmount, prettyExpression, roundHalfAway } from '../amount-math';
-import { CategoryPickerComponent } from '../category-picker/category-picker';
+import { Bubble, CategoryPickerComponent, categoryColor, categoryIcon } from '../category-picker/category-picker';
 import { FeeSheetComponent } from '../fee-sheet/fee-sheet';
 import { currencyDecimals, formatMoney, formatNumber } from '../format';
 import { FxSheetComponent, FxValue } from '../fx-sheet/fx-sheet';
@@ -67,7 +73,6 @@ import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { IMPORT_RUNNING_TOAST, isImportRunning } from '../schedule-math';
 import { SCHEDULE_TABS, ScheduleDraft, ScheduleTab, defaultDraft, ruleDayFor, tabsFor } from '../schedule-tabs/schedule-draft';
 import { ScheduleTabsComponent } from '../schedule-tabs/schedule-tabs';
-import { SplitLinesComponent } from '../split-lines/split-lines';
 import { TransferPanelComponent } from '../transfer-panel/transfer-panel';
 import {
   FORM_KINDS,
@@ -90,13 +95,7 @@ import {
   NO_RELATED,
   RelatedLoad,
   SharedFields,
-  SplitGroupFields,
-  buildEntryInput,
-  entryInputFromDetail,
-  executeEntrySave,
-  fxFromDetail,
   loadRelatedRows,
-  planEntrySave,
   rememberEntryUse,
   resolveCounterpartyId,
 } from './entry-save';
@@ -109,6 +108,23 @@ import {
   formCanRepresent,
   shouldCatchUp,
 } from './schedule-save';
+import {
+  ChildDraft,
+  ChildView,
+  Owner,
+  PARENT_KEY,
+  ParentDraft,
+  SplitDraftStore,
+  childView,
+  draftSnapshot,
+  newChild,
+  newParent,
+  normalizePosted,
+} from './split-draft';
+import { addAvailability, childFromDetail, splitFromDetails } from './split-load';
+import { memberError, resultIds } from './split-result';
+import { executeEntrySave, fullChild, planEntrySave } from './split-save';
+import { CurrencyNet, accountAmount, dissolveNotices, netByCurrency, rewardEstimates } from './split-summary';
 import { TransferEdit, transferCommonFrom, transferEditFrom } from './transfer-math';
 
 export { NO_RELATED } from './entry-save';
@@ -118,6 +134,24 @@ export const LONG_PRESS_MS = 600;
 
 const FX_FEE_NAME = '國外交易手續費';
 const FLASH_MS = 1500;
+
+/**
+ * The account / kind a child's account detail and category tree were loaded for. FX inputs and the date are not
+ * part of it: the handlers that change them (sheet, 重新換算, account move, parent date) invalidate explicitly.
+ */
+function resourceDeps(child: ChildDraft): string {
+  return `${child.accountId}|${child.kind}`;
+}
+
+/** `group_members[].protected_reason` in the owner's words. */
+const PROTECTED_REASONS: Record<string, string> = {
+  settlement: '收款／還款',
+  refund: '退款',
+  transfer: '轉帳',
+  system: '系統記錄',
+  settled_original: '已有收還款或退款',
+  scheduled_loan: '排程還款中的借貸',
+};
 
 interface FeeProposal {
   entryId: number;
@@ -175,7 +209,6 @@ export function scheduleDraftKey(draft: ScheduleDraft): unknown {
     FxSheetComponent,
     FeeSheetComponent,
     TransferPanelComponent,
-    SplitLinesComponent,
     ScheduleTabsComponent,
   ],
   templateUrl: './entry-form.html',
@@ -196,6 +229,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
 
   readonly kinds = FORM_KINDS;
   readonly ruleLabel = ruleLabel;
+  readonly formatMoney = formatMoney;
 
   // Reference data
   readonly ready = signal(false);
@@ -207,7 +241,33 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   readonly accountDetail = signal<AccountDetail | null>(null);
 
   // Form state
-  readonly kind = signal<FormKind>('expense');
+  /**
+   * The children (one for a plain entry, 2–50 for a split), the parent fields and the selection (spec §2.1). The
+   * tiles below are views of the selected child; asynchronous results are applied only through captured owners.
+   */
+  readonly drafts = new SplitDraftStore(newParent(todayIso(), nowTime()));
+  readonly children = this.drafts.children;
+  readonly selected = this.drafts.selected;
+  readonly parent = this.drafts.parent;
+  readonly isSplit = this.drafts.isSplit;
+  /** The loaded split group id (upsert / dissolve target), when editing a split member. */
+  readonly groupId = this.drafts.groupId;
+  /** Split / group semantics apply: two or more children, or a loaded group (even reduced to one, until dissolved). */
+  readonly childScope = computed(() => this.isSplit() || this.groupId() !== null);
+  /** The parent bubble is selected: the group summary and parent fields replace the child tiles. */
+  readonly parentMode = computed(() => this.selected() === PARENT_KEY);
+  readonly current = computed(() => {
+    const key = this.selected();
+    return this.children().find(child => child.key === key) ?? null;
+  });
+  /** The selected child is server-protected: only its metadata is editable. */
+  readonly protectedChild = computed(() => this.current()?.protected ?? false);
+  /** Any protected child pins the shared dates (spec §2.5). */
+  readonly dateLocked = computed(() => this.children().some(child => child.protected));
+  /** A single entry the server would refuse to convert (settled, refunded, loan, schedule-posted): no ＋. */
+  readonly convertBlockedReason = signal<string | null>(null);
+  /** The tab of a single entry, including the transfer / system workflows that never become a child kind. */
+  readonly singleKind = signal<FormKind>('expense');
   /** Update target; set only when the matching `GET /entries/{id}` response is applied (null for new records and copies). */
   readonly entryId = signal<number | null>(null);
   /** The route has `:id` (edit mode), known from navigation before the record arrives. */
@@ -216,30 +276,54 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   readonly loading = signal(false);
   /** Related rows of the applied record (split members, transfer counterpart). */
   readonly related = signal<RelatedLoad>(NO_RELATED);
-  /** Account of the record being edited, kept selectable even when archived. */
+  /** Account of a transfer / definition being edited, kept selectable even when archived (children keep their own). */
   private readonly originalAccountId = signal<number | null>(null);
   readonly locked = signal(false);
   readonly unsupported = signal<string | null>(null);
-  readonly category = signal<CategoryNode | null>(null);
-  readonly accountId = signal<number | null>(null);
-  readonly projectId = signal<number | null>(null);
-  readonly amountExpr = signal('');
+  readonly amountExpr = childView(this.drafts, 'amountExpr', '', true);
+  readonly accountId = childView(this.drafts, 'accountId', null, true);
+  readonly name = childView(this.drafts, 'name', '');
+  readonly projectId = childView(this.drafts, 'projectId', null);
+  readonly description = childView(this.drafts, 'description', '');
+  readonly tags = childView(this.drafts, 'tags', []);
+  readonly counterpartyName = childView(this.drafts, 'counterpartyName', '', true);
+  readonly fee = childView(this.drafts, 'fee', null, true);
+  readonly discount = childView(this.drafts, 'discount', null, true);
+  readonly fx = childView(this.drafts, 'fx', null, true);
+  readonly ruleIds = childView(this.drafts, 'ruleIds', [], true);
+  readonly rulesTouched = childView(this.drafts, 'rulesTouched', false, true);
+  readonly invoiceNumber = computed(() => this.current()?.invoice.number ?? '');
+  readonly invoiceRandom = computed(() => this.current()?.invoice.random ?? '');
+  readonly merchant = this.parentView('merchant');
+  readonly entryDate = this.parentView('entryDate');
+  readonly entryTime = this.parentView('entryTime');
+  readonly postedDate = this.parentView('postedDate');
+  /** Selected child's kind in child scope (non-editable protected kinds lay out as `system`), else the single tab. */
+  readonly kind: ChildView<FormKind> = Object.assign(
+    () => {
+      const child = this.current();
+      return this.childScope() ? (child && isWritableKind(child.kind) ? child.kind : 'system') : this.singleKind();
+    },
+    {
+      set: (value: FormKind) => {
+        const child = this.drafts.current();
+        const owner = this.drafts.capture();
+        if (this.childScope()) {
+          if (child && owner && !child.protected && isWritableKind(value)) {
+            this.drafts.accept(owner, { kind: value });
+          }
+        } else {
+          this.singleKind.set(value);
+          if (owner && isWritableKind(value)) {
+            this.drafts.accept(owner, { kind: value });
+          }
+        }
+      },
+      update: (fn: (value: FormKind) => FormKind) => this.kind.set(fn(this.kind())),
+    },
+  );
   readonly amountError = signal(false);
   readonly targetExpr = signal('');
-  readonly name = signal('');
-  readonly merchant = signal('');
-  readonly counterpartyName = signal('');
-  readonly entryDate = signal(todayIso());
-  readonly entryTime = signal(nowTime());
-  readonly postedDate = signal('');
-  readonly invoiceNumber = signal('');
-  readonly invoiceRandom = signal('');
-  readonly description = signal('');
-  readonly tags = signal<string[]>([]);
-  readonly ruleIds = signal<number[]>([]);
-  readonly fx = signal<FxValue | null>(null);
-  readonly fee = signal<ChildInput | null>(null);
-  readonly discount = signal<ChildInput | null>(null);
   readonly sheet = signal<'fx' | 'fee' | null>(null);
   readonly saving = signal(false);
   readonly error = signal<string | null>(null);
@@ -247,16 +331,12 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   readonly notice = signal<string | null>(null);
   readonly savedFlash = signal(false);
   readonly feeProposal = signal<FeeProposal | null>(null);
-  /** Extra split lines; empty for a plain entry. */
-  readonly members = signal<EntryInput[]>([]);
-  /** The loaded entry's split group id, when editing a split member. */
-  readonly groupId = signal<number | null>(null);
-  /** The loaded split group's own fields and the edited member's position (split member edits only). */
-  private splitGroup: Omit<SplitGroupFields, 'dateChanged'> | null = null;
-  /** Date / time / posting date as loaded, to tell whether the owner moved the edited split member. */
-  private loadedDates: string | null = null;
+  /** A split write answered without a usable key mapping: the server may have committed, so no retry is offered. */
+  readonly saveResponseInvalid = signal(false);
+  readonly deleteGroupPrompt = signal(false);
   readonly transferEdit = signal<TransferEdit | null>(null);
   readonly transferPanel = viewChild(TransferPanelComponent);
+  readonly categoryPicker = viewChild(CategoryPickerComponent);
   private readonly toast = inject(AccountingToastService);
   /** 進階 單次 / 週期 / 分期 (Task 21); 單次 is the plain entry. */
   readonly scheduleDraft = signal<ScheduleDraft>(defaultDraft(todayIso()));
@@ -266,36 +346,24 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   readonly definitionLocked = signal(false);
   /** A definition whose lines the form cannot rebuild losslessly (`formCanRepresent`): shown read-only. */
   readonly definitionReadOnly = signal(false);
-  /** Server 422 field errors of the last schedule save, shown beside their fields. */
+  /** Server 422 field errors of the last save, shown beside their fields. */
   readonly fieldErrors = signal<Record<string, string>>({});
   /** 週期 / 分期 chosen; never while editing an entry (that edits the one record: 單次 only, final review F1). */
   readonly scheduling = computed(() => this.scheduleDraft().tab !== 'single' && !this.editing());
-  /** Serialised draft as the save would read it; derived values (auto rule ids, defaulted dates) are left out. */
+  /**
+   * Serialised draft as the save would read it (`draftSnapshot`): identity, selection, offered rules, automatic rule
+   * defaults and online quotes are left out; the single tab (a transfer / system choice is an edit) is kept.
+   */
   private readonly formState = computed(() =>
     JSON.stringify([
-      this.kind(),
-      this.accountId(),
-      this.projectId(),
-      this.category()?.id ?? this.pendingCategoryId,
-      this.amountExpr(),
-      this.targetExpr(),
-      this.name(),
-      this.merchant(),
-      this.counterpartyName(),
-      this.entryDate(),
-      this.entryTime(),
-      this.postedDate(),
-      this.invoiceNumber(),
-      this.invoiceRandom(),
-      this.description(),
-      this.tags(),
-      this.rulesTouched() ? [...this.ruleIds()].sort((a, b) => a - b) : null,
-      this.fx(),
-      this.fee(),
-      this.discount(),
-      this.members(),
-      scheduleDraftKey(this.scheduleDraft()),
-      this.kind() === 'transfer' ? (this.transferPanel()?.draftKey() ?? null) : null,
+      this.singleKind(),
+      draftSnapshot(
+        this.parent(),
+        this.children(),
+        scheduleDraftKey(this.scheduleDraft()),
+        !this.childScope() && this.kind() === 'transfer' ? (this.transferPanel()?.draftKey() ?? null) : null,
+        this.targetExpr(),
+      ),
     ]),
   );
   /** Snapshot of `formState` once the record (or blank form) has rendered; null while loading. */
@@ -322,13 +390,29 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   /** Definition mode: the definition of the current navigation has been applied (else ✓ has no target). */
   private readonly definitionLoaded = signal(false);
 
-  private readonly rulesTouched = signal(false);
   /** Bumped by every `load()`; a response carrying an older value is dropped. */
   private loadId = 0;
   /** The one entry point of the load sequence (see the class comment). */
   private readonly loads = new Subject<EntryLoad | null>();
-  private pendingCategoryId: number | null = null;
-  private readonly categoryCache = new Map<string, CategoryNode[]>();
+  /** Category trees by kind (presentation only: neither selection nor equal kinds identify an owner). */
+  private readonly categoryLists = signal<ReadonlyMap<string, CategoryNode[]>>(new Map());
+  /** Labels of loaded members' categories, for bubbles of kinds whose tree is not loaded (protected rows). */
+  private readonly loadedCategories = signal<ReadonlyMap<number, { name: string; icon: string | null; color: string | null }>>(
+    new Map(),
+  );
+  /** Each child's account detail, applied to the tiles when that child is selected again. */
+  private readonly childAccountCache = new Map<string, AccountDetail | null>();
+  /** Account settings read during this navigation, by account id. */
+  private readonly accountDetails = new Map<number, AccountDetail>();
+  /** The generation (and its dependency signature) whose resources were requested, per child key. */
+  private readonly requestedGeneration = new Map<string, { generation: number; deps: string }>();
+  /** The in-flight resource load per child key; a newer generation or removal cancels it (like a per-key switchMap). */
+  private readonly childLoads = new Map<string, Subscription>();
+  private readonly pendingDraftLoads = signal<Owner[]>([]);
+  private readonly draftLoadErrors = signal<Record<string, string>>({});
+  /** The child whose FX / fee sheet is open; the sheet's results apply to it whatever is selected meanwhile. */
+  private sheetOwner: Owner | null = null;
+  private deleteGroupOpener: HTMLElement | null = null;
   private pressTimer: ReturnType<typeof setTimeout> | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
   private longPressed = false;
@@ -345,22 +429,120 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   );
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   readonly inSheet = computed(() => this.layoutMode.mode() === 'sheet');
-  readonly isSystem = computed(() => this.kind() === 'system');
+  /** 餘額調整 (single only): a protected non-editable child lays out as `system` but never edits a balance. */
+  readonly isSystem = computed(() => !this.childScope() && this.kind() === 'system');
   readonly isParty = computed(() => this.kind() === 'receivable' || this.kind() === 'payable');
-  readonly categoryKind = computed(() => categoryKindFor(this.kind()));
+  readonly categoryKind = computed(() => {
+    const child = this.current();
+    return this.childScope() ? (child && isWritableKind(child.kind) ? child.kind : null) : categoryKindFor(this.kind());
+  });
+  /** The selected child's category, resolved in its kind's tree. */
+  readonly category = computed(() => findCategory(this.categories(), this.current()?.categoryId ?? null));
+  /** Date the selected child's rules and quotes use: its own untouched loaded date, else the parent's. */
+  readonly childDate = computed(() => {
+    const child = this.current();
+    const parent = this.parent();
+    return child?.loaded && !parent.dateTouched && this.childScope() ? child.loaded.entryDate : parent.entryDate;
+  });
+  /** The protected child's real kind and reason, shown above its (disabled) financial fields. */
+  readonly protectedText = computed(() => {
+    const child = this.current();
+    if (!child?.protected) {
+      return null;
+    }
+    const reason = child.protectedReason ? (PROTECTED_REASONS[child.protectedReason] ?? child.protectedReason) : null;
+    return reason ? `${ENTRY_KIND_LABELS[child.kind]}・${reason}` : ENTRY_KIND_LABELS[child.kind];
+  });
+  /** The protected child's kind is not an editable tab: one disabled tab with its real label instead. */
+  readonly protectedKindLabel = computed(() => {
+    const child = this.current();
+    return child?.protected && !isWritableKind(child.kind) ? ENTRY_KIND_LABELS[child.kind] : null;
+  });
+  readonly draftLoadsPending = computed(() =>
+    this.pendingDraftLoads().some(owner =>
+      this.children().some(child => child.key === owner.key && child.generation === owner.generation),
+    ),
+  );
+  readonly draftLoadsFailed = computed(() =>
+    this.children().some(child => this.draftLoadErrors()[`${child.key}:${child.generation}`] !== undefined),
+  );
+  /** A child's account / category defaults are still loading or failed: saving now could omit them. */
+  readonly resourcesBlocking = computed(() => this.childScope() && (this.draftLoadsPending() || this.draftLoadsFailed()));
+  readonly addState = computed(() =>
+    addAvailability({
+      split: this.isSplit() || this.groupId() !== null,
+      count: this.children().length,
+      scheduleId: this.scheduleId(),
+      eventTab: this.scheduleDraft().tab,
+      editing: this.editing(),
+      kind: this.kind(),
+      convertBlockedReason: this.convertBlockedReason(),
+      source: this.current()?.loaded?.source ?? 'manual',
+      locked: this.locked(),
+    }),
+  );
+  readonly removeReason = computed(() => {
+    const child = this.current();
+    return child ? this.drafts.removeReason(child.key) : null;
+  });
+  /** Parent fields the save will not keep: dropped on an unsaved split → single, or not copied by a dissolve. */
+  readonly removalNotices = computed(() =>
+    this.isSplit()
+      ? []
+      : this.groupId() !== null
+        ? dissolveNotices(this.parent(), this.children()[0])
+        : this.drafts.droppedNotices(),
+  );
+  readonly summary = computed(() => netByCurrency(this.children(), this.accounts()));
+  readonly rewards = computed(() => rewardEstimates(this.children(), this.accounts()));
+  readonly accountCount = computed(
+    () => new Set(this.children().map(child => child.accountId).filter(id => id !== null)).size,
+  );
+  /** Untouched loaded members carry different dates / times / posting dates. */
+  readonly mixedDates = computed(() => {
+    if (this.parent().dateTouched) {
+      return false;
+    }
+    const keys = new Set(
+      this.children()
+        .map(child => child.loaded)
+        .filter(loaded => loaded !== null)
+        .map(loaded => [loaded.entryDate, loaded.entryTime, normalizePosted(loaded.entryDate, loaded.postedDate)].join('|')),
+    );
+    return keys.size > 1;
+  });
+  readonly parentText = computed(() => {
+    const lines = this.summary().map(line => this.netText(line));
+    return `多類別 ${lines.join(' · ')} (${this.children().length})`;
+  });
+  readonly bubbles = computed<Bubble[]>(() => this.children().map(child => this.bubbleOf(child)));
+  /** A plain entry shows its bubble (with ＋) only once it has a category, as the old selected strip did. */
+  readonly stripBubbles = computed(() =>
+    this.childScope() || this.current()?.categoryId != null ? this.bubbles() : [],
+  );
+  /** A protected child's stored, server-signed amount (read only). */
+  readonly protectedAmount = computed(() => {
+    const loaded = this.current()?.loaded;
+    return loaded ? formatMoney(loaded.signedAmount, loaded.currency, { sign: true }) : '—';
+  });
+  /** The child's loaded merchant (a split member keeps its own; the group's is the parent's). */
+  readonly childMerchant = computed(() => {
+    const merchant = this.current()?.loaded?.merchant;
+    return this.childScope() && merchant?.trim() ? merchant : null;
+  });
   readonly title = computed(() => (this.scheduleId() !== null ? '編輯排程' : this.editing() ? '編輯記錄' : '新增記錄'));
   readonly account = computed(() => this.accounts().find(account => account.id === this.accountId()) ?? null);
   /**
    * Open accounts; in edit and definition mode also the record's / definition's own account when it is archived.
    * New records never offer archived ones.
    */
-  readonly accountOptions = computed(() =>
-    this.accounts().filter(
-      account =>
-        !account.is_archived ||
-        ((this.editing() || this.scheduleId() !== null) && account.id === this.originalAccountId()),
-    ),
-  );
+  readonly accountOptions = computed(() => {
+    // A loaded child keeps only its own original account selectable; other modes the transfer / definition's.
+    const original = this.current()?.loaded?.originalAccountId ?? this.originalAccountId();
+    return this.accounts().filter(
+      account => !account.is_archived || ((this.editing() || this.scheduleId() !== null) && account.id === original),
+    );
+  });
   readonly projectOptions = computed(() =>
     this.projects().filter(project => !project.is_archived || project.id === this.projectId()),
   );
@@ -400,7 +582,21 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     const value = this.convertedAmount() ?? 0;
     return isWritableKind(kind) ? signFor(kind) * value : value;
   });
-  readonly offeredRules = computed(() => rulesForDate(this.accountDetail()?.reward_rules ?? [], this.entryDate()));
+  /** Rules of the selected child's account valid on its date, plus the rules its stored row is still linked to. */
+  readonly offeredRules = computed((): RewardRule[] => {
+    const child = this.current();
+    if (!child) {
+      return [];
+    }
+    const own = rulesForDate(child.availableRules.filter(rule => rule.account_id === child.accountId), this.childDate());
+    const attached =
+      child.loaded?.originalAccountId === child.accountId
+        ? child.availableRules.filter(
+            rule => child.loaded!.attachedRuleIds.includes(rule.id) && !own.some(other => other.id === rule.id),
+          )
+        : [];
+    return [...own, ...attached];
+  });
   readonly quick = computed(() => {
     const category = this.category();
     return category ? quickAmounts(category.id) : [];
@@ -421,7 +617,8 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     );
   });
   readonly footer = computed(() => {
-    if (this.kind() === 'transfer') {
+    // The parent shows its own summary; a protected child's amount is the server's.
+    if (this.kind() === 'transfer' || this.parentMode() || this.protectedChild()) {
       return '';
     }
     const parts: string[] = [];
@@ -466,29 +663,34 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     .subscribe(command => (command === 'cancel' ? this.cancel() : this.save(command === 'save-continue')));
 
   constructor() {
-    toObservable(this.categoryKind)
-      .pipe(
-        distinctUntilChanged(),
-        switchMap(kind => this.loadCategories(kind)),
-        takeUntilDestroyed(),
-      )
-      .subscribe(list => {
-        this.categories.set(list);
-        this.resolvePendingCategory();
-      });
-
-    toObservable(this.accountId)
-      .pipe(
-        distinctUntilChanged(),
-        switchMap(id => (id === null ? of(null) : this.accounting.getAccount(id).pipe(catchError(() => of(null))))),
-        takeUntilDestroyed(),
-      )
-      .subscribe(detail => {
-        this.accountDetail.set(detail);
-        if (!this.rulesTouched()) {
-          this.ruleIds.set(this.basicRuleIds());
+    // Per-child resource reconciler: every child generation not yet requested (selected or not) loads its account,
+    // category tree and missing online quote once; removed keys drop their bookkeeping.
+    effect(() => {
+      const rows = this.children();
+      untracked(() => {
+        for (const child of rows) {
+          const deps = resourceDeps(child);
+          const requested = this.requestedGeneration.get(child.key);
+          if (requested?.generation === child.generation) {
+            if (requested.deps !== deps) {
+              // A dependency changed through a plain field write: older answers are stale; the next run reloads.
+              this.drafts.invalidate(child.key);
+            }
+            continue;
+          }
+          this.requestedGeneration.set(child.key, { generation: child.generation, deps });
+          this.loadChildResources(child);
+        }
+        for (const key of [...this.requestedGeneration.keys()]) {
+          if (!rows.some(child => child.key === key)) {
+            this.requestedGeneration.delete(key);
+            this.childAccountCache.delete(key);
+            this.childLoads.get(key)?.unsubscribe();
+            this.childLoads.delete(key);
+          }
         }
       });
+    });
 
     // A preference saved elsewhere (keypad layout, main currency) reaches a mounted form too.
     toObservable(this.accounting.preferenceChanged)
@@ -609,17 +811,15 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.baseline.set(null);
     this.clearDiscardFocus();
     this.registry.clearPending();
-    this.resetFields();
+    this.accountDetails.clear();
+    this.resetFields(id === null && isFormKind(kindParam) ? kindParam : 'expense');
     this.related.set(NO_RELATED);
     this.feeProposal.set(null);
     this.locked.set(false);
     this.unsupported.set(null);
     this.error.set(null);
-    this.entryDate.set(todayIso());
-    this.entryTime.set(nowTime());
     this.entryId.set(null);
     this.originalAccountId.set(null);
-    this.accountId.set(null);
     this.editing.set(id !== null);
     ++this.definitionRequest;
     this.loanEntryId = null;
@@ -632,7 +832,6 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (id !== null) {
       return { entryId: Number(id), copy: false };
     }
-    this.kind.set(isFormKind(kindParam) ? kindParam : 'expense');
     if (copyParam !== null) {
       return { entryId: Number(copyParam), copy: true };
     }
@@ -650,40 +849,32 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   }
 
 
-  private resetFields(): void {
+  /** One fresh child (new key) and a new parent: every outstanding child callback and sheet owner is dropped. */
+  private resetFields(kind: FormKind = 'expense'): void {
     this.notice.set(null);
-    this.category.set(null);
-    this.pendingCategoryId = null;
-    this.projectId.set(null);
-    this.amountExpr.set('');
     this.amountError.set(false);
     this.targetExpr.set('');
-    this.name.set('');
-    this.merchant.set('');
-    this.counterpartyName.set('');
-    this.postedDate.set('');
-    this.invoiceNumber.set('');
-    this.invoiceRandom.set('');
-    this.description.set('');
-    this.tags.set([]);
-    this.ruleIds.set([]);
-    this.rulesTouched.set(false);
-    this.fx.set(null);
-    this.fee.set(null);
-    this.discount.set(null);
     this.sheet.set(null);
-    this.members.set([]);
+    this.sheetOwner = null;
+    this.singleKind.set(kind);
+    const child = newChild(isWritableKind(kind) ? kind : 'expense');
+    this.children.set([child]);
+    this.selected.set(child.key);
+    this.parent.set(newParent(todayIso(), nowTime()));
     this.groupId.set(null);
-    this.splitGroup = null;
-    this.loadedDates = null;
+    this.drafts.anchorId.set(null);
+    this.drafts.droppedNotices.set([]);
+    this.convertBlockedReason.set(null);
+    this.saveResponseInvalid.set(false);
+    this.deleteGroupPrompt.set(false);
+    this.deleteGroupOpener = null;
+    this.draftLoadErrors.set({});
+    this.accountDetail.set(null);
+    this.categories.set(this.categoryLists().get(child.kind) ?? []);
     this.transferEdit.set(null);
     this.transferPanel()?.reset();
     this.scheduleDraft.set(defaultDraft(todayIso()));
     this.fieldErrors.set({});
-  }
-
-  private datesKey(): string {
-    return [this.entryDate(), this.entryTime(), this.postedDate()].join('|');
   }
 
   /** Stage 1 `getEntry`, stage 2 `loadRelated`; each stage's answer is dropped when a newer `load()` exists. */
@@ -724,107 +915,292 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (loaded.loadId !== this.loadId || loaded.detail.id !== loaded.entryId) {
       return;
     }
-    this.entryId.set(loaded.copy ? null : loaded.detail.id);
+    const detail = loaded.detail;
+    this.entryId.set(loaded.copy ? null : detail.id);
     this.related.set(loaded.related);
-    this.applyDetail(loaded.detail, loaded.copy);
-    // A transfer copy is prefilled from both legs but saves as a new transfer (saveTransfer sends no group id then).
-    this.transferEdit.set(transferEditFrom(loaded.detail, loaded.related.transfer));
-    const group = loaded.detail.group;
-    if (!loaded.copy && group?.kind === 'split') {
-      // Editing a split member: the other members (in group order) become split lines and the save replaces the
-      // group's members, putting this one back at its own position under the group's own name / merchant / note.
-      this.groupId.set(group.id);
-      this.members.set(loaded.related.members.map(entryInputFromDetail));
-      const index = (loaded.detail.group_members ?? []).findIndex(member => member.id === loaded.detail.id);
-      this.splitGroup = {
-        name: group.name,
-        merchant: group.merchant ?? null,
-        description: group.description ?? null,
-        index: Math.max(index, 0),
-      };
-      this.loadedDates = this.datesKey();
+    this.rememberCategories([detail, ...loaded.related.members]);
+    this.transferEdit.set(null);
+    if (!loaded.copy && detail.group?.kind === 'split') {
+      // A split member: every member becomes a child in group order, the opened one selected.
+      let state: ReturnType<typeof splitFromDetails>;
+      try {
+        state = splitFromDetails(detail, loaded.related.members, this.preference().main_currency);
+      } catch (error) {
+        this.loading.set(false);
+        this.error.set(error instanceof Error ? error.message : '記錄讀取失敗，請稍後再試。');
+        return;
+      }
+      this.children.set(state.children);
+      this.parent.set(state.parent);
+      this.selected.set(state.selected);
+      this.groupId.set(detail.group.id);
+      this.drafts.anchorId.set(null);
+      this.convertBlockedReason.set(null);
+      this.singleKind.set(state.children.find(child => isWritableKind(child.kind))?.kind as FormKind ?? 'expense');
+      this.showChildCaches();
+      this.locked.set(detail.locked);
+      this.unsupported.set(null);
+      this.loading.set(false);
+      this.markClean();
+      return;
+    }
+    this.groupId.set(null);
+    this.drafts.anchorId.set(null);
+    if (isWritableKind(detail.kind)) {
+      this.applySingle(detail, loaded.copy);
     } else {
-      // Not (or no longer) a split member, e.g. a reload after the group was dissolved: the next save is a plain write.
-      this.groupId.set(null);
-      this.members.set([]);
-      this.splitGroup = null;
-      this.loadedDates = null;
+      this.applyDetail(detail, loaded.copy);
+      // A transfer copy is prefilled from both legs but saves as a new transfer (saveTransfer sends no group id then).
+      this.transferEdit.set(transferEditFrom(detail, loaded.related.transfer));
     }
     this.loading.set(false);
     this.markClean();
   }
 
+  /**
+   * An editable single entry (or a copy) as one child. It stays editable whatever links it has; links the server would
+   * refuse to convert only hide ＋ (`convertBlockedReason`), and the server stays authoritative at convert.
+   */
+  private applySingle(detail: EntryDetail, copy: boolean): void {
+    const convertBlocked =
+      detail.is_settlement ||
+      detail.transfer_group_id !== null ||
+      detail.settled_by.length > 0 ||
+      detail.refunded_by.length > 0 ||
+      detail.loan_schedule != null ||
+      detail.source === 'schedule' ||
+      (detail.schedule?.posted_entry_ids.includes(detail.id) ?? false);
+    this.convertBlockedReason.set(!copy && convertBlocked ? '此記錄不能拆帳' : null);
+    let child = childFromDetail(detail, { protected: false, protected_reason: null }, this.preference().main_currency);
+    if (copy) {
+      // A copy is a new record: no id, no provenance, no invoice; it never converts its source.
+      child = { ...child, id: null, loaded: null, invoice: { number: '', random: '' } };
+    }
+    this.children.set([child]);
+    this.selected.set(child.key);
+    this.drafts.anchorId.set(copy ? null : detail.id);
+    this.parent.set({
+      name: '',
+      merchant: detail.merchant ?? '',
+      description: '',
+      entryDate: copy ? todayIso() : detail.entry_date,
+      entryTime: copy ? nowTime() : detail.entry_time,
+      postedDate: copy ? null : normalizePosted(detail.entry_date, detail.posted_date),
+      dateTouched: false,
+    });
+    this.singleKind.set(child.kind as FormKind);
+    this.showChildCaches();
+    this.locked.set(!copy && detail.locked);
+    this.unsupported.set(null);
+    if (copy && this.accounts().find(account => account.id === child.accountId)?.is_archived) {
+      // A copy never lands on an archived account (the FX state follows the new currency).
+      this.moveToAccount(this.accounts().find(account => !account.is_archived)?.id ?? null);
+    }
+  }
+
+  /** A transfer leg (both legs reach the panel through `transferEdit`), or a kind the form cannot edit. */
   private applyDetail(detail: EntryDetail, copy: boolean): void {
     this.locked.set(!copy && detail.locked);
     if (!copy) {
       this.originalAccountId.set(detail.account_id);
     }
     const transfer = detail.kind === 'transfer_out' || detail.kind === 'transfer_in';
-    if (!transfer && !isWritableKind(detail.kind)) {
+    if (!transfer) {
       this.unsupported.set(`${ENTRY_KIND_LABELS[detail.kind]}請在明細頁處理`);
       return;
     }
     this.name.set(detail.name ?? '');
-    this.merchant.set(detail.merchant ?? '');
     this.description.set(detail.description ?? '');
     this.tags.set([...detail.tags]);
-    this.entryDate.set(copy ? todayIso() : detail.entry_date);
-    this.entryTime.set(copy ? nowTime() : (detail.entry_time ?? '').slice(0, 5));
-    this.postedDate.set(copy || detail.posted_date === detail.entry_date ? '' : detail.posted_date);
     this.projectId.set(detail.project_id ?? this.projects().find(project => project.name === detail.project)?.id ?? null);
-    if (transfer) {
-      // Both legs reach the transfer panel through loadRelated() → applyLoaded() → transferEdit.
-      this.kind.set('transfer');
-      return;
+    this.parent.set({
+      name: '',
+      merchant: detail.merchant ?? '',
+      description: '',
+      entryDate: copy ? todayIso() : detail.entry_date,
+      entryTime: copy ? nowTime() : (detail.entry_time ?? '').slice(0, 5),
+      postedDate: copy || detail.posted_date === detail.entry_date ? null : detail.posted_date,
+      dateTouched: false,
+    });
+    this.kind.set('transfer');
+  }
+
+  /** Category labels of loaded rows, for bubbles whose kind's tree is not loaded (e.g. a protected refund). */
+  private rememberCategories(details: readonly EntryDetail[]): void {
+    const known = new Map(this.loadedCategories());
+    for (const detail of details) {
+      if (detail.category_id !== null && detail.category) {
+        known.set(detail.category_id, {
+          name: detail.category.split('/').pop() ?? detail.category,
+          icon: detail.category_icon,
+          color: detail.category_color,
+        });
+      }
     }
-    this.rulesTouched.set(true);
-    this.kind.set(detail.kind as WritableEntryKind);
-    const archived = this.accounts().find(account => account.id === detail.account_id)?.is_archived ?? false;
-    this.accountId.set(detail.account_id);
-    this.pendingCategoryId = detail.category_id;
-    this.resolvePendingCategory();
-    const input = entryInputFromDetail(detail);
-    const fx = fxFromDetail(detail);
-    this.fx.set(fx);
-    this.amountExpr.set((fx ? fx.original_amount : input.amount) ?? '');
-    this.counterpartyName.set(detail.counterparty ?? '');
-    this.invoiceNumber.set(copy ? '' : (input.invoice_number ?? ''));
-    this.invoiceRandom.set(copy ? '' : (input.invoice_random ?? ''));
-    this.fee.set(input.fee);
-    this.discount.set(input.discount);
-    this.ruleIds.set(input.reward_rule_ids);
-    if (copy && archived) {
-      // A copy is a new record: it never lands on an archived account (the FX state follows the new currency).
-      this.moveToAccount(this.accounts().find(account => !account.is_archived)?.id ?? null);
-    }
+    this.loadedCategories.set(known);
   }
 
   private loadCategories(kind: string | null): Observable<CategoryNode[]> {
     if (!kind) {
       return of([]);
     }
-    const cached = this.categoryCache.get(kind);
+    const cached = this.categoryLists().get(kind);
     if (cached) {
       return of(cached);
     }
     return this.accounting.getCategories(kind).pipe(
-      tap(list => this.categoryCache.set(kind, list)),
+      tap(list => this.cacheCategories(kind, list)),
       catchError(() => of([])),
     );
   }
 
-  private resolvePendingCategory(): void {
-    const node = findCategory(this.categories(), this.pendingCategoryId);
-    if (node) {
-      this.category.set(node);
-      this.pendingCategoryId = null;
+  private cacheCategories(kind: string, list: CategoryNode[]): void {
+    if (this.categoryLists().get(kind) !== list) {
+      this.categoryLists.update(lists => new Map(lists).set(kind, list));
     }
   }
 
-  private basicRuleIds(): number[] {
-    return this.offeredRules()
-      .filter(rule => rule.is_basic)
-      .map(rule => rule.id);
+  /**
+   * One generation of a child's asynchronous defaults: account detail (rules), category tree and a missing online
+   * quote. The result applies only to the captured owner, selected or not; display caches follow the selection.
+   */
+  private loadChildResources(child: ChildDraft): void {
+    const owner: Owner = { key: child.key, generation: child.generation };
+    const parent = this.parent();
+    const date = parent.dateTouched || !child.loaded || !this.childScope() ? parent.entryDate : child.loaded.entryDate;
+    const fx = child.fx;
+    const token = `${owner.key}:${owner.generation}`;
+    this.pendingDraftLoads.update(rows => [...rows, owner]);
+    this.draftLoadErrors.update(errors => {
+      const next = { ...errors };
+      delete next[token];
+      return next;
+    });
+    this.childLoads.get(owner.key)?.unsubscribe();
+    // An account's settings are read once per navigation (as the old per-account stream did); a kind / date / FX
+    // change only re-derives the defaults. A failed read is not cached, so 重新載入子項設定 asks again.
+    const accountId = child.accountId;
+    const cached = accountId === null ? undefined : this.accountDetails.get(accountId);
+    const load = forkJoin({
+      account:
+        accountId === null
+          ? of(null)
+          : cached
+            ? of(cached)
+            : this.accounting.getAccount(accountId).pipe(tap(detail => this.accountDetails.set(accountId, detail))),
+      // A single transfer / 系統 tab shows no category grid for its (hidden) child.
+      categories:
+        isWritableKind(child.kind) && (this.childScope() || isWritableKind(this.singleKind()))
+          ? this.loadCategories(child.kind)
+          : of<CategoryNode[]>([]),
+      // The quote is display only (the server converts online FX): a failed quote shows `?`, never blocks saving.
+      quote:
+        fx?.use_online && fx.fx_rate === null
+          ? this.accounting.getFxRate(date, fx.original_currency, fx.account_currency).pipe(catchError(() => of(null)))
+          : of(null),
+    })
+      .pipe(
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() =>
+          this.pendingDraftLoads.update(rows =>
+            rows.filter(other => other.key !== owner.key || other.generation !== owner.generation),
+          ),
+        ),
+      )
+      .subscribe({
+        next: result => {
+          const current = this.children().find(row => row.key === owner.key && row.generation === owner.generation);
+          if (!current) {
+            return;
+          }
+          const accountRules = result.account?.reward_rules ?? [];
+          const unchangedAccount = current.loaded?.originalAccountId === current.accountId;
+          const attached = unchangedAccount
+            ? current.availableRules.filter(rule => current.loaded!.attachedRuleIds.includes(rule.id))
+            : [];
+          const availableRules = [...new Map([...attached, ...accountRules].map(rule => [rule.id, rule])).values()];
+          const eligible = rulesForDate(accountRules, date);
+          const chosen = current.rulesTouched ? current.ruleIds : eligible.filter(rule => rule.is_basic).map(rule => rule.id);
+          const allowed = new Set(eligible.map(rule => rule.id));
+          if (unchangedAccount) {
+            for (const id of current.loaded!.attachedRuleIds) {
+              allowed.add(id);
+            }
+          }
+          const patch: Partial<ChildDraft> = { availableRules, ruleIds: chosen.filter(id => allowed.has(id)) };
+          if (result.quote && current.fx?.use_online) {
+            patch.fx = { ...current.fx, fx_rate: String(Number(result.quote.rate)), rate_date: result.quote.date };
+          }
+          if (isWritableKind(child.kind)) {
+            this.cacheCategories(child.kind, result.categories);
+          }
+          if (!this.drafts.accept(owner, patch)) {
+            return;
+          }
+          this.childAccountCache.set(owner.key, result.account);
+          if (this.selected() === owner.key) {
+            this.categories.set(result.categories);
+            this.accountDetail.set(result.account);
+          }
+        },
+        error: (error: unknown) => {
+          if (this.children().some(row => row.key === owner.key && row.generation === owner.generation)) {
+            this.draftLoadErrors.update(errors => ({ ...errors, [token]: writeErrorMessage(error) }));
+          }
+        },
+      });
+    if (!load.closed) {
+      this.childLoads.set(owner.key, load);
+    }
+  }
+
+  /** 重新載入子項設定: new generations for the failed children (their edits are kept). */
+  retryChildResources(): void {
+    const errors = this.draftLoadErrors();
+    for (const child of this.children()) {
+      if (errors[`${child.key}:${child.generation}`] !== undefined) {
+        this.drafts.invalidate(child.key);
+      }
+    }
+    this.error.set(null);
+  }
+
+  /** The tiles show the selected child's cached account / category data (cleared when it has none yet). */
+  private showChildCaches(): void {
+    const child = this.drafts.current();
+    this.accountDetail.set(child ? (this.childAccountCache.get(child.key) ?? null) : null);
+    this.categories.set(child && isWritableKind(child.kind) ? (this.categoryLists().get(child.kind) ?? []) : []);
+  }
+
+  private parentView<K extends keyof ParentDraft>(field: K): ChildView<ParentDraft[K]> {
+    const view = (() => this.parent()[field]) as ChildView<ParentDraft[K]>;
+    view.set = value => this.parent.update(parent => ({ ...parent, [field]: value }));
+    view.update = fn => view.set(fn(view()));
+    return view;
+  }
+
+  private netText(line: CurrencyNet): string {
+    return `${line.currency} ${line.amount === null ? '—' : formatMoney(line.amount, line.currency, { sign: true })}`;
+  }
+
+  private bubbleOf(child: ChildDraft): Bubble {
+    const account = this.accounts().find(candidate => candidate.id === child.accountId);
+    const amount = accountAmount(child, account);
+    const currency = account?.currency ?? child.loaded?.currency ?? this.preference().main_currency;
+    const tree = this.categoryLists().get(child.kind) ?? [];
+    const node = findCategory(tree, child.categoryId);
+    const main = node ? (tree.find(other => other.children.some(sub => sub.id === node.id)) ?? null) : null;
+    const loaded = child.categoryId === null ? undefined : this.loadedCategories().get(child.categoryId);
+    const empty = child.categoryId === null;
+    return {
+      key: child.key,
+      label: node?.name || loaded?.name || (empty && isWritableKind(child.kind) ? '未選類別' : ENTRY_KIND_LABELS[child.kind]),
+      icon: node ? categoryIcon(node, main, child.kind) : (loaded?.icon ?? (empty ? '○' : defaultCategoryIcon(null, child.kind))),
+      color: node ? categoryColor(node, main) : (loaded?.color ?? 'var(--app-surface-soft)'),
+      amount: amount === null ? '—' : formatMoney(amount, currency, { sign: true }),
+      empty: empty && isWritableKind(child.kind),
+      protected: child.protected,
+    };
   }
 
   // ---- field handlers -----------------------------------------------------
@@ -832,6 +1208,10 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   /** While editing, the record type cannot change into 系統 or between a transfer and a single entry; in definition
    * mode it cannot change at all. */
   tabDisabled(kind: FormKind): boolean {
+    if (this.childScope()) {
+      // A child keeps an editable kind; a protected child's kind never changes.
+      return this.parentMode() || this.protectedChild() || kind === 'transfer' || kind === 'system';
+    }
     if (this.scheduleId() !== null) {
       return kind !== this.kind();
     }
@@ -877,50 +1257,86 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (kind === this.kind() || this.tabDisabled(kind)) {
       return;
     }
+    const owner = this.drafts.capture();
+    if (owner && !this.flushChild(owner)) {
+      return;
+    }
+    if (owner) {
+      // The kind is a dependency of the child's category tree and defaults.
+      this.drafts.invalidate(owner.key);
+    }
     this.kind.set(kind);
+    this.setCategory(null);
+    this.error.set(null);
     if (!this.eventTabEnabled(this.scheduleDraft().tab)) {
       // The system branch has no schedule component to normalize its tab; use the same transition here.
       this.selectEventTab('single');
     }
-    this.category.set(null);
-    this.error.set(null);
+    this.categories.set(isWritableKind(kind) ? (this.categoryLists().get(kind) ?? []) : []);
+    if (this.childScope()) {
+      afterNextRender(() => this.categoryPicker()?.reopen(), { injector: this.injector });
+    }
+  }
+
+  /** The picker's selection: the selected child's category (never a protected child's). */
+  setCategory(node: CategoryNode | null): void {
+    const owner = this.drafts.capture();
+    if (owner && !this.drafts.current()?.protected) {
+      this.drafts.accept(owner, { categoryId: node?.id ?? null, pendingCategoryId: null });
+    }
   }
 
   onCategoryPicked(node: CategoryNode): void {
+    this.setCategory(node);
     this.error.set(null);
-    if (this.entryId() !== null) {
-      return;
+    // Last-use / category defaults belong to a new single record only; a split child keeps its inherited account.
+    if (!this.isSplit() && this.groupId() === null && this.entryId() === null) {
+      const usable = (id: number | null | undefined): id is number =>
+        id !== null && id !== undefined && this.accounts().some(account => account.id === id && !account.is_archived);
+      const last = readLastUse(node.id);
+      if (usable(last?.account_id)) {
+        this.moveToAccount(last!.account_id);
+      } else if (usable(node.default_account_id)) {
+        this.moveToAccount(node.default_account_id);
+      }
+      if (last) {
+        this.projectId.set(last.project_id);
+      } else if (node.default_project_id !== null) {
+        this.projectId.set(node.default_project_id);
+      }
     }
-    const usable = (id: number | null | undefined): id is number =>
-      id !== null && id !== undefined && this.accounts().some(account => account.id === id && !account.is_archived);
-    const last = readLastUse(node.id);
-    if (usable(last?.account_id)) {
-      this.moveToAccount(last!.account_id);
-    } else if (usable(node.default_account_id)) {
-      this.moveToAccount(node.default_account_id);
-    }
-    if (last) {
-      this.projectId.set(last.project_id);
-    } else if (node.default_project_id !== null) {
-      this.projectId.set(node.default_project_id);
-    }
+    afterNextRender(() => {
+      const host = this.host.nativeElement;
+      (host.querySelector<HTMLElement>('.amount-input') ?? host.querySelector<HTMLElement>('.amount-value'))?.focus();
+    }, { injector: this.injector });
   }
 
   chooseAccount(id: number | null): void {
     this.moveToAccount(id);
-    if (this.entryId() === null) {
-      this.rulesTouched.set(false);
-    }
   }
 
   /**
-   * Every account change of a loaded or typed record goes through here. The FX conversion, fee and discount were
-   * typed against the previous account's currency, so a currency change re-validates them: a conversion back into
-   * the original currency is dropped (the amount stays the original amount); any other change resets it to the
-   * online rate; fee and discount are cleared. A one-line notice says what changed.
+   * Every account change of the selected child goes through here. The FX conversion, fee and discount were typed
+   * against the previous account's currency, so a currency change re-validates them: a conversion back into the
+   * original currency is dropped (the amount stays the original amount); any other change resets it to the online
+   * rate; fee and discount are cleared. A one-line notice says what changed. Rule selections of the old account are
+   * cleared; a loaded child stays `rulesTouched` (no automatic basic rules over its stored choice). Other children
+   * are never touched.
    */
   private moveToAccount(id: number | null): void {
+    // Re-picking the same account is a no-op (it no longer resets a new record's rule choice).
+    if (id === this.accountId()) {
+      return;
+    }
+    const selected = this.drafts.current();
+    if (!selected || selected.protected) {
+      return;
+    }
     const before = this.accountCurrency();
+    // The account is a dependency of the child's rules and quote: older answers are now stale.
+    this.drafts.invalidate(selected.key);
+    this.drafts.accept(this.drafts.capture()!, { availableRules: [], ruleIds: [], rulesTouched: selected.loaded !== null });
+    this.accountDetail.set(null);
     this.accountId.set(id);
     const after = this.accountCurrency();
     const fx = this.fx();
@@ -949,6 +1365,9 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   }
 
   toggleRule(id: number): void {
+    if (this.protectedChild()) {
+      return;
+    }
     this.rulesTouched.set(true);
     this.ruleIds.update(ids => (ids.includes(id) ? ids.filter(other => other !== id) : [...ids, id]));
   }
@@ -978,6 +1397,35 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
 
   removeTag(tag: string): void {
     this.tags.update(tags => tags.filter(other => other !== tag));
+  }
+
+  setInvoice(field: 'number' | 'random', value: string): void {
+    const child = this.drafts.current();
+    const owner = this.drafts.capture();
+    if (child && owner && !child.protected) {
+      this.drafts.accept(owner, { invoice: { ...child.invoice, [field]: value } });
+    }
+  }
+
+  setParentText(field: 'name' | 'merchant' | 'description', value: string): void {
+    this.parent.update(parent => ({ ...parent, [field]: value }));
+  }
+
+  /**
+   * Every user date / time / posting-date edit. Refused while a protected child pins the dates. Marks the parent dates
+   * as the owner's (every full member then carries them) and restarts every child's date-dependent rules and quote.
+   */
+  setParentDate(field: 'entryDate' | 'entryTime' | 'postedDate', value: string): void {
+    if (this.dateLocked()) {
+      return;
+    }
+    this.parent.update(parent => ({ ...parent, [field]: field === 'entryDate' ? value : value || null, dateTouched: true }));
+    for (const child of this.children()) {
+      if (child.fx?.use_online) {
+        this.drafts.accept({ key: child.key, generation: child.generation }, { fx: { ...child.fx, fx_rate: null, rate_date: null } });
+      }
+      this.drafts.invalidate(child.key);
+    }
   }
 
   onAmountInput(text: string): void {
@@ -1024,7 +1472,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   private sheetOpener: HTMLElement | null = null;
 
   openSheet(sheet: 'fx' | 'fee', event?: Event): void {
-    if (this.locked()) {
+    if (this.locked() || this.saving() || this.protectedChild()) {
       return;
     }
     if (sheet === 'fx' && !this.account()) {
@@ -1032,45 +1480,68 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       return;
     }
     this.sheetOpener = (event?.currentTarget ?? this.host.nativeElement.ownerDocument.activeElement) as HTMLElement | null;
+    this.sheetOwner = this.drafts.capture();
     this.sheet.set(sheet);
+  }
+
+  /**
+   * A sheet result, applied to the child the sheet was opened for. A changed currency pair or online / manual choice
+   * is a dependency change: the child's generation moves on (the sheet keeps writing through its new owner).
+   */
+  applySheet(patch: Pick<Partial<ChildDraft>, 'fx' | 'fee' | 'discount'>): void {
+    const owner = this.sheetOwner;
+    if (!owner) {
+      return;
+    }
+    const before = this.children().find(child => child.key === owner.key && child.generation === owner.generation);
+    if (!before || !this.drafts.accept(owner, patch)) {
+      return;
+    }
+    if ('fx' in patch) {
+      const next = patch.fx ?? null;
+      const previous = before.fx;
+      if (
+        next?.original_currency !== previous?.original_currency ||
+        next?.account_currency !== previous?.account_currency ||
+        next?.use_online !== previous?.use_online
+      ) {
+        this.drafts.invalidate(owner.key);
+        this.sheetOwner = { key: owner.key, generation: owner.generation + 1 };
+      }
+    }
   }
 
   closeSheet(): void {
     this.sheet.set(null);
+    this.sheetOwner = null;
     restoreOverlayFocus(this.sheetOpener, this.host.nativeElement);
     this.sheetOpener = null;
   }
 
   onFxClosed(): void {
-    this.closeSheet();
-    const fx = this.fx();
-    if (fx?.original_amount) {
-      this.amountExpr.set(fx.original_amount);
+    const owner = this.sheetOwner;
+    const child = owner ? this.children().find(row => row.key === owner.key) : undefined;
+    if (owner && child?.fx?.original_amount) {
+      this.drafts.accept(owner, { amountExpr: child.fx.original_amount });
     }
+    this.closeSheet();
   }
 
   /** 重新換算: drop the fixed converted amount; the server converts with the online rate (shown once fetched). */
   recomputeFx(): void {
     const fx = this.fx();
     const amount = this.amount();
-    if (!fx || amount === null || this.locked()) {
+    if (!fx || amount === null || this.locked() || this.protectedChild()) {
+      return;
+    }
+    const owner = this.drafts.capture();
+    if (!owner) {
       return;
     }
     const online: FxValue = { ...fx, original_amount: String(amount), use_online: true, manual: null, amount: null, fx_rate: null, rate_date: null };
-    this.fx.set(online);
-    this.accounting
-      .getFxRate(this.entryDate(), online.original_currency, online.account_currency)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: result => {
-          const current = this.fx();
-          // Only while this online conversion is still the one shown.
-          if (current?.use_online && current.original_currency === online.original_currency && current.account_currency === online.account_currency) {
-            this.fx.set({ ...current, fx_rate: String(Number(result.rate)), rate_date: result.date });
-          }
-        },
-        error: () => undefined,
-      });
+    this.drafts.accept(owner, { fx: online });
+    // The reconciler fetches the quote for this child's new generation, even if the selection changes now.
+    this.drafts.invalidate(owner.key);
   }
 
   focusName(): void {
@@ -1089,6 +1560,124 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
 
   proposalText(proposal: FeeProposal): string {
     return formatMoney(-Math.abs(Number(proposal.amount)), this.accountCurrency());
+  }
+
+  // ---- children -----------------------------------------------------------
+
+  /**
+   * Commits the owner's pending amount expression before its ownership ends (switch, add, kind change, save). A loaded
+   * online-FX original is not re-rounded merely by switching. False (with the amount marked) when it does not parse.
+   */
+  private flushChild(owner: Owner): boolean {
+    const child = this.children().find(row => row.key === owner.key);
+    if (!child || child.protected || !child.amountExpr.trim()) {
+      return true;
+    }
+    if (
+      child.fx?.use_online &&
+      child.loaded?.onlineFx?.amountExpr === child.amountExpr &&
+      child.loaded.onlineFx.originalCurrency === child.fx.original_currency
+    ) {
+      return true;
+    }
+    const account = this.accounts().find(candidate => candidate.id === child.accountId);
+    const value = evalOrNull(
+      child.amountExpr,
+      currencyDecimals(child.fx?.original_currency ?? account?.currency ?? this.preference().main_currency),
+    );
+    if (value === null) {
+      this.amountError.set(true);
+      return false;
+    }
+    return this.drafts.accept(owner, { amountExpr: String(value) });
+  }
+
+  /** A bubble (or the parent): the outgoing child's pending input is flushed first; its own caches are shown. */
+  selectBubble(key: string): void {
+    if (this.saving() || this.sheet() || key === this.selected()) {
+      return;
+    }
+    if (this.drafts.select(key, owner => this.flushChild(owner))) {
+      this.amountError.set(false);
+      this.showChildCaches();
+    }
+  }
+
+  /** ＋: flush the selected child, add one after it (inherited kind / account) and open the main category grid. */
+  addChild(): void {
+    const state = this.addState();
+    if (!state.visible || state.disabled || this.saving() || this.sheet()) {
+      return;
+    }
+    const owner = this.drafts.capture();
+    if (owner && !this.flushChild(owner)) {
+      return;
+    }
+    if (!this.drafts.add(this.accounts())) {
+      return;
+    }
+    this.amountError.set(false);
+    this.showChildCaches();
+    afterNextRender(() => this.categoryPicker()?.reopen(), { injector: this.injector });
+  }
+
+  /** 移除此項: also for an unfinished / invalid draft (its expression is discarded, not flushed). */
+  removeChild(): void {
+    const child = this.drafts.current();
+    if (!child || this.saving() || this.sheet() || this.drafts.removeReason(child.key)) {
+      return;
+    }
+    this.drafts.remove(child.key);
+    this.amountError.set(false);
+    const survivor = this.drafts.current();
+    if (!this.childScope() && survivor && isWritableKind(survivor.kind)) {
+      // Back to a plain entry: the single tab follows the survivor's kind.
+      this.singleKind.set(survivor.kind);
+    }
+    // The survivor's own tree and account settings, exactly as selecting its bubble shows them.
+    this.showChildCaches();
+  }
+
+  openDeleteGroup(event: Event): void {
+    if (this.groupId() === null || this.saving() || this.locked()) {
+      return;
+    }
+    this.deleteGroupOpener = event.currentTarget as HTMLElement;
+    this.deleteGroupPrompt.set(true);
+    afterNextRender(() => this.host.nativeElement.querySelector<HTMLButtonElement>('.delete-group-cancel')?.focus(), {
+      injector: this.injector,
+    });
+  }
+
+  closeDeleteGroup(): void {
+    this.deleteGroupPrompt.set(false);
+    restoreOverlayFocus(this.deleteGroupOpener, this.host.nativeElement);
+    this.deleteGroupOpener = null;
+  }
+
+  onDeleteGroupKey(event: KeyboardEvent): void {
+    if (isHandledKey(event)) {
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      this.closeDeleteGroup();
+    } else if (event.key === 'Tab') {
+      trapFocus(event.currentTarget as HTMLElement, event);
+    }
+  }
+
+  /** 刪除整組: an explicit confirmation of `DELETE /splits/{id}` (the server refuses protected groups). */
+  confirmDeleteGroup(): void {
+    const id = this.groupId();
+    if (id === null || this.saving() || this.locked()) {
+      return;
+    }
+    this.write(this.accounting.deleteSplit(id), () => {
+      this.deleteGroupPrompt.set(false);
+      this.deleteGroupOpener = null;
+      this.leave();
+    });
   }
 
   // ---- save ---------------------------------------------------------------
@@ -1137,7 +1726,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       }
       return;
     }
-    if (event.key !== 'Enter' || this.sheet()) {
+    if (event.key !== 'Enter' || this.sheet() || this.deleteGroupPrompt()) {
       return;
     }
     const target = event.target as HTMLElement | null;
@@ -1202,7 +1791,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
 
   save(continuous: boolean): void {
     // No save until the record of the current navigation has arrived (a stale form must never be written).
-    if (this.loading() || this.saving() || this.feeProposal()) {
+    if (this.loading() || this.saving() || this.feeProposal() || this.deleteGroupPrompt()) {
       return;
     }
     // Edit whose record never arrived (failed load): never fall through to a create.
@@ -1210,11 +1799,28 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       this.error.set('記錄未載入，無法儲存');
       return;
     }
+    if (this.saveResponseInvalid()) {
+      this.error.set('儲存回應缺少子項對應，請重新載入');
+      return;
+    }
     const created = this.createdScheduleId();
     if (created !== null) {
       // R-F2: the definition exists; ✓ retries only its catch-up, whatever the (disabled) fields now say.
       this.error.set(null);
       this.runCatchUp(created, continuous);
+      return;
+    }
+    if (this.childScope()) {
+      // Split / group: every child is validated and saved; the parent view never falls back to one child's fields.
+      if (this.locked() || this.definitionLocked()) {
+        this.error.set('MOZE 匯入資料，切換後可編輯');
+        return;
+      }
+      if (this.unsupported()) {
+        this.error.set(this.unsupported());
+        return;
+      }
+      this.saveChildren(continuous);
       return;
     }
     const problem = this.validate();
@@ -1228,11 +1834,11 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       this.saveSchedule(continuous && this.scheduleId() === null);
       return;
     }
-    this.saving.set(true);
     // Captured now: the id set when the matching response was applied, not whatever the route says later.
     const targetId = this.entryId();
     const keepGoing = continuous && targetId === null;
     if (this.kind() === 'transfer') {
+      this.saving.set(true);
       const groupId = targetId === null ? null : (this.transferEdit()?.groupId ?? null);
       // null: the panel shows its own validation message.
       const panel = this.transferPanel();
@@ -1259,48 +1865,163 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       });
       return;
     }
-    const group = this.splitGroup ? { ...this.splitGroup, dateChanged: this.datesKey() !== this.loadedDates } : null;
-    const context = { entryId: targetId, groupId: this.groupId(), group };
-    const counterparty: Observable<number | null> = this.isParty()
-      ? resolveCounterpartyId(this.accounting, this.counterpartyName(), this.counterparties(), party =>
-          this.counterparties.update(list => [...list, party]),
-        )
-      : of(null);
-    const request = counterparty.pipe(
-      map(counterpartyId => planEntrySave(this.buildInput(counterpartyId), this.members(), context)),
-      switchMap(plan =>
-        executeEntrySave(this.accounting, plan).pipe(
-          // Only single-entry writes answer with an `EntryDetail` (and its `proposed_fee`); splits with their ids.
-          map(result => ({
-            plan,
-            detail: plan.kind === 'create' || plan.kind === 'update' ? (result as EntryDetail) : null,
-            memberIds: plan.kind === 'update-split' ? ((result as { member_ids?: number[] } | null)?.member_ids ?? []) : [],
-          })),
-        ),
-      ),
+    this.saveChildren(continuous);
+  }
+
+  /**
+   * The single-entry and split write (spec §2.7): the submitted children, parent, selection and load are captured
+   * first; every editable child is validated (the first invalid one is selected); each typed counterparty is
+   * resolved once per name; then the planner picks one of the five routes. A split answer maps ids by client key.
+   * Errors keep the draft and its dirty state; nothing is retried automatically.
+   */
+  private saveChildren(continuous: boolean): void {
+    if (this.resourcesBlocking()) {
+      this.error.set(this.draftLoadsFailed() ? '子項設定讀取失敗，請重新載入子項設定' : '子項設定載入中，請稍候');
+      return;
+    }
+    const owner = this.drafts.capture();
+    if (owner && !this.flushChild(owner)) {
+      this.error.set('金額算式有誤');
+      return;
+    }
+    const submitted = structuredClone(this.children());
+    const parent = structuredClone(this.parent());
+    const selected = this.selected();
+    const loadId = this.loadId;
+    const context = { entryId: this.entryId(), groupId: this.groupId() };
+    const owners = submitted.map(child => ({ key: child.key, generation: child.generation }));
+    const keepGoing = continuous && context.entryId === null && context.groupId === null;
+    const single = submitted.length === 1 && context.groupId === null;
+    for (const child of submitted) {
+      if (child.protected) {
+        continue;
+      }
+      try {
+        fullChild(child, parent, this.accounts(), child.counterpartyId, single);
+        if ((child.kind === 'receivable' || child.kind === 'payable') && !child.counterpartyName.trim()) {
+          throw new Error('請輸入對象');
+        }
+      } catch (error) {
+        this.selectBubble(child.key);
+        this.error.set(error instanceof Error ? error.message : '請檢查子項');
+        return;
+      }
+    }
+    this.saving.set(true);
+    this.error.set(null);
+    this.fieldErrors.set({});
+    const ownersCurrent = () =>
+      this.loadId === loadId &&
+      owners.every(other => this.children().some(child => child.key === other.key && child.generation === other.generation));
+    // One request per typed name in this submission (two children naming a new counterparty create it once).
+    const partyRequests = new Map<string, Observable<number>>();
+    const resolveName = (typed: string): Observable<number> => {
+      const name = typed.trim();
+      let request = partyRequests.get(name);
+      if (!request) {
+        request = resolveCounterpartyId(this.accounting, name, this.counterparties(), party => {
+          if (ownersCurrent()) {
+            this.counterparties.update(rows => (rows.some(other => other.id === party.id) ? rows : [...rows, party]));
+          }
+        }).pipe(shareReplay({ bufferSize: 1, refCount: true }));
+        partyRequests.set(name, request);
+      }
+      return request;
+    };
+    const resolutions = submitted.map(child =>
+      child.protected || (child.kind !== 'receivable' && child.kind !== 'payable')
+        ? of([child.key, null] as const)
+        : resolveName(child.counterpartyName).pipe(map(id => [child.key, id] as const)),
     );
-    this.write(request, ({ plan, detail, memberIds }) => {
-      const input =
-        plan.kind === 'create' || plan.kind === 'update'
-          ? plan.input
-          : (plan.input.members[plan.kind === 'update-split' ? plan.index : 0] as EntryInput);
-      rememberEntryUse(input, this.amount());
-      rememberRecentAccounts([input.account_id]);
-      if (detail?.proposed_fee && Number(detail.proposed_fee) > 0 && !input.fee) {
-        this.feeProposal.set({ entryId: detail.id, amount: detail.proposed_fee, input, continuous: keepGoing });
-        return;
+    forkJoin(resolutions)
+      .pipe(
+        map(pairs => new Map(pairs.filter((pair): pair is readonly [string, number] => pair[1] !== null))),
+        switchMap(parties => {
+          if (!ownersCurrent()) {
+            return EMPTY;
+          }
+          const plan = planEntrySave(submitted, parent, this.accounts(), parties, context);
+          return executeEntrySave(this.accounting, plan).pipe(map(result => ({ plan, result })));
+        }),
+        takeUntilDestroyed(this.destroyRef),
+        finalize(() => {
+          if (this.loadId === loadId) {
+            this.saving.set(false);
+          }
+        }),
+      )
+      .subscribe({
+        next: ({ plan, result }) => {
+          if (this.loadId !== loadId) {
+            return;
+          }
+          this.saving.set(false);
+          rememberRecentAccounts(submitted.map(child => child.accountId));
+          if (plan.kind === 'create' || plan.kind === 'update') {
+            const detail = result as EntryDetail;
+            rememberEntryUse(plan.input, Number(plan.input.original_amount ?? plan.input.amount));
+            this.markClean();
+            if (detail.proposed_fee && Number(detail.proposed_fee) > 0 && !plan.input.fee) {
+              this.feeProposal.set({ entryId: detail.id, amount: detail.proposed_fee, input: plan.input, continuous: keepGoing });
+              return;
+            }
+            this.finish(keepGoing);
+            return;
+          }
+          let ids: Map<string, number>;
+          try {
+            ids = resultIds(result as SplitResult, submitted);
+          } catch (error) {
+            // The server may have committed: no automatic retry (a second POST could duplicate the split).
+            this.error.set(error instanceof Error ? error.message : '請重新載入');
+            this.saveResponseInvalid.set(true);
+            return;
+          }
+          this.children.update(rows => rows.map(child => ({ ...child, id: ids.get(child.key) ?? child.id })));
+          this.groupId.set((result as SplitResult).group_id);
+          this.drafts.droppedNotices.set([]);
+          this.markClean();
+          if (keepGoing) {
+            this.continueEntry();
+            return;
+          }
+          const key = selected === PARENT_KEY ? submitted[0].key : selected;
+          // closeTo: the page before this one in history may be the edit page, so the detail's ✕ must not go back().
+          void this.router.navigateByUrl(`/accounting/entries/${ids.get(key) ?? ids.get(submitted[0].key)}`, {
+            replaceUrl: true,
+            state: { closeTo: 'list' },
+          });
+        },
+        error: (error: unknown) => {
+          if (this.loadId !== loadId) {
+            return;
+          }
+          this.saving.set(false);
+          // 404 / 409 / 422 / network: the draft and its dirty state stay; nothing is resubmitted.
+          const routed = memberError(error, submitted.map(child => child.key));
+          if (routed) {
+            this.selectBubble(routed.key);
+            this.fieldErrors.set({ [routed.field]: routed.message });
+            this.error.set(routed.message);
+          } else if (error instanceof Error) {
+            this.error.set(error.message);
+          } else {
+            this.error.set(writeErrorMessage(error));
+          }
+        },
+      });
+  }
+
+  /** 重新載入 after an unmappable split answer: through the discard prompt when the draft is dirty. */
+  reloadAfterSave(): void {
+    this.registry.requestClose(() => {
+      this.saveResponseInvalid.set(false);
+      this.markClean();
+      if (this.entryId() !== null) {
+        this.reload();
+      } else {
+        void this.router.navigateByUrl('/accounting');
       }
-      if (plan.kind === 'update-split') {
-        // update-split re-inserts every member under new ids: the old id (and the page that showed it) is gone.
-        const newId = memberIds[plan.index];
-        // closeTo: the entry before this page in history is the old id too, so the detail's ✕ must not go back().
-        void this.router.navigateByUrl(newId === undefined ? '/accounting' : `/accounting/entries/${newId}`, {
-          replaceUrl: true,
-          state: { closeTo: 'list' },
-        });
-        return;
-      }
-      this.finish(keepGoing);
     });
   }
 
@@ -1350,8 +2071,10 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.accountId.set(form.accountId);
     this.amountExpr.set(form.amount);
     this.counterpartyName.set(form.counterparty ?? '');
-    this.pendingCategoryId = form.categoryId;
-    this.resolvePendingCategory();
+    const owner = this.drafts.capture();
+    if (owner) {
+      this.drafts.accept(owner, { categoryId: form.categoryId });
+    }
     this.transferEdit.set(form.transfer);
     this.markClean();
   }
@@ -1386,7 +2109,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           description: this.description(),
           tags: this.tags(),
           projectId: this.projectId(),
-          categoryId: this.category()?.id ?? null,
+          categoryId: this.current()?.categoryId ?? null,
           categoryName: this.category()?.name ?? null,
           account: this.account(),
           amount: this.amount(),
@@ -1487,32 +2210,14 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   private sharedFields(): SharedFields {
     return {
       entryDate: this.entryDate(),
-      entryTime: this.entryTime(),
-      postedDate: this.postedDate(),
+      entryTime: this.entryTime() ?? '',
+      postedDate: this.postedDate() ?? '',
       name: this.name(),
       merchant: this.merchant(),
       description: this.description(),
       projectId: this.projectId(),
       tags: this.tags(),
     };
-  }
-
-  private buildInput(counterpartyId: number | null): EntryInput {
-    const offered = new Set(this.offeredRules().map(rule => rule.id));
-    return buildEntryInput({
-      ...this.sharedFields(),
-      kind: this.kind() as WritableEntryKind,
-      account: this.account()!,
-      amount: this.amount()!,
-      fx: this.fx(),
-      categoryId: this.category()?.id ?? null,
-      invoiceNumber: this.invoiceNumber(),
-      invoiceRandom: this.invoiceRandom(),
-      fee: this.fee(),
-      discount: this.discount(),
-      ruleIds: this.accountDetail() ? this.ruleIds().filter(id => offered.has(id)) : this.ruleIds(),
-      counterpartyId,
-    });
   }
 
   addProposedFee(): void {
@@ -1549,15 +2254,15 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   private continueEntry(): void {
     // A reset is part of the load sequence too: anything still in flight is cancelled and its answer dropped.
     this.load(null);
-    const kind = this.kind();
-    const accountId = this.accountId();
+    const child = this.drafts.current() ?? this.children()[0];
+    const kind: FormKind = this.childScope()
+      ? ((child && isWritableKind(child.kind) ? child.kind : this.children().find(row => isWritableKind(row.kind))?.kind) as FormKind | undefined) ?? 'expense'
+      : this.kind();
+    const accountId = child?.accountId ?? null;
     const date = this.entryDate();
-    this.resetFields();
-    this.kind.set(kind);
+    this.resetFields(kind);
     this.accountId.set(accountId);
-    this.entryDate.set(date);
-    this.entryTime.set(nowTime());
-    this.ruleIds.set(this.basicRuleIds());
+    this.parent.update(parent => ({ ...parent, entryDate: date }));
     this.savedFlash.set(true);
     if (this.flashTimer) {
       clearTimeout(this.flashTimer);

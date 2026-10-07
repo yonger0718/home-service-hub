@@ -1,9 +1,14 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TestBed } from '@angular/core/testing';
 import { describe, expect, it } from 'vitest';
+
+import { AccountingService } from '../../../services/accounting.service';
 
 import { makeAccount, makeEntryDetail, makeRule } from '../testing/fixtures';
 import { ChildDraft, newChild, newParent, normalizePosted } from './split-draft';
 import { childFromDetail } from './split-load';
-import { fullChild, permittedRuleIds, planEntrySave, toSplitInput } from './split-save';
+import { executeEntrySave, fullChild, permittedRuleIds, planEntrySave, toSplitInput } from './split-save';
 
 const accounts = [makeAccount()];
 const child = (id: number | null = null): ChildDraft => ({ ...newChild('expense', 1), id, amountExpr: '10' });
@@ -151,5 +156,25 @@ describe('split save contract', () => {
     expect(fullChild(c, parent(), accounts, null, false)).toMatchObject({ original_amount: '12.34567', amount: null });
     c.amountExpr = '13';
     expect(fullChild(c, parent(), accounts, null, false)).toMatchObject({ original_amount: '13', amount: null });
+  });
+
+  it.each([
+    [null, null, 1, 'POST', '/api/accounting/entries'],
+    [7, null, 1, 'PUT', '/api/accounting/entries/7'],
+    [null, null, 2, 'POST', '/api/accounting/splits'],
+    [7, null, 2, 'PUT', '/api/accounting/entries/7/split'],
+    [7, 4, 2, 'PUT', '/api/accounting/splits/4'],
+    [7, 4, 1, 'PUT', '/api/accounting/splits/4'],
+  ] as const)('sends entry=%s group=%s count=%s as %s %s', (entryId, groupId, count, method, url) => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    const http = TestBed.inject(HttpTestingController);
+    const rows = [child(entryId), child()].slice(0, count);
+    const plan = planEntrySave(rows, parent(), accounts, parties, { entryId, groupId });
+    executeEntrySave(TestBed.inject(AccountingService), plan).subscribe();
+    const req = http.expectOne(url);
+    expect(req.request.method).toBe(method);
+    expect(req.request.body).toBe(plan.input);
+    req.flush({});
+    http.verify();
   });
 });

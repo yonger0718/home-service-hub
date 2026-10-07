@@ -19,7 +19,6 @@ import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.ser
 import { makeAccount, makeAccountDetail, makeCategory, makeEntry, makeEntryDetail, makeGroupMember, makePreference, makeRule } from '../testing/fixtures';
 import { EntryDetailComponent } from '../entry-detail/entry-detail';
 import { DirtyFormRegistry } from '../dirty-form.service';
-import { emptyEntryInput } from './entry-save';
 import { EntryFormComponent, NO_RELATED, RelatedLoad } from './entry-form';
 
 /** Stands in for the timeline so the form's real `navigateByUrl('/accounting')` (leave()) has somewhere to land. */
@@ -654,16 +653,19 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
 
     expect(save.disabled).toBe(false);
-    expect(form.members().length).toBe(1);
-    expect(el.querySelectorAll('app-split-lines .member').length).toBe(1);
+    expect(form.children().map(child => child.id)).toEqual([7, 8]);
+    expect(el.querySelectorAll('[data-bubble]:not([data-bubble="parent"])').length).toBe(2);
     save.click();
     settle();
     const put = httpMock.expectOne(r => r.method === 'PUT');
     expect(put.request.url).toBe('/api/accounting/splits/4');
-    expect(put.request.body.members.length).toBe(2);
-    put.flush({});
+    expect(put.request.body.members.map((member: { id: number }) => member.id)).toEqual([7, 8]);
+    expect(put.request.body.members.map((member: { client_key: string }) => member.client_key))
+      .toEqual(form.children().map(child => child.key));
+    put.flush({ group_id: 4, member_ids: [7, 8], members: form.children().map(child => ({ id: child.id!, client_key: child.key })) });
     settle();
-    expect(left()).toBe(true);
+    expect(navigate).toHaveBeenCalledWith('/accounting/entries/7', { replaceUrl: true, state: { closeTo: 'list' } });
+    expect(left()).toBe(false);
   });
 
   it('drops member responses that belong to a previous entry', async () => {
@@ -687,9 +689,9 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
 
     expect((el.querySelector('.name-input') as HTMLInputElement).value).toBe('晚餐');
-    expect(form.members()).toEqual([]);
+    expect(form.children().map(child => child.id)).toEqual([9]);
     expect(form.groupId()).toBeNull();
-    expect(el.querySelector('app-split-lines .member')).toBeNull();
+    expect(el.querySelector('[data-bubble="parent"]')).toBeNull();
 
     (el.querySelector('button.save') as HTMLButtonElement).click();
     settle();
@@ -832,15 +834,25 @@ describe('EntryFormComponent', () => {
     expect(el.querySelector('.form-error')?.textContent).toContain('找不到轉帳的另一筆');
   });
 
-  it('does not offer split lines when editing a single entry', async () => {
+  it('offers ＋ to convert an editable single entry, but not one the server would refuse', async () => {
     const { el } = await open('/accounting/entries/9/edit');
     respond('/api/accounting/entries/9', makeEntryDetail({ id: 9, account_id: 2, category_id: 12, amount: '-250.0000' }));
     respond('/api/accounting/categories', [FOOD]);
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect((el.querySelector('.strip .add') as HTMLButtonElement).disabled).toBe(false);
 
-    expect((el.querySelector('app-split-lines .add') as HTMLButtonElement).disabled).toBe(true);
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    await harness.navigateByUrl('/accounting/entries/10/edit');
+    settle();
+    respond('/api/accounting/entries/10', makeEntryDetail({
+      id: 10, account_id: 2, category_id: 12, settled_by: [makeEntryDetail({ id: 11, is_settlement: true })],
+    }));
+    respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+    expect(el.querySelector('.strip .add')).toBeNull();
+    expect(text(el.querySelector('.strip .hint'))).toBe('此記錄不能拆帳');
+    expect(form.children()[0].protected).toBe(false);
   });
-  it('closes the split sheet on Esc from its + button without leaving the form', async () => {
+  it('＋ adds a child with the main grid open; Esc from that unselected grid asks about the dirty draft', async () => {
     const { el, left } = await open('/accounting/entry');
     respond('/api/accounting/categories', [FOOD]);
     respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
@@ -848,16 +860,19 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '午餐');
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
 
-    const add = el.querySelector('app-split-lines .add') as HTMLButtonElement;
-    add.click();
+    (el.querySelector('.strip .add') as HTMLButtonElement).click();
     settle();
-    respond('/api/accounting/categories', [FOOD]);
-    respond('/api/accounting/counterparties', []);
-    expect(el.querySelector('app-split-lines .sheet')).not.toBeNull();
+    // The inherited account's settings were already read in this navigation.
+    httpMock.expectNone('/api/accounting/accounts/2');
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    expect(form.children()).toHaveLength(2);
+    expect(form.children()[1]).toMatchObject({ kind: 'expense', accountId: 2, categoryId: null });
+    expect(el.querySelector('app-category-picker .grid')).not.toBeNull();
 
-    add.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    el.querySelector('app-category-picker .grid .cat')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     settle();
-    expect(el.querySelector('app-split-lines .sheet')).toBeNull();
+    expect(text(el.querySelector('.discard-strip'))).toContain('放棄未儲存的內容？');
     expect(left()).toBe(false);
     expect(harness.routeNativeElement?.querySelector('.entry-form')).not.toBeNull();
   });
@@ -875,7 +890,7 @@ describe('EntryFormComponent', () => {
     settle();
     respond('/api/accounting/entries/7', { ...SPLIT_SEVEN, group: null, group_members: [] });
     expect(form.groupId()).toBeNull();
-    expect(form.members()).toEqual([]);
+    expect(form.children().map(child => child.id)).toEqual([7]);
 
     (el.querySelector('button.save') as HTMLButtonElement).click();
     settle();
@@ -956,6 +971,8 @@ describe('EntryFormComponent', () => {
     convertYen(el, '.fx-rate', '0.25');
 
     chooseAccount(el, 5);
+    // The reset conversion is online: the child's reconciler asks for the display quote of the new pair.
+    respond('/api/accounting/fx-rate', { date: '2026-10-02', base: 'JPY', quote: 'USD', rate: '0.0067', source: 'cache' });
 
     expect(text(el.querySelector('.form-notice'))).toBe('已重設匯率（帳戶幣別變更）');
     expect(text(el.querySelector('button.cur'))).toBe('JPY');
@@ -982,6 +999,7 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '飲食');
     tap(el, '.cat', '牛排');
     respond('/api/accounting/accounts/5', makeAccountDetail({ id: 5 }));
+    respond('/api/accounting/fx-rate', { date: '2026-10-02', base: 'JPY', quote: 'USD', rate: '0.0067', source: 'cache' });
 
     expect(form.accountId()).toBe(5);
     expect(text(el.querySelector('.form-notice'))).toBe('已重設匯率（帳戶幣別變更）');
@@ -1028,7 +1046,7 @@ describe('EntryFormComponent', () => {
   });
   // ---- C2: editing a split member -------------------------------------------------------------------------------
 
-  it('edits split member 2 keeping the group fields and member order, then lands on its new id', async () => {
+  it('edits split member 2 keeping the group fields, member order and stable ids, then lands on its id', async () => {
     const group = { ...SPLIT_GROUP, name: '聚餐', merchant: '鼎泰豐', description: '週五聚餐' };
     const members = [makeGroupMember({ id: 7 }), makeGroupMember({ id: 8 })];
     const shared = { entry_date: '2026-09-30', entry_time: '19:00:00', posted_date: '2026-09-30', group, group_members: members };
@@ -1065,22 +1083,25 @@ describe('EntryFormComponent', () => {
       entry_time: '19:00:00',
     });
     const body = put.request.body.members;
+    expect(body.map((line: { id: number }) => line.id)).toEqual([7, 8]);
     expect(body.map((line: { amount: string }) => line.amount)).toEqual(['200', '120']);
-    expect(body[1]).toMatchObject({ kind: 'receivable', counterparty_id: 5, description: '代墊 Alan', entry_date: '2026-09-30' });
+    expect(body[1]).toMatchObject({
+      kind: 'receivable', counterparty_id: 5, description: '代墊 Alan', entry_date: '2026-09-30', entry_time: '19:00:00',
+    });
     expect(form.isDirty()).toBe(true);
     const cleared = pendingClose();
-    put.flush({ group_id: 4, member_ids: [21, 22] });
+    put.flush({ group_id: 4, member_ids: [7, 8], members: form.children().map(child => ({ id: child.id!, client_key: child.key })) });
     settle();
     cleared();
     expect(form.isDirty()).toBe(false);
     await Promise.all(navigate!.mock.results.map(result => result.value));
 
-    expect(navigate).toHaveBeenCalledWith('/accounting/entries/22', { replaceUrl: true, state: { closeTo: 'list' } });
-    expect(TestBed.inject(Router).url).toBe('/accounting/entries/22');
+    expect(navigate).toHaveBeenCalledWith('/accounting/entries/8', { replaceUrl: true, state: { closeTo: 'list' } });
+    expect(TestBed.inject(Router).url).toBe('/accounting/entries/8');
     expect(TestBed.inject(Location).back).not.toHaveBeenCalled();
   });
 
-  it('closes the new split member detail to the timeline, not back to the deleted old id', async () => {
+  it('closes the saved split member detail to the timeline, not back to the edit page', async () => {
     TestBed.inject(Router).resetConfig(
       ROUTES.map(route => (route.path === 'accounting/entries/:id' ? { ...route, component: EntryDetailComponent } : route)),
     );
@@ -1094,12 +1115,14 @@ describe('EntryFormComponent', () => {
 
     (el.querySelector('button.save') as HTMLButtonElement).click();
     settle();
-    httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/splits/4').flush({ group_id: 4, member_ids: [21, 22] });
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/splits/4')
+      .flush({ group_id: 4, member_ids: [7, 8], members: form.children().map(child => ({ id: child.id!, client_key: child.key })) });
     settle();
     await Promise.all(navigate!.mock.results.map(result => result.value));
-    expect(TestBed.inject(Router).url).toBe('/accounting/entries/22');
+    expect(TestBed.inject(Router).url).toBe('/accounting/entries/8');
     settle();
-    respond('/api/accounting/entries/22', { ...SPLIT_EIGHT, id: 22, group, group_members: [makeEntry({ id: 21 }), makeEntry({ id: 22 })] });
+    respond('/api/accounting/entries/8', { ...SPLIT_EIGHT, group, group_members: members });
     httpMock.match(r => r.method === 'GET' && r.url === '/api/accounting/accounts').forEach(request => request.flush(ACCOUNTS));
     settle();
 
@@ -1110,7 +1133,7 @@ describe('EntryFormComponent', () => {
     expect(TestBed.inject(Router).url).toBe('/accounting');
   });
 
-  it("uses the edited line's date for the whole split when the owner changed it", async () => {
+  it('uses the parent date for every member when the owner changed it, deriving an equal posting date', async () => {
     const group = { ...SPLIT_GROUP, name: '聚餐', merchant: null, description: null };
     const members = [makeGroupMember({ id: 7 }), makeGroupMember({ id: 8 })];
     const shared = { entry_date: '2026-09-30', entry_time: null, posted_date: '2026-09-30', group, group_members: members };
@@ -1119,7 +1142,12 @@ describe('EntryFormComponent', () => {
     respond('/api/accounting/entries/7', { ...SPLIT_SEVEN, ...shared });
     respond('/api/accounting/categories', [FOOD]);
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
-    const date = el.querySelector('.date-input') as HTMLInputElement;
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    // A split child has no date tile: the dates are the parent's.
+    expect(el.querySelector('.date-input')).toBeNull();
+    (el.querySelector('[data-bubble="parent"]') as HTMLButtonElement).click();
+    settle();
+    const date = el.querySelector('[aria-label="整筆日期"]') as HTMLInputElement;
     date.value = '2026-09-29';
     date.dispatchEvent(new Event('change'));
     settle();
@@ -1129,8 +1157,9 @@ describe('EntryFormComponent', () => {
     const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/splits/4');
     expect(put.request.body.entry_date).toBe('2026-09-29');
     expect(put.request.body.members.map((line: { entry_date: string }) => line.entry_date)).toEqual(['2026-09-29', '2026-09-29']);
+    expect(put.request.body.members.map((line: { posted_date: string | null }) => line.posted_date)).toEqual([null, null]);
     expect(put.request.body.members.map((line: { amount: string }) => line.amount)).toEqual(['200', '100']);
-    put.flush({ group_id: 4, member_ids: [21, 22] });
+    put.flush({ group_id: 4, member_ids: [7, 8], members: form.children().map(child => ({ id: child.id!, client_key: child.key })) });
     settle();
   });
   it('shows the effective rate and 固定 for a fixed converted amount, and 重新換算 goes back online', async () => {
@@ -1498,10 +1527,13 @@ describe('EntryFormComponent', () => {
     tap(el, '.cat', '飲食'); tap(el, '.cat', '午餐');
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 })); keys(el, '1', '7', '0');
     const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
-    form.members.set([emptyEntryInput({ kind: 'expense', account_id: 2, amount: '50' })]); settle();
+    form.addChild(); settle();
+    tap(el, '.cat', '飲食'); tap(el, '.cat', '午餐'); keys(el, '5', '0');
     form.save(false); settle();
     const cleared = pendingClose();
-    httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/splits').flush({ group_id: 6, member_ids: [31, 32] });
+    const post = httpMock.expectOne(r => r.method === 'POST' && r.url === '/api/accounting/splits');
+    expect(post.request.body.members.map((member: { amount: string }) => member.amount)).toEqual(['170', '50']);
+    post.flush({ group_id: 6, member_ids: [31, 32], members: form.children().map((child, i) => ({ id: 31 + i, client_key: child.key })) });
     settle(); cleared();
   });
 
@@ -1553,24 +1585,25 @@ describe('EntryFormComponent', () => {
     });
 
   for (const overlay of [
-    { name: 'split', route: '/accounting/entry', opener: 'app-split-lines .add', host: 'app-split-lines', modal: '.overlay' },
+    { name: 'delete group', route: '/accounting/entries/7/edit', opener: '.delete-group', host: '.entry-form', modal: '.delete-group-dialog' },
     { name: 'transfer fee', route: '/accounting/entry?kind=transfer', opener: 'app-transfer-panel .out-tile .plus', host: 'app-transfer-panel', modal: '.overlay' },
   ]) {
     it(`contains Tab in ${overlay.name}, restores its opener, and sends the next Esc to the dirty form`, async () => {
       const { el, left } = await open(overlay.route);
-      if (overlay.name === 'split') respond('/api/accounting/categories', [FOOD]); else respondTransferCategories();
-      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
-      typeInto(el, '.name-input', '未儲存');
-      if (overlay.name === 'split') {
-        tap(el, '.cat', '飲食'); tap(el, '.cat', '午餐');
+      if (overlay.name === 'delete group') {
+        respond('/api/accounting/entries/7', SPLIT_SEVEN);
+        respond('/api/accounting/entries/8', SPLIT_EIGHT);
+        respond('/api/accounting/categories', [FOOD]);
         respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
+        (el.querySelector('[data-bubble="parent"]') as HTMLButtonElement).click(); settle();
+        typeInto(el, '[aria-label="整筆名稱"]', '未儲存');
+      } else {
+        respondTransferCategories();
+        respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+        typeInto(el, '.name-input', '未儲存');
       }
       const opener = el.querySelector<HTMLButtonElement>(overlay.opener)!;
       opener.focus(); opener.click(); settle();
-      if (overlay.name === 'split') {
-        respond('/api/accounting/categories', [FOOD]);
-        respond('/api/accounting/counterparties', []);
-      }
       const modal = el.querySelector(`${overlay.host} ${overlay.modal}`)!;
       expect(modal.hasAttribute('data-overlay')).toBe(true);
       const controls = Array.from(modal.querySelectorAll<HTMLElement>('button, input, select')).filter(control => !(control as HTMLButtonElement).disabled);
@@ -1720,7 +1753,8 @@ describe('EntryFormComponent', () => {
     expect(request.request.body.account_id).toBe(2);
     const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
     form.accountId.set(1); settle();
-    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    // Account 1's settings were read when the form opened (once per navigation).
+    httpMock.expectNone('/api/accounting/accounts/1');
     request.flush(makeEntryDetail({ id: 99, amount: '-170.0000', account_id: 2, category_id: 12 }));
     settle();
     expect(JSON.parse(localStorage.getItem(RECENT_ACCOUNTS_KEY)!)).toEqual([2]);
@@ -1800,38 +1834,35 @@ describe('EntryFormComponent', () => {
       row.focus();
       row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
       settle();
-      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      // Account 1's settings were read when the form opened (once per navigation).
+      httpMock.expectNone('/api/accounting/accounts/1');
       httpMock.expectNone(r => r.method === 'POST');
       expect(left()).toBe(false);
       expect(el.querySelector('.account-picker .acct-trigger')!.getAttribute('data-value')).toBe('1');
     });
 
-    it('from the 新增拆帳行 modal: picker, then modal, then the discard prompt', async () => {
+    it('from a split child account tile: picker first, then the discard prompt', async () => {
       const { el, left } = await open('/accounting/entry');
       respond('/api/accounting/categories', [FOOD]);
       respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
       tap(el, '.cat', '飲食');
       tap(el, '.cat', '午餐'); // a picked category makes the draft dirty
       respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
-      (el.querySelector('app-split-lines .add') as HTMLButtonElement).click();
+      (el.querySelector('.strip .add') as HTMLButtonElement).click();
       settle();
-      respond('/api/accounting/categories', [FOOD]);
-      respond('/api/accounting/counterparties', []);
-      (el.querySelector('app-split-lines .line-account .acct-trigger') as HTMLButtonElement).click();
+      const trigger = el.querySelector('.account-tile .acct-trigger') as HTMLButtonElement;
+      trigger.focus();
+      trigger.click();
       settle();
 
-      escape(el.querySelector('app-split-lines .line-account .acct-panel')!);
-      expect(el.querySelector('app-split-lines .line-account .acct-panel')).toBeNull();
-      expect(el.querySelector('app-split-lines .sheet')).not.toBeNull();
-
-      expect(document.activeElement).toBe(el.querySelector('app-split-lines .line-account .acct-trigger'));
-      escape(document.activeElement!);
-      expect(el.querySelector('app-split-lines .sheet')).toBeNull();
-      expect(el.querySelectorAll('app-split-lines .member').length).toBe(0);
+      escape(el.querySelector('.account-tile .acct-panel')!);
+      expect(el.querySelector('.account-tile .acct-panel')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
       expect(el.querySelector('.discard-strip')).toBeNull();
-      expect((harness.routeDebugElement!.componentInstance as EntryFormComponent).category()?.id).toBe(12);
+      const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+      expect(form.children()).toHaveLength(2);
+      expect(form.children()[0].categoryId).toBe(12);
 
-      expect(document.activeElement).toBe(el.querySelector('app-split-lines .add'));
       escape(document.activeElement!);
       expect(text(el.querySelector('.discard-strip'))).toContain('放棄未儲存的內容？');
       expect(left()).toBe(false);

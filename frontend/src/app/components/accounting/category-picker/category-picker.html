@@ -1,20 +1,55 @@
-@if (strip(); as sel) {
-  <div class="strip">
-    <button type="button" class="sel" [attr.aria-label]="'更改類別 ' + sel.name" (click)="reopen()">
-      <span class="ico" [style.background]="colorOf(sel)">{{ iconOf(sel) }}</span>
-      <span class="sel-text">
-        <b>{{ sel.name }}</b>
-        @if (amount()) {
-          <small>{{ amount() }}</small>
+@if (bubbles().length) {
+  <div class="strip bubbles" aria-label="多類別子項">
+    @if (parentText(); as text) {
+      <button
+        type="button"
+        class="sel parent-bubble"
+        data-bubble="parent"
+        [attr.aria-pressed]="activeBubble() === 'parent'"
+        (click)="chooseBubble('parent')"
+      >{{ text }}</button>
+    }
+    @for (bubble of bubbles(); track bubble.key) {
+      <button
+        type="button"
+        class="sel"
+        [class.empty]="bubble.empty"
+        [attr.data-bubble]="bubble.key"
+        [attr.aria-pressed]="activeBubble() === bubble.key"
+        (click)="chooseBubble(bubble.key)"
+      >
+        <span class="ico" [style.background]="bubble.color">{{ bubble.icon }}</span>
+        <span class="sel-text"><b>{{ bubble.label }}</b><small>{{ bubble.amount }}</small></span>
+        @if (bubble.protected) {
+          <span class="lock" aria-label="受保護">🔒</span>
         }
-      </span>
-    </button>
-    <ng-content select="[stripExtra]" />
-    @if (splittable()) {
-      <button type="button" class="add" aria-label="新增拆帳行" (click)="addLine.emit()">+</button>
-      <span class="hint">拆帳：每行可用不同類別、帳戶</span>
+      </button>
+    }
+    @if (addVisible()) {
+      <button type="button" class="add" aria-label="新增子項" [disabled]="addDisabled()" (click)="addChild.emit()">＋</button>
+    }
+    @if (addHint(); as hint) {
+      <span class="hint">{{ hint }}</span>
     }
   </div>
+}
+@if (strip(); as sel) {
+  @if (!bubbles().length) {
+    <div class="strip">
+      <button type="button" class="sel" [attr.aria-label]="'更改類別 ' + sel.name" (click)="reopen()">
+        <span class="ico" [style.background]="colorOf(sel)">{{ iconOf(sel) }}</span>
+        <span class="sel-text">
+          <b>{{ sel.name }}</b>
+          @if (amount()) {
+            <small>{{ amount() }}</small>
+          }
+        </span>
+      </button>
+      <ng-content select="[stripExtra]" />
+    </div>
+  }
+} @else if (!gridAllowed()) {
+  <!-- parent / protected child: the strip only -->
 } @else if (openParent(); as parent) {
   <div class="grid" role="listbox" [attr.aria-label]="parent.name + ' 子類別'">
     <button type="button" class="cat back" (click)="back()">

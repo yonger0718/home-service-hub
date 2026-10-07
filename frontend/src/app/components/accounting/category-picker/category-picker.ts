@@ -25,7 +25,21 @@ export function categoryColor(node: CategoryNode, parent: CategoryNode | null): 
   return node.color ?? parent?.color ?? 'var(--app-surface-soft)';
 }
 
-/** Category chooser with one drill-in grid on every layout. */
+/** One child of the entry form's split strip. */
+export interface Bubble {
+  key: string;
+  label: string;
+  icon: string;
+  color: string;
+  amount: string;
+  empty: boolean;
+  protected: boolean;
+}
+
+/**
+ * Category chooser with one drill-in grid on every layout. The entry form passes `bubbles` (its children, a parent
+ * bubble and ＋); other callers keep the single selected strip.
+ */
 @Component({
   selector: 'app-category-picker',
   standalone: true,
@@ -38,10 +52,18 @@ export class CategoryPickerComponent {
   readonly kind = input.required<string>();
   readonly categories = input<CategoryNode[]>([]);
   readonly amount = input<string | null>(null);
-  readonly splittable = input(true);
   readonly selected = model<CategoryNode | null>(null);
   readonly picked = output<CategoryNode>();
-  readonly addLine = output<void>();
+  readonly bubbles = input<Bubble[]>([]);
+  readonly activeBubble = input<string | null>(null);
+  readonly parentText = input<string | null>(null);
+  readonly addVisible = input(false);
+  readonly addDisabled = input(false);
+  readonly addHint = input<string | null>(null);
+  /** False for the parent and for a protected child: no category can be chosen. */
+  readonly gridAllowed = input(true);
+  readonly bubbleSelected = output<string>();
+  readonly addChild = output<void>();
 
   /** main category whose sub-categories are on screen. */
   readonly openParent = signal<CategoryNode | null>(null);
@@ -74,6 +96,23 @@ export class CategoryPickerComponent {
         });
       }
     });
+    // Another bubble never inherits the previous child's drill-in or reopened grid.
+    effect(() => {
+      this.activeBubble();
+      untracked(() => {
+        this.openParent.set(null);
+        this.reopened.set(false);
+      });
+    });
+  }
+
+  /** The selected bubble again reopens its main grid; any other bubble (or the parent) is a selection change. */
+  chooseBubble(key: string): void {
+    if (key === this.activeBubble() && key !== 'parent' && this.gridAllowed()) {
+      this.reopen();
+    } else {
+      this.bubbleSelected.emit(key);
+    }
   }
 
   parentOf(node: CategoryNode): CategoryNode | null {
@@ -128,7 +167,8 @@ export class CategoryPickerComponent {
       event.preventDefault();
       this.reopened.set(false);
       this.cdr.detectChanges();
-      host.querySelector<HTMLButtonElement>('.strip .sel')?.focus();
+      (host.querySelector<HTMLButtonElement>('[data-bubble][aria-pressed="true"]') ??
+        host.querySelector<HTMLButtonElement>('.strip .sel'))?.focus();
     } else if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       if (!event.repeat) button.click();

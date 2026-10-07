@@ -12,7 +12,7 @@
       class="ib ok save"
       aria-label="儲存"
       title="長按或 ⇧⏎：儲存並續記"
-      [disabled]="locked() || definitionLocked() || definitionReadOnly() || saving() || loading() || loadFailed()"
+      [disabled]="locked() || definitionLocked() || definitionReadOnly() || saving() || loading() || loadFailed() || resourcesBlocking() || saveResponseInvalid()"
       (pointerdown)="onSavePointerDown()"
       (pointerup)="onSavePointerUp()"
       (pointerleave)="onSavePointerUp()"
@@ -37,6 +37,18 @@
   }
   @if (error(); as message) {
     <p class="form-error" role="alert">{{ message }}</p>
+  }
+  @if (childScope() && draftLoadsFailed()) {
+    <p class="form-error child-load-error" role="alert">
+      子項設定讀取失敗
+      <button type="button" class="retry-children" (click)="retryChildResources()">重新載入子項設定</button>
+    </p>
+  }
+  @if (saveResponseInvalid()) {
+    <p class="form-error" role="alert">
+      記錄可能已儲存，請重新載入確認
+      <button type="button" class="reload-after-save" (click)="reloadAfterSave()">重新載入</button>
+    </p>
   }
   @if (notice(); as message) {
     <p class="form-notice" role="status">{{ message }}</p>
@@ -73,22 +85,29 @@
     }
   </ng-template>
 
-  <fieldset class="content" [disabled]="locked() || definitionLocked() || definitionReadOnly() || loading() || createdScheduleId() !== null">
-    <div class="kinds" role="tablist" aria-label="記錄類型">
-      @for (tab of kinds; track tab.kind) {
-        <button
-          type="button"
-          role="tab"
-          class="kind-tab"
-          [class.on]="kind() === tab.kind"
-          [attr.aria-selected]="kind() === tab.kind"
-          [disabled]="tabDisabled(tab.kind)"
-          (click)="selectKind(tab.kind)"
-        >{{ tab.label }}</button>
-      }
-    </div>
+  <fieldset class="content" [disabled]="locked() || definitionLocked() || definitionReadOnly() || loading() || saving() || createdScheduleId() !== null">
+    @if (!parentMode()) {
+      <div class="kinds" role="tablist" aria-label="記錄類型">
+        @if (protectedKindLabel(); as label) {
+          <!-- a protected system / refund / transfer child: its real kind, never a selected 系統 tab -->
+          <button type="button" role="tab" class="kind-tab on" aria-selected="true" disabled>{{ label }}</button>
+        } @else {
+          @for (tab of kinds; track tab.kind) {
+            <button
+              type="button"
+              role="tab"
+              class="kind-tab"
+              [class.on]="kind() === tab.kind"
+              [attr.aria-selected]="kind() === tab.kind"
+              [disabled]="tabDisabled(tab.kind)"
+              (click)="selectKind(tab.kind)"
+            >{{ tab.label }}</button>
+          }
+        }
+      </div>
+    }
 
-    @if (kind() === 'transfer') {
+    @if (!childScope() && kind() === 'transfer') {
       <app-transfer-panel
         [accounts]="accounts()"
         [locked]="locked()"
@@ -136,184 +155,251 @@
         </div>
         <label class="tile wide">
           <span class="cap">日期</span>
-          <input type="date" class="date-input" [value]="entryDate()" (change)="entryDate.set($any($event.target).value)" />
+          <input type="date" class="date-input" [value]="entryDate()" (change)="setParentDate('entryDate', $any($event.target).value)" />
         </label>
         <ng-container *ngTemplateOutlet="eventType" />
       </div>
       <textarea class="note" placeholder="備註" aria-label="備註" [value]="description()" (input)="description.set($any($event.target).value)"></textarea>
+      <p class="split-unavailable">此記錄不能拆帳</p>
     } @else {
-      @if (kind() !== 'transfer') {
+      @if (childScope() || kind() !== 'transfer') {
         <app-category-picker
           [kind]="categoryKind() ?? 'expense'"
           [categories]="categories()"
-          [(selected)]="category"
+          [selected]="category()"
+          (selectedChange)="setCategory($event)"
           [amount]="stripAmount()"
-          [splittable]="false"
+          [bubbles]="stripBubbles()"
+          [activeBubble]="selected()"
+          [parentText]="isSplit() ? parentText() : null"
+          [addVisible]="addState().visible"
+          [addDisabled]="addState().disabled || saving()"
+          [addHint]="addState().hint"
+          [gridAllowed]="!parentMode() && !protectedChild() && kind() !== 'transfer' && !isSystem()"
+          (bubbleSelected)="selectBubble($event)"
+          (addChild)="addChild()"
           (picked)="onCategoryPicked($event)"
         />
-        @if (category() !== null && !scheduling()) {
-          <!-- An existing single entry cannot become a split here (that would duplicate it): only split members edit lines. -->
-          <app-split-lines
-            [(members)]="members"
-            [accounts]="accounts()"
-            [defaultAccountId]="accountId()"
-            [disabled]="locked() || (entryId() !== null && groupId() === null)"
-            [knownCounterparties]="counterparties()"
-            (counterpartyCreated)="counterparties.set(counterparties().concat([$event]))"
-          />
-        }
+      } @else {
+        <p class="split-unavailable">此記錄不能拆帳</p>
       }
 
-      <div class="tiles">
-        @if (kind() !== 'transfer') {
-          <div class="tile amount wide" [class.invalid]="amountError()">
-            @if (scheduling() && !fx()) {
-              <span class="cur">{{ accountCurrency() }}</span>
-            } @else {
-              <!-- also on 週期 / 分期 while a rate is set: the FX sheet is where the owner removes it -->
-              <button type="button" class="cur" aria-label="幣種與匯率" (click)="openSheet('fx', $event)">{{ entryCurrency() }}</button>
+      @if (parentMode()) {
+        <section class="split-parent" aria-label="多類別摘要">
+          <div class="split-totals">
+            @for (line of summary(); track line.currency) {
+              <p class="split-net">{{ line.currency }} {{ line.amount === null ? '—' : formatMoney(line.amount, line.currency, { sign: true }) }}</p>
             }
-            @if (isPhone()) {
-              <span class="amount-value">{{ amountText() }}</span>
-            } @else {
-              <input
-                class="amount-input"
-                inputmode="decimal"
-                aria-label="金額，可輸入算式"
-                placeholder="0"
-                [value]="amountExpr()"
-                [attr.aria-invalid]="amountError()"
-                (input)="onAmountInput($any($event.target).value)"
-                (blur)="commitAmountInput($any($event.target).value)"
-              />
-            }
-            @if (!scheduling()) {
-              <button type="button" class="plus fee-open" aria-label="手續費與折扣" (click)="openSheet('fee', $event)">+</button>
+            <p class="split-count">{{ children().length }} 項 · {{ accountCount() }} 個帳戶</p>
+            @for (line of rewards(); track line.currency) {
+              <p class="split-reward">預估回饋 {{ line.currency }} {{ line.amount === null ? '—' : formatMoney(line.amount, line.currency) }}</p>
             }
           </div>
-        }
-
-        <div class="tile wide name-tile">
-          <input class="name-input" placeholder="名稱" aria-label="名稱" [value]="name()" (input)="name.set($any($event.target).value)" />
-          <button type="button" class="cap star" disabled aria-label="存為範本（之後開放）">☆</button>
-        </div>
-
-        @if (kind() !== 'transfer') {
-          <div class="tile account-tile">
-            <app-account-picker
-              class="account-picker"
-              label="帳戶"
-              [accounts]="accountOptions()"
-              [value]="accountId()"
-              [allowArchived]="editing() || scheduleId() !== null"
-              (valueChange)="chooseAccount($event)"
-            />
-          </div>
-        }
-
-        <label class="tile">
-          <span class="sr-only">專案</span>
-          <select class="project-select" (change)="setProject($any($event.target).value)">
-            <option value="" [selected]="projectId() === null">無專案</option>
-            @for (project of projectOptions(); track project.id) {
-              <option [value]="project.id" [selected]="project.id === projectId()">{{ project.name }}</option>
-            }
-          </select>
-        </label>
-
-        @if (isParty()) {
-          <label class="tile">
-            <span class="sr-only">對象</span>
-            <input
-              class="counterparty-input"
-              list="entry-counterparties"
-              placeholder="對象"
-              [value]="counterpartyName()"
-              (input)="counterpartyName.set($any($event.target).value)"
-            />
-          </label>
-          <datalist id="entry-counterparties">
-            @for (party of counterparties(); track party.id) {
-              <option [value]="party.name"></option>
-            }
-          </datalist>
-        } @else {
-          <label class="tile">
-            <span class="sr-only">商家</span>
-            <input class="merchant-input" placeholder="商家" [value]="merchant()" (input)="merchant.set($any($event.target).value)" />
-          </label>
-        }
-        <label class="tile">
-          <span class="sr-only">日期</span>
-          <input type="date" class="date-input" [value]="entryDate()" (change)="entryDate.set($any($event.target).value)" />
-        </label>
-
-        <label class="tile">
-          <span class="sr-only">時間</span>
-          <input type="time" class="time-input" [value]="entryTime()" (change)="entryTime.set($any($event.target).value)" />
-        </label>
-        <ng-container *ngTemplateOutlet="eventType" />
-        <div class="schedule-block">
-          <app-schedule-tabs
-            [kind]="kind()"
-            [entryDate]="entryDate()"
-            [amount]="amount()"
-            [currency]="accountCurrency()"
-            [accounts]="accountOptions()"
-            [accountId]="accountId()"
-            [disabled]="locked() || definitionLocked() || definitionReadOnly() || createdScheduleId() !== null"
-            [definitionMode]="scheduleId() !== null"
-            [editing]="editing()"
-            [errors]="fieldErrors()"
-            [showTabs]="false"
-            [(draft)]="scheduleDraft"
-          >
-            <label class="adv-row">
-              <span>入帳日</span>
-              <input type="date" class="posted-input" [value]="postedDate() || entryDate()" (change)="postedDate.set($any($event.target).value)" />
+          <div class="tiles">
+            <label class="tile wide">
+              <span class="cap">商家</span>
+              <input class="parent-merchant" aria-label="整筆商家" [value]="parent().merchant" (input)="setParentText('merchant', $any($event.target).value)" />
             </label>
-          </app-schedule-tabs>
-        </div>
-        @if (scheduling()) {
-          <p class="tile wide schedule-unsupported" aria-live="polite">週期／分期不含：手續費、拆帳、外幣、發票</p>
+            <label class="tile">
+              <span class="cap">日期</span>
+              <input type="date" aria-label="整筆日期" [disabled]="dateLocked()" [value]="parent().entryDate" (change)="setParentDate('entryDate', $any($event.target).value)" />
+            </label>
+            <label class="tile">
+              <span class="cap">時間</span>
+              <input type="time" step="1" aria-label="整筆時間" [disabled]="dateLocked()" [value]="parent().entryTime ?? ''" (change)="setParentDate('entryTime', $any($event.target).value)" />
+            </label>
+            <label class="tile wide">
+              <span class="cap">入帳日</span>
+              <input type="date" aria-label="整筆入帳日" [disabled]="dateLocked()" [value]="parent().postedDate ?? parent().entryDate" (change)="setParentDate('postedDate', $any($event.target).value)" />
+            </label>
+            @if (dateLocked()) {
+              <p class="tile wide split-hint">含受保護子項，日期不可更改</p>
+            }
+            @if (mixedDates()) {
+              <p class="tile wide split-hint">子項日期不一致；改日期會套用到全部子項</p>
+            }
+            <label class="tile wide">
+              <span class="cap">整筆名稱</span>
+              <input aria-label="整筆名稱" [value]="parent().name" (input)="setParentText('name', $any($event.target).value)" />
+            </label>
+          </div>
+          <textarea class="note" placeholder="整筆備註" aria-label="整筆備註" [value]="parent().description" (input)="setParentText('description', $any($event.target).value)"></textarea>
+          @if (groupId() !== null) {
+            <button type="button" class="delete-group" (click)="openDeleteGroup($event)">刪除整組</button>
+          }
+        </section>
+      } @else {
+        @if (protectedText(); as text) {
+          <p class="protected-note" role="note">🔒 {{ text }}：只能修改名稱、專案、標籤與備註</p>
         }
-        @if (kind() !== 'transfer' && !scheduling()) {
-          <div class="tile invoice-tile">
-            <input class="invoice-input" placeholder="發票號碼" aria-label="發票號碼" maxlength="16" [value]="invoiceNumber()" (input)="invoiceNumber.set($any($event.target).value)" />
-            <input class="random-input" placeholder="隨機碼" aria-label="隨機碼" maxlength="8" [value]="invoiceRandom()" (input)="invoiceRandom.set($any($event.target).value)" />
+        <div class="tiles">
+          @if (kind() !== 'transfer' || childScope()) {
+            <div class="tile amount wide" [class.invalid]="amountError()">
+              @if (scheduling() && !fx()) {
+                <span class="cur">{{ accountCurrency() }}</span>
+              } @else {
+                <!-- also on 週期 / 分期 while a rate is set: the FX sheet is where the owner removes it -->
+                <button type="button" class="cur" aria-label="幣種與匯率" [disabled]="protectedChild()" (click)="openSheet('fx', $event)">{{ entryCurrency() }}</button>
+              }
+              @if (isPhone() || protectedChild()) {
+                <span class="amount-value" tabindex="-1">{{ protectedChild() ? protectedAmount() : amountText() }}</span>
+              } @else {
+                <input
+                  class="amount-input"
+                  inputmode="decimal"
+                  aria-label="金額，可輸入算式"
+                  placeholder="0"
+                  [value]="amountExpr()"
+                  [attr.aria-invalid]="amountError()"
+                  (input)="onAmountInput($any($event.target).value)"
+                  (blur)="commitAmountInput($any($event.target).value)"
+                />
+              }
+              @if (!scheduling()) {
+                <button type="button" class="plus fee-open" aria-label="手續費與折扣" [disabled]="protectedChild()" (click)="openSheet('fee', $event)">+</button>
+              }
+            </div>
+          }
+
+          <div class="tile wide name-tile">
+            <input class="name-input" placeholder="名稱" aria-label="名稱" [value]="name()" (input)="name.set($any($event.target).value)" />
+            <button type="button" class="cap star" disabled aria-label="存為範本（之後開放）">☆</button>
+          </div>
+
+          @if (kind() !== 'transfer' || childScope()) {
+            <div class="tile account-tile">
+              <app-account-picker
+                class="account-picker"
+                label="帳戶"
+                [accounts]="accountOptions()"
+                [value]="accountId()"
+                [allowArchived]="editing() || scheduleId() !== null"
+                [disabled]="protectedChild()"
+                (valueChange)="chooseAccount($event)"
+              />
+            </div>
+          }
+
+          <label class="tile">
+            <span class="sr-only">專案</span>
+            <select class="project-select" (change)="setProject($any($event.target).value)">
+              <option value="" [selected]="projectId() === null">無專案</option>
+              @for (project of projectOptions(); track project.id) {
+                <option [value]="project.id" [selected]="project.id === projectId()">{{ project.name }}</option>
+              }
+            </select>
+          </label>
+
+          @if (isParty()) {
+            <label class="tile">
+              <span class="sr-only">對象</span>
+              <input
+                class="counterparty-input"
+                list="entry-counterparties"
+                placeholder="對象"
+                [disabled]="protectedChild()"
+                [value]="counterpartyName()"
+                (input)="counterpartyName.set($any($event.target).value)"
+              />
+            </label>
+            <datalist id="entry-counterparties">
+              @for (party of counterparties(); track party.id) {
+                <option [value]="party.name"></option>
+              }
+            </datalist>
+          } @else if (!isSplit()) {
+            <label class="tile">
+              <span class="sr-only">商家</span>
+              <input class="merchant-input" placeholder="商家" [value]="merchant()" (input)="merchant.set($any($event.target).value)" />
+            </label>
+          }
+          @if (!isSplit()) {
+            <label class="tile">
+              <span class="sr-only">日期</span>
+              <input type="date" class="date-input" [disabled]="dateLocked()" [value]="entryDate()" (change)="setParentDate('entryDate', $any($event.target).value)" />
+            </label>
+
+            <label class="tile">
+              <span class="sr-only">時間</span>
+              <input type="time" step="1" class="time-input" [disabled]="dateLocked()" [value]="entryTime() ?? ''" (change)="setParentDate('entryTime', $any($event.target).value)" />
+            </label>
+            <ng-container *ngTemplateOutlet="eventType" />
+            <div class="schedule-block">
+              <app-schedule-tabs
+                [kind]="kind()"
+                [entryDate]="entryDate()"
+                [amount]="amount()"
+                [currency]="accountCurrency()"
+                [accounts]="accountOptions()"
+                [accountId]="accountId()"
+                [disabled]="locked() || definitionLocked() || definitionReadOnly() || createdScheduleId() !== null"
+                [definitionMode]="scheduleId() !== null"
+                [editing]="editing()"
+                [errors]="fieldErrors()"
+                [showTabs]="false"
+                [(draft)]="scheduleDraft"
+              >
+                <label class="adv-row">
+                  <span>入帳日</span>
+                  <input type="date" class="posted-input" [disabled]="dateLocked()" [value]="postedDate() || entryDate()" (change)="setParentDate('postedDate', $any($event.target).value)" />
+                </label>
+              </app-schedule-tabs>
+            </div>
+          }
+          @if (scheduling()) {
+            <p class="tile wide schedule-unsupported" aria-live="polite">週期／分期不含：手續費、拆帳、外幣、發票</p>
+          }
+          @if ((kind() !== 'transfer' || childScope()) && !scheduling()) {
+            <div class="tile invoice-tile">
+              <input class="invoice-input" placeholder="發票號碼" aria-label="發票號碼" maxlength="16" [disabled]="protectedChild()" [value]="invoiceNumber()" (input)="setInvoice('number', $any($event.target).value)" />
+              <input class="random-input" placeholder="隨機碼" aria-label="隨機碼" maxlength="8" [disabled]="protectedChild()" [value]="invoiceRandom()" (input)="setInvoice('random', $any($event.target).value)" />
+            </div>
+          }
+        </div>
+
+        <div class="chips">
+          @if ((kind() !== 'transfer' || childScope()) && !scheduling()) {
+            @for (rule of offeredRules(); track rule.id) {
+              <button
+                type="button"
+                class="chip rule-chip"
+                [class.off]="!ruleIds().includes(rule.id)"
+                [attr.aria-pressed]="ruleIds().includes(rule.id)"
+                [disabled]="protectedChild()"
+                (click)="toggleRule(rule.id)"
+              >{{ ruleLabel(rule) }}</button>
+            }
+          }
+          @for (tag of tags(); track tag) {
+            <button type="button" class="chip tag" [attr.aria-label]="'移除標籤 ' + tag" (click)="removeTag(tag)">#{{ tag }} ×</button>
+          }
+          @if ((kind() !== 'transfer' || childScope()) && !scheduling()) {
+            @if (fee(); as child) {
+              <span class="chip fee">{{ child.name || '手續費' }} {{ feeText(child) }}</span>
+            }
+            @if (discount(); as child) {
+              <span class="chip">{{ child.name || '折扣' }} {{ discountText(child) }}</span>
+            }
+          }
+          <input class="chip-input" placeholder="#標籤 / 紅利回饋" aria-label="新增標籤" (keydown.enter)="onTagEnter($event)" (blur)="onTagBlur($event)" />
+        </div>
+
+        <textarea class="note" placeholder="備註" aria-label="備註" [value]="description()" (input)="description.set($any($event.target).value)"></textarea>
+        @if (childMerchant(); as shop) {
+          <p class="child-merchant">商家（此項）{{ shop }}</p>
+        }
+        @for (message of removalNotices(); track message) {
+          <p class="form-notice removal-notice" role="status">{{ message }}</p>
+        }
+        @if (isSplit()) {
+          <div class="child-actions">
+            <button type="button" class="remove-child" [disabled]="removeReason() !== null" (click)="removeChild()">移除此項</button>
+            @if (removeReason(); as reason) {
+              <span class="remove-hint">{{ reason }}</span>
+            }
           </div>
         }
-      </div>
-
-      <div class="chips">
-        @if (kind() !== 'transfer' && !scheduling()) {
-          @for (rule of offeredRules(); track rule.id) {
-            <button
-              type="button"
-              class="chip rule-chip"
-              [class.off]="!ruleIds().includes(rule.id)"
-              [attr.aria-pressed]="ruleIds().includes(rule.id)"
-              (click)="toggleRule(rule.id)"
-            >{{ ruleLabel(rule) }}</button>
-          }
-        }
-        @for (tag of tags(); track tag) {
-          <button type="button" class="chip tag" [attr.aria-label]="'移除標籤 ' + tag" (click)="removeTag(tag)">#{{ tag }} ×</button>
-        }
-        @if (kind() !== 'transfer' && !scheduling()) {
-          @if (fee(); as child) {
-            <span class="chip fee">{{ child.name || '手續費' }} {{ feeText(child) }}</span>
-          }
-          @if (discount(); as child) {
-            <span class="chip">{{ child.name || '折扣' }} {{ discountText(child) }}</span>
-          }
-        }
-        <input class="chip-input" placeholder="#標籤 / 紅利回饋" aria-label="新增標籤" (keydown.enter)="onTagEnter($event)" (blur)="onTagBlur($event)" />
-      </div>
-
-      <textarea class="note" placeholder="備註" aria-label="備註" [value]="description()" (input)="description.set($any($event.target).value)"></textarea>
-
-
+      }
     }
   </fieldset>
 
@@ -329,7 +415,7 @@
         }
       </div>
     }
-    @if (isPhone() && !locked() && kind() !== 'transfer') {
+    @if (isPhone() && !locked() && kind() !== 'transfer' && !parentMode() && !protectedChild()) {
       @if (isSystem()) {
         <app-amount-keypad
           [layout]="preference().keypad_layout"
@@ -342,7 +428,8 @@
           [layout]="preference().keypad_layout"
           [quickAmounts]="quick()"
           [decimals]="decimals()"
-          [(value)]="amountExpr"
+          [value]="amountExpr()"
+          (valueChange)="amountExpr.set($event)"
           (next)="focusName()"
           (save)="save(false)"
         />
@@ -353,9 +440,10 @@
   @if (sheet() === 'fx' && account(); as current) {
     <app-fx-sheet
       [account]="current"
-      [entryDate]="entryDate()"
+      [entryDate]="childDate()"
       [originalAmount]="amountPlain()"
-      [(value)]="fx"
+      [value]="fx()"
+      (valueChange)="applySheet({ fx: $event })"
       (closed)="onFxClosed()"
     />
   }
@@ -364,9 +452,28 @@
       [amount]="signedConverted()"
       [currency]="accountCurrency()"
       [kind]="kind()"
-      [(fee)]="fee"
-      [(discount)]="discount"
+      [fee]="fee()"
+      (feeChange)="applySheet({ fee: $event })"
+      [discount]="discount()"
+      (discountChange)="applySheet({ discount: $event })"
       (closed)="closeSheet()"
     />
+  }
+
+  @if (deleteGroupPrompt()) {
+    <section
+      class="delete-group-dialog"
+      data-overlay
+      role="alertdialog"
+      aria-modal="true"
+      aria-label="刪除整組記錄？"
+      (keydown)="onDeleteGroupKey($event)"
+    >
+      <p>刪除整組記錄？所有子項都會刪除。</p>
+      <div class="delete-group-actions">
+        <button type="button" class="delete-group-cancel" [disabled]="saving()" (click)="closeDeleteGroup()">取消</button>
+        <button type="button" class="delete-group-confirm" [disabled]="saving()" (click)="confirmDeleteGroup()">刪除整組</button>
+      </div>
+    </section>
   }
 </div>

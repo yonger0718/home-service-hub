@@ -87,18 +87,78 @@ describe('CategoryPickerComponent', () => {
     expect(component.selected()?.id).toBe(2);
   });
 
-  it('emits addLine from the strip plus and hides it when not splittable', () => {
-    const { el, tap, component, fixture } = render();
-    let lines = 0;
-    component.addLine.subscribe(() => lines++);
-    tap('.cat', '交通');
+  it('emits addChild from the bubble strip plus only when the form offers it', () => {
+    const bubble = { key: 'a', label: '交通', icon: '🚌', color: '#fff', amount: '-10', empty: false, protected: false };
+    const { el, component, fixture } = render({ bubbles: [bubble], activeBubble: 'a', addVisible: true });
+    let added = 0;
+    component.addChild.subscribe(() => added++);
 
     (el.querySelector('.strip .add') as HTMLButtonElement).click();
-    expect(lines).toBe(1);
+    expect(added).toBe(1);
 
-    fixture.componentRef.setInput('splittable', false);
+    fixture.componentRef.setInput('addVisible', false);
     fixture.detectChanges();
     expect(el.querySelector('.strip .add')).toBeNull();
+  });
+
+  it('renders outlined, empty and locked bubbles and caps add', () => {
+    const { el, component, fixture } = render({
+      activeBubble: 'b',
+      parentText: '多類別 TWD -10 (2)',
+      bubbles: [
+        { key: 'a', label: '午餐', icon: '🍜', color: '#fff', amount: '-10', empty: false, protected: true },
+        { key: 'b', label: '未選類別', icon: '○', color: '#fff', amount: '0', empty: true, protected: false },
+      ],
+      addVisible: true,
+      addDisabled: true,
+      addHint: '最多 50 項',
+    });
+    expect(el.querySelector('[data-bubble="b"]')?.classList.contains('empty')).toBe(true);
+    expect(el.querySelector('[data-bubble="b"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(el.querySelector('[data-bubble="a"]')?.textContent).toContain('🔒');
+    expect((el.querySelector('.add') as HTMLButtonElement).disabled).toBe(true);
+    expect(el.querySelector('.strip .hint')?.textContent).toContain('最多 50 項');
+    const selected: string[] = [];
+    component.bubbleSelected.subscribe(key => selected.push(key));
+    (el.querySelector('[data-bubble="parent"]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(selected).toEqual(['parent']);
+  });
+
+  it('reopens the main grid from the selected bubble; another bubble is a selection and resets drill-in', () => {
+    const bubbles = [
+      { key: 'a', label: '晚餐', icon: '🍜', color: '#fff', amount: '-10', empty: false, protected: false },
+      { key: 'b', label: '交通', icon: '🚌', color: '#fff', amount: '-5', empty: false, protected: false },
+    ];
+    const { el, component, fixture, tap } = render({ bubbles, activeBubble: 'a', selected: DINNER });
+    const selected: string[] = [];
+    component.bubbleSelected.subscribe(key => selected.push(key));
+    expect(el.querySelector('.grid')).toBeNull();
+    (el.querySelector('[data-bubble="a"]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(labels(el, '.grid .cat')).toEqual(['🍜飲食', '🚌交通', '🛍️購物']);
+    tap('.cat', '飲食');
+    expect(labels(el, '.grid .cat')[0]).toBe('‹返回');
+    (el.querySelector('[data-bubble="b"]') as HTMLButtonElement).click();
+    expect(selected).toEqual(['b']);
+    fixture.componentRef.setInput('activeBubble', 'b');
+    fixture.componentRef.setInput('selected', BUS);
+    fixture.detectChanges();
+    // b's own category is shown collapsed: a's drill-in is not inherited.
+    expect(el.querySelector('.grid')).toBeNull();
+    expect(el.querySelectorAll('.strip .sel')).toHaveLength(2);
+  });
+
+  it('shows only the strip when no category can be chosen (parent / protected child)', () => {
+    const bubble = { key: 'a', label: '退款', icon: '↩', color: '#fff', amount: '+5', empty: false, protected: true };
+    const { el, component, fixture } = render({ bubbles: [bubble], activeBubble: 'a', gridAllowed: false });
+    expect(el.querySelector('.grid')).toBeNull();
+    const selected: string[] = [];
+    component.bubbleSelected.subscribe(key => selected.push(key));
+    (el.querySelector('[data-bubble="a"]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(el.querySelector('.grid')).toBeNull();
+    expect(selected).toEqual(['a']);
   });
 
   it('reopens the grid at the main level from the strip and returns to the mains on reset', () => {
@@ -123,8 +183,9 @@ describe('CategoryPickerComponent', () => {
       tap('.cat', '飲食');
       expect(el.querySelector('.catbar, .subbar, select')).toBeNull();
       tap('.cat', '午餐');
-      expect(el.querySelector('.strip .add')).not.toBeNull();
-      expect(el.querySelector('.strip .hint')?.textContent).toContain('拆帳');
+      expect(el.querySelector('.strip .sel')).not.toBeNull();
+      // Splitting is the entry form's bubble strip; a plain picker offers no ＋.
+      expect(el.querySelector('.strip .add')).toBeNull();
     });
   }
 
@@ -243,6 +304,22 @@ describe('CategoryPickerComponent', () => {
     expect(picked).toEqual([]);
     expect(unhandled).toEqual([]);
     el.parentElement!.removeEventListener('keydown', listener);
+  });
+
+  it('returns Escape focus to the selected bubble, never the parent bubble before it', () => {
+    const bubbles = [
+      { key: 'a', label: '晚餐', icon: '🍜', color: '#fff', amount: '-10', empty: false, protected: false },
+      { key: 'b', label: '交通', icon: '🚌', color: '#fff', amount: '-5', empty: false, protected: false },
+    ];
+    const { el, fixture } = render({ bubbles, activeBubble: 'b', parentText: '多類別 (2)', selected: BUS });
+    (el.querySelector('[data-bubble="b"]') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    const main = document.activeElement!;
+    expect(main.classList.contains('cat')).toBe(true);
+    expect(key(main, 'Escape').defaultPrevented).toBe(true);
+    fixture.detectChanges();
+    expect(el.querySelector('.grid')).toBeNull();
+    expect(document.activeElement).toBe(el.querySelector('[data-bubble="b"]'));
   });
 
   it('leaves main-grid Escape unhandled when there is no selection', () => {

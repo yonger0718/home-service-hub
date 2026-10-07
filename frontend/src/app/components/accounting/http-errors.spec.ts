@@ -51,4 +51,38 @@ describe('http error helpers', () => {
     expect(writeErrorMessage(httpError(0, null))).toBe('無法連線到伺服器');
     expect(writeErrorMessage(new Error('x'))).toBe('儲存失敗，請稍後再試');
   });
+
+  it.each([
+    ['retry', '記錄剛被更新，請重新載入後再試'],
+    ['member_locked', '子項已受保護，請重新載入後再試'],
+    ['already_grouped', '此記錄已屬於群組，請重新載入'],
+    ['entry_locked', '此記錄目前不能拆帳'],
+    ['kind_not_splittable', '此記錄類型不能拆帳'],
+    ['import_running', '匯入進行中，請稍後再試'],
+    ['group_scheduled', '排程產生的群組不可在此修改'],
+    ['locked_until_cutover', 'MOZE 匯入資料，切換後可編輯'],
+  ])('translates the real shared-lib 409 envelope: %s', (message, translated) => {
+    expect(writeErrorMessage(httpError(409, { code: 'conflict', message, trace_id: 'test-trace' }))).toBe(translated);
+  });
+
+  it.each([
+    [409, 'retry: member 7 changed', '記錄剛被更新，請重新載入後再試'],
+    [409, 'member_locked: member 7 (settlement)', '子項已受保護，請重新載入後再試'],
+    [409, 'already_grouped: entry 7 belongs to group 4', '此記錄已屬於群組，請重新載入'],
+    [409, 'kind_not_splittable: entry 7 is listed by a posted schedule period', '此記錄類型不能拆帳'],
+    [409, 'group_scheduled: instance 77', '排程產生的群組不可在此修改'],
+    [409, 'locked_until_cutover: entry 7', 'MOZE 匯入資料，切換後可編輯'],
+    [404, 'member_not_found: member 7', '找不到群組中的子項，請重新載入'],
+  ] as const)('reads message prefix for HTTP %i: %s', (status, message, expected) => {
+    expect(writeErrorMessage(httpError(status, {
+      code: status === 404 ? 'NOT_FOUND' : 'CONFLICT', message, trace_id: 'test',
+    }))).toBe(expected);
+  });
+
+  it('does not treat an arbitrary prefix as a known conflict code', () => {
+    expect(writeErrorMessage(httpError(409, { code: 'CONFLICT', message: 'retrying is unavailable', trace_id: 'test' })))
+      .toBe('retrying is unavailable');
+    // A business code on another status is not a conflict translation.
+    expect(writeErrorMessage(httpError(422, { code: 'X', message: 'retry: no' }))).toBe('retry: no');
+  });
 });

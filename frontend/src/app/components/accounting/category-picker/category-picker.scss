@@ -114,6 +114,60 @@
   }
 }
 
+/* The entry form's children: one scrolling row, the selected child outlined, an uncategorised child dashed. */
+.strip.bubbles {
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding: 0.35rem;
+  scrollbar-width: thin;
+
+  .sel {
+    border: 1px solid transparent;
+    border-radius: 0.75rem;
+    flex: 0 0 auto;
+    max-width: 14rem;
+    padding: 0.25rem 0.5rem 0.25rem 0.25rem;
+  }
+
+  .sel[aria-pressed='true'] {
+    border-color: currentColor;
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
+  }
+
+  .sel.empty {
+    border: 1px dashed var(--app-border);
+  }
+
+  .parent-bubble {
+    background: var(--app-surface-soft);
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 0.45rem 0.65rem;
+    white-space: nowrap;
+  }
+
+  .lock {
+    font-size: 0.75rem;
+  }
+
+  .add {
+    flex: 0 0 auto;
+  }
+
+  .add:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .hint {
+    min-width: max-content;
+    font-size: 0.75rem;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .grid, .strip, button {
     animation: none;

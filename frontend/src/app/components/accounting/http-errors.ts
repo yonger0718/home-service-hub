@@ -1,5 +1,7 @@
 import { HttpErrorResponse } from '@angular/common/http';
 
+import { IMPORT_RUNNING_TOAST, isImportRunning } from './schedule-math';
+
 interface ValidationItem {
   loc?: unknown[];
   msg?: unknown;
@@ -29,30 +31,45 @@ export function fieldErrors(err: unknown): Record<string, string> {
   return result;
 }
 
-/** Schedule 409 codes (`{"detail": "<code>"}`) in the owner's words. */
+/** 409 codes (schedule `{"detail": "<code>"}`, shared_lib `message` = `<code>` or `<code>: <detail>`) in the owner's words. */
 const CONFLICT_MESSAGES: Record<string, string> = {
   definition_ended: '排程已結束，無法編輯',
   already_posted: '此期已入帳',
   skipped: '此期已略過',
   definition_changed: '排程剛變更，請重試',
   busy: '排程工作正在執行，請稍後再試',
+  retry: '記錄剛被更新，請重新載入後再試',
+  member_locked: '子項已受保護，請重新載入後再試',
+  already_grouped: '此記錄已屬於群組，請重新載入',
+  entry_locked: '此記錄目前不能拆帳',
+  kind_not_splittable: '此記錄類型不能拆帳',
+  import_running: IMPORT_RUNNING_TOAST,
+  group_scheduled: '排程產生的群組不可在此修改',
 };
 
 /**
  * One human-readable line for a failed write. 404 / 409 bodies are shared_lib's `{"code", "message", "trace_id"}`
- * (the lock refusal has `message == "locked_until_cutover"`; an ended schedule's PUT `definition_ended`); 422 bodies
- * carry a `detail` list.
+ * whose `message` starts with the business code (`locked_until_cutover`, `retry: …`, `member_locked: …`); 422
+ * bodies carry a `detail` list.
  */
 export function writeErrorMessage(err: unknown): string {
+  if (isImportRunning(err)) {
+    return IMPORT_RUNNING_TOAST;
+  }
   if (err instanceof HttpErrorResponse) {
     const body = err.error as { detail?: unknown; message?: unknown } | null;
     const detail = body?.detail;
-    if (err.status === 409 && (detail === 'locked_until_cutover' || body?.message === 'locked_until_cutover')) {
+    // The business code is the message's prefix (`retry: member 7 changed`), never the generic HTTP `code`.
+    const message = typeof body?.message === 'string' ? body.message : typeof detail === 'string' ? detail : null;
+    const messageCode = message?.split(':', 1)[0].trim();
+    if (err.status === 409 && messageCode === 'locked_until_cutover') {
       return 'MOZE 匯入資料，切換後可編輯';
     }
-    const conflict = err.status === 409 ? (typeof detail === 'string' ? detail : body?.message) : undefined;
-    if (typeof conflict === 'string' && Object.hasOwn(CONFLICT_MESSAGES, conflict)) {
-      return CONFLICT_MESSAGES[conflict];
+    if (err.status === 409 && messageCode && Object.hasOwn(CONFLICT_MESSAGES, messageCode)) {
+      return CONFLICT_MESSAGES[messageCode];
+    }
+    if (err.status === 404 && messageCode === 'member_not_found') {
+      return '找不到群組中的子項，請重新載入';
     }
     if (typeof body?.message === 'string' && body.message) {
       return body.message;

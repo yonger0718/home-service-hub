@@ -177,7 +177,8 @@ describe('EntryFormComponent schedules', () => {
     // Capture the account used by the submitted definition, even if component state changes in flight.
     const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
     form.accountId.set(1); settle();
-    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    // Account 1's settings were read when the form opened (once per navigation).
+    httpMock.expectNone('/api/accounting/accounts/1');
     req.flush(makeDefinition({ id: 9 }));
     settle();
     cleared();
@@ -279,14 +280,15 @@ describe('EntryFormComponent schedules', () => {
     expect(el.querySelector('button.cur')).not.toBeNull();
     expect(el.querySelector('.fee-open')).not.toBeNull();
     expect(el.querySelector('.invoice-tile')).not.toBeNull();
-    expect(el.querySelector('app-split-lines')).not.toBeNull();
+    expect(el.querySelector('.strip .add')).not.toBeNull();
 
     tap(el, '.schedule-tab', '週期');
 
     expect(el.querySelector('button.cur')).toBeNull();
     expect(el.querySelector('.fee-open')).toBeNull();
     expect(el.querySelector('.invoice-tile')).toBeNull();
-    expect(el.querySelector('app-split-lines')).toBeNull();
+    // A schedule cannot be split: ＋ is not offered on 週期 / 分期.
+    expect(el.querySelector('.strip .add')).toBeNull();
     const unsupported = el.querySelector('.tile.wide.schedule-unsupported')!;
     expect(text(unsupported)).toBe('週期／分期不含：手續費、拆帳、外幣、發票');
     expect(unsupported.getAttribute('aria-live')).toBe('polite');
