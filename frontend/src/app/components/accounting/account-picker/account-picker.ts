@@ -168,8 +168,8 @@ export class AccountPickerComponent {
   }
 
   /**
-   * Overlay keyboard contract (spec §3.1): every key handled here is marked handled, so the split-lines modal, the
-   * entry form (⏎ save, Esc cancel) and the layout (Esc, shortcuts) leave it alone. Esc closes only the picker.
+   * Overlay keyboard contract (spec §3.1): every key handled here is marked handled, so the entry form (⏎ save, Esc
+   * cancel) and the layout (Esc, shortcuts) leave it alone. Esc closes only the picker.
    */
   onHostKeydown(event: KeyboardEvent): void {
     if (!this.open() || isHandledKey(event)) {

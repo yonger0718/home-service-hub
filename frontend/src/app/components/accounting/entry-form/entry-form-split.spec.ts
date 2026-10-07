@@ -1,15 +1,18 @@
 import { Component } from '@angular/core';
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
+import { Subject, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { EntryDetail, LedgerAccount } from '../../../models/accounting.model';
+import { AccountDetail, CategoryNode, EntryDetail, FxRateOut, LedgerAccount } from '../../../models/accounting.model';
+import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { DirtyFormRegistry } from '../dirty-form.service';
-import { makeAccount, makeAccountDetail, makeCategory, makeEntryDetail, makePreference } from '../testing/fixtures';
+import { makeAccount, makeAccountDetail, makeCategory, makeEntryDetail, makePreference, makeRule } from '../testing/fixtures';
+import { LAST_USE_PREFIX } from './entry-draft';
 import { EntryFormComponent } from './entry-form';
 
 @Component({ template: '' })
@@ -317,5 +320,569 @@ describe('split form integration', () => {
     expect(form.category()?.id).toBe(12);
     expect(form.kind()).toBe('expense');
     expect(form.accountDetail()?.id).toBe(1);
+  });
+
+  // ---- Task 9: bubbles, ownership and async interleavings -------------------------------------------------------
+
+  it('switches loaded bubbles cleanly and flushes keypad to the old child', async () => {
+    seedGroup(makeEntryDetail({ id: 7, amount: '-10' }), makeEntryDetail({ id: 8, amount: '-5' }));
+    await open('/accounting/entries/7/edit');
+    expect(form.isDirty()).toBe(false);
+    form.selectBubble(form.children()[1].key);
+    settle();
+    expect(form.amountExpr()).toBe('5');
+    expect(form.isDirty()).toBe(false);
+    form.selectBubble(form.children()[0].key);
+    settle();
+    expect(form.isDirty()).toBe(false);
+    clickKey('+');
+    clickKey('2');
+    const second = harness.routeNativeElement!.querySelector<HTMLButtonElement>(`[data-bubble="${form.children()[1].key}"]`)!;
+    second.click();
+    settle(); // flush pending 10+2 before changing selected owner
+    expect(form.children().map(c => c.amountExpr)).toEqual(['12', '5']);
+    clickKey('C');
+    clickKey('9');
+    clickKey('↵');
+    expect(form.children().map(c => c.amountExpr)).toEqual(['12', '9']);
+    form.selectBubble('parent');
+    settle();
+    expect(harness.routeNativeElement!.querySelector('app-amount-keypad')).toBeNull();
+    expect(form.children().map(c => c.amountExpr)).toEqual(['12', '9']);
+  });
+
+  it('parent date controls reject changes whenever any child is protected', async () => {
+    await open();
+    fill();
+    form.addChild();
+    settle();
+    form.children.update(rows => rows.map((c, i) => (i ? { ...c, id: 8, protected: true } : c)));
+    form.selectBubble('parent');
+    settle();
+    const before = structuredClone(form.parent());
+    form.setParentDate('entryDate', '2030-01-01');
+    expect(form.parent()).toEqual(before);
+    const date = harness.routeNativeElement!.querySelector<HTMLInputElement>('[aria-label="整筆日期"]')!;
+    expect(date.disabled).toBe(true);
+    expect(harness.routeNativeElement!.textContent).toContain('含受保護子項，日期不可更改');
+  });
+
+  it('retains outgoing defaults, isolates equal-value siblings and drops removed owners', async () => {
+    await open();
+    fill();
+    const pending: Subject<AccountDetail>[] = [];
+    const spy = vi.spyOn(TestBed.inject(AccountingService), 'getAccount').mockImplementation(() => {
+      const response = new Subject<AccountDetail>();
+      pending.push(response);
+      return response;
+    });
+    form.chooseAccount(2);
+    settle();
+    expect(pending).toHaveLength(1);
+    form.addChild();
+    settle();
+    // The new child has the same account and kind; its request is its own.
+    expect(form.children()[1]).toMatchObject({ accountId: 2, kind: 'expense' });
+    expect(pending).toHaveLength(2);
+    pending[0].next(makeAccountDetail({ id: 2, reward_rules: [makeRule({ id: 99, account_id: 2, is_basic: true })] }));
+    pending[0].complete();
+    settle();
+    // Applied to the outgoing (unselected) child only.
+    expect(form.children()[0].ruleIds).toEqual([99]);
+    expect(form.children()[1].ruleIds).toEqual([]);
+    form.removeChild();
+    settle();
+    pending[1].next(makeAccountDetail({ id: 2, reward_rules: [makeRule({ id: 6, account_id: 2, is_basic: true })] }));
+    pending[1].complete();
+    settle();
+    expect(form.children()).toHaveLength(1);
+    expect(form.children()[0].ruleIds).toEqual([99]);
+    expect(form.draftLoadsPending()).toBe(false);
+    spy.mockRestore();
+  });
+
+  it('drops an in-flight account answer once the same child moved to another account', async () => {
+    await open();
+    fill();
+    const pending: Subject<AccountDetail>[] = [];
+    vi.spyOn(TestBed.inject(AccountingService), 'getAccount').mockImplementation(() => {
+      const response = new Subject<AccountDetail>();
+      pending.push(response);
+      return response;
+    });
+    form.chooseAccount(2);
+    settle();
+    expect(pending).toHaveLength(1);
+    // Back to account 1 (already read): a new generation for the same key, answered from this navigation's cache.
+    form.chooseAccount(1);
+    settle();
+    pending[0].next(makeAccountDetail({ id: 2, reward_rules: [makeRule({ id: 99, account_id: 2, is_basic: true })] }));
+    pending[0].complete();
+    settle();
+    expect(form.children()[0]).toMatchObject({ accountId: 1, ruleIds: [] });
+    expect(form.accountDetail()?.id).toBe(1);
+  });
+
+  it('a failed child settings read blocks the split save until 重新載入子項設定 succeeds', async () => {
+    await open();
+    fill();
+    form.addChild();
+    settle();
+    vi.spyOn(TestBed.inject(AccountingService), 'getAccount')
+      .mockReturnValueOnce(throwError(() => new HttpErrorResponse({ status: 500, statusText: 'Server Error' })));
+    form.chooseAccount(2);
+    form.onCategoryPicked(makeCategory({ id: 12 }));
+    form.onAmountInput('20');
+    settle();
+    const root = harness.routeNativeElement!;
+    expect(form.draftLoadsFailed()).toBe(true);
+    expect(root.querySelector<HTMLButtonElement>('button.save')!.disabled).toBe(true);
+    form.save(false);
+    http.expectNone(r => r.method === 'POST');
+    expect(form.error()).toBe('子項設定讀取失敗，請重新載入子項設定');
+    root.querySelector<HTMLButtonElement>('.retry-children')!.click();
+    settle();
+    expect(form.draftLoadsFailed()).toBe(false);
+    expect(form.children()[1].amountExpr).toBe('20');
+    form.save(false);
+    const req = http.expectOne(r => r.method === 'POST' && r.url.endsWith('/splits'));
+    expect(req.request.body.members.map((m: { account_id: number }) => m.account_id)).toEqual([1, 2]);
+    req.flush({ detail: [{ loc: ['members.1.amount'], msg: 'test rejection' }] }, { status: 422, statusText: 'Unprocessable Entity' });
+  });
+
+  it('parent Escape uses the existing discard prompt', async () => {
+    await open();
+    fill();
+    form.addChild();
+    settle();
+    form.selectBubble('parent');
+    settle();
+    harness.routeNativeElement!.querySelector('.entry-form')!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+    settle();
+    expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(true);
+  });
+
+  // ---- R1: single originals, validation, defaults, field map ----------------------------------------------------
+
+  it.each(['settled', 'refunded', 'loan'] as const)('keeps %s single editing but hides convert plus', async marker => {
+    const d = makeEntryDetail({ id: 7 });
+    if (marker === 'settled') d.settled_by = [makeEntryDetail({ id: 8, is_settlement: true })];
+    if (marker === 'refunded') d.refunded_by = [makeEntryDetail({ id: 8, kind: 'refund' })];
+    if (marker === 'loan') {
+      d.kind = 'payable';
+      d.counterparty = 'Alan';
+      d.counterparty_id = 4;
+      d.loan_schedule = {
+        definition_id: 12, name: '信貸 每月還款', status: 'active', posting_mode: 'auto', posted_count: 3, times: 36,
+        next_due_date: '2027-02-09', next_amount: [{ currency: 'TWD', amount: '-8953.0000' }],
+        remaining: '-275001.0000', repaid: '24999.0000', needs_check: false,
+      };
+    }
+    entries.set(7, d);
+    await open('/accounting/entries/7/edit');
+    if (marker === 'loan') form.counterparties.set([{ id: 4, name: 'Alan', open_amounts: [], moze_id: null }]);
+    expect(form.children()[0].protected).toBe(false);
+    expect(form.addState().visible).toBe(false);
+    form.name.set('changed');
+    form.save(false);
+    const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7'));
+    expect(req.request.body.name).toBe('changed');
+    if (marker === 'loan') expect(req.request.body.counterparty_id).toBe(4);
+    req.flush(makeEntryDetail({ id: 7, name: 'changed' }));
+    await harness.fixture.whenStable();
+  });
+
+  it('parent validates each child and blocks missing manual FX before HTTP', async () => {
+    await open();
+    fill();
+    form.addChild();
+    settle();
+    fill('20');
+    form.fx.set({
+      original_amount: '20', original_currency: 'USD', account_currency: 'TWD',
+      use_online: false, manual: 'rate', fx_rate: null, amount: null, rate_date: null,
+    });
+    const invalidKey = form.selected();
+    form.selectBubble('parent');
+    settle();
+    form.save(false);
+    http.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+    expect(form.selected()).toBe(invalidKey);
+    expect(form.error()).toBe('請輸入匯率或轉換後金額');
+  });
+
+  it('plus opens main grid; picking focuses phone amount and keeps inherited account', async () => {
+    await open();
+    fill();
+    localStorage.setItem(LAST_USE_PREFIX + '12', JSON.stringify({ account_id: 2, project_id: 9 }));
+    form.addChild();
+    settle();
+    const root = harness.routeNativeElement!;
+    expect(root.querySelector('app-category-picker .grid')).not.toBeNull();
+    root.querySelector<HTMLButtonElement>('app-category-picker .grid .cat')!.click();
+    settle();
+    expect(root.querySelector('app-category-picker .grid')).toBeNull();
+    expect(document.activeElement).toBe(root.querySelector('.amount-value'));
+    expect(form.accountId()).toBe(1);
+    expect(form.projectId()).toBeNull();
+  });
+
+  it('mixed kinds select their own tabs, with transfer and system disabled', async () => {
+    seedGroup(makeEntryDetail({ id: 7, kind: 'expense' }), makeEntryDetail({ id: 8, kind: 'income', amount: '30' }));
+    await open('/accounting/entries/7/edit');
+    expect(form.kind()).toBe('expense');
+    form.selectBubble(form.children()[1].key);
+    settle();
+    expect(form.kind()).toBe('income');
+    const tabs = [...harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('.kind-tab')];
+    expect(tabs.find(t => t.getAttribute('aria-selected') === 'true')?.textContent).toContain('收入');
+    for (const word of ['轉帳', '系統']) expect(tabs.find(t => t.textContent?.includes(word))?.disabled).toBe(true);
+  });
+
+  it('shows a protected system child with its real kind label and disabled financial fields', async () => {
+    const group = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-5', currency: 'TWD' };
+    const a = makeEntryDetail({ id: 7, group });
+    const b = makeEntryDetail({ id: 8, kind: 'reward', amount: '5', category_id: null, group });
+    const members = [{ ...a, protected: false, protected_reason: null }, { ...b, protected: true, protected_reason: 'system' }];
+    entries.set(7, { ...a, group_members: members });
+    entries.set(8, { ...b, group_members: members });
+    await open('/accounting/entries/8/edit');
+    const root = harness.routeNativeElement!;
+    const tabs = [...root.querySelectorAll<HTMLButtonElement>('.kind-tab')];
+    expect(tabs.map(t => t.textContent?.trim())).toEqual(['紅利回饋']);
+    expect(tabs[0].disabled).toBe(true);
+    expect(root.querySelector('.protected-note')?.textContent).toContain('系統記錄');
+    expect(root.querySelector('app-amount-keypad')).toBeNull();
+    expect(root.querySelector('app-category-picker .grid')).toBeNull();
+    expect(root.querySelector<HTMLButtonElement>('.fee-open')!.disabled).toBe(true);
+    expect(root.querySelector<HTMLButtonElement>('button.cur')!.disabled).toBe(true);
+    expect(root.querySelector<HTMLInputElement>('.name-input')!.disabled).toBe(false);
+    expect(root.querySelector('.remove-child')?.hasAttribute('disabled')).toBe(true);
+    expect(root.textContent).toContain('受保護子項不可移除');
+  });
+
+  it('changing A account does not clear B FX, fee or rules', async () => {
+    await open();
+    fill();
+    form.addChild();
+    settle();
+    fill('20');
+    form.fx.set({
+      original_amount: '20', original_currency: 'USD', account_currency: 'TWD', use_online: false,
+      manual: 'amount', amount: '600', fx_rate: null, rate_date: null,
+    });
+    form.fee.set({ amount: '2', name: null });
+    form.ruleIds.set([99]);
+    form.rulesTouched.set(true);
+    const b = structuredClone(form.children()[1]);
+    form.selectBubble(form.children()[0].key);
+    form.chooseAccount(2);
+    settle();
+    expect(form.children()[0].accountId).toBe(2);
+    expect(form.children()[1]).toEqual(b);
+  });
+
+  it('each of two archived originals retains only its own archived option', async () => {
+    fixtureAccounts = [makeAccount(), makeAccount({ id: 3, is_archived: true }), makeAccount({ id: 4, is_archived: true })];
+    seedGroup(makeEntryDetail({ id: 7, account_id: 3 }), makeEntryDetail({ id: 8, account_id: 4 }));
+    await open('/accounting/entries/7/edit');
+    expect(form.accountOptions().map(a => a.id)).toEqual([1, 3]);
+    form.selectBubble(form.children()[1].key);
+    settle();
+    expect(form.accountOptions().map(a => a.id)).toEqual([1, 4]);
+  });
+
+  it('existing anchor round-trips metadata and all edited parent dates through plus', async () => {
+    entries.set(7, makeEntryDetail({
+      id: 7, name: 'child', description: 'note', merchant: 'old shop',
+      entry_date: '2026-01-01', entry_time: '01:02:03.456', posted_date: '2026-01-01',
+    }));
+    await open('/accounting/entries/7/edit');
+    form.setParentDate('entryDate', '2026-02-01');
+    form.setParentDate('entryTime', '11:12');
+    form.setParentDate('postedDate', '2026-02-03');
+    settle();
+    form.addChild();
+    settle();
+    fill('20');
+    form.save(false);
+    const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7/split'));
+    expect(req.request.body.members[0]).toMatchObject({ id: 7, name: 'child', description: 'note', merchant: 'old shop' });
+    for (const m of req.request.body.members) {
+      expect(m).toMatchObject({ entry_date: '2026-02-01', entry_time: '11:12', posted_date: '2026-02-03' });
+    }
+    req.flush({ detail: [{ loc: ['body', 'members.1.amount'], msg: 'test rejection' }] }, { status: 422, statusText: 'Unprocessable Entity' });
+    settle();
+    expect(form.selected()).toBe(form.children()[1].key);
+    form.removeChild();
+    settle();
+    form.merchant.set('new shop');
+    form.save(false);
+    const single = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7'));
+    expect(single.request.body).toMatchObject({
+      name: 'child', description: 'note', merchant: 'new shop', posted_date: '2026-02-03', entry_time: '11:12',
+    });
+    single.flush(makeEntryDetail({ id: 7 }));
+    await harness.fixture.whenStable();
+  });
+
+  it('untouched single keeps time precision and derives posted date after changing date', async () => {
+    entries.set(7, makeEntryDetail({ id: 7, entry_date: '2026-01-01', posted_date: '2026-01-01', entry_time: '12:31:09.123' }));
+    await open('/accounting/entries/7/edit');
+    expect(form.parent().postedDate).toBeNull();
+    form.setParentDate('entryDate', '2026-02-01');
+    settle();
+    form.save(false);
+    const req = http.expectOne(r => r.method === 'PUT');
+    expect(req.request.body).toMatchObject({ entry_date: '2026-02-01', posted_date: null, entry_time: '12:31:09.123' });
+    req.flush(makeEntryDetail({ id: 7 }));
+    await harness.fixture.whenStable();
+  });
+
+  it('a removed child cannot apply its category response to the survivor', async () => {
+    await open();
+    fill();
+    const pending = new Subject<CategoryNode[]>();
+    const spy = vi.spyOn(TestBed.inject(AccountingService), 'getCategories').mockReturnValue(pending);
+    form.addChild();
+    settle();
+    form.selectKind('income');
+    settle();
+    const removed = form.selected();
+    form.removeChild();
+    settle();
+    pending.next([makeCategory({ id: 99, kind: 'income' })]);
+    pending.complete();
+    settle();
+    expect(form.children().some(c => c.key === removed)).toBe(false);
+    expect(form.category()?.id).toBe(12);
+    expect(form.kind()).toBe('expense');
+    expect(form.categories().some(c => c.id === 99)).toBe(false);
+    spy.mockRestore();
+  });
+
+  it('a removed child cannot apply its FX response to the survivor', async () => {
+    await open();
+    fill();
+    form.addChild();
+    settle();
+    fill('20');
+    const pending = new Subject<FxRateOut>();
+    const spy = vi.spyOn(TestBed.inject(AccountingService), 'getFxRate').mockReturnValue(pending);
+    form.fx.set({
+      original_amount: '20', original_currency: 'USD', account_currency: 'TWD', use_online: true,
+      manual: null, amount: null, fx_rate: null, rate_date: null,
+    });
+    form.drafts.invalidate(form.selected());
+    settle();
+    expect(spy).toHaveBeenCalledTimes(1);
+    form.removeChild();
+    settle();
+    pending.next({ date: '2026-10-06', base: 'USD', quote: 'TWD', rate: '999', source: 'test' });
+    pending.complete();
+    settle();
+    expect(form.children()).toHaveLength(1);
+    expect(form.fx()).toBeNull();
+    spy.mockRestore();
+  });
+
+  it('an unselected child still receives its own online quote', async () => {
+    await open();
+    fill();
+    const pending = new Subject<FxRateOut>();
+    vi.spyOn(TestBed.inject(AccountingService), 'getFxRate').mockReturnValue(pending);
+    form.fx.set({
+      original_amount: '10', original_currency: 'USD', account_currency: 'TWD', use_online: true,
+      manual: null, amount: null, fx_rate: null, rate_date: null,
+    });
+    form.drafts.invalidate(form.selected());
+    settle();
+    form.addChild();
+    settle();
+    pending.next({ date: '2026-10-06', base: 'USD', quote: 'TWD', rate: '31.5', source: 'test' });
+    pending.complete();
+    settle();
+    expect(form.children()[0].fx).toMatchObject({ fx_rate: '31.5', use_online: true });
+    expect(form.children()[1].fx).toBeNull();
+  });
+
+  it('shows inconsistent dates and read-only child merchant', async () => {
+    seedGroup(makeEntryDetail({ id: 7, entry_date: '2026-01-01', merchant: 'member shop' }), makeEntryDetail({ id: 8, entry_date: '2026-02-01' }));
+    await open('/accounting/entries/7/edit');
+    expect(harness.routeNativeElement!.textContent).toContain('商家（此項）');
+    expect(harness.routeNativeElement!.textContent).toContain('member shop');
+    form.selectBubble('parent');
+    settle();
+    expect(harness.routeNativeElement!.textContent).toContain('子項日期不一致');
+  });
+
+  it('reselecting a bubble keeps its caches and invalid draft removal is allowed', async () => {
+    await open();
+    fill();
+    const categories = form.categories();
+    form.selectBubble(form.selected());
+    expect(form.categories()).toBe(categories);
+    form.addChild();
+    settle();
+    form.onAmountInput('10+');
+    form.removeChild();
+    settle();
+    expect(form.children()).toHaveLength(1);
+  });
+
+  it('creates a duplicate new counterparty name once per submission', async () => {
+    await open();
+    form.selectKind('receivable');
+    settle();
+    fill();
+    form.counterpartyName.set('Alan');
+    form.addChild();
+    settle();
+    fill('20');
+    form.counterpartyName.set(' Alan ');
+    form.save(false);
+    const party = http.expectOne(r => r.method === 'POST' && r.url.endsWith('/counterparties'));
+    party.flush({ id: 4, name: 'Alan', open_amounts: [], moze_id: null });
+    const split = http.expectOne(r => r.method === 'POST' && r.url.endsWith('/splits'));
+    expect(split.request.body.members.map((c: { counterparty_id: number }) => c.counterparty_id)).toEqual([4, 4]);
+    split.flush({ detail: [{ loc: ['body', 'members.1.amount'], msg: 'test rejection' }] }, { status: 422, statusText: 'Unprocessable Entity' });
+    settle();
+    expect(form.counterparties().map(p => p.id)).toEqual([4]);
+  });
+
+  it('falls back from archived last-use account and retains project without a default', async () => {
+    fixtureAccounts.push(makeAccount({ id: 3, is_archived: true }));
+    await open();
+    localStorage.setItem(LAST_USE_PREFIX + '12', JSON.stringify({ account_id: 3, project_id: null }));
+    form.onCategoryPicked(makeCategory({ id: 12, default_account_id: 2 }));
+    settle();
+    expect(form.accountId()).toBe(2);
+    localStorage.removeItem(LAST_USE_PREFIX + '12');
+    form.projectId.set(9);
+    form.onCategoryPicked(makeCategory({ id: 12, default_account_id: null, default_project_id: null }));
+    settle();
+    expect(form.projectId()).toBe(9);
+  });
+
+  it('delete-group dialog traps focus, restores opener, then Escape asks about dirty parent', async () => {
+    seedGroup(makeEntryDetail({ id: 7 }), makeEntryDetail({ id: 8 }));
+    await open('/accounting/entries/7/edit');
+    form.selectBubble('parent');
+    form.setParentText('name', 'dirty');
+    settle();
+    const root = harness.routeNativeElement!;
+    const opener = root.querySelector<HTMLButtonElement>('.delete-group')!;
+    opener.focus();
+    opener.click();
+    settle();
+    const dialog = root.querySelector<HTMLElement>('.delete-group-dialog')!;
+    expect(dialog.hasAttribute('data-overlay')).toBe(true);
+    const buttons = [...dialog.querySelectorAll<HTMLButtonElement>('button')];
+    expect(document.activeElement).toBe(buttons[0]);
+    buttons.at(-1)!.focus();
+    buttons.at(-1)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(buttons[0]);
+    buttons[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    settle();
+    expect(root.querySelector('.delete-group-dialog')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+    expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(false);
+    opener.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    settle();
+    expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(true);
+  });
+
+  it('delete-group confirmation deletes the whole group and leaves', async () => {
+    seedGroup(makeEntryDetail({ id: 7 }), makeEntryDetail({ id: 8 }));
+    await open('/accounting/entries/7/edit');
+    form.selectBubble('parent');
+    settle();
+    harness.routeNativeElement!.querySelector<HTMLButtonElement>('.delete-group')!.click();
+    settle();
+    harness.routeNativeElement!.querySelector<HTMLButtonElement>('.delete-group-confirm')!.click();
+    const req = http.expectOne(r => r.method === 'DELETE' && r.url.endsWith('/splits/4'));
+    req.flush(null);
+    await harness.fixture.whenStable();
+    expect(form.deleteGroupPrompt()).toBe(false);
+  });
+
+  it('child account picker Escape restores trigger; next Escape prompts the dirty form', async () => {
+    await open();
+    fill();
+    form.addChild();
+    settle();
+    fill('20');
+    const root = harness.routeNativeElement!;
+    const trigger = root.querySelector<HTMLButtonElement>('.account-tile .acct-trigger')!;
+    trigger.focus();
+    trigger.click();
+    settle();
+    const panel = root.querySelector('.account-tile .acct-panel')!;
+    panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    settle();
+    expect(root.querySelector('.account-tile .acct-panel')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(false);
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    settle();
+    expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(true);
+  });
+
+  // ---- PR-B contract: unchanged payload, posted-period refusal ---------------------------------------------------
+
+  it('metadata PUT retains online wire mode and exact original quantity/time', async () => {
+    seedGroup(
+      makeEntryDetail({
+        id: 7, amount: '-370.3680', original_amount: '-12.3456', original_currency: 'USD', fx_source: 'fx_api',
+        fx_rate: '30', entry_time: '19:00:37.125',
+      }),
+      makeEntryDetail({ id: 8 }),
+    );
+    await open('/accounting/entries/7/edit');
+    form.name.set('metadata only');
+    form.save(false);
+    const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/splits/4'));
+    expect(req.request.body.members[0]).toMatchObject({
+      id: 7, entry_time: '19:00:37.125', amount: null, fx_rate: null, original_amount: '12.3456', original_currency: 'USD',
+    });
+    req.flush({ code: 'CONFLICT', message: 'retry: member changed before lock', trace_id: 'test' }, { status: 409, statusText: 'Conflict' });
+    settle();
+    expect(form.isDirty()).toBe(true);
+    expect(form.error()).toBe('記錄剛被更新，請重新載入後再試');
+    http.expectNone(r => r.method !== 'GET');
+  });
+
+  it('hides convert for an import-booked posted period without protecting single editing', async () => {
+    entries.set(7, makeEntryDetail({
+      id: 7, source: 'moze_backup', locked: false,
+      schedule: {
+        definition_id: 12, instance_id: 77, kind: 'recurring', seq: 1, times: null,
+        name: '每月支出', is_partial: false, acted_by: 'import', posted_entry_ids: [7],
+      },
+    }));
+    await open('/accounting/entries/7/edit');
+    expect(form.children()[0].protected).toBe(false);
+    expect(form.addState().visible).toBe(false);
+    form.addChild();
+    expect(form.children()).toHaveLength(1);
+  });
+
+  it('keeps convert draft on authoritative posted-period refusal and does not retry', async () => {
+    entries.set(7, makeEntryDetail({ id: 7, source: 'manual', schedule: null }));
+    await open('/accounting/entries/7/edit');
+    form.addChild();
+    settle();
+    fill('20');
+    form.save(false);
+    http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7/split')).flush({
+      code: 'CONFLICT', message: 'kind_not_splittable: entry 7 is listed by a posted schedule period', trace_id: 'test',
+    }, { status: 409, statusText: 'Conflict' });
+    settle();
+    expect(form.children()).toHaveLength(2);
+    expect(form.isDirty()).toBe(true);
+    expect(form.error()).toBe('此記錄類型不能拆帳');
+    http.expectNone(r => r.method === 'POST' || r.method === 'PUT');
   });
 });

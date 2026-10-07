@@ -8,7 +8,7 @@
 
 **Spec:** Binding v4, precedence update at [`f19e1fb`](https://github.com/yonger0718/home-service-hub/blob/f19e1fb/docs/superpowers/specs/2026-10-06-split-entry-rework-design.md), §2; HTTP contracts §1.3/§1.5/§1.6. Final API authority: [`abf1365:openspec/specs/accounting-ledger/spec.md`](https://github.com/yonger0718/home-service-hub/blob/abf1365/openspec/specs/accounting-ledger/spec.md), requirements Split endpoint, Protected split members, Split upsert by member id, Dissolving a split, Converting an entry into a split, Deleting a member dissolves a one-member split, and Split write phases/errors/lock order. Both spec files remain on their own branches and are not copied or edited here.
 
-**Base / branch:** `main` @ `4e301e24a1c2852258fbced2d98ec0745a2a337c` → `feat/split-entry-rework-fe`. Anchors below refer to this base and include symbols to survive line movement. This commit contains only this plan. Do not execute its implementation steps before the owner's plan review clears (P1 blocks; P2/P3 proceed). PR-B is open as [#55](https://github.com/yonger0718/home-service-hub/pull/55), with final API contract at `feat/split-upsert-api` @ `abf1365`; it must land before frontend delivery. Use contract HTTP mocks until the demo exposes the new routes.
+**Base / branch:** merged `main` @ `e591244908a54397f50528036d33c295f1ff0230` → `feat/split-entry-rework-fe`. The plan was first written against `4e301e24a1c2852258fbced2d98ec0745a2a337c`; `git diff 4e301e2 e591244 -- frontend` is empty, so every frontend line anchor below is unchanged at `e591244`. Anchors include symbols to survive line movement. The owner's plan review has cleared (AGENT-67). PR-B merged as [#55](https://github.com/yonger0718/home-service-hub/pull/55) (`abf1365`, merge `e591244`); its `openspec/specs/accounting-ledger/spec.md` on `main` is the final API contract. Use contract HTTP mocks where the demo backend cannot exercise a route.
 
 **Owner / risk / budget:** lead-astra owns the plan and integration; medium/high regression risk (financial payload preservation, not backend transaction implementation). Implementation author and a capable non-author reviewer must be assigned after approval using the existing workspace routing/capacity rules. No second Lead, nested agents, added capacity or paid fallback. `budget_ref=unknown`; run/usage source unavailable = `null`.
 
@@ -2122,7 +2122,7 @@ it('creates a duplicate new counterparty name once per submission', async () => 
 
 ### Task 9 migration inventory (finding 10)
 
-All anchors below are at base `4e301e2`. Rewrite each existing test rather than deleting its behavioral assertion; remove only the component-specific tests with the deleted split-lines component.
+All anchors below were taken at `4e301e2` and are identical at merged base `e591244` (no frontend change between them). Rewrite each existing test rather than deleting its behavioral assertion; remove only the component-specific tests with the deleted split-lines component.
 
 | Base test anchor | Replacement and retained contract |
 |---|---|
