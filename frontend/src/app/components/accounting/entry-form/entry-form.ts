@@ -655,7 +655,8 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (this.isSystem()) {
       return '儲存時以當下餘額計算調整差額';
     }
-    return this.category() ? '' : '先選類別，帳戶與專案會帶入上次使用的設定';
+    // Last-use account / project defaults apply to a new plain entry only (a split child keeps its inherited account).
+    return this.category() || this.childScope() ? '' : '先選類別，帳戶與專案會帶入上次使用的設定';
   });
 
   private readonly shortcutCommands = inject(AccountingShortcutsService)

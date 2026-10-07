@@ -143,6 +143,7 @@
 
   .parent-bubble {
     background: var(--app-surface-soft);
+    max-width: none;
     font-size: 0.8rem;
     font-weight: 700;
     padding: 0.45rem 0.65rem;

@@ -51,12 +51,19 @@ function sum(lines: CurrencyNet[]): CurrencyNet[] {
   }));
 }
 
-/** The parent's net, one line per account currency. */
+/**
+ * The parent's net, one line per account currency. A child with nothing typed yet adds 0; an invalid expression or
+ * an unknown conversion makes its currency's line unknown.
+ */
 export function netByCurrency(children: readonly ChildDraft[], accounts: readonly LedgerAccount[]): CurrencyNet[] {
   return sum(
     children.map(child => {
       const account = accounts.find(candidate => candidate.id === child.accountId);
-      return { currency: account?.currency ?? child.loaded?.currency ?? '—', amount: accountAmount(child, account) };
+      const blank = !child.protected && isWritableKind(child.kind) && !child.amountExpr.trim();
+      return {
+        currency: account?.currency ?? child.loaded?.currency ?? '—',
+        amount: blank && account ? 0 : accountAmount(child, account),
+      };
     }),
   );
 }

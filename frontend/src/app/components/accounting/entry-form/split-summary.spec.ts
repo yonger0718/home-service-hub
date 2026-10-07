@@ -37,6 +37,13 @@ describe('split summary', () => {
       .toEqual([{ currency: 'TWD', amount: null }]);
   });
 
+  it('counts a blank child as 0 but an invalid expression as unknown', () => {
+    const typed = { ...newChild('expense', 1), amountExpr: '100' };
+    const blank = newChild('expense', 1);
+    expect(netByCurrency([typed, blank], [makeAccount()])).toEqual([{ currency: 'TWD', amount: -100 }]);
+    expect(netByCurrency([typed, { ...blank, amountExpr: '1÷0' }], [makeAccount()])).toEqual([{ currency: 'TWD', amount: null }]);
+  });
+
   it('shows each copy-skipped field, treating whitespace as empty', () => {
     const p = { ...newParent('2026-10-06', ''), name: 'Group', merchant: 'Shop', description: 'Note' };
     const c = childFromDetail(

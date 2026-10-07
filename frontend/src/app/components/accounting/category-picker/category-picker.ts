@@ -2,6 +2,8 @@ import {
   ChangeDetectionStrategy,
   ChangeDetectorRef,
   ElementRef,
+  Injector,
+  afterNextRender,
   inject,
   Component,
   computed,
@@ -86,6 +88,7 @@ export class CategoryPickerComponent {
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly cdr = inject(ChangeDetectorRef);
+  private readonly injector = inject(Injector);
 
   constructor() {
     effect(() => {
@@ -96,14 +99,26 @@ export class CategoryPickerComponent {
         });
       }
     });
-    // Another bubble never inherits the previous child's drill-in or reopened grid.
+    // Another bubble never inherits the previous child's drill-in or reopened grid, and is scrolled into the strip.
     effect(() => {
-      this.activeBubble();
+      const key = this.activeBubble();
       untracked(() => {
         this.openParent.set(null);
         this.reopened.set(false);
       });
+      if (key !== null) {
+        afterNextRender(() => this.revealBubble(key), { injector: this.injector });
+      }
     });
+  }
+
+  private revealBubble(key: string): void {
+    const bubble = Array.from(this.host.nativeElement.querySelectorAll<HTMLElement>('[data-bubble]')).find(
+      element => element.dataset['bubble'] === key,
+    );
+    if (typeof bubble?.scrollIntoView === 'function') {
+      bubble.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
   }
 
   /** The selected bubble again reopens its main grid; any other bubble (or the parent) is a selection change. */
