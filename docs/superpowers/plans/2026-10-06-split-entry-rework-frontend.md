@@ -6,9 +6,9 @@
 
 **Tech Stack:** Angular 21 standalone/signals, RxJS, existing Vitest/HttpTestingController/RouterTestingHarness; no new dependencies.
 
-**Spec:** Binding v4 at [`a864393`](https://github.com/yonger0718/home-service-hub/blob/a864393/docs/superpowers/specs/2026-10-06-split-entry-rework-design.md), §2; HTTP contracts §1.3/§1.5/§1.6. Spec remains on its own branch and is not copied or edited here.
+**Spec:** Binding v4, precedence update at [`f19e1fb`](https://github.com/yonger0718/home-service-hub/blob/f19e1fb/docs/superpowers/specs/2026-10-06-split-entry-rework-design.md), §2; HTTP contracts §1.3/§1.5/§1.6. Spec remains on its own branch and is not copied or edited here.
 
-**Base / branch:** `main` @ `4e301e24a1c2852258fbced2d98ec0745a2a337c` → `feat/split-entry-rework-fe`. Anchors below refer to this base and include symbols to survive line movement. This commit contains only this plan. Do not execute its implementation steps before the owner's plan review clears (P1 blocks; P2/P3 proceed). Backend PR-B must land before frontend delivery; use contract HTTP mocks while its demo routes return 404.
+**Base / branch:** `main` @ `4e301e24a1c2852258fbced2d98ec0745a2a337c` → `feat/split-entry-rework-fe`. Anchors below refer to this base and include symbols to survive line movement. This commit contains only this plan. Do not execute its implementation steps before the owner's plan review clears (P1 blocks; P2/P3 proceed). PR-B has completed all 10 tasks and is in final whole-branch review (owner update); it must land before frontend delivery. Use contract HTTP mocks until the demo exposes the new routes.
 
 **Owner / risk / budget:** lead-astra owns the plan and integration; medium/high regression risk (financial payload preservation, not backend transaction implementation). Implementation author and a capable non-author reviewer must be assigned after approval using the existing workspace routing/capacity rules. No second Lead, nested agents, added capacity or paid fallback. `budget_ref=unknown`; run/usage source unavailable = `null`.
 
@@ -34,7 +34,7 @@
 
 1. Spec focus 1: old members with different dates, change only one amount → every raw date/time/posted date retained. **Task 3, `preserves raw provenance and explicit empty fields`**, and Task 7 HTTP body test.
 2. Spec focus 4: pending keypad commit flushed to old child before switch; subsequent input targets new child. **Task 4, `flushes before changing owner, including parent`** and Task 9 DOM regression.
-3. Spec focus 5: removed/replaced child account/category/FX responses dropped by key + generation, including equal account/kind values. **Task 4, `drops same-value stale owners`**.
+3. Spec focus 5: removed/replaced child account/category/FX responses dropped by key + generation, including equal account/kind values. **Task 4, `accepts unselected owners but drops removed or changed generations`**, plus Task 9 removed-category/FX HTTP regressions.
 4. Additional: protected settlement/refund/system signs are server signs; no original FX currency summed. **Task 6, `uses stored signs and account currencies`**.
 5. Additional: dissolution cannot discard the last persisted id; keep payload contains no financial/date properties and routes errors by submitted keys. **Task 2, `guards all four removals`**, **Task 3, `emits only keep metadata`**, **Task 7, `routes indexed errors using submitted keys`**.
 
@@ -42,13 +42,13 @@
 
 - `EditableKind` in the spec is the existing `WritableEntryKind`; do not widen it. `ChildDraft.kind` may carry a real `EntryKind` for protected rows; single transfer/system mode remains a separate `FormKind` adapter.
 - Current wire `fx_source` uses `fx_api` for online. Preserve that DTO spelling unless PR-B explicitly changes it; the spec's “online” is semantic, not permission to invent a wire enum. No main-currency member amount exists in current DTO: `loaded.signedBase=null` unless account currency is the preference's main currency.
-- A switch invalidates the outgoing child's generation after flushing synchronous pending input. Returning to the child starts fresh async requests even with the same kind/account. Response identity is never inferred from these values.
+- A switch flushes pending synchronous input but does not change generation. Existing children may receive valid defaults/quotes while unselected. Account/kind/currency/date dependency changes invalidate that child; removal eliminates its key. A per-child request reconciler refreshes every changed child, not just the visible one.
 - Parent mode's add derives from the last child; protected/non-editable kind falls back by scanning predecessors. Account inheritance still comes from that last/selected child, independently of the kind fallback.
 - New members serialize `merchant:null`; persisted members use raw loaded merchant. When an unsaved split shrinks to one, parent merchant wins only if non-empty; single payload uses parent merchant. Existing-group single layout still edits group parent values until dissolve succeeds.
-- Parent dates compare all three raw values on the first single→split transition. A user time edit may produce minute precision; an untouched loaded time must never be truncated. Date controls display raw values with `step="1"`; millisecond precision stays in the model if the browser display cannot express it.
+- Parent dates compare time/date and normalized posting-date semantics on the first single→split transition; equal-to-entry-date means null in the parent editor, while untouched child provenance stays raw. A user time edit may produce minute precision; an untouched loaded time must never be truncated. Date controls display raw values with `step="1"`; millisecond precision stays in the model if the browser display cannot express it.
 - Async defaults must not rewrite the entire dirty baseline: track a default-only baseline patch for the same child/fields; user edits elsewhere stay dirty. Automatic rule selection is excluded until `rulesTouched`; FX quote rate/date are excluded when online, while user-selected FX inputs remain in the snapshot.
 - Estimates are per-account-currency, exclude existing reward ledger rows and do not claim available statement/window caps. Unknown FX totals display `—`, never zero or an original-currency sum.
-- No required §2 deviation identified. Owner review is still required for these interpretations before implementation.
+- Naming deviation from §2.9: `childFromDetail` owns loaded provenance rather than expanding `entryInputFromDetail` into a mixed draft/API DTO; `entryInputFromDetail` still preserves raw time. No wire/behavior deviation. Owner re-review must clear the three P1 findings before implementation.
 
 ---
 ### Task 1: Type the upsert/convert envelope and protected read flag
@@ -133,7 +133,7 @@ For this type-only transition, existing `toSplitInput` temporarily assigns `clie
 
 ### Task 2: Child/parent state and add/remove field transitions
 
-**Files:** Create `frontend/src/app/components/accounting/entry-form/split-draft.ts` and `split-draft.spec.ts`; consume `entry-draft.ts:14` (`FormKind`), `:48` (`signFor`), `entry-save.ts:131` (`emptyEntryInput`), model types.
+**Files:** Create `frontend/src/app/components/accounting/entry-form/split-draft.ts` and `split-draft.spec.ts`; consume `entry-draft.ts:6` (`FormKind`), `:36` (`signFor`), `entry-save.ts:112` (`emptyEntryInput`), model types.
 
 **Interfaces:** Produces `ChildDraft`, `ParentDraft`, `Owner`, `newChild(kind?: EntryKind, accountId?: number | null): ChildDraft`, `newParent(date: string, time: string): ParentDraft`, `SplitDraftStore`. Public store signals: `children`, `selected`, `parent`, `groupId`, `anchorId`, `droppedNotices`; methods `current(): ChildDraft|null`, `capture(): Owner|null`, `accept(owner: Owner, patch: Partial<ChildDraft>): boolean`, `invalidate(key: string): void`, `add(accounts: readonly LedgerAccount[]): ChildDraft|null`, `removeReason(key: string): string|null`, `remove(key: string): boolean`. `select` is implemented in Task 4, with explicit flush ownership.
 
@@ -197,7 +197,7 @@ Run `cd frontend && npm test -- --watch=false --include src/app/components/accou
 - [ ] **Step 2 — green:** New module:
 
 ```ts
-import { computed, signal } from '@angular/core';
+import { computed, signal, WritableSignal } from '@angular/core';
 import { ChildInput, EntryKind, LedgerAccount, RewardRule } from '../../../models/accounting.model';
 import { FxValue } from '../fx-sheet/fx-sheet';
 import { isWritableKind } from './entry-draft';
@@ -226,20 +226,28 @@ export interface Owner { key: string; generation: number }
 export function newParent(entryDate: string, entryTime: string): ParentDraft {
   return { name: '', merchant: '', description: '', entryDate, entryTime, postedDate: null, dateTouched: false };
 }
+let childSequence = 0;
+export function childKey(source: { randomUUID?: () => string } | undefined = globalThis.crypto): string {
+  if (typeof source?.randomUUID === 'function') return source.randomUUID();
+  // UI identity only, never an authentication token. Process-local monotonic suffix prevents collisions.
+  return `child-${Date.now().toString(36)}-${(++childSequence).toString(36)}`;
+}
 export function newChild(kind: EntryKind = 'expense', accountId: number | null = null): ChildDraft {
   return {
-    key: crypto.randomUUID(), id: null, protected: false, protectedReason: null, kind, categoryId: null,
+    key: childKey(), id: null, protected: false, protectedReason: null, kind, categoryId: null,
     amountExpr: '', accountId, counterpartyName: '', counterpartyId: null, name: '', projectId: null,
     tags: [], description: '', fee: null, discount: null, fx: null, ruleIds: [],
     invoice: { number: '', random: '' }, loaded: null, rulesTouched: false, pendingCategoryId: null,
     generation: 0, availableRules: [],
   };
 }
+export const normalizePosted = (date: string, posted: string | null): string | null =>
+  posted && posted !== date ? posted : null;
 export const nonempty = (value: string | null | undefined): boolean => !!value?.trim();
 export class SplitDraftStore {
   readonly children = signal<ChildDraft[]>([newChild()]);
   readonly selected = signal<string>('');
-  readonly parent;
+  readonly parent: WritableSignal<ParentDraft>;
   readonly groupId = signal<number | null>(null);
   readonly anchorId = signal<number | null>(null);
   readonly droppedNotices = signal<string[]>([]);
@@ -276,10 +284,10 @@ export class SplitDraftStore {
     if (rows.length === 1 && this.groupId() === null) {
       const p = this.parent(), loaded = rows[0].loaded;
       this.parent.set({ ...p, name: '', description: '', dateTouched: !loaded ||
-        p.entryDate !== loaded.entryDate || p.entryTime !== loaded.entryTime || p.postedDate !== loaded.postedDate });
+        p.entryDate !== loaded.entryDate || p.entryTime !== loaded.entryTime ||
+        normalizePosted(p.entryDate, p.postedDate) !== normalizePosted(loaded.entryDate, loaded.postedDate) });
     }
     const next = newChild(kind, accountId);
-    if (this.current()) this.invalidate(this.current()!.key);
     this.children.update(current => [...current, next]);
     this.selected.set(next.key); this.droppedNotices.set([]);
     return next;
@@ -297,9 +305,7 @@ export class SplitDraftStore {
     if (this.removeReason(key)) return false;
     const index = this.children().findIndex(c => c.key === key);
     const rows = this.children().filter(c => c.key !== key);
-    const old = this.current();
-    if (old && old.key !== key) this.invalidate(old.key);
-    // Preserve invalidation when removing an unselected row.
+    // Removing the key invalidates all outstanding callbacks for that child.
     const remaining = this.children().filter(c => c.key !== key);
     this.children.set(remaining);
     this.selected.set(remaining[Math.max(0, index - 1)].key);
@@ -321,7 +327,7 @@ export class SplitDraftStore {
 
 ### Task 3: Pure explicit serializer and five-row save planner
 
-**Files:** Modify `entry-form/entry-save.ts:172–273` (`EntrySavePlan`, `SplitGroupFields`, `toSplitInput`, `planEntrySave`, `executeEntrySave`) and `:370` (`entryInputFromDetail`); tests `entry-save.spec.ts`; new `split-save.spec.ts`.
+**Files:** Create `entry-form/split-save.ts` and `split-save.spec.ts` for the new planner/serializer. Modify `entry-form/entry-save.ts:291` (`entryInputFromDetail`, raw time) and add the fee/discount extractor. Retire old `entry-save.ts:137–225` save-plan exports and migrate `entry-save.spec.ts` only in the Tasks 4–7 vertical integration commit.
 
 **Interfaces:** Consumes `ChildDraft`, `ParentDraft`, account lookup, resolved party IDs. Produces `SaveContext {entryId:number|null;groupId:number|null}`, `fullChild(c: ChildDraft, parent: ParentDraft, accounts: readonly LedgerAccount[], partyId: number|null, single: boolean): EntryInput`, `toSplitInput(children: readonly ChildDraft[], parent: ParentDraft, accounts: readonly LedgerAccount[], partyIds: ReadonlyMap<string,number>): SplitInput`, `planEntrySave(children, parent, accounts, partyIds, context): EntrySavePlan`. Keep `buildEntryInput`, `emptyEntryInput`, counterparty and related-load helpers unchanged except raw `entry_time` preservation.
 
@@ -376,7 +382,7 @@ describe('split save contract', () => {
 
 Run `cd frontend && npm test -- --watch=false --include src/app/components/accounting/entry-form/split-save.spec.ts`; expect signature failures.
 
-- [ ] **Step 2 — green:** Replace save-plan region; add imports `SplitResult`, `SplitMemberInput`, `ChildDraft`, `ParentDraft`, `evalOrNull`, `isWritableKind`.
+- [ ] **Step 2 — green:** Create `split-save.ts` with the following save-plan code; add imports `SplitResult`, `SplitMemberInput`, `ChildDraft`, `ParentDraft`, `normalizePosted`, `evalOrNull`, `isWritableKind`, `rulesForDate`. Import `buildEntryInput` from `./entry-save` and `currencyDecimals` from `../format`.
 
 ```ts
 export interface SaveContext { entryId: number | null; groupId: number | null }
@@ -387,6 +393,12 @@ export type EntrySavePlan =
   | { kind: 'convert-split'; id: number; input: SplitInput }
   | { kind: 'update-split'; groupId: number; input: SplitInput };
 
+export function permittedRuleIds(c: ChildDraft, date: string): number[] {
+  const offered = new Set(rulesForDate(c.availableRules.filter(rule => rule.account_id === c.accountId), date).map(r => r.id));
+  if (c.loaded?.originalAccountId === c.accountId)
+    for (const id of c.loaded.attachedRuleIds) offered.add(id);
+  return c.ruleIds.filter(id => offered.has(id));
+}
 export function fullChild(c: ChildDraft, p: ParentDraft, accounts: readonly LedgerAccount[],
   partyId: number | null, single: boolean): EntryInput {
   if (c.protected || !isWritableKind(c.kind)) throw new Error('受保護子項只可更新備註資料');
@@ -394,23 +406,29 @@ export function fullChild(c: ChildDraft, p: ParentDraft, accounts: readonly Ledg
   if (!account) throw new Error('請選擇帳戶');
   const amount = evalOrNull(c.amountExpr, currencyDecimals(c.fx?.original_currency ?? account.currency));
   if (amount === null || amount <= 0) throw new Error('請輸入有效金額');
-  const dates = single || p.dateTouched || !c.loaded ? p : c.loaded;
+  const fx = c.fx;
+  const manual = fx?.manual === 'amount' ? fx.amount : fx?.manual === 'rate' ? fx.fx_rate : null;
+  if (fx && !fx.use_online && (!manual?.trim() || !Number.isFinite(Number(manual)) || Number(manual) <= 0))
+    throw new Error('請輸入匯率或轉換後金額');
+  const parentDates = single || p.dateTouched || !c.loaded;
+  const dates = parentDates ? p : c.loaded!;
   const input = buildEntryInput({
     kind: c.kind, account, amount, fx: c.fx, categoryId: c.categoryId, counterpartyId: partyId,
     name: c.name, merchant: '', description: c.description, projectId: c.projectId, tags: [...c.tags],
     entryDate: dates.entryDate, entryTime: dates.entryTime ?? '', postedDate: dates.postedDate ?? '',
     invoiceNumber: c.invoice.number, invoiceRandom: c.invoice.random,
-    fee: c.fee, discount: c.discount, ruleIds: [...c.ruleIds],
+    fee: c.fee, discount: c.discount, ruleIds: permittedRuleIds(c, dates.entryDate),
   });
-  // Override sharedInput normalization: null and raw precision are contractual values here.
-  return { ...input, entry_date: dates.entryDate, entry_time: dates.entryTime, posted_date: dates.postedDate,
-    merchant: single ? (p.merchant.trim() || null) : c.loaded?.merchant ?? null };
+  const party = c.kind === 'receivable' || c.kind === 'payable';
+  return { ...input, entry_date: dates.entryDate, entry_time: dates.entryTime,
+    posted_date: parentDates ? normalizePosted(dates.entryDate, dates.postedDate) : dates.postedDate,
+    merchant: single ? (party ? null : p.merchant.trim() || null) : c.loaded?.merchant ?? null };
 }
 export function toSplitInput(children: readonly ChildDraft[], p: ParentDraft,
   accounts: readonly LedgerAccount[], partyIds: ReadonlyMap<string, number>): SplitInput {
   return {
     name: p.name.trim() || null, merchant: p.merchant.trim() || null, description: p.description.trim() || null,
-    entry_date: p.entryDate, entry_time: p.entryTime, posted_date: p.postedDate, project_id: null, tags: [],
+    entry_date: p.entryDate, entry_time: p.entryTime, posted_date: normalizePosted(p.entryDate, p.postedDate), project_id: null, tags: [],
     members: children.map(c => {
       if (c.protected) {
         if (c.id === null) throw new Error('受保護子項缺少記錄編號');
@@ -488,14 +506,15 @@ describe('split owner', () => {
     amount.set('999');
     expect(s.children().map(c => c.amountExpr)).toEqual(['12', '6']);
   });
-  it('drops same-value stale owners', () => {
+  it('accepts unselected owners but drops removed or changed generations', () => {
     const s = new SplitDraftStore(newParent('2026-10-06', ''));
     const a = s.children()[0], request = s.capture()!;
     const b = s.add([makeAccount()])!;
-    expect(s.accept(request, { ruleIds: [99], categoryId: 5 })).toBe(false);
+    expect(s.accept(request, { ruleIds: [99], categoryId: 5 })).toBe(true);
+    expect(s.children()[1].ruleIds).toEqual([]);
     const bRequest = s.capture()!;
     s.select(a.key, () => true);
-    expect(s.accept(bRequest, { fx: null, fee: { amount: '9', name: null } })).toBe(false);
+    expect(s.accept(bRequest, { fx: null, fee: { amount: '9', name: null } })).toBe(true);
     s.remove(b.key);
     expect(s.accept(bRequest, { amountExpr: '500' })).toBe(false);
     const current = s.capture()!;
@@ -515,6 +534,13 @@ describe('split owner', () => {
     expect(draftSnapshot(s.parent(), s.children(), 'schedule', 'transfer', '11')).not.toBe(before);
     s.children.update(rows => rows.map(c => ({ ...c, name: 'user edit' })));
     expect(snap()).not.toBe(before);
+    const owner = s.children()[0];
+    const fx = { original_amount: '20', original_currency: 'USD', account_currency: 'TWD',
+      use_online: true, manual: null, amount: null, fx_rate: '30', rate_date: '2026-10-01' };
+    s.accept({ key: owner.key, generation: owner.generation }, { fx });
+    const quoted = snap();
+    s.accept({ key: owner.key, generation: owner.generation }, { fx: { ...fx, fx_rate: '31', rate_date: '2026-10-02' } });
+    expect(snap()).toBe(quoted);
   });
 });
 ```
@@ -557,7 +583,6 @@ select(key: string, flush: (owner: Owner) => boolean): boolean {
   if (key === 'parent' ? !this.isSplit() : !this.children().some(c => c.key === key)) return false;
   const owner = this.capture();
   if (owner && !flush(owner)) return false;
-  if (owner) this.invalidate(owner.key);
   this.selected.set(key);
   return true;
 }
@@ -592,9 +617,11 @@ private flushChild(owner: Owner): boolean {
   return this.drafts.accept(owner, { amountExpr: String(value) });
 }
 selectBubble(key: string): void {
-  if (this.saving() || this.sheet()) return;
+  if (this.saving() || this.sheet() || key === this.selected()) return;
   if (this.drafts.select(key, owner => this.flushChild(owner))) {
-    this.accountDetail.set(null); this.categories.set([]);
+    const c = this.drafts.current();
+    this.accountDetail.set(c ? this.childAccountCache.get(c.key) ?? null : null);
+    this.categories.set(c ? this.categoryCache.get(c.kind) ?? [] : []);
   }
 }
 ```
@@ -622,42 +649,85 @@ setInvoice(field: 'number' | 'random', value: string): void {
 
 Parent dates are nullable internally; the unchanged schedule/transfer `sharedFields()` uses `entryTime() ?? ''` and `postedDate() ?? ''`. Set `dateTouched` through the user date handler in Task 6, not on initial load.
 
-- [ ] **Step 4 — async replacement:** Replace constructor account/category subscriptions with an owner-bearing selection stream. Import `mergeMap`, `catchError`, `takeUntilDestroyed`, `computed`, `toObservable`, `of`, `map` from the existing packages. Request key includes generation, even if kind/account are equal. Subscriptions are cancelled on destroy; out-of-order responses are filtered by `accept`.
+- [ ] **Step 4 — async replacement:** Replace the selection-only constructor account/category subscriptions with a per-child reconciler. Import `effect`, `untracked` from Angular, `forkJoin`, `of`, `map`, `finalize`, `takeUntilDestroyed` from their existing packages. Keep `categoryCache` for presentation only; neither selection nor same account/kind values identify an owner. Every current generation starts once, including unselected children after a date edit. Add `AccountDetail` to model imports. Add these members and constructor effect:
 
 ```ts
-const ownerState = computed(() => {
-  const c = this.drafts.current();
-  return c ? { owner: { key: c.key, generation: c.generation }, accountId: c.accountId, kind: c.kind } : null;
-});
-toObservable(ownerState).pipe(
-  distinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b)),
-  mergeMap(state => !state || state.accountId === null ? of(null) :
-    this.accounting.getAccount(state.accountId).pipe(
-      map(detail => ({ ...state, detail })), catchError(() => of(null)))),
-  takeUntilDestroyed(),
-).subscribe(result => {
-  if (!result) return;
-  const c = this.children().find(c => c.key === result.owner.key);
-  if (!c) return;
-  const ids = rulesForDate(result.detail.reward_rules, this.parent().entryDate).filter(r => r.is_basic).map(r => r.id);
-  const accepted = this.drafts.accept(result.owner, {
-    availableRules: [...new Map([...c.availableRules, ...result.detail.reward_rules].map(rule => [rule.id, rule])).values()],
-    ruleIds: c.rulesTouched ? c.ruleIds : ids,
+private readonly childAccountCache = new Map<string, AccountDetail | null>();
+private readonly requestedGeneration = new Map<string, number>();
+private readonly pendingDraftLoads = signal<Owner[]>([]);
+private readonly draftLoadErrors = signal<Record<string, string>>({});
+readonly draftLoadsPending = computed(() => this.pendingDraftLoads().some(o =>
+  this.children().some(c => c.key === o.key && c.generation === o.generation)));
+readonly draftLoadsFailed = computed(() => this.children().some(c =>
+  this.draftLoadErrors()[`${c.key}:${c.generation}`] !== undefined));
+// Constructor:
+effect(() => {
+  const rows = this.children();
+  if (!this.childScope() && !isWritableKind(this.singleKind())) return;
+  untracked(() => {
+    for (const c of rows) {
+      if (this.requestedGeneration.get(c.key) === c.generation) continue;
+      this.requestedGeneration.set(c.key, c.generation);
+      this.loadChildResources(c);
+    }
+    for (const key of this.requestedGeneration.keys())
+      if (!rows.some(c => c.key === key)) { this.requestedGeneration.delete(key); this.childAccountCache.delete(key); }
   });
-  if (accepted && this.selected() === result.owner.key) this.accountDetail.set(result.detail);
-});
-toObservable(ownerState).pipe(
-  distinctUntilChanged((a, b) => JSON.stringify(a) === JSON.stringify(b)),
-  mergeMap(state => !state || !isWritableKind(state.kind) ? of(null) :
-    this.loadCategories(state.kind).pipe(map(list => ({ ...state, list })))),
-  takeUntilDestroyed(),
-).subscribe(result => {
-  if (!result || !this.drafts.accept(result.owner, {})) return;
-  if (this.selected() === result.owner.key) this.categories.set(result.list);
 });
 ```
 
-Before an account/kind/FX input change, invalidate that child's generation and capture its new owner. Keep `moveToAccount`'s existing currency-change reset logic, now operating on the selected views; it must not touch any other child. Clear displayed account/category caches immediately on selection to avoid transient wrong rules. Sheets store `sheetOwner:Owner|null` at open; replace `[(value)]="fx"`, `[(fee)]`, `[(discount)]` with explicit outputs `applySheet({fx:$event})`, `applySheet({fee:$event})`, `applySheet({discount:$event})`. `applySheet` calls `accept(sheetOwner, patch)` and never a current view; close copies original amount through the same owner before clearing it. Save callbacks and counterparty resolution use submitted owner tokens (Task 7).
+```ts
+private loadChildResources(child: ChildDraft): void {
+  const owner: Owner = { key: child.key, generation: child.generation };
+  const date = this.parent().dateTouched || !child.loaded ? this.parent().entryDate : child.loaded.entryDate;
+  const fx = child.fx;
+  const token = `${owner.key}:${owner.generation}`;
+  this.pendingDraftLoads.update(rows => [...rows, owner]);
+  this.draftLoadErrors.update(errors => { const next = { ...errors }; delete next[token]; return next; });
+  forkJoin({
+    account: child.accountId === null ? of(null) : this.accounting.getAccount(child.accountId),
+    categories: isWritableKind(child.kind) ? this.loadCategories(child.kind) : of([]),
+    quote: fx?.use_online && fx.fx_rate === null ? this.accounting.getFxRate(date, fx.original_currency, fx.account_currency) : of(null),
+  }).pipe(takeUntilDestroyed(this.destroyRef), finalize(() => {
+    this.pendingDraftLoads.update(rows => rows.filter(o => o.key !== owner.key || o.generation !== owner.generation));
+  })).subscribe({
+    next: result => {
+      const c = this.children().find(c => c.key === owner.key && c.generation === owner.generation);
+      if (!c) return;
+      const accountRules = result.account?.reward_rules ?? [];
+      const unchangedAccount = c.loaded?.originalAccountId === c.accountId;
+      const attached = unchangedAccount ? c.availableRules.filter(r => c.loaded!.attachedRuleIds.includes(r.id)) : [];
+      const availableRules = [...new Map([...attached, ...accountRules].map(r => [r.id, r])).values()];
+      const eligible = rulesForDate(accountRules, date);
+      const selected = c.rulesTouched ? c.ruleIds : eligible.filter(r => r.is_basic).map(r => r.id);
+      const allowed = new Set(eligible.map(r => r.id));
+      if (unchangedAccount) for (const id of c.loaded!.attachedRuleIds) allowed.add(id);
+      const patch: Partial<ChildDraft> = { availableRules, ruleIds: selected.filter(id => allowed.has(id)) };
+      if (result.quote && c.fx?.use_online) patch.fx = { ...c.fx,
+        fx_rate: String(Number(result.quote.rate)), rate_date: result.quote.date };
+      this.categoryCache.set(child.kind, result.categories);
+      if (!this.drafts.accept(owner, patch)) return;
+      this.childAccountCache.set(owner.key, result.account);
+      if (this.selected() === owner.key) {
+        this.categories.set(result.categories); this.accountDetail.set(result.account);
+      }
+    },
+    error: error => {
+      if (this.children().some(c => c.key === owner.key && c.generation === owner.generation)) {
+        this.draftLoadErrors.update(errors => ({ ...errors, [token]: writeErrorMessage(error) }));
+        this.error.set(writeErrorMessage(error));
+      }
+    },
+  });
+}
+retryChildResources(): void {
+  for (const c of this.children()) if (this.draftLoadErrors()[`${c.key}:${c.generation}`]) this.drafts.invalidate(c.key);
+}
+```
+
+Use `draftLoadsPending() || draftLoadsFailed()` in save-disabled and the opening `save()` guard, before counterparty creation. The error strip offers `重新載入子項設定` → `retryChildResources()` (preserves edits). This ensures fast ＋ followed by save cannot silently omit an unselected child's pending defaults. Existing loaded online rates are retained until their currency/date inputs change; the reconciler requests only a missing online rate, so untouched metadata does not require a new quote. Ordinary blank children have no account/FX dependency; valid in-flight results still apply while parent mode is selected. Cache `AccountDetail` by child key for tile display on reselection; selecting an already-loaded child synchronously sets `accountDetail` from that cache and categories from `categoryCache`, without invalidating its owner. Store that cache only after the owner check above, and clear it on removal/reset. Remove redundant standalone FX subscription from `recomputeFx`: set online inputs, invalidate the owner, and let this reconciler perform the one versioned quote request. User sheet callbacks still capture `sheetOwner` and apply only through `accept`.
+
+On an account/kind/currency/date dependency change, invalidate that child's generation and capture its new owner; selection alone never invalidates it. Keep `moveToAccount`'s existing currency-change reset logic, now operating on the selected views; it must not touch any other child. On a different selection use that child's own cached account/category data; clear display only if its cache is missing. Re-selecting the same key is a no-op. Sheets store `sheetOwner:Owner|null` at open; replace `[(value)]="fx"`, `[(fee)]`, `[(discount)]` with explicit outputs `applySheet({fx:$event})`, `applySheet({fee:$event})`, `applySheet({discount:$event})`. `applySheet` calls `accept(sheetOwner, patch)` and never a current view; close copies original amount through the same owner before clearing it. Save callbacks and counterparty resolution use submitted owner tokens (Task 7).
 
 ```ts
 private sheetOwner: Owner | null = null;
@@ -666,21 +736,14 @@ applySheet(patch: Partial<ChildDraft>): void {
 }
 // In openSheet after its existing checks:
 this.sheetOwner = this.drafts.capture();
-// In recomputeFx, after invalidating/capturing and constructing `online`:
+// In recomputeFx, after its existing amount/lock guards and constructing `online`:
 const owner = this.drafts.capture();
 if (!owner) return;
-this.accounting.getFxRate(this.parent().entryDate, online.original_currency, online.account_currency)
-  .pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-    next: result => {
-      const c = this.children().find(c => c.key === owner.key);
-      if (c?.fx?.use_online) this.drafts.accept(owner, {
-        fx: { ...c.fx, fx_rate: String(Number(result.rate)), rate_date: result.date },
-      });
-    }, error: () => undefined,
-  });
+this.drafts.accept(owner, { fx: online });
+this.drafts.invalidate(owner.key); // reconciler fetches the quote, including if selection changes now
 ```
 
-- [ ] **Step 5 — dirty integration:** `formState` uses `draftSnapshot(parent(), children(), scheduleDraftKey(scheduleDraft()), transferPanel()?.draftKey() ?? null, targetExpr())`; preserve explicit single transfer/system kind in the outer JSON (`singleKind()`), since changing a system tab is a user edit. Keep `baseline`, `markClean`, discard focus and pending-discard clearing at their existing load/save/continue boundaries. Initial route load sets baseline only after related rows are applied. The new async streams above update only snapshot-excluded presentation/rule-default fields; online quote rate/date are excluded. Synchronous category last-use defaults occur inside the user's category-pick operation and therefore remain dirty as part of that user edit. No async `markClean()` call is added.
+- [ ] **Step 5 — dirty integration:** `formState` uses `draftSnapshot(parent(), children(), scheduleDraftKey(scheduleDraft()), transferPanel()?.draftKey() ?? null, targetExpr())`; preserve explicit single transfer/system kind in the outer JSON (`singleKind()`), since changing a system tab is a user edit. Keep `baseline`, `markClean`, discard focus and pending-discard clearing at their existing load/save/continue boundaries. Initial route load sets baseline only after related rows are applied. The per-child request reconciler above updates only snapshot-excluded presentation/rule-default fields; online quote rate/date are excluded. Synchronous category last-use defaults occur inside the user's category-pick operation and therefore remain dirty as part of that user edit. No async `markClean()` call is added.
 
 - [ ] **Step 6 — verify/commit:** Run `split-owner.spec.ts`, the existing `entry-form.spec.ts` and `entry-form-schedule.spec.ts`, full suite/build. Commit `refactor(split): bind draft views by owner` with trailer once Task 5 load adapters compile; the form migration is a single vertical commit including Task 7 save wiring, as specified in the commit map at the end.
 
@@ -712,13 +775,13 @@ it('loads group order, opened selection, raw times and each protected flag', () 
 });
 describe('add mode matrix', () => {
   const mode = { split: false, count: 1, scheduleId: null, eventTab: 'single', editing: false,
-    kind: 'expense', protected: false, source: 'manual', locked: false };
+    kind: 'expense', convertBlockedReason: null, source: 'manual', locked: false };
   it.each([
     [{}, true, false], [{ eventTab: 'recurring' }, false, false], [{ eventTab: 'installment' }, false, false],
     [{ scheduleId: 4 }, false, false], [{ editing: true }, true, false],
     [{ kind: 'transfer' }, false, false], [{ kind: 'system' }, false, false],
-    [{ source: 'schedule' }, false, false], [{ protected: true }, false, false], [{ locked: true }, false, false],
-    [{ split: true, count: 2, protected: true, kind: 'refund' }, true, false],
+    [{ source: 'schedule' }, false, false], [{ convertBlockedReason: '已有收還款' }, false, false], [{ locked: true }, false, false],
+    [{ split: true, count: 2, convertBlockedReason: null, kind: 'refund' }, true, false],
     [{ split: true, count: 50 }, true, true], [{ split: true, count: 51 }, true, true],
   ])('availability %j', (patch, visible, disabled) => {
     expect(addAvailability({ ...mode, ...patch })).toMatchObject({ visible, disabled });
@@ -733,7 +796,7 @@ Run `cd frontend && npm test -- --watch=false --include src/app/components/accou
 ```ts
 import { EntryDetail, SplitGroupMember } from '../../../models/accounting.model';
 import { fxFromDetail, feeAndDiscountFromDetail } from './entry-save';
-import { newChild, ChildDraft, ParentDraft } from './split-draft';
+import { newChild, ChildDraft, ParentDraft, normalizePosted } from './split-draft';
 import { isWritableKind } from './entry-draft';
 export function childFromDetail(d: EntryDetail, flag: Pick<SplitGroupMember, 'protected' | 'protected_reason'>,
   mainCurrency: string): ChildDraft {
@@ -765,18 +828,19 @@ export function splitFromDetails(opened: EntryDetail, related: EntryDetail[], ma
   if (!first || !selected) throw new Error('子項載入不完整');
   return { children, selected: selected.key, parent: {
     name: group.name ?? '', merchant: group.merchant ?? '', description: group.description ?? '',
-    entryDate: first.entryDate, entryTime: first.entryTime, postedDate: first.postedDate, dateTouched: false,
+    entryDate: first.entryDate, entryTime: first.entryTime,
+    postedDate: normalizePosted(first.entryDate, first.postedDate), dateTouched: false,
   } };
 }
 export interface AddMode {
   split: boolean; count: number; scheduleId: number | null; eventTab: string; editing: boolean;
-  kind: string; protected: boolean; source: string; locked: boolean;
+  kind: string; convertBlockedReason: string | null; source: string; locked: boolean;
 }
 export function addAvailability(m: AddMode): { visible: boolean; disabled: boolean; hint: string | null } {
   if (m.scheduleId !== null || (!m.editing && m.eventTab !== 'single')) return { visible: false, disabled: false, hint: null };
   if (m.locked) return { visible: false, disabled: false, hint: '此記錄不能拆帳' };
-  if (!m.split && (!isWritableKind(m.kind) || m.protected || m.source === 'schedule'))
-    return { visible: false, disabled: false, hint: '此記錄不能拆帳' };
+  if (!m.split && (!isWritableKind(m.kind) || m.convertBlockedReason !== null || m.source === 'schedule'))
+    return { visible: false, disabled: false, hint: m.convertBlockedReason ?? '此記錄不能拆帳' };
   return { visible: true, disabled: m.count >= 50, hint: m.count >= 50 ? '最多 50 項' : null };
 }
 ```
@@ -789,7 +853,7 @@ export function feeAndDiscountFromDetail(detail: EntryDetail): { fee: ChildInput
 }
 ```
 
-- [ ] **Step 3 — apply after all GETs:** In `applyLoaded`, before old `applyDetail`, branch on `!copy && group.kind==='split'`. Use the block below; otherwise initialize one `childFromDetail` and parent from the single record, retaining existing transfer copy/definition paths. The single protected predicate is `is_settlement || !isWritableKind(kind) || transfer_group_id !== null || settled_by.length>0 || refunded_by.length>0 || loan_schedule != null`; the server remains authoritative at convert. A locked single cannot add. Copies clear `id`, `loaded`, attached rules according to today's copy behavior, and anchor/group ids; they never accidentally convert their source.
+- [ ] **Step 3 — apply after all GETs:** In `applyLoaded`, before old `applyDetail`, branch on `!copy && group.kind==='split'`. Use the block below; otherwise initialize one `childFromDetail` and parent from the single record, retaining existing transfer copy/definition paths. The single **conversion-only** predicate is `is_settlement || !isWritableKind(kind) || transfer_group_id !== null || settled_by.length>0 || refunded_by.length>0 || loan_schedule != null`; store its hint in `convertBlockedReason`, keep single `ChildDraft.protected=false`, and let the server remain authoritative at convert. A locked single cannot add. Copies clear `id`, `loaded`, attached rules according to today's copy behavior, and anchor/group ids; they never accidentally convert their source.
 
 ```ts
 if (!loaded.copy && loaded.detail.group?.kind === 'split') {
@@ -816,17 +880,21 @@ addChild(): void {
   afterNextRender(() => this.categoryPicker()?.reopen(), { injector: this.injector });
 }
 removeChild(): void {
-  const c = this.drafts.current(), owner = this.drafts.capture();
-  if (!c || !owner || this.saving() || !this.flushChild(owner)) return;
+  const c = this.drafts.current();
+  if (!c || this.saving() || this.drafts.removeReason(c.key)) return;
+  // Deletion must also work for an unfinished/invalid draft. Do not flush the discarded expression.
   this.drafts.remove(c.key);
 }
 onCategoryPicked(node: CategoryNode): void {
   this.setCategory(node); this.error.set(null);
   if (!this.isSplit() && this.groupId() === null && this.entryId() === null) {
     const last = readLastUse(node.id);
-    const candidate = last?.account_id ?? node.default_account_id;
-    if (this.accounts().some(a => a.id === candidate && !a.is_archived)) this.moveToAccount(candidate);
-    this.projectId.set(last ? last.project_id : node.default_project_id);
+    const usable = (id: number | null | undefined): id is number =>
+      id != null && this.accounts().some(a => a.id === id && !a.is_archived);
+    if (usable(last?.account_id)) this.moveToAccount(last!.account_id);
+    else if (usable(node.default_account_id)) this.moveToAccount(node.default_account_id);
+    if (last) this.projectId.set(last.project_id);
+    else if (node.default_project_id !== null) this.projectId.set(node.default_project_id);
   }
   afterNextRender(() => {
     const host = this.host.nativeElement;
@@ -835,12 +903,12 @@ onCategoryPicked(node: CategoryNode): void {
 }
 ```
 
-The amount value gets `tabindex="-1"` on phone. `addState` is a computed call to `addAvailability` with current schedule, entry source/protection/lock, child count and single kind. After removal, single layout selects the survivor and still retains `groupId` so saving uses dissolve.
+The amount value gets `tabindex="-1"` on phone. `addState` is a computed call to `addAvailability` with current schedule, entry source/convertBlockedReason/lock, child count and single kind. After removal, single layout selects the survivor and still retains `groupId` so saving uses dissolve.
 
-- [ ] **Step 4 — verify:** Focused load tests plus component tests for opened protected child and two archived originals; full suite/build before the vertical integration commit. Reset/continue initializes a fresh UUID child and new parent, clears `anchorId/groupId/droppedNotices/sheetOwner`, then calls the existing clean/reset flow. Do not clear the transfer panel's own draft key or schedule key from dirty registration.
+- [ ] **Step 4 — verify:** Focused load tests plus component tests for opened protected child and two archived originals; full suite/build before the vertical integration commit. Reset/continue initializes a fresh UUID child and new parent, clears `anchorId/groupId/droppedNotices/sheetOwner/convertBlockedReason`, then calls the existing clean/reset flow. Do not clear the transfer panel's own draft key or schedule key from dirty registration.
 ### Task 6: Bubble strip, child tiles, parent totals and notices
 
-**Files:** New `entry-form/split-summary.ts`, `split-summary.spec.ts`; modify `category-picker.ts:41`, `category-picker.html:1`, `category-picker.scss` (strip); `entry-form.html:90` (kind tabs), `:166` (picker/old lines), `:194` (tiles), `:398` (keypad), `entry-form.scss`; tests `category-picker.spec.ts:98`, `entry-form.spec.ts`.
+**Files:** New `entry-form/split-summary.ts`, `split-summary.spec.ts`; modify `category-picker.ts:41`, `category-picker.html:1`, `category-picker.scss` (strip); `entry-form.html:77` (kind tabs), `:146` (picker/old lines), `:167` (tiles), `:332` (keypad), `entry-form.scss`; tests `category-picker.spec.ts:98`, `entry-form.spec.ts`.
 
 **Interfaces:** Produces `CurrencyNet {currency:string;amount:number|null}`, `netByCurrency(children, accounts): CurrencyNet[]`, `dissolveNotices(parent, survivor): string[]`, `rewardEstimates(children, accounts): CurrencyNet[]`. Picker consumes `bubbles: Bubble[]`, `activeBubble:string|null`, `parentText:string|null`, `addVisible:boolean`, `addDisabled:boolean`, `addHint:string|null`, `gridAllowed:boolean`; emits `bubbleSelected:string`, `addChild:void`. `Bubble` is `{key:string;label:string;icon:string;color:string;amount:string;empty:boolean;protected:boolean}`. Keep existing `selected`, `picked`, drill-in keyboard events and `stripExtra` projection for non-form callers.
 
@@ -1030,7 +1098,7 @@ Avoid duplicate selected strips: the old `@if (strip(); as sel)` renders only wh
 
 - [ ] **Step 5 — parent/child integration:** Add computed `parentMode = selected()==='parent'`, `protectedChild = current()?.protected ?? false`, `dateLocked = children().some(c=>c.protected)`, `summary=netByCurrency`, `rewards=rewardEstimates`, distinct non-null `accountCount`, and `mixedDates` comparing loaded triples. Produce each `Bubble` from its child's category cache keyed by kind, falling back to `ENTRY_KIND_LABELS[kind]` and `defaultCategoryIcon`; no category uses `未選類別`, `○`, `empty:true`; amount comes from `accountAmount`, formatting account currency only. Cache every loaded category label/icon/color when loading group_members so unvisited kinds do not lose their bubble labels. Parent text joins per-currency amounts and `(N)`.
 
-In the form template: category picker goes above the transfer/system switch so hidden-plus hints remain visible in forbidden single modes. Bind `[bubbles]="bubbles()" [activeBubble]="selected()" [parentText]="isSplit() ? parentText() : null" [addVisible]="addState().visible" [addDisabled]="addState().disabled" [addHint]="addState().hint" [gridAllowed]="!parentMode() && !protectedChild() && kind() !== 'transfer' && !isSystem()" (bubbleSelected)="selectBubble($event)" (addChild)="addChild()"`. Hide kind tabs in parent mode; disable transfer/system tabs in split mode and every tab for a protected child. Show the protected child's actual kind/reason above financial fields.
+In the form template: Render `app-category-picker` only in ordinary writable/split child modes. Single transfer/system modes render only `<p class="split-unavailable">此記錄不能拆帳</p>`; they never render an expense bubble or a second picker. Keep the transfer panel's own picker unchanged. Bind `[bubbles]="bubbles()" [activeBubble]="selected()" [parentText]="isSplit() ? parentText() : null" [addVisible]="addState().visible" [addDisabled]="addState().disabled" [addHint]="addState().hint" [gridAllowed]="!parentMode() && !protectedChild() && kind() !== 'transfer' && !isSystem()" (bubbleSelected)="selectBubble($event)" (addChild)="addChild()"`. Hide kind tabs in parent mode; disable transfer/system tabs in split mode and every tab for a protected child. Show the protected child's actual kind/reason above financial fields.
 
 Replace the old `app-split-lines` block with no content; child controls now edit selected views. Wrap the existing ordinary tiles/chips/textarea in `@if (!parentMode())`. Financial controls (amount, account, category grid, counterparty, invoice, fee, FX, reward buttons) get `[disabled]="protectedChild()"` individually; metadata controls remain enabled. Do not disable the whole child fieldset. Protected phone amount is read-only; hide its keypad. Display loaded non-empty child merchant below the note as `商家（此項）`. Remove merchant/date/time/event row/schedule block from split child mode by gating on `!isSplit()`; never hide them from single schedule/transfer mode. An existing group reduced to one still uses group parent merchant/date controls and `dateLocked` even though it uses single layout.
 
@@ -1069,8 +1137,13 @@ setParentText(field: 'name' | 'merchant' | 'description', value: string): void {
 setParentDate(field: 'entryDate' | 'entryTime' | 'postedDate', value: string): void {
   if (this.dateLocked()) return;
   this.parent.update(p => ({ ...p, [field]: field === 'entryDate' ? value : value || null, dateTouched: true }));
-  // Invalidate all date-dependent FX/rule requests; current owner's effect restarts with its new generation.
-  for (const c of this.children()) this.drafts.invalidate(c.key);
+  // Invalidate all date-dependent FX/rule requests; the reconciler restarts every surviving child.
+  for (const c of this.children()) {
+    if (c.fx?.use_online) this.drafts.accept({ key: c.key, generation: c.generation }, {
+      fx: { ...c.fx, fx_rate: null, rate_date: null },
+    });
+    this.drafts.invalidate(c.key);
+  }
 }
 readonly removalNotices = computed(() => this.isSplit() ? [] : this.groupId() !== null
   ? dissolveNotices(this.parent(), this.children()[0]) : this.drafts.droppedNotices());
@@ -1110,7 +1183,7 @@ describe('split results', () => {
       .toEqual({ key: 'b', field: 'amount', message: 'must be positive' });
     expect(memberError({ error: { detail: { 'members.1.amount': 'invalid' } } }, ['a', 'b']))
       .toEqual({ key: 'b', field: 'amount', message: 'invalid' });
-    expect(memberError({ error: { detail: 'retry' } }, ['a', 'b'])).toBeNull();
+    expect(memberError({ error: { code: 'conflict', message: 'retry' } }, ['a', 'b'])).toBeNull();
   });
   it('rejects missing/duplicate keys instead of navigating to a wrong row', () => {
     const a = newChild();
@@ -1146,7 +1219,7 @@ export function memberError(error: unknown, keys: readonly string[]): { key: str
     for (const [field, message] of Object.entries(detail)) entries.push([field, String(message)]);
   }
   for (const [path, message] of entries) {
-    const match = /(?:^|\.)members\.(\d+)\.(.+)$/.exec(path);
+    const match = /(?:^|\.)members\.(\d+)\.(?:(?:SplitMemberIn|SplitKeepIn|function-after\[[^\]]+\])\.)*(.+)$/.exec(path);
     const key = match ? keys[Number(match[1])] : undefined;
     if (match && key !== undefined) return { key, field: match[2], message };
   }
@@ -1154,7 +1227,18 @@ export function memberError(error: unknown, keys: readonly string[]): { key: str
 }
 ```
 
-- [ ] **Step 3 — replace single/split branch:** Leave schedule, transfer, system branches intact, but enter them only when `!isSplit() && groupId()===null` (definition edit remains its earlier branch). Replace the old `splitGroup/members` save branch with a `saveChildren(continuous)` method. Before it sets `saving=true`, validate all editable children with `fullChild` (parties may be unresolved; check non-empty counterparty name separately); on the first failure select that child and show its error. Do not validate only the currently selected/parent view. Disable form fieldset, bubble/add/remove and all sheet changes while saving so submitted data cannot drift.
+- [ ] **Step 3 — replace single/split branch:** Import `shareReplay` for request-local duplicate-name coalescing.  In `save()` after `createdScheduleId` handling and BEFORE `const problem = this.validate()`, insert:
+
+```ts
+if (this.childScope()) {
+  if (this.locked() || this.definitionLocked()) { this.error.set('MOZE 匯入資料，切換後可編輯'); return; }
+  if (this.unsupported()) { this.error.set(this.unsupported()); return; }
+  this.saveChildren(continuous);
+  return;
+}
+```
+
+Thus parent mode never evaluates current-child account/amount fallbacks. `saveChildren` validates every nonprotected child via `fullChild`, including the manual-FX guard. Ordinary single/schedule/transfer/system retain existing `validate()` and dispatch. Leave schedule, transfer, system branches intact, but enter them only when `!isSplit() && groupId()===null` (definition edit remains its earlier branch). Replace the old `splitGroup/members` save branch with a `saveChildren(continuous)` method. Before it sets `saving=true`, validate all editable children with `fullChild` (parties may be unresolved; check non-empty counterparty name separately); on the first failure select that child and show its error. Do not validate only the currently selected/parent view. Disable form fieldset, bubble/add/remove and all sheet changes while saving so submitted data cannot drift.
 
 ```ts
 private saveChildren(continuous: boolean): void {
@@ -1179,12 +1263,22 @@ private saveChildren(continuous: boolean): void {
     }
   }
   this.saving.set(true); this.error.set(null);
-  const resolutions = submitted.map(c => c.protected || (c.kind !== 'receivable' && c.kind !== 'payable')
-    ? of([c.key, null] as const)
-    : resolveCounterpartyId(this.accounting, c.counterpartyName, this.counterparties(), party => {
+  const partyRequests = new Map<string, Observable<number>>();
+  const resolveName = (typed: string): Observable<number> => {
+    const name = typed.trim();
+    let request = partyRequests.get(name);
+    if (!request) {
+      request = resolveCounterpartyId(this.accounting, name, this.counterparties(), party => {
         if (this.loadId === loadId && owners.every(o => this.children().some(c => c.key === o.key && c.generation === o.generation)))
           this.counterparties.update(rows => rows.some(p => p.id === party.id) ? rows : [...rows, party]);
-      }).pipe(map(id => [c.key, id] as const)));
+      }).pipe(shareReplay({ bufferSize: 1, refCount: true }));
+      partyRequests.set(name, request);
+    }
+    return request;
+  };
+  const resolutions = submitted.map(c => c.protected || (c.kind !== 'receivable' && c.kind !== 'payable')
+    ? of([c.key, null] as const)
+    : resolveName(c.counterpartyName).pipe(map(id => [c.key, id] as const)));
   forkJoin(resolutions).pipe(
     map(pairs => new Map(pairs.filter((pair): pair is readonly [string, number] => pair[1] !== null))),
     switchMap(parties => {
@@ -1237,7 +1331,7 @@ private saveChildren(continuous: boolean): void {
 }
 ```
 
-Add `saveResponseInvalid=signal(false)` and include it in save-disabled/guard conditions; explicit reload clears it. The UI reload action must go through DirtyFormRegistry if draft is dirty. `409 retry`, `member_locked`, `already_grouped`, `import_running`, `group_scheduled`, `group_locked` keep the draft and show the existing server error; never automatically resubmit a convert or silently reload away edits. Complete cancellation uses `finalize` guarded by `loadId` to reset saving after EMPTY/destroy. Do not call existing `write` here: it marks clean before mapping results and cannot route child errors.
+Add `saveResponseInvalid=signal(false)` and include it in save-disabled/guard conditions; explicit reload clears it. The UI reload action must go through DirtyFormRegistry if draft is dirty. Read the implemented §1.6 order at `f19e1fb`: schema 422 → group 404 → group_scheduled 409 → not-a-split 404 → locked_until_cutover 409 → DB-dependent cardinality 422 → member_not_found 404 → member_locked 409 → member validation 422 → retry 409; convert missing entry 404 → already_grouped/entry_locked/kind_not_splittable 409 → members 422. Do not invent client-side precedence or a group_locked response contract. `409 retry`, `member_locked`, `already_grouped`, `entry_locked`, `kind_not_splittable`, `import_running`, `group_scheduled`, `locked_until_cutover` keep the draft and use translated `writeErrorMessage` messages (Task 7 revision below); never automatically resubmit a convert or silently reload away edits. Complete cancellation uses `finalize` guarded by `loadId` to reset saving after EMPTY/destroy. Do not call existing `write` here: it marks clean before mapping results and cannot route child errors.
 
 Counterparty creation before the atomic entry write is already the single-entry contract; this plan does not claim rollback of a newly created counterparty if the subsequent split fails. The callback is owner/load-bound and cannot mutate another child's draft.
 
@@ -1267,13 +1361,14 @@ it('nets only stored amounts in their currencies', () => {
 // In existing entry-detail.spec.ts describe, using render/detail/entry/el:
 it('shows parent card and permits metadata edit of an opened protected split child', () => {
   const group = { id: 4, kind: 'split', name: '旅遊', merchant: '商家', description: '備註', count: 2, total: '-60', currency: 'TWD' };
-  const fixture = render(detail({ id: 42, kind: 'refund', amount: '40', group,
+  const fixture = render(detail({ id: 42, kind: 'receivable', is_settlement: true, amount: '40', group,
     group_members: [
       { ...entry({ id: 7, amount: '-100', group }), protected: false, protected_reason: null },
-      { ...entry({ id: 42, kind: 'refund', amount: '40', group }), protected: true, protected_reason: 'refund' },
+      { ...entry({ id: 42, kind: 'receivable', is_settlement: true, amount: '40', group }), protected: true, protected_reason: 'settlement' },
     ] }));
   expect(el(fixture).querySelector('.split-parent-card')?.textContent).toContain('多類別');
   expect(el(fixture).querySelectorAll('.split-child')).toHaveLength(2);
+  expect(el(fixture).querySelector('.related')?.textContent ?? '').not.toContain('拆帳');
   expect(el(fixture).querySelector('.split-child[aria-current="true"]')?.textContent).toContain('🔒');
   const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
   fixture.componentInstance.edit();
@@ -1312,7 +1407,17 @@ readonly splitNet = computed(() => storedGroupNet(this.splitMembers()));
 readonly splitAccountCount = computed(() => new Set(this.splitMembers().map(c => c.account_id)).size);
 ```
 
-In `formEditable`, after the existing `detail.schedule && detail.group` refusal and before the kind check, add `if (detail.group?.kind === 'split' && !detail.locked) return true;`. Keep per-member settle/refund/repost/delete actions unchanged; editing a protected child now reaches metadata-only split form. Do not grant ordinary protected single editing through this new condition.
+In `formEditable`, after the existing `detail.schedule && detail.group` refusal and before the kind check, add `if (detail.group?.kind === 'split' && !detail.locked) return true;`. Keep per-member settle/refund/repost/delete actions unchanged; editing a protected child now reaches metadata-only split form. Also replace `canEdit` with:
+
+```ts
+readonly canEdit = computed(() => {
+  const detail = this.detail();
+  return !!detail && !this.locked() &&
+    (detail.group?.kind === 'split' || !detail.is_settlement || !!detail.schedule);
+});
+```
+
+`edit()` keeps its schedule-first routing. For split groups, remove sibling rows only from `related()` (guard its sibling loop with `detail.group?.kind !== 'split'`); retain fee children, settlements, refunds and transfer counterpart relationships. Do not change ordinary single-entry action guards.
 
 ```html
 @if (d.group?.kind === 'split') {
@@ -1326,7 +1431,7 @@ In `formEditable`, after the existing `detail.schedule && detail.group` refusal 
     @for (member of splitMembers(); track member.id) {
       <a class="split-child" [routerLink]="['/accounting/entries', member.id]" [attr.aria-current]="member.id === d.id ? 'true' : null">
         <span class="ico" [style.background]="colorOf(member)">{{ iconOf(member) }}</span>
-        <span>{{ member.name || member.category || kindLabel(member.kind) }} · {{ member.account_name }}</span>
+        <span>{{ member.name || member.category || kindLabels[member.kind] }} · {{ member.account_name }}</span>
         <span>{{ formatMoney(member.amount, member.currency, { sign: true }) }}</span>
         @if (member.protected) { <span aria-label="受保護">🔒</span> }
       </a>
@@ -1361,7 +1466,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EntryDetail } from '../../../models/accounting.model';
+import { EntryDetail, LedgerAccount } from '../../../models/accounting.model';
 import { EntryFormComponent } from './entry-form';
 import { DirtyFormRegistry } from '../dirty-form.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
@@ -1373,8 +1478,10 @@ describe('split form integration', () => {
   let harness: RouterTestingHarness;
   let form: EntryFormComponent;
   const entries = new Map<number, EntryDetail>();
+  let fixtureAccounts: LedgerAccount[];
   beforeEach(() => {
     entries.clear(); localStorage.clear();
+    fixtureAccounts = [makeAccount(), makeAccount({ id: 2 })];
     TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([
       { path: 'accounting', component: Destination },
       { path: 'accounting/entry', component: EntryFormComponent },
@@ -1392,11 +1499,12 @@ describe('split form integration', () => {
       for (const req of requests) {
         if (req.cancelled) continue;
         const path = req.request.url.replace('/api/accounting', '');
-        if (path === '/accounts') req.flush([makeAccount(), makeAccount({ id: 2 })]);
+        if (path === '/accounts') req.flush(fixtureAccounts);
         else if (path === '/projects' || path === '/counterparties') req.flush([]);
         else if (path === '/preference') req.flush(makePreference());
-        else if (path === '/categories') req.flush([makeCategory({ id: 12 })]);
-        else if (/^\/accounts\/\d+$/.test(path)) req.flush(makeAccountDetail({ id: Number(path.split('/').pop()) }));
+        else if (path === '/fx-rate') req.flush({ date: req.request.params.get('date'), base: req.request.params.get('base'), quote: req.request.params.get('quote'), rate: '30', source: 'test' });
+        else if (path === '/categories') req.flush([makeCategory({ id: 12, kind: req.request.params.get('kind') ?? 'expense' })]);
+        else if (/^\/accounts\/\d+$/.test(path)) req.flush(makeAccountDetail(fixtureAccounts.find(a => a.id === Number(path.split('/').pop()))));
         else if (/^\/entries\/\d+$/.test(path)) {
           const detail = entries.get(Number(path.split('/').pop()));
           if (!detail) throw new Error(`missing fixture ${path}`);
@@ -1404,6 +1512,17 @@ describe('split form integration', () => {
         } else throw new Error(`unexpected GET ${path}`);
       }
     }
+  }
+  function seedGroup(a: EntryDetail, b: EntryDetail): void {
+    const group = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null,
+      count: 2, total: null, currency: 'TWD' };
+    const members = [a, b].map(c => ({ ...c, protected: false, protected_reason: null }));
+    entries.set(a.id, { ...a, group, group_members: members });
+    entries.set(b.id, { ...b, group, group_members: members });
+  }
+  function clickKey(key: string): void {
+    const button = harness.routeNativeElement!.querySelector<HTMLButtonElement>(`app-amount-keypad [data-key="${key}"]`);
+    expect(button).not.toBeNull(); button!.click(); settle();
   }
   async function open(path = '/accounting/entry'): Promise<void> {
     harness = await RouterTestingHarness.create();
@@ -1441,19 +1560,33 @@ describe('split form integration', () => {
     const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7/split'));
     expect(req.request.body.members.map((m: Record<string, unknown>) => m['id'])).toEqual([7, undefined]);
     expect(req.request.body.members.every((m: Record<string, unknown>) => m['entry_time'] === '11:12')).toBe(true);
+    const discarded = vi.fn();
+    const registry = TestBed.inject(DirtyFormRegistry);
+    registry.requestClose(discarded); settle();
+    expect(registry.promptOpen()).toBe(true); expect(discarded).not.toHaveBeenCalled();
     const members = form.children().map((c, i) => ({ id: i + 7, client_key: c.key }));
     req.flush({ group_id: 4, member_ids: [7, 8], members });
     await harness.fixture.whenStable();
-    expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(false);
+    expect(registry.promptOpen()).toBe(false);
+    registry.confirmDiscard(); expect(discarded).not.toHaveBeenCalled();
   });
-  it('switches tiles without dirtying and flushes old keypad expression', async () => {
-    await open(); fill('10+2'); form.addChild(); settle(); fill('5');
-    expect(form.children()[0].amountExpr).toBe('12');
-    const before = form.isDirty();
-    form.selectBubble(form.children()[0].key); settle();
-    expect(form.amountExpr()).toBe('12');
+  it('switches loaded bubbles cleanly and flushes keypad to the old child', async () => {
+    seedGroup(makeEntryDetail({ id: 7, amount: '-10' }), makeEntryDetail({ id: 8, amount: '-5' }));
+    await open('/accounting/entries/7/edit');
+    expect(form.isDirty()).toBe(false);
     form.selectBubble(form.children()[1].key); settle();
-    expect(form.amountExpr()).toBe('5'); expect(form.isDirty()).toBe(before);
+    expect(form.amountExpr()).toBe('5'); expect(form.isDirty()).toBe(false);
+    form.selectBubble(form.children()[0].key); settle();
+    expect(form.isDirty()).toBe(false);
+    clickKey('+'); clickKey('2');
+    const second = harness.routeNativeElement!.querySelector<HTMLButtonElement>(`[data-bubble="${form.children()[1].key}"]`)!;
+    second.click(); settle(); // flush pending 10+2 before changing selected owner
+    expect(form.children().map(c => c.amountExpr)).toEqual(['12', '5']);
+    clickKey('C'); clickKey('9'); clickKey('↵');
+    expect(form.children().map(c => c.amountExpr)).toEqual(['12', '9']);
+    form.selectBubble('parent'); settle();
+    expect(harness.routeNativeElement!.querySelector('app-amount-keypad')).toBeNull();
+    expect(form.children().map(c => c.amountExpr)).toEqual(['12', '9']);
   });
   it('dissolves with a persisted protected survivor using keep and parent values', async () => {
     const group = { id: 4, kind: 'split' as const, name: 'Parent', merchant: 'Shop', description: 'Note', count: 2, total: '0', currency: 'TWD' };
@@ -1465,6 +1598,7 @@ describe('split form integration', () => {
     form.selectBubble(form.children()[1].key); form.removeChild(); settle();
     form.save(false);
     const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/splits/4'));
+    expect(req.request.body).toMatchObject({ name: 'Parent', merchant: 'Shop', description: 'Note' });
     expect(req.request.body.members).toEqual([{ id: 7, keep: true, client_key: form.children()[0].key,
       name: null, project_id: null, tags: [], description: null }]);
     req.flush({ group_id: null, member_ids: [7], members: [{ id: 7, client_key: form.children()[0].key }] });
@@ -1488,9 +1622,10 @@ describe('split form integration', () => {
 ```ts
 it('keeps failed save dirty and never automatically retries a 409', async () => {
   await open(); fill(); form.addChild(); settle(); fill('20'); form.save(false);
-  http.expectOne(r => r.method === 'POST').flush({ detail: 'retry' }, { status: 409, statusText: 'Conflict' });
+  http.expectOne(r => r.method === 'POST').flush({ code: 'conflict', message: 'retry', trace_id: 'test' }, { status: 409, statusText: 'Conflict' });
   settle();
   expect(form.isDirty()).toBe(true);
+  expect(form.error()).toBe('記錄剛被更新，請重新載入後再試');
   http.expectNone(r => r.method !== 'GET');
 });
 it('retains each untouched raw date on group upsert', async () => {
@@ -1526,7 +1661,7 @@ it('save-and-continue clears children, notices and dirty state', async () => {
 });
 ```
 
-Async interleaving acceptance is pinned to Task 4's concrete owner tests plus these implementation checks: a captured owner token is passed through account/category/FX/sheet/counterparty callbacks; account changes increment generation before clearing FX/fees/rules; switching invalidates outgoing requests even for same-value siblings. Add Subject-based component tests to replace any current value-comparison assertions, and retain existing PR-2 schedule-only/transfer-only/target-only dirty tests. This is required evidence, not permission to discard failing legacy tests.
+Async interleaving acceptance is pinned to Task 4's concrete owner tests plus these implementation checks: a captured owner token is passed through account/category/FX/sheet/counterparty callbacks; account changes increment generation before clearing FX/fees/rules; switching preserves valid unselected callbacks; dependency changes/removal invalidate stale owners. Add Subject-based component tests to replace any current value-comparison assertions, and retain existing PR-2 schedule-only/transfer-only/target-only dirty tests. This is required evidence, not permission to discard failing legacy tests.
 
 - [ ] **Step 3 — preserve keyboard/account regression:** Run unchanged category-picker PR-5 tests for child→main, reopened main→strip focus, unselected main→form. Add a parent-mode dirty Escape assertion in the component suite using `new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true})` dispatched at `.entry-form`; expect registry prompt true. Keep account-picker archived filtering, transfer exclusion, overlay Escape/Tab and focus-return tests. Bubble switch must not remount/re-register the whole form or bypass `isHandledKey`.
 
@@ -1576,16 +1711,17 @@ Plan self-review checks: compare Global Constraints text byte-for-byte with the 
 
 ## Integration details pinned during self-review
 
-The following code belongs to the named tasks above and removes implicit adapter work from the handoff.
+The following code belongs to the named tasks above. Review revision R1 additionally pins the regression tests and per-finding dispositions below; it replaces the earlier selection-invalidation interpretation.
 
 **Task 5 — existing editable single initialization:** Place after the split branch and before the legacy transfer/system/definition branches. On copy use current date/time, no provenance/id/anchor; reuse today's archived-account fallback. This block prevents an anchor from being removable and prevents `applyDetail` from truncating its time.
 
 ```ts
 if (isWritableKind(loaded.detail.kind)) {
   const d = loaded.detail;
-  const protectedSingle = d.is_settlement || d.transfer_group_id !== null || d.settled_by.length > 0 ||
+  const convertBlocked = d.is_settlement || d.transfer_group_id !== null || d.settled_by.length > 0 ||
     d.refunded_by.length > 0 || d.loan_schedule != null;
-  let c = childFromDetail(d, { protected: protectedSingle, protected_reason: protectedSingle ? '此記錄不能拆帳' : null }, this.preference().main_currency);
+  this.convertBlockedReason.set(!loaded.copy && convertBlocked ? '此記錄不能拆帳' : null);
+  let c = childFromDetail(d, { protected: false, protected_reason: null }, this.preference().main_currency);
   if (loaded.copy) c = { ...c, id: null, loaded: null, protected: false, protectedReason: null,
     invoice: { number: '', random: '' } };
   this.children.set([c]); this.selected.set(c.key);
@@ -1593,8 +1729,9 @@ if (isWritableKind(loaded.detail.kind)) {
   this.parent.set({ name: '', merchant: d.merchant ?? '', description: '',
     entryDate: loaded.copy ? todayIso() : d.entry_date,
     entryTime: loaded.copy ? nowTime() : d.entry_time,
-    postedDate: loaded.copy ? null : d.posted_date, dateTouched: false });
-  this.singleKind.set(d.kind); this.locked.set(!loaded.copy && d.locked);
+    postedDate: loaded.copy ? null : normalizePosted(d.entry_date, d.posted_date), dateTouched: false });
+  if (isWritableKind(d.kind)) this.singleKind.set(d.kind);
+  this.locked.set(!loaded.copy && d.locked);
   if (loaded.copy && this.accounts().find(a => a.id === c.accountId)?.is_archived)
     this.moveToAccount(this.accounts().find(a => !a.is_archived)?.id ?? null);
   this.loading.set(false); this.markClean();
@@ -1605,6 +1742,7 @@ if (isWritableKind(loaded.detail.kind)) {
 **Task 4 — type-safe form kind adapter:** Preserve `FormKind`/schedule inputs without widening `WritableEntryKind`. For a protected noneditable child, the form's layout adapter uses `system`, but the visible disabled strip/tab label uses its real `ENTRY_KIND_LABELS` and the system balance editor never renders (`isSystem` gates on scope). Ordinary kind tabs render for writable kinds only; protected noneditable children show a single disabled actual-kind tab instead of a misleading selected system tab.
 
 ```ts
+readonly convertBlockedReason = signal<string | null>(null);
 readonly singleKind = signal<FormKind>('expense');
 readonly childScope = computed(() => this.isSplit() || this.groupId() !== null);
 readonly kind: ChildView<FormKind> = Object.assign(
@@ -1651,7 +1789,7 @@ The split child template condition is `childScope() || kind() !== 'transfer'`; t
 **Task 9 — concrete interleaved account callback regression:** Add `vi` to the Vitest imports, `Subject` from RxJS, `AccountDetail` model, `AccountingService` and `makeRule` fixture imports. Insert this test in the Task 9 harness. It exercises actual form subscription code with identical account/kind siblings, not only the store's predicate.
 
 ```ts
-it('drops interleaved account defaults for the old owner with the same account and kind', async () => {
+it('retains outgoing defaults, isolates equal-value siblings and drops removed owners', async () => {
   await open(); fill();
   const pending: Subject<AccountDetail>[] = [];
   const spy = vi.spyOn(TestBed.inject(AccountingService), 'getAccount').mockImplementation(() => {
@@ -1664,13 +1802,14 @@ it('drops interleaved account defaults for the old owner with the same account a
   expect(pending).toHaveLength(2);
   pending[0].next(makeAccountDetail({ reward_rules: [makeRule({ id: 99, is_basic: true })] }));
   pending[0].complete(); settle();
-  expect(form.children()[0].ruleIds).not.toContain(99);
-  expect(form.children()[1].ruleIds).not.toContain(99);
+  expect(form.children()[0].ruleIds).toEqual([99]);
+  expect(form.children()[1].ruleIds).toEqual([]);
+  form.removeChild(); settle();
   pending[1].next(makeAccountDetail({ reward_rules: [makeRule({ id: 6, is_basic: true })] }));
   pending[1].complete(); settle();
-  expect(form.children()[1].ruleIds).toEqual([6]);
-  form.selectBubble('parent'); settle();
-  expect(form.children()[0].ruleIds).not.toContain(6);
+  expect(form.children()).toHaveLength(1);
+  expect(form.children()[0].ruleIds).toEqual([99]);
+  expect(form.draftLoadsPending()).toBe(false);
   spy.mockRestore();
 });
 it('parent Escape uses the existing discard prompt', async () => {
@@ -1718,3 +1857,368 @@ confirmDeleteGroup(): void {
   </section>
 }
 ```
+
+## Review revision R1 — executable regressions and dispositions
+
+Source: owner attachment `plan-review-c31eaa6.md` on AGENT-67, comment `01a11408-ac49-7bf0-96dd-7fccc7a32036`. All changes below revise plan code only. §1.6 was re-read at `f19e1fb`; backend remains owner-owned. Tests here are implementation instructions, not a claim that application tests have run during planning.
+
+### Task 3 additions — single compatibility and parent date semantics (findings 1–3, 5–6)
+
+Add to `split-save.spec.ts`, importing `fullChild`, `permittedRuleIds`, `childFromDetail`, `makeEntryDetail`, `makeRule` and `normalizePosted`:
+
+```ts
+it('single originals remain editable; conversion eligibility is separate', () => {
+  const d = makeEntryDetail({ id: 7, settled_by: [makeEntryDetail({ id: 8, is_settlement: true })] });
+  const c = childFromDetail(d, { protected: false, protected_reason: null }, 'TWD');
+  c.name = 'metadata edit';
+  const p = { ...parent(), entryDate: d.entry_date, entryTime: d.entry_time,
+    postedDate: normalizePosted(d.entry_date, d.posted_date) };
+  expect(planEntrySave([c], p, accounts, parties, { entryId: 7, groupId: null }))
+    .toMatchObject({ kind: 'update', input: { name: 'metadata edit' } });
+});
+it('normalizes parent posting date but preserves untouched child raw dates', () => {
+  const d = makeEntryDetail({ id: 7, entry_date: '2026-01-01', posted_date: '2026-01-01', entry_time: '12:31:09.123' });
+  const c = childFromDetail(d, { protected: false, protected_reason: null }, 'TWD');
+  const p = { ...parent(), entryDate: d.entry_date, entryTime: d.entry_time,
+    postedDate: normalizePosted(d.entry_date, d.posted_date) };
+  expect(p.postedDate).toBeNull();
+  p.entryDate = '2026-02-01';
+  expect(fullChild(c, p, accounts, null, true)).toMatchObject({ entry_date: '2026-02-01', posted_date: null, entry_time: '12:31:09.123' });
+  expect(fullChild(c, p, accounts, null, false)).toMatchObject({ entry_date: '2026-01-01', posted_date: '2026-01-01' });
+  p.dateTouched = true;
+  for (const postedDate of [null, '', '2026-02-01'])
+    expect(fullChild(c, { ...p, postedDate }, accounts, null, false).posted_date).toBeNull();
+  expect(fullChild(c, { ...p, postedDate: '2026-02-03' }, accounts, null, false).posted_date).toBe('2026-02-03');
+});
+it('rejects incomplete manual FX instead of sending it as online', () => {
+  const c = child();
+  c.fx = { original_amount: '10', original_currency: 'USD', account_currency: 'TWD',
+    use_online: false, manual: 'rate', fx_rate: null, amount: null, rate_date: null };
+  expect(() => fullChild(c, parent(), accounts, null, false)).toThrow('請輸入匯率或轉換後金額');
+  c.fx.manual = 'amount';
+  expect(() => fullChild(c, parent(), accounts, null, false)).toThrow('請輸入匯率或轉換後金額');
+});
+it.each(['receivable', 'payable'] as const)('single %s keeps the existing no-merchant rule', kind => {
+  const c = { ...child(), kind, counterpartyId: 4 };
+  expect(fullChild(c, { ...parent(), merchant: 'must not leak' }, accounts, 4, true).merchant).toBeNull();
+});
+it('preserves attached rules only on the original account, otherwise filters by account/date', () => {
+  const c = childFromDetail(makeEntryDetail({ rules: [makeRule({ id: 99, is_enabled: false })] }),
+    { protected: false, protected_reason: null }, 'TWD');
+  c.ruleIds = [99, 10, 11];
+  c.availableRules = [makeRule({ id: 10, account_id: 2 }), makeRule({ id: 11, account_id: 2, ends_on: '2020-01-01' })];
+  expect(permittedRuleIds(c, '2026-01-01')).toContain(99);
+  c.accountId = 2;
+  expect(permittedRuleIds(c, '2026-01-01')).toEqual([10]);
+});
+```
+
+On account change, `moveToAccount` first captures the old currency, then invalidates only the selected child's generation, clears that child's `availableRules/ruleIds`, and applies its existing FX/fee currency-reset logic. For new/copy children reset `rulesTouched=false`; loaded children remain touched and may reselect new-account rules. The reconciler intersects selected ids with date-valid new-account rules; attached exceptions apply only when `loaded.originalAccountId === accountId`. `permittedRuleIds` must additionally filter `availableRules` by `rule.account_id===c.accountId` before calling `rulesForDate`, so stale account caches cannot pass a rule through.
+
+### Task 7 additions — translated errors with implemented envelopes (finding 7)
+
+**Files:** `http-errors.ts:33` (`CONFLICT_MESSAGES`), `:44` (`writeErrorMessage`), `http-errors.spec.ts`; consume `schedule-math.ts:22` (`isImportRunning`) and `IMPORT_RUNNING_TOAST`.
+
+```ts
+// Add to CONFLICT_MESSAGES; keep existing schedule entries and locked_until_cutover handling.
+retry: '記錄剛被更新，請重新載入後再試',
+member_locked: '子項已受保護，請重新載入後再試',
+already_grouped: '此記錄已屬於群組，請重新載入',
+entry_locked: '此記錄目前不能拆帳',
+kind_not_splittable: '此記錄類型不能拆帳',
+import_running: IMPORT_RUNNING_TOAST,
+group_scheduled: '排程產生的群組不可在此修改',
+// First line of writeErrorMessage, importing both from './schedule-math':
+if (isImportRunning(err)) return IMPORT_RUNNING_TOAST;
+```
+
+```ts
+it.each([
+  ['retry', '記錄剛被更新，請重新載入後再試'],
+  ['member_locked', '子項已受保護，請重新載入後再試'],
+  ['already_grouped', '此記錄已屬於群組，請重新載入'],
+  ['entry_locked', '此記錄目前不能拆帳'],
+  ['kind_not_splittable', '此記錄類型不能拆帳'],
+  ['import_running', '匯入進行中，請稍後再試'],
+  ['group_scheduled', '排程產生的群組不可在此修改'],
+  ['locked_until_cutover', 'MOZE 匯入資料，切換後可編輯'],
+])('translates the real shared-lib 409 envelope: %s', (message, translated) => {
+  expect(writeErrorMessage(new HttpErrorResponse({ status: 409,
+    error: { code: 'conflict', message, trace_id: 'test-trace' } }))).toBe(translated);
+});
+// split-result.spec.ts:
+it('normalizes discriminated member loc before field routing', () => {
+  expect(memberError({ error: { detail: [
+    { loc: ['body', 'members', 1, 'SplitMemberIn', 'amount'], msg: 'invalid amount' },
+  ] } }, ['a', 'b'])).toEqual({ key: 'b', field: 'amount', message: 'invalid amount' });
+});
+```
+
+409 always retains draft/dirty state; no silent reread or auto-resubmit. `locked_until_cutover` is the implemented cutover refusal, distinct from transient `import_running`. Group/member 404, limit 422, and post-lock retry are separate server stages; client error routing does not reorder them.
+
+### Task 9 additions — missing form-level acceptance (findings 1–3, 11–12, 18–19)
+
+Insert all tests below inside the existing Task 9 harness `describe`, using its `seedGroup`, `clickKey`, `fixtureAccounts`, `entries`, `open`, `fill`, `settle`, `http`, `harness`, `form`. Add imports `AccountDetail`, `CategoryNode`, `FxRateOut`, `Subject`, `AccountingService`, `makeRule`, `LAST_USE_PREFIX`; restore mocks in `afterEach`. Extend `settle` with `/fx-rate` → `{date:req.request.params.get('date'),base:req.request.params.get('base'),quote:req.request.params.get('quote'),rate:'30',source:'test'}` so normal quotes complete. Tests that examine stale quotes remove/capture the request before `settle`, then release it explicitly.
+
+```ts
+it.each(['settled', 'refunded', 'loan'] as const)('keeps %s single editing but hides convert plus', async marker => {
+  const d = makeEntryDetail({ id: 7 });
+  if (marker === 'settled') d.settled_by = [makeEntryDetail({ id: 8, is_settlement: true })];
+  if (marker === 'refunded') d.refunded_by = [makeEntryDetail({ id: 8, kind: 'refund' })];
+  if (marker === 'loan') {
+    d.kind = 'payable'; d.counterparty = 'Alan'; d.counterparty_id = 4;
+    d.loan_schedule = {
+      definition_id: 12, name: '信貸 每月還款', status: 'active', posting_mode: 'auto', posted_count: 3, times: 36,
+      next_due_date: '2027-02-09', next_amount: [{ currency: 'TWD', amount: '-8953.0000' }],
+      remaining: '-275001.0000', repaid: '24999.0000', needs_check: false,
+    };
+  }
+  entries.set(7, d); await open('/accounting/entries/7/edit');
+  if (marker === 'loan') form.counterparties.set([{ id: 4, name: 'Alan', open_amounts: [], moze_id: null }]);
+  expect(form.children()[0].protected).toBe(false);
+  expect(form.addState().visible).toBe(false);
+  form.name.set('changed'); form.save(false);
+  const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7'));
+  expect(req.request.body.name).toBe('changed');
+  req.flush(makeEntryDetail({ id: 7, name: 'changed' })); await harness.fixture.whenStable();
+});
+it('parent validates each child and blocks missing manual FX before HTTP', async () => {
+  await open(); fill(); form.addChild(); settle(); fill('20');
+  form.fx.set({ original_amount: '20', original_currency: 'USD', account_currency: 'TWD',
+    use_online: false, manual: 'rate', fx_rate: null, amount: null, rate_date: null });
+  const invalidKey = form.selected(); form.selectBubble('parent'); settle(); form.save(false);
+  http.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+  expect(form.selected()).toBe(invalidKey);
+  expect(form.error()).toBe('請輸入匯率或轉換後金額');
+});
+it('plus opens main grid; picking focuses phone amount and keeps inherited account', async () => {
+  await open(); fill();
+  localStorage.setItem(LAST_USE_PREFIX + '12', JSON.stringify({ account_id: 2, project_id: 9 }));
+  form.addChild(); settle();
+  const root = harness.routeNativeElement!;
+  expect(root.querySelector('app-category-picker .grid')).not.toBeNull();
+  root.querySelector<HTMLButtonElement>('app-category-picker .grid .cat')!.click(); settle();
+  expect(root.querySelector('app-category-picker .grid')).toBeNull();
+  expect(document.activeElement).toBe(root.querySelector('.amount-value'));
+  expect(form.accountId()).toBe(1); expect(form.projectId()).toBeNull();
+});
+it('mixed kinds select their own tabs, with transfer and system disabled', async () => {
+  seedGroup(makeEntryDetail({ id: 7, kind: 'expense' }), makeEntryDetail({ id: 8, kind: 'income', amount: '30' }));
+  await open('/accounting/entries/7/edit');
+  expect(form.kind()).toBe('expense');
+  form.selectBubble(form.children()[1].key); settle();
+  expect(form.kind()).toBe('income');
+  const tabs = [...harness.routeNativeElement!.querySelectorAll<HTMLButtonElement>('.kind-tab')];
+  expect(tabs.find(t => t.getAttribute('aria-selected') === 'true')?.textContent).toContain('收入');
+  for (const word of ['轉帳', '系統']) expect(tabs.find(t => t.textContent?.includes(word))?.disabled).toBe(true);
+});
+it('changing A account does not clear B FX, fee or rules', async () => {
+  await open(); fill(); form.addChild(); settle(); fill('20');
+  form.fx.set({ original_amount: '20', original_currency: 'USD', account_currency: 'TWD', use_online: false,
+    manual: 'amount', amount: '600', fx_rate: null, rate_date: null });
+  form.fee.set({ amount: '2', name: null }); form.ruleIds.set([99]); form.rulesTouched.set(true);
+  const b = structuredClone(form.children()[1]);
+  form.selectBubble(form.children()[0].key); form.chooseAccount(2); settle();
+  expect(form.children()[1]).toEqual(b);
+});
+it('each of two archived originals retains only its own archived option', async () => {
+  fixtureAccounts = [makeAccount(), makeAccount({ id: 3, is_archived: true }), makeAccount({ id: 4, is_archived: true })];
+  seedGroup(makeEntryDetail({ id: 7, account_id: 3 }), makeEntryDetail({ id: 8, account_id: 4 }));
+  await open('/accounting/entries/7/edit');
+  expect(form.accountOptions().map(a => a.id)).toEqual([1, 3]);
+  form.selectBubble(form.children()[1].key); settle();
+  expect(form.accountOptions().map(a => a.id)).toEqual([1, 4]);
+});
+it('existing anchor round-trips metadata and all edited parent dates through plus', async () => {
+  entries.set(7, makeEntryDetail({ id: 7, name: 'child', description: 'note', merchant: 'old shop',
+    entry_date: '2026-01-01', entry_time: '01:02:03.456', posted_date: '2026-01-01' }));
+  await open('/accounting/entries/7/edit');
+  form.setParentDate('entryDate', '2026-02-01'); form.setParentDate('entryTime', '11:12');
+  form.setParentDate('postedDate', '2026-02-03'); settle();
+  form.addChild(); settle(); fill('20'); form.save(false);
+  const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7/split'));
+  expect(req.request.body.members[0]).toMatchObject({ id: 7, name: 'child', description: 'note', merchant: 'old shop' });
+  for (const m of req.request.body.members) expect(m).toMatchObject({ entry_date: '2026-02-01', entry_time: '11:12', posted_date: '2026-02-03' });
+  req.flush({ detail: [{ loc: ['body', 'members.1.amount'], msg: 'test rejection' }] }, { status: 422, statusText: 'Unprocessable Entity' });
+  form.removeChild(); settle(); form.merchant.set('new shop'); form.save(false);
+  const single = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7'));
+  expect(single.request.body).toMatchObject({ name: 'child', description: 'note', merchant: 'new shop', posted_date: '2026-02-03' });
+  single.flush(makeEntryDetail({ id: 7 })); await harness.fixture.whenStable();
+});
+it('untouched single keeps time precision and derives posted date after changing date', async () => {
+  entries.set(7, makeEntryDetail({ id: 7, entry_date: '2026-01-01', posted_date: '2026-01-01', entry_time: '12:31:09.123' }));
+  await open('/accounting/entries/7/edit');
+  expect(form.parent().postedDate).toBeNull();
+  form.setParentDate('entryDate', '2026-02-01'); settle(); form.save(false);
+  const req = http.expectOne(r => r.method === 'PUT');
+  expect(req.request.body).toMatchObject({ entry_date: '2026-02-01', posted_date: null, entry_time: '12:31:09.123' });
+  req.flush(makeEntryDetail({ id: 7 })); await harness.fixture.whenStable();
+});
+it('a removed child cannot apply its category response to the survivor', async () => {
+  await open(); fill();
+  const pending = new Subject<CategoryNode[]>();
+  const spy = vi.spyOn(TestBed.inject(AccountingService), 'getCategories').mockReturnValue(pending);
+  form.addChild(); settle(); form.selectKind('income'); settle();
+  const removed = form.selected(); form.removeChild(); settle();
+  pending.next([makeCategory({ id: 99, kind: 'income' })]); pending.complete(); settle();
+  expect(form.children().some(c => c.key === removed)).toBe(false);
+  expect(form.category()?.id).toBe(12); expect(form.kind()).toBe('expense');
+  expect(form.categories().some(c => c.id === 99)).toBe(false);
+  spy.mockRestore();
+});
+it('a removed child cannot apply its FX response to the survivor', async () => {
+  await open(); fill(); form.addChild(); settle(); fill('20');
+  const pending = new Subject<FxRateOut>();
+  const spy = vi.spyOn(TestBed.inject(AccountingService), 'getFxRate').mockReturnValue(pending);
+  form.fx.set({ original_amount: '20', original_currency: 'USD', account_currency: 'TWD', use_online: true,
+    manual: null, amount: null, fx_rate: null, rate_date: null });
+  form.drafts.invalidate(form.selected()); settle();
+  expect(spy).toHaveBeenCalledTimes(1);
+  form.removeChild(); settle();
+  pending.next({ date: '2026-10-06', base: 'USD', quote: 'TWD', rate: '999', source: 'test' }); pending.complete(); settle();
+  expect(form.children()).toHaveLength(1); expect(form.fx()).toBeNull();
+  spy.mockRestore();
+});
+it('shows inconsistent dates and read-only child merchant', async () => {
+  seedGroup(makeEntryDetail({ id: 7, entry_date: '2026-01-01', merchant: 'member shop' }),
+    makeEntryDetail({ id: 8, entry_date: '2026-02-01' }));
+  await open('/accounting/entries/7/edit');
+  expect(harness.routeNativeElement!.textContent).toContain('商家（此項）');
+  expect(harness.routeNativeElement!.textContent).toContain('member shop');
+  form.selectBubble('parent'); settle();
+  expect(harness.routeNativeElement!.textContent).toContain('子項日期不一致');
+});
+it('reselecting a bubble keeps its caches and invalid draft removal is allowed', async () => {
+  await open(); fill(); const categories = form.categories();
+  form.selectBubble(form.selected()); expect(form.categories()).toBe(categories);
+  form.addChild(); settle(); form.onAmountInput('10+'); form.removeChild(); settle();
+  expect(form.children()).toHaveLength(1);
+});
+it('creates a duplicate new counterparty name once per submission', async () => {
+  await open(); form.selectKind('receivable'); settle(); fill(); form.counterpartyName.set('Alan');
+  form.addChild(); settle(); fill('20'); form.counterpartyName.set(' Alan '); form.save(false);
+  const party = http.expectOne(r => r.method === 'POST' && r.url.endsWith('/counterparties'));
+  party.flush({ id: 4, name: 'Alan', open_amounts: [], moze_id: null });
+  const split = http.expectOne(r => r.method === 'POST' && r.url.endsWith('/splits'));
+  expect(split.request.body.members.map((c: { counterparty_id: number }) => c.counterparty_id)).toEqual([4, 4]);
+  split.flush({ detail: [{ loc: ['body', 'members.1.amount'], msg: 'test rejection' }] }, { status: 422, statusText: 'Unprocessable Entity' });
+});
+```
+
+### Task 9 migration inventory (finding 10)
+
+All anchors below are at base `4e301e2`. Rewrite each existing test rather than deleting its behavioral assertion; remove only the component-specific tests with the deleted split-lines component.
+
+| Base test anchor | Replacement and retained contract |
+|---|---|
+| `entry-form.spec.ts:640–692` loaded/member race | `children.length===2`/bubble count; related GET still blocks saving; stale route result cannot replace current child; response contains client_key/id envelope |
+| `entry-form.spec.ts:719` transfer layout | Keep no `app-category-picker` assertion; add `.split-unavailable` hint; transfer panel's picker unaffected |
+| `entry-form.spec.ts:841–878` single plus / old sheet / reload | Editable single plus enabled; protected conversion hint; old modal Escape becomes delete-group dialog; reload dissolved entry resets children to one and groupId null |
+| `entry-form.spec.ts:1031–1132` split saves/new-id assumptions | Stable 7/8 ids + client keys; raw `19:00:00`; navigate to opened id 8; detail closeTo list preserved; parent date change updates each full member and derives equal posting date |
+| `entry-form.spec.ts:1501` pending-close new split | Add via form.addChild, fill selected child; use existing `pendingClose()` before flushing full SplitResult; assert pending callback cleared |
+| `entry-form.spec.ts:1556` PR-2 overlay table | Replace old split modal row with loaded-group parent delete dialog, `.delete-group` opener, `.delete-group-dialog[data-overlay]`; retain wrap, opener focus, next Escape→discard |
+| `entry-form.spec.ts:1816–1834` nested account picker | Open selected child `.account-tile .acct-trigger`; first Escape closes picker/restores trigger, next Escape prompts dirty form; no now-removed middle split-modal step |
+| `entry-save.spec.ts:139` detail mapping | Expect raw `12:31:00` time; keep unsigned FX/fee metadata assertions |
+| `category-picker.spec.ts:90–101,126–127` old plus | `addChild/addVisible/addDisabled`; preserve reopen/drill-in/focus contract and use active bubble focus selector |
+
+### Task 2 key fallback / Task 5 last-use regression (findings 13, 17)
+
+Use `childKey(source: {randomUUID?:()=>string}|undefined=globalThis.crypto)` so tests can simulate an insecure context without asserting a fake Crypto type. Add to `split-draft.spec.ts`:
+
+```ts
+it('makes unique short UI keys without secure-context randomUUID', () => {
+  const keys = Array.from({ length: 100 }, () => childKey({}));
+  expect(new Set(keys).size).toBe(100);
+  expect(keys.every(key => key.length <= 64)).toBe(true);
+});
+```
+
+Add to the Task 9 form harness:
+
+```ts
+it('falls back from archived last-use account and retains project without a default', async () => {
+  fixtureAccounts.push(makeAccount({ id: 3, is_archived: true }));
+  await open();
+  localStorage.setItem(LAST_USE_PREFIX + '12', JSON.stringify({ account_id: 3, project_id: null }));
+  form.onCategoryPicked(makeCategory({ id: 12, default_account_id: 2 })); settle();
+  expect(form.accountId()).toBe(2);
+  localStorage.removeItem(LAST_USE_PREFIX + '12'); form.projectId.set(9);
+  form.onCategoryPicked(makeCategory({ id: 12, default_account_id: null, default_project_id: null })); settle();
+  expect(form.projectId()).toBe(9);
+});
+```
+
+Task 4 account transition insertion: at the start of `moveToAccount`, before its existing `const before = this.accountCurrency()` and before `accountId.set(id)`, insert:
+
+```ts
+if (id === this.accountId()) return;
+const selected = this.drafts.current();
+if (!selected || selected.protected) return;
+this.drafts.invalidate(selected.key);
+this.drafts.accept(this.drafts.capture()!, {
+  availableRules: [], ruleIds: [], rulesTouched: selected.loaded !== null,
+});
+```
+
+Remove the old trailing `chooseAccount` rule reset based on the form's `entryId`; the child's provenance now governs it. Keep the existing currency-specific clearing after this insertion. Add a currency-changing sheet result through a method that writes the captured owner and invalidates that owner only when `fx.original_currency`, `fx.account_currency`, manual/online choice or date dependencies changed. Amount/rate callbacks never invalidate themselves; newly started resources must not recursively restart on their own derived quote update.
+
+Task 9 delete-group/account-picker overlay replacements use these executable harness tests (finding 10):
+
+```ts
+it('delete-group dialog traps focus, restores opener, then Escape asks about dirty parent', async () => {
+  seedGroup(makeEntryDetail({ id: 7 }), makeEntryDetail({ id: 8 }));
+  await open('/accounting/entries/7/edit'); form.selectBubble('parent'); form.setParentText('name', 'dirty'); settle();
+  const root = harness.routeNativeElement!;
+  const opener = root.querySelector<HTMLButtonElement>('.delete-group')!;
+  opener.focus(); opener.click(); settle();
+  const dialog = root.querySelector<HTMLElement>('.delete-group-dialog')!;
+  expect(dialog.hasAttribute('data-overlay')).toBe(true);
+  const buttons = [...dialog.querySelectorAll<HTMLButtonElement>('button')];
+  buttons.at(-1)!.focus();
+  buttons.at(-1)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+  expect(document.activeElement).toBe(buttons[0]);
+  buttons[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+  expect(root.querySelector('.delete-group-dialog')).toBeNull(); expect(document.activeElement).toBe(opener);
+  expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(false);
+  opener.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+  expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(true);
+});
+it('child account picker Escape restores trigger; next Escape prompts the dirty form', async () => {
+  await open(); fill(); form.addChild(); settle(); fill('20');
+  const root = harness.routeNativeElement!;
+  const trigger = root.querySelector<HTMLButtonElement>('.account-tile .acct-trigger')!;
+  trigger.focus(); trigger.click(); settle();
+  const panel = root.querySelector('.account-tile .acct-panel')!;
+  panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+  expect(root.querySelector('.account-tile .acct-panel')).toBeNull(); expect(document.activeElement).toBe(trigger);
+  expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(false);
+  trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); settle();
+  expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(true);
+});
+```
+
+### Per-finding disposition
+
+| Finding | Disposition | Revised plan evidence |
+|---|---|---|
+| 1 · P1 | fixed | Task 5 single load sets protected=false; separate convertBlockedReason feeds plus only; R1 settled/refunded/loan PUT tests |
+| 2 · P1 | fixed | normalizePosted at parent load, first-split comparison, parent/full serialization; untouched loaded child stays raw; R1 raw-time/date tests |
+| 3 · P1 | fixed | save dispatches childScope before selected-field validate; fullChild validates manual FX; parent POST and incomplete-FX tests |
+| 4 · P2 | fixed | select/add no generation bump; per-child resource reconciler; valid unselected callbacks retained, remove/dependency stale callbacks dropped; pending resources block save |
+| 5 · P2 | fixed | account transition clears old rule selections; per-account/date filter; only unchanged-account attached ids exempt |
+| 6 · P2 | fixed | single receivable/payable merchant remains null; per-kind serializer regression |
+| 7 · P2 | fixed | f19e1fb §1.6 order; actual shared-lib 409 envelope; translated conflict map and isImportRunning reuse |
+| 8 · P2 | fixed | formEditable and canEdit admit split metadata editing; test opens an is_settlement member |
+| 9 · P2 | fixed | forbidden transfer/system single modes show hint only; no extra category-picker/stale expense bubble |
+| 10 · P2 | fixed | explicit base-line legacy replacement inventory plus delete-dialog and child account-picker Escape tests |
+| 11 · P2 | fixed | clean loaded-group switch assertions; actual keypad DOM; pending-close precondition and callback clearing; changing online quote in snapshot test; remove trivial parent assertion |
+| 12 · P2 | fixed | R1 concrete grid/focus, mixed kind, sibling account isolation, archived originals, anchor field-map/date/time, removed category/FX callback and keypad tests |
+| 13 · P2 | fixed | injectable short unique childKey fallback when crypto.randomUUID unavailable; collision/length test |
+| 14 · P2 | fixed | WritableSignal<ParentDraft>; narrow d.kind before singleKind.set; template uses kindLabels[member.kind] |
+| 15 · P3 | fixed | corrected base anchors for entry-draft, entry-save and entry-form.html |
+| 16 · P3 | fixed | Task 3 Files/green step name new split-save.ts; old exports retire only in vertical integration |
+| 17 · P3 | fixed | usable last-use account → default account fallback; retain project when no last-use/default; regression test |
+| 18 · P3 | fixed | same-bubble no-op; remove invalid draft without flush; submission-local shared counterparty observable per trimmed name |
+| 19 · P3 | fixed | union loc normalization; no duplicate split sibling related rows; dissolve parent fields asserted; mixedDates/member merchant tests; childFromDetail naming deviation explicit |
+
+No disagreements. P1 re-review remains an owner gate. This table records changes to the plan, not implementation/test execution; compile and full application tests remain mandatory at implementation commits.
