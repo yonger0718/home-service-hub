@@ -25,13 +25,18 @@ from .entry_write_service import (
     check_project,
     delete_entries_cascade,
     dissolve_group,
+    get_entry,
     insert_prepared,
     lock_group,
+    locked_entry,
     prepare_entry,
     remember_all_defaults,
 )
 from .errors import (
+    ALREADY_GROUPED,
+    ENTRY_LOCKED,
     GROUP_SCHEDULED,
+    KIND_NOT_SPLITTABLE,
     MEMBER_LOCKED,
     MEMBER_NOT_FOUND,
     RETRY,
@@ -41,7 +46,7 @@ from .errors import (
     ValidationError,
 )
 from .split_compare import MemberSignature, classify, payload_signature, stored_signature
-from .split_protection import protected_reasons
+from .split_protection import protected_reason, protected_reasons
 
 SHARED_FIELDS = ("entry_date", "entry_time", "posted_date", "project_id", "tags")
 KEEP_FIELDS = ("name", "project_id", "tags", "description")  # what SplitKeepIn may change
@@ -374,6 +379,72 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
         group_out = group_id
     remember_all_defaults(db, [member.prepared for member in members if member.prepared is not None])
     return SplitResult(group_out, result)
+
+
+def _check_convert_cardinality(entry_id: int, payload: SplitIn) -> None:
+    """PUT /entries/{entry_id}/split (§1.3): 2 to MAX_SPLIT_MEMBERS full members; exactly one carries an id, the
+    anchor's."""
+    if not 2 <= len(payload.members) <= MAX_SPLIT_MEMBERS:
+        raise ValidationError("members", f"a split has 2 to {MAX_SPLIT_MEMBERS} members")
+    for index, item in enumerate(payload.members):
+        if isinstance(item, SplitKeepIn):
+            raise ValidationError(f"members.{index}.keep", "converting an entry takes full members only")
+        if item.id is not None and item.id != entry_id:
+            raise ValidationError(f"members.{index}.id", f"only the converted entry {entry_id} carries an id")
+    if all(item.id != entry_id for item in payload.members):
+        raise ValidationError("members", f"one member must be the converted entry {entry_id}")
+
+
+def _refuse_anchor(db: Session, anchor: LedgerEntry) -> None:
+    """§1.6 convert refusals in order, on the unlocked read and again on the locked anchor: already in a group →
+    already_grouped; protected or not an editable kind → entry_locked; posted by a schedule → kind_not_splittable;
+    an imported row before cutover → locked_until_cutover."""
+    if anchor.group_id is not None:
+        raise CodedConflictError(ALREADY_GROUPED, f"entry {anchor.id} already belongs to group {anchor.group_id}")
+    reason = protected_reason(db, anchor)  # covers every kind outside EditableKind
+    if reason is not None:
+        raise CodedConflictError(ENTRY_LOCKED, f"entry {anchor.id} cannot be split ({reason})")
+    if anchor.source == "schedule":
+        raise CodedConflictError(KIND_NOT_SPLITTABLE, f"entry {anchor.id} was posted by a schedule")
+    assert_editable(anchor)
+
+
+def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=None) -> SplitResult:
+    """PUT /entries/{entry_id}/split (§1.6): the anchor joins a new split group and is rewritten in place (its id
+    is stable); the other members are inserted. Phases as update_split; the only row lock is the anchor (it
+    belongs to no group, and the new group row is invisible to other transactions until commit). A concurrent
+    convert of the same entry waits on that lock and then answers already_grouped."""
+    # 1. cardinality, 404, refusals on the unlocked read
+    _check_convert_cardinality(entry_id, payload)
+    _refuse_anchor(db, get_entry(db, entry_id))
+    members = [
+        _Member(
+            index, item, item.id, "new" if item.id is None else "full", payload=member_payload(payload, item),
+            change=None if item.id is None else "financial",  # the anchor is always prepared, with its rule links
+        )
+        for index, item in enumerate(payload.members)
+    ]
+    # 2. prepare (FX may commit), before any lock
+    _prepare(db, members, http_get)
+    # 3. lock the anchor; 4. re-validate it
+    try:
+        anchor = locked_entry(db, entry_id)
+    except NotFoundError as exc:
+        raise CodedConflictError(RETRY, f"entry {entry_id} was deleted concurrently") from exc
+    _refuse_anchor(db, anchor)
+    # 5. write
+    group = EntryGroup(kind="split", name=payload.name, merchant=payload.merchant, description=payload.description)
+    db.add(group)
+    db.flush()
+    anchor.group_id = group.id
+    for member in members:
+        if member.action == "full":
+            apply_prepared_update(db, anchor, member.prepared)
+        else:
+            member.entry_id = insert_prepared(db, member.prepared, group_id=group.id, remember=False)
+    db.flush()
+    remember_all_defaults(db, [member.prepared for member in members])
+    return SplitResult(group.id, [(member.entry_id, member.item.client_key) for member in members])
 
 
 def delete_split(db: Session, group_id: int) -> None:

@@ -5,8 +5,8 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..schemas.ledger import DailySummaryOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
-from ..schemas.writes import EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, SettleIn
-from ..services import entry_write_service, ledger_service, settlement_service
+from ..schemas.writes import EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, SettleIn, SplitIn, SplitOut
+from ..services import entry_write_service, ledger_service, settlement_service, split_service
 from .errors import service_errors
 
 router = APIRouter(prefix="/entries", tags=["Entries"])
@@ -83,6 +83,15 @@ def remove_entry(entry_id: int, db: Session = Depends(get_db)):
         entry_write_service.delete_entry(db, entry_id)
     db.commit()
     return Response(status_code=204)
+
+
+@router.put("/{entry_id}/split", response_model=SplitOut)
+def put_entry_split(entry_id: int, payload: SplitIn, db: Session = Depends(get_db)):
+    """Convert a single entry into a split; the entry keeps its id (split rework §1.6)."""
+    with service_errors():
+        result = split_service.convert_to_split(db, entry_id, payload)
+    db.commit()
+    return result.out()
 
 
 @router.post("/{entry_id}/settle", response_model=EntryDetailOut, status_code=201)
