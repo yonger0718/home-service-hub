@@ -11,6 +11,31 @@
   @if (detail(); as d) {
     <app-lock-banner [locked]="d.locked" />
 
+    @if (d.group?.kind === 'split') {
+      <section class="split-parent-card" aria-label="多類別摘要">
+        <h3>{{ d.group?.name || '多類別' }} · 多類別</h3>
+        @for (line of splitNet(); track line.currency) {
+          <p class="split-net">{{ line.currency }} {{ formatMoney(line.amount, line.currency, { sign: true }) }}</p>
+        }
+        <p class="split-meta">{{ splitMembers().length }} 項 · {{ splitAccountCount() }} 個帳戶</p>
+        <p class="split-meta">商家 {{ d.group?.merchant || '—' }} · 日期 {{ splitMembers()[0]?.entry_date }}</p>
+        @for (member of splitMembers(); track member.id) {
+          <a
+            class="split-child"
+            [routerLink]="['/accounting/entries', member.id]"
+            [attr.aria-current]="member.id === d.id ? 'true' : null"
+          >
+            <span class="ico" [style.background]="colorOf(member)">{{ iconOf(member) }}</span>
+            <span class="split-child-name">{{ member.name || member.category || kindLabels[member.kind] }} · {{ member.account_name }}</span>
+            <span class="split-child-amount">{{ formatMoney(member.amount, member.currency, { sign: true }) }}</span>
+            @if (member.protected) {
+              <span aria-label="受保護">🔒</span>
+            }
+          </a>
+        }
+      </section>
+    }
+
     <div class="dhead" [style.background]="colorOf(d)" [style.color]="textOn(d.category_color)">
       @if (!inSheet()) {
         <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>

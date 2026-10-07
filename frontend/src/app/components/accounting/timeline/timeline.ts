@@ -226,7 +226,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
         entryId: entry.id,
         icon: iconOf(entry),
         color: colorOf(entry),
-        title: entry.group.name?.trim() || displayTitle(entry),
+        title: entry.group.name?.trim() || (entry.group.kind === 'split' ? '多類別' : displayTitle(entry)),
         sub: subLine(entry),
         amountText: total === null ? '—' : formatSigned(total, entry.group.currency),
         tone: total === null || total === 0 ? 'neutral' : total < 0 ? 'out' : 'in',

@@ -149,6 +149,19 @@ describe('LedgerTimelineComponent', () => {
     expect(text(el.querySelector('.day span'))).toBe('09/30 週三');
   });
 
+  it('uses group name or 多類別 and preserves one row and count', () => {
+    const group = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-30', currency: 'TWD' };
+    const rows = [makeEntry({ id: 7, group }), makeEntry({ id: 8, group })];
+    const days = buildDays(rows, 'TWD', false);
+    expect(days.flatMap(d => d.rows)).toHaveLength(1);
+    expect(days[0].rows[0]).toMatchObject({ title: '多類別', groupCount: 2 });
+    rows[0].group = { ...group, name: '旅遊' };
+    expect(buildDays(rows, 'TWD', false)[0].rows[0].title).toBe('旅遊');
+    // Other group kinds keep their member-title fallback.
+    const installment = { ...group, kind: 'installment' as const };
+    expect(buildDays([makeEntry({ id: 9, name: '手機', group: installment })], 'TWD', false)[0].rows[0].title).toBe('手機');
+  });
+
   it('shows a split group as one row with its count badge and total', () => {
     const { fixture, el } = render();
     flushSummary('2026-10');
