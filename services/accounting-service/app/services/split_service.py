@@ -24,6 +24,7 @@ from .entry_write_service import (
     attached_rule_ids,
     check_project,
     delete_entries_cascade,
+    dissolve_group,
     insert_prepared,
     lock_group,
     prepare_entry,
@@ -360,11 +361,19 @@ def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None)
         elif member.change == "meta":
             _apply_meta(db.get(LedgerEntry, member.entry_id), member.payload)
     db.flush()
-    group = db.get(EntryGroup, group_id)
-    group.name, group.merchant, group.description = payload.name, payload.merchant, payload.description
-    db.flush()
+    result = [(member.entry_id, member.item.client_key) for member in members]
+    if len(members) == 1:
+        # Dissolve (§1.6): the payload's parent values fill the survivor's blank fields, then the group goes.
+        survivor = db.get(LedgerEntry, members[0].entry_id)
+        dissolve_group(db, group_id, survivor, name=payload.name, merchant=payload.merchant, description=payload.description)
+        group_out = None
+    else:
+        group = db.get(EntryGroup, group_id)
+        group.name, group.merchant, group.description = payload.name, payload.merchant, payload.description
+        db.flush()
+        group_out = group_id
     remember_all_defaults(db, [member.prepared for member in members if member.prepared is not None])
-    return SplitResult(group_id, [(member.entry_id, member.item.client_key) for member in members])
+    return SplitResult(group_out, result)
 
 
 def delete_split(db: Session, group_id: int) -> None:

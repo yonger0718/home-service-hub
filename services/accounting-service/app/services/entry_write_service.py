@@ -497,6 +497,32 @@ def delete_entries_cascade(db: Session, entry_ids: Iterable[int]) -> None:
     db.expire_all()
 
 
+def is_blank(value: str | None) -> bool:
+    """Empty for the dissolve copy rule (split rework §1.6): None or whitespace only."""
+    return value is None or not value.strip()
+
+
+def dissolve_group(
+    db: Session, group_id: int, survivor: LedgerEntry, *, name: str | None, merchant: str | None, description: str | None
+) -> None:
+    """Turn a split left with one member back into a plain entry (§1.6 dissolve, §1.7): each non-blank parent value
+    fills the survivor's field only when that field is blank, field by field; then every row still carrying the
+    group id is detached and the group row deleted, in the caller's transaction. The caller holds the group row
+    and the survivor FOR UPDATE."""
+    for field, value in (("name", name), ("merchant", merchant), ("description", description)):
+        if not is_blank(value) and is_blank(getattr(survivor, field)):
+            setattr(survivor, field, value)
+    db.flush()
+    db.execute(
+        update(LedgerEntry)
+        .where(LedgerEntry.group_id == group_id)
+        .values(group_id=None)
+        .execution_options(synchronize_session=False)
+    )
+    db.execute(delete(EntryGroup).where(EntryGroup.id == group_id))
+    db.expire_all()
+
+
 def _group_ids_to_lock(db: Session, entry_id: int) -> tuple[list[int], object]:
     """The entry_group ids of the entry (and of its transfer legs), read without a lock so the group rows can be
     locked before the entries. group_id never changes on an existing row; a member a split PUT replaced is a
