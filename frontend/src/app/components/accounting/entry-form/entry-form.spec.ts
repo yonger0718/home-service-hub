@@ -1218,13 +1218,28 @@ describe('EntryFormComponent', () => {
     expect(chips).toEqual(['手續費 −$30', '折價券 +$1,000']);
     expect(text(el.querySelector('.foot'))).toBe('手續費 −$30 · 折扣 +$1,000 · 總額 −$196');
   });
-  it("hides its own ✕ inside the layout's 760–1023 px sheet", async () => {
-    const { el } = await open('/accounting/entry', 'sheet');
-    respond('/api/accounting/categories', [FOOD]);
-    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
-    expect(el.querySelector('.topbar .cancel')).toBeNull();
-    expect(el.querySelector('.topbar .save')).not.toBeNull();
-  });
+  for (const mode of ['phone', 'sheet', 'panes'] as const) {
+    it(`draws one ✕ at the header's top-right, a 44px target, in the ${mode} layout`, async () => {
+      const { el, left } = await open('/accounting/entry', mode);
+      respond('/api/accounting/categories', [FOOD]);
+      respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+      const topbar = el.querySelector<HTMLElement>('.topbar')!;
+      const closes = Array.from(el.querySelectorAll('button')).filter(button => text(button) === '✕');
+      expect(closes).toEqual([topbar.querySelector('.cancel')]);
+      const cancel = closes[0] as HTMLButtonElement;
+      // The header's last cell, drawn after ✓ (CSS order); still the form's first control in the DOM.
+      expect(cancel.parentElement).toBe(topbar.lastElementChild);
+      expect(cancel.parentElement!.classList).toContain('topbar-end');
+      expect(getComputedStyle(cancel).order).toBe('1');
+      expect(getComputedStyle(cancel.parentElement!.querySelector('.save')!).order).not.toBe('1');
+      expect(getComputedStyle(cancel).width).toBe('44px');
+      expect(getComputedStyle(cancel).height).toBe('44px');
+      // Sticky: it stays in reach while the pane / sheet scrolls.
+      expect(getComputedStyle(topbar).position).toBe('sticky');
+      cancel.click(); settle();
+      expect(left()).toBe(true);
+    });
+  }
   it('still shows 入帳日 for a new single entry and sends posted_date', async () => {
     const { el } = await open('/accounting/entry');
     respond('/api/accounting/categories', [FOOD]);

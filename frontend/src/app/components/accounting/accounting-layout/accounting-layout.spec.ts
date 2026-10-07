@@ -394,6 +394,25 @@ describe('AccountingLayoutComponent', () => {
     field.remove();
   });
 
+  it("leaves the sheet's ✕ to the entry form's header: one ✕, focused on open, and the grip still swipes", async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entry');
+    const sheet = await find(harness, '.detail-pane.open');
+    const formClose = await find(harness, '.detail-pane .entry-form .topbar .cancel');
+    const grip = await find(harness, '.sheet-grip');
+    expect(grip.classList).toContain('sheet-grip--active');
+    expect(grip.querySelector('.sheet-handle')).not.toBeNull();
+    expect(grip.querySelector('.sheet-close')).toBeNull();
+    expect(Array.from(sheet.querySelectorAll('button')).filter(button => button.textContent?.trim() === '✕')).toEqual([formClose]);
+    await vi.waitFor(() => expect(document.activeElement).toBe(formClose));
+
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 20, bubbles: true }));
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+  });
+
   it('keeps a grip without handle or ✕ in the two-pane layout and never swipes there', async () => {
     const harness = await start('panes', '/accounting/entries/5');
     await find(harness, PANE_PAGE);

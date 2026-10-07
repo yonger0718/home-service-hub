@@ -99,6 +99,11 @@ export interface TimelinePill {
 export interface TimelineRow {
   key: string;
   entryId: number;
+  /**
+   * Entries the row stands for on this page: a group row's members loaded so far (the detail may route to any of them),
+   * else just `entryId`.
+   */
+  memberIds: number[];
   icon: string;
   color: string;
   title: string;
@@ -203,7 +208,11 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
   const transferLegs = new Map<string, LedgerEntry[]>();
   // Only the members loaded so far: the folder draws these and counts the rest of `group.count` as `+N`.
   const splitIcons = new Map<number, FolderIcon[]>();
+  const groupMembers = new Map<number, number[]>();
   for (const entry of entries) {
+    if (entry.group) {
+      groupMembers.set(entry.group.id, [...(groupMembers.get(entry.group.id) ?? []), entry.id]);
+    }
     if (entry.transfer_group_id && TRANSFER_KINDS.has(entry.kind)) {
       transferLegs.set(entry.transfer_group_id, [...(transferLegs.get(entry.transfer_group_id) ?? []), entry]);
     }
@@ -232,6 +241,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
       row = {
         key,
         entryId: entry.id,
+        memberIds: groupMembers.get(entry.group.id) ?? [entry.id],
         icon: iconOf(entry),
         color: colorOf(entry),
         title: entry.group.name?.trim() || (entry.group.kind === 'split' ? '多類別' : displayTitle(entry)),
@@ -257,6 +267,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
       row = {
         key,
         entryId: out.id,
+        memberIds: [out.id],
         icon: out.category_icon ?? defaultCategoryIcon(null, 'transfer_out'),
         color: colorOf(out),
         title: out.name?.trim() || '轉帳',
@@ -274,6 +285,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
       row = {
         key: `e${entry.id}`,
         entryId: entry.id,
+        memberIds: [entry.id],
         icon: iconOf(entry),
         color: colorOf(entry),
         title: displayTitle(entry),
@@ -372,6 +384,12 @@ export class LedgerTimelineComponent implements OnInit {
   readonly days = computed(() => buildDays(this.entries(), this.mainCurrency(), this.hideRewards()));
   readonly hasMore = computed(() => this.entries().length < (this.total() ?? 0));
   readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
+
+  /** The routed entry is this row's entry or, for a group row, any of its members on this page. */
+  isCurrent(row: TimelineRow): boolean {
+    const id = this.selectedId();
+    return id !== null && row.memberIds.includes(id);
+  }
   readonly monthText = computed(() => monthLabel(this.month()));
   readonly weekStart = computed(() => this.preference()?.week_start ?? DEFAULT_PREFERENCE.week_start);
   /** Outlined in the 日曆 grid; refreshed on a month change and when the tab becomes visible (past midnight). */

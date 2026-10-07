@@ -351,6 +351,31 @@ describe('split form integration', () => {
     expect(form.children().map(c => c.amountExpr)).toEqual(['12', '9']);
   });
 
+  it('on the phone, a tap on the 多類別 folder tile enters parent mode with the ring on the tile', async () => {
+    expect(TestBed.inject(LayoutModeService).mode()).toBe('phone');
+    seedGroup(makeEntryDetail({ id: 7, amount: '-10' }), makeEntryDetail({ id: 8, amount: '-5' }));
+    await open('/accounting/entries/8/edit');
+    const root = harness.routeNativeElement!;
+    expect(root.querySelector('app-amount-keypad')).not.toBeNull();
+    clickKey('+');
+    clickKey('2');
+    const parent = root.querySelector<HTMLButtonElement>('[data-bubble="parent"]')!;
+    expect(parent.classList).not.toContain('on');
+    // The tap lands on the aria-hidden folder tile inside the bubble; it is still the bubble's click.
+    parent.querySelector('app-split-folder')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    settle();
+
+    expect(form.parentMode()).toBe(true);
+    expect(parent.getAttribute('aria-pressed')).toBe('true');
+    expect(parent.classList).toContain('on');
+    expect(root.querySelector('.split-parent .split-totals')).not.toBeNull();
+    const labels = Array.from(root.querySelectorAll('.split-parent [aria-label]')).map(field => field.getAttribute('aria-label'));
+    expect(labels).toEqual(expect.arrayContaining(['整筆商家', '整筆日期', '整筆名稱', '整筆備註']));
+    expect(root.querySelector('app-amount-keypad')).toBeNull();
+    // The pending keypad expression was committed to the child that owned it.
+    expect(form.children().map(c => c.amountExpr)).toEqual(['10', '7']);
+  });
+
   it('parent date controls reject changes whenever any child is protected', async () => {
     await open();
     fill();

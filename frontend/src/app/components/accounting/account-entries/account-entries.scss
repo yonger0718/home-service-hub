@@ -50,6 +50,16 @@
 
 .row + .row { border-top: 1px solid var(--app-border); }
 
+/* The entry open in the pane, as the timeline marks it. */
+.row.sel {
+  background: var(--app-primary-soft);
+  border-radius: var(--radius-sm);
+  margin: 0 -8px;
+  padding-inline: 8px;
+}
+
+.row.sel + .row { border-top: 0; }
+
 .ico {
   align-items: center;
   border-radius: 50%;

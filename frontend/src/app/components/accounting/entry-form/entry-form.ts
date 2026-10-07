@@ -430,7 +430,6 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       ((this.editing() && this.entryId() === null) || (this.scheduleId() !== null && !this.definitionLoaded())),
   );
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
-  readonly inSheet = computed(() => this.layoutMode.mode() === 'sheet');
   /** 餘額調整 (single only): a protected non-editable child lays out as `system` but never edits a balance. */
   readonly isSystem = computed(() => !this.childScope() && this.kind() === 'system');
   readonly isParty = computed(() => this.kind() === 'receivable' || this.kind() === 'payable');

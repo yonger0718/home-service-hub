@@ -28,6 +28,9 @@ export function categoryColor(node: CategoryNode, parent: CategoryNode | null): 
   return node.color ?? parent?.color ?? 'var(--app-surface-soft)';
 }
 
+/** Space kept between a revealed bubble and the strip's edge (or the pinned parent tile), in px. */
+const BUBBLE_GAP = 8;
+
 /** One child of the entry form's split strip. */
 export interface Bubble {
   key: string;
@@ -122,12 +125,26 @@ export class CategoryPickerComponent {
     });
   }
 
+  /**
+   * Scrolls the strip just enough to show `key`. The parent tile is pinned at the strip's start, so a child is kept clear
+   * of it (a plain `scrollIntoView` would leave it under the tile, or scroll the tile itself out of reach).
+   */
   private revealBubble(key: string): void {
-    const bubble = Array.from(this.host.nativeElement.querySelectorAll<HTMLElement>('[data-bubble]')).find(
+    const strip = this.host.nativeElement.querySelector<HTMLElement>('.strip.bubbles');
+    const bubble = Array.from(strip?.querySelectorAll<HTMLElement>('[data-bubble]') ?? []).find(
       element => element.dataset['bubble'] === key,
     );
-    if (typeof bubble?.scrollIntoView === 'function') {
-      bubble.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (!strip || !bubble || key === 'parent') {
+      return;
+    }
+    const pinned = strip.querySelector<HTMLElement>('.parent-bubble')?.offsetWidth ?? 0;
+    // The strip is the bubbles' offset parent (position: relative): offsets are in its scroll coordinates.
+    const left = bubble.offsetLeft;
+    const right = left + bubble.offsetWidth;
+    if (left - pinned < strip.scrollLeft) {
+      strip.scrollLeft = Math.max(0, left - pinned - BUBBLE_GAP);
+    } else if (right > strip.scrollLeft + strip.clientWidth) {
+      strip.scrollLeft = right - strip.clientWidth + BUBBLE_GAP;
     }
   }
 

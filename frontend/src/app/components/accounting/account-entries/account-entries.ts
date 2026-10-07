@@ -5,6 +5,7 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 
 import { AccountDetail, AccountPeriodSummary, ENTRY_KIND_LABELS, EntryKind, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
+import { AccountingLayoutComponent } from '../accounting-layout/accounting-layout';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf } from '../accounting-ui';
 import { Period, periodLabel, shiftPeriod, statementPeriod } from '../cycle';
 import { todayIso } from '../dates';
@@ -25,6 +26,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
   private accountingService = inject(AccountingService);
   private route = inject(ActivatedRoute);
   private destroyRef = inject(DestroyRef);
+  private readonly layout = inject(AccountingLayoutComponent, { optional: true });
   private requestId = 0;
   private summaryRequestId = 0;
 
@@ -37,6 +39,8 @@ export class AccountingAccountEntriesComponent implements OnInit {
   readonly periodSummary = signal<AccountPeriodSummary | null>(null);
   readonly currency = computed(() => this.periodSummary()?.currency ?? this.account()?.currency ?? 'TWD');
   readonly entries = signal<LedgerEntry[]>([]);
+  /** Entry open in the pane: its row is marked, as on the timeline. */
+  readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
   readonly total = signal(0);
   readonly loading = signal(true);
   readonly loadError = signal(false);

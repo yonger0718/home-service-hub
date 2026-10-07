@@ -1,24 +1,24 @@
 <div class="entry-form" [class.entry-form--phone]="isPhone()">
+  <!-- ✕ sits at the header's top-right in every layout; the sheet's grip keeps only its handle and swipe. -->
   <header class="topbar">
-    <!-- In the layout's 760–1023 px sheet the sheet's own ✕ is the one close control. -->
-    @if (!inSheet()) {
-      <button type="button" class="ib cancel" aria-label="取消" (click)="cancel()">✕</button>
-    } @else {
-      <span class="ib" aria-hidden="true"></span>
-    }
+    <span class="topbar-start" aria-hidden="true"></span>
     <h2>{{ title() }}</h2>
-    <button
-      type="button"
-      class="ib ok save"
-      aria-label="儲存"
-      title="長按或 ⇧⏎：儲存並續記"
-      [disabled]="locked() || definitionLocked() || definitionReadOnly() || saving() || loading() || loadFailed() || resourcesBlocking() || saveResponseInvalid()"
-      (pointerdown)="onSavePointerDown()"
-      (pointerup)="onSavePointerUp()"
-      (pointerleave)="onSavePointerUp()"
-      (pointercancel)="onSavePointerUp()"
-      (click)="onSaveClick()"
-    >✓</button>
+    <span class="topbar-end">
+      <!-- First in the DOM: the form's first control (focus fallbacks land here, not on ✓); drawn right-most. -->
+      <button type="button" class="ib cancel" aria-label="取消" data-pane-close (click)="cancel()">✕</button>
+      <button
+        type="button"
+        class="ib ok save"
+        aria-label="儲存"
+        title="長按或 ⇧⏎：儲存並續記"
+        [disabled]="locked() || definitionLocked() || definitionReadOnly() || saving() || loading() || loadFailed() || resourcesBlocking() || saveResponseInvalid()"
+        (pointerdown)="onSavePointerDown()"
+        (pointerup)="onSavePointerUp()"
+        (pointerleave)="onSavePointerUp()"
+        (pointercancel)="onSavePointerUp()"
+        (click)="onSaveClick()"
+      >✓</button>
+    </span>
   </header>
   @if (registry.promptOpen()) {
     <div class="discard-strip" role="alertdialog" aria-label="放棄未儲存的內容？">
