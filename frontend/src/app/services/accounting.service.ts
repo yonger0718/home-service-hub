@@ -42,6 +42,7 @@ import {
   ScheduleStatus,
   SettleInput,
   SplitInput,
+  SplitResult,
   TransferInput,
 } from '../models/accounting.model';
 
@@ -189,13 +190,18 @@ export class AccountingService {
     return this.bump(this.http.put<unknown>(`${this.apiUrl}/transfers/${groupId}`, input));
   }
 
-  createSplit(input: SplitInput): Observable<{ group_id: number; member_ids: number[] }> {
-    return this.bump(this.http.post<{ group_id: number; member_ids: number[] }>(`${this.apiUrl}/splits`, input));
+  createSplit(input: SplitInput): Observable<SplitResult> {
+    return this.bump(this.http.post<SplitResult>(`${this.apiUrl}/splits`, input));
   }
 
-  /** Replaces every member: the answer carries the members' new ids, in `input.members` order. */
-  updateSplit(groupId: number, input: SplitInput): Observable<{ group_id: number; member_ids: number[] }> {
-    return this.bump(this.http.put<{ group_id: number; member_ids: number[] }>(`${this.apiUrl}/splits/${groupId}`, input));
+  /** Upserts the members by id (keep / full / new / dropped); one member dissolves the split. */
+  updateSplit(groupId: number, input: SplitInput): Observable<SplitResult> {
+    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/splits/${groupId}`, input));
+  }
+
+  /** Converts an ungrouped entry into a split; the entry is the anchor and keeps its id. */
+  convertEntryToSplit(entryId: number, input: SplitInput): Observable<SplitResult> {
+    return this.bump(this.http.put<SplitResult>(`${this.apiUrl}/entries/${entryId}/split`, input));
   }
 
   deleteSplit(groupId: number): Observable<void> {

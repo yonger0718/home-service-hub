@@ -479,3 +479,143 @@
 .account-tile app-account-picker {
   flex: 1;
 }
+
+/* ---- split: parent summary, protected child, removal ------------------------------------------------------ */
+
+.split-unavailable,
+.protected-note,
+.child-merchant,
+.split-hint,
+.remove-hint {
+  color: var(--app-text-muted);
+  font-size: 0.78rem;
+  margin: 0.25rem 0;
+}
+
+.protected-note {
+  background: var(--app-surface-soft);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.6rem;
+}
+
+.split-parent {
+  display: grid;
+  gap: 0.5rem;
+
+  .split-totals {
+    border: 1px solid var(--app-border);
+    border-radius: 0.75rem;
+    display: grid;
+    gap: 0.15rem;
+    padding: 0.6rem 0.75rem;
+  }
+
+  .split-totals p {
+    margin: 0;
+  }
+
+  .split-net {
+    font-size: 1.05rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+  }
+
+  .split-count,
+  .split-reward {
+    color: var(--app-text-muted);
+    font-size: 0.8rem;
+  }
+
+  .tile input {
+    background: none;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .delete-group {
+    background: none;
+    border: 1px solid var(--c-red);
+    border-radius: 0.5rem;
+    color: var(--c-red);
+    cursor: pointer;
+    font: inherit;
+    justify-self: start;
+    padding: 0.35rem 0.75rem;
+  }
+}
+
+.child-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+
+  .remove-child {
+    background: none;
+    border: 1px solid var(--app-border);
+    border-radius: 0.5rem;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    padding: 0.3rem 0.7rem;
+  }
+
+  .remove-child:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
+.child-load-error button,
+.form-error .reload-after-save {
+  background: none;
+  border: 1px solid currentColor;
+  border-radius: 0.4rem;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.5rem;
+}
+
+.delete-group-dialog {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 0.75rem;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+  left: 50%;
+  max-width: min(22rem, calc(100% - 2rem));
+  padding: 1rem;
+  position: fixed;
+  top: 40%;
+  transform: translate(-50%, -50%);
+  z-index: 30;
+
+  p {
+    margin: 0 0 0.75rem;
+  }
+
+  .delete-group-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+  }
+
+  button {
+    border: 1px solid var(--app-border);
+    border-radius: 0.5rem;
+    cursor: pointer;
+    font: inherit;
+    padding: 0.35rem 0.8rem;
+  }
+
+  .delete-group-confirm {
+    background: var(--c-red);
+    border-color: var(--c-red);
+    color: #fff;
+  }
+}

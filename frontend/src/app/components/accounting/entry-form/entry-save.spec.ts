@@ -12,10 +12,8 @@ import {
   buildEntryInput,
   emptyEntryInput,
   entryInputFromDetail,
-  executeEntrySave,
   fxFromDetail,
   loadRelatedRows,
-  planEntrySave,
   resolveCounterpartyId,
 } from './entry-save';
 
@@ -33,7 +31,7 @@ const LUNCH = emptyEntryInput({
 });
 const PAID_FOR_ALAN = emptyEntryInput({ account_id: 2, kind: 'receivable', amount: '180', category_id: 51, counterparty_id: 5 });
 
-describe('entry save plan', () => {
+describe('entry save helpers', () => {
   let http: HttpTestingController;
   let service: AccountingService;
 
@@ -44,67 +42,6 @@ describe('entry save plan', () => {
   });
 
   afterEach(() => http.verify());
-
-  it('posts a plain entry when there is one line', () => {
-    const plan = planEntrySave(LUNCH, [], { entryId: null, groupId: null });
-    expect(plan.kind).toBe('create');
-    executeEntrySave(service, plan).subscribe();
-    const req = http.expectOne('/api/accounting/entries');
-    expect(req.request.method).toBe('POST');
-    expect(req.request.body.amount).toBe('230');
-    req.flush({});
-  });
-
-  it('posts a split with the expense and the 代付 receivable as members', () => {
-    const plan = planEntrySave(LUNCH, [PAID_FOR_ALAN], { entryId: null, groupId: null });
-    expect(plan.kind).toBe('create-split');
-    executeEntrySave(service, plan).subscribe();
-
-    const req = http.expectOne('/api/accounting/splits');
-    expect(req.request.method).toBe('POST');
-    const body = req.request.body;
-    expect(body.name).toBe('午餐');
-    expect(body.merchant).toBe('麥當勞');
-    expect(body.entry_date).toBe('2026-10-02');
-    expect(body.project_id).toBe(4);
-    expect(body.members.map((m: { kind: string }) => m.kind)).toEqual(['expense', 'receivable']);
-    expect(body.members[1]).toMatchObject({ account_id: 2, amount: '180', counterparty_id: 5, entry_date: '2026-10-02', entry_time: '12:31', project_id: 4 });
-    req.flush({ group_id: 12, member_ids: [100, 101] });
-  });
-
-  it('replaces the members of an existing group', () => {
-    const plan = planEntrySave(LUNCH, [PAID_FOR_ALAN], { entryId: 100, groupId: 12 });
-    executeEntrySave(service, plan).subscribe();
-    const req = http.expectOne('/api/accounting/splits/12');
-    expect(req.request.method).toBe('PUT');
-    expect(req.request.body.members.length).toBe(2);
-    req.flush({});
-  });
-
-  it("puts an edited member back at its index under the group's own fields and the primary's date", () => {
-    const edited = { ...PAID_FOR_ALAN, entry_date: '2026-10-05', entry_time: null, name: null, description: '代付' };
-    const group = { name: '午餐', merchant: '麥當勞', description: '週五', index: 1, dateChanged: false };
-    const plan = planEntrySave(edited, [LUNCH], { entryId: 101, groupId: 12, group });
-    expect(plan).toMatchObject({ kind: 'update-split', groupId: 12, index: 1 });
-    const input = plan.kind === 'update-split' ? plan.input : null;
-    expect(input).toMatchObject({ name: '午餐', merchant: '麥當勞', description: '週五', entry_date: '2026-10-02', entry_time: '12:31' });
-    expect(input!.members.map(member => [member.kind, member.entry_date, member.description])).toEqual([
-      ['expense', '2026-10-02', null],
-      ['receivable', '2026-10-02', '代付'],
-    ]);
-
-    const moved = planEntrySave(edited, [LUNCH], { entryId: 101, groupId: 12, group: { ...group, dateChanged: true } });
-    expect(moved.kind === 'update-split' && moved.input.members.map(member => member.entry_date)).toEqual(['2026-10-05', '2026-10-05']);
-    // A member removed in the form shifts the edited line left, never past the end.
-    expect(planEntrySave(edited, [], { entryId: 101, groupId: 12, group })).toMatchObject({ index: 0 });
-  });
-
-  it('updates a single entry in place', () => {
-    executeEntrySave(service, planEntrySave(LUNCH, [], { entryId: 100, groupId: null })).subscribe();
-    const req = http.expectOne('/api/accounting/entries/100');
-    expect(req.request.method).toBe('PUT');
-    req.flush({});
-  });
 
   it('turns a loaded member detail back into an unsigned entry input with its children', () => {
     const detail = {
@@ -135,7 +72,8 @@ describe('entry save plan', () => {
       account_id: 2,
       kind: 'receivable',
       amount: '180',
-      entry_time: '12:31',
+      // The stored time is kept raw (seconds included): an untouched time is never truncated.
+      entry_time: '12:31:00',
       counterparty_id: 5,
       fee: { amount: '15', name: '手續費' },
       discount: null,

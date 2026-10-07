@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { EntryDetail, EntryScheduleLink } from '../../../models/accounting.model';
 import { AccountingToastService } from '../accounting-toast';
-import { makeAccount, makeDefinition, makeEntry, makeEntryDetail, makeInstance } from '../testing/fixtures';
+import { makeAccount, makeDefinition, makeEntry, makeEntryDetail, makeGroupMember, makeInstance } from '../testing/fixtures';
 import { EntryDetailComponent } from './entry-detail';
 
 const ACCOUNTS = [makeAccount({ id: 1, name: '薪轉' })];
@@ -23,8 +23,8 @@ const REPAYMENT = makeEntryDetail({
   id: 42, kind: 'payable', amount: '-8333.0000', is_settlement: true, name: '信貸 每月還款', account_id: 1, account_name: '薪轉',
   schedule: link(), group: { id: 5, kind: 'installment', name: '信貸 每月還款 #1/36', merchant: null, description: null, count: 2, total: '-8953.0000', currency: 'TWD' },
   group_members: [
-    makeEntry({ id: 42, kind: 'payable', amount: '-8333.0000' }),
-    makeEntry({ id: 43, kind: 'interest', amount: '-620.0000' }),
+    makeGroupMember({ id: 42, kind: 'payable', amount: '-8333.0000' }),
+    makeGroupMember({ id: 43, kind: 'interest', amount: '-620.0000' }),
   ],
 });
 
@@ -120,7 +120,7 @@ describe('EntryDetailComponent schedules', () => {
       id: 42, kind: 'expense', amount: '-390.0000', name: '串流組合', account_id: 1, account_name: '薪轉',
       schedule: link({ kind: 'recurring', times: null, name: '串流組合', posted_entry_ids: [42, 44] }),
       group: { id: 6, kind: 'split', name: '串流組合 #1', merchant: null, description: null, count: 2, total: '-539.0000', currency: 'TWD' },
-      group_members: [makeEntry({ id: 42, amount: '-390.0000' }), makeEntry({ id: 44, amount: '-149.0000' })],
+      group_members: [makeGroupMember({ id: 42, amount: '-390.0000' }), makeGroupMember({ id: 44, amount: '-149.0000' })],
     });
     const { fixture, el } = render(member);
     click(fixture, '.action-edit');
@@ -223,7 +223,7 @@ describe('EntryDetailComponent schedules', () => {
       schedule: link({ definition_id: 12, instance_id: 77, posted_entry_ids: [42, 43] }),
       // a grouped period (expense + interest): 編輯這一筆 opens the repost panel, never the entry form
       group: { id: 5, kind: 'installment', name: '手機分期 #1/3', merchant: null, description: null, count: 2, total: '-9120.0000', currency: 'TWD' },
-      group_members: [makeEntry({ id: 42, kind: 'expense', amount: '-9000.0000' }), makeEntry({ id: 43, kind: 'interest', amount: '-120.0000' })],
+      group_members: [makeGroupMember({ id: 42, kind: 'expense', amount: '-9000.0000' }), makeGroupMember({ id: 43, kind: 'interest', amount: '-120.0000' })],
     });
     function definitionWith(lines: (typeof line)[], amounts: string[]) {
       return {

@@ -33,6 +33,7 @@ import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
+import { storedGroupNet } from './split-card';
 
 const FX_SOURCE_LABELS: Record<string, string> = {
   fx_api: '線上匯率',
@@ -90,8 +91,8 @@ export class EntryDetailComponent implements OnInit {
   readonly loadError = signal(false);
   /**
    * Set when the navigation that opened this entry asked ✕ to go to a fixed page: `state.closeTo === 'list'` (the
-   * parent list; after a split member edit the previous history entry is the member's old, deleted id) or
-   * `'reminders'` (opened from the reminder centre).
+   * parent list; after a split save the previous history entry is the edit form) or `'reminders'` (opened from the
+   * reminder centre).
    */
   private closeTo: 'list' | 'reminders' | null = null;
   readonly panel = signal<DetailPanel>(null);
@@ -144,6 +145,10 @@ export class EntryDetailComponent implements OnInit {
     if (detail.schedule && detail.group) {
       // A period's group member: the form saves it with PUT /splits/{id}, which a scheduled group refuses (409, D29).
       return false;
+    }
+    if (detail.group?.kind === 'split' && !detail.locked) {
+      // Any split member opens the split form; a protected one edits its metadata only (keep member).
+      return true;
     }
     return (FORM_KINDS.has(detail.kind) && !detail.is_settlement) || detail.kind === 'transfer_out' || detail.kind === 'transfer_in';
   });
@@ -224,8 +229,12 @@ export class EntryDetailComponent implements OnInit {
   /** 收款 / 還款 rows cannot be edited by the form (`PUT` answers 422 `kind`); a scheduled one is (編輯這一筆 reposts it). */
   readonly canEdit = computed(() => {
     const detail = this.detail();
-    return !!detail && !this.locked() && (!detail.is_settlement || !!detail.schedule);
+    return !!detail && !this.locked() && (detail.group?.kind === 'split' || !detail.is_settlement || !!detail.schedule);
   });
+  /** Every member of the opened split, the opened one included, in group order (the parent card). */
+  readonly splitMembers = computed(() => (this.detail()?.group?.kind === 'split' ? this.detail()!.group_members : []));
+  readonly splitNet = computed(() => storedGroupNet(this.splitMembers()));
+  readonly splitAccountCount = computed(() => new Set(this.splitMembers().map(member => member.account_id)).size);
   readonly canSettle = computed(() => {
     const detail = this.detail();
     return this.isDebt() && !this.locked() && !detail?.is_settled && !detail?.is_closed && Number(detail?.open_amount ?? 0) > 0;
@@ -272,8 +281,11 @@ export class EntryDetailComponent implements OnInit {
       const other = detail.transfer_counterpart;
       lines.push(line(other, `${this.kindLabels[other.kind]} · ${other.account_name}`));
     }
-    for (const sibling of this.siblings()) {
-      lines.push(line(sibling, `拆帳 · ${sibling.name || this.kindLabels[sibling.kind]} · ${sibling.account_name}`));
+    if (detail.group?.kind !== 'split') {
+      // A split's members are listed by its parent card instead.
+      for (const sibling of this.siblings()) {
+        lines.push(line(sibling, `拆帳 · ${sibling.name || this.kindLabels[sibling.kind]} · ${sibling.account_name}`));
+      }
     }
     if (detail.settles) {
       lines.push(line(detail.settles, `結清 · ${detail.settles.name || this.kindLabels[detail.settles.kind]}`));

@@ -269,3 +269,55 @@
     .ico { height: 44px; width: 44px; }
   }
 }
+
+.split-parent-card {
+  border: 1px solid var(--app-border);
+  border-radius: 0.75rem;
+  margin-bottom: 0.75rem;
+  padding: 0.75rem;
+
+  h3 {
+    font-size: 0.95rem;
+    margin: 0 0 0.25rem;
+  }
+
+  p {
+    margin: 0.1rem 0;
+  }
+
+  .split-net {
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+  }
+
+  .split-meta {
+    color: var(--app-text-muted);
+    font-size: 0.8rem;
+  }
+}
+
+.split-child {
+  align-items: center;
+  border-radius: 0.4rem;
+  color: inherit;
+  display: flex;
+  font-size: 0.85rem;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  text-decoration: none;
+
+  .split-child-name {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .split-child-amount {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.split-child[aria-current='true'] {
+  outline: 2px solid currentColor;
+}
+

@@ -500,4 +500,34 @@ describe('EntryDetailComponent', () => {
     expect(component.eventKindLabel({ ...RECEIVABLE, schedule: { kind: 'installment' } } as unknown as EntryDetail)).toBe('分期');
   });
 
+
+  it('shows parent card and permits metadata edit of an opened protected split child', () => {
+    const group = { id: 4, kind: 'split', name: '旅遊', merchant: '商家', description: '備註', count: 2, total: '-60', currency: 'TWD' };
+    const fixture = render(detail({ id: 42, kind: 'receivable', is_settlement: true, amount: '40', group,
+      group_members: [
+        { ...entry({ id: 7, amount: '-100', group }), protected: false, protected_reason: null },
+        { ...entry({ id: 42, kind: 'receivable', is_settlement: true, amount: '40', group }), protected: true, protected_reason: 'settlement' },
+      ] }));
+    const card = el(fixture).querySelector('.split-parent-card');
+    expect(card?.textContent).toContain('多類別');
+    expect(card?.textContent).toContain('旅遊');
+    expect(card?.textContent).toContain('2 項 · 1 個帳戶');
+    expect(card?.textContent).toContain('−$60');
+    expect(el(fixture).querySelectorAll('.split-child')).toHaveLength(2);
+    expect(el(fixture).querySelector('.related')?.textContent ?? '').not.toContain('拆帳');
+    expect(el(fixture).querySelector('.split-child[aria-current="true"]')?.textContent).toContain('🔒');
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    fixture.componentInstance.edit();
+    expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit']);
+  });
+
+  it('keeps a locked split member uneditable', () => {
+    const group = { id: 4, kind: 'split', name: null, merchant: null, description: null, count: 2, total: '-60', currency: 'TWD' };
+    const fixture = render(detail({ id: 42, locked: true, group, group_members: [
+      { ...entry({ id: 7, group }), protected: false, protected_reason: null },
+      { ...entry({ id: 42, group }), protected: false, protected_reason: null },
+    ] }));
+    expect(fixture.componentInstance.canEdit()).toBe(false);
+    expect(el(fixture).querySelector('.split-parent-card h3')?.textContent).toContain('多類別');
+  });
 });

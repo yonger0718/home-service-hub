@@ -7,7 +7,6 @@ import {
   EntryInput,
   LedgerAccount,
   LedgerEntry,
-  SplitInput,
   WritableEntryKind,
 } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -134,96 +133,6 @@ export function emptyEntryInput(fields: Partial<EntryInput> & Pick<EntryInput, '
   };
 }
 
-export type EntrySavePlan =
-  | { kind: 'create'; input: EntryInput }
-  | { kind: 'update'; id: number; input: EntryInput }
-  | { kind: 'create-split'; input: SplitInput }
-  /** `index`: position of the edited line in `input.members` (and in the response's `member_ids`). */
-  | { kind: 'update-split'; groupId: number; index: number; input: SplitInput };
-
-/** The loaded split group an edited member belongs to. */
-export interface SplitGroupFields {
-  /** The group row's own fields (`EntryGroupSummary`), never the edited line's. */
-  name: string | null;
-  merchant: string | null;
-  description: string | null;
-  /** Position of the edited member among the group's members. */
-  index: number;
-  /** The owner changed the edited line's date, time or posting date: the whole split moves with it. */
-  dateChanged: boolean;
-}
-
-/** Where the edited line goes among `extraCount` other lines (members removed in the form shift it left). */
-function editedIndex(group: SplitGroupFields | null, extraCount: number): number {
-  return group ? Math.min(Math.max(group.index, 0), extraCount) : 0;
-}
-
-/**
- * New split (`group` null): the typed line comes first and carries the group fields. Editing a member: the edited line
- * goes back to its own position, the group fields are the loaded group's, and the shared date / time / posting date
- * are the primary (first) member's unless the owner changed them on the edited line. Every member gets the shared
- * date, time and posting date, and (when unset) the shared project.
- */
-export function toSplitInput(edited: EntryInput, extra: EntryInput[], group: SplitGroupFields | null = null): SplitInput {
-  const lines = [...extra];
-  lines.splice(editedIndex(group, extra.length), 0, edited);
-  const shared = group === null || group.dateChanged ? edited : lines[0];
-  const members = lines.map(line => ({
-    ...line,
-    entry_date: shared.entry_date,
-    entry_time: shared.entry_time,
-    posted_date: shared.posted_date,
-    project_id: line.project_id ?? shared.project_id,
-  }));
-  return {
-    name: group ? group.name : edited.name,
-    merchant: group ? group.merchant : edited.merchant,
-    description: group ? group.description : edited.description,
-    entry_date: shared.entry_date,
-    entry_time: shared.entry_time,
-    posted_date: shared.posted_date,
-    project_id: shared.project_id,
-    tags: shared.tags,
-    members,
-  };
-}
-
-/** One line and no group → a plain entry; otherwise a split (create, or replace the members of the loaded group). */
-export function planEntrySave(
-  primary: EntryInput,
-  extra: EntryInput[],
-  context: { entryId: number | null; groupId: number | null; group?: SplitGroupFields | null },
-): EntrySavePlan {
-  if (context.groupId !== null) {
-    const group = context.group ?? null;
-    return {
-      kind: 'update-split',
-      groupId: context.groupId,
-      index: editedIndex(group, extra.length),
-      input: toSplitInput(primary, extra, group),
-    };
-  }
-  if (extra.length > 0) {
-    return { kind: 'create-split', input: toSplitInput(primary, extra) };
-  }
-  return context.entryId !== null
-    ? { kind: 'update', id: context.entryId, input: primary }
-    : { kind: 'create', input: primary };
-}
-
-export function executeEntrySave(service: AccountingService, plan: EntrySavePlan): Observable<unknown> {
-  switch (plan.kind) {
-    case 'create':
-      return service.createEntry(plan.input);
-    case 'update':
-      return service.updateEntry(plan.id, plan.input);
-    case 'create-split':
-      return service.createSplit(plan.input);
-    case 'update-split':
-      return service.updateSplit(plan.groupId, plan.input);
-  }
-}
-
 function unsigned(value: string | null): string | null {
   if (value === null || value === undefined) {
     return null;
@@ -238,6 +147,11 @@ function childFrom(children: LedgerEntry[], kind: 'fee' | 'discount'): ChildInpu
   }
   const total = matching.reduce((sum, child) => sum + Math.abs(Number(child.amount)), 0);
   return { amount: String(total), name: matching[0].name };
+}
+
+/** A loaded entry's fee / discount children as the form's sheet values. */
+export function feeAndDiscountFromDetail(detail: EntryDetail): { fee: ChildInput | null; discount: ChildInput | null } {
+  return { fee: childFrom(detail.children ?? [], 'fee'), discount: childFrom(detail.children ?? [], 'discount') };
 }
 
 /** The FX sheet value of a loaded foreign-currency entry; null when it is in the account currency. */
@@ -297,7 +211,7 @@ export function entryInputFromDetail(detail: EntryDetail): EntryInput {
     original_currency: detail.original_currency,
     fx_rate: detail.fx_source === 'manual' ? detail.fx_rate : null,
     entry_date: detail.entry_date,
-    entry_time: detail.entry_time ? detail.entry_time.slice(0, 5) : null,
+    entry_time: detail.entry_time,
     posted_date: detail.posted_date,
     category_id: detail.category_id,
     project_id: detail.project_id,
@@ -312,17 +226,6 @@ export function entryInputFromDetail(detail: EntryDetail): EntryInput {
     discount: childFrom(detail.children ?? [], 'discount'),
     reward_rule_ids: (detail.rules ?? []).map(rule => rule.id),
   });
-}
-
-/** The other members of the loaded entry's split group, each fetched for its children. */
-export function loadSplitMembers(service: AccountingService, detail: EntryDetail): Observable<EntryInput[]> {
-  const others = (detail.group_members ?? []).filter(member => member.id !== detail.id);
-  if (others.length === 0) {
-    return of([]);
-  }
-  return forkJoin(others.map(member => service.getEntry(member.id))).pipe(
-    map(details => details.map(entryInputFromDetail)),
-  );
 }
 
 /**
