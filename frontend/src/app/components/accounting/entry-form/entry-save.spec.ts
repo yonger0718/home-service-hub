@@ -135,7 +135,8 @@ describe('entry save plan', () => {
       account_id: 2,
       kind: 'receivable',
       amount: '180',
-      entry_time: '12:31',
+      // The stored time is kept raw (seconds included): an untouched time is never truncated.
+      entry_time: '12:31:00',
       counterparty_id: 5,
       fee: { amount: '15', name: '手續費' },
       discount: null,

@@ -1062,7 +1062,7 @@ describe('EntryFormComponent', () => {
       merchant: '鼎泰豐',
       description: '週五聚餐',
       entry_date: '2026-09-30',
-      entry_time: '19:00',
+      entry_time: '19:00:00',
     });
     const body = put.request.body.members;
     expect(body.map((line: { amount: string }) => line.amount)).toEqual(['200', '120']);

@@ -245,6 +245,11 @@ function childFrom(children: LedgerEntry[], kind: 'fee' | 'discount'): ChildInpu
   return { amount: String(total), name: matching[0].name };
 }
 
+/** A loaded entry's fee / discount children as the form's sheet values. */
+export function feeAndDiscountFromDetail(detail: EntryDetail): { fee: ChildInput | null; discount: ChildInput | null } {
+  return { fee: childFrom(detail.children ?? [], 'fee'), discount: childFrom(detail.children ?? [], 'discount') };
+}
+
 /** The FX sheet value of a loaded foreign-currency entry; null when it is in the account currency. */
 export function fxFromDetail(detail: EntryDetail): FxValue | null {
   if (!detail.original_currency || detail.original_amount === null || detail.original_currency === detail.currency) {
@@ -302,7 +307,7 @@ export function entryInputFromDetail(detail: EntryDetail): EntryInput {
     original_currency: detail.original_currency,
     fx_rate: detail.fx_source === 'manual' ? detail.fx_rate : null,
     entry_date: detail.entry_date,
-    entry_time: detail.entry_time ? detail.entry_time.slice(0, 5) : null,
+    entry_time: detail.entry_time,
     posted_date: detail.posted_date,
     category_id: detail.category_id,
     project_id: detail.project_id,
