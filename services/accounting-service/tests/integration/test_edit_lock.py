@@ -55,7 +55,10 @@ CASES = {
         {"from_account_id": b["wallet"], "to_account_id": b["bank"], "out_amount": "250", "entry_date": DAY}, 200,
     ),
     "delete_transfer_leg": lambda b: ("DELETE", f"/entries/{b['out_leg']}", None, 204),
-    "put_split": lambda b: ("PUT", f"/splits/{b['split']}", {"entry_date": DAY, "members": [_entry_body(b, amount="40")]}, 200),
+    "put_split": lambda b: (
+        "PUT", f"/splits/{b['split']}",
+        {"entry_date": DAY, "members": [_entry_body(b, amount="40"), _entry_body(b, amount="20")]}, 200,
+    ),
     "delete_split": lambda b: ("DELETE", f"/splits/{b['split']}", None, 204),
 }
 

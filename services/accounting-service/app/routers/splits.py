@@ -20,10 +20,9 @@ def post_split(payload: SplitIn, db: Session = Depends(get_db)):
 @router.put("/{group_id}", response_model=SplitOut)
 def put_split(group_id: int, payload: SplitIn, db: Session = Depends(get_db)):
     with service_errors():
-        split_service.update_split(db, group_id, payload)
+        result = split_service.update_split(db, group_id, payload)
     db.commit()
-    ids = split_service.member_ids(db, group_id)  # replaced by the upsert's own result in Task 4
-    return split_service.SplitResult(group_id, list(zip(ids, [m.client_key for m in payload.members]))).out()
+    return result.out()
 
 
 @router.delete("/{group_id}", status_code=204)

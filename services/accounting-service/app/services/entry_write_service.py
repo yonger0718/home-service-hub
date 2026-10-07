@@ -319,6 +319,19 @@ def insert_prepared(
     return entry.id
 
 
+def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEntry) -> None:
+    """Rewrite an editable entry the caller holds FOR UPDATE: columns, fee / discount children and rule links.
+    Reward ledger rows point at the entry through reward_source_entry_id, not parent_entry_id, so they stay. A
+    posted period's entry stays a schedule row."""
+    payload = prepared.payload
+    source = "schedule" if entry.source == "schedule" else "manual"
+    _apply(entry, prepared, source)
+    db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id == entry.id))
+    db.flush()
+    write_children(db, entry, payload.fee, payload.discount, source=source)
+    write_rule_links(db, entry.id, payload.reward_rule_ids)
+
+
 def create_entry(db: Session, payload: EntryIn, *, http_get=None) -> int:
     return insert_prepared(db, prepare_entry(db, payload, http_get=http_get))
 
@@ -460,12 +473,7 @@ def update_entry(db: Session, entry_id: int, payload: EntryUpdateIn, *, http_get
     if entry.kind not in EDITABLE_KINDS or entry.parent_entry_id is not None:
         raise ValidationError("kind", f"{entry.kind} entries are not edited through this endpoint")
     _check_linked_original(db, entry, prepared)
-    source = "schedule" if entry.source == "schedule" else "manual"  # a posted period's entry stays a schedule row
-    _apply(entry, prepared, source)
-    db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id == entry.id))
-    db.flush()
-    write_children(db, entry, payload.fee, payload.discount, source=source)
-    write_rule_links(db, entry.id, payload.reward_rule_ids)
+    apply_prepared_update(db, entry, prepared)
     remember_defaults(db, payload.category_id, prepared.account.id, payload.project_id)
 
 
