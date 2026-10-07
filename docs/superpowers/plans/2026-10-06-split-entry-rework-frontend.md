@@ -641,7 +641,8 @@ toObservable(ownerState).pipe(
   if (!c) return;
   const ids = rulesForDate(result.detail.reward_rules, this.parent().entryDate).filter(r => r.is_basic).map(r => r.id);
   const accepted = this.drafts.accept(result.owner, {
-    availableRules: result.detail.reward_rules, ruleIds: c.rulesTouched ? c.ruleIds : ids,
+    availableRules: [...new Map([...c.availableRules, ...result.detail.reward_rules].map(rule => [rule.id, rule])).values()],
+    ruleIds: c.rulesTouched ? c.ruleIds : ids,
   });
   if (accepted && this.selected() === result.owner.key) this.accountDetail.set(result.detail);
 });
@@ -1359,7 +1360,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EntryDetail } from '../../../models/accounting.model';
 import { EntryFormComponent } from './entry-form';
 import { DirtyFormRegistry } from '../dirty-form.service';
@@ -1383,7 +1384,7 @@ describe('split form integration', () => {
     http = TestBed.inject(HttpTestingController);
     TestBed.inject(LayoutModeService).set('phone');
   });
-  afterEach(() => { http.verify(); localStorage.clear(); });
+  afterEach(() => { http.verify(); localStorage.clear(); vi.restoreAllMocks(); });
   function settle(): void {
     for (let round = 0; round < 8; round++) {
       harness.detectChanges();
@@ -1572,3 +1573,148 @@ Task 3's final `EntrySavePlan`, `planEntrySave`, `toSplitInput`, `executeEntrySa
 Signature audit: canonical child `key` is generated once; every serializer call receives `children,parent,accounts,partyIds,context`; no `primary/extra/group.index` callers survive integration. `SplitKeepInput` is a union member, never asserted as `EntryInput`. All four API responses use `SplitResult`. Dates/protection are loaded before baseline; submitted keys are captured before counterparty HTTP. No alternate save code may fall back to POST after a missing load or failed convert.
 
 Plan self-review checks: compare Global Constraints text byte-for-byte with the binding spec section; enumerate §2.1–§2.11 including §2.3a above; search for unresolved TODO/TBD, dummy code, omitted test/implementation blocks, and signature drift; verify each Review Focus cites a named test. Review the exact plan commit, not a predecessor. Any finding left open is included in the issue handoff; the owner's plan gate is not replaced by self-review or an automated review.
+
+## Integration details pinned during self-review
+
+The following code belongs to the named tasks above and removes implicit adapter work from the handoff.
+
+**Task 5 — existing editable single initialization:** Place after the split branch and before the legacy transfer/system/definition branches. On copy use current date/time, no provenance/id/anchor; reuse today's archived-account fallback. This block prevents an anchor from being removable and prevents `applyDetail` from truncating its time.
+
+```ts
+if (isWritableKind(loaded.detail.kind)) {
+  const d = loaded.detail;
+  const protectedSingle = d.is_settlement || d.transfer_group_id !== null || d.settled_by.length > 0 ||
+    d.refunded_by.length > 0 || d.loan_schedule != null;
+  let c = childFromDetail(d, { protected: protectedSingle, protected_reason: protectedSingle ? '此記錄不能拆帳' : null }, this.preference().main_currency);
+  if (loaded.copy) c = { ...c, id: null, loaded: null, protected: false, protectedReason: null,
+    invoice: { number: '', random: '' } };
+  this.children.set([c]); this.selected.set(c.key);
+  this.groupId.set(null); this.drafts.anchorId.set(loaded.copy ? null : d.id);
+  this.parent.set({ name: '', merchant: d.merchant ?? '', description: '',
+    entryDate: loaded.copy ? todayIso() : d.entry_date,
+    entryTime: loaded.copy ? nowTime() : d.entry_time,
+    postedDate: loaded.copy ? null : d.posted_date, dateTouched: false });
+  this.singleKind.set(d.kind); this.locked.set(!loaded.copy && d.locked);
+  if (loaded.copy && this.accounts().find(a => a.id === c.accountId)?.is_archived)
+    this.moveToAccount(this.accounts().find(a => !a.is_archived)?.id ?? null);
+  this.loading.set(false); this.markClean();
+  return;
+}
+```
+
+**Task 4 — type-safe form kind adapter:** Preserve `FormKind`/schedule inputs without widening `WritableEntryKind`. For a protected noneditable child, the form's layout adapter uses `system`, but the visible disabled strip/tab label uses its real `ENTRY_KIND_LABELS` and the system balance editor never renders (`isSystem` gates on scope). Ordinary kind tabs render for writable kinds only; protected noneditable children show a single disabled actual-kind tab instead of a misleading selected system tab.
+
+```ts
+readonly singleKind = signal<FormKind>('expense');
+readonly childScope = computed(() => this.isSplit() || this.groupId() !== null);
+readonly kind: ChildView<FormKind> = Object.assign(
+  () => {
+    const c = this.drafts.current();
+    return this.childScope() ? (c && isWritableKind(c.kind) ? c.kind : 'system') : this.singleKind();
+  },
+  {
+    set: (value: FormKind) => {
+      const c = this.drafts.current(), owner = this.drafts.capture();
+      if (this.childScope()) {
+        if (c && owner && !c.protected && isWritableKind(value)) this.drafts.accept(owner, { kind: value });
+      } else {
+        this.singleKind.set(value);
+        if (owner && isWritableKind(value)) this.drafts.accept(owner, { kind: value });
+      }
+    },
+    update: (fn: (value: FormKind) => FormKind) => this.kind.set(fn(this.kind())),
+  },
+);
+readonly isSystem = computed(() => !this.childScope() && this.kind() === 'system');
+readonly categoryKind = computed(() => {
+  const c = this.drafts.current();
+  return this.childScope() ? (c && isWritableKind(c.kind) ? c.kind : null) : categoryKindFor(this.kind());
+});
+tabDisabled(kind: FormKind): boolean {
+  if (this.childScope()) return this.parentMode() || this.protectedChild() || kind === 'transfer' || kind === 'system';
+  if (this.scheduleId() !== null) return kind !== this.kind();
+  return this.editing() && (kind === 'system' || (kind === 'transfer') !== (this.kind() === 'transfer'));
+}
+selectKind(kind: FormKind): void {
+  if (kind === this.kind() || this.tabDisabled(kind)) return;
+  const owner = this.drafts.capture();
+  if (owner && !this.flushChild(owner)) return;
+  if (owner) this.drafts.invalidate(owner.key);
+  this.kind.set(kind); this.setCategory(null); this.error.set(null);
+  if (!this.eventTabEnabled(this.scheduleDraft().tab)) this.selectEventTab('single');
+  afterNextRender(() => this.categoryPicker()?.reopen(), { injector: this.injector });
+}
+```
+
+The split child template condition is `childScope() || kind() !== 'transfer'`; the transfer panel condition is `!childScope() && kind()==='transfer'`. The parent form never calls either single-system or transfer serialization. A one-child existing group also remains in `childScope` for keep/dissolve semantics.
+
+**Task 9 — concrete interleaved account callback regression:** Add `vi` to the Vitest imports, `Subject` from RxJS, `AccountDetail` model, `AccountingService` and `makeRule` fixture imports. Insert this test in the Task 9 harness. It exercises actual form subscription code with identical account/kind siblings, not only the store's predicate.
+
+```ts
+it('drops interleaved account defaults for the old owner with the same account and kind', async () => {
+  await open(); fill();
+  const pending: Subject<AccountDetail>[] = [];
+  const spy = vi.spyOn(TestBed.inject(AccountingService), 'getAccount').mockImplementation(() => {
+    const response = new Subject<AccountDetail>(); pending.push(response); return response;
+  });
+  const first = form.children()[0].key;
+  form.drafts.invalidate(first); settle();
+  expect(pending).toHaveLength(1);
+  form.addChild(); settle();
+  expect(pending).toHaveLength(2);
+  pending[0].next(makeAccountDetail({ reward_rules: [makeRule({ id: 99, is_basic: true })] }));
+  pending[0].complete(); settle();
+  expect(form.children()[0].ruleIds).not.toContain(99);
+  expect(form.children()[1].ruleIds).not.toContain(99);
+  pending[1].next(makeAccountDetail({ reward_rules: [makeRule({ id: 6, is_basic: true })] }));
+  pending[1].complete(); settle();
+  expect(form.children()[1].ruleIds).toEqual([6]);
+  form.selectBubble('parent'); settle();
+  expect(form.children()[0].ruleIds).not.toContain(6);
+  spy.mockRestore();
+});
+it('parent Escape uses the existing discard prompt', async () => {
+  await open(); fill(); form.addChild(); settle(); form.selectBubble('parent'); settle();
+  harness.routeNativeElement!.querySelector('.entry-form')!.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  settle();
+  expect(TestBed.inject(DirtyFormRegistry).promptOpen()).toBe(true);
+});
+```
+
+**Task 6 — delete-group prompt implementation:** Use the component's existing overlay focus utilities; capture opener in `openDeleteGroup(event)` and call it from the parent delete button instead of setting the signal directly. This is an explicit delete confirmation, not a backend permission bypass.
+
+```ts
+readonly deleteGroupPrompt = signal(false);
+private deleteGroupOpener: HTMLElement | null = null;
+openDeleteGroup(event: Event): void {
+  if (this.groupId() === null || this.saving() || this.locked()) return;
+  this.deleteGroupOpener = event.currentTarget as HTMLElement;
+  this.deleteGroupPrompt.set(true);
+  afterNextRender(() => this.host.nativeElement.querySelector<HTMLButtonElement>('.delete-group-cancel')?.focus(), { injector: this.injector });
+}
+closeDeleteGroup(): void {
+  this.deleteGroupPrompt.set(false);
+  restoreOverlayFocus(this.deleteGroupOpener, this.host.nativeElement); this.deleteGroupOpener = null;
+}
+onDeleteGroupKey(event: KeyboardEvent): void {
+  if (isHandledKey(event)) return;
+  if (event.key === 'Escape') { event.preventDefault(); this.closeDeleteGroup(); }
+  else if (event.key === 'Tab') trapFocus(event.currentTarget as HTMLElement, event);
+}
+confirmDeleteGroup(): void {
+  const id = this.groupId();
+  if (id === null || this.saving() || this.locked()) return;
+  this.write(this.accounting.deleteSplit(id), () => { this.deleteGroupPrompt.set(false); this.leave(); });
+}
+```
+
+```html
+@if (deleteGroupPrompt()) {
+  <section class="delete-group-dialog" data-overlay role="alertdialog" aria-modal="true" aria-label="刪除整組記錄？" (keydown)="onDeleteGroupKey($event)">
+    <p>刪除整組記錄？</p>
+    <button type="button" class="delete-group-cancel" [disabled]="saving()" (click)="closeDeleteGroup()">取消</button>
+    <button type="button" [disabled]="saving()" (click)="confirmDeleteGroup()">刪除整組</button>
+  </section>
+}
+```
