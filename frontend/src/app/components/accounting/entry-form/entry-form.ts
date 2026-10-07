@@ -168,6 +168,8 @@ export const CATCH_UP_FAILED_TOAST = '排程已建立；這一期入帳失敗，
 interface EntryTarget {
   entryId: number;
   copy: boolean;
+  /** `?select=parent` (the group view's 編輯, E on a split row): a split opens with its parent bubble selected. */
+  parent?: boolean;
 }
 
 /** One edit / copy / refetch load; `loadId` identifies the `load()` call that started it. */
@@ -720,7 +722,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       .pipe(takeUntilDestroyed())
       .subscribe(([params, query]) => {
         const schedule = query.get('schedule');
-        const target = this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule);
+        const target = this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule, query.get('select') === 'parent');
         this.load(target);
         if (schedule !== null) {
           this.loadDefinition(Number(schedule));
@@ -809,7 +811,13 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   }
 
   /** Resets the form for a navigation; returns the record to load (edit or copy), or null for a blank record. */
-  private start(id: string | null, kindParam: string | null, copyParam: string | null, scheduleParam: string | null = null): EntryTarget | null {
+  private start(
+    id: string | null,
+    kindParam: string | null,
+    copyParam: string | null,
+    scheduleParam: string | null = null,
+    parent = false,
+  ): EntryTarget | null {
     this.baseline.set(null);
     this.clearDiscardFocus();
     this.registry.clearPending();
@@ -832,7 +840,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.createdScheduleId.set(null);
     this.scheduleId.set(scheduleParam !== null ? Number(scheduleParam) : null);
     if (id !== null) {
-      return { entryId: Number(id), copy: false };
+      return { entryId: Number(id), copy: false, parent };
     }
     if (copyParam !== null) {
       return { entryId: Number(copyParam), copy: true };
@@ -934,7 +942,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       }
       this.children.set(state.children);
       this.parent.set(state.parent);
-      this.selected.set(state.selected);
+      this.selected.set(loaded.parent ? PARENT_KEY : state.selected);
       this.groupId.set(detail.group.id);
       this.drafts.anchorId.set(null);
       this.convertBlockedReason.set(null);

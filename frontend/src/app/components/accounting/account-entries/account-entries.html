@@ -47,7 +47,7 @@
       <app-skeleton rows="3" />
     } @else {
       @for (entry of entries(); track entry.id) {
-      <a class="row entry" [class.entry--review]="entry.needs_review" [class.sel]="entry.id === selectedId()" [routerLink]="['/accounting/accounts', accountId(), 'entries', entry.id]" [attr.data-entry-id]="entry.id" [attr.aria-current]="entry.id === selectedId() ? 'true' : null">
+      <a class="row entry" [class.entry--review]="entry.needs_review" [class.sel]="isSelected(entry)" [routerLink]="rowCommands(entry)" [state]="rowState(entry)" [attr.data-entry-id]="entry.id" [attr.data-split]="entry.group?.kind === 'split' ? '' : null" [attr.aria-current]="isSelected(entry) ? 'true' : null">
         <span class="ico" [style.background]="colorOf(entry)">{{ iconOf(entry) }}</span>
         <span class="name">{{ title(entry) }}</span>
         <span class="sub">{{ subtitle(entry) }}</span>

@@ -2,6 +2,11 @@ import { Routes } from '@angular/router';
 import { ACCOUNTING_PAGES, AccountingPage } from './components/accounting/accounting-pages';
 import { phoneLayoutGuard, wideLayoutGuard } from './services/layout-mode.service';
 
+/**
+ * Every deep-linkable accounting path must also match Caddy's `@hub_spa` matcher (docs/deploy). PR-9 adds the 多類別
+ * group view: `/accounting/entries/[0-9]+/group` and `/accounting/accounts/[0-9]+/entries/[0-9]+/group`.
+ */
+
 /** Below 760 px: one screen per route, in the layout's primary outlet. */
 const ACCOUNTING_PHONE_ROUTES: Routes = [
   { path: '', pathMatch: 'full', loadComponent: ACCOUNTING_PAGES.timeline },
@@ -9,10 +14,13 @@ const ACCOUNTING_PHONE_ROUTES: Routes = [
   { path: 'accounts/new', loadComponent: ACCOUNTING_PAGES.accountSettings },
   { path: 'accounts/:id/settings', loadComponent: ACCOUNTING_PAGES.accountSettings },
   // An entry opened from a passbook keeps the passbook in its URL (✕ / delete return there; ↑ ↓ stay in it).
+  { path: 'accounts/:id/entries/:eid/group', loadComponent: ACCOUNTING_PAGES.splitGroup },
   { path: 'accounts/:id/entries/:eid', loadComponent: ACCOUNTING_PAGES.entryDetail },
   { path: 'accounts/:id', loadComponent: ACCOUNTING_PAGES.accountEntries },
   { path: 'entry', loadComponent: ACCOUNTING_PAGES.entryForm },
   { path: 'entries/:id/edit', loadComponent: ACCOUNTING_PAGES.entryForm },
+  // The 多類別 group view, routed by one of its members (the API reads a split through a member).
+  { path: 'entries/:id/group', loadComponent: ACCOUNTING_PAGES.splitGroup },
   { path: 'entries/:id', loadComponent: ACCOUNTING_PAGES.entryDetail },
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
   { path: 'reminders', loadComponent: ACCOUNTING_PAGES.reminders },
@@ -28,11 +36,13 @@ const ACCOUNTING_WIDE_ROUTES: Routes = [
   { path: '', pathMatch: 'full', data: { list: 'timeline' }, children: [] },
   { path: 'entry', data: { list: 'timeline' }, children: pane('entryForm') },
   { path: 'entries/:id/edit', data: { list: 'timeline' }, children: pane('entryForm') },
+  { path: 'entries/:id/group', data: { list: 'timeline' }, children: pane('splitGroup') },
   { path: 'entries/:id', data: { list: 'timeline' }, children: pane('entryDetail') },
   { path: 'reminders', data: { list: 'timeline' }, children: pane('reminders') },
   { path: 'accounts', pathMatch: 'full', data: { list: 'accounts' }, children: [] },
   { path: 'accounts/new', data: { list: 'accounts' }, children: pane('accountSettings') },
   { path: 'accounts/:id/settings', data: { list: 'accounts' }, children: pane('accountSettings') },
+  { path: 'accounts/:id/entries/:eid/group', data: { list: 'accounts' }, children: pane('splitGroup') },
   { path: 'accounts/:id/entries/:eid', data: { list: 'accounts' }, children: pane('entryDetail') },
   { path: 'accounts/:id', data: { list: 'accounts' }, children: pane('accountEntries') },
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },

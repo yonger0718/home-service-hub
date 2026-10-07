@@ -36,6 +36,7 @@ import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../bill
 import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
+import { FROM_LIST, groupCommands } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
@@ -928,7 +929,12 @@ export class LedgerTimelineComponent implements OnInit {
     this.filtersOpen.update(open => !open);
   }
 
+  /** A split row opens its 多類別 group view (the list is the history entry before it); any other row its detail. */
   open(row: TimelineRow): void {
+    if (row.folder) {
+      void this.router.navigate(groupCommands(row.entryId, null), { state: FROM_LIST });
+      return;
+    }
     void this.router.navigate(['/accounting/entries', row.entryId]);
   }
 

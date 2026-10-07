@@ -7,6 +7,7 @@ export type AccountingPage =
   | 'accountSettings'
   | 'entryForm'
   | 'entryDetail'
+  | 'splitGroup'
   | 'settings'
   | 'reminders';
 
@@ -26,6 +27,7 @@ export const ACCOUNTING_PAGES: Record<AccountingPage, PageLoader> = {
   accountSettings: () => import('./account-settings/account-settings').then(m => m.AccountSettingsComponent),
   entryForm: () => import('./entry-form/entry-form').then(m => m.EntryFormComponent),
   entryDetail: () => import('./entry-detail/entry-detail').then(m => m.EntryDetailComponent),
+  splitGroup: () => import('./split-group/split-group').then(m => m.SplitGroupComponent),
   settings: () => import('./accounting-settings/accounting-settings').then(m => m.AccountingSettingsComponent),
   reminders: () => import('./reminders/reminders').then(m => m.AccountingRemindersComponent),
 };

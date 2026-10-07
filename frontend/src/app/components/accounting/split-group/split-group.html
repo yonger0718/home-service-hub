@@ -1,0 +1,88 @@
+<section class="entry-detail split-group" aria-label="多類別">
+  @if (loadError()) {
+    @if (!detail() && !inSheet()) {
+      <div class="error-head">
+        <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
+      </div>
+    }
+    <p class="load-error">記錄讀取失敗，請稍後再試。</p>
+  }
+
+  @if (detail(); as d) {
+    <app-lock-banner [locked]="d.locked" />
+
+    <div class="dhead group-head">
+      @if (!inSheet()) {
+        <button type="button" class="close" aria-label="關閉" (click)="close()">✕</button>
+      }
+      <app-split-folder [icons]="icons()" [count]="d.group?.count ?? members().length" />
+      <span class="cat">多類別</span>
+    </div>
+
+    <div class="dtitle">
+      <b class="group-name">{{ title() }}</b>
+      <span class="group-nets">
+        @for (line of net(); track line.currency) {
+          <span class="amt group-net" [class.neg]="(line.amount ?? 0) < 0" [class.pos]="(line.amount ?? 0) > 0">
+            @if (net().length > 1) {<small>{{ line.currency }} </small>}{{ formatMoney(line.amount, line.currency, { sign: true }) }}
+          </span>
+        }
+      </span>
+    </div>
+    <p class="group-count">{{ members().length }} 項 · {{ accountCount() }} 個帳戶</p>
+
+    <div class="dgrid group-grid">
+      <div><small>商家</small><b class="group-merchant">{{ d.group?.merchant || '—' }}</b></div>
+      <div><small>日期</small><b class="group-date">{{ slashDate(first()!.entry_date) }}</b></div>
+      <div><small>時間</small><b class="group-time">{{ first()!.entry_time ? first()!.entry_time!.slice(0, 5) : '—' }}</b></div>
+    </div>
+
+    <div class="dsec">子項</div>
+    <div class="group-children">
+      @for (member of members(); track member.id) {
+        <a class="split-child" [routerLink]="childCommands(member.id)" [replaceUrl]="childReplacesUrl()" [state]="childState()" [attr.data-member-id]="member.id">
+          <span class="ico" [style.background]="colorOf(member)">{{ iconOf(member) }}</span>
+          <span class="split-child-name">
+            <b>{{ memberTitle(member) }}</b>
+            <small>{{ member.account_name }}</small>
+          </span>
+          @if (member.protected) {
+            <span class="split-child-lock" role="img" aria-label="受保護">🔒</span>
+          }
+          <span class="split-child-amount" [class.neg]="+member.amount < 0" [class.pos]="+member.amount > 0">
+            {{ formatMoney(member.amount, member.currency, { sign: true }) }}
+          </span>
+        </a>
+      }
+    </div>
+
+    <div class="dsec">整筆備註</div>
+    <p class="dline note group-note">{{ d.group?.description || '—' }}</p>
+
+    @if (deleting()) {
+      <div class="delete-confirm" role="alertdialog" aria-label="刪除整組">
+        <p><b>確定刪除整組「{{ d.group?.name || '拆帳' }}」？</b></p>
+        <p>共 {{ d.group?.count ?? members().length }} 筆：</p>
+        <ul>
+          @for (member of members(); track member.id) {
+            <li>{{ memberTitle(member) }} · {{ member.account_name }} {{ formatMoney(member.amount, member.currency) }}</li>
+          }
+        </ul>
+        @if (formError()) {
+          <p class="form-error" role="alert">{{ formError() }}</p>
+        }
+        <div class="btnrow">
+          <button type="button" (click)="closePanel()">取消</button>
+          <button type="button" class="danger delete-group" [disabled]="busy()" (click)="confirmDeleteGroup()">刪除整組</button>
+        </div>
+      </div>
+    }
+
+    <nav class="actions" aria-label="多類別動作">
+      <button type="button" class="action-edit" [disabled]="!canEdit()" (click)="edit()"><span class="ico">✎</span>編輯</button>
+      @if (canDeleteGroup()) {
+        <button type="button" class="danger action-delete" [disabled]="locked()" (click)="openDelete()"><span class="ico">🗑</span>刪除整組</button>
+      }
+    </nav>
+  }
+</section>

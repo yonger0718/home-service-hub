@@ -2,7 +2,8 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting, TestRequest } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ActivatedRoute, ParamMap, convertToParamMap, provideRouter } from '@angular/router';
+import { ActivatedRoute, ParamMap, RouterLink, convertToParamMap, provideRouter } from '@angular/router';
+import { By } from '@angular/platform-browser';
 import { BehaviorSubject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -42,11 +43,12 @@ const SUMMARY: AccountPeriodSummary = {
 describe('AccountingAccountEntriesComponent (passbook)', () => {
   let http: HttpTestingController;
   let params: BehaviorSubject<ParamMap>;
-  /** The wide layout's routed entry (`/accounting/accounts/7/entries/:eid`). */
-  const layout = { selectedEntryId: signal<number | null>(null) };
+  /** The wide layout's routed entry (`/accounting/accounts/7/entries/:eid`, `…/group` for a group view). */
+  const layout = { selectedEntryId: signal<number | null>(null), groupViewOpen: signal(false) };
 
   beforeEach(async () => {
     layout.selectedEntryId.set(null);
+    layout.groupViewOpen.set(false);
     params = new BehaviorSubject(convertToParamMap({ id: '7' }));
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 10, 0));
@@ -181,6 +183,38 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     layout.selectedEntryId.set(3);
     fixture.detectChanges();
     expect(current()).toEqual([null, null, 'true', null]);
+  });
+
+  it('opens the 多類別 group view of a split member, the passbook kept in the URL and noted as its origin', () => {
+    const group = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-300.0000', currency: 'TWD' };
+    const installment = { ...group, id: 5, kind: 'installment' as const };
+    const fixture = render(page([entry(1, { group }), entry(2, { group: installment }), entry(3)]));
+    const el = fixture.nativeElement as HTMLElement;
+    const rows = Array.from(el.querySelectorAll<HTMLElement>('.entry'));
+    expect(rows.map(row => row.getAttribute('href'))).toEqual([
+      '/accounting/accounts/7/entries/1/group',
+      '/accounting/accounts/7/entries/2',
+      '/accounting/accounts/7/entries/3',
+    ]);
+    expect(rows.map(row => row.hasAttribute('data-split'))).toEqual([true, false, false]);
+    const links = fixture.debugElement.queryAll(By.directive(RouterLink)).map(debug => debug.injector.get(RouterLink));
+    expect(links.find(link => link.href === '/accounting/accounts/7/entries/1/group')?.state).toEqual({ groupDepth: 1 });
+    expect(links.find(link => link.href === '/accounting/accounts/7/entries/3')?.state).toBeUndefined();
+  });
+
+  it('marks every row of the split whose group view is routed, and only the routed row on a member detail', () => {
+    const group = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-300.0000', currency: 'TWD' };
+    const fixture = render(page([entry(1, { group }), entry(2), entry(3, { group })]));
+    const el = fixture.nativeElement as HTMLElement;
+    const current = () => Array.from(el.querySelectorAll('.entry')).map(row => row.getAttribute('aria-current'));
+
+    layout.selectedEntryId.set(3);
+    layout.groupViewOpen.set(true);
+    fixture.detectChanges();
+    expect(current()).toEqual(['true', null, 'true']);
+    layout.groupViewOpen.set(false);
+    fixture.detectChanges();
+    expect(current()).toEqual([null, null, 'true']);
   });
 
   it('renders icon, name, merchant and tags, pills and a link to the detail', () => {

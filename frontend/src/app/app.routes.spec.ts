@@ -18,8 +18,10 @@ const PAGES: [string, string][] = [
   ['/accounting/accounts/5', 'app-accounting-account-entries'],
   ['/accounting/accounts/5/settings', 'app-account-settings'],
   ['/accounting/accounts/5/entries/9', 'app-entry-detail'],
+  ['/accounting/accounts/5/entries/9/group', 'app-split-group'],
   ['/accounting/entry', 'app-entry-form'],
   ['/accounting/entries/9', 'app-entry-detail'],
+  ['/accounting/entries/9/group', 'app-split-group'],
   ['/accounting/entries/9/edit', 'app-entry-form'],
   ['/accounting/settings', 'app-accounting-settings'],
   ['/accounting/reminders', 'app-accounting-reminders'],
@@ -131,10 +133,12 @@ describe('accounting navigation', () => {
     ['/accounting', '記錄'],
     ['/accounting/entry', '記錄'],
     ['/accounting/entries/9', '記錄'],
+    ['/accounting/entries/9/group', '記錄'],
     ['/accounting/accounts', '帳戶'],
     ['/accounting/accounts/5', '帳戶'],
     ['/accounting/accounts/5/settings', '帳戶'],
     ['/accounting/accounts/5/entries/9', '帳戶'],
+    ['/accounting/accounts/5/entries/9/group', '帳戶'],
     ['/accounting/settings', '記帳設定'],
   ];
 

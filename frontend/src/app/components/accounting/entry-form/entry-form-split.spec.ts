@@ -351,6 +351,24 @@ describe('split form integration', () => {
     expect(form.children().map(c => c.amountExpr)).toEqual(['12', '9']);
   });
 
+  it('opens in parent mode with ?select=parent (the group view 編輯, E on a split row) and stays clean', async () => {
+    seedGroup(makeEntryDetail({ id: 7, amount: '-10' }), makeEntryDetail({ id: 8, amount: '-5' }));
+    await open('/accounting/entries/7/edit?select=parent');
+    const root = harness.routeNativeElement!;
+    expect(form.parentMode()).toBe(true);
+    expect(root.querySelector<HTMLButtonElement>('[data-bubble="parent"]')!.getAttribute('aria-pressed')).toBe('true');
+    expect(root.querySelector('.split-parent .split-totals')).not.toBeNull();
+    expect(root.querySelector('app-amount-keypad')).toBeNull();
+    expect(form.children().map(c => c.id)).toEqual([7, 8]);
+    expect(form.isDirty()).toBe(false);
+
+    // Without it the opened child is selected, as before.
+    await harness.navigateByUrl('/accounting/entries/8/edit', EntryFormComponent);
+    settle();
+    expect(form.parentMode()).toBe(false);
+    expect(form.selected()).toBe(form.children().find(c => c.id === 8)!.key);
+  });
+
   it('on the phone, a tap on the 多類別 folder tile enters parent mode with the ring on the tile', async () => {
     expect(TestBed.inject(LayoutModeService).mode()).toBe('phone');
     seedGroup(makeEntryDetail({ id: 7, amount: '-10' }), makeEntryDetail({ id: 8, amount: '-5' }));
