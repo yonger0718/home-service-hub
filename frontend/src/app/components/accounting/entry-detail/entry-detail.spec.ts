@@ -521,6 +521,23 @@ describe('EntryDetailComponent', () => {
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit']);
   });
 
+  it('draws the split parent card as a folder tile of its members, +N past four and the badge of the count', () => {
+    const group = { id: 4, kind: 'split', name: null, merchant: null, description: null, count: 5, total: '-500', currency: 'TWD' };
+    const icons = ['🍜', '🚕', '🎬', '📱', '🎁'];
+    const members = icons.map((icon, i) => ({
+      ...entry({ id: 70 + i, group, category_icon: icon, category_color: '#4a90e2' }), protected: false, protected_reason: null,
+    }));
+    const fixture = render(detail({ id: 70, group, group_members: members }));
+    const folder = el(fixture).querySelector<HTMLElement>('.split-parent-card .split-head app-split-folder.folder')!;
+    expect(folder.classList.contains('compact')).toBe(false);
+    const cells = Array.from(folder.querySelectorAll<HTMLElement>('.cell'));
+    expect(cells.map(cell => cell.textContent)).toEqual(['🍜', '🚕', '🎬', '+2']);
+    expect(cells[0].style.background).toBe('rgb(74, 144, 226)');
+    expect(folder.querySelector('.badge')?.textContent).toBe('5');
+    // The member list itself stays complete.
+    expect(el(fixture).querySelectorAll('.split-child')).toHaveLength(5);
+  });
+
   it('keeps a locked split member uneditable', () => {
     const group = { id: 4, kind: 'split', name: null, merchant: null, description: null, count: 2, total: '-60', currency: 'TWD' };
     const fixture = render(detail({ id: 42, locked: true, group, group_members: [

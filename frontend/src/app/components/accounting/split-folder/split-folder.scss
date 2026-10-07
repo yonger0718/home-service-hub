@@ -1,0 +1,64 @@
+/* A rounded square holding a 2×2 mosaic of small icon circles, with the member count on its top-right corner. */
+:host {
+  --cell: 18px;
+
+  align-content: center;
+  background: var(--app-surface-soft);
+  border-radius: 12px;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 2px;
+  grid-template-columns: repeat(2, var(--cell));
+  height: 44px;
+  justify-content: center;
+  position: relative;
+  width: 44px;
+}
+
+/* Timeline row: the size of the row's icon circle. */
+:host(.compact) {
+  --cell: 14px;
+
+  border-radius: 10px;
+  height: var(--ico-size, 38px);
+  width: var(--ico-size, 38px);
+}
+
+.cell {
+  align-items: center;
+  border-radius: 50%;
+  display: flex;
+  font-size: 0.72rem;
+  height: var(--cell);
+  justify-content: center;
+  line-height: 1;
+  overflow: hidden;
+  width: var(--cell);
+}
+
+.cell.more {
+  background: var(--app-border);
+  color: var(--app-text);
+  font-weight: 800;
+  letter-spacing: -0.06em;
+  overflow: visible;
+}
+
+/* Darkened locally so white digits reach 4.5:1 on both themes (light 9.1:1, dark 5.3:1). */
+.badge {
+  background: var(--app-primary);
+  background: color-mix(in srgb, var(--app-primary) 75%, #000);
+  border-radius: 9px;
+  color: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 800;
+  height: 18px;
+  line-height: 18px;
+  min-width: 18px;
+  padding: 0 4px;
+  position: absolute;
+  right: -7px;
+  text-align: center;
+  top: -7px;
+}

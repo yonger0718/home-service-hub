@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { LayoutMode, LayoutModeService } from '../../../services/layout-mode.service';
 import { CategoryNode } from '../../../models/accounting.model';
 import { makeCategory } from '../testing/fixtures';
-import { CategoryPickerComponent } from './category-picker';
+import { Bubble, CategoryPickerComponent, parentNetLines } from './category-picker';
 
 const LUNCH = makeCategory({ id: 12, parent_id: 1, name: '午餐', icon: null, color: null });
 const DINNER = makeCategory({ id: 13, parent_id: 1, name: '晚餐' });
@@ -123,6 +123,94 @@ describe('CategoryPickerComponent', () => {
     (el.querySelector('[data-bubble="parent"]') as HTMLButtonElement).click();
     fixture.detectChanges();
     expect(selected).toEqual(['parent']);
+  });
+
+  const child = (key: string, extra: Partial<Bubble> = {}): Bubble => ({
+    key, label: '午餐', icon: '🍜', color: '#f0cd92', amount: '−$10', empty: false, protected: false, ...extra,
+  });
+  const PALETTE = ['#f0cd92', '#4a90e2', '#cc7676', '#7ac29a', '#b48ee0', '#e8a33d'];
+  const children = (count: number) =>
+    Array.from({ length: count }, (_, i) => child('k' + i, { icon: String.fromCodePoint(0x1f34f + i), color: PALETTE[i] }));
+  const rgb = (hex: string) =>
+    'rgb(' + [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)).join(', ') + ')';
+
+  it.each([1, 2, 3, 4])('draws every child of a %i-child split in the folder tile', count => {
+    const bubbles = children(count);
+    const { el } = render({ bubbles, parentText: `多類別 TWD −$10 (${count})`, activeBubble: 'k0' });
+    const cells = Array.from(el.querySelectorAll<HTMLElement>('[data-bubble="parent"] .folder .cell'));
+    expect(cells.map(cell => cell.textContent)).toEqual(bubbles.map(bubble => bubble.icon));
+    expect(cells.map(cell => cell.style.background)).toEqual(bubbles.map(bubble => rgb(bubble.color)));
+    expect(el.querySelector('.folder .more')).toBeNull();
+    expect(el.querySelector('.folder .badge')?.textContent).toBe(String(count));
+  });
+
+  it.each([[5, 2], [6, 3]])('draws three children and +N for a %i-child split', (count, more) => {
+    const bubbles = children(count);
+    const { el } = render({ bubbles, parentText: `多類別 TWD −$10 (${count})`, activeBubble: 'k0' });
+    const cells = Array.from(el.querySelectorAll<HTMLElement>('[data-bubble="parent"] .folder .cell'));
+    expect(cells.map(cell => cell.textContent)).toEqual([...bubbles.slice(0, 3).map(bubble => bubble.icon), '+' + more]);
+    expect(cells.slice(0, 3).map(cell => cell.style.background)).toEqual(bubbles.slice(0, 3).map(b => rgb(b.color)));
+    expect(cells[3].classList.contains('more')).toBe(true);
+    expect(el.querySelector('.folder .badge')?.textContent).toBe(String(count));
+  });
+
+  it('labels the folder tile 多類別 with one signed net line per currency and keeps the pill text as its name', () => {
+    const text = '多類別 TWD −$2,479 · USD +$3.50 · JPY ¥0 (3)';
+    const { el } = render({ bubbles: children(3), parentText: text, activeBubble: 'k0' });
+    const parent = el.querySelector<HTMLButtonElement>('[data-bubble="parent"]')!;
+    expect(parent.querySelector('.folder')?.getAttribute('aria-hidden')).toBe('true');
+    expect(parent.getAttribute('aria-label')).toBe(text);
+    expect(parent.querySelector('.name')?.textContent).toBe('多類別');
+    const lines = Array.from(parent.querySelectorAll('.amt'));
+    expect(lines.map(line => line.textContent)).toEqual(['TWD −$2,479', 'USD +$3.50', 'JPY ¥0']);
+    expect(lines.map(line => [line.classList.contains('neg'), line.classList.contains('pos')])).toEqual([
+      [true, false], [false, true], [false, false],
+    ]);
+    expect(parentNetLines('多類別 (2)')).toEqual([]);
+  });
+
+  it('rings only the active bubble, following activeBubble()', () => {
+    const { el, fixture } = render({ bubbles: children(2), parentText: '多類別 TWD −$20 (2)', activeBubble: 'parent' });
+    const on = () => Array.from(el.querySelectorAll('[data-bubble].on')).map(node => node.getAttribute('data-bubble'));
+    expect(on()).toEqual(['parent']);
+    expect(el.querySelector('[data-bubble="parent"]')?.getAttribute('aria-pressed')).toBe('true');
+    fixture.componentRef.setInput('activeBubble', 'k1');
+    fixture.detectChanges();
+    expect(on()).toEqual(['k1']);
+    expect(el.querySelector('[data-bubble="parent"]')?.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('stacks a child bubble vertically: circle (lock on its corner), full-name title, signed amount', () => {
+    const { el } = render({
+      activeBubble: 'a',
+      bubbles: [
+        child('a', { label: '早餐與下午茶', protected: true }),
+        child('b', { label: '退款', icon: '↩', amount: '+$5' }),
+        child('c', { label: '未選類別', icon: '○', amount: '$0', empty: true }),
+      ],
+      addVisible: true,
+      addDisabled: true,
+      addHint: '最多 50 項',
+    });
+    const a = el.querySelector('[data-bubble="a"]')!;
+    expect(Array.from(a.children).map(node => node.className.split(' ')[0])).toEqual(['ico-wrap', 'name', 'amt']);
+    expect(a.querySelector('.ico-wrap .ico')?.textContent).toBe('🍜');
+    expect(a.querySelector('.ico-wrap .lock')?.textContent).toBe('🔒');
+    // The emoji stays out of the button's name; the lock is a sibling, outside the hidden subtree.
+    expect(a.querySelector('.ico-wrap .ico')?.getAttribute('aria-hidden')).toBe('true');
+    expect(a.querySelector('.ico-wrap .lock')?.closest('[aria-hidden="true"]')).toBeNull();
+    expect(a.querySelector('.name')?.getAttribute('title')).toBe('早餐與下午茶');
+    expect(a.querySelector('.amt')?.classList.contains('neg')).toBe(true);
+    expect(el.querySelector('[data-bubble="b"] .amt')?.classList.contains('pos')).toBe(true);
+    expect(el.querySelector('[data-bubble="b"] .lock')).toBeNull();
+    expect(el.querySelector('[data-bubble="c"]')?.classList.contains('empty')).toBe(true);
+    expect(el.querySelector('[data-bubble="c"] .amt')?.className).toBe('amt');
+    const add = el.querySelector<HTMLButtonElement>('.strip .add')!;
+    expect(add.disabled).toBe(true);
+    expect(add.getAttribute('aria-label')).toBe('新增子項');
+    expect(add.querySelector('.add-ico')?.textContent).toBe('＋');
+    expect(add.querySelector('.name')?.textContent).toBe('');
+    expect(el.querySelector('.strip .hint')?.textContent).toBe('最多 50 項');
   });
 
   it('reopens the main grid from the selected bubble; another bubble is a selection and resets drill-in', () => {

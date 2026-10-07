@@ -16,6 +16,7 @@ import {
 } from '@angular/core';
 
 import { isHandledKey } from '../accounting-ui';
+import { SplitFolderComponent } from '../split-folder/split-folder';
 
 import { CategoryNode, defaultCategoryIcon } from '../../../models/accounting.model';
 
@@ -38,6 +39,12 @@ export interface Bubble {
   protected: boolean;
 }
 
+/** The form's `多類別 TWD −$2,479 · USD +$3 (3)` as its net lines, one per currency. */
+export function parentNetLines(text: string | null): string[] {
+  const nets = (text ?? '').replace(/^\s*多類別/, '').replace(/\(\d+\)\s*$/, '');
+  return nets.split(' · ').map(line => line.trim()).filter(line => line !== '');
+}
+
 /**
  * Category chooser with one drill-in grid on every layout. The entry form passes `bubbles` (its children, a parent
  * bubble and ＋); other callers keep the single selected strip.
@@ -45,6 +52,7 @@ export interface Bubble {
 @Component({
   selector: 'app-category-picker',
   standalone: true,
+  imports: [SplitFolderComponent],
   templateUrl: './category-picker.html',
   styleUrl: './category-picker.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -66,6 +74,8 @@ export class CategoryPickerComponent {
   readonly gridAllowed = input(true);
   readonly bubbleSelected = output<string>();
   readonly addChild = output<void>();
+
+  readonly parentLines = computed(() => parentNetLines(this.parentText()));
 
   /** main category whose sub-categories are on screen. */
   readonly openParent = signal<CategoryNode | null>(null);
@@ -128,6 +138,11 @@ export class CategoryPickerComponent {
     } else {
       this.bubbleSelected.emit(key);
     }
+  }
+
+  /** Colour of a signed amount: `−` negative, `+` positive, zero / unknown neutral. */
+  tone(amount: string): string {
+    return /[−-]/.test(amount) ? 'neg' : amount.includes('+') ? 'pos' : '';
   }
 
   parentOf(node: CategoryNode): CategoryNode | null {

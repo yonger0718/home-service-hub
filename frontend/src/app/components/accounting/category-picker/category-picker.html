@@ -5,28 +5,43 @@
         type="button"
         class="sel parent-bubble"
         data-bubble="parent"
+        [class.on]="activeBubble() === 'parent'"
+        [attr.aria-label]="text"
         [attr.aria-pressed]="activeBubble() === 'parent'"
         (click)="chooseBubble('parent')"
-      >{{ text }}</button>
+      >
+        <app-split-folder [icons]="bubbles()" [count]="bubbles().length" />
+        <b class="name">多類別</b>
+        @for (line of parentLines(); track $index) {
+          <small class="amt" [class]="tone(line)">{{ line }}</small>
+        }
+      </button>
     }
     @for (bubble of bubbles(); track bubble.key) {
       <button
         type="button"
         class="sel"
+        [class.on]="activeBubble() === bubble.key"
         [class.empty]="bubble.empty"
         [attr.data-bubble]="bubble.key"
         [attr.aria-pressed]="activeBubble() === bubble.key"
         (click)="chooseBubble(bubble.key)"
       >
-        <span class="ico" [style.background]="bubble.color">{{ bubble.icon }}</span>
-        <span class="sel-text"><b>{{ bubble.label }}</b><small>{{ bubble.amount }}</small></span>
-        @if (bubble.protected) {
-          <span class="lock" aria-label="受保護">🔒</span>
-        }
+        <span class="ico-wrap">
+          <span class="ico" aria-hidden="true" [style.background]="bubble.color">{{ bubble.icon }}</span>
+          @if (bubble.protected) {
+            <span class="lock" aria-label="受保護">🔒</span>
+          }
+        </span>
+        <b class="name" [title]="bubble.label">{{ bubble.label }}</b>
+        <small class="amt" [class]="tone(bubble.amount)">{{ bubble.amount }}</small>
       </button>
     }
     @if (addVisible()) {
-      <button type="button" class="add" aria-label="新增子項" [disabled]="addDisabled()" (click)="addChild.emit()">＋</button>
+      <button type="button" class="add" aria-label="新增子項" [disabled]="addDisabled()" (click)="addChild.emit()">
+        <span class="ico add-ico" aria-hidden="true">＋</span>
+        <span class="name" aria-hidden="true"></span>
+      </button>
     }
     @if (addHint(); as hint) {
       <span class="hint">{{ hint }}</span>

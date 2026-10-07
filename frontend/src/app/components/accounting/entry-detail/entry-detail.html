@@ -13,12 +13,17 @@
 
     @if (d.group?.kind === 'split') {
       <section class="split-parent-card" aria-label="多類別摘要">
-        <h3>{{ d.group?.name || '多類別' }} · 多類別</h3>
-        @for (line of splitNet(); track line.currency) {
-          <p class="split-net">{{ line.currency }} {{ formatMoney(line.amount, line.currency, { sign: true }) }}</p>
-        }
-        <p class="split-meta">{{ splitMembers().length }} 項 · {{ splitAccountCount() }} 個帳戶</p>
-        <p class="split-meta">商家 {{ d.group?.merchant || '—' }} · 日期 {{ splitMembers()[0]?.entry_date }}</p>
+        <div class="split-head">
+          <app-split-folder [icons]="splitIcons()" [count]="d.group?.count ?? splitMembers().length" />
+          <div class="split-summary">
+            <h3>{{ d.group?.name || '多類別' }} · 多類別</h3>
+            @for (line of splitNet(); track line.currency) {
+              <p class="split-net">{{ line.currency }} {{ formatMoney(line.amount, line.currency, { sign: true }) }}</p>
+            }
+            <p class="split-meta">{{ splitMembers().length }} 項 · {{ splitAccountCount() }} 個帳戶</p>
+            <p class="split-meta">商家 {{ d.group?.merchant || '—' }} · 日期 {{ splitMembers()[0]?.entry_date }}</p>
+          </div>
+        </div>
         @for (member of splitMembers(); track member.id) {
           <a
             class="split-child"
