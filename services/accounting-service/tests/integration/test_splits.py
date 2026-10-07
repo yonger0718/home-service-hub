@@ -776,13 +776,17 @@ def test_fully_unchanged_payload_is_a_no_op(client, db_session, seed, monkeypatc
 def test_merchant_only_change_is_applied(client, db_session, seed, monkeypatch):
     wallet_id, group_id, [first_id, second_id] = _two_member_split(db_session, seed)
     first, second = _members(db_session, group_id)
+    first.needs_review = second.needs_review = True  # as an import flags rows it could not fully map
+    db_session.commit()
     prepared = _spy_prepare(monkeypatch)
 
-    response = client.put(f"/splits/{group_id}", json=_split(_echo(first, merchant="全家"), _echo(second)))
+    response = client.put(f"/splits/{group_id}", json=_split(_echo(first, merchant="全家"), _keep(second_id, name="修正")))
 
     assert response.status_code == 200, response.text
     assert prepared == []
-    assert [(m.merchant, m.amount) for m in _members(db_session, group_id)] == [("全家", Decimal("-100")), (None, Decimal("-50"))]
+    assert [(m.merchant, m.amount, m.name, m.needs_review) for m in _members(db_session, group_id)] == [
+        ("全家", Decimal("-100"), None, False), (None, Decimal("-50"), "修正", False),  # meta and keep clear the flag
+    ]
 
 
 def test_reward_ledger_rows_are_never_touched(client, db_session, seed):
@@ -1000,6 +1004,34 @@ def test_cold_fx_cache_put_takes_its_locks_after_the_fx_commit(pg_engine, db_ses
     assert [(m.amount, m.fx_source, m.name) for m in members] == [
         (Decimal("-100"), None, None), (Decimal("-50"), None, None), (Decimal("-200"), "fx_api", None),
     ]
+
+
+def test_a_settlement_between_read_and_lock_is_409_retry(client, pg_engine, db_session, seed, monkeypatch):
+    # The PUT sends the loan as a full member (allowed: unprotected at phase 1); a settle commits before the lock.
+    wallet_id, alan_id, group_id, lent_id, meal_id = _split_with_a_loan(db_session, seed)
+    before = _ledger(db_session)
+    original = ss._prepare
+
+    def prepare_then_settle(db, members, http_get):
+        original(db, members, http_get)
+        with sessionmaker(bind=pg_engine)() as other:
+            st.settle(other, lent_id, SettleIn(account_id=wallet_id, amount="100", entry_date=DAY))
+            other.commit()
+
+    monkeypatch.setattr(ss, "_prepare", prepare_then_settle)
+    body = _split(
+        {"id": lent_id, "account_id": wallet_id, "kind": "receivable", "amount": "350", "counterparty_id": alan_id},
+        _keep(meal_id, name="改名"),
+    )
+
+    response = client.put(f"/splits/{group_id}", json=body)
+
+    assert response.status_code == 409 and response.json()["message"].startswith("retry"), response.text
+    after = _ledger(db_session)
+    [collection_id] = [key for key in after if key not in before]  # only the settle's own collection row is new
+    assert after[collection_id][4] == lent_id
+    assert {key: value for key, value in after.items() if key != collection_id} == before
+    assert db_session.get(LedgerEntry, meal_id).name is None
 
 
 def _split_with_a_loan(db_session, seed) -> tuple[int, int, int, int, int]:

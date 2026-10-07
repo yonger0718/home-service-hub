@@ -167,8 +167,11 @@ def member_ids(db: Session, group_id: int) -> list[int]:
 # paths, D32): schedule rows (only the delete paths take them) → the entry_group row(s) (lock_group, ascending id) →
 # the entries (one SELECT … FOR UPDATE by ascending id; delete_entry adds transfer legs and the members of the split
 # groups it may dissolve to that same statement) → no further row lock except the category rows of the defaults,
-# written last in ascending id (remember_all_defaults). A split PUT takes no schedule lock: a scheduled group is
-# refused before and again inside the locks. Convert (convert_to_split) locks only its ungrouped anchor row.
+# written last in ascending id (remember_all_defaults). delete_entries_cascade also nulls reward_source_entry_id /
+# settles_entry_id / refunds_entry_id on dependant rows outside this lock set (UPDATE without a prior lock); safe
+# because no path locks those dependant rows before a group or member row. A split PUT takes no schedule lock: a
+# scheduled group is refused before and again inside the locks. Convert (convert_to_split) locks only its ungrouped
+# anchor row.
 #
 # Exception: PUT /entries/{id}, settle and refund on a member do NOT take the group lock. They lock only the
 # target entry row (locked_entry) and lock nothing else in the group afterwards, which is why they cannot
@@ -317,6 +320,7 @@ def _apply_meta(entry: LedgerEntry, payload: EntryIn) -> None:
     """A financially unchanged keep_full member: metadata only (no FX, no child or rule-link rebuild)."""
     entry.name, entry.merchant, entry.project_id = payload.name, payload.merchant, payload.project_id
     entry.tags, entry.description = list(payload.tags), payload.description
+    entry.needs_review = False  # as _apply on every financial / single edit
 
 
 def _apply_keep(entry: LedgerEntry, item: SplitKeepIn) -> None:
@@ -325,6 +329,7 @@ def _apply_keep(entry: LedgerEntry, item: SplitKeepIn) -> None:
         if field in item.model_fields_set:
             value = getattr(item, field)
             setattr(entry, field, list(value or []) if field == "tags" else value)
+    entry.needs_review = False  # as _apply on every financial / single edit
 
 
 def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None) -> SplitResult:
@@ -397,7 +402,8 @@ def _check_convert_cardinality(entry_id: int, payload: SplitIn) -> None:
 
 def _refuse_anchor(db: Session, anchor: LedgerEntry) -> None:
     """§1.6 convert refusals in order, on the unlocked read and again on the locked anchor: already in a group →
-    already_grouped; protected or not an editable kind → entry_locked; posted by a schedule → kind_not_splittable;
+    already_grouped; protected or not an editable kind → entry_locked; posted by a schedule, or listed by a posted
+    period whatever its source (a MOZE-booked period lists moze rows) → kind_not_splittable;
     an imported row before cutover → locked_until_cutover."""
     if anchor.group_id is not None:
         raise CodedConflictError(ALREADY_GROUPED, f"entry {anchor.id} already belongs to group {anchor.group_id}")
@@ -406,6 +412,10 @@ def _refuse_anchor(db: Session, anchor: LedgerEntry) -> None:
         raise CodedConflictError(ENTRY_LOCKED, f"entry {anchor.id} cannot be split ({reason})")
     if anchor.source == "schedule":
         raise CodedConflictError(KIND_NOT_SPLITTABLE, f"entry {anchor.id} was posted by a schedule")
+    if schedule_entry_hooks.posted_instance_for(db, [anchor.id]) is not None:
+        # e.g. a MOZE-booked period (acted_by='import') lists a moze-source row: the new group would be refused by
+        # every PUT /splits/{gid} (group_scheduled), dissolve included.
+        raise CodedConflictError(KIND_NOT_SPLITTABLE, f"entry {anchor.id} is listed by a posted schedule period")
     assert_editable(anchor)
 
 

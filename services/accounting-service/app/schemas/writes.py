@@ -133,9 +133,10 @@ class TransferIn(BaseModel):
 
 
 class SplitIn(BaseModel):
-    """Body of POST /splits, PUT /splits/{id} and PUT /entries/{id}/split. Group fields plus 1+ members; the
-    per-operation cardinality (POST >= 2 without ids, PUT <= max(50, current), convert: exactly the anchor with an
-    id) is checked by split_service before any database read that could 404."""
+    """Body of POST /splits, PUT /splits/{id} and PUT /entries/{id}/split. Group fields plus 1+ members. The
+    schema-level checks (duplicate ids, POST >= 2 without ids, convert: exactly the anchor with an id) run before
+    any database read; PUT's <= max(50, current) needs the group, so it runs after the group lookup (404 group,
+    409 group_scheduled come first). See the precedence chain in openspec accounting-ledger "Split write phases…"."""
 
     name: ShortText | None = None
     merchant: ShortText | None = None

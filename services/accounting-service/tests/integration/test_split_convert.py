@@ -134,6 +134,30 @@ def test_grouped_scheduled_and_imported_anchors_are_refused(client, db_session, 
     assert _groups(db_session) == 1  # only the pre-existing group
 
 
+def test_an_anchor_listed_by_a_moze_booked_period_is_refused(client, db_session, seed, monkeypatch):
+    # A MOZE-booked period (acted_by='import') lists a moze-source row: after cutover it is editable and ungrouped,
+    # but a split made of it would be refused by every PUT /splits/{gid} (group_scheduled), so convert refuses it.
+    monkeypatch.setenv("ACCOUNTING_IMPORT_LOCKED", "true")
+    card = seed.account("範例卡")
+    booked_row = seed.entry(card, "-390", source="moze_backup", moze_id="R-1")
+    definition = seed.definition([seed.line("expense", card, "390")], created_locally=False, moze_id="P-1")
+    seed.instance(definition, 1, DAY, status="posted", entries=[booked_row], acted_by="import", moze_id="R-1")
+    db_session.commit()
+    anchor_id, card_id = booked_row.id, card.id
+
+    def snapshot():
+        db_session.expire_all()
+        return [(e.id, e.amount, e.group_id, e.name) for e in db_session.scalars(select(LedgerEntry).order_by(LedgerEntry.id))]
+
+    before = snapshot()
+
+    response = client.put(f"/entries/{anchor_id}/split", json=_convert(anchor_id, card_id, _member(card_id)))
+
+    assert (response.status_code, response.json()["message"].split(":")[0]) == (409, "kind_not_splittable")
+    assert snapshot() == before
+    assert _groups(db_session) == 0
+
+
 def test_convert_cardinality(client, db_session, seed):
     wallet_id, anchor_id = _anchor(db_session, seed)
     anchor_only = _convert(anchor_id, wallet_id)

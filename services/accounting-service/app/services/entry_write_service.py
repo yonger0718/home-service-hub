@@ -583,7 +583,9 @@ def delete_entry(db: Session, entry_id: int) -> None:
     """Deleting needs no FX, so the locks are taken straight away, in the shared order (D32, split rework §1.7):
     the period's schedule rows (lock_for_entry_delete) → every affected entry_group row (lock_group, ascending id)
     → the targets, their transfer legs and every member of an affected split group in ONE statement by ascending id
-    (locked_with_legs) → nothing else. The affected set is read before the locks and again under them; any
+    (locked_with_legs) → nothing else (delete_entries_cascade then nulls reward_source_entry_id / settles_entry_id /
+    refunds_entry_id on dependant rows outside this lock set; safe, as no path locks those rows before a group or
+    member row). The affected set is read before the locks and again under them; any
     difference (a member added or dropped by a split PUT, a convert that grouped the entry, a group dissolved by a
     concurrent delete) is a 409 retry; a target already gone is a 404. Today's refusals stay (referenced loan,
     reward rows, cutover lock). After the delete every affected group of any kind left empty is removed, and a

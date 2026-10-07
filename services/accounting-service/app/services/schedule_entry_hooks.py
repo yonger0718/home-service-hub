@@ -29,6 +29,12 @@ def _instance_listing(db: Session, entry_ids: list[int]) -> ScheduleInstance | N
     )
 
 
+def posted_instance_for(db: Session, entry_ids: list[int]) -> ScheduleInstance | None:
+    """The posted instance listing one of the entries, or None (unlocked read). Whatever the entry's source: a
+    MOZE-booked period lists moze-source rows."""
+    return _instance_listing(db, entry_ids)
+
+
 DEFINITION_ENDED_RETRY = "排程剛結束，請重試刪除"
 
 
