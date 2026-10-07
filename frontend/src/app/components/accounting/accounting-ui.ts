@@ -189,7 +189,7 @@ export function focusSheetField(host: HTMLElement, selector: string, injector: I
 
 // ---- focus containment ----------------------------------------------------------------------------------------
 
-/** Root attribute of an overlay (picker, fee / fx sheet, 新增拆帳行): it traps its own Tab; outer traps skip it. */
+/** Root attribute of an overlay (picker, fee / fx sheet, delete-group dialog): it traps its own Tab; outer traps skip it. */
 export const OVERLAY_ATTR = 'data-overlay';
 
 export const FOCUSABLE_SELECTOR = [

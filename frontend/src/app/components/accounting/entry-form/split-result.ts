@@ -44,7 +44,7 @@ export function memberError(error: unknown, keys: readonly string[]): { key: str
     }
   }
   for (const [path, message] of entries) {
-    const match = /(?:^|\.)members\.(\d+)\.(?:(?:SplitMemberIn|SplitKeepIn|function-after\[[^\]]+\])\.)*(.+)$/.exec(path);
+    const match = /(?:^|\.)members\.(\d+)\.(?:(?:SplitMemberIn|SplitKeepIn|full|keep|function-after\[[^\]]+\])\.)*(.+)$/.exec(path);
     const key = match ? keys[Number(match[1])] : undefined;
     if (match && key !== undefined) {
       return { key, field: match[2], message };

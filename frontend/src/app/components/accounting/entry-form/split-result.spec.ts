@@ -30,6 +30,13 @@ describe('split results', () => {
     expect(memberError({ error: { detail: [
       { loc: ['body', 'members', 1, 'SplitMemberIn', 'amount'], msg: 'invalid amount' },
     ] } }, ['a', 'b'])).toEqual({ key: 'b', field: 'amount', message: 'invalid amount' });
+    // The members union is tagged `full` / `keep` (Pydantic `Tag`), which the real 422 loc carries.
+    expect(memberError({ error: { detail: [
+      { loc: ['body', 'members', 1, 'full', 'amount'], msg: 'invalid amount' },
+    ] } }, ['a', 'b'])).toEqual({ key: 'b', field: 'amount', message: 'invalid amount' });
+    expect(memberError({ error: { detail: [
+      { loc: ['body', 'members', 0, 'keep', 'name'], msg: 'too long' },
+    ] } }, ['a', 'b'])).toEqual({ key: 'a', field: 'name', message: 'too long' });
   });
 
   it('rejects missing/duplicate keys instead of navigating to a wrong row', () => {

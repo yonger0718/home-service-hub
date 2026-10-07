@@ -494,6 +494,107 @@ describe('split form integration', () => {
     await harness.fixture.whenStable();
   });
 
+  it.each(['installment', 'reward_claim'] as const)('keeps a %s group member single editing but hides convert plus', async kind => {
+    const group = { id: 9, kind, name: null, merchant: null, description: null, count: 3, total: null, currency: 'TWD' };
+    entries.set(7, makeEntryDetail({ id: 7, group }));
+    await open('/accounting/entries/7/edit');
+    expect(form.children()).toHaveLength(1);
+    expect(form.children()[0].protected).toBe(false);
+    expect(form.groupId()).toBeNull();
+    expect(form.addState().visible).toBe(false);
+    form.name.set('changed');
+    form.save(false);
+    const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/entries/7'));
+    expect(req.request.body.name).toBe('changed');
+    req.flush(makeEntryDetail({ id: 7, name: 'changed', group }));
+    await harness.fixture.whenStable();
+  });
+
+  it('a failed category fetch does not replace a loaded tree of the same kind and is retried', async () => {
+    await open();
+    fill();
+    const first = new Subject<CategoryNode[]>();
+    const failures = new Subject<CategoryNode[]>();
+    const spy = vi.spyOn(TestBed.inject(AccountingService), 'getCategories');
+    spy.mockReturnValueOnce(first).mockReturnValueOnce(failures);
+    form.addChild();
+    settle();
+    form.selectKind('income');
+    settle();
+    const firstKey = form.selected();
+    // The new child inherits income while the first income fetch is still pending: a second fetch starts.
+    form.addChild();
+    settle();
+    expect(form.kind()).toBe('income');
+    expect(spy).toHaveBeenCalledTimes(2);
+    first.next([makeCategory({ id: 31, kind: 'income' })]);
+    first.complete();
+    failures.error(new Error('offline'));
+    settle();
+    expect(form.categories().map(c => c.id)).toEqual([31]);
+    form.selectBubble(firstKey);
+    settle();
+    expect(form.categories().map(c => c.id)).toEqual([31]);
+    spy.mockRestore();
+  });
+
+  it('a failed category fetch caches nothing, so the next load asks again', async () => {
+    await open();
+    fill();
+    const spy = vi.spyOn(TestBed.inject(AccountingService), 'getCategories');
+    spy.mockReturnValueOnce(throwError(() => new Error('offline')));
+    form.addChild();
+    settle();
+    form.selectKind('income');
+    settle();
+    expect(form.categories()).toEqual([]);
+    spy.mockRestore();
+    form.addChild();
+    settle();
+    expect(form.kind()).toBe('income');
+    expect(form.categories().map(c => c.id)).toEqual([31]);
+  });
+
+  it('routes a 422 under the full / keep union tags to the child field', async () => {
+    seedGroup(makeEntryDetail({ id: 7 }), makeEntryDetail({ id: 8, amount: '-20.0000' }));
+    await open('/accounting/entries/7/edit');
+    for (const [tag, field] of [['full', 'amount'], ['keep', 'name']] as const) {
+      form.selectBubble(form.children()[0].key);
+      settle();
+      form.name.set(`changed ${tag}`);
+      form.save(false);
+      const req = http.expectOne(r => r.method === 'PUT' && r.url.endsWith('/splits/4'));
+      req.flush(
+        { detail: [{ loc: ['body', 'members', 1, tag, field], msg: `bad ${field}` }] },
+        { status: 422, statusText: 'Unprocessable Entity' },
+      );
+      settle();
+      expect(form.selected()).toBe(form.children()[1].key);
+      expect(form.fieldErrors()).toEqual({ [field]: `bad ${field}` });
+      expect(form.isDirty()).toBe(true);
+    }
+  });
+
+  it('an untouched copy whose rule is out of window stays clean; an edit still dirties it', async () => {
+    const expired = makeRule({ id: 5, ends_on: '2020-01-31' });
+    entries.set(7, makeEntryDetail({ id: 7, rules: [expired] }));
+    // The account's rules arrive after the copy has rendered and taken its clean baseline.
+    const account = new Subject<AccountDetail>();
+    vi.spyOn(TestBed.inject(AccountingService), 'getAccount').mockReturnValue(account);
+    await open('/accounting/entry?copy=7');
+    expect(form.entryId()).toBeNull();
+    expect(form.children()[0].ruleIds).toEqual([5]);
+    expect(form.isDirty()).toBe(false);
+    account.next(makeAccountDetail({ ...fixtureAccounts[0], reward_rules: [expired] }));
+    account.complete();
+    settle();
+    expect(form.children()[0].ruleIds).toEqual([]);
+    expect(form.isDirty()).toBe(false);
+    form.name.set('edited');
+    settle();
+    expect(form.isDirty()).toBe(true);
+  });
+
   it('parent validates each child and blocks missing manual FX before HTTP', async () => {
     await open();
     fill();

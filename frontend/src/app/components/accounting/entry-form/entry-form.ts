@@ -368,6 +368,8 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   );
   /** Snapshot of `formState` once the record (or blank form) has rendered; null while loading. */
   private readonly baseline = signal<string | null>(null);
+  /** The copied child whose first resource load still belongs to loading the copy (see `loadChildResources`). */
+  private copyBaselineKey: string | null = null;
   /** The draft differs from what was loaded (spec §4.3). */
   readonly isDirty = computed(() => {
     const baseline = this.baseline();
@@ -964,6 +966,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
    */
   private applySingle(detail: EntryDetail, copy: boolean): void {
     const convertBlocked =
+      detail.group !== null ||
       detail.is_settlement ||
       detail.transfer_group_id !== null ||
       detail.settled_by.length > 0 ||
@@ -979,6 +982,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     }
     this.children.set([child]);
     this.selected.set(child.key);
+    this.copyBaselineKey = copy ? child.key : null;
     this.drafts.anchorId.set(copy ? null : detail.id);
     this.parent.set({
       name: '',
@@ -1082,6 +1086,8 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     // change only re-derives the defaults. A failed read is not cached, so 重新載入子項設定 asks again.
     const accountId = child.accountId;
     const cached = accountId === null ? undefined : this.accountDetails.get(accountId);
+    // A single transfer / 系統 tab shows no category grid for its (hidden) child.
+    const wantsCategories = isWritableKind(child.kind) && (this.childScope() || isWritableKind(this.singleKind()));
     const load = forkJoin({
       account:
         accountId === null
@@ -1089,11 +1095,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           : cached
             ? of(cached)
             : this.accounting.getAccount(accountId).pipe(tap(detail => this.accountDetails.set(accountId, detail))),
-      // A single transfer / 系統 tab shows no category grid for its (hidden) child.
-      categories:
-        isWritableKind(child.kind) && (this.childScope() || isWritableKind(this.singleKind()))
-          ? this.loadCategories(child.kind)
-          : of<CategoryNode[]>([]),
+      categories: wantsCategories ? this.loadCategories(child.kind) : of<CategoryNode[]>([]),
       // The quote is display only (the server converts online FX): a failed quote shows `?`, never blocks saving.
       quote:
         fx?.use_online && fx.fx_rate === null
@@ -1132,15 +1134,21 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           if (result.quote && current.fx?.use_online) {
             patch.fx = { ...current.fx, fx_rate: String(Number(result.quote.rate)), rate_date: result.quote.date };
           }
-          if (isWritableKind(child.kind)) {
-            this.cacheCategories(child.kind, result.categories);
-          }
+          // A copy's late rule filtering is part of loading it, not an edit: an untouched copy stays clean.
+          const keepClean = this.copyBaselineKey === owner.key && !this.isDirty();
           if (!this.drafts.accept(owner, patch)) {
             return;
           }
+          if (this.copyBaselineKey === owner.key) {
+            this.copyBaselineKey = null;
+          }
+          if (keepClean && this.baseline() !== null) {
+            this.baseline.set(this.formState());
+          }
           this.childAccountCache.set(owner.key, result.account);
           if (this.selected() === owner.key) {
-            this.categories.set(result.categories);
+            // `loadCategories` caches only a successful tree; a failed fetch (`[]`) never replaces a loaded one.
+            this.categories.set(wantsCategories ? (this.categoryLists().get(child.kind) ?? []) : []);
             this.accountDetail.set(result.account);
           }
         },
