@@ -1,63 +1,156 @@
-"""Splits (design D15): an entry_group of kind split whose members each move one account.
+"""Splits (design D15; split rework §1): an entry_group of kind split whose members each move one account.
 
-Every member is validated and FX-resolved before the first row is written, so a split is created or
-replaced completely or not at all. The cutover lock covers the group row and every member.
+Every write follows the rework's phases (§1.4): (1) a preliminary read and classification with no lock and no FX;
+(2) prepare: validation and FX resolution, which may commit the session through the FX cache
+(fx_rate_service.get_rate), so it runs before any lock or ledger write; (3) locks in the accepted order; (4) a
+re-read inside the locks, where anything that moved since (1) is a 409 retry (never a re-preparation); (5) the
+writes, through helpers that never commit. The router commits once, so a split write lands completely or not at
+all (FX cache rows excepted).
 """
+
+from dataclasses import dataclass
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..models import EntryGroup, LedgerEntry
-from ..schemas.writes import EntryIn, SplitIn
+from ..schemas.writes import MAX_SPLIT_MEMBERS, EntryIn, SplitIn, SplitKeepIn, SplitMemberIn
 from . import schedule_entry_hooks
 from .edit_lock import assert_editable
 from .entry_write_service import (
     EDITABLE_KINDS,
     PreparedEntry,
+    apply_prepared_update,
+    attached_rule_ids,
+    check_project,
     delete_entries_cascade,
-    has_settlements_or_refunds,
+    dissolve_group,
+    get_entry,
     insert_prepared,
     lock_group,
+    locked_entry,
     prepare_entry,
     remember_all_defaults,
 )
-from .errors import NotFoundError, ValidationError
+from .errors import (
+    ALREADY_GROUPED,
+    ENTRY_LOCKED,
+    GROUP_SCHEDULED,
+    KIND_NOT_SPLITTABLE,
+    MEMBER_LOCKED,
+    MEMBER_NOT_FOUND,
+    RETRY,
+    CodedConflictError,
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
+from .split_compare import MemberSignature, classify, payload_signature, stored_signature
+from .split_protection import protected_reason, protected_reasons
 
 SHARED_FIELDS = ("entry_date", "entry_time", "posted_date", "project_id", "tags")
+KEEP_FIELDS = ("name", "project_id", "tags", "description")  # what SplitKeepIn may change
+
+
+def member_payload(payload: SplitIn, member: SplitMemberIn) -> EntryIn:
+    """One full member as an EntryIn; fields the member did not send come from the group, except posted_date,
+    which defaults to the member's own entry_date when the member sent one. The rework's client sends every
+    per-member field; this inheritance stays for callers that omit them (§1.3)."""
+    data = member.model_dump(exclude={"id", "client_key"})
+    own_date = data["entry_date"]  # captured before the loop fills entry_date from the group
+    for field in SHARED_FIELDS:
+        if field not in member.model_fields_set or (field == "entry_date" and data[field] is None):
+            if field == "posted_date" and own_date is not None:
+                data[field] = own_date  # a member with its own entry_date posts on that date, not the group's
+            else:
+                data[field] = getattr(payload, field)
+    return EntryIn(**data)
 
 
 def member_payloads(payload: SplitIn) -> list[EntryIn]:
-    """Each member as a full EntryIn; fields the member did not send come from the group, except posted_date,
-    which defaults to the member's own entry_date when the member sent one."""
-    members = []
-    for member in payload.members:
-        data = member.model_dump()
-        own_date = data["entry_date"]  # captured before the loop fills entry_date from the group
-        for field in SHARED_FIELDS:
-            if field not in member.model_fields_set or (field == "entry_date" and data[field] is None):
-                if field == "posted_date" and own_date is not None:
-                    data[field] = own_date  # a member with its own entry_date posts on that date, not the group's
-                else:
-                    data[field] = getattr(payload, field)
-        members.append(EntryIn(**data))
-    return members
+    """member_payload for every full member, in request order (keep members carry no entry payload)."""
+    return [member_payload(payload, member) for member in payload.members if isinstance(member, SplitMemberIn)]
 
 
-def _prepare_all(db: Session, payload: SplitIn, http_get) -> list[PreparedEntry]:
-    prepared = []
-    for index, member in enumerate(member_payloads(payload)):
+@dataclass(frozen=True)
+class SplitResult:
+    """What every split write answers (§1.6): member ids with their client keys, in request order."""
+
+    group_id: int | None
+    members: list[tuple[int, str | None]]
+
+    def out(self) -> dict:
+        return {
+            "group_id": self.group_id,
+            "member_ids": [entry_id for entry_id, _ in self.members],
+            "members": [{"id": entry_id, "client_key": key} for entry_id, key in self.members],
+        }
+
+
+@dataclass
+class _Member:
+    """One payload member through the phases. action: "new" (no id), "full" (SplitMemberIn with an id) or "keep"
+    (SplitKeepIn). For "full", `stored` is the signature the decision was taken on and `change` its verdict
+    ("unchanged" / "meta" / "financial"); `prepared` is set for "new" and financially changed "full" members."""
+
+    index: int
+    item: SplitMemberIn | SplitKeepIn
+    entry_id: int | None
+    action: str
+    payload: EntryIn | None = None
+    stored: MemberSignature | None = None
+    change: str | None = None
+    prepared: PreparedEntry | None = None
+
+
+def _prepare(db: Session, members: list[_Member], http_get) -> None:
+    """Phase 2: prepare_entry for new members and financially changed full ones (a full member passes its current
+    rule links as `attached`, so a rule disabled or expired after import still round-trips); a metadata-only
+    member only has its project checked. Never called with a lock held: FX resolution may commit the session.
+    Errors are renamed members.{i}.{field}."""
+    for member in members:
         try:
-            prepared.append(prepare_entry(db, member, http_get=http_get))
+            if member.action == "new" or member.change == "financial":
+                attached = attached_rule_ids(db, member.entry_id) if member.entry_id is not None else ()
+                member.prepared = prepare_entry(db, member.payload, http_get=http_get, attached_rules=attached)
+            elif member.action == "full" and member.change == "meta":
+                check_project(db, member.payload.project_id)
+            elif member.action == "keep" and "project_id" in member.item.model_fields_set:
+                check_project(db, member.item.project_id)
         except ValidationError as exc:
-            raise ValidationError(f"members.{index}.{exc.field}", exc.message) from exc
-    return prepared
+            raise ValidationError(f"members.{member.index}.{exc.field}", exc.message) from exc
 
 
-def _get_split(db: Session, group_id: int) -> EntryGroup:
-    group = db.get(EntryGroup, group_id)
-    if group is None or group.kind != "split":
-        raise NotFoundError(f"split {group_id} not found")
-    return group
+def _check_create_cardinality(payload: SplitIn) -> None:
+    """POST /splits: 2 to MAX_SPLIT_MEMBERS members, none of them existing (§1.3)."""
+    if not 2 <= len(payload.members) <= MAX_SPLIT_MEMBERS:
+        raise ValidationError("members", f"a new split has 2 to {MAX_SPLIT_MEMBERS} members")
+    for index, item in enumerate(payload.members):
+        if isinstance(item, SplitKeepIn):
+            raise ValidationError(f"members.{index}.keep", "a new split has no existing members")
+        if item.id is not None:
+            raise ValidationError(f"members.{index}.id", "a new split has no existing members")
+
+
+def create_split_result(db: Session, payload: SplitIn, *, http_get=None) -> SplitResult:
+    """POST /splits: cardinality, then every member prepared (FX may commit), then the group and members written."""
+    _check_create_cardinality(payload)
+    members = [
+        _Member(index, item, None, "new", payload=member_payload(payload, item))
+        for index, item in enumerate(payload.members)
+    ]
+    _prepare(db, members, http_get)
+    group = EntryGroup(kind="split", name=payload.name, merchant=payload.merchant, description=payload.description)
+    db.add(group)
+    db.flush()
+    for member in members:
+        member.entry_id = insert_prepared(db, member.prepared, group_id=group.id, remember=False)
+    remember_all_defaults(db, [member.prepared for member in members])
+    return SplitResult(group.id, [(member.entry_id, member.item.client_key) for member in members])
+
+
+def create_split(db: Session, payload: SplitIn, *, http_get=None) -> int:
+    return create_split_result(db, payload, http_get=http_get).group_id
 
 
 def member_ids(db: Session, group_id: int) -> list[int]:
@@ -70,14 +163,15 @@ def member_ids(db: Session, group_id: int) -> list[int]:
     )
 
 
-# Lock order for every write that locks a group row (shared with entry_write_service.delete_entry): the
-# entry_group row(s) (entry_write_service.lock_group, ascending id) → the entry / the group's members (one
-# SELECT … FOR UPDATE by ascending id; delete_entry adds the transfer legs to that same statement) → no further
-# row lock except the category rows of the defaults, written last in ascending id (remember_all_defaults). The
-# group row is the one stable row two writes to a group share (members are deleted and re-inserted), so it is
-# what makes a second PUT / DELETE wait for the first and then see the first's members instead of the ones it
-# replaced; a single DELETE /entries/{id} of a member takes the same group lock first, so it never deadlocks
-# against a split PUT (plan review round 5).
+# Lock order for every write that locks a group row (shared with entry_write_service.delete_entry and the schedule
+# paths, D32): schedule rows (only the delete paths take them) → the entry_group row(s) (lock_group, ascending id) →
+# the entries (one SELECT … FOR UPDATE by ascending id; delete_entry adds transfer legs and the members of the split
+# groups it may dissolve to that same statement) → no further row lock except the category rows of the defaults,
+# written last in ascending id (remember_all_defaults). delete_entries_cascade also nulls reward_source_entry_id /
+# settles_entry_id / refunds_entry_id on dependant rows outside this lock set (UPDATE without a prior lock); safe
+# because no path locks those dependant rows before a group or member row. A split PUT takes no schedule lock: a
+# scheduled group is refused before and again inside the locks. Convert (convert_to_split) locks only its ungrouped
+# anchor row.
 #
 # Exception: PUT /entries/{id}, settle and refund on a member do NOT take the group lock. They lock only the
 # target entry row (locked_entry) and lock nothing else in the group afterwards, which is why they cannot
@@ -96,7 +190,7 @@ def _locked_split(db: Session, group_id: int) -> EntryGroup:
 
 def _locked_members(db: Session, group_id: int) -> list[LedgerEntry]:
     """The group's members, one SELECT … FOR UPDATE ordered by ascending id (the row lock settle / refund take
-    via locked_entry; the same order locked_with_legs uses). Callers hold the group lock from _locked_split first."""
+    via locked_entry; the same order locked_with_legs uses). Callers hold the group lock first."""
     return list(
         db.scalars(
             select(LedgerEntry)
@@ -108,60 +202,259 @@ def _locked_members(db: Session, group_id: int) -> list[LedgerEntry]:
     )
 
 
-def _assert_no_settlements(db: Session, members: list[LedgerEntry]) -> None:
-    """Rebuilding members would re-sign a settlement (a +200 collection becomes a −200 receivable) and orphan
-    the entries that settle or refund a member, so such groups are never rebuilt."""
-    for member in members:
-        if member.is_settlement or member.kind == "refund" or has_settlements_or_refunds(db, member.id):
-            raise ValidationError(
-                "members", "groups containing settlements or refunds are edited by deleting and re-settling"
-            )
-
-
 def _assert_no_transfers_or_system_entries(members: list[LedgerEntry]) -> None:
-    """Imported split groups (MOZE packages) can hold a transfer leg whose counterpart is outside the group, or
-    reward / interest / balance-adjustment rows. Rebuilding or deleting the group would orphan the counterpart or
-    delete rows delete_entry refuses, so such groups are edited one entry at a time."""
+    """DELETE /splits/{id} (unchanged by the rework): imported split groups can hold a transfer leg whose
+    counterpart is outside the group, or reward / interest / balance-adjustment rows; deleting the group would
+    orphan the counterpart or delete rows delete_entry refuses, so such groups are deleted one entry at a time."""
     for member in members:
         if member.transfer_group_id is not None or member.kind not in EDITABLE_KINDS:
             raise ValidationError("members", "groups containing transfers, rewards or system entries are edited per entry")
 
 
-def create_split(db: Session, payload: SplitIn, *, http_get=None) -> int:
-    prepared = _prepare_all(db, payload, http_get)
+def _assert_not_scheduled(db: Session, group_id: int) -> None:
+    """D29: a group a posted period lists is edited one period at a time; 409 group_scheduled naming the instance."""
+    try:
+        schedule_entry_hooks.assert_group_not_scheduled(db, group_id)
+    except ConflictError as exc:
+        raise CodedConflictError(GROUP_SCHEDULED, str(exc)) from exc
+
+
+def _readable_split(db: Session, group_id: int) -> EntryGroup:
+    """Phase 1 group checks in precedence order: 404 missing → 409 group_scheduled (before the kind check, so the
+    accepted D29 scenario on an installment group still answers 409) → 404 not a split → 409 cutover lock."""
+    group = db.get(EntryGroup, group_id)
+    if group is None:
+        raise NotFoundError(f"split {group_id} not found")
+    _assert_not_scheduled(db, group_id)
+    if group.kind != "split":
+        raise NotFoundError(f"split {group_id} not found")
+    assert_editable(group)
+    return group
+
+
+def _current_members(db: Session, group_id: int) -> list[LedgerEntry]:
+    """The group's top-level members, unlocked, ascending id."""
+    return list(
+        db.scalars(
+            select(LedgerEntry)
+            .where(LedgerEntry.group_id == group_id, LedgerEntry.parent_entry_id.is_(None))
+            .order_by(LedgerEntry.id)
+        )
+    )
+
+
+def _check_put_cardinality(payload: SplitIn, current_count: int) -> None:
+    """PUT /splits/{id}: at most max(50, current) members (an imported group over 50 stays editable but never
+    grows); a one-member PUT is a dissolve and must name an existing member."""
+    limit = max(MAX_SPLIT_MEMBERS, current_count)
+    if len(payload.members) > limit:
+        raise ValidationError("members", f"at most {limit} members")
+    if len(payload.members) == 1 and payload.members[0].id is None:
+        raise ValidationError("members.0.id", "a split edited down to one member keeps one of its members")
+
+
+def _plan_members(payload: SplitIn, current: list[LedgerEntry]) -> list[_Member]:
+    """keep_full / keep_meta / new per payload member; 404 member_not_found for an id outside the group."""
+    known = {entry.id for entry in current}
+    members = []
+    for index, item in enumerate(payload.members):
+        if item.id is not None and item.id not in known:
+            raise NotFoundError(f"{MEMBER_NOT_FOUND}: entry {item.id} is not a member of this split")
+        if isinstance(item, SplitKeepIn):
+            members.append(_Member(index, item, item.id, "keep"))
+        else:
+            action = "new" if item.id is None else "full"
+            members.append(_Member(index, item, item.id, action, payload=member_payload(payload, item)))
+    return members
+
+
+def _refuse_locked(members: list[_Member], drop_ids: list[int], protected: dict[int, str | None]) -> None:
+    """§1.5: a protected member is only accepted in the keep form and is never dropped (409 member_locked)."""
+    for member in members:
+        reason = protected.get(member.entry_id) if member.action == "full" else None
+        if reason is not None:
+            raise CodedConflictError(
+                MEMBER_LOCKED, f"member {member.entry_id} is protected ({reason}); send it as {{id, keep: true}}"
+            )
+    for entry_id in drop_ids:
+        if protected[entry_id] is not None:
+            raise CodedConflictError(MEMBER_LOCKED, f"member {entry_id} is protected ({protected[entry_id]}) and cannot be removed")
+
+
+def _classify_full(db: Session, members: list[_Member], by_id: dict[int, LedgerEntry]) -> None:
+    """The canonical comparison for every keep_full member (split_compare), on the unlocked read."""
+    for member in members:
+        if member.action == "full":
+            entry = by_id[member.entry_id]
+            member.stored = stored_signature(db, entry)
+            member.change = classify(member.stored, payload_signature(member.payload, entry.currency))
+
+
+def _revalidate(
+    db: Session,
+    group: EntryGroup | None,
+    group_id: int,
+    locked: list[LedgerEntry],
+    before_ids: list[int],
+    protected: dict[int, str | None],
+    members: list[_Member],
+) -> None:
+    """Phase 4, inside the group and member locks: the group still a split, still editable and unscheduled; the
+    same members, the same protected set and, for every keep_full member, the same stored signature as in phase 1.
+    Any drift is a 409 retry: the client re-reads and re-submits."""
+    if group is None or group.kind != "split":
+        raise CodedConflictError(RETRY, f"split {group_id} changed concurrently")
+    assert_editable(group)
+    _assert_not_scheduled(db, group_id)
+    by_id = {entry.id: entry for entry in locked}
+    if sorted(by_id) != before_ids:
+        raise CodedConflictError(RETRY, f"the members of split {group_id} changed concurrently")
+    if protected_reasons(db, locked) != protected:
+        raise CodedConflictError(RETRY, f"a member of split {group_id} was settled, refunded or scheduled concurrently")
+    for member in members:
+        if member.action == "full" and stored_signature(db, by_id[member.entry_id]) != member.stored:
+            raise CodedConflictError(RETRY, f"member {member.entry_id} changed concurrently")
+
+
+def _apply_meta(entry: LedgerEntry, payload: EntryIn) -> None:
+    """A financially unchanged keep_full member: metadata only (no FX, no child or rule-link rebuild)."""
+    entry.name, entry.merchant, entry.project_id = payload.name, payload.merchant, payload.project_id
+    entry.tags, entry.description = list(payload.tags), payload.description
+    entry.needs_review = False  # as _apply on every financial / single edit
+
+
+def _apply_keep(entry: LedgerEntry, item: SplitKeepIn) -> None:
+    """A keep_meta member: only the fields the request sent (null and [] included)."""
+    for field in KEEP_FIELDS:
+        if field in item.model_fields_set:
+            value = getattr(item, field)
+            setattr(entry, field, list(value or []) if field == "tags" else value)
+    entry.needs_review = False  # as _apply on every financial / single edit
+
+
+def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None) -> SplitResult:
+    """PUT /splits/{group_id}: upsert by member id (§1.5). keep_full members are rewritten in place (financially
+    changed), get a metadata-only update (financially unchanged) or are skipped (fully unchanged); keep_meta
+    members get the sent metadata; new members are inserted; current members absent from the payload are deleted.
+    Protected members (split_protection) only take the keep form and are never dropped. Reward ledger rows are
+    never touched. Errors in phase order: see _readable_split, _check_put_cardinality, _plan_members,
+    _refuse_locked, _prepare, _revalidate."""
+    # 1. preliminary read and classification: no lock, no FX
+    _readable_split(db, group_id)
+    current = _current_members(db, group_id)
+    _check_put_cardinality(payload, len(current))
+    members = _plan_members(payload, current)
+    kept = {member.entry_id for member in members if member.entry_id is not None}
+    drop_ids = sorted(entry.id for entry in current if entry.id not in kept)
+    protected = protected_reasons(db, current)
+    _refuse_locked(members, drop_ids, protected)
+    _classify_full(db, members, {entry.id: entry for entry in current})
+    before_ids = sorted(entry.id for entry in current)
+    # 2. prepare: may commit through the FX cache, so it runs before any lock or ledger write
+    _prepare(db, members, http_get)
+    # 3. lock: the group row, then its members in one statement by ascending id
+    group = lock_group(db, group_id)
+    locked = _locked_members(db, group_id) if group is not None else []
+    # 4. re-read and re-validate inside the locks
+    _revalidate(db, group, group_id, locked, before_ids, protected, members)
+    # 5. write: no helper below commits
+    for entry_id in drop_ids:  # §1.5: the same refusal as a single delete; not kind-gated like SCHEDULED_LOAN
+        schedule_entry_hooks.assert_not_referenced(db, loan_entry_id=entry_id)
+    delete_entries_cascade(db, drop_ids)  # expires the session; rows are re-read below under the held locks
+    for member in members:
+        if member.action == "new":
+            member.entry_id = insert_prepared(db, member.prepared, group_id=group_id, remember=False)
+        elif member.action == "keep":
+            _apply_keep(db.get(LedgerEntry, member.entry_id), member.item)
+        elif member.change == "financial":
+            apply_prepared_update(db, db.get(LedgerEntry, member.entry_id), member.prepared)
+        elif member.change == "meta":
+            _apply_meta(db.get(LedgerEntry, member.entry_id), member.payload)
+    db.flush()
+    result = [(member.entry_id, member.item.client_key) for member in members]
+    if len(members) == 1:
+        # Dissolve (§1.6): the payload's parent values fill the survivor's blank fields, then the group goes.
+        survivor = db.get(LedgerEntry, members[0].entry_id)
+        dissolve_group(db, group_id, survivor, name=payload.name, merchant=payload.merchant, description=payload.description)
+        group_out = None
+    else:
+        group = db.get(EntryGroup, group_id)
+        group.name, group.merchant, group.description = payload.name, payload.merchant, payload.description
+        db.flush()
+        group_out = group_id
+    remember_all_defaults(db, [member.prepared for member in members if member.prepared is not None])
+    return SplitResult(group_out, result)
+
+
+def _check_convert_cardinality(entry_id: int, payload: SplitIn) -> None:
+    """PUT /entries/{entry_id}/split (§1.3): 2 to MAX_SPLIT_MEMBERS full members; exactly one carries an id, the
+    anchor's."""
+    if not 2 <= len(payload.members) <= MAX_SPLIT_MEMBERS:
+        raise ValidationError("members", f"a split has 2 to {MAX_SPLIT_MEMBERS} members")
+    for index, item in enumerate(payload.members):
+        if isinstance(item, SplitKeepIn):
+            raise ValidationError(f"members.{index}.keep", "converting an entry takes full members only")
+        if item.id is not None and item.id != entry_id:
+            raise ValidationError(f"members.{index}.id", f"only the converted entry {entry_id} carries an id")
+    if all(item.id != entry_id for item in payload.members):
+        raise ValidationError("members", f"one member must be the converted entry {entry_id}")
+
+
+def _refuse_anchor(db: Session, anchor: LedgerEntry) -> None:
+    """§1.6 convert refusals in order, on the unlocked read and again on the locked anchor: already in a group →
+    already_grouped; protected or not an editable kind → entry_locked; posted by a schedule, or listed by a posted
+    period whatever its source (a MOZE-booked period lists moze rows) → kind_not_splittable;
+    an imported row before cutover → locked_until_cutover."""
+    if anchor.group_id is not None:
+        raise CodedConflictError(ALREADY_GROUPED, f"entry {anchor.id} already belongs to group {anchor.group_id}")
+    reason = protected_reason(db, anchor)  # covers every kind outside EditableKind
+    if reason is not None:
+        raise CodedConflictError(ENTRY_LOCKED, f"entry {anchor.id} cannot be split ({reason})")
+    if anchor.source == "schedule":
+        raise CodedConflictError(KIND_NOT_SPLITTABLE, f"entry {anchor.id} was posted by a schedule")
+    if schedule_entry_hooks.posted_instance_for(db, [anchor.id]) is not None:
+        # e.g. a MOZE-booked period (acted_by='import') lists a moze-source row: the new group would be refused by
+        # every PUT /splits/{gid} (group_scheduled), dissolve included.
+        raise CodedConflictError(KIND_NOT_SPLITTABLE, f"entry {anchor.id} is listed by a posted schedule period")
+    assert_editable(anchor)
+
+
+def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=None) -> SplitResult:
+    """PUT /entries/{entry_id}/split (§1.6): the anchor joins a new split group and is rewritten in place (its id
+    is stable); the other members are inserted. Phases as update_split; the only row lock is the anchor (it
+    belongs to no group, and the new group row is invisible to other transactions until commit). A concurrent
+    convert of the same entry waits on that lock and then answers already_grouped."""
+    # 1. cardinality, 404, refusals on the unlocked read
+    _check_convert_cardinality(entry_id, payload)
+    _refuse_anchor(db, get_entry(db, entry_id))
+    members = [
+        _Member(
+            index, item, item.id, "new" if item.id is None else "full", payload=member_payload(payload, item),
+            change=None if item.id is None else "financial",  # the anchor is always prepared, with its rule links
+        )
+        for index, item in enumerate(payload.members)
+    ]
+    # 2. prepare (FX may commit), before any lock
+    _prepare(db, members, http_get)
+    # 3. lock the anchor; 4. re-validate it
+    try:
+        anchor = locked_entry(db, entry_id)
+    except NotFoundError as exc:
+        raise CodedConflictError(RETRY, f"entry {entry_id} was deleted concurrently") from exc
+    _refuse_anchor(db, anchor)
+    # 5. write
     group = EntryGroup(kind="split", name=payload.name, merchant=payload.merchant, description=payload.description)
     db.add(group)
     db.flush()
-    for item in prepared:
-        insert_prepared(db, item, group_id=group.id, remember=False)
-    remember_all_defaults(db, prepared)
-    return group.id
-
-
-def update_split(db: Session, group_id: int, payload: SplitIn, *, http_get=None) -> None:
-    """Replace every member (and their children) and the group fields.
-
-    `_prepare_all` runs first because FX resolution may commit the session, which would release the row
-    locks; then the group row and the members are locked FOR UPDATE (group → members) and checked inside
-    that lock, so no settle / refund can commit between the check and the delete, and a concurrent PUT /
-    DELETE of the same group waits and then sees this one's members. Members are never created with
-    is_settlement: SplitMemberIn has no such field and insert_prepared stores False."""
-    schedule_entry_hooks.assert_group_not_scheduled(db, group_id)
-    assert_editable(_get_split(db, group_id))
-    prepared = _prepare_all(db, payload, http_get)
-    group = _locked_split(db, group_id)
-    assert_editable(group)
-    members = _locked_members(db, group_id)
-    _assert_no_settlements(db, members)
-    _assert_no_transfers_or_system_entries(members)
-    delete_entries_cascade(db, [member.id for member in members])
-    group.name = payload.name
-    group.merchant = payload.merchant
-    group.description = payload.description
+    anchor.group_id = group.id
+    for member in members:
+        if member.action == "full":
+            apply_prepared_update(db, anchor, member.prepared)
+        else:
+            member.entry_id = insert_prepared(db, member.prepared, group_id=group.id, remember=False)
     db.flush()
-    for item in prepared:
-        insert_prepared(db, item, group_id=group_id, remember=False)
-    remember_all_defaults(db, prepared)
+    remember_all_defaults(db, [member.prepared for member in members])
+    return SplitResult(group.id, [(member.entry_id, member.item.client_key) for member in members])
 
 
 def delete_split(db: Session, group_id: int) -> None:

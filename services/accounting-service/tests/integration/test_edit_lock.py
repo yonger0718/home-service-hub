@@ -55,7 +55,14 @@ CASES = {
         {"from_account_id": b["wallet"], "to_account_id": b["bank"], "out_amount": "250", "entry_date": DAY}, 200,
     ),
     "delete_transfer_leg": lambda b: ("DELETE", f"/entries/{b['out_leg']}", None, 204),
-    "put_split": lambda b: ("PUT", f"/splits/{b['split']}", {"entry_date": DAY, "members": [_entry_body(b, amount="40")]}, 200),
+    "put_split": lambda b: (
+        "PUT", f"/splits/{b['split']}",
+        {"entry_date": DAY, "members": [_entry_body(b, amount="40"), _entry_body(b, amount="20")]}, 200,
+    ),
+    "convert_entry": lambda b: (
+        "PUT", f"/entries/{b['expense']}/split",
+        {"entry_date": DAY, "members": [_entry_body(b, id=b["expense"]), _entry_body(b, amount="20")]}, 200,
+    ),
     "delete_split": lambda b: ("DELETE", f"/splits/{b['split']}", None, 204),
 }
 
@@ -144,6 +151,7 @@ def test_manual_rows_stay_writable_while_unlocked(client, db_session, books):
 
 EXPECTED_WRITES = {
     ("/entries", "POST"), ("/entries/{entry_id}", "PUT"), ("/entries/{entry_id}", "DELETE"),
+    ("/entries/{entry_id}/split", "PUT"),
     ("/entries/{entry_id}/settle", "POST"), ("/entries/{entry_id}/refund", "POST"),
     ("/transfers", "POST"), ("/transfers/{group_id}", "PUT"),
     ("/splits", "POST"), ("/splits/{group_id}", "PUT"), ("/splits/{group_id}", "DELETE"),
