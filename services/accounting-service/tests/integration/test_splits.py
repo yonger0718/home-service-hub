@@ -859,12 +859,14 @@ def test_a_foreign_member_id_is_404_before_member_validation(client, db_session,
     )))
     db_session.commit()
     foreign_id = ss.member_ids(db_session, other)[0]
+    before = _ledger(db_session)
 
     response = client.put(f"/splits/{group_id}", json=_split(
         {"id": foreign_id, "account_id": 999999, "kind": "expense", "amount": "1"}, _keep(second_id),
     ))
 
     assert response.status_code == 404 and response.json()["message"].startswith("member_not_found")
+    assert _ledger(db_session) == before
 
 
 def test_member_locked_409_comes_before_member_validation(client, db_session, seed):
@@ -874,6 +876,7 @@ def test_member_locked_409_comes_before_member_validation(client, db_session, se
     plain = seed.entry(wallet, "-100", group_id=group.id)
     collection = seed.entry(wallet, "200", kind="receivable", counterparty_id=alan.id, is_settlement=True, group_id=group.id)
     db_session.commit()
+    before = _ledger(db_session)
 
     response = client.put(f"/splits/{group.id}", json=_split(
         {"id": collection.id, "account_id": wallet.id, "kind": "receivable", "amount": "200", "counterparty_id": alan.id},
@@ -881,6 +884,7 @@ def test_member_locked_409_comes_before_member_validation(client, db_session, se
     ))
 
     assert response.status_code == 409 and response.json()["message"].startswith("member_locked")
+    assert _ledger(db_session) == before
 
 
 def test_a_scheduled_group_is_409_before_an_unknown_member(client, db_session, seed):
@@ -891,11 +895,13 @@ def test_a_scheduled_group_is_409_before_an_unknown_member(client, db_session, s
     bundle = seed.definition([seed.line("expense", card, "390"), seed.line("expense", card, "149")], name="串流組合")
     instance = seed.instance(bundle, 1, date(2026, 10, 22), status="posted", entries=[first, second])
     db_session.commit()
+    before = _ledger(db_session)
 
     response = client.put(f"/splits/{group.id}", json=_split(_keep(999999), _keep(second.id)))
 
     assert response.status_code == 409
     assert response.json()["message"].startswith("group_scheduled") and str(instance.id) in response.json()["message"]
+    assert _ledger(db_session) == before
 
 
 def test_membership_change_between_read_and_lock_is_409_retry(client, pg_engine, db_session, seed, monkeypatch):
@@ -920,10 +926,12 @@ def test_membership_change_between_read_and_lock_is_409_retry(client, pg_engine,
 def test_convert_cardinality_422_comes_before_a_missing_entry(client, db_session, seed):
     wallet = seed.account()
     db_session.commit()
+    before = _ledger(db_session)
 
     response = client.put("/entries/999999/split", json=_split({"id": 999999, "account_id": wallet.id, "kind": "expense", "amount": "1"}))
 
     assert (response.status_code, response.json()["detail"][0]["loc"]) == (422, ["members"])
+    assert _ledger(db_session) == before
 
 
 def test_put_accepts_an_imported_group_over_fifty_but_never_grows_it(client, db_session, seed):
@@ -1021,6 +1029,7 @@ def test_split_put_then_settle_keeps_the_settlement_on_the_same_member(pg_engine
     [collection] = db_session.scalars(select(LedgerEntry).where(LedgerEntry.settles_entry_id == lent_id)).all()
     lent = db_session.get(LedgerEntry, lent_id)
     assert (collection.amount, lent.name, lent.amount) == (Decimal("100"), "代墊", Decimal("-300"))
+    assert db_session.get(LedgerEntry, meal_id).amount == Decimal("-60")  # the PUT's other member still landed
 
 
 def test_settle_then_split_put_of_that_member_retries(pg_engine, db_session, seed):
@@ -1036,3 +1045,174 @@ def test_settle_then_split_put_of_that_member_retries(pg_engine, db_session, see
     assert isinstance(result, CodedConflictError) and result.code == RETRY  # the member became protected under the PUT
     db_session.expire_all()
     assert db_session.get(LedgerEntry, lent_id).amount == Decimal("-300")
+    assert db_session.get(LedgerEntry, meal_id).amount == Decimal("-50")  # the refused PUT wrote nothing
+    collections = db_session.scalars(select(LedgerEntry).where(LedgerEntry.settles_entry_id == lent_id)).all()
+    assert [c.amount for c in collections] == [Decimal("100")]  # only the settle's own collection row exists
+
+
+def test_a_scheduled_group_that_is_not_a_split_is_409_before_the_404(client, db_session, seed):
+    card = seed.account("範例卡")
+    group = seed.group(kind="installment", name="分期組")
+    first = seed.entry(card, "-390", group_id=group.id, source="schedule")
+    second = seed.entry(card, "-149", group_id=group.id, source="schedule")
+    bundle = seed.definition([seed.line("expense", card, "390"), seed.line("expense", card, "149")], name="分期")
+    seed.instance(bundle, 1, date(2026, 10, 22), status="posted", entries=[first, second])
+    db_session.commit()
+    before = _ledger(db_session)
+
+    response = client.put(f"/splits/{group.id}", json=_split(_keep(999999), _keep(second.id)))
+
+    assert response.status_code == 409 and response.json()["message"].startswith("group_scheduled")
+    assert _ledger(db_session) == before
+
+
+def test_not_a_split_404_comes_before_the_cutover_409(client, db_session, seed):
+    wallet = seed.account()
+    group = seed.group(kind="installment", moze_id="pkg-4")  # imported: the cutover lock would refuse it
+    seed.entry(wallet, "-50", group_id=group.id)
+    seed.entry(wallet, "-60", group_id=group.id)
+    db_session.commit()
+    before = _ledger(db_session)
+
+    response = client.put(f"/splits/{group.id}", json=_split(_keep(999999), _keep(999998)))
+
+    assert response.status_code == 404 and not response.json()["message"].startswith("member_not_found")
+    assert _ledger(db_session) == before
+
+
+def test_cutover_409_comes_before_the_db_dependent_422(client, db_session, seed):
+    wallet = seed.account()
+    group = seed.group(moze_id="pkg-5")
+    seed.entry(wallet, "-50", group_id=group.id)
+    db_session.commit()
+    before = _ledger(db_session)
+
+    response = client.put(f"/splits/{group.id}", json=_split(*[_member(wallet) for _ in range(51)]))
+
+    assert (response.status_code, response.json()["message"]) == (409, "locked_until_cutover")
+    assert _ledger(db_session) == before
+
+
+def test_db_dependent_422_comes_before_member_not_found(client, db_session, seed):
+    wallet_id, group_id, [first_id, second_id] = _two_member_split(db_session, seed)
+    other = ss.create_split(db_session, SplitIn(**_split(
+        {"account_id": wallet_id, "kind": "expense", "amount": "1"}, {"account_id": wallet_id, "kind": "expense", "amount": "2"},
+    )))
+    db_session.commit()
+    foreign_id = ss.member_ids(db_session, other)[0]
+    before = _ledger(db_session)
+    members = [_keep(foreign_id)] + [{"account_id": wallet_id, "kind": "expense", "amount": "1"} for _ in range(50)]
+
+    response = client.put(f"/splits/{group_id}", json=_split(*members))
+
+    assert (response.status_code, response.json()["detail"][0]["loc"]) == (422, ["members"])
+    assert _ledger(db_session) == before
+
+
+def test_member_not_found_404_comes_before_member_locked(client, db_session, seed):
+    wallet = seed.account()
+    group = seed.group()
+    plain = seed.entry(wallet, "-100", group_id=group.id)
+    protected = make_protected_member(seed, "settled_original", wallet, group.id)
+    other = seed.group()
+    foreign = seed.entry(wallet, "-5", group_id=other.id)
+    db_session.commit()
+    before = _ledger(db_session)
+
+    response = client.put(f"/splits/{group.id}", json=_split(
+        _echo(foreign), _echo(protected, amount="1"), _keep(plain.id),
+    ))
+
+    assert response.status_code == 404 and response.json()["message"].startswith("member_not_found")
+    assert _ledger(db_session) == before
+
+
+def test_convert_missing_entry_404_comes_before_state_checks(client, db_session, seed):
+    wallet = seed.account()
+    db_session.commit()
+    before = _ledger(db_session)
+
+    response = client.put("/entries/999999/split", json=_split(
+        {"id": 999999, "account_id": wallet.id, "kind": "expense", "amount": "70"}, _member(wallet),
+    ))
+
+    assert response.status_code == 404
+    assert _ledger(db_session) == before
+
+
+def test_convert_already_grouped_409_comes_before_member_validation(client, db_session, seed):
+    wallet = seed.account()
+    group = seed.group()
+    anchor = seed.entry(wallet, "-100", group_id=group.id)
+    db_session.commit()
+    before = _ledger(db_session)
+
+    response = client.put(f"/entries/{anchor.id}/split", json=_split(
+        {"id": anchor.id, "account_id": wallet.id, "kind": "expense", "amount": "70"},
+        {"account_id": 999999, "kind": "expense", "amount": "30"},  # a 422 later
+    ))
+
+    assert response.status_code == 409 and response.json()["message"].startswith("already_grouped")
+    assert _ledger(db_session) == before
+
+
+def test_convert_entry_locked_409_comes_before_member_validation(client, db_session, seed):
+    wallet = seed.account()
+    anchor = make_protected_member(seed, "settled_original", wallet, None)
+    db_session.commit()
+    before = _ledger(db_session)
+
+    response = client.put(f"/entries/{anchor.id}/split", json=_split(
+        {"id": anchor.id, "account_id": wallet.id, "kind": "receivable", "amount": "70", "counterparty_id": anchor.counterparty_id},
+        {"account_id": 999999, "kind": "expense", "amount": "30"},  # a 422 later
+    ))
+
+    assert response.status_code == 409 and response.json()["message"].startswith("entry_locked")
+    assert _ledger(db_session) == before
+
+
+def test_post_cardinality_422_comes_before_member_validation(client, db_session, seed):
+    seed.account()
+    db_session.commit()
+    before = _ledger(db_session)
+
+    response = client.post("/splits", json=_split({"account_id": 999999, "kind": "expense", "amount": "1"}))
+
+    assert (response.status_code, response.json()["detail"][0]["loc"]) == (422, ["members"])
+    assert _ledger(db_session) == before
+
+
+def test_delete_of_a_missing_entry_is_404(client, db_session, seed):
+    seed.account()
+    db_session.commit()
+    before = _ledger(db_session)
+
+    response = client.delete("/entries/999999")
+
+    assert response.status_code == 404
+    assert _ledger(db_session) == before
+
+
+def test_delete_referenced_loan_409_comes_before_dissolve(client, db_session, seed):
+    wallet = seed.account()
+    group = seed.group()
+    plain = seed.entry(wallet, "-100", group_id=group.id)
+    loan = seed.entry(wallet, "1000", kind="payable", counterparty_id=seed.counterparty("Bob").id, group_id=group.id)
+    seed.definition([seed.line("repayment", wallet, "100", loan_entry_id=loan.id)], kind="installment", name="分期-貸", times=10)
+    db_session.commit()
+    group_id, plain_id, loan_id = group.id, plain.id, loan.id
+    before = _ledger(db_session)
+
+    refused = client.delete(f"/entries/{loan_id}")
+
+    assert refused.status_code == 409
+    assert _ledger(db_session) == before  # the group is intact, both members still in it
+    assert [m.id for m in _members(db_session, group_id)] == [plain_id, loan_id]
+
+    deleted = client.delete(f"/entries/{plain_id}")
+
+    assert deleted.status_code in (200, 204), deleted.text
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, plain_id) is None
+    assert db_session.get(LedgerEntry, loan_id).group_id is None  # dissolved into the surviving loan
+    assert db_session.get(EntryGroup, group_id) is None
