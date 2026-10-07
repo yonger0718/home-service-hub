@@ -35,6 +35,7 @@ import { AccountingLayoutComponent } from '../accounting-layout/accounting-layou
 import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../billing/billing-math';
 import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { SkeletonComponent } from '../skeleton/skeleton';
+import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
@@ -107,6 +108,8 @@ export interface TimelineRow {
   fx: string | null;
   pills: TimelinePill[];
   groupCount: number | null;
+  /** A split group's folder tile: the icons of its members on this page and the group's full count; null otherwise. */
+  folder: { icons: FolderIcon[]; count: number } | null;
 }
 
 /** One 繳費提醒 line in the 日曆 day panel (only statements with a remaining balance). */
@@ -198,9 +201,14 @@ function pillsOf(entry: LedgerEntry): TimelinePill[] {
 /** Group the newest-first entries by day; one row per split group and per transfer pair. */
 export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewards: boolean): TimelineDay[] {
   const transferLegs = new Map<string, LedgerEntry[]>();
+  // Only the members loaded so far: the folder draws these and counts the rest of `group.count` as `+N`.
+  const splitIcons = new Map<number, FolderIcon[]>();
   for (const entry of entries) {
     if (entry.transfer_group_id && TRANSFER_KINDS.has(entry.kind)) {
       transferLegs.set(entry.transfer_group_id, [...(transferLegs.get(entry.transfer_group_id) ?? []), entry]);
+    }
+    if (entry.group?.kind === 'split') {
+      splitIcons.set(entry.group.id, [...(splitIcons.get(entry.group.id) ?? []), { icon: iconOf(entry), color: colorOf(entry) }]);
     }
   }
 
@@ -233,6 +241,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
         fx: null,
         pills: pillsOf(entry).filter(pill => pill.tone !== 'rv'),
         groupCount: entry.group.count,
+        folder: entry.group.kind === 'split' ? { icons: splitIcons.get(entry.group.id) ?? [], count: entry.group.count } : null,
       };
       net = total ?? 0;
       netCurrency = entry.group.currency;
@@ -257,6 +266,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
         fx: fxLine(out),
         pills: [...schedulePills(out), { label: '轉帳', tone: '' }],
         groupCount: null,
+        folder: null,
       };
     } else {
       const amount = Number(entry.amount);
@@ -273,6 +283,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
         fx: fxLine(entry),
         pills: pillsOf(entry),
         groupCount: null,
+        folder: null,
       };
       net = TRANSFER_KINDS.has(entry.kind) ? 0 : amount;
     }
@@ -294,7 +305,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
 @Component({
   selector: 'app-ledger-timeline',
   standalone: true,
-  imports: [CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent],
+  imports: [CalendarMonthComponent, NgTemplateOutlet, SkeletonComponent, SplitFolderComponent],
   templateUrl: './timeline.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './timeline.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,

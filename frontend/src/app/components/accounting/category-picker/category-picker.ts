@@ -16,6 +16,7 @@ import {
 } from '@angular/core';
 
 import { isHandledKey } from '../accounting-ui';
+import { SplitFolderComponent } from '../split-folder/split-folder';
 
 import { CategoryNode, defaultCategoryIcon } from '../../../models/accounting.model';
 
@@ -38,9 +39,6 @@ export interface Bubble {
   protected: boolean;
 }
 
-/** Most children the folder tile draws; a larger split shows one less and a `+N` cell. */
-const MOSAIC_CELLS = 4;
-
 /** The form's `多類別 TWD −$2,479 · USD +$3 (3)` as its net lines, one per currency. */
 export function parentNetLines(text: string | null): string[] {
   const nets = (text ?? '').replace(/^\s*多類別/, '').replace(/\(\d+\)\s*$/, '');
@@ -54,6 +52,7 @@ export function parentNetLines(text: string | null): string[] {
 @Component({
   selector: 'app-category-picker',
   standalone: true,
+  imports: [SplitFolderComponent],
   templateUrl: './category-picker.html',
   styleUrl: './category-picker.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -76,13 +75,6 @@ export class CategoryPickerComponent {
   readonly bubbleSelected = output<string>();
   readonly addChild = output<void>();
 
-  /** The parent folder tile: every child's icon up to four, otherwise the first three and the remaining count. */
-  readonly mosaic = computed(() => {
-    const bubbles = this.bubbles();
-    return bubbles.length <= MOSAIC_CELLS
-      ? { cells: bubbles, more: 0 }
-      : { cells: bubbles.slice(0, MOSAIC_CELLS - 1), more: bubbles.length - MOSAIC_CELLS + 1 };
-  });
   readonly parentLines = computed(() => parentNetLines(this.parentText()));
 
   /** main category whose sub-categories are on screen. */

@@ -33,6 +33,7 @@ import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
+import { SplitFolderComponent } from '../split-folder/split-folder';
 import { storedGroupNet } from './split-card';
 
 const FX_SOURCE_LABELS: Record<string, string> = {
@@ -64,7 +65,7 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent],
+  imports: [RouterLink, LockBannerComponent, SplitFolderComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -234,6 +235,7 @@ export class EntryDetailComponent implements OnInit {
   /** Every member of the opened split, the opened one included, in group order (the parent card). */
   readonly splitMembers = computed(() => (this.detail()?.group?.kind === 'split' ? this.detail()!.group_members : []));
   readonly splitNet = computed(() => storedGroupNet(this.splitMembers()));
+  readonly splitIcons = computed(() => this.splitMembers().map(member => ({ icon: iconOf(member), color: colorOf(member) })));
   readonly splitAccountCount = computed(() => new Set(this.splitMembers().map(member => member.account_id)).size);
   readonly canSettle = computed(() => {
     const detail = this.detail();

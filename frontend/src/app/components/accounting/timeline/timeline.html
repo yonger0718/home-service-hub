@@ -85,7 +85,11 @@
     <button type="button" class="row" [class.sel]="row.entryId === selectedId()" [attr.data-entry-id]="row.entryId"
       [attr.aria-current]="row.entryId === selectedId() ? 'true' : null"
       (click)="open(row)">
-      <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
+      @if (row.folder; as folder) {
+        <app-split-folder size="row" [icons]="folder.icons" [count]="folder.count" />
+      } @else {
+        <span class="ico" [style.background]="row.color">{{ row.icon }}</span>
+      }
       <span class="name">{{ row.title }}@if (row.groupCount) {<span class="badge">{{ row.groupCount }}</span>}</span>
       <span class="sub">{{ row.sub }}</span>
       <span class="amt" [class.neg]="row.tone === 'out'" [class.pos]="row.tone === 'in'">

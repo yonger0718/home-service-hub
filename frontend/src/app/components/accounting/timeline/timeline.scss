@@ -11,6 +11,11 @@
   color: var(--tone-pos, var(--c-green));
 }
 
+/* A split group's row draws its folder tile where other rows have the category circle. */
+app-split-folder {
+  grid-area: ico;
+}
+
 .missing-rates {
   background: var(--app-state-warning-bg);
   border-radius: var(--radius-sm);

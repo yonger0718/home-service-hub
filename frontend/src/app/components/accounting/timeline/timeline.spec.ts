@@ -180,6 +180,37 @@ describe('LedgerTimelineComponent', () => {
     expect(text(rows[0].querySelector('.amt'))).toBe('−$410');
   });
 
+  it('draws a split row as a folder of its loaded members, +N for the rest and a badge of the full count', () => {
+    const { fixture, el } = render();
+    flushSummary('2026-10');
+    const split = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 5, total: '-500.0000', currency: 'TWD' };
+    const installment = { ...split, id: 5, kind: 'installment' as const, count: 12 };
+    const reward = { ...split, id: 6, kind: 'reward_claim' as const, count: 2 };
+    // Two of the split's five members are on this page.
+    flushEntries([
+      makeEntry({ id: 40, group: split, category_icon: '🍜', category_color: '#f0cd92' }),
+      makeEntry({ id: 41, group: split, category_icon: '🚕', category_color: '#4a90e2' }),
+      makeEntry({ id: 50, name: '手機', group: installment, category_icon: '📱', category_color: '#cc7676' }),
+      makeEntry({ id: 60, kind: 'reward', amount: '12.0000', group: reward, category_icon: '🎁', category_color: '#7ac29a' }),
+    ], 60);
+    fixture.detectChanges();
+
+    const rows = Array.from(el.querySelectorAll<HTMLElement>('.row'));
+    expect(rows.length).toBe(3);
+    const folder = rows[0].querySelector<HTMLElement>('app-split-folder.folder.compact')!;
+    const cells = Array.from(folder.querySelectorAll<HTMLElement>('.cell'));
+    expect(cells.map(cell => cell.textContent)).toEqual(['🍜', '🚕', '+3']);
+    expect(cells.slice(0, 2).map(cell => cell.style.background)).toEqual(['rgb(240, 205, 146)', 'rgb(74, 144, 226)']);
+    expect(text(folder.querySelector('.badge'))).toBe('5');
+    expect(rows[0].querySelector(':scope > .ico')).toBeNull();
+    expect(text(rows[0].querySelector('.name'))).toBe('多類別5');
+
+    for (const [row, icon] of [[rows[1], '📱'], [rows[2], '🎁']] as const) {
+      expect(row.querySelector('app-split-folder')).toBeNull();
+      expect(text(row.querySelector(':scope > .ico'))).toBe(icon);
+    }
+  });
+
   it('nets each day in the main currency and shows a transfer pair as one neutral row', () => {
     const { fixture, el } = render();
     flushSummary('2026-10');
@@ -1505,6 +1536,24 @@ describe('buildDays', () => {
     expect(days[0].rows.map(row => row.key)).toEqual(['g4', 'tt-1']);
     expect(days[0].rows[1]).toMatchObject({ sub: '錢包 → 玉山', tone: 'neutral' });
     expect(days[0].net).toBe(-410);
+  });
+
+  it('gives a split row the icons of every loaded member and the group count, and other rows no folder', () => {
+    const big = { ...group('-900.0000'), count: 6 };
+    const installment = { ...group('-300.0000'), id: 5, kind: 'installment' as const };
+    const days = buildDays([
+      makeEntry({ id: 1, group: big, category_icon: '🍜', category_color: '#f0cd92' }),
+      makeEntry({ id: 7, group: installment }),
+      makeEntry({ id: 2, group: big, category_icon: null, category_color: null, category: null }),
+      makeEntry({ id: 8, amount: '-20.0000' }),
+    ], 'TWD', false);
+    const [split, plan, plain] = days[0].rows;
+    expect(split.folder).toEqual({
+      icons: [{ icon: '🍜', color: '#f0cd92' }, { icon: expect.any(String), color: 'var(--app-surface-soft)' }],
+      count: 6,
+    });
+    expect(plan).toMatchObject({ key: 'g5', folder: null, icon: '🍜' });
+    expect(plain.folder).toBeNull();
   });
 
   it('drops rewards when hideRewards is on', () => {

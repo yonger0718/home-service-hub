@@ -10,15 +10,7 @@
         [attr.aria-pressed]="activeBubble() === 'parent'"
         (click)="chooseBubble('parent')"
       >
-        <span class="folder" aria-hidden="true">
-          @for (cell of mosaic().cells; track cell.key) {
-            <span class="cell" [style.background]="cell.color">{{ cell.icon }}</span>
-          }
-          @if (mosaic().more) {
-            <span class="cell more">+{{ mosaic().more }}</span>
-          }
-          <span class="badge">{{ bubbles().length }}</span>
-        </span>
+        <app-split-folder [icons]="bubbles()" [count]="bubbles().length" />
         <b class="name">多類別</b>
         @for (line of parentLines(); track $index) {
           <small class="amt" [class]="tone(line)">{{ line }}</small>

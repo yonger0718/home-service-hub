@@ -224,56 +224,6 @@
     color: var(--tone-pos, var(--c-green));
   }
 
-  .folder {
-    align-content: center;
-    background: var(--app-surface-soft);
-    border-radius: 12px;
-    display: grid;
-    gap: 2px;
-    grid-template-columns: repeat(2, 18px);
-    height: 44px;
-    justify-content: center;
-    position: relative;
-    width: 44px;
-  }
-
-  .cell {
-    align-items: center;
-    border-radius: 50%;
-    display: flex;
-    font-size: 0.72rem;
-    height: 18px;
-    justify-content: center;
-    line-height: 1;
-    overflow: hidden;
-    width: 18px;
-  }
-
-  .cell.more {
-    background: var(--app-border);
-    color: var(--app-text);
-    font-weight: 800;
-    letter-spacing: -0.06em;
-    overflow: visible;
-  }
-
-  .badge {
-    background: var(--app-primary);
-    border-radius: 9px;
-    color: #fff;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.72rem;
-    font-weight: 800;
-    height: 18px;
-    line-height: 18px;
-    min-width: 18px;
-    padding: 0 4px;
-    position: absolute;
-    right: -7px;
-    text-align: center;
-    top: -7px;
-  }
-
   .add:disabled {
     cursor: not-allowed;
     opacity: 0.5;
