@@ -181,6 +181,23 @@ export class AccountingLayoutComponent {
         open ? this.focusSheet() : this.restoreFocus();
       });
     });
+    // Detail → form inside an open sheet removes the focused grip ✕: move focus to the form's own ✕ so it stays in the
+    // dialog (the opener saved by focusSheet is kept).
+    effect(() => {
+      if (this.sheetOpen() && this.formOpen()) {
+        afterNextRender(
+          {
+            write: () => {
+              const pane = this.detailPane()?.nativeElement;
+              if (pane && !pane.contains(this.document.activeElement)) {
+                pane.querySelector<HTMLElement>('[data-pane-close]')?.focus();
+              }
+            },
+          },
+          { injector: this.injector },
+        );
+      }
+    });
     inject(DestroyRef).onDestroy(() => this.setOutsideInert(false));
   }
 
@@ -291,7 +308,10 @@ export class AccountingLayoutComponent {
     }
     const path = this.router.url.split(/[?#]/)[0];
     const current = ENTRY_URL.exec(path)?.[1];
-    const index = rows.findIndex(row => row.dataset['entryId'] === current);
+    // A group row stands for every member on the page (`data-member-ids`), as its highlight does.
+    const index = rows.findIndex(
+      row => row.dataset['entryId'] === current || (current !== undefined && (row.dataset['memberIds'] ?? '').split(' ').includes(current)),
+    );
     const next = rows[index === -1 ? 0 : Math.min(rows.length - 1, Math.max(0, index + delta))];
     next.scrollIntoView?.({ block: 'nearest' });
     const id = Number(next.dataset['entryId']);

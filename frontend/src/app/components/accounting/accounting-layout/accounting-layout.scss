@@ -28,7 +28,9 @@
   min-height: 0;
   min-width: 0;
   overflow-y: auto;
-  padding: 8px 14px 14px;
+  /* Read by sticky page headers (the entry form's) so they stick at the pane's top edge, over this padding. */
+  --pane-pad-top: 8px;
+  padding: var(--pane-pad-top) 14px 14px;
   position: relative;
 }
 
@@ -56,7 +58,8 @@
     border-radius: var(--radius-sheet) 0 0 var(--radius-sheet);
     bottom: 0;
     box-shadow: var(--app-raised-shadow);
-    padding-top: 56px;
+    --pane-pad-top: 56px;
+    padding-top: var(--pane-pad-top);
     position: fixed;
     right: 0;
     top: 0;

@@ -24,19 +24,19 @@
 }
 
 /*
- * Sticky so ✓ / ✕ stay in reach while a pane or sheet scrolls; on the phone only `.content` scrolls. The shadow
- * covers the pane's 8px top padding, which the scrolled form would otherwise show above the header.
+ * Sticky so ✓ / ✕ stay in reach while a pane or sheet scrolls; on the phone only `.content` scrolls. It sticks at the
+ * pane's top edge (over the pane's top padding, `--pane-pad-top`: 8px, 56px in the sheet), so no scrolled content shows
+ * above it.
  */
 .topbar {
   align-items: center;
   background: var(--app-surface);
-  box-shadow: 0 -8px 0 var(--app-surface);
   display: grid;
   grid-template-columns: 88px 1fr 88px;
   min-height: 52px;
   padding: 6px 8px 0;
   position: sticky;
-  top: 0;
+  top: calc(-1 * var(--pane-pad-top, 0px));
   z-index: 2;
 
   .topbar-end {

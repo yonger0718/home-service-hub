@@ -82,7 +82,7 @@
   }
 
   <ng-template #rowTemplate let-row>
-    <button type="button" class="row" [class.sel]="isCurrent(row)" [attr.data-entry-id]="row.entryId"
+    <button type="button" class="row" [class.sel]="isCurrent(row)" [attr.data-entry-id]="row.entryId" [attr.data-member-ids]="row.memberIds.join(' ')"
       [attr.aria-current]="isCurrent(row) ? 'true' : null"
       (click)="open(row)">
       @if (row.folder; as folder) {

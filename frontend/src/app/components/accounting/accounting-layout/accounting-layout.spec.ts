@@ -413,6 +413,53 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => expect(router.url).toBe('/accounting'));
   });
 
+  it('moves focus from the removed grip ✕ to the form ✕ when the open sheet switches from a detail to the form', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    const gripClose = await find(harness, '.sheet-close');
+    await vi.waitFor(() => expect(document.activeElement).toBe(gripClose));
+
+    await router.navigateByUrl('/accounting/entries/5/edit');
+    const formClose = await find(harness, '.detail-pane .entry-form .topbar .cancel');
+    expect(harness.routeNativeElement!.querySelector('.sheet-close')).toBeNull();
+    await vi.waitFor(() => expect(document.activeElement).toBe(formClose));
+    opener.remove();
+  });
+
+  it('pins the form header to the top edge of the sheet and of the pane, over their top padding', async () => {
+    const sheet = await start('sheet', '/accounting');
+    await find(sheet, LIST);
+    await TestBed.inject(Router).navigateByUrl('/accounting/entry');
+    const pane = await find(sheet, '.detail-pane.open') as HTMLElement;
+    const topbar = await find(sheet, '.detail-pane .entry-form .topbar') as HTMLElement;
+    expect(getComputedStyle(pane).getPropertyValue('--pane-pad-top').trim()).toBe('56px');
+    expect(getComputedStyle(pane).paddingTop).toBe('var(--pane-pad-top)');
+    expect(getComputedStyle(topbar).position).toBe('sticky');
+    expect(getComputedStyle(topbar).top.replace(/\s+/g, '')).toBe('calc(-1*var(--pane-pad-top,0px))');
+  });
+
+  it('starts ↓ / ↑ from a group row when the open entry is one of its later members', async () => {
+    const harness = await start('phone', '/accounting/entries/8');
+    const router = TestBed.inject(Router);
+    const box = addRows(harness, [5, 9, 3]);
+    // The group row: first-seen member 9, members 9 / 8 / 7 on the page.
+    (box.children[1] as HTMLElement).dataset['memberIds'] = '9 8 7';
+
+    press('ArrowDown');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/3'));
+    const again = addRows(harness, [5, 9, 3]);
+    (again.children[1] as HTMLElement).dataset['memberIds'] = '9 8 7';
+    await router.navigateByUrl('/accounting/entries/7');
+    addRows(harness, [5, 9, 3]).children[1].setAttribute('data-member-ids', '9 8 7');
+    press('ArrowUp');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/5'));
+  });
+
   it('keeps a grip without handle or ✕ in the two-pane layout and never swipes there', async () => {
     const harness = await start('panes', '/accounting/entries/5');
     await find(harness, PANE_PAGE);

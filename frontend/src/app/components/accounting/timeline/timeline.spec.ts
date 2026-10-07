@@ -322,6 +322,8 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
     const rows = () => Array.from(el.querySelectorAll<HTMLElement>('.row'));
     expect(rows().map(row => row.dataset['entryId'])).toEqual(['9', '5']);
+    // ↑ / ↓ in the layout find the current row through these, as the highlight does.
+    expect(rows().map(row => row.dataset['memberIds'])).toEqual(['9 8 7', '5']);
 
     for (const member of [9, 8, 7]) {
       layout.selectedEntryId.set(member);
