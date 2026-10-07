@@ -175,8 +175,9 @@ describe('LedgerTimelineComponent', () => {
 
     const rows = Array.from(el.querySelectorAll('.row'));
     expect(rows.length).toBe(2);
-    expect(text(rows[0].querySelector('.name'))).toBe('聚餐2');
-    expect(text(rows[0].querySelector('.badge'))).toBe('2');
+    expect(text(rows[0].querySelector('.name'))).toBe('聚餐');
+    expect(rows[0].querySelector('.name .badge')).toBeNull();
+    expect(text(rows[0].querySelector('app-split-folder .badge'))).toBe('2');
     expect(text(rows[0].querySelector('.amt'))).toBe('−$410');
   });
 
@@ -203,11 +204,13 @@ describe('LedgerTimelineComponent', () => {
     expect(cells.slice(0, 2).map(cell => cell.style.background)).toEqual(['rgb(240, 205, 146)', 'rgb(74, 144, 226)']);
     expect(text(folder.querySelector('.badge'))).toBe('5');
     expect(rows[0].querySelector(':scope > .ico')).toBeNull();
-    expect(text(rows[0].querySelector('.name'))).toBe('多類別5');
+    expect(text(rows[0].querySelector('.name'))).toBe('多類別');
+    expect(rows[0].querySelector('.name .badge')).toBeNull();
 
-    for (const [row, icon] of [[rows[1], '📱'], [rows[2], '🎁']] as const) {
+    for (const [row, icon, count] of [[rows[1], '📱', '12'], [rows[2], '🎁', '2']] as const) {
       expect(row.querySelector('app-split-folder')).toBeNull();
       expect(text(row.querySelector(':scope > .ico'))).toBe(icon);
+      expect(text(row.querySelector('.name .badge'))).toBe(count);
     }
   });
 

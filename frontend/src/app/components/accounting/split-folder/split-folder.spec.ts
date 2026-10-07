@@ -76,6 +76,15 @@ describe('SplitFolderComponent', () => {
     expect(view.badge).toBe('4');
   });
 
+  it.each(['bubble', 'row'] as const)('caps a remainder of ten or more at 9+ in a 13-member %s, the badge still 13', size => {
+    const thirteen = Array.from({ length: 13 }, (_, i) => ({ icon: String.fromCodePoint(0x1f34f + i), color: PALETTE[i % 6] }));
+    const view = render({ icons: thirteen, count: 13, size });
+    expect(view.texts).toEqual([...thirteen.slice(0, 3).map(cell => cell.icon), '9+']);
+    expect(view.badge).toBe('13');
+    // Nine left over still reads +9.
+    expect(render({ icons: thirteen.slice(0, 12), count: 12, size }).texts.at(-1)).toBe('+9');
+  });
+
   it('draws no +N cell when every member is drawn', () => {
     const view = render({ icons: icons(3), count: 3, size: 'row' });
     expect(view.host.querySelector('.more')).toBeNull();

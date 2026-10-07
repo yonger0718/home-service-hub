@@ -20,11 +20,14 @@ export function folderCells(icons: readonly FolderIcon[], count: number, size: '
   return { cells, more: Math.max(0, count - cells.length) };
 }
 
-/** A 多類別 group drawn as a folder: its children's icons in their colours plus a count badge. Presentation only. */
+/**
+ * A 多類別 group drawn as a folder: its children's icons in their colours plus a count badge. Presentation only. A
+ * remainder of ten or more reads `9+` so it fits its cell; the badge keeps the full count.
+ */
 @Component({
   selector: 'app-split-folder',
   standalone: true,
-  template: `@for (cell of view().cells; track $index) {<span class="cell" [style.background]="cell.color">{{ cell.icon }}</span>}@if (view().more) {<span class="cell more">+{{ view().more }}</span>}<span class="badge">{{ count() }}</span>`,
+  template: `@for (cell of view().cells; track $index) {<span class="cell" [style.background]="cell.color">{{ cell.icon }}</span>}@if (view().more) {<span class="cell more">{{ view().more > 9 ? '9+' : '+' + view().more }}</span>}<span class="badge">{{ count() }}</span>`,
   styleUrl: './split-folder.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'folder', 'aria-hidden': 'true', '[class.compact]': "size() === 'row'" },

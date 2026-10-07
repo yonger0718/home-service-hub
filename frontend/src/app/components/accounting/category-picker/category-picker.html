@@ -28,7 +28,7 @@
         (click)="chooseBubble(bubble.key)"
       >
         <span class="ico-wrap">
-          <span class="ico" [style.background]="bubble.color">{{ bubble.icon }}</span>
+          <span class="ico" aria-hidden="true" [style.background]="bubble.color">{{ bubble.icon }}</span>
           @if (bubble.protected) {
             <span class="lock" aria-label="受保護">🔒</span>
           }

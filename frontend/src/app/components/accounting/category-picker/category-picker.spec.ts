@@ -196,6 +196,9 @@ describe('CategoryPickerComponent', () => {
     expect(Array.from(a.children).map(node => node.className.split(' ')[0])).toEqual(['ico-wrap', 'name', 'amt']);
     expect(a.querySelector('.ico-wrap .ico')?.textContent).toBe('🍜');
     expect(a.querySelector('.ico-wrap .lock')?.textContent).toBe('🔒');
+    // The emoji stays out of the button's name; the lock is a sibling, outside the hidden subtree.
+    expect(a.querySelector('.ico-wrap .ico')?.getAttribute('aria-hidden')).toBe('true');
+    expect(a.querySelector('.ico-wrap .lock')?.closest('[aria-hidden="true"]')).toBeNull();
     expect(a.querySelector('.name')?.getAttribute('title')).toBe('早餐與下午茶');
     expect(a.querySelector('.amt')?.classList.contains('neg')).toBe(true);
     expect(el.querySelector('[data-bubble="b"] .amt')?.classList.contains('pos')).toBe(true);
