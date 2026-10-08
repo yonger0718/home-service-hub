@@ -557,6 +557,60 @@ describe('AccountingLayoutComponent', () => {
     dock.remove();
   });
 
+  it('hides the closed 820px sheet from assistive tech and focus, but not the ≥ 1024px pane', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const pane = harness.routeNativeElement!.querySelector('.detail-pane')!;
+    expect(pane.hasAttribute('inert')).toBe(true);
+    expect(pane.getAttribute('aria-hidden')).toBe('true');
+
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    await find(harness, '.detail-pane.open');
+    expect(pane.hasAttribute('inert')).toBe(false);
+    expect(pane.hasAttribute('aria-hidden')).toBe(false);
+
+    await router.navigateByUrl('/accounting');
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(pane.hasAttribute('inert')).toBe(true);
+      expect(pane.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    // Two panes: the empty pane shows its placeholder and stays exposed.
+    TestBed.inject(LayoutModeService).set('panes');
+    harness.detectChanges();
+    const wide = await find(harness, '.detail-pane');
+    expect(wide.hasAttribute('inert')).toBe(false);
+    expect(wide.hasAttribute('aria-hidden')).toBe(false);
+  });
+
+  it('never closes the sheet when the grip drag selected text', async () => {
+    const harness = await start('sheet', '/accounting');
+    await find(harness, LIST);
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/accounting/entries/5');
+    const sheet = await find(harness, '.detail-pane.open');
+    const grip = await find(harness, '.sheet-grip');
+    const title = document.createElement('h2');
+    title.textContent = '午餐 便當';
+    sheet.appendChild(title);
+
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointermove', { clientX: 200, clientY: 22, bubbles: true }));
+    document.getSelection()!.selectAllChildren(title);
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 22, bubbles: true }));
+    harness.detectChanges();
+    expect(router.url).toBe('/accounting/entries/5');
+
+    // The same drag with nothing selected is a swipe.
+    document.getSelection()!.removeAllRanges();
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 22, bubbles: true }));
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    title.remove();
+  });
+
   it('wraps Tab inside the sheet: from the last focusable to ✕ and back with Shift+Tab', async () => {
     const harness = await start('sheet', '/accounting');
     await find(harness, LIST);

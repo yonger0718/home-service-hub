@@ -19,6 +19,8 @@
       aria-label="明細"
       [attr.role]="sheetOpen() ? 'dialog' : null"
       [attr.aria-modal]="sheetOpen() ? 'true' : null"
+      [attr.inert]="sheetClosed() ? '' : null"
+      [attr.aria-hidden]="sheetClosed() ? 'true' : null"
       [class.open]="paneOpen()"
     >
       <div

@@ -122,6 +122,8 @@ export class AccountingLayoutComponent {
 
   /** 760–1023 px with a page in the pane: the right-hand sheet is a modal dialog. */
   readonly sheetOpen = computed(() => this.mode() === 'sheet' && this.paneOpen());
+  /** The 760–1023 px sheet slid off-screen: not an empty 明細 region for assistive tech, and not focusable. */
+  readonly sheetClosed = computed(() => this.mode() === 'sheet' && !this.paneOpen());
 
   /** The entry form (new / edit) is on screen; it carries its own ✕. */
   readonly formOpen = computed(() => FORM_URL.test(this.url()));
@@ -386,6 +388,11 @@ export class AccountingLayoutComponent {
     const swipe = this.swipe;
     this.swipe = null;
     if (!swipe || !this.sheetOpen()) {
+      return;
+    }
+    // A mouse drag from the grip across the pinned header selects text: that is a selection, not a close.
+    const selection = this.document.getSelection();
+    if (selection && !selection.isCollapsed && selection.toString().trim()) {
       return;
     }
     const dx = event.clientX - swipe.x;
