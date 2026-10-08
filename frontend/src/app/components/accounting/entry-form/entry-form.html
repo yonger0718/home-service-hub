@@ -388,9 +388,6 @@
         @if (childMerchant(); as shop) {
           <p class="child-merchant">商家（此項）{{ shop }}</p>
         }
-        @for (message of removalNotices(); track message) {
-          <p class="form-notice removal-notice" role="status">{{ message }}</p>
-        }
         @if (isSplit()) {
           <div class="child-actions">
             <button type="button" class="remove-child" [disabled]="removeReason() !== null" (click)="removeChild()">移除此項</button>
@@ -402,6 +399,15 @@
       }
     }
   </fieldset>
+
+  <!-- Outside the scrolling fields: pinned above the keypad dock (phone) or at the sheet / pane's bottom edge. -->
+  @if (!isSystem() && !parentMode() && removalNotices().length) {
+    <div class="removal-notices">
+      @for (message of removalNotices(); track message) {
+        <p class="form-notice removal-notice" role="status">{{ message }}</p>
+      }
+    </div>
+  }
 
   <div class="entrybottom">
     @if (footer()) {

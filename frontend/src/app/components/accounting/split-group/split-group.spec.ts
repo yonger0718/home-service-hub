@@ -73,6 +73,27 @@ describe('SplitGroupComponent (多類別 group view)', () => {
     vi.spyOn(router, 'currentNavigation').mockReturnValue({ extras: { state } } as never);
   }
 
+  it('shows 對象 and an 應收／應付 mark on receivable / payable rows; other rows keep the account', () => {
+    const members = [
+      makeGroupMember({ id: 42, amount: '-1200.0000', name: '機票', account_id: 1, account_name: '玉山 UNI', group: GROUP }),
+      makeGroupMember({
+        id: 43, kind: 'receivable', amount: '-300.0000', account_id: 1, account_name: '玉山 UNI', counterparty: '小明', counterparty_id: 3,
+        group: GROUP,
+      }),
+      makeGroupMember({
+        id: 44, kind: 'payable', amount: '200.0000', account_id: 1, account_name: '玉山 UNI', counterparty: '阿華', counterparty_id: 4,
+        group: GROUP,
+      }),
+    ];
+    const fixture = render(splitDetail({ group_members: members }));
+    const rows = Array.from(el(fixture).querySelectorAll('.split-child'));
+    const subtitle = (row: Element) => row.querySelector('.split-child-name small')?.textContent?.replace(/\s+/g, ' ').trim();
+    expect(rows.map(subtitle)).toEqual(['玉山 UNI', '應收小明', '應付阿華']);
+    expect(rows[0].querySelector('.party-mark')).toBeNull();
+    expect(rows[1].querySelector('.party-mark')?.textContent).toBe('應收');
+    expect(rows[2].querySelector('.party-mark')?.textContent).toBe('應付');
+  });
+
   it('shows the net per currency from the server-signed amounts, protected members included', () => {
     const fixture = render();
     const nets = Array.from(el(fixture).querySelectorAll('.group-net')).map(node => node.textContent?.replace(/\s+/g, ' ').trim());

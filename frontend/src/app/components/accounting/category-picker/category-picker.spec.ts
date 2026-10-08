@@ -117,7 +117,7 @@ describe('CategoryPickerComponent', () => {
     expect(el.querySelector('[data-bubble="b"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(el.querySelector('[data-bubble="a"]')?.textContent).toContain('🔒');
     expect((el.querySelector('.add') as HTMLButtonElement).disabled).toBe(true);
-    expect(el.querySelector('.strip .hint')?.textContent).toContain('最多 50 項');
+    expect(el.querySelector('.bubble-hint')?.textContent).toContain('最多 50 項');
     const selected: string[] = [];
     component.bubbleSelected.subscribe(key => selected.push(key));
     (el.querySelector('[data-bubble="parent"]') as HTMLButtonElement).click();
@@ -238,7 +238,7 @@ describe('CategoryPickerComponent', () => {
     expect(add.getAttribute('aria-label')).toBe('新增子項');
     expect(add.querySelector('.add-ico')?.textContent).toBe('＋');
     expect(add.querySelector('.name')?.textContent).toBe('');
-    expect(el.querySelector('.strip .hint')?.textContent).toBe('最多 50 項');
+    expect(el.querySelector('.bubble-hint')?.textContent).toBe('最多 50 項');
   });
 
   it('reopens the main grid from the selected bubble; another bubble is a selection and resets drill-in', () => {

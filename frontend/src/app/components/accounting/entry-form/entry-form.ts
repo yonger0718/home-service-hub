@@ -1633,8 +1633,16 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (owner && !this.flushChild(owner)) {
       return;
     }
+    const rows = this.children();
+    // Converting a saved single (not a new form's first ＋, whose split still saves without a name).
+    const single = rows.length === 1 && this.groupId() === null && this.entryId() !== null ? rows[0] : null;
+    const parentName = this.parent().name;
     if (!this.drafts.add(this.accounts())) {
       return;
+    }
+    if (single) {
+      // single → split: an empty 整筆名稱 takes the single's 名稱, which also stays on child 1 (§2.3a).
+      this.parent.update(parent => ({ ...parent, name: parentName.trim() ? parentName : single.name }));
     }
     this.amountError.set(false);
     this.showChildCaches();
@@ -1647,9 +1655,14 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (!child || this.saving() || this.sheet() || this.drafts.removeReason(child.key)) {
       return;
     }
+    const parentName = this.parent().name;
     this.drafts.remove(child.key);
     this.amountError.set(false);
     const survivor = this.drafts.current();
+    if (this.groupId() === null && this.children().length === 1 && parentName.trim() === this.children()[0].name.trim()) {
+      // Undoing a convert's ＋: the parent name the single lent it stays on the single, so nothing is dropped.
+      this.drafts.droppedNotices.update(notices => notices.filter(notice => notice !== `整筆名稱「${parentName}」不會保留`));
+    }
     if (!this.childScope() && survivor && isWritableKind(survivor.kind)) {
       // Back to a plain entry: the single tab follows the survivor's kind.
       this.singleKind.set(survivor.kind);
@@ -2003,6 +2016,11 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           this.markClean();
           if (keepGoing) {
             this.continueEntry();
+            return;
+          }
+          if (plan.kind === 'convert-split') {
+            // A converted single keeps its id: the new split's group view, anchored on it, not the new child.
+            this.leaveToGroup(ids, plan.id);
             return;
           }
           if (selected === PARENT_KEY || this.enteredParent) {
