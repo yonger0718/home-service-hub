@@ -29,6 +29,8 @@ export class AmountKeypadComponent {
   readonly layout = input<KeypadLayout>('calculator');
   readonly quickAmounts = input<number[]>([]);
   readonly decimals = input(0);
+  /** While the form is loading (or saving): every key and quick amount is inert. */
+  readonly disabled = input(false);
   readonly value = model('');
   /** ↵: move to the next field; carries the evaluated amount (null when empty). */
   readonly next = output<number | null>();
@@ -43,6 +45,9 @@ export class AmountKeypadComponent {
   readonly rows = computed(() => (this.layout() === 'phone' ? KEYPAD_PHONE : KEYPAD_CALCULATOR));
 
   press(key: string): void {
+    if (this.disabled()) {
+      return;
+    }
     const state = applyKey(keypadState(this.value(), this.decimals()), key);
     this.value.set(state.expression);
     this.error.set(state.error);
@@ -58,6 +63,9 @@ export class AmountKeypadComponent {
   }
 
   pickQuick(amount: number): void {
+    if (this.disabled()) {
+      return;
+    }
     this.value.set(String(amount));
     this.error.set(null);
   }

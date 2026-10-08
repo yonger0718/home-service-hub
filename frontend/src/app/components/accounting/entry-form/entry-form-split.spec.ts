@@ -901,6 +901,23 @@ describe('split form integration', () => {
     expect(form.counterparties()).toEqual([]);
   });
 
+  it('⏎ on a <select> in the split form neither adds a line nor saves', async () => {
+    await open();
+    fill();
+    form.addChild();
+    settle();
+    fill('20');
+    const select = harness.routeNativeElement!.querySelector<HTMLSelectElement>('select');
+    expect(select).not.toBeNull();
+    select!.focus();
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    select!.dispatchEvent(enter);
+    settle();
+    expect(enter.defaultPrevented).toBe(false);
+    expect(form.children()).toHaveLength(2);
+    http.expectNone(r => r.method === 'POST');
+  });
+
   it('keeps an inline-created counterparty when the write succeeds', async () => {
     await open();
     form.selectKind('receivable');

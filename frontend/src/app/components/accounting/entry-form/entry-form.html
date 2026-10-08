@@ -427,6 +427,7 @@
           [layout]="preference().keypad_layout"
           [decimals]="accountDecimals()"
           [(value)]="targetExpr"
+          [disabled]="loading() || saving()"
           (save)="save(false)"
         />
       } @else {
@@ -435,6 +436,7 @@
           [quickAmounts]="quick()"
           [decimals]="decimals()"
           [value]="amountExpr()"
+          [disabled]="loading() || saving()"
           (valueChange)="amountExpr.set($event)"
           (next)="focusName()"
           (save)="save(false)"

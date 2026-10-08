@@ -279,7 +279,9 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   /** The route has `:id` (edit mode), known from navigation before the record arrives. */
   readonly editing = signal(false);
   /** True from `load()` of an edit / copy / refetch until the record AND its related rows (`loadRelated`) are applied. */
-  readonly loading = signal(false);
+  private readonly recordLoading = signal(false);
+  /** The record (above) or the reference data (accounts, projects, counterparties, preference) is not ready yet. */
+  readonly loading = computed(() => this.recordLoading() || !this.ready());
   /** Related rows of the applied record (split members, transfer counterpart). */
   readonly related = signal<RelatedLoad>(NO_RELATED);
   /** Account of a transfer / definition being edited, kept selectable even when archived (children keep their own). */
@@ -773,7 +775,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
    */
   private load(target: EntryTarget | null): void {
     const loadId = ++this.loadId;
-    this.loading.set(target !== null);
+    this.recordLoading.set(target !== null);
     this.loads.next(target === null ? null : { ...target, loadId });
   }
 
@@ -908,7 +910,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       ),
       catchError(() => {
         if (request.loadId === this.loadId) {
-          this.loading.set(false);
+          this.recordLoading.set(false);
           this.error.set('記錄讀取失敗，請稍後再試。');
         }
         return of(null);
@@ -941,7 +943,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       try {
         state = splitFromDetails(detail, loaded.related.members, this.preference().main_currency);
       } catch (error) {
-        this.loading.set(false);
+        this.recordLoading.set(false);
         this.error.set(error instanceof Error ? error.message : '記錄讀取失敗，請稍後再試。');
         return;
       }
@@ -955,7 +957,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       this.showChildCaches();
       this.locked.set(detail.locked);
       this.unsupported.set(null);
-      this.loading.set(false);
+      this.recordLoading.set(false);
       this.markClean();
       return;
     }
@@ -968,7 +970,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       // A transfer copy is prefilled from both legs but saves as a new transfer (saveTransfer sends no group id then).
       this.transferEdit.set(transferEditFrom(detail, loaded.related.transfer));
     }
-    this.loading.set(false);
+    this.recordLoading.set(false);
     this.markClean();
   }
 
@@ -1824,6 +1826,11 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   }
 
   save(continuous: boolean): void {
+    // The saved entry's 手續費 question is still open: ✓ points at it instead of doing nothing.
+    if (this.feeProposal() && !this.saving()) {
+      this.revealFeePrompt();
+      return;
+    }
     // No save until the record of the current navigation has arrived (a stale form must never be written).
     if (this.loading() || this.saving() || this.feeProposal() || this.deleteGroupPrompt()) {
       return;
@@ -2098,7 +2105,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   /** 編輯整個排程: the definition's fields into the form; an answer for an older navigation is dropped. */
   private loadDefinition(definitionId: number): void {
     const request = ++this.definitionRequest;
-    this.loading.set(true);
+    this.recordLoading.set(true);
     this.accounting
       .getScheduleDefinition(definitionId)
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -2106,12 +2113,12 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
         next: definition => {
           if (request === this.definitionRequest) {
             this.applyDefinition(definition);
-            this.loading.set(false);
+            this.recordLoading.set(false);
           }
         },
         error: () => {
           if (request === this.definitionRequest) {
-            this.loading.set(false);
+            this.recordLoading.set(false);
             this.error.set('排程讀取失敗，請稍後再試。');
           }
         },
@@ -2310,6 +2317,13 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       this.feeProposal.set(null);
       this.finish(proposal.continuous);
     });
+  }
+
+  /** ✓ while the 手續費 prompt is open: bring it into view and focus its first choice (the save already happened). */
+  private revealFeePrompt(): void {
+    const prompt = this.host.nativeElement.querySelector<HTMLElement>('.fee-prompt');
+    prompt?.scrollIntoView?.({ block: 'nearest' });
+    prompt?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
   }
 
   skipProposedFee(): void {

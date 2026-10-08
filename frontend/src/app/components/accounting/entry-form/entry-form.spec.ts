@@ -334,6 +334,11 @@ describe('EntryFormComponent', () => {
     expect(form.isDirty()).toBe(false);
     expect(text(el.querySelector('.fee-prompt .add-fee'))).toBe('＋ 國外交易手續費 −$17');
 
+    // ✓ again while the question is open: no second write, the prompt's first choice takes the focus.
+    keys(el, '✓');
+    httpMock.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+    expect(document.activeElement).toBe(el.querySelector('.fee-prompt .add-fee'));
+
     (el.querySelector('.fee-prompt .add-fee') as HTMLButtonElement).click();
     const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/99');
     expect(put.request.body).toMatchObject({ amount: '1166', fee: { amount: '17.0000', name: '國外交易手續費' } });
@@ -530,6 +535,35 @@ describe('EntryFormComponent', () => {
     expect(left()).toBe(true);
   });
 
+  it('stays loading, with the phone keypad disabled, until the reference data has arrived', async () => {
+    TestBed.inject(LayoutModeService).set('phone');
+    harness = await RouterTestingHarness.create();
+    await harness.navigateByUrl('/accounting/entry');
+    settle();
+    const el = harness.routeNativeElement as HTMLElement;
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    const keypadDisabled = () =>
+      Array.from(el.querySelectorAll<HTMLButtonElement>('app-amount-keypad button')).every(button => button.disabled);
+
+    expect(form.loading()).toBe(true);
+    expect(el.querySelectorAll('app-amount-keypad button').length).toBeGreaterThan(0);
+    expect(keypadDisabled()).toBe(true);
+    expect((el.querySelector('button.save') as HTMLButtonElement).disabled).toBe(true);
+
+    httpMock.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+    respond('/api/accounting/projects', PROJECTS);
+    respond('/api/accounting/counterparties', []);
+    // Still one of the four outstanding.
+    expect(form.loading()).toBe(true);
+    expect(keypadDisabled()).toBe(true);
+    respond('/api/accounting/preference', makePreference());
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+
+    expect(form.loading()).toBe(false);
+    expect(Array.from(el.querySelectorAll<HTMLButtonElement>('app-amount-keypad button')).some(button => button.disabled)).toBe(false);
+  });
+
   it('stays loading until the related stage completes, not on its first value', async () => {
     const related = holdRelated();
     const { el } = await open('/accounting/entries/9/edit');
@@ -715,6 +749,15 @@ describe('EntryFormComponent', () => {
     input.dispatchEvent(new Event('blur'));
     settle();
   }
+
+  it('asks for the transfer category tree once (the panel owns it)', async () => {
+    await open('/accounting/entry?kind=transfer');
+    const trees = httpMock.match(r => r.url === '/api/accounting/categories').filter(request => !request.cancelled);
+    expect(trees.map(r => r.request.params.get('kind'))).toEqual(['transfer_out']);
+    trees.forEach(r => r.flush([makeCategory({ id: 40, kind: 'transfer_out', name: '轉帳' })]));
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    httpMock.expectNone(r => r.url === '/api/accounting/categories');
+  });
 
   it('records a transfer from the 轉帳 tab with the shared name and date tiles', async () => {
     const { el, left } = await open('/accounting/entry?kind=transfer');

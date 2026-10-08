@@ -35,6 +35,7 @@
   --app-primary-press: #2e2b8c;
   --app-primary-soft: rgba(83, 58, 253, 0.10);
   --app-focus-ring: rgba(83, 58, 253, 0.22);
+  --app-on-primary: #fff;       /* text / icons on a filled primary surface */
 
   --app-success: #5f7f98;       /* muted slate blue */
   --app-warning: #7b87a8;       /* muted blue-gray */
@@ -131,6 +132,8 @@
   --row-py: 7px;          /* list row vertical padding */
   --ico-size: 38px;       /* list row icon circle */
   --dhead-py: 18px;       /* entry detail head top padding */
+  --key-h: 44px;          /* amount keypad key height */
+  --key-gap: 6px;         /* amount keypad / quick-amount gap */
 }
 
 /* Compact height: 13-inch laptops (≈1280×800 / 1440×900) fit the accounting panes without page scroll. */
@@ -141,6 +144,7 @@
     --row-py: 4px;
     --ico-size: 32px;
     --dhead-py: 10px;
+    --key-h: 38px;
   }
 }
 

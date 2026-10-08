@@ -5,9 +5,9 @@
 .quick {
   border-top: 1px solid var(--app-border);
   display: flex;
-  gap: 6px;
+  gap: var(--key-gap);
   overflow-x: auto;
-  padding: 6px 10px;
+  padding: var(--key-gap) var(--space-3);
   scrollbar-width: none;
 
   button {
@@ -18,27 +18,27 @@
     cursor: pointer;
     flex: 0 0 auto;
     font: inherit;
-    font-size: 0.8rem;
+    font-size: var(--fs-sm);
     font-variant-numeric: tabular-nums;
-    font-weight: 700;
-    padding: 3px 11px;
+    font-weight: var(--fw-bold);
+    padding: var(--space-1) var(--space-3);
   }
 }
 
 .keypad-error {
   color: var(--c-red);
   font-size: var(--fs-micro);
-  font-weight: 700;
+  font-weight: var(--fw-bold);
   margin: 0;
-  padding: 2px 12px;
+  padding: 2px var(--space-3);
 }
 
 .keypad {
   background: var(--app-surface-soft);
   display: grid;
-  gap: 6px;
+  gap: var(--key-gap);
   grid-template-columns: repeat(4, 1fr);
-  padding: 6px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  padding: var(--key-gap) var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
 
   button {
     align-items: center;
@@ -49,21 +49,21 @@
     cursor: pointer;
     display: flex;
     font: inherit;
-    font-size: 1.15rem;
+    font-size: var(--fs-h3);
     font-variant-numeric: tabular-nums;
-    font-weight: 600;
-    height: 44px;
+    font-weight: var(--fw-semibold);
+    height: var(--key-h);
     justify-content: center;
     touch-action: manipulation;
 
     &.fn {
       background: var(--app-border);
-      font-size: 1rem;
+      font-size: var(--fs-card-title);
     }
 
     &.ok {
       background: var(--app-primary);
-      color: #fff;
+      color: var(--app-on-primary);
     }
 
     &:active {
@@ -74,12 +74,10 @@
       outline: 2px solid var(--app-primary);
       outline-offset: 1px;
     }
-  }
-}
 
-/* Compact height (13-inch laptops): shorter keys. */
-@media (min-width: 760px) and (max-height: 820px) {
-  .keypad button {
-    height: 38px;
+    &:disabled {
+      cursor: default;
+      opacity: 0.5;
+    }
   }
 }
