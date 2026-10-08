@@ -36,7 +36,7 @@ import { BillingEvent, billingEvents, reminderDues, upcomingDues } from '../bill
 import { BillState, BillingService, billKey } from '../billing/billing.service';
 import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
-import { FROM_LIST, groupCommands } from '../split-group/group-nav';
+import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
@@ -929,10 +929,14 @@ export class LedgerTimelineComponent implements OnInit {
     this.filtersOpen.update(open => !open);
   }
 
-  /** A split row opens its 多類別 group view (the list is the history entry before it); any other row its detail. */
+  /**
+   * A split row opens its 多類別 group view (search results included: they are these rows); any other row its detail.
+   * The list counts as the history entry below the group view only while it is the page on screen (`listOpenState`).
+   */
   open(row: TimelineRow): void {
     if (row.folder) {
-      void this.router.navigate(groupCommands(row.entryId, null), { state: FROM_LIST });
+      const state = listOpenState(this.router.url, '/accounting');
+      void this.router.navigate(groupCommands(row.entryId, null), state ? { state } : {});
       return;
     }
     void this.router.navigate(['/accounting/entries', row.entryId]);

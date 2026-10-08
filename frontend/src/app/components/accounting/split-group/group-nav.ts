@@ -32,6 +32,19 @@ export function readGroupNavState(router: Router, location: Location): GroupNavS
 /** The state a list row opens a group view with: the list is the history entry right below it. */
 export const FROM_LIST: GroupNavState = { groupDepth: 1 };
 
+/** A group view's path, from the timeline or a passbook; group 1 is the member it is routed by. */
+export const GROUP_PATH = /^\/accounting(?:\/accounts\/\d+)?\/entries\/(\d+)\/group$/;
+
+/**
+ * The state a list row opens a group view with, given the path on screen when it is clicked: `FROM_LIST` only when the
+ * list itself is the current page. In the two-pane layout the list stays clickable while a detail, a child or another
+ * group view is open on the right; the entry below the new group view is then that page, not the list, so no depth is
+ * claimed and ✕ goes to the parent list instead of back.
+ */
+export function listOpenState(currentPath: string, listPath: string): GroupNavState | undefined {
+  return currentPath.split(/[?#]/)[0] === listPath ? FROM_LIST : undefined;
+}
+
 /** The group view of the split `entryId` belongs to; under a passbook it keeps the passbook in its URL. */
 export function groupCommands(entryId: number, passbookId: number | null): (string | number)[] {
   return passbookId === null ? ['/accounting/entries', entryId, 'group'] : ['/accounting/accounts', passbookId, 'entries', entryId, 'group'];

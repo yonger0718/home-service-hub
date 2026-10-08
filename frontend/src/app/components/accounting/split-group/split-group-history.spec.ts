@@ -41,6 +41,8 @@ describe('多類別 group view history (no page stacking)', () => {
   let location: SpyLocation;
 
   beforeEach(async () => {
+    // Workers share modules across spec files: never inherit another spec's fake timers (settle() waits on real ones).
+    vi.useRealTimers();
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),

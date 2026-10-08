@@ -301,12 +301,20 @@ describe('LedgerTimelineComponent', () => {
       makeEntry({ id: 60, kind: 'reward', amount: '12.0000', group: reward }),
     ]);
     fixture.detectChanges();
-    const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+    const url = vi.spyOn(router, 'url', 'get').mockReturnValue('/accounting?month=2026-10');
 
     const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.row'));
     expect(rows.map(row => row.hasAttribute('data-split'))).toEqual([true, false, false]);
     rows[0].click();
     expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 40, 'group'], { state: { groupDepth: 1 } });
+    // Two-pane layout with a page open on the right: that page, not the list, is below the group view (no depth).
+    for (const open of ['/accounting/entries/9', '/accounting/entries/43', '/accounting/entries/52/group']) {
+      url.mockReturnValue(open);
+      rows[0].click();
+      expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 40, 'group'], {});
+    }
     rows[1].click();
     expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 50]);
     rows[2].click();

@@ -114,6 +114,9 @@ export class AccountingLayoutComponent {
     return match ? Number(match[1]) : null;
   });
 
+  /** The routed path without query or fragment (lists read it to know whether they are the page on screen). */
+  readonly currentPath = computed(() => this.url().split(/[?#]/)[0]);
+
   /** The routed page is a group view: a list marks every row of the routed member's split. */
   readonly groupViewOpen = computed(() => GROUP_URL.test(this.url().split(/[?#]/)[0]));
 

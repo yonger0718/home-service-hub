@@ -44,11 +44,12 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
   let http: HttpTestingController;
   let params: BehaviorSubject<ParamMap>;
   /** The wide layout's routed entry (`/accounting/accounts/7/entries/:eid`, `…/group` for a group view). */
-  const layout = { selectedEntryId: signal<number | null>(null), groupViewOpen: signal(false) };
+  const layout = { selectedEntryId: signal<number | null>(null), groupViewOpen: signal(false), currentPath: signal('/accounting/accounts/7') };
 
   beforeEach(async () => {
     layout.selectedEntryId.set(null);
     layout.groupViewOpen.set(false);
+    layout.currentPath.set('/accounting/accounts/7');
     params = new BehaviorSubject(convertToParamMap({ id: '7' }));
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date(2026, 9, 2, 10, 0));
@@ -200,6 +201,11 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     const links = fixture.debugElement.queryAll(By.directive(RouterLink)).map(debug => debug.injector.get(RouterLink));
     expect(links.find(link => link.href === '/accounting/accounts/7/entries/1/group')?.state).toEqual({ groupDepth: 1 });
     expect(links.find(link => link.href === '/accounting/accounts/7/entries/3')?.state).toBeUndefined();
+
+    // A detail open beside the passbook (wide layout): the group view claims no depth, so its ✕ goes to the passbook.
+    layout.currentPath.set('/accounting/accounts/7/entries/3');
+    fixture.detectChanges();
+    expect(links.find(link => link.href === '/accounting/accounts/7/entries/1/group')?.state).toBeUndefined();
   });
 
   it('marks every row of the split whose group view is routed, and only the routed row on a member detail', () => {
