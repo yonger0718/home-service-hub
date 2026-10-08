@@ -2,7 +2,7 @@ import uuid
 from datetime import date, time, timedelta
 from decimal import Decimal
 
-from app.models import Account, AccountGroup, Category, FxRate, LedgerEntry, Preference, Project, RewardRule
+from app.models import Account, AccountGroup, Category, EntryGroup, FxRate, LedgerEntry, Preference, Project, RewardRule
 from app.services import ledger_service
 
 
@@ -223,6 +223,51 @@ def test_entries_text_filter_matches_name_merchant_and_description(client, db_se
     assert [e["amount"] for e in by_text["items"]] == ["-3.0000", "-2.0000", "-1.0000"]
     assert by_text["total"] == 3
     assert [e["amount"] for e in by_literal["items"]] == ["-5.0000"]
+
+
+def _grouped(db, wallet, kind="split", **group_fields):
+    group = EntryGroup(kind=kind, **group_fields)
+    db.add(group)
+    db.flush()
+    return [_entry(db, wallet, amt, seq=seq, group_id=group.id, name="成員") for seq, amt in ((1, "-10"), (2, "-20"))]
+
+
+def test_entries_text_filter_matches_group_name_merchant_description(client, db_session):
+    wallet = _account(db_session, opening="0")
+    _grouped(db_session, wallet, name="好市多採買")
+    other = _account(db_session, name="另一個", opening="0")
+    group = EntryGroup(kind="installment", merchant="全聯", description="週末補貨")
+    db_session.add(group)
+    db_session.flush()
+    _entry(db_session, other, "-7", seq=3, group_id=group.id, name="分期")
+    _entry(db_session, other, "-8", seq=4, name="無關")
+    db_session.commit()
+
+    def amounts(path, q):
+        body = client.get(path, params={"q": q}).json()
+        return sorted(e["amount"] for e in body["items"]), body["total"]
+
+    assert amounts("/entries", "好市多") == (["-10.0000", "-20.0000"], 2)
+    assert amounts("/entries", "全聯") == (["-7.0000"], 1)
+    assert amounts("/entries", "補貨") == (["-7.0000"], 1)
+    assert amounts("/entries", "不存在") == ([], 0)
+    assert amounts(f"/accounts/{wallet.id}/entries", "好市多") == (["-10.0000", "-20.0000"], 2)
+    assert amounts(f"/accounts/{other.id}/entries", "補貨") == (["-7.0000"], 1)
+    assert amounts(f"/accounts/{wallet.id}/entries", "補貨") == ([], 0)
+
+
+def test_entries_text_filter_escapes_wildcards_against_group_fields(client, db_session):
+    wallet = _account(db_session, opening="0")
+    _grouped(db_session, wallet, name="100%_off")
+    group = EntryGroup(kind="split", name="1000 off")
+    db_session.add(group)
+    db_session.flush()
+    _entry(db_session, wallet, "-9", seq=5, group_id=group.id, name="x")
+    db_session.commit()
+
+    body = client.get("/entries", params={"q": "%_"}).json()
+
+    assert sorted(e["amount"] for e in body["items"]) == ["-10.0000", "-20.0000"]
 
 
 def test_entries_newest_first_with_running_balance_category_and_project(client, db_session):

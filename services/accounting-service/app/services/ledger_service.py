@@ -256,10 +256,24 @@ def _running_subquery(account_ids: list[int] | None):
 def _text_filter(q: str):
     escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     pattern = f"%{escaped}%"
+    group_match = (
+        select(EntryGroup.id)
+        .where(
+            EntryGroup.id == LedgerEntry.group_id,
+            or_(
+                EntryGroup.name.ilike(pattern, escape="\\"),
+                EntryGroup.merchant.ilike(pattern, escape="\\"),
+                EntryGroup.description.ilike(pattern, escape="\\"),
+            ),
+        )
+        .correlate(LedgerEntry)
+        .exists()
+    )
     return or_(
         LedgerEntry.name.ilike(pattern, escape="\\"),
         LedgerEntry.merchant.ilike(pattern, escape="\\"),
         LedgerEntry.description.ilike(pattern, escape="\\"),
+        group_match,  # rows are titled by their group's name, so group-level fields are searchable too
     )
 
 
