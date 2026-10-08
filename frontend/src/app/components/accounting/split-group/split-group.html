@@ -44,7 +44,11 @@
           <span class="ico" [style.background]="colorOf(member)">{{ iconOf(member) }}</span>
           <span class="split-child-name">
             <b>{{ memberTitle(member) }}</b>
-            <small>{{ member.account_name }}</small>
+            @if (partyMark(member); as mark) {
+              <small class="split-child-party"><span class="party-mark">{{ mark }}</span>{{ member.counterparty || '—' }}</small>
+            } @else {
+              <small>{{ member.account_name }}</small>
+            }
           </span>
           @if (member.protected) {
             <span class="split-child-lock" role="img" aria-label="受保護">🔒</span>

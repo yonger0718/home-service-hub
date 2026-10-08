@@ -1633,8 +1633,16 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (owner && !this.flushChild(owner)) {
       return;
     }
+    const rows = this.children();
+    // Converting a saved single (not a new form's first ＋, whose split still saves without a name).
+    const single = rows.length === 1 && this.groupId() === null && this.entryId() !== null ? rows[0] : null;
+    const parentName = this.parent().name;
     if (!this.drafts.add(this.accounts())) {
       return;
+    }
+    if (single) {
+      // single → split: an empty 整筆名稱 takes the single's 名稱, which also stays on child 1 (§2.3a).
+      this.parent.update(parent => ({ ...parent, name: parentName.trim() ? parentName : single.name }));
     }
     this.amountError.set(false);
     this.showChildCaches();
@@ -2003,6 +2011,11 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           this.markClean();
           if (keepGoing) {
             this.continueEntry();
+            return;
+          }
+          if (plan.kind === 'convert-split') {
+            // A converted single keeps its id: the new split's group view, anchored on it, not the new child.
+            this.leaveToGroup(ids, plan.id);
             return;
           }
           if (selected === PARENT_KEY || this.enteredParent) {

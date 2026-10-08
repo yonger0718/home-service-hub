@@ -365,6 +365,20 @@
   margin-top: auto;
 }
 
+/* Fields the save will not keep: sticky at the scrolling pane / sheet's bottom edge, a docked row on the phone. */
+.removal-notices {
+  background: var(--app-surface);
+  bottom: 0;
+  margin-top: auto;
+  padding: 2px 0;
+  position: sticky;
+  z-index: 1;
+
+  + .entrybottom {
+    margin-top: 0;
+  }
+}
+
 .foot {
   background: var(--app-surface-soft);
   border-top: 1px solid var(--app-border);

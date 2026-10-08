@@ -152,6 +152,11 @@ export class SplitGroupComponent implements OnInit {
     return member.name || member.category?.split('/').pop() || this.kindLabels[member.kind];
   }
 
+  /** 應收／應付 for a receivable / payable member (its row shows 對象 instead of the account), else null. */
+  partyMark(member: EntryDetail['group_members'][number]): string | null {
+    return member.kind === 'receivable' ? '應收' : member.kind === 'payable' ? '應付' : null;
+  }
+
   /**
    * ✕ and after 刪除整組: opened from a list row, back to that list (nothing added to history); with `closeTo` that
    * fixed page; else (deep link, ↑ ↓) the parent list.

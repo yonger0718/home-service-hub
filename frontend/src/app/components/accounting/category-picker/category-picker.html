@@ -43,10 +43,11 @@
         <span class="name" aria-hidden="true"></span>
       </button>
     }
-    @if (addHint(); as hint) {
-      <span class="hint">{{ hint }}</span>
-    }
   </div>
+  <!-- Outside the scrolling row, so 最多 50 項 stays in view however far the row is scrolled. -->
+  @if (addHint(); as hint) {
+    <p class="hint bubble-hint" role="status">{{ hint }}</p>
+  }
 }
 @if (strip(); as sel) {
   @if (!bubbles().length) {

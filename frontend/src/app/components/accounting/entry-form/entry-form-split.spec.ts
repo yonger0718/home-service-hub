@@ -40,6 +40,8 @@ describe('split form integration', () => {
           { path: 'accounting', component: Destination },
           { path: 'accounting/entry', component: EntryFormComponent },
           { path: 'accounting/entries/:id/edit', component: EntryFormComponent },
+          // A convert lands on the group view (PR-10).
+          { path: 'accounting/entries/:id/group', component: Destination },
           { path: 'accounting/entries/:id', component: Destination },
         ]),
       ],

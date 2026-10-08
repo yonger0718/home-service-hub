@@ -851,7 +851,7 @@ describe('EntryFormComponent', () => {
     }));
     respond('/api/accounting/accounts/2', makeAccountDetail({ id: 2 }));
     expect(el.querySelector('.strip .add')).toBeNull();
-    expect(text(el.querySelector('.strip .hint'))).toBe('此記錄不能拆帳');
+    expect(text(el.querySelector('.bubble-hint'))).toBe('此記錄不能拆帳');
     expect(form.children()[0].protected).toBe(false);
   });
   it('＋ adds a child with the main grid open; Esc from that unselected grid asks about the dirty draft', async () => {

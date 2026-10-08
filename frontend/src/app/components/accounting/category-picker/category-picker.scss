@@ -239,11 +239,13 @@
     opacity: 0.5;
   }
 
-  .hint {
-    align-self: center;
-    min-width: max-content;
-    font-size: 0.75rem;
-  }
+}
+
+.bubble-hint {
+  color: var(--app-text-muted);
+  font-size: 0.75rem;
+  margin: 0 0.4rem 0.35rem;
+  text-align: right;
 }
 
 @media (prefers-reduced-motion: reduce) {
