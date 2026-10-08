@@ -57,11 +57,23 @@ const EMPTY_FORM: AccountForm = {
   fx_fee_on: false, fx_fee_pct: '', fx_fee_rounding: 'keep', fx_fee_refundable: false,
 };
 
-function decimalText(value: string | null | undefined): string {
+/**
+ * A server decimal as the form shows it (`"-1234567890123.4500"` → `"-1234567890123.45"`), on the text only: no
+ * `Number` round-trip, so amounts ≥ 1e12 keep every digit. Anything that is not a plain decimal is shown as sent.
+ */
+export function decimalText(value: string | null | undefined): string {
   if (value === null || value === undefined || value === '') {
     return '';
   }
-  return String(Number(value));
+  const text = value.trim();
+  const match = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(text);
+  if (!match || (match[2] === '' && !match[3])) {
+    return text;
+  }
+  const whole = match[2].replace(/^0+(?=\d)/, '') || '0';
+  const fraction = (match[3] ?? '').replace(/0+$/, '');
+  const digits = fraction ? `${whole}.${fraction}` : whole;
+  return match[1] === '-' && /[1-9]/.test(digits) ? `-${digits}` : digits;
 }
 
 function intOrNull(value: string): number | null {
@@ -190,7 +202,8 @@ export class AccountSettingsComponent implements OnInit {
   /** Id of the account whose response is applied to the form; writes target this id only. */
   readonly loadedId = signal<number | null>(null);
   readonly loading = signal(false);
-  readonly today = todayIso();
+  /** Re-read on every open (navigation), so a page kept open past midnight shows the current cycle. */
+  readonly today = signal(todayIso());
 
   readonly detail = signal<AccountDetail | null>(null);
   readonly accounts = signal<LedgerAccount[]>([]);
@@ -227,7 +240,7 @@ export class AccountSettingsComponent implements OnInit {
     return errors;
   });
   readonly closingDay = computed(() => intOrNull(this.form().closing_day));
-  readonly period = computed(() => statementPeriod(this.closingDay(), this.today));
+  readonly period = computed(() => statementPeriod(this.closingDay(), this.today()));
   readonly cycleLabel = computed(() => {
     if (this.localErrors()['closing_day']) {
       return '';
@@ -294,6 +307,7 @@ export class AccountSettingsComponent implements OnInit {
         return idParam === null ? null : Number(idParam);
       }),
       tap(id => {
+        this.today.set(todayIso());
         this.accountId.set(id);
         // A save of the previous account may still be in flight; its answer is dropped (see save()).
         this.saving.set(false);

@@ -6,7 +6,7 @@ import { BehaviorSubject } from 'rxjs';
 import { MockInstance, afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AccountDetail, LedgerAccount } from '../../../models/accounting.model';
-import { AccountSettingsComponent } from './account-settings';
+import { AccountSettingsComponent, accountToInput, decimalText } from './account-settings';
 
 function account(fields: Record<string, unknown>): LedgerAccount {
   return {
@@ -187,6 +187,46 @@ describe('AccountSettingsComponent', () => {
     });
     req.flush(DETAIL);
     expect(navigate).toHaveBeenCalledWith(['/accounting/accounts', 11]);
+  });
+
+  it('keeps every digit of balances ≥ 1e12 on the way into the form and back', async () => {
+    await setup('11');
+    const big = { ...DETAIL, opening_balance: '-1234567890123.4500', credit_limit: '9007199254740993.0000' } as AccountDetail;
+    const fixture = render(big);
+    expect(el(fixture).querySelector<HTMLInputElement>('.opening-input')!.value).toBe('-1234567890123.45');
+    expect(el(fixture).querySelector<HTMLInputElement>('.credit-limit')!.value).toBe('9007199254740993');
+    el(fixture).querySelector<HTMLButtonElement>('.save')!.click();
+    const req = http.expectOne('/api/accounting/accounts/11');
+    expect(req.request.body).toMatchObject({ opening_balance: '-1234567890123.45', credit_limit: '9007199254740993' });
+    req.flush(big);
+    expect(accountToInput(big)).toMatchObject({ opening_balance: '-1234567890123.45', credit_limit: '9007199254740993' });
+  });
+
+  it('formats server decimals as text only', () => {
+    expect(decimalText('1234567890123.4567')).toBe('1234567890123.4567');
+    expect(decimalText('99999999999999999.0000')).toBe('99999999999999999');
+    expect(decimalText('-3693.0000')).toBe('-3693');
+    expect(decimalText('1.500')).toBe('1.5');
+    expect(decimalText('0007.10')).toBe('7.1');
+    expect(decimalText('-0.0000')).toBe('0');
+    expect(decimalText('+12.30')).toBe('12.3');
+    expect(decimalText('.5')).toBe('0.5');
+    expect(decimalText('')).toBe('');
+    expect(decimalText(null)).toBe('');
+    expect(decimalText('abc')).toBe('abc');
+  });
+
+  it('reads today when the page opens, not when the component was built', async () => {
+    await setup('11');
+    const fixture = render(DETAIL);
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('09/16 – 10/15');
+
+    // The reused pane stays alive across midnight; the next open reads the new date.
+    vi.setSystemTime(new Date(2026, 9, 20, 9, 0));
+    navigateTo('12');
+    http.expectOne('/api/accounting/accounts/12').flush({ ...DETAIL, id: 12 });
+    fixture.detectChanges();
+    expect(el(fixture).querySelector('.cycle-preview')?.textContent?.trim()).toBe('10/16 – 11/15');
   });
 
   it('clears the credit-only fields when 信用帳戶 is switched off', async () => {
