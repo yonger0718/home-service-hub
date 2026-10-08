@@ -6,7 +6,7 @@ import { NO_ENTER_SAVE_TAGS } from './accounting-ui';
 export type EntryCommand = 'save' | 'save-continue' | 'cancel';
 
 export type ShortcutAction =
-  | { type: 'navigate'; commands: (string | number)[] }
+  | { type: 'navigate'; commands: (string | number)[]; queryParams?: Record<string, string> }
   | { type: 'move'; delta: 1 | -1 }
   | { type: 'entry'; command: EntryCommand };
 
@@ -20,9 +20,11 @@ export interface ShortcutKey {
 
 const ENTRY_FORM = /^\/accounting\/(entry|entries\/\d+\/edit)$/;
 /** Pages listing entry rows (`[data-entry-id]`); the reminder centre has them under an expanded counterparty. */
-const LIST_PAGE = /^\/accounting(\/entries\/\d+|\/accounts\/\d+(\/entries\/\d+)?|\/reminders)?$/;
+const LIST_PAGE = /^\/accounting(\/entries\/\d+(\/group)?|\/accounts\/\d+(\/entries\/\d+(\/group)?)?|\/reminders)?$/;
 /** The selected entry: `/accounting/entries/:id` or, opened from a passbook, `/accounting/accounts/:id/entries/:eid`. */
 const SELECTED = /^\/accounting(?:\/accounts\/\d+)?\/entries\/(\d+)$/;
+/** A split row's group view (`…/entries/:id/group`): E edits the split with its parent (多類別) bubble selected. */
+const SELECTED_GROUP = /^\/accounting(?:\/accounts\/\d+)?\/entries\/(\d+)\/group$/;
 const TYPING_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
 
 /**
@@ -52,6 +54,10 @@ export function resolveShortcut(event: ShortcutKey, context: { url: string; targ
       return { type: 'navigate', commands: ['/accounting/entry'] };
     case 'e':
     case 'E': {
+      const group = SELECTED_GROUP.exec(path);
+      if (group) {
+        return { type: 'navigate', commands: ['/accounting/entries', Number(group[1]), 'edit'], queryParams: { select: 'parent' } };
+      }
       const selected = SELECTED.exec(path);
       return selected ? { type: 'navigate', commands: ['/accounting/entries', Number(selected[1]), 'edit'] } : null;
     }

@@ -33,7 +33,7 @@ import { shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney } from '../format';
 import { LockBannerComponent } from '../lock-banner/lock-banner';
 import { alignedRepostAmounts, schedulePill } from '../schedule-math';
-import { SplitFolderComponent } from '../split-folder/split-folder';
+import { GroupNavState, closeGroupPage, groupCommands, inPlaceState, readGroupNavState } from '../split-group/group-nav';
 import { storedGroupNet } from './split-card';
 
 const FX_SOURCE_LABELS: Record<string, string> = {
@@ -65,7 +65,7 @@ interface Chip {
 @Component({
   selector: 'app-entry-detail',
   standalone: true,
-  imports: [RouterLink, LockBannerComponent, SplitFolderComponent],
+  imports: [RouterLink, LockBannerComponent],
   templateUrl: './entry-detail.html',
   styleUrl: './entry-detail.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -96,6 +96,8 @@ export class EntryDetailComponent implements OnInit {
    * reminder centre).
    */
   private closeTo: 'list' | 'reminders' | null = null;
+  /** The history state this detail was opened with (group view hops, PR-9). */
+  private readonly navState = signal<GroupNavState>({});
   readonly panel = signal<DetailPanel>(null);
   readonly formAccountId = signal<number | null>(null);
   readonly formAmount = signal('');
@@ -232,11 +234,28 @@ export class EntryDetailComponent implements OnInit {
     const detail = this.detail();
     return !!detail && !this.locked() && (detail.group?.kind === 'split' || !detail.is_settlement || !!detail.schedule);
   });
-  /** Every member of the opened split, the opened one included, in group order (the parent card). */
+  /** Every member of the opened split, the opened one included, in group order. */
   readonly splitMembers = computed(() => (this.detail()?.group?.kind === 'split' ? this.detail()!.group_members : []));
   readonly splitNet = computed(() => storedGroupNet(this.splitMembers()));
-  readonly splitIcons = computed(() => this.splitMembers().map(member => ({ icon: iconOf(member), color: colorOf(member) })));
-  readonly splitAccountCount = computed(() => new Set(this.splitMembers().map(member => member.account_id)).size);
+  /** `$合計` of the 「← 多類別」 link: the group's net per currency, server-signed. */
+  readonly splitNetText = computed(() => {
+    const lines = this.splitNet();
+    return lines
+      .map(line => `${lines.length > 1 ? `${line.currency} ` : ''}${formatMoney(line.amount, line.currency, { sign: true })}`)
+      .join(' · ');
+  });
+  /** 「← 多類別」: back to the group view in place of this child (replaceUrl), so ✕ there never meets this child. */
+  readonly groupLink = computed(() => {
+    const detail = this.detail();
+    return detail?.group?.kind === 'split' ? groupCommands(detail.id, this.passbookId()) : null;
+  });
+  /** Sibling and 「← 多類別」 replace this child in history: same depth, still one entry above the group view. */
+  readonly siblingState = computed<GroupNavState>(() => inPlaceState(this.navState()));
+  readonly groupBackState = this.siblingState;
+  private readonly siblingIds = computed(() => {
+    const id = this.detail()?.id;
+    return new Set(this.splitMembers().filter(member => member.id !== id).map(member => member.id));
+  });
   readonly canSettle = computed(() => {
     const detail = this.detail();
     return this.isDebt() && !this.locked() && !detail?.is_settled && !detail?.is_closed && Number(detail?.open_amount ?? 0) > 0;
@@ -284,7 +303,7 @@ export class EntryDetailComponent implements OnInit {
       lines.push(line(other, `${this.kindLabels[other.kind]} · ${other.account_name}`));
     }
     if (detail.group?.kind !== 'split') {
-      // A split's members are listed by its parent card instead.
+      // A split's members are listed by its group view instead.
       for (const sibling of this.siblings()) {
         lines.push(line(sibling, `拆帳 · ${sibling.name || this.kindLabels[sibling.kind]} · ${sibling.account_name}`));
       }
@@ -354,9 +373,9 @@ export class EntryDetailComponent implements OnInit {
       this.scheduleDefinition.set(null);
       this.routeEntryId.set(id);
       this.passbookId.set(passbook ? Number(params.get('id')) : null);
-      const state = this.router.currentNavigation()?.extras.state ?? (this.location.getState() as Record<string, unknown> | null);
-      const closeTo = state?.['closeTo'];
-      this.closeTo = closeTo === 'list' || closeTo === 'reminders' ? closeTo : null;
+      const state = readGroupNavState(this.router, this.location);
+      this.navState.set(state);
+      this.closeTo = state.closeTo ?? null;
       // Another entry: drop the shown one at once, so nothing acts on it while the new one loads. A reload of the
       // same entry keeps it (and keeps it when that reload fails).
       if (this.detail()?.id !== id) {
@@ -387,11 +406,22 @@ export class EntryDetailComponent implements OnInit {
    * `closeTo` it always goes to that page.
    */
   close(): void {
+    if (this.navState().viaGroup) {
+      // A child of the group view: back to the list the group view was opened from (history not grown), never to
+      // the group view; a deep-linked group view has no list behind it, so the parent list.
+      closeGroupPage(this.router, this.location, this.navState(), this.parentUrl());
+      return;
+    }
     if (this.closeTo !== null) {
       void this.router.navigateByUrl(this.parentUrl());
       return;
     }
     leavePage(this.router, this.location, this.parentUrl());
+  }
+
+  /** A link to another member of the shown split (a sibling): it replaces this child in history. */
+  isSibling(id: number): boolean {
+    return this.siblingIds().has(id);
   }
 
   /** The entry shown, only while it is also the one in the URL; writes act on nothing else. */

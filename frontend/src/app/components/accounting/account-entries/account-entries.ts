@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, effect, inject, signal, untracked } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { SkeletonComponent } from '../skeleton/skeleton';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { AccountDetail, AccountPeriodSummary, ENTRY_KIND_LABELS, EntryKind, LedgerEntry } from '../../../models/accounting.model';
 import { AccountingService } from '../../../services/accounting.service';
@@ -10,6 +10,7 @@ import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf } from '../accounting-ui'
 import { Period, periodLabel, shiftPeriod, statementPeriod } from '../cycle';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
+import { GroupNavState, entryCommands, groupCommands, listOpenState } from '../split-group/group-nav';
 import { formatMoney } from '../format';
 
 export const PAGE_SIZE = 200;
@@ -27,6 +28,7 @@ export class AccountingAccountEntriesComponent implements OnInit {
   private route = inject(ActivatedRoute);
   private destroyRef = inject(DestroyRef);
   private readonly layout = inject(AccountingLayoutComponent, { optional: true });
+  private readonly router = inject(Router);
   private requestId = 0;
   private summaryRequestId = 0;
 
@@ -41,6 +43,15 @@ export class AccountingAccountEntriesComponent implements OnInit {
   readonly entries = signal<LedgerEntry[]>([]);
   /** Entry open in the pane: its row is marked, as on the timeline. */
   readonly selectedId = computed(() => this.layout?.selectedEntryId() ?? null);
+  /** With a group view routed, the split of the routed member: every row of it on this page is marked. */
+  private readonly selectedGroupId = computed(() => {
+    if (!this.layout?.groupViewOpen()) {
+      return null;
+    }
+    const id = this.selectedId();
+    const group = this.entries().find(entry => entry.id === id)?.group;
+    return group?.kind === 'split' ? group.id : null;
+  });
   readonly total = signal(0);
   readonly loading = signal(true);
   readonly loadError = signal(false);
@@ -233,6 +244,28 @@ export class AccountingAccountEntriesComponent implements OnInit {
   setDateTo(value: string): void {
     this.dateTo.set(value || null);
     this.load(true);
+  }
+
+  /** The routed entry, or a member of the split whose group view is routed. */
+  isSelected(entry: LedgerEntry): boolean {
+    const group = this.selectedGroupId();
+    return entry.id === this.selectedId() || (group !== null && entry.group?.id === group);
+  }
+
+  /** A split member opens its 多類別 group view (the passbook stays in the URL); any other row its detail. */
+  rowCommands(entry: LedgerEntry): (string | number)[] {
+    return entry.group?.kind === 'split' ? groupCommands(entry.id, this.accountId()) : entryCommands(entry.id, this.accountId());
+  }
+
+  /**
+   * The passbook is the history entry below a group view opened from it, but only while the passbook itself is the
+   * page on screen (in the wide layout a detail may be open beside it).
+   */
+  rowState(entry: LedgerEntry): GroupNavState | undefined {
+    if (entry.group?.kind !== 'split') {
+      return undefined;
+    }
+    return listOpenState(this.layout?.currentPath() ?? this.router.url, `/accounting/accounts/${this.accountId()}`);
   }
 
   title(entry: LedgerEntry): string {

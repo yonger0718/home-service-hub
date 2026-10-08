@@ -49,11 +49,13 @@ export function readLayoutState(root: ActivatedRouteSnapshot): LayoutRouteState 
   return state;
 }
 
-/** `/accounting/entries/:id…` or, opened from a passbook, `/accounting/accounts/:id/entries/:eid`. */
+/** `/accounting/entries/:id…` or, opened from a passbook, `/accounting/accounts/:id/entries/:eid` (and `…/group`). */
 const ENTRY_URL = /^\/accounting(?:\/accounts\/\d+)?\/entries\/(\d+)(?:\/|$)/;
+/** The 多類別 group view of the split the routed member belongs to. */
+const GROUP_URL = /^\/accounting(?:\/accounts\/\d+)?\/entries\/\d+\/group$/;
 /** A passbook (`/accounting/accounts/:id`) or an entry opened from it: ↓ / ↑ stay inside that passbook. */
 const REMINDERS_URL = /^\/accounting\/reminders(?:\/|$)/;
-const PASSBOOK_URL = /^\/accounting\/accounts\/(\d+)(?:\/entries\/\d+)?$/;
+const PASSBOOK_URL = /^\/accounting\/accounts\/(\d+)(?:\/entries\/\d+(?:\/group)?)?$/;
 const FORM_URL = /^\/accounting\/(?:entry|entries\/\d+\/edit)(?:[/?#]|$)/;
 const SWIPE_CLOSE_PX = 80;
 /** A swipe that drifts more than this vertically is a scroll, not a close. */
@@ -111,6 +113,12 @@ export class AccountingLayoutComponent {
     const match = ENTRY_URL.exec(this.url().split(/[?#]/)[0]);
     return match ? Number(match[1]) : null;
   });
+
+  /** The routed path without query or fragment (lists read it to know whether they are the page on screen). */
+  readonly currentPath = computed(() => this.url().split(/[?#]/)[0]);
+
+  /** The routed page is a group view: a list marks every row of the routed member's split. */
+  readonly groupViewOpen = computed(() => GROUP_URL.test(this.url().split(/[?#]/)[0]));
 
   /** 760–1023 px with a page in the pane: the right-hand sheet is a modal dialog. */
   readonly sheetOpen = computed(() => this.mode() === 'sheet' && this.paneOpen());
@@ -279,7 +287,7 @@ export class AccountingLayoutComponent {
     }
     event.preventDefault();
     if (action.type === 'navigate') {
-      void this.router.navigate(action.commands);
+      void this.router.navigate(action.commands, action.queryParams ? { queryParams: action.queryParams } : undefined);
     } else if (action.type === 'entry') {
       this.shortcuts.entryCommands.next(action.command);
     } else {
@@ -316,12 +324,14 @@ export class AccountingLayoutComponent {
     next.scrollIntoView?.({ block: 'nearest' });
     const id = Number(next.dataset['entryId']);
     const passbook = PASSBOOK_URL.exec(path);
+    // A split row (`data-split`) opens its group view, as a click on it does.
+    const tail = next.dataset['split'] !== undefined ? ['group'] : [];
     if (REMINDERS_URL.test(path)) {
       // Opened from the reminder centre: ✕ on the detail returns there.
-      void this.router.navigate(['/accounting/entries', id], { state: { closeTo: 'reminders' } });
+      void this.router.navigate(['/accounting/entries', id, ...tail], { state: { closeTo: 'reminders' } });
       return;
     }
-    void this.router.navigate(passbook ? ['/accounting/accounts', Number(passbook[1]), 'entries', id] : ['/accounting/entries', id]);
+    void this.router.navigate(passbook ? ['/accounting/accounts', Number(passbook[1]), 'entries', id, ...tail] : ['/accounting/entries', id, ...tail]);
   }
 
   private focusSheet(): void {

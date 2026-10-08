@@ -287,6 +287,40 @@ describe('LedgerTimelineComponent', () => {
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 1]);
   });
 
+  it('opens the 多類別 group view from a split row (the list noted as its origin); installment and reward rows open the detail', () => {
+    localStorage.setItem(VIEW_KEY, 'list');
+    const { fixture, el } = render();
+    flushSummary('2026-10');
+    const split = { id: 4, kind: 'split' as const, name: null, merchant: null, description: null, count: 2, total: '-300.0000', currency: 'TWD' };
+    const installment = { ...split, id: 5, kind: 'installment' as const, count: 12 };
+    const reward = { ...split, id: 6, kind: 'reward_claim' as const, count: 2 };
+    flushEntries([
+      makeEntry({ id: 40, group: split }),
+      makeEntry({ id: 41, group: split }),
+      makeEntry({ id: 50, name: '手機', group: installment }),
+      makeEntry({ id: 60, kind: 'reward', amount: '12.0000', group: reward }),
+    ]);
+    fixture.detectChanges();
+    const router = TestBed.inject(Router);
+    const navigate = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+    const url = vi.spyOn(router, 'url', 'get').mockReturnValue('/accounting?month=2026-10');
+
+    const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.row'));
+    expect(rows.map(row => row.hasAttribute('data-split'))).toEqual([true, false, false]);
+    rows[0].click();
+    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 40, 'group'], { state: { groupDepth: 1 } });
+    // Two-pane layout with a page open on the right: that page, not the list, is below the group view (no depth).
+    for (const open of ['/accounting/entries/9', '/accounting/entries/43', '/accounting/entries/52/group']) {
+      url.mockReturnValue(open);
+      rows[0].click();
+      expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 40, 'group'], {});
+    }
+    rows[1].click();
+    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 50]);
+    rows[2].click();
+    expect(navigate).toHaveBeenLastCalledWith(['/accounting/entries', 60]);
+  });
+
   it('marks the first row once its entry is opened, and moves the mark with the routed entry', () => {
     const layout = { selectedEntryId: signal<number | null>(null) };
     localStorage.setItem(VIEW_KEY, 'list');

@@ -1,0 +1,71 @@
+/* Layered on entry-detail.scss: the group view reuses the detail's head, grid, sections, dialog and action bar. */
+
+.group-head {
+  background: var(--app-surface-soft);
+}
+
+.group-nets {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+
+  small {
+    color: var(--app-text-muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    margin-right: 4px;
+  }
+}
+
+.group-count {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  margin: 2px 0 4px;
+}
+
+.group-children {
+  display: flex;
+  flex-direction: column;
+}
+
+.split-child {
+  align-items: center;
+  border-bottom: 1px solid var(--app-border);
+  color: inherit;
+  display: flex;
+  font-size: 0.88rem;
+  gap: 0.6rem;
+  padding: 0.5rem 0;
+  text-decoration: none;
+
+  .ico {
+    align-items: center;
+    border-radius: 50%;
+    display: flex;
+    flex: none;
+    height: 32px;
+    justify-content: center;
+    width: 32px;
+  }
+
+  .split-child-name {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    overflow-wrap: anywhere;
+
+    small { color: var(--app-text-muted); font-size: 0.75rem; }
+  }
+
+  .split-child-amount {
+    font-variant-numeric: tabular-nums;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 1px;
+  }
+}

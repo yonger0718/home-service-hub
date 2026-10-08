@@ -28,6 +28,20 @@ describe('resolveShortcut', () => {
     expect(resolveShortcut(key('e'), { url: '/accounting/accounts/5', targetTag: null })).toBeNull();
   });
 
+  it('edits a split with its parent bubble selected on E in the group view, from the timeline or a passbook', () => {
+    for (const url of ['/accounting/entries/9/group', '/accounting/accounts/5/entries/9/group']) {
+      expect(resolveShortcut(key('e'), { url, targetTag: null })).toEqual({
+        type: 'navigate',
+        commands: ['/accounting/entries', 9, 'edit'],
+        queryParams: { select: 'parent' },
+      });
+      // The group view is a list page: N and the arrows keep working there.
+      expect(resolveShortcut(key('n'), { url, targetTag: null })).toEqual({ type: 'navigate', commands: ['/accounting/entry'] });
+      expect(resolveShortcut(key('ArrowDown'), { url, targetTag: null })).toEqual({ type: 'move', delta: 1 });
+    }
+    expect(resolveShortcut(key('e'), { url: '/accounting/entries/9/group/x', targetTag: null })).toBeNull();
+  });
+
   it('moves the selection with the arrow keys', () => {
     expect(resolveShortcut(key('ArrowDown'), { url: '/accounting', targetTag: null })).toEqual({ type: 'move', delta: 1 });
     expect(resolveShortcut(key('ArrowUp'), { url: '/accounting/entries/9', targetTag: null })).toEqual({ type: 'move', delta: -1 });

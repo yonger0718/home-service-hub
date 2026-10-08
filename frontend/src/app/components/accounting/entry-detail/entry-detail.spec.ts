@@ -3,7 +3,8 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { Location } from '@angular/common';
 import { provideLocationMocks } from '@angular/common/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { ActivatedRoute, ParamMap, Router, convertToParamMap, provideRouter } from '@angular/router';
+import { ActivatedRoute, ParamMap, Router, RouterLink, convertToParamMap, provideRouter } from '@angular/router';
+import { By } from '@angular/platform-browser';
 import { BehaviorSubject } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -501,50 +502,127 @@ describe('EntryDetailComponent', () => {
   });
 
 
-  it('shows parent card and permits metadata edit of an opened protected split child', () => {
-    const group = { id: 4, kind: 'split', name: '旅遊', merchant: '商家', description: '備註', count: 2, total: '-60', currency: 'TWD' };
-    const fixture = render(detail({ id: 42, kind: 'receivable', is_settlement: true, amount: '40', group,
+  const SPLIT = { id: 4, kind: 'split', name: '旅遊', merchant: '商家', description: '備註', count: 2, total: '-60', currency: 'TWD' };
+
+  /** A child of a two-member split (7 and 42); 42 is the opened one. */
+  function splitChild(fields: Record<string, unknown> = {}): EntryDetail {
+    return detail({
+      id: 42, amount: '40', group: SPLIT,
       group_members: [
-        { ...entry({ id: 7, amount: '-100', group }), protected: false, protected_reason: null },
-        { ...entry({ id: 42, kind: 'receivable', is_settlement: true, amount: '40', group }), protected: true, protected_reason: 'settlement' },
-      ] }));
-    const card = el(fixture).querySelector('.split-parent-card');
-    expect(card?.textContent).toContain('多類別');
-    expect(card?.textContent).toContain('旅遊');
-    expect(card?.textContent).toContain('2 項 · 1 個帳戶');
-    expect(card?.textContent).toContain('−$60');
-    expect(el(fixture).querySelectorAll('.split-child')).toHaveLength(2);
+        { ...entry({ id: 7, amount: '-100', group: SPLIT }), protected: false, protected_reason: null },
+        { ...entry({ id: 42, amount: '40', group: SPLIT }), protected: false, protected_reason: null },
+      ],
+      ...fields,
+    });
+  }
+
+  /** The navigation state the detail was opened with (as `router.currentNavigation()` would report it). */
+  function openedWith(state: Record<string, unknown>): void {
+    vi.spyOn(TestBed.inject(Router), 'currentNavigation').mockReturnValue({ extras: { state } } as never);
+  }
+
+  function links(fixture: ComponentFixture<EntryDetailComponent>): RouterLink[] {
+    return fixture.debugElement.queryAll(By.directive(RouterLink)).map(debug => debug.injector.get(RouterLink));
+  }
+
+  it('has no 多類別 parent card on a split child; a protected child still edits its metadata with itself selected', () => {
+    const fixture = render(splitChild({
+      kind: 'receivable', is_settlement: true,
+      group_members: [
+        { ...entry({ id: 7, amount: '-100', group: SPLIT }), protected: false, protected_reason: null },
+        { ...entry({ id: 42, kind: 'receivable', is_settlement: true, amount: '40', group: SPLIT }), protected: true, protected_reason: 'settlement' },
+      ],
+    }));
+    expect(el(fixture).querySelector('.split-parent-card')).toBeNull();
+    expect(el(fixture).querySelector('app-split-folder')).toBeNull();
+    expect(el(fixture).querySelectorAll('.split-child')).toHaveLength(0);
     expect(el(fixture).querySelector('.related')?.textContent ?? '').not.toContain('拆帳');
-    expect(el(fixture).querySelector('.split-child[aria-current="true"]')?.textContent).toContain('🔒');
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
     fixture.componentInstance.edit();
     expect(navigate).toHaveBeenCalledWith(['/accounting/entries', 42, 'edit']);
   });
 
-  it('draws the split parent card as a folder tile of its members, +N past four and the badge of the count', () => {
-    const group = { id: 4, kind: 'split', name: null, merchant: null, description: null, count: 5, total: '-500', currency: 'TWD' };
-    const icons = ['🍜', '🚕', '🎬', '📱', '🎁'];
-    const members = icons.map((icon, i) => ({
-      ...entry({ id: 70 + i, group, category_icon: icon, category_color: '#4a90e2' }), protected: false, protected_reason: null,
+  it('draws a slim 「← 多類別 $合計」 link that replaces the child with its group view, carrying the group state', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    const fixture = render(splitChild());
+    const back = el(fixture).querySelector<HTMLAnchorElement>('.group-back')!;
+    expect(back.textContent?.replace(/\s+/g, ' ').trim()).toBe('← 多類別 −$60');
+    expect(back.getAttribute('href')).toBe('/accounting/entries/42/group');
+    const link = links(fixture).find(item => item.href === '/accounting/entries/42/group')!;
+    expect(link.replaceUrl).toBe(true);
+    expect(link.state).toEqual({ groupDepth: 2, viaGroup: true });
+    // Above the coloured head.
+    expect(back.compareDocumentPosition(el(fixture).querySelector('.dhead')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps the passbook in the 「← 多類別」 link of a child opened from a passbook', () => {
+    params.next(convertToParamMap({ id: '5', eid: '42' }));
+    const fixture = render(splitChild());
+    expect(el(fixture).querySelector('.group-back')?.getAttribute('href')).toBe('/accounting/accounts/5/entries/42/group');
+  });
+
+  it('has no 「← 多類別」 link on an entry outside a split', () => {
+    const fixture = render(RECEIVABLE);
+    expect(el(fixture).querySelector('.group-back')).toBeNull();
+  });
+
+  it('replaces the child in history when a related line leads to a sibling; other related lines push', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    const fixture = render(splitChild({
+      kind: 'expense', amount: '-60', refunded_amount: '0',
+      refunded_by: [entry({ id: 7, kind: 'income', amount: '-100', group: SPLIT })],
+      settled_by: [],
+      children: [entry({ id: 90, kind: 'fee', amount: '-5' })],
     }));
-    const fixture = render(detail({ id: 70, group, group_members: members }));
-    const folder = el(fixture).querySelector<HTMLElement>('.split-parent-card .split-head app-split-folder.folder')!;
-    expect(folder.classList.contains('compact')).toBe(false);
-    const cells = Array.from(folder.querySelectorAll<HTMLElement>('.cell'));
-    expect(cells.map(cell => cell.textContent)).toEqual(['🍜', '🚕', '🎬', '+2']);
-    expect(cells[0].style.background).toBe('rgb(74, 144, 226)');
-    expect(folder.querySelector('.badge')?.textContent).toBe('5');
-    // The member list itself stays complete.
-    expect(el(fixture).querySelectorAll('.split-child')).toHaveLength(5);
+    const sibling = links(fixture).find(item => item.href === '/accounting/entries/7')!;
+    expect(sibling.replaceUrl).toBe(true);
+    expect(sibling.state).toEqual({ groupDepth: 2, viaGroup: true });
+    const fee = links(fixture).find(item => item.href === '/accounting/entries/90')!;
+    expect(fee.replaceUrl).toBe(false);
+    expect(fee.state).toBeUndefined();
+  });
+
+  it('✕ on a child opened from a list-opened group view goes back past the group view (history not grown)', () => {
+    openedWith({ groupDepth: 2, viaGroup: true });
+    const router = TestBed.inject(Router);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    const location = TestBed.inject(Location);
+    const go = vi.spyOn(location, 'historyGo');
+    const back = vi.spyOn(location, 'back');
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(splitChild());
+    el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
+    expect(go).toHaveBeenCalledWith(-2);
+    expect(back).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('✕ on a child of a deep-linked group view goes to the parent list, never to the group view', () => {
+    openedWith({ viaGroup: true });
+    const router = TestBed.inject(Router);
+    Object.defineProperty(router, 'lastSuccessfulNavigation', { configurable: true, value: () => ({ previousNavigation: {} }) });
+    const location = TestBed.inject(Location);
+    const back = vi.spyOn(location, 'back');
+    const go = vi.spyOn(location, 'historyGo');
+    const navigate = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(splitChild());
+    el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
+    expect(navigate).toHaveBeenCalledWith('/accounting');
+    expect(back).not.toHaveBeenCalled();
+    expect(go).not.toHaveBeenCalled();
+  });
+
+  it('✕ on a child of a group view opened from the reminder centre returns there', () => {
+    openedWith({ closeTo: 'reminders', groupDepth: 2, viaGroup: true });
+    const navigate = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+    const fixture = render(splitChild());
+    el(fixture).querySelector<HTMLButtonElement>('.dhead .close')!.click();
+    expect(navigate).toHaveBeenCalledWith('/accounting/reminders');
   });
 
   it('keeps a locked split member uneditable', () => {
-    const group = { id: 4, kind: 'split', name: null, merchant: null, description: null, count: 2, total: '-60', currency: 'TWD' };
-    const fixture = render(detail({ id: 42, locked: true, group, group_members: [
-      { ...entry({ id: 7, group }), protected: false, protected_reason: null },
-      { ...entry({ id: 42, group }), protected: false, protected_reason: null },
-    ] }));
+    const fixture = render(splitChild({ locked: true }));
     expect(fixture.componentInstance.canEdit()).toBe(false);
-    expect(el(fixture).querySelector('.split-parent-card h3')?.textContent).toContain('多類別');
+    expect(el(fixture).querySelector('.group-back')).not.toBeNull();
   });
 });

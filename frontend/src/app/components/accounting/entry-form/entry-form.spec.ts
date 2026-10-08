@@ -29,6 +29,8 @@ const ROUTES: Routes = [
   { path: 'accounting', component: AccountingStubComponent },
   { path: 'accounting/entry', component: EntryFormComponent },
   { path: 'accounting/entries/:id/edit', component: EntryFormComponent },
+  // A parent-mode save returns to the group view (PR-9).
+  { path: 'accounting/entries/:id/group', component: AccountingStubComponent },
   { path: 'accounting/entries/:id', component: AccountingStubComponent },
 ];
 
@@ -1161,6 +1163,8 @@ describe('EntryFormComponent', () => {
     expect(put.request.body.members.map((line: { amount: string }) => line.amount)).toEqual(['200', '100']);
     put.flush({ group_id: 4, member_ids: [7, 8], members: form.children().map(child => ({ id: child.id!, client_key: child.key })) });
     settle();
+    // Saved as the parent: the group view of the split replaces the form, not a member's detail.
+    await vi.waitFor(() => expect(TestBed.inject(Router).url).toBe('/accounting/entries/7/group'));
   });
   it('shows the effective rate and 固定 for a fixed converted amount, and 重新換算 goes back online', async () => {
     const { el } = await open('/accounting/entries/9/edit');

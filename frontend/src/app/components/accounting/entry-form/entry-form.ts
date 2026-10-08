@@ -74,6 +74,7 @@ import { IMPORT_RUNNING_TOAST, isImportRunning } from '../schedule-math';
 import { SCHEDULE_TABS, ScheduleDraft, ScheduleTab, defaultDraft, ruleDayFor, tabsFor } from '../schedule-tabs/schedule-draft';
 import { ScheduleTabsComponent } from '../schedule-tabs/schedule-tabs';
 import { TransferPanelComponent } from '../transfer-panel/transfer-panel';
+import { GROUP_PATH, groupCommands } from '../split-group/group-nav';
 import {
   FORM_KINDS,
   FormKind,
@@ -168,6 +169,8 @@ export const CATCH_UP_FAILED_TOAST = '排程已建立；這一期入帳失敗，
 interface EntryTarget {
   entryId: number;
   copy: boolean;
+  /** `?select=parent` (the group view's 編輯, E on a split row): a split opens with its parent bubble selected. */
+  parent?: boolean;
 }
 
 /** One edit / copy / refetch load; `loadId` identifies the `load()` call that started it. */
@@ -251,6 +254,8 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   readonly parent = this.drafts.parent;
   readonly isSplit = this.drafts.isSplit;
   /** The loaded split group id (upsert / dissolve target), when editing a split member. */
+  /** Opened with `?select=parent` (the group view's 編輯, E on a group view): a save returns to the group view. */
+  private enteredParent = false;
   readonly groupId = this.drafts.groupId;
   /** Split / group semantics apply: two or more children, or a loaded group (even reduced to one, until dissolved). */
   readonly childScope = computed(() => this.isSplit() || this.groupId() !== null);
@@ -720,7 +725,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       .pipe(takeUntilDestroyed())
       .subscribe(([params, query]) => {
         const schedule = query.get('schedule');
-        const target = this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule);
+        const target = this.start(params.get('id'), query.get('kind'), query.get('copy'), schedule, query.get('select') === 'parent');
         this.load(target);
         if (schedule !== null) {
           this.loadDefinition(Number(schedule));
@@ -809,7 +814,13 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   }
 
   /** Resets the form for a navigation; returns the record to load (edit or copy), or null for a blank record. */
-  private start(id: string | null, kindParam: string | null, copyParam: string | null, scheduleParam: string | null = null): EntryTarget | null {
+  private start(
+    id: string | null,
+    kindParam: string | null,
+    copyParam: string | null,
+    scheduleParam: string | null = null,
+    parent = false,
+  ): EntryTarget | null {
     this.baseline.set(null);
     this.clearDiscardFocus();
     this.registry.clearPending();
@@ -831,8 +842,9 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.definitionLoaded.set(false);
     this.createdScheduleId.set(null);
     this.scheduleId.set(scheduleParam !== null ? Number(scheduleParam) : null);
+    this.enteredParent = id !== null && parent;
     if (id !== null) {
-      return { entryId: Number(id), copy: false };
+      return { entryId: Number(id), copy: false, parent };
     }
     if (copyParam !== null) {
       return { entryId: Number(copyParam), copy: true };
@@ -934,7 +946,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       }
       this.children.set(state.children);
       this.parent.set(state.parent);
-      this.selected.set(state.selected);
+      this.selected.set(loaded.parent ? PARENT_KEY : state.selected);
       this.groupId.set(detail.group.id);
       this.drafts.anchorId.set(null);
       this.convertBlockedReason.set(null);
@@ -1993,7 +2005,12 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
             this.continueEntry();
             return;
           }
-          const key = selected === PARENT_KEY ? submitted[0].key : selected;
+          if (selected === PARENT_KEY || this.enteredParent) {
+            // Edited as the 多類別 parent: back to the group view, not to one of its children.
+            this.leaveToGroup(ids, ids.get(submitted[0].key)!);
+            return;
+          }
+          const key = selected;
           // closeTo: the page before this one in history may be the edit page, so the detail's ✕ must not go back().
           void this.router.navigateByUrl(`/accounting/entries/${ids.get(key) ?? ids.get(submitted[0].key)}`, {
             replaceUrl: true,
@@ -2018,6 +2035,22 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           }
         },
       });
+  }
+
+  /**
+   * After a parent-mode save: `back()` when the page before the form is a group view of a member still in the split
+   * (it reloads and keeps its history state, so its ✕ still lands on the list and nothing stacks); else the group view
+   * replaces the form, with ✕ going to the list (`closeTo`, as after any split save).
+   */
+  private leaveToGroup(ids: Map<string, number>, firstId: number): void {
+    const previous = this.router.lastSuccessfulNavigation()?.previousNavigation;
+    const tree = previous?.finalUrl ?? previous?.initialUrl;
+    const anchor = tree ? GROUP_PATH.exec(this.router.serializeUrl(tree).split(/[?#]/)[0]) : null;
+    if (anchor && [...ids.values()].includes(Number(anchor[1]))) {
+      this.location.back();
+      return;
+    }
+    void this.router.navigate(groupCommands(firstId, null), { replaceUrl: true, state: { closeTo: 'list' } });
   }
 
   /** 重新載入 after an unmappable split answer: through the discard prompt when the draft is dirty. */

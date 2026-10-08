@@ -460,6 +460,65 @@ describe('AccountingLayoutComponent', () => {
     await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/5'));
   });
 
+  it('serves the 多類別 group view as its own screen on a phone', async () => {
+    const harness = await start('phone', '/accounting/entries/5/group');
+    const screen = await find(harness, SCREEN);
+    expect(screen.tagName.toLowerCase()).toBe('app-split-group');
+    expect(harness.routeNativeElement!.querySelector('.dbody')).toBeNull();
+  });
+
+  it('serves the group view in the right pane at 1280px, beside the list, and marks the routed member', async () => {
+    const harness = await start('panes', '/accounting/entries/5/group');
+    await find(harness, LIST);
+    const page = await find(harness, PANE_PAGE);
+    expect(page.tagName.toLowerCase()).toBe('app-split-group');
+    const layout = harness.routeDebugElement!.componentInstance as AccountingLayoutComponent;
+    expect(layout.selectedEntryId()).toBe(5);
+    expect(layout.groupViewOpen()).toBe(true);
+    await TestBed.inject(Router).navigateByUrl('/accounting/entries/5');
+    expect(layout.groupViewOpen()).toBe(false);
+  });
+
+  it('serves a passbook group view in the 820px sheet and closes it back to the passbook', async () => {
+    const harness = await start('sheet', '/accounting/accounts/3/entries/5/group');
+    await find(harness, LIST);
+    const page = await find(harness, '.detail-pane.open ' + 'app-split-group');
+    expect(page).not.toBeNull();
+    const router = TestBed.inject(Router);
+    (await find(harness, '.sheet-close') as HTMLButtonElement).click();
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/accounts/3'));
+  });
+
+  it('opens the group view of a split row reached with ↓ / ↑ on the timeline', async () => {
+    const harness = await start('phone', '/accounting');
+    const router = TestBed.inject(Router);
+    addRows(harness, [7, 8]).children[1].setAttribute('data-split', '');
+    press('ArrowDown');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7'));
+    addRows(harness, [7, 8]).children[1].setAttribute('data-split', '');
+    press('ArrowDown');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/8/group'));
+    // From the group view the walk goes on.
+    addRows(harness, [7, 8]).children[1].setAttribute('data-split', '');
+    press('ArrowUp');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/7'));
+  });
+
+  it('opens the passbook-scoped group view of a split row reached with ↓', async () => {
+    const harness = await start('phone', '/accounting/accounts/5');
+    const router = TestBed.inject(Router);
+    addRows(harness, [9]).children[0].setAttribute('data-split', '');
+    press('ArrowDown');
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/accounts/5/entries/9/group'));
+  });
+
+  it('opens the entry form in parent mode with E on a group view', async () => {
+    await start('phone', '/accounting/entries/5/group');
+    const router = TestBed.inject(Router);
+    expect(press('e').defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting/entries/5/edit?select=parent'));
+  });
+
   it('keeps a grip without handle or ✕ in the two-pane layout and never swipes there', async () => {
     const harness = await start('panes', '/accounting/entries/5');
     await find(harness, PANE_PAGE);
