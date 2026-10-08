@@ -97,6 +97,7 @@ import {
   RelatedLoad,
   SharedFields,
   loadRelatedRows,
+  discardCreatedCounterparties,
   rememberEntryUse,
   resolveCounterpartyId,
 } from './entry-save';
@@ -605,7 +606,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   });
   readonly quick = computed(() => {
     const category = this.category();
-    return category ? quickAmounts(category.id) : [];
+    return category ? quickAmounts(category.id, this.entryCurrency()) : [];
   });
   readonly currentBalance = computed(() => {
     const account = this.account();
@@ -1948,11 +1949,15 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       owners.every(other => this.children().some(child => child.key === other.key && child.generation === other.generation));
     // One request per typed name in this submission (two children naming a new counterparty create it once).
     const partyRequests = new Map<string, Observable<number>>();
+    // Created by this submission: removed again when the write does not happen or fails (no orphan 對象).
+    const createdParties: Counterparty[] = [];
+    const discardParties = () => discardCreatedCounterparties(this.accounting, createdParties, this.forgetCounterparty);
     const resolveName = (typed: string): Observable<number> => {
       const name = typed.trim();
       let request = partyRequests.get(name);
       if (!request) {
         request = resolveCounterpartyId(this.accounting, name, this.counterparties(), party => {
+          createdParties.push(party);
           if (ownersCurrent()) {
             this.counterparties.update(rows => (rows.some(other => other.id === party.id) ? rows : [...rows, party]));
           }
@@ -1971,6 +1976,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
         map(pairs => new Map(pairs.filter((pair): pair is readonly [string, number] => pair[1] !== null))),
         switchMap(parties => {
           if (!ownersCurrent()) {
+            discardParties();
             return EMPTY;
           }
           const plan = planEntrySave(submitted, parent, this.accounts(), parties, context);
@@ -1992,7 +1998,11 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           rememberRecentAccounts(submitted.map(child => child.accountId));
           if (plan.kind === 'create' || plan.kind === 'update') {
             const detail = result as EntryDetail;
-            rememberEntryUse(plan.input, Number(plan.input.original_amount ?? plan.input.amount));
+            rememberEntryUse(
+              plan.input,
+              Number(plan.input.original_amount ?? plan.input.amount),
+              this.accounts().find(account => account.id === plan.input.account_id)?.currency ?? null,
+            );
             this.markClean();
             if (detail.proposed_fee && Number(detail.proposed_fee) > 0 && !plan.input.fee) {
               this.feeProposal.set({ entryId: detail.id, amount: detail.proposed_fee, input: plan.input, continuous: keepGoing });
@@ -2036,6 +2046,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           });
         },
         error: (error: unknown) => {
+          discardParties();
           if (this.loadId !== loadId) {
             return;
           }
@@ -2138,6 +2149,10 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.markClean();
   }
 
+  /** Drops a counterparty the server deleted after a failed write from the typeahead list. */
+  private readonly forgetCounterparty = (id: number): void =>
+    this.counterparties.update(rows => rows.filter(party => party.id !== id));
+
   /** 週期 / 分期: create (then catch-up when it starts today, 自動入帳) or, in definition mode, PUT the definition. */
   private saveSchedule(keepGoing: boolean): void {
     this.fieldErrors.set({});
@@ -2152,10 +2167,12 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       ? [panel?.fromId(), panel?.toId()]
       : [this.accountId()];
     const repayId = this.scheduleDraft().repayAccountId;
+    const createdParties: Counterparty[] = [];
     const counterparty: Observable<number | null> = this.isParty() && this.loanEntryId === null
-      ? resolveCounterpartyId(this.accounting, this.counterpartyName(), this.counterparties(), party =>
-          this.counterparties.update(list => [...list, party]),
-        )
+      ? resolveCounterpartyId(this.accounting, this.counterpartyName(), this.counterparties(), party => {
+          createdParties.push(party);
+          this.counterparties.update(list => [...list, party]);
+        })
       : of(null);
     const definitionId = this.scheduleId();
     const request = counterparty.pipe(
@@ -2204,6 +2221,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       },
       error: (error: unknown) => {
         this.saving.set(false);
+        discardCreatedCounterparties(this.accounting, createdParties, this.forgetCounterparty);
         if (error instanceof ScheduleFormError) {
           this.fieldErrors.set({ [error.field]: error.message });
           this.error.set(error.message);

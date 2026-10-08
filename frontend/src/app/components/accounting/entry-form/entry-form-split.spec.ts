@@ -895,6 +895,42 @@ describe('split form integration', () => {
     expect(split.request.body.members.map((c: { counterparty_id: number }) => c.counterparty_id)).toEqual([4, 4]);
     split.flush({ detail: [{ loc: ['body', 'members.1.amount'], msg: 'test rejection' }] }, { status: 422, statusText: 'Unprocessable Entity' });
     settle();
+    // The failed write must not leave the inline-created 對象 behind.
+    http.expectOne(r => r.method === 'DELETE' && r.url.endsWith('/counterparties/4')).flush(null);
+    settle();
+    expect(form.counterparties()).toEqual([]);
+  });
+
+  it('keeps an inline-created counterparty when the write succeeds', async () => {
+    await open();
+    form.selectKind('receivable');
+    settle();
+    fill();
+    form.counterpartyName.set('Alan');
+    form.save(false);
+    http.expectOne(r => r.method === 'POST' && r.url.endsWith('/counterparties')).flush({ id: 4, name: 'Alan', open_amounts: [], moze_id: null });
+    const entry = http.expectOne(r => r.method === 'POST' && r.url.endsWith('/entries'));
+    expect(entry.request.body.counterparty_id).toBe(4);
+    entry.flush(makeEntryDetail({ id: 9, kind: 'receivable', counterparty_id: 4 }));
+    settle();
+    http.expectNone(r => r.method === 'DELETE');
+    expect(form.counterparties().map(p => p.id)).toEqual([4]);
+  });
+
+  it('keeps the counterparty when the server refuses its cleanup (the write may have committed)', async () => {
+    await open();
+    form.selectKind('receivable');
+    settle();
+    fill();
+    form.counterpartyName.set('Alan');
+    form.save(false);
+    http.expectOne(r => r.method === 'POST' && r.url.endsWith('/counterparties')).flush({ id: 4, name: 'Alan', open_amounts: [], moze_id: null });
+    http.expectOne(r => r.method === 'POST' && r.url.endsWith('/entries')).error(new ProgressEvent('error'));
+    settle();
+    http
+      .expectOne(r => r.method === 'DELETE' && r.url.endsWith('/counterparties/4'))
+      .flush({ detail: 'counterparty is used by 1 entries' }, { status: 409, statusText: 'Conflict' });
+    settle();
     expect(form.counterparties().map(p => p.id)).toEqual([4]);
   });
 

@@ -216,6 +216,7 @@ describe('EntryFormComponent', () => {
     cleared();
     expect(left()).toBe(true);
     expect(JSON.parse(localStorage.getItem('hh.accounting.lastUse.12')!)).toEqual({ account_id: 2, project_id: 5 });
+    expect(JSON.parse(localStorage.getItem('hh.accounting.amounts.12.TWD')!)).toEqual([170]);
   });
 
   it("prefers this device's last use of the category over the server defaults", async () => {
@@ -989,6 +990,9 @@ describe('EntryFormComponent', () => {
     });
     req.flush(makeEntryDetail({ id: 99 }));
     settle();
+    // Quick amounts are remembered in the typed (original) currency, never mixed into the account's USD.
+    expect(JSON.parse(localStorage.getItem('hh.accounting.amounts.12.JPY')!)).toEqual([5390]);
+    expect(localStorage.getItem('hh.accounting.amounts.12.USD')).toBeNull();
   });
 
   it('applies the same FX reset when a category pick moves the account', async () => {

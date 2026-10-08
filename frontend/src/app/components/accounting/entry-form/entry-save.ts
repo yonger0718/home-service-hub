@@ -190,14 +190,33 @@ export function resolveCounterpartyId(
   );
 }
 
-/** After a save: this device's last account / project and quick-amount history for the category. */
-export function rememberEntryUse(input: EntryInput, amount: number | null): void {
+/**
+ * Best-effort removal of counterparties created inline for a write that then failed, so no orphan 對象 is left behind.
+ * The server refuses (409) to delete one an entry references, so a write that committed despite the error keeps its
+ * party; `removed` fires only for a row the server actually deleted.
+ */
+export function discardCreatedCounterparties(
+  service: AccountingService,
+  created: readonly Counterparty[],
+  removed: (id: number) => void,
+): void {
+  for (const party of created) {
+    service.deleteCounterparty(party.id).subscribe({ next: () => removed(party.id), error: () => undefined });
+  }
+}
+
+/**
+ * After a save: this device's last account / project and quick-amount history for the category, in the currency the
+ * amount was typed in (the original currency when set, else the account's).
+ */
+export function rememberEntryUse(input: EntryInput, amount: number | null, accountCurrency: string | null): void {
   if (input.category_id === null) {
     return;
   }
   writeLastUse(input.category_id, { account_id: input.account_id, project_id: input.project_id });
-  if (amount !== null) {
-    recordAmount(input.category_id, amount);
+  const currency = input.original_currency ?? accountCurrency;
+  if (amount !== null && currency) {
+    recordAmount(input.category_id, currency, amount);
   }
 }
 

@@ -29,21 +29,26 @@ describe('entry draft helpers', () => {
     localStorage.setItem('hh.accounting.lastUse.13', '{not json');
     expect(readLastUse(13)).toBeNull();
 
-    // Amount history: only a plain object of finite non-negative integer counts is trusted.
-    localStorage.setItem('hh.accounting.amounts.14', '[3, 5]');
-    expect(quickAmounts(14)).toEqual([]);
-    localStorage.setItem('hh.accounting.amounts.15', '{"170":3,"85":"9","90":-1,"95":1.5,"99":null,"60":2}');
-    expect(quickAmounts(15)).toEqual([170, 60]);
-    recordAmount(15, 85);
-    expect(JSON.parse(localStorage.getItem('hh.accounting.amounts.15')!)).toEqual({ '170': 3, '60': 2, '85': 1 });
+    // Amount history: only an array of finite non-negative amounts is trusted, each once.
+    localStorage.setItem('hh.accounting.amounts.14.TWD', '{"170":3}');
+    expect(quickAmounts(14, 'TWD')).toEqual([]);
+    localStorage.setItem('hh.accounting.amounts.15.TWD', '[170,"85",-1,null,60,170]');
+    expect(quickAmounts(15, 'TWD')).toEqual([170, 60]);
+    recordAmount(15, 'TWD', 85);
+    expect(JSON.parse(localStorage.getItem('hh.accounting.amounts.15.TWD')!)).toEqual([85, 170, 60]);
   });
 
-  it('ranks quick amounts by how often they were saved, six at most', () => {
-    for (const amount of [170, 170, 170, 120, 120, 85, 240, 310, 1500, 999]) {
-      recordAmount(12, amount);
+  it('keeps the last eight distinct quick amounts per currency, most recent first', () => {
+    for (const amount of [170, 120, 85, 240, 310, 1500, 999, 60, 45, 120, 170]) {
+      recordAmount(12, 'TWD', amount);
     }
-    expect(quickAmounts(12)).toEqual([170, 120, 85, 240, 310, 999]);
-    expect(quickAmounts(99)).toEqual([]);
+    expect(quickAmounts(12, 'TWD')).toEqual([170, 120, 45, 60, 999, 1500, 310, 240]);
+    expect(JSON.parse(localStorage.getItem('hh.accounting.amounts.12.TWD')!)).toHaveLength(8);
+    // Original-currency amounts are a separate history: ¥1200 is never offered as TWD 1200.
+    recordAmount(12, 'JPY', 1200);
+    expect(quickAmounts(12, 'JPY')).toEqual([1200]);
+    expect(quickAmounts(12, 'TWD')).not.toContain(1200);
+    expect(quickAmounts(99, 'TWD')).toEqual([]);
   });
 
   it('offers enabled rules covering the entry date and labels them with their rate', () => {
