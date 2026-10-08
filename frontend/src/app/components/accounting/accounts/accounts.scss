@@ -28,6 +28,7 @@
   small { color: var(--app-text-muted); font-size: 0.72rem; font-weight: 700; }
   b { display: block; font-size: 1.5rem; font-variant-numeric: tabular-nums; }
   .totals-line { color: var(--app-text-muted); font-size: 0.72rem; }
+  .excluded-hint { display: block; font-weight: 400; }
 }
 
 .grp {
@@ -79,6 +80,7 @@
 .name { font-weight: 800; grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { color: var(--app-text-muted); font-size: 0.72rem; grid-area: meta; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bal { font-variant-numeric: tabular-nums; font-weight: 800; grid-area: bal; text-align: right; white-space: nowrap; }
+.family-hint { color: var(--app-text-muted); display: block; font-size: var(--fs-micro); font-weight: 700; }
 .due { align-items: center; display: flex; flex-wrap: wrap; gap: 2px 8px; grid-area: due; justify-content: flex-end; min-width: 0; padding-top: 2px; }
 /* 待繳帳款 on the left, the due pill on the right; at 390 px the pill wraps below instead of scrolling. */
 .owed { color: var(--app-text); font-size: 0.72rem; font-variant-numeric: tabular-nums; font-weight: 700; margin-right: auto; min-width: 0; overflow-wrap: anywhere; }

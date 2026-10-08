@@ -21,7 +21,11 @@
       <span class="name">{{ account.name }}@if (node?.children.length) {<span class="badge">主帳戶 {{ node.children.length }}</span>}</span>
       <span class="meta">{{ meta(account) }}</span>
       @if (node?.children.length) {
-        <span class="bal" [class.neg]="node.total < 0">{{ formatMoney(node.total, node.totalCurrency) }}</span>
+        @if (node.total === null) {
+          <span class="bal">—<small class="partial-hint family-hint">部分帳戶未換算</small></span>
+        } @else {
+          <span class="bal" [class.neg]="node.total < 0">{{ formatMoney(node.total, node.totalCurrency) }}</span>
+        }
       } @else {
         <span class="bal" [class.neg]="+account.balance < 0">{{ formatMoney(account.balance, account.currency) }}</span>
       }
@@ -58,6 +62,9 @@
       <small>總額 {{ mainCurrency() }}</small>
       <b class="total-amount" [class.neg]="total() < 0">{{ formatMoney(total(), mainCurrency()) }}</b>
       <span class="totals-line">總資產 {{ formatMoney(assets(), mainCurrency()) }} · 總負債 {{ formatMoney(liabilities(), mainCurrency()) }}</span>
+      @if (excludedCount() > 0) {
+        <small class="excluded-hint">另有 {{ excludedCount() }} 個帳戶未換算，未計入</small>
+      }
     </div>
 
     @for (group of groups(); track group.key) {
