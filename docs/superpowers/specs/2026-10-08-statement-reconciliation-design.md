@@ -1,6 +1,6 @@
 # Statement reconciliation (對帳) — design
 
-Status: draft v1 for Multica review (2026-10-08). Owner decisions taken so far are marked **[owner]**; defaults I chose are marked **[default]** and are open to change at review.
+Status: draft v1.1 for Multica review (2026-10-08; owner decisions on provider, policy defaults, backfill and date handling folded in). Owner decisions taken so far are marked **[owner]**; defaults I chose are marked **[default]** and are open to change at review.
 
 ## 1. Problem
 
@@ -131,7 +131,7 @@ Append-only: `{id, proposal_id nullable, case_id, action, params, before JSONB, 
 
 ## 4. Ingest worker (`app/statements/ingest.py`, CLI `python -m app.statements.ingest`)
 
-Runs as a systemd user timer daily at 07:30 local (after Hermes' mail sweep) and on demand. Lives in the accounting-service so it has the DB session, MinIO client and the FX service. Never imported by the API process.
+Runs as a systemd user timer daily at 07:30 local (after Hermes' mail sweep) and on demand. On demand means the Hermes skill `homehub-statements` (§8) or the owner running the CLI; both execute the same command, so chat ("對帳一下") and the timer are indistinguishable in the audit. Lives in the accounting-service so it has the DB session, MinIO client and the FX service. Never imported by the API process.
 
 ### 4.1 Sync
 `rclone sync gdrive:財務對帳單/銀行 <state>/inbox` (read-only on the Drive side; `--immutable`). The inbox lives in `/var/lib/home-hub-statements/` mode 700, owned by `opc`. Every file's sha256 is checked against `statement_file`; unseen files get a row with `status=new` and the original bytes are put in MinIO.
@@ -146,7 +146,7 @@ Passwords come from `/etc/home-hub-production/statement-passwords.env` (root:opc
 `pdfplumber`: text chars and tables on page 1. `has_text_layer = text_chars ≥ 200`. Text path: full text with page markers plus `extract_tables()` output. Vision path: pages rendered at 150 dpi (`pypdfium2`) and sent as images. Both paths mask before leaving the box: card numbers (`\d{4}[- *]+\d{4}…` → keep last 4), ID numbers, the holder's name (from the passwords file's `STATEMENT_HOLDER_NAMES`).
 
 ### 4.5 Parse (model as a function)
-One request per statement with a strict JSON schema (`StatementParse`): the §3.2 header fields plus `lines[]` with the §3.3 fields. Model: the Anthropic API through the SDK, `claude-sonnet-5-5` **[default — owner to confirm the provider]**, temperature 0, structured output, 3 retries on schema failure. Per-bank regex parsers (`app/statements/parsers/<bank>.py`) are tried **first** when registered and win when their self-check passes; the model is the fallback. v1 ships with no regex parsers; each gets added once three statements of that bank have parsed and the format is known.
+One request per statement with a strict JSON schema (`StatementParse`): the §3.2 header fields plus `lines[]` with the §3.3 fields. Parser backend is pluggable (`claude-cli` / `codex-cli` / `anthropic-api`). **[owner]** v1 uses `claude-cli`: the worker shells out to `claude -p --output-format json` with the schema, authenticated by the VPS's existing Claude Code login (Max subscription, no API key in the service). Temperature 0 where the backend allows it, 3 retries on schema failure, 120 s timeout per statement, the CLI runs with `--tools ""` (no tool use) and only the masked text or page images on stdin. `anthropic-api` stays as the fallback backend for a future key-based deployment. Per-bank regex parsers (`app/statements/parsers/<bank>.py`) are tried **first** when registered and win when their self-check passes; the model is the fallback. v1 ships with no regex parsers; each gets added once three statements of that bank have parsed and the format is known.
 
 Guardrails, all hard:
 - `opening_balance + sum(lines.amount) == statement_total` for both cards and banks, with the §3.3 sign convention (purchases/fees/interest positive, payments/refunds/rewards negative; for banks deposits negative and withdrawals positive is **not** used — bank lines keep the account's own sign, deposits positive). A missing card `opening_balance` is treated as 0 only when the statement prints no 上期應繳; else `needs_review`. On failure lines are stored but **no matching runs**.
@@ -210,7 +210,7 @@ Each action has a validator and an applier in `reconciliation_actions.py`; both 
 Entries protected today (settlements, transfer legs beyond R1, live-schedule loans, referenced originals) stay protected: actions that would touch them fail validation with the existing 409 messages, and the case stays open with the reason shown.
 
 ### 6.3 Policy engine (auto-apply)
-Runs after matching, before the agent. Allowlist, each with a threshold, all default **off** except the first two **[default]**:
+Runs after matching, before the agent. Allowlist, each with a threshold, all default **off** except the first two **[owner: on]**:
 
 - `create_system_entry` for R6 lines (fee/interest/reward) — on.
 - `attach_fee` when R3's `delta` equals `fee_expected` within 1 TWD — on.
@@ -247,12 +247,12 @@ New env `ACCOUNTING_TOKEN_SCOPES`: `label=scope[,scope]` list, e.g. `hermes=read
 
 ## 8. Agent contract (Hermes skill `homehub-reconcile`)
 
-- Trigger: Hermes cron daily 08:00 after the worker, or the owner saying 對帳 in chat.
+- Two Hermes skills, both thin wrappers around repo-owned scripts: `homehub-statements` runs the ingest worker CLI and reports "N files, M parsed, K need review, cases opened"; `homehub-reconcile` is the triage below. Trigger: Hermes cron daily 08:00 after the worker, or the owner saying 對帳 in chat (runs both in sequence).
 - Steps the skill script runs (deterministic shell/python inside the skill, not free-form tool use): `GET /reconciliation/cases?status=open` → for each case build a prompt from `kind`, the line/entry, `candidates`, `context` (ids kept, amounts and merchants included, nothing else from the ledger) → model answer in the proposal schema → `POST …/proposals` → summary message to the gateway: "N cases, M proposals, K need you".
 - The skill never calls `write` routes; its token cannot.
 - Limits: ≤ 50 cases per run, ≤ 2 proposals per case, rationale ≤ 1,000 chars, confidence required.
 - Swap: the skill's prompt + schema live in the repo (`docs/agents/reconcile-skill.md`); running it under Claude Code headless or a plain cron with the Anthropic SDK is the same two endpoints.
-- Provider: Hermes' current provider is `openai-codex`. Case text (merchant names, amounts, dates) therefore goes to OpenAI. **[owner to decide]**: keep, or set the skill's model to an Anthropic one, or run the skill outside Hermes.
+- Provider: Hermes' current provider is `openai-codex` and stays **[owner]**. Case text (merchant names, amounts, dates of the involved candidates) therefore goes to OpenAI for triage; statement parsing does not (it runs on the Claude CLI inside the worker).
 
 ## 9. UI (Angular, `components/accounting/reconciliation/`)
 
@@ -302,11 +302,11 @@ Taken:
 - Hermes is the v1 triage agent through the proposal contract; the brain is swappable **[owner]**.
 - Bank accounts included in v1 with the same engine; investment statements out.
 
-Open for the owner at review:
-1. Parser model provider (Anthropic via SDK **[default]**) and whether Hermes' triage runs on its current OpenAI provider.
-2. Policy defaults: keep `create_system_entry` and `attach_fee` on by default?
-3. Cutover date for backfill cases (`2026-10-31` **[default]**).
-4. Whether `adjust_amount` should also be allowed to change `entry_date` to the statement's `txn_date` (off by default).
+Decided by the owner on 2026-10-08:
+1. Parser runs on the Claude CLI (subscription) inside the worker; Hermes wraps the worker for chat access and keeps its OpenAI provider for triage.
+2. Policy defaults: `create_system_entry` and `attach_fee` on; everything else off.
+3. Backfill: the full Drive history is ingested now as a verification run (parse accuracy = parsed total vs printed total, match rate per period), cases only from statements whose period ends after `2026-10-31`.
+4. `adjust_amount` changes the amount only; `entry_date` is never touched by reconciliation (no setting for it in v1).
 
 Open for the reviewer (Multica):
 - Rule order and thresholds in §5; anything that can mis-match money silently.
