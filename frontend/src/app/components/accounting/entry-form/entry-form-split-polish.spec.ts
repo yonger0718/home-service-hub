@@ -220,6 +220,73 @@ describe('entry form split polish', () => {
     });
   });
 
+  describe('整筆名稱 notice after undoing ＋', () => {
+    beforeEach(() => setUp('phone'));
+
+    /** Named single → ＋ (prefilled) → optional 整筆名稱 edit → 移除此項 on the new child. */
+    async function undoPlus(parentName?: string): Promise<string[]> {
+      await openSingle();
+      await addSecond();
+      if (parentName !== undefined) {
+        form().selectBubble('parent');
+        await settle();
+        const input = root().querySelector<HTMLInputElement>('input[aria-label="整筆名稱"]')!;
+        input.value = parentName;
+        input.dispatchEvent(new Event('input'));
+        form().selectBubble(form().children()[1].key);
+        await settle();
+      }
+      form().removeChild();
+      await settle();
+      expect(form().children()).toHaveLength(1);
+      expect(form().children()[0].name).toBe('午餐');
+      return Array.from(root().querySelectorAll('.removal-notice')).map(node => node.textContent!.trim());
+    }
+
+    it('a named single → ＋ → undo shows no notice (its name stays on the single)', async () => {
+      expect(await undoPlus()).toEqual([]);
+      expect(root().querySelector('.removal-notices')).toBeNull();
+    });
+
+    it('a parent name that differs from the survivor still shows the exact notice', async () => {
+      expect(await undoPlus('週末聚餐')).toEqual(['整筆名稱「週末聚餐」不會保留']);
+    });
+
+    it('an empty or blank parent name shows no notice', async () => {
+      expect(await undoPlus('   ')).toEqual([]);
+    });
+  });
+
+  describe('整筆名稱 notice on a dissolve', () => {
+    beforeEach(() => setUp('phone'));
+
+    async function dissolve(groupName: string | null): Promise<string[]> {
+      const group = { ...GROUP, name: groupName };
+      const members = [7, 8].map(id => ({
+        ...makeEntryDetail({ id, amount: '-5.0000', name: id === 8 ? '聚餐' : '其他', group }), protected: false, protected_reason: null,
+      }));
+      for (const entry of members) {
+        details.set(entry.id, { ...entry, group_members: members });
+      }
+      await router.navigate(['/accounting/entries', 8, 'edit']);
+      await settle();
+      form().selectBubble(form().children().find(child => child.id === 7)!.key);
+      await settle();
+      form().removeChild();
+      await settle();
+      expect(form().children().map(child => child.name)).toEqual(['聚餐']);
+      return Array.from(root().querySelectorAll('.removal-notice')).map(node => node.textContent!.trim());
+    }
+
+    it('no notice when the survivor already carries the parent name (trimmed)', async () => {
+      expect(await dissolve(' 聚餐 ')).toEqual([]);
+    });
+
+    it('shows 將不保留 for a different parent name', async () => {
+      expect(await dissolve('週末聚餐')).toEqual(['整筆名稱「週末聚餐」將不保留']);
+    });
+  });
+
   describe('最多 50 項', () => {
     beforeEach(() => setUp('phone'));
 

@@ -1655,9 +1655,14 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     if (!child || this.saving() || this.sheet() || this.drafts.removeReason(child.key)) {
       return;
     }
+    const parentName = this.parent().name;
     this.drafts.remove(child.key);
     this.amountError.set(false);
     const survivor = this.drafts.current();
+    if (this.groupId() === null && this.children().length === 1 && parentName.trim() === this.children()[0].name.trim()) {
+      // Undoing a convert's ＋: the parent name the single lent it stays on the single, so nothing is dropped.
+      this.drafts.droppedNotices.update(notices => notices.filter(notice => notice !== `整筆名稱「${parentName}」不會保留`));
+    }
     if (!this.childScope() && survivor && isWritableKind(survivor.kind)) {
       // Back to a plain entry: the single tab follows the survivor's kind.
       this.singleKind.set(survivor.kind);

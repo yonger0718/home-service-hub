@@ -55,4 +55,15 @@ describe('split summary', () => {
     c.name = ' ';
     expect(dissolveNotices(p, c)).toEqual(['整筆備註將不保留']);
   });
+
+  it('keeps no 整筆名稱 notice when the survivor already carries the same name (trimmed) or the parent has none', () => {
+    const p = { ...newParent('2026-10-02', null), name: ' 午餐 ' };
+    const c = { ...newChild(), name: '午餐' };
+    expect(dissolveNotices(p, c)).toEqual([]);
+    c.name = '晚餐';
+    expect(dissolveNotices(p, c)).toEqual(['整筆名稱「 午餐 」將不保留']);
+    for (const name of ['', '   ']) {
+      expect(dissolveNotices({ ...p, name }, c)).toEqual([]);
+    }
+  });
 });

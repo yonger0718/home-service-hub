@@ -103,7 +103,10 @@ export function rewardEstimates(children: readonly ChildDraft[], accounts: reado
 /** Group fields a dissolve will not copy onto the survivor because it has its own (spec §1.5 copy-into-blank). */
 export function dissolveNotices(parent: ParentDraft, survivor: ChildDraft): string[] {
   return [
-    ...(nonempty(parent.name) && nonempty(survivor.name) ? [`整筆名稱「${parent.name}」將不保留`] : []),
+    // A parent name equal to the survivor's (a prefilled convert) is not lost: the survivor keeps it.
+    ...(nonempty(parent.name) && nonempty(survivor.name) && parent.name.trim() !== survivor.name.trim()
+      ? [`整筆名稱「${parent.name}」將不保留`]
+      : []),
     ...(nonempty(parent.merchant) && nonempty(survivor.loaded?.merchant) ? [`整筆商家「${parent.merchant}」將不保留`] : []),
     ...(nonempty(parent.description) && nonempty(survivor.description) ? ['整筆備註將不保留'] : []),
   ];
