@@ -7,23 +7,31 @@ import { phoneLayoutGuard, wideLayoutGuard } from './services/layout-mode.servic
  * group view: `/accounting/entries/[0-9]+/group` and `/accounting/accounts/[0-9]+/entries/[0-9]+/group`.
  */
 
+/**
+ * Pages with their own URL below the list: one screen per route below 760 px, the layout's `pane` outlet beside
+ * `list` from 760 px. Both route tables are derived from this one list; order matters (more specific paths first).
+ */
+const PANE_PAGES: readonly { path: string; list: 'timeline' | 'accounts'; page: AccountingPage }[] = [
+  { path: 'accounts/new', list: 'accounts', page: 'accountSettings' },
+  { path: 'accounts/:id/settings', list: 'accounts', page: 'accountSettings' },
+  // An entry opened from a passbook keeps the passbook in its URL (✕ / delete return there; ↑ ↓ stay in it).
+  { path: 'accounts/:id/entries/:eid/group', list: 'accounts', page: 'splitGroup' },
+  { path: 'accounts/:id/entries/:eid', list: 'accounts', page: 'entryDetail' },
+  { path: 'accounts/:id', list: 'accounts', page: 'accountEntries' },
+  { path: 'entry', list: 'timeline', page: 'entryForm' },
+  { path: 'entries/:id/edit', list: 'timeline', page: 'entryForm' },
+  // The 多類別 group view, routed by one of its members (the API reads a split through a member).
+  { path: 'entries/:id/group', list: 'timeline', page: 'splitGroup' },
+  { path: 'entries/:id', list: 'timeline', page: 'entryDetail' },
+  { path: 'reminders', list: 'timeline', page: 'reminders' },
+];
+
 /** Below 760 px: one screen per route, in the layout's primary outlet. */
 const ACCOUNTING_PHONE_ROUTES: Routes = [
   { path: '', pathMatch: 'full', loadComponent: ACCOUNTING_PAGES.timeline },
-  { path: 'accounts', loadComponent: ACCOUNTING_PAGES.accounts },
-  { path: 'accounts/new', loadComponent: ACCOUNTING_PAGES.accountSettings },
-  { path: 'accounts/:id/settings', loadComponent: ACCOUNTING_PAGES.accountSettings },
-  // An entry opened from a passbook keeps the passbook in its URL (✕ / delete return there; ↑ ↓ stay in it).
-  { path: 'accounts/:id/entries/:eid/group', loadComponent: ACCOUNTING_PAGES.splitGroup },
-  { path: 'accounts/:id/entries/:eid', loadComponent: ACCOUNTING_PAGES.entryDetail },
-  { path: 'accounts/:id', loadComponent: ACCOUNTING_PAGES.accountEntries },
-  { path: 'entry', loadComponent: ACCOUNTING_PAGES.entryForm },
-  { path: 'entries/:id/edit', loadComponent: ACCOUNTING_PAGES.entryForm },
-  // The 多類別 group view, routed by one of its members (the API reads a split through a member).
-  { path: 'entries/:id/group', loadComponent: ACCOUNTING_PAGES.splitGroup },
-  { path: 'entries/:id', loadComponent: ACCOUNTING_PAGES.entryDetail },
+  { path: 'accounts', pathMatch: 'full', loadComponent: ACCOUNTING_PAGES.accounts },
+  ...PANE_PAGES.map(({ path, page }) => ({ path, loadComponent: ACCOUNTING_PAGES[page] })),
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
-  { path: 'reminders', loadComponent: ACCOUNTING_PAGES.reminders },
 ];
 
 /** The page shown in the layout's `pane` outlet; an empty-path named child keeps the URL free of `(pane:…)`. */
@@ -34,17 +42,8 @@ function pane(page: AccountingPage): Routes {
 /** 760 px and wider: the layout renders `data.list` on the left and the `pane` outlet on the right. */
 const ACCOUNTING_WIDE_ROUTES: Routes = [
   { path: '', pathMatch: 'full', data: { list: 'timeline' }, children: [] },
-  { path: 'entry', data: { list: 'timeline' }, children: pane('entryForm') },
-  { path: 'entries/:id/edit', data: { list: 'timeline' }, children: pane('entryForm') },
-  { path: 'entries/:id/group', data: { list: 'timeline' }, children: pane('splitGroup') },
-  { path: 'entries/:id', data: { list: 'timeline' }, children: pane('entryDetail') },
-  { path: 'reminders', data: { list: 'timeline' }, children: pane('reminders') },
   { path: 'accounts', pathMatch: 'full', data: { list: 'accounts' }, children: [] },
-  { path: 'accounts/new', data: { list: 'accounts' }, children: pane('accountSettings') },
-  { path: 'accounts/:id/settings', data: { list: 'accounts' }, children: pane('accountSettings') },
-  { path: 'accounts/:id/entries/:eid/group', data: { list: 'accounts' }, children: pane('splitGroup') },
-  { path: 'accounts/:id/entries/:eid', data: { list: 'accounts' }, children: pane('entryDetail') },
-  { path: 'accounts/:id', data: { list: 'accounts' }, children: pane('accountEntries') },
+  ...PANE_PAGES.map(({ path, list, page }) => ({ path, data: { list }, children: pane(page) })),
   { path: 'settings', loadComponent: ACCOUNTING_PAGES.settings },
 ];
 
