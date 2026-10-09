@@ -22,7 +22,7 @@ The system SHALL persist accounts in an `account` table with these columns:
 - `credit_sharing_id` (UUID, nullable; accounts with the same value share one credit limit)
 - `auto_pay_account_id` (FK → `account.id`, nullable)
 - `fx_fee_pct` (NUMERIC(6,3), nullable), `fx_fee_rounding` (enum `floor`, `round`, `ceil`, `keep`, nullable), `fx_fee_refundable` (BOOLEAN, default FALSE)
-- `statement_password_rule` (VARCHAR(64), nullable; the NAME of the rule the statement worker uses to open this account's password-protected PDFs, never a password), `statement_live_from` (DATE, nullable; NULL means every statement of the account is historical, otherwise statements whose `period_end` is on or after it are live) and `statement_source_root` (enum `mail`, `manual`, nullable; the Drive root its statement folders live under)
+- `statement_password_rule` (VARCHAR(64), nullable; the NAME of the rule the statement worker uses to open this account's password-protected PDFs, never a password), `statement_live_from` (DATE, nullable; NULL means every statement of the account is historical, otherwise statements whose `period_end` is on or after it are live) and `statement_source_root` (enum `mail`, `manual`, nullable; the Drive root its statement folders live under). In R1a these three columns are NOT exposed by the account API: `AccountIn` does not accept them and account reads do not return them; they are set directly in the database
 - `settings_locally_edited` (BOOLEAN, default FALSE; set by any settings write, cleared by the owner to let the next import overwrite settings)
 - `moze_id` (VARCHAR(64), UNIQUE, nullable)
 - `created_at` and `updated_at` (TIMESTAMPTZ)
@@ -55,7 +55,7 @@ An account's balance SHALL be `opening_balance + Σ ledger_entry.amount` over it
 - **THEN** the response SHALL be HTTP 422 naming `currency`
 
 #### Scenario: Statement columns default to unconfigured
-- **WHEN** an account is created without statement settings
+- **WHEN** an account row exists with no statement settings
 - **THEN** `statement_password_rule`, `statement_live_from` and `statement_source_root` SHALL be NULL
 - **AND** its statements SHALL be treated as historical
 
