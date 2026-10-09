@@ -424,19 +424,30 @@ describe('AccountingSettingsComponent', () => {
     http.expectOne('/api/accounting/projects').flush([PROJECTS[1], PROJECTS[0]]);
   });
 
-  it('puts the first project back when the second PUT of a reorder fails (no half-commit)', () => {
+  it('changes nothing when the first PUT of a reorder fails: no revert, no re-read', () => {
+    el.querySelectorAll<HTMLButtonElement>('.project-row .move-down')[0].click();
+    http
+      .expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4')
+      .flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    http.expectNone(r => r.method === 'PUT');
+    http.expectNone('/api/accounting/projects');
+    expect(el.querySelector('.data-message')).not.toBeNull();
+    expect(Array.from(el.querySelectorAll<HTMLInputElement>('.project-row .project-name')).map(input => input.value)).toEqual(['生活', '2026 大阪']);
+  });
+
+  it('puts the first project back when the second PUT of a reorder is refused, then re-reads the list', () => {
     el.querySelectorAll<HTMLButtonElement>('.project-row .move-down')[0].click();
     http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4').flush({});
     http
       .expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/5')
-      .flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+      .flush({ detail: [{ loc: ['body', 'sort_order'], msg: 'bad' }] }, { status: 422, statusText: 'Unprocessable Entity' });
     const revert = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4');
     expect(revert.request.body).toEqual({ name: '生活', is_archived: false, sort_order: 0 });
     revert.flush({});
+    http.expectOne('/api/accounting/projects').flush(PROJECTS);
     fixture.detectChanges();
     expect(el.querySelector('.data-message')).not.toBeNull();
-    // The server is back to the original order: nothing to re-read, the list stays as it was.
-    http.expectNone('/api/accounting/projects');
     expect(Array.from(el.querySelectorAll<HTMLInputElement>('.project-row .project-name')).map(input => input.value)).toEqual(['生活', '2026 大阪']);
   });
 

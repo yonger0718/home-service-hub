@@ -131,10 +131,13 @@ export class AccountingLayoutComponent {
   readonly showFab = computed(() => this.mode() !== 'phone' && !this.formOpen());
 
   private wasPhone: boolean | null = null;
-  private swipe: { x: number; y: number } | null = null;
+  /** `selection`: the document's selected text at pointerdown, so only a selection made by this gesture blocks it. */
+  private swipe: { x: number; y: number; selection: string } | null = null;
 
   /** Element focused before the sheet opened; focus returns there when it closes. */
   private focusBeforeSheet: HTMLElement | null = null;
+  /** The sheet was open (focus moved into it), so its closing owes focus somewhere other than `<body>`. */
+  private sheetWasOpen = false;
 
   constructor() {
     this.router.events
@@ -337,6 +340,7 @@ export class AccountingLayoutComponent {
   }
 
   private focusSheet(): void {
+    this.sheetWasOpen = true;
     const active = this.document.activeElement;
     if (!this.focusBeforeSheet && active instanceof HTMLElement && active !== this.document.body) {
       this.focusBeforeSheet = active;
@@ -356,10 +360,21 @@ export class AccountingLayoutComponent {
 
   private restoreFocus(): void {
     const previous = this.focusBeforeSheet;
+    const wasOpen = this.sheetWasOpen;
     this.focusBeforeSheet = null;
+    this.sheetWasOpen = false;
     if (previous?.isConnected) {
       previous.focus();
+      return;
     }
+    // No opener (a deep link): the now-inert sheet would leave focus on <body>. Fall back to the list's current row,
+    // else the list pane itself, unless focus already moved somewhere live.
+    const active = this.document.activeElement;
+    if (!wasOpen || (active && active !== this.document.body && !this.detailPane()?.nativeElement.contains(active))) {
+      return;
+    }
+    const list = this.listPane()?.nativeElement;
+    (list?.querySelector<HTMLElement>('.sel, [aria-current]:not([aria-current="false"])') ?? list)?.focus();
   }
 
   /** Swipe-to-close starts only on the grip, only in the 760–1023 px sheet (spec §4.1). */
@@ -369,7 +384,7 @@ export class AccountingLayoutComponent {
       this.swipe = null;
       return;
     }
-    this.swipe = { x: event.clientX, y: event.clientY };
+    this.swipe = { x: event.clientX, y: event.clientY, selection: this.selectedText() };
     const grip = event.currentTarget as HTMLElement | null;
     // Capture would retarget the button's following click to the grip, swallowing a plain tap on ✕.
     if (typeof event.pointerId === 'number' && !target?.closest('.sheet-close')) {
@@ -390,9 +405,11 @@ export class AccountingLayoutComponent {
     if (!swipe || !this.sheetOpen()) {
       return;
     }
-    // A mouse drag from the grip across the pinned header selects text: that is a selection, not a close.
-    const selection = this.document.getSelection();
-    if (selection && !selection.isCollapsed && selection.toString().trim()) {
+    // A mouse drag from the grip across the pinned header selects text: that is a selection, not a close. Only a
+    // selection this gesture made inside the pane counts; an older one elsewhere never blocks a swipe.
+    const text = this.selectedText();
+    const anchor = this.document.getSelection()?.anchorNode ?? null;
+    if (text && text !== swipe.selection && anchor && this.detailPane()?.nativeElement.contains(anchor)) {
       return;
     }
     const dx = event.clientX - swipe.x;
@@ -400,6 +417,11 @@ export class AccountingLayoutComponent {
     if (dx > SWIPE_CLOSE_PX && Math.abs(dy) < SWIPE_MAX_DY) {
       this.close();
     }
+  }
+
+  private selectedText(): string {
+    const selection = this.document.getSelection();
+    return selection && !selection.isCollapsed ? selection.toString().trim() : '';
   }
 
   onGripPointerCancel(): void {

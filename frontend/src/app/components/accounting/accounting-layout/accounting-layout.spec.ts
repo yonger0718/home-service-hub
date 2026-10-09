@@ -136,6 +136,23 @@ describe('AccountingLayoutComponent', () => {
     opener.remove();
   });
 
+  it('sends focus to the list, not <body>, when a deep-linked sheet closes with no opener', async () => {
+    const harness = await start('sheet', '/accounting/entries/5');
+    await find(harness, LIST);
+    const closeButton = await find(harness, '.sheet-close');
+    await vi.waitFor(() => expect(document.activeElement).toBe(closeButton));
+
+    (closeButton as HTMLButtonElement).click();
+    const router = TestBed.inject(Router);
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    const list = harness.routeNativeElement!.querySelector<HTMLElement>('.list-pane')!;
+    await vi.waitFor(() => {
+      harness.detectChanges();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(list.contains(document.activeElement)).toBe(true);
+    });
+  });
+
   it('leaves an Escape already handled inside the sheet (the entry form cancels itself)', async () => {
     const harness = await start('sheet', '/accounting');
     await find(harness, LIST);
@@ -603,12 +620,36 @@ describe('AccountingLayoutComponent', () => {
     harness.detectChanges();
     expect(router.url).toBe('/accounting/entries/5');
 
-    // The same drag with nothing selected is a swipe.
+    // A selection that was already there before the gesture (or lies outside the pane) never blocks a swipe.
+    const outside = document.createElement('p');
+    outside.textContent = '舊的選取';
+    document.body.appendChild(outside);
+    document.getSelection()!.selectAllChildren(outside);
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 22, bubbles: true }));
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    outside.remove();
+    title.remove();
+
+    // Same for an old selection inside the pane: unchanged during the gesture, so the swipe closes.
+    await router.navigateByUrl('/accounting/entries/5');
+    const reopened = await find(harness, '.detail-pane.open');
+    const kept = document.createElement('h2');
+    kept.textContent = '晚餐';
+    reopened.appendChild(kept);
+    document.getSelection()!.selectAllChildren(kept);
+    grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+    grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 22, bubbles: true }));
+    await vi.waitFor(() => expect(router.url).toBe('/accounting'));
+    kept.remove();
+
+    // And with nothing selected it is a swipe as before.
+    await router.navigateByUrl('/accounting/entries/5');
+    await find(harness, '.detail-pane.open');
     document.getSelection()!.removeAllRanges();
     grip.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
     grip.dispatchEvent(new MouseEvent('pointerup', { clientX: 200, clientY: 22, bubbles: true }));
     await vi.waitFor(() => expect(router.url).toBe('/accounting'));
-    title.remove();
   });
 
   it('wraps Tab inside the sheet: from the last focusable to ✕ and back with Shift+Tab', async () => {

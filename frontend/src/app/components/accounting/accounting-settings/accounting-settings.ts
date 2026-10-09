@@ -320,17 +320,18 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
     const put = (project: Project, sortOrder: number) =>
       this.service.updateProject(project.id, { name: project.name, is_archived: project.is_archived, sort_order: sortOrder });
     // No batch endpoint for projects: two PUTs in order, and a failed second one puts the first back, so the pair is
-    // never half-swapped. If even that revert fails, the list is re-read to show what the server has.
+    // never half-swapped. Once the first PUT has committed, every failure re-reads the list (revert or not), so it
+    // shows what the server has; a failed first PUT changed nothing.
     const swapped = put(current, a).pipe(
       concatMap(() =>
         put(other, b).pipe(
           catchError((error: unknown) =>
             put(current, current.sort_order).pipe(
-              catchError(() => {
+              catchError(() => of(null)),
+              concatMap(() => {
                 this.loadProjects();
-                return of(null);
+                return throwError(() => error);
               }),
-              concatMap(() => throwError(() => error)),
             ),
           ),
         ),
