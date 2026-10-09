@@ -50,6 +50,23 @@ def wait_until_unlocked(engine, timeout: float = 5.0) -> None:
         time.sleep(0.05)
 
 
+def wait_until_blocked(engine, pid: int, timeout: float = 5.0) -> str:
+    """Poll pg_stat_activity (50 ms steps, at most `timeout` s) until backend `pid` waits on a heavyweight lock
+    (wait_event_type 'Lock', e.g. 'transactionid'/'tuple' for a row lock); returns its wait_event, else fails."""
+    deadline = time.monotonic() + timeout
+    seen = None
+    with engine.connect() as conn:
+        while True:
+            seen = conn.execute(
+                text("SELECT wait_event_type, wait_event, state FROM pg_stat_activity WHERE pid = :pid"), {"pid": pid}
+            ).one_or_none()
+            if seen is not None and seen.wait_event_type == "Lock":
+                return seen.wait_event
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"backend {pid} never blocked on a lock within {timeout} s (last seen: {seen})")
+            time.sleep(0.05)
+
+
 def make_account(session, name: str = "錢包", currency: str = "TWD", opening: str = "0", **columns) -> Account:
     """Insert an account (flushed, not committed); `columns` sets any other Account column."""
     account = Account(name=name, currency=currency, opening_balance=Decimal(opening), **columns)
