@@ -21,7 +21,7 @@ from sqlalchemy import (
     event,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, ENUM
 from sqlalchemy.sql import func
 
 from ..database import Base, TimestampMixin
@@ -41,7 +41,7 @@ ENTRY_KINDS = (
     "refund",
 )
 SYSTEM_KINDS = ("fee", "discount", "reward", "interest", "balance_adjustment")
-ENTRY_SOURCES = ("moze_import", "moze_backup", "manual", "hermes", "rule", "schedule")
+ENTRY_SOURCES = ("moze_import", "moze_backup", "manual", "hermes", "rule", "schedule", "statement")
 MOZE_SOURCES = ("moze_import", "moze_backup")
 FX_SOURCES = ("fx_api", "moze_backup", "manual")
 DUE_RULES = ("fixed_day", "days_after_closing")
@@ -131,6 +131,11 @@ class Account(Base, TimestampMixin):
     fx_fee_refundable = Column(Boolean, nullable=False, server_default=text("false"))
     settings_locally_edited = Column(Boolean, nullable=False, server_default=text("false"))
     moze_id = Column(String(64), nullable=True, unique=True)
+    statement_password_rule = Column(String(64), nullable=True)
+    statement_live_from = Column(Date, nullable=True)
+    # app/models/statements.py owns (creates) the statement_source_root type; the PostgreSQL ENUM is used here
+    # because the generic Enum silently ignores create_type.
+    statement_source_root = Column(ENUM("mail", "manual", name="statement_source_root", create_type=False), nullable=True)
 
 
 class Category(Base):
