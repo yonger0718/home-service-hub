@@ -1667,7 +1667,7 @@ def _line(**kw):
 
 
 def _rev(**kw):
-    base = dict(run_id=1, lease_token="t", file_id=1, account_id=1, kind="card", parser="claude-cli", parser_version="2.1.295",
+    base = dict(run_id=1, lease_token="t" * 16, file_id=1, account_id=1, kind="card", parser="claude-cli", parser_version="2.1.295",
                 currency="TWD", period_start="2026-09-01", period_end="2026-09-30", statement_total="580", lines=[_line()], raw={})
     base.update(kw)
     return base
