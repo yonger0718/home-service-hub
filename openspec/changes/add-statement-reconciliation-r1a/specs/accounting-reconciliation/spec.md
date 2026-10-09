@@ -75,13 +75,18 @@ Every route of the statements router SHALL sit behind a feature dependency: whil
 
 ### Requirement: Ingest runs and leases
 
-`POST /statements/ingest/run` (scope `enqueue`) SHALL insert a `queued` run with `trigger = 'enqueue'` and `mode = 'live'`, or, when a non-terminal run exists, SHALL return that run with the request appended to `summary.coalesced`; the check SHALL be serialised by an advisory lock. A worker SHALL claim a run with one atomic conditional update: the run moves to `claimed`, receives a fresh `lease_token`, `lease_expires_at = now + 30 minutes` and `attempt = attempt + 1`. A claim on a run whose lease is still live SHALL fail with HTTP 409 and change nothing. A claim on a `claimed` or `running` run whose lease has expired SHALL first expire it by a conditional update, so that one expiry bumps `attempt` once and a concurrent fresh claim is never overwritten. Every submission (`renew`, `finish`, files, sources, `mark-removed`, revisions) SHALL carry `run_id` and `lease_token`; it SHALL be refused with HTTP 409 with message `lease` when the run is not `claimed`/`running`, the token differs (compared in constant time), the lease is expired, or the caller's label is not the label that claimed the run. The first valid submission moves `claimed` to `running`; `renew` SHALL extend the lease by 30 minutes; `finish` SHALL accept only `done` or `failed` and merge the worker's summary over the stored one.
+`POST /statements/ingest/run` (scope `enqueue`) SHALL insert a `queued` run with `trigger = 'enqueue'` and `mode = 'live'`, or, when a `queued` run or a `claimed`/`running` run whose lease has not expired exists, SHALL return that run with the request appended to `summary.coalesced` (an `expired` run or a dead lease SHALL never be a coalescing target); the check SHALL be serialised by an advisory lock. A worker SHALL claim a run with one atomic conditional update: the run moves to `claimed`, receives a fresh `lease_token`, `lease_expires_at = now + 30 minutes` and `attempt = attempt + 1`. A claim on a run whose lease is still live SHALL fail with HTTP 409 and change nothing. A claim on a `claimed` or `running` run whose lease has expired SHALL first expire it by a conditional update, so that one expiry bumps `attempt` once and a concurrent fresh claim is never overwritten. Every submission (`renew`, `finish`, files, sources, `mark-removed`, revisions) SHALL carry `run_id` and `lease_token`; it SHALL be refused with HTTP 409 with message `lease` when the run is not `claimed`/`running`, the token differs (compared in constant time), the lease is expired, or the caller's label is not the label that claimed the run. The first valid submission moves `claimed` to `running`; `renew` SHALL extend the lease by 30 minutes; `finish` SHALL accept only `done` or `failed` and merge the worker's summary over the stored one.
 
 #### Scenario: Enqueue coalesces
-- **GIVEN** a non-terminal run exists
+- **GIVEN** a queued run exists
 - **WHEN** a token holding `enqueue` (here `hermes=read,propose,enqueue`) enqueues twice
 - **THEN** both calls SHALL return the same run id
 - **AND** `summary.coalesced[0].principal` SHALL be `hermes`
+
+#### Scenario: Enqueue never coalesces into a dead lease
+- **GIVEN** a claimed run whose lease has been moved into the past
+- **WHEN** a token holding `enqueue` enqueues
+- **THEN** a new `queued` run SHALL be created with a different run id
 
 #### Scenario: Claim is atomic and bumps the attempt after expiry
 - **GIVEN** run 1 claimed by `worker` with attempt 1

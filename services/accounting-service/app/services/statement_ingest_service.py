@@ -46,13 +46,17 @@ def _now() -> datetime:
 
 # ---- runs ----
 def enqueue_run(db: Session, *, principal: str) -> IngestRun:
-    """Insert a queued run, or return the existing non-terminal one with this request appended to summary.coalesced.
+    """Insert a queued run, or return a pending one with this request appended to summary.coalesced.
 
+    Only a `queued` run, or a `claimed`/`running` one whose lease is still live, is a coalescing target: an `expired`
+    run or a dead lease may never be picked up again, so the request gets a new queued run instead.
     The caller learns whether it coalesced from `bool(run.summary.get("coalesced"))` (the creating call has none).
     """
     db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ENQUEUE_LOCK_KEY})
+    pending = or_(IngestRun.status == "queued",
+                  IngestRun.status.in_(LEASED) & (IngestRun.lease_expires_at > _now()))
     run = db.execute(
-        select(IngestRun).where(IngestRun.status.not_in(TERMINAL)).order_by(IngestRun.id).limit(1).with_for_update()
+        select(IngestRun).where(pending).order_by(IngestRun.id).limit(1).with_for_update()
     ).scalar_one_or_none()
     if run is None:
         run = IngestRun(trigger="enqueue", principal=principal, mode="live", status="queued", summary={})

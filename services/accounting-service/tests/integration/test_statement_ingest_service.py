@@ -65,6 +65,19 @@ def test_enqueue_coalesces_non_terminal_runs(db_session):
     assert a.id == b.id and b.summary["coalesced"][0]["principal"] == "hermes"
 
 
+def test_enqueue_coalesces_into_a_live_lease_but_never_a_dead_one(db_session):
+    queued = svc.enqueue_run(db_session, principal="hermes")
+    claimed, _ = svc.claim_run(db_session, queued.id, label="worker")
+    assert svc.enqueue_run(db_session, principal="hermes").id == queued.id  # claimed, lease live
+    claimed.lease_expires_at = svc._now() - timedelta(minutes=1)
+    db_session.flush()
+    fresh = svc.enqueue_run(db_session, principal="hermes")
+    assert fresh.id != queued.id and fresh.status == "queued" and not fresh.summary.get("coalesced")
+    fresh.status = "expired"
+    db_session.flush()
+    assert svc.enqueue_run(db_session, principal="hermes").id not in (queued.id, fresh.id)
+
+
 def test_claim_is_atomic_and_fences_submissions(db_session, run):
     r, token = run
     with pytest.raises(ConflictError):
