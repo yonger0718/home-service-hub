@@ -223,6 +223,11 @@ def _standalone(entry: Entry) -> bool:
     return entry.group_id is None and entry.parent_entry_id is None and entry.instance is None
 
 
+def _peer_ok(kind: str, line: Line, entry: Entry) -> bool:
+    """A card `payment` line takes only a leg whose transfer peer is known not to be a card (every candidate path)."""
+    return not (line.line_kind == "payment" and kind == "card" and entry.transfer_peer_is_card is not False)
+
+
 def _same(a: Decimal, b: Decimal) -> bool:
     return a.quantize(Q) == b.quantize(Q)
 
@@ -255,7 +260,7 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         # group members, installment instances and children never stand alone (children reach a line via the child path)
         if e.id in claimed or not _standalone(e) or _entry_class(e) not in gate:
             continue
-        if line.line_kind == "payment" and kind == "card" and e.transfer_peer_is_card is not False:
+        if not _peer_ok(kind, line, e):
             continue
         principal = (Row(e.id, "principal", e.flow),)
         child_rows = tuple(Row(c.id, "child", c.flow) for c in e.children if c.id not in claimed)
@@ -334,7 +339,7 @@ def _foreign_case(kind: str, line: Line, entries: list[Entry], claimed: set[int]
         return None
     gate = eligible_kinds(kind, line.line_kind)
     found = sorted((e for e in entries
-                    if e.id not in claimed and _standalone(e) and _entry_class(e) in gate
+                    if e.id not in claimed and _standalone(e) and _entry_class(e) in gate and _peer_ok(kind, line, e)
                     and e.original_amount is not None and e.original_currency == line.foreign_currency
                     and _same(e.original_amount, line.foreign_amount) and _date_distance(line, e) <= rules.foreign_window_days),
                    key=lambda e: (_date_distance(line, e), e.id))
@@ -358,7 +363,7 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
     tol = max(rules.near_tolerance_abs, (rules.near_tolerance_pct * abs(line.flow)).quantize(Q))
     found: list[tuple[Decimal, int, int, Decimal]] = []
     for e in entries:
-        if e.id in claimed or _entry_class(e) not in gate or not _standalone(e):
+        if e.id in claimed or _entry_class(e) not in gate or not _standalone(e) or not _peer_ok(kind, line, e):
             continue
         theirs = tokens(normalise(e.merchant or "")) | tokens(normalise(e.name or ""))
         if not mine or not theirs or 2 * len(mine & theirs) < len(mine | theirs):

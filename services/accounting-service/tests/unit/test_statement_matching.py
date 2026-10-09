@@ -256,3 +256,20 @@ def test_second_line_on_an_already_claimed_entry_is_hinted():
     res = run([L(1, date(2026, 9, 3), "-580"), L(2, date(2026, 9, 3), "-580")], [E(10, date(2026, 9, 3), "-580")])
     assert [c.line_id for c in res.claims] == [1]
     assert res.cases[0].kind == "line_unmatched" and res.cases[0].context == {"hint": "claimed_by_earlier_line", "entry_id": 10}
+
+
+def test_card_to_card_transfer_leg_is_never_a_near_or_foreign_candidate_for_a_payment():
+    # the standalone path's card-payment peer check applies to the near and foreign cases too
+    line = L(1, date(2026, 9, 10), "5000", kind="payment", merchant="繳款")
+    for peer in (True, None):
+        near = run([line], [E(80, date(2026, 9, 10), "4990", kind="transfer_in", merchant="繳款", peer_is_card=peer)])
+        assert [c.kind for c in near.cases] == ["line_unmatched"], peer
+    control = run([line], [E(80, date(2026, 9, 10), "4990", kind="transfer_in", merchant="繳款", peer_is_card=False)])
+    assert [c.kind for c in control.cases] == ["amount_delta"]
+    foreign_line = L(1, date(2026, 9, 10), "5000", kind="payment", merchant="繳款", foreign_amount=D("160"),
+                     foreign_currency="USD")
+    leg = dict(kind="transfer_in", merchant="其他", original_amount=D("160"), original_currency="USD")
+    foreign = run([foreign_line], [E(81, date(2026, 9, 10), "4990", peer_is_card=True, **leg)])
+    assert [c.kind for c in foreign.cases] == ["line_unmatched"]
+    control = run([foreign_line], [E(81, date(2026, 9, 10), "4990", peer_is_card=False, **leg)])
+    assert [c.kind for c in control.cases] == ["amount_delta"]
