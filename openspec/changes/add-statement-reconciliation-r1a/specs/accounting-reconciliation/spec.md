@@ -35,7 +35,7 @@
 
 #### Scenario: Restricted token is refused on every legacy mutation route
 - **GIVEN** scopes `spa=legacy; hermes=read,propose; worker=ingest` and the feature on
-- **WHEN** the `hermes` token calls any mutation route of the full route table (including `POST /entries`, `PUT /accounts/{id}`, `POST /transfers`, `POST /imports/moze` and the settings writes)
+- **WHEN** the `hermes` token calls any mutation route of the full route table that is not a `propose` route (none exist in R1a) (including `POST /entries`, `PUT /accounts/{id}`, `POST /transfers`, `POST /imports/moze` and the settings writes)
 - **THEN** each response SHALL be HTTP 403 with message `scope`
 
 #### Scenario: Ingest token cannot read the ledger
@@ -183,7 +183,7 @@ For every revision the server SHALL compute guardrails. A `card` statement SHALL
 
 ### Requirement: Statement identity, revisions and current revision
 
-A statement SHALL be identified by `(account_id, currency, period_end)`; the first submission creates it (concurrent creators SHALL NOT raise), later ones add revisions to it under a row lock. A revision SHALL be immutable and numbered from 1 within its statement. An unknown account SHALL answer HTTP 404 and `period_start` after `period_end` HTTP 422 on `period_start`. The statement's `kind` SHALL match the account (`card` iff `is_credit`), else HTTP 422 on `kind`; a file-backed revision SHALL come from a folder `<root>/<first two folders>` that `account_map` maps to the same account, else HTTP 422 on `account_id` (message `folder maps elsewhere`).
+A statement SHALL be identified by `(account_id, currency, period_end)`; the first submission creates it (concurrent creators SHALL NOT raise), later ones add revisions to it under a row lock. A revision SHALL be immutable and numbered from 1 within its statement. An unknown account SHALL answer HTTP 404 and `period_start` after `period_end` HTTP 422 on `period_start`. The statement's `kind` SHALL match the account (`card` iff `is_credit`), else HTTP 422 on `kind`; a file-backed revision SHALL come from a folder `<root>/<first two folders>` that `account_map` maps to the same account, else HTTP 422 whose `detail[0].loc` ends with `account_id` and whose `msg` is `folder maps elsewhere`.
 
 A revision SHALL become the statement's current revision when any of these holds: it creates the statement (even if its guardrails failed); it is a correction, i.e. the current revision failed its guardrails and this one passes, and the statement is not reconciled; or it passes its guardrails, the statement is not reconciled, the twin counts are unchanged and no compared header field (`period_start`, `closing_date`, `due_date`, `opening_balance`, `statement_total`, `minimum_payment`) changed. Otherwise the revision SHALL be stored and the current revision SHALL stay. A correction SHALL also supersede the statement's still-open `parse_review` cases (status `superseded`, version incremented). A revision submitted for a statement whose `status` is `reconciled` SHALL be stored with `conflict = true`, SHALL set `conflict_open`, SHALL open one `statement_conflict` case (live mode) and SHALL NOT change the current revision.
 
@@ -214,7 +214,7 @@ A revision SHALL become the statement's current revision when any of these holds
 #### Scenario: Kind and folder must match the account
 - **GIVEN** a bank account and a card revision, or a file whose folder maps to account N+1
 - **WHEN** the revision is submitted for account N
-- **THEN** the response SHALL be 422 on `kind`, respectively 422 on `account_id` with message `folder maps elsewhere`
+- **THEN** the response SHALL be 422 on `kind`, respectively 422 whose `detail[0].loc` ends with `account_id` and whose `msg` is `folder maps elsewhere`
 
 ### Requirement: Events and lineage
 

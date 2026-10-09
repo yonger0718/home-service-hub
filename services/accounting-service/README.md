@@ -129,8 +129,8 @@ Three further variables (design `docs/superpowers/specs/2026-10-08-statement-rec
 - `ACCOUNTING_RESTRICTED_LABELS`: extra comma-separated labels (besides the built-in `hermes` and `worker`) that must
   never run without a scope entry.
 - `ACCOUNTING_RECONCILIATION_ENABLED`: `1`, `true` or `yes` (any case) serves the statement routes (`/statements/...`,
-  `/accounts/{id}/statements`, `/settings/reconciliation`); otherwise they answer 404. Scope checks stay active
-  either way.
+  `/accounts/{id}/statements`, `/settings/reconciliation`); otherwise they answer 404 before any scope check. Scope
+  checks stay active either way on the legacy and settings routers.
 
 The service refuses to start when scopes are set and a token is bare, a token value is duplicated, a label has no
 scope entry (or a scope entry has no token), a scope name is unknown, or `legacy` is combined with `ingest`/`enqueue`;
