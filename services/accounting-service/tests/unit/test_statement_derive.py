@@ -87,3 +87,9 @@ def test_bank_equation_requires_opening():
 def test_other_guardrails(bad):
     lines = derive.derive_lines("card", bad.get("lines", [L(1, date(2026, 9, 3), "580")]))
     assert not derive.guardrails("card", bad.get("hdr", _hdr("580")), "TWD", lines).ok
+
+
+def test_amounts_round_half_up_like_the_ledger():
+    assert derive.flow_amount("card", "purchase", Decimal("1.00005")) == Decimal("-1.0001")
+    line = derive.derive_lines("card", [L(1, date(2026, 9, 3), "1.00005")])[0]
+    assert line.logical_key == "2026-09-03|-1.0001|0"
