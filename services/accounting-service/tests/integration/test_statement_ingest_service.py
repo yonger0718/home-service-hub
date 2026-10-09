@@ -193,6 +193,8 @@ def test_reconciled_statement_gets_conflict_not_new_current(db_session, card, ru
     new_event = db_session.query(StatementEvent).filter_by(first_revision_id=second.revision.id).one()
     assert (old_event.status, old_event.current_line_id) == ("live", old_event.first_line_id)
     assert new_event.current_line_id is None and new_event.first_line_id is not None
+    # ...and that orphan event is born retired, so no live event lacks a current line.
+    assert new_event.status == "retired"
 
 
 def test_kind_must_match_account_and_folder_map(db_session, seed, run, card):

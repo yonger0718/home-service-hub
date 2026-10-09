@@ -135,7 +135,8 @@ def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision:
     new_events: dict[int, StatementEvent] = {}
     for pairing in pairings:
         if pairing.new is not None and pairing.old is None:
-            event = StatementEvent(statement_id=statement.id, first_revision_id=revision.id, status="live")
+            event = StatementEvent(statement_id=statement.id, first_revision_id=revision.id,
+                                   status="live" if becomes_current else "retired")
             db.add(event)
             new_events[pairing.new.index] = event
     db.flush()
