@@ -317,10 +317,56 @@ def test_settings_expose_rules_and_validate_rule_keys(client, card):
     assert current["rules"]["accept"] == "0.80" and "period_end" not in current["rules"]
     for bad in ({"nope": 1}, {"period_end": "2026-09-30"}, {"deferral_days": "x"}, {"deferral_days": True},
                 {"accept": 0.8}, {"bank_only_patterns": "年費"}, {"bank_only_patterns": [1]}):
-        assert client.put("/settings/reconciliation", headers=S, json={"rules": bad}).status_code == 422, bad
+        refused = client.put("/settings/reconciliation", headers=S, json={"rules": bad})
+        assert refused.status_code == 422 and refused.json()["detail"][0]["loc"][-1] == "rules", bad
+    for out_of_range in ({"accept": "1.5"}, {"margin": "-0.1"}, {"ambiguous_floor": "2"}, {"near_tolerance_pct": "-1"},
+                         {"near_tolerance_abs": "-5"}):
+        refused = client.put("/settings/reconciliation", headers=S, json={"rules": out_of_range})
+        assert refused.status_code == 422 and refused.json()["detail"][0]["loc"][-1] == "rules", out_of_range
     saved = client.put("/settings/reconciliation", headers=S, json={"rules": {"deferral_days": 3, "accept": "0.90"}})
     assert saved.status_code == 200, saved.text
     assert saved.json()["rules"]["deferral_days"] == 3 and saved.json()["rules"]["accept"] == "0.90"
     assert saved.json()["rules_version"] == f"r1b-{current['version'] + 1}"
     again = client.put("/settings/reconciliation", headers=S, json={"rules": {"deferral_days": 3, "accept": "0.90"}})
     assert again.json()["rules_version"] == saved.json()["rules_version"]  # unchanged rules keep the version
+    edges = {"accept": "1", "margin": "0", "ambiguous_floor": "0.5", "near_tolerance_pct": "0", "near_tolerance_abs": "0"}
+    assert client.put("/settings/reconciliation", headers=S, json={"rules": edges}).status_code == 200
+
+
+def test_cases_listing_limit_defaults_to_200_and_caps_at_1000(client, card, seed, db_session):
+    _submit(client, card, [{**LINE, "seq": n} for n in (1, 2, 3)], "1740")  # three unmatched lines: three cases
+    assert len(client.get("/reconciliation/cases", headers=H).json()) == 3
+    assert len(client.get("/reconciliation/cases?limit=2", headers=H).json()) == 2
+    newest = client.get("/reconciliation/cases?limit=1", headers=H).json()
+    assert newest[0]["id"] == max(c["id"] for c in client.get("/reconciliation/cases", headers=H).json())
+    for bad in ("0", "1001", "x"):
+        assert client.get(f"/reconciliation/cases?limit={bad}", headers=H).status_code == 422, bad
+    assert client.get("/reconciliation/cases?limit=1000", headers=H).status_code == 200
+
+
+def test_sweep_stops_with_409_lease_when_the_lease_expires_between_items(client, card, seed, db_session, monkeypatch):
+    from datetime import timedelta
+    from app.services import reconciliation_service as rec
+    from app.services import statement_ingest_service as svc
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    second_card = seed.account("卡二", is_credit=True, statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    first, lease = _submit(client, card)
+    second, _ = _submit(client, second_card, lease=lease)
+    lease = {"run_id": lease["run_id"], "lease_token": lease["lease_token"]}
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = true"))
+    db_session.commit()
+    real, real_now, done = rec.reconcile, svc._now, []
+
+    def reconcile_then_expire(db, statement_id, **kwargs):
+        out = real(db, statement_id, **kwargs)
+        done.append(statement_id)
+        monkeypatch.setattr(svc, "_now", lambda: real_now() + svc.LEASE + timedelta(minutes=1))
+        return out
+
+    monkeypatch.setattr(rec, "reconcile", reconcile_then_expire)
+    refused = client.post("/reconciliation/sweep", headers=W, json=lease)
+    assert refused.status_code == 409 and refused.json()["message"] == "lease", refused.text
+    assert done == [first]  # the second statement was never started
+    flags = dict(db_session.execute(text("SELECT id, needs_recheck FROM account_statement")).all())
+    assert flags[first] is False and flags[second] is True  # the finished item stays committed

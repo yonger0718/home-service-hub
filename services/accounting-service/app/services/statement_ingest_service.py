@@ -30,7 +30,7 @@ from app.services.statement_revision_service import SubmitResult, submit_revisio
 
 __all__ = [
     "LEASE", "TERMINAL", "SubmitResult", "enqueue_run", "create_worker_run", "list_runs", "claim_run", "renew_lease",
-    "finish_run", "require_lease", "register_file", "register_source", "update_file", "mark_removed_sources",
+    "finish_run", "require_lease", "lease_is_live", "register_file", "register_source", "update_file", "mark_removed_sources",
     "submit_revision", "list_statements", "get_statement", "list_cases",
 ]
 
@@ -49,8 +49,9 @@ def _now() -> datetime:
 def enqueue_run(db: Session, *, principal: str) -> IngestRun:
     """Insert a queued run, or return a pending one with this request appended to summary.coalesced.
 
-    Only a `queued` run, or a `claimed`/`running` one whose lease is still live, is a coalescing target: an `expired`
-    run or a dead lease may never be picked up again, so the request gets a new queued run instead.
+    Only a `queued` run, or a `claimed`/`running` one whose lease is still live, is a coalescing target. An `expired`
+    run can still be claimed explicitly, but enqueue refuses to coalesce into it (and into a dead lease): the request
+    gets a new queued run instead, so a fresh trigger never waits on a stalled run.
     The caller learns whether it coalesced from `bool(run.summary.get("coalesced"))` (the creating call has none).
     """
     db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ENQUEUE_LOCK_KEY})
@@ -157,6 +158,19 @@ def require_lease(db: Session, run_id: int, token: str, *, label: str) -> Ingest
         run.status = "running"
         db.flush()
     return run
+
+
+def lease_is_live(db: Session, run_id: int, token: str, label: str) -> bool:
+    """Read-only (no FOR UPDATE) counterpart of `require_lease`: the run is leased to `label` with this token and the
+    lease has not expired. Does not fence anything; use it between units of work, never before a write."""
+    run = db.get(IngestRun, run_id, populate_existing=True)
+    if run is None or run.claimed_by != label:
+        return False
+    try:
+        _check_token(run, token)
+    except ConflictError:
+        return False
+    return True
 
 
 def renew_lease(db: Session, run_id: int, token: str) -> IngestRun:
@@ -325,8 +339,9 @@ def get_statement(db: Session, statement_id: int) -> dict:
 
 
 def list_cases(db: Session, *, status: str | None = None, account_id: int | None = None,
-               kind: str | None = None) -> list[dict]:
-    """Reconciliation cases across statements, newest first; optional status / kind / statement-account filters."""
+               kind: str | None = None, limit: int = 200) -> list[dict]:
+    """Reconciliation cases across statements, newest first (at most `limit`); optional status / kind /
+    statement-account filters."""
     q = select(ReconciliationCase)
     if status is not None:
         q = q.where(ReconciliationCase.status == status)
@@ -335,5 +350,5 @@ def list_cases(db: Session, *, status: str | None = None, account_id: int | None
     if account_id is not None:
         q = q.where(ReconciliationCase.statement_id.in_(
             select(AccountStatement.id).where(AccountStatement.account_id == account_id)))
-    q = q.order_by(ReconciliationCase.created_at.desc(), ReconciliationCase.id.desc())
+    q = q.order_by(ReconciliationCase.created_at.desc(), ReconciliationCase.id.desc()).limit(limit)
     return [_row(item, CASE_FIELDS) for item in db.execute(q).scalars()]

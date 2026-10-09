@@ -97,6 +97,10 @@ def _check_account_map(account_map) -> None:
             raise ValidationError("account_map", f"value for {key!r} is not an account id")
 
 
+RULE_UNIT_INTERVAL = {"accept", "margin", "ambiguous_floor", "near_tolerance_pct"}  # scores / fractions: [0, 1]
+RULE_NON_NEGATIVE = {"near_tolerance_abs"}
+
+
 def _check_rules(rules) -> dict:
     """The matching.Rules overrides, validated against the dataclass defaults' types and normalised to the JSON the
     settings store (Decimal as a string, tuple as a list): unknown keys and `period_end` are refused."""
@@ -115,6 +119,10 @@ def _check_rules(rules) -> dict:
         elif isinstance(default, Decimal):
             try:
                 ok = isinstance(value, str) and Decimal(value).is_finite()
+                if ok and key in RULE_UNIT_INTERVAL:
+                    ok = 0 <= Decimal(value) <= 1
+                elif ok and key in RULE_NON_NEGATIVE:
+                    ok = Decimal(value) >= 0
             except ArithmeticError:
                 ok = False
         else:

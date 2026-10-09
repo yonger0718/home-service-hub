@@ -2,10 +2,11 @@
 
 Every route sits behind `require_feature()` (404 while ACCOUNTING_RECONCILIATION_ENABLED is off) and names its own
 scope: `enqueue` to queue a run, `ingest` for the worker's run/file/source/revision calls (each fenced by the run's
-lease, checked against the caller's label), `read` for statement reads, `admin` to change the settings.
+lease, checked against the caller's label), `read` for statement reads and cases, `write` to reconcile one statement,
+`admin` to change the settings.
 """
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -44,7 +45,7 @@ from ..schemas.statements import (
 from ..services import reconciliation_service as recon
 from ..services import settings_service
 from ..services import statement_ingest_service as ingest
-from ..services.errors import NotFoundError, ValidationError
+from ..services.errors import ConflictError, NotFoundError, ValidationError
 from .errors import service_errors
 
 router = APIRouter(tags=["Statements"], dependencies=[Depends(require_feature())])
@@ -226,14 +227,19 @@ def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
     with service_errors():
         ingest.require_lease(db, body.run_id, body.lease_token, label=_label(request))
         db.commit()  # release the lease row lock; each statement then commits on its own
-        for item in recon.reconcile_each(db, recon.pending_statement_ids(db), run_id=body.run_id):
+        label = _label(request)
+        pending = recon.pending_statement_ids(db)
+        for index, item in enumerate(recon.reconcile_each(db, pending, run_id=body.run_id)):
             if "error" in item:
                 errors.append({"statement_id": item["statement_id"], "error": item["error"]})
             else:
                 totals["statements"] += 1
                 totals["claims"] += item["result"].claims
                 totals["cases_opened"] += len(item["result"].cases_opened)
-            db.commit()
+            db.commit()  # the items done so far stay committed
+            if index < len(pending) - 1 and not ingest.lease_is_live(db, body.run_id, body.lease_token, label):
+                db.rollback()  # release the read transaction before refusing
+                raise ConflictError("lease")
         links = recon.fill_deferral_links(db)
     db.commit()
     return {**totals, "errors": errors, "links_filled": links}
@@ -241,8 +247,8 @@ def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/reconciliation/cases", response_model=list[CaseOut], dependencies=READ)
 def list_cases(status: CaseStatus | None = None, account_id: int | None = None, kind: CaseKind | None = None,
-               db: Session = Depends(get_db)):
-    return ingest.list_cases(db, status=status, account_id=account_id, kind=kind)
+               limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db)):
+    return ingest.list_cases(db, status=status, account_id=account_id, kind=kind, limit=limit)
 
 
 # ---- settings ----
