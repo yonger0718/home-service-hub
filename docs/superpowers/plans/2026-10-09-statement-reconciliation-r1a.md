@@ -1490,7 +1490,7 @@ def tokens(norm: str) -> frozenset[str]:
 ```python
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 
 from app.services.statements.merchant import normalise
@@ -1557,7 +1557,7 @@ class GuardrailResult:
 
 
 def _q(value: Decimal) -> Decimal:
-    return Decimal(value).quantize(QUANTUM)
+    return Decimal(value).quantize(QUANTUM, rounding=ROUND_HALF_UP)  # same rounding as entry_write_service._round_amount
 
 
 def flow_amount(kind: str, line_kind: str, printed: Decimal) -> Decimal:
