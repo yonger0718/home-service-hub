@@ -296,17 +296,16 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
     return result
 
 
-def sweep_pending(db: Session) -> list[int]:
-    """Statements (any mode) with an event past their watermark that may touch them: the account or a combined
-    child on either side, an account event whose old or new `combined_account_id` is the account, or a group/entry
-    their active coverage holds (by column or, after a SET NULL delete, by snapshot id). A superset; `sweep` decides
-    relevance. Read without the writer barrier: an uncommitted event only shows up on a later call."""
-    s = AccountStatement
+def _touches(s):
+    """EXISTS: an event past the statement `s`'s watermark that may touch it: the account or a combined child on
+    either side, an account event whose old or new `combined_account_id` is the account, or a group/entry its active
+    coverage holds (by column or, after a SET NULL delete, by snapshot id). A superset; `sweep` decides relevance.
+    `s` is the AccountStatement entity (or alias) the clause is correlated to."""
     child = aliased(Account)
     participating = select(child.id).where(child.combined_account_id == s.account_id)
     covered = select(StatementCoverage).where(StatementCoverage.statement_id == s.id,
                                               StatementCoverage.status == "active")
-    touches = exists().where(
+    return exists().where(
         CoverageDirty.id > s.swept_through_event_id,
         or_(
             CoverageDirty.old_account_id == s.account_id, CoverageDirty.new_account_id == s.account_id,
@@ -322,4 +321,16 @@ def sweep_pending(db: Session) -> list[int]:
                 StatementCoverage.snapshot["id"].astext.cast(Integer) == CoverageDirty.row_id)))),
         ),
     )
-    return list(db.execute(select(s.id).where(touches).order_by(s.id)).scalars())
+
+
+def sweep_pending(db: Session) -> list[int]:
+    """Statements (any mode) with an event past their watermark that may touch them (`_touches`). Read without the
+    writer barrier: an uncommitted event only shows up on a later call."""
+    s = AccountStatement
+    return list(db.execute(select(s.id).where(_touches(s)).order_by(s.id)).scalars())
+
+
+def has_pending_events(db: Session, statement: AccountStatement) -> bool:
+    """The same relevance as `sweep_pending`, for one statement (the read model's `stale_events_pending`)."""
+    s = AccountStatement
+    return db.execute(select(exists().where(s.id == statement.id, _touches(s)))).scalar_one()

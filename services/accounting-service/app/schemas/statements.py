@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models import STATEMENT_SOURCE_ROOTS
 from app.models.statements import (
+    CASE_KINDS,
+    CASE_STATUSES,
     INGEST_STATUSES,
     LINE_KINDS,
     STATEMENT_FILE_FAILURES,
@@ -18,6 +20,8 @@ from app.models.statements import (
 from .writes import Currency, Int32, SignedMoney
 
 Strict = ConfigDict(extra="forbid")
+CaseStatus = Literal[CASE_STATUSES]  # type: ignore[valid-type]
+CaseKind = Literal[CASE_KINDS]  # type: ignore[valid-type]
 LineKind = Literal[LINE_KINDS]  # type: ignore[valid-type]
 StatementKind = Literal[STATEMENT_KINDS]  # type: ignore[valid-type]
 FileStatus = Literal[STATEMENT_FILE_STATUSES]  # type: ignore[valid-type]
@@ -213,6 +217,19 @@ class RevisionOut(BaseModel):
 
 
 # ---- statements ----
+class CoverageOut(BaseModel):
+    """One active coverage row of a line: the ledger entry (or group) it is matched to. `entry_id`/`group_id` go null
+    when the ledger row was deleted (the claim is then stale until the next sweep)."""
+    model_config = Strict
+    entry_id: int | None
+    group_id: int | None
+    role: str
+    flow: Decimal | None
+    match_rule: str
+    match_kind: str
+    status: str
+
+
 class LineOut(BaseModel):
     model_config = Strict
     id: int
@@ -229,6 +246,8 @@ class LineOut(BaseModel):
     line_kind: str
     installment_seq: int | None
     installment_total: int | None
+    matched: bool
+    coverage: list[CoverageOut]
 
 
 class CaseOut(BaseModel):
@@ -284,3 +303,37 @@ class ReconciliationSettingsIn(BaseModel):
     model_config = Strict
     account_map: dict[str, Int32] = {}
     dirty_enabled: bool = False
+    rules: dict = {}  # matching.Rules overrides (settings_service validates keys and types); {} = the defaults
+
+
+class ReconciliationSettingsOut(BaseModel):
+    model_config = Strict
+    account_map: dict[str, int]
+    dirty_enabled: bool
+    rules: dict
+    rules_version: str
+    version: int
+
+
+class ReconcileOut(BaseModel):
+    model_config = Strict
+    claims: int
+    cases_opened: list[int]
+    explained: int
+    unmatched_entries: int
+    skipped: str | None
+
+
+class SweepError(BaseModel):
+    model_config = Strict
+    statement_id: int
+    error: str
+
+
+class SweepOut(BaseModel):
+    model_config = Strict
+    statements: int
+    claims: int
+    cases_opened: int
+    errors: list[SweepError]
+    links_filled: int

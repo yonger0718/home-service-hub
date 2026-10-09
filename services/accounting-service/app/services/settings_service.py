@@ -97,6 +97,34 @@ def _check_account_map(account_map) -> None:
             raise ValidationError("account_map", f"value for {key!r} is not an account id")
 
 
+def _check_rules(rules) -> dict:
+    """The matching.Rules overrides, validated against the dataclass defaults' types and normalised to the JSON the
+    settings store (Decimal as a string, tuple as a list): unknown keys and `period_end` are refused."""
+    if not isinstance(rules, dict):
+        raise ValidationError("rules", "must be an object")
+    kinds = {f.name: f.default for f in fields(matching.Rules) if f.name != "period_end"}
+    out = {}
+    for key, value in rules.items():
+        if key not in kinds:
+            raise ValidationError("rules", f"unknown rule {key!r}")
+        default = kinds[key]
+        if isinstance(default, bool):
+            ok = isinstance(value, bool)
+        elif isinstance(default, int):
+            ok = isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 10000
+        elif isinstance(default, Decimal):
+            try:
+                ok = isinstance(value, str) and Decimal(value).is_finite()
+            except ArithmeticError:
+                ok = False
+        else:
+            ok = isinstance(value, list) and all(isinstance(item, str) and item for item in value)
+        if not ok:
+            raise ValidationError("rules", f"{key!r} has the wrong type or range")
+        out[key] = value
+    return out
+
+
 def reconciliation_rules(db: Session) -> dict:
     """The matching rules (defaults overlaid with the stored keys), read without inserting the settings row: the
     reconcile transaction writes nothing outside its statement."""
@@ -115,9 +143,15 @@ def update_reconciliation_settings(db: Session, data: dict) -> dict:
     _check_account_map(data.get("account_map", {}))
     if not isinstance(data.get("dirty_enabled", False), bool):
         raise ValidationError("dirty_enabled", "must be a boolean")
+    rules = _check_rules(data.get("rules", {}))
     row = _reconciliation_row(db, lock=True)
-    row.data = dict(data)
+    before = _reconciliation_dict(row)
+    row.data = {**data, "rules": rules}
     row.version = row.version + 1
+    if {**RULE_DEFAULTS, **rules} != before["rules"]:
+        row.data = {**row.data, "rules_version": f"r1b-{row.version}"}
+    else:
+        row.data = {**row.data, "rules_version": before["rules_version"]}
     db.flush()
     return _reconciliation_dict(row)
 

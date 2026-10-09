@@ -188,6 +188,7 @@ EXPECTED_WRITES = {
     ("/statements/files", "POST"), ("/statements/files/{file_id}", "PATCH"),
     ("/statements/sources", "POST"), ("/statements/sources/mark-removed", "POST"),
     ("/statements/revisions", "POST"), ("/settings/reconciliation", "PUT"),
+    ("/accounts/{account_id}/statements/{statement_id}/reconcile", "POST"), ("/reconciliation/sweep", "POST"),
 }
 
 

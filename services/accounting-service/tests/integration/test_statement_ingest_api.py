@@ -202,3 +202,125 @@ def test_duplicate_line_seq_is_422_and_stores_nothing(client, card, db_session):
     assert "duplicate seq" in response.json()["detail"][0]["msg"]
     counts = db_session.execute(text("SELECT (SELECT count(*) FROM account_statement), (SELECT count(*) FROM statement_revision)")).one()
     assert tuple(counts) == (0, 0)
+
+
+# ---- reconcile, sweep, cases, coverage read model (r1b task 7) ----
+LINE = {"seq": 1, "posted_date": "2026-09-03", "merchant_raw": "全聯", "printed_amount": "580", "line_kind": "purchase"}
+
+
+def _submit(client, account, lines=None, total="580", lease=None):
+    lease = lease or _claim(client)
+    created = client.post("/statements/revisions", headers=W, json=_revision(lease, account, [LINE] if lines is None else lines, total))
+    assert created.status_code == 201, created.text
+    return created.json()["statement_id"], lease
+
+
+def test_reconcile_route_needs_write_and_the_statements_account(client, card, seed, db_session):
+    other = seed.account("錢包")
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    statement_id, _ = _submit(client, card)
+    url = f"/accounts/{card.id}/statements/{statement_id}/reconcile"
+    assert client.post(url, headers=H).status_code == 403
+    assert client.post(url, headers=W).status_code == 403
+    assert client.post(f"/accounts/{other.id}/statements/{statement_id}/reconcile", headers=S).status_code == 404
+    done = client.post(url, headers=S)
+    assert done.status_code == 200, done.text
+    assert set(done.json()) == {"claims", "cases_opened", "explained", "unmatched_entries", "skipped"}
+    assert done.json()["claims"] == 1 and done.json()["skipped"] is None
+
+
+def test_detail_shows_coverage_and_matched(client, card, seed, db_session):
+    entry = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    statement_id, _ = _submit(client, card, [LINE, {**LINE, "seq": 2, "merchant_raw": "家樂福", "printed_amount": "77"}], "657")
+    detail = client.get(f"/accounts/{card.id}/statements/{statement_id}", headers=H).json()
+    first, second = detail["lines"]
+    assert first["matched"] is True and second["matched"] is False and second["coverage"] == []
+    assert [c["entry_id"] for c in first["coverage"]] == [entry.id]
+    assert set(first["coverage"][0]) == {"entry_id", "group_id", "role", "flow", "match_rule", "match_kind", "status"}
+    assert first["coverage"][0]["status"] == "active"
+    assert detail["matched_count"] == 1 and "conflict_open" in detail and "needs_recheck" in detail
+
+
+def test_stale_events_follow_the_sweep_relevance(client, card, seed, db_session):
+    from tests.helpers import set_dirty
+    set_dirty(db_session, True)
+    statement_id, _ = _submit(client, card)
+    assert client.get(f"/accounts/{card.id}/statements/{statement_id}", headers=H).json()["stale_events_pending"] is False
+    seed.entry(card, "-5", day=date(2026, 9, 4))
+    db_session.commit()
+    assert client.get(f"/accounts/{card.id}/statements/{statement_id}", headers=H).json()["stale_events_pending"] is True
+
+
+def test_sweep_needs_ingest_and_a_lease_and_reports_the_batch(client, card, seed, db_session):
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    statement_id, lease = _submit(client, card)
+    lease = {"run_id": lease["run_id"], "lease_token": lease["lease_token"]}
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = true"))
+    db_session.commit()
+    assert client.post("/reconciliation/sweep", headers=H, json=lease).status_code == 403
+    assert client.post("/reconciliation/sweep", headers=W, json=lease | {"lease_token": "x" * 48}).status_code == 409
+    done = client.post("/reconciliation/sweep", headers=W, json=lease)
+    assert done.status_code == 200, done.text
+    assert done.json() == {"statements": 1, "claims": 1, "cases_opened": 0, "errors": [], "links_filled": 0}
+    assert db_session.execute(text("SELECT needs_recheck FROM account_statement")).scalar_one() is False
+
+
+def test_sweep_skips_guardrail_failures_and_lists_errors(client, card, seed, db_session, monkeypatch):
+    from app.services import reconciliation_service as rec
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    second_card = seed.account("卡二", is_credit=True, statement_live_from=date(2026, 9, 1))
+    third_card = seed.account("卡三", is_credit=True, statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    good, lease = _submit(client, card)
+    broken, _ = _submit(client, second_card, lease=lease)
+    failing, _ = _submit(client, third_card, [LINE], "999", lease=lease)  # total does not add up: guardrail fails
+    lease = {"run_id": lease["run_id"], "lease_token": lease["lease_token"]}
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = true"))
+    db_session.commit()
+    real = rec.reconcile
+
+    def flaky(db, statement_id, **kwargs):
+        if statement_id == broken:
+            raise RuntimeError("boom")
+        return real(db, statement_id, **kwargs)
+
+    monkeypatch.setattr(rec, "reconcile", flaky)
+    out = client.post("/reconciliation/sweep", headers=W, json=lease)
+    assert out.status_code == 200, out.text
+    body = out.json()
+    assert body["errors"] == [{"statement_id": broken, "error": "RuntimeError"}]
+    assert body["statements"] == 2 and body["claims"] == 1  # the skipped statement is processed, not an error
+    assert good != failing
+
+
+def test_cases_listing_needs_read_and_validates_status(client, card, seed, db_session):
+    statement_id, _ = _submit(client, card)  # an unmatched line opens a case
+    assert client.get("/reconciliation/cases", headers=W).status_code == 403
+    assert client.get("/reconciliation/cases?status=bogus", headers=H).status_code == 422
+    listing = client.get("/reconciliation/cases", headers=H)
+    assert listing.status_code == 200, listing.text
+    cases = listing.json()
+    assert cases and cases[0]["status"] == "open" and "candidates" in cases[0]
+    assert [c["id"] for c in cases] == sorted((c["id"] for c in cases), reverse=True)
+    assert client.get(f"/reconciliation/cases?status=resolved", headers=H).json() == []
+    assert client.get(f"/reconciliation/cases?account_id={card.id}&kind=line_unmatched", headers=H).json() == cases
+    assert client.get(f"/reconciliation/cases?account_id={card.id + 99}", headers=H).json() == []
+    assert client.get("/reconciliation/cases?kind=bogus", headers=H).status_code == 422
+
+
+def test_settings_expose_rules_and_validate_rule_keys(client, card):
+    current = client.get("/settings/reconciliation", headers=H).json()
+    assert set(current) == {"account_map", "dirty_enabled", "rules", "rules_version", "version"}
+    assert current["rules"]["accept"] == "0.80" and "period_end" not in current["rules"]
+    for bad in ({"nope": 1}, {"period_end": "2026-09-30"}, {"deferral_days": "x"}, {"deferral_days": True},
+                {"accept": 0.8}, {"bank_only_patterns": "年費"}, {"bank_only_patterns": [1]}):
+        assert client.put("/settings/reconciliation", headers=S, json={"rules": bad}).status_code == 422, bad
+    saved = client.put("/settings/reconciliation", headers=S, json={"rules": {"deferral_days": 3, "accept": "0.90"}})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["rules"]["deferral_days"] == 3 and saved.json()["rules"]["accept"] == "0.90"
+    assert saved.json()["rules_version"] == f"r1b-{current['version'] + 1}"
+    again = client.put("/settings/reconciliation", headers=S, json={"rules": {"deferral_days": 3, "accept": "0.90"}})
+    assert again.json()["rules_version"] == saved.json()["rules_version"]  # unchanged rules keep the version

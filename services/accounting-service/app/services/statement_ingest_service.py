@@ -24,13 +24,14 @@ from app.models import (
     StatementSource,
 )
 from app.schemas.statements import FileRegisterIn, FileUpdateIn, SourceRegisterIn
+from app.services import coverage_service
 from app.services.errors import ConflictError, NotFoundError
 from app.services.statement_revision_service import SubmitResult, submit_revision
 
 __all__ = [
     "LEASE", "TERMINAL", "SubmitResult", "enqueue_run", "create_worker_run", "list_runs", "claim_run", "renew_lease",
     "finish_run", "require_lease", "register_file", "register_source", "update_file", "mark_removed_sources",
-    "submit_revision", "list_statements", "get_statement",
+    "submit_revision", "list_statements", "get_statement", "list_cases",
 ]
 
 LEASE = timedelta(minutes=30)
@@ -271,6 +272,7 @@ LINE_FIELDS = ("id", "event_id", "seq", "txn_date", "posted_date", "merchant_raw
                "flow_amount", "foreign_amount", "foreign_currency", "line_kind", "installment_seq", "installment_total")
 CASE_FIELDS = ("id", "kind", "status", "event_id", "line_id", "entry_id", "explanation", "candidates", "context",
                "version", "created_at")
+COVERAGE_FIELDS = ("entry_id", "group_id", "role", "match_rule", "match_kind", "status")
 REVISION_FIELDS = ("id", "revision", "file_id", "parser", "parser_version", "guardrail_ok", "conflict", "rejected",
                    "created_at")
 
@@ -309,14 +311,29 @@ def get_statement(db: Session, statement_id: int) -> dict:
         select(StatementRevision).where(StatementRevision.statement_id == statement.id)
         .order_by(StatementRevision.revision.desc())
     ).scalars()
-    stale = db.execute(select(exists().where(
-        CoverageDirty.id > statement.swept_through_event_id,
-        or_(CoverageDirty.old_account_id == statement.account_id, CoverageDirty.new_account_id == statement.account_id),
-    ))).scalar_one()
+    coverage = coverage_service.active_rows(db, statement.id)
+    stale = coverage_service.has_pending_events(db, statement)
     return {
         **_row(statement, HEADER_FIELDS),
-        "lines": [_row(line, LINE_FIELDS) for line in lines],
+        "lines": [{**_row(line, LINE_FIELDS), "matched": bool(coverage.get(line.id)),
+                   "coverage": [{**_row(r, COVERAGE_FIELDS), "flow": r.snapshot.get("flow")}
+                                      for r in coverage.get(line.id, [])]} for line in lines],
         "cases": [_row(item, CASE_FIELDS) for item in cases],
         "revisions": [_row(item, REVISION_FIELDS) for item in revisions],
-        "stale_events_pending": bool(stale),
+        "stale_events_pending": stale,
     }
+
+
+def list_cases(db: Session, *, status: str | None = None, account_id: int | None = None,
+               kind: str | None = None) -> list[dict]:
+    """Reconciliation cases across statements, newest first; optional status / kind / statement-account filters."""
+    q = select(ReconciliationCase)
+    if status is not None:
+        q = q.where(ReconciliationCase.status == status)
+    if kind is not None:
+        q = q.where(ReconciliationCase.kind == kind)
+    if account_id is not None:
+        q = q.where(ReconciliationCase.statement_id.in_(
+            select(AccountStatement.id).where(AccountStatement.account_id == account_id)))
+    q = q.order_by(ReconciliationCase.created_at.desc(), ReconciliationCase.id.desc())
+    return [_row(item, CASE_FIELDS) for item in db.execute(q).scalars()]

@@ -11,12 +11,19 @@ from sqlalchemy.orm import Session
 
 from ..auth import require, require_feature
 from ..database import get_db
+from ..models import AccountStatement
 from ..schemas.statements import (
     FileOut,
     FileRegisterIn,
     FileStatus,
     FileUpdateIn,
+    CaseKind,
+    CaseOut,
+    CaseStatus,
+    Lease,
+    ReconcileOut,
     ReconciliationSettingsIn,
+    ReconciliationSettingsOut,
     RevisionIn,
     RevisionOut,
     RunClaimOut,
@@ -32,7 +39,9 @@ from ..schemas.statements import (
     SourcesMarkRemovedOut,
     StatementDetailOut,
     StatementOut,
+    SweepOut,
 )
+from ..services import reconciliation_service as recon
 from ..services import settings_service
 from ..services import statement_ingest_service as ingest
 from ..services.errors import NotFoundError, ValidationError
@@ -43,6 +52,7 @@ router = APIRouter(tags=["Statements"], dependencies=[Depends(require_feature())
 ENQUEUE = [Depends(require("enqueue"))]
 INGEST = [Depends(require("ingest"))]
 READ = [Depends(require("read"))]
+WRITE = [Depends(require("write"))]
 ADMIN = [Depends(require("admin"))]
 
 
@@ -192,15 +202,58 @@ def get_statement(account_id: int, statement_id: int, db: Session = Depends(get_
     return statement
 
 
+# ---- reconcile, sweep, cases ----
+@router.post("/accounts/{account_id}/statements/{statement_id}/reconcile", response_model=ReconcileOut,
+             dependencies=WRITE)
+def reconcile_statement(account_id: int, statement_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        statement = db.get(AccountStatement, statement_id)
+        if statement is None or statement.account_id != account_id:
+            raise NotFoundError(f"statement {statement_id} not found")
+        result = recon.reconcile(db, statement_id)
+        out = {"claims": result.claims, "cases_opened": result.cases_opened, "explained": result.explained,
+               "unmatched_entries": result.unmatched_entries, "skipped": result.skipped}
+    db.commit()
+    return out
+
+
+@router.post("/reconciliation/sweep", response_model=SweepOut, dependencies=INGEST)
+def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
+    """The worker's daily pass over every pending statement. One transaction per statement: the next statement's
+    sweep must not run while this one still holds the previous statement's entry/group locks."""
+    totals = {"statements": 0, "claims": 0, "cases_opened": 0}
+    errors: list[dict] = []
+    with service_errors():
+        ingest.require_lease(db, body.run_id, body.lease_token, label=_label(request))
+        db.commit()  # release the lease row lock; each statement then commits on its own
+        for item in recon.reconcile_each(db, recon.pending_statement_ids(db), run_id=body.run_id):
+            if "error" in item:
+                errors.append({"statement_id": item["statement_id"], "error": item["error"]})
+            else:
+                totals["statements"] += 1
+                totals["claims"] += item["result"].claims
+                totals["cases_opened"] += len(item["result"].cases_opened)
+            db.commit()
+        links = recon.fill_deferral_links(db)
+    db.commit()
+    return {**totals, "errors": errors, "links_filled": links}
+
+
+@router.get("/reconciliation/cases", response_model=list[CaseOut], dependencies=READ)
+def list_cases(status: CaseStatus | None = None, account_id: int | None = None, kind: CaseKind | None = None,
+               db: Session = Depends(get_db)):
+    return ingest.list_cases(db, status=status, account_id=account_id, kind=kind)
+
+
 # ---- settings ----
-@router.get("/settings/reconciliation", dependencies=READ)
+@router.get("/settings/reconciliation", response_model=ReconciliationSettingsOut, dependencies=READ)
 def get_reconciliation_settings(db: Session = Depends(get_db)):
     settings = settings_service.get_reconciliation_settings(db)
     db.commit()
     return settings
 
 
-@router.put("/settings/reconciliation", dependencies=ADMIN)
+@router.put("/settings/reconciliation", response_model=ReconciliationSettingsOut, dependencies=ADMIN)
 def update_reconciliation_settings(body: ReconciliationSettingsIn, db: Session = Depends(get_db)):
     with service_errors():
         settings = settings_service.update_reconciliation_settings(db, body.model_dump())
