@@ -205,6 +205,8 @@ def validate_auth_config() -> None:
             raise ValueError(f"{SCOPES_ENV} is set: bare tokens are not allowed in {TOKENS_ENV}")
         if len(set(labels)) != len(labels):
             raise ValueError(f"{TOKENS_ENV}: duplicate labels")
+        if len({token for _, token in tokens}) != len(tokens):
+            raise ValueError(f"{TOKENS_ENV}: duplicate token values")
         missing = set(labels) - set(scopes)
         if missing:
             raise ValueError(f"{SCOPES_ENV}: labels without a scope entry: {sorted(missing)!r}")

@@ -70,6 +70,12 @@ def test_validate_refuses_bare_tokens_with_scopes(env):
         auth.validate_auth_config()
 
 
+def test_validate_refuses_duplicate_token_values(env):
+    env(tokens="spa:x,hermes:x", scopes="spa=legacy; hermes=read,propose")
+    with pytest.raises(ValueError, match="duplicate token"):
+        auth.validate_auth_config()
+
+
 def test_validate_accepts_complete_map(env):
     env(scopes="spa=legacy; hermes=read,propose; worker=ingest; ops=legacy,admin", feature="true")
     auth.validate_auth_config()
