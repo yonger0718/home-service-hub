@@ -130,6 +130,16 @@ def _try_claim(db: Session, run_id: int, label: str) -> tuple[IngestRun, str] | 
     return db.get(IngestRun, run_id, populate_existing=True), token
 
 
+def _locked_run(db: Session, run_id: int, token: str) -> IngestRun:
+    """Load the run under SELECT ... FOR UPDATE (fresh from the database) and check the lease. The row lock is held
+    until the caller's commit, so a concurrent finish/renew/claim on this run waits for the request holding it."""
+    run = db.get(IngestRun, run_id, with_for_update=True, populate_existing=True)
+    if run is None:
+        raise NotFoundError(f"run {run_id} not found")
+    _check_token(run, token)
+    return run
+
+
 def _check_token(run: IngestRun, token: str) -> None:
     if (run.status not in LEASED or not hmac.compare_digest((run.lease_token or "").encode(), token.encode())
             or run.lease_expires_at is None or run.lease_expires_at < _now()):
@@ -137,9 +147,9 @@ def _check_token(run: IngestRun, token: str) -> None:
 
 
 def require_lease(db: Session, run_id: int, token: str, *, label: str) -> IngestRun:
-    """Fence a submission: the run is claimed/running by `label`, the token matches and the lease is live."""
-    run = _get_run(db, run_id)
-    _check_token(run, token)
+    """Fence a submission: the run is claimed/running by `label`, the token matches and the lease is live.
+    The run row stays locked until the submission commits (finish/renew/reclaim serialise behind it)."""
+    run = _locked_run(db, run_id, token)
     if run.claimed_by != label:
         raise ConflictError("lease")
     if run.status == "claimed":
@@ -149,8 +159,7 @@ def require_lease(db: Session, run_id: int, token: str, *, label: str) -> Ingest
 
 
 def renew_lease(db: Session, run_id: int, token: str) -> IngestRun:
-    run = _get_run(db, run_id)
-    _check_token(run, token)
+    run = _locked_run(db, run_id, token)
     run.lease_expires_at = _now() + LEASE
     db.flush()
     return run
@@ -160,8 +169,7 @@ def finish_run(db: Session, run_id: int, token: str, *, status: str, summary: di
     """Close a leased run as done/failed; the worker's summary is merged over the stored one (keeps coalesced)."""
     if status not in TERMINAL:
         raise ConflictError(f"cannot finish a run as {status}")
-    run = _get_run(db, run_id)
-    _check_token(run, token)
+    run = _locked_run(db, run_id, token)
     run.status = status
     run.finished_at = _now()
     run.summary = {**(run.summary or {}), **summary}
