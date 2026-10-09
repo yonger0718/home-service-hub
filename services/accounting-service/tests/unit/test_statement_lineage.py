@@ -49,3 +49,15 @@ def test_twin_count_change_is_flagged():
 def test_new_line_without_old_is_unpaired_new():
     out = lineage.pair([], [N(0, "d|-1|0", "c", "A")])
     assert out[0].old is None and out[0].new.index == 0 and out[0].equivalence == "unpaired"
+
+
+def test_twin_multiplicity_change_is_flagged():
+    old = [O(i, f"d|-580|{i - 1}", "c", "A") for i in (1, 2)]
+    new = [N(i, f"d|-580|{i}", "c", "A") for i in (0, 1, 2)]
+    assert lineage.twin_count_changed(old, new) is True
+
+
+def test_same_twin_multiplicity_is_not_flagged():
+    old = [O(i, f"d|-580|{i - 1}", "c", "A") for i in (1, 2)]
+    new = [N(i, f"d|-580|{i}", "c", "A") for i in (0, 1)]
+    assert lineage.twin_count_changed(old, new) is False
