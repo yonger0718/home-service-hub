@@ -118,6 +118,29 @@ one configured token (SHA-256 digests compared in constant time), otherwise 401 
 are never logged. Restart the service after changing either variable. The SPA sends its own token
 (`ACCOUNTING_SPA_TOKEN`, see `docs/deploy/accounting-phase-2a.md`).
 
+### Token scopes and the reconciliation feature
+
+Three further variables (design `docs/superpowers/specs/2026-10-08-statement-reconciliation-design.md` §8.1):
+
+- `ACCOUNTING_TOKEN_SCOPES`: `label=scope,scope; label=scope`, e.g.
+  `spa=legacy; ops=legacy,admin; hermes=read,propose; worker=ingest`. Scopes: `read`, `propose`, `write`, `admin`,
+  `enqueue`, `ingest`, `legacy` (`legacy` passes every check of the existing routes but cannot be combined with
+  `ingest` or `enqueue`). Unset keeps the compatibility behaviour (every valid token may do everything).
+- `ACCOUNTING_RESTRICTED_LABELS`: extra comma-separated labels (besides the built-in `hermes` and `worker`) that must
+  never run without a scope entry.
+- `ACCOUNTING_RECONCILIATION_ENABLED`: `true` serves the statement routes (`/statements/...`,
+  `/accounts/{id}/statements`, `/settings/reconciliation`); otherwise they answer 404. Scope checks stay active
+  either way.
+
+The service refuses to start when scopes are set and a token is bare, a token value is duplicated, a label has no
+scope entry (or a scope entry has no token), a scope name is unknown, or `legacy` is combined with `ingest`/`enqueue`;
+and when scopes are unset but the feature is `true` or a restricted label holds a token. A token whose scopes do
+not cover a route gets HTTP 403 with the message `scope`.
+
+Deploy note: before setting `ACCOUNTING_TOKEN_SCOPES`, map the existing SPA and ops labels to `legacy`
+(`spa=legacy; ops=legacy,admin`), the statement worker label to `ingest` (`worker=ingest`) and the hermes label to
+`read,propose` (`hermes=read,propose`). Restart the service after changing any of them.
+
 Amounts are unsigned decimal strings (at most 4 decimals; the `kind` or the endpoint gives the direction) and dates
 are Asia/Taipei local `YYYY-MM-DD`. Through Caddy the paths carry the `/api/accounting` prefix:
 
