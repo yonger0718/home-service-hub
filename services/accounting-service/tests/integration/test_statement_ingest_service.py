@@ -11,6 +11,7 @@ from app.models import (
     ReconciliationCase,
     StatementEvent,
     StatementLine,
+    StatementFile,
     StatementSource,
 )
 from app.schemas.statements import FileRegisterIn, LineIn, RevisionIn, SourceRegisterIn
@@ -214,6 +215,8 @@ def test_kind_must_match_account_and_folder_map(db_session, seed, run, card):
     res = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="580", file_id=f.id),
                               account_map={"mail/信用卡/國泰世華": card.id})
     assert res.statement.origin == "import" and res.revision.file_id == f.id
+    db_session.expire_all()
+    assert db_session.get(StatementFile, f.id).account_id == card.id
 
 
 def test_sign_inconsistent_line_is_422(db_session, card, run):
@@ -237,3 +240,33 @@ def test_get_and_list_statements(db_session, card, run):
     assert svc.get_statement(db_session, res.statement.id)["stale_events_pending"] is True
     assert [s.id for s in svc.list_statements(db_session, card.id)] == [res.statement.id]
     assert db_session.query(AccountStatement).count() == 1
+
+
+def test_first_revision_with_identical_twins_opens_no_case(db_session, card, run):
+    r, token = run
+    twins = [_line(1, date(2026, 9, 3), "100"), _line(2, date(2026, 9, 3), "100")]
+    res = svc.submit_revision(db_session, r, _rev(r, token, card, twins, total="200"), account_map={})
+    assert res.case_ids == [] and res.revision.guardrail["twins_changed"] is False
+    assert db_session.query(ReconciliationCase).count() == 0 and res.statement.current_revision_id == res.revision.id
+
+
+def test_corrected_revision_replaces_failed_current_and_supersedes_parse_review(db_session, card, run):
+    r, token = run
+    bad = svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 9, 3), "580")], total="999"), account_map={})
+    fixed = svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 9, 3), "580")], total="580"), account_map={})
+    assert fixed.revision.guardrail_ok and fixed.case_ids == []
+    assert bad.statement.current_revision_id == fixed.revision.id and bad.statement.statement_total == Decimal("580")
+    cases = db_session.query(ReconciliationCase).all()
+    assert [(c.kind, c.status, c.version) for c in cases] == [("parse_review", "superseded", 2)]
+    assert bad.statement.open_case_count == 0
+    event = db_session.query(StatementEvent).one()
+    assert event.current_line_id != event.first_line_id
+
+
+def test_claim_does_not_expire_a_live_lease(db_session, run):
+    r, token = run
+    with pytest.raises(ConflictError):
+        svc.claim_run(db_session, r.id, label="other")
+    db_session.expire_all()
+    row = db_session.get(IngestRun, r.id)
+    assert (row.status, row.attempt, row.lease_token) == ("claimed", 1, token)

@@ -195,6 +195,19 @@ def _open_case(db: Session, statement: AccountStatement, revision: StatementRevi
     return item.id
 
 
+def _supersede_parse_reviews(db: Session, statement: AccountStatement) -> None:
+    """A corrected revision closes the statement's still-open parse_review cases (version bumped for proposals)."""
+    for item in db.execute(
+        select(ReconciliationCase)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "parse_review",
+               ReconciliationCase.status.in_(OPEN_CASE_STATUSES))
+        .with_for_update()
+    ).scalars():
+        item.status = "superseded"
+        item.version = item.version + 1
+    db.flush()
+
+
 def _recount(db: Session, statement: AccountStatement) -> None:
     statement.open_case_count = db.execute(
         select(func.count()).select_from(ReconciliationCase)
@@ -213,6 +226,7 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
         raise ValidationError("period_start", "period_start is after period_end")
     if payload.file_id is not None:
         _assert_folder_maps(db, payload.file_id, payload.account_id, account_map)
+        db.get(StatementFile, payload.file_id).account_id = payload.account_id
     # 2. server-side derivation and guardrails
     try:
         derived = derive.derive_lines(payload.kind, [derive.LineIn(**line.model_dump()) for line in payload.lines])
@@ -227,11 +241,14 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     # 5. revision
     old, new = _old_lines(db, statement), _new_lines(derived)
     pairings = lineage.pair(old, new)
-    twins_changed = lineage.twin_count_changed(old, new)
+    twins_changed = (not created) and lineage.twin_count_changed(old, new)
     header_changes = {} if created else _header_changes(statement, payload)
     header_changed = bool(header_changes)
     conflict = statement.status == "reconciled"
-    becomes_current = created or (check.ok and not conflict and not twins_changed and not header_changed)
+    # A passing revision replaces a failed current one: the failed header is no trustworthy comparison base.
+    current_failed = not created and not db.get(StatementRevision, statement.current_revision_id).guardrail_ok
+    correction = current_failed and check.ok and not conflict
+    becomes_current = created or correction or (check.ok and not conflict and not twins_changed and not header_changed)
     number = (db.execute(select(func.max(StatementRevision.revision))
                          .where(StatementRevision.statement_id == statement.id)).scalar() or 0) + 1
     revision = StatementRevision(
@@ -251,6 +268,8 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
             setattr(statement, column, value)
     if conflict:
         statement.conflict_open = True
+    if correction:
+        _supersede_parse_reviews(db, statement)
     # 8. cases (live mode only; historical diagnostics stay in revision.guardrail)
     case_ids: list[int] = []
     # A reconciled statement gets only the conflict case: it already reviews the whole revision.
@@ -259,7 +278,7 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
             case_ids.append(_open_case(db, statement, revision, "statement_conflict", context={
                 "revision": number, "guardrail_ok": check.ok, "twins_changed": twins_changed,
                 "header_changes": header_changes}))
-        elif not check.ok or twins_changed or header_changed:
+        elif not correction and (not check.ok or twins_changed or header_changed):
             case_ids.append(_open_case(db, statement, revision, "parse_review", context={
                 "checks": check.checks, "detail": check.detail, "twins_changed": twins_changed,
                 "header_changes": header_changes}))

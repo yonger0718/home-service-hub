@@ -94,11 +94,16 @@ def claim_run(db: Session, run_id: int, *, label: str) -> tuple[IngestRun, str]:
     db.flush()
     claimed = _try_claim(db, run_id, label)
     if claimed is None:
-        run = _get_run(db, run_id)
-        db.refresh(run)
-        if run.status in LEASED and run.lease_expires_at is not None and run.lease_expires_at < _now():
-            run.status = "expired"
-            db.flush()
+        _get_run(db, run_id)
+        # Conditional, so a concurrent fresh claim is never overwritten and one expiry bumps attempt only once.
+        expired = db.execute(
+            update(IngestRun)
+            .where(IngestRun.id == run_id, IngestRun.status.in_(LEASED), IngestRun.lease_expires_at < _now())
+            .values(status="expired")
+            .returning(IngestRun.id)
+            .execution_options(synchronize_session=False)
+        ).scalar_one_or_none()
+        if expired is not None:
             claimed = _try_claim(db, run_id, label)
     if claimed is None:
         raise ConflictError("run not claimable")
