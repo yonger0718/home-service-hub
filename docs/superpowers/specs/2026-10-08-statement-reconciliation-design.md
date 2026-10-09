@@ -166,3 +166,13 @@ Round 3 → v4: C1 §8.1 (auth independent of mounting; compatibility mode impos
 
 ## 16. Carried into the implementation plan as acceptance criteria (not re-specified here)
 Snapshot field inventory per action (C6); the exact trigger DDL and population-derivation queries (C3); the run lease state machine tests (S1); parser gate script and its evidence format (C7/B2); acquisition crash-boundary tests (C9); fee bound and conservation fixtures (C8); amplification benchmark for triggers on an import-sized batch (S3). Each becomes a task-level test in `docs/superpowers/plans/…-statement-reconciliation-r1.md` and `…-r2.md`.
+
+## 17. R1a implementation notes (2026-10-09, PR "R1a")
+Decisions taken during implementation that refine this document:
+- **Dirty triggers are gated** by `reconciliation_settings.data->>'dirty_enabled'` (one PK lookup per changed row, default off). With the flag off in production the triggers write nothing; enabling the feature = set `ACCOUNTING_RECONCILIATION_ENABLED`, configure scopes, then `PUT /settings/reconciliation {"dirty_enabled": true}` once the worker is live (§4.6, §13).
+- **`balance_generation` is derived** from `coverage_dirty` (`max(id)` for the account), not an `account` column: a trigger updating `account` would take an account row lock after entry locks and invert D32 (§7.2 C4).
+- **Worker-created runs**: `POST /statements/ingest-runs` (scope `ingest`) creates and claims a `timer`/`owner_cli` run in one request; `enqueue` coalesces only into `queued` runs or claimed/running runs with a live lease (§4.1).
+- **Events on a revision that does not become current** are created `retired`; "live" events are those with `current_line_id IS NOT NULL` (§4.4, §5.7).
+- **A guardrail-ok revision replaces a current revision whose guardrail failed** regardless of header/twin changes, and supersedes that statement's open `parse_review` cases (§4.3).
+- Settings mutations require `admin`; `legacy` satisfies every scope (so the SPA token can also reach the ingest routes — the owner decides before enabling, §8.1).
+- The three account statement columns are not exposed by the account API in R1a (set via the database/settings in R2).
