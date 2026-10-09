@@ -40,6 +40,14 @@ class RunEnqueueOut(BaseModel):
     coalesced: bool
 
 
+class RunCreateIn(BaseModel):
+    """A worker-created run (timer or owner CLI); `enqueue` runs come from POST /statements/ingest/run only."""
+    model_config = Strict
+    trigger: Literal["timer", "owner_cli"]
+    mode: Literal["live", "backfill"] = "live"
+    initiator_hint: str | None = Field(default=None, max_length=64)
+
+
 class RunClaimOut(BaseModel):
     model_config = Strict
     run_id: int

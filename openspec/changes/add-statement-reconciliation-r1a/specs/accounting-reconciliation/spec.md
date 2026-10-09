@@ -301,6 +301,7 @@ The statements router SHALL expose these routes, all behind the feature gate, ea
 | Route | Scope | Success status |
 |---|---|---|
 | `POST /statements/ingest/run` | `enqueue` | 202 |
+| `POST /statements/ingest-runs` (worker creates a `timer`/`owner_cli` run and claims it in one transaction) | `ingest` | 201 |
 | `GET /statements/ingest-runs`, `POST …/{run_id}/claim`, `…/renew`, `…/finish` | `ingest` | 200 |
 | `POST /statements/files` | `ingest` | 201 |
 | `PATCH /statements/files/{file_id}`, `GET /statements/files` | `ingest` | 200 |

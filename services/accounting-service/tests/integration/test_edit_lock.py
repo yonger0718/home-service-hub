@@ -182,8 +182,9 @@ EXPECTED_WRITES = {
     # The daily job, now (acted_by auto; the job posts without the cutover check, D34).
     ("/schedules/run-now", "POST"),
     # Statement ingest and reconciliation settings (feature-gated): statement tables only, never ledger rows.
-    ("/statements/ingest/run", "POST"), ("/statements/ingest-runs/{run_id}/claim", "POST"),
-    ("/statements/ingest-runs/{run_id}/renew", "POST"), ("/statements/ingest-runs/{run_id}/finish", "POST"),
+    ("/statements/ingest/run", "POST"), ("/statements/ingest-runs", "POST"),
+    ("/statements/ingest-runs/{run_id}/claim", "POST"), ("/statements/ingest-runs/{run_id}/renew", "POST"),
+    ("/statements/ingest-runs/{run_id}/finish", "POST"),
     ("/statements/files", "POST"), ("/statements/files/{file_id}", "PATCH"),
     ("/statements/sources", "POST"), ("/statements/sources/mark-removed", "POST"),
     ("/statements/revisions", "POST"), ("/settings/reconciliation", "PUT"),

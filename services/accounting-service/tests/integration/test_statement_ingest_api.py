@@ -154,3 +154,27 @@ def test_statement_reads_need_read_scope_and_matching_account(client, card, seed
     statement_id = client.post("/statements/revisions", headers=W, json=_revision(lease, card, [], "0")).json()["statement_id"]
     assert client.get(f"/accounts/{other.id}/statements/{statement_id}", headers=S).status_code == 404
     assert client.get(f"/accounts/{card.id}/statements/{statement_id}", headers=H).status_code == 200
+
+
+def test_worker_creates_and_claims_its_own_timer_run(client, card):
+    created = client.post("/statements/ingest-runs", headers=W, json={"trigger": "timer", "initiator_hint": "systemd"})
+    assert created.status_code == 201, created.text
+    lease = created.json()
+    assert set(lease) == {"run_id", "lease_token", "lease_expires_at", "attempt"} and lease["attempt"] == 1
+    runs = client.get("/statements/ingest-runs?status=claimed", headers=W).json()
+    assert [(r["id"], r["trigger"], r["principal"], r["mode"], r["claimed_by"]) for r in runs] == [
+        (lease["run_id"], "timer", "worker", "live", "worker")]
+    body = _revision(lease, card, [{"seq": 1, "posted_date": "2026-09-03", "merchant_raw": "全聯", "printed_amount": "580",
+                                    "line_kind": "purchase"}], "580")
+    submitted = client.post("/statements/revisions", headers=W, json=body)
+    assert submitted.status_code == 201, submitted.text
+
+
+def test_worker_run_creation_needs_ingest_and_a_worker_trigger(client):
+    assert client.post("/statements/ingest-runs", headers=H, json={"trigger": "timer"}).status_code == 403
+    assert client.post("/statements/ingest-runs", headers=W, json={"trigger": "enqueue"}).status_code == 422
+    assert client.post("/statements/ingest-runs", headers=W, json={"trigger": "owner_cli", "mode": "replay"}).status_code == 422
+    assert client.post("/statements/ingest-runs", headers=W,
+                       json={"trigger": "owner_cli", "initiator_hint": "x" * 65}).status_code == 422
+    backfill = client.post("/statements/ingest-runs", headers=W, json={"trigger": "owner_cli", "mode": "backfill"})
+    assert backfill.status_code == 201, backfill.text

@@ -20,6 +20,7 @@ from ..schemas.statements import (
     RevisionIn,
     RevisionOut,
     RunClaimOut,
+    RunCreateIn,
     RunEnqueueOut,
     RunFinishIn,
     RunLeaseIn,
@@ -60,6 +61,17 @@ def enqueue_run(request: Request, db: Session = Depends(get_db)):
     with service_errors():
         run = ingest.enqueue_run(db, principal=_label(request) or "anonymous")
         out = {"run_id": run.id, "status": run.status, "coalesced": bool((run.summary or {}).get("coalesced"))}
+    db.commit()
+    return out
+
+
+@router.post("/statements/ingest-runs", response_model=RunClaimOut, status_code=201, dependencies=INGEST)
+def create_run(body: RunCreateIn, request: Request, db: Session = Depends(get_db)):
+    """The worker creates its own timer/CLI run and claims it in the same transaction."""
+    with service_errors():
+        created = ingest.create_worker_run(db, trigger=body.trigger, initiator_hint=body.initiator_hint, mode=body.mode)
+        run, token = ingest.claim_run(db, created.id, label=_label(request))
+        out = {"run_id": run.id, "lease_token": token, "lease_expires_at": run.lease_expires_at, "attempt": run.attempt}
     db.commit()
     return out
 
