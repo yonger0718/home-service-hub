@@ -177,6 +177,13 @@ def register_file(db: Session, run: IngestRun, payload: FileRegisterIn) -> State
     return db.execute(select(StatementFile).where(StatementFile.sha256 == sha)).scalar_one()
 
 
+def list_files(db: Session, *, status: str | None) -> list[StatementFile]:
+    query = select(StatementFile).order_by(StatementFile.id)
+    if status is not None:
+        query = query.where(StatementFile.status == status)
+    return list(db.execute(query).scalars())
+
+
 def update_file(db: Session, run: IngestRun, file_id: int, payload: FileUpdateIn) -> StatementFile:
     """Record a processing outcome. `failure` always follows the new status; other fields only when sent."""
     file = db.get(StatementFile, file_id, with_for_update=True)

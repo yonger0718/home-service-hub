@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models import STATEMENT_SOURCE_ROOTS
 from app.models.statements import (
+    INGEST_STATUSES,
     LINE_KINDS,
     STATEMENT_FILE_FAILURES,
     STATEMENT_FILE_STATUSES,
@@ -22,6 +23,7 @@ StatementKind = Literal[STATEMENT_KINDS]  # type: ignore[valid-type]
 FileStatus = Literal[STATEMENT_FILE_STATUSES]  # type: ignore[valid-type]
 FileFailure = Literal[STATEMENT_FILE_FAILURES]  # type: ignore[valid-type]
 SourceRoot = Literal[STATEMENT_SOURCE_ROOTS]  # type: ignore[valid-type]
+RunStatus = Literal[INGEST_STATUSES]  # type: ignore[valid-type]
 
 
 class Lease(BaseModel):
@@ -135,6 +137,18 @@ class SourceOut(BaseModel):
     removed_at: datetime | None
 
 
+class SourcesMarkRemovedIn(Lease):
+    """Sent only after a COMPLETE Drive listing; an empty list would mark every source removed, so it needs
+    `allow_empty`."""
+    seen_drive_file_ids: list[str] = Field(max_length=100000)
+    allow_empty: bool = False
+
+
+class SourcesMarkRemovedOut(BaseModel):
+    model_config = Strict
+    removed: int
+
+
 # ---- revisions ----
 class LineIn(BaseModel):
     model_config = Strict
@@ -244,3 +258,10 @@ class StatementDetailOut(StatementOut):
     cases: list[CaseOut]
     stale_events_pending: bool
     revisions: list[dict] = []
+
+
+# ---- settings ----
+class ReconciliationSettingsIn(BaseModel):
+    """`account_map`: Drive folder `<root>/<folder>/<subfolder>` -> account id (the service checks the key shape)."""
+    model_config = Strict
+    account_map: dict[str, Int32] = {}
