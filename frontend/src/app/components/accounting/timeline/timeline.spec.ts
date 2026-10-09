@@ -250,7 +250,7 @@ describe('LedgerTimelineComponent', () => {
 
     expect(text(el.querySelector('.day b'))).toBe('−$1,336');
     // The ¥500 row is not in the day net: the header says so.
-    expect(text(el.querySelector('.day .net-hint'))).toBe('僅計主幣別');
+    expect(text(el.querySelector('.day .net-hint'))).toBe('僅計主幣種');
     const transfer = Array.from(el.querySelectorAll('.row')).find(row => text(row.querySelector('.sub')).includes('→'))!;
     expect(text(transfer.querySelector('.sub'))).toBe('國泰主帳戶 → Line Bank');
     expect(text(transfer.querySelector('.amt'))).toBe('$10,000');
@@ -1119,7 +1119,7 @@ describe('LedgerTimelineComponent', () => {
       // The summary says −1,234 / +500 for the day; the filtered TWD rows sum to −280.
       expect(text(el.querySelector('.day-net b'))).toBe('−$280');
       expect(el.querySelector('.day-net b')!.classList).toContain('neg');
-      expect(text(el.querySelector('.day-net .net-hint'))).toBe('僅計主幣別');
+      expect(text(el.querySelector('.day-net .net-hint'))).toBe('僅計主幣種');
     });
 
     it('drops a late response for a previously tapped day', () => {

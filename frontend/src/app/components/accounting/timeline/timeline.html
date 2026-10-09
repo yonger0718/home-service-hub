@@ -138,7 +138,7 @@
           @if (dayNet(); as d) {
             <span class="day-total">
               @if (d.excluded) {
-                <small class="net-hint">僅計主幣別</small>
+                <small class="net-hint">僅計主幣種</small>
               }
               <b [class.neg]="d.net < 0" [class.pos]="d.net > 0">{{ d.text }}</b>
             </span>
@@ -186,7 +186,7 @@
           <span>{{ day.label }}</span>
           <span class="day-total">
             @if (day.excluded) {
-              <small class="net-hint">僅計主幣別</small>
+              <small class="net-hint">僅計主幣種</small>
             }
             <b>{{ formatSigned(day.net, mainCurrency()) }}</b>
           </span>

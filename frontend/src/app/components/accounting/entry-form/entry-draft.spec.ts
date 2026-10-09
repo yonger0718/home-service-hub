@@ -9,6 +9,7 @@ import {
   quickAmounts,
   readLastUse,
   recordAmount,
+  resetLegacyHistoryCleanup,
   ruleLabel,
   rulesForDate,
   todayIso,
@@ -49,6 +50,23 @@ describe('entry draft helpers', () => {
     expect(quickAmounts(12, 'JPY')).toEqual([1200]);
     expect(quickAmounts(12, 'TWD')).not.toContain(1200);
     expect(quickAmounts(99, 'TWD')).toEqual([]);
+  });
+
+  it('removes the pre-currency quick-amount maps once, on the first read, without migrating them', () => {
+    resetLegacyHistoryCleanup();
+    localStorage.setItem('hh.accounting.amounts.12', '{"170":3}');
+    localStorage.setItem('hh.accounting.amounts.13', '{"85":1}');
+    localStorage.setItem('hh.accounting.amounts.12.TWD', '[60]');
+    localStorage.setItem('hh.accounting.lastUse.12', '{"account_id":1,"project_id":null}');
+    expect(quickAmounts(12, 'TWD')).toEqual([60]);
+    expect(localStorage.getItem('hh.accounting.amounts.12')).toBeNull();
+    expect(localStorage.getItem('hh.accounting.amounts.13')).toBeNull();
+    expect(localStorage.getItem('hh.accounting.amounts.12.TWD')).toBe('[60]');
+    expect(localStorage.getItem('hh.accounting.lastUse.12')).not.toBeNull();
+    // One-shot: a legacy key written later is left alone in this session.
+    localStorage.setItem('hh.accounting.amounts.14', '{"1":1}');
+    quickAmounts(14, 'TWD');
+    expect(localStorage.getItem('hh.accounting.amounts.14')).toBe('{"1":1}');
   });
 
   it('offers enabled rules covering the entry date and labels them with their rate', () => {

@@ -82,8 +82,29 @@ function historyKey(categoryId: number, currency: string): string {
   return `${AMOUNT_HISTORY_PREFIX}${categoryId}.${currency}`;
 }
 
+/** Pre-currency frequency maps (`hh.accounting.amounts.<category>`): removed once, on the first read; not migrated. */
+const LEGACY_HISTORY_KEY = /^hh\.accounting\.amounts\.\d+$/;
+let legacyHistoryCleared = false;
+
+function clearLegacyHistory(storage: Storage | null): void {
+  if (legacyHistoryCleared || !storage) {
+    return;
+  }
+  legacyHistoryCleared = true;
+  const legacy = Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter(
+    (key): key is string => key !== null && LEGACY_HISTORY_KEY.test(key),
+  );
+  legacy.forEach(key => storage.removeItem(key));
+}
+
+/** Test hook: let the next read clean up legacy keys again. */
+export function resetLegacyHistoryCleanup(): void {
+  legacyHistoryCleared = false;
+}
+
 function readHistory(categoryId: number, currency: string): number[] {
   try {
+    clearLegacyHistory(store());
     const raw = store()?.getItem(historyKey(categoryId, currency));
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) {
