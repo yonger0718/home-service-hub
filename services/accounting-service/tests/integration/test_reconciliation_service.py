@@ -1,13 +1,14 @@
 """Reconciliation orchestration (spec v3 §6.1 populations, §6.3 R9/R10, §6.4 bank gap, §7.4 lock order, §5.8 modes):
 reconcile = sweep → (re)claim → cases → deferrals → balance gap → counts, run by the revision hook and the batch."""
 import uuid
+from dataclasses import replace as dc_replace
 from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from app.models import AccountStatement, ReconciliationCase, StatementCoverage, StatementLine
+from app.models import AccountStatement, CoverageDirty, ReconciliationCase, StatementCoverage, StatementLine
 from app.schemas.statements import LineIn, RevisionIn
 from app.schemas.writes import EntryUpdateIn
 from app.services import entry_write_service as ews
@@ -84,6 +85,15 @@ def _transfer(seed, source, target, amount, day):
     out_leg = seed.entry(source, f"-{amount}", kind="transfer_out", day=day, transfer_group_id=pair)
     in_leg = seed.entry(target, str(amount), kind="transfer_in", day=day, transfer_group_id=pair)
     return out_leg, in_leg
+
+
+def _batch(db, **kw) -> list[dict]:
+    """The Task 7 route's loop: one commit per yielded statement (reconcile_each never commits)."""
+    out = []
+    for item in rec.reconcile_each(db, rec.pending_statement_ids(db), **kw):
+        db.commit()
+        out.append(item)
+    return out
 
 
 def _reconcile(db, statement_id, **kw):
@@ -184,6 +194,7 @@ def test_changed_outcome_supersedes_the_stale_case_and_keeps_dismissed(card_mont
     assert ls[5].id in {r.line_id for r in _active(db_session, stmt.id)}
     stmt = db_session.get(AccountStatement, stmt.id)
     assert (stmt.matched_count, stmt.open_case_count) == (5, 2)
+    assert stmt.explained_count == 2  # the deferral + the dismissed entry case
 
 
 def test_historical_statement_gets_coverage_but_no_cases(seed, db_session, run):
@@ -340,7 +351,35 @@ def test_deferral_finds_an_existing_next_statement(seed, db_session, run):
     db_session.commit()
     sep, _, _ = _submit(db_session, run, bank, [], kind="bank", period=SEP, opening="0")
     (case,) = _cases(db_session, sep.id, "resolved")
-    assert (case.entry_id, case.deferred_to_period_end, case.deferred_to_statement_id) == (late.id, OCT[1], octo.id)
+    # the earlier statement never references (or locks) the later one: the later statement's reconcile links
+    assert (case.entry_id, case.deferred_to_period_end, case.deferred_to_statement_id) == (late.id, OCT[1], None)
+    _reconcile(db_session, octo.id)
+    assert db_session.get(ReconciliationCase, case.id).deferred_to_statement_id == octo.id
+    # re-reconciling the earlier statement keeps the link
+    _reconcile(db_session, sep.id)
+    assert db_session.get(ReconciliationCase, case.id).deferred_to_statement_id == octo.id
+
+
+def test_fill_deferral_links_links_every_unlinked_deferral(seed, db_session, run):
+    bank = seed.account("銀行", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    octo, _, _ = _submit(db_session, run, bank, [], kind="bank", period=OCT, opening="0")
+    seed.entry(bank, "-90", day=date(2026, 9, 30), merchant="咖啡")
+    db_session.commit()
+    sep, _, _ = _submit(db_session, run, bank, [], kind="bank", period=SEP, opening="0")
+    (case,) = _cases(db_session, sep.id, "resolved")
+    assert case.deferred_to_statement_id is None
+    assert rec.fill_deferral_links(db_session) == 1
+    db_session.commit()
+    assert db_session.get(ReconciliationCase, case.id).deferred_to_statement_id == octo.id
+    assert rec.fill_deferral_links(db_session) == 0
+
+
+def test_rules_for_coerces_settings_types():
+    rules = rec.rules_for({"accept": "0.9", "exact_window_days": "4", "bank_only_patterns": ["年費"], "x": 1},
+                          date(2026, 9, 30))
+    assert (rules.accept, rules.exact_window_days, rules.bank_only_patterns) == (Decimal("0.9"), 4, ("年費",))
+    assert rules.period_end == date(2026, 9, 30) and rules.margin == Decimal("0.15")
 
 
 def test_next_period_end_rules():
@@ -439,8 +478,8 @@ def test_hook_leaves_the_pass_to_the_batch_while_an_import_runs(seed, db_session
             importer.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": IMPORT_LOCK_KEY})
     assert stmt.current_revision_id == res.revision.id and stmt.needs_recheck is True
     assert _active(db_session, stmt.id) == [] and res.case_ids == []
-    assert rec.reconcile_pending(db_session)["claims"] == 1
-    db_session.commit()
+    (item,) = _batch(db_session)
+    assert item["statement_id"] == stmt.id and item["result"].claims == 1
     assert len(_active(db_session, stmt.id)) == 1
 
 
@@ -451,7 +490,7 @@ def test_rules_defaults_in_settings(db_session):
     assert "period_end" not in settings["rules"] and "年費" in settings["rules"]["bank_only_patterns"]
 
 
-def test_reconcile_pending_batch_records_a_failure(seed, db_session, run, monkeypatch):
+def test_batch_records_a_failure_and_goes_on(seed, db_session, run, monkeypatch):
     good_card = _card(seed, db_session, "好卡")
     bad_card = _card(seed, db_session, "壞卡")
     buy = seed.entry(good_card, "-580", day=date(2026, 9, 3), merchant="全聯")
@@ -469,30 +508,36 @@ def test_reconcile_pending_batch_records_a_failure(seed, db_session, run, monkey
         return real(db, statement, accounts, **kw)
 
     monkeypatch.setattr(rec, "load_candidates", flaky)
-    result = rec.reconcile_pending(db_session)
-    db_session.commit()
-    assert result["statements"] == 2 and result["claims"] == 1 and result["cases_opened"] == 0
-    assert result["skipped"] == {} and set(result["errors"]) == {bad.id}
+    assert rec.pending_statement_ids(db_session) == sorted([good.id, bad.id])
+    commits = []
+    items = []
+    for item in rec.reconcile_each(db_session, rec.pending_statement_ids(db_session)):
+        commits.append(db_session.in_transaction())  # the service leaves the commit to the caller
+        db_session.commit()
+        items.append(item)
+    assert commits == [True, True]
+    by_id = {item["statement_id"]: item for item in items}
+    assert by_id[good.id]["result"].claims == 1 and "error" not in by_id[good.id]
+    assert by_id[bad.id] == {"statement_id": bad.id, "error": "RuntimeError"}
     db_session.expire_all()
     assert db_session.get(AccountStatement, good.id).needs_recheck is False
     assert db_session.get(AccountStatement, bad.id).needs_recheck is True
     assert [r.entry_id for r in _active(db_session, good.id)] == [buy.id]
 
 
-def test_reconcile_pending_picks_up_dirty_statements(seed, db_session, run):
+def test_batch_picks_up_dirty_statements(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
     assert stmt.open_case_count == 1
     set_dirty(db_session, True)
     buy = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
     db_session.commit()
-    result = rec.reconcile_pending(db_session)
-    db_session.commit()
-    assert result["statements"] == 1 and result["claims"] == 1
+    (item,) = _batch(db_session)
+    assert item["statement_id"] == stmt.id and item["result"].claims == 1
     assert [r.entry_id for r in _active(db_session, stmt.id)] == [buy.id]
     stmt = db_session.get(AccountStatement, stmt.id)
     assert (stmt.needs_recheck, stmt.open_case_count, stmt.matched_count) == (False, 0, 1)
-    assert rec.reconcile_pending(db_session)["statements"] == 0
+    assert rec.pending_statement_ids(db_session) == []
 
 
 # --- lock order --------------------------------------------------------------------------------------------------
@@ -515,5 +560,71 @@ def test_edit_waits_for_reconcile_and_the_next_sweep_releases(seed, db_session, 
     db_session.expire_all()
     old = db_session.get(StatementCoverage, claim.id)
     assert old.status == "stale" and old.stale_reason.startswith("dirty:update:")
+    assert _active(db_session, stmt.id) == []
+    assert {c.kind for c in _cases(db_session, stmt.id, "open")} == {"amount_delta", "entry_unmatched"}
+
+
+def test_rederived_case_carries_the_sweep_event(seed, db_session, run):
+    card = _card(seed, db_session)
+    buy = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    set_dirty(db_session, True)
+    buy = db_session.get(type(buy), buy.id)
+    buy.amount = Decimal("-590")
+    db_session.commit()
+    event_id = db_session.execute(select(func.max(CoverageDirty.id))).scalar_one()
+    _reconcile(db_session, stmt.id)
+    superseded = _cases(db_session, stmt.id, "superseded")
+    assert [c.kind for c in superseded] == ["recheck"]
+    (delta,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "amount_delta"]
+    assert delta.context["sweep"] == {"reopened_by_event": event_id, "op": "update", "row_id": buy.id}
+    # a quiet re-run keeps the case (the carried sweep note is not part of its identity)
+    _reconcile(db_session, stmt.id)
+    assert [c.id for c in _cases(db_session, stmt.id, "open") if c.kind == "amount_delta"] == [delta.id]
+
+
+def test_entry_whose_group_changed_between_reads_is_left_out(seed, db_session, run, monkeypatch):
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    real = rec.load_candidates
+    calls = []
+
+    def regrouped(db, statement, accounts, **kw):
+        entries, groups = real(db, statement, accounts, **kw)
+        calls.append(1)
+        if len(calls) == 2:  # the re-read under the locks sees the entry joined a group meanwhile
+            entries = [dc_replace(e, group_id=999) for e in entries]
+        return entries, groups
+
+    monkeypatch.setattr(rec, "load_candidates", regrouped)
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    assert len(calls) == 2 and _active(db_session, stmt.id) == []
+    assert [c.kind for c in _cases(db_session, stmt.id, "open")] == ["line_unmatched"]
+
+
+def test_reconcile_waits_at_the_sweep_barrier_for_a_writer(seed, db_session, run, pg_engine):
+    """Writer first: it holds the shared dirty barrier (its trigger fired) and a candidate's row lock; reconcile must
+    block at the sweep's exclusive barrier (before any row lock), not deadlock, and finish after the writer commits."""
+    card = _card(seed, db_session)
+    buy = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    (claim,) = _active(db_session, stmt.id)
+    set_dirty(db_session, True)
+    payload = EntryUpdateIn(account_id=card.id, kind="expense", amount=Decimal("590"), entry_date=date(2026, 9, 3),
+                            posted_date=date(2026, 9, 3), merchant="全聯")
+
+    def writer(session):
+        ews.update_entry(session, buy.id, payload)
+        session.flush()  # the trigger runs: shared barrier + the row lock are held until commit
+
+    outcome = race(pg_engine, writer, lambda s: rec.reconcile(s, stmt.id))
+
+    assert outcome == "committed"
+    db_session.expire_all()
+    old = db_session.get(StatementCoverage, claim.id)
+    assert old.status == "stale" and old.stale_reason.startswith("dirty:update:")  # the sweep saw the writer's event
     assert _active(db_session, stmt.id) == []
     assert {c.kind for c in _cases(db_session, stmt.id, "open")} == {"amount_delta", "entry_unmatched"}

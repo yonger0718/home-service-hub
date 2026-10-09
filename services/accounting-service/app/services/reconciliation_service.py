@@ -1,18 +1,21 @@
-"""Reconciliation orchestration (spec v3 §6, §7.4; v4 §4.6, §5.7–5.8): one statement per transaction, never commits
-except `reconcile_pending` (one transaction per statement, see there).
+"""Reconciliation orchestration (spec v3 §6, §7.4; v4 §4.6, §5.7–5.8): one statement per transaction. Never commits:
+the batch (`pending_statement_ids` + `reconcile_each`) yields per statement and its caller commits each one.
 
 `reconcile` lock order (§7.4, the sweep barrier of coverage_service): the shared import key → the statement row
 FOR UPDATE → flush → `coverage_service.sweep` (briefly takes the dirty barrier; it must run before any entry_group /
 ledger_entry lock, because a writer holding the shared barrier may be waiting on a row this transaction would hold)
-→ the deferral target statement FOR KEY SHARE (the deferral case's foreign key would otherwise wait on a statement
-whose reconcile may be waiting on our entry rows) → entry_group rows ascending → the candidate entries, their
+→ entry_group rows ascending → the candidate entries, their
 children and their transfer legs in ONE ordered SELECT … FOR UPDATE → re-read the population under those locks →
 match → coverage → cases → counts. Reconcile writes no ledger rows, so it emits no dirty events of its own.
+
+No statement row other than its own is locked or referenced by a statement's reconcile: a deferral case gets its
+`deferred_to_statement_id` only from the LATER statement's reconcile (`_link_earlier_deferrals`, case rows only) or
+from `fill_deferral_links`.
 
 Re-running is idempotent: a line whose active claim equals the new claim (same rows, roles, rule and snapshots)
 keeps its coverage rows; every other active row of the statement (including orphans whose entry was deleted) is
 released with reason `reconcile` and the new claim written. Likewise an open/proposed matcher case equal to a newly
-derived one (kind, event/entry, candidates, context) is kept (its line pointer refreshed), every other open matcher
+derived one (kind, event/entry, candidates, context without the carried `sweep` note) is kept (its line pointer refreshed), every other open matcher
 case is superseded (version bumped) and the rest are created. Dismissed cases are never reopened. Cases, including
 deferral explanations, are written in live mode only (§5.8)."""
 from __future__ import annotations
@@ -25,8 +28,10 @@ from datetime import date, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, exists, func, or_, select
-from sqlalchemy.orm import Session
+from typing import Iterable, Iterator
+
+from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy.orm import Session, aliased
 
 from app.models import (
     Account, AccountStatement, EntryGroup, InstallmentPlanMap, LedgerEntry, ReconciliationCase, ScheduleDefinition,
@@ -69,7 +74,9 @@ def rules_for(raw: dict, period_end: date) -> matching.Rules:
         if f.name == "period_end" or f.name not in raw:
             continue
         value, default = raw[f.name], f.default
-        if isinstance(default, Decimal):
+        if isinstance(default, bool):  # before int: bool is an int subclass
+            value = value is True or str(value).lower() == "true"
+        elif isinstance(default, Decimal):
             value = Decimal(str(value))
         elif isinstance(default, tuple):
             value = tuple(value)
@@ -221,19 +228,6 @@ def _lock_entries(db: Session, entry_ids: set[int], transfer_group_ids: set) -> 
     return {row.id: row for row in rows}
 
 
-def _deferral_target(db: Session, statement: AccountStatement, account: Account) -> tuple[date, int | None]:
-    """The next period end and the statement already holding it, taken FOR KEY SHARE before any entry lock (the
-    deferral case's foreign key would otherwise wait on that statement's row lock while we hold entry rows)."""
-    closing_day = (account.closing_day or statement.period_end.day) if statement.kind == "card" else None
-    end = next_period_end(statement.period_end, closing_day)
-    target = db.execute(
-        select(AccountStatement.id)
-        .where(AccountStatement.account_id == statement.account_id, AccountStatement.currency == statement.currency,
-               AccountStatement.period_end == end)
-        .with_for_update(key_share=True)).scalar_one_or_none()
-    return end, target
-
-
 # --- outputs -----------------------------------------------------------------------------------------------------
 
 def _claim_unchanged(rows: list[StatementCoverage], claim: matching.Claim, locked: dict[int, LedgerEntry]) -> bool:
@@ -285,9 +279,26 @@ def _case(kind: str, *, event_id=None, line_id=None, entry_id=None, candidates=(
             "candidates": [dict(c) for c in candidates], "context": dict(context or {})}
 
 
+SWEEP_NOTE = "sweep"  # context key carrying the dirty event that released the line (from the superseded case)
+
+
 def _key(kind, event_id, entry_id, candidates, context) -> tuple:
+    """A case's identity for the keep-or-supersede diff; the carried sweep note is not part of it."""
+    context = {k: v for k, v in (context or {}).items() if k != SWEEP_NOTE}
     return (kind, event_id, entry_id, json.dumps(candidates, sort_keys=True, default=str),
             json.dumps(context, sort_keys=True, default=str))
+
+
+def _sweep_note(case: ReconciliationCase) -> dict | None:
+    """The dirty event a superseded case recorded: a sweep `recheck` case ({event_id, op, row_id}), a case the sweep
+    bumped ({reopened_by_event, op, row_id}) or one that already carried a note."""
+    context = case.context or {}
+    if "reopened_by_event" in context:
+        return {"reopened_by_event": context["reopened_by_event"], "op": context.get("op"),
+                "row_id": context.get("row_id")}
+    if case.kind == "recheck" and "event_id" in context:
+        return {"reopened_by_event": context["event_id"], "op": context.get("op"), "row_id": context.get("row_id")}
+    return context.get(SWEEP_NOTE)
 
 
 def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int], result: matching.MatchResult,
@@ -341,7 +352,7 @@ def _write_cases(db: Session, statement: AccountStatement, desired: list[dict]) 
         if case.status in OPEN:
             open_by_key[_key(case.kind, case.event_id, case.entry_id, case.candidates, case.context)].append(case)
     kept: set[int] = set()
-    created: list[int] = []
+    fresh: list[dict] = []
     for want in desired:
         same = open_by_key.get(_key(want["kind"], want["event_id"], want["entry_id"], want["candidates"],
                                     want["context"]))
@@ -350,27 +361,39 @@ def _write_cases(db: Session, statement: AccountStatement, desired: list[dict]) 
             kept.add(case.id)
             if case.line_id != want["line_id"]:  # an identical re-parse moved the event to a new line
                 case.line_id, case.revision_id = want["line_id"], statement.current_revision_id
-            continue
-        if _dismissed(dismissed, want):
-            continue
+        elif not _dismissed(dismissed, want):
+            fresh.append(want)
+    leaving = [c for c in existing if c.status in OPEN and c.id not in kept]
+    notes: dict[int, dict] = {}  # event id → the newest sweep note among its superseded cases
+    for case in leaving:
+        note = _sweep_note(case)
+        if case.event_id is not None and note:
+            notes[case.event_id] = note
+    created: list[int] = []
+    for want in fresh:
+        note = notes.get(want["event_id"]) if want["event_id"] is not None else None
+        if note:
+            want = {**want, "context": {**want["context"], SWEEP_NOTE: note}}
         case = ReconciliationCase(statement_id=statement.id, revision_id=statement.current_revision_id, **want)
         db.add(case)
         db.flush()
         created.append(case.id)
-    for case in existing:
-        if case.status in OPEN and case.id not in kept and case.id not in created:
-            case.status = "superseded"
-            case.version = case.version + 1
+    for case in leaving:
+        case.status = "superseded"
+        case.version = case.version + 1
     db.flush()
     return created
 
 
-def _write_deferrals(db: Session, statement: AccountStatement, deferred: list[int], evaluated: set[int],
-                     target: tuple[date, int | None]) -> None:
-    """Resolved `entry_unmatched` cases explaining `deferred_next_period` (resolved_by NULL: the matcher's own).
-    Refreshed in place; one whose entry was evaluated this run and is no longer deferred is superseded; one whose
-    entry left the population (e.g. covered by the next statement) keeps its explanation."""
-    end, target_id = target
+def _write_deferrals(db: Session, statement: AccountStatement, account: Account, deferred: list[int],
+                     evaluated: set[int]) -> None:
+    """Resolved `entry_unmatched` cases explaining `deferred_next_period` (resolved_by NULL: the matcher's own) with
+    `deferred_to_period_end` from the account's cycle. `deferred_to_statement_id` is never set here (the later
+    statement links it); an existing link is kept, and cleared only when the period end itself moved (a cycle
+    change). Refreshed in place; one whose entry was evaluated this run and is no longer deferred is superseded; one
+    whose entry left the population (e.g. covered by the next statement) keeps its explanation."""
+    closing_day = (account.closing_day or statement.period_end.day) if statement.kind == "card" else None
+    end = next_period_end(statement.period_end, closing_day)
     current = {c.entry_id: c for c in db.execute(
         select(ReconciliationCase)
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "entry_unmatched",
@@ -383,9 +406,9 @@ def _write_deferrals(db: Session, statement: AccountStatement, deferred: list[in
             db.add(ReconciliationCase(
                 statement_id=statement.id, revision_id=statement.current_revision_id, kind="entry_unmatched",
                 entry_id=entry_id, status="resolved", explanation=DEFERRED, deferred_to_period_end=end,
-                deferred_to_statement_id=target_id, resolved_at=func.now(), context={}))
-        elif (case.deferred_to_period_end, case.deferred_to_statement_id) != (end, target_id):
-            case.deferred_to_period_end, case.deferred_to_statement_id = end, target_id
+                resolved_at=func.now(), context={}))
+        elif case.deferred_to_period_end != end:
+            case.deferred_to_period_end, case.deferred_to_statement_id = end, None
     for entry_id, case in current.items():
         if entry_id in evaluated and entry_id not in deferred:
             case.status = "superseded"
@@ -393,22 +416,47 @@ def _write_deferrals(db: Session, statement: AccountStatement, deferred: list[in
     db.flush()
 
 
-def _link_earlier_deferrals(db: Session, statement: AccountStatement) -> None:
-    """Point earlier statements' unlinked deferrals to this period at this statement. SKIP LOCKED: a deferral case
-    another reconcile is writing is left to that reconcile (it looks this statement up itself)."""
-    rows = db.execute(
-        select(ReconciliationCase)
-        .join(AccountStatement, AccountStatement.id == ReconciliationCase.statement_id)
-        .where(AccountStatement.account_id == statement.account_id, AccountStatement.currency == statement.currency,
-               AccountStatement.id != statement.id, ReconciliationCase.kind == "entry_unmatched",
-               ReconciliationCase.status == "resolved", ReconciliationCase.explanation == DEFERRED,
-               ReconciliationCase.deferred_to_period_end == statement.period_end,
-               ReconciliationCase.deferred_to_statement_id.is_(None))
-        .order_by(ReconciliationCase.id)
-        .with_for_update(skip_locked=True, of=ReconciliationCase)).scalars()
-    for case in rows:
-        case.deferred_to_statement_id = statement.id
+def _deferral_conditions() -> list:
+    case = ReconciliationCase
+    return [case.kind == "entry_unmatched", case.status == "resolved", case.explanation == DEFERRED,
+            case.deferred_to_statement_id.is_(None)]
+
+
+def _link_earlier_deferrals(db: Session, statement: AccountStatement) -> int:
+    """Point earlier statements' unlinked deferrals to this period at this statement: one UPDATE of case rows only
+    (no statement row of theirs is locked; the foreign key's KEY SHARE lands on this statement, which we hold).
+    No SKIP LOCKED: an earlier statement's reconcile writes its deferral cases only after taking all its entry locks
+    and then waits on nothing of ours, so waiting for its commit here cannot close a cycle."""
+    earlier = select(AccountStatement.id).where(
+        AccountStatement.account_id == statement.account_id, AccountStatement.currency == statement.currency,
+        AccountStatement.id != statement.id)
+    count = db.execute(
+        update(ReconciliationCase)
+        .where(ReconciliationCase.statement_id.in_(earlier),
+               ReconciliationCase.deferred_to_period_end == statement.period_end, *_deferral_conditions())
+        .values(deferred_to_statement_id=statement.id)
+        .execution_options(synchronize_session=False)).rowcount
     db.flush()
+    return count
+
+
+def fill_deferral_links(db: Session) -> int:
+    """Link every unlinked deferral case to the statement of the same account and currency whose period_end is its
+    `deferred_to_period_end`; returns the number linked. Case rows only, no statement lock taken (the foreign key's
+    KEY SHARE may wait for a running reconcile of the target: call it in its own transaction, e.g. after the batch)."""
+    own, target = aliased(AccountStatement), aliased(AccountStatement)
+    target_id = (select(target.id)
+                 .join(own, and_(own.account_id == target.account_id, own.currency == target.currency))
+                 .where(own.id == ReconciliationCase.statement_id,
+                        target.period_end == ReconciliationCase.deferred_to_period_end)
+                 .limit(1).scalar_subquery())
+    count = db.execute(
+        update(ReconciliationCase)
+        .where(*_deferral_conditions(), ReconciliationCase.deferred_to_period_end.is_not(None), target_id.is_not(None))
+        .values(deferred_to_statement_id=target_id)
+        .execution_options(synchronize_session=False)).rowcount
+    db.flush()
+    return count
 
 
 def _recount(db: Session, statement: AccountStatement) -> None:
@@ -419,8 +467,9 @@ def _recount(db: Session, statement: AccountStatement) -> None:
     statement.matched_count = db.execute(
         select(func.count(func.distinct(StatementCoverage.line_id)))
         .where(StatementCoverage.statement_id == statement.id, StatementCoverage.status == "active")).scalar_one()
-    statement.explained_count = count(ReconciliationCase.status == "resolved",
-                                      ReconciliationCase.explanation.is_not(None))
+    statement.explained_count = count(or_(
+        and_(ReconciliationCase.status == "resolved", ReconciliationCase.explanation.is_not(None)),
+        ReconciliationCase.status == "dismissed"))
     statement.open_case_count = count(ReconciliationCase.status.in_(OPEN))
     statement.needs_recheck = False
     db.flush()
@@ -439,8 +488,9 @@ def _skip_reason(db: Session, statement: AccountStatement) -> str | None:
 
 def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, locked: bool = False) -> ReconcileResult:
     """Sweep, match and record one statement (module docstring for the lock order). `locked=True`: the caller
-    already holds the statement row FOR UPDATE (the revision hook); the import key is still taken (a non-blocking
-    try, raising ImportRunningError while an import runs). Skips (after the sweep): no current revision or a failed
+    already holds the statement row FOR UPDATE (the revision hook); the import key is then attempted AFTER that
+    statement lock, which is safe only because the attempt never waits (pg_try_advisory_xact_lock_shared raises
+    ImportRunningError at once while an import holds the key exclusively). Skips (after the sweep): no current revision or a failed
     current one → `no_current_revision`; an open/proposed parse_review → `parse_review`. Never commits."""
     take_import_key_shared(db)
     statement = db.get(AccountStatement, statement_id) if locked else _lock_statement(db, statement_id)
@@ -457,7 +507,6 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     line_rows = _current_lines(db, statement)
     include_reward = any(line.line_kind == "reward" for line in line_rows)
-    target = _deferral_target(db, statement, accounts_by_id[statement.account_id]) if live else None
     # population before the locks, to know what to lock; re-read under the locks
     entries, groups = load_candidates(db, statement, accounts, window_days=rules.candidate_window_days,
                                       include_reward=include_reward)
@@ -466,10 +515,13 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     wanted = {e.id for e in entries} | {c.id for e in entries for c in e.children}
     transfers = {e.transfer_group_id for e in entries if e.transfer_group_id is not None}
     locked_rows = _lock_entries(db, wanted, {UUID(t) for t in transfers})
+    first_groups = {e.id: e.group_id for e in entries}
     entries, groups = load_candidates(db, statement, accounts, window_days=rules.candidate_window_days,
                                       include_reward=include_reward)
-    # rows that joined the population after the first read are not locked: left to the next sweep/recheck
-    entries = [_with_children(e, locked_rows) for e in entries if e.id in locked_rows]
+    # rows that joined the population after the first read are not locked, and a row whose group changed in between
+    # belongs to a group we did not lock: both are left to the next sweep/recheck
+    entries = [_with_children(e, locked_rows) for e in entries
+               if e.id in locked_rows and e.id in first_groups and first_groups[e.id] == e.group_id]
     result = matching.match(
         statement.kind, [_as_line(row) for row in line_rows], entries, groups, plan_map(db, statement.account_id),
         lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency)
@@ -481,7 +533,7 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
         by_id = {e.id: e for e in entries}
         created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id))
         evaluated = set(by_id) | {c.id for e in entries for c in e.children}
-        _write_deferrals(db, statement, deferred, evaluated, target)
+        _write_deferrals(db, statement, accounts_by_id[statement.account_id], deferred, evaluated)
     _link_earlier_deferrals(db, statement)
     coverage_service.assert_conserved(db, statement)
     _recount(db, statement)
@@ -494,28 +546,23 @@ def _with_children(entry: matching.Entry, locked: dict[int, LedgerEntry]) -> mat
     return entry if children == entry.children else replace(entry, children=children)
 
 
-def reconcile_pending(db: Session, *, run_id: int | None = None) -> dict:
-    """The daily pass: `reconcile` every statement with a dirty event past its watermark (`sweep_pending`) or
-    `needs_recheck`, each in a savepoint so one failure does not abort the batch (the error class is recorded).
+def pending_statement_ids(db: Session) -> list[int]:
+    """Statements (any mode) with a dirty event past their watermark that may touch them (`sweep_pending`) or with
+    `needs_recheck`, deduplicated, ascending."""
+    flagged = db.execute(select(AccountStatement.id).where(AccountStatement.needs_recheck.is_(True))).scalars()
+    return sorted(set(coverage_service.sweep_pending(db)) | set(flagged))
 
-    Commits after each statement: the sweep must run before the transaction holds any entry/group row lock (module
-    docstring), so the next statement's sweep cannot share a transaction with this one's entry locks. Raises
-    ImportRunningError before doing anything while an import runs."""
-    take_import_key_shared(db)
-    ids = sorted(set(coverage_service.sweep_pending(db)) | set(db.execute(
-        select(AccountStatement.id).where(AccountStatement.needs_recheck.is_(True))).scalars()))
-    db.commit()
-    out = {"statements": len(ids), "claims": 0, "cases_opened": 0, "skipped": {}, "errors": {}}
-    for statement_id in ids:
+
+def reconcile_each(db: Session, statement_ids: Iterable[int], *, run_id: int | None = None) -> Iterator[dict]:
+    """`reconcile` each statement inside its own savepoint and yield `{"statement_id", "result"}` or
+    `{"statement_id", "error": <exception class>}` (the class only: driver messages can carry amounts). Never commits.
+    The caller MUST commit after each yielded item: the next statement's sweep must not run while this transaction
+    still holds the previous statement's entry/group row locks (module docstring)."""
+    for statement_id in statement_ids:
         try:
             with db.begin_nested():
                 result = reconcile(db, statement_id, run_id=run_id)
-        except Exception as exc:  # noqa: BLE001  (recorded; the batch goes on)
-            out["errors"][statement_id] = exc.__class__.__name__
+        except Exception as exc:  # noqa: BLE001  (reported per statement; the batch goes on)
+            yield {"statement_id": statement_id, "error": exc.__class__.__name__}
         else:
-            out["claims"] += result.claims
-            out["cases_opened"] += len(result.cases_opened)
-            if result.skipped is not None:
-                out["skipped"][statement_id] = result.skipped
-        db.commit()
-    return out
+            yield {"statement_id": statement_id, "result": result}
