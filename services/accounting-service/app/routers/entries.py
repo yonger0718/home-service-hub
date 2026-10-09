@@ -3,13 +3,14 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
+from ..auth import method_scope
 from ..database import get_db
 from ..schemas.ledger import DailySummaryOut, EntryDetailOut, EntryKind, EntryPage, MonthSummaryOut
 from ..schemas.writes import EntryIn, EntryUpdateIn, EntryWriteOut, RefundIn, SettleIn, SplitIn, SplitOut
 from ..services import entry_write_service, ledger_service, settlement_service, split_service
 from .errors import service_errors
 
-router = APIRouter(prefix="/entries", tags=["Entries"])
+router = APIRouter(prefix="/entries", tags=["Entries"], dependencies=[Depends(method_scope())])
 
 
 @router.get("", response_model=EntryPage)

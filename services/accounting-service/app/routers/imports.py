@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from ..auth import method_scope
 from ..database import get_db, get_engine
 from ..models import ImportRun
 from ..schemas.imports import ImportReport
@@ -19,7 +20,7 @@ from ..services.moze_import_service import (
     run_report,
 )
 
-router = APIRouter(prefix="/imports", tags=["Imports"])
+router = APIRouter(prefix="/imports", tags=["Imports"], dependencies=[Depends(method_scope())])
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_BACKUP_UPLOAD_BYTES = 200 * 1024 * 1024

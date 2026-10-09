@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
+from ..auth import method_scope
 from ..database import get_db
 from ..schemas.writes import SplitIn, SplitOut
 from ..services import split_service
 from .errors import service_errors
 
-router = APIRouter(prefix="/splits", tags=["Splits"])
+router = APIRouter(prefix="/splits", tags=["Splits"], dependencies=[Depends(method_scope())])
 
 
 @router.post("", response_model=SplitOut, status_code=201)

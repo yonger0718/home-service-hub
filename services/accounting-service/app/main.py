@@ -3,9 +3,11 @@ import logging
 from shared_lib import create_app
 from starlette.middleware import Middleware
 
-from .auth import ApiTokenMiddleware, api_auth_status, docs_paths
+from .auth import ApiTokenMiddleware, api_auth_status, docs_paths, validate_auth_config
 from .database import engine, get_db
-from .routers import accounts, balance_adjustments, entries, imports, schedules, settings, splits, transfers
+from .routers import (
+    accounts, balance_adjustments, entries, imports, schedules, settings, splits, statements, transfers,
+)
 from .services import schedule_job
 
 app = create_app(
@@ -15,6 +17,7 @@ app = create_app(
     routers=[
         accounts.router, entries.router, imports.router, settings.router,
         transfers.router, splits.router, balance_adjustments.router, schedules.router,
+        statements.router,
     ],
     get_db=get_db,
     engine=engine,
@@ -25,6 +28,7 @@ app = create_app(
 # Innermost user middleware (appended, not add_middleware's insert-at-0): CORS stays outside it, so preflights are
 # answered by CORS and a 401 still carries CORS headers. api_auth_status() also fails startup on a malformed list;
 # it goes to uvicorn's logger because that one is configured (INFO) before uvicorn imports this module.
+validate_auth_config()  # raises ValueError and stops the process on an unsafe configuration
 app.user_middleware.append(Middleware(ApiTokenMiddleware, docs_paths=docs_paths(app)))
 logging.getLogger("uvicorn.error").info(api_auth_status())
 

@@ -14,9 +14,11 @@ from ..models import (
     Counterparty,
     LedgerEntry,
     Preference,
+    STATEMENT_SOURCE_ROOTS,
     Project,
     RewardRule,
 )
+from ..models.statements import ReconciliationSettings
 from ..schemas.writes import AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn
 from . import schedule_entry_hooks
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
@@ -45,6 +47,52 @@ def update_preference(db: Session, payload: PreferenceIn) -> dict:
         setattr(preference, field, getattr(payload, field))
     db.flush()
     return {field: getattr(preference, field) for field in PREFERENCE_FIELDS}
+
+
+# --- reconciliation settings (single row, id = 1) -------------------------------
+
+
+def _reconciliation_row(db: Session, *, lock: bool = False) -> ReconciliationSettings:
+    """The single reconciliation settings row; inserted with the column defaults when absent. Not committed."""
+    db.execute(pg_insert(ReconciliationSettings).values(id=1).on_conflict_do_nothing(index_elements=["id"]))
+    return db.get(ReconciliationSettings, 1, populate_existing=True, with_for_update=lock)
+
+
+def _reconciliation_dict(row: ReconciliationSettings) -> dict:
+    data = dict(row.data or {})
+    return {**data, "account_map": data.get("account_map") or {}, "dirty_enabled": data.get("dirty_enabled") is True,
+            "version": row.version}
+
+
+def _check_account_map(account_map) -> None:
+    """Keys are Drive folders `<root>/<folder>/<subfolder>` (the shape the revision folder check builds); values
+    are account ids."""
+    if not isinstance(account_map, dict):
+        raise ValidationError("account_map", "must be an object")
+    for key, value in account_map.items():
+        parts = key.split("/") if isinstance(key, str) else []
+        if (len(parts) != 3 or any(not part or part != part.strip() for part in parts)
+                or parts[0] not in STATEMENT_SOURCE_ROOTS):
+            raise ValidationError("account_map", f"key {key!r} is not <root>/<folder>/<subfolder>")
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValidationError("account_map", f"value for {key!r} is not an account id")
+
+
+def get_reconciliation_settings(db: Session) -> dict:
+    return _reconciliation_dict(_reconciliation_row(db))
+
+
+def update_reconciliation_settings(db: Session, data: dict) -> dict:
+    """Replace the settings data and bump `version`; the row is locked so concurrent saves bump it once each.
+    `dirty_enabled` is the dirty-trigger kill switch the ledger triggers read (off unless true)."""
+    _check_account_map(data.get("account_map", {}))
+    if not isinstance(data.get("dirty_enabled", False), bool):
+        raise ValidationError("dirty_enabled", "must be a boolean")
+    row = _reconciliation_row(db, lock=True)
+    row.data = dict(data)
+    row.version = row.version + 1
+    db.flush()
+    return _reconciliation_dict(row)
 
 
 # --- shared ---------------------------------------------------------------------

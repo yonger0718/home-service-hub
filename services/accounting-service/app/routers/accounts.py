@@ -3,6 +3,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
+from ..auth import method_scope
 from ..database import get_db
 from ..models import Account
 from ..schemas.ledger import AccountDetailOut, AccountOut, AccountPeriodSummaryOut, EntryKind, EntryPage, RewardRuleOut
@@ -10,7 +11,7 @@ from ..schemas.writes import AccountIn
 from ..services import ledger_service, settings_service
 from .errors import service_errors
 
-router = APIRouter(prefix="/accounts", tags=["Accounts"])
+router = APIRouter(prefix="/accounts", tags=["Accounts"], dependencies=[Depends(method_scope())])
 
 
 def _require_account(db: Session, account_id: int) -> None:

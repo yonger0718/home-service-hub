@@ -1,0 +1,179 @@
+# Statement reconciliation (對帳) — design
+
+Status: **v4**, final after three Multica review rounds on AGENT-83 (rounds 1/1.1 → v2, round 2 → v3, round 3 → v4). §15 is the cumulative answer map; §16 lists what is carried into the implementation plan as acceptance criteria rather than re-specified here. Owner decisions are **[owner]**; defaults **[default]**; open owner items are in §14. Wherever this document says "as v2", it means the text of commit `eef3b31aa517368c34f57dfb1c9dd785e86ac1fa`.
+
+## 1. Problem
+
+The reminder centre's 信用卡帳單 only says how much to pay; nothing checks the ledger against what the bank billed. The owner's Hermes mail automation already lands every card and bank e-statement in Google Drive:
+
+| Drive path (under `財務對帳單/`) | content (2026-10-09) |
+|---|---|
+| `銀行/信用卡/<issuer>/` | 14 card folders, emailed e-statements, `YYYY-MM_<issuer>_…pdf` |
+| `銀行/銀行帳戶/<bank>/` | 12 bank folders, emailed e-statements |
+| `手動下載/國泰世華/` | 12 monthly Cathay 綜合月結單, `YYMM.pdf`, owner-downloaded |
+| `投資/`, `電子發票/` | out of scope |
+
+496 bank PDFs + 12 manual. Every PDF is password-protected. A read-only spike (one or two files per folder) unlocked every folder with the owner's password rules and found a text layer in every file, so **v1 has no OCR and no vision path**. Two folders use uppercase `.PDF`. 台新 changed its password rule in 2024-12.
+
+Goals, in priority order:
+1. Per statement period: every statement line is matched to ledger rows, explained (bank fee, interest, reward, deferred) or an open case; same in reverse.
+2. The ledger converges to the statement only through explicit, validated, reversible, audited actions. Nothing writes money without the owner's grant.
+3. Unattended for new statements; idempotent over history.
+4. The triage brain is replaceable.
+
+Non-goals (v1): bank logins/scraping **[owner]**, OCR/vision, investment and e-invoice files, chat-based approval, historical ledger repair.
+
+## 2. Shape
+
+| Layer | Runs in | Handles |
+|---|---|---|
+| Rules | API process, `reconciliation_service` (pure, deterministic) | eligibility gates, competing representations compared globally per line, monetary conservation, bank-only lines, deferral, cross-account hints; never resolves ambiguity |
+| Model as a function | sandboxed, tool-less parser child of the ingest worker | masked statement text → `StatementParse` JSON |
+| Agent triage | Hermes skill, `read,propose` token | proposals on open cases |
+| Apply | API process, owner tap or policy engine under owner grants | one transaction per action, event-identity idempotency, audit, operation-specific inverse |
+
+## 3. Processes, identities, access
+
+| Process | Linux user | Has | Does not have |
+|---|---|---|---|
+| accounting-service API | **`homehub-api`** (prerequisite for `ACCOUNTING_RECONCILIATION_ENABLED`; today `opc`) | DB role `accounting`, token files | sudo, password file, Drive, MinIO write key, parser login, any other user's home |
+| ingest worker (`homehub-statements.timer`/`.service`, user units of `homehub-worker`) | `homehub-worker` | password file (root:homehub-worker 0440), rclone config with a read-only Drive token, MinIO key (put/get on `homehub-statements`), API token label `worker` scope `ingest`, `/var/lib/home-hub-statements/` 0700, write access to `/var/lib/home-hub-verify/masked/` (group `homehub-verify`, 0770) | DB credentials, the API's token file, `/home/opc`, sudo |
+| parser child (`claude -p` in bwrap) | `homehub-worker` | stdin, tmpfs `/tmp` and `/work` (discarded), the parser login directory with only `.credentials.json` writable (OAuth refresh) and the rest read-only, network | inbox, keys, tokens, `/etc`, repos, worker env |
+| verify runner (`homehub-statements-verify.service`) | `homehub-verify` | `/var/lib/home-hub-verify/` (masked text snapshots exported by the worker, report dir), DB role `accounting_ro` (SELECT only, `default_transaction_read_only=on`), the parser login read-only | password file, PDFs, Drive, API token, MinIO key, any write role |
+| Hermes | **own user `hermes`** (prerequisite for any grant beyond `read,propose`) | API token `hermes=read,propose` (+ `enqueue` when the owner grants it) | sudo, worker execution, other users' files |
+| owner shell | `opc` | `sudo -u homehub-worker` / `sudo -u homehub-verify` for the named CLI entry points only | — |
+
+Why dedicated users: a Unix uid is the only boundary a sudoers rule or a file mode can see. With Hermes or the API sharing `opc` (passwordless sudo), nothing distinguishes them from the owner, so "Hermes can only propose" and "the API never has sudo" would be assertions, not enforcement. Both moves are ops prerequisites in §13; until they are done the feature flag stays off.
+
+Operator evidence before real input (checklist in PR-R2's deploy notes; nothing here is certified by review): file modes and ownership as above; `sudo -u homehub-worker cat` of the password file succeeds and the same fails as `opc`, `hermes`, `homehub-verify`, `homehub-api`; the parser child cannot read the inbox or `/etc`; the verify user has no key/token (attempts refused); `hermes` cannot run the worker; the parser gate (§5.5) passes; the owner confirms in the Claude account settings that the subscription is personal with no organisation-managed policy (server-delivered managed settings cannot be inspected from the sandbox, so the absence of an org policy is the operator's evidence).
+
+## 4. Data model (Alembic `statement_tables`)
+
+Types follow the ledger: money `Numeric(20, 4)`, ids `Integer`, dates `date`, timestamps `timestamptz`. New enums get their own types. The PostgreSQL enum `entry_source` gains `statement` (`ALTER TYPE entry_source ADD VALUE`, committed in its own migration step before any use). Downgrade refuses while any `ledger_entry.source='statement'`, coverage, action or audit row exists. The operator confirms the live head with `alembic current`; the migration test suite runs upgrade/downgrade on a populated database, including trigger/FK ordering so `ON DELETE SET NULL` can never leave an active claim pointing at a deleted row.
+
+### 4.1 `ingest_run` (B1, S1)
+`id, trigger ('timer'|'owner_cli'|'enqueue'), principal (token label; for timer/CLI 'worker' plus `initiator_hint` unix user, unauthenticated), mode ('live'|'backfill'), status ('queued'|'claimed'|'running'|'done'|'failed'|'expired'), claimed_by, lease_token, lease_expires_at, attempt, parser_version, rules_version, policy_config_sha256, mapping_version, credential_version, requested_at, started_at, finished_at, summary JSONB`.
+Protocol: enqueue (`POST /statements/ingest/run`, scope `enqueue`) inserts `queued` or returns the existing non-terminal run (coalesced; the request is appended to `summary.coalesced[]`). **No file handoff**: the worker (timer tick every 5 min, and its daily full run) polls `GET /statements/ingest-runs?status=queued` with scope `ingest`, then `POST …/{id}/claim`, which atomically moves `queued → claimed` (`UPDATE … WHERE status='queued'`), sets a 30-minute lease and returns a `lease_token`. Every submission carries the run id and lease token; the API accepts it only if the run is `claimed`/`running`, the token matches and the lease is live (else 409). Leases are renewed by the worker every 5 minutes; an expired lease moves the run to `expired`, a new claim gets a new token and increments `attempt`; late submissions with the old token are refused. Restart recovery: a worker finding its own `claimed`/`running` run with a live lease resumes it; otherwise it waits for expiry. Timer/CLI runs are created by the worker itself. Tests: two enqueues coalesce, crash before claim, crash after claim and reclaim after expiry, late submission with a stale token refused, submission to a `done` run refused.
+
+### 4.2 `statement_file` and `statement_source` (A11, C9, S2)
+`statement_file`: `id, sha256 (unique), size, kind, account_id (nullable), object_key, status, failure, has_text_layer, text_chars, pages, credential_version, mapping_version, parser_version, attempts, next_retry_at, first_seen_at, parsed_at, run_id`.
+`statement_source`: `id, file_id, root ('mail'|'manual'), drive_file_id, drive_path, drive_md5, drive_size, path_history JSONB, first_seen_at, last_seen_at, removed_at, superseded_by_source_id`. Many sources per file; many files per path over time; rename appends to `path_history`; Drive deletion sets `removed_at` only after a **complete** listing (a listing error aborts the run without marking anything removed).
+Retry triggers and singleton: as v2 (`transient` backoff, `credential_version`/`mapping_version`/`parser_version` changes; `flock`).
+
+### 4.3 `account_statement` — as v3 (`mode` immutable, `conflict_open`, `needs_recheck`, `swept_through_event_id` added, see §4.6).
+
+### 4.4 `statement_revision`, `statement_line`, `statement_event` (A2, C2)
+`statement_revision`: as v3, immutable.
+`statement_line`: **immutable rows per revision**, as v3 (`canonical_key`, `logical_key`, `flow_amount`, …), plus `event_id`.
+`statement_event`: the **persistent financial-event identity** of a statement line across revisions: `id, statement_id, first_revision_id, first_line_id, current_line_id (nullable while unpaired), status ('live'|'retired'|'quarantined'), created_at`. Created for every line of a statement's first revision; on later revisions lines are paired to events (§5.7). All coverage, cases, proposals, explanations, dismissals and action effects reference the `event_id`, never a line id alone. Unique active effect: `reconciliation_action` has a partial unique index on `(event_id, action, effect_slot) WHERE status='applied'` (`effect_slot` = `'create'` for creations, `'fee'` for the fee child, `'match'` otherwise), so a second creation/fee for the same event is refused at the database, not only by a lookup.
+
+### 4.5 `line_lineage` (C2)
+`id, event_id, old_line_id, new_line_id, equivalence ('identical'|'normalised'|'changed'|'unpaired'), transferred bool, created_at`. `normalised` = everything equal after the merchant normaliser (token set identical, differences only in whitespace/punctuation/case); a merchant change from A to B is `changed`. Transfer rules in §5.7.
+
+### 4.6 `statement_coverage` and the dirty protocol (A3, A6, C3)
+`statement_coverage`: `id, statement_id, event_id, line_id, entry_id (nullable), group_id (nullable), role, snapshot JSONB, match_kind, match_rule, status ('active'|'stale'), stale_reason, run_id, created_at`. Unique `(entry_id) WHERE status='active' AND entry_id IS NOT NULL`. Conservation invariant asserted before commit (as v3). FKs `ON DELETE SET NULL` with snapshots.
+
+**Dirty events** (`coverage_dirty`): `id (bigserial, the generation), kind ('entry'|'group'|'account'), row_id, op ('insert'|'update'|'delete'), old JSONB, new JSONB, action_id (nullable), happened_at`. Row-level `AFTER` triggers on `ledger_entry` (all persisted columns that matter: `account_id, amount, currency, original_amount, original_currency, fx_rate, entry_date, posted_date, kind, name, merchant, group_id, parent_entry_id, transfer_group_id, refunds_entry_id, settles_entry_id, is_settlement, reward_source_entry_id, reward_rule_id, source, import_run_id`), `entry_group` (all columns), `account` (`opening_balance, currency, combined_account_id, closing_day, due_rule, due_value, is_credit, is_archived`). Triggers are append-only (never mutate their source tables, so no recursion), use null-safe `IS DISTINCT FROM` comparisons (no event for no-op updates), and record **both OLD and NEW** rows so every affected population can be derived: old and new account, old and new period (by `posted_date`/`entry_date`), old and new group/parent/combined parent, old and new link targets. `action_id` is filled from a transaction-local setting (`SET LOCAL app.reconciliation_action_id`) that only the apply path sets, so self-generated events are attributable.
+
+**Sweep protocol**: `sweep(statement)` runs inside the statement's transaction (lock order §7.4), reads events with `id > statement.swept_through_event_id` whose old or new population touches the statement (account ∈ participating set now or before, and date within the period ± window, or a referenced row has active coverage/explanation in this statement), applies them (stale coverage with the line's claim released as a whole, cases reopened/created in live mode, summary-only in historical mode **but coverage is still released**, `needs_recheck` for account-level/insert events), skips events whose `action_id` belongs to an action applied on this statement, then advances `swept_through_event_id` to the highest id it has seen. Events are never deleted by the sweep (a retention job removes events older than every statement's watermark). Writers never lock statements, so there is no inversion; a writer committing after a sweep produces a higher event id that the next sweep sees.
+Reads: every statement GET returns `stale_events_pending = exists(event id > watermark touching this statement)`; the UI shows 需重新同步 and the detail is computed from stored rows (no mutation on GET). Confirm and apply always sweep first under the statement lock, so a confirmation can never be based on an unswept state.
+Service hooks (`coverage.touch`) remain as the immediate path for UX; they only insert events through the same table.
+Tests: every write path listed in round 2/3 (bulk delete, repost/reopen, settlement relink, child replacement, member detachment, reward unlink, account config edit, combined-child relink both parents, cross-period move of an uncovered row, delete of an unmatched row in a reconciled period, insert into a reconciled period), barrier tests edit/insert/delete-vs-confirm, historical release of a stale claim, self-generated events not reopening fresh coverage, trigger amplification on an import-sized batch.
+
+### 4.7 `reconciliation_case` — as v3, keyed by `event_id` in addition to `line_id`.
+### 4.8 `reconciliation_proposal` — as v3, keyed by `event_id`; superseded when the case version moves or the event's current line changed with equivalence other than `identical`/`normalised`.
+
+### 4.9 `reconciliation_action` + audit (A8, C2, C6)
+As v3 (`idempotency_key`, full `before`/`after`/`inverse` snapshots, created/deleted/touched ids) with `event_id`, `effect_slot` and the partial unique index of §4.4 replacing the hashed `effect_key`. Snapshot scope (acceptance criterion, §16): every persisted field of each touched entry and group, the complete child/member id sets, and incoming dependencies (refund/settlement/reward links, schedule instance membership). Compare-and-write happens after the §7.4 locks are held and the locks are retained through commit; relationship writers (child insert, member add/relink) already lock the parent entry/group first, which this design relies on and the tests verify (concurrent child insert during apply must either serialise or be detected).
+
+### 4.10 `policy_budget` — as v3.
+### 4.11 `installment_plan_map` (C5)
+`id, account_id, plan_key (merchant_norm + installment_total + per-instance amount), definition_id, confirmed_by ('owner'), created_at`. Owner-confirmed once per plan through the case action `link_installment_plan`; the matcher uses only confirmed mappings.
+### 4.12 Ledger changes — as v3 (`statement` source, `statement_password_rule`, `statement_live_from` null = never live, `statement_source_root`, versioned settings).
+
+## 5. Ingest worker
+
+### 5.1 Acquisition (A11, C9)
+List with `rclone lsjson --hash --recursive` (`ID, Path, Hashes.md5, Size, ModTime`), case-insensitive `.pdf`. For each `(drive_file_id, md5)` not yet in `statement_source`: download with `rclone copyto` by **file id** (`--drive-root-folder-id`/id addressing, not the path) into a private staging dir; verify size and md5 of the downloaded bytes against the listing (mismatch → re-list once, then skip with `transient`); compute sha256; publish atomically into `inbox/by-sha/<sha256>.pdf` (`rename` onto a temp name, never overwriting an existing object with different bytes — a collision is a hard failure); only then register file and source via the API and put to MinIO (idempotent by sha256). Failure matrix: local publish ok + MinIO fail → retry MinIO next run (file row `transient`); MinIO ok + API fail → re-register next run (idempotent); any listing error → abort before `removed_at` logic. Tests: source replaced between list and copy, crash at each boundary, incomplete listing.
+
+### 5.2 Account mapping — as v2. 5.3 Unlock — as v2. 5.4 Probe/extract/mask — as v3 (bounds, masking patterns, canary).
+
+### 5.5 Parse (D1, D3, B2, C7, C8)
+Regex parsers first when registered. Fallback: the parser child, CLI pinned to **2.1.295** (refused otherwise until the pin is bumped after a passing gate).
+```
+bwrap --unshare-all --share-net --die-with-parent --new-session --cap-drop ALL \
+  --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /lib64 /lib64 --ro-bind <node> /node \
+  --ro-bind /var/lib/home-hub-parser/claude /cfg --bind /var/lib/home-hub-parser/claude/.credentials.json /cfg/.credentials.json \
+  --tmpfs /tmp --tmpfs /work --chdir /work \
+  --setenv HOME /tmp --setenv CLAUDE_CONFIG_DIR /cfg --setenv PATH /node/bin:/usr/bin \
+  -- claude -p --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+     --permission-prompts none --no-session-persistence --max-turns 1 \
+     --output-format stream-json --json-schema "$(cat schema.json)" --model <pinned model id> "<fixed instruction>"
+```
+Writable surfaces, stated exactly: `/tmp` and `/work` (tmpfs, discarded), `/cfg/.credentials.json` (OAuth refresh). Everything else read-only or absent (`/etc` absent: no local managed settings, no DNS config → the sandbox gets a minimal `/etc/resolv.conf` and `/etc/ssl` bound read-only, which the gate verifies). The worker consumes the **stream** (`stream-json`): any `tool_use`, hook, or subagent event → the run is failed and parsing is disabled (`failed/sandbox`) until an operator re-runs the gate; the final result's `structured_output` is validated with pydantic `StatementParse` (as v3). Bounds: stdin ≤ 400 KB, stdout and stderr each capped at 2 MB while streaming (truncation = failure), 120 s per attempt, 3 attempts, `max_turns` hit = failure, process group killed and reaped on expiry. **Gate** (at worker start, after any CLI/config/pin change, and daily): a canary prompt run under the same command must yield exactly one assistant turn, zero tool/hook/subagent events, a schema-valid output, no files outside the stated writable surfaces (checked by a post-run diff of the read-only mounts' mtimes and a `find` over `/cfg`), and no child processes other than the CLI's own (bwrap `--new-session`, `/proc` inspection from the worker). Server-managed policy cannot be inspected offline; the operator's evidence is the account-level confirmation in §3. If the gate cannot pass with the pinned command, parsing stays off; the gate does not "pass by omission".
+
+### 5.6 Submission and server-side guardrails — as v3 (API derives `flow_amount`, mode, mapping, guardrails; never trusts submitted flags).
+
+### 5.7 Re-parse, events and lineage (C2)
+A new revision pairs its lines to the statement's `statement_event` rows: first by `logical_key` with identical `canonical_key` (`identical`), then by `logical_key` with `normalised` equivalence, in print order among identical twins. Pairs with any other difference are `changed`; events with no pair are `unpaired`; new lines without an event get a new event. Transfer: `identical` → coverage, explanations, dismissals and pending proposals carry over; `normalised` → coverage transfers, pending proposals superseded, line flagged 文字已變更; `changed`/`unpaired` → the event is **quarantined** when it has any applied action or active coverage (its coverage released, a `parse_review` case opened, nothing automatic), else simply retired. A quarantined event's effects remain unique (§4.4): a replacement line (new event) cannot create/fee again until the owner resolves the quarantine, because the resolution either re-links the new line to the old event (keeping its effects) or explicitly reverts the old effects first. Twin-count changes and header changes → `parse_review`, no transfers. Reconciled statement + new revision → `conflict_open` (as v3). Fixtures: corrected date/amount after an applied create, two genuinely identical purchases, same-count reordered distinct twins, merchant change with an old applied effect.
+
+### 5.8 Modes (A9, C7)
+`live`, `historical`, `backfill`: as v3. `verify` is now two steps because verify cannot decrypt: (1) the worker, as `homehub-worker`, runs `export-masked --for-verify` (local only: unlock + extract + mask, writing masked text snapshots by sha256 into `/var/lib/home-hub-verify/masked/`, no API or MinIO calls); (2) `homehub-verify` runs the verify runner over those snapshots: parser child (its own read-only login mount), pure matching against a read-only snapshot through `accounting_ro`, report into `/var/lib/home-hub-verify/reports/`. Neither step can write application state; tested with policies enabled.
+
+## 6. Matching engine — as v3 (populations, eligibility gates, global representation competition, conservation, foreign/near/bank-only/deferral/cross-account), with one change:
+- **Installments (C5):** eligible only through a confirmed `installment_plan_map` row for the account and plan key; the mapped definition's instance with `seq == installment_seq` and equal per-instance amount is the single admissible representation. Without a confirmed mapping the line is a `line_unmatched` case with hint 分期未對應 and a `link_installment_plan` action listing candidate definitions, **even when exactly one numeric candidate exists**. Fixture: wrong plan with equal total/sequence/amount must stay a case.
+
+## 7. Cases, actions, policy
+
+### 7.1 Case lifecycle — as v3.
+
+### 7.2 Actions (as v3, with C4/C6/C8 changes)
+- `attach_fee`: params `entry_id, fee_line_id?`; the purchase line is bound from the case's event (bundled) or `fee_line_id` must be a fee line of the same statement (separate); an action lacking that binding is rejected; `fee = residual` as v3, **and** `0 < fee ≤ 5 % × |principal|`, and the child amount must satisfy the exact conservation assertion (a quantum-tolerant residual that would break exact conservation fails with no partial effect). Tests: zero, negative, excessive, quantum-violating.
+- `adjust_amount`: `fx_rate := amount / original_amount` derived from the authoritative pair (as base `resolve_fx` does), with zero checks and the ledger's precision; the prepared market rate is not stored. 
+- `link_installment_plan`: `case_id, definition_id` → inserts `installment_plan_map` (owner only) and re-runs the line.
+- `balance_adjustment_asof` (C4): contract = **account generation compare-and-write**, not SSI. `account.balance_generation` (bigint) is incremented by the `ledger_entry` triggers of §4.6 for the affected account(s) (old and new on moves) and by account-config triggers. The action: read `generation`, compute `delta` over `posted_date ≤ period_end` in READ COMMITTED, then take the account row lock, re-read `generation`; if unchanged insert the adjustment (the insert itself bumps the generation) and commit; if changed, roll back the whole transaction and retry from the start (fresh statement/current-revision validation) at most 3 times; on exhaustion return 409 with no action, budget or audit effect. Later edits are caught by the dirty protocol (`needs_recheck`). Tests: concurrent edit and delete of summed rows between compute and lock, double submit, exhaustion.
+- all other rows as v3.
+
+### 7.3 Policy engine — as v3 (shipped off; caps; budget), plus: the policy phase runs in a **second transaction** after matching, taking budget rows then the statement lock in the §7.4 order (matching never touches the budget).
+### 7.4 Lock order — as v3; writers never lock statements; the budget phase is separate (above).
+
+## 8. API — as v3, with: no `run.request` file (polling, §4.1); claim/renew endpoints; `GET /statements/ingest-runs?status=`.
+
+### 8.1 Token scopes (M9, A1, C1)
+Authorization is **independent of feature mounting**. Rules:
+- When `ACCOUNTING_TOKEN_SCOPES` is set, the scope dependency is enforced on every router whether or not reconciliation is enabled; unknown scope names, unknown or duplicate labels, duplicate token values and malformed maps refuse startup.
+- When `ACCOUNTING_TOKEN_SCOPES` is unset ("compatibility mode"), startup refuses if `ACCOUNTING_RECONCILIATION_ENABLED=true` **or** if any configured token label is one of the restricted names (`hermes`, `worker`, or any label in `ACCOUNTING_RESTRICTED_LABELS`); compatibility mode therefore exists only for an all-legacy token set and cannot be reached while a restricted credential is configured.
+- Turning the feature flag off with scopes still set keeps every restriction (the statement/reconciliation routers are simply not mounted). Test: enabled→disabled with the Hermes token against every existing mutation route stays 403.
+- Scopes and the `legacy`/`ingest`/`enqueue` exclusions as v3; PR-R4 grants Hermes `read,propose` only (S2), `enqueue` later on the owner's word.
+
+## 9. Agent contract — as v3 (§9.1 enqueue counts only; §9.2 DTO with masking and limits).
+## 10. UI — as v3, plus the 需重新同步 chip from `stale_events_pending`, the quarantine state (資料已變更，待確認) on affected rows, and the 分期對應 sheet for `link_installment_plan`.
+## 11. Privacy and security — as v3 with §3/§5.5/§8.1 of this version.
+
+## 12. Testing — v3 list plus: C1 enabled→disabled matrix and startup refusals; C2 fixtures (§5.7); C3 old/new population tests, barrier tests, historical release, self-event skipping, amplification; C4 generation races; C5 wrong-plan case; C6 concurrent child insert/relink during apply, split restore exact-or-refuse, FX ratio derivation; C8 fee bounds and conservation; C9 acquisition races and crash boundaries; S1 run lease protocol; S3 null-safe trigger no-op, migration ordering.
+
+## 13. Rollout
+PR stack as v2 (R1 backend core, R2 worker, R3 frontend by Multica, R4 Hermes skills). **Ops prerequisites before the feature flag can be enabled** (separate from the PRs, owner-scheduled): users `homehub-api` (API moved off `opc`), `homehub-worker`, `homehub-verify`, `hermes` (Hermes moved off `opc`); sudoers entries for the named CLIs; parser login as `homehub-worker`; read-only Drive token; MinIO bucket; DB roles; `.env` with `ACCOUNTING_TOKEN_SCOPES` and the SPA/ops labels on `legacy`; the operator checklist (§3) signed before `backfill`.
+
+## 14. Decisions
+Taken **[owner]**: statement-driven; parser on the Claude CLI inside the worker; Hermes keeps its provider for triage; matched = marked; amount-only adjustments; entry point 提醒中心; bank accounts in v1.
+Changed after review, pending the owner's confirmation: policy ships off with caps; Hermes `enqueue` only after it runs as its own user; per-account `statement_live_from` (null = historical); the API moves to its own user before the feature is enabled.
+Owner input needed: `statement_live_from` per account (after the verify run); create the `hermes` and `homehub-api` users (ops task, timing); confirm the policy-off start.
+
+## 15. Answer map
+Rounds 1/1.1 → v2, round 2 → v3: as listed in v3 §15 (commit `6aabdc9`).
+Round 3 → v4: C1 §8.1 (auth independent of mounting; compatibility mode impossible with restricted labels) · C2 §4.4/§4.5/§4.9/§5.7 (persistent `statement_event`, unique active effects per event, `normalised` vs `changed`, quarantine) · C3 §4.6 (OLD/NEW payload incl. links/currency/name/merchant, population derivation, watermark sweep under the statement lock, read-side staleness flag, historical release, self-event attribution, budget phase separated) · C4 §7.2 (account generation compare-and-write, bounded retries, no effects on exhaustion) · C5 §4.11/§6/§7.2 (owner-confirmed plan map) · C6 §4.9/§7.2 (snapshot scope, relationship-writer locking relied on and tested, FX ratio derived) · C7 §3/§5.5/§5.8 (API user prerequisite, verify via worker-exported masked snapshots, exact writable surfaces, stream-event gate, operator evidence for managed policy) · C8 §5.5/§7.2 (stdout+stderr caps, fee bounds, bound purchase line) · C9 §5.1 (staged download, verification, atomic publish, failure matrix) · S1 §4.1 (lease/fencing, polling, recovery) · S2 header note (`eef3b31` pin), §4.2 `path_history`, §8.1 PR-R4 grant · S3 §4/§4.6 (null-safe append-only triggers, migration ordering, `entry_source` name).
+
+## 16. Carried into the implementation plan as acceptance criteria (not re-specified here)
+Snapshot field inventory per action (C6); the exact trigger DDL and population-derivation queries (C3); the run lease state machine tests (S1); parser gate script and its evidence format (C7/B2); acquisition crash-boundary tests (C9); fee bound and conservation fixtures (C8); amplification benchmark for triggers on an import-sized batch (S3). Each becomes a task-level test in `docs/superpowers/plans/…-statement-reconciliation-r1.md` and `…-r2.md`.
+
+## 17. R1a implementation notes (2026-10-09, PR "R1a")
+Decisions taken during implementation that refine this document:
+- **Dirty triggers are gated** by `reconciliation_settings.data->>'dirty_enabled'` (one PK lookup per changed row, default off). With the flag off in production the triggers write nothing; enabling the feature = set `ACCOUNTING_RECONCILIATION_ENABLED`, configure scopes, then `PUT /settings/reconciliation {"dirty_enabled": true}` once the worker is live (§4.6, §13).
+- **`balance_generation` is derived** from `coverage_dirty` (`max(id)` for the account), not an `account` column: a trigger updating `account` would take an account row lock after entry locks and invert D32 (§7.2 C4).
+- **Worker-created runs**: `POST /statements/ingest-runs` (scope `ingest`) creates and claims a `timer`/`owner_cli` run in one request; `enqueue` coalesces only into `queued` runs or claimed/running runs with a live lease (§4.1).
+- **Events on a revision that does not become current** are created `retired`; "live" events are those with `current_line_id IS NOT NULL` (§4.4, §5.7).
+- **A `changed` pair never transfers its event**: the old event is retired (`current_line_id` NULL) and the new line gets a new event, as for an unpaired line; only `identical`/`normalised` pairs move an event. Quarantine of a `changed`/unpaired event with applied effects or active coverage arrives with effects in R1b (§5.7).
+- **A guardrail-ok revision replaces a current revision whose guardrail failed** regardless of header/twin changes, and supersedes that statement's open `parse_review` cases (§4.3).
+- Settings mutations require `admin`; `legacy` satisfies every scope (so the SPA token can also reach the ingest routes — the owner decides before enabling, §8.1).
+- The three account statement columns are not exposed by the account API in R1a (set via the database/settings in R2).

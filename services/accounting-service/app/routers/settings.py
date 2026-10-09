@@ -3,6 +3,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
+from ..auth import method_scope
 from ..database import get_db
 from ..schemas.ledger import (
     AccountGroupOut,
@@ -17,7 +18,7 @@ from ..schemas.writes import AccountGroupIn, CategoryIn, CounterpartyIn, OrderIn
 from ..services import fx_rate_service, settings_service
 from .errors import service_errors
 
-router = APIRouter(tags=["Settings"])
+router = APIRouter(tags=["Settings"], dependencies=[Depends(method_scope(write="admin"))])
 
 CURRENCY_PATTERN = r"^[A-Za-z0-9]{3,8}$"
 

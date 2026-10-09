@@ -21,7 +21,7 @@ from sqlalchemy import (
     event,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, ENUM
 from sqlalchemy.sql import func
 
 from ..database import Base, TimestampMixin
@@ -41,7 +41,7 @@ ENTRY_KINDS = (
     "refund",
 )
 SYSTEM_KINDS = ("fee", "discount", "reward", "interest", "balance_adjustment")
-ENTRY_SOURCES = ("moze_import", "moze_backup", "manual", "hermes", "rule", "schedule")
+ENTRY_SOURCES = ("moze_import", "moze_backup", "manual", "hermes", "rule", "schedule", "statement")
 MOZE_SOURCES = ("moze_import", "moze_backup")
 FX_SOURCES = ("fx_api", "moze_backup", "manual")
 DUE_RULES = ("fixed_day", "days_after_closing")
@@ -52,6 +52,8 @@ REWARD_WINDOWS = ("statement_cycle",)
 REWARD_POSTINGS = ("after_window", "after_transaction", "manual")
 COLOR_CONVENTIONS = ("red_green", "green_red")
 KEYPAD_LAYOUTS = ("calculator", "phone")
+# The statement_source_root type is created by app/models/statements.py, which imports this tuple.
+STATEMENT_SOURCE_ROOTS = ("mail", "manual")
 
 entry_kind_enum = Enum(*ENTRY_KINDS, name="entry_kind")
 entry_source_enum = Enum(*ENTRY_SOURCES, name="entry_source")
@@ -131,6 +133,13 @@ class Account(Base, TimestampMixin):
     fx_fee_refundable = Column(Boolean, nullable=False, server_default=text("false"))
     settings_locally_edited = Column(Boolean, nullable=False, server_default=text("false"))
     moze_id = Column(String(64), nullable=True, unique=True)
+    statement_password_rule = Column(String(64), nullable=True)
+    statement_live_from = Column(Date, nullable=True)
+    # app/models/statements.py owns (creates) the statement_source_root type; the PostgreSQL ENUM is used here
+    # because the generic Enum silently ignores create_type.
+    statement_source_root = Column(
+        ENUM(*STATEMENT_SOURCE_ROOTS, name="statement_source_root", create_type=False), nullable=True
+    )
 
 
 class Category(Base):
