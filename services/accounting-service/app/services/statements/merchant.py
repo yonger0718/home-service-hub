@@ -8,7 +8,7 @@ _PREFIXES = (
     (re.compile(r"^GOOGLE\s*\*\s*"), "GOOGLE "),
     (re.compile(r"^APPLE\.COM/BILL\s*"), "APPLE "),
 )
-_NON_TOKEN = re.compile(r"[^0-9A-Z一-鿿]+")
+_NON_TOKEN = re.compile(r"[^\w]+|_+")
 
 
 def normalise(raw: str) -> str:
@@ -19,4 +19,4 @@ def normalise(raw: str) -> str:
 
 
 def tokens(norm: str) -> frozenset[str]:
-    return frozenset(part for part in norm.split(" ") if len(part) >= 2)
+    return frozenset(part for part in norm.split(" ") if part)
