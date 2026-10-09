@@ -2,13 +2,13 @@
 import time
 from datetime import date
 
-import pytest
 from sqlalchemy import text
 
 from app.models import (
     AccountStatement, CoverageDirty, IngestRun, StatementEvent, StatementFile, StatementLine, StatementRevision,
     StatementSource, ReconciliationSettings,
 )
+from tests.helpers import set_dirty
 
 
 def test_statement_tables_exist_after_migration(db_session):
@@ -24,19 +24,6 @@ def test_statement_tables_exist_after_migration(db_session):
 def test_entry_source_enum_has_statement(db_session):
     values = {row[0] for row in db_session.execute(text("SELECT unnest(enum_range(NULL::entry_source))::text"))}
     assert "statement" in values
-
-
-def _set_dirty(db_session, enabled: bool) -> None:
-    db_session.execute(text(
-        "INSERT INTO reconciliation_settings (id, data) VALUES (1, jsonb_build_object('dirty_enabled', :on)) "
-        "ON CONFLICT (id) DO UPDATE SET data = reconciliation_settings.data || EXCLUDED.data"), {"on": enabled})
-    db_session.commit()
-
-
-@pytest.fixture
-def dirty_on(db_session):
-    """The dirty triggers write only while reconciliation_settings.data.dirty_enabled is true."""
-    _set_dirty(db_session, True)
 
 
 def test_dirty_trigger_records_old_and_new_on_account_move(db_session, seed, dirty_on):
@@ -181,14 +168,14 @@ def test_dirty_triggers_follow_the_setting(db_session, seed):
     entry = seed.entry(a, "-10")
     group = seed.group()
     db_session.commit()
-    _set_dirty(db_session, True)
+    set_dirty(db_session, True)
     entry.account_id = b.id
     group.name = "renamed"
     a.opening_balance = 5
     db_session.commit()
     assert sorted(r.kind for r in db_session.query(CoverageDirty)) == ["account", "entry", "group"]
     db_session.execute(text("DELETE FROM coverage_dirty"))
-    _set_dirty(db_session, False)
+    set_dirty(db_session, False)
     entry.account_id = a.id
     group.name = "again"
     a.opening_balance = 6
@@ -215,12 +202,12 @@ def _bulk_round_trip(db_session, account_id: int) -> float:
 def test_dirty_trigger_amplification_on_an_import_sized_batch(db_session, seed):
     a = seed.account("A")
     db_session.commit()
-    _set_dirty(db_session, True)
+    set_dirty(db_session, True)
     elapsed = _bulk_round_trip(db_session, a.id)
     counts = dict(db_session.execute(text("SELECT op::text, count(*) FROM coverage_dirty GROUP BY op")).all())
     assert counts == {"insert": BULK, "delete": BULK}
     assert elapsed < 15, f"{2 * BULK} dirty rows took {elapsed:.1f}s"
     db_session.execute(text("DELETE FROM coverage_dirty"))
-    _set_dirty(db_session, False)
+    set_dirty(db_session, False)
     _bulk_round_trip(db_session, a.id)
     assert db_session.query(CoverageDirty).count() == 0

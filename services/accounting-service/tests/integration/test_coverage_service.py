@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.models import StatementCoverage, StatementLine
 from app.schemas.statements import LineIn, RevisionIn
@@ -50,7 +51,7 @@ def test_conserved_claim_stores_rows_snapshots_roles(ctx, seed, db_session):
     assert all(c.event_id == l1.event_id and c.group_id == g.id and c.status == "active" for c in out)
     s = out[0].snapshot
     assert s["amount"] == "-300.0000" and s["flow"] == s["amount"] and s["currency"] == "TWD"
-    assert s["account_id"] == card.id and s["group_id"] == g.id and s["parent_entry_id"] is None
+    assert s["id"] == a.id and s["account_id"] == card.id and s["group_id"] == g.id and s["parent_entry_id"] is None
     assert isinstance(s["entry_date"], str) and isinstance(s["posted_date"], str)
     assert set(s) >= {"original_amount", "original_currency", "kind", "transfer_group_id", "refunds_entry_id", "settles_entry_id", "is_settlement", "name", "merchant"}
 
@@ -132,3 +133,56 @@ def test_assert_conserved_passes_then_fails_on_tamper(ctx, seed, db_session):
     db_session.expire_all()
     with pytest.raises(ConflictError, match=f"line {l1.id}"):
         cov.assert_conserved(db_session, stmt)
+
+
+def test_assert_conserved_is_null_safe(ctx, seed, db_session):
+    stmt, (l1, _), card, _ = ctx
+    a = seed.entry(card, "-580")
+    db_session.flush()
+    _claim(db_session, stmt, l1, [a])
+    db_session.execute(text("update statement_coverage set snapshot = jsonb_set(snapshot, '{flow}', 'null')"))
+    db_session.expire_all()
+    with pytest.raises(ConflictError, match=f"line {l1.id}"):
+        cov.assert_conserved(db_session, stmt)
+
+
+def test_snapshot_amounts_are_quantised_to_four_places(ctx, seed, db_session):
+    stmt, (l1, _), card, _ = ctx
+    a = seed.entry(card, "-580", original_amount=Decimal("-20.5"), original_currency="USD")
+    db_session.flush()  # not refreshed: the Python-side Decimals are unquantised
+    snap = _claim(db_session, stmt, l1, [a])[0].snapshot
+    assert (snap["amount"], snap["flow"], snap["original_amount"]) == ("-580.0000", "-580.0000", "-20.5000")
+
+
+def test_duplicate_claim_across_statements_raises_coded(ctx, seed, db_session):
+    stmt, (l1, _), card, _ = ctx
+    a = seed.entry(card, "-580")
+    db_session.flush()
+    _claim(db_session, stmt, l1, [a])
+    r = ing.create_worker_run(db_session, trigger="timer", initiator_hint=None, mode="live")
+    r, token = ing.claim_run(db_session, r.id, label="worker")
+    from app.services import statement_revision_service as revs
+    rev = RevisionIn(run_id=r.id, lease_token=token, file_id=None, account_id=card.id, kind="card", parser="t",
+                     parser_version="1", currency="TWD", period_start=date(2026, 10, 1), period_end=date(2026, 10, 31),
+                     opening_balance=None, statement_total=Decimal("580"), raw={},
+                     lines=[LineIn(seq=1, posted_date=date(2026, 10, 3), merchant_raw="全聯",
+                                   printed_amount=Decimal("580"), line_kind="purchase")])
+    res = revs.submit_revision(db_session, r, rev, account_map={})
+    db_session.flush()
+    other_line = db_session.query(StatementLine).filter_by(revision_id=res.revision.id).one()
+    assert res.statement.id != stmt.id
+    with pytest.raises(CodedConflictError) as ei:
+        _claim(db_session, res.statement, other_line, [a])
+    assert ei.value.code == "duplicate_claim" and f"entry {a.id}" in str(ei.value)
+    assert cov.claimed_entry_ids(db_session) == {a.id}
+
+
+def test_other_integrity_errors_pass_through(ctx, seed, db_session):
+    stmt, (l1, _), card, _ = ctx
+    a = seed.entry(card, "-580")
+    db_session.flush()
+    with pytest.raises(IntegrityError) as ei:
+        cov.write_claim(db_session, stmt, l1, _rows([a]), entries_by_id={a.id: a}, match_kind="auto",
+                        match_rule="exact", run_id=987654)
+    assert "ux_statement_coverage_active_entry" not in str(ei.value.orig)
+    assert db_session.query(StatementCoverage).count() == 0  # the savepoint rolled back; the session is usable

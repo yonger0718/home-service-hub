@@ -67,6 +67,14 @@ def wait_until_blocked(engine, pid: int, timeout: float = 5.0) -> str:
             time.sleep(0.05)
 
 
+def set_dirty(session, enabled: bool) -> None:
+    """The R1a dirty triggers write coverage_dirty only while reconciliation_settings.data.dirty_enabled is true."""
+    session.execute(text(
+        "INSERT INTO reconciliation_settings (id, data) VALUES (1, jsonb_build_object('dirty_enabled', :on)) "
+        "ON CONFLICT (id) DO UPDATE SET data = reconciliation_settings.data || EXCLUDED.data"), {"on": enabled})
+    session.commit()
+
+
 def make_account(session, name: str = "錢包", currency: str = "TWD", opening: str = "0", **columns) -> Account:
     """Insert an account (flushed, not committed); `columns` sets any other Account column."""
     account = Account(name=name, currency=currency, opening_balance=Decimal(opening), **columns)

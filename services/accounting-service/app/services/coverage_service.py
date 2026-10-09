@@ -1,14 +1,19 @@
-"""Statement coverage (spec §4.6): claims, release, conservation. Never commits; callers own the transaction."""
+"""Statement coverage (spec §4.6): claims, release, conservation and the dirty-event sweep. Never commits;
+callers own the transaction."""
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
-from app.models import AccountStatement, LedgerEntry, StatementCoverage, StatementLine
+from app.models import (
+    Account, AccountStatement, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
+    StatementLine,
+)
 from app.services.errors import CodedConflictError, ConflictError
 from app.services.statements import matching
 
@@ -19,10 +24,15 @@ def _s(value) -> str | None:
     return None if value is None else str(value)
 
 
+def _m(value) -> str | None:
+    """Money in snapshots: always 4 dp, whether the entry was refreshed from the database or not."""
+    return None if value is None else str(Decimal(value).quantize(_Q))
+
+
 def snapshot_entry(entry: LedgerEntry) -> dict:
     return {
-        "amount": _s(entry.amount), "flow": _s(entry.amount), "currency": entry.currency,
-        "original_amount": _s(entry.original_amount), "original_currency": entry.original_currency,
+        "id": entry.id, "amount": _m(entry.amount), "flow": _m(entry.amount), "currency": entry.currency,
+        "original_amount": _m(entry.original_amount), "original_currency": entry.original_currency,
         "entry_date": _s(entry.entry_date), "posted_date": _s(entry.posted_date),
         "account_id": entry.account_id, "kind": _s(entry.kind), "group_id": entry.group_id,
         "parent_entry_id": entry.parent_entry_id, "transfer_group_id": _s(entry.transfer_group_id),
@@ -91,8 +101,183 @@ def claimed_entry_ids(db: Session, *, exclude_statement_id: int | None = None) -
 
 
 def assert_conserved(db: Session, statement: AccountStatement) -> None:
-    for line_id, rows in active_rows(db, statement.id).items():
-        line = db.get(StatementLine, line_id)
-        total = sum((Decimal(r.snapshot["flow"]) for r in rows), Decimal(0))
-        if total.quantize(_Q) != line.flow_amount.quantize(_Q):
+    """Every line with active coverage: Σ snapshot flow == line flow (one query; a missing flow is not conserved)."""
+    rows = db.execute(
+        select(StatementCoverage.line_id, StatementLine.flow_amount, StatementCoverage.snapshot["flow"].astext)
+        .join(StatementLine, StatementLine.id == StatementCoverage.line_id)
+        .where(StatementCoverage.statement_id == statement.id, StatementCoverage.status == "active")
+        .order_by(StatementCoverage.line_id)
+    ).all()
+    totals: dict[int, Decimal | None] = {}
+    targets: dict[int, Decimal | None] = {}
+    for line_id, line_flow, flow in rows:
+        targets[line_id] = line_flow
+        total = totals.get(line_id, Decimal(0))
+        totals[line_id] = None if total is None or flow is None else total + Decimal(flow)
+    for line_id, total in totals.items():
+        target = targets[line_id]
+        if total is None or target is None or total.quantize(_Q) != target.quantize(_Q):
             raise ConflictError(f"coverage not conserved for line {line_id}")
+
+
+# --- dirty sweep (§4.6 "Sweep protocol") -------------------------------------------------------------------------
+
+SWEEP_BATCH = 1000
+OPEN_CASE_STATUSES = ("open", "proposed")
+
+
+@dataclass
+class SweepResult:
+    stale_lines: list[int] = field(default_factory=list)
+    reopened_cases: list[int] = field(default_factory=list)
+    created_cases: list[int] = field(default_factory=list)
+    recheck: bool = False
+    swept_through: int = 0
+
+
+def participating_accounts(db: Session, account_id: int) -> list[int]:
+    """The statement's account plus every account combined into it (`combined_account_id == account_id`)."""
+    children = db.execute(select(Account.id).where(Account.combined_account_id == account_id).order_by(Account.id))
+    return [account_id, *children.scalars()]
+
+
+def _applied_action_ids(db: Session, statement: AccountStatement) -> set[int]:
+    """Actions applied on this statement (their events are self-generated and must not reopen fresh coverage)."""
+    return set(db.execute(
+        select(ReconciliationAction.id)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied")
+    ).scalars())
+
+
+def _recount(db: Session, statement: AccountStatement) -> None:
+    statement.open_case_count = db.execute(
+        select(func.count()).select_from(ReconciliationCase)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.status.in_(OPEN_CASE_STATUSES))
+    ).scalar_one()
+    statement.matched_count = db.execute(
+        select(func.count(func.distinct(StatementCoverage.line_id)))
+        .where(StatementCoverage.statement_id == statement.id, StatementCoverage.status == "active")
+    ).scalar_one()
+
+
+def _case_for_released_line(db: Session, statement: AccountStatement, line_id: int, event, run_id: int | None,
+                            result: SweepResult) -> None:
+    """Live mode: reopen the line's event's newest case when it is resolved, else open a `recheck` case."""
+    line = db.get(StatementLine, line_id)
+    newest = db.execute(
+        select(ReconciliationCase)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.event_id == line.event_id)
+        .order_by(ReconciliationCase.id.desc()).limit(1).with_for_update()
+    ).scalar_one_or_none()
+    if newest is not None and newest.status == "resolved":
+        newest.status = "open"
+        newest.version = newest.version + 1
+        newest.context = {**(newest.context or {}), "reopened_by_event": event.id}
+        db.flush()
+        result.reopened_cases.append(newest.id)
+        return
+    context = {"event_id": event.id, "op": event.op, "row_id": event.row_id}
+    if run_id is not None:
+        context["run_id"] = run_id
+    item = ReconciliationCase(statement_id=statement.id, revision_id=line.revision_id, kind="recheck",
+                              event_id=line.event_id, line_id=line.id, context=context)
+    db.add(item)
+    db.flush()
+    result.created_cases.append(item.id)
+
+
+def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None) -> SweepResult:
+    """Apply every coverage_dirty event past the statement's watermark that touches it, then advance the watermark
+    to the highest id scanned (relevant or not). Precondition: the caller holds the statement row FOR UPDATE (§7.4:
+    writers never lock statements, so a writer committing after this sweep gets a higher id the next sweep sees).
+    Effects: a changed/deleted covered entry or group releases its line(s) as a whole (live: reopen/create a case;
+    historical: release only); population changes (insert/move/edit/delete of an uncovered in-period row, account
+    config) set `needs_recheck` in live mode. Events of actions applied on this statement are skipped. Never deletes
+    events and never commits."""
+    live = statement.mode == "live"
+    accounts = set(participating_accounts(db, statement.account_id))
+    active = active_rows(db, statement.id)
+    lines_by_entry: dict[int, set[int]] = defaultdict(set)
+    lines_by_group: dict[int, set[int]] = defaultdict(set)
+    for line_id, rows in active.items():
+        for r in rows:
+            # the snapshot keeps the ids after a delete SET NULLs the columns
+            for entry_id in {r.entry_id, (r.snapshot or {}).get("id")} - {None}:
+                lines_by_entry[entry_id].add(line_id)
+            for group_id in {r.group_id, (r.snapshot or {}).get("group_id")} - {None}:
+                lines_by_group[group_id].add(line_id)
+    skipped_actions = _applied_action_ids(db, statement)
+    start, end = statement.period_start, statement.period_end
+    result = SweepResult(swept_through=statement.swept_through_event_id)
+    released: set[int] = set()
+
+    def in_population(account_id, day) -> bool:
+        return account_id in accounts and day is not None and start <= day <= end
+
+    def release(line_ids, event, reason: str) -> None:
+        for line_id in sorted(line_ids - released):
+            released.add(line_id)
+            if release_line(db, statement, line_id, reason=reason) == 0:
+                continue
+            result.stale_lines.append(line_id)
+            if live:
+                _case_for_released_line(db, statement, line_id, event, run_id, result)
+
+    last = statement.swept_through_event_id
+    while True:
+        batch = db.execute(
+            select(CoverageDirty.id, CoverageDirty.kind, CoverageDirty.row_id, CoverageDirty.op,
+                   CoverageDirty.old_account_id, CoverageDirty.new_account_id, CoverageDirty.old_date,
+                   CoverageDirty.new_date, CoverageDirty.action_id)
+            .where(CoverageDirty.id > last).order_by(CoverageDirty.id).limit(SWEEP_BATCH)
+        ).all()
+        if not batch:
+            break
+        last = batch[-1].id
+        for ev in batch:
+            if ev.action_id is not None and ev.action_id in skipped_actions:
+                continue
+            if ev.kind == "entry":
+                if ev.row_id in lines_by_entry:
+                    if ev.op in ("update", "delete"):
+                        release(lines_by_entry[ev.row_id], ev, f"dirty:{ev.op}:{ev.id}")
+                elif in_population(ev.new_account_id, ev.new_date) or in_population(ev.old_account_id, ev.old_date):
+                    result.recheck = result.recheck or live
+            elif ev.kind == "group":
+                if ev.row_id in lines_by_group and ev.op in ("update", "delete"):
+                    release(lines_by_group[ev.row_id], ev, f"dirty:group:{ev.id}")
+            elif ev.kind == "account" and ev.row_id in accounts:
+                result.recheck = result.recheck or live
+        if len(batch) < SWEEP_BATCH:
+            break
+    if last > statement.swept_through_event_id:
+        statement.swept_through_event_id = last
+    if result.recheck:
+        statement.needs_recheck = True
+    result.swept_through = statement.swept_through_event_id
+    _recount(db, statement)
+    db.flush()
+    return result
+
+
+def sweep_pending(db: Session) -> list[int]:
+    """Statements (any mode) with an event past their watermark that may touch them: the account or a combined
+    child on either side, or a group/entry their active coverage holds. A superset; `sweep` decides relevance."""
+    s = AccountStatement
+    child = aliased(Account)
+    participating = select(child.id).where(child.combined_account_id == s.account_id)
+    covered = select(StatementCoverage).where(StatementCoverage.statement_id == s.id,
+                                              StatementCoverage.status == "active")
+    touches = exists().where(
+        CoverageDirty.id > s.swept_through_event_id,
+        or_(
+            CoverageDirty.old_account_id == s.account_id, CoverageDirty.new_account_id == s.account_id,
+            CoverageDirty.old_account_id.in_(participating), CoverageDirty.new_account_id.in_(participating),
+            and_(CoverageDirty.kind == "group",
+                 exists(covered.where(StatementCoverage.group_id == CoverageDirty.row_id))),
+            and_(CoverageDirty.kind == "entry",
+                 exists(covered.where(StatementCoverage.entry_id == CoverageDirty.row_id))),
+        ),
+    )
+    return list(db.execute(select(s.id).where(touches).order_by(s.id)).scalars())
