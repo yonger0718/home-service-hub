@@ -191,3 +191,14 @@ def test_settings_carry_the_dirty_switch(client, card, seed, db_session):
     seed.entry(card, "-10")  # the triggers read the switch the PUT stored
     db_session.commit()
     assert db_session.execute(text("SELECT count(*) FROM coverage_dirty")).scalar_one() == 1
+
+
+def test_duplicate_line_seq_is_422_and_stores_nothing(client, card, db_session):
+    lease = _claim(client)
+    line = {"posted_date": "2026-09-03", "merchant_raw": "全聯", "printed_amount": "290", "line_kind": "purchase"}
+    body = _revision(lease, card, [{"seq": 1, **line}, {"seq": 1, **line, "merchant_raw": "家樂福"}], "580")
+    response = client.post("/statements/revisions", headers=W, json=body)
+    assert response.status_code == 422 and response.json()["detail"][0]["loc"][-1] == "lines", response.text
+    assert "duplicate seq" in response.json()["detail"][0]["msg"]
+    counts = db_session.execute(text("SELECT (SELECT count(*) FROM account_statement), (SELECT count(*) FROM statement_revision)")).one()
+    assert tuple(counts) == (0, 0)

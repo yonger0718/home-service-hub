@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models import STATEMENT_SOURCE_ROOTS
 from app.models.statements import (
@@ -189,6 +189,15 @@ class RevisionIn(Lease):
     minimum_payment: SignedMoney | None = None
     lines: list[LineIn] = Field(max_length=2000)
     raw: dict
+
+    @field_validator("lines")
+    @classmethod
+    def _unique_seq(cls, lines: list[LineIn]) -> list[LineIn]:
+        """Stored (non-subtotal) lines are unique by seq within a revision; refuse duplicates as 422, not a 500."""
+        seqs = [line.seq for line in lines if not line.is_subtotal]
+        if len(seqs) != len(set(seqs)):
+            raise ValueError("duplicate seq")
+        return lines
 
 
 class RevisionOut(BaseModel):
