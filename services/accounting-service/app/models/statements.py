@@ -212,6 +212,7 @@ class StatementEvent(Base):
     first_line_id = Column(Integer)  # FKs in __table_args__ (circular with statement_line)
     current_line_id = Column(Integer)
     status = Column(event_status_enum, nullable=False, server_default=text("'live'"))
+    flag = Column(String(32), nullable=True)  # 'text_changed' after a normalised re-parse (§5.7)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=NOW)
 
 

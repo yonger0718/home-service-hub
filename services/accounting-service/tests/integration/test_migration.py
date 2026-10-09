@@ -19,7 +19,8 @@ PHASE_1_HEAD = "5d2e7c9a1b3f"
 PHASE_2A_HEAD = "7b1e4a2c9d05"
 SCHEDULES_HEAD = "c4e8b2f1a7d3"
 RECONCILE_HEAD = "d1f3a7c2e9b4"
-R1B_HEAD = "e2a9c4d1b7f0"
+DIRTY_BARRIER_HEAD = "e2a9c4d1b7f0"
+R1B_HEAD = "f3b1d2c4a9e7"
 
 
 def _schema(url) -> dict:
@@ -627,3 +628,24 @@ def test_dirty_barrier_upgrade_adds_and_downgrade_removes_the_shared_lock(databa
 
     command.upgrade(cfg, "head")
     assert all("pg_advisory_xact_lock_shared(1145655892)" in body for body in _function_defs(url).values())
+
+
+def _event_columns(url) -> set[str]:
+    engine = create_engine(url)
+    try:
+        return {c["name"] for c in inspect(engine).get_columns("statement_event")}
+    finally:
+        engine.dispose()
+
+
+def test_statement_event_flag_round_trip(database_factory, alembic_config):
+    url = database_factory()
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    assert _version(url) == R1B_HEAD and "flag" in _event_columns(url)
+
+    command.downgrade(cfg, DIRTY_BARRIER_HEAD)
+    assert _version(url) == DIRTY_BARRIER_HEAD and "flag" not in _event_columns(url)
+
+    command.upgrade(cfg, "head")
+    assert "flag" in _event_columns(url)
