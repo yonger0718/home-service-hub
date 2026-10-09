@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from ..auth import method_scope
 from ..database import get_db, get_engine
 from ..models import ScheduleDefinition, ScheduleInstance
 from ..schemas.schedules import (
@@ -31,7 +32,7 @@ from ..schemas.schedules import (
 from ..services import schedule_job, schedule_locks, schedule_read, schedule_service
 from .errors import service_errors
 
-router = APIRouter(prefix="/schedules", tags=["Schedules"])
+router = APIRouter(prefix="/schedules", tags=["Schedules"], dependencies=[Depends(method_scope())])
 
 
 def _definition_out(db: Session, definition_id: int) -> dict:

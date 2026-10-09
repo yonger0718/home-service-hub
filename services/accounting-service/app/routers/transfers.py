@@ -3,12 +3,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from ..auth import method_scope
 from ..database import get_db
 from ..schemas.writes import TransferIn, TransferOut
 from ..services import transfer_service
 from .errors import service_errors
 
-router = APIRouter(prefix="/transfers", tags=["Transfers"])
+router = APIRouter(prefix="/transfers", tags=["Transfers"], dependencies=[Depends(method_scope())])
 
 
 def _out(db: Session, group_id: UUID) -> dict:

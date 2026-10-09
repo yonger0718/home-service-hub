@@ -135,3 +135,124 @@ class ApiTokenMiddleware:
             return False
         path = scope.get("path", "")
         return path in ALWAYS_PUBLIC or (path in self.docs_paths and docs_public())
+
+
+# --- scopes (reconciliation design §8.1) -------------------------------------------------------------
+from fastapi import Depends, HTTPException, Request  # noqa: E402
+
+SCOPES_ENV = "ACCOUNTING_TOKEN_SCOPES"
+RESTRICTED_ENV = "ACCOUNTING_RESTRICTED_LABELS"
+FEATURE_ENV = "ACCOUNTING_RECONCILIATION_ENABLED"
+VALID_SCOPES = frozenset({"read", "propose", "write", "admin", "enqueue", "ingest", "legacy"})
+_EXCLUSIVE_WITH_LEGACY = frozenset({"ingest", "enqueue"})
+_BUILTIN_RESTRICTED = frozenset({"hermes", "worker"})
+
+
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def feature_enabled() -> bool:
+    return _truthy(os.getenv(FEATURE_ENV))
+
+
+def restricted_labels() -> frozenset[str]:
+    extra = {item.strip() for item in (os.getenv(RESTRICTED_ENV) or "").split(",") if item.strip()}
+    return _BUILTIN_RESTRICTED | frozenset(extra)
+
+
+@lru_cache(maxsize=8)
+def parse_scopes(raw: str | None) -> dict[str, frozenset[str]]:
+    """`"spa=legacy; hermes=read,propose"` -> {label: scopes}. Malformed input raises ValueError."""
+    out: dict[str, frozenset[str]] = {}
+    for item in (raw or "").split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        label, sep, scopes_text = item.partition("=")
+        label = label.strip()
+        if not sep or not label:
+            raise ValueError(f"{SCOPES_ENV}: malformed item {item!r}")
+        if label in out:
+            raise ValueError(f"{SCOPES_ENV}: duplicate label {label!r}")
+        scopes = frozenset(s.strip() for s in scopes_text.split(",") if s.strip())
+        if not scopes:
+            raise ValueError(f"{SCOPES_ENV}: no scopes for label {label!r}")
+        unknown = scopes - VALID_SCOPES
+        if unknown:
+            raise ValueError(f"{SCOPES_ENV}: unknown scope {sorted(unknown)!r} for label {label!r}")
+        if "legacy" in scopes and scopes & _EXCLUSIVE_WITH_LEGACY:
+            raise ValueError(f"{SCOPES_ENV}: label {label!r} holds legacy together with ingest/enqueue")
+        out[label] = scopes
+    return out
+
+
+def configured_scopes() -> dict[str, frozenset[str]]:
+    return parse_scopes(os.getenv(SCOPES_ENV))
+
+
+def scopes_configured() -> bool:
+    return bool((os.getenv(SCOPES_ENV) or "").strip())
+
+
+def validate_auth_config() -> None:
+    """Startup check: refuse configurations that would widen a restricted credential (design §8.1)."""
+    tokens = configured_tokens()
+    labels = [label for label, _ in tokens]
+    if scopes_configured():
+        scopes = configured_scopes()
+        if any(label is None for label in labels):
+            raise ValueError(f"{SCOPES_ENV} is set: bare tokens are not allowed in {TOKENS_ENV}")
+        if len(set(labels)) != len(labels):
+            raise ValueError(f"{TOKENS_ENV}: duplicate labels")
+        missing = set(labels) - set(scopes)
+        if missing:
+            raise ValueError(f"{SCOPES_ENV}: labels without a scope entry: {sorted(missing)!r}")
+        ghosts = set(scopes) - set(labels)
+        if ghosts:
+            raise ValueError(f"{SCOPES_ENV}: labels without a token: {sorted(ghosts)!r}")
+        if feature_enabled() and not tokens:
+            raise ValueError(f"{FEATURE_ENV} requires {TOKENS_ENV}")
+        return
+    if feature_enabled():
+        raise ValueError(f"{FEATURE_ENV}=true requires {SCOPES_ENV}")
+    present = {label for label in labels if label} & restricted_labels()
+    if present:
+        raise ValueError(f"restricted labels {sorted(present)!r} need {SCOPES_ENV}")
+
+
+def _label_scopes(request: Request) -> frozenset[str] | None:
+    """None when scopes are unconfigured (compatibility mode); else the caller's scope set."""
+    if not scopes_configured():
+        return None
+    label = getattr(request.state, "client_label", None)
+    return configured_scopes().get(label, frozenset())
+
+
+def require(*scopes: str):
+    needed = frozenset(scopes)
+    assert needed <= VALID_SCOPES, scopes
+
+    def dependency(request: Request) -> None:
+        held = _label_scopes(request)
+        if held is None or "legacy" in held or held & needed:
+            return
+        raise HTTPException(status_code=403, detail="scope")
+
+    return dependency
+
+
+def method_scope(read: str = "read", write: str = "write"):
+    def dependency(request: Request) -> None:
+        needed = read if request.method in PUBLIC_METHODS else write
+        require(needed)(request)
+
+    return dependency
+
+
+def require_feature():
+    def dependency() -> None:
+        if not feature_enabled():
+            raise HTTPException(status_code=404, detail="reconciliation disabled")
+
+    return dependency

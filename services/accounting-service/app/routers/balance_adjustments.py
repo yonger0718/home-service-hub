@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from ..auth import method_scope
 from ..database import get_db
 from ..schemas.ledger import EntryDetailOut
 from ..schemas.writes import BalanceAdjustmentIn
 from ..services import entry_write_service, ledger_service
 from .errors import service_errors
 
-router = APIRouter(prefix="/balance-adjustments", tags=["Entries"])
+router = APIRouter(prefix="/balance-adjustments", tags=["Entries"], dependencies=[Depends(method_scope())])
 
 
 @router.post("", response_model=EntryDetailOut, status_code=201)
