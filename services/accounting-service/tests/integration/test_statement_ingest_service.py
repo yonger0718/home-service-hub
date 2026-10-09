@@ -18,6 +18,9 @@ from app.schemas.statements import FileRegisterIn, LineIn, RevisionIn, SourceReg
 from app.services import statement_ingest_service as svc
 from app.services.errors import ConflictError, ValidationError
 
+# These tests isolate their service: submit_revision runs without the reconcile pass (conftest.matcher_off).
+pytestmark = pytest.mark.usefixtures("matcher_off")
+
 SHA = "ab" * 32
 MD5 = "cd" * 16
 

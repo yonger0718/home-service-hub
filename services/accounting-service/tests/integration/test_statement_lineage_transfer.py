@@ -18,6 +18,9 @@ from app.services import coverage_service as cov
 from app.services import statement_ingest_service as svc
 from app.services.statements import matching
 
+# These tests isolate their service: submit_revision runs without the reconcile pass (conftest.matcher_off).
+pytestmark = pytest.mark.usefixtures("matcher_off")
+
 DAY = date(2026, 9, 3)
 
 

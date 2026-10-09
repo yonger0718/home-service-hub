@@ -22,6 +22,9 @@ from app.services import statement_revision_service as revs
 from app.services.statements import matching
 from tests.helpers import set_dirty, wait_until_blocked
 
+# These tests isolate their service: submit_revision runs without the reconcile pass (conftest.matcher_off).
+pytestmark = pytest.mark.usefixtures("matcher_off")
+
 SEP = (date(2026, 9, 1), date(2026, 9, 30))
 OCT = (date(2026, 10, 1), date(2026, 10, 31))
 

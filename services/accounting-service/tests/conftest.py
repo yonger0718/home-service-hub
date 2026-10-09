@@ -452,6 +452,16 @@ def dirty_on(db_session):
 
 
 @pytest.fixture()
+def matcher_off(monkeypatch):
+    """submit_revision without the reconcile pass (its hook returns no cases): for tests of the revision, lineage and
+    sweep services that hand-craft coverage and count cases (tests/integration/test_reconciliation_service.py covers
+    the hook)."""
+    from app.services import statement_revision_service
+
+    monkeypatch.setattr(statement_revision_service, "reconciliation_hook", lambda *args: [])
+
+
+@pytest.fixture()
 def seed(db_session):
     """seed.account(...), seed.entry(account, "-100", kind=..., source=..., ...) and friends on db_session."""
     return Seed(db_session)

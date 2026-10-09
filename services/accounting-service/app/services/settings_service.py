@@ -1,5 +1,7 @@
 """Settings reads and writes. Task 5: preference; Task 16 adds accounts, groups, categories, projects, counterparties."""
 
+from dataclasses import fields
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select, update
@@ -19,6 +21,7 @@ from ..models import (
     RewardRule,
 )
 from ..models.statements import ReconciliationSettings
+from .statements import matching
 from ..schemas.writes import AccountGroupIn, AccountIn, CategoryIn, CounterpartyIn, PreferenceIn, ProjectIn
 from . import schedule_entry_hooks
 from .errors import ConflictError, NotFoundError, ValidationError  # noqa: F401  (re-exported)
@@ -58,10 +61,26 @@ def _reconciliation_row(db: Session, *, lock: bool = False) -> ReconciliationSet
     return db.get(ReconciliationSettings, 1, populate_existing=True, with_for_update=lock)
 
 
+RULES_VERSION = "r1b-1"
+
+
+def _rule_default(value):
+    if isinstance(value, tuple):
+        return list(value)
+    return str(value) if isinstance(value, Decimal) else value
+
+
+# matching.Rules defaults, JSON-serialised (Decimal → str, tuple → list); period_end is per statement, not a setting.
+RULE_DEFAULTS = {f.name: _rule_default(f.default) for f in fields(matching.Rules) if f.name != "period_end"}
+
+
 def _reconciliation_dict(row: ReconciliationSettings) -> dict:
+    """Stored data plus defaults: `rules` = the matching.Rules defaults overlaid with the stored keys, and
+    `rules_version` (bumped whenever the defaults change meaning)."""
     data = dict(row.data or {})
+    rules = {**RULE_DEFAULTS, **(data.get("rules") or {})}
     return {**data, "account_map": data.get("account_map") or {}, "dirty_enabled": data.get("dirty_enabled") is True,
-            "version": row.version}
+            "rules": rules, "rules_version": data.get("rules_version") or RULES_VERSION, "version": row.version}
 
 
 def _check_account_map(account_map) -> None:
@@ -76,6 +95,14 @@ def _check_account_map(account_map) -> None:
             raise ValidationError("account_map", f"key {key!r} is not <root>/<folder>/<subfolder>")
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValidationError("account_map", f"value for {key!r} is not an account id")
+
+
+def reconciliation_rules(db: Session) -> dict:
+    """The matching rules (defaults overlaid with the stored keys), read without inserting the settings row: the
+    reconcile transaction writes nothing outside its statement."""
+    row = db.get(ReconciliationSettings, 1)
+    stored = (row.data or {}).get("rules") if row is not None else None
+    return {**RULE_DEFAULTS, **(stored or {})}
 
 
 def get_reconciliation_settings(db: Session) -> dict:

@@ -45,10 +45,25 @@ OPEN_CASE_STATUSES = ("open", "proposed")
 TEXT_CHANGED = "text_changed"  # statement_event.flag after a normalised re-parse (UI: 文字已變更)
 
 
-def reconciliation_hook(db: Session, statement: AccountStatement, revision: StatementRevision, run: IngestRun) -> None:
-    """Called by `submit_revision` after lines, lineage and the current-revision switch are written. A no-op in this
-    task; Task 6 replaces it with the reconcile pass (matcher) for the statement. Kept module level so the revision
-    service never imports reconciliation_service."""
+def reconciliation_hook(db: Session, statement: AccountStatement, revision: StatementRevision,
+                        run: IngestRun) -> list[int]:
+    """Called by `submit_revision` after lines, lineage and the current-revision switch are written, under its
+    statement lock: when the revision became current and passed its guardrails, reconcile the statement
+    (`reconciliation_service.reconcile(locked=True)`); returns the ids of the cases it opened. While an import holds
+    the import key the pass is left to the daily batch (`needs_recheck`). Imported late: reconciliation_service
+    depends on the ledger services, the revision service must not at import time."""
+    if statement.current_revision_id != revision.id or not revision.guardrail_ok:
+        return []
+    from app.services import reconciliation_service
+    from app.services.schedule_locks import ImportRunningError
+
+    try:
+        result = reconciliation_service.reconcile(db, statement.id, run_id=run.id, locked=True)
+    except ImportRunningError:
+        statement.needs_recheck = True
+        db.flush()
+        return []
+    return list(result.cases_opened)
 
 
 @dataclass
@@ -367,9 +382,10 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
         statement.conflict_open = True
     if correction:
         _supersede_parse_reviews(db, statement)
-    reconciliation_hook(db, statement, revision, run)
-    # 8. cases (live mode only; historical diagnostics stay in revision.guardrail); quarantines were opened in step 6
-    case_ids: list[int] = list(quarantine_case_ids)
+    matcher_case_ids = reconciliation_hook(db, statement, revision, run)
+    # 8. cases (live mode only; historical diagnostics stay in revision.guardrail); quarantines were opened in step 6,
+    # the matcher's by the hook
+    case_ids: list[int] = list(quarantine_case_ids) + matcher_case_ids
     # A reconciled statement gets only the conflict case: it already reviews the whole revision.
     if statement.mode == "live":
         if conflict:
