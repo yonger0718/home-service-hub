@@ -370,3 +370,35 @@ def test_sweep_stops_with_409_lease_when_the_lease_expires_between_items(client,
     assert done == [first]  # the second statement was never started
     flags = dict(db_session.execute(text("SELECT id, needs_recheck FROM account_statement")).all())
     assert flags[first] is False and flags[second] is True  # the finished item stays committed
+
+
+def test_reconcile_and_sweep_routes_report_lock_conflicts(client, card, seed, db_session, pg_engine, monkeypatch):
+    """reconcile_busy (a candidate row is locked) and sweep_barrier_busy (a writer holds the dirty barrier past the
+    lock timeout) are 409 on the reconcile route and per-statement errors of the sweep route."""
+    from app.services import coverage_service
+    from tests.helpers import set_dirty
+    entry = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    statement_id, lease = _submit(client, card)
+    lease = {"run_id": lease["run_id"], "lease_token": lease["lease_token"]}
+    url = f"/accounts/{card.id}/statements/{statement_id}/reconcile"
+    db_session.execute(text("UPDATE account_statement SET needs_recheck = true"))
+    db_session.commit()
+    with pg_engine.connect() as holder:
+        holder.execute(text("SELECT id FROM ledger_entry WHERE id = :id FOR UPDATE"), {"id": entry.id})
+        busy = client.post(url, headers=S)
+        swept = client.post("/reconciliation/sweep", headers=W, json=lease)
+        holder.rollback()
+    assert busy.status_code == 409 and busy.json()["message"].startswith("reconcile_busy"), busy.text
+    assert swept.status_code == 200 and swept.json()["errors"] == [{"statement_id": statement_id, "error": "reconcile_busy"}]
+    set_dirty(db_session, True)
+    monkeypatch.setattr(coverage_service, "BARRIER_LOCK_TIMEOUT", "200ms")
+    with pg_engine.connect() as writer:
+        writer.execute(text("UPDATE ledger_entry SET name = 'renamed' WHERE id = :id"), {"id": entry.id})
+        barrier = client.post(url, headers=S)
+        swept = client.post("/reconciliation/sweep", headers=W, json=lease)
+        writer.rollback()
+    assert barrier.status_code == 409 and barrier.json()["message"].startswith("sweep_barrier_busy"), barrier.text
+    assert swept.status_code == 200 and swept.json()["errors"] == [{"statement_id": statement_id, "error": "sweep_barrier_busy"}]
+    done = client.post(url, headers=S)
+    assert done.status_code == 200 and done.json()["claims"] == 1

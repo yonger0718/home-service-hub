@@ -400,13 +400,14 @@ def locked_with_legs(db: Session, entry_id: int, transfer_group_id, also_ids: It
     )
 
 
-def lock_group(db: Session, group_id: int) -> EntryGroup | None:
+def lock_group(db: Session, group_id: int, *, nowait: bool = False) -> EntryGroup | None:
     """The entry_group row, SELECT … FOR UPDATE; None when it is gone. Shared with split_service so both paths
-    take the group lock through one function and in one order."""
+    take the group lock through one function and in one order. `nowait`: FOR UPDATE NOWAIT (reconcile, which must
+    never wait on a ledger row lock)."""
     return db.execute(
         select(EntryGroup)
         .where(EntryGroup.id == group_id)
-        .with_for_update()
+        .with_for_update(nowait=nowait)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
 

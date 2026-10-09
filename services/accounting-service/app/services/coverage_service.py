@@ -8,15 +8,18 @@ keeps it until its transaction ends. The sweep takes the same key EXCLUSIVELY at
 `cap = max(id)` and unlocks at once: once it holds the exclusive lock no writer is between its insert and its
 commit, so every id <= cap is committed (or rolled back) and visible, and any later writer gets an id > cap. The
 lock is session level and released in a `finally` so it is never held for the rest of the reconcile transaction
-(an xact-level lock would block every ledger writer until the reconcile commits)."""
+(an xact-level lock would block every ledger writer until the reconcile commits). The wait for it is bounded by
+BARRIER_LOCK_TIMEOUT: a long writer transaction makes the sweep raise `sweep_barrier_busy` instead of stalling."""
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from psycopg2.errors import LockNotAvailable, QueryCanceled
+
 from sqlalchemy import Integer, and_, exists, func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, aliased
 
 from app.models import (
@@ -132,6 +135,8 @@ def assert_conserved(db: Session, statement: AccountStatement) -> None:
 # --- dirty sweep (§4.6 "Sweep protocol") -------------------------------------------------------------------------
 
 SWEEP_BATCH = 1000
+BARRIER_LOCK_TIMEOUT = "5s"  # the longest the sweep waits for in-flight ledger writers at the barrier
+SWEEP_BARRIER_BUSY = "sweep_barrier_busy"
 OPEN_CASE_STATUSES = ("open", "proposed")
 
 
@@ -220,9 +225,26 @@ def _unlock_barrier(db: Session) -> None:
         raise RuntimeError("the dirty barrier was not held at unlock; connection invalidated")
 
 
+def _take_barrier(db: Session) -> None:
+    """The exclusive session-level barrier, waiting at most BARRIER_LOCK_TIMEOUT (a transaction-local lock_timeout set
+    and restored around the wait). The wait runs in a savepoint so a timeout leaves the session usable; it raises
+    `CodedConflictError("sweep_barrier_busy")`."""
+    previous = db.execute(select(func.current_setting("lock_timeout"))).scalar_one()
+    try:
+        with db.begin_nested():
+            db.execute(select(func.set_config("lock_timeout", BARRIER_LOCK_TIMEOUT, True)))
+            db.execute(select(func.pg_advisory_lock(DIRTY_BARRIER_KEY)))
+    except OperationalError as exc:
+        if isinstance(exc.orig, (LockNotAvailable, QueryCanceled)):
+            raise CodedConflictError(SWEEP_BARRIER_BUSY, "a ledger write held the dirty barrier too long") from exc
+        raise
+    finally:
+        db.execute(select(func.set_config("lock_timeout", previous, True)))
+
+
 def _committed_cap(db: Session) -> int | None:
     """max(coverage_dirty.id) read under the exclusive barrier (module docstring); None when there are no events."""
-    db.execute(select(func.pg_advisory_lock(DIRTY_BARRIER_KEY)))
+    _take_barrier(db)
     try:
         with db.begin_nested():  # a failing read must not leave the transaction unable to unlock
             return db.execute(select(func.max(CoverageDirty.id))).scalar_one()

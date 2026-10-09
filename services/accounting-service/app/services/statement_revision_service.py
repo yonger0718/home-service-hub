@@ -34,7 +34,7 @@ from app.models import (
 )
 from app.schemas.statements import RevisionIn
 from app.services import coverage_service
-from app.services.errors import NotFoundError, ValidationError
+from app.services.errors import ConflictError, NotFoundError, ValidationError
 from app.services.statements import derive, lineage
 
 HEADER_COLUMNS = ("period_start", "period_end", "closing_date", "due_date", "opening_balance", "statement_total",
@@ -49,17 +49,20 @@ def reconciliation_hook(db: Session, statement: AccountStatement, revision: Stat
                         run: IngestRun) -> list[int]:
     """Called by `submit_revision` after lines, lineage and the current-revision switch are written, under its
     statement lock: when the revision became current and passed its guardrails, reconcile the statement
-    (`reconciliation_service.reconcile(locked=True)`); returns the ids of the cases it opened. While an import holds
-    the import key the pass is left to the daily batch (`needs_recheck`). Imported late: reconciliation_service
+    (`reconciliation_service.reconcile(locked=True)`) inside a savepoint; returns the ids of the cases it opened. Any
+    ConflictError of the pass (an import holding the import key, `reconcile_busy`, `sweep_barrier_busy`,
+    `duplicate_claim`, coverage not conserved) rolls back only the savepoint and leaves the pass to the daily batch
+    (`needs_recheck`): the revision itself is stored and the ingest commits. Imported late: reconciliation_service
     depends on the ledger services, the revision service must not at import time."""
     if statement.current_revision_id != revision.id or not revision.guardrail_ok:
         return []
     from app.services import reconciliation_service
-    from app.services.schedule_locks import ImportRunningError
 
+    db.flush()  # the revision, lines and current-revision switch stay outside the savepoint
     try:
-        result = reconciliation_service.reconcile(db, statement.id, run_id=run.id, locked=True)
-    except ImportRunningError:
+        with db.begin_nested():
+            result = reconciliation_service.reconcile(db, statement.id, run_id=run.id, locked=True)
+    except ConflictError:
         statement.needs_recheck = True
         db.flush()
         return []

@@ -8,6 +8,12 @@ ledger_entry lock, because a writer holding the shared barrier may be waiting on
 children and their transfer legs in ONE ordered SELECT … FOR UPDATE → re-read the population under those locks →
 match → coverage → cases → counts. Reconcile writes no ledger rows, so it emits no dirty events of its own.
 
+Reconcile yields on lock conflicts: the sweep (and, in the revision hook, the coverage transfer) has already written
+coverage/case rows when the group/entry locks are taken, while a ledger delete locks the entry/group first and then
+needs those rows (`statement_coverage.entry_id/group_id`, `reconciliation_case.entry_id` are ON DELETE SET NULL).
+Waiting would close a cycle, so the group/entry locks are taken NOWAIT inside a savepoint and a held row raises
+`CodedConflictError("reconcile_busy")` (route 409, the batch records it, the hook leaves `needs_recheck`).
+
 No statement row other than its own is locked or referenced by a statement's reconcile: a deferral case gets its
 `deferred_to_statement_id` only from the LATER statement's reconcile (`_link_earlier_deferrals`, case rows only) or
 from `fill_deferral_links`.
@@ -30,7 +36,9 @@ from uuid import UUID
 
 from typing import Iterable, Iterator
 
+from psycopg2.errors import LockNotAvailable
 from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, aliased
 
 from app.models import (
@@ -39,7 +47,7 @@ from app.models import (
 )
 from app.services import coverage_service, settings_service
 from app.services.entry_write_service import lock_group, proposed_fx_fee
-from app.services.errors import NotFoundError
+from app.services.errors import CodedConflictError, NotFoundError
 from app.services.ledger_service import account_balance
 from app.services.schedule_locks import take_import_key_shared
 from app.services.statements import matching
@@ -53,6 +61,7 @@ MATCHER_KINDS = ("line_unmatched", "ambiguous", "amount_delta", "entry_unmatched
 DEFERRED = "deferred_next_period"
 UNCOVERED_CHILD = "uncovered_child"
 CROSS_ACCOUNT_DAYS = 3
+RECONCILE_BUSY = "reconcile_busy"
 _Q = Decimal("0.0001")
 
 
@@ -215,7 +224,7 @@ def _lock_statement(db: Session, statement_id: int) -> AccountStatement:
 
 
 def _lock_entries(db: Session, entry_ids: set[int], transfer_group_ids: set) -> dict[int, LedgerEntry]:
-    """The rows with every top-level leg of their transfers in ONE SELECT … FOR UPDATE ordered by id (the
+    """The rows with every top-level leg of their transfers in ONE SELECT … FOR UPDATE NOWAIT ordered by id (the
     `locked_with_legs` shape over an id set)."""
     if not entry_ids:
         return {}
@@ -223,9 +232,24 @@ def _lock_entries(db: Session, entry_ids: set[int], transfer_group_ids: set) -> 
     if transfer_group_ids:
         condition = or_(condition, and_(LedgerEntry.transfer_group_id.in_(transfer_group_ids),
                                         LedgerEntry.parent_entry_id.is_(None)))
-    rows = db.execute(select(LedgerEntry).where(condition).order_by(LedgerEntry.id).with_for_update()
+    rows = db.execute(select(LedgerEntry).where(condition).order_by(LedgerEntry.id).with_for_update(nowait=True)
                       .execution_options(populate_existing=True)).scalars()
     return {row.id: row for row in rows}
+
+
+def _lock_candidates(db: Session, group_ids: list[int], entry_ids: set[int],
+                     transfer_group_ids: set) -> dict[int, LedgerEntry]:
+    """Groups ascending, then the entries (`_lock_entries`), all NOWAIT inside a savepoint: a row another transaction
+    holds raises `reconcile_busy` and leaves the session usable (module docstring)."""
+    try:
+        with db.begin_nested():
+            for group_id in group_ids:
+                lock_group(db, group_id, nowait=True)
+            return _lock_entries(db, entry_ids, transfer_group_ids)
+    except OperationalError as exc:
+        if isinstance(exc.orig, LockNotAvailable):
+            raise CodedConflictError(RECONCILE_BUSY, "a candidate entry or group is locked by another write") from exc
+        raise
 
 
 # --- outputs -----------------------------------------------------------------------------------------------------
@@ -491,7 +515,9 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     already holds the statement row FOR UPDATE (the revision hook); the import key is then attempted AFTER that
     statement lock, which is safe only because the attempt never waits (pg_try_advisory_xact_lock_shared raises
     ImportRunningError at once while an import holds the key exclusively). Skips (after the sweep): no current revision or a failed
-    current one → `no_current_revision`; an open/proposed parse_review → `parse_review`. Never commits."""
+    current one → `no_current_revision`; an open/proposed parse_review → `parse_review`. Raises
+    `CodedConflictError`: `reconcile_busy` (a candidate group/entry row is locked) or `sweep_barrier_busy` (the
+    sweep's barrier wait timed out); the caller rolls back (or the savepoint does). Never commits."""
     take_import_key_shared(db)
     statement = db.get(AccountStatement, statement_id) if locked else _lock_statement(db, statement_id)
     if statement is None:
@@ -510,11 +536,9 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     # population before the locks, to know what to lock; re-read under the locks
     entries, groups = load_candidates(db, statement, accounts, window_days=rules.candidate_window_days,
                                       include_reward=include_reward)
-    for group_id in sorted(groups):
-        lock_group(db, group_id)
     wanted = {e.id for e in entries} | {c.id for e in entries for c in e.children}
     transfers = {e.transfer_group_id for e in entries if e.transfer_group_id is not None}
-    locked_rows = _lock_entries(db, wanted, {UUID(t) for t in transfers})
+    locked_rows = _lock_candidates(db, sorted(groups), wanted, {UUID(t) for t in transfers})
     first_groups = {e.id: e.group_id for e in entries}
     entries, groups = load_candidates(db, statement, accounts, window_days=rules.candidate_window_days,
                                       include_reward=include_reward)
@@ -555,7 +579,8 @@ def pending_statement_ids(db: Session) -> list[int]:
 
 def reconcile_each(db: Session, statement_ids: Iterable[int], *, run_id: int | None = None) -> Iterator[dict]:
     """`reconcile` each statement inside its own savepoint and yield `{"statement_id", "result"}` or
-    `{"statement_id", "error": <exception class>}` (the class only: driver messages can carry amounts). Never commits.
+    `{"statement_id", "error": <code>}`: a CodedConflictError's code (`reconcile_busy`, `sweep_barrier_busy`, ...),
+    else the exception class (never the message: driver messages can carry amounts). Never commits.
     The caller MUST commit after each yielded item: the next statement's sweep must not run while this transaction
     still holds the previous statement's entry/group row locks (module docstring)."""
     for statement_id in statement_ids:
@@ -563,6 +588,7 @@ def reconcile_each(db: Session, statement_ids: Iterable[int], *, run_id: int | N
             with db.begin_nested():
                 result = reconcile(db, statement_id, run_id=run_id)
         except Exception as exc:  # noqa: BLE001  (reported per statement; the batch goes on)
-            yield {"statement_id": statement_id, "error": exc.__class__.__name__}
+            code = exc.code if isinstance(exc, CodedConflictError) else exc.__class__.__name__
+            yield {"statement_id": statement_id, "error": code}
         else:
             yield {"statement_id": statement_id, "result": result}

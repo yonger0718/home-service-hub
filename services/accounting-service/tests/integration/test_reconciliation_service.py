@@ -10,7 +10,9 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import sessionmaker
 
-from app.models import AccountStatement, CoverageDirty, ReconciliationCase, StatementCoverage, StatementLine
+from app.models import (
+    AccountStatement, CoverageDirty, IngestRun, LedgerEntry, ReconciliationCase, StatementCoverage, StatementLine,
+)
 from app.schemas.statements import LineIn, RevisionIn
 from app.schemas.writes import EntryUpdateIn
 from app.services import entry_write_service as ews
@@ -18,6 +20,7 @@ from app.services import reconciliation_service as rec
 from app.services import settings_service
 from app.services import statement_ingest_service as ing
 from app.services import statement_revision_service as revs
+from app.services.errors import CodedConflictError, ConflictError
 from tests.helpers import race, set_dirty, wait_until_blocked
 
 SEP = (date(2026, 9, 1), date(2026, 9, 30))
@@ -673,3 +676,190 @@ def test_reconcile_waits_at_the_sweep_barrier_for_a_writer(seed, db_session, run
     assert old.status == "stale" and old.stale_reason.startswith("dirty:update:")  # the sweep saw the writer's event
     assert _active(db_session, stmt.id) == []
     assert {c.kind for c in _cases(db_session, stmt.id, "open")} == {"amount_delta", "entry_unmatched"}
+
+
+# --- lock conflicts: reconcile yields (NOWAIT on group/entry locks, bounded barrier wait) -----------------------
+
+def _code(outcome) -> str | None:
+    return getattr(outcome, "code", None)
+
+
+def _pause_after_the_sweep(monkeypatch):
+    """reconcile's first `load_candidates` (after the sweep wrote its coverage/case rows, before the group/entry
+    locks) sets `swept` and waits (bounded) for `go`."""
+    swept, go = threading.Event(), threading.Event()
+    real, calls = rec.load_candidates, []
+
+    def paused(db, statement, accounts, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            swept.set()
+            go.wait(10)
+        return real(db, statement, accounts, **kw)
+
+    monkeypatch.setattr(rec, "load_candidates", paused)
+    return swept, go
+
+
+def _interleave(pg_engine, first, second, swept, go) -> dict:
+    """first(session) runs in a thread until it pauses after its sweep; second(session) then runs in a thread until
+    it blocks on a lock; first resumes. Returns {"first", "second"}: "committed" or the exception raised."""
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    sessions = {"first": factory(), "second": factory()}
+    out: dict = {}
+
+    def runner(key, fn):
+        session = sessions[key]
+        try:
+            fn(session)
+            session.commit()
+            out[key] = "committed"
+        except Exception as exc:  # noqa: BLE001  (asserted by the caller)
+            session.rollback()
+            out[key] = exc
+
+    # the transaction stays open so the session keeps this connection (and pid) for second()
+    second_pid = sessions["second"].execute(text("SELECT pg_backend_pid()")).scalar_one()
+    threads = [threading.Thread(target=runner, args=("first", first), daemon=True),
+               threading.Thread(target=runner, args=("second", second), daemon=True)]
+    threads[0].start()
+    try:
+        assert swept.wait(10)
+        threads[1].start()
+        wait_until_blocked(pg_engine, second_pid)  # on a coverage/case row the paused reconcile wrote
+    finally:
+        go.set()
+        for thread in threads:
+            thread.join(15)
+    assert not any(thread.is_alive() for thread in threads), out
+    for session in sessions.values():
+        session.close()
+    return out
+
+
+def test_reconcile_yields_to_a_delete_of_a_claimed_entry(seed, db_session, run, pg_engine, monkeypatch):
+    """A dirty edit makes the sweep release the claim (row lock on the coverage row); a delete of the entry then
+    locks the entry and waits on that coverage row (ON DELETE SET NULL). Reconcile must not wait on the entry:
+    it yields with reconcile_busy and the delete commits (before the fix: DeadlockDetected)."""
+    card = _card(seed, db_session)
+    buy = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    buy_id = buy.id
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    stmt_id = stmt.id
+    assert len(_active(db_session, stmt_id)) == 1
+    set_dirty(db_session, True)
+    db_session.get(LedgerEntry, buy_id).name = "renamed"
+    db_session.commit()
+    swept, go = _pause_after_the_sweep(monkeypatch)
+
+    out = _interleave(pg_engine, lambda s: rec.reconcile(s, stmt_id), lambda s: ews.delete_entry(s, buy_id),
+                      swept, go)
+
+    assert _code(out["first"]) == "reconcile_busy", out
+    assert isinstance(out["first"], CodedConflictError) and out["second"] == "committed", out
+    assert db_session.execute(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.id == buy_id)).scalar_one() == 0
+    assert stmt_id in rec.pending_statement_ids(db_session)  # the next pass picks it up
+
+
+def test_reparse_hook_yields_to_a_delete_and_the_ingest_commits(seed, db_session, run, pg_engine, monkeypatch):
+    """An identical re-parse moves the event's coverage to the new line (row lock on the coverage row) before the
+    hook reconciles; a delete of the claimed entry waits on that row. The hook yields: the ingest commits with
+    needs_recheck and the delete commits (before the fix: DeadlockDetected)."""
+    card = _card(seed, db_session)
+    buy = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    lines = [_line(1, date(2026, 9, 3), "全聯", 580)]
+    stmt, _, _ = _submit(db_session, run, card, lines)
+    assert len(_active(db_session, stmt.id)) == 1
+    swept, go = _pause_after_the_sweep(monkeypatch)
+    r, token = run
+    submitted = []
+
+    def ingest(session):
+        rev = RevisionIn(run_id=r.id, lease_token=token, file_id=None, account_id=card.id, kind="card", parser="t",
+                         parser_version="1", currency="TWD", period_start=SEP[0], period_end=SEP[1],
+                         opening_balance=None, statement_total=Decimal("580"), lines=lines, raw={})
+        submitted.append(revs.submit_revision(session, session.get(IngestRun, r.id), rev, account_map={}).revision.id)
+
+    out = _interleave(pg_engine, ingest, lambda s: ews.delete_entry(s, buy.id), swept, go)
+
+    assert out == {"first": "committed", "second": "committed"}, out
+    db_session.expire_all()
+    stmt = db_session.get(AccountStatement, stmt.id)
+    assert stmt.current_revision_id == submitted[0] and stmt.needs_recheck is True
+    (item,) = _batch(db_session)
+    assert item["statement_id"] == stmt.id and item["result"].claims == 0 and _active(db_session, stmt.id) == []
+
+
+@pytest.mark.parametrize("table", ["ledger_entry", "entry_group"])
+def test_reconcile_is_busy_while_a_candidate_row_is_locked(card_month, db_session, pg_engine, table):
+    stmt, _, e, group, _, _ = card_month
+    row_id = e["buy"].id if table == "ledger_entry" else group.id
+    stmt = db_session.get(AccountStatement, stmt.id)
+    stmt.needs_recheck = True
+    db_session.commit()
+    with pg_engine.connect() as holder:
+        holder.execute(text(f"SELECT id FROM {table} WHERE id = :id FOR UPDATE"), {"id": row_id})
+        with pytest.raises(CodedConflictError) as busy:
+            rec.reconcile(db_session, stmt.id)
+        assert busy.value.code == "reconcile_busy"
+        assert db_session.execute(text("SELECT 1")).scalar_one() == 1  # the session is still usable
+        db_session.rollback()
+        (item,) = _batch(db_session)
+        assert item == {"statement_id": stmt.id, "error": "reconcile_busy"}
+        holder.rollback()
+    (item,) = _batch(db_session)
+    assert "error" not in item and item["result"].claims == 4
+
+
+def test_hook_isolates_a_matcher_failure(seed, db_session, run, monkeypatch):
+    """A conflict inside the hook's reconcile rolls back only the reconcile: the revision is stored and current,
+    its coverage writes are undone and the statement waits for the batch (needs_recheck)."""
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+
+    def broken(db, statement):
+        raise ConflictError("coverage not conserved")
+
+    monkeypatch.setattr(rec.coverage_service, "assert_conserved", broken)
+    stmt, ls, res = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    db_session.expire_all()
+    stmt = db_session.get(AccountStatement, stmt.id)
+    assert stmt.current_revision_id == res.revision.id and len(ls) == 1
+    assert stmt.needs_recheck is True and _active(db_session, stmt.id) == [] and res.case_ids == []
+    monkeypatch.undo()
+    (item,) = _batch(db_session)
+    assert item["result"].claims == 1
+
+
+def test_sweep_barrier_wait_is_bounded(seed, db_session, run, pg_engine, monkeypatch):
+    """A writer holding the shared dirty barrier (an uncommitted dirty write) makes the sweep give up after
+    lock_timeout with sweep_barrier_busy; the session stays usable with its lock_timeout restored."""
+    from app.services import coverage_service
+    card = _card(seed, db_session)
+    buy = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    stmt.needs_recheck = True
+    db_session.commit()
+    set_dirty(db_session, True)
+    monkeypatch.setattr(coverage_service, "BARRIER_LOCK_TIMEOUT", "200ms")
+    writer = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:
+        writer.get(LedgerEntry, buy.id).name = "renamed"
+        writer.flush()  # the trigger holds the shared barrier until the writer's transaction ends
+        before = db_session.execute(text("SHOW lock_timeout")).scalar_one()
+        with pytest.raises(CodedConflictError) as busy:
+            rec.reconcile(db_session, stmt.id)
+        assert busy.value.code == "sweep_barrier_busy"
+        assert db_session.execute(text("SHOW lock_timeout")).scalar_one() == before  # usable, timeout restored
+        db_session.rollback()
+        (item,) = _batch(db_session)
+        assert item == {"statement_id": stmt.id, "error": "sweep_barrier_busy"}
+    finally:
+        writer.rollback()
+        writer.close()
+    (item,) = _batch(db_session)
+    assert "error" not in item and item["result"].claims == 1
