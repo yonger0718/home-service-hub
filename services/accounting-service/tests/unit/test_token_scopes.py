@@ -49,18 +49,21 @@ def test_validate_refuses_restricted_label_without_scopes(env):
 
 
 @pytest.mark.parametrize(
-    "scopes",
+    ("scopes", "reason"),
     [
-        "spa=legacy; hermes=read,propose",            # worker label missing from the map
-        "spa=legacy; hermes=read,propose; worker=ingest; ghost=read",  # label not in tokens
-        "spa=legacy,ingest; hermes=read; worker=ingest",  # legacy together with ingest
-        "spa=legacy; hermes=read,enqueue,legacy; worker=ingest",  # legacy together with enqueue
-        "spa=legacy; hermes=admin; worker=ingest",      # admin is fine; this row only checks ops missing below
+        # Every row maps every token label but the one its reason names, so each fails for that reason alone.
+        ("spa=legacy; hermes=read,propose; ops=legacy", r"labels without a scope entry: \['worker'\]"),
+        ("spa=legacy; hermes=read,propose; worker=ingest; ops=legacy; ghost=read", r"labels without a token: \['ghost'\]"),
+        ("spa=legacy,ingest; hermes=read; worker=ingest; ops=legacy", r"label 'spa' holds legacy together with ingest"),
+        ("spa=legacy; hermes=read,enqueue,legacy; worker=ingest; ops=legacy",
+         r"label 'hermes' holds legacy together with ingest/enqueue"),
+        ("spa=legacy; hermes=admin; worker=ingest", r"labels without a scope entry: \['ops'\]"),  # admin is fine; ops is not
     ],
+    ids=["missing_label", "label_without_token", "legacy_with_ingest", "legacy_with_enqueue", "missing_ops"],
 )
-def test_validate_refuses_incomplete_or_unsafe_maps(env, scopes):
+def test_validate_refuses_incomplete_or_unsafe_maps(env, scopes, reason):
     env(scopes=scopes)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=reason):
         auth.validate_auth_config()
 
 
