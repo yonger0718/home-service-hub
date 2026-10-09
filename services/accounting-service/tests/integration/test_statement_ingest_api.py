@@ -2,6 +2,7 @@
 from datetime import date
 
 import pytest
+from sqlalchemy import text
 
 from app import auth
 
@@ -178,3 +179,15 @@ def test_worker_run_creation_needs_ingest_and_a_worker_trigger(client):
                        json={"trigger": "owner_cli", "initiator_hint": "x" * 65}).status_code == 422
     backfill = client.post("/statements/ingest-runs", headers=W, json={"trigger": "owner_cli", "mode": "backfill"})
     assert backfill.status_code == 201, backfill.text
+
+
+def test_settings_carry_the_dirty_switch(client, card, seed, db_session):
+    assert client.get("/settings/reconciliation", headers=H).json()["dirty_enabled"] is False
+    assert client.put("/settings/reconciliation", headers=S, json={"dirty_enabled": "maybe"}).status_code == 422
+    saved = client.put("/settings/reconciliation", headers=S, json={"dirty_enabled": True})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["dirty_enabled"] is True and saved.json()["account_map"] == {}
+    assert client.get("/settings/reconciliation", headers=H).json() == saved.json()
+    seed.entry(card, "-10")  # the triggers read the switch the PUT stored
+    db_session.commit()
+    assert db_session.execute(text("SELECT count(*) FROM coverage_dirty")).scalar_one() == 1

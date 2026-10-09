@@ -270,6 +270,8 @@ class StatementDetailOut(StatementOut):
 
 # ---- settings ----
 class ReconciliationSettingsIn(BaseModel):
-    """`account_map`: Drive folder `<root>/<folder>/<subfolder>` -> account id (the service checks the key shape)."""
+    """`account_map`: Drive folder `<root>/<folder>/<subfolder>` -> account id (the service checks the key shape).
+    `dirty_enabled`: the ledger dirty triggers write coverage_dirty only while it is true (a PUT replaces it)."""
     model_config = Strict
     account_map: dict[str, Int32] = {}
+    dirty_enabled: bool = False

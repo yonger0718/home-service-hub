@@ -68,6 +68,9 @@ CREATE FUNCTION reconciliation_dirty_entry() RETURNS trigger AS $$
 DECLARE
     v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
+    IF NOT COALESCE((SELECT (data->>'dirty_enabled')::boolean FROM reconciliation_settings WHERE id = 1), false) THEN
+        RETURN NULL;
+    END IF;
     IF TG_OP = 'UPDATE' AND (to_jsonb(OLD) - 'updated_at') = (to_jsonb(NEW) - 'updated_at') THEN
         RETURN NULL;
     END IF;
@@ -98,6 +101,9 @@ CREATE FUNCTION reconciliation_dirty_group() RETURNS trigger AS $$
 DECLARE
     v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
+    IF NOT COALESCE((SELECT (data->>'dirty_enabled')::boolean FROM reconciliation_settings WHERE id = 1), false) THEN
+        RETURN NULL;
+    END IF;
     IF TG_OP = 'UPDATE' AND to_jsonb(OLD) = to_jsonb(NEW) THEN
         RETURN NULL;
     END IF;
@@ -119,6 +125,9 @@ CREATE FUNCTION reconciliation_dirty_account() RETURNS trigger AS $$
 DECLARE
     v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
+    IF NOT COALESCE((SELECT (data->>'dirty_enabled')::boolean FROM reconciliation_settings WHERE id = 1), false) THEN
+        RETURN NULL;
+    END IF;
     IF OLD.opening_balance IS NOT DISTINCT FROM NEW.opening_balance
        AND OLD.currency IS NOT DISTINCT FROM NEW.currency
        AND OLD.combined_account_id IS NOT DISTINCT FROM NEW.combined_account_id
@@ -143,7 +152,8 @@ FOR EACH ROW EXECUTE FUNCTION reconciliation_dirty_account()
 
 # Each count blocks the downgrade: the previous revision cannot hold what reconciliation recorded. Every dropped
 # table is guarded except coverage_dirty (derived from the ledger by the triggers); reconciliation_settings only
-# once it differs from its defaults.
+# once it has been saved: every PUT bumps `version`, so the rule is `version <> 1` alone (a row still at version 1,
+# whatever its data, e.g. the default `{"dirty_enabled": false}`, was never saved by the owner).
 DOWNGRADE_GUARDS = {
     "statement-created entries": "SELECT count(*) FROM ledger_entry WHERE source = 'statement'",
     "coverage rows": "SELECT count(*) FROM statement_coverage",
@@ -161,7 +171,7 @@ DOWNGRADE_GUARDS = {
     "statement files": "SELECT count(*) FROM statement_file",
     "policy budget rows": "SELECT count(*) FROM policy_budget",
     "installment plan mappings": "SELECT count(*) FROM installment_plan_map",
-    "settings changed": "SELECT count(*) FROM reconciliation_settings WHERE data <> '{}'::jsonb OR version <> 1",
+    "settings changed": "SELECT count(*) FROM reconciliation_settings WHERE version <> 1",
     "accounts with statement settings": (
         "SELECT count(*) FROM account WHERE statement_password_rule IS NOT NULL OR statement_live_from IS NOT NULL "
         "OR statement_source_root IS NOT NULL"

@@ -266,7 +266,14 @@ A statement SHALL be `live` when its account's `statement_live_from` is set and 
 
 ### Requirement: Dirty events
 
-`ledger_entry` and `entry_group` SHALL carry row-level `AFTER INSERT/UPDATE/DELETE` triggers and `account` an `AFTER UPDATE` trigger; each appends to `coverage_dirty` and never writes to its source table. An entry row SHALL record `op`, `old_account_id`/`new_account_id`, `old_date`/`new_date` (posted dates) and the full `old_row`/`new_row` as JSON (the missing side NULL for insert and delete). An update that changes nothing (ignoring `updated_at` on entries) SHALL record nothing. An account update SHALL record only when `opening_balance`, `currency`, `combined_account_id`, `closing_day`, `due_rule`, `due_value`, `is_credit` or `is_archived` changed. Each row SHALL carry `action_id` from the transaction-local setting `app.reconciliation_action_id`, NULL when unset.
+`ledger_entry` and `entry_group` SHALL carry row-level `AFTER INSERT/UPDATE/DELETE` triggers and `account` an `AFTER UPDATE` trigger; each appends to `coverage_dirty` and never writes to its source table. An entry row SHALL record `op`, `old_account_id`/`new_account_id`, `old_date`/`new_date` (posted dates) and the full `old_row`/`new_row` as JSON (the missing side NULL for insert and delete). An update that changes nothing (ignoring `updated_at` on entries) SHALL record nothing. An account update SHALL record only when `opening_balance`, `currency`, `combined_account_id`, `closing_day`, `due_rule`, `due_value`, `is_credit` or `is_archived` changed. Each row SHALL carry `action_id` from the transaction-local setting `app.reconciliation_action_id`, NULL when unset. Every trigger SHALL record nothing unless `reconciliation_settings.data.dirty_enabled` is true (an absent settings row or key means off), checked with one primary-key lookup per changed row.
+
+#### Scenario: Dirty events are off until enabled
+- **GIVEN** no settings row, or `dirty_enabled` false
+- **WHEN** an entry is moved to another account
+- **THEN** no `coverage_dirty` row SHALL be written
+- **AND WHEN** `PUT /settings/reconciliation` stores `{"dirty_enabled": true}`
+- **THEN** the next change SHALL be recorded
 
 #### Scenario: Cross-account move records both sides
 - **GIVEN** an entry of `-10` on account A
@@ -312,7 +319,7 @@ The statements router SHALL expose these routes, all behind the feature gate, ea
 | `GET /settings/reconciliation` | `read` | 200 |
 | `PUT /settings/reconciliation` | `admin` | 200 |
 
-An `enqueue`-only token SHALL NOT be able to submit revisions, and an `ingest`-only token SHALL NOT read ledger or statement data. A statement detail requested through the wrong account id SHALL answer 404. `PUT /settings/reconciliation` SHALL accept `account_map` keys of the form `<root>/<folder>/<subfolder>` mapping to an account id, return the stored settings with an incremented `version`, and refuse malformed keys or values with HTTP 422 on `account_map`. A revision submission SHALL answer 201 with the statement id, revision, lineage counts and opened case ids.
+An `enqueue`-only token SHALL NOT be able to submit revisions, and an `ingest`-only token SHALL NOT read ledger or statement data. A statement detail requested through the wrong account id SHALL answer 404. `PUT /settings/reconciliation` SHALL accept `account_map` keys of the form `<root>/<folder>/<subfolder>` mapping to an account id and a boolean `dirty_enabled` (default false), return the stored settings with an incremented `version`, and refuse malformed keys or values with HTTP 422 on `account_map`. A revision submission SHALL answer 201 with the statement id, revision, lineage counts and opened case ids.
 
 #### Scenario: Enqueue returns 202
 - **GIVEN** the feature on and a token holding only `enqueue`

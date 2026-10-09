@@ -421,6 +421,9 @@ CREATE FUNCTION reconciliation_dirty_entry() RETURNS trigger AS $$
 DECLARE
     v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
+    IF NOT COALESCE((SELECT (data->>'dirty_enabled')::boolean FROM reconciliation_settings WHERE id = 1), false) THEN
+        RETURN NULL;
+    END IF;
     IF TG_OP = 'UPDATE' AND (to_jsonb(OLD) - 'updated_at') = (to_jsonb(NEW) - 'updated_at') THEN
         RETURN NULL;
     END IF;
@@ -451,6 +454,9 @@ CREATE FUNCTION reconciliation_dirty_group() RETURNS trigger AS $$
 DECLARE
     v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
+    IF NOT COALESCE((SELECT (data->>'dirty_enabled')::boolean FROM reconciliation_settings WHERE id = 1), false) THEN
+        RETURN NULL;
+    END IF;
     IF TG_OP = 'UPDATE' AND to_jsonb(OLD) = to_jsonb(NEW) THEN
         RETURN NULL;
     END IF;
@@ -472,6 +478,9 @@ CREATE FUNCTION reconciliation_dirty_account() RETURNS trigger AS $$
 DECLARE
     v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
+    IF NOT COALESCE((SELECT (data->>'dirty_enabled')::boolean FROM reconciliation_settings WHERE id = 1), false) THEN
+        RETURN NULL;
+    END IF;
     IF OLD.opening_balance IS NOT DISTINCT FROM NEW.opening_balance
        AND OLD.currency IS NOT DISTINCT FROM NEW.currency
        AND OLD.combined_account_id IS NOT DISTINCT FROM NEW.combined_account_id

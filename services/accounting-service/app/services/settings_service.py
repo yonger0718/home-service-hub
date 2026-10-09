@@ -60,7 +60,8 @@ def _reconciliation_row(db: Session, *, lock: bool = False) -> ReconciliationSet
 
 def _reconciliation_dict(row: ReconciliationSettings) -> dict:
     data = dict(row.data or {})
-    return {**data, "account_map": data.get("account_map") or {}, "version": row.version}
+    return {**data, "account_map": data.get("account_map") or {}, "dirty_enabled": data.get("dirty_enabled") is True,
+            "version": row.version}
 
 
 def _check_account_map(account_map) -> None:
@@ -82,8 +83,11 @@ def get_reconciliation_settings(db: Session) -> dict:
 
 
 def update_reconciliation_settings(db: Session, data: dict) -> dict:
-    """Replace the settings data and bump `version`; the row is locked so concurrent saves bump it once each."""
+    """Replace the settings data and bump `version`; the row is locked so concurrent saves bump it once each.
+    `dirty_enabled` is the dirty-trigger kill switch the ledger triggers read (off unless true)."""
     _check_account_map(data.get("account_map", {}))
+    if not isinstance(data.get("dirty_enabled", False), bool):
+        raise ValidationError("dirty_enabled", "must be a boolean")
     row = _reconciliation_row(db, lock=True)
     row.data = dict(data)
     row.version = row.version + 1

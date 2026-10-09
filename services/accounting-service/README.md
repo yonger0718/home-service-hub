@@ -141,6 +141,11 @@ Deploy note: before setting `ACCOUNTING_TOKEN_SCOPES`, map the existing SPA and 
 (`spa=legacy; ops=legacy,admin`), the statement worker label to `ingest` (`worker=ingest`) and the hermes label to
 `read,propose` (`hermes=read,propose`). Restart the service after changing any of them.
 
+Enabling reconciliation: set `ACCOUNTING_RECONCILIATION_ENABLED`, configure the scopes above, then, once the statement
+worker is live, `PUT /settings/reconciliation {"dirty_enabled": true}` (the ledger dirty triggers write nothing until then;
+a PUT replaces the whole settings, so send the current `account_map` with it).
+Deploy order: run `.venv/bin/alembic upgrade head` before restarting the service.
+
 Amounts are unsigned decimal strings (at most 4 decimals; the `kind` or the endpoint gives the direction) and dates
 are Asia/Taipei local `YYYY-MM-DD`. Through Caddy the paths carry the `/api/accounting` prefix:
 

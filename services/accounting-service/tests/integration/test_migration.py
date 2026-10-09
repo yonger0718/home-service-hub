@@ -500,7 +500,7 @@ def test_reconcile_downgrade_refuses_with_a_manual_statement_and_no_run(database
             "1 statement-created entries",
         ),
         ("UPDATE account SET statement_live_from = '2026-10-01' WHERE id = :a", "1 accounts with statement settings"),
-        ("INSERT INTO reconciliation_settings (data) VALUES ('{\"policy\": true}')", "1 settings changed"),
+        ("INSERT INTO reconciliation_settings (version) VALUES (2)", "1 settings changed"),
     ],
     ids=["statement_entry", "account_statement_settings", "settings_changed"],
 )
@@ -519,6 +519,19 @@ def test_reconcile_downgrade_refusal_names_each_guard(database_factory, alembic_
         command.downgrade(cfg, SCHEDULES_HEAD)
     assert str(excinfo.value) == f"refusing to downgrade d1f3a7c2e9b4: {label}"
     assert _version(url) == RECONCILE_HEAD
+
+
+def test_reconcile_downgrade_passes_a_never_saved_settings_row(database_factory, alembic_config):
+    """Only a saved row (version bumped past 1) counts as changed settings; a row holding the default switch does not."""
+    url = database_factory()
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO reconciliation_settings (data) VALUES ('{\"dirty_enabled\": false}')"))
+    engine.dispose()
+    command.downgrade(cfg, SCHEDULES_HEAD)
+    assert _version(url) == SCHEDULES_HEAD
 
 
 def test_reconcile_head_has_exact_fk_actions_predicates_and_triggers(pg_engine):
