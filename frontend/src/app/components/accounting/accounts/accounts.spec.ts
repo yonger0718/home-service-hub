@@ -385,6 +385,32 @@ describe('AccountingAccountsComponent', () => {
     expect(rows(el)[1].querySelector('.bal')?.textContent?.trim()).toBe('US$100');
     expect(el.querySelector('.total-amount')?.textContent?.trim()).toBe('$3,070');
     expect(el.querySelector('.grp b')?.textContent?.trim()).toBe('+$3,070');
+    // 總額 / 總資產 / 總負債 say that one account was left out.
+    expect(el.querySelector('.nw .excluded-hint')?.textContent?.trim()).toBe('另有 1 個帳戶未換算，未計入');
+  });
+
+  it('shows no excluded hint when every counted account has a rate (an excluded-from-total one does not count)', () => {
+    const el = render([
+      account({ id: 1, name: '錢包', balance: '3070', balance_main: '3070' }),
+      account({ id: 5, name: '美金', currency: 'USD', balance: '100', balance_main: null, include_in_total: false }),
+    ], LATEST).nativeElement as HTMLElement;
+    expect(el.querySelector('.nw .excluded-hint')).toBeNull();
+  });
+
+  it('shows — and a hint for a mixed-currency family with an unconverted member, never counting it as 0', () => {
+    const el = render([
+      account({ id: 20, name: '複幣主帳戶', balance: '1000', balance_main: '1000' }),
+      account({ id: 21, name: '美金子帳戶', currency: 'USD', combined_account_id: 20, balance: '100', balance_main: null }),
+      account({ id: 30, name: '同幣主帳戶', balance: '500', balance_main: '500' }),
+      account({ id: 31, name: '同幣子帳戶', combined_account_id: 30, balance: '200', balance_main: '200' }),
+    ], LATEST).nativeElement as HTMLElement;
+
+    const mixed = rows(el).find(row => row.textContent?.includes('複幣主帳戶'))!;
+    expect(mixed.querySelector('.bal')?.textContent?.replace(/\s+/g, '')).toBe('—部分帳戶未換算');
+    expect(mixed.querySelector('.bal')?.classList.contains('neg')).toBe(false);
+    const same = rows(el).find(row => row.textContent?.includes('同幣主帳戶'))!;
+    expect(same.querySelector('.bal')?.textContent?.trim()).toBe('$700');
+    expect(same.querySelector('.family-hint')).toBeNull();
   });
 
   it('reloads the list with the new main currency after a preference save', () => {

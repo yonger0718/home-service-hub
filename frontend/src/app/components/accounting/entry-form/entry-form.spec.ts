@@ -216,6 +216,7 @@ describe('EntryFormComponent', () => {
     cleared();
     expect(left()).toBe(true);
     expect(JSON.parse(localStorage.getItem('hh.accounting.lastUse.12')!)).toEqual({ account_id: 2, project_id: 5 });
+    expect(JSON.parse(localStorage.getItem('hh.accounting.amounts.12.TWD')!)).toEqual([170]);
   });
 
   it("prefers this device's last use of the category over the server defaults", async () => {
@@ -332,6 +333,11 @@ describe('EntryFormComponent', () => {
     expect(left()).toBe(false);
     expect(form.isDirty()).toBe(false);
     expect(text(el.querySelector('.fee-prompt .add-fee'))).toBe('＋ 國外交易手續費 −$17');
+
+    // ✓ again while the question is open: no second write, the prompt's first choice takes the focus.
+    keys(el, '✓');
+    httpMock.expectNone(r => r.method === 'POST' || r.method === 'PUT');
+    expect(document.activeElement).toBe(el.querySelector('.fee-prompt .add-fee'));
 
     (el.querySelector('.fee-prompt .add-fee') as HTMLButtonElement).click();
     const put = httpMock.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/entries/99');
@@ -529,6 +535,81 @@ describe('EntryFormComponent', () => {
     expect(left()).toBe(true);
   });
 
+  it('stays loading, with the phone keypad disabled, until the reference data has arrived', async () => {
+    TestBed.inject(LayoutModeService).set('phone');
+    harness = await RouterTestingHarness.create();
+    await harness.navigateByUrl('/accounting/entry');
+    settle();
+    const el = harness.routeNativeElement as HTMLElement;
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    const keypadDisabled = () =>
+      Array.from(el.querySelectorAll<HTMLButtonElement>('app-amount-keypad button')).every(button => button.disabled);
+
+    expect(form.loading()).toBe(true);
+    expect(el.querySelectorAll('app-amount-keypad button').length).toBeGreaterThan(0);
+    expect(keypadDisabled()).toBe(true);
+    expect((el.querySelector('button.save') as HTMLButtonElement).disabled).toBe(true);
+
+    httpMock.expectOne(r => r.url === '/api/accounting/accounts').flush(ACCOUNTS);
+    respond('/api/accounting/projects', PROJECTS);
+    respond('/api/accounting/counterparties', []);
+    // Still one of the four outstanding.
+    expect(form.loading()).toBe(true);
+    expect(keypadDisabled()).toBe(true);
+    respond('/api/accounting/preference', makePreference());
+    respond('/api/accounting/categories', [FOOD]);
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+
+    expect(form.loading()).toBe(false);
+    expect(Array.from(el.querySelectorAll<HTMLButtonElement>('app-amount-keypad button')).some(button => button.disabled)).toBe(false);
+  });
+
+  it('blocks ✓ and the keypad of a single entry while only its category tree is outstanding', async () => {
+    const { el } = await open('/accounting/entry');
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    const keypad = () => Array.from(el.querySelectorAll<HTMLButtonElement>('app-amount-keypad button'));
+    // Reference data is in: not loading, the fieldset stays usable; only the child's resources are pending.
+    expect(form.loading()).toBe(false);
+    expect((el.querySelector('fieldset.content') as HTMLFieldSetElement).disabled).toBe(false);
+    expect(form.resourcesBlocking()).toBe(true);
+    expect(keypad().every(button => button.disabled)).toBe(true);
+    expect((el.querySelector('button.save') as HTMLButtonElement).disabled).toBe(true);
+    // ✓ from the keyboard (⏎) still reaches save(): a valid amount, and the write waits for the tree.
+    form.onAmountInput('170');
+    settle();
+    form.save(false);
+    settle();
+    httpMock.expectNone(r => r.method === 'POST');
+    expect(text(el.querySelector('.form-error'))).toBe('子項設定載入中，請稍候');
+
+    respond('/api/accounting/categories', [FOOD]);
+    expect(form.resourcesBlocking()).toBe(false);
+    expect(keypad().some(button => button.disabled)).toBe(false);
+  });
+
+  it('keeps the form disabled when the reference data fails to load', async () => {
+    TestBed.inject(LayoutModeService).set('phone');
+    harness = await RouterTestingHarness.create();
+    await harness.navigateByUrl('/accounting/entry');
+    settle();
+    const el = harness.routeNativeElement as HTMLElement;
+    const form = harness.routeDebugElement!.componentInstance as EntryFormComponent;
+    httpMock.expectOne(r => r.url === '/api/accounting/accounts').flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    settle();
+    // The forkJoin is gone with the error; whatever else it had in flight was cancelled.
+    httpMock.match(() => true).forEach(request => request.cancelled || request.flush([]));
+    settle();
+
+    expect(text(el.querySelector('.form-error'))).toBe('資料讀取失敗，請稍後再試。');
+    expect(form.loading()).toBe(true);
+    expect((el.querySelector('fieldset.content') as HTMLFieldSetElement).disabled).toBe(true);
+    expect((el.querySelector('button.save') as HTMLButtonElement).disabled).toBe(true);
+    expect(Array.from(el.querySelectorAll<HTMLButtonElement>('app-amount-keypad button')).every(button => button.disabled)).toBe(true);
+    form.save(false);
+    httpMock.expectNone(r => r.method === 'POST');
+  });
+
   it('stays loading until the related stage completes, not on its first value', async () => {
     const related = holdRelated();
     const { el } = await open('/accounting/entries/9/edit');
@@ -714,6 +795,15 @@ describe('EntryFormComponent', () => {
     input.dispatchEvent(new Event('blur'));
     settle();
   }
+
+  it('asks for the transfer category tree once (the panel owns it)', async () => {
+    await open('/accounting/entry?kind=transfer');
+    const trees = httpMock.match(r => r.url === '/api/accounting/categories').filter(request => !request.cancelled);
+    expect(trees.map(r => r.request.params.get('kind'))).toEqual(['transfer_out']);
+    trees.forEach(r => r.flush([makeCategory({ id: 40, kind: 'transfer_out', name: '轉帳' })]));
+    respond('/api/accounting/accounts/1', makeAccountDetail({ id: 1 }));
+    httpMock.expectNone(r => r.url === '/api/accounting/categories');
+  });
 
   it('records a transfer from the 轉帳 tab with the shared name and date tiles', async () => {
     const { el, left } = await open('/accounting/entry?kind=transfer');
@@ -989,6 +1079,9 @@ describe('EntryFormComponent', () => {
     });
     req.flush(makeEntryDetail({ id: 99 }));
     settle();
+    // Quick amounts are remembered in the typed (original) currency, never mixed into the account's USD.
+    expect(JSON.parse(localStorage.getItem('hh.accounting.amounts.12.JPY')!)).toEqual([5390]);
+    expect(localStorage.getItem('hh.accounting.amounts.12.USD')).toBeNull();
   });
 
   it('applies the same FX reset when a category pick moves the account', async () => {

@@ -32,7 +32,8 @@ const STATUS_LABELS: Record<ImportRun['status'], string> = {
 export interface AccountNode {
   account: LedgerAccount;
   children: LedgerAccount[];
-  total: number;
+  /** Family total; null for a mixed-currency family with a member that has no main-currency rate (never as 0). */
+  total: number | null;
   totalCurrency: string;
 }
 
@@ -89,7 +90,10 @@ export function buildAccountGroups(accounts: LedgerAccount[], mainCurrency: stri
     const children = childrenOf.get(account.id) ?? [];
     const family = [account, ...children];
     const sameCurrency = children.every(child => child.currency === account.currency);
-    const total = family.reduce((sum, member) => sum + value(sameCurrency ? member.balance : member.balance_main), 0);
+    const unrated = !sameCurrency && family.some(member => member.balance_main === null || member.balance_main === undefined);
+    const total = unrated
+      ? null
+      : family.reduce((sum, member) => sum + value(sameCurrency ? member.balance : member.balance_main), 0);
     group.nodes.push({ account, children, total, totalCurrency: sameCurrency ? account.currency : mainCurrency });
     for (const member of family) {
       if (member.balance_main === null || member.balance_main === undefined) {
@@ -143,6 +147,10 @@ export class AccountingAccountsComponent {
   );
   readonly liabilities = computed(() =>
     this.included().reduce((sum, account) => sum + Math.max(0, -value(account.balance_main)), 0),
+  );
+  /** Accounts counted in 總額 that have no main-currency rate: left out of 總額 / 總資產 / 總負債, and said so. */
+  readonly excludedCount = computed(
+    () => this.included().filter(account => account.balance_main === null || account.balance_main === undefined).length,
   );
   readonly reviewCount = computed(() => {
     const summary = this.latestImport()?.summary as unknown as

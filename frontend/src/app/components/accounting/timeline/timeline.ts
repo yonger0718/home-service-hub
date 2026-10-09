@@ -131,7 +131,10 @@ export interface BillLine {
 export interface TimelineDay {
   date: string;
   label: string;
+  /** Main-currency rows only. */
   net: number;
+  /** A row with a non-zero amount outside the main currency (or a mixed group without a rate) is left out of `net`. */
+  excluded: boolean;
   rows: TimelineRow[];
 }
 
@@ -231,6 +234,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
     let row: TimelineRow;
     let net = 0;
     let netCurrency = entry.currency;
+    let unrated = false;
     if (entry.group) {
       const key = `g${entry.group.id}`;
       if (seen.has(key)) {
@@ -256,6 +260,7 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
       };
       net = total ?? 0;
       netCurrency = entry.group.currency;
+      unrated = total === null;
     } else if (entry.transfer_group_id && TRANSFER_KINDS.has(entry.kind)) {
       const key = `t${entry.transfer_group_id}`;
       if (seen.has(key)) {
@@ -303,12 +308,16 @@ export function buildDays(entries: LedgerEntry[], mainCurrency: string, hideRewa
 
     let day = days.get(entry.entry_date);
     if (!day) {
-      day = { date: entry.entry_date, label: dayLabel(entry.entry_date), net: 0, rows: [] };
+      day = { date: entry.entry_date, label: dayLabel(entry.entry_date), net: 0, excluded: false, rows: [] };
       days.set(entry.entry_date, day);
     }
     day.rows.push(row);
-    if (netCurrency === mainCurrency) {
+    if (unrated) {
+      day.excluded = true;
+    } else if (netCurrency === mainCurrency) {
       day.net += net;
+    } else if (net !== 0) {
+      day.excluded = true;
     }
   }
   return [...days.values()];
@@ -403,7 +412,7 @@ export class LedgerTimelineComponent implements OnInit {
   /** Net of the rows shown (main-currency rows only, the list's per-day rule); the grid keeps the summary figures. */
   readonly dayNet = computed(() => {
     const group = this.dayGroup();
-    return group ? { net: group.net, text: formatSigned(group.net, this.mainCurrency()) } : null;
+    return group ? { net: group.net, text: formatSigned(group.net, this.mainCurrency()), excluded: group.excluded } : null;
   });
   readonly selectedDayText = computed(() => {
     const date = this.selectedDay();

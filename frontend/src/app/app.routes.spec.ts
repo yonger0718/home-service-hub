@@ -10,6 +10,7 @@ import { AccountingShortcutsService, EntryCommand } from './components/accountin
 import { DockComponent } from './components/dock/dock';
 import { MobileNavComponent } from './components/mobile-nav/mobile-nav';
 import { NAV_GROUPS, navItemForUrl } from './components/shell/navigation';
+import { LayoutModeService, MATCH_MEDIA, PANES_QUERY, PHONE_QUERY } from './services/layout-mode.service';
 
 const PAGES: [string, string][] = [
   ['/accounting', 'app-ledger-timeline'],
@@ -72,6 +73,74 @@ describe('accounting routes', () => {
       expect(root.querySelector(selector)).not.toBeNull();
     });
   }
+});
+
+/** Both route tables, chosen by the real `MATCH_MEDIA` queries (not a forced layout mode). */
+describe('accounting routes per viewport', () => {
+  const WIDTHS: [string, number][] = [['phone (390px)', 390], ['wide (1280px)', 1280]];
+  const LISTS: Record<string, string> = { timeline: 'app-ledger-timeline', accounts: 'app-accounting-accounts' };
+
+  for (const [label, width] of WIDTHS) {
+    describe(label, () => {
+      beforeEach(() => {
+        const matches = (query: string) => (query === PHONE_QUERY ? width < 760 : query === PANES_QUERY ? width >= 1024 : false);
+        TestBed.configureTestingModule({
+          providers: [
+            provideRouter(routes),
+            provideHttpClient(),
+            provideHttpClientTesting(),
+            {
+              provide: MATCH_MEDIA,
+              useValue: (query: string) =>
+                ({ matches: matches(query), media: query, addEventListener: () => undefined, removeEventListener: () => undefined }) as unknown as MediaQueryList,
+            },
+          ],
+        });
+      });
+
+      for (const [url, selector] of PAGES) {
+        it(`serves ${url} as ${selector}`, async () => {
+          expect(TestBed.inject(LayoutModeService).mode()).toBe(width < 760 ? 'phone' : 'panes');
+          const harness = await RouterTestingHarness.create();
+          await harness.navigateByUrl(url);
+          await harness.fixture.whenStable();
+          const root = harness.fixture.nativeElement as HTMLElement;
+          await vi.waitFor(() => {
+            harness.fixture.detectChanges();
+            expect(root.querySelector(selector)).not.toBeNull();
+          });
+          expect(TestBed.inject(Router).url).toBe(url);
+          if (width < 760) {
+            // One screen per route: no panes.
+            expect(root.querySelector('.dbody')).toBeNull();
+            return;
+          }
+          const list = url.startsWith('/accounting/accounts') ? LISTS['accounts'] : LISTS['timeline'];
+          if (url === '/accounting/settings') {
+            expect(root.querySelector('.dbody')).toBeNull();
+          } else if (selector === list) {
+            expect(root.querySelector(`.list-pane ${selector}`)).not.toBeNull();
+          } else {
+            // A pane page beside its list.
+            await vi.waitFor(() => {
+              harness.fixture.detectChanges();
+              expect(root.querySelector(`.list-pane ${list}`)).not.toBeNull();
+            });
+            expect(root.querySelector(`.detail-pane ${selector}`)).not.toBeNull();
+          }
+        });
+      }
+    });
+  }
+});
+
+describe('accounting route redirects and shortcuts', () => {
+  beforeEach(() => {
+    stubMatchMedia();
+    TestBed.configureTestingModule({
+      providers: [provideRouter(routes), provideHttpClient(), provideHttpClientTesting()],
+    });
+  });
 
   for (const removed of REDIRECTED) {
     it(`lands a bookmarked /accounting/${removed} on the timeline`, async () => {

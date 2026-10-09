@@ -39,7 +39,7 @@ export function signFor(kind: WritableEntryKind): 1 | -1 {
 
 export const LAST_USE_PREFIX = 'hh.accounting.lastUse.';
 export const AMOUNT_HISTORY_PREFIX = 'hh.accounting.amounts.';
-const QUICK_AMOUNT_COUNT = 6;
+const QUICK_AMOUNT_COUNT = 8;
 
 export interface LastUse {
   account_id: number | null;
@@ -78,39 +78,61 @@ export function writeLastUse(categoryId: number, value: LastUse): void {
   }
 }
 
-function readCounts(categoryId: number): Record<string, number> {
+function historyKey(categoryId: number, currency: string): string {
+  return `${AMOUNT_HISTORY_PREFIX}${categoryId}.${currency}`;
+}
+
+/** Pre-currency frequency maps (`hh.accounting.amounts.<category>`): removed once, on the first read; not migrated. */
+const LEGACY_HISTORY_KEY = /^hh\.accounting\.amounts\.\d+$/;
+let legacyHistoryCleared = false;
+
+function clearLegacyHistory(storage: Storage | null): void {
+  if (legacyHistoryCleared || !storage) {
+    return;
+  }
+  legacyHistoryCleared = true;
+  const legacy = Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter(
+    (key): key is string => key !== null && LEGACY_HISTORY_KEY.test(key),
+  );
+  legacy.forEach(key => storage.removeItem(key));
+}
+
+/** Test hook: let the next read clean up legacy keys again. */
+export function resetLegacyHistoryCleanup(): void {
+  legacyHistoryCleared = false;
+}
+
+function readHistory(categoryId: number, currency: string): number[] {
   try {
-    const raw = store()?.getItem(AMOUNT_HISTORY_PREFIX + categoryId);
-    const parsed: unknown = raw ? JSON.parse(raw) : {};
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return {};
+    clearLegacyHistory(store());
+    const raw = store()?.getItem(historyKey(categoryId, currency));
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) {
+      return [];
     }
-    // Keep only finite non-negative integer counts; anything else on this device is dropped.
-    return Object.fromEntries(
-      Object.entries(parsed as Record<string, unknown>).filter(
-        (pair): pair is [string, number] => Number.isInteger(pair[1]) && (pair[1] as number) >= 0,
-      ),
-    );
+    // Keep only finite non-negative amounts, once each; anything else on this device is dropped.
+    const amounts = parsed.filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0);
+    return [...new Set(amounts)].slice(0, QUICK_AMOUNT_COUNT);
   } catch {
-    return {};
+    return [];
   }
 }
 
-/** The six amounts saved most often for a category on this device, most frequent first. */
-export function quickAmounts(categoryId: number): number[] {
-  return Object.entries(readCounts(categoryId))
-    .filter(([amount, count]) => Number.isFinite(Number(amount)) && typeof count === 'number')
-    .sort(([left, leftCount], [right, rightCount]) => rightCount - leftCount || Number(left) - Number(right))
-    .slice(0, QUICK_AMOUNT_COUNT)
-    .map(([amount]) => Number(amount));
+/**
+ * The last eight distinct amounts saved for a category in one currency on this device, most recent first. Keyed by
+ * currency so an original-currency amount (¥1200) is never offered as TWD.
+ */
+export function quickAmounts(categoryId: number, currency: string): number[] {
+  return readHistory(categoryId, currency);
 }
 
-export function recordAmount(categoryId: number, amount: number): void {
-  const counts = readCounts(categoryId);
-  const key = String(amount);
-  counts[key] = (counts[key] ?? 0) + 1;
+export function recordAmount(categoryId: number, currency: string, amount: number): void {
+  if (!Number.isFinite(amount) || amount < 0) {
+    return;
+  }
+  const history = [amount, ...readHistory(categoryId, currency).filter(other => other !== amount)].slice(0, QUICK_AMOUNT_COUNT);
   try {
-    store()?.setItem(AMOUNT_HISTORY_PREFIX + categoryId, JSON.stringify(counts));
+    store()?.setItem(historyKey(categoryId, currency), JSON.stringify(history));
   } catch {
     // Quick amounts are a convenience only.
   }

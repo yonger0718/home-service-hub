@@ -2,7 +2,7 @@
   <router-outlet />
 } @else {
   <div class="dbody" [class.dbody--sheet]="mode() === 'sheet'">
-    <section #listPane class="pane list-pane" aria-label="列表">
+    <section #listPane class="pane list-pane" aria-label="列表" tabindex="-1">
       @if (listComponent(); as list) {
         <ng-container *ngComponentOutlet="list" />
       }
@@ -19,6 +19,8 @@
       aria-label="明細"
       [attr.role]="sheetOpen() ? 'dialog' : null"
       [attr.aria-modal]="sheetOpen() ? 'true' : null"
+      [attr.inert]="sheetClosed() ? '' : null"
+      [attr.aria-hidden]="sheetClosed() ? 'true' : null"
       [class.open]="paneOpen()"
     >
       <div

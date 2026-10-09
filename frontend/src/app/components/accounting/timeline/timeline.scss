@@ -110,6 +110,18 @@ app-split-folder {
   }
 }
 
+.day-total {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* The day net counts main-currency rows only; said when a row was left out. */
+.net-hint {
+  font-size: var(--fs-micro, 0.72rem);
+  font-weight: 400;
+}
+
 .empty,
 .load-error {
   color: var(--app-text-muted);

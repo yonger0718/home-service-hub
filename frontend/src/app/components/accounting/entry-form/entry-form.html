@@ -38,7 +38,7 @@
   @if (error(); as message) {
     <p class="form-error" role="alert">{{ message }}</p>
   }
-  @if (childScope() && draftLoadsFailed()) {
+  @if (draftLoadsFailed()) {
     <p class="form-error child-load-error" role="alert">
       子項設定讀取失敗
       <button type="button" class="retry-children" (click)="retryChildResources()">重新載入子項設定</button>
@@ -427,6 +427,7 @@
           [layout]="preference().keypad_layout"
           [decimals]="accountDecimals()"
           [(value)]="targetExpr"
+          [disabled]="loading() || saving() || resourcesBlocking()"
           (save)="save(false)"
         />
       } @else {
@@ -435,6 +436,7 @@
           [quickAmounts]="quick()"
           [decimals]="decimals()"
           [value]="amountExpr()"
+          [disabled]="loading() || saving() || resourcesBlocking()"
           (valueChange)="amountExpr.set($event)"
           (next)="focusName()"
           (save)="save(false)"

@@ -895,6 +895,99 @@ describe('split form integration', () => {
     expect(split.request.body.members.map((c: { counterparty_id: number }) => c.counterparty_id)).toEqual([4, 4]);
     split.flush({ detail: [{ loc: ['body', 'members.1.amount'], msg: 'test rejection' }] }, { status: 422, statusText: 'Unprocessable Entity' });
     settle();
+    // The failed write must not leave the inline-created 對象 behind; it leaves the typeahead before the DELETE.
+    const cleanup = http.expectOne(r => r.method === 'DELETE' && r.url.endsWith('/counterparties/4'));
+    expect(form.counterparties()).toEqual([]);
+    cleanup.flush(null);
+    settle();
+    expect(form.counterparties()).toEqual([]);
+  });
+
+  it('deletes the first new counterparty when the second one cannot be created', async () => {
+    await open();
+    form.selectKind('receivable');
+    settle();
+    fill();
+    form.counterpartyName.set('Alan');
+    form.addChild();
+    settle();
+    fill('20');
+    form.counterpartyName.set('Bob');
+    form.save(false);
+    const parties = http.match(r => r.method === 'POST' && r.url.endsWith('/counterparties'));
+    expect(parties.map(r => r.request.body.name)).toEqual(['Alan', 'Bob']);
+    parties[0].flush({ id: 4, name: 'Alan', open_amounts: [], moze_id: null });
+    parties[1].flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    settle();
+    http.expectNone(r => r.method === 'POST');
+    http.expectOne(r => r.method === 'DELETE' && r.url.endsWith('/counterparties/4')).flush(null);
+    settle();
+    expect(form.counterparties()).toEqual([]);
+  });
+
+  it('deletes the new counterparty when the page is left mid-save (the write never answered)', async () => {
+    await open();
+    form.selectKind('receivable');
+    settle();
+    fill();
+    form.counterpartyName.set('Alan');
+    form.save(false);
+    http.expectOne(r => r.method === 'POST' && r.url.endsWith('/counterparties')).flush({ id: 4, name: 'Alan', open_amounts: [], moze_id: null });
+    const entry = http.expectOne(r => r.method === 'POST' && r.url.endsWith('/entries'));
+    harness.fixture.destroy();
+    expect(entry.cancelled).toBe(true);
+    http.expectOne(r => r.method === 'DELETE' && r.url.endsWith('/counterparties/4')).flush(null);
+  });
+
+  it('⏎ on a <select> in the split form neither adds a line nor saves', async () => {
+    await open();
+    fill();
+    form.addChild();
+    settle();
+    fill('20');
+    const select = harness.routeNativeElement!.querySelector<HTMLSelectElement>('select');
+    expect(select).not.toBeNull();
+    select!.focus();
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    select!.dispatchEvent(enter);
+    settle();
+    expect(enter.defaultPrevented).toBe(false);
+    expect(form.children()).toHaveLength(2);
+    http.expectNone(r => r.method === 'POST');
+  });
+
+  it('keeps an inline-created counterparty when the write succeeds', async () => {
+    await open();
+    form.selectKind('receivable');
+    settle();
+    fill();
+    form.counterpartyName.set('Alan');
+    form.save(false);
+    http.expectOne(r => r.method === 'POST' && r.url.endsWith('/counterparties')).flush({ id: 4, name: 'Alan', open_amounts: [], moze_id: null });
+    const entry = http.expectOne(r => r.method === 'POST' && r.url.endsWith('/entries'));
+    expect(entry.request.body.counterparty_id).toBe(4);
+    entry.flush(makeEntryDetail({ id: 9, kind: 'receivable', counterparty_id: 4 }));
+    settle();
+    http.expectNone(r => r.method === 'DELETE');
+    expect(form.counterparties().map(p => p.id)).toEqual([4]);
+  });
+
+  it('keeps the counterparty when the server refuses its cleanup (the write may have committed)', async () => {
+    await open();
+    form.selectKind('receivable');
+    settle();
+    fill();
+    form.counterpartyName.set('Alan');
+    form.save(false);
+    http.expectOne(r => r.method === 'POST' && r.url.endsWith('/counterparties')).flush({ id: 4, name: 'Alan', open_amounts: [], moze_id: null });
+    http.expectOne(r => r.method === 'POST' && r.url.endsWith('/entries')).error(new ProgressEvent('error'));
+    settle();
+    const cleanup = http.expectOne(r => r.method === 'DELETE' && r.url.endsWith('/counterparties/4'));
+    // Out of the typeahead while the DELETE is in flight: a retry now creates afresh, never reuses id 4.
+    expect(form.counterparties()).toEqual([]);
+    cleanup.flush({ detail: 'counterparty is used by 1 entries' }, { status: 409, statusText: 'Conflict' });
+    settle();
+    // Put back: the server kept it.
     expect(form.counterparties().map(p => p.id)).toEqual([4]);
   });
 

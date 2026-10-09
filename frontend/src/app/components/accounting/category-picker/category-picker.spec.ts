@@ -123,6 +123,24 @@ describe('CategoryPickerComponent', () => {
     (el.querySelector('[data-bubble="parent"]') as HTMLButtonElement).click();
     fixture.detectChanges();
     expect(selected).toEqual(['parent']);
+    // aria-* only where there is a role: the strip is a group, the 🔒 an image.
+    expect(el.querySelector('.strip.bubbles')!.getAttribute('role')).toBe('group');
+    expect(el.querySelector('.lock')!.getAttribute('role')).toBe('img');
+  });
+
+  it('exposes the grids as groups of buttons, not as listboxes without options', () => {
+    const { el, tap } = render();
+    const roles = () => {
+      const grid = el.querySelector('.grid')!;
+      expect(grid.getAttribute('role')).toBe('group');
+      expect(grid.querySelector('[role="option"]')).toBeNull();
+    };
+    expect(el.querySelector('[role="listbox"]')).toBeNull();
+    roles();
+    tap('.cat', '飲食');
+    expect(el.querySelector('[role="listbox"]')).toBeNull();
+    roles();
+    expect(el.querySelector('.grid')!.getAttribute('aria-label')).toBe('飲食 子類別');
   });
 
   const child = (key: string, extra: Partial<Bubble> = {}): Bubble => ({

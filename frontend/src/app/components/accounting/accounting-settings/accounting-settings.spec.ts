@@ -411,6 +411,82 @@ describe('AccountingSettingsComponent', () => {
     http.expectOne('/api/accounting/projects').flush(PROJECTS);
   });
 
+  it('swaps two projects with two PUTs in order and re-reads the list', () => {
+    el.querySelectorAll<HTMLButtonElement>('.project-row .move-down')[0].click();
+    const first = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4');
+    expect(first.request.body).toEqual({ name: '生活', is_archived: false, sort_order: 1 });
+    // The second PUT waits for the first.
+    http.expectNone(r => r.method === 'PUT' && r.url === '/api/accounting/projects/5');
+    first.flush({});
+    const second = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/5');
+    expect(second.request.body).toEqual({ name: '2026 大阪', is_archived: false, sort_order: 0 });
+    second.flush({});
+    http.expectOne('/api/accounting/projects').flush([PROJECTS[1], PROJECTS[0]]);
+  });
+
+  it('changes nothing when the first PUT of a reorder fails: no revert, no re-read', () => {
+    el.querySelectorAll<HTMLButtonElement>('.project-row .move-down')[0].click();
+    http
+      .expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4')
+      .flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    http.expectNone(r => r.method === 'PUT');
+    http.expectNone('/api/accounting/projects');
+    expect(el.querySelector('.data-message')).not.toBeNull();
+    expect(Array.from(el.querySelectorAll<HTMLInputElement>('.project-row .project-name')).map(input => input.value)).toEqual(['生活', '2026 大阪']);
+  });
+
+  it('puts the first project back when the second PUT of a reorder is refused, then re-reads the list', () => {
+    el.querySelectorAll<HTMLButtonElement>('.project-row .move-down')[0].click();
+    http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4').flush({});
+    http
+      .expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/5')
+      .flush({ detail: [{ loc: ['body', 'sort_order'], msg: 'bad' }] }, { status: 422, statusText: 'Unprocessable Entity' });
+    const revert = http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4');
+    expect(revert.request.body).toEqual({ name: '生活', is_archived: false, sort_order: 0 });
+    revert.flush({});
+    http.expectOne('/api/accounting/projects').flush(PROJECTS);
+    fixture.detectChanges();
+    expect(el.querySelector('.data-message')).not.toBeNull();
+    expect(Array.from(el.querySelectorAll<HTMLInputElement>('.project-row .project-name')).map(input => input.value)).toEqual(['生活', '2026 大阪']);
+  });
+
+  it('re-reads the projects when even the revert of a failed reorder fails', () => {
+    el.querySelectorAll<HTMLButtonElement>('.project-row .move-down')[0].click();
+    http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4').flush({});
+    http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/5').error(new ProgressEvent('error'));
+    http.expectOne(r => r.method === 'PUT' && r.url === '/api/accounting/projects/4').error(new ProgressEvent('error'));
+    http.expectOne('/api/accounting/projects').flush([{ ...PROJECTS[0], sort_order: 1 }, PROJECTS[1]]);
+  });
+
+  it('clears the previous report when a re-run fails, and a failed 試算 no longer allows 匯入', () => {
+    chooseFile();
+    el.querySelector<HTMLButtonElement>('.dry-run')!.click();
+    http.expectOne(r => r.url.startsWith('/api/accounting/imports/moze-backup')).flush({ status: 'dry_run', summary: {} });
+    fixture.detectChanges();
+    expect(el.querySelector('.import-report')).not.toBeNull();
+    expect(el.querySelector<HTMLButtonElement>('.real-run')!.disabled).toBe(false);
+
+    // A failed real run: the dry run's report is gone; 匯入 may be retried.
+    el.querySelector<HTMLButtonElement>('.real-run')!.click();
+    http.expectOne(r => r.url.startsWith('/api/accounting/imports/moze-backup')).flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelector('.import-report')).toBeNull();
+    expect(el.querySelector('.import-error')).not.toBeNull();
+    expect(el.querySelector<HTMLButtonElement>('.real-run')!.disabled).toBe(false);
+
+    // A successful 試算, then a failed re-run of it: no stale report, and 匯入 waits for a good 試算.
+    el.querySelector<HTMLButtonElement>('.dry-run')!.click();
+    http.expectOne(r => r.url.startsWith('/api/accounting/imports/moze-backup')).flush({ status: 'dry_run', summary: {} });
+    fixture.detectChanges();
+    expect(el.querySelector('.import-report')).not.toBeNull();
+    el.querySelector<HTMLButtonElement>('.dry-run')!.click();
+    http.expectOne(r => r.url.startsWith('/api/accounting/imports/moze-backup')).flush({ detail: 'boom' }, { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    expect(el.querySelector('.import-report')).toBeNull();
+    expect(el.querySelector<HTMLButtonElement>('.real-run')!.disabled).toBe(true);
+  });
+
   it('puts 取消 after 確定刪除 and labels every add field', () => {
     const row = el.querySelector('.cp-row')!;
     row.querySelector<HTMLButtonElement>('.row-delete')!.click();

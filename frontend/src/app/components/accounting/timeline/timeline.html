@@ -136,7 +136,12 @@
         <div class="day day-net">
           <span>{{ selectedDayText() }}</span>
           @if (dayNet(); as d) {
-            <b [class.neg]="d.net < 0" [class.pos]="d.net > 0">{{ d.text }}</b>
+            <span class="day-total">
+              @if (d.excluded) {
+                <small class="net-hint">僅計主幣種</small>
+              }
+              <b [class.neg]="d.net < 0" [class.pos]="d.net > 0">{{ d.text }}</b>
+            </span>
           }
         </div>
         @if (billLines().length > 0) {
@@ -177,7 +182,15 @@
       <app-skeleton rows="3" />
     } @else {
       @for (day of days(); track day.date) {
-        <div class="day"><span>{{ day.label }}</span><b>{{ formatSigned(day.net, mainCurrency()) }}</b></div>
+        <div class="day">
+          <span>{{ day.label }}</span>
+          <span class="day-total">
+            @if (day.excluded) {
+              <small class="net-hint">僅計主幣種</small>
+            }
+            <b>{{ formatSigned(day.net, mainCurrency()) }}</b>
+          </span>
+        </div>
         @for (row of day.rows; track row.key) {
           <ng-container *ngTemplateOutlet="rowTemplate; context: { $implicit: row }" />
         }

@@ -32,6 +32,32 @@ describe('AmountKeypadComponent', () => {
     expect(component.value()).toBe('120');
   });
 
+  it('disables every key and quick amount while disabled, and ignores presses', () => {
+    const { el, fixture, component } = render({ disabled: true, quickAmounts: [120] });
+    const saved: (number | null)[] = [];
+    component.save.subscribe(value => saved.push(value));
+    const buttons = Array.from(el.querySelectorAll<HTMLButtonElement>('button'));
+    expect(buttons.length).toBeGreaterThan(16);
+    expect(buttons.every(button => button.disabled)).toBe(true);
+    component.press('1');
+    component.press('✓');
+    component.pickQuick(120);
+    expect(component.value()).toBe('');
+    expect(saved).toEqual([]);
+
+    fixture.componentRef.setInput('disabled', false);
+    fixture.detectChanges();
+    expect(buttons.some(button => button.disabled)).toBe(false);
+  });
+
+  it('labels only elements with a role: the quick row is a group', () => {
+    const { el } = render({ quickAmounts: [120] });
+    for (const node of Array.from(el.querySelectorAll('[aria-label]'))) {
+      expect(node.tagName === 'BUTTON' || node.hasAttribute('role'), node.outerHTML).toBe(true);
+    }
+    expect(el.querySelector('.quick')!.getAttribute('role')).toBe('group');
+  });
+
   it('renders the calculator layout by default and the phone layout on request', () => {
     const calculator = render().el;
     expect(Array.from(calculator.querySelectorAll('.keypad button')).slice(4, 8).map(b => b.textContent?.trim())).toEqual(['7', '8', '9', '⌫']);

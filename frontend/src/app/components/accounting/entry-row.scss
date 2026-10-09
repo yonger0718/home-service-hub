@@ -21,12 +21,14 @@
     border-top: 1px solid var(--app-border);
   }
 
+  /* The highlight bleeds into the container's padding only as far as the container says it may
+     (--row-sel-bleed, set by the layout pane); without it the row stays inside its box. */
   &.sel {
     background: var(--app-primary-soft);
     border-radius: var(--radius-sm);
-    margin: 0 -8px;
-    padding-inline: 8px;
-    width: calc(100% + 16px);
+    margin-inline: calc(-1 * var(--row-sel-bleed, 0px));
+    padding-inline: var(--row-sel-bleed, 0px);
+    width: calc(100% + 2 * var(--row-sel-bleed, 0px));
   }
 
   &.sel + .row {

@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 import { Router } from '@angular/router';
-import { Observable, Subject, catchError, concatMap, forkJoin, map, of } from 'rxjs';
+import { Observable, Subject, catchError, concatMap, map, of, throwError } from 'rxjs';
 
 import {
   AccountGroup,
@@ -317,14 +317,27 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
       return;
     }
     const [a, b] = current.sort_order === other.sort_order ? [index + delta, index] : [other.sort_order, current.sort_order];
-    this.write(
-      forkJoin([
-        this.service.updateProject(current.id, { name: current.name, is_archived: current.is_archived, sort_order: a }),
-        this.service.updateProject(other.id, { name: other.name, is_archived: other.is_archived, sort_order: b }),
-      ]),
-      () => this.loadProjects(),
-      '無法排序',
+    const put = (project: Project, sortOrder: number) =>
+      this.service.updateProject(project.id, { name: project.name, is_archived: project.is_archived, sort_order: sortOrder });
+    // No batch endpoint for projects: two PUTs in order, and a failed second one puts the first back, so the pair is
+    // never half-swapped. Once the first PUT has committed, every failure re-reads the list (revert or not), so it
+    // shows what the server has; a failed first PUT changed nothing.
+    const swapped = put(current, a).pipe(
+      concatMap(() =>
+        put(other, b).pipe(
+          catchError((error: unknown) =>
+            put(current, current.sort_order).pipe(
+              catchError(() => of(null)),
+              concatMap(() => {
+                this.loadProjects();
+                return throwError(() => error);
+              }),
+            ),
+          ),
+        ),
+      ),
     );
+    this.write(swapped, () => this.loadProjects(), '無法排序');
   }
 
   deleteProject(project: Project): void {
@@ -423,6 +436,12 @@ export class AccountingSettingsComponent implements OnInit, OnDestroy {
       error: err => {
         this.importing.set(false);
         this.importError.set(writeErrorMessage(err));
+        // The previous run's report no longer describes this file's state; a failed 試算 also no longer clears 匯入.
+        this.report.set(null);
+        this.reportMode.set(null);
+        if (dryRun) {
+          this.dryRunFile.set(null);
+        }
       },
     });
   }

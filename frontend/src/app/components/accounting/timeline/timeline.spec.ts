@@ -249,6 +249,8 @@ describe('LedgerTimelineComponent', () => {
     fixture.detectChanges();
 
     expect(text(el.querySelector('.day b'))).toBe('−$1,336');
+    // The ¥500 row is not in the day net: the header says so.
+    expect(text(el.querySelector('.day .net-hint'))).toBe('僅計主幣種');
     const transfer = Array.from(el.querySelectorAll('.row')).find(row => text(row.querySelector('.sub')).includes('→'))!;
     expect(text(transfer.querySelector('.sub'))).toBe('國泰主帳戶 → Line Bank');
     expect(text(transfer.querySelector('.amt'))).toBe('$10,000');
@@ -1011,6 +1013,7 @@ describe('LedgerTimelineComponent', () => {
       expect(el.querySelector('button.cell[data-date="2026-10-02"]')!.getAttribute('aria-pressed')).toBe('true');
       const net = el.querySelector('.day-net b')!;
       expect(text(net)).toBe('−$734');
+      expect(el.querySelector('.day-net .net-hint')).toBeNull();
       expect(net.classList).toContain('neg');
       const rows = Array.from(el.querySelectorAll<HTMLButtonElement>('.day-entries .row'));
       expect(rows.map(row => row.getAttribute('data-entry-id'))).toEqual(['11', '12']);
@@ -1116,6 +1119,7 @@ describe('LedgerTimelineComponent', () => {
       // The summary says −1,234 / +500 for the day; the filtered TWD rows sum to −280.
       expect(text(el.querySelector('.day-net b'))).toBe('−$280');
       expect(el.querySelector('.day-net b')!.classList).toContain('neg');
+      expect(text(el.querySelector('.day-net .net-hint'))).toBe('僅計主幣種');
     });
 
     it('drops a late response for a previously tapped day', () => {
@@ -1648,6 +1652,21 @@ describe('buildDays', () => {
     );
     expect(days[0].rows[0]).toMatchObject({ amountText: '—', tone: 'neutral', groupCount: 2 });
     expect(days[0].net).toBe(-50);
+    expect(days[0].excluded).toBe(true);
+  });
+
+  it('flags a day only when a non-zero row outside the main currency was left out of the net', () => {
+    const net = (entries: LedgerEntry[]) => buildDays(entries, 'TWD', false)[0];
+    expect(net([makeEntry({ id: 1, amount: '-50.0000' })]).excluded).toBe(false);
+    // A foreign-currency transfer adds nothing to any net: no hint.
+    expect(
+      net([
+        makeEntry({ id: 1, amount: '-50.0000' }),
+        makeEntry({ id: 2, kind: 'transfer_out', amount: '-10.0000', currency: 'USD', transfer_group_id: 't-1' }),
+      ]).excluded,
+    ).toBe(false);
+    expect(net([makeEntry({ id: 1, amount: '-500.0000', currency: 'JPY' })])).toMatchObject({ net: 0, excluded: true });
+    expect(net([makeEntry({ id: 1, amount: '-100.0000', group: group('-100.0000', 'JPY') })]).excluded).toBe(true);
   });
 
   it('keeps one row per split group across pages and per transfer pair, leaving transfers out of the net', () => {

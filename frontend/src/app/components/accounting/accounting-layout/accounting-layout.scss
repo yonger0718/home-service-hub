@@ -32,6 +32,8 @@
   --pane-pad-top: 8px;
   padding: var(--pane-pad-top) 14px 14px;
   position: relative;
+  /* A selected timeline row may bleed this far into the 14px inline padding. */
+  --row-sel-bleed: 8px;
 }
 
 .pane-empty {
@@ -52,6 +54,7 @@
     border: 0;
     overflow: visible;
     padding: 0;
+    --row-sel-bleed: 0px;
   }
 
   .detail-pane {

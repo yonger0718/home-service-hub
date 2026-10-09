@@ -1,7 +1,7 @@
 @if (quickAmounts().length) {
-  <div class="quick" aria-label="常用金額">
+  <div class="quick" role="group" aria-label="常用金額">
     @for (amount of quickAmounts(); track amount) {
-      <button type="button" (click)="pickQuick(amount)">{{ quickLabel(amount) }}</button>
+      <button type="button" [disabled]="disabled()" (click)="pickQuick(amount)">{{ quickLabel(amount) }}</button>
     }
   </div>
 }
@@ -17,6 +17,7 @@
         [class.fn]="isFunction(key)"
         [class.ok]="key === '✓'"
         [attr.aria-label]="ariaLabel(key)"
+        [disabled]="disabled()"
         (click)="press(key)"
       >{{ key }}</button>
     }

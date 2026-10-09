@@ -1,5 +1,5 @@
 @if (bubbles().length) {
-  <div class="strip bubbles" aria-label="多類別子項">
+  <div class="strip bubbles" role="group" aria-label="多類別子項">
     @if (parentText(); as text) {
       <button
         type="button"
@@ -30,7 +30,7 @@
         <span class="ico-wrap">
           <span class="ico" aria-hidden="true" [style.background]="bubble.color">{{ bubble.icon }}</span>
           @if (bubble.protected) {
-            <span class="lock" aria-label="受保護">🔒</span>
+            <span class="lock" role="img" aria-label="受保護">🔒</span>
           }
         </span>
         <b class="name" [title]="bubble.label">{{ bubble.label }}</b>
@@ -67,7 +67,7 @@
 } @else if (!gridAllowed()) {
   <!-- parent / protected child: the strip only -->
 } @else if (openParent(); as parent) {
-  <div class="grid" role="listbox" [attr.aria-label]="parent.name + ' 子類別'">
+  <div class="grid" role="group" [attr.aria-label]="parent.name + ' 子類別'">
     <button type="button" class="cat back" (click)="back()">
       <span class="ico back-ico" aria-hidden="true">‹</span>返回
     </button>
@@ -78,7 +78,7 @@
     }
   </div>
 } @else {
-  <div class="grid" role="listbox" aria-label="類別">
+  <div class="grid" role="group" aria-label="類別">
     @for (main of mains(); track main.id) {
       <button type="button" class="cat" [attr.data-category-id]="main.id" [class.on]="isSelectedMain(main)" (click)="tapMain(main)">
         <span class="ico" [style.background]="colorOf(main)">{{ iconOf(main) }}</span>{{ main.name }}
