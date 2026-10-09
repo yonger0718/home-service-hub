@@ -1900,7 +1900,7 @@ def pair(old: list[Old], new: list[New]) -> list[Pairing]:
 
 def twin_count_changed(old: list[Old], new: list[New]) -> bool:
     def twins(items, key):
-        return Counter(k for k, c in Counter(key(i) for i in items).items() if c > 1)
+        return {k: c for k, c in Counter(key(i) for i in items).items() if c > 1}  # multiplicities matter
     strip = lambda lk: lk.rsplit("|", 1)[0]  # (posted_date, flow) without the occurrence index
     return twins(old, lambda o: strip(o.logical_key)) != twins(new, lambda n: strip(n.logical_key))
 ```
