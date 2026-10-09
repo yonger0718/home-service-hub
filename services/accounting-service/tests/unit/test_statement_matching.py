@@ -143,3 +143,116 @@ def test_claims_are_conserved():
     entries = [E(21, date(2026, 9, 3), "-300", group_id=5), E(22, date(2026, 9, 3), "-281", group_id=5)]
     res = run([L(1, date(2026, 9, 3), "-580")], entries, groups={5: g})
     assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+
+
+# --- fix round 1 -------------------------------------------------------------
+
+def test_bank_withdrawal_respects_split_groups():
+    g = m.Group(id=5, kind="split", member_ids=(21, 22))
+    entries = [E(21, date(2026, 9, 3), "-300", group_id=5), E(22, date(2026, 9, 3), "-280", group_id=5)]
+    res = run([L(1, date(2026, 9, 3), "-300", kind="withdrawal")], entries, groups={5: g}, kind="bank")
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+    res2 = run([L(1, date(2026, 9, 3), "-580", kind="withdrawal")], entries, groups={5: g}, kind="bank")
+    assert res2.claims[0].representation.rule == "group" and sorted(r.entry_id for r in res2.claims[0].representation.rows) == [21, 22]
+
+
+def test_bank_withdrawal_never_claims_an_installment_member():
+    entries = [E(40, date(2026, 9, 5), "-1000", instance=m.InstanceRef(definition_id=7, seq=2, times=12))]
+    res = run([L(1, date(2026, 9, 5), "-1000", kind="withdrawal")], entries, kind="bank")
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+
+
+def _installment_run(entry_day):
+    entries = [E(40, date(2026, 9, entry_day), "-1000", instance=m.InstanceRef(definition_id=7, seq=2, times=12))]
+    line = L(1, date(2026, 9, 17), "-1000", kind="installment", merchant="APPLE", seq=2, total=12)
+    return run([line], entries, plan_map={"APPLE|12|1000.0000": 7})
+
+
+def test_installment_claims_within_the_candidate_window():
+    for day in (16, 8):  # 1-day and 9-day drift
+        res = _installment_run(day)
+        assert [c.representation.rule for c in res.claims] == ["installment"], day
+
+
+def test_installment_beyond_the_candidate_window_is_a_drift_case():
+    res = _installment_run(5)  # 12-day drift
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+    assert res.cases[0].context == {"hint": "installment_date_drift", "entry_id": 40, "definition_id": 7}
+
+
+def test_principal_with_children_is_a_representation():
+    fee = m.Child(id=31, kind="fee", flow=D("-2"))
+    res = run([L(1, date(2026, 9, 3), "-102")], [E(21, date(2026, 9, 3), "-100", children=(fee,))])
+    claim = res.claims[0].representation
+    assert claim.rule == "exact_children" and sorted(r.entry_id for r in claim.rows) == [21, 31]
+
+
+def test_foreign_line_closes_once_the_fee_child_exists():
+    fee = m.Child(id=71, kind="fee", flow=D("-10"))
+    entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY", children=(fee,))]
+    res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("-3000"), foreign_currency="JPY")], entries, fee=lambda e: D("10"))
+    assert res.cases == [] and res.claims[0].representation.rule == "exact_children"
+
+
+def test_foreign_twins_are_ambiguous():
+    entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY"),
+               E(72, date(2026, 9, 9), "-661", original_amount=D("-3000"), original_currency="JPY")]
+    res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("-3000"), foreign_currency="JPY")], entries, fee=lambda e: D("10"))
+    case = res.cases[0]
+    assert res.claims == [] and case.kind == "ambiguous" and "entry_id" not in case.context
+    assert sorted(c["entry_id"] for c in case.candidates) == [70, 72] and {c["reason"] for c in case.candidates} == {"foreign"}
+
+
+def test_foreign_fee_is_quantised_and_compared_exactly():
+    entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY")]
+    res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("-3000"), foreign_currency="JPY")], entries, fee=lambda e: D("10.5"))
+    assert res.cases[0].context["fee_expected"] == "11" and res.cases[0].context["fee_matches"] is False
+    res2 = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("-3000"), foreign_currency="JPY")], entries, fee=lambda e: D("10.4"))
+    assert res2.cases[0].context["fee_matches"] is True
+
+
+def test_members_only_claim_reports_the_uncovered_child():
+    g = m.Group(id=5, kind="split", member_ids=(21,))
+    fee = m.Child(id=31, kind="fee", flow=D("-2"))
+    res = run([L(1, date(2026, 9, 3), "-100")], [E(21, date(2026, 9, 3), "-100", group_id=5, children=(fee,))], groups={5: g})
+    assert res.claims[0].representation.rule == "group"
+    assert res.unmatched_entry_ids == [31] and res.explained == {31: "uncovered_child"}
+
+
+def test_children_of_unclaimed_parents_are_represented_by_the_parent():
+    fee = m.Child(id=31, kind="fee", flow=D("-2"))
+    res = run([], [E(21, date(2026, 9, 3), "-100", children=(fee,))])
+    assert res.unmatched_entry_ids == [21] and res.explained == {}
+
+
+def test_child_passed_as_an_entry_row_is_not_duplicated():
+    fee = m.Child(id=31, kind="fee", flow=D("-2"))
+    entries = [E(21, date(2026, 9, 3), "-100", children=(fee,)), E(31, date(2026, 9, 3), "-2", kind="fee", parent_entry_id=21)]
+    res = run([L(1, date(2026, 9, 3), "-2", kind="fee")], entries)
+    assert [(c.representation.rule, [r.entry_id for r in c.representation.rows]) for c in res.claims] == [("exact", [31])]
+
+
+def test_near_prefers_smaller_delta_then_date_and_lists_every_candidate():
+    entries = [E(12, date(2026, 9, 6), "-580", merchant="全聯 大安"), E(11, date(2026, 9, 4), "-590", merchant="全聯 大安"),
+               E(10, date(2026, 9, 3), "-580", merchant="全聯 大安")]
+    res = run([L(1, date(2026, 9, 3), "-585", merchant="全聯 大安")], entries)
+    case = res.cases[0]
+    assert case.kind == "amount_delta" and case.entry_id == 10 and case.context["entry_id"] == 10
+    assert [c["entry_id"] for c in case.candidates] == [10, 11, 12]
+
+
+def test_installment_unmapped_candidates_are_deduplicated_and_skip_claimed_rows():
+    entries = [E(40, date(2026, 9, 5), "-1000", instance=m.InstanceRef(definition_id=7, seq=2, times=12)),
+               E(41, date(2026, 9, 5), "-1000", instance=m.InstanceRef(definition_id=8, seq=3, times=12)),
+               E(42, date(2026, 9, 6), "-1000", instance=m.InstanceRef(definition_id=8, seq=4, times=12))]
+    lines = [L(1, date(2026, 9, 5), "-1000", kind="installment", merchant="APPLE", seq=2, total=12),
+             L(2, date(2026, 9, 5), "-1000", kind="installment", merchant="APPLE STORE", seq=3, total=12)]
+    res = run(lines, entries, plan_map={"APPLE|12|1000.0000": 7})
+    assert [c.line_id for c in res.claims] == [1]
+    assert res.cases[0].context["hint"] == "installment_unmapped" and res.cases[0].candidates == ({"definition_id": 8},)
+
+
+def test_second_line_on_an_already_claimed_entry_is_hinted():
+    res = run([L(1, date(2026, 9, 3), "-580"), L(2, date(2026, 9, 3), "-580")], [E(10, date(2026, 9, 3), "-580")])
+    assert [c.line_id for c in res.claims] == [1]
+    assert res.cases[0].kind == "line_unmatched" and res.cases[0].context == {"hint": "claimed_by_earlier_line", "entry_id": 10}
