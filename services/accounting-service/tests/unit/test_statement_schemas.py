@@ -1,7 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.statements import LineIn, RevisionIn
+from app.schemas.statements import Lease, LineIn, RevisionIn
+from app.services.statements import derive
 
 
 def _line(**kw):
@@ -11,17 +12,28 @@ def _line(**kw):
 
 
 def _rev(**kw):
-    base = dict(run_id=1, lease_token="t", file_id=1, account_id=1, kind="card", parser="claude-cli", parser_version="2.1.295",
+    base = dict(run_id=1, lease_token="t" * 16, file_id=1, account_id=1, kind="card", parser="claude-cli", parser_version="2.1.295",
                 currency="TWD", period_start="2026-09-01", period_end="2026-09-30", statement_total="580", lines=[_line()], raw={})
     base.update(kw)
     return base
 
 
 def test_revision_in_forbids_extra_and_caps_lines():
+    RevisionIn(**_rev())
     with pytest.raises(ValidationError):
         RevisionIn(**_rev(extra=1))
+    RevisionIn(**_rev(lines=[_line(seq=i) for i in range(1, 2001)]))
     with pytest.raises(ValidationError):
         RevisionIn(**_rev(lines=[_line(seq=i) for i in range(1, 2002)]))
+
+
+def test_lease_token_min_length():
+    with pytest.raises(ValidationError):
+        Lease(run_id=1, lease_token="t")
+
+
+def test_line_in_field_parity_with_derive():
+    derive.LineIn(**LineIn(**_line()).model_dump())
 
 
 def test_line_in_validates_kind_and_amount_scale():
