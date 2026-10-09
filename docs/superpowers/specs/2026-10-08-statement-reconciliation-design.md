@@ -1,6 +1,6 @@
 # Statement reconciliation (對帳) — design
 
-Status: **v3** for Multica review (2026-10-09). v3 answers round 2 (A1–A11, B1–B5) on AGENT-83 on top of v2's answers to rounds 1/1.1; the cumulative answer map is §15. Owner decisions are marked **[owner]**; defaults I chose are **[default]**; items the owner still has to decide are in §14.
+Status: **v4**, final after three Multica review rounds on AGENT-83 (rounds 1/1.1 → v2, round 2 → v3, round 3 → v4). §15 is the cumulative answer map; §16 lists what is carried into the implementation plan as acceptance criteria rather than re-specified here. Owner decisions are **[owner]**; defaults **[default]**; open owner items are in §14. Wherever this document says "as v2", it means the text of commit `eef3b31aa517368c34f57dfb1c9dd785e86ac1fa`.
 
 ## 1. Problem
 
@@ -30,230 +30,139 @@ Non-goals (v1): bank logins/scraping **[owner]**, OCR/vision, investment and e-i
 | Rules | API process, `reconciliation_service` (pure, deterministic) | eligibility gates, competing representations compared globally per line, monetary conservation, bank-only lines, deferral, cross-account hints; never resolves ambiguity |
 | Model as a function | sandboxed, tool-less parser child of the ingest worker | masked statement text → `StatementParse` JSON |
 | Agent triage | Hermes skill, `read,propose` token | proposals on open cases |
-| Apply | API process, owner tap or policy engine under owner grants | one transaction per action, lineage-aware idempotency, audit, operation-specific inverse |
+| Apply | API process, owner tap or policy engine under owner grants | one transaction per action, event-identity idempotency, audit, operation-specific inverse |
 
-## 3. Processes, identities, access (D2, M10, A9, A10)
+## 3. Processes, identities, access
 
 | Process | Linux user | Has | Does not have |
 |---|---|---|---|
-| accounting-service API | `opc` today (migration to `homehub-api` is a separate ops task, §14) | DB role `accounting`, token files | password file, Drive, MinIO write key, parser login, sudo |
-| ingest worker (`homehub-statements.timer`/`.path`/`.service`, user units of the dedicated user) | `homehub-worker` | password file (root:homehub-worker 0440), rclone config with a read-only Drive token, MinIO key (put/get on bucket `homehub-statements`), API token label `worker` with scope `ingest`, `/var/lib/home-hub-statements/` 0700 | DB credentials, API's token file, `/home/opc` |
-| parser child (`claude -p` in bwrap) | `homehub-worker` | `CLAUDE_CONFIG_DIR=/var/lib/home-hub-parser/claude` (owner logs in once as `homehub-worker`), stdin, tmpfs, network | everything else: `/etc` is not bound (so no managed settings, no hooks), no inbox, no keys, no repo |
-| verify runner (`homehub-statements-verify.service`, run on demand) | `homehub-verify` | read-only Drive token, DB role `accounting_ro` (SELECT only, `default_transaction_read_only`), report dir `/var/lib/home-hub-verify/` 0700, the same parser login dir mounted read-only | API token, MinIO key, write DB role, the live inbox |
-| Hermes | **own user `hermes` (prerequisite for any grant beyond `read,propose`)** | API token `hermes` with `read,propose` and, once it runs as its own user and the owner grants it, `enqueue` | worker execution, sudo, the worker/verify users' files |
-| owner shell | `opc` | `sudo -u homehub-worker` / `sudo -u homehub-verify` for the CLI entry points (sudoers lines name the exact commands) | — |
+| accounting-service API | **`homehub-api`** (prerequisite for `ACCOUNTING_RECONCILIATION_ENABLED`; today `opc`) | DB role `accounting`, token files | sudo, password file, Drive, MinIO write key, parser login, any other user's home |
+| ingest worker (`homehub-statements.timer`/`.service`, user units of `homehub-worker`) | `homehub-worker` | password file (root:homehub-worker 0440), rclone config with a read-only Drive token, MinIO key (put/get on `homehub-statements`), API token label `worker` scope `ingest`, `/var/lib/home-hub-statements/` 0700, write access to `/var/lib/home-hub-verify/masked/` (group `homehub-verify`, 0770) | DB credentials, the API's token file, `/home/opc`, sudo |
+| parser child (`claude -p` in bwrap) | `homehub-worker` | stdin, tmpfs `/tmp` and `/work` (discarded), the parser login directory with only `.credentials.json` writable (OAuth refresh) and the rest read-only, network | inbox, keys, tokens, `/etc`, repos, worker env |
+| verify runner (`homehub-statements-verify.service`) | `homehub-verify` | `/var/lib/home-hub-verify/` (masked text snapshots exported by the worker, report dir), DB role `accounting_ro` (SELECT only, `default_transaction_read_only=on`), the parser login read-only | password file, PDFs, Drive, API token, MinIO key, any write role |
+| Hermes | **own user `hermes`** (prerequisite for any grant beyond `read,propose`) | API token `hermes=read,propose` (+ `enqueue` when the owner grants it) | sudo, worker execution, other users' files |
+| owner shell | `opc` | `sudo -u homehub-worker` / `sudo -u homehub-verify` for the named CLI entry points only | — |
 
-Why the Hermes user matters (A10): today Hermes runs as `opc`, the same uid the owner uses for `sudo`; a uid cannot tell them apart, so no sudo-based broker can exclude Hermes. Until Hermes has its own user it gets `read,propose` only, and runs happen on the timer. The API also runs as `opc` today; it never has sudo and the sudoers rules are user-specific commands, but moving it to `homehub-api` is listed as an ops follow-up.
+Why dedicated users: a Unix uid is the only boundary a sudoers rule or a file mode can see. With Hermes or the API sharing `opc` (passwordless sudo), nothing distinguishes them from the owner, so "Hermes can only propose" and "the API never has sudo" would be assertions, not enforcement. Both moves are ops prerequisites in §13; until they are done the feature flag stays off.
 
-Operator evidence before real input (checklist in PR-R2's deploy notes): password file readable by `homehub-worker`, unreadable by `opc`, `hermes`, `homehub-verify`; parser child cannot read the inbox or `/etc` (bwrap test prints `ENOENT`); verify user cannot reach MinIO or the API (no key, no token, test attempts logged as refused); `hermes` cannot run the worker; the parser smoke test (§5.5) passes in the deployed sandbox. The review does not attest host state; the checklist does.
+Operator evidence before real input (checklist in PR-R2's deploy notes; nothing here is certified by review): file modes and ownership as above; `sudo -u homehub-worker cat` of the password file succeeds and the same fails as `opc`, `hermes`, `homehub-verify`, `homehub-api`; the parser child cannot read the inbox or `/etc`; the verify user has no key/token (attempts refused); `hermes` cannot run the worker; the parser gate (§5.5) passes; the owner confirms in the Claude account settings that the subscription is personal with no organisation-managed policy (server-delivered managed settings cannot be inspected from the sandbox, so the absence of an org policy is the operator's evidence).
 
 ## 4. Data model (Alembic `statement_tables`)
 
-Types follow the ledger: money `Numeric(20, 4)`, ids `Integer`, dates `date`, timestamps `timestamptz`. New enums get their own types. `ENTRY_SOURCES` gains `statement` via `ALTER TYPE … ADD VALUE`. **Downgrade refuses** while any `ledger_entry.source='statement'`, coverage, action or audit row exists (B3); the operator confirms the live head with `alembic current` before upgrade, and the migration test suite runs upgrade/downgrade from the repository head on a populated database (including A3's deletion cases).
+Types follow the ledger: money `Numeric(20, 4)`, ids `Integer`, dates `date`, timestamps `timestamptz`. New enums get their own types. The PostgreSQL enum `entry_source` gains `statement` (`ALTER TYPE entry_source ADD VALUE`, committed in its own migration step before any use). Downgrade refuses while any `ledger_entry.source='statement'`, coverage, action or audit row exists. The operator confirms the live head with `alembic current`; the migration test suite runs upgrade/downgrade on a populated database, including trigger/FK ordering so `ON DELETE SET NULL` can never leave an active claim pointing at a deleted row.
 
-### 4.1 `ingest_run` (D7, B1)
-`id, trigger ('timer'|'owner_cli'|'enqueue'), principal (token label for enqueue; 'worker' for timer/CLI with `initiator_hint` = the unix user the worker observed, marked unauthenticated), mode ('live'|'backfill'), status ('queued'|'claimed'|'running'|'done'|'failed'), claimed_by (token label), parser_version, rules_version, policy_config_sha256, mapping_version, credential_version, requested_at, started_at, finished_at, summary JSONB`. Enqueue (`POST /statements/ingest/run`, scope `enqueue`) creates the row with `status=queued` and writes only the run id into `/var/lib/home-hub-statements/run.request`; if a run is already queued/claimed/running, enqueue returns that run (coalesced, recorded in `summary.coalesced_requests[]` with principal and time). The worker claims a run (`POST /statements/ingest-runs/{id}/claim`, scope `ingest`); every file/revision submission carries the run id and is accepted only from the claiming label. Timer and CLI runs are created by the worker itself (`trigger` timer/owner_cli). Verify never creates a run.
+### 4.1 `ingest_run` (B1, S1)
+`id, trigger ('timer'|'owner_cli'|'enqueue'), principal (token label; for timer/CLI 'worker' plus `initiator_hint` unix user, unauthenticated), mode ('live'|'backfill'), status ('queued'|'claimed'|'running'|'done'|'failed'|'expired'), claimed_by, lease_token, lease_expires_at, attempt, parser_version, rules_version, policy_config_sha256, mapping_version, credential_version, requested_at, started_at, finished_at, summary JSONB`.
+Protocol: enqueue (`POST /statements/ingest/run`, scope `enqueue`) inserts `queued` or returns the existing non-terminal run (coalesced; the request is appended to `summary.coalesced[]`). **No file handoff**: the worker (timer tick every 5 min, and its daily full run) polls `GET /statements/ingest-runs?status=queued` with scope `ingest`, then `POST …/{id}/claim`, which atomically moves `queued → claimed` (`UPDATE … WHERE status='queued'`), sets a 30-minute lease and returns a `lease_token`. Every submission carries the run id and lease token; the API accepts it only if the run is `claimed`/`running`, the token matches and the lease is live (else 409). Leases are renewed by the worker every 5 minutes; an expired lease moves the run to `expired`, a new claim gets a new token and increments `attempt`; late submissions with the old token are refused. Restart recovery: a worker finding its own `claimed`/`running` run with a live lease resumes it; otherwise it waits for expiry. Timer/CLI runs are created by the worker itself. Tests: two enqueues coalesce, crash before claim, crash after claim and reclaim after expiry, late submission with a stale token refused, submission to a `done` run refused.
 
-### 4.2 `statement_file` and `statement_source` (S3, A11)
-`statement_file`: `id, sha256 (unique), kind, account_id (nullable), object_key, status ('new'|'unlocked'|'parsed'|'needs_review'|'failed'|'ignored'), failure, has_text_layer, text_chars, pages, credential_version, mapping_version, parser_version, attempts, next_retry_at, first_seen_at, parsed_at, run_id`. Content-addressed; never mutated into a different content.
-`statement_source`: `id, file_id, root ('mail'|'manual'), drive_file_id, drive_path, drive_md5, first_seen_at, last_seen_at, removed_at, superseded_by_source_id`. Many sources per file (same bytes at two paths), many files per path over time (same path, corrected bytes → a new file row and a new source row; the old source gets `superseded_by`). Rename = same `drive_file_id`, new path → the source row's path is updated and the old path kept in `summary`. Deletion on Drive → `removed_at`; nothing local or in the DB is deleted.
-Retry triggers: `transient` (backoff 1h/6h/24h, max 5), `password` on `credential_version` change, `mapping` on `mapping_version` change, `parse`/`guardrail` on `parser_version` change. Unchanged successful files are no-ops. Worker singleton via `flock`.
+### 4.2 `statement_file` and `statement_source` (A11, C9, S2)
+`statement_file`: `id, sha256 (unique), size, kind, account_id (nullable), object_key, status, failure, has_text_layer, text_chars, pages, credential_version, mapping_version, parser_version, attempts, next_retry_at, first_seen_at, parsed_at, run_id`.
+`statement_source`: `id, file_id, root ('mail'|'manual'), drive_file_id, drive_path, drive_md5, drive_size, path_history JSONB, first_seen_at, last_seen_at, removed_at, superseded_by_source_id`. Many sources per file; many files per path over time; rename appends to `path_history`; Drive deletion sets `removed_at` only after a **complete** listing (a listing error aborts the run without marking anything removed).
+Retry triggers and singleton: as v2 (`transient` backoff, `credential_version`/`mapping_version`/`parser_version` changes; `flock`).
 
-### 4.3 `account_statement`
-`id, account_id, kind, currency, period_start, period_end, closing_date, due_date, opening_balance, statement_total, minimum_payment, source ('manual'|'import'), mode ('historical'|'live') immutable, status ('open'|'reconciled'), conflict_open bool, needs_recheck bool, current_revision_id, matched_count, explained_count, open_case_count, note, created_run_id`. Unique `(account_id, currency, period_end)`. Derived display status: `reconciled` ∧ `conflict_open` → shown as 已確認（有新版本待處理）; confirm is invalid while `conflict_open` or `needs_recheck` (A2, S5).
+### 4.3 `account_statement` — as v3 (`mode` immutable, `conflict_open`, `needs_recheck`, `swept_through_event_id` added, see §4.6).
 
-### 4.4 `statement_revision` and `statement_line` (M5, A2)
-`statement_revision`: `id, statement_id, revision, file_id, parser, parser_version, raw JSONB, header fields as parsed, guardrail JSONB (server-computed), guardrail_ok, conflict, created_at, run_id`. Immutable.
-`statement_line`: **immutable rows per revision**: `id, revision_id, seq, canonical_key, logical_key, txn_date, posted_date, merchant_raw, merchant_norm, printed_amount, flow_amount, foreign_amount, foreign_currency, line_kind, installment_seq, installment_total`.
-- `flow_amount`: the ledger's cash-flow sign (`SIGN_BY_KIND`: expense −, income +; a card payment received +, refund +, fee/interest −, reward +; bank deposit +, withdrawal −). Derived by the server-side adapter from `line_kind` and `printed_amount` (the worker submits printed values and the parser's kind; the API derives and checks, never trusting submitted flags).
-- `canonical_key` = sha256 of `(posted_date, txn_date, flow_amount, foreign_amount, foreign_currency, line_kind, installment_seq, installment_total, merchant_norm)`.
-- `logical_key` = `(posted_date, flow_amount, occurrence_index)`, used only to pair candidate lines across revisions before the semantic comparison.
-- `line_kind`: `purchase|refund|payment|fee|interest|reward|installment|balance_adjustment|deposit|withdrawal|transfer_in|transfer_out|unknown`.
+### 4.4 `statement_revision`, `statement_line`, `statement_event` (A2, C2)
+`statement_revision`: as v3, immutable.
+`statement_line`: **immutable rows per revision**, as v3 (`canonical_key`, `logical_key`, `flow_amount`, …), plus `event_id`.
+`statement_event`: the **persistent financial-event identity** of a statement line across revisions: `id, statement_id, first_revision_id, first_line_id, current_line_id (nullable while unpaired), status ('live'|'retired'|'quarantined'), created_at`. Created for every line of a statement's first revision; on later revisions lines are paired to events (§5.7). All coverage, cases, proposals, explanations, dismissals and action effects reference the `event_id`, never a line id alone. Unique active effect: `reconciliation_action` has a partial unique index on `(event_id, action, effect_slot) WHERE status='applied'` (`effect_slot` = `'create'` for creations, `'fee'` for the fee child, `'match'` otherwise), so a second creation/fee for the same event is refused at the database, not only by a lookup.
 
-### 4.5 `line_lineage` (A2)
-`id, old_line_id, new_line_id, equivalence ('identical'|'text_only'|'changed'|'unpaired'), transferred bool, created_at`. Built at every re-parse (§5.7). Coverage, explanations and dismissals transfer only on `identical`; `text_only` (merchant text differs, everything else identical) transfers coverage but supersedes pending proposals and flags the line 文字已變更; `changed`/`unpaired` never transfer.
+### 4.5 `line_lineage` (C2)
+`id, event_id, old_line_id, new_line_id, equivalence ('identical'|'normalised'|'changed'|'unpaired'), transferred bool, created_at`. `normalised` = everything equal after the merchant normaliser (token set identical, differences only in whitespace/punctuation/case); a merchant change from A to B is `changed`. Transfer rules in §5.7.
 
-### 4.6 `statement_coverage` (M4, A3, A5)
-`id, statement_id, line_id, entry_id (nullable), group_id (nullable), role ('principal'|'child'|'member'), snapshot JSONB (entry amount, dates, account, group, kind, parent), match_kind, match_rule, status ('active'|'stale'), stale_reason, run_id, created_at`. Unique `(entry_id) WHERE status='active' AND entry_id IS NOT NULL`. Monetary conservation invariant (A5): for every line with active coverage, `Σ snapshot.flow of its rows == line.flow_amount` exactly; the DB layer asserts it before commit.
-Deletion: `entry_id`/`group_id` FKs are `ON DELETE SET NULL`; the snapshot keeps the history; a coverage row whose entry becomes null is `stale/deleted`.
+### 4.6 `statement_coverage` and the dirty protocol (A3, A6, C3)
+`statement_coverage`: `id, statement_id, event_id, line_id, entry_id (nullable), group_id (nullable), role, snapshot JSONB, match_kind, match_rule, status ('active'|'stale'), stale_reason, run_id, created_at`. Unique `(entry_id) WHERE status='active' AND entry_id IS NOT NULL`. Conservation invariant asserted before commit (as v3). FKs `ON DELETE SET NULL` with snapshots.
 
-**Invalidation surface (A3)** — two nets, both required:
-1. **Database triggers (completeness net):** `AFTER UPDATE OF account_id, amount, original_amount, original_currency, entry_date, posted_date, kind, group_id, parent_entry_id, transfer_group_id, refunds_entry_id, settles_entry_id, is_settlement OR DELETE ON ledger_entry`, `AFTER INSERT ON ledger_entry`, `AFTER UPDATE OR DELETE ON entry_group`, `AFTER UPDATE OF opening_balance, currency, combined_account_id, closing_day, is_credit ON account` → insert into `coverage_dirty (kind, row_id, account_id, posted_date, happened_at)`. Bulk deletes (`delete_moze_entries`), schedule repost/reopen, settlement relinks, child replacement, member detachment, account configuration edits and inserts into reconciled periods are all caught here regardless of code path.
-2. **Service hooks (immediacy):** `entry_write_service`, `split_service`, `transfer_service`, `settlement_service`, `schedule_posting`, `moze_import_service`, `settings_service` call `coverage.touch()` with the affected ids they already know, after their own locks, without locking statements (A6).
-`coverage.sweep(run or request)` drains `coverage_dirty` at the start of every reconcile/apply/confirm and in the daily worker: changed or deleted rows → their active coverage `stale`, the line's claim released atomically (all rows of that line), the case reopened or created; inserts with `posted_date` inside a `live` statement's period or account-level changes → `needs_recheck=true` on the affected statements; in `historical` mode the sweep only updates the summary. Tests cover every path in the list above, plus historical mode producing no cases.
+**Dirty events** (`coverage_dirty`): `id (bigserial, the generation), kind ('entry'|'group'|'account'), row_id, op ('insert'|'update'|'delete'), old JSONB, new JSONB, action_id (nullable), happened_at`. Row-level `AFTER` triggers on `ledger_entry` (all persisted columns that matter: `account_id, amount, currency, original_amount, original_currency, fx_rate, entry_date, posted_date, kind, name, merchant, group_id, parent_entry_id, transfer_group_id, refunds_entry_id, settles_entry_id, is_settlement, reward_source_entry_id, reward_rule_id, source, import_run_id`), `entry_group` (all columns), `account` (`opening_balance, currency, combined_account_id, closing_day, due_rule, due_value, is_credit, is_archived`). Triggers are append-only (never mutate their source tables, so no recursion), use null-safe `IS DISTINCT FROM` comparisons (no event for no-op updates), and record **both OLD and NEW** rows so every affected population can be derived: old and new account, old and new period (by `posted_date`/`entry_date`), old and new group/parent/combined parent, old and new link targets. `action_id` is filled from a transaction-local setting (`SET LOCAL app.reconciliation_action_id`) that only the apply path sets, so self-generated events are attributable.
 
-### 4.7 `reconciliation_case`
-`id, statement_id, revision_id, kind ('line_unmatched'|'entry_unmatched'|'amount_delta'|'ambiguous'|'duplicate_claim'|'balance_gap'|'statement_conflict'|'parse_review'|'recheck'), line_id, entry_id, candidates JSONB, context JSONB, status ('open'|'proposed'|'resolved'|'dismissed'|'superseded'), explanation ('deferred_next_period'|'accepted_exception'|null), deferred_to_period_end (date), deferred_to_statement_id, resolved_by ('owner'|'policy'|null), resolved_action_id, version, created_at, resolved_at`.
+**Sweep protocol**: `sweep(statement)` runs inside the statement's transaction (lock order §7.4), reads events with `id > statement.swept_through_event_id` whose old or new population touches the statement (account ∈ participating set now or before, and date within the period ± window, or a referenced row has active coverage/explanation in this statement), applies them (stale coverage with the line's claim released as a whole, cases reopened/created in live mode, summary-only in historical mode **but coverage is still released**, `needs_recheck` for account-level/insert events), skips events whose `action_id` belongs to an action applied on this statement, then advances `swept_through_event_id` to the highest id it has seen. Events are never deleted by the sweep (a retention job removes events older than every statement's watermark). Writers never lock statements, so there is no inversion; a writer committing after a sweep produces a higher event id that the next sweep sees.
+Reads: every statement GET returns `stale_events_pending = exists(event id > watermark touching this statement)`; the UI shows 需重新同步 and the detail is computed from stored rows (no mutation on GET). Confirm and apply always sweep first under the statement lock, so a confirmation can never be based on an unswept state.
+Service hooks (`coverage.touch`) remain as the immediate path for UX; they only insert events through the same table.
+Tests: every write path listed in round 2/3 (bulk delete, repost/reopen, settlement relink, child replacement, member detachment, reward unlink, account config edit, combined-child relink both parents, cross-period move of an uncovered row, delete of an unmatched row in a reconciled period, insert into a reconciled period), barrier tests edit/insert/delete-vs-confirm, historical release of a stale claim, self-generated events not reopening fresh coverage, trigger amplification on an import-sized batch.
 
-### 4.8 `reconciliation_proposal`
-As v2, plus `line_canonical_key`; superseded when the case version moves or the line's lineage is not `identical`.
+### 4.7 `reconciliation_case` — as v3, keyed by `event_id` in addition to `line_id`.
+### 4.8 `reconciliation_proposal` — as v3, keyed by `event_id`; superseded when the case version moves or the event's current line changed with equivalence other than `identical`/`normalised`.
 
-### 4.9 `reconciliation_action` + `reconciliation_audit` (M8, A2, A8)
-`reconciliation_action`: `id, idempotency_key (unique), effect_key (indexed), case_id, proposal_id, action, params, actor, run_id, status ('applied'|'reverted'|'failed'), created_entry_ids, deleted_entry_ids, touched_entry_ids, touched_group_ids, before JSONB (full snapshots of every touched row, its children and group memberships), after JSONB, inverse JSONB (operation-specific), reverted_by_action_id, created_at`.
-- `idempotency_key = sha256(case_id, case_version, action, canonical params)`: a replay returns the stored result.
-- `effect_key = sha256(statement identity, line canonical_key, action, effect target)`: a new action whose `effect_key` matches an `applied`, non-reverted action is refused (422 `duplicate effect`) even across revisions and cases — a corrected line cannot create a second fee child or entry for the same statement line.
-- Conflict detection without version columns: the validator re-reads every touched row (and children/members) and compares with `before`; any difference → 409. `updated_at` is used as a fast pre-check only.
-`reconciliation_audit`: append-only log of every state change with `actor`, `run_id`, `request_id`.
+### 4.9 `reconciliation_action` + audit (A8, C2, C6)
+As v3 (`idempotency_key`, full `before`/`after`/`inverse` snapshots, created/deleted/touched ids) with `event_id`, `effect_slot` and the partial unique index of §4.4 replacing the hashed `effect_key`. Snapshot scope (acceptance criterion, §16): every persisted field of each touched entry and group, the complete child/member id sets, and incoming dependencies (refund/settlement/reward links, schedule instance membership). Compare-and-write happens after the §7.4 locks are held and the locks are retained through commit; relationship writers (child insert, member add/relink) already lock the parent entry/group first, which this design relies on and the tests verify (concurrent child insert during apply must either serialise or be detected).
 
-### 4.10 `policy_budget` (A6)
-`(month, currency) → used_amount, used_count`, one row per month per currency, locked FOR UPDATE at the start of every policy phase; reservations are made inside the apply transaction and never reset by reparse or retry (an `effect_key` replay reuses its reservation).
+### 4.10 `policy_budget` — as v3.
+### 4.11 `installment_plan_map` (C5)
+`id, account_id, plan_key (merchant_norm + installment_total + per-instance amount), definition_id, confirmed_by ('owner'), created_at`. Owner-confirmed once per plan through the case action `link_installment_plan`; the matcher uses only confirmed mappings.
+### 4.12 Ledger changes — as v3 (`statement` source, `statement_password_rule`, `statement_live_from` null = never live, `statement_source_root`, versioned settings).
 
-### 4.11 Ledger changes
-`ENTRY_SOURCES` + `statement`; `account` + `statement_password_rule`, `statement_live_from` (date, **null = never live**: historical only until the owner sets it), `statement_source_root`; `settings.reconciliation` (thresholds, policy, caps, categories, account map, issuer pattern tables, all versioned).
+## 5. Ingest worker
 
-## 5. Ingest worker (`services/accounting-service/worker/statements/`)
+### 5.1 Acquisition (A11, C9)
+List with `rclone lsjson --hash --recursive` (`ID, Path, Hashes.md5, Size, ModTime`), case-insensitive `.pdf`. For each `(drive_file_id, md5)` not yet in `statement_source`: download with `rclone copyto` by **file id** (`--drive-root-folder-id`/id addressing, not the path) into a private staging dir; verify size and md5 of the downloaded bytes against the listing (mismatch → re-list once, then skip with `transient`); compute sha256; publish atomically into `inbox/by-sha/<sha256>.pdf` (`rename` onto a temp name, never overwriting an existing object with different bytes — a collision is a hard failure); only then register file and source via the API and put to MinIO (idempotent by sha256). Failure matrix: local publish ok + MinIO fail → retry MinIO next run (file row `transient`); MinIO ok + API fail → re-register next run (idempotent); any listing error → abort before `removed_at` logic. Tests: source replaced between list and copy, crash at each boundary, incomplete listing.
 
-### 5.1 Acquisition (A11)
-No `rclone sync`. The worker lists `gdrive:財務對帳單/銀行` and `手動下載` with `rclone lsjson --hash --recursive` (fields `ID`, `Path`, `Hashes.md5`, `ModTime`, `Size`), case-insensitive `.pdf` filter, and compares `(drive_file_id, md5)` with `statement_source`. New pairs are downloaded with `rclone copyto` into `inbox/by-sha/<sha256>.pdf` (content-addressed, never deleted by the worker), registered via `POST /statements/files` (sha256, kind) and `POST /statements/sources` (file id, drive id, path, md5), and the original bytes are put in MinIO (key = sha256; idempotent). Paths no longer listed → `removed_at`. Same bytes at two paths → one file, two sources. Same path, new bytes → new file + new source superseding the old one → a new revision for the statement identity (§5.7).
+### 5.2 Account mapping — as v2. 5.3 Unlock — as v2. 5.4 Probe/extract/mask — as v3 (bounds, masking patterns, canary).
 
-### 5.2 Account mapping — as v2 (`settings.reconciliation.account_map`, versioned, `admin` scope; unmapped folders listed; manual-root files take account/period from the parsed header validated against the mapped account).
-
-### 5.3 Unlock — as v2 (candidate order, `.altN`, `@alias`, rule grammar; winning index recorded; nothing logged).
-
-### 5.4 Probe, extract, mask — as v2, with bounds: ≤ 40 pages, ≤ 20 MB, 60 s; extracted text ≤ 400 KB (else `needs_review/too_large`); masking of card/account numbers (last 4 kept), ID numbers (`[A-Z][12]\d{8}` and separator-tolerant digit runs ≥ 6), birth date, holder names, emails, phones, applied to text and table cells; canary tests.
-
-### 5.5 Parse (D1, D3, B2, A10)
-Regex parsers first when registered (none in v1). Fallback: the parser child.
-
-Supported CLI version: **2.1.295** (installed; the worker refuses any other version until the pin is bumped with a passing smoke test). Command:
+### 5.5 Parse (D1, D3, B2, C7, C8)
+Regex parsers first when registered. Fallback: the parser child, CLI pinned to **2.1.295** (refused otherwise until the pin is bumped after a passing gate).
 ```
 bwrap --unshare-all --share-net --die-with-parent --new-session --cap-drop ALL \
   --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /lib64 /lib64 --ro-bind <node> /node \
-  --tmpfs /tmp --tmpfs /work --chdir /work --bind /var/lib/home-hub-parser/claude /cfg \
+  --ro-bind /var/lib/home-hub-parser/claude /cfg --bind /var/lib/home-hub-parser/claude/.credentials.json /cfg/.credentials.json \
+  --tmpfs /tmp --tmpfs /work --chdir /work \
   --setenv HOME /tmp --setenv CLAUDE_CONFIG_DIR /cfg --setenv PATH /node/bin:/usr/bin \
   -- claude -p --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
      --permission-prompts none --no-session-persistence --max-turns 1 \
-     --output-format json --json-schema "$(cat schema.json)" --model <pinned model id> "<fixed instruction>"
+     --output-format stream-json --json-schema "$(cat schema.json)" --model <pinned model id> "<fixed instruction>"
 ```
-`/etc` is not bound inside the sandbox, so `/etc/claude-code/managed-settings.json` (managed hooks/policy) cannot load; `--safe-mode` disables user/project customisations; the empty cwd has no project instructions. **Effective-policy gate**: at worker start and after any CLI/config change, a smoke run with a canary prompt must return `num_turns == 1`, zero tool-use events in the envelope, `structured_output` matching the schema, and no file outside `/tmp` touched (bwrap read-only elsewhere); failure disables parsing (`failed/sandbox`) until an operator fixes it. Output contract: read `structured_output` only, validate with pydantic `StatementParse` (decimal strings, field caps, ≤ 2,000 lines, `is_subtotal` dropped), treat non-zero exit, `max_turns` hit, missing/invalid `structured_output`, output > 2 MB or stdin > 400 KB as `failed/parse`. 120 s per attempt, 3 attempts, process group killed and reaped on expiry, scrubbed environment. No image input in v1.
+Writable surfaces, stated exactly: `/tmp` and `/work` (tmpfs, discarded), `/cfg/.credentials.json` (OAuth refresh). Everything else read-only or absent (`/etc` absent: no local managed settings, no DNS config → the sandbox gets a minimal `/etc/resolv.conf` and `/etc/ssl` bound read-only, which the gate verifies). The worker consumes the **stream** (`stream-json`): any `tool_use`, hook, or subagent event → the run is failed and parsing is disabled (`failed/sandbox`) until an operator re-runs the gate; the final result's `structured_output` is validated with pydantic `StatementParse` (as v3). Bounds: stdin ≤ 400 KB, stdout and stderr each capped at 2 MB while streaming (truncation = failure), 120 s per attempt, 3 attempts, `max_turns` hit = failure, process group killed and reaped on expiry. **Gate** (at worker start, after any CLI/config/pin change, and daily): a canary prompt run under the same command must yield exactly one assistant turn, zero tool/hook/subagent events, a schema-valid output, no files outside the stated writable surfaces (checked by a post-run diff of the read-only mounts' mtimes and a `find` over `/cfg`), and no child processes other than the CLI's own (bwrap `--new-session`, `/proc` inspection from the worker). Server-managed policy cannot be inspected offline; the operator's evidence is the account-level confirmation in §3. If the gate cannot pass with the pinned command, parsing stays off; the gate does not "pass by omission".
 
-### 5.6 Submission and server-side guardrails (A1)
-The worker submits `POST /statements/revisions` with the parsed header, printed lines (`printed_amount`, `line_kind`, dates, merchant, foreign fields) and the file/run ids. The API, not the worker, derives `flow_amount`, computes the guardrails, assigns `mode`, validates the account mapping and schema, and stores the computed guardrail result. Guardrails (hard; failure → `parse_review`, lines stored, no matching, no cases in historical mode):
-- Exact `Decimal` equations: card `statement_total_debt == opening_debt − Σ flow_amount`; bank `closing == opening + Σ flow_amount`.
-- Dates within `[period_start − 5 d, period_end + 5 d]`; period ≤ 62 d; currency equals the account's.
-- Kind/sign consistency table per `line_kind`; installment `seq ≤ total`.
-Arithmetic consistency is a consistency flag, not accuracy (D9).
+### 5.6 Submission and server-side guardrails — as v3 (API derives `flow_amount`, mode, mapping, guardrails; never trusts submitted flags).
 
-### 5.7 Re-parse and lineage (A2)
-A new revision for an existing identity: pair lines by `logical_key`, then classify each pair by `canonical_key`: identical → lineage `identical`, coverage/explanations/dismissals transfer, pending proposals stay; text-only difference → `text_only`, coverage transfers, proposals superseded, line flagged; any other difference or unpaired → no transfer, old coverage `stale/superseded`, old cases `superseded`, new line matched normally **except** that its validator refuses any action whose `effect_key` already exists (duplicate creation). Twins with identical canonical keys are interchangeable and paired in print order; a changed twin count → `parse_review`, no transfers. Header change (totals, dates) → `parse_review`. A revision for a `reconciled` statement sets `conflict_open=true` and a `statement_conflict` case; the UI qualifies the status until the owner resolves it (accept new revision → re-run; keep old → mark the new revision `rejected`).
+### 5.7 Re-parse, events and lineage (C2)
+A new revision pairs its lines to the statement's `statement_event` rows: first by `logical_key` with identical `canonical_key` (`identical`), then by `logical_key` with `normalised` equivalence, in print order among identical twins. Pairs with any other difference are `changed`; events with no pair are `unpaired`; new lines without an event get a new event. Transfer: `identical` → coverage, explanations, dismissals and pending proposals carry over; `normalised` → coverage transfers, pending proposals superseded, line flagged 文字已變更; `changed`/`unpaired` → the event is **quarantined** when it has any applied action or active coverage (its coverage released, a `parse_review` case opened, nothing automatic), else simply retired. A quarantined event's effects remain unique (§4.4): a replacement line (new event) cannot create/fee again until the owner resolves the quarantine, because the resolution either re-links the new line to the old event (keeping its effects) or explicitly reverts the old effects first. Twin-count changes and header changes → `parse_review`, no transfers. Reconciled statement + new revision → `conflict_open` (as v3). Fixtures: corrected date/amount after an applied create, two genuinely identical purchases, same-count reordered distinct twins, merchant change with an old applied effect.
 
-### 5.8 Modes (M11, A9, D6)
-- `live`: `account.statement_live_from` is set and `period_end ≥` it. Persisted as `mode` at creation.
-- `historical`: everything else, including every account with `statement_live_from = null`. Parsing, revisions, matching and coverage persist (needed for deferral and summaries); **no cases of any kind** (guardrail failures, conflicts and invalidations are recorded as non-actionable diagnostics in `summary`), no proposals, no policy.
-- `verify`: a distinct runtime (§3) with no API token, no MinIO key, read-only DB role: lists Drive, parses in memory, runs the pure matcher against a read-only snapshot, writes a report under `/var/lib/home-hub-verify/`. Zero application-state writes by construction (no write capability exists in that process); tested with policies enabled and post-cutover inputs.
-- `backfill`: an ordinary worker run over history (`trigger=owner_cli`). Because it can include live periods once `statement_live_from` is set, the CLI requires `--acknowledge-live-periods` and prints the live-period count before proceeding; policy stays under its own gate (§7.3).
+### 5.8 Modes (A9, C7)
+`live`, `historical`, `backfill`: as v3. `verify` is now two steps because verify cannot decrypt: (1) the worker, as `homehub-worker`, runs `export-masked --for-verify` (local only: unlock + extract + mask, writing masked text snapshots by sha256 into `/var/lib/home-hub-verify/masked/`, no API or MinIO calls); (2) `homehub-verify` runs the verify runner over those snapshots: parser child (its own read-only login mount), pure matching against a read-only snapshot through `accounting_ro`, report into `/var/lib/home-hub-verify/reports/`. Neither step can write application state; tested with policies enabled.
 
-## 6. Matching engine
-
-Pure `match(...) -> MatchResult`; the DB layer runs it inside one transaction per statement with the lock order of §7.4. Idempotent.
-
-### 6.1 Populations (S2)
-Participating accounts: the statement's account plus accounts whose `combined_account_id` points at it. Candidate entries: those accounts, `posted_date` (fallback `entry_date`) in `[period_start − 10 d, period_end + 10 d]`, no active coverage, excluding `balance_adjustment` and (unless the line is a reward) `reward`. Reverse population: `posted_date ∈ [period_start, period_end]`. The participating set is recomputed on every run; a change (combined membership edited) marks the statement `needs_recheck` through the account trigger.
-
-### 6.2 Eligibility gates (A4)
-Eligibility is a gate, evaluated before any scoring:
-
-| line_kind | eligible ledger representations |
-|---|---|
-| payment (card) | `transfer_in` on the card whose paired leg is not a card |
-| refund | `refund` entries, with or without `refunds_entry_id` (orphans allowed) |
-| installment (`seq/total` present) | an entry listed in `schedule_instance.posted_entry_ids` whose instance has `seq == installment_seq` and whose definition is an installment with `times == installment_total` and whose per-instance amount equals the line; no verified instance → `line_unmatched` case with hint 分期未對應, never a generic match |
-| purchase | standalone `expense` entries that are not members of any group and not listed in any `posted_entry_ids`; complete split groups (every member unclaimed); never partial groups, never installment members |
-| fee / interest | `fee` / `interest` entries (standalone or children not yet covered) |
-| reward | `reward` entries |
-| deposit (bank) | `income`, `transfer_in`, settlement inflows (`is_settlement` on receivable/payable with positive flow), `interest` |
-| withdrawal (bank) | `expense`, `transfer_out`, settlement outflows, `fee` |
-| transfer_in / transfer_out (bank, when the statement names it) | the matching transfer leg |
-| balance_adjustment / unknown | nothing (case) |
-
-Same currency; `foreign_amount` compares against `original_amount`/`original_currency`.
-
-### 6.3 Representations, scoring, decision (A4, A5)
-For each line, every eligible representation is scored, **across all gates at once**: a standalone entry, a complete group (members only), a complete group with its fee/discount children, an installment instance entry, a transfer leg, a refund. Monetary conservation is part of eligibility: a representation is admissible only if `Σ flow of its rows == line.flow_amount` exactly, except the foreign representation below.
-
-Score = `0.60 (amount exact) + 0.30 × max(0, 1 − date_distance/4) + 0.10 × Jaccard(merchant tokens)`; `date_distance` = min over (`posted_date` vs entry `posted_date`, `txn_date` vs `entry_date`). Decision per line: the best representation is accepted when `score ≥ 0.80` **and** it beats every other admissible representation of any kind by `≥ 0.15`; otherwise, if any representation scored `≥ 0.50`, the line becomes `ambiguous` and stops; otherwise it falls to the foreign and near evaluations, then to a case. A group accepted as representation reserves exactly the rows it was scored with (members, plus children only in the "with children" variant), so a separately printed fee line can still claim an uncovered child.
-
-**Foreign representation (R6, A5):** eligible when `foreign_amount == original_amount` and currencies match, date ≤ 5 d, and `line.flow − entry.flow == −fee_expected` where `fee_expected = proposed_fx_fee(account, entry.amount)` quantised with the existing `_round_amount`/whole-unit rules (`fx_fee_rounding` is a mode, the quantum is the currency's). When the equality holds: score as above using the foreign amount, and the accepted coverage is principal + a **proposed** fee child (`attach_fee`, policy-eligible); the line is not consumed until the child exists (owner or policy), so the conservation invariant holds. When the residual is any other value → `amount_delta` case with the residual, no coverage.
-
-**Near (R7):** merchant token overlap ≥ 0.5, `|delta| ≤ max(10 TWD, 3 %)`, ≤ 5 d → always an `amount_delta` case.
-
-**Bank-only (R8):** `fee/interest/reward` lines matching the issuer's versioned pattern table (`年費`, `循環利息`, `現金回饋`, `跨行手續費`, …) with no eligible existing entry within ±5 d → proposal `create_system_entry`.
-
-**Deferral (R9, B4):** reverse-population entry unmatched with `posted_date > period_end − 2 d` → explanation `deferred_next_period` with `deferred_to_period_end` computed from the account's cycle (`closing_day`, or the bank's calendar month); when a statement with that `period_end` is created the link is filled and its matcher tries deferred entries first. Confirm of the next statement first resolves/reopens its deferrals; an unmatched deferred entry reopens as `entry_unmatched` on the earlier statement **before** the next statement can be confirmed, so a confirmation is never invalidated by the reopen.
-
-**Cross-account (R10):** as v2; `move_account` targets may be outside the participating set (typed exception in validation).
-
-Duplicate claims are impossible (unique active entry); a second line scoring a covered row → `duplicate_claim`. Thresholds in settings, versioned.
-
-### 6.4 Bank statements — as v2; `balance_gap = statement_total − balance_asof(period_end)` with `posted_date ≤ period_end`.
+## 6. Matching engine — as v3 (populations, eligibility gates, global representation competition, conservation, foreign/near/bank-only/deferral/cross-account), with one change:
+- **Installments (C5):** eligible only through a confirmed `installment_plan_map` row for the account and plan key; the mapped definition's instance with `seq == installment_seq` and equal per-instance amount is the single admissible representation. Without a confirmed mapping the line is a `line_unmatched` case with hint 分期未對應 and a `link_installment_plan` action listing candidate definitions, **even when exactly one numeric candidate exists**. Fixture: wrong plan with equal total/sequence/amount must stay a case.
 
 ## 7. Cases, actions, policy
 
-### 7.1 Case lifecycle — as v2, plus `recheck` cases from the sweep in live mode and `superseded` by lineage.
+### 7.1 Case lifecycle — as v3.
 
-### 7.2 Actions (M6, M7, A5, A7, A8)
-Every action: pydantic params (`extra='forbid'`), **prepare phase** outside any lock (FX rate fetch through `get_rate`, which commits its cache; category/project/account existence), then **one transaction** in the §7.4 lock order: re-validate against current rows (ownership, participating set with typed exceptions, protected-entry rules → 409, import lock, scheduled-entry restrictions, kind/currency compatibility, bounded amounts, id scoping: entry/group/line ids must come from the case's candidates/context or be created by this action; category/project/account ids are validated references), check `effect_key` (422 duplicate effect) and `before` snapshots (409 conflict), apply, write coverage with the conservation assertion, record `reconciliation_action` and audit, recompute counts.
+### 7.2 Actions (as v3, with C4/C6/C8 changes)
+- `attach_fee`: params `entry_id, fee_line_id?`; the purchase line is bound from the case's event (bundled) or `fee_line_id` must be a fee line of the same statement (separate); an action lacking that binding is rejected; `fee = residual` as v3, **and** `0 < fee ≤ 5 % × |principal|`, and the child amount must satisfy the exact conservation assertion (a quantum-tolerant residual that would break exact conservation fails with no partial effect). Tests: zero, negative, excessive, quantum-violating.
+- `adjust_amount`: `fx_rate := amount / original_amount` derived from the authoritative pair (as base `resolve_fx` does), with zero checks and the ledger's precision; the prepared market rate is not stored. 
+- `link_installment_plan`: `case_id, definition_id` → inserts `installment_plan_map` (owner only) and re-runs the line.
+- `balance_adjustment_asof` (C4): contract = **account generation compare-and-write**, not SSI. `account.balance_generation` (bigint) is incremented by the `ledger_entry` triggers of §4.6 for the affected account(s) (old and new on moves) and by account-config triggers. The action: read `generation`, compute `delta` over `posted_date ≤ period_end` in READ COMMITTED, then take the account row lock, re-read `generation`; if unchanged insert the adjustment (the insert itself bumps the generation) and commit; if changed, roll back the whole transaction and retry from the start (fresh statement/current-revision validation) at most 3 times; on exhaustion return 409 with no action, budget or audit effect. Later edits are caught by the dirty protocol (`needs_recheck`). Tests: concurrent edit and delete of summed rows between compute and lock, double submit, exhaustion.
+- all other rows as v3.
 
-| action | params | effect | inverse |
-|---|---|---|---|
-| `match` | `line_id, entry_id` or `group_id` (+ `with_children`) | coverage only; allowed on protected entries; conservation must hold | delete coverage |
-| `unmatch` | `line_id` | release the line's claim | re-claim if rows unchanged |
-| `adjust_amount` | `entry_id, line_id` | `amount := |line.flow|` with the ledger sign; when the line prints a foreign amount, `original_amount := foreign_amount` and `fx_rate` from the prepared rate; previous values to `before` and `description`; date unchanged **[owner]** | restore if snapshot unchanged |
-| `attach_fee` | `entry_id, line_id?` | `fee := residual` where residual = `entry.flow − line.flow` (bundled, no `line_id`) or `|fee line.flow|` (separate, `line_id` of the fee line); must equal `fee_expected` within one quantum; entry has no existing `國外交易手續費` child; writes the child through the existing child path; coverage: bundled → principal + child on the purchase line; separate → child on the fee line only | delete the child if unchanged |
-| `create_entry` | `line_id, kind ∈ {expense, income}, category_id, name?, project_id?` | account = statement account, amount from `flow_amount`, dates from the line, `source='statement'`, `needs_review` unless owner-chosen category | delete if unchanged |
-| `create_refund` | `line_id, original_entry_id` | amount `|line.flow|`, date `posted_date`, account = statement account; original must be in the participating set with remaining refundable ≥ amount (`settlement_service` rules) | delete if unchanged |
-| `create_system_entry` | `line_id, kind ∈ {fee, interest, reward}` | as v2; category from settings | delete if unchanged |
-| `move_account` | `entry_id, account_id` | target any non-archived account of compatible kind/currency; existing entry-write validation; both statements re-run | move back if unchanged |
-| `defer_next_period` | `entry_id` | explanation + `deferred_to_period_end` | clear |
-| `split_entry` | `entry_id, parts[]` | via `split_service` conversion; `before` stores the anchor and all member/child rows | restore the anchor exactly and remove members when every member/child is unchanged, else refuse |
-| `balance_adjustment_asof` | `case_id` only | owner only; account, period and closing amount are taken from the case's statement (never from params); runs in a `SERIALIZABLE` transaction with up to 3 retries, locks the account row, computes `delta = statement_closing − balance_asof(period_end)` over `posted_date ≤ period_end`, refuses zero, inserts a `balance_adjustment` dated `period_end` with `needs_review=true`; concurrent edits/deletes of summed rows abort the transaction (SSI), which retries and recomputes | delete if unchanged |
-| `revert` | `action_id` | runs the stored inverse only when every touched row still equals `after` and no later applied action references its rows; refuses otherwise | — |
+### 7.3 Policy engine — as v3 (shipped off; caps; budget), plus: the policy phase runs in a **second transaction** after matching, taking budget rows then the statement lock in the §7.4 order (matching never touches the budget).
+### 7.4 Lock order — as v3; writers never lock statements; the budget phase is separate (above).
 
-Tests (§12) include concurrent edit/delete during `balance_adjustment_asof`, split revert after a member edit (refuse), duplicate effect across revisions, FX prepare before locks.
+## 8. API — as v3, with: no `run.request` file (polling, §4.1); claim/renew endpoints; `GET /statements/ingest-runs?status=`.
 
-### 7.3 Policy engine (D4, A6)
-Shipped off; enabling per action requires the §12 money/concurrency/revision/auth fixtures green, the operator checklist signed, and the owner's review of the first complete live period. Caps: per action amount, per statement count/total, per month per currency via `policy_budget` (atomic reservation; non-TWD budgets are per currency; foreign-currency accounts stay excluded until a budget exists for their currency). Exclusions as v2. `policy.accept_agent_proposals` off; even when on, only `match` on `ambiguous` with a validator-confirmed single admissible representation.
+### 8.1 Token scopes (M9, A1, C1)
+Authorization is **independent of feature mounting**. Rules:
+- When `ACCOUNTING_TOKEN_SCOPES` is set, the scope dependency is enforced on every router whether or not reconciliation is enabled; unknown scope names, unknown or duplicate labels, duplicate token values and malformed maps refuse startup.
+- When `ACCOUNTING_TOKEN_SCOPES` is unset ("compatibility mode"), startup refuses if `ACCOUNTING_RECONCILIATION_ENABLED=true` **or** if any configured token label is one of the restricted names (`hermes`, `worker`, or any label in `ACCOUNTING_RESTRICTED_LABELS`); compatibility mode therefore exists only for an all-legacy token set and cannot be reached while a restricted credential is configured.
+- Turning the feature flag off with scopes still set keeps every restriction (the statement/reconciliation routers are simply not mounted). Test: enabled→disabled with the Hermes token against every existing mutation route stays 403.
+- Scopes and the `legacy`/`ingest`/`enqueue` exclusions as v3; PR-R4 grants Hermes `read,propose` only (S2), `enqueue` later on the owner's word.
 
-### 7.4 Lock order (A6) — extension of D32
-`import advisory key (shared) → policy_budget row(s) (FOR UPDATE, by month/currency) → account_statement row(s) (FOR UPDATE, ascending id; both statements for move_account) → schedule definition/instances (as D32) → entry_group rows (ascending) → entries with legs (one ordered statement)`. The account row keeps its existing separate class (only `balance_adjustment*` paths, before any entry lock). Existing edit paths never lock statements: they emit dirty rows (§4.6) and the next reconcile/apply/confirm sweeps them, so no cycle exists. Reconcile discovers affected statements before taking entry locks and re-checks membership after locking. Tests: edit-vs-reconcile, schedule repost-vs-reconcile, import-vs-reconcile, two statements at the monthly cap.
+## 9. Agent contract — as v3 (§9.1 enqueue counts only; §9.2 DTO with masking and limits).
+## 10. UI — as v3, plus the 需重新同步 chip from `stale_events_pending`, the quarantine state (資料已變更，待確認) on affected rows, and the 分期對應 sheet for `link_installment_plan`.
+## 11. Privacy and security — as v3 with §3/§5.5/§8.1 of this version.
 
-## 8. API (A1, B1)
+## 12. Testing — v3 list plus: C1 enabled→disabled matrix and startup refusals; C2 fixtures (§5.7); C3 old/new population tests, barrier tests, historical release, self-event skipping, amplification; C4 generation races; C5 wrong-plan case; C6 concurrent child insert/relink during apply, split restore exact-or-refuse, FX ratio derivation; C8 fee bounds and conservation; C9 acquisition races and crash boundaries; S1 run lease protocol; S3 null-safe trigger no-op, migration ordering.
 
-| method | path | scope |
-|---|---|---|
-| GET statements/revisions/cases/actions (as v2) | | `read` |
-| POST `/accounts/{id}/statements` (manual), `/…/reconcile`, `/…/confirm`, proposals apply/reject, case actions/dismiss, action revert | | `write` |
-| POST `/reconciliation/cases/{id}/proposals` | | `propose` |
-| POST `/statements/ingest/run` | enqueue only; no arguments; returns the queued/coalesced run | `enqueue` |
-| POST `/statements/ingest-runs/{id}/claim`, `/statements/files`, `/statements/sources`, `/statements/revisions`, PATCH `/statements/files/{id}`, GET `/statements/files?status=` | worker only; every submission carries a run id claimed by the same label | `ingest` |
-| GET/PUT `/settings/reconciliation` | | `read` / `admin` |
-
-Confirm: atomic over the sweep, deferral resolution, current revision, `guardrail_ok`, `conflict_open=false`, `needs_recheck=false`, no open/proposed cases, no pending actionable proposals; `force` requires a note and is audited.
-
-### 8.1 Token scopes (M9, A1)
-`ACCOUNTING_TOKEN_SCOPES="spa=legacy; ops=legacy,admin; hermes=read,propose; worker=ingest"`.
-- Scopes: `read`, `propose`, `write`, `admin`, `enqueue`, `ingest`, `legacy` (= today's full access, explicit).
-- **Reconciliation is a gated feature**: `ACCOUNTING_RECONCILIATION_ENABLED=true` is required for the statement/reconciliation routers to be mounted at all, and it refuses to start unless `ACCOUNTING_TOKEN_SCOPES` is set, every configured label is listed, no bare tokens exist, `ACCOUNTING_API_TOKENS` is non-empty, and no label holds `legacy` together with `ingest`/`enqueue`. With the flag off the service behaves exactly as today (legacy label-only auth) and no restricted principal can exist. An unset scopes variable can therefore never grant Hermes anything: the routes it would use are not mounted.
-- Enforcement on all routers via a per-route method→scope table; `ingest` cannot read ledger routes; `enqueue` cannot submit files/revisions; `propose` writes proposal rows only.
-- Tests: forged revision submission from `hermes` (403), `enqueue` with arguments (422/ignored), unset scopes with the flag on (startup refusal), unknown labels, duplicate labels, `legacy+ingest` (startup refusal), every legacy mutation route against each restricted token.
-
-## 9. Agent contract (Hermes)
-### 9.1 `homehub-statements`: `POST /statements/ingest/run` (needs `enqueue`, hence the dedicated Hermes user, §3), then counts only.
-### 9.2 `homehub-reconcile` (D8, B5): as v2, with the outbound DTO masked field by field through the same masker as §5.4 (`account_name` included, emails/phones/IDs/separator-tolerant digit runs), history window ≤ 180 days and ≤ 10 rows, ≤ 5 candidates, ≤ 5 cross-account rows; synthetic canary tests on every string field. Provider: Hermes keeps `openai-codex` **[owner]**; both flows stated in settings.
-
-## 10. UI — as v2 (both route tables, sibling chip, sheet-before-form, dirty registry, focus/Escape, keyboard force-confirm with note, Caddy for all deep links), plus: the header labels the comparison 帳單應繳 vs 帳本本期 (the period measure, not today's remaining payment); a 已確認（有新版本）/ 需重新檢查 chip when `conflict_open`/`needs_recheck`; lineage flags (文字已變更) on transferred rows; historical periods show the summary table only.
-
-## 11. Privacy and security — as v2, with §3's identities, §5.5's effective-policy gate, §8.1's feature gate, and the verify runtime's capability absence.
-
-## 12. Testing — v2 list plus: A2 scenarios (same-count twin reorder, changed-kind same logical key, corrected date after an applied create → duplicate effect refused), A3 trigger coverage for bulk delete, schedule repost, settlement relink, child replacement, member detachment, account config edit, insert into a reconciled period, historical mode without cases; A4 collisions (group vs standalone same amount/date, installment of another plan, orphan refund, bank income/settlement lines); A5 conservation (group with separately printed fee child; foreign residual ≠ fee); A6/A7 concurrency (edit-vs-reconcile, repost-vs-reconcile, two statements at the cap, concurrent edit/delete during as-of adjustment); A8 inverses (split revert refusal, snapshot conflict); A9 verify call graph with no write capability; A11 acquisition (same path new bytes, same bytes two paths, rename, delete); B1 run ownership (submission with a foreign run id refused); B2 sandbox smoke test; B5 DTO canaries.
-
-## 13. Rollout — as v2, plus the ops prerequisites: `homehub-worker`, `homehub-verify`, `hermes` users; sudoers entries; the parser login as `homehub-worker`; `ACCOUNTING_RECONCILIATION_ENABLED` and scopes in `.env`; operator checklist signed before `backfill`.
+## 13. Rollout
+PR stack as v2 (R1 backend core, R2 worker, R3 frontend by Multica, R4 Hermes skills). **Ops prerequisites before the feature flag can be enabled** (separate from the PRs, owner-scheduled): users `homehub-api` (API moved off `opc`), `homehub-worker`, `homehub-verify`, `hermes` (Hermes moved off `opc`); sudoers entries for the named CLIs; parser login as `homehub-worker`; read-only Drive token; MinIO bucket; DB roles; `.env` with `ACCOUNTING_TOKEN_SCOPES` and the SPA/ops labels on `legacy`; the operator checklist (§3) signed before `backfill`.
 
 ## 14. Decisions
 Taken **[owner]**: statement-driven; parser on the Claude CLI inside the worker; Hermes keeps its provider for triage; matched = marked; amount-only adjustments; entry point 提醒中心; bank accounts in v1.
-Changed after review, pending the owner's confirmation: policy ships off with caps (owner wanted on); Hermes gets `enqueue` only after it runs as its own user (owner wanted chat-triggered runs; until then the timer runs ingestion); per-account `statement_live_from` with null = historical.
-Owner input needed: `statement_live_from` per account; create the `hermes` user (yes/no); schedule the API's move to `homehub-api` (yes/later).
+Changed after review, pending the owner's confirmation: policy ships off with caps; Hermes `enqueue` only after it runs as its own user; per-account `statement_live_from` (null = historical); the API moves to its own user before the feature is enabled.
+Owner input needed: `statement_live_from` per account (after the verify run); create the `hermes` and `homehub-api` users (ops task, timing); confirm the policy-off start.
 
 ## 15. Answer map
-Rounds 1/1.1 (v2): M1 §4.4/§5.6 · M2 §6.2–6.3 · M3 §6.3/§7.2/§7.3 · M4 §4.6 · M5 §4.4–4.5/§5.7 · M6 §7.2 · M7 §7.2 · M8 §4.9/§7.2/§7.4 · M9 §8.1 · M10 §3/§5.4–5.5 · M11 §5.8 · S1 §4 · S2 §6.1/§6.3 · S3 §4.2 · S4 §10 · S5 §4.3/§4.7/§8 · N1 §6.3 · N2 §12 · D1–D3 §5.5 · D4 §7.3 · D5 §8/§8.1 · D6 §5.8 · D7 §4.1 · D8 §9.2 · D9 §5.6.
-Round 2 (v3): A1 §5.6/§8/§8.1 (worker-only `ingest`, `enqueue` separate, server-side derivation, feature gate makes unset scopes impossible) · A2 §4.4/§4.5/§4.9/§5.7 (immutable lines, lineage, `effect_key`) · A3 §4.6 (triggers + hooks, nullable FKs with snapshots, account/insert triggers, historical summary-only) · A4 §6.2–6.3 (gates incl. instance-verified installments, orphan refunds, bank taxonomy, global comparison across representations, partial groups excluded) · A5 §4.6/§6.3/§7.2 (conservation invariant, children variants, foreign residual equality, quantum) · A6 §4.10/§7.4 (extended order, dirty queue instead of statement locks from edit paths, atomic budget) · A7 §7.2 (serializable as-of adjustment bound to the case's statement) · A8 §4.9/§7.2 (snapshot conflicts, split inverse, typed id exceptions, prepare phase for FX, refund derivation) · A9 §3/§5.8 (verify runtime without write capability, null live-from, historical overrides, backfill acknowledgement) · A10 §3/§5.5 (Hermes user prerequisite, `/etc` unbound + smoke gate) · A11 §4.2/§5.1 (lsjson + copyto, content-addressed, source history) · B1 §4.1 (server-owned runs, claim, coalescing) · B2 §5.5 (2.1.295, bounds, smoke test, turn-limit = failure) · B3 §4 (downgrade refusal, operator head check) · B4 §6.3 R9/§8 (period-end key, deferrals before confirm, labelled period measure) · B5 §9.2.
+Rounds 1/1.1 → v2, round 2 → v3: as listed in v3 §15 (commit `6aabdc9`).
+Round 3 → v4: C1 §8.1 (auth independent of mounting; compatibility mode impossible with restricted labels) · C2 §4.4/§4.5/§4.9/§5.7 (persistent `statement_event`, unique active effects per event, `normalised` vs `changed`, quarantine) · C3 §4.6 (OLD/NEW payload incl. links/currency/name/merchant, population derivation, watermark sweep under the statement lock, read-side staleness flag, historical release, self-event attribution, budget phase separated) · C4 §7.2 (account generation compare-and-write, bounded retries, no effects on exhaustion) · C5 §4.11/§6/§7.2 (owner-confirmed plan map) · C6 §4.9/§7.2 (snapshot scope, relationship-writer locking relied on and tested, FX ratio derived) · C7 §3/§5.5/§5.8 (API user prerequisite, verify via worker-exported masked snapshots, exact writable surfaces, stream-event gate, operator evidence for managed policy) · C8 §5.5/§7.2 (stdout+stderr caps, fee bounds, bound purchase line) · C9 §5.1 (staged download, verification, atomic publish, failure matrix) · S1 §4.1 (lease/fencing, polling, recovery) · S2 header note (`eef3b31` pin), §4.2 `path_history`, §8.1 PR-R4 grant · S3 §4/§4.6 (null-safe append-only triggers, migration ordering, `entry_source` name).
+
+## 16. Carried into the implementation plan as acceptance criteria (not re-specified here)
+Snapshot field inventory per action (C6); the exact trigger DDL and population-derivation queries (C3); the run lease state machine tests (S1); parser gate script and its evidence format (C7/B2); acquisition crash-boundary tests (C9); fee bound and conservation fixtures (C8); amplification benchmark for triggers on an import-sized batch (S3). Each becomes a task-level test in `docs/superpowers/plans/…-statement-reconciliation-r1.md` and `…-r2.md`.
