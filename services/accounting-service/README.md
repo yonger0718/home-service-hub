@@ -148,15 +148,15 @@ Deploy order: run `.venv/bin/alembic upgrade head` before restarting the service
 
 Matching (R1b). `GET /settings/reconciliation` also returns `rules` (the matcher's tunables, defaults shown) and
 `rules_version`; `PUT /settings/reconciliation {"rules": {...}}` overrides any subset of `exact_window_days` (3),
-`foreign_window_days` (5), `near_window_days` (5), `near_tolerance_abs` (`"10"`), `near_tolerance_pct` (`"0.03"`),
-`accept` (`"0.80"`), `margin` (`"0.15"`), `ambiguous_floor` (`"0.50"`), `candidate_window_days` (10), `deferral_days` (2)
+`foreign_window_days` (5), `near_window_days` (5), `near_tolerance_abs` (`"10"`, at least 0), `near_tolerance_pct` (`"0.03"`),
+`accept` (`"0.80"`), `margin` (`"0.15"`), `ambiguous_floor` (`"0.50"`), `candidate_window_days` (10), `deferral_days` (2: entries posted later than `period_end` minus that many days are deferred)
 and `bank_only_patterns`. Decimals are strings; `accept`, `margin`, `ambiguous_floor` and `near_tolerance_pct` must lie in
 0..1, integers in 0..10000; unknown keys and `period_end` are refused with 422 on `rules`. A PUT replaces `account_map`,
 `dirty_enabled` and `rules` wholesale (send them all). `rules_version` becomes `r1b-<settings version>` when the effective
 rules change.
 
-Daily sweep. The statement worker calls `POST /reconciliation/sweep` (`ingest` scope, body `{run_id, lease_token}`) once a
-day under its run lease: it reconciles every statement with a relevant ledger change past its watermark or with
+Daily sweep. The statement worker is expected to call `POST /reconciliation/sweep` (`ingest` scope, body `{run_id, lease_token}`) once a
+day (a worker convention, not enforced) under its run lease: it reconciles every statement with a relevant ledger change past its watermark or with
 `needs_recheck`, one transaction per statement, then fills deferral links (a deferral to a later period shows its link only
 after the later statement is reconciled or this batch runs). It answers 409 `lease` if the lease lapses between items;
 the finished items stay committed. One statement is reconciled with
