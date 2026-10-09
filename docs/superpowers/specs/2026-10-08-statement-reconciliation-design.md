@@ -1,315 +1,331 @@
 # Statement reconciliation (對帳) — design
 
-Status: draft v1.1 for Multica review (2026-10-08; owner decisions on provider, policy defaults, backfill and date handling folded in). Owner decisions taken so far are marked **[owner]**; defaults I chose are marked **[default]** and are open to change at review.
+Status: **v2** for Multica review (2026-10-09). v2 answers review rounds 1 (M1–M11, S1–S5, N1–N2) and 1.1 (D1–D9) on AGENT-83; the answer map is in §15. Owner decisions are marked **[owner]**; defaults I chose are **[default]**.
 
 ## 1. Problem
 
-The reminder centre's 信用卡帳單 only says how much to pay; nothing checks the ledger against what the bank actually billed. The owner already has every card and bank e-statement landing in Google Drive (`財務對帳單/銀行/{信用卡,銀行帳戶}/<bank>/…pdf`, 395 PDFs across 19 account groups as of 2026-10-08, plus 48 investment statements) through a Hermes mail automation. All sampled PDFs are password-protected. What is missing is: get the lines out of those PDFs, compare them with the ledger, and surface what differs so the owner can fix the ledger with one tap, or let a bounded agent propose the fix.
+The reminder centre's 信用卡帳單 only says how much to pay; nothing checks the ledger against what the bank billed. The owner's Hermes mail automation already lands every card and bank e-statement in Google Drive:
+
+| Drive path (under `財務對帳單/`) | content (2026-10-09) |
+|---|---|
+| `銀行/信用卡/<issuer>/` | 14 card folders, emailed e-statements, `YYYY-MM_<issuer>_…pdf` |
+| `銀行/銀行帳戶/<bank>/` | 12 bank folders, emailed e-statements |
+| `手動下載/國泰世華/` | 12 monthly Cathay 綜合月結單, `YYMM.pdf`, owner-downloaded (Cathay does not email them) |
+| `投資/`, `電子發票/` | out of scope (portfolio service has broker imports; e-invoice CSV is a later feature) |
+
+496 bank PDFs + 12 manual. Every PDF is password-protected. A read-only spike on one or two files per folder unlocked every folder with the owner's password rules and found a text layer in every file (pdfplumber), so **v1 has no OCR and no vision path**. Two folders use uppercase `.PDF`. 台新 changed its password rule in 2024-12 (two candidates).
 
 Goals, in priority order:
+1. Per statement period: every statement line is matched to a ledger object, explained (bank fee, interest, reward, deferred to next period) or an open case; same in the reverse direction.
+2. The ledger converges to the statement only through explicit, validated, reversible, audited actions. Nothing writes money without the owner's grant.
+3. The pipeline runs unattended for new statements and is idempotent over history.
+4. The triage "brain" is replaceable: Hermes today, anything that can call two HTTP endpoints later.
 
-1. Per card statement period: every statement line is either matched to a ledger entry, explained (fee, interest, reward, next period), or shown as an open case. Same for the reverse direction.
-2. The ledger converges to the statement with explicit, reversible actions. Nothing silently writes money.
-3. The pipeline runs unattended for new statements and can be re-run over history without duplicating anything.
-4. The "brain" for the hard residue is replaceable: Hermes today, anything that can call two HTTP endpoints tomorrow.
-
-Non-goals (v1): bank logins/scraping (the all-set-tw approach is explicitly rejected **[owner]**), OCR of scanned paper, investment statements (the portfolio service has its own broker imports), multi-currency bank accounts beyond displaying the foreign amount, chat-based approval.
+Non-goals (v1): bank logins/scraping (the all-set-tw approach is rejected **[owner]**), OCR/vision, investment and e-invoice files, chat-based approval, historical ledger repair (match/summary only before the per-account live period).
 
 ## 2. Shape
 
-Three layers, in order, each handling what the previous one could not:
-
-| Layer | Who | Handles |
+| Layer | Runs as | Handles |
 |---|---|---|
-| Rules | HomeHub matching service (pure Python, deterministic) | exact/near matches, posted-date drift, FX fee, transfer fee, split groups, installments, card payments, bank-only lines (年費/利息/回饋/跨行手續費), refunds, next-period, duplicates |
-| Model as a function | ingest worker calling a model with a JSON schema, no tools | PDF text → statement lines; merchant normalisation; category suggestion for unseen merchants |
-| Agent triage | Hermes skill (v1) with a read-only scoped token, writing proposals only | residue: unexplained deltas, many-to-one, two plausible candidates, closing-balance gaps |
+| Rules | API process, `reconciliation_service` (pure, deterministic) | specialised identities first (payment, refund, installment, group), then exact, foreign, near; bank-only lines; deferral; cross-account hints; never auto-resolves ambiguity |
+| Model as a function | parser child of the ingest worker, sandboxed, tool-less | masked statement text → `StatementParse` JSON; nothing else |
+| Agent triage | Hermes skill with a `read,propose` token | proposals on open cases; cannot write the ledger, cannot run ingestion |
+| Apply | API process only, owner tap or the policy engine under owner grants | one transaction per action, audit row, operation-specific inverse |
 
-Apply = owner tap in the SPA, or the HomeHub policy engine for an allow-listed set of low-risk actions under thresholds. Every apply writes an audit row and is reversible.
+## 3. Processes, identities, access (D2, M10)
 
-## 3. Data model (accounting-service, Alembic migration `statement_tables`)
-
-All money columns are `Numeric(18, 2)` like `ledger_entry.amount`; dates are `date`; ids are `BigInteger` identity; timestamps are `timestamptz` UTC.
-
-### 3.1 `statement_file`
-One row per PDF/CSV seen by the ingest worker. Idempotency anchor.
-
-| column | notes |
-|---|---|
-| id | |
-| sha256 | unique; the raw (still encrypted) file bytes |
-| drive_path | `銀行/信用卡/國泰世華/….pdf` relative to the Drive folder; unique |
-| object_key | MinIO key in bucket `homehub-statements` (private); the decrypted PDF is **not** stored — only the original bytes, so the password stays necessary to read it |
-| account_id | nullable until mapped (see 4.2) |
-| kind | `card` / `bank` from the Drive path |
-| status | `new` / `unlocked` / `parsed` / `needs_review` / `failed` / `ignored` |
-| text_chars, has_text_layer | probe result; `has_text_layer=false` routes to the vision path |
-| parser | `model:<model id>` / `regex:<bank>` / `manual` |
-| error | last error text, redacted (no statement content) |
-| first_seen_at, parsed_at | |
-
-### 3.2 `account_statement`
-One row per account per period. Replaces nothing: the reminder centre keeps computing the live "應繳" from the ledger; this table is what the bank said.
-
-| column | notes |
-|---|---|
-| id | |
-| account_id | FK account; card or bank |
-| file_id | FK statement_file, nullable (manual statements have none) |
-| period_start, period_end | inclusive |
-| closing_date | card: statement date; bank: last day covered |
-| due_date | card only |
-| currency | statement currency (TWD for every sampled issuer; HSBC/DBS may show foreign sub-totals as lines) |
-| statement_total | card: 本期應繳總額; bank: closing balance |
-| opening_balance | bank only; card: 上期應繳 if printed |
-| minimum_payment | card only, nullable |
-| source | `manual` / `import` / `agent` |
-| status | `open` / `reconciled` / `disputed` |
-| raw | JSONB: the parser's full output, for audit and re-matching |
-| note | |
-| unique (account_id, period_end) | re-ingesting the same statement updates lines in place (see 4.6) |
-
-### 3.3 `statement_line`
-
-| column | notes |
-|---|---|
-| id | |
-| statement_id | FK |
-| line_hash | sha256 of (statement_id, posted_date, txn_date, amount, merchant_raw, seq); unique within statement |
-| seq | order as printed |
-| txn_date | 消費日, nullable |
-| posted_date | 入帳日 |
-| merchant_raw | as printed, trimmed |
-| merchant_norm | normalised (uppercase, punctuation stripped, known prefixes like `PAYPAL *`, `AMZN Mktp` collapsed); filled by the parser, overridable |
-| amount | signed in statement currency: expense positive, credit/refund negative, consistent with how the ledger signs `expense` |
-| foreign_amount, foreign_currency | when printed |
-| line_kind | `purchase` / `refund` / `payment` / `fee` / `interest` / `reward` / `installment` / `adjustment` / `transfer_in` / `transfer_out` / `unknown`; parser's classification, rules may override |
-| installment_seq, installment_total | `3/12` when printed |
-| matched_entry_id | FK ledger_entry, nullable |
-| match_kind | `auto` / `manual` / `agent` / `none` |
-| match_rule | which rule matched (string, for the UI's "why") |
-| group_id | FK entry_group when the line matched a split group as a whole |
-
-A ledger entry can be matched by at most one line (partial unique index on `matched_entry_id` where not null). A split group can be matched by one line (its members then count as matched through the group).
-
-### 3.4 `reconciliation_case`
-One row per unresolved thing after the rules ran.
-
-| column | notes |
-|---|---|
-| id | |
-| statement_id | FK |
-| kind | `line_unmatched` (statement has it, ledger does not) / `entry_unmatched` (ledger has it, statement does not) / `amount_delta` (matched by merchant+date but amount differs beyond tolerance) / `ambiguous` (2+ candidates with the same score) / `duplicate_entries` (2+ entries claim one line) / `balance_gap` (bank: opening + lines ≠ closing or ledger balance ≠ closing) |
-| line_id, entry_id | whichever applies |
-| candidates | JSONB: `[{entry_id, score, reasons[]}]` or `[{line_id, …}]` |
-| context | JSONB: computed once for the agent — same-merchant entries last 6 months (ids, dates, amounts), other accounts' entries with the same amount ±3 days, FX rate used, card's `fx_fee_pct` |
-| status | `open` / `proposed` / `resolved` / `dismissed` |
-| resolved_by | `owner` / `policy` / `agent` (never `agent` alone: agent proposals always go through policy or owner) |
-| created_at, resolved_at | |
-
-### 3.5 `reconciliation_proposal`
-
-| column | notes |
-|---|---|
-| id | |
-| case_id | FK |
-| action | one of §6.2 |
-| params | JSONB per action |
-| rationale | text ≤ 1,000 chars |
-| confidence | 0–1 |
-| author | token label (`reconcile`) or `policy` |
-| status | `pending` / `applied` / `rejected` / `superseded` |
-| created_at, decided_at | |
-
-### 3.6 `reconciliation_audit`
-Append-only: `{id, proposal_id nullable, case_id, action, params, before JSONB, after JSONB, actor, created_at}`. `before` holds the affected entries' prior field values so every apply can be reverted by a `revert` action that writes its own audit row.
-
-### 3.7 Ledger changes
-- `ENTRY_SOURCES` gains `statement` (entries created from a statement line).
-- `ledger_entry.posted_date` already exists; the matcher reads it. No new entry columns.
-- `account` gains `statement_password_rule` (nullable text, e.g. `id`, `id+birth`, `birth8`, `custom`) — the rule name only, never the secret.
-
-## 4. Ingest worker (`app/statements/ingest.py`, CLI `python -m app.statements.ingest`)
-
-Runs as a systemd user timer daily at 07:30 local (after Hermes' mail sweep) and on demand. On demand means the Hermes skill `homehub-statements` (§8) or the owner running the CLI; both execute the same command, so chat ("對帳一下") and the timer are indistinguishable in the audit. Lives in the accounting-service so it has the DB session, MinIO client and the FX service. Never imported by the API process.
-
-### 4.1 Sync
-`rclone sync gdrive:財務對帳單/銀行 <state>/inbox` (read-only on the Drive side; `--immutable`). The inbox lives in `/var/lib/home-hub-statements/` mode 700, owned by `opc`. Every file's sha256 is checked against `statement_file`; unseen files get a row with `status=new` and the original bytes are put in MinIO.
-
-### 4.2 Account mapping
-Drive subfolder → account by a YAML map in `/etc/home-hub-production/statement-accounts.yaml` (`銀行/信用卡/國泰世華: 12`, …). Unmapped folders → `status=ignored` with a once-per-folder log line; the SPA settings page lists unmapped folders so the owner can map them (writes the YAML through a settings endpoint, owner-only token).
-
-### 4.3 Unlock
-Passwords come from `/etc/home-hub-production/statement-passwords.env` (root:opc 0440, never read by the API process, never logged). Format: `<folder>=<password>` and optionally `<folder>.alt=<password>`. The worker tries the folder's values, then the account's `statement_password_rule` derivations from `STATEMENT_ID_NUMBER` / `STATEMENT_BIRTH_DATE` in the same file. Wrong password → `status=failed`, error `password`, retried next run only if the file changed. Decryption with `pypdf` (+ `cryptography` for AES). The decrypted bytes exist only in memory and in a `tmpfs` scratch dir for the vision path.
-
-### 4.4 Probe and extract
-`pdfplumber`: text chars and tables on page 1. `has_text_layer = text_chars ≥ 200`. Text path: full text with page markers plus `extract_tables()` output. Vision path: pages rendered at 150 dpi (`pypdfium2`) and sent as images. Both paths mask before leaving the box: card numbers (`\d{4}[- *]+\d{4}…` → keep last 4), ID numbers, the holder's name (from the passwords file's `STATEMENT_HOLDER_NAMES`).
-
-### 4.5 Parse (model as a function)
-One request per statement with a strict JSON schema (`StatementParse`): the §3.2 header fields plus `lines[]` with the §3.3 fields. Parser backend is pluggable (`claude-cli` / `codex-cli` / `anthropic-api`). **[owner]** v1 uses `claude-cli`: the worker shells out to `claude -p --output-format json` with the schema, authenticated by the VPS's existing Claude Code login (Max subscription, no API key in the service). Temperature 0 where the backend allows it, 3 retries on schema failure, 120 s timeout per statement, the CLI runs with `--tools ""` (no tool use) and only the masked text or page images on stdin. `anthropic-api` stays as the fallback backend for a future key-based deployment. Per-bank regex parsers (`app/statements/parsers/<bank>.py`) are tried **first** when registered and win when their self-check passes; the model is the fallback. v1 ships with no regex parsers; each gets added once three statements of that bank have parsed and the format is known.
-
-Guardrails, all hard:
-- `opening_balance + sum(lines.amount) == statement_total` for both cards and banks, with the §3.3 sign convention (purchases/fees/interest positive, payments/refunds/rewards negative; for banks deposits negative and withdrawals positive is **not** used — bank lines keep the account's own sign, deposits positive). A missing card `opening_balance` is treated as 0 only when the statement prints no 上期應繳; else `needs_review`. On failure lines are stored but **no matching runs**.
-- Every line's `posted_date` within `[period_start − 5d, period_end + 5d]`.
-- `len(lines) ≤ 2,000`; duplicates by `line_hash` dropped.
-- The model never sees the ledger. Parsing and matching are separate steps.
-
-### 4.6 Idempotency
-Statement upsert on `(account_id, period_end)`. On re-parse: lines are diffed by `line_hash`; unchanged lines keep their matches; removed lines release their match and close their cases as `superseded`; new lines get matched. Re-running the worker on an unchanged Drive folder is a no-op.
-
-### 4.7 Backfill mode
-`--backfill --until 2026-10-31`: ingests and matches but **never** creates cases of kind `line_unmatched` for periods before the cutover (the MOZE history is known-incomplete); instead writes a per-period 對帳率 summary (`matched / total lines`) into `account_statement.raw.backfill`. The SPA shows it as a read-only table under the card's statements. Cases are produced from the first post-cutover period on.
-
-## 5. Matching engine (`app/services/reconciliation_service.py`)
-
-Pure function `match(statement, lines, entries, groups, account) -> MatchResult` plus a thin DB layer. Entries considered: the account's entries with `entry_date` or `posted_date` in `[period_start − 10d, period_end + 10d]`, not already matched by another statement, not `kind in ('reward',)` unless the line is a reward.
-
-Rules run in order; a line is consumed by the first rule that produces exactly one candidate above threshold. Ties fall through to the next rule, and finally to a case.
-
-| # | rule | candidates | consumes |
+| Process | Linux user | Has | Does not have |
 |---|---|---|---|
-| R1 | payment | line_kind `payment` ↔ `transfer_in` on the card whose `transfer_group_id` out-leg is a bank account, amount equal, date ±5d | line + entry |
-| R2 | exact | amount equal (same currency), `posted_date` ±3d or `txn_date` = `entry_date` ±1d | line + entry; score = 1 − date_distance/4 + merchant bonus |
-| R3 | foreign | line has `foreign_amount` and entry `original_amount == foreign_amount` and `original_currency == foreign_currency`, date ±5d | line + entry; if TWD differs → **also** emits `amount_delta` with `params.delta` and `params.fee_expected = foreign × rate × fx_fee_pct` so the proposal can say "手續費" |
-| R4 | group | line amount == sum of a split group's members on this account, date ±3d | line + group |
-| R5 | installment | line `installment_seq/total` ↔ installment group member or schedule instance for the same plan, amount equal | line + entry |
-| R6 | bank-only | line_kind in `fee/interest/reward/adjustment` and merchant_norm matches the issuer's regex table (`年費`, `循環信息`, `現金回饋`, `跨行`…) | line → **policy action** `create_system_entry` (kind = line_kind, category from `settings.statement_system_categories`) |
-| R7 | near | same `merchant_norm` tokens (≥ 1 token of length ≥ 2 shared) and amount within `max(10 TWD, 3%)` and date ±5d | line + entry → emits `amount_delta` |
-| R8 | refund | negative line ↔ `refund` entry with `refunds_entry_id` on this account, amount equal, ±10d | line + entry |
-| R9 | next period | entry unmatched with `entry_date > period_end − 2d` | entry → `explained_next_period`, not a case |
-| R10 | cross-account | entry unmatched, another account has a statement line with equal amount ±3d unmatched | entry → case `entry_unmatched` with `candidates` pointing at the other account's line, proposal hint `move_account` |
+| accounting-service API (pm2) | `opc` (today) | DB role `accounting` (full), `ACCOUNTING_API_TOKENS`, `ACCOUNTING_TOKEN_SCOPES` | password file, Drive, MinIO write, parser login |
+| ingest worker (`homehub-statements.timer`/`.service`, systemd user unit of a dedicated user) | `homehub-worker` (new system user, no login shell) | `/etc/home-hub-production/statement-passwords.env` (root:homehub-worker 0440), rclone config with a **read-only** Drive token, MinIO key scoped to bucket `homehub-statements` (put/get), API token with scope `ingest` (§8.1), `/var/lib/home-hub-statements/` (0700) | DB credentials (never talks to Postgres), the API's token file, `/home/opc` |
+| parser child (`claude -p`) | `homehub-worker`, inside `bwrap` | its own `CLAUDE_CONFIG_DIR=/var/lib/home-hub-parser/claude` (owner logs in once as this user, subscription), stdin = masked text, a private tmpfs `/tmp`, network | password file, inbox, MinIO, API token, worker env (scrubbed to `PATH`, `HOME=/tmp`, `CLAUDE_CONFIG_DIR`), any repo checkout (cwd = empty tmpfs) |
+| Hermes | `opc` (today) | API token with scopes `read,propose` and, separately granted, `ingest` (§8.1) | worker execution, worker user, any file above |
+| owner CLI (`verify`, `backfill`) | `opc` via `sudo -u homehub-worker` | same as worker; `verify` additionally uses a read-only DB role `accounting_ro` | — |
 
-Everything still unmatched: `line_unmatched` or `entry_unmatched` cases. 2+ candidates with equal top score in R2/R7: `ambiguous`. 2+ entries claiming one line: `duplicate_entries`.
+All ledger writes happen in the API process, through the same lock order as every existing write path (D32: import advisory key → schedule definition → instances → entry groups ascending → target entries with transfer legs in one ordered statement). The worker is an API client; it never opens a DB session. Operator evidence required before real input: `sudo -u homehub-worker cat` of the password file succeeds, the same as `opc` fails, the parser child cannot read the inbox (bwrap test), and the API user cannot read the password file. Tests: synthetic injection PDFs whose text says "run tools / read credentials" produce schema-only output; a secret canary string placed in the inbox never appears in parser output or logs.
 
-Thresholds (`settings.reconciliation`): date windows, the near tolerance, and the auto-apply allowlist (§6.3) — editable in 記帳設定 → 對帳.
+## 4. Data model (accounting-service, Alembic `statement_tables`)
 
-Bank accounts (v1 scope: same engine, fewer rules): R1 maps to the mirror transfer leg, R2/R7/R9/R10 apply, closing balance check adds `balance_gap` when `ledger balance at period_end ≠ statement_total` after all explained items.
+Types follow the ledger: money `Numeric(20, 4)`, ids `Integer` identity (existing FKs are `Integer`), dates `date`, timestamps `timestamptz`. New enums get their own PostgreSQL types with upgrade/downgrade; `ENTRY_SOURCES` gains `statement` via `ALTER TYPE entry_source ADD VALUE` (downgrade recreates the type after rewriting rows to `manual`). FKs from audit tables are `ON DELETE RESTRICT` so history cannot vanish; entries referenced by coverage can still be deleted by the existing routes, which triggers coverage invalidation (§4.6). The migration is tested from the real schema head (`c4e8b2f1a7d3`) up and down.
 
-## 6. Cases, proposals, policy
+### 4.1 `ingest_run` (D7)
+`id, trigger ('timer'|'owner_cli'|'hermes'|'api'), principal (token label or unix user), mode ('live'|'verify'|'backfill'), parser_version, rules_version, policy_config_sha256, mapping_version, credential_version, started_at, finished_at, summary JSONB, status`. Every statement revision, case, proposal, policy apply and audit row references the run that produced it. `verify` runs never create this row (§6.7); they write a report file instead.
 
-### 6.1 Case lifecycle
-`open` → (`proposed` when a proposal exists) → `resolved` (owner tap, policy apply, or an apply from a proposal) / `dismissed` (owner: "ignore this line", stored so it never reopens). Re-parsing a statement supersedes cases whose line disappeared.
+### 4.2 `statement_file`
+`id, sha256 (unique), source_root ('mail'|'manual'), drive_path (unique), object_key, account_id (nullable), kind ('card'|'bank'), status ('new'|'unlocked'|'parsed'|'needs_review'|'failed'|'ignored'), failure ('password'|'no_text_layer'|'parse'|'guardrail'|'mapping'|'transient'), has_text_layer, text_chars, pages, credential_version, mapping_version, parser_version, attempts, next_retry_at, first_seen_at, parsed_at, run_id`.
+Retry triggers (S3): a file is retried when its `failure` is `transient` (backoff 1h/6h/24h, max 5), or when the matching version changed: `credential_version` (sha256 of the password file) for `password`, `mapping_version` (sha256 of the account map) for `mapping`, `parser_version` for `parse`/`guardrail`. An unchanged, successful file is a no-op. Drive deletions are recorded (`status=ignored`, `failure=null`, `drive_path` kept) and never delete statements; a rename is a new path with the same sha256 → the existing row's `drive_path` is updated. Upload-success/DB-failure: the object key is the sha256, so a retry is idempotent. One worker at a time: `flock` on `/var/lib/home-hub-statements/.lock`.
 
-### 6.2 Actions
-Each action has a validator and an applier in `reconciliation_actions.py`; both the UI and the policy engine go through the same code.
+### 4.3 `account_statement`
+`id, account_id, kind, currency, period_start, period_end, closing_date, due_date, opening_balance, statement_total, minimum_payment, source ('manual'|'import'|'agent'), mode ('historical'|'live') immutable at creation (§6.7), status ('open'|'reconciled'|'disputed'), current_revision_id, matched_count, explained_count, open_case_count, note, created_run_id`.
+Identity: unique `(account_id, currency, period_end)`. A re-ingest of the same identity is a new **revision**, never an overwrite (§4.4). A manual statement later covered by an import, or two files for the same identity with different bytes, creates revision N+1 with `conflict=true` and a `statement_conflict` case; nothing transfers automatically while the conflict is open.
 
-| action | params | effect |
+### 4.4 `statement_revision` (M5)
+`id, statement_id, revision (1..n), file_id (nullable), parser, parser_version, raw JSONB (full parser output), header fields as parsed, guardrail_ok, conflict, created_at, run_id`. Immutable. Lines belong to a revision.
+
+### 4.5 `statement_line`
+`id, revision_id, seq, logical_key, txn_date, posted_date, merchant_raw, merchant_norm, printed_amount, flow_amount, foreign_amount, foreign_currency, line_kind, installment_seq, installment_total`.
+- `printed_amount`: as the issuer prints it (card: charges positive, credits negative; bank: as printed).
+- `flow_amount` (M1): the **account cash-flow sign the ledger uses** (`SIGN_BY_KIND`: expense −, income +; a card payment received is + on the card; a refund is +; fees/interest −; rewards +; bank deposit +, withdrawal −). Derived once by the parser adapter from `line_kind` and `printed_amount`, verified by the guardrail equation, and the only amount the matcher compares. A statement amount never becomes a ledger amount directly; actions compute from `flow_amount` plus the action's own validation.
+- `logical_key` = `(posted_date, flow_amount, occurrence_index)` where `occurrence_index` numbers identical `(posted_date, flow_amount)` pairs in print order. Whitespace or merchant text changes keep the key; an inserted line shifts only the occurrence index of identical later twins, which is exactly the uncertain case (§4.4 diff).
+- `line_kind`: `purchase|refund|payment|fee|interest|reward|installment|balance_adjustment|transfer_in|transfer_out|unknown` (`adjustment` renamed to the ledger kind, M3).
+
+### 4.6 `statement_coverage` (M4)
+One row per **ledger row** a line covers: `id, statement_id, line_id, entry_id, role ('principal'|'child'|'member'), group_id (nullable), match_kind ('auto'|'manual'|'agent'), match_rule, status ('active'|'stale'), run_id, created_at`. Unique `(entry_id) WHERE status='active'` — one active claim per ledger row across all statements, groups and individual matches. A line matched to a split group reserves every member (and their fee/discount children) as `member`/`child` rows in one insert, so neither another line nor another statement can claim a member. Invalidation: the existing write paths (entry update/delete, `split_service` member add/update/remove/dissolve, `transfer_service`, settlement) call `coverage.invalidate(entry_ids)` inside their transaction; it marks the rows `stale`, clears the line's match, reopens or creates the case, and bumps the statement counts. A metadata-only `match` on a protected entry (transfer leg, settlement, live-schedule loan) is allowed and still invalidates on edit.
+
+### 4.7 `reconciliation_case`
+`id, statement_id, revision_id, kind ('line_unmatched'|'entry_unmatched'|'amount_delta'|'ambiguous'|'duplicate_claim'|'balance_gap'|'statement_conflict'|'parse_review'), line_id, entry_id, candidates JSONB, context JSONB, status ('open'|'proposed'|'resolved'|'dismissed'|'superseded'), explanation ('deferred_next_period'|'accepted_exception'|null), deferred_to_statement_id, resolved_by ('owner'|'policy'|null), resolved_action_id, version, created_at, resolved_at`. `resolved_by` is never `agent` (S5): an agent proposal is applied by the owner or by policy, and the audit row says which.
+
+### 4.8 `reconciliation_proposal`
+`id, case_id, case_version, action, params JSONB, rationale (≤1,000), confidence, author (token label or 'policy'), status ('pending'|'applied'|'rejected'|'superseded'), created_at, decided_at, applied_action_id`. One pending proposal per (case, author); a newer one supersedes. A proposal whose `case_version` is behind the case is `superseded` on read and cannot be applied.
+
+### 4.9 `reconciliation_action` + `reconciliation_audit` (M8)
+`reconciliation_action`: `id, idempotency_key (unique), case_id, proposal_id, action, params, actor ('owner'|'policy'), run_id, status ('applied'|'reverted'|'failed'), created_entry_ids int[], deleted_entry_ids int[], touched_entry_ids int[], before JSONB, after JSONB, inverse JSONB, reverted_by_action_id, created_at`. `reconciliation_audit` is the append-only log of every state change (actions, matches, invalidations, confirms, dismissals, forced confirms with note) with `actor`, `run_id`, `request_id`.
+
+### 4.10 Ledger changes
+- `ENTRY_SOURCES` + `statement`.
+- `account` + `statement_password_rule` (rule name only), `statement_live_from` (date, nullable: first period end treated as live, S2/M11), `statement_source_root` (`mail`/`manual`).
+- Settings (`settings.reconciliation`): thresholds, allowlist, caps, system categories, account map (§5.2).
+
+## 5. Ingest worker (`services/accounting-service/worker/statements/`, CLI `python -m worker.statements`)
+
+Separate package from `app/`; shares only the schemas module. Timer daily 07:30 local; on-demand via the API's enqueue (§8.1) which touches `/var/lib/home-hub-statements/run.request` watched by a `.path` unit; owner CLI directly.
+
+### 5.1 Sync
+`rclone sync` of `gdrive:財務對帳單/銀行` and `gdrive:財務對帳單/手動下載` into `inbox/mail` and `inbox/manual` with a read-only Drive token, `--immutable`, never deleting locally. Globs are case-insensitive (`.pdf`/`.PDF`). Each unseen sha256 → `statement_file(new)` via `POST /statements/files` (scope `ingest`) and `PUT` of the original bytes to MinIO (bucket private, SSE on, key = sha256).
+
+### 5.2 Account mapping
+`settings.reconciliation.account_map`: `{ "mail/信用卡/國泰世華": 12, "manual/國泰世華": 7, … }`, edited in 記帳設定 (scope `admin`), versioned (`mapping_version`). Unmapped folders: `status=ignored, failure=mapping`, listed in settings; mapping them re-queues their files (S3). Manual-root files carry no period in the name; account and period come from the parsed header, validated against the mapped account's `kind`.
+
+### 5.3 Unlock
+Password file format: `<root>/<folder>=<value>`, `.alt`, `.alt2`… extra candidates, `@<other folder>` alias, identity fields `STATEMENT_ID_NUMBER`, `STATEMENT_BIRTH_DATE`, `STATEMENT_HOLDER_NAMES`; value grammar `$ID`, `$ID[a:b]`, `$BIRTH8|6|4`, `$BIRTH{DDMMYY…}`, `+` concat, literal. Candidates are tried in order; the winning index is recorded, not the value. `pypdf` + `cryptography`. Decrypted bytes live only in memory and the bwrap tmpfs. Wrong password → `failed/password`, retried on `credential_version` change (S3). Nothing from this file is ever logged; errors say `password`.
+
+### 5.4 Probe and extract
+`pdfplumber` text + tables, page cap 40, byte cap 20 MB, 60 s. `text_chars < 200` on page 1 → `needs_review/no_text_layer` (fail closed; no vision in v1). Masking before anything leaves the worker: card/account numbers (keep last 4), the ID number, birth date, holder names, email addresses, phone numbers; a canary test proves the masks apply to both text and table output.
+
+### 5.5 Parse (model as a function; D1, D3)
+Regex parsers per bank (`worker/statements/parsers/<bank>.py`, versioned) run first when registered and win when their self-check passes; v1 ships none. Fallback: the parser child.
+
+Command (pinned CLI version, checked at start; any other version → `failed/parse`):
+```
+bwrap --unshare-all --share-net --die-with-parent --new-session --cap-drop ALL \
+  --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind /lib64 /lib64 --ro-bind <node> /node \
+  --tmpfs /tmp --tmpfs /work --chdir /work --bind /var/lib/home-hub-parser/claude /cfg \
+  --setenv HOME /tmp --setenv CLAUDE_CONFIG_DIR /cfg --setenv PATH /node/bin:/usr/bin \
+  -- claude -p --safe-mode --tools "" --disallowedTools "mcp__*" --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+     --permission-prompts none --no-session-persistence --output-format json --json-schema <StatementParse schema> \
+     --model <pinned> --max-turns 1 "<fixed instruction>"
+```
+`--safe-mode` disables CLAUDE.md, skills, plugins, hooks, MCP servers and custom agents while keeping subscription auth (`--bare` would drop it); `--tools ""` removes built-ins and `--disallowedTools "mcp__*"` plus the empty strict MCP config deny MCP; cwd is an empty tmpfs so no project instructions exist. The masked text goes on stdin; the schema is the only output contract: the worker reads `structured_output` from the JSON envelope, validates it with the pydantic `StatementParse` model (field length caps, ≤ 2,000 lines, decimal strings), and treats a missing/invalid `structured_output`, non-zero exit, auth error, or output over 2 MB as `failed/parse`. Limits: 120 s per attempt wall clock, 3 attempts, the whole process group killed on expiry (`start_new_session`, `killpg`), stdout/stderr capped while streaming. Environment scrubbed to the three variables above. Images are not an input in v1 (no stdin encoding is defined); the `anthropic-api` backend is a separately configured, owner-authorised fallback for a future key-based deployment.
+
+### 5.6 Guardrails (hard; any failure → `needs_review`, lines stored on the revision, **no matching, no cases except `parse_review`**)
+- Equations in flow terms, exact `Decimal`, no rounding: card `statement_total_debt == opening_debt − Σ flow_amount` (charges reduce flow, payments increase it); bank `closing == opening + Σ flow_amount`. Printed subtotals/section totals are excluded from lines by the schema (`is_subtotal` lines are dropped before the sum).
+- `posted_date ∈ [period_start − 5 d, period_end + 5 d]`; `period_end − period_start ≤ 62 d`; `currency` equals the mapped account's currency or the statement is `needs_review`.
+- `line_kind` and sign consistency: a `payment` must have `flow_amount > 0` on a card, etc. (table in the parser adapter, tested per kind).
+- Installment lines must carry `installment_seq ≤ installment_total`.
+Parsed-total agreement is reported as **arithmetic consistency**, not accuracy (D9); accuracy is measured against golden synthetic fixtures per bank layout (§12).
+
+### 5.7 Revisions and diff (M5)
+A new revision for an existing statement identity is diffed against the current revision by `logical_key`:
+- same key → the line id is kept; coverage, cases, proposals stay.
+- key only in the new revision → new line, matched normally.
+- key only in the old revision → the old line is retired: its active coverage becomes `stale`, its cases `superseded`, pending proposals `superseded`; applied actions keep their links (`reconciliation_action.line_logical_key`) and are **never** re-executed or reversed automatically.
+- any change in the count of identical `(posted_date, flow_amount)` twins, or a header change (totals, dates) → `parse_review` case and no automatic transfer of matches; the owner confirms which revision is current.
+Statements already `reconciled` get a new revision only with `conflict=true` and a `statement_conflict` case; status does not change until the owner acts.
+
+### 5.8 Modes (M11, D6)
+- `live`: for statements whose `period_end ≥ account.statement_live_from` (inclusive) **[owner picks per account]**; full pipeline. The decision is persisted as `account_statement.mode` at creation and never changes on rerun.
+- `historical`: `period_end < statement_live_from`: parse, revisions, matching and coverage are persisted (needed for cross-period deferral), but **no cases, no proposals, no policy**, and the UI shows only the per-period summary (matched/explained/unmatched counts, consistency flag). Historical repair is a separate, later, owner-authorised operation.
+- `verify` (owner CLI only, `python -m worker.statements verify --until <date> --report <path>`): zero application-state writes — read-only DB role, no MinIO upload, no `statement_file` rows, parsing in memory, pure matching against a read-only snapshot, report written to the given path under the worker's directory, never to the DB or Hermes. Tested with both policies enabled and post-cutover inputs: zero rows change.
+- `backfill` (owner CLI, explicit): same as `live`/`historical` by period, used once after R2 merges to load the Drive history; it is an ordinary authorised ingest, not the verify run.
+
+## 6. Matching engine (`app/services/reconciliation_service.py`)
+
+Pure `match(revision, lines, candidate_entries, groups, account_set, settings) -> MatchResult`, DB layer applies it inside one transaction per statement with the D32 lock order (statement row FOR UPDATE → groups → entries). Idempotent: re-running on an unchanged revision yields the same coverage.
+
+### 6.1 Candidate population
+Participating accounts (S2): the statement's account plus every account whose `combined_account_id` points at it (child cards billed on the master). Entries of those accounts with `posted_date` (fallback `entry_date`) in `[period_start − 10 d, period_end + 10 d]`, without an active coverage row, excluding `reward` entries unless the line is a reward, excluding `balance_adjustment`. The reverse population (entries that should appear on this statement) is narrower: `posted_date ∈ [period_start, period_end]`.
+
+### 6.2 Compatibility matrix (M2)
+A line may only match entries whose kind/direction agrees:
+
+| line_kind | entry kinds | direction |
 |---|---|---|
-| `match` | `line_id, entry_id` or `group_id` | sets `matched_entry_id`, `match_kind` |
-| `unmatch` | `line_id` | releases |
-| `adjust_amount` | `entry_id, amount, original_amount?` | updates the entry's TWD amount (and `fx_rate` recomputed when `original_amount` is set); the previous amount goes to `description` as `對帳前 NT$1,234` and to the audit `before` |
-| `attach_fee` | `entry_id, amount` | writes a `fee` child entry on the same account (existing `write_children` path), matches the fee line to it |
-| `create_entry` | `line_id, category_id, name?, project_id?` | creates an `expense`/`income`/`refund` entry from the line, `source='statement'`, `needs_review=true` unless the category came from the owner, then matches |
-| `create_system_entry` | `line_id, kind` | R6: fee/interest/reward/balance_adjustment entry, category per settings |
-| `move_account` | `entry_id, account_id` | changes the entry's account (uses the existing entry-write validation incl. protected entries) and re-runs matching on both statements |
-| `mark_next_period` | `entry_id` | records `explained_next_period` on the case; the entry is offered to the next statement first |
-| `split_entry` | `entry_id, parts[]` | converts an entry to a split group so lines can match members (uses `PUT /entries/{id}/split`) |
-| `balance_adjustment` | `account_id, amount, date` | bank only: posts through the existing balance-adjustment route, `needs_review=true` |
-| `revert` | `audit_id` | restores `before` |
+| purchase | expense; split group of expenses; installment group member | flow − |
+| refund | refund (`refunds_entry_id` set) | flow + |
+| payment (card) | transfer_in on the card whose paired leg is a bank/cash account | flow + |
+| transfer_in / transfer_out (bank) | transfer_in / transfer_out on this account | sign equal |
+| fee / interest | fee / interest entries (children or standalone) | flow − |
+| reward | reward entries | flow + |
+| installment | member of an `installment` group / posted schedule instance entry | flow − |
+| unknown | none (case) | — |
 
-Entries protected today (settlements, transfer legs beyond R1, live-schedule loans, referenced originals) stay protected: actions that would touch them fail validation with the existing 409 messages, and the case stays open with the reason shown.
+Same currency as the account; `foreign_amount` compares against `original_amount`/`original_currency`.
 
-### 6.3 Policy engine (auto-apply)
-Runs after matching, before the agent. Allowlist, each with a threshold, all default **off** except the first two **[owner: on]**:
+### 6.3 Rules, in order
+Each rule produces scored candidates from the compatible set. A line is consumed when exactly one candidate has `score ≥ 0.80` and beats the runner-up by `≥ 0.15`; otherwise, if any candidate scored `≥ 0.50`, the line becomes an `ambiguous` case **and stops** (no later rule, no policy); if none, the next rule runs.
 
-- `create_system_entry` for R6 lines (fee/interest/reward) — on.
-- `attach_fee` when R3's `delta` equals `fee_expected` within 1 TWD — on.
-- `adjust_amount` for R7 deltas ≤ 30 TWD — off.
-- `match` for `ambiguous` cases when the agent's proposal confidence ≥ 0.9 — off.
+Score = `amount_term + date_term + text_term`, with `amount_term = 0.60` for exact `flow_amount` equality (else the rule does not apply, except R7), `date_term = 0.30 × max(0, 1 − |posted_date − entry.posted_date| / 4)` (`txn_date` vs `entry_date` when both exist, best of the two), `text_term = 0.10 × Jaccard(tokens(merchant_norm), tokens(entry.merchant ∪ entry.name))` with tokens of length ≥ 2 after normalisation.
 
-Every policy apply is an audit row with `actor='policy'` and shows in the proposal inbox as "已自動套用 (可還原)".
+| # | rule | specifics |
+|---|---|---|
+| R1 payment | card `payment` line ↔ `transfer_in` on the card whose paired `transfer_out` leg is not a card; amount exact; ±5 d | metadata-only coverage (transfer legs stay protected) |
+| R2 refund | `refund` line ↔ `refund` entry; orphan refunds (original deleted) stay candidates | |
+| R3 installment | line with `installment_seq/total` ↔ entry in an `installment` group (schedule posting creates one per instance) whose definition matches by plan total and `seq`; amount exact | plan identity = `schedule_definition.id` carried on the group |
+| R4 group | `purchase` line `flow_amount` == Σ members of a split group on the account set; ±3 d | reserves all members + children |
+| R5 exact | compatible kinds, amount exact, scoring as above | |
+| R6 foreign | `foreign_amount == original_amount` and currency equal, ±5 d; TWD difference `delta = line.flow − entry.flow` recorded | emits `amount_delta` with `fee_expected = proposed_fx_fee(account, entry.amount)` (existing helper: `|amount| × fx_fee_pct / 100` with `fx_fee_rounding`) and whether the entry already has an `國外交易手續費` child |
+| R7 near | same `merchant_norm` token set overlap ≥ 0.5, `|delta| ≤ max(10 TWD, 3 %)`, ±5 d; amount_term scaled by `1 − |delta|/tolerance` | always a case (`amount_delta`), never auto |
+| R8 bank-only | `fee/interest/reward` lines whose `merchant_norm` matches the issuer's versioned pattern table (`年費`, `循環利息`, `現金回饋`, `跨行手續費`, …) **and** no compatible existing entry within ±5 d | proposal `create_system_entry` (policy-eligible, §7.3); `balance_adjustment` lines are never auto-created |
+| R9 deferral | reverse population entry unmatched with `posted_date > period_end − 2 d` | `explanation=deferred_next_period`, `deferred_to_statement_id` = next period once it exists; the next statement's matcher tries deferred entries first; if the next statement is reconciled without them the case reopens as `entry_unmatched` |
+| R10 cross-account | reverse population entry unmatched; another account **outside the participating set** has an unmatched line with equal `flow_amount` ±3 d | `entry_unmatched` case with `move_account` hint; never for combined child cards |
 
-### 6.4 Agent proposals
-Only `pending` proposals from the `reconcile` token label are shown in the inbox; the owner applies or rejects. A proposal must reference entries/lines that are in the case's `candidates` or `context`, or be a `create_entry`; anything else is rejected at POST with 422 so the agent cannot invent ids. One pending proposal per case per author; a new one supersedes.
+Leftovers: `line_unmatched` / `entry_unmatched`. Two active claims on one row cannot happen (unique index); a second line scoring an already-covered entry gets `duplicate_claim`. Thresholds live in `settings.reconciliation` and are versioned (`rules_version`).
 
-## 7. API (prefix `/reconciliation`, plus statement routes under `/accounts`)
+### 6.4 Bank statements
+Same engine; R1 maps to the mirrored transfer leg, R2/R5/R7/R9/R10 apply; after matching, `balance_gap = statement_total − ledger_balance_asof(period_end)` where the ledger balance uses `posted_date ≤ period_end`; a non-zero gap after explained items opens a `balance_gap` case (owner-only action, §7.2).
 
-| method | path | token scope | purpose |
+## 7. Cases, actions, policy
+
+### 7.1 Case lifecycle
+`open` → `proposed` (pending proposal exists) → `resolved` (owner/policy apply, or an explanation) / `dismissed` (owner: `accepted_exception`, stored durably; a dismissed arithmetic gap stays visible in the header delta) / `superseded` (revision retired the line). Counts and statement status are recomputed after every apply, unmatch, invalidation, reparse and revert (S5).
+
+### 7.2 Actions (M6, M7)
+Every action has a pydantic params schema with `extra='forbid'`, a validator run at proposal time **and again at apply time** against current rows, and an applier that runs in one transaction with the D32 lock order, writes `reconciliation_action` (idempotency key = `sha256(case_id, case_version, action, canonical params)`; a repeat returns the existing result) and an audit row. Validation always checks: case/statement/line ownership, account ∈ participating set, currency, protected-entry rules (409 as today), import lock, scheduled-entry restrictions, category/project existence and kind compatibility, bounded amounts, all ids (including nested) belong to the case's candidates/context or are newly created by this action.
+
+| action | params | effect | inverse |
 |---|---|---|---|
-| GET | `/accounts/{id}/statements` | read | list periods with `matched/total`, status |
-| GET | `/accounts/{id}/statements/{sid}` | read | header + lines (+ match info) + cases |
-| POST | `/accounts/{id}/statements` | write | manual statement (header + optional lines); also what a future importer uses |
-| POST | `/accounts/{id}/statements/{sid}/reconcile` | write | re-run rules + policy |
-| POST | `/accounts/{id}/statements/{sid}/confirm` | write | status → `reconciled` (requires no open cases, or `force=true` with a note) |
-| GET | `/reconciliation/cases?status=open&account_id=` | read | cases with candidates and context |
-| POST | `/reconciliation/cases/{id}/proposals` | propose | agent/owner proposal |
-| POST | `/reconciliation/proposals/{id}/apply` | write | owner apply |
+| `match` | `line_id, entry_id` or `group_id` | coverage rows only; allowed on protected entries | delete coverage |
+| `unmatch` | `line_id` | coverage → stale | re-insert if rows unchanged |
+| `adjust_amount` | `entry_id, line_id` | sets `amount` (and `original_amount` when the line prints a foreign amount, `fx_rate` recomputed by the existing FX path); prior values into `before` and `description` (`對帳前 NT$…`); date never changes **[owner]** | restore if version unchanged |
+| `attach_fee` | `entry_id, line_id?, fee_amount` | `fee_amount == fee_expected` (± `fx_fee_rounding` unit), entry has no `國外交易手續費` child, `0 < fee ≤ 5 % of |amount|`; writes the fee child via the existing child path; with `line_id` (separate fee line) covers it; without (bundled) the purchase line's coverage gains the child row | delete the created child |
+| `create_entry` | `line_id, kind ∈ {expense, income}, category_id, name?, project_id?` | amount from `flow_amount`, `source='statement'`, `needs_review=true` unless the category came from the owner; covers the line | delete the created entry if untouched |
+| `create_refund` | `line_id, original_entry_id` | via `settlement_service` refund creation (checks remaining refundable amount); covers the line | delete if untouched |
+| `create_system_entry` | `line_id, kind ∈ {fee, interest, reward}` | category from settings; only when R8 found no compatible existing entry; covers the line | delete if untouched |
+| `move_account` | `entry_id, account_id` | existing entry-write validation; re-runs matching on both statements | move back if untouched |
+| `defer_next_period` | `entry_id` | sets explanation and the forward link | clear |
+| `split_entry` | `entry_id, parts[]` | `PUT /entries/{id}/split` semantics (ids in `parts` must be categories/projects; amounts sum to the entry) | dissolve if members untouched |
+| `balance_adjustment_asof` | `account_id, period_end, line? ` | owner only, never policy: in one transaction, lock the account row, compute `delta = statement_closing − balance_asof(period_end)` from `posted_date ≤ period_end`, refuse zero, write a `balance_adjustment` entry dated `period_end` with `needs_review=true`; does not use the existing today-relative route | delete if untouched |
+| `revert` | `action_id` | runs the recorded inverse; refuses when any touched row's version changed since, when created rows were edited, or when a later action depends on it | — |
+
+Concurrency (M8): proposals carry `case_version`; apply fails with 409 if the case or statement revision moved; two applies of the same key return one result; owner edits racing a worker reconcile are serialised by the statement row lock. Tests: concurrent apply, stale proposal after reparse, reparse-vs-apply interleaving, revert after an intervening edit (must refuse), double submit of `attach_fee`.
+
+### 7.3 Policy engine (M3, D4)
+Runs after matching, before the agent, only on `live` statements, only when `settings.reconciliation.policy.enabled` and the action is individually enabled with caps. **Shipped off** for every action; the owner enables `create_system_entry` and `attach_fee` after the first live period has been reviewed by hand and the adversarial fixtures (§12) pass. This defers the owner's "on" choice rather than overriding it (§14). Caps when enabled: per action max amount (default 500 TWD for fees, 2,000 TWD for system entries), per statement max count (5) and total (5,000 TWD), per month aggregate (20,000 TWD); anything over → proposal for the owner. Policy never touches `ambiguous`, `amount_delta` from R7, `balance_gap`, `statement_conflict`, `parse_review`, historical statements, or `balance_adjustment` lines. Consuming agent proposals (`policy.accept_agent_proposals`) is a separate explicit grant, off, and even then only for `match` on `ambiguous` with validator-confirmed single eligibility; confidence is informational, never authorisation.
+
+### 7.4 Agent proposals
+Only `pending` proposals from a `propose`-scoped label appear in the inbox. A proposal is validated at POST (schema, ids within candidates/context, action allowed for the case kind) and again at apply.
+
+## 8. API
+
+| method | path | scope | purpose |
+|---|---|---|---|
+| GET | `/accounts/{id}/statements` | read | periods with counts, mode, status |
+| GET | `/accounts/{id}/statements/{sid}` | read | header, current revision lines with coverage, cases |
+| GET | `/accounts/{id}/statements/{sid}/revisions` | read | |
+| POST | `/accounts/{id}/statements` | write | manual statement (header + optional lines) |
+| POST | `/accounts/{id}/statements/{sid}/reconcile` | write | re-run rules (+ policy if enabled) |
+| POST | `/accounts/{id}/statements/{sid}/confirm` | write | atomic: current revision, `guardrail_ok`, no open/proposed cases, no pending actionable proposals, delta explained; `force=true` requires `note` and is audited |
+| POST | `/statements/files` | ingest | worker registers a file (sha256, path, root) |
+| POST | `/statements/revisions` | ingest | worker posts a parsed revision (header + lines + guardrail result); the API creates/links the statement, runs matching and policy, returns counts |
+| PATCH | `/statements/files/{id}` | ingest | status/failure updates |
+| GET | `/statements/files?status=` | ingest, read | retry queue |
+| POST | `/statements/ingest/run` | ingest | enqueue a `live` run (fixed arguments; no mode/config overrides); 202 with run id |
+| GET | `/reconciliation/cases?status=&account_id=` | read | cases with candidates + context DTO (§9.2) |
+| POST | `/reconciliation/cases/{id}/proposals` | propose | |
+| POST | `/reconciliation/proposals/{id}/apply` | write | |
 | POST | `/reconciliation/proposals/{id}/reject` | write | |
-| POST | `/reconciliation/cases/{id}/actions` | write | direct owner action without a proposal |
-| POST | `/reconciliation/cases/{id}/dismiss` | write | |
-| GET | `/reconciliation/audit?statement_id=` | read | |
-| POST | `/reconciliation/audit/{id}/revert` | write | |
-| GET/PUT | `/settings/reconciliation` | read/write | thresholds, allowlist, system categories, unmapped folders |
-| POST | `/statements/ingest/run` | write | enqueue a worker run (writes a flag file the timer honours; the API never runs the worker in-process) |
+| POST | `/reconciliation/cases/{id}/actions` | write | direct owner action |
+| POST | `/reconciliation/cases/{id}/dismiss` | write | `accepted_exception` with note |
+| GET | `/reconciliation/actions?statement_id=` | read | |
+| POST | `/reconciliation/actions/{id}/revert` | write | |
+| GET/PUT | `/settings/reconciliation` | read / admin | thresholds, policy, caps, categories, account map, live-from dates |
 
-### 7.1 Token scopes (`app/auth.py`)
-New env `ACCOUNTING_TOKEN_SCOPES`: `label=scope[,scope]` list, e.g. `hermes=read,propose; spa=read,write; ops=read,write,admin`. Scopes: `read` (GET on everything but `/settings/*` secrets), `propose` (POST proposals only), `write` (everything the SPA does today), `admin` (settings writes, ingest run). A label without a scope entry keeps today's behaviour (full access) so the current SPA/API tokens keep working; the Hermes token gets `read,propose`. Enforced by a dependency on each router; 403 `{"detail": "scope"}` when missing. Covered by unit tests per route group.
+### 8.1 Token scopes (M9, D5) — `app/auth.py`
+`ACCOUNTING_TOKEN_SCOPES="spa=legacy; ops=legacy,admin; hermes=read,propose,ingest; worker=ingest,read"`.
+- Scopes: `read` (GET on ledger and reconciliation routes, not settings secrets), `propose` (POST proposals only), `write` (every mutation the SPA performs today except settings), `admin` (settings writes), `ingest` (the worker routes and the enqueue route only), `legacy` (= everything, explicit).
+- **Fail closed**: when `ACCOUNTING_TOKEN_SCOPES` is set, every configured label must appear in it, bare tokens are rejected at startup, an unknown or duplicate label is a startup error, and `ACCOUNTING_API_TOKENS` must be non-empty (no unauthenticated mode with scopes on). When unset, behaviour is unchanged (today's label-only auth) and the deploy notes migrate the SPA/ops tokens to `legacy` explicitly.
+- Enforcement is a router-level dependency applied to **all** routers (`entries`, `accounts`, `splits`, `transfers`, `schedules`, `imports`, `settings`, `balance-adjustments`, statements, reconciliation) with a per-route method→scope table; 403 `{"detail": "scope"}`.
+- `read,propose` can write proposal rows only; it cannot mutate the ledger, cannot run ingestion, cannot change settings. `ingest` is a separate explicit grant: it can register files/revisions and enqueue a `live` run, nothing else; the enqueue takes no arguments. Hermes gets `ingest` only if the owner wants chat-triggered runs; otherwise the timer alone.
+- Tests: the restricted tokens against every legacy mutation route, settings, ingest, apply, revert; malformed/missing mappings refuse startup.
 
-## 8. Agent contract (Hermes skill `homehub-reconcile`)
+## 9. Agent contract (Hermes skills)
 
-- Two Hermes skills, both thin wrappers around repo-owned scripts: `homehub-statements` runs the ingest worker CLI and reports "N files, M parsed, K need review, cases opened"; `homehub-reconcile` is the triage below. Trigger: Hermes cron daily 08:00 after the worker, or the owner saying 對帳 in chat (runs both in sequence).
-- Steps the skill script runs (deterministic shell/python inside the skill, not free-form tool use): `GET /reconciliation/cases?status=open` → for each case build a prompt from `kind`, the line/entry, `candidates`, `context` (ids kept, amounts and merchants included, nothing else from the ledger) → model answer in the proposal schema → `POST …/proposals` → summary message to the gateway: "N cases, M proposals, K need you".
-- The skill never calls `write` routes; its token cannot.
-- Limits: ≤ 50 cases per run, ≤ 2 proposals per case, rationale ≤ 1,000 chars, confidence required.
-- Swap: the skill's prompt + schema live in the repo (`docs/agents/reconcile-skill.md`); running it under Claude Code headless or a plain cron with the Anthropic SDK is the same two endpoints.
-- Provider: Hermes' current provider is `openai-codex` and stays **[owner]**. Case text (merchant names, amounts, dates of the involved candidates) therefore goes to OpenAI for triage; statement parsing does not (it runs on the Claude CLI inside the worker).
+### 9.1 `homehub-statements` (trigger + report)
+`POST /statements/ingest/run` with the `ingest` token, poll `GET /statements/files?run_id=` counts, post to the gateway: "run <id>: N new files, M parsed, K needs review, C cases opened". Counts only; no filenames, no amounts, no parser output, no stdout. Verification runs are not reachable from Hermes.
 
-## 9. UI (Angular, `components/accounting/reconciliation/`)
+### 9.2 `homehub-reconcile` (triage)
+Cron after the worker, or on the owner's 對帳 in chat. Script-driven (not free-form tool use): `GET /reconciliation/cases?status=open` → per case the **outbound DTO** (D8): `case.kind`, the line (`posted_date, txn_date, flow_amount, foreign_amount+currency, merchant_norm, line_kind`), the entry (`posted_date, entry_date, amount, original_amount+currency, merchant, name, kind`), ≤ 5 candidates (same fields + `score, reasons`), ≤ 10 same-merchant history rows (`posted_date, amount` only), ≤ 5 cross-account equal-amount rows (`account_name, posted_date, amount`), FX rate and `fx_fee_pct`. Nothing else: no descriptions, tags, counterparties, invoice numbers, ids beyond the ones needed to reference candidates. Merchant/name text is re-masked (holder names, digits ≥ 6) before leaving. → model answer in the proposal schema → `POST …/proposals` (≤ 50 cases/run, ≤ 2 proposals/case) → gateway summary with counts. The prompt, schema and DTO builder live in the repo (`docs/agents/reconcile-skill.md`, `worker/agent/dto.py`) so the same skill runs under Claude headless or a cron with the SDK.
+Provider: Hermes keeps `openai-codex` **[owner]**; the DTO above is therefore what reaches OpenAI. Parsing never does (Claude CLI inside the worker). Both flows are stated in the settings page's privacy note. Synthetic outbound-payload tests assert the DTO field set.
 
-Entry point **[default]**: 提醒中心 → 信用卡帳單 row gets a `對帳 k/n` pill (n = lines, k = matched or explained) and, when the bank statement for the period exists, the statement's 應繳 next to the ledger's. Tap → `/accounting/accounts/:id/statements/:sid` (new route; Caddy regex extended like `/group` was).
+## 10. UI (Angular, `components/accounting/reconciliation/`)
 
-Statement page, phone-first like the rest of the ledger UI:
-- Header: period, 應繳 (bank) vs 帳本 (ledger), delta in the warning tone, status chip, `全部確認` (disabled while cases are open, long-press → force with note).
-- Three segments: 已對帳 / 僅帳單有 / 僅帳本有, each a list using `entry-row` styling; a matched row shows the "why" (`match_rule`) on tap.
-- Case row actions are the §6.2 actions as a bottom sheet (same `sheet.scss` pattern): candidates first ("配對到 10/03 全聯 −580"), then 新增支出 (opens the entry form prefilled from the line, category suggestion first), 下期, 忽略, 移到其他卡.
-- Proposal inbox: `/accounting/reconciliation` lists pending proposals across accounts; each shows rationale + confidence; 套用 / 拒絕; auto-applied rows show 還原.
-- Settings: 記帳設定 → 對帳: thresholds, allowlist toggles, system-entry categories, unmapped Drive folders → account map, "立即執行" (ingest run).
-- Backfill table under the card's statements: period × 對帳率, read-only.
-- Bank accounts: same statement page; header shows 期末餘額 (statement) vs 帳本餘額; `balance_gap` case offers 餘額調整.
+Routes in **both** tables (phone and wide, derived from the single list PR #62 introduces): `accounts/:id/statements` (list), `accounts/:id/statements/:sid` (detail), `reconciliation` (inbox), `settings/reconciliation`. Caddy `@hub_spa` regex extended for all four deep links in the release notes. No raw PDF route.
 
-## 10. Privacy and security
+- 提醒中心 → 信用卡帳單 row: the row stays a single button; a sibling `對帳 k/n` chip (not nested) links to the statement detail; when a statement exists for the period its 應繳 shows next to the ledger's, labelled 帳單 / 帳本.
+- Statement detail (phone-first): header (period, 帳單 vs 帳本, delta in warning tone, mode chip `歷史`/`對帳中`/`已確認`, revision badge when conflict), three segments 已對帳 / 僅帳單有 / 僅帳本有 using `entry-row`; a matched row's tap shows `match_rule` and the covered rows; a case row's tap opens the action bottom sheet (candidates first, then 新增支出 / 退款 / 下期 / 移到其他卡 / 忽略). The sheet closes before any form opens; the entry form is reached through the existing group view when the target is a group (no stacked detail); return state goes back to the statement with the same scroll position (`listOpenState` pattern). Every draft registers with `DirtyFormRegistry`; focus trap + return and Escape order follow `schedule-sheet`. `全部確認` is a normal button: disabled with reason when cases are open; `強制確認` is a separate keyboard-accessible action that opens a note dialog.
+- Inbox `/accounting/reconciliation`: pending proposals across accounts (rationale, confidence, author), 套用 / 拒絕; policy applies listed with 還原.
+- Settings → 對帳: thresholds, policy toggles + caps (with the "shipped off" explanation), system categories, account map with unmapped folders, per-account 對帳起算期, privacy note (which data goes to which provider), 立即執行 (enqueue).
+- Historical periods: per-period summary table only (matched / explained / unmatched, consistency ✓/✗), no actions.
+- Bank accounts: same detail; header 期末餘額 vs 帳本餘額; `balance_gap` offers 餘額調整（截至期末）.
 
-- Statement PDFs never enter the repo, the demo DB, or Multica's reach; the Multica implementation uses fixtures only (synthetic PDFs generated by a script in `tests/fixtures/statements/`, with a fake bank layout).
-- Passwords, ID number, birth date, holder names: one root:opc 0440 file, read by the worker only; the API process has no path to it; nothing is logged.
-- Masking before any model call (§4.4); the matcher never calls a model; the agent gets ids + amounts + merchants of the involved candidates, not the ledger.
-- MinIO bucket private, server-side encryption on, objects named by sha256; the SPA never links to raw PDFs in v1.
-- Scoped tokens (§7.1); the Hermes token can propose, not write.
-- Owner financial data in reviews and PR descriptions only as aggregates (counts, rates), consistent with the existing rule.
+## 11. Privacy and security
+- PDFs never enter the repo, the demo DB or Multica's reach; Multica implements against synthetic fixtures (`tests/fixtures/statements/`, generated encrypted PDFs with fake layouts).
+- Secrets and isolation per §3; nothing from the password file or statement text is logged; worker logs carry file ids and counts only.
+- Masking in the worker before the parser child (§5.4); DTO minimisation before triage (§9.2); the parser child is tool-less, MCP-less, instruction-less, filesystem-isolated (§5.5).
+- Scoped tokens fail closed (§8.1); policy is off until the owner enables it with caps (§7.3); every money action is validated twice, idempotent, audited, reversible (§7.2).
+- MinIO bucket private with SSE; objects keyed by sha256; the SPA never links to raw files.
+- Owner financial data in reviews, PRs and Multica issues only as aggregates.
 
-## 11. Testing
+## 12. Testing
+- Rules: table-driven unit tests per rule and per compatibility-matrix cell; adversarial fixtures: equal same-day purchases (must be `ambiguous`), split member vs standalone candidates, installment of a different plan with equal amount, orphan refund, bundled vs separate FX fee, duplicate claim, combined child card spend, deferral then reopen, cross-account hint on a child card (must not fire); property test: `match` idempotent and stable under line reordering.
+- Revisions: whitespace-only reparse keeps every match; inserted twin → `parse_review`, no transfers; retired line supersedes its case, applied action untouched; reconciled statement + changed file → conflict.
+- Actions: each action's validator (ownership, ids, protected entries, caps), idempotency key replay, revert refusal after intervening edit, `attach_fee` double submit, `balance_adjustment_asof` with later income (the M6 example: period-end 100, later +50, statement 110 → +10 dated period end).
+- Concurrency: two applies, worker reconcile vs owner edit, stale proposal after reparse.
+- Auth: scope matrix over every router; startup refusal on malformed mappings; `read,propose` token cannot mutate; `ingest` token cannot read entries.
+- Worker: unlock with candidate order and aliases, retry on credential/mapping/parser version change, flock singleton, case-insensitive globs, canary masking (text and tables), parser child: schema failure, timeout kill, oversize output, injection fixture → schema-only output; `verify` mode leaves zero rows changed with policies on.
+- Parser accuracy: golden synthetic fixtures for three layouts (line, table-heavy, multi-page) with field-level diffs, plus the arithmetic consistency flag.
+- Frontend: Vitest for the detail states, sheet actions, inbox, settings, routes in both tables, dirty-form registration, focus trap; screenshots 390/760/1280 on the 18080 demo with fixture statements.
+- openspec: `accounting-reconciliation` spec in the existing SHALL/scenario style with the adversarial scenarios above; `accounting-ledger` delta for `statement` source and coverage invalidation.
 
-- Matching: table-driven unit tests per rule with synthetic statements; property test that `match` is idempotent and that re-running after `unmatch` reproduces the same result.
-- Parser: schema validation + guardrail tests with fixture texts for three synthetic bank layouts (text, table-heavy, vision-only); the model call is mocked in CI; a `--live` marker runs one real call locally.
-- Worker: sync/unlock/probe with generated encrypted PDFs (pypdf can write them); idempotency across runs; backfill mode produces no `line_unmatched` cases before the cutover.
-- API: scope enforcement per route group; proposal POST rejects ids outside the case; apply/revert round-trip restores `before`.
-- Frontend: Vitest for the statement page states (no statement, open cases, all matched, force confirm), the sheet actions, the inbox, the settings page; screenshots at 390/760/1280 from the 18080 demo with fixture statements.
+## 13. Rollout and PR stack
+1. **PR-R1 backend core** (owner session, Postgres): migration, models, scopes (fail-closed), matching + rules, actions, policy engine (off), routes, openspec, tests.
+2. **PR-R2 worker** (owner session): worker package, parser child, verify/backfill/live modes, systemd units for `homehub-worker`, password/mapping formats, deploy notes incl. the operator evidence checklist (§3). After merge: `verify` over the Drive history → report; owner sets `statement_live_from` per account; `backfill`.
+3. **PR-R3 frontend** (Multica): routes, detail, inbox, settings, chip; Caddy note.
+4. **PR-R4 Hermes skills** (owner session): the two skills, tokens `hermes=read,propose[,ingest]`.
+5. Release: migration + backend restart + SPA publish; `.env` gains `ACCOUNTING_TOKEN_SCOPES` with the SPA/ops labels on `legacy`.
 
-## 12. Rollout and PR stack
+## 14. Decisions
+Taken by the owner: statement-driven, no bank logins; parser on the Claude CLI inside the worker; Hermes wraps the worker for chat access and keeps its OpenAI provider for triage; matched entries marked not locked; `adjust_amount` amount-only; entry point 提醒中心; bank accounts in v1 on the same engine.
+Changed in v2 after review, pending the owner's confirmation: policy actions **ship off** (owner wanted `create_system_entry` + `attach_fee` on); they are enabled per action with caps after the first live period is reviewed. The owner's choice is kept as the intended steady state.
+Owner input still needed: `statement_live_from` per account (first complete ledger period, likely the first period ending after the 2026-10-31 cutover); whether Hermes gets the `ingest` scope.
 
-1. **PR-R1 backend core** (owner session, needs Postgres): migration, models, matching service + rules R1–R10, actions, policy engine, routes, token scopes, openspec `accounting-reconciliation` + `accounting-ledger` deltas. Tests above.
-2. **PR-R2 ingest worker** (owner session): sync/unlock/probe/parse/upsert, backfill mode, systemd timer unit, settings file formats. Runs once in `--backfill` against the real Drive folder on the VPS after merge; the result table is the acceptance check.
-3. **PR-R3 frontend** (Multica): statement page, pill, inbox, settings, routes, Caddy regex note for the release.
-4. **PR-R4 Hermes skill** (owner session): skill files + the token with `read,propose`; first run on real cases after R2's backfill reaches the first post-cutover period.
-5. Release: one SPA publish + backend restart + migration, same procedure as the split releases; `ACCOUNTING_TOKEN_SCOPES` added to `.env` by the owner.
-
-## 13. Decisions and open points
-
-Taken:
-- Statement-driven, no bank logins **[owner]**.
-- Matched entries are marked, not locked; editing a matched entry's amount/date unmatches it and reopens a case **[default, MOZE behaviour]**.
-- Card/bank statement is the source of truth for amounts; `adjust_amount` keeps the prior amount in the description and audit **[default]**.
-- Entry point in 提醒中心 **[default]**; a card's account page links to the same statement list.
-- Hermes is the v1 triage agent through the proposal contract; the brain is swappable **[owner]**.
-- Bank accounts included in v1 with the same engine; investment statements out.
-
-Decided by the owner on 2026-10-08:
-1. Parser runs on the Claude CLI (subscription) inside the worker; Hermes wraps the worker for chat access and keeps its OpenAI provider for triage.
-2. Policy defaults: `create_system_entry` and `attach_fee` on; everything else off.
-3. Backfill: the full Drive history is ingested now as a verification run (parse accuracy = parsed total vs printed total, match rate per period), cases only from statements whose period ends after `2026-10-31`.
-4. `adjust_amount` changes the amount only; `entry_date` is never touched by reconciliation (no setting for it in v1).
-
-Open for the reviewer (Multica):
-- Rule order and thresholds in §5; anything that can mis-match money silently.
-- Whether the `line_hash` definition survives re-parses with a different parser (merchant_raw spacing) — proposal: hash on `(posted_date, amount, seq)` only.
-- Scope model in §7.1 vs. the existing label-only tokens.
-- Anything in §9 that fights the current phone layout rules (dirty-form registry, group view, sheet focus handling).
+## 15. Answer map to AGENT-83 findings
+| finding | answer |
+|---|---|
+| M1 signs | §4.5 `flow_amount`, §5.6 equations, §6.2 matrix, §7.2 actions compute from flow |
+| M2 rule order / thresholds | §6.2–6.3: specialised rules first, explicit score/threshold/margin, ambiguity stops, installment via definition id, orphan refunds kept, fixtures §12 |
+| M3 fee formula / coverage | §6.3 R6 uses `proposed_fx_fee`; §7.2 `attach_fee` bundled vs separate, child guard, bounds, idempotency key; R8 searches existing rows, `balance_adjustment` never auto; policy off §7.3 |
+| M4 group coverage | §4.6 coverage table, global unique active claim, invalidation hooks on all split/entry writes |
+| M5 revisions | §4.4, §4.5 logical key, §5.7 diff rules, conflict handling, applied actions never replayed |
+| M6 balance adjustment | §7.2 `balance_adjustment_asof` (as-of delta, account lock, owner only) |
+| M7 validation | §7.2 per-action schemas, ownership/id checks at proposal and apply, `create_refund` separate, metadata-only match |
+| M8 concurrency / revert | §4.9, §7.2 single transaction, versions, idempotency keys, operation-specific inverses, tests §12 |
+| M9 scopes | §8.1 fail closed, all routers, `legacy` explicit, `ingest` separate, no agent authority via confidence |
+| M10 isolation / masking | §3 process matrix, §5.4 masking + canary, §5.5 bwrap parser, no vision in v1, mapping via settings not `/etc` |
+| M11 backfill | §5.8 modes, per-account `statement_live_from` persisted as `mode`, historical = no cases/policy |
+| S1 schema | §4 types, enum migration, FK restrict, head-to-head migration tests |
+| S2 accounts / deferral | §6.1 participating set, R9 durable deferral + reopen, R10 excludes children, period measure 帳單 vs 帳本 |
+| S3 retries | §4.2 versions and triggers, flock, rename/delete |
+| S4 UI | §10 both route tables, return state, sheet-before-form, dirty registry, focus, force-confirm dialog, sibling chip, Caddy for all deep links |
+| S5 states | §4.7 explanation fields, `resolved_by` owner/policy only, §8 confirm atomic checks |
+| N1 | `循環利息` |
+| N2 | §12 openspec scenarios |
+| D1 CLI hardening | §5.5 `--safe-mode`, `--tools ""`, `--disallowedTools mcp__*`, strict empty MCP config, empty cwd, own config dir, bwrap |
+| D2 process matrix | §3 |
+| D3 I/O contract | §5.5 `--json-schema` + `structured_output` + pydantic validation, caps, timeouts, process-group kill, no images |
+| D4 policy safety | §7.3 shipped off, caps, exclusions, fixtures |
+| D5 Hermes write path | §8.1 `ingest` as a separate grant, enqueue with no arguments, worker runs as its own user |
+| D6 verify zero-write | §5.8 `verify` |
+| D7 provenance | §4.1 `ingest_run`, every row carries `run_id`, verify reports external |
+| D8 outbound DTO | §9.2 |
+| D9 metric | §5.6 arithmetic consistency vs §12 golden accuracy |
