@@ -6,11 +6,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from app.database import Base
+from app.models.ledger import STATEMENT_SOURCE_ROOTS
 
 STATEMENT_KINDS = ("card", "bank")
 STATEMENT_FILE_STATUSES = ("new", "unlocked", "parsed", "needs_review", "failed", "ignored")
 STATEMENT_FILE_FAILURES = ("password", "no_text_layer", "too_large", "parse", "guardrail", "mapping", "transient", "sandbox")
-STATEMENT_SOURCE_ROOTS = ("mail", "manual")
 INGEST_TRIGGERS = ("timer", "owner_cli", "enqueue")
 INGEST_MODES = ("live", "backfill")
 INGEST_STATUSES = ("queued", "claimed", "running", "done", "failed", "expired")
@@ -89,9 +89,12 @@ class IngestRun(Base):
 
 class StatementFile(Base):
     __tablename__ = "statement_file"
-    __table_args__ = (Index("ix_statement_file_status", "status"),)
+    __table_args__ = (
+        UniqueConstraint("sha256", name="uq_statement_file_sha256"),
+        Index("ix_statement_file_status", "status"),
+    )
     id = Column(Integer, primary_key=True)
-    sha256 = Column(String(64), nullable=False, unique=True)
+    sha256 = Column(String(64), nullable=False)
     size = Column(BigInteger, nullable=False)
     kind = Column(statement_kind_enum, nullable=False)
     account_id = Column(Integer, ForeignKey("account.id", ondelete="RESTRICT"))
@@ -466,6 +469,8 @@ FOR EACH ROW EXECUTE FUNCTION reconciliation_dirty_group()
 """
 DIRTY_ACCOUNT_FUNCTION_SQL = """
 CREATE FUNCTION reconciliation_dirty_account() RETURNS trigger AS $$
+DECLARE
+    v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
     IF OLD.opening_balance IS NOT DISTINCT FROM NEW.opening_balance
        AND OLD.currency IS NOT DISTINCT FROM NEW.currency
@@ -477,8 +482,8 @@ BEGIN
        AND OLD.is_archived IS NOT DISTINCT FROM NEW.is_archived THEN
         RETURN NULL;
     END IF;
-    INSERT INTO coverage_dirty (kind, row_id, op, old_account_id, new_account_id, old_row, new_row)
-    VALUES ('account', NEW.id, 'update', OLD.id, NEW.id, to_jsonb(OLD), to_jsonb(NEW));
+    INSERT INTO coverage_dirty (kind, row_id, op, old_account_id, new_account_id, old_row, new_row, action_id)
+    VALUES ('account', NEW.id, 'update', OLD.id, NEW.id, to_jsonb(OLD), to_jsonb(NEW), v_action);
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql

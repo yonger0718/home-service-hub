@@ -39,8 +39,11 @@ SERVICE_DIR = Path(__file__).resolve().parents[1]
 # Every ledger table, children first; TRUNCATE ... CASCADE also clears rows the list misses.
 # preference is truncated too: settings_service.get_preference recreates the defaults on first read.
 LEDGER_TABLES = (
-    "entry_reward_rule, schedule_instance, schedule_definition, ledger_entry, reward_rule, entry_group, "
-    "counterparty, import_run, category, project, account, account_group, fx_rate, preference"
+    "reconciliation_audit, reconciliation_action, reconciliation_proposal, reconciliation_case, statement_coverage, "
+    "line_lineage, statement_line, statement_event, statement_revision, account_statement, statement_source, "
+    "statement_file, ingest_run, coverage_dirty, policy_budget, installment_plan_map, reconciliation_settings, "
+    "entry_reward_rule, schedule_instance, schedule_definition, ledger_entry, reward_rule, entry_group, counterparty, "
+    "import_run, category, project, account, account_group, fx_rate, preference"
 )
 
 

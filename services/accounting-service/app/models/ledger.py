@@ -52,6 +52,8 @@ REWARD_WINDOWS = ("statement_cycle",)
 REWARD_POSTINGS = ("after_window", "after_transaction", "manual")
 COLOR_CONVENTIONS = ("red_green", "green_red")
 KEYPAD_LAYOUTS = ("calculator", "phone")
+# The statement_source_root type is created by app/models/statements.py, which imports this tuple.
+STATEMENT_SOURCE_ROOTS = ("mail", "manual")
 
 entry_kind_enum = Enum(*ENTRY_KINDS, name="entry_kind")
 entry_source_enum = Enum(*ENTRY_SOURCES, name="entry_source")
@@ -135,7 +137,9 @@ class Account(Base, TimestampMixin):
     statement_live_from = Column(Date, nullable=True)
     # app/models/statements.py owns (creates) the statement_source_root type; the PostgreSQL ENUM is used here
     # because the generic Enum silently ignores create_type.
-    statement_source_root = Column(ENUM("mail", "manual", name="statement_source_root", create_type=False), nullable=True)
+    statement_source_root = Column(
+        ENUM(*STATEMENT_SOURCE_ROOTS, name="statement_source_root", create_type=False), nullable=True
+    )
 
 
 class Category(Base):

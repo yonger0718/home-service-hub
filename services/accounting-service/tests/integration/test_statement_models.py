@@ -1,3 +1,5 @@
+from datetime import date
+
 from sqlalchemy import text
 
 from app.models import (
@@ -59,4 +61,85 @@ def test_account_config_change_is_dirty(db_session, seed):
     a.opening_balance = 5
     db_session.commit()
     row = db_session.query(CoverageDirty).one()
-    assert (row.kind, row.op, row.new_account_id) == ("account", "update", a.id)
+    assert (row.kind, row.op, row.old_account_id, row.new_account_id) == ("account", "update", a.id, a.id)
+
+
+def test_dirty_trigger_records_insert_with_new_side_only(db_session, seed):
+    a = seed.account("A")
+    db_session.commit()
+    db_session.execute(text("DELETE FROM coverage_dirty"))
+    entry = seed.entry(a, "-10", day=date(2026, 9, 3), posted_date=date(2026, 9, 5))
+    db_session.commit()
+    row = db_session.query(CoverageDirty).one()
+    assert (row.kind, row.row_id, row.op) == ("entry", entry.id, "insert")
+    assert (row.old_account_id, row.new_account_id) == (None, a.id)
+    assert (row.old_date, row.new_date) == (None, date(2026, 9, 5))
+    assert row.old_row is None and row.new_row["id"] == entry.id
+
+
+def test_dirty_trigger_records_delete_with_old_side_only(db_session, seed):
+    a = seed.account("A")
+    entry = seed.entry(a, "-10", day=date(2026, 9, 3), posted_date=date(2026, 9, 5))
+    db_session.commit()
+    entry_id = entry.id
+    db_session.execute(text("DELETE FROM coverage_dirty"))
+    db_session.execute(text("DELETE FROM ledger_entry WHERE id = :id"), {"id": entry_id})
+    db_session.commit()
+    row = db_session.query(CoverageDirty).one()
+    assert (row.kind, row.row_id, row.op) == ("entry", entry_id, "delete")
+    assert (row.old_account_id, row.new_account_id) == (a.id, None)
+    assert (row.old_date, row.new_date) == (date(2026, 9, 5), None)
+    assert row.new_row is None and row.old_row["id"] == entry_id
+
+
+def test_dirty_trigger_records_entry_group_update(db_session, seed):
+    group = seed.group()
+    db_session.commit()
+    db_session.execute(text("DELETE FROM coverage_dirty"))
+    group.name = "renamed"
+    db_session.commit()
+    row = db_session.query(CoverageDirty).one()
+    assert (row.kind, row.row_id, row.op) == ("group", group.id, "update")
+    assert (row.old_row["name"], row.new_row["name"]) == (None, "renamed")
+    assert (row.old_account_id, row.new_account_id) == (None, None)
+
+
+def test_account_archive_only_change_is_dirty(db_session, seed):
+    a = seed.account("A")
+    db_session.commit()
+    db_session.execute(text("DELETE FROM coverage_dirty"))
+    a.is_archived = True
+    db_session.commit()
+    row = db_session.query(CoverageDirty).one()
+    assert (row.kind, row.row_id, row.op, row.old_account_id, row.new_account_id) == (
+        "account", a.id, "update", a.id, a.id
+    )
+    assert (row.old_row["is_archived"], row.new_row["is_archived"]) == (False, True)
+
+
+def test_account_name_only_change_is_not_dirty(db_session, seed):
+    a = seed.account("A")
+    db_session.commit()
+    db_session.execute(text("DELETE FROM coverage_dirty"))
+    a.name = "Renamed"
+    db_session.commit()
+    assert db_session.query(CoverageDirty).count() == 0
+
+
+def test_account_dirty_row_tags_action_id_from_transaction_setting(db_session, seed):
+    a = seed.account("A")
+    db_session.commit()
+    db_session.execute(text("DELETE FROM coverage_dirty"))
+    db_session.execute(text("SET LOCAL app.reconciliation_action_id = '7'"))
+    a.opening_balance = 5
+    db_session.commit()
+    assert db_session.query(CoverageDirty).one().action_id == 7
+
+
+def test_dirty_trigger_action_id_is_null_without_the_setting(db_session, seed):
+    entry = seed.entry(seed.account("A"), "-10")
+    db_session.commit()
+    db_session.execute(text("DELETE FROM coverage_dirty"))
+    entry.amount = entry.amount - 1
+    db_session.commit()
+    assert db_session.query(CoverageDirty).one().action_id is None

@@ -18,6 +18,7 @@ LEDGER_TABLES = (
 PHASE_1_HEAD = "5d2e7c9a1b3f"
 PHASE_2A_HEAD = "7b1e4a2c9d05"
 SCHEDULES_HEAD = "c4e8b2f1a7d3"
+RECONCILE_HEAD = "d1f3a7c2e9b4"
 
 
 def _schema(url) -> dict:
@@ -307,7 +308,7 @@ def test_downgrade_refuses_when_phase_2a_data_exists(database_factory, alembic_c
     assert "1 ledger_entry rows with source = manual" in message
     assert "1 ledger_entry rows whose posted_date differs from entry_date" in message
     assert "1 account_group rows" in message
-    assert _version(url) == SCHEDULES_HEAD
+    assert _version(url) == RECONCILE_HEAD
 
 
 def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config):
@@ -343,7 +344,7 @@ def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config)
     assert "1 ledger_entry rows with source = moze_backup" in message
     assert "1 reward_rule rows" in message
     assert "source = manual" not in message
-    assert _version(url) == SCHEDULES_HEAD
+    assert _version(url) == RECONCILE_HEAD
 
 
 def test_self_referencing_entry_links_are_indexed(pg_engine):
@@ -413,7 +414,7 @@ def test_upgrade_adds_schedule_source_and_tables_and_drops_moze_schedule(databas
     assert "moze_schedule" not in tables
     assert "schedule" in sources
     assert kinds == 0
-    assert _version(url) == SCHEDULES_HEAD
+    assert _version(url) == RECONCILE_HEAD
 
 
 def test_downgrade_recreates_an_empty_moze_schedule(database_factory, alembic_config):
@@ -449,4 +450,77 @@ def test_downgrade_refuses_while_homehub_posted_data_exists(database_factory, al
     assert message.startswith("refusing to downgrade c4e8b2f1a7d3: ")
     assert "1 ledger_entry rows with source = schedule" in message
     assert "1 schedule instances posted or skipped by HomeHub (acted_by auto or owner)" in message
-    assert _version(url) == SCHEDULES_HEAD
+    assert _version(url) == RECONCILE_HEAD
+
+
+def test_reconcile_downgrade_refuses_with_statement_rows(database_factory, alembic_config):
+    url = database_factory()
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO account (name, currency) VALUES ('A', 'TWD')"))
+        conn.execute(text("INSERT INTO ingest_run (trigger, principal) VALUES ('timer', 'worker')"))
+    engine.dispose()
+    with pytest.raises(RuntimeError, match="refusing to downgrade d1f3a7c2e9b4: 1 ingest runs"):
+        command.downgrade(cfg, SCHEDULES_HEAD)
+    assert _version(url) == RECONCILE_HEAD
+
+
+def test_reconcile_head_has_exact_fk_actions_predicates_and_triggers(pg_engine):
+    """_schema() compares neither FK ON DELETE actions, index predicates nor triggers: check them on the migrated DB."""
+    with pg_engine.connect() as conn:
+        named_fks = dict(
+            conn.execute(
+                text(
+                    "SELECT conname, confdeltype FROM pg_constraint WHERE contype = 'f' AND conname IN "
+                    "('fk_account_statement_current_revision', 'fk_statement_event_first_line', "
+                    "'fk_statement_event_current_line')"
+                )
+            ).all()
+        )
+        coverage_fks = dict(
+            conn.execute(
+                text(
+                    "SELECT a.attname, c.confdeltype FROM pg_constraint c "
+                    "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1] "
+                    "WHERE c.contype = 'f' AND c.conrelid = 'statement_coverage'::regclass "
+                    "AND c.confrelid IN ('ledger_entry'::regclass, 'entry_group'::regclass)"
+                )
+            ).all()
+        )
+        indexdefs = dict(
+            conn.execute(
+                text(
+                    "SELECT indexname, indexdef FROM pg_indexes WHERE indexname IN "
+                    "('ux_statement_coverage_active_entry', 'ux_reconciliation_action_effect')"
+                )
+            ).all()
+        )
+        triggers = dict(
+            conn.execute(
+                text(
+                    "SELECT tgname, tgisinternal FROM pg_trigger WHERE tgname IN "
+                    "('trg_ledger_entry_reconciliation_dirty', 'trg_entry_group_reconciliation_dirty', "
+                    "'trg_account_reconciliation_dirty')"
+                )
+            ).all()
+        )
+
+    assert named_fks == {
+        "fk_account_statement_current_revision": "r",
+        "fk_statement_event_first_line": "r",
+        "fk_statement_event_current_line": "n",
+    }
+    assert coverage_fks == {"entry_id": "n", "group_id": "n"}
+    coverage = indexdefs["ux_statement_coverage_active_entry"]
+    assert coverage.startswith("CREATE UNIQUE INDEX") and "(entry_id)" in coverage
+    assert "status = 'active'" in coverage and "entry_id IS NOT NULL" in coverage
+    effect = indexdefs["ux_reconciliation_action_effect"]
+    assert effect.startswith("CREATE UNIQUE INDEX") and "(event_id, action, effect_slot)" in effect
+    assert "status = 'applied'" in effect
+    assert triggers == {
+        "trg_ledger_entry_reconciliation_dirty": False,
+        "trg_entry_group_reconciliation_dirty": False,
+        "trg_account_reconciliation_dirty": False,
+    }
