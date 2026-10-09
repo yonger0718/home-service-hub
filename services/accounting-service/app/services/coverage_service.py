@@ -207,6 +207,19 @@ def _case_for_released_line(db: Session, statement: AccountStatement, line_id: i
     result.created_cases.append(item.id)
 
 
+def _unlock_barrier(db: Session) -> None:
+    """Release the session-level barrier lock. A failed or false unlock would leave it on a pooled connection (blocking
+    every later writer), so the connection is invalidated: the pool discards it and the server drops the lock."""
+    try:
+        released = db.execute(select(func.pg_advisory_unlock(DIRTY_BARRIER_KEY))).scalar_one()
+    except Exception:
+        db.connection().invalidate()
+        raise
+    if not released:
+        db.connection().invalidate()
+        raise RuntimeError("the dirty barrier was not held at unlock; connection invalidated")
+
+
 def _committed_cap(db: Session) -> int | None:
     """max(coverage_dirty.id) read under the exclusive barrier (module docstring); None when there are no events."""
     db.execute(select(func.pg_advisory_lock(DIRTY_BARRIER_KEY)))
@@ -214,7 +227,7 @@ def _committed_cap(db: Session) -> int | None:
         with db.begin_nested():  # a failing read must not leave the transaction unable to unlock
             return db.execute(select(func.max(CoverageDirty.id))).scalar_one()
     finally:
-        db.execute(select(func.pg_advisory_unlock(DIRTY_BARRIER_KEY)))
+        _unlock_barrier(db)
 
 
 def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None) -> SweepResult:
@@ -225,7 +238,9 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
     historical: release only); population changes (insert/move/edit/delete of an uncovered in-period row, account
     config, a combined child relinked to or away from the account) set `needs_recheck` in live mode. Events of
     actions applied on this statement are skipped. Only ids <= the committed cap read under the writer barrier are
-    scanned (module docstring). Never deletes events and never commits."""
+    scanned (module docstring). That argument needs READ COMMITTED isolation and `coverage_dirty_id_seq` with CACHE 1
+    (a cached block would let a later-allocated lower id commit after the cap). Never deletes events and never
+    commits."""
     live = statement.mode == "live"
     cap = _committed_cap(db)
     accounts = set(participating_accounts(db, statement.account_id))

@@ -603,3 +603,46 @@ def test_sweep_waits_for_uncommitted_writers_so_no_event_is_skipped(claimed, see
     assert not isinstance(res, Exception), res
     assert res.stale_lines == [l1.id] and res.swept_through == _max_event(db_session)
     assert cov.sweep(db_session, db_session.get(AccountStatement, stmt.id)).stale_lines == []
+
+
+def _barrier_holders(engine) -> int:
+    with engine.connect() as conn:
+        return conn.execute(text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = :key"),
+                            {"key": cov.DIRTY_BARRIER_KEY}).scalar_one()
+
+
+@pytest.mark.parametrize("failure", ["raises", "returns_false"])
+def test_a_failed_barrier_unlock_invalidates_the_connection(pg_engine, monkeypatch, failure):
+    class FuncProxy:
+        def __getattr__(self, name):
+            if name != "pg_advisory_unlock":
+                return getattr(func, name)
+            if failure == "raises":
+                return lambda key: func.pg_advisory_unlock_no_such_function(key)
+            return lambda key: func.pg_advisory_unlock(key + 1)  # a lock this session does not hold: returns false
+
+    session = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:
+        connection = session.connection()
+        monkeypatch.setattr(cov, "func", FuncProxy())
+        with pytest.raises(Exception):
+            cov._committed_cap(session)
+        assert connection.invalidated
+        monkeypatch.undo()
+        session.rollback()
+    finally:
+        session.close()
+    assert _barrier_holders(pg_engine) == 0  # the invalidated connection took its session lock with it
+    fresh = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:
+        cov._committed_cap(fresh)
+        assert _barrier_holders(pg_engine) == 0
+    finally:
+        fresh.close()
+
+
+def test_dirty_id_sequence_is_not_cached(db_session):
+    """The sweep's cap argument needs ids handed out one at a time (CACHE 1); see coverage_service.sweep."""
+    cache = db_session.execute(text(
+        "SELECT cache_size FROM pg_sequences WHERE sequencename = 'coverage_dirty_id_seq'")).scalar_one()
+    assert cache == 1
