@@ -19,6 +19,7 @@ PHASE_1_HEAD = "5d2e7c9a1b3f"
 PHASE_2A_HEAD = "7b1e4a2c9d05"
 SCHEDULES_HEAD = "c4e8b2f1a7d3"
 RECONCILE_HEAD = "d1f3a7c2e9b4"
+R1B_HEAD = "e2a9c4d1b7f0"
 
 
 def _schema(url) -> dict:
@@ -308,7 +309,7 @@ def test_downgrade_refuses_when_phase_2a_data_exists(database_factory, alembic_c
     assert "1 ledger_entry rows with source = manual" in message
     assert "1 ledger_entry rows whose posted_date differs from entry_date" in message
     assert "1 account_group rows" in message
-    assert _version(url) == RECONCILE_HEAD
+    assert _version(url) == R1B_HEAD
 
 
 def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config):
@@ -344,7 +345,7 @@ def test_downgrade_refusal_names_every_blocker(database_factory, alembic_config)
     assert "1 ledger_entry rows with source = moze_backup" in message
     assert "1 reward_rule rows" in message
     assert "source = manual" not in message
-    assert _version(url) == RECONCILE_HEAD
+    assert _version(url) == R1B_HEAD
 
 
 def test_self_referencing_entry_links_are_indexed(pg_engine):
@@ -414,7 +415,7 @@ def test_upgrade_adds_schedule_source_and_tables_and_drops_moze_schedule(databas
     assert "moze_schedule" not in tables
     assert "schedule" in sources
     assert kinds == 0
-    assert _version(url) == RECONCILE_HEAD
+    assert _version(url) == R1B_HEAD
 
 
 def test_downgrade_recreates_an_empty_moze_schedule(database_factory, alembic_config):
@@ -450,7 +451,7 @@ def test_downgrade_refuses_while_homehub_posted_data_exists(database_factory, al
     assert message.startswith("refusing to downgrade c4e8b2f1a7d3: ")
     assert "1 ledger_entry rows with source = schedule" in message
     assert "1 schedule instances posted or skipped by HomeHub (acted_by auto or owner)" in message
-    assert _version(url) == RECONCILE_HEAD
+    assert _version(url) == R1B_HEAD
 
 
 def test_reconcile_downgrade_refuses_with_statement_rows(database_factory, alembic_config):
@@ -464,7 +465,7 @@ def test_reconcile_downgrade_refuses_with_statement_rows(database_factory, alemb
     engine.dispose()
     with pytest.raises(RuntimeError, match="refusing to downgrade d1f3a7c2e9b4: 1 ingest runs"):
         command.downgrade(cfg, SCHEDULES_HEAD)
-    assert _version(url) == RECONCILE_HEAD
+    assert _version(url) == R1B_HEAD
 
 
 def test_reconcile_downgrade_refuses_with_a_manual_statement_and_no_run(database_factory, alembic_config):
@@ -488,7 +489,7 @@ def test_reconcile_downgrade_refuses_with_a_manual_statement_and_no_run(database
     with pytest.raises(RuntimeError) as excinfo:
         command.downgrade(cfg, SCHEDULES_HEAD)
     assert str(excinfo.value) == "refusing to downgrade d1f3a7c2e9b4: 1 statements"
-    assert _version(url) == RECONCILE_HEAD
+    assert _version(url) == R1B_HEAD
 
 
 @pytest.mark.parametrize(
@@ -518,7 +519,7 @@ def test_reconcile_downgrade_refusal_names_each_guard(database_factory, alembic_
     with pytest.raises(RuntimeError) as excinfo:
         command.downgrade(cfg, SCHEDULES_HEAD)
     assert str(excinfo.value) == f"refusing to downgrade d1f3a7c2e9b4: {label}"
-    assert _version(url) == RECONCILE_HEAD
+    assert _version(url) == R1B_HEAD
 
 
 def test_reconcile_downgrade_passes_a_never_saved_settings_row(database_factory, alembic_config):
@@ -591,3 +592,38 @@ def test_reconcile_head_has_exact_fk_actions_predicates_and_triggers(pg_engine):
         "trg_entry_group_reconciliation_dirty": False,
         "trg_account_reconciliation_dirty": False,
     }
+
+
+def _function_defs(url) -> dict[str, str]:
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            return dict(conn.execute(text(
+                "SELECT proname, pg_get_functiondef(oid) FROM pg_proc WHERE proname IN "
+                "('reconciliation_dirty_entry', 'reconciliation_dirty_group', 'reconciliation_dirty_account')")).all())
+    finally:
+        engine.dispose()
+
+
+def test_dirty_barrier_upgrade_adds_and_downgrade_removes_the_shared_lock(database_factory, alembic_config):
+    url = database_factory()
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    assert _version(url) == R1B_HEAD
+    defs = _function_defs(url)
+    assert len(defs) == 3 and all("pg_advisory_xact_lock_shared(1145655892)" in body for body in defs.values())
+
+    command.downgrade(cfg, RECONCILE_HEAD)
+    assert _version(url) == RECONCILE_HEAD
+    defs = _function_defs(url)
+    assert len(defs) == 3 and not any("pg_advisory" in body for body in defs.values())
+    triggers = create_engine(url)
+    try:
+        with triggers.connect() as conn:
+            count = "SELECT count(*) FROM pg_trigger WHERE tgname LIKE 'trg_%_reconciliation_dirty'"
+            assert conn.execute(text(count)).scalar_one() == 3
+    finally:
+        triggers.dispose()
+
+    command.upgrade(cfg, "head")
+    assert all("pg_advisory_xact_lock_shared(1145655892)" in body for body in _function_defs(url).values())

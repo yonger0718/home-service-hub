@@ -1,17 +1,26 @@
 """Statement coverage (spec §4.6): claims, release, conservation and the dirty-event sweep. Never commits;
-callers own the transaction."""
+callers own the transaction.
+
+Sweep barrier (§4.6 erratum): coverage_dirty ids come from a bigserial, assigned at insert, not at commit, so a
+writer can hold an uncommitted id N while a later id N+1 commits; a watermark advanced past N+1 would skip N for
+good. Every dirty trigger therefore takes `pg_advisory_xact_lock_shared(DIRTY_BARRIER_KEY)` before it inserts and
+keeps it until its transaction ends. The sweep takes the same key EXCLUSIVELY at session level, reads
+`cap = max(id)` and unlocks at once: once it holds the exclusive lock no writer is between its insert and its
+commit, so every id <= cap is committed (or rolled back) and visible, and any later writer gets an id > cap. The
+lock is session level and released in a `finally` so it is never held for the rest of the reconcile transaction
+(an xact-level lock would block every ledger writer until the reconcile commits)."""
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import Integer, and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from app.models import (
-    Account, AccountStatement, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
+    DIRTY_BARRIER_KEY, Account, AccountStatement, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
     StatementLine,
 )
 from app.services.errors import CodedConflictError, ConflictError
@@ -163,17 +172,28 @@ def _recount(db: Session, statement: AccountStatement) -> None:
 
 def _case_for_released_line(db: Session, statement: AccountStatement, line_id: int, event, run_id: int | None,
                             result: SweepResult) -> None:
-    """Live mode: reopen the line's event's newest case when it is resolved, else open a `recheck` case."""
+    """Live mode, by the event's newest case: open/proposed → bump `version` (proposals go stale) and note the event,
+    no second case; resolved → reopen with its resolution moved into `context.previous_resolution`; none, dismissed
+    or superseded → a new `recheck` case. No row lock: the caller's statement lock serialises case writers."""
     line = db.get(StatementLine, line_id)
     newest = db.execute(
         select(ReconciliationCase)
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.event_id == line.event_id)
-        .order_by(ReconciliationCase.id.desc()).limit(1).with_for_update()
+        .order_by(ReconciliationCase.id.desc()).limit(1)
     ).scalar_one_or_none()
-    if newest is not None and newest.status == "resolved":
-        newest.status = "open"
+    note = {"reopened_by_event": event.id, "op": event.op, "row_id": event.row_id}
+    if newest is not None and newest.status in ("open", "proposed", "resolved"):
+        context = {**(newest.context or {}), **note}
+        if newest.status == "resolved":
+            context["previous_resolution"] = {
+                "resolved_at": newest.resolved_at.isoformat() if newest.resolved_at else None,
+                "resolved_by": newest.resolved_by, "resolved_action_id": newest.resolved_action_id,
+                "explanation": newest.explanation,
+            }
+            newest.status = "open"
+            newest.resolved_at = newest.resolved_by = newest.resolved_action_id = newest.explanation = None
+        newest.context = context
         newest.version = newest.version + 1
-        newest.context = {**(newest.context or {}), "reopened_by_event": event.id}
         db.flush()
         result.reopened_cases.append(newest.id)
         return
@@ -187,15 +207,27 @@ def _case_for_released_line(db: Session, statement: AccountStatement, line_id: i
     result.created_cases.append(item.id)
 
 
+def _committed_cap(db: Session) -> int | None:
+    """max(coverage_dirty.id) read under the exclusive barrier (module docstring); None when there are no events."""
+    db.execute(select(func.pg_advisory_lock(DIRTY_BARRIER_KEY)))
+    try:
+        with db.begin_nested():  # a failing read must not leave the transaction unable to unlock
+            return db.execute(select(func.max(CoverageDirty.id))).scalar_one()
+    finally:
+        db.execute(select(func.pg_advisory_unlock(DIRTY_BARRIER_KEY)))
+
+
 def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None) -> SweepResult:
     """Apply every coverage_dirty event past the statement's watermark that touches it, then advance the watermark
     to the highest id scanned (relevant or not). Precondition: the caller holds the statement row FOR UPDATE (§7.4:
     writers never lock statements, so a writer committing after this sweep gets a higher id the next sweep sees).
     Effects: a changed/deleted covered entry or group releases its line(s) as a whole (live: reopen/create a case;
     historical: release only); population changes (insert/move/edit/delete of an uncovered in-period row, account
-    config) set `needs_recheck` in live mode. Events of actions applied on this statement are skipped. Never deletes
-    events and never commits."""
+    config, a combined child relinked to or away from the account) set `needs_recheck` in live mode. Events of
+    actions applied on this statement are skipped. Only ids <= the committed cap read under the writer barrier are
+    scanned (module docstring). Never deletes events and never commits."""
     live = statement.mode == "live"
+    cap = _committed_cap(db)
     accounts = set(participating_accounts(db, statement.account_id))
     active = active_rows(db, statement.id)
     lines_by_entry: dict[int, set[int]] = defaultdict(set)
@@ -229,9 +261,11 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
         batch = db.execute(
             select(CoverageDirty.id, CoverageDirty.kind, CoverageDirty.row_id, CoverageDirty.op,
                    CoverageDirty.old_account_id, CoverageDirty.new_account_id, CoverageDirty.old_date,
-                   CoverageDirty.new_date, CoverageDirty.action_id)
-            .where(CoverageDirty.id > last).order_by(CoverageDirty.id).limit(SWEEP_BATCH)
-        ).all()
+                   CoverageDirty.new_date, CoverageDirty.action_id,
+                   CoverageDirty.old_row["combined_account_id"].astext.cast(Integer).label("old_parent"),
+                   CoverageDirty.new_row["combined_account_id"].astext.cast(Integer).label("new_parent"))
+            .where(CoverageDirty.id > last, CoverageDirty.id <= cap).order_by(CoverageDirty.id).limit(SWEEP_BATCH)
+        ).all() if cap is not None else []
         if not batch:
             break
         last = batch[-1].id
@@ -247,7 +281,8 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
             elif ev.kind == "group":
                 if ev.row_id in lines_by_group and ev.op in ("update", "delete"):
                     release(lines_by_group[ev.row_id], ev, f"dirty:group:{ev.id}")
-            elif ev.kind == "account" and ev.row_id in accounts:
+            elif ev.kind == "account" and (
+                    ev.row_id in accounts or statement.account_id in (ev.old_parent, ev.new_parent)):  # relinks
                 result.recheck = result.recheck or live
         if len(batch) < SWEEP_BATCH:
             break
@@ -263,7 +298,9 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
 
 def sweep_pending(db: Session) -> list[int]:
     """Statements (any mode) with an event past their watermark that may touch them: the account or a combined
-    child on either side, or a group/entry their active coverage holds. A superset; `sweep` decides relevance."""
+    child on either side, an account event whose old or new `combined_account_id` is the account, or a group/entry
+    their active coverage holds (by column or, after a SET NULL delete, by snapshot id). A superset; `sweep` decides
+    relevance. Read without the writer barrier: an uncommitted event only shows up on a later call."""
     s = AccountStatement
     child = aliased(Account)
     participating = select(child.id).where(child.combined_account_id == s.account_id)
@@ -273,11 +310,16 @@ def sweep_pending(db: Session) -> list[int]:
         CoverageDirty.id > s.swept_through_event_id,
         or_(
             CoverageDirty.old_account_id == s.account_id, CoverageDirty.new_account_id == s.account_id,
+            and_(CoverageDirty.kind == "account",
+                 or_(CoverageDirty.old_row["combined_account_id"].astext.cast(Integer) == s.account_id,
+                     CoverageDirty.new_row["combined_account_id"].astext.cast(Integer) == s.account_id)),
             CoverageDirty.old_account_id.in_(participating), CoverageDirty.new_account_id.in_(participating),
-            and_(CoverageDirty.kind == "group",
-                 exists(covered.where(StatementCoverage.group_id == CoverageDirty.row_id))),
-            and_(CoverageDirty.kind == "entry",
-                 exists(covered.where(StatementCoverage.entry_id == CoverageDirty.row_id))),
+            and_(CoverageDirty.kind == "group", exists(covered.where(or_(
+                StatementCoverage.group_id == CoverageDirty.row_id,
+                StatementCoverage.snapshot["group_id"].astext.cast(Integer) == CoverageDirty.row_id)))),
+            and_(CoverageDirty.kind == "entry", exists(covered.where(or_(
+                StatementCoverage.entry_id == CoverageDirty.row_id,
+                StatementCoverage.snapshot["id"].astext.cast(Integer) == CoverageDirty.row_id)))),
         ),
     )
     return list(db.execute(select(s.id).where(touches).order_by(s.id)).scalars())

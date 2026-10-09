@@ -416,14 +416,20 @@ class ReconciliationSettings(Base):
 
 
 # --- dirty triggers (design §4.6) -------------------------------------------------------------------
-DIRTY_ENTRY_FUNCTION_SQL = """
-CREATE FUNCTION reconciliation_dirty_entry() RETURNS trigger AS $$
+# Writer barrier (§4.6 erratum): every trigger that appends an event first takes this advisory key SHARED for the
+# rest of its transaction; the sweep takes it EXCLUSIVE (session level, briefly) to read max(id), so every id at or
+# below that cap is committed — bigserial ids are assigned at insert, not at commit.
+DIRTY_BARRIER_KEY = 0x44495254  # 'DIRT'
+_BARRIER = f"PERFORM pg_advisory_xact_lock_shared({DIRTY_BARRIER_KEY});"
+DIRTY_ENTRY_FUNCTION_SQL = f"""
+CREATE OR REPLACE FUNCTION reconciliation_dirty_entry() RETURNS trigger AS $$
 DECLARE
     v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
     IF NOT COALESCE((SELECT (data->>'dirty_enabled')::boolean FROM reconciliation_settings WHERE id = 1), false) THEN
         RETURN NULL;
     END IF;
+    {_BARRIER}
     IF TG_OP = 'UPDATE' AND (to_jsonb(OLD) - 'updated_at') = (to_jsonb(NEW) - 'updated_at') THEN
         RETURN NULL;
     END IF;
@@ -449,14 +455,15 @@ CREATE TRIGGER trg_ledger_entry_reconciliation_dirty
 AFTER INSERT OR UPDATE OR DELETE ON ledger_entry
 FOR EACH ROW EXECUTE FUNCTION reconciliation_dirty_entry()
 """
-DIRTY_GROUP_FUNCTION_SQL = """
-CREATE FUNCTION reconciliation_dirty_group() RETURNS trigger AS $$
+DIRTY_GROUP_FUNCTION_SQL = f"""
+CREATE OR REPLACE FUNCTION reconciliation_dirty_group() RETURNS trigger AS $$
 DECLARE
     v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
     IF NOT COALESCE((SELECT (data->>'dirty_enabled')::boolean FROM reconciliation_settings WHERE id = 1), false) THEN
         RETURN NULL;
     END IF;
+    {_BARRIER}
     IF TG_OP = 'UPDATE' AND to_jsonb(OLD) = to_jsonb(NEW) THEN
         RETURN NULL;
     END IF;
@@ -473,14 +480,15 @@ CREATE TRIGGER trg_entry_group_reconciliation_dirty
 AFTER INSERT OR UPDATE OR DELETE ON entry_group
 FOR EACH ROW EXECUTE FUNCTION reconciliation_dirty_group()
 """
-DIRTY_ACCOUNT_FUNCTION_SQL = """
-CREATE FUNCTION reconciliation_dirty_account() RETURNS trigger AS $$
+DIRTY_ACCOUNT_FUNCTION_SQL = f"""
+CREATE OR REPLACE FUNCTION reconciliation_dirty_account() RETURNS trigger AS $$
 DECLARE
     v_action integer := NULLIF(current_setting('app.reconciliation_action_id', true), '')::integer;
 BEGIN
     IF NOT COALESCE((SELECT (data->>'dirty_enabled')::boolean FROM reconciliation_settings WHERE id = 1), false) THEN
         RETURN NULL;
     END IF;
+    {_BARRIER}
     IF OLD.opening_balance IS NOT DISTINCT FROM NEW.opening_balance
        AND OLD.currency IS NOT DISTINCT FROM NEW.currency
        AND OLD.combined_account_id IS NOT DISTINCT FROM NEW.combined_account_id

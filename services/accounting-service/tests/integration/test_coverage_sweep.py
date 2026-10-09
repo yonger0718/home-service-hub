@@ -1,10 +1,12 @@
 """Dirty sweep (spec §4.6 "Dirty events" / "Sweep protocol"): the watermark scan over coverage_dirty releases claims
 whose ledger rows changed, opens/reopens recheck cases in live mode only and flags population changes."""
+import threading
 from datetime import date
 from decimal import Decimal
 
 import pytest
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.orm import sessionmaker
 
 from app.models import (
     AccountStatement, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
@@ -18,7 +20,7 @@ from app.services import split_service as ss
 from app.services import statement_ingest_service as ing
 from app.services import statement_revision_service as revs
 from app.services.statements import matching
-from tests.helpers import set_dirty
+from tests.helpers import set_dirty, wait_until_blocked
 
 SEP = (date(2026, 9, 1), date(2026, 9, 30))
 OCT = (date(2026, 10, 1), date(2026, 10, 31))
@@ -123,8 +125,14 @@ def test_amount_edit_on_claimed_entry_releases_line_and_opens_recheck_case(claim
 
 def test_edit_reopens_the_events_resolved_case_instead_of_creating_one(claimed, db_session):
     stmt, (l1, _), card, entry = claimed()
+    older = ReconciliationCase(statement_id=stmt.id, revision_id=l1.revision_id, kind="line_unmatched",
+                               event_id=l1.event_id, line_id=l1.id, status="dismissed")
+    db_session.add(older)
+    db_session.flush()
     old = ReconciliationCase(statement_id=stmt.id, revision_id=l1.revision_id, kind="line_unmatched",
-                             event_id=l1.event_id, line_id=l1.id, status="resolved", context={"k": 1})
+                             event_id=l1.event_id, line_id=l1.id, status="resolved", context={"k": 1},
+                             resolved_by="owner", resolved_action_id=7, explanation="accepted_exception",
+                             resolved_at=func.now())
     db_session.add(old)
     db_session.commit()
     entry.amount = Decimal("-581")
@@ -135,8 +143,49 @@ def test_edit_reopens_the_events_resolved_case_instead_of_creating_one(claimed, 
 
     assert res.reopened_cases == [old.id] and res.created_cases == []
     db_session.refresh(old)
-    assert (old.status, old.version) == ("open", 2) and old.context == {"k": 1, "reopened_by_event": event_id}
+    assert (old.status, old.version) == ("open", 2)
+    assert (old.resolved_at, old.resolved_by, old.resolved_action_id, old.explanation) == (None, None, None, None)
+    prev = old.context.pop("previous_resolution")
+    assert old.context == {"k": 1, "reopened_by_event": event_id, "op": "update", "row_id": entry.id}
+    assert (prev["resolved_by"], prev["resolved_action_id"], prev["explanation"]) == ("owner", 7, "accepted_exception")
+    assert isinstance(prev["resolved_at"], str)
     assert db_session.get(AccountStatement, stmt.id).open_case_count == 1
+
+
+@pytest.mark.parametrize("status", ["open", "proposed"])
+def test_edit_bumps_an_already_open_newest_case_without_inserting(claimed, db_session, status):
+    stmt, (l1, _), card, entry = claimed()
+    case = ReconciliationCase(statement_id=stmt.id, revision_id=l1.revision_id, kind="amount_delta",
+                              event_id=l1.event_id, line_id=l1.id, status=status, context={"k": 1})
+    db_session.add(case)
+    db_session.commit()
+    entry.amount = Decimal("-581")
+    db_session.commit()
+    event_id = _max_event(db_session)
+
+    res = _sweep(db_session, stmt)
+
+    assert res.created_cases == [] and res.reopened_cases == [case.id] and res.stale_lines == [l1.id]
+    db_session.refresh(case)
+    assert (case.status, case.version) == (status, 2)
+    assert case.context == {"k": 1, "reopened_by_event": event_id, "op": "update", "row_id": entry.id}
+    assert db_session.query(ReconciliationCase).count() == 1
+
+
+@pytest.mark.parametrize("status", ["dismissed", "superseded"])
+def test_edit_after_a_closed_newest_case_opens_a_new_recheck(claimed, db_session, status):
+    stmt, (l1, _), card, entry = claimed()
+    case = ReconciliationCase(statement_id=stmt.id, revision_id=l1.revision_id, kind="amount_delta",
+                              event_id=l1.event_id, line_id=l1.id, status=status)
+    db_session.add(case)
+    db_session.commit()
+    entry.amount = Decimal("-581")
+    db_session.commit()
+
+    res = _sweep(db_session, stmt)
+
+    assert res.reopened_cases == [] and len(res.created_cases) == 1
+    assert db_session.get(ReconciliationCase, case.id).status == status
 
 
 # (b) historical amount edit
@@ -432,3 +481,122 @@ def test_sweep_pending_sees_combined_child_and_covered_group_events(seed, db_ses
     g.name = "改名"
     db_session.commit()
     assert cov.sweep_pending(db_session) == [stmt.id]
+
+
+# fix round 1 ------------------------------------------------------------------------------------------------------
+
+def test_covered_entry_moved_to_a_non_participating_account_releases(claimed, seed, db_session):
+    stmt, (l1, _), card, entry = claimed()
+    wallet = seed.account("錢包")
+    db_session.commit()
+    entry.account_id = wallet.id
+    db_session.commit()
+
+    res = _sweep(db_session, stmt)
+
+    assert res.stale_lines == [l1.id] and len(res.created_cases) == 1
+
+
+def test_group_delete_without_member_events_releases_via_the_snapshot(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (l1, _) = _submit(db_session, run, card)
+    g = seed.group()
+    a = seed.entry(card, "-300", day=date(2026, 9, 3), group_id=g.id)
+    b = seed.entry(card, "-280", day=date(2026, 9, 3), group_id=g.id)
+    db_session.flush(); db_session.refresh(a); db_session.refresh(b)
+    _claim(db_session, stmt, l1, [a, b], roles=["principal", "member"])
+    a.group_id = b.group_id = None  # detached while tracking was off: no member events
+    db_session.commit()
+    set_dirty(db_session, True)
+    db_session.execute(text("DELETE FROM entry_group WHERE id = :id"), {"id": g.id})
+    db_session.commit()
+    assert [(r.kind, r.op) for r in db_session.query(CoverageDirty)] == [("group", "delete")]
+    assert {r.group_id for r in _coverage(db_session)} == {None}  # SET NULL
+    assert cov.sweep_pending(db_session) == [stmt.id]
+
+    res = _sweep(db_session, stmt)
+
+    assert res.stale_lines == [l1.id]
+
+
+def test_deleted_covered_entry_outside_the_population_is_pending_via_the_snapshot(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (l1, _) = _submit(db_session, run, card)
+    wallet = seed.account("錢包")
+    foreign = seed.entry(wallet, "-580", day=date(2026, 9, 3))
+    db_session.flush(); db_session.refresh(foreign)
+    _claim(db_session, stmt, l1, [foreign])
+    db_session.commit()
+    set_dirty(db_session, True)
+    db_session.execute(delete(LedgerEntry).where(LedgerEntry.id == foreign.id)
+                       .execution_options(synchronize_session=False))
+    db_session.commit()
+    assert _coverage(db_session)[0].entry_id is None
+
+    assert cov.sweep_pending(db_session) == [stmt.id]
+    assert _sweep(db_session, stmt).stale_lines == [l1.id]
+
+
+def test_combined_child_relink_flags_both_parents(seed, db_session, run):
+    p1 = _card(seed, db_session, name="P1")
+    p2 = _card(seed, db_session, name="P2")
+    child = seed.account("附卡", is_credit=True, combined_account_id=p1.id)
+    s1, _ = _submit(db_session, run, p1)
+    s2, _ = _submit(db_session, run, p2)
+    db_session.commit()
+    set_dirty(db_session, True)
+    child.combined_account_id = p2.id
+    db_session.commit()
+
+    assert cov.sweep_pending(db_session) == sorted([s1.id, s2.id])
+    a, b = _sweep(db_session, s1), _sweep(db_session, s2)
+    db_session.commit()
+
+    assert a.recheck is True and b.recheck is True
+    assert db_session.get(AccountStatement, s1.id).needs_recheck is True
+    assert db_session.get(AccountStatement, s2.id).needs_recheck is True
+    assert cov.sweep_pending(db_session) == []
+
+
+def test_sweep_waits_for_uncommitted_writers_so_no_event_is_skipped(claimed, seed, pg_engine, db_session):
+    """The writer barrier: an event whose id is assigned but not yet committed must not fall under the watermark
+    when a later-id event commits first."""
+    stmt, (l1, _), card, entry = claimed()
+    wallet = seed.account("錢包")
+    db_session.commit()
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder, sweeper = factory(), factory()
+    outcome: list = []
+    pid: list = []
+
+    def run_sweep():
+        try:
+            pid.append(sweeper.execute(text("SELECT pg_backend_pid()")).scalar_one())
+            ready.set()
+            outcome.append(_sweep(sweeper, sweeper.get(AccountStatement, stmt.id)))
+            sweeper.commit()
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            sweeper.rollback()
+            outcome.append(exc)
+
+    ready = threading.Event()
+    thread = threading.Thread(target=run_sweep, daemon=True)
+    try:
+        holder.execute(text("UPDATE ledger_entry SET amount = -600 WHERE id = :id"), {"id": entry.id})  # id N, open
+        seed.entry(wallet, "-10")
+        db_session.commit()  # a later id (N+1) commits first
+        thread.start()
+        assert ready.wait(5)
+        assert wait_until_blocked(pg_engine, pid[0]) == "advisory"
+        assert not outcome, "the sweep finished while a writer still held the barrier"
+        holder.commit()
+        thread.join(5)
+        assert not thread.is_alive()
+    finally:
+        holder.rollback()
+        thread.join(5)
+        holder.close(); sweeper.close()
+    res = outcome[0]
+    assert not isinstance(res, Exception), res
+    assert res.stale_lines == [l1.id] and res.swept_through == _max_event(db_session)
+    assert cov.sweep(db_session, db_session.get(AccountStatement, stmt.id)).stale_lines == []
