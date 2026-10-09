@@ -467,6 +467,60 @@ def test_reconcile_downgrade_refuses_with_statement_rows(database_factory, alemb
     assert _version(url) == RECONCILE_HEAD
 
 
+def test_reconcile_downgrade_refuses_with_a_manual_statement_and_no_run(database_factory, alembic_config):
+    url = database_factory()
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        account_id = conn.execute(
+            text("INSERT INTO account (name, currency) VALUES ('A', 'TWD') RETURNING id")
+        ).scalar_one()
+        conn.execute(
+            text(
+                "INSERT INTO account_statement (account_id, kind, currency, period_start, period_end, "
+                "statement_total, origin, mode) "
+                "VALUES (:a, 'card', 'TWD', '2026-09-01', '2026-09-30', 100, 'manual', 'historical')"
+            ),
+            {"a": account_id},
+        )
+    engine.dispose()
+    with pytest.raises(RuntimeError) as excinfo:
+        command.downgrade(cfg, SCHEDULES_HEAD)
+    assert str(excinfo.value) == "refusing to downgrade d1f3a7c2e9b4: 1 statements"
+    assert _version(url) == RECONCILE_HEAD
+
+
+@pytest.mark.parametrize(
+    ("sql", "label"),
+    [
+        (
+            "INSERT INTO ledger_entry (account_id, kind, amount, currency, entry_date, posted_date, source) "
+            "VALUES (:a, 'expense', -10, 'TWD', '2026-10-01', '2026-10-01', 'statement')",
+            "1 statement-created entries",
+        ),
+        ("UPDATE account SET statement_live_from = '2026-10-01' WHERE id = :a", "1 accounts with statement settings"),
+        ("INSERT INTO reconciliation_settings (data) VALUES ('{\"policy\": true}')", "1 settings changed"),
+    ],
+    ids=["statement_entry", "account_statement_settings", "settings_changed"],
+)
+def test_reconcile_downgrade_refusal_names_each_guard(database_factory, alembic_config, sql, label):
+    url = database_factory()
+    cfg = alembic_config(url)
+    command.upgrade(cfg, "head")
+    engine = create_engine(url)
+    with engine.begin() as conn:
+        account_id = conn.execute(
+            text("INSERT INTO account (name, currency) VALUES ('A', 'TWD') RETURNING id")
+        ).scalar_one()
+        conn.execute(text(sql), {"a": account_id})
+    engine.dispose()
+    with pytest.raises(RuntimeError) as excinfo:
+        command.downgrade(cfg, SCHEDULES_HEAD)
+    assert str(excinfo.value) == f"refusing to downgrade d1f3a7c2e9b4: {label}"
+    assert _version(url) == RECONCILE_HEAD
+
+
 def test_reconcile_head_has_exact_fk_actions_predicates_and_triggers(pg_engine):
     """_schema() compares neither FK ON DELETE actions, index predicates nor triggers: check them on the migrated DB."""
     with pg_engine.connect() as conn:

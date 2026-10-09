@@ -141,13 +141,31 @@ AFTER UPDATE ON account
 FOR EACH ROW EXECUTE FUNCTION reconciliation_dirty_account()
 """
 
-# Each count blocks the downgrade: the previous revision cannot hold what reconciliation recorded.
+# Each count blocks the downgrade: the previous revision cannot hold what reconciliation recorded. Every dropped
+# table is guarded except coverage_dirty (derived from the ledger by the triggers); reconciliation_settings only
+# once it differs from its defaults.
 DOWNGRADE_GUARDS = {
     "statement-created entries": "SELECT count(*) FROM ledger_entry WHERE source = 'statement'",
     "coverage rows": "SELECT count(*) FROM statement_coverage",
     "reconciliation actions": "SELECT count(*) FROM reconciliation_action",
     "audit rows": "SELECT count(*) FROM reconciliation_audit",
     "ingest runs": "SELECT count(*) FROM ingest_run",
+    "reconciliation proposals": "SELECT count(*) FROM reconciliation_proposal",
+    "reconciliation cases": "SELECT count(*) FROM reconciliation_case",
+    "line lineage rows": "SELECT count(*) FROM line_lineage",
+    "statement lines": "SELECT count(*) FROM statement_line",
+    "statement events": "SELECT count(*) FROM statement_event",
+    "statement revisions": "SELECT count(*) FROM statement_revision",
+    "statements": "SELECT count(*) FROM account_statement",
+    "statement sources": "SELECT count(*) FROM statement_source",
+    "statement files": "SELECT count(*) FROM statement_file",
+    "policy budget rows": "SELECT count(*) FROM policy_budget",
+    "installment plan mappings": "SELECT count(*) FROM installment_plan_map",
+    "settings changed": "SELECT count(*) FROM reconciliation_settings WHERE data <> '{}'::jsonb OR version <> 1",
+    "accounts with statement settings": (
+        "SELECT count(*) FROM account WHERE statement_password_rule IS NOT NULL OR statement_live_from IS NOT NULL "
+        "OR statement_source_root IS NOT NULL"
+    ),
 }
 # Children before parents; the three circular FKs are dropped before any table.
 TABLES_IN_DROP_ORDER = (
