@@ -475,8 +475,11 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
   readonly draftLoadsFailed = computed(() =>
     this.children().some(child => this.draftLoadErrors()[`${child.key}:${child.generation}`] !== undefined),
   );
-  /** A child's account / category defaults are still loading or failed: saving now could omit them. */
-  readonly resourcesBlocking = computed(() => this.childScope() && (this.draftLoadsPending() || this.draftLoadsFailed()));
+  /**
+   * A child's account / category defaults (reward rules, category tree) are still loading or failed: saving now could
+   * omit them. Single entries too. Not part of `loading()`, which would disable the whole fieldset on every change.
+   */
+  readonly resourcesBlocking = computed(() => this.draftLoadsPending() || this.draftLoadsFailed());
   readonly addState = computed(() =>
     addAvailability({
       split: this.isSplit() || this.groupId() !== null,
@@ -1958,7 +1961,10 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     const partyRequests = new Map<string, Observable<number>>();
     // Created by this submission: removed again when the write does not happen or fails (no orphan 對象).
     const createdParties: Counterparty[] = [];
-    const discardParties = () => discardCreatedCounterparties(this.accounting, createdParties, this.forgetCounterparty);
+    const discardParties = () =>
+      discardCreatedCounterparties(this.accounting, createdParties, this.forgetCounterparty, this.restoreCounterparty);
+    // Whether the write answered (either way): a save cut off by leaving the page answers neither.
+    let answered = false;
     const resolveName = (typed: string): Observable<number> => {
       const name = typed.trim();
       let request = partyRequests.get(name);
@@ -1991,6 +1997,10 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
         }),
         takeUntilDestroyed(this.destroyRef),
         finalize(() => {
+          // Destroyed mid-save: the write was cancelled unanswered. If it did commit, the server's 409 keeps the party.
+          if (!answered) {
+            discardParties();
+          }
           if (this.loadId === loadId) {
             this.saving.set(false);
           }
@@ -1998,6 +2008,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       )
       .subscribe({
         next: ({ plan, result }) => {
+          answered = true;
           if (this.loadId !== loadId) {
             return;
           }
@@ -2053,6 +2064,7 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
           });
         },
         error: (error: unknown) => {
+          answered = true;
           discardParties();
           if (this.loadId !== loadId) {
             return;
@@ -2156,9 +2168,12 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
     this.markClean();
   }
 
-  /** Drops a counterparty the server deleted after a failed write from the typeahead list. */
+  /** Drops a counterparty being deleted after a failed write from the typeahead list … */
   private readonly forgetCounterparty = (id: number): void =>
     this.counterparties.update(rows => rows.filter(party => party.id !== id));
+  /** … and puts it back when the server keeps it (409: an entry uses it). */
+  private readonly restoreCounterparty = (party: Counterparty): void =>
+    this.counterparties.update(rows => (rows.some(other => other.id === party.id) ? rows : [...rows, party]));
 
   /** 週期 / 分期: create (then catch-up when it starts today, 自動入帳) or, in definition mode, PUT the definition. */
   private saveSchedule(keepGoing: boolean): void {
@@ -2214,8 +2229,16 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
       ),
     );
     this.saving.set(true);
-    request.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+    let answered = false;
+    const discardParties = () =>
+      discardCreatedCounterparties(this.accounting, createdParties, this.forgetCounterparty, this.restoreCounterparty);
+    request.pipe(
+      takeUntilDestroyed(this.destroyRef),
+      // Destroyed mid-save: same cleanup as a failed write (the server's 409 keeps a party in use).
+      finalize(() => answered || discardParties()),
+    ).subscribe({
       next: catchUpId => {
+        answered = true;
         rememberRecentAccounts(recentAccountIds);
         this.saving.set(false);
         this.markClean();
@@ -2227,8 +2250,9 @@ export class EntryFormComponent implements OnInit, OnDestroy, DirtyAware {
         this.finish(keepGoing);
       },
       error: (error: unknown) => {
+        answered = true;
         this.saving.set(false);
-        discardCreatedCounterparties(this.accounting, createdParties, this.forgetCounterparty);
+        discardParties();
         if (error instanceof ScheduleFormError) {
           this.fieldErrors.set({ [error.field]: error.message });
           this.error.set(error.message);

@@ -191,17 +191,21 @@ export function resolveCounterpartyId(
 }
 
 /**
- * Best-effort removal of counterparties created inline for a write that then failed, so no orphan 對象 is left behind.
- * The server refuses (409) to delete one an entry references, so a write that committed despite the error keeps its
- * party; `removed` fires only for a row the server actually deleted.
+ * Best-effort removal of counterparties created inline for a write that then failed or never answered, so no orphan
+ * 對象 is left behind. Each is dropped from the typeahead (`forget`) before its DELETE, so an instant retry cannot
+ * resolve to an id being deleted. The server refuses (409) to delete one an entry references, so a write that
+ * committed despite the error keeps its party; any failed DELETE puts the party back (`restore`). Empties `created`,
+ * so a second call is a no-op.
  */
 export function discardCreatedCounterparties(
   service: AccountingService,
-  created: readonly Counterparty[],
-  removed: (id: number) => void,
+  created: Counterparty[],
+  forget: (id: number) => void,
+  restore: (party: Counterparty) => void,
 ): void {
-  for (const party of created) {
-    service.deleteCounterparty(party.id).subscribe({ next: () => removed(party.id), error: () => undefined });
+  for (const party of created.splice(0)) {
+    forget(party.id);
+    service.deleteCounterparty(party.id).subscribe({ error: () => restore(party) });
   }
 }
 
