@@ -50,9 +50,10 @@ def wait_until_unlocked(engine, timeout: float = 5.0) -> None:
         time.sleep(0.05)
 
 
-def wait_until_blocked(engine, pid: int, timeout: float = 5.0) -> str:
+def wait_until_blocked(engine, pid: int, timeout: float = 5.0, blocker_pid: int | None = None) -> str:
     """Poll pg_stat_activity (50 ms steps, at most `timeout` s) until backend `pid` waits on a heavyweight lock
-    (wait_event_type 'Lock', e.g. 'transactionid'/'tuple' for a row lock); returns its wait_event, else fails."""
+    (wait_event_type 'Lock', e.g. 'transactionid'/'tuple' for a row lock); returns its wait_event, else fails.
+    With `blocker_pid`, also asserts that backend is among pg_blocking_pids(pid) (advisory locks included)."""
     deadline = time.monotonic() + timeout
     seen = None
     with engine.connect() as conn:
@@ -61,6 +62,9 @@ def wait_until_blocked(engine, pid: int, timeout: float = 5.0) -> str:
                 text("SELECT wait_event_type, wait_event, state FROM pg_stat_activity WHERE pid = :pid"), {"pid": pid}
             ).one_or_none()
             if seen is not None and seen.wait_event_type == "Lock":
+                if blocker_pid is not None:
+                    blockers = conn.execute(text("SELECT pg_blocking_pids(:pid)"), {"pid": pid}).scalar_one()
+                    assert blocker_pid in blockers, f"backend {pid} is blocked by {blockers}, not by {blocker_pid}"
                 return seen.wait_event
             if time.monotonic() >= deadline:
                 raise AssertionError(f"backend {pid} never blocked on a lock within {timeout} s (last seen: {seen})")

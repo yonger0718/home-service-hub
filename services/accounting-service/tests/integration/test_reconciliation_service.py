@@ -1,12 +1,14 @@
 """Reconciliation orchestration (spec v3 §6.1 populations, §6.3 R9/R10, §6.4 bank gap, §7.4 lock order, §5.8 modes):
 reconcile = sweep → (re)claim → cases → deferrals → balance gap → counts, run by the revision hook and the batch."""
+import threading
 import uuid
 from dataclasses import replace as dc_replace
 from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.orm import sessionmaker
 
 from app.models import AccountStatement, CoverageDirty, ReconciliationCase, StatementCoverage, StatementLine
 from app.schemas.statements import LineIn, RevisionIn
@@ -16,7 +18,7 @@ from app.services import reconciliation_service as rec
 from app.services import settings_service
 from app.services import statement_ingest_service as ing
 from app.services import statement_revision_service as revs
-from tests.helpers import race, set_dirty
+from tests.helpers import race, set_dirty, wait_until_blocked
 
 SEP = (date(2026, 9, 1), date(2026, 9, 30))
 OCT = (date(2026, 10, 1), date(2026, 10, 31))
@@ -620,9 +622,52 @@ def test_reconcile_waits_at_the_sweep_barrier_for_a_writer(seed, db_session, run
         ews.update_entry(session, buy.id, payload)
         session.flush()  # the trigger runs: shared barrier + the row lock are held until commit
 
-    outcome = race(pg_engine, writer, lambda s: rec.reconcile(s, stmt.id))
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    writer_session, recon_session = factory(), factory()
+    pids: list[int] = []
+    ready, outcome = threading.Event(), []
 
-    assert outcome == "committed"
+    def reconcile_in_thread():
+        try:
+            pids.append(recon_session.execute(text("SELECT pg_backend_pid()")).scalar_one())
+            ready.set()
+            rec.reconcile(recon_session, stmt.id)
+            recon_session.commit()
+            outcome.append("committed")
+        except Exception as exc:  # noqa: BLE001
+            recon_session.rollback()
+            outcome.append(exc)
+        finally:
+            ready.set()
+            recon_session.close()
+
+    thread = threading.Thread(target=reconcile_in_thread, daemon=True)
+    committed = started = False
+    try:
+        writer(writer_session)
+        writer_pid = writer_session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        thread.start()
+        started = True
+        assert ready.wait(5) and pids
+        # reconcile waits on a lock held by the writer's backend: the exclusive advisory barrier (before any row lock)
+        assert wait_until_blocked(pg_engine, pids[0], blocker_pid=writer_pid) == "advisory"
+        assert not outcome
+        writer_session.commit()
+        committed = True
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    finally:
+        if not committed:
+            writer_session.rollback()
+        if started:
+            thread.join(timeout=5)
+            if thread.is_alive() and pids:
+                with pg_engine.connect() as conn:
+                    conn.execute(text("SELECT pg_cancel_backend(:pid)"), {"pid": pids[0]})
+                thread.join(timeout=5)
+        writer_session.close()
+
+    assert outcome == ["committed"]
     db_session.expire_all()
     old = db_session.get(StatementCoverage, claim.id)
     assert old.status == "stale" and old.stale_reason.startswith("dirty:update:")  # the sweep saw the writer's event

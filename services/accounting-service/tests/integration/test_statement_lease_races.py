@@ -51,23 +51,35 @@ def contend(engine, holder, contender):
             outcome.append(exc)
         finally:
             about_to_lock.set()
+            contender_session.close()  # in the thread that uses it
 
     thread = threading.Thread(target=run_contender, daemon=True)
+    started = False
+    committed = False
     try:
         holder(holder_session)
+        holder_pid = holder_session.execute(text("SELECT pg_backend_pid()")).scalar_one()
         thread.start()
+        started = True
         assert about_to_lock.wait(TIMEOUT) and pid, "the contender never reached its locking call"
-        wait_until_blocked(engine, pid[0], timeout=TIMEOUT)  # fails the test unless it waits on the holder's lock
+        # fails the test unless the contender waits on a lock held by the holder's backend
+        wait_until_blocked(engine, pid[0], timeout=TIMEOUT, blocker_pid=holder_pid)
         assert not outcome, "the contender finished while the holder still held the row lock"
         holder_session.commit()
+        committed = True
         thread.join(timeout=TIMEOUT)
         assert not thread.is_alive(), f"the contender is still blocked {TIMEOUT} s after the holder committed"
         return outcome[0]
     finally:
-        holder_session.rollback()
-        thread.join(timeout=TIMEOUT)
+        if not committed:
+            holder_session.rollback()  # failure path: release the locks so the contender can finish
+        if started:
+            thread.join(timeout=TIMEOUT)
+            if thread.is_alive() and pid:  # still stuck: cancel its backend, then wait (bounded) for it to unwind
+                with engine.connect() as conn:
+                    conn.execute(text("SELECT pg_cancel_backend(:pid)"), {"pid": pid[0]})
+                thread.join(timeout=TIMEOUT)
         holder_session.close()
-        contender_session.close()
 
 
 def _refused_with_old_token(engine, run_id, token):
