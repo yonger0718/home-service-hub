@@ -146,11 +146,20 @@ def test_reparse_identical_keeps_events_and_current_moves(db_session, card, run)
     assert first.statement.current_revision_id == second.revision.id
 
 
-def test_merchant_change_pairs_changed_and_keeps_event(db_session, card, run):
+def test_merchant_change_pairs_changed_retires_old_event_and_creates_new(db_session, card, run):
     r, token = run
-    svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 9, 3), "580", merchant="PAYPAL *Spotify")], total="580"), account_map={})
+    first = svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 9, 3), "580", merchant="PAYPAL *Spotify")], total="580"), account_map={})
+    old_line = db_session.query(StatementLine).filter_by(revision_id=first.revision.id).one()
     second = svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 9, 3), "580", merchant="PAYPAL *Netflix")], total="580"), account_map={})
-    assert second.lineage_counts["changed"] == 1 and db_session.query(StatementEvent).count() == 1
+    assert second.lineage_counts == {"identical": 0, "normalised": 0, "changed": 1, "unpaired_old": 0, "new": 0}
+    db_session.expire_all()
+    new_line = db_session.query(StatementLine).filter_by(revision_id=second.revision.id).one()
+    old_event, new_event = db_session.query(StatementEvent).order_by(StatementEvent.id).all()
+    assert (old_event.status, old_event.current_line_id) == ("retired", None) and old_line.event_id == old_event.id
+    assert (new_event.status, new_event.first_line_id, new_event.current_line_id) == ("live", new_line.id, new_line.id)
+    assert new_line.event_id == new_event.id and new_event.first_revision_id == second.revision.id
+    row = db_session.query(LineLineage).one()
+    assert (row.old_line_id, row.new_line_id, row.equivalence, row.transferred) == (old_line.id, new_line.id, "changed", False)
 
 
 def test_unpaired_old_event_is_retired_and_new_line_gets_event(db_session, card, run):

@@ -129,12 +129,14 @@ def _new_lines(derived: list[derive.DerivedLine]) -> list[lineage.New]:
 def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision: StatementRevision,
                              derived: list[derive.DerivedLine], pairings: list[lineage.Pairing],
                              becomes_current: bool) -> dict[str, int]:
-    """Events for unpaired new lines first (statement_line.event_id is NOT NULL), then lines, then event pointers,
-    retirements and lineage rows. A first revision (nothing to pair with) writes no lineage rows."""
+    """Events for unpaired and `changed` new lines first (statement_line.event_id is NOT NULL), then lines, then event
+    pointers, retirements and lineage rows. Only `identical`/`normalised` pairs move the old event to the new line; a
+    `changed` pair retires the old event and gives the new line a new one (§5.7). A first revision (nothing to pair
+    with) writes no lineage rows."""
     record_lineage = statement.current_revision_id is not None
     new_events: dict[int, StatementEvent] = {}
     for pairing in pairings:
-        if pairing.new is not None and pairing.old is None:
+        if pairing.new is not None and (pairing.old is None or pairing.equivalence == "changed"):
             event = StatementEvent(statement_id=statement.id, first_revision_id=revision.id,
                                    status="live" if becomes_current else "retired")
             db.add(event)
@@ -145,7 +147,8 @@ def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision:
         if pairing.new is None:
             continue
         d = derived[pairing.new.index]
-        event_id = pairing.old.event_id if pairing.old is not None else new_events[pairing.new.index].id
+        event = new_events.get(pairing.new.index)
+        event_id = event.id if event is not None else pairing.old.event_id
         line = StatementLine(
             revision_id=revision.id, event_id=event_id, seq=d.line.seq, canonical_key=d.canonical_key,
             logical_key=d.logical_key, txn_date=d.line.txn_date, posted_date=d.line.posted_date,
@@ -164,20 +167,22 @@ def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision:
     counts = Counter({"identical": 0, "normalised": 0, "changed": 0, "unpaired_old": 0, "new": 0})
     for pairing in pairings:
         new_line = lines.get(pairing.new.index) if pairing.new is not None else None
+        new_event = new_events.get(pairing.new.index) if pairing.new is not None else None
+        if new_event is not None:
+            new_event.first_line_id = new_line.id
+            new_event.current_line_id = new_line.id if becomes_current else None
+        if pairing.old is not None and becomes_current:
+            old_event = paired_events[pairing.old.event_id]
+            if new_event is None and pairing.new is not None:
+                old_event.current_line_id = new_line.id  # identical / normalised: the event moves
+            else:
+                old_event.status = "retired"  # unpaired / changed. R1b: quarantined when effects exist
+                old_event.current_line_id = None
         if pairing.old is None:
-            event = new_events[pairing.new.index]
-            event.first_line_id = new_line.id
-            event.current_line_id = new_line.id if becomes_current else None
             counts["new"] += 1
         elif pairing.new is None:
-            if becomes_current:
-                retired = paired_events[pairing.old.event_id]
-                retired.status = "retired"  # R1b: quarantined when effects exist
-                retired.current_line_id = None
             counts["unpaired_old"] += 1
         else:
-            if becomes_current:
-                paired_events[pairing.old.event_id].current_line_id = new_line.id
             counts[pairing.equivalence] += 1
         if not record_lineage:
             continue

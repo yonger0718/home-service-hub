@@ -223,7 +223,7 @@ A revision SHALL become the statement's current revision when any of these holds
 
 ### Requirement: Events and lineage
 
-Each printed transaction SHALL have one `statement_event` that persists across revisions. When a revision is submitted, its lines SHALL be paired to the current revision's lines by `logical_key` in print order and classified: `identical` (same canonical key), `normalised` (same kind fields and same merchant tokens), `changed` (any other difference) or `unpaired` (no partner on either side). A paired line SHALL reuse the old line's event; an unpaired new line SHALL create a new event; an unpaired old line SHALL retire its event. Events move (current line, retirement) only when the revision becomes current; a revision that does not become current SHALL record lineage but move nothing, except that its unpaired new lines still create events with status `retired`, whose `current_line_id` stays NULL. A change in the number of identical twins (lines sharing posted date and flow) between the current and the new revision SHALL prevent the new revision from becoming current and, in live mode, open a `parse_review`. The first revision of a statement SHALL write no lineage rows and open no case for twins.
+Each printed transaction SHALL have one `statement_event` that persists across revisions. When a revision is submitted, its lines SHALL be paired to the current revision's lines by `logical_key` in print order and classified: `identical` (same canonical key), `normalised` (same kind fields and same merchant tokens), `changed` (any other difference) or `unpaired` (no partner on either side). An `identical` or `normalised` pair SHALL transfer the old event to the new line; a `changed` pair and an unpaired old line SHALL retire the old event (status `retired`, `current_line_id` NULL), and a `changed` new line, like an unpaired new line, SHALL get a new event; the `changed` lineage row records the old and new line with `transferred = false`. Quarantine of a `changed`/unpaired event that has applied effects or active coverage is R1b. Events move (current line, retirement) only when the revision becomes current; a revision that does not become current SHALL record lineage but move nothing, except that its unpaired and `changed` new lines still create events with status `retired`, whose `current_line_id` stays NULL. A change in the number of identical twins (lines sharing posted date and flow) between the current and the new revision SHALL prevent the new revision from becoming current and, in live mode, open a `parse_review`. The first revision of a statement SHALL write no lineage rows and open no case for twins.
 
 #### Scenario: Whitespace-only re-parse pairs identical
 - **GIVEN** a stored line `全聯` on 2026-09-03 for `580`
@@ -231,15 +231,16 @@ Each printed transaction SHALL have one `statement_event` that persists across r
 - **THEN** the lineage counts SHALL be `identical = 1` with no `changed`
 - **AND** the event SHALL be unchanged with its current line moved to the new line and the new revision SHALL be current
 
-#### Scenario: Merchant change pairs changed and keeps the event
+#### Scenario: Merchant change pairs changed and retires the old event
 - **GIVEN** a stored line `PAYPAL *Spotify`
 - **WHEN** a re-parse prints `PAYPAL *Netflix` on the same date and amount
-- **THEN** `changed = 1` and exactly one event SHALL exist
+- **THEN** `changed = 1` and two events SHALL exist: the old one `retired` with `current_line_id` NULL, and a new `live` one whose first and current line is the new line
+- **AND** one `changed` lineage row SHALL record the old and new line with `transferred = false`
 
 #### Scenario: Moved date retires the old event
 - **GIVEN** a stored line on 2026-09-03 for `580`
 - **WHEN** the re-parse prints it on 2026-09-04
-- **THEN** the counts SHALL be `unpaired_old = 1`, `new = 1`, the old event SHALL be `retired`, and two `unpaired` lineage rows SHALL exist
+- **THEN** the counts SHALL be `unpaired_old = 1`, `new = 1`, the old event SHALL be `retired` with `current_line_id` NULL, and two `unpaired` lineage rows SHALL exist
 
 #### Scenario: Reordered identical twins stay identical
 - **GIVEN** two identical lines on 2026-09-03 for `100`

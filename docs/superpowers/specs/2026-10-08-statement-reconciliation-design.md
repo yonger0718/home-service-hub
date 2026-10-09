@@ -173,6 +173,7 @@ Decisions taken during implementation that refine this document:
 - **`balance_generation` is derived** from `coverage_dirty` (`max(id)` for the account), not an `account` column: a trigger updating `account` would take an account row lock after entry locks and invert D32 (§7.2 C4).
 - **Worker-created runs**: `POST /statements/ingest-runs` (scope `ingest`) creates and claims a `timer`/`owner_cli` run in one request; `enqueue` coalesces only into `queued` runs or claimed/running runs with a live lease (§4.1).
 - **Events on a revision that does not become current** are created `retired`; "live" events are those with `current_line_id IS NOT NULL` (§4.4, §5.7).
+- **A `changed` pair never transfers its event**: the old event is retired (`current_line_id` NULL) and the new line gets a new event, as for an unpaired line; only `identical`/`normalised` pairs move an event. Quarantine of a `changed`/unpaired event with applied effects or active coverage arrives with effects in R1b (§5.7).
 - **A guardrail-ok revision replaces a current revision whose guardrail failed** regardless of header/twin changes, and supersedes that statement's open `parse_review` cases (§4.3).
 - Settings mutations require `admin`; `legacy` satisfies every scope (so the SPA token can also reach the ingest routes — the owner decides before enabling, §8.1).
 - The three account statement columns are not exposed by the account API in R1a (set via the database/settings in R2).
