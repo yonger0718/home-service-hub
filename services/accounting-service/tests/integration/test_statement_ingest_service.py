@@ -160,7 +160,8 @@ def test_unpaired_old_event_is_retired_and_new_line_gets_event(db_session, card,
     second = svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 9, 4), "580")], total="580"), account_map={})
     assert second.lineage_counts == {"identical": 0, "normalised": 0, "changed": 0, "unpaired_old": 1, "new": 1}
     db_session.refresh(old_event)
-    assert old_event.status == "retired" and first.statement.current_revision_id == second.revision.id
+    assert old_event.status == "retired" and old_event.current_line_id is None
+    assert first.statement.current_revision_id == second.revision.id
     new_line = db_session.query(StatementLine).filter_by(revision_id=second.revision.id).one()
     new_event = db_session.get(StatementEvent, new_line.event_id)
     assert new_event.id != old_event.id and new_event.first_line_id == new_event.current_line_id == new_line.id

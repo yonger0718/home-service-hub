@@ -171,7 +171,9 @@ def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision:
             counts["new"] += 1
         elif pairing.new is None:
             if becomes_current:
-                paired_events[pairing.old.event_id].status = "retired"  # R1b: quarantined when effects exist
+                retired = paired_events[pairing.old.event_id]
+                retired.status = "retired"  # R1b: quarantined when effects exist
+                retired.current_line_id = None
             counts["unpaired_old"] += 1
         else:
             if becomes_current:
