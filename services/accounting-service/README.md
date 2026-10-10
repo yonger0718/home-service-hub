@@ -147,7 +147,8 @@ a PUT replaces the whole settings, so send the current `account_map` with it).
 Deploy order: run `.venv/bin/alembic upgrade head` before restarting the service.
 
 Matching (R1b). `GET /settings/reconciliation` also returns `rules` (the matcher's tunables, defaults shown) and
-`rules_version`; `PUT /settings/reconciliation {"rules": {...}}` overrides any subset of `exact_window_days` (3),
+`rules_version`; `PUT /settings/reconciliation {"account_map": <current>, "dirty_enabled": <current>, "rules": {...}}`
+(the full body: a PUT replaces all three) overrides, inside `rules`, any subset of `exact_window_days` (3),
 `foreign_window_days` (5), `near_window_days` (5), `near_tolerance_abs` (`"10"`, at least 0), `near_tolerance_pct` (`"0.03"`),
 `accept` (`"0.80"`), `margin` (`"0.15"`), `ambiguous_floor` (`"0.50"`), `candidate_window_days` (10), `deferral_days` (2: entries posted later than `period_end` minus that many days are deferred)
 and `bank_only_patterns`. Decimals are strings; `accept`, `margin`, `ambiguous_floor` and `near_tolerance_pct` must lie in
