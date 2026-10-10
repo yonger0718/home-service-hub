@@ -48,3 +48,56 @@ def test_encrypted_extract_uses_password():
 def test_malformed_pdf_is_bounded():
     with pytest.raises(pdf.Malformed):
         pdf.extract(b"%PDF-1.4 garbage", None)
+
+
+def test_wrong_password_in_extract_is_password_error():
+    data = encrypt(make_pdf([statement_lines()]), "pw")
+    with pytest.raises(pdf.PasswordError):
+        pdf.extract(data, "bad")
+
+
+def test_unlock_malformed_and_too_large():
+    with pytest.raises(pdf.Malformed):
+        pdf.unlock(b"%PDF-1.4 garbage", ["x"])
+    with pytest.raises(pdf.TooLarge):
+        pdf.unlock(make_pdf([statement_lines()]), ["x"], max_bytes=10)
+
+
+def test_extract_timeout_fires(monkeypatch):
+    import time
+
+    import pdfplumber.page
+
+    def slow(self, *args, **kwargs):
+        time.sleep(5)
+        return ""
+
+    monkeypatch.setattr(pdfplumber.page.Page, "extract_text", slow)
+    with pytest.raises(pdf.ExtractTimeout):
+        pdf.extract(make_pdf([statement_lines()]), None, timeout_s=1)
+
+
+def test_none_table_cells_become_empty_strings(monkeypatch):
+    import pdfplumber.page
+
+    monkeypatch.setattr(pdfplumber.page.Page, "extract_tables", lambda self, *a, **k: [[[None, "x"]]])
+    out = pdf.extract(make_pdf([statement_lines()]), None)
+    assert out.tables == [[["", "x"]]]
+
+
+def test_alarm_restores_previous_handler():
+    import signal
+
+    from worker.pdf import _Alarm
+
+    def custom(signum, frame):
+        pass
+
+    previous = signal.signal(signal.SIGALRM, custom)
+    try:
+        with _Alarm(5):
+            pass
+        assert signal.getsignal(signal.SIGALRM) is custom
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)

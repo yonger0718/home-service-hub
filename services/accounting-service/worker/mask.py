@@ -9,8 +9,14 @@ from worker.passwords import Identity
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 # boundaries on ASCII letters/digits only: CJK neighbours must not protect a secret (AGENT-95 Must 1)
 _ID = re.compile(r"(?<![A-Za-z0-9])[A-Z][12]\d{8}(?![A-Za-z0-9])")
-_PHONE = re.compile(r"(?<!\d)(?:\(0\d{1,2}\)|0\d{1,2})[- ]?\d{3,4}[- ]?\d{3,4}(?!\d)")
-_DIGIT_RUN = re.compile(r"(?<!\d)\d(?:[ \-]?\d){5,}(?!\d)")  # separator-tolerant, >= 6 digits
+# Taiwan mobile, international mobile, and landlines only when written with parentheses or dashes
+_PHONE = re.compile(
+    r"(?<!\d)09\d{2}[- ]?\d{3}[- ]?\d{3}(?!\d)"
+    r"|\+886[- ]?9\d{2}[- ]?\d{3}[- ]?\d{3}(?!\d)"
+    r"|(?<!\d)(?:\(0\d{1,2}\)[- ]?\d{3,4}[- ]?\d{4}|0\d{1,2}-\d{3,4}-\d{4})(?!\d)"
+)
+# a run is >= 6 contiguous digits, or >= 2 groups of >= 3 digits joined by one space or dash
+_DIGIT_RUN = re.compile(r"(?<!\d)(?:\d{6,}|\d{3,}(?:[ \-]\d{3,})+)(?!\d)")
 
 
 def _birth_patterns(ymd: str) -> list[str]:
@@ -25,11 +31,14 @@ class Masker:
         self.literals: list[str] = []
         if identity.birth_date and len(identity.birth_date) == 8:
             self.literals += _birth_patterns(identity.birth_date)
-        self.names = sorted((n for n in identity.holder_names if n), key=len, reverse=True)
+        self.names = sorted((n for n in identity.holder_names if len(n) >= 2), key=len, reverse=True)
 
     @staticmethod
     def _digits(match: re.Match) -> str:
-        digits = re.sub(r"\D", "", match.group(0))
+        raw = match.group(0)
+        digits = re.sub(r"\D", "", raw)
+        if (" " in raw or "-" in raw) and len(digits) < 8:
+            return raw  # dates and short references such as "000 2026" are not account numbers
         return f"[NUM…{digits[-4:]}]"
 
     def text(self, s: str) -> str:
