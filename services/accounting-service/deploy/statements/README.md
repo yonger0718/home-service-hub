@@ -69,7 +69,10 @@ privileges only:
 Expected: no superuser, createrole or createdb; the second query returns no rows (no non-SELECT grant for
 `accounting_ro` or `PUBLIC`); the third returns no rows (no role memberships). Denied-write check, against a disposable
 synthetic table only (never a real table): connect as `accounting_ro`, `SHOW transaction_read_only;` must say `on`,
-and `INSERT INTO <synthetic> VALUES (1);` must fail with a read-only error.
+and `INSERT INTO <synthetic> VALUES (1);` must fail with a read-only error. Then repeat with the read-only default
+overridden, which any role may attempt (`SET default_transaction_read_only = off; BEGIN READ WRITE; INSERT INTO
+<synthetic> VALUES (1);`): the INSERT must now fail with `permission denied for table` (the privilege grants are the
+real guard; the read-only default only catches mistakes), then `ROLLBACK`.
 
 Placement: the URL goes into `~/.config/homehub-statements.env` as `STATEMENT_VERIFY_DB_URL=...` (mode 0600) and
 nowhere else (not in the root `.env`, not in a unit file, not in a log or PR text). The worker never prints it
