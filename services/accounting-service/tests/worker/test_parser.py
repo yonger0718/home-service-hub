@@ -255,3 +255,54 @@ def test_gate_key_tracks_the_login_dir_but_not_credentials(cfg, tmp_path):
     assert gate.key(prs)["config_dir_digest"] == first
     (login / "settings.json").write_text("{}")
     assert gate.key(prs)["config_dir_digest"] != first
+
+
+@pytest.mark.parametrize("kind", ["directory", "not_executable"])
+def test_unlaunchable_cli_latches_with_evidence(tmp_path, kind):
+    cli = tmp_path / "claude"
+    if kind == "directory":
+        cli.mkdir()
+    else:
+        cli.write_text("#!/bin/sh\n")
+        cli.chmod(0o600)
+    cfg = config.load({"STATEMENT_PARSER_CLI": str(cli), "STATEMENT_PARSER_SANDBOX": "false",
+                       "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true", "STATEMENT_STATE_DIR": str(tmp_path / "state")})
+    prs = parser.Parser(cfg, SubprocessRunner())
+    gate = parser.Gate(cfg)
+    with pytest.raises(parser.ParserDisabled):
+        gate.ensure(prs)
+    assert gate.latch_path.exists() and json.loads(gate.evidence_path.read_text())["ok"] is False
+
+
+def test_key_failure_latches(cfg):
+    class Boom:
+        def run(self, *a, **k):
+            raise PermissionError("x")
+    gate = parser.Gate(cfg)
+    with pytest.raises(parser.ParserDisabled):
+        gate.ensure(parser.Parser(cfg, Boom()))
+    assert json.loads(gate.evidence_path.read_text())["reasons"] == ["key: PermissionError"] and gate.latch_path.exists()
+    gate.clear()
+    report = gate.run_operator_gate(parser.Parser(cfg, Boom()))
+    assert not report.ok and report.reasons == ["key: PermissionError"] and gate.latch_path.exists()
+
+
+def test_login_dir_digest_sees_same_size_same_mtime_edits(cfg, tmp_path):
+    login = tmp_path / "login"
+    login.mkdir()
+    f = login / "settings.json"
+    f.write_text("aaaa")
+    st = f.stat()
+    prs = parser.Parser(cfg, SubprocessRunner(), config_dir=login)
+    gate = parser.Gate(cfg)
+    before = gate.key(prs)["config_dir_digest"]
+    f.write_text("bbbb")
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert gate.key(prs)["config_dir_digest"] != before
+
+
+def test_raising_on_start_hook_surfaces_its_own_error(cfg):
+    def hook(proc):
+        raise KeyError("hook")
+    report = parser.Parser(cfg, SubprocessRunner()).gate(hook)
+    assert not report.ok and report.reasons == ["error: KeyError"]

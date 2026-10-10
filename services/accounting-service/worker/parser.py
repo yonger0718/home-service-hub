@@ -283,7 +283,8 @@ class _ChildIO:
                 pipe.close()
             except (OSError, ValueError):
                 pass
-        self._writer.join(timeout=1)
+        if self._writer.ident is not None:  # never started when an on_start hook raised
+            self._writer.join(timeout=1)
 
 
 def _kill(proc: subprocess.Popen) -> None:
@@ -404,7 +405,8 @@ class Parser:
 
 
 def _dir_digest(directory: Path) -> str | None:
-    """sha256 over (relative name, size, mtime) of every file in the login dir except .credentials.json."""
+    """sha256 over (relative name, content hash | size:mtime_ns for files > 1 MiB) of every file in the login dir
+    except the top-level .credentials.json."""
     digest = hashlib.sha256()
     try:
         for path in sorted(directory.rglob("*")):
@@ -412,7 +414,11 @@ def _dir_digest(directory: Path) -> str | None:
             if str(rel) == ".credentials.json" or not path.is_file():
                 continue
             st = path.stat()
-            digest.update(f"{rel}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+            if st.st_size <= 1024 * 1024:
+                stamp = hashlib.sha256(path.read_bytes()).hexdigest()
+            else:
+                stamp = f"{st.st_size}:{st.st_mtime_ns}"
+            digest.update(f"{rel}\0{stamp}\n".encode())
     except OSError:
         return None
     return digest.hexdigest()
@@ -458,10 +464,20 @@ class Gate:
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return False  # missing, corrupt or odd evidence is stale: re-run the canary
 
+    def _key_failure(self, exc: Exception) -> None:
+        reason = f"key: {type(exc).__name__}"
+        self._write(self.evidence_path, {"ok": False, "reasons": [reason], "evidence": {}, "key": {},
+                                         "checked_at": datetime.now(timezone.utc).isoformat()})
+        self.latch(reason, {})
+
     def ensure(self, parser: Parser) -> None:
         if self.latch_path.exists():
             raise ParserDisabled("parser disabled until an operator gate succeeds")
-        key = self.key(parser)
+        try:
+            key = self.key(parser)
+        except Exception as exc:
+            self._key_failure(exc)
+            raise ParserDisabled("gate failed") from exc
         if self._fresh(key):
             return
         report = parser.gate()
@@ -474,6 +490,11 @@ class Gate:
     def run_operator_gate(self, parser: Parser, *, verify_parser: Parser | None = None) -> GateReport:
         """`python -m worker gate` (ruling 16): the latch clears only when the worker canary passed, a verify-login
         canary ran and passed, and (sandbox on) every host check ran and passed; otherwise it is (re)latched."""
+        try:
+            key = self.key(parser)
+        except Exception as exc:
+            self._key_failure(exc)
+            return GateReport(False, [f"key: {type(exc).__name__}"], {})
         report = parser.gate()
         evidence: dict = {"worker": report.evidence}
         reasons = list(report.reasons)
@@ -494,7 +515,6 @@ class Gate:
             except Exception as exc:
                 reasons.append(f"host: error {type(exc).__name__}")
         evidence["checks_ran"] = checks_ran
-        key = self.key(parser)
         self._write(self.evidence_path, {"ok": not reasons, "reasons": reasons, "evidence": evidence, "key": key,
                                          "checked_at": datetime.now(timezone.utc).isoformat()})
         if reasons:

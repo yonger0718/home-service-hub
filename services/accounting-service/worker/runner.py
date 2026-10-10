@@ -27,6 +27,8 @@ class SubprocessRunner:
             return Result(-1, exc.stdout or b"", (exc.stderr or b"") + b"\ntimeout")
         except FileNotFoundError:
             return Result(127, b"", b"not found")
+        except OSError:  # PermissionError, NotADirectoryError, IsADirectoryError, ...: cannot launch
+            return Result(126, b"", b"cannot execute")
         return Result(done.returncode, done.stdout, done.stderr)
 
 
