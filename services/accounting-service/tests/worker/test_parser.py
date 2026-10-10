@@ -404,6 +404,8 @@ def _ok_canary(prs, monkeypatch, *, start=True):
 
 @pytest.mark.parametrize("name,ps,expected", [
     ("claude seen", lambda pid: _Done(0, "7 claude\n") if pid == "1" else _Done(1), True),
+    ("claude with its own sh and git", lambda pid: _Done(0, "7 claude\n8 sh\n9 git\n") if pid == "1" else _Done(1), True),
+    ("claude and a node", lambda pid: _Done(0, "7 claude\n8 node\n") if pid == "1" else _Done(1), False),
     ("claude and a stray python", lambda pid: _Done(0, "7 claude\n8 python3\n") if pid == "1" else _Done(1), False),
     ("empty rc 0", lambda pid: _Done(0, ""), False),
     ("rc 1 only", lambda pid: _Done(1, ""), False),

@@ -567,7 +567,9 @@ class Gate:
 
 AUTH_MARKERS = ("not logged in", "please run /login", "authentication_error", "invalid api key", "oauth")
 SAMPLE_INTERVAL_S = 0.05
-ALLOWED_COMMS = {"bwrap", "claude", "git"}  # git = the CLI's own child
+# git and sh = the CLI's own children (its `sh -c git ...` repo probe). Comm sampling cannot tell those from a tool
+# shell, so the stream validator (no tool_use other than StructuredOutput) is the primary control; this is defence in depth.
+ALLOWED_COMMS = {"bwrap", "claude", "git", "sh"}
 
 
 def _descendant_comms(pid: int) -> set[str]:

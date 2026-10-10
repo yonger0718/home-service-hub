@@ -120,7 +120,7 @@ It runs two canaries, one per mount (worker login, verify login), and the host c
 `/usr/bin/true` inside bwrap; `/etc/passwd` and `$HOME` absent inside; only `/tmp` writable (for the verify mount
 `/cfg/.credentials.json` must be read-only too); login directory content digest unchanged across the canary; and the
 descendants of the sandbox child sampled at t=0 and every 50 ms during the canary, which passes only when `claude` or
-`bwrap` was actually observed and nothing but bwrap/claude/git was. A failing, empty or erroring sampler fails the check.
+`bwrap` was actually observed and nothing but bwrap/claude/git/sh was (the CLI spawns a transient `sh` for its own `git` probe; comm sampling cannot tell that from a tool shell, so the stream validator is the primary control and sampling is defence in depth). A failing, empty or erroring sampler fails the check.
 Evidence is written to `<state_dir>/gate-<hash>.json` (`host.worker` and `host.verify_login`; one file per parser
 configuration); the latch is removed only when every check of both mounts ran and passed.
 
