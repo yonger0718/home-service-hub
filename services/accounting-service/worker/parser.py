@@ -32,6 +32,7 @@ class ParseError(RuntimeError):
     def __init__(self, reason: str, detail: str = ""):
         super().__init__(reason if not detail else f"{reason}: {detail}")
         self.reason = reason
+        self.envelope: Envelope | None = None  # the partial stream observed, attached by Parser._run_once
 
 
 class ParserDisabled(RuntimeError):
@@ -204,7 +205,7 @@ class StreamValidator:
                 self._bad("num_turns is not 2")
             self._expect = "end"
             return
-        self._bad("unknown event type")
+        self._bad(f"unknown event {kind[:30]}/{sub[:30]}")
 
     def finish(self) -> Envelope:
         env = self.envelope
@@ -345,6 +346,14 @@ class Parser:
             raise ParseError("exit", f"cannot start the parser ({type(exc).__name__})") from exc
         io = _ChildIO(proc, stdin, time.monotonic() + self.cfg.parser_timeout_s)
         try:
+            return self._drive(proc, io, on_start)
+        except ParseError as exc:
+            exc.envelope = io.validator.envelope
+            raise
+
+    def _drive(self, proc: subprocess.Popen, io: "_ChildIO",
+               on_start: Callable[[subprocess.Popen], None] | None) -> Envelope:
+        try:
             if on_start is not None:
                 on_start(proc)
             try:
@@ -400,6 +409,10 @@ class Parser:
             parse_schema.StatementParse.model_validate(envelope.structured_output or {})
         except ParseError as exc:
             reasons.append(str(exc)[:300])
+            seen = exc.envelope
+            if seen is not None:
+                evidence.update(events=[e[:64] for e in seen.events], num_turns=seen.num_turns,
+                                tools=[t[:64] for t in seen.tools], tool_calls=len(seen.tool_names))
         except ValidationError as exc:
             reasons.append(f"schema: {_safe_errors(exc)}")
         except Exception as exc:  # a missing bwrap/CLI or any surprise is a gate failure, never a crash
@@ -594,4 +607,5 @@ def host_evidence(cfg: WorkerConfig, parser: Parser) -> dict:
     checks["login_dir_unchanged"] = changed in ([], [".credentials.json"])
     checks["only_cli_processes"] = bool(sampler) and not sampler_failed.is_set() and seen <= {"bwrap", "claude", "git"}
     checks["canary"] = report.ok
-    return {"ok_by_check": checks, "processes_seen": sorted(seen), "changed_files": changed}
+    return {"ok_by_check": checks, "processes_seen": sorted(seen), "changed_files": changed,
+            "canary_reasons": report.reasons, "canary_events": report.evidence.get("events")}

@@ -319,3 +319,32 @@ def test_thinking_tokens_only_between_init_and_result():
     v = parser.StreamValidator()
     v.feed(b'{"type":"system","subtype":"thinking_tokens"}')
     assert v.violation
+
+
+def test_failed_gate_keeps_the_observed_events(cfg, tmp_path):
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(other_system_subtype=True))
+    report = parser.Parser(cfg, SubprocessRunner()).gate()
+    assert not report.ok and "system/other" in report.reasons[0]
+    assert "system/other_subtype" in report.evidence["events"] and report.evidence["tools"] == ["StructuredOutput"]
+    assert "num_turns" in report.evidence and "tool_calls" in report.evidence
+
+
+def test_host_evidence_records_the_canary_report(tmp_path, monkeypatch):
+    cfg = config.load({"STATEMENT_PARSER_SANDBOX": "true", "STATEMENT_PARSER_CONFIG_DIR": str(tmp_path / "cfg"),
+                       "STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_STATE_DIR": str(tmp_path / "s")})
+    prs = parser.Parser(cfg, SubprocessRunner())
+    failed = parser.GateReport(False, ["sandbox: unknown event system/foo"], {"events": ["system/init", "system/foo"]})
+    monkeypatch.setattr(prs, "gate", lambda on_start=None: failed)
+
+    class Done:
+        def __init__(self, rc):
+            self.returncode, self.stdout = rc, ""
+
+    def fake_run(cmd, **kw):
+        tail = cmd[cmd.index("--") + 1:] if "--" in cmd else cmd
+        return Done(1 if tail[:2] == ["/usr/bin/test", "-e"] or tail == ["/usr/bin/touch", "/cfg/x"] else 0)
+
+    monkeypatch.setattr(parser.subprocess, "run", fake_run)
+    out = parser.host_evidence(cfg, prs)
+    assert out["ok_by_check"]["canary"] is False
+    assert out["canary_reasons"] == failed.reasons and out["canary_events"] == ["system/init", "system/foo"]
