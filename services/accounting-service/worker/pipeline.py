@@ -206,13 +206,17 @@ def _fail(services: Services, lease: Lease, file_row: dict, failure: str, summar
     fields = {"status": "failed", "failure": failure, **versions}
     if failure == "transient":
         attempts = services.retries.get(sha)["transient_attempts"] + (1 if _epoch else 0)
-        services.retries.set(sha, transient_attempts=attempts)
         fields["next_retry_at"] = (_now() + BACKOFF.get(max(attempts, 1), timedelta(hours=24))).isoformat()
+        local = {"transient_attempts": attempts}
+    else:
+        local = {"transient_attempts": 0,
+                 "sandbox_failed_at": _now().isoformat() if failure == "sandbox" else None}
+    services.api.update_file(lease, file_row["id"], **fields)  # the local epoch moves only once the API has it
+    services.retries.set(sha, **local)
+    if failure == "transient":
         summary.transient += 1
     else:
-        services.retries.set(sha, transient_attempts=0, sandbox_failed_at=_now().isoformat() if failure == "sandbox" else None)
         summary.failed += 1
-    services.api.update_file(lease, file_row["id"], **fields)
     return "failed"
 
 
@@ -341,13 +345,21 @@ def _download_verified(services: Services, listed: drive_mod.Listed, summary: Su
     return None
 
 
+def store_id_for(cfg: WorkerConfig) -> str:
+    """Identity of the configured store: normalised host:port plus bucket ("null" without MinIO)."""
+    if cfg.minio_endpoint is None:
+        return "null"
+    host, _secure = inbox_mod._split_endpoint(cfg.minio_endpoint)
+    return f"{host}/{cfg.minio_bucket}"
+
+
 def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_path: Path, summary: Summary) -> bool:
     """Storage has its own due/attempt ladder (AGENT-96 Must 4). Returns False only when the file may not proceed
     to parsing this run (never parsed + object not stored); a parsed file keeps its status whatever the store says.
     A confirmation is valid only for the store that gave it (`confirmed_by`): a NullStore "yes" never satisfies a
     MinIO configured later."""
     sha = file_row["sha256"]
-    store_id = services.cfg.minio_endpoint or "null"
+    store_id = store_id_for(services.cfg)
     store = services.retries.get(sha)["store"]
     if not store["pending"] and store.get("confirmed_by") == store_id:
         return True
@@ -374,7 +386,8 @@ def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_p
     return True
 
 
-def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: dict[str, dict], summary: Summary):
+def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: dict[str, dict], summary: Summary,
+             trace: dict | None = None):
     """Ruling 10: fetch bytes only when the index does not know them; register the source every listing;
     ensure the object is stored. Returns (file_row, bytes-or-None, listed) or None when skipped this run."""
     if listed.size > inbox_mod.MAX_PDF_BYTES:
@@ -382,6 +395,7 @@ def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: 
         return None
     sha = services.index.get(listed.drive_file_id, listed.md5)
     path = services.cfg.inbox_dir / f"{sha}.pdf" if sha else None
+    trace = trace if trace is not None else {}
     data = None
     if not (sha and sha in known and path.exists()):
         got = _download_verified(services, listed, summary)
@@ -392,13 +406,15 @@ def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: 
             return None
         published, listed = got
         sha, path = published.sha256, published.path
+        trace["sha"] = sha
         data = path.read_bytes()
         services.index.put(listed.drive_file_id, listed.md5, sha)
+    trace["sha"] = sha
     kind = "bank" if drive_mod.folder_of(listed).startswith("銀行帳戶") else "card"
     file_row = services.api.register_file(lease, sha, path.stat().st_size, kind, f"by-sha/{sha}.pdf")
     if sha not in known:
         summary.new_files += 1
-        known[sha] = file_row
+    known[sha] = file_row
     services.api.register_source(lease, file_row["id"], listed.root, listed.drive_file_id, listed.path, listed.md5,
                                  listed.size)
     if not _ensure_stored(services, lease, file_row, path, summary):
@@ -472,9 +488,9 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
             for listed in listing:
                 if keeper.lost:
                     raise RunAborted("lease lost")
-                row = None
+                row, trace = None, {}
                 try:
-                    acquired = _acquire(services, lease, listed, known, summary)
+                    acquired = _acquire(services, lease, listed, known, summary, trace)
                     if acquired is None:
                         continue
                     file_row, data, listed = acquired
@@ -492,12 +508,17 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
                     process_file(services, lease, file_row, listed, data, account_map, mapping_version, summary)
                 except (LeaseLost, RunAborted, httpx.TransportError, drive_mod.ListingError):
                     raise
-                except Exception:  # noqa: BLE001 — one bad file must not stop the run
+                except Exception as exc:  # noqa: BLE001 — one bad file must not stop the run
+                    if isinstance(exc, ApiError) and exc.status in (401, 403):
+                        summary.errors.append("auth") if "auth" not in summary.errors else None
+                        raise RunAborted("auth") from exc
                     log.exception("file failed")
                     if "file_error" not in summary.errors:
                         summary.errors.append("file_error")
-                    row = row or known.get(services.index.get(listed.drive_file_id, listed.md5) or "")
-                    if row is not None and row.get("status") != "parsed":
+                    row = row or known.get(trace.get("sha", ""))
+                    # only a row that was due and in flight is marked; anything else keeps its status
+                    if row is not None and (row.get("status") in ("new", "unlocked")
+                                            or (row.get("status") == "failed" and row.get("failure") == "transient")):
                         try:
                             _fail(services, lease, row, "transient", summary)
                         except (LeaseLost, httpx.TransportError):
@@ -516,6 +537,11 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
         raise RunAborted("lease lost") from exc
     except RunAborted:
         raise
+    except ApiError as exc:
+        code = "auth" if exc.status in (401, 403) else "unexpected"
+        if code not in summary.errors:
+            summary.errors.append(code)
+        raise RunAborted(code) from exc
     except Exception as exc:
         if "unexpected" not in summary.errors:
             summary.errors.append("unexpected")

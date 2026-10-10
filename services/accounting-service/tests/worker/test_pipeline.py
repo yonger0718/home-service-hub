@@ -488,3 +488,43 @@ def test_transient_backoff_steps():
     import datetime as dt
     assert [pipeline.BACKOFF.get(n, dt.timedelta(hours=24)) for n in (1, 2, 3, 5)] == [
         dt.timedelta(hours=1), dt.timedelta(hours=6), dt.timedelta(hours=24), dt.timedelta(hours=24)]
+
+
+def test_containment_leaves_a_settled_row_alone(world, db_session, monkeypatch):
+    from worker.api import ApiError
+    services, _, cfg = world
+    cfg.password_file.write_text(PW_FILE.replace("$ID", "nope"), encoding="utf-8")
+    services = pipeline.build(cfg, services.api.client, services.runner)
+    pipeline.run(services, trigger="owner_cli")  # failed/password
+    monkeypatch.setattr(services.api, "register_source", lambda *a, **k: (_ for _ in ()).throw(ApiError(503, "x")))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["file_error"] and _file_rows(db_session) == [("failed", "password")]
+
+
+def test_auth_failure_aborts_the_run(world, db_session, monkeypatch):
+    from worker.api import ApiError
+    services, _, _ = world
+    monkeypatch.setattr(services.api, "submit_revision", lambda *a, **k: (_ for _ in ()).throw(ApiError(403, "no")))
+    with pytest.raises(pipeline.RunAborted):
+        pipeline.run(services, trigger="owner_cli")
+    summary = services.api.client.get("/statements/ingest-runs", headers={"Authorization": "Bearer worker-token"}).json()[-1]["summary"]
+    assert "auth" in summary["errors"] and "file_error" not in summary["errors"]
+
+
+def test_epoch_moves_only_after_the_api_accepted_it(world, monkeypatch):
+    from worker.api import ApiError
+    services, _, _ = world
+    row = {"id": 1, "sha256": "ab" * 32}
+    monkeypatch.setattr(services.api, "update_file", lambda *a, **k: (_ for _ in ()).throw(ApiError(500, "x")))
+    with pytest.raises(ApiError):
+        pipeline._fail(services, None, row, "transient", pipeline.Summary())
+    assert services.retries.get(row["sha256"])["transient_attempts"] == 0
+
+
+def test_store_id_normalises_endpoint_and_includes_bucket(world):
+    import dataclasses
+    _, _, cfg = world
+    ids = [pipeline.store_id_for(dataclasses.replace(cfg, minio_endpoint=e, minio_bucket=b))
+           for e, b in (("http://minio:9000", "b"), ("minio:9000", "b"), ("minio:9000", "c"))]
+    assert ids[0] == ids[1] == "minio:9000/b" and ids[2] != ids[0]
+    assert pipeline.store_id_for(cfg) == "null"
