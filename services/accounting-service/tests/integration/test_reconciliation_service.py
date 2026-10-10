@@ -718,15 +718,17 @@ def _interleave(pg_engine, first, second, swept, go) -> dict:
             session.rollback()
             out[key] = exc
 
-    # the transaction stays open so the session keeps this connection (and pid) for second()
-    second_pid = sessions["second"].execute(text("SELECT pg_backend_pid()")).scalar_one()
+    # the transactions stay open so each session keeps this connection (and pid) for its function
+    first_pid, second_pid = (sessions[key].execute(text("SELECT pg_backend_pid()")).scalar_one()
+                             for key in ("first", "second"))
     threads = [threading.Thread(target=runner, args=("first", first), daemon=True),
                threading.Thread(target=runner, args=("second", second), daemon=True)]
     threads[0].start()
     try:
         assert swept.wait(10)
         threads[1].start()
-        wait_until_blocked(pg_engine, second_pid)  # on a coverage/case row the paused reconcile wrote
+        # on a coverage/case row the paused first() wrote
+        wait_until_blocked(pg_engine, second_pid, blocker_pid=first_pid)
     finally:
         go.set()
         for thread in threads:
