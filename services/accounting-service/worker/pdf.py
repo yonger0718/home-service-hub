@@ -70,7 +70,7 @@ def unlock(data: bytes, candidates: list[str], *, max_bytes: int = 20_000_000) -
                     return Unlocked(reader, index)
             except (PdfReadError, NotImplementedError):
                 continue
-    except _LIBRARY_ERRORS:
+    except Exception:  # noqa: BLE001 — any library surprise is a malformed file; never carry its text along
         raise Malformed("malformed") from None
     raise PasswordError("password") from None
 
@@ -109,25 +109,25 @@ def extract(data: bytes, password: str | None, *, max_pages: int = 40, max_bytes
     with _Alarm(timeout_s):
         try:
             doc = pdfplumber.open(BytesIO(data), password=password)
-        except PdfminerException as exc:
-            if isinstance(exc.args[0] if exc.args else None, PDFPasswordIncorrect):
-                raise PasswordError("password") from None
-            raise Malformed("malformed") from None
-        except _LIBRARY_ERRORS:
-            raise Malformed("malformed") from None
-        with doc:
-            if len(doc.pages) > max_pages:
-                raise TooLarge(f"{len(doc.pages)} pages") from None
-            texts: list[str] = []
-            tables: list[list[list[str]]] = []
-            try:
+            with doc:
+                npages = len(doc.pages)
+                if npages > max_pages:
+                    raise TooLarge(f"{npages} pages") from None
+                texts: list[str] = []
+                tables: list[list[list[str]]] = []
                 for page in doc.pages:
                     texts.append(page.extract_text() or "")
                     for table in page.extract_tables() or []:
                         tables.append([[("" if cell is None else str(cell)) for cell in row] for row in table])
-            except _LIBRARY_ERRORS:
-                raise Malformed("malformed") from None
-            page1 = len(texts[0].strip()) if texts else 0
-            if page1 < 200:
-                raise NoTextLayer(f"page 1 has {page1} characters") from None
-            return Extracted("\f".join(texts), tables, len(doc.pages), page1)
+                page1 = len(texts[0].strip()) if texts else 0
+                if page1 < 200:
+                    raise NoTextLayer(f"page 1 has {page1} characters") from None
+                return Extracted("\f".join(texts), tables, npages, page1)
+        except (PasswordError, NoTextLayer, TooLarge, ExtractTimeout):
+            raise
+        except PdfminerException as exc:
+            if isinstance(exc.args[0] if exc.args else None, PDFPasswordIncorrect):
+                raise PasswordError("password") from None
+            raise Malformed("malformed") from None
+        except Exception:  # noqa: BLE001
+            raise Malformed("malformed") from None

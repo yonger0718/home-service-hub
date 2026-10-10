@@ -181,7 +181,10 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
         raise Refused("STATEMENT_VERIFY_DB_URL is required for verify (read-only role, ruling 11)")
     prs = parser_mod.Parser(cfg, runner, config_dir=cfg.verify_parser_config_dir, credentials_writable=False)
     gate = parser_mod.Gate(cfg)
-    gate.ensure(prs)  # raises ParserDisabled (ruling 9)
+    try:
+        gate.ensure(prs)  # raises ParserDisabled (ruling 9)
+    except parser_mod.GateUnavailable:  # transient canary failure: no latch, nothing parsed
+        return {"errors": ["gate_unavailable"], "statements": 0}
     version = parse_schema.version(prs.cli_version() or "unknown", cfg.parser_model)
     vtag = hashlib.sha256(version.encode("utf-8")).hexdigest()[:16]
     masked_dir, parsed_dir = cfg.verify_dir / "masked", inbox_mod.private_dir(cfg.verify_dir / "parsed")
@@ -191,7 +194,7 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
     totals = {"statements": 0, "lines": 0, "claims": 0, "unmatched_lines": 0, "unmatched_entries": 0,
               "guardrail_failed": 0, "parse_failed": 0, "unmapped": 0, "existing": 0, "verify_errors": 0,
               "cases": {}, "errors": []}
-    engine = create_engine(cfg.verify_db_url)
+    engine = create_engine(cfg.verify_db_url, hide_parameters=True)
     try:
         # Phase 1: parse (or load the cache) with no database connection open.
         pending: list[tuple[str, int, parse_schema.StatementParse]] = []
@@ -231,9 +234,10 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
                         continue
                     _write_private(cache, parsed.model_dump_json())
                 pending.append((sha, account_id, parsed))
-            except Exception:
+            except Exception as exc:
                 totals["verify_errors"] += 1
-                rows.append({"sha256": sha, "account_id": account_id, "error": "verify_error"})
+                rows.append({"sha256": sha, "account_id": account_id, "error": "verify_error",
+                             "error_class": type(exc).__name__})
         # Phase 2: one read-only snapshot, held only while matching.
         if pending and not aborted:
             with Session(engine) as db:
@@ -242,9 +246,10 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
                     try:
                         with db.begin_nested():  # a failed statement must not poison the shared snapshot
                             _report_one(db, sha, account_id, parsed, rows, totals)
-                    except Exception:
+                    except Exception as exc:
                         totals["verify_errors"] += 1
-                        rows.append({"sha256": sha, "account_id": account_id, "error": "verify_error"})
+                        rows.append({"sha256": sha, "account_id": account_id, "error": "verify_error",
+                                     "error_class": type(exc).__name__})
                 db.rollback()
     finally:
         engine.dispose()

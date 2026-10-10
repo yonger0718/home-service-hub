@@ -463,6 +463,8 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
     state = RunState(services.cfg.state_dir / "run.json")
     state.save(lease, trigger=trigger, mode=mode)  # right after the claim (also for poll's claimed leases)
     services.parser_disabled = False
+    for stale in services.cfg.staging_dir.glob("*.tmp"):  # leftovers of crashed runs (the singleton guarantees none is live)
+        stale.unlink(missing_ok=True)
     summary.versions = {"parser_version": services.parser_version, "cli_version": services.cli_version,
                         "model": services.cfg.parser_model, "credential_version": services.credential_version}
     status, interrupted = "failed", False
@@ -474,6 +476,9 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
             except parser_mod.ParserDisabled:
                 services.parser_disabled = True
                 summary.errors.append("parser_disabled")
+            except parser_mod.GateUnavailable:  # transient canary failure: skip parsing, nothing latched, run done
+                services.parser_disabled = True
+                summary.errors.append("gate_unavailable")
             account_map, mapping_version = services.api.account_map()
             summary.versions["mapping_version"] = mapping_version
             try:
@@ -512,7 +517,7 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
                     if isinstance(exc, ApiError) and exc.status in (401, 403):
                         summary.errors.append("auth") if "auth" not in summary.errors else None
                         raise RunAborted("auth") from exc
-                    log.exception("file failed")
+                    log.warning("file failed: %s", type(exc).__name__)  # class only, never text or traceback
                     if "file_error" not in summary.errors:
                         summary.errors.append("file_error")
                     row = row or known.get(trace.get("sha", ""))
@@ -523,8 +528,8 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
                             _fail(services, lease, row, "transient", summary)
                         except (LeaseLost, httpx.TransportError):
                             raise
-                        except Exception:  # noqa: BLE001
-                            log.warning("could not record the file failure")
+                        except Exception as inner:  # noqa: BLE001
+                            log.warning("could not record the file failure: %s", type(inner).__name__)
             services.api.mark_removed(lease, [i.drive_file_id for i in listing], allow_empty=not listing)
             if trigger in FULL_RUN_TRIGGERS:
                 _sweep(services, lease, summary)
@@ -545,7 +550,7 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
     except Exception as exc:
         if "unexpected" not in summary.errors:
             summary.errors.append("unexpected")
-        log.exception("run failed")
+        log.warning("run failed: %s", type(exc).__name__)
         raise RunAborted("unexpected") from exc
     except BaseException:
         interrupted = True  # KeyboardInterrupt / SystemExit: do not finish, keep run.json
@@ -555,8 +560,8 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
             try:  # the guard stays armed (services.keeper is still set), so a lost lease cannot finish either
                 services.api.finish(lease, status, summary.as_dict())
                 state.clear()
-            except Exception:  # noqa: BLE001 — ApiError or transport: the lease expires and the run is reclaimed
-                log.warning("finish failed")
+            except Exception as exc:  # noqa: BLE001 — ApiError or transport: the lease expires and the run is reclaimed
+                log.warning("finish failed: %s", type(exc).__name__)
         services.keeper = None
     return summary.as_dict()
 

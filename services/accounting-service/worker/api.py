@@ -117,7 +117,7 @@ class ApiClient:
         return self._call("GET", "/statements/files") or []
 
     def sweep(self, lease: Lease) -> dict:
-        return self._call("POST", "/reconciliation/sweep", json=lease.body(), lease_route=True)
+        return self._call("POST", "/reconciliation/sweep", json=lease.body(), lease_route=True, timeout=600)
 
     def submit_revision(self, lease: Lease, body: dict) -> dict:
         return self._call("POST", "/statements/revisions", json=lease.body(**body), lease_route=True)
@@ -166,6 +166,8 @@ class RunState:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({**lease.__dict__, "trigger": trigger, "mode": mode}, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, self.path)
 
     def load(self):

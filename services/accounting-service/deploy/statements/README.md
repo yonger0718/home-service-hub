@@ -38,7 +38,8 @@ Only once the dedicated users exist (checklist at the end of this file) and the 
     systemctl --user list-timers 'homehub-statements*'
 
 A second worker (overlapping tick, manual run during the timer) prints `already running` and exits 0, so overlapping
-ticks never fail the unit. Without the worker API token and the password file the run path exits 2.
+ticks never fail the unit (`gate`, `verify` and `export-masked` exit 3 instead). For manual runs load the env file:
+`set -a; . ~/.config/homehub-statements.env; set +a`. Without the worker API token and the password file the run path exits 2.
 
 ## Read-only database role for `verify` (ruling 11)
 
@@ -77,17 +78,31 @@ nowhere else (not in the root `.env`, not in a unit file, not in a log or PR tex
 ## Verify parser login copy
 
 `verify` runs the parser child with the login directory bound read-only and no writable credentials file, so an
-expired token fails `verify` with `auth` instead of being refreshed. The directory is a copy of the worker login
-(`STATEMENT_PARSER_CONFIG_DIR`, default `~/.local/state/home-hub-parser/claude`) at
-`STATEMENT_VERIFY_PARSER_CONFIG_DIR` (default `~/.local/state/home-hub-parser/claude-verify`):
+expired token fails `verify` with `auth` instead of being refreshed. It has its own login at
+`STATEMENT_VERIFY_PARSER_CONFIG_DIR` (default `~/.local/state/home-hub-parser/claude-verify`), separate from the worker
+login (`STATEMENT_PARSER_CONFIG_DIR`, default `~/.local/state/home-hub-parser/claude`). Never copy
+`~/.claude/.credentials.json` or one login into the other: a copied refresh token rotates on use and can log out the
+owner's interactive CLI and the Multica agents.
 
-    src=~/.local/state/home-hub-parser/claude; dst=~/.local/state/home-hub-parser/claude-verify
-    chmod -R u+w "$dst" 2>/dev/null; rm -rf "$dst"; mkdir -p "$dst"
-    cp -a "$src"/. "$dst"/
-    chmod 400 "$dst"/* ; chmod 500 "$dst"
+    dst=~/.local/state/home-hub-parser/claude-verify
+    chmod u+w "$dst" 2>/dev/null; mkdir -p "$dst"
+    CLAUDE_CONFIG_DIR="$dst" claude /login
+    chmod 400 "$dst"/.credentials.json; chmod 500 "$dst"
 
-Refresh the copy (same commands) after every successful operator `gate.sh`, and whenever the worker login was
-refreshed; then run `gate.sh` again so the gate key (which hashes the contents of the login directory's files up to 1 MiB, `size:mtime_ns` above that, excluding the top-level `.credentials.json`) matches. The operator gate runs the canary with this login too when the directory exists.
+The worker login is created the same way (`.../claude`, then `chmod 700` the directory and `chmod 600 .credentials.json`).
+After a new login run `gate.sh` again so the gate key (which hashes the contents of the login directory's files up to 1 MiB, `size:mtime_ns` above that, excluding the top-level `.credentials.json`) matches. The operator gate runs the canary with this login too when the directory exists.
+
+## Pinned CLI copy
+
+`~/.local/bin/claude` is the auto-updater's symlink. Copy the pinned binary and set `STATEMENT_PARSER_CLI` to it:
+
+    mkdir -p ~/.local/state/home-hub-parser/bin
+    cp "$(readlink -f ~/.local/bin/claude)" ~/.local/state/home-hub-parser/bin/claude-2.1.296
+    chmod 500 ~/.local/state/home-hub-parser/bin/claude-2.1.296
+
+Bump the pin: copy the new binary, update `STATEMENT_PARSER_CLI` and `STATEMENT_PARSER_CLI_VERSION`, run `gate.sh`.
+The parser version changes, so files that failed `parse`/`guardrail`/`no_text_layer`/`too_large` are re-parsed once
+(one model call per file).
 
 ## Operator gate (`gate.sh`)
 
@@ -124,7 +139,8 @@ completing this list:
 2. Move the rclone config for `gdrive:`, the password file, the API token file (worker label, `ingest` scope only), the
    MinIO key file and the parser login to the worker user, all 0600 in 0700 directories; nothing readable by `opc` or
    by the application user.
-3. Install the units under the worker user (`loginctl enable-linger homehub-worker`), set `STATEMENT_*` paths in that
+3. `verify` imports `app.models` -> `app.database` -> `load_dotenv(.env)`, so under the user split `homehub-verify` must get its own environment without the application's write-role `.env`.
+   Install the units under the worker user (`loginctl enable-linger homehub-worker`), set `STATEMENT_*` paths in that
    user's `homehub-statements.env`, run `gate.sh` as that user and keep its evidence.
 4. Rotate every credential that `opc` ever held: the worker API token, the password file contents (bank passwords
    stay the owner's, rotate the Drive/rclone token and the parser login), the `accounting_ro` password.

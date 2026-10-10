@@ -222,16 +222,30 @@ class _VersionOnly:
         return Result(0, b"2.1.296 (Claude Code)\n", b"")
 
 
-def test_missing_cli_binary_is_a_gate_failure_and_latches(tmp_path):
+def test_missing_cli_binary_is_a_gate_failure_that_does_not_latch(tmp_path):
     cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "nope"), "STATEMENT_PARSER_SANDBOX": "false",
                        "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true", "STATEMENT_STATE_DIR": str(tmp_path / "state")})
     prs = parser.Parser(cfg, _VersionOnly())  # version check passes, Popen raises FileNotFoundError
     report = prs.gate()
     assert not report.ok and report.reasons
     gate = parser.Gate(cfg)
+    with pytest.raises(parser.GateUnavailable):  # cannot start = exit class: outage, not a violation
+        gate.ensure(prs)
+    assert not gate.latch_path.exists() and gate.evidence_path_for(gate.key(prs)).exists()
+
+
+def test_transient_canary_failure_does_not_latch_but_a_schema_failure_does(tmp_path):
+    cfg = config.load({"STATEMENT_PARSER_CLI": str(fake_claude.write(tmp_path / "claude", fake_claude.transcript(), exit_code=1)),
+                       "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true",
+                       "STATEMENT_STATE_DIR": str(tmp_path / "state")})
+    prs, gate = parser.Parser(cfg, SubprocessRunner()), parser.Gate(cfg)
+    with pytest.raises(parser.GateUnavailable):
+        gate.ensure(prs)
+    assert not gate.latch_path.exists()
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(output={"kind": "card"}))
     with pytest.raises(parser.ParserDisabled):
         gate.ensure(prs)
-    assert gate.latch_path.exists() and gate.evidence_path_for(gate.key(prs)).exists()
+    assert gate.latch_path.exists()
 
 
 def test_corrupt_or_naive_gate_evidence_is_stale_not_a_crash(cfg):

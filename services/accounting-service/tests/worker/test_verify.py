@@ -300,7 +300,7 @@ def test_verify_contains_a_per_statement_failure(tmp_path, db_session, seed, ro_
     totals = verify.run(_verify_cfg(tmp_path, cli, ro_url), SubprocessRunner(), limit=None)
     assert totals["verify_errors"] == 3 and totals["statements"] == 0
     report = json.loads(next((tmp_path / "v" / "reports").glob("*.json")).read_text(encoding="utf-8"))
-    assert all(r["error"] == "verify_error" and set(r) == {"sha256", "account_id", "error"} for r in report["rows"])
+    assert all(r["error"] == "verify_error" and set(r) == {"sha256", "account_id", "error", "error_class"} for r in report["rows"])
     assert sorted(r["account_id"] is None for r in report["rows"]) == [False, False, True]
     assert len(report["rows"]) == 3
 
@@ -375,3 +375,11 @@ def test_kind_of():
     assert kind_of(mk("mail", "信用卡/國泰世華/x.pdf")) == "card"
     assert kind_of(mk("mail", "銀行帳戶/國泰/x.pdf")) == "bank"
     assert kind_of(mk("manual", "國泰/x.pdf")) == "bank"
+
+
+def test_verify_with_a_transient_canary_failure_reports_gate_unavailable_without_latching(tmp_path, ro_url):
+    cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript(), exit_code=1)
+    cfg = _verify_cfg(tmp_path, cli, ro_url)
+    result = verify.run(cfg, SubprocessRunner(), limit=None)
+    assert result["errors"] == ["gate_unavailable"]
+    assert not (cfg.state_dir / "parser-disabled.json").exists()

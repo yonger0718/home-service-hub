@@ -6,11 +6,21 @@ import json
 import logging
 import os
 import sys
+import warnings
 
 import httpx
 
 from worker import config, pipeline
 from worker.runner import SubprocessRunner
+
+
+def quiet_libraries() -> None:
+    """PDF libraries may log fragments of the document; none of that may reach a log or journal."""
+    for name in ("pdfminer", "pdfplumber", "pypdf"):
+        logging.getLogger(name).setLevel(logging.CRITICAL + 1)
+    warnings.filterwarnings("ignore", module=r"(pdfminer|pdfplumber|pypdf).*")
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -31,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    quiet_libraries()
     if args.cmd == "backfill" and not args.acknowledge_live_periods:  # before anything is read or spawned
         print("backfill may touch live periods; pass --acknowledge-live-periods", file=sys.stderr)
         return 2
@@ -47,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
                 report = Gate(cfg).run_operator_gate(worker_parser, verify_parser=verify_parser)
         except pipeline.AlreadyRunning:
             print("already running")
-            return 0
+            return 3
         print(json.dumps(report.__dict__, ensure_ascii=False, indent=2, default=str))
         return 0 if report.ok else 1
     if args.cmd in ("export-masked", "verify"):
@@ -63,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(result, ensure_ascii=False))
         except pipeline.AlreadyRunning:
             print("already running")
-            return 0
+            return 3
         except (pipeline.Refused, verify.Refused) as exc:
             print(str(exc), file=sys.stderr)
             return 2

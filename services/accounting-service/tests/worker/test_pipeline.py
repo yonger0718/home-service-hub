@@ -528,3 +528,37 @@ def test_store_id_normalises_endpoint_and_includes_bucket(world):
            for e, b in (("http://minio:9000", "b"), ("minio:9000", "b"), ("minio:9000", "c"))]
     assert ids[0] == ids[1] == "minio:9000/b" and ids[2] != ids[0]
     assert pipeline.store_id_for(cfg) == "null"
+
+
+def test_transient_canary_failure_skips_parsing_without_latching(world, db_session, tmp_path):
+    services, _, cfg = world
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), exit_code=1)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["gate_unavailable"] and summary["parsed"] == 0 and summary["skipped"] == 1
+    assert db_session.execute(text("select status from ingest_run")).scalar_one() == "done"
+    assert not (cfg.state_dir / "parser-disabled.json").exists()
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] == 1  # recovers on its own
+
+
+def test_drive_deletion_marks_removed_and_reappearance_clears_it(world, db_session):
+    services, drive_files, _ = world
+    pipeline.run(services, trigger="owner_cli")
+    entry = drive_files.pop("id-1")
+    pipeline.run(services, trigger="owner_cli")
+    db_session.expire_all()
+    assert db_session.execute(text("select removed_at is not null from statement_source")).scalar_one() is True
+    drive_files["id-1"] = entry
+    pipeline.run(services, trigger="owner_cli")
+    db_session.expire_all()
+    assert db_session.execute(text("select removed_at is null from statement_source")).scalar_one() is True
+    assert services.runner.downloads == 1
+
+
+def test_stale_staging_files_are_swept_at_run_start(world):
+    services, _, cfg = world
+    from worker import inbox
+    inbox.private_dir(cfg.staging_dir)
+    (cfg.staging_dir / "old.tmp").write_bytes(b"x")
+    pipeline.run(services, trigger="owner_cli")
+    assert not (cfg.staging_dir / "old.tmp").exists()

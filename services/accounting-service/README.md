@@ -215,8 +215,8 @@ are in `deploy/statements/README.md`.
     python -m worker export-masked --for-verify [--folder PREFIX] [--limit N]
     python -m worker verify [--limit N]
 
-Exit codes: `0` success (a `done` run with transient codes in `errors` is still 0; `already running` is 0 so timers never
-fail on overlap); `1` a run `failed` or `aborted`, `parser_disabled`, any verify/export error, a failed gate;
+Exit codes: `0` success (a `done` run with transient codes in `errors` is still 0; `already running` is 0 for `run`/`poll` so timers never
+fail on overlap, and 3 for `gate`, `verify` and `export-masked`, which operators must notice); `1` a run `failed` or `aborted`, `parser_disabled`, any verify/export error, a failed gate;
 `2` refused (missing token or password file for `run`, `poll` and `backfill` only; `backfill` without `--acknowledge-live-periods`, `verify` without
 `STATEMENT_VERIFY_DB_URL`). Output is one JSON line of codes and counts (never text, names or paths).
 
@@ -239,7 +239,7 @@ Configuration (all optional; empty means default):
 | `STATEMENT_MINIO_ENDPOINT` | unset | object store; unset skips the put (`object_key` is still `by-sha/<sha256>.pdf`) |
 | `STATEMENT_MINIO_BUCKET` | `homehub-statements` | bucket |
 | `STATEMENT_MINIO_KEY_FILE` | unset | access/secret key file (two lines) |
-| `STATEMENT_PARSER_CLI` | `/home/opc/.local/bin/claude` | Claude Code CLI binary |
+| `STATEMENT_PARSER_CLI` | `/home/opc/.local/bin/claude` | Claude Code CLI binary; set it to the pinned copy (see "Pinned CLI copy"), because the default is the auto-updater's symlink |
 | `STATEMENT_PARSER_CLI_VERSION` | `2.1.296` | pinned CLI version; any other version disables parsing (`failed/sandbox`) |
 | `STATEMENT_PARSER_MODEL` | `claude-sonnet-5-5` | pinned model |
 | `STATEMENT_PARSER_CONFIG_DIR` | `~/.local/state/home-hub-parser/claude` | parser login directory (worker) |
@@ -252,15 +252,30 @@ Configuration (all optional; empty means default):
 | `STATEMENT_VERIFY_PARSER_CONFIG_DIR` | `~/.local/state/home-hub-parser/claude-verify` | read-only copy of the parser login for `verify` (chmod 500 dir, 400 files) |
 | `STATEMENT_ACCOUNT_MAP_FILE` | unset | account map JSON for `verify` while the feature flag is off (same key format as settings) |
 
-Parser login. The parser runs in a sandbox that sees only a copy of the CLI login:
+Pinned CLI copy. `~/.local/bin/claude` is the auto-updater's symlink, so the pin (`STATEMENT_PARSER_CLI_VERSION`) would
+break the day the updater moves it. Copy the pinned binary and point the worker at the copy:
 
-    mkdir -p ~/.local/state/home-hub-parser/claude
-    cp ~/.claude/.credentials.json ~/.local/state/home-hub-parser/claude/
-    chmod 700 ~/.local/state/home-hub-parser/claude
-    chmod 600 ~/.local/state/home-hub-parser/claude/.credentials.json
+    mkdir -p ~/.local/state/home-hub-parser/bin
+    cp "$(readlink -f ~/.local/bin/claude)" ~/.local/state/home-hub-parser/bin/claude-2.1.296
+    chmod 500 ~/.local/state/home-hub-parser/bin/claude-2.1.296
+    # STATEMENT_PARSER_CLI=$HOME/.local/state/home-hub-parser/bin/claude-2.1.296
 
-The worker's run may refresh that file; `verify` never does (its copy is read-only and an expired token fails the
-verify with `auth`). Refresh the verify copy after a successful `gate` as described in `deploy/statements/README.md`.
+Bumping the pin: copy the new binary, set `STATEMENT_PARSER_CLI` and `STATEMENT_PARSER_CLI_VERSION`, run `gate`. The
+parser version changes, so every `parse`, `guardrail`, `no_text_layer` and `too_large` file is re-parsed once (a model
+call per file); budget for that before bumping.
+
+Parser logins. The parser runs in a sandbox that sees only its own login directory. Create separate logins, never a
+copy of `~/.claude/.credentials.json`: a copied refresh token rotates on use and can log out the owner's interactive CLI
+and the Multica agents that share it.
+
+    CLAUDE_CONFIG_DIR=~/.local/state/home-hub-parser/claude claude /login          # worker login
+    chmod 700 ~/.local/state/home-hub-parser/claude; chmod 600 ~/.local/state/home-hub-parser/claude/.credentials.json
+    CLAUDE_CONFIG_DIR=~/.local/state/home-hub-parser/claude-verify claude /login   # verify login
+    chmod 400 ~/.local/state/home-hub-parser/claude-verify/.credentials.json; chmod 500 ~/.local/state/home-hub-parser/claude-verify
+
+The worker's run may refresh its file; `verify` never does (its login is read-only and an expired token fails the
+verify with `auth`; log in again and `chmod` as above). Run `gate` after a new login as described in `deploy/statements/README.md`.
+For a manual run load the optional env file first: `set -a; . ~/.config/homehub-statements.env; set +a`.
 Grant the worker its token by adding a `worker:<token>` item to `ACCOUNTING_API_TOKENS` and `worker=ingest` to
 `ACCOUNTING_TOKEN_SCOPES`, and put just the token value into `STATEMENT_API_TOKEN_FILE` (`chmod 600`).
 
@@ -273,10 +288,12 @@ whose password contains a plus sign cannot be configured in R2. The values never
 Gate and latch. Every `run`, `poll`, `backfill` and `verify` first checks `<state_dir>/gate-<hash>.json` (one evidence
 file per parser configuration, valid for 24 h while the CLI version, model, login directory listing, argv template and
 sandbox flag are unchanged) and otherwise runs the canary. Any violation (gate or real input: a second tool call, a tool
-other than `StructuredOutput`, `num_turns` other than 2, a changed CLI version, an `auth` failure) writes
+other than `StructuredOutput`, `num_turns` other than 2, a changed CLI version, an `auth` failure, a schema failure of the
+canary) writes
 `<state_dir>/parser-disabled.json`. While it exists nothing parses: runs finish `failed` with `parser_disabled` and the
 command exits 1. Only a successful operator `python -m worker gate` (worker canary, verify canary and the host checks)
-removes it; a file that failed `sandbox` becomes due again once a newer successful gate exists.
+removes it. A canary that merely cannot run (CLI exit, timeout, outage) does not latch: the run skips parsing,
+records `gate_unavailable` and finishes `done`; the next run tries again. A file that failed `sandbox` becomes due again once a newer successful gate exists.
 
 Verify flow (read-only against the live ledger; writes only its report):
 

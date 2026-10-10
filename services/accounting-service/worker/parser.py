@@ -40,6 +40,10 @@ class ParserDisabled(RuntimeError):
     pass
 
 
+class GateUnavailable(RuntimeError):
+    """The canary could not run (CLI exit, timeout, outage): nothing is latched, parsing waits for the next run."""
+
+
 @dataclass
 class Envelope:
     structured_output: dict | None = None
@@ -57,6 +61,7 @@ class GateReport:
     ok: bool
     reasons: list[str]
     evidence: dict
+    transient: bool = False  # the only failure was exit/timeout: not evidence of a violation
 
 
 def _sandbox_prefix(cfg: WorkerConfig, config_dir: Path, credentials_writable: bool) -> list[str]:
@@ -327,7 +332,8 @@ class Parser:
         return command(self.cfg, self._schema, config_dir=self.config_dir, credentials_writable=self.credentials_writable)
 
     def cli_version(self) -> str:
-        result = self.runner.run([str(self.cfg.parser_cli), "--version"], timeout=30)
+        env = {k: os.environ[k] for k in ("HOME", "PATH") if k in os.environ}
+        result = self.runner.run([str(self.cfg.parser_cli), "--version"], timeout=30, env=env)
         words = result.stdout.decode("utf-8", "replace").split() if result.returncode == 0 else []
         return words[0] if words else ""
 
@@ -398,6 +404,7 @@ class Parser:
 
     def gate(self, on_start: Callable[[subprocess.Popen], None] | None = None) -> GateReport:
         reasons: list[str] = []
+        transient = False
         evidence: dict = {"pinned": self.cfg.parser_cli_version, "model": self.cfg.parser_model,
                           "sandbox": self.cfg.parser_sandbox}
         try:
@@ -408,6 +415,7 @@ class Parser:
             parse_schema.StatementParse.model_validate(envelope.structured_output or {})
         except ParseError as exc:
             reasons.append(str(exc)[:300])
+            transient = exc.reason in ("exit", "timeout")
             seen = exc.envelope
             if seen is not None:
                 evidence.update(events=[e[:64] for e in seen.events], num_turns=seen.num_turns,
@@ -416,7 +424,7 @@ class Parser:
             reasons.append(f"schema: {_safe_errors(exc)}")
         except Exception as exc:  # a missing bwrap/CLI or any surprise is a gate failure, never a crash
             reasons.append(f"error: {type(exc).__name__}")
-        return GateReport(not reasons, reasons, evidence)
+        return GateReport(not reasons, reasons, evidence, transient and len(reasons) == 1)
 
 
 def _dir_digest(directory: Path) -> str | None:
@@ -503,6 +511,8 @@ class Gate:
         self._write(self.evidence_path_for(key), {"ok": report.ok, "reasons": report.reasons, "evidence": report.evidence,
                                          "key": key, "checked_at": datetime.now(timezone.utc).isoformat()})
         if not report.ok:
+            if report.transient:
+                raise GateUnavailable("canary could not run")
             self.latch("; ".join(report.reasons), key)
             raise ParserDisabled("gate failed")
 

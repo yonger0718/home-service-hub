@@ -101,3 +101,19 @@ def test_alarm_restores_previous_handler():
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous)
+
+
+def test_library_logging_never_carries_pdf_content(caplog):
+    import logging
+    from worker import cli
+    from worker import pdf as pdf_mod
+    from tests.worker.pdfgen import make_pdf
+    raw = make_pdf([["A123456789 WANG"] + ["filler line"] * 5]).replace(b"Tj", b"g ")  # invalid operator operands
+    cli.quiet_libraries()
+    with caplog.at_level(logging.INFO):
+        try:
+            pdf_mod.extract(raw, None)
+        except Exception:  # noqa: BLE001 — the outcome does not matter, only what was logged
+            pass
+    assert "A123456789" not in caplog.text
+    assert all("A123456789" not in r.getMessage() for r in caplog.records)
