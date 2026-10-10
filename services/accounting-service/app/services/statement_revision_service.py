@@ -13,7 +13,9 @@ from collections import Counter
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
+from psycopg2.errors import DeadlockDetected
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -49,11 +51,14 @@ def reconciliation_hook(db: Session, statement: AccountStatement, revision: Stat
                         run: IngestRun) -> list[int]:
     """Called by `submit_revision` after lines, lineage and the current-revision switch are written, under its
     statement lock: when the revision became current and passed its guardrails, reconcile the statement
-    (`reconciliation_service.reconcile(locked=True)`) inside a savepoint; returns the ids of the cases it opened. Any
-    ConflictError of the pass (an import holding the import key, `reconcile_busy`, `sweep_barrier_busy`,
-    `duplicate_claim`, coverage not conserved) rolls back only the savepoint and leaves the pass to the daily batch
-    (`needs_recheck`): the revision itself is stored and the ingest commits. Imported late: reconciliation_service
-    depends on the ledger services, the revision service must not at import time."""
+    (`reconciliation_service.reconcile(locked=True, barrier_wait=False)`) inside a savepoint; returns the ids of the
+    cases it opened. The pass never waits for the dirty barrier: this transaction already holds the coverage/case rows
+    the lineage transfer moved, and a writer holding the shared barrier may be waiting on them. Any ConflictError of
+    the pass (an import holding the import key, `reconcile_busy`, `sweep_barrier_busy`, `duplicate_claim`, coverage
+    not conserved) and a residual `DeadlockDetected` roll back only the savepoint and leave the pass to the daily
+    batch (`needs_recheck`): the revision itself is stored and the ingest commits. Any other OperationalError
+    propagates. Imported late: reconciliation_service depends on the ledger services, the revision service must not
+    at import time."""
     if statement.current_revision_id != revision.id or not revision.guardrail_ok:
         return []
     from app.services import reconciliation_service
@@ -61,8 +66,11 @@ def reconciliation_hook(db: Session, statement: AccountStatement, revision: Stat
     db.flush()  # the revision, lines and current-revision switch stay outside the savepoint
     try:
         with db.begin_nested():
-            result = reconciliation_service.reconcile(db, statement.id, run_id=run.id, locked=True)
-    except ConflictError:
+            result = reconciliation_service.reconcile(db, statement.id, run_id=run.id, locked=True,
+                                                      barrier_wait=False)
+    except (ConflictError, OperationalError) as exc:
+        if isinstance(exc, OperationalError) and not isinstance(exc.orig, DeadlockDetected):
+            raise
         statement.needs_recheck = True
         db.flush()
         return []

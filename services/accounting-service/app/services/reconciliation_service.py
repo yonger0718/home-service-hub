@@ -510,20 +510,23 @@ def _skip_reason(db: Session, statement: AccountStatement) -> str | None:
 
 # --- entry points ------------------------------------------------------------------------------------------------
 
-def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, locked: bool = False) -> ReconcileResult:
+def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, locked: bool = False,
+              barrier_wait: bool = True) -> ReconcileResult:
     """Sweep, match and record one statement (module docstring for the lock order). `locked=True`: the caller
     already holds the statement row FOR UPDATE (the revision hook); the import key is then attempted AFTER that
     statement lock, which is safe only because the attempt never waits (pg_try_advisory_xact_lock_shared raises
     ImportRunningError at once while an import holds the key exclusively). Skips (after the sweep): no current revision or a failed
     current one → `no_current_revision`; an open/proposed parse_review → `parse_review`. Raises
     `CodedConflictError`: `reconcile_busy` (a candidate group/entry row is locked) or `sweep_barrier_busy` (the
-    sweep's barrier wait timed out); the caller rolls back (or the savepoint does). Never commits."""
+    sweep's barrier wait timed out, or with `barrier_wait=False` the barrier was busy at all: the revision hook passes
+    it because its transaction already holds coverage rows a barrier-holding writer may wait on); the caller rolls
+    back (or the savepoint does). Never commits."""
     take_import_key_shared(db)
     statement = db.get(AccountStatement, statement_id) if locked else _lock_statement(db, statement_id)
     if statement is None:
         raise NotFoundError(f"statement {statement_id} not found")
     db.flush()  # the sweep runs on a clean session
-    coverage_service.sweep(db, statement, run_id=run_id)
+    coverage_service.sweep(db, statement, run_id=run_id, barrier_wait=barrier_wait)
     skipped = _skip_reason(db, statement)
     if skipped is not None:
         return ReconcileResult(skipped=skipped)

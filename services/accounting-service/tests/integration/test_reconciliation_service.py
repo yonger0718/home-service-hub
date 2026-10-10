@@ -865,3 +865,81 @@ def test_sweep_barrier_wait_is_bounded(seed, db_session, run, pg_engine, monkeyp
         writer.close()
     (item,) = _batch(db_session)
     assert "error" not in item and item["result"].claims == 1
+
+
+def test_reparse_hook_never_waits_for_the_barrier(seed, db_session, run, pg_engine, monkeypatch):
+    """The re-parse transfers coverage row C (held by the ingest) before the hook sweeps. A writer that already holds
+    the shared dirty barrier (it updated another entry) then deletes C's entry and waits on C. Waiting for the
+    barrier would close the cycle, so the hook try-locks it: the ingest commits with needs_recheck and the writer
+    commits (before the fix: DeadlockDetected)."""
+    from app.services import coverage_service
+    card = _card(seed, db_session)
+    bank = seed.account("銀行")
+    buy = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    other = seed.entry(bank, "-50", day=date(2026, 9, 3), merchant="早餐")
+    db_session.commit()
+    buy_id, other_id = buy.id, other.id
+    lines = [_line(1, date(2026, 9, 3), "全聯", 580)]
+    stmt, _, _ = _submit(db_session, run, card, lines)
+    stmt_id = stmt.id
+    assert len(_active(db_session, stmt_id)) == 1
+    set_dirty(db_session, True)
+    paused, go = threading.Event(), threading.Event()
+    real, calls = coverage_service._take_barrier, []
+
+    def pause_before_the_barrier(db, **kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            paused.set()
+            go.wait(10)
+        return real(db, **kw)
+
+    monkeypatch.setattr(coverage_service, "_take_barrier", pause_before_the_barrier)
+    r, token = run
+    submitted = []
+
+    def ingest(session):
+        rev = RevisionIn(run_id=r.id, lease_token=token, file_id=None, account_id=card.id, kind="card", parser="t",
+                         parser_version="1", currency="TWD", period_start=SEP[0], period_end=SEP[1],
+                         opening_balance=None, statement_total=Decimal("580"), lines=lines, raw={})
+        submitted.append(revs.submit_revision(session, session.get(IngestRun, r.id), rev, account_map={}).revision.id)
+
+    def writer(session):
+        session.execute(text("UPDATE ledger_entry SET name = 'x' WHERE id = :id"), {"id": other_id})  # shared barrier
+        ews.delete_entry(session, buy_id)  # waits on the coverage row the ingest transferred
+
+    out = _interleave(pg_engine, ingest, writer, paused, go)
+
+    assert out == {"first": "committed", "second": "committed"}, out
+    db_session.expire_all()
+    stmt = db_session.get(AccountStatement, stmt_id)
+    assert stmt.current_revision_id == submitted[0] and stmt.needs_recheck is True
+
+
+@pytest.mark.parametrize("orig", ["deadlock", "other"])
+def test_hook_tolerates_a_deadlock_but_not_other_driver_errors(seed, db_session, run, monkeypatch, orig):
+    """DeadlockDetected inside the hook's pass (a residual wait on a coverage/case row) is treated like a conflict:
+    the ingest commits with needs_recheck. Any other OperationalError still fails the submission."""
+    import psycopg2.errors
+    from sqlalchemy.exc import OperationalError
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    cause = psycopg2.errors.DeadlockDetected() if orig == "deadlock" else psycopg2.errors.DiskFull()
+
+    def broken(db, statement):
+        raise OperationalError("SELECT 1", {}, cause)
+
+    monkeypatch.setattr(rec.coverage_service, "assert_conserved", broken)
+    lines = [_line(1, date(2026, 9, 3), "全聯", 580)]
+    if orig == "other":
+        with pytest.raises(OperationalError):
+            _submit(db_session, run, card, lines)
+        db_session.rollback()
+        assert db_session.execute(select(func.count()).select_from(AccountStatement)).scalar_one() == 0
+        return
+    stmt, ls, res = _submit(db_session, run, card, lines)
+    db_session.expire_all()
+    stmt = db_session.get(AccountStatement, stmt.id)
+    assert stmt.current_revision_id == res.revision.id and stmt.needs_recheck is True
+    assert _active(db_session, stmt.id) == []
