@@ -4,14 +4,18 @@
 (account, currency, period_end), stores an immutable revision, pairs its lines to the statement's events and
 opens cases in live mode. Event state (current line, retirement) follows the CURRENT revision only: a revision that
 does not become current (guardrail failure, twin/header change, conflict) records its lineage but moves nothing
-(§5.7 "no transfers"). Services never commit; routers do.
+(§5.7 "no transfers"). When it does become current, `identical`/`normalised` pairs carry the event's active coverage
+to the new line and `changed`/`unpaired` events holding coverage or applied effects are quarantined (§5.7). Services
+never commit; routers do.
 """
 
 from collections import Counter
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy import func, select
+from psycopg2.errors import DeadlockDetected
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -20,7 +24,10 @@ from app.models import (
     AccountStatement,
     IngestRun,
     LineLineage,
+    ReconciliationAction,
     ReconciliationCase,
+    ReconciliationProposal,
+    StatementCoverage,
     StatementEvent,
     StatementFile,
     StatementLine,
@@ -28,7 +35,8 @@ from app.models import (
     StatementSource,
 )
 from app.schemas.statements import RevisionIn
-from app.services.errors import NotFoundError, ValidationError
+from app.services import coverage_service
+from app.services.errors import ConflictError, NotFoundError, ValidationError
 from app.services.statements import derive, lineage
 
 HEADER_COLUMNS = ("period_start", "period_end", "closing_date", "due_date", "opening_balance", "statement_total",
@@ -36,6 +44,37 @@ HEADER_COLUMNS = ("period_start", "period_end", "closing_date", "due_date", "ope
 # Header fields compared between revisions; period_end and currency are the identity.
 COMPARED_HEADER = ("period_start", "closing_date", "due_date", "opening_balance", "statement_total", "minimum_payment")
 OPEN_CASE_STATUSES = ("open", "proposed")
+TEXT_CHANGED = "text_changed"  # statement_event.flag after a normalised re-parse (UI: 文字已變更)
+
+
+def reconciliation_hook(db: Session, statement: AccountStatement, revision: StatementRevision,
+                        run: IngestRun) -> list[int]:
+    """Called by `submit_revision` after lines, lineage and the current-revision switch are written, under its
+    statement lock: when the revision became current and passed its guardrails, reconcile the statement
+    (`reconciliation_service.reconcile(locked=True, barrier_wait=False)`) inside a savepoint; returns the ids of the
+    cases it opened. The pass never waits for the dirty barrier: this transaction already holds the coverage/case rows
+    the lineage transfer moved, and a writer holding the shared barrier may be waiting on them. Any ConflictError of
+    the pass (an import holding the import key, `reconcile_busy`, `sweep_barrier_busy`, `duplicate_claim`, coverage
+    not conserved) and a residual `DeadlockDetected` roll back only the savepoint and leave the pass to the daily
+    batch (`needs_recheck`): the revision itself is stored and the ingest commits. Any other OperationalError
+    propagates. Imported late: reconciliation_service depends on the ledger services, the revision service must not
+    at import time."""
+    if statement.current_revision_id != revision.id or not revision.guardrail_ok:
+        return []
+    from app.services import reconciliation_service
+
+    db.flush()  # the revision, lines and current-revision switch stay outside the savepoint
+    try:
+        with db.begin_nested():
+            result = reconciliation_service.reconcile(db, statement.id, run_id=run.id, locked=True,
+                                                      barrier_wait=False)
+    except (ConflictError, OperationalError) as exc:
+        if isinstance(exc, OperationalError) and not isinstance(exc.orig, DeadlockDetected):
+            raise
+        statement.needs_recheck = True
+        db.flush()
+        return []
+    return list(result.cases_opened)
 
 
 @dataclass
@@ -126,13 +165,56 @@ def _new_lines(derived: list[derive.DerivedLine]) -> list[lineage.New]:
             for i, d in enumerate(derived)]
 
 
+def _events_with_applied_effects(db: Session, event_ids: list[int]) -> set[int]:
+    if not event_ids:
+        return set()
+    return set(db.execute(
+        select(ReconciliationAction.event_id)
+        .where(ReconciliationAction.event_id.in_(event_ids), ReconciliationAction.status == "applied")
+    ).scalars())
+
+
+def _supersede_pending_proposals(db: Session, event_id: int) -> None:
+    db.execute(update(ReconciliationProposal)
+               .where(ReconciliationProposal.event_id == event_id, ReconciliationProposal.status == "pending")
+               .values(status="superseded").execution_options(synchronize_session="fetch"))
+
+
+def _open_quarantine_case(db: Session, statement: AccountStatement, revision: StatementRevision,
+                          event: StatementEvent, old_line_id: int, *, context: dict) -> int:
+    """One open parse_review per quarantined event: an open/proposed one is reused (context merged, version bumped
+    so its proposals go stale), otherwise a new case keyed by the event and its old line."""
+    existing = db.execute(
+        select(ReconciliationCase)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "parse_review",
+               ReconciliationCase.event_id == event.id, ReconciliationCase.status.in_(OPEN_CASE_STATUSES))
+        .order_by(ReconciliationCase.id.desc()).limit(1).with_for_update()
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.context = {**(existing.context or {}), **context}
+        existing.version = existing.version + 1
+        db.flush()
+        return existing.id
+    item = ReconciliationCase(statement_id=statement.id, revision_id=revision.id, kind="parse_review",
+                              event_id=event.id, line_id=old_line_id, context=context)
+    db.add(item)
+    db.flush()
+    return item.id
+
+
 def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision: StatementRevision,
                              derived: list[derive.DerivedLine], pairings: list[lineage.Pairing],
-                             becomes_current: bool) -> dict[str, int]:
+                             becomes_current: bool) -> tuple[dict[str, int], list[int]]:
     """Events for unpaired and `changed` new lines first (statement_line.event_id is NOT NULL), then lines, then event
-    pointers, retirements and lineage rows. Only `identical`/`normalised` pairs move the old event to the new line; a
-    `changed` pair retires the old event and gives the new line a new one (§5.7). A first revision (nothing to pair
-    with) writes no lineage rows."""
+    pointers, transfers, quarantines and lineage rows. Only `identical`/`normalised` pairs move the old event to the
+    new line; a `changed` pair gives the new line a new event (§5.7).
+
+    Transfer rules, applied only when the revision becomes current: `identical` → the event's active coverage moves to
+    the new line (lineage `transferred`); `normalised` → the same, plus the event is flagged `text_changed` and its
+    pending proposals are superseded; `changed`/unpaired old → when the event holds active coverage or an applied
+    action, its coverage is released (`lineage:<equivalence>`), it becomes `quarantined` and, in live mode, gets one
+    open `parse_review` case; otherwise it is `retired`. A first revision (nothing to pair with) writes no lineage
+    rows. Returns the lineage counts and the ids of the quarantine cases opened or reused."""
     record_lineage = statement.current_revision_id is not None
     new_events: dict[int, StatementEvent] = {}
     for pairing in pairings:
@@ -159,25 +241,53 @@ def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision:
         db.add(line)
         lines[pairing.new.index] = line
     db.flush()
-    paired_events = {}
-    if becomes_current:
+    paired_events: dict[int, StatementEvent] = {}
+    coverage_by_event: dict[int, list] = {}
+    with_effects: set[int] = set()
+    if becomes_current and record_lineage:
         event_ids = [p.old.event_id for p in pairings if p.old is not None]
         paired_events = {e.id: e for e in db.execute(
             select(StatementEvent).where(StatementEvent.id.in_(event_ids)).with_for_update()).scalars()}
+        for rows in coverage_service.active_rows(db, statement.id).values():
+            for row in rows:
+                coverage_by_event.setdefault(row.event_id, []).append(row)
+        with_effects = _events_with_applied_effects(db, event_ids)
     counts = Counter({"identical": 0, "normalised": 0, "changed": 0, "unpaired_old": 0, "new": 0})
+    case_ids: list[int] = []
     for pairing in pairings:
         new_line = lines.get(pairing.new.index) if pairing.new is not None else None
         new_event = new_events.get(pairing.new.index) if pairing.new is not None else None
         if new_event is not None:
             new_event.first_line_id = new_line.id
             new_event.current_line_id = new_line.id if becomes_current else None
+        transferred = False
         if pairing.old is not None and becomes_current:
             old_event = paired_events[pairing.old.event_id]
-            if new_event is None and pairing.new is not None:
-                old_event.current_line_id = new_line.id  # identical / normalised: the event moves
-            else:
-                old_event.status = "retired"  # unpaired / changed. R1b: quarantined when effects exist
+            covered = coverage_by_event.get(old_event.id, [])
+            if new_event is None and pairing.new is not None:  # identical / normalised: the event moves
+                old_event.current_line_id = new_line.id
+                for row in covered:
+                    row.line_id = new_line.id
+                transferred = True
+                if pairing.equivalence == "normalised":
+                    old_event.flag = TEXT_CHANGED
+                    _supersede_pending_proposals(db, old_event.id)
+            else:  # changed / unpaired: the event leaves the current revision
                 old_event.current_line_id = None
+                _supersede_pending_proposals(db, old_event.id)  # §4.8: line changed beyond normalised
+                if covered or old_event.id in with_effects:
+                    for line_id in sorted({row.line_id for row in covered}):
+                        coverage_service.release_line(db, statement, line_id,
+                                                      reason=f"lineage:{pairing.equivalence}")
+                    old_event.status = "quarantined"
+                    if statement.mode == "live":
+                        case_ids.append(_open_quarantine_case(db, statement, revision, old_event,
+                                                              pairing.old.line_id, context={
+                            "quarantined_event_id": old_event.id, "equivalence": pairing.equivalence,
+                            "old_line_id": pairing.old.line_id,
+                            "new_line_id": new_line.id if new_line is not None else None}))
+                else:
+                    old_event.status = "retired"
         if pairing.old is None:
             counts["new"] += 1
         elif pairing.new is None:
@@ -190,9 +300,9 @@ def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision:
             event_id=pairing.old.event_id if pairing.old is not None else new_events[pairing.new.index].id,
             old_line_id=pairing.old.line_id if pairing.old is not None else None,
             new_line_id=new_line.id if new_line is not None else None,
-            equivalence=pairing.equivalence, transferred=False))
+            equivalence=pairing.equivalence, transferred=transferred))
     db.flush()
-    return dict(counts)
+    return dict(counts), case_ids
 
 
 def _open_case(db: Session, statement: AccountStatement, revision: StatementRevision, kind: str, *,
@@ -204,11 +314,12 @@ def _open_case(db: Session, statement: AccountStatement, revision: StatementRevi
 
 
 def _supersede_parse_reviews(db: Session, statement: AccountStatement) -> None:
-    """A corrected revision closes the statement's still-open parse_review cases (version bumped for proposals)."""
+    """A corrected revision closes the statement's still-open statement-level parse_review cases (version bumped for
+    proposals). Event-level ones (quarantines, `event_id` set) stay open: only the owner resolves a quarantine."""
     for item in db.execute(
         select(ReconciliationCase)
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "parse_review",
-               ReconciliationCase.status.in_(OPEN_CASE_STATUSES))
+               ReconciliationCase.event_id.is_(None), ReconciliationCase.status.in_(OPEN_CASE_STATUSES))
         .with_for_update()
     ).scalars():
         item.status = "superseded"
@@ -220,6 +331,10 @@ def _recount(db: Session, statement: AccountStatement) -> None:
     statement.open_case_count = db.execute(
         select(func.count()).select_from(ReconciliationCase)
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.status.in_(OPEN_CASE_STATUSES))
+    ).scalar_one()
+    statement.matched_count = db.execute(
+        select(func.count(func.distinct(StatementCoverage.line_id)))
+        .where(StatementCoverage.statement_id == statement.id, StatementCoverage.status == "active")
     ).scalar_one()
 
 
@@ -268,7 +383,7 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     db.add(revision)
     db.flush()
     # 6. lines, events, lineage
-    counts = _write_lines_and_lineage(db, statement, revision, derived, pairings, becomes_current)
+    counts, quarantine_case_ids = _write_lines_and_lineage(db, statement, revision, derived, pairings, becomes_current)
     # 7. current revision / conflict
     if becomes_current:
         statement.current_revision_id = revision.id
@@ -278,8 +393,10 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
         statement.conflict_open = True
     if correction:
         _supersede_parse_reviews(db, statement)
-    # 8. cases (live mode only; historical diagnostics stay in revision.guardrail)
-    case_ids: list[int] = []
+    matcher_case_ids = reconciliation_hook(db, statement, revision, run)
+    # 8. cases (live mode only; historical diagnostics stay in revision.guardrail); quarantines were opened in step 6,
+    # the matcher's by the hook
+    case_ids: list[int] = list(quarantine_case_ids) + matcher_case_ids
     # A reconciled statement gets only the conflict case: it already reviews the whole revision.
     if statement.mode == "live":
         if conflict:

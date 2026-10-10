@@ -24,13 +24,14 @@ from app.models import (
     StatementSource,
 )
 from app.schemas.statements import FileRegisterIn, FileUpdateIn, SourceRegisterIn
+from app.services import coverage_service
 from app.services.errors import ConflictError, NotFoundError
 from app.services.statement_revision_service import SubmitResult, submit_revision
 
 __all__ = [
     "LEASE", "TERMINAL", "SubmitResult", "enqueue_run", "create_worker_run", "list_runs", "claim_run", "renew_lease",
-    "finish_run", "require_lease", "register_file", "register_source", "update_file", "mark_removed_sources",
-    "submit_revision", "list_statements", "get_statement",
+    "finish_run", "require_lease", "lease_is_live", "register_file", "register_source", "update_file", "mark_removed_sources",
+    "submit_revision", "list_statements", "get_statement", "list_cases",
 ]
 
 LEASE = timedelta(minutes=30)
@@ -48,8 +49,9 @@ def _now() -> datetime:
 def enqueue_run(db: Session, *, principal: str) -> IngestRun:
     """Insert a queued run, or return a pending one with this request appended to summary.coalesced.
 
-    Only a `queued` run, or a `claimed`/`running` one whose lease is still live, is a coalescing target: an `expired`
-    run or a dead lease may never be picked up again, so the request gets a new queued run instead.
+    Only a `queued` run, or a `claimed`/`running` one whose lease is still live, is a coalescing target. An `expired`
+    run can still be claimed explicitly, but enqueue refuses to coalesce into it (and into a dead lease): the request
+    gets a new queued run instead, so a fresh trigger never waits on a stalled run.
     The caller learns whether it coalesced from `bool(run.summary.get("coalesced"))` (the creating call has none).
     """
     db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ENQUEUE_LOCK_KEY})
@@ -156,6 +158,19 @@ def require_lease(db: Session, run_id: int, token: str, *, label: str) -> Ingest
         run.status = "running"
         db.flush()
     return run
+
+
+def lease_is_live(db: Session, run_id: int, token: str, label: str) -> bool:
+    """Read-only (no FOR UPDATE) counterpart of `require_lease`: the run is leased to `label` with this token and the
+    lease has not expired. Does not fence anything; use it between units of work, never before a write."""
+    run = db.get(IngestRun, run_id, populate_existing=True)
+    if run is None or run.claimed_by != label:
+        return False
+    try:
+        _check_token(run, token)
+    except ConflictError:
+        return False
+    return True
 
 
 def renew_lease(db: Session, run_id: int, token: str) -> IngestRun:
@@ -271,6 +286,7 @@ LINE_FIELDS = ("id", "event_id", "seq", "txn_date", "posted_date", "merchant_raw
                "flow_amount", "foreign_amount", "foreign_currency", "line_kind", "installment_seq", "installment_total")
 CASE_FIELDS = ("id", "kind", "status", "event_id", "line_id", "entry_id", "explanation", "candidates", "context",
                "version", "created_at")
+COVERAGE_FIELDS = ("entry_id", "group_id", "role", "match_rule", "match_kind", "status")
 REVISION_FIELDS = ("id", "revision", "file_id", "parser", "parser_version", "guardrail_ok", "conflict", "rejected",
                    "created_at")
 
@@ -309,14 +325,30 @@ def get_statement(db: Session, statement_id: int) -> dict:
         select(StatementRevision).where(StatementRevision.statement_id == statement.id)
         .order_by(StatementRevision.revision.desc())
     ).scalars()
-    stale = db.execute(select(exists().where(
-        CoverageDirty.id > statement.swept_through_event_id,
-        or_(CoverageDirty.old_account_id == statement.account_id, CoverageDirty.new_account_id == statement.account_id),
-    ))).scalar_one()
+    coverage = coverage_service.active_rows(db, statement.id)
+    stale = coverage_service.has_pending_events(db, statement)
     return {
         **_row(statement, HEADER_FIELDS),
-        "lines": [_row(line, LINE_FIELDS) for line in lines],
+        "lines": [{**_row(line, LINE_FIELDS), "matched": bool(coverage.get(line.id)),
+                   "coverage": [{**_row(r, COVERAGE_FIELDS), "flow": r.snapshot.get("flow")}
+                                      for r in coverage.get(line.id, [])]} for line in lines],
         "cases": [_row(item, CASE_FIELDS) for item in cases],
         "revisions": [_row(item, REVISION_FIELDS) for item in revisions],
-        "stale_events_pending": bool(stale),
+        "stale_events_pending": stale,
     }
+
+
+def list_cases(db: Session, *, status: str | None = None, account_id: int | None = None,
+               kind: str | None = None, limit: int = 200) -> list[dict]:
+    """Reconciliation cases across statements, newest first (at most `limit`); optional status / kind /
+    statement-account filters."""
+    q = select(ReconciliationCase)
+    if status is not None:
+        q = q.where(ReconciliationCase.status == status)
+    if kind is not None:
+        q = q.where(ReconciliationCase.kind == kind)
+    if account_id is not None:
+        q = q.where(ReconciliationCase.statement_id.in_(
+            select(AccountStatement.id).where(AccountStatement.account_id == account_id)))
+    q = q.order_by(ReconciliationCase.created_at.desc(), ReconciliationCase.id.desc()).limit(limit)
+    return [_row(item, CASE_FIELDS) for item in db.execute(q).scalars()]

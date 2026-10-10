@@ -32,7 +32,7 @@ from app.models import (
     ScheduleInstance,
 )
 from app.services import fx_rate_service
-from tests.helpers import make_account, make_definition, make_entry, make_instance, schedule_line
+from tests.helpers import make_account, make_definition, make_entry, make_instance, schedule_line, set_dirty
 from app.services.moze_backup_json import parse_backup_doc
 
 SERVICE_DIR = Path(__file__).resolve().parents[1]
@@ -443,6 +443,22 @@ class Seed:
 
     def fx(self, day, base, quote, rate) -> FxRate:
         return self._add(FxRate(date=day, base=base, quote=quote, rate=Decimal(rate), source="test"))
+
+
+@pytest.fixture()
+def dirty_on(db_session):
+    """The dirty triggers write only while reconciliation_settings.data.dirty_enabled is true."""
+    set_dirty(db_session, True)
+
+
+@pytest.fixture()
+def matcher_off(monkeypatch):
+    """submit_revision without the reconcile pass (its hook returns no cases): for tests of the revision, lineage and
+    sweep services that hand-craft coverage and count cases (tests/integration/test_reconciliation_service.py covers
+    the hook)."""
+    from app.services import statement_revision_service
+
+    monkeypatch.setattr(statement_revision_service, "reconciliation_hook", lambda *args: [])
 
 
 @pytest.fixture()
