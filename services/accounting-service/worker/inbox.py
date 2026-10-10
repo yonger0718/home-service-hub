@@ -71,7 +71,8 @@ class Inbox:
 
         A VerifyError removes the staged file. A CollisionError keeps it, so the caller can inspect it.
         An identical existing object is a no-op (the staged file is removed, the target is re-chmodded 0600).
-        Orphan `.*.tmp` files left by earlier crashed calls are swept before anything new is written.
+        Orphan `.*.tmp` files left by earlier crashed calls are swept before anything new is written; this relies on the flock singleton (`pipeline.singleton`), which
+        guarantees no other worker process is mid-publish.
         """
         md5, sha, size = _digests(staged)
         if md5 != expected_md5.lower() or size != expected_size:
