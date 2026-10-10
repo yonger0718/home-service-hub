@@ -1,3 +1,4 @@
+import dataclasses
 from datetime import date
 from decimal import Decimal
 
@@ -273,3 +274,13 @@ def test_card_to_card_transfer_leg_is_never_a_near_or_foreign_candidate_for_a_pa
     assert [c.kind for c in foreign.cases] == ["line_unmatched"]
     control = run([foreign_line], [E(81, date(2026, 9, 10), "4990", peer_is_card=False, **leg)])
     assert [c.kind for c in control.cases] == ["amount_delta"]
+
+
+def test_non_claimable_entries_only_feed_the_installment_drift_hint():
+    exact = run([L(1, date(2026, 9, 3), "-580")], [dataclasses.replace(E(10, date(2026, 9, 3), "-580"), claimable=False)])
+    assert exact.claims == [] and [c.kind for c in exact.cases] == ["line_unmatched"] and exact.unmatched_entry_ids == []
+    inst = m.InstanceRef(definition_id=7, seq=2, times=12)
+    late = dataclasses.replace(E(40, date(2026, 9, 6), "-1000", instance=inst), claimable=False)  # even in window
+    res = run([L(1, date(2026, 9, 6), "-1000", kind="installment", merchant="APPLE", seq=2, total=12)], [late],
+              plan_map={"APPLE|12|1000.0000": 7})
+    assert res.claims == [] and res.cases[0].context == {"hint": "installment_date_drift", "entry_id": 40, "definition_id": 7}

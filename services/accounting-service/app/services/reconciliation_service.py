@@ -214,7 +214,39 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             transfer_group_id=None if e.transfer_group_id is None else str(e.transfer_group_id),
             transfer_peer_is_card=peer_is_card.get(e.id), children=tuple(children.get(e.id, ())),
             instance=instances.get(e.id), in_reverse=statement.period_start <= posted <= statement.period_end))
+    entries.extend(_drifted_instances(db, statement, accounts, set(ids) | claimed))
     return entries, groups
+
+
+def _drifted_instances(db: Session, statement: AccountStatement, accounts: list[int],
+                       skip: set[int]) -> list[matching.Entry]:
+    """Posted instance entries of the account's confirmed plans (`installment_plan_map`) that the window left out:
+    participating account, statement currency, top level, not claimed elsewhere. Passed as non-claimable entries so
+    the plan gate can name them (`installment_date_drift`); never locked, claimed or reported."""
+    definitions = sorted(set(plan_map(db, statement.account_id).values()))
+    if not definitions:
+        return []
+    refs: dict[int, matching.InstanceRef] = {}
+    for posted, definition_id, seq, times in db.execute(
+            select(ScheduleInstance.posted_entry_ids, ScheduleInstance.definition_id, ScheduleInstance.seq,
+                   ScheduleDefinition.times)
+            .join(ScheduleDefinition, ScheduleDefinition.id == ScheduleInstance.definition_id)
+            .where(ScheduleInstance.definition_id.in_(definitions))
+            .order_by(ScheduleInstance.id)):
+        for entry_id in posted or []:
+            if isinstance(entry_id, int) and entry_id not in skip:
+                refs.setdefault(entry_id, matching.InstanceRef(definition_id, seq, times))
+    if not refs:
+        return []
+    rows = db.execute(select(LedgerEntry).where(
+        LedgerEntry.id.in_(refs), LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == statement.currency,
+        LedgerEntry.parent_entry_id.is_(None)).order_by(LedgerEntry.id)).scalars()
+    return [matching.Entry(
+        id=e.id, kind=e.kind, flow=Decimal(e.amount), posted_date=e.posted_date or e.entry_date,
+        entry_date=e.entry_date, name=e.name, merchant=e.merchant, original_amount=None, original_currency=None,
+        account_id=e.account_id, group_id=e.group_id, parent_entry_id=None, is_settlement=bool(e.is_settlement),
+        refunds_entry_id=e.refunds_entry_id, transfer_group_id=None, transfer_peer_is_card=None, children=(),
+        instance=refs[e.id], in_reverse=False, claimable=False) for e in rows]
 
 
 # --- locks -------------------------------------------------------------------------------------------------------
@@ -543,7 +575,7 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     # population before the locks, to know what to lock; re-read under the locks
     entries, groups = load_candidates(db, statement, accounts, window_days=rules.candidate_window_days,
                                       include_reward=include_reward)
-    wanted = {e.id for e in entries} | {c.id for e in entries for c in e.children}
+    wanted = {e.id for e in entries if e.claimable} | {c.id for e in entries for c in e.children}
     transfers = {e.transfer_group_id for e in entries if e.transfer_group_id is not None}
     locked_rows = _lock_candidates(db, sorted(groups), wanted, {UUID(t) for t in transfers})
     first_groups = {e.id: e.group_id for e in entries}
@@ -552,7 +584,7 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     # rows that joined the population after the first read are not locked, and a row whose group changed in between
     # belongs to a group we did not lock: both are left to the next sweep/recheck
     entries = [_with_children(e, locked_rows) for e in entries
-               if e.id in locked_rows and e.id in first_groups and first_groups[e.id] == e.group_id]
+               if not e.claimable or (e.id in locked_rows and e.id in first_groups and first_groups[e.id] == e.group_id)]
     result = matching.match(
         statement.kind, [_as_line(row) for row in line_rows], entries, groups, plan_map(db, statement.account_id),
         lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency)
@@ -561,7 +593,7 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     deferred = [entry_id for entry_id in result.unmatched_entry_ids if result.explained.get(entry_id) == DEFERRED]
     created: list[int] = []
     if live:
-        by_id = {e.id: e for e in entries}
+        by_id = {e.id: e for e in entries if e.claimable}
         created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id))
         evaluated = set(by_id) | {c.id for e in entries for c in e.children}
         _write_deferrals(db, statement, accounts_by_id[statement.account_id], deferred, evaluated)

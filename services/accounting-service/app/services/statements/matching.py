@@ -73,6 +73,9 @@ class Entry:
     children: tuple[Child, ...]
     instance: InstanceRef | None
     in_reverse: bool = True
+    # False: a mapped installment instance outside the candidate window, passed only so the plan gate can name it
+    # (installment_date_drift); never represented, claimed, near/foreign-matched or reported
+    claimable: bool = True
 
 
 @dataclass(frozen=True)
@@ -402,6 +405,8 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
           fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str) -> MatchResult:
     result = MatchResult()
     claimed: set[int] = set()
+    hint_only = [e for e in entries if not e.claimable]
+    entries = [e for e in entries if e.claimable]
     for line in sorted(lines, key=lambda ln: ln.id):
         reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules), key=lambda r: r.score, reverse=True)
         if reps and reps[0].score >= rules.accept and (len(reps) == 1 or reps[0].score - reps[1].score >= rules.margin):
@@ -410,7 +415,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             claimed |= {r.entry_id for r in best.rows}
             continue
         if line.line_kind == "installment":  # gated by the plan map only: never a generic, foreign or near match
-            result.cases.append(_installment_case(line, reps, entries, plan_map, claimed, rules))
+            result.cases.append(_installment_case(line, reps, entries + hint_only, plan_map, claimed, rules))
             continue
         if reps and reps[0].score >= rules.ambiguous_floor:  # ambiguity stops the line
             result.cases.append(_ambiguous(line, reps))

@@ -982,3 +982,22 @@ def test_child_in_another_currency_does_not_complete_its_parent(seed, db_session
     db_session.commit()
     stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 5), "書店", 102)])
     assert _active(db_session, stmt.id) == []
+
+
+def test_mapped_instance_beyond_the_window_gets_the_drift_hint(seed, db_session, run):
+    """S1: the confirmed plan's instance entry lies 25 days past the candidate window: never claimed, but the line's
+    case names it (installment_date_drift) instead of a plain line_unmatched."""
+    from app.models import InstallmentPlanMap
+    card = _card(seed, db_session)
+    definition = seed.definition([seed.line("expense", card, "1000")], kind="installment", name="手機", times=12)
+    late = seed.entry(card, "-1000", day=date(2026, 11, 4), merchant="手機")  # window ends 2026-10-10
+    seed.instance(definition, 2, date(2026, 11, 4), status="posted", entries=[late])
+    db_session.add(InstallmentPlanMap(account_id=card.id, plan_key="手機|12|1000.0000", definition_id=definition.id,
+                                      confirmed_by="owner"))
+    db_session.commit()
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 6), "手機", 1000, "installment",
+                                                        installment_seq=2, installment_total=12)])
+    assert _active(db_session, stmt.id) == []
+    (case,) = _cases(db_session, stmt.id, "open")
+    assert (case.kind, case.line_id) == ("line_unmatched", ls[0].id)
+    assert case.context == {"hint": "installment_date_drift", "entry_id": late.id, "definition_id": definition.id}
