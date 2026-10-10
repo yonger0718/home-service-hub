@@ -3,7 +3,7 @@
 Ops files for the statement ingest worker (`python -m worker`, see "Statement ingest worker (R2)" in
 `services/accounting-service/README.md`). Nothing here is installed by the repo; copy or link by hand.
 
-Interim principal: the units are systemd **user** units for `opc` (linger is already on). The same files move to the
+Interim principal: the units are systemd **user** units for `opc` (linger is already on; timers not enabled, see below). The same files move to the
 dedicated `homehub-worker` user when the section 3 split below is done. The reconciliation feature flag stays off
 in production and no real-data `run`/`backfill` happens until then; the first real use is `export-masked` + `verify`.
 
@@ -18,17 +18,27 @@ in production and no real-data `run`/`backfill` happens until then; the first re
 Both services read `EnvironmentFile=-%h/.config/homehub-statements.env` (optional, mode 0600) for `STATEMENT_*`
 overrides; every variable has a default (table in the service README).
 
-## Enable
+## Install (timers stay disabled for now)
+
+During the interim deviation (rulings 3/11: `opc`, scope `export-masked` and `verify` only, no real-data `run`) the units are
+installed but the timers are NOT enabled:
 
     mkdir -p ~/.config/systemd/user
     ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-statements*.{service,timer} ~/.config/systemd/user/
     systemctl --user daemon-reload
+
+Today's hard guard is the feature flag: with `ACCOUNTING_RECONCILIATION_ENABLED` off the statement routes answer 404, so a
+`run` or `poll` cannot submit anything.
+
+## After the section 3 checklist is complete
+
+Only once the dedicated users exist (checklist at the end of this file) and the feature is switched on:
+
     systemctl --user enable --now homehub-statements-poll.timer homehub-statements-daily.timer
     systemctl --user list-timers 'homehub-statements*'
 
 A second worker (overlapping tick, manual run during the timer) prints `already running` and exits 0, so overlapping
-ticks never fail the unit. Do not enable the timers before the feature is switched on (the run path needs the worker
-API token and the password file; without them the command exits 2).
+ticks never fail the unit. Without the worker API token and the password file the run path exits 2.
 
 ## Read-only database role for `verify` (ruling 11)
 
@@ -39,11 +49,13 @@ API token and the password file; without them the command exits 2).
     GRANT CONNECT ON DATABASE accounting_db TO accounting_ro;
     GRANT USAGE ON SCHEMA public TO accounting_ro;
     GRANT SELECT ON ALL TABLES IN SCHEMA public TO accounting_ro;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO accounting_ro;
+    ALTER DEFAULT PRIVILEGES FOR ROLE <migration role> IN SCHEMA public GRANT SELECT ON TABLES TO accounting_ro;
     ALTER ROLE accounting_ro SET default_transaction_read_only = on;
     REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
-(The `REVOKE ... FROM PUBLIC` removes the implicit schema CREATE for every role without a `TO accounting_ro` clause;
+`ALTER DEFAULT PRIVILEGES` only covers tables created by the role that runs it (or named in `FOR ROLE`), so it must name the role
+that runs Alembic migrations, the application's database user from `.env` (`POSTGRES_USER`); otherwise tables created by later
+migrations are unreadable and `verify` fails with permission denied. (The `REVOKE ... FROM PUBLIC` removes the implicit schema CREATE for every role without a `TO accounting_ro` clause;
 check that no other application role relied on it before running it.) Audit; attach the output to the PR, it lists
 privileges only:
 
@@ -75,8 +87,7 @@ expired token fails `verify` with `auth` instead of being refreshed. The directo
     chmod 400 "$dst"/* ; chmod 500 "$dst"
 
 Refresh the copy (same commands) after every successful operator `gate.sh`, and whenever the worker login was
-refreshed; then run `gate.sh` again so the gate key (which hashes the login directory's names, sizes and mtimes,
-not the credentials file) matches. The operator gate runs the canary with this login too when the directory exists.
+refreshed; then run `gate.sh` again so the gate key (which hashes the contents of the login directory's files up to 1 MiB, `size:mtime_ns` above that, excluding the top-level `.credentials.json`) matches. The operator gate runs the canary with this login too when the directory exists.
 
 ## Operator gate (`gate.sh`)
 

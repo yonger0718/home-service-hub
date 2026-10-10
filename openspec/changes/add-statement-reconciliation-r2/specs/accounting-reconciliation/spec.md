@@ -36,7 +36,7 @@ The worker SHALL try the folder's password candidates in file order (aliases res
 #### Scenario: Dates and amounts survive
 - **GIVEN** the text `30 2026`, `000 2026`, `2026/09/30`, `1,234,567.00` and `20260930`
 - **WHEN** the text is masked
-- **THEN** all of them SHALL be unchanged, while `20260930` followed by one more digit or an 8-digit non-date token SHALL be masked
+- **THEN** all of them SHALL be unchanged, while `20261399` (not a valid date) and `12345678` SHALL be masked
 
 #### Scenario: Wrong password, then a changed password file
 - **GIVEN** a file no candidate opens
@@ -66,12 +66,12 @@ The parser SHALL run as `bwrap --unshare-all --share-net --die-with-parent --new
 
 ### Requirement: Worker runs under a lease
 
-Every submission SHALL carry `run_id` and `lease_token`; the worker SHALL renew the lease every 5 minutes (one immediate retry before declaring it lost) and SHALL check a guard before every write, so a lease lost while a parse is in flight blocks the submission that follows. A 409 on renew or submit SHALL abort the run (`failed`, reason `lease`). The claimed lease SHALL be kept on disk (0600) so a restarted worker resumes its own run; an expired lease is reclaimed, and a resume discards the stored run only on 404 or 409. At most one worker SHALL run at a time (`flock` on `<state_dir>/.lock`); a second prints `already running` and exits 0. Per-file failures SHALL be contained as `failed` or `transient` and the run goes on; only a lost lease, a transport error or an `auth` failure aborts it. Transient outcomes SHALL follow a retry table keyed by the worker epoch, which moves only after the API accepted it. The full run SHALL end with `POST /reconciliation/sweep` under its lease.
+Every submission SHALL carry `run_id` and `lease_token`; the worker SHALL renew the lease every 5 minutes (one immediate retry before declaring it lost) and SHALL check a guard before every write, so a lease lost while a parse is in flight blocks the submission that follows. A 409 on renew or submit SHALL abort the run (`failed`, code `lease_lost`). The claimed lease SHALL be kept on disk (0600) so a restarted worker resumes its own run; an expired lease is reclaimed, and a resume discards the stored run only on 404 or 409. At most one worker SHALL run at a time (`flock` on `<state_dir>/.lock`); a second prints `already running` and exits 0. Per-file failures SHALL be contained as `failed` or `transient` and the run goes on; only a lost lease, a transport error or an `auth` failure aborts it. Transient outcomes SHALL follow a retry table keyed by the worker epoch, which moves only after the API accepted it. The full run SHALL end with `POST /reconciliation/sweep` under its lease.
 
 #### Scenario: Lease lost during a parse
 - **GIVEN** a lease that the API reports lost while the parser is running
 - **WHEN** the parse returns
-- **THEN** no submission SHALL be sent and the run SHALL end `failed` with reason `lease`
+- **THEN** no submission SHALL be sent and the run SHALL end `failed` with code `lease_lost`
 
 #### Scenario: Crash after claim resumes the same run
 - **GIVEN** a worker that crashed after claiming a run

@@ -217,7 +217,7 @@ are in `deploy/statements/README.md`.
 
 Exit codes: `0` success (a `done` run with transient codes in `errors` is still 0; `already running` is 0 so timers never
 fail on overlap); `1` a run `failed` or `aborted`, `parser_disabled`, any verify/export error, a failed gate;
-`2` refused (missing token or password file, `backfill` without `--acknowledge-live-periods`, `verify` without
+`2` refused (missing token or password file for `run`, `poll` and `backfill` only; `backfill` without `--acknowledge-live-periods`, `verify` without
 `STATEMENT_VERIFY_DB_URL`). Output is one JSON line of codes and counts (never text, names or paths).
 
 Interim principal (accepted deviation, not compliance). The dedicated users of design section 3 do not exist yet, so the
