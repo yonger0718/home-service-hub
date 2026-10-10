@@ -410,7 +410,7 @@ def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: 
         data = path.read_bytes()
         services.index.put(listed.drive_file_id, listed.md5, sha)
     trace["sha"] = sha
-    kind = "bank" if drive_mod.folder_of(listed).startswith("銀行帳戶") else "card"
+    kind = drive_mod.kind_of(listed)
     file_row = services.api.register_file(lease, sha, path.stat().st_size, kind, f"by-sha/{sha}.pdf")
     if sha not in known:
         summary.new_files += 1

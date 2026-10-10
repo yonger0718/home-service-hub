@@ -87,7 +87,7 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
         if len(rendered.encode("utf-8")) > parser_mod.STDIN_CAP:
             out["too_large"] += 1
             continue
-        kind = "bank" if drive_mod.folder_of(item).startswith("銀行帳戶") else "card"
+        kind = drive_mod.kind_of(item)
         _write_private(masked_dir / f"{published.sha256}.txt", rendered)
         _write_private(masked_dir / f"{published.sha256}.json", json.dumps(
             {"root": item.root, "folder": drive_mod.folder_of(item), "name": item.name, "kind": kind,
@@ -138,7 +138,13 @@ def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementPa
                               foreign_currency=l.foreign_currency, line_kind=l.line_kind,
                               installment_seq=l.installment_seq, installment_total=l.installment_total,
                               is_subtotal=l.is_subtotal) for l in parsed.lines if not l.is_subtotal]
-    derived = derive.derive_lines(parsed.kind, line_ins)
+    try:
+        derived = derive.derive_lines(parsed.kind, line_ins)
+    except derive.SignError:
+        existing = db.execute(select(AccountStatement.id).where(
+            AccountStatement.account_id == account_id, AccountStatement.currency == parsed.currency,
+            AccountStatement.period_end == parsed.period_end)).scalar_one_or_none()
+        return DryRun(None, derive.GuardrailResult(ok=False, checks={"sign": False}, detail={}), existing)
     header = derive.Header(parsed.period_start, parsed.period_end, parsed.closing_date, parsed.due_date,
                            Decimal(parsed.opening_balance) if parsed.opening_balance else None,
                            Decimal(parsed.statement_total),
@@ -201,6 +207,7 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
             if limit is not None and len(pending) + totals["parse_failed"] + totals["unmapped"] + totals["verify_errors"] >= limit:
                 break
             sha = meta_path.stem
+            account_id = None
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 account_id = account_map.get(_key(meta))
@@ -226,7 +233,7 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
                 pending.append((sha, account_id, parsed))
             except Exception:
                 totals["verify_errors"] += 1
-                rows.append({"sha256": sha, "error": "verify_error"})
+                rows.append({"sha256": sha, "account_id": account_id, "error": "verify_error"})
         # Phase 2: one read-only snapshot, held only while matching.
         if pending and not aborted:
             with Session(engine) as db:
@@ -237,7 +244,7 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
                             _report_one(db, sha, account_id, parsed, rows, totals)
                     except Exception:
                         totals["verify_errors"] += 1
-                        rows.append({"sha256": sha, "error": "verify_error"})
+                        rows.append({"sha256": sha, "account_id": account_id, "error": "verify_error"})
                 db.rollback()
     finally:
         engine.dispose()

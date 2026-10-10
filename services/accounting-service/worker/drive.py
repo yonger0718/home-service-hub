@@ -35,6 +35,11 @@ def folder_of(item: Listed) -> str:
     return "/".join(parts[:-1])
 
 
+def kind_of(item: Listed) -> str:
+    """The manual root holds 綜合月結單 bank statements; mail files are bank only under 銀行帳戶."""
+    return "bank" if item.root == "manual" or folder_of(item).startswith("銀行帳戶") else "card"
+
+
 class Drive:
     def __init__(self, cfg: WorkerConfig, runner: Runner):
         self.cfg, self.runner = cfg, runner

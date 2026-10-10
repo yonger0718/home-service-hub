@@ -300,7 +300,9 @@ def test_verify_contains_a_per_statement_failure(tmp_path, db_session, seed, ro_
     totals = verify.run(_verify_cfg(tmp_path, cli, ro_url), SubprocessRunner(), limit=None)
     assert totals["verify_errors"] == 3 and totals["statements"] == 0
     report = json.loads(next((tmp_path / "v" / "reports").glob("*.json")).read_text(encoding="utf-8"))
-    assert all(r == {"sha256": r["sha256"], "error": "verify_error"} for r in report["rows"]) and len(report["rows"]) == 3
+    assert all(r["error"] == "verify_error" and set(r) == {"sha256", "account_id", "error"} for r in report["rows"])
+    assert sorted(r["account_id"] is None for r in report["rows"]) == [False, False, True]
+    assert len(report["rows"]) == 3
 
 
 @pytest.mark.parametrize("content,bad", [({"mail/x": 1}, "mail/x"), ({"mail/a/b": True}, "mail/a/b"),
@@ -352,3 +354,24 @@ def test_export_masked_cap_counts_too_large(tmp_path, monkeypatch):
     monkeypatch.setattr(parser_mod, "STDIN_CAP", 5)
     out = verify.export_masked(cfg, runner, folder=None, limit=None)
     assert out["too_large"] == 1 and out["exported"] == 0 and not list((tmp_path / "v" / "masked").glob("*.json"))
+
+
+def test_zero_amount_purchase_is_a_guardrail_failure(tmp_path, db_session, seed, ro_url):
+    account = seed.account("卡", is_credit=True)
+    db_session.commit()
+    bad = {**fake_claude.GOOD, "lines": [{**fake_claude.GOOD["lines"][0], "printed_amount": "0"}], "statement_total": "0"}
+    _snapshot(tmp_path / "v" / "masked", "ab" * 32)
+    (tmp_path / "map.json").write_text(json.dumps({"mail/信用卡/國泰世華": account.id}), encoding="utf-8")
+    cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript(bad))
+    totals = verify.run(_verify_cfg(tmp_path, cli, ro_url), SubprocessRunner(), limit=None)
+    assert totals["guardrail_failed"] == 1 and totals["verify_errors"] == 0
+    row = json.loads(next((tmp_path / "v" / "reports").glob("*.json")).read_text(encoding="utf-8"))["rows"][0]
+    assert row["account_id"] == account.id and row["guardrail_ok"] is False
+
+
+def test_kind_of():
+    from worker.drive import Listed, kind_of
+    mk = lambda root, path: Listed("i", path, "x.pdf", 1, "0" * 32, "", root)
+    assert kind_of(mk("mail", "信用卡/國泰世華/x.pdf")) == "card"
+    assert kind_of(mk("mail", "銀行帳戶/國泰/x.pdf")) == "bank"
+    assert kind_of(mk("manual", "國泰/x.pdf")) == "bank"
