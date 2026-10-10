@@ -12,8 +12,7 @@ from io import BytesIO
 
 import pdfplumber
 from pdfminer.pdfdocument import PDFPasswordIncorrect
-from pdfminer.pdfexceptions import PDFException
-from pdfplumber.utils.exceptions import MalformedPDFException, PdfminerException
+from pdfplumber.utils.exceptions import PdfminerException
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
