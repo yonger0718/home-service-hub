@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, pydantic 2.14, httpx 0.28 (Starlette's `TestClient` is an `httpx.Client`, so tests inject it as the API client), `pypdf` 6 + `cryptography` 50 (unlock), `pdfplumber` 0.11 (text + tables), `minio` (optional object store), rclone 1.73 (`gdrive:` remote), bubblewrap, Claude Code CLI **2.1.296** (native aarch64 binary at `/home/opc/.local/bin/claude`).
 
-**Spec:** `docs/superpowers/specs/2026-10-08-statement-reconciliation-design.md` v4 (§3, §4.1, §4.2, §5 incl. the "as v2"/"as v3" text of commits `eef3b31` and `6aabdc9`, §8, §9.1, §11, §13, §16 C7/C9/S1 acceptance items, §17 notes). Base: `main` a4a9207 (R1b merged).
+**Spec:** `docs/superpowers/specs/2026-10-08-statement-reconciliation-design.md` v4 (§3, §4.1, §4.2, §5 incl. the "as v2"/"as v3" text of commits `eef3b31` and `6aabdc9`, §8, §9.1, §11, §13, §16 C7/C9/S1 acceptance items, §17 notes). Base: `main` a4a9207 (R1b merged). Revision 2 after the Multica plan review (AGENT-95, dev-astra): 11 Must + 5 Should folded in; see the rulings 9–13.
 
 ## Global Constraints
 
@@ -19,7 +19,9 @@
 - **CLI pin 2.1.296** (ruling below); any other `claude --version` → parsing disabled (`failed/sandbox`), the run continues for acquisition only.
 - **Run lease** (§4.1): every submission carries `run_id` + `lease_token`; the worker renews every 5 minutes; a 409 on renew or submit aborts the run (`failed`, reason `lease`).
 - **Idempotency**: files by sha256, sources by `(drive_file_id, drive_md5)`, object key `by-sha/<sha256>.pdf`; a crash at any boundary is safe to re-run.
-- **Singleton**: `flock` on `<state_dir>/.lock`; a second worker exits 0 with `already running`.
+- **Singleton**: `flock` on `<state_dir>/.lock`; a second worker prints `already running` and exits 0 (timer units must not fail).
+- **Private by construction**: the CLI sets `umask 0o077` first thing; every directory the worker creates is 0700 and every file 0600 (state, staging, inbox, verify dirs, reports, caches). A listed PDF larger than 20 MB is skipped before download (counted `too_large`, never registered).
+- **Error text discipline**: run summaries, reports and API payloads carry bounded codes and counts only (`errors: ["listing", "download", "store", …]`), never exception text, paths, names or identities.
 - **No owner financial data in tests**; synthetic PDFs built by the test helper. Commits carry `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`; the PR body ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - Services never commit; routers do (the one API addition in Task 6 follows this).
 
@@ -27,19 +29,24 @@
 
 1. **CLI pin bumped 2.1.295 → 2.1.296** (installed version; .295 is gone). The gate must pass before the first real parse.
 2. **Structured output is a tool call.** With `--json-schema`, the CLI exposes exactly one tool, `StructuredOutput`, and the model answers by calling it: the stream is `system/init` (tools `["StructuredOutput"]`) → one `assistant` message whose content is exactly one `tool_use` named `StructuredOutput` → one `user` message (its `tool_result`) → `result` (`subtype == "success"`, `num_turns == 2`, `structured_output` set). The §5.5 gate therefore reads: tools list equals `["StructuredOutput"]`, exactly one `tool_use` and it is `StructuredOutput`, no other tool name, no `hook`/`subagent`/permission event, `num_turns == 2`. Anything else → `failed/sandbox` and parsing disabled.
-3. **Interim principal.** The dedicated users of §3 do not exist yet; R2 runs as `opc` with every path configurable (`STATEMENT_*` env, defaults below). The deploy notes carry the §3 checklist for the switch; the feature flag stays off in production until then, so the first real use is `export-masked` + `verify`.
+3. **Interim principal.** The dedicated users of §3 do not exist yet; R2 runs as `opc` with every path configurable (`STATEMENT_*` env, defaults below). The deploy notes carry the §3 checklist for the switch; the feature flag stays off in production until then, so the first real use is `export-masked` + `verify` (under ruling 11's read-only role).
 4. **MinIO is optional in R2**: with `STATEMENT_MINIO_ENDPOINT` unset the put is skipped and `object_key` is still `by-sha/<sha>.pdf` (the local inbox holds the bytes). Setting the endpoint later re-uploads missing objects on the next run (the file row stays `transient` until the put succeeds).
 5. **Account map reaches the worker through a new ingest-scope route** `GET /statements/account-map` (`{"account_map": …, "mapping_version": sha256-prefix}`), because the worker token holds `ingest` only and cannot read settings. `verify` reads the map from the database (read-only) or from `STATEMENT_ACCOUNT_MAP_FILE` (same key format) while the feature flag is off.
-6. **Verify is in-process, read-only.** The verify runner opens one `SET TRANSACTION READ ONLY` session, builds candidates with `reconciliation_service.load_candidates` on a stand-in statement (`id=0`) and calls `matching.match`; it writes only its report. Parse results are cached by sha256 + parser version so re-runs do not re-parse.
-7. **Regex parsers**: none in v1 (as spec); the registry exists so a bank parser can be added without touching the pipeline.
+6. **Verify is in-process, read-only.** The verify runner opens one `REPEATABLE READ READ ONLY` transaction on the read-only role (ruling 11), builds candidates with `reconciliation_service.load_candidates` on a stand-in statement whose id is the existing statement's id when `(account, currency, period_end)` already exists (so its own claims are excluded like a re-reconcile) and `0` otherwise, skips matching when the guardrails fail (as `reconcile` does), and calls `matching.match`; it writes only its report. Parse results are cached by sha256 + parser version so re-runs do not re-parse.
+7. **Regex parsers**: none in R2 (as spec v1); no registry either (ruling 13) — adding one later touches `pipeline.process_file` in one place.
 8. **Pinned model** default `claude-sonnet-5-5` (`STATEMENT_PARSER_MODEL`); the parser version string is `claude-cli-<cli version>-<model>-<instruction sha256[:8]>-<schema sha256[:8]>`.
+9. **The gate is mandatory and latched** (AGENT-95 Must 2). Every `run`, `poll`, `backfill` and `verify` calls `parser.Gate.ensure()` before the first parse: it passes when `<state_dir>/gate.json` holds a successful gate whose key (`cli_version`, `model`, `config dir mtime`, sha256 of the full argv template, sandbox flag) matches and is younger than 24 h; otherwise it runs the canary now. A violation anywhere (gate or real input) writes `<state_dir>/parser-disabled.json` (reason, time, key); while that latch exists no process parses, runs finish `failed` with `errors: ["parser_disabled"]`, and only a successful operator `python -m worker gate` removes it. `deploy/statements/gate.sh` adds the host-side evidence (mounts, processes, `/etc` and `$HOME` unreadable) and is the §16 C7 artefact.
+10. **`SourceIndex` is a download cache, never the authority.** Every complete listing re-registers every listed source through `POST /statements/sources` (idempotent upsert; path history, `removed_at` reset) and re-checks the object store for every file that lacks a stored object (`store_pending` tracked locally), regardless of the index. The index only decides whether bytes must be fetched again.
+11. **Verify reads through a dedicated read-only database role** (AGENT-95 Must 9/11, owner decision pending at plan time): `STATEMENT_VERIFY_DB_URL` is **required** for `verify` (no fallback to the application URL) and must name a role with `SELECT` only and `default_transaction_read_only = on` (ops step in Task 9's README: `CREATE ROLE accounting_ro LOGIN PASSWORD … ; GRANT CONNECT ON DATABASE accounting_db; GRANT USAGE ON SCHEMA public; GRANT SELECT ON ALL TABLES IN SCHEMA public; ALTER ROLE accounting_ro SET default_transaction_read_only = on`). The verify transaction is `REPEATABLE READ READ ONLY`. Verify's parser child binds the login directory read-only with **no** writable credentials file (`STATEMENT_VERIFY_PARSER_CONFIG_DIR`, a copy refreshed by the operator's `gate` run); an expired token fails verify with `auth`, it never refreshes. The Linux principal stays `opc` in the interim (ruling 3), recorded as an accepted deviation from §3, not as compliance; the flag stays off and no real-data `run` happens until the §3 users exist.
+12. **Settings are read SELECT-only where a read-only transaction may hold them**: new `settings_service.read_reconciliation_settings(db)` (no insert, defaults applied) and `read_reconciliation_rules(db)` are used by `GET /settings/reconciliation`, `GET /statements/account-map` and verify; the inserting `_reconciliation_row` stays for writers.
+13. **Narrowed contracts** (AGENT-95 Should): no regex-parser registry in R2 (ruling 7 is "none", the pipeline has a single parser); run provenance (`parser_version`, `credential_version`, `mapping_version`, `cli_version`, `model`) travels in the run's finish `summary.versions` (the `ingest_run` columns stay for R1c's API change); `backfill` prints no pre-execution live-period count (the worker cannot read accounts) — the CLI refuses without `--acknowledge-live-periods` and the summary reports `live_revisions` afterwards; the daily sweep (`POST /reconciliation/sweep`) runs at the end of every full run under its lease.
 
 ## Review Focus
 
 1. A Drive file replaced between listing and download (md5 mismatch) must be re-listed once and then skipped as `transient`, never published under the wrong identity — Task 3.
 2. A wrong password must mark the file `failed/password` with the winning index unrecorded, and a change of the password file (new `credential_version`) must retry it — Tasks 2, 4, 7.
 3. The parser emitting a second tool call or a non-`StructuredOutput` tool must fail the run and disable parsing; a timeout must kill the whole process group — Task 5.
-4. A submission with an expired lease must abort the run without marking any file parsed — Tasks 6, 7.
+4. A lease lost while a parse is in flight must block the submission that follows it, and a crash after claim must resume the same run on restart — Tasks 6, 7.
 5. `verify` with policies enabled and a live account must leave every table's row count unchanged — Task 8.
 
 ---
@@ -91,11 +98,12 @@ minio==7.2.15
 | `parser_timeout_s` | `STATEMENT_PARSER_TIMEOUT` | `120` |
 | `parser_attempts` | `STATEMENT_PARSER_ATTEMPTS` | `3` |
 | `verify_dir` | `STATEMENT_VERIFY_DIR` | `~/.local/state/home-hub-verify` |
-| `verify_db_url` | `STATEMENT_VERIFY_DB_URL` | `None` (verify falls back to `app.database.SQLALCHEMY_DATABASE_URL`) |
+| `verify_db_url` | `STATEMENT_VERIFY_DB_URL` | `None` (**required** by `verify`; must be the read-only role, ruling 11) |
+| `verify_parser_config_dir` | `STATEMENT_VERIFY_PARSER_CONFIG_DIR` | `~/.local/state/home-hub-parser/claude-verify` (bound read-only, no credentials write) |
 | `account_map_file` | `STATEMENT_ACCOUNT_MAP_FILE` | `None` |
 
   `~` expands with `Path.expanduser()`. Derived properties: `mail_root = f"{drive_root}/銀行"`, `manual_root = f"{drive_root}/手動下載"`, `inbox_dir = state_dir / "inbox" / "by-sha"`, `staging_dir = state_dir / "staging"`, `lock_path = state_dir / ".lock"`. Booleans parse `1/true/yes` case-insensitively.
-- Produces `passwords.Candidates = dict[str, list[str]]`, `passwords.load(path: Path) -> tuple[Candidates, str]` (candidates per folder key, and `credential_version` = sha256 hex of the file bytes), `passwords.password_key(root: str, folder: str) -> str` (`mail` → `folder`, e.g. `信用卡/國泰世華`; `manual` → `手動下載/` + folder).
+- Produces `passwords.Candidates = dict[str, list[str]]`, `passwords.load(path: Path) -> tuple[Candidates, str]` (candidates per folder key, and `credential_version` = sha256 hex of the file bytes), `passwords.identity(path: Path) -> passwords.Identity(id_number, birth_date, holder_names)` (the **same** parser as `load`, so leading whitespace or inline comments cannot make an identity line vanish from masking while it still feeds candidates — AGENT-95 Must 1), `passwords.password_key(root: str, folder: str) -> str` (`mail` → `folder`, e.g. `信用卡/國泰世華`; `manual` → `手動下載/` + folder).
 
 - [ ] **Step 1: Write the failing tests** `tests/worker/test_config.py`:
 
@@ -171,6 +179,16 @@ def test_unknown_folder_has_no_candidates(pwfile):
     assert cands.get("信用卡/不存在", []) == []
 
 
+def test_identity_shares_the_parser(tmp_path):
+    p = tmp_path / "pw.env"
+    p.write_text("  STATEMENT_ID_NUMBER=A123456789  # id\n\tSTATEMENT_BIRTH_DATE=19900101\n"
+                 "STATEMENT_HOLDER_NAMES=王小明,WANG\\, XIAO\n信用卡/x=$ID\n", encoding="utf-8")
+    ident = passwords.identity(p)
+    assert ident.id_number == "A123456789" and ident.birth_date == "19900101"
+    assert ident.holder_names == ["王小明", "WANG, XIAO"]
+    assert passwords.load(p)[0]["信用卡/x"] == ["A123456789"]
+
+
 def test_repr_never_shows_values(pwfile):
     cands, _ = passwords.load(pwfile)
     assert "A123456789" not in passwords.describe(cands)
@@ -221,6 +239,7 @@ class WorkerConfig:
     parser_attempts: int
     verify_dir: Path
     verify_db_url: str | None
+    verify_parser_config_dir: Path
     account_map_file: Path | None
 
     @property
@@ -266,6 +285,7 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         parser_attempts=int(env.get("STATEMENT_PARSER_ATTEMPTS", "3")),
         verify_dir=_path(env, "STATEMENT_VERIFY_DIR", "~/.local/state/home-hub-verify"),
         verify_db_url=_opt(env, "STATEMENT_VERIFY_DB_URL"),
+        verify_parser_config_dir=_path(env, "STATEMENT_VERIFY_PARSER_CONFIG_DIR", "~/.local/state/home-hub-parser/claude-verify"),
         account_map_file=Path(map_file).expanduser() if map_file else None,
     )
 ```
@@ -278,6 +298,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 Candidates = dict[str, list[str]]
@@ -352,6 +373,21 @@ def load(path: Path) -> tuple[Candidates, str]:
     return out, hashlib.sha256(data).hexdigest()
 
 
+@dataclass(frozen=True)
+class Identity:
+    id_number: str | None
+    birth_date: str | None  # YYYYMMDD
+    holder_names: list[str]
+
+
+def identity(path: Path) -> Identity:
+    """The three STATEMENT_* fields through the same parser as `load` (whitespace/comment handling identical)."""
+    ident, _ = _parse(path.read_text(encoding="utf-8"))
+    raw_names = ident.get("STATEMENT_HOLDER_NAMES", "").replace("\\,", "\x00")
+    names = [n.replace("\x00", ",").strip() for n in raw_names.split(",") if n.strip()]
+    return Identity(ident.get("STATEMENT_ID_NUMBER") or None, ident.get("STATEMENT_BIRTH_DATE") or None, names)
+
+
 def password_key(root: str, folder: str) -> str:
     """Key in the password file for a source: mail files use their folder path under 銀行/, manual ones 手動下載/<folder>."""
     return folder if root == "mail" else f"手動下載/{folder}"
@@ -362,7 +398,7 @@ def describe(candidates: Candidates) -> str:
     return ", ".join(f"{folder}={len(values)}" for folder, values in sorted(candidates.items()))
 ```
 
-- [ ] **Step 4:** `.venv/bin/pytest tests/worker -q` → 7 passed.
+- [ ] **Step 4:** `.venv/bin/pytest tests/worker -q` → 8 passed.
 - [ ] **Step 5:** commit `feat(worker): config and password resolver`.
 
 ---
@@ -378,7 +414,8 @@ def describe(candidates: Candidates) -> str:
 - `drive.Listed` (frozen dataclass): `drive_file_id, path (relative to the root listed), name, size, md5, mod_time, root ('mail'|'manual')`; `drive.folder_of(listed) -> str` = parent folders joined by `/` (e.g. `信用卡/國泰世華`, or `國泰世華` under manual).
 - `drive.Drive(cfg, runner)`: `list_pdfs() -> list[Listed]` (both roots, `rclone lsjson --hash --recursive --files-only <remote><root>`, case-insensitive `.pdf`, raises `drive.ListingError` on any non-zero exit or JSON error — **nothing is marked removed after a ListingError**); `download(item: Listed, dest: Path) -> None` (`rclone copyto --drive-root-folder-id <id> <remote> <dest>` is NOT how Drive addresses a single file; use `rclone backend copyid <remote> <id> <dest>` which downloads by file id), raises `drive.DownloadError`.
 - `inbox.Inbox(cfg)`: `publish(staged: Path, *, expected_md5: str, expected_size: int) -> inbox.Published(sha256: str, object_key: str, path: Path)`; verifies size and md5 of the staged bytes (mismatch → `inbox.VerifyError`), computes sha256, publishes atomically to `inbox_dir/<sha>.pdf` via `os.replace` from a temp name in the same directory; if the target exists with different bytes → `inbox.CollisionError` (hard failure); identical existing bytes → no-op; `object_key = f"by-sha/{sha}.pdf"`.
-- `inbox.SourceIndex(path: Path)`: the worker's local memory of what it already acquired, a JSON map `"<drive_file_id>:<md5>" → sha256` at `state_dir/sources.json` (mode 600, written atomically); `get(drive_file_id, md5) -> str | None`, `put(drive_file_id, md5, sha256) -> None`. A listed item whose identity is indexed is not downloaded again (§5.1 "not yet in statement_source", kept locally because the `ingest` scope cannot read sources); wiping the state dir only costs a re-download.
+- `inbox.SourceIndex(path: Path)`: a **download cache only** (ruling 10): JSON map `"<drive_file_id>:<md5>" → sha256` at `state_dir/sources.json` (mode 600, written atomically); `get(drive_file_id, md5) -> str | None`, `put(drive_file_id, md5, sha256) -> None`. It decides only whether bytes are fetched again; registration, path history and store checks happen every run regardless. Wiping the state dir costs a re-download, nothing else.
+- `inbox.private_dir(path) -> Path` (0700 mkdir), `inbox.MAX_PDF_BYTES = 20_000_000`; the staging file is created 0600 (`rclone copyto` writes with the process umask, which the CLI sets to `0o077`).
 - `inbox.ObjectStore` protocol with `put(key: str, path: Path) -> None` and `exists(key) -> bool`; `inbox.MinioStore(endpoint, bucket, key_file)` using the `minio` client (`fput_object`, `stat_object`); `inbox.NullStore` when the endpoint is unset (`put` no-op, `exists` True).
 
 - [ ] **Step 1: Write the failing tests** `tests/worker/test_drive.py`:
@@ -482,6 +519,20 @@ def test_md5_or_size_mismatch_refuses(cfg, tmp_path):
     with pytest.raises(inbox.VerifyError):
         inbox.Inbox(cfg).publish(staged, expected_md5=md5, expected_size=size + 1)
     assert not cfg.inbox_dir.exists() or not list(cfg.inbox_dir.iterdir())
+
+
+def test_same_bytes_compares_bytes_not_digests(cfg, tmp_path, monkeypatch):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.write_bytes(b"x" * 10)
+    b.write_bytes(b"y" * 10)
+    monkeypatch.setattr(inbox, "_digests", lambda path: ("m", "same-digest", 10))  # a forced digest collision
+    assert inbox._same_bytes(a, b) is False
+
+
+def test_private_modes(cfg, tmp_path):
+    staged, md5, size = _staged(tmp_path)
+    published = inbox.Inbox(cfg).publish(staged, expected_md5=md5, expected_size=size)
+    assert oct(cfg.inbox_dir.stat().st_mode)[-3:] == "700" and oct(published.path.stat().st_mode)[-3:] == "600"
 
 
 def test_collision_with_different_bytes_is_hard(cfg, tmp_path, monkeypatch):
@@ -630,6 +681,7 @@ class Drive:
 """The private inbox: verified bytes published atomically by sha256, optionally mirrored to MinIO (ruling 4)."""
 from __future__ import annotations
 
+import filecmp
 import hashlib
 import json
 import os
@@ -638,6 +690,15 @@ from pathlib import Path
 from typing import Protocol
 
 from worker.config import WorkerConfig
+
+MAX_PDF_BYTES = 20_000_000
+
+
+def private_dir(path: Path) -> Path:
+    """mkdir -p with mode 0700 (and chmod when it already existed with a wider mode)."""
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+    return path
 
 
 class VerifyError(RuntimeError):
@@ -667,7 +728,7 @@ def _digests(path: Path) -> tuple[str, str, int]:
 
 
 def _same_bytes(a: Path, b: Path) -> bool:
-    return _digests(a)[1] == _digests(b)[1]
+    return filecmp.cmp(a, b, shallow=False)  # byte comparison, not a second digest (AGENT-95 Should)
 
 
 class Inbox:
@@ -679,7 +740,7 @@ class Inbox:
         if md5 != expected_md5.lower() or size != expected_size:
             staged.unlink(missing_ok=True)
             raise VerifyError("downloaded bytes do not match the listing")
-        self.cfg.inbox_dir.mkdir(parents=True, exist_ok=True)
+        private_dir(self.cfg.inbox_dir)
         target = self.cfg.inbox_dir / f"{sha}.pdf"
         if target.exists():
             if not _same_bytes(target, staged):
@@ -757,7 +818,7 @@ def store_for(cfg: WorkerConfig) -> ObjectStore:
     return MinioStore(cfg.minio_endpoint, cfg.minio_bucket, cfg.minio_key_file)
 ```
 
-- [ ] **Step 4:** run → 8 passed (this task's tests).
+- [ ] **Step 4:** run → 10 passed (this task's tests).
 - [ ] **Step 5:** commit `feat(worker): Drive listing, download by id, verified atomic inbox`.
 
 ---
@@ -771,7 +832,7 @@ def store_for(cfg: WorkerConfig) -> ObjectStore:
 **Interfaces:**
 - `pdf.Unlocked(reader: pypdf.PdfReader, password_index: int | None)`; `pdf.unlock(data: bytes, candidates: list[str]) -> Unlocked` raises `pdf.PasswordError` (message exactly `password`) when every candidate fails; an unencrypted PDF returns index `None`.
 - `pdf.Extracted(text: str, tables: list[list[list[str]]], pages: int, text_chars_page1: int)`; `pdf.extract(data: bytes, password: str | None, *, max_pages=40, max_bytes=20_000_000, timeout_s=60) -> Extracted` raises `pdf.TooLarge`, `pdf.NoTextLayer` (page 1 < 200 chars), `pdf.ExtractTimeout`. Text is the concatenation of `page.extract_text()` with `\f` between pages; tables via `page.extract_tables()`.
-- `mask.Masker(identity: mask.Identity)` with `Identity(id_number: str | None, birth_date: str | None (YYYYMMDD), holder_names: list[str])`; `mask.identity_from_password_file(path) -> Identity` (reads the three `STATEMENT_*` keys only); `Masker.text(s: str) -> str`; `Masker.tables(tables) -> tables`; `Masker.render(extracted: pdf.Extracted) -> str` = masked text + a `\n\n[tables]\n` section with every table row as `cell | cell | …`. Replacement tokens: `[ID]`, `[BIRTH]`, `[NAME]`, `[EMAIL]`, `[PHONE]`, numbers → `****` + last 4 (`[NUM…1234]`).
+- `mask.Masker(identity: passwords.Identity)` (the identity comes from `passwords.identity(path)`, Task 2); `Masker.text(s: str) -> str`; `Masker.tables(tables) -> tables`; `Masker.render(extracted: pdf.Extracted) -> str` = masked text + a `\n\n[tables]\n` section with every table row as `cell | cell | …`. Replacement tokens: `[ID]`, `[BIRTH]`, `[NAME]`, `[EMAIL]`, `[PHONE]`, numbers → `[NUM…1234]` (last 4 kept). Boundaries are **digit/ASCII-letter boundaries, not `\w`** (AGENT-95 Must 1): `\w` matches CJK, so `帳號123456789012結餘` must still mask; order: configured ID literal → generic ID pattern → names (longest first) → e-mail → birth literals → phones → digit runs.
 
 - [ ] **Step 1: Write the helper** `tests/worker/pdfgen.py` (a minimal one-page text PDF, optional encryption):
 
@@ -887,9 +948,9 @@ def test_encrypted_extract_uses_password():
 `tests/worker/test_mask.py` (the canary of §5.4; synthetic identity):
 
 ```python
-from worker import mask, pdf
+from worker import mask, passwords, pdf
 
-IDENT = mask.Identity(id_number="A123456789", birth_date="19900101", holder_names=["王小明", "WANG XIAO MING"])
+IDENT = passwords.Identity(id_number="A123456789", birth_date="19900101", holder_names=["王小明", "WANG XIAO MING"])
 
 
 def test_text_canary_masks_every_class():
@@ -901,6 +962,13 @@ def test_text_canary_masks_every_class():
                    "a.b@example.com", "0912-345-678", "2345-6789"):
         assert secret not in out, secret
     assert "3456" in out and "[ID]" in out and "[NAME]" in out and "[EMAIL]" in out and "12345" in out
+
+
+def test_cjk_adjacent_secrets_are_masked():
+    m = mask.Masker(IDENT)
+    out = m.text("帳號123456789012結餘 身分證B223456789末 戶名王小明先生 卡號4321-5678-9012-3456元")
+    assert "123456789012" not in out and "B223456789" not in out and "王小明" not in out and "5678-9012" not in out
+    assert out.startswith("帳號[NUM…9012]結餘") and "[ID]末" in out and "戶名[NAME]先生" in out and "3456]元" in out
 
 
 def test_tables_are_masked_cell_by_cell():
@@ -916,12 +984,12 @@ def test_render_joins_text_and_tables():
     assert rendered.startswith("hello [ID]") and "[tables]" in rendered and "a | b" in rendered
 
 
-def test_identity_from_password_file(tmp_path):
+def test_masker_from_password_file_uses_the_shared_parser(tmp_path):
     p = tmp_path / "pw.env"
-    p.write_text("STATEMENT_ID_NUMBER=A123456789\nSTATEMENT_BIRTH_DATE=19900101\n"
+    p.write_text("  STATEMENT_ID_NUMBER=A123456789\nSTATEMENT_BIRTH_DATE=19900101\n"
                  "STATEMENT_HOLDER_NAMES=王小明,WANG\\, XIAO\n信用卡/x=$ID\n", encoding="utf-8")
-    ident = mask.identity_from_password_file(p)
-    assert ident.id_number == "A123456789" and ident.holder_names == ["王小明", "WANG, XIAO"]
+    m = mask.Masker(passwords.identity(p))
+    assert m.text("A123456789 王小明 WANG, XIAO 1990/01/01") == "[ID] [NAME] [NAME] [BIRTH]"
 ```
 
 - [ ] **Step 3:** run → import errors.
@@ -1024,33 +1092,15 @@ def extract(data: bytes, password: str | None, *, max_pages: int = 40, max_bytes
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from pathlib import Path
 
 from worker import pdf
+from worker.passwords import Identity
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_ID = re.compile(r"\b[A-Z][12]\d{8}\b")
+# boundaries on ASCII letters/digits only: CJK neighbours must not protect a secret (AGENT-95 Must 1)
+_ID = re.compile(r"(?<![A-Za-z0-9])[A-Z][12]\d{8}(?![A-Za-z0-9])")
 _PHONE = re.compile(r"(?<!\d)(?:\(0\d{1,2}\)|0\d{1,2})[- ]?\d{3,4}[- ]?\d{3,4}(?!\d)")
-_DIGIT_RUN = re.compile(r"(?<![\w])\d(?:[ \-]?\d){5,}(?![\w])")  # separator-tolerant, ≥ 6 digits
-
-
-@dataclass(frozen=True)
-class Identity:
-    id_number: str | None
-    birth_date: str | None  # YYYYMMDD
-    holder_names: list[str]
-
-
-def identity_from_password_file(path: Path) -> Identity:
-    values: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        if raw.startswith("STATEMENT_") and "=" in raw:
-            key, _, value = raw.partition("=")
-            values[key.strip()] = value.split("  #", 1)[0].strip()
-    names = [n.replace("\x00", ",").strip() for n in values.get("STATEMENT_HOLDER_NAMES", "")
-             .replace("\\,", "\x00").split(",") if n.strip()]
-    return Identity(values.get("STATEMENT_ID_NUMBER") or None, values.get("STATEMENT_BIRTH_DATE") or None, names)
+_DIGIT_RUN = re.compile(r"(?<!\d)\d(?:[ \-]?\d){5,}(?!\d)")  # separator-tolerant, ≥ 6 digits
 
 
 def _birth_patterns(ymd: str) -> list[str]:
@@ -1098,7 +1148,9 @@ class Masker:
         return "".join(parts)
 ```
 
-- [ ] **Step 5:** run → 11 passed. If `pdfplumber` cannot read the synthetic PDF's Helvetica text, switch the helper's font to `/Courier` (still a standard 14 font) and re-run; do not weaken the 200-char probe.
+`pdf.unlock` and `pdf.extract` wrap every library exception (`PdfReadError`, `pdfplumber`/`pdfminer` errors, `ValueError`, `KeyError`) into `pdf.Malformed` (message `malformed`), so a corrupted PDF is a bounded outcome (`failed/parse` in the pipeline), never a traceback with file content. Add `test_malformed_pdf_is_bounded`: `pdf.extract(b"%PDF-1.4 garbage", None)` raises `pdf.Malformed`. The 20 MB check runs on the listing size before download (Task 3) and again on the bytes before `PdfReader` is constructed (`unlock` checks `len(data)` first).
+
+- [ ] **Step 5:** run → 13 passed. If `pdfplumber` cannot read the synthetic PDF's Helvetica text, switch the helper's font to `/Courier` (still a standard 14 font) and re-run; do not weaken the 200-char probe.
 - [ ] **Step 6:** commit `feat(worker): unlock, extract within bounds, masking canary`.
 
 ---
@@ -1111,8 +1163,10 @@ class Masker:
 
 **Interfaces:**
 - `parse_schema.ParsedLine`, `parse_schema.StatementParse` (pydantic, `extra="forbid"`): fields as `RevisionIn`/`LineIn` of `app/schemas/statements.py` but amounts as decimal **strings** (`pattern ^-?\d{1,15}(\.\d{1,4})?$`), `kind: Literal["card","bank"]`, `currency: str (3 upper)`, `lines ≤ 2000`, `merchant_raw ≤ 256`, `notes: str | None ≤ 500`; `parse_schema.json_schema() -> dict` (`StatementParse.model_json_schema()`), `parse_schema.INSTRUCTION` (fixed text below), `parse_schema.version(cli_version, model) -> str` (ruling 8).
-- `parser.Parser(cfg, runner)`: `cli_version() -> str` (`claude --version` first token), `parse(masked_text: str) -> StatementParse` raising `parser.ParseError(reason)` with reasons `cli_version`, `stdin_too_large`, `timeout`, `output_too_large`, `exit`, `schema`, `sandbox`; `gate() -> parser.GateReport(ok: bool, reasons: list[str], evidence: dict)` running the canary; `parser.command(cfg, schema_json: str) -> list[str]` builds the full argv (with the bwrap prefix when `cfg.parser_sandbox`).
-- Stream rules (ruling 2) implemented in `parser.consume(stream: Iterable[bytes]) -> parser.Envelope(structured_output, num_turns, tool_names: list[str], events: list[str], result_subtype)`; `parser.check_envelope(env) -> list[str]` returns the violated rules (empty = ok).
+- `parser.Parser(cfg, runner, *, config_dir: Path | None = None, credentials_writable: bool = True)`: `cli_version() -> str` (`claude --version` first token), `parse(masked_text: str) -> StatementParse` raising `parser.ParseError(reason)` with reasons `cli_version`, `stdin_too_large`, `timeout`, `output_too_large`, `exit`, `schema`, `sandbox`, `auth`; `gate() -> parser.GateReport(ok: bool, reasons: list[str], evidence: dict)` running the canary; `parser.command(cfg, schema_json: str, *, config_dir, credentials_writable) -> list[str]` builds the full argv (bwrap prefix when `cfg.parser_sandbox`; with `credentials_writable=False` there is no `--bind` of `.credentials.json`, the whole dir is `--ro-bind` — verify's mode, ruling 11).
+- Stream rules (ruling 2) implemented in `parser.consume(stream: Iterable[bytes]) -> parser.Envelope` which validates **while consuming** against the exact allowed sequence `system/init → assistant(one tool_use StructuredOutput, optional text blocks) → user(tool_result) → [rate_limit_event]* → result/success` and records every deviation in `envelope.violations` (unknown or malformed event, any `hook*`/`subagent*`/`permission*` type **or subtype**, a second init or result, an assistant block that is not `text` or `tool_use`, a `tool_use` with another name, more than one assistant message, a user message without a `tool_result`, `num_turns != 2`, `tools != ["StructuredOutput"]`). `parser.check_envelope(env) -> list[str]` returns those violations. **Precedence** (AGENT-95 Must 3): violations are checked before exit status, schema and everything else, so a forbidden stream that also exits non-zero is `sandbox`, never a retried `exit`.
+- I/O (AGENT-95 Must 4): stdin is written by a helper thread (so a child that stops reading cannot block the deadline loop; a `BrokenPipeError` there is recorded, not raised), stdout/stderr are drained with `selectors` and `os.read(fd, 65536)` under one deadline, every read is bounded by the caps (`STDOUT_CAP` each), the final drain after exit is bounded too, and any failure path kills the process group (`killpg(SIGKILL)`) and reaps it.
+- `parser.Gate(cfg)`: `key(parser) -> dict` (`cli_version`, `model`, `config_dir_mtime`, `argv_sha256`, `sandbox`), `ensure(parser) -> None` (ruling 9: raises `parser.ParserDisabled` when `<state_dir>/parser-disabled.json` exists; otherwise reads `<state_dir>/gate.json` and returns when it is ok, same key and younger than 24 h; otherwise runs `parser.gate()` now, writes `gate.json`, and on failure writes the latch and raises `ParserDisabled`), `latch(reason: str, key: dict) -> None`, `clear() -> None` (only `python -m worker gate` after a success).
 
 - [ ] **Step 1: Write the fake CLI helper** `tests/worker/fake_claude.py`:
 
@@ -1162,6 +1216,8 @@ def write(path: Path, body: str, *, version="2.1.296 (Claude Code)", sleep=0, st
 
 ```python
 import json
+import os
+import time
 
 import pytest
 
@@ -1173,7 +1229,7 @@ from worker.runner import SubprocessRunner
 @pytest.fixture
 def cfg(tmp_path):
     cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
-    return config.load({"STATEMENT_STATE_DIR": str(tmp_path), "STATEMENT_PARSER_CLI": str(cli),
+    return config.load({"STATEMENT_STATE_DIR": str(tmp_path / "state"), "STATEMENT_PARSER_CLI": str(cli),
                         "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_TIMEOUT": "5",
                         "STATEMENT_PARSER_ATTEMPTS": "1"})
 
@@ -1198,15 +1254,22 @@ def test_command_without_sandbox_has_the_pinned_flags(cfg):
 
 
 def test_command_with_sandbox_binds_only_the_stated_surfaces(tmp_path):
-    cfg = config.load({"STATEMENT_PARSER_SANDBOX": "true", "STATEMENT_PARSER_CONFIG_DIR": str(tmp_path)})
+    cli = tmp_path / "bin" / "claude"
+    cfg = config.load({"STATEMENT_PARSER_SANDBOX": "true", "STATEMENT_PARSER_CONFIG_DIR": str(tmp_path / "cfg"),
+                       "STATEMENT_PARSER_CLI": str(cli)})
     argv = parser.command(cfg, "{}")
     assert argv[0] == "bwrap" and "--unshare-all" in argv and "--share-net" in argv and "--cap-drop" in argv
     assert argv[argv.index("--chdir") + 1] == "/work"
-    assert ["--ro-bind", str(cfg.parser_cli), "/opt/claude/claude"] == argv[argv.index("/opt/claude/claude") - 2:argv.index("/opt/claude/claude") + 1]
-    assert argv[argv.index("--bind") + 1] == str(tmp_path / ".credentials.json")
-    assert "/home" not in " ".join(a for a in argv if a.startswith("/")).replace(str(tmp_path), "")
+    i = argv.index("/opt/claude/claude")
+    assert argv[i - 2:i + 1] == ["--ro-bind", str(cli), "/opt/claude/claude"]
+    assert argv[argv.index("--bind") + 1] == str(tmp_path / "cfg" / ".credentials.json")
+    host_paths = [a for a in argv if a.startswith("/") and not a.startswith(str(tmp_path))]
+    assert all(p.startswith(("/usr", "/lib", "/etc/pki", "/etc/ssl", "/etc/resolv.conf", "/etc/hosts", "/opt/claude",
+                             "/cfg", "/tmp", "/work", "/proc", "/dev")) for p in host_paths), host_paths
     env_pairs = [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv) if a == "--setenv"]
     assert dict(env_pairs) == {"HOME": "/tmp", "CLAUDE_CONFIG_DIR": "/cfg", "PATH": "/opt/claude:/usr/bin"}
+    ro = parser.command(cfg, "{}", config_dir=tmp_path / "ro", credentials_writable=False)
+    assert "--bind" not in ro and ["--ro-bind", str(tmp_path / "ro"), "/cfg"] == ro[ro.index("/cfg") - 2:ro.index("/cfg") + 1]
 
 
 def test_parse_happy_path(cfg):
@@ -1223,29 +1286,53 @@ def test_version_pin(cfg, tmp_path):
 
 @pytest.mark.parametrize("variant, reason", [
     ({"extra_tool": True}, "sandbox"), ({"tool_name": "Bash"}, "sandbox"), ({"tools": ("StructuredOutput", "Bash")}, "sandbox"),
-    ({"num_turns": 3}, "sandbox"), ({"subtype": "error_max_turns"}, "exit"),
+    ({"num_turns": 3}, "sandbox"), ({"hook_event": True}, "sandbox"), ({"duplicate_result": True}, "sandbox"),
+    ({"garbage_line": True}, "sandbox"), ({"extra_tool": True, "exit_code": 1}, "sandbox"),
+    ({"subtype": "error_max_turns"}, "exit"), ({"exit_code": 1}, "exit"),
     ({"output": {**fake_claude.GOOD, "statement_total": "abc"}}, "schema")])
-def test_envelope_violations(cfg, tmp_path, variant, reason):
-    fake_claude.write(tmp_path / "claude", fake_claude.transcript(**variant))
+def test_envelope_violations_and_precedence(cfg, tmp_path, variant, reason):
+    exit_code = variant.pop("exit_code", 0)
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(**variant), exit_code=exit_code)
     with pytest.raises(parser.ParseError) as err:
         parser.Parser(cfg, SubprocessRunner()).parse("x")
     assert err.value.reason == reason
 
 
-def test_timeout_kills_the_process_group(cfg, tmp_path):
-    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), sleep=30)
-    cfg = config.load({**{k: v for k, v in [("STATEMENT_PARSER_CLI", str(tmp_path / "claude"))]},
-                       "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_TIMEOUT": "1", "STATEMENT_PARSER_ATTEMPTS": "1"})
+def test_timeout_kills_the_whole_process_group(cfg, tmp_path):
+    marker = tmp_path / "grandchild.pid"
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), sleep=30, grandchild_pid_file=marker)
+    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_SANDBOX": "false",
+                       "STATEMENT_PARSER_TIMEOUT": "1", "STATEMENT_PARSER_ATTEMPTS": "1",
+                       "STATEMENT_STATE_DIR": str(tmp_path / "state")})
     with pytest.raises(parser.ParseError) as err:
         parser.Parser(cfg, SubprocessRunner()).parse("x")
     assert err.value.reason == "timeout"
+    pid = int(marker.read_text())
+    time.sleep(0.2)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)  # the grandchild died with the group
 
 
-def test_stdin_and_stdout_caps(cfg, tmp_path):
+def test_child_that_never_reads_stdin_still_times_out(cfg, tmp_path):
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), sleep=30, read_stdin=False)
+    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_SANDBOX": "false",
+                       "STATEMENT_PARSER_TIMEOUT": "1", "STATEMENT_PARSER_ATTEMPTS": "1",
+                       "STATEMENT_STATE_DIR": str(tmp_path / "state")})
+    started = time.monotonic()
     with pytest.raises(parser.ParseError) as err:
-        parser.Parser(cfg, SubprocessRunner()).parse("x" * (400_001))
+        parser.Parser(cfg, SubprocessRunner()).parse("x" * 300_000)  # larger than a pipe buffer
+    assert err.value.reason == "timeout" and time.monotonic() - started < 4
+
+
+def test_stdin_and_output_caps(cfg, tmp_path):
+    with pytest.raises(parser.ParseError) as err:
+        parser.Parser(cfg, SubprocessRunner()).parse("x" * (parser.STDIN_CAP + 1))
     assert err.value.reason == "stdin_too_large"
-    fake_claude.write(tmp_path / "claude", "", stdout_bytes=b"{" + b"x" * (2 * 1024 * 1024 + 1))
+    fake_claude.write(tmp_path / "claude", "", stdout_bytes=b"{" + b"x" * (parser.STDOUT_CAP + 1))
+    with pytest.raises(parser.ParseError) as err:
+        parser.Parser(cfg, SubprocessRunner()).parse("x")
+    assert err.value.reason == "output_too_large"
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), stderr_bytes=b"e" * (parser.STDOUT_CAP + 1))
     with pytest.raises(parser.ParseError) as err:
         parser.Parser(cfg, SubprocessRunner()).parse("x")
     assert err.value.reason == "output_too_large"
@@ -1259,10 +1346,31 @@ def test_gate_passes_on_the_canary_and_fails_on_a_second_tool(cfg, tmp_path):
     assert not report.ok and any("tool" in r for r in report.reasons)
 
 
+def test_gate_ensure_caches_and_latches(cfg, tmp_path):
+    prs = parser.Parser(cfg, SubprocessRunner())
+    gate = parser.Gate(cfg)
+    gate.ensure(prs)  # runs the canary once
+    assert (cfg.state_dir / "gate.json").exists()
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))
+    gate.ensure(prs)  # cached evidence, same key → no new canary, still allowed
+    stale = json.loads((cfg.state_dir / "gate.json").read_text())
+    stale["checked_at"] = "2000-01-01T00:00:00+00:00"
+    (cfg.state_dir / "gate.json").write_text(json.dumps(stale))
+    with pytest.raises(parser.ParserDisabled):
+        gate.ensure(prs)  # stale → re-run → violation → latch
+    assert (cfg.state_dir / "parser-disabled.json").exists()
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    with pytest.raises(parser.ParserDisabled):
+        gate.ensure(prs)  # latched until an operator gate clears it
+    assert gate.run_operator_gate(prs).ok and not (cfg.state_dir / "parser-disabled.json").exists()
+
+
 def test_parser_version_string():
     v = parse_schema.version("2.1.296", "claude-sonnet-5-5")
     assert v.startswith("claude-cli-2.1.296-claude-sonnet-5-5-") and len(v.split("-")[-1]) == 8
 ```
+
+The fake CLI helper gains: `exit_code=` (exit status after printing), `stderr_bytes=` (written to stderr), `read_stdin=False` (skip the `cat >/dev/null`), `grandchild_pid_file=` (the script starts `sleep 60 &` and writes its pid there before sleeping), and `transcript(..., hook_event=True)` (inserts `{"type": "system", "subtype": "hook_started"}` after init), `duplicate_result=True` (a second `result` line), `garbage_line=True` (a non-JSON line before the result).
 
 - [ ] **Step 3:** run → import errors.
 - [ ] **Step 4: Implement** `worker/parse_schema.py`:
@@ -1343,15 +1451,20 @@ def version(cli_version: str, model: str) -> str:
 `worker/parser.py`:
 
 ```python
-"""The sandboxed model-as-a-function parser (§5.5, rulings 1–2, 8): command, stream consumption, gate."""
+"""The sandboxed model-as-a-function parser (§5.5, rulings 1–2, 8–9): command, strict stream, bounded I/O, gate."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import selectors
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Iterable
 
 from pydantic import ValidationError
@@ -1364,12 +1477,18 @@ STDIN_CAP = 400 * 1024
 STDOUT_CAP = 2 * 1024 * 1024
 STRUCTURED_TOOL = "StructuredOutput"
 CANARY = "MASKED STATEMENT CANARY\n" + "\n".join(f"2026/09/{i:02d} CANARY SHOP {i} 100" for i in range(1, 12))
+GATE_MAX_AGE = timedelta(hours=24)
+FORBIDDEN_PREFIXES = ("hook", "subagent", "permission")
 
 
 class ParseError(RuntimeError):
     def __init__(self, reason: str, detail: str = ""):
         super().__init__(reason if not detail else f"{reason}: {detail}")
         self.reason = reason
+
+
+class ParserDisabled(RuntimeError):
+    pass
 
 
 @dataclass
@@ -1381,6 +1500,7 @@ class Envelope:
     events: list[str] = field(default_factory=list)
     result_subtype: str | None = None
     assistant_messages: int = 0
+    violations: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1390,23 +1510,25 @@ class GateReport:
     evidence: dict
 
 
-def _sandbox_prefix(cfg: WorkerConfig) -> list[str]:
-    cfg_dir = str(cfg.parser_config_dir)
-    cred = str(cfg.parser_config_dir / ".credentials.json")
+def _sandbox_prefix(cfg: WorkerConfig, config_dir: Path, credentials_writable: bool) -> list[str]:
     binds: list[str] = []
     for path in ("/usr", "/lib", "/lib64", "/etc/pki", "/etc/ssl", "/etc/resolv.conf", "/etc/hosts"):
         if os.path.exists(path):
             binds += ["--ro-bind", path, path]
+    cfg_binds = ["--ro-bind", str(config_dir), "/cfg"]
+    if credentials_writable:
+        cfg_binds += ["--bind", str(config_dir / ".credentials.json"), "/cfg/.credentials.json"]
     return ["bwrap", "--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
-            *binds, "--ro-bind", str(cfg.parser_cli), "/opt/claude/claude",
-            "--ro-bind", cfg_dir, "/cfg", "--bind", cred, "/cfg/.credentials.json",
+            *binds, "--ro-bind", str(cfg.parser_cli), "/opt/claude/claude", *cfg_binds,
             "--tmpfs", "/tmp", "--tmpfs", "/work", "--proc", "/proc", "--dev", "/dev", "--chdir", "/work",
             "--setenv", "HOME", "/tmp", "--setenv", "CLAUDE_CONFIG_DIR", "/cfg",
             "--setenv", "PATH", "/opt/claude:/usr/bin", "--", "/opt/claude/claude"]
 
 
-def command(cfg: WorkerConfig, schema_json: str) -> list[str]:
-    head = _sandbox_prefix(cfg) if cfg.parser_sandbox else [str(cfg.parser_cli)]
+def command(cfg: WorkerConfig, schema_json: str, *, config_dir: Path | None = None,
+            credentials_writable: bool = True) -> list[str]:
+    config_dir = config_dir or cfg.parser_config_dir
+    head = _sandbox_prefix(cfg, config_dir, credentials_writable) if cfg.parser_sandbox else [str(cfg.parser_cli)]
     return [*head, "-p", "--safe-mode", "--tools", "", "--disallowedTools", "mcp__*", "--strict-mcp-config",
             "--mcp-config", '{"mcpServers":{}}', "--permission-prompts", "none", "--no-session-persistence",
             "--max-turns", "1", "--output-format", "stream-json", "--verbose", "--json-schema", schema_json,
@@ -1414,7 +1536,9 @@ def command(cfg: WorkerConfig, schema_json: str) -> list[str]:
 
 
 def consume(lines: Iterable[bytes]) -> Envelope:
+    """Validate the exact allowed sequence while consuming (ruling 2; AGENT-95 Must 3)."""
     env = Envelope()
+    expect = "init"
     for raw in lines:
         raw = raw.strip()
         if not raw:
@@ -1422,44 +1546,125 @@ def consume(lines: Iterable[bytes]) -> Envelope:
         try:
             event = json.loads(raw)
         except json.JSONDecodeError:
-            env.events.append("unparseable")
+            env.violations.append("non-json line")
             continue
-        kind = event.get("type")
-        env.events.append(f"{kind}/{event.get('subtype', '')}")
-        if kind == "system" and event.get("subtype") == "init":
+        if not isinstance(event, dict):
+            env.violations.append("non-object event")
+            continue
+        kind, sub = str(event.get("type", "")), str(event.get("subtype", "") or "")
+        env.events.append(f"{kind}/{sub}")
+        if kind.startswith(FORBIDDEN_PREFIXES) or sub.startswith(FORBIDDEN_PREFIXES):
+            env.violations.append(f"forbidden event {kind}/{sub}")
+            continue
+        if kind == "system" and sub == "init":
+            if expect != "init":
+                env.violations.append("duplicate init")
             env.tools = list(event.get("tools") or [])
+            expect = "assistant"
         elif kind == "assistant":
             env.assistant_messages += 1
-            for block in (event.get("message") or {}).get("content") or []:
-                if block.get("type") == "tool_use":
-                    env.tool_names.append(block.get("name", ""))
+            if expect != "assistant":
+                env.violations.append("assistant out of order")
+            blocks = (event.get("message") or {}).get("content") or []
+            for block in blocks:
+                btype = block.get("type") if isinstance(block, dict) else None
+                if btype == "tool_use":
+                    env.tool_names.append(str(block.get("name", "")))
+                elif btype != "text":
+                    env.violations.append(f"assistant block {btype}")
+            expect = "user"
+        elif kind == "user":
+            blocks = (event.get("message") or {}).get("content") or []
+            if expect != "user" or not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
+                env.violations.append("user message without tool_result or out of order")
+            expect = "result"
+        elif kind == "rate_limit_event":
+            continue
         elif kind == "result":
-            env.result_subtype = event.get("subtype")
+            if env.result_subtype is not None:
+                env.violations.append("duplicate result")
+            if expect != "result":
+                env.violations.append("result out of order")
+            env.result_subtype = sub
             env.num_turns = event.get("num_turns")
             env.structured_output = event.get("structured_output")
+            expect = "end"
+        else:
+            env.violations.append(f"unknown event {kind}/{sub}")
+    if env.tools != [STRUCTURED_TOOL]:
+        env.violations.append(f"tools exposed: {env.tools}")
+    if env.tool_names != [STRUCTURED_TOOL]:
+        env.violations.append(f"tool calls: {env.tool_names}")
+    if env.assistant_messages != 1:
+        env.violations.append(f"assistant messages: {env.assistant_messages}")
+    if env.num_turns != 2:
+        env.violations.append(f"num_turns: {env.num_turns}")
     return env
 
 
 def check_envelope(env: Envelope) -> list[str]:
-    """Ruling 2: the only permitted shape. Empty list = ok."""
-    problems = []
-    if env.tools != [STRUCTURED_TOOL]:
-        problems.append(f"tools exposed: {env.tools}")
-    if env.tool_names != [STRUCTURED_TOOL]:
-        problems.append(f"tool calls: {env.tool_names}")
-    if env.assistant_messages != 1:
-        problems.append(f"assistant messages: {env.assistant_messages}")
-    if env.num_turns != 2:
-        problems.append(f"num_turns: {env.num_turns}")
-    if any(e.startswith(("hook", "subagent", "permission")) for e in env.events):
-        problems.append("hook/subagent/permission event")
-    return problems
+    return list(env.violations)
+
+
+class _ChildIO:
+    """Bounded, deadline-driven I/O with the child: stdin from a thread, stdout/stderr via selectors."""
+
+    def __init__(self, proc: subprocess.Popen, stdin: bytes, deadline: float):
+        self.proc, self.deadline = proc, deadline
+        self.out, self.err = bytearray(), bytearray()
+        self.stdin_error: str | None = None
+        self._writer = threading.Thread(target=self._write, args=(stdin,), daemon=True)
+
+    def _write(self, data: bytes) -> None:
+        try:
+            self.proc.stdin.write(data)
+            self.proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            self.stdin_error = "stdin closed by the child"
+
+    def pump(self) -> None:
+        self._writer.start()
+        sel = selectors.DefaultSelector()
+        sel.register(self.proc.stdout, selectors.EVENT_READ, self.out)
+        sel.register(self.proc.stderr, selectors.EVENT_READ, self.err)
+        open_pipes = 2
+        while open_pipes:
+            remaining = self.deadline - time.monotonic()
+            if remaining <= 0:
+                raise ParseError("timeout")
+            for key, _ in sel.select(timeout=min(remaining, 0.25)):
+                chunk = os.read(key.fileobj.fileno(), 65536)
+                if not chunk:
+                    sel.unregister(key.fileobj)
+                    open_pipes -= 1
+                    continue
+                key.data.extend(chunk)
+                if len(key.data) > STDOUT_CAP:
+                    raise ParseError("output_too_large")
+        if self.proc.wait(timeout=max(0.0, self.deadline - time.monotonic())) is None:
+            raise ParseError("timeout")
+
+
+def _kill(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 class Parser:
-    def __init__(self, cfg: WorkerConfig, runner: Runner):
+    def __init__(self, cfg: WorkerConfig, runner: Runner, *, config_dir: Path | None = None,
+                 credentials_writable: bool = True):
         self.cfg, self.runner = cfg, runner
+        self.config_dir, self.credentials_writable = config_dir or cfg.parser_config_dir, credentials_writable
         self._schema = json.dumps(parse_schema.json_schema(), ensure_ascii=False, separators=(",", ":"))
+
+    def argv(self) -> list[str]:
+        return command(self.cfg, self._schema, config_dir=self.config_dir, credentials_writable=self.credentials_writable)
 
     def cli_version(self) -> str:
         result = self.runner.run([str(self.cfg.parser_cli), "--version"], timeout=30)
@@ -1471,56 +1676,29 @@ class Parser:
             raise ParseError("cli_version", f"found {found or 'none'}, pinned {self.cfg.parser_cli_version}")
 
     def _run_once(self, stdin: bytes) -> Envelope:
-        argv = command(self.cfg, self._schema)
         env = {"HOME": os.environ.get("HOME", "/tmp"), "PATH": os.environ.get("PATH", "/usr/bin")}
-        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        proc = subprocess.Popen(self.argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 env=env, start_new_session=True)
-        deadline = time.monotonic() + self.cfg.parser_timeout_s
+        io = _ChildIO(proc, stdin, time.monotonic() + self.cfg.parser_timeout_s)
         try:
-            proc.stdin.write(stdin)
-            proc.stdin.close()
-            out, err = bytearray(), bytearray()
-            os.set_blocking(proc.stdout.fileno(), False)
-            os.set_blocking(proc.stderr.fileno(), False)
-            while True:
-                for pipe, buf in ((proc.stdout, out), (proc.stderr, err)):
-                    chunk = pipe.read()
-                    if chunk:
-                        buf.extend(chunk)
-                        if len(buf) > STDOUT_CAP:
-                            raise ParseError("output_too_large")
-                if proc.poll() is not None:
-                    for pipe, buf in ((proc.stdout, out), (proc.stderr, err)):
-                        rest = pipe.read()
-                        if rest:
-                            buf.extend(rest)
-                    break
-                if time.monotonic() > deadline:
-                    raise ParseError("timeout")
-                time.sleep(0.05)
-        except ParseError:
-            self._kill(proc)
+            io.pump()
+        except BaseException:
+            _kill(proc)
             raise
         finally:
             if proc.poll() is None:
-                self._kill(proc)
-        envelope = consume(bytes(out).splitlines())
+                _kill(proc)
+        envelope = consume(bytes(io.out).splitlines())
+        if envelope.violations:  # sandbox precedence over exit/schema (AGENT-95 Must 3)
+            raise ParseError("sandbox", "; ".join(envelope.violations)[:500])
         if proc.returncode != 0 or envelope.result_subtype != "success":
+            text = bytes(io.err).decode("utf-8", "replace")
+            if "auth" in text.lower() or "login" in text.lower():
+                raise ParseError("auth")
             raise ParseError("exit", f"rc={proc.returncode} subtype={envelope.result_subtype}")
         return envelope
 
-    @staticmethod
-    def _kill(proc: subprocess.Popen) -> None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait(timeout=10)
-
     def _validated(self, envelope: Envelope) -> parse_schema.StatementParse:
-        problems = check_envelope(envelope)
-        if problems:
-            raise ParseError("sandbox", "; ".join(problems))
         try:
             return parse_schema.StatementParse.model_validate(envelope.structured_output or {})
         except ValidationError as exc:
@@ -1536,7 +1714,7 @@ class Parser:
             try:
                 return self._validated(self._run_once(stdin))
             except ParseError as exc:
-                if exc.reason in ("sandbox", "cli_version", "stdin_too_large"):
+                if exc.reason in ("sandbox", "cli_version", "stdin_too_large", "auth"):
                     raise
                 last = exc
         assert last is not None
@@ -1544,22 +1722,80 @@ class Parser:
 
     def gate(self) -> GateReport:
         reasons: list[str] = []
-        evidence: dict = {"pinned": self.cfg.parser_cli_version, "model": self.cfg.parser_model}
+        evidence: dict = {"pinned": self.cfg.parser_cli_version, "model": self.cfg.parser_model,
+                          "sandbox": self.cfg.parser_sandbox}
         try:
             self._check_version()
             envelope = self._run_once(CANARY.encode())
             evidence.update(num_turns=envelope.num_turns, tools=envelope.tools, tool_calls=envelope.tool_names,
                             events=envelope.events)
-            reasons += check_envelope(envelope)
             parse_schema.StatementParse.model_validate(envelope.structured_output or {})
         except ParseError as exc:
-            reasons.append(f"{exc.reason}: {exc}")
+            reasons.append(f"{exc.reason}: {exc}"[:300])
         except ValidationError as exc:
             reasons.append(f"schema: {str(exc)[:200]}")
         return GateReport(not reasons, reasons, evidence)
+
+
+class Gate:
+    """Ruling 9: mandatory, cached for 24 h per key, latched on any violation until an operator gate succeeds."""
+
+    def __init__(self, cfg: WorkerConfig):
+        self.cfg = cfg
+        self.evidence_path = cfg.state_dir / "gate.json"
+        self.latch_path = cfg.state_dir / "parser-disabled.json"
+
+    def key(self, parser: Parser) -> dict:
+        try:
+            mtime = parser.config_dir.stat().st_mtime
+        except FileNotFoundError:
+            mtime = None
+        return {"cli_version": parser.cli_version(), "model": self.cfg.parser_model, "config_dir_mtime": mtime,
+                "argv_sha256": hashlib.sha256("\0".join(parser.argv()).encode()).hexdigest(),
+                "sandbox": self.cfg.parser_sandbox}
+
+    def _write(self, path: Path, data: dict) -> None:
+        self.cfg.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, default=str)
+
+    def latch(self, reason: str, key: dict) -> None:
+        self._write(self.latch_path, {"reason": reason[:300], "at": datetime.now(timezone.utc).isoformat(), "key": key})
+
+    def clear(self) -> None:
+        self.latch_path.unlink(missing_ok=True)
+
+    def ensure(self, parser: Parser) -> None:
+        if self.latch_path.exists():
+            raise ParserDisabled("parser disabled until an operator gate succeeds")
+        key = self.key(parser)
+        if self.evidence_path.exists():
+            evidence = json.loads(self.evidence_path.read_text(encoding="utf-8"))
+            checked = datetime.fromisoformat(evidence.get("checked_at", "2000-01-01T00:00:00+00:00"))
+            if evidence.get("ok") and evidence.get("key") == key and datetime.now(timezone.utc) - checked < GATE_MAX_AGE:
+                return
+        report = parser.gate()
+        self._write(self.evidence_path, {"ok": report.ok, "reasons": report.reasons, "evidence": report.evidence,
+                                         "key": key, "checked_at": datetime.now(timezone.utc).isoformat()})
+        if not report.ok:
+            self.latch("; ".join(report.reasons), key)
+            raise ParserDisabled("gate failed")
+
+    def run_operator_gate(self, parser: Parser) -> GateReport:
+        """`python -m worker gate`: the only path that clears the latch (on success)."""
+        report = parser.gate()
+        key = self.key(parser)
+        self._write(self.evidence_path, {"ok": report.ok, "reasons": report.reasons, "evidence": report.evidence,
+                                         "key": key, "checked_at": datetime.now(timezone.utc).isoformat()})
+        if report.ok:
+            self.clear()
+        else:
+            self.latch("; ".join(report.reasons), key)
+        return report
 ```
 
-- [ ] **Step 5:** run → 17 passed. The sandbox test only builds argv; a real `bwrap` run is the operator's gate (Task 9 script).
+- [ ] **Step 5:** run → 24 passed. The sandbox test only builds argv; a real `bwrap` run is the operator's gate (Task 9 script).
 - [ ] **Step 6:** commit `feat(worker): StatementParse schema, sandboxed parser child, envelope gate`.
 
 ---
@@ -1568,18 +1804,30 @@ class Parser:
 
 **Files:**
 - Create: `worker/api.py`
-- Modify: `app/routers/statements.py` (one route), `app/services/settings_service.py` (`mapping_version`), `app/schemas/statements.py` (`AccountMapOut`)
+- Modify: `app/routers/statements.py` (one route; `GET /settings/reconciliation` switches to the SELECT-only reader), `app/services/settings_service.py` (`mapping_version`, `read_reconciliation_settings`, `read_reconciliation_rules`), `app/schemas/statements.py` (`AccountMapOut`, three optional version fields on `FileOut`)
 - Test: `tests/worker/test_api.py` (against the real API through `TestClient`), extend `tests/integration/test_statement_ingest_api.py`
 
 **Interfaces:**
 - `settings_service.mapping_version(account_map: dict) -> str` = `sha256(json.dumps(account_map, sort_keys=True, ensure_ascii=False, separators=(",", ":")))[:16]`.
+- `settings_service.read_reconciliation_settings(db) -> dict` and `read_reconciliation_rules(db) -> dict` (ruling 12): `db.get(ReconciliationSettings, 1)` without the insert; when the row is absent they return the same defaults `_reconciliation_dict` would produce for an empty row (`account_map {}`, `dirty_enabled False`, `rules` = `RULE_DEFAULTS`, `version 0`). `GET /settings/reconciliation` and `GET /statements/account-map` use them; `PUT` keeps `_reconciliation_row(lock=True)`. Test: in a session that ran `SET TRANSACTION READ ONLY`, `read_reconciliation_settings` succeeds on an empty table and `get_reconciliation_settings` raises.
 - `GET /statements/account-map` → `AccountMapOut(account_map: dict[str, int], mapping_version: str)`, scope `ingest`, behind the feature gate.
-- `api.ApiClient(client: httpx.Client, token: str)`: `create_run(trigger, mode, initiator_hint) -> api.Lease(run_id, lease_token, lease_expires_at, attempt)` (`POST /statements/ingest-runs`), `queued_runs() -> list[dict]`, `claim(run_id) -> Lease`, `renew(lease) -> None`, `finish(lease, status, summary) -> None`, `account_map() -> tuple[dict[str, int], str]`, `register_file(lease, sha256, size, kind, object_key) -> dict`, `update_file(lease, file_id, **fields) -> dict`, `register_source(lease, file_id, root, drive_file_id, drive_path, drive_md5, drive_size) -> dict`, `mark_removed(lease, seen_ids: list[str], allow_empty=False) -> int`, `submit_revision(lease, body: dict) -> dict`. Every call raises `api.LeaseLost` on 409 from a lease route or submission, `api.ApiError(status, body)` otherwise. Requests carry `Authorization: Bearer <token>`.
-- `api.LeaseKeeper(client: ApiClient, lease: Lease, interval_s=300)`: context manager running a daemon thread that renews; a failed renew sets `keeper.lost = True` (checked by the pipeline before every submission) and stops.
+- `api.ApiClient(client: httpx.Client, token: str, *, guard: Callable[[], bool] | None = None)`: `guard` (the pipeline passes `lambda: keeper.lost`) is consulted **before every lease-route request**; when it returns True the client raises `LeaseLost` without sending (AGENT-95 Must 7: a lease lost during a parse blocks the submission that follows). Methods: `create_run(trigger, mode, initiator_hint) -> api.Lease(run_id, lease_token, lease_expires_at, attempt)` (`POST /statements/ingest-runs`), `queued_runs() -> list[dict]`, `claim(run_id) -> Lease`, `renew(lease) -> None`, `finish(lease, status, summary) -> None`, `account_map() -> tuple[dict[str, int], str]`, `register_file(lease, sha256, size, kind, object_key) -> dict`, `update_file(lease, file_id, **fields) -> dict`, `register_source(lease, file_id, root, drive_file_id, drive_path, drive_md5, drive_size) -> dict`, `mark_removed(lease, seen_ids: list[str], allow_empty=False) -> int`, `submit_revision(lease, body: dict) -> dict`. Every call raises `api.LeaseLost` on 409 from a lease route or submission, `api.ApiError(status, body)` otherwise. Requests carry `Authorization: Bearer <token>`.
+- `api.LeaseKeeper(client: ApiClient, lease: Lease, interval_s=300)`: context manager running a daemon thread that renews; **any** exception from a renew (`ApiError`, `httpx.HTTPError`, `OSError`) sets `keeper.lost = True` and stops the thread; `__exit__` joins the thread (bounded) and never raises. `api.RunState(path)` persists `{run_id, lease_token, attempt, started_at}` at `<state_dir>/run.json` (0600) after a claim and deletes it after `finish`; on start the pipeline reads it and, when `renew` succeeds, **resumes** that run (same lease), otherwise discards the file (§4.1 restart recovery; AGENT-95 Must 7).
 
 - [ ] **Step 1: Write the failing API test** (append to `tests/integration/test_statement_ingest_api.py`):
 
 ```python
+def test_read_only_settings_reader_never_inserts(db_session):
+    from sqlalchemy import text
+    from app.services import settings_service
+    db_session.execute(text("SET TRANSACTION READ ONLY"))
+    data = settings_service.read_reconciliation_settings(db_session)
+    assert data["account_map"] == {} and data["dirty_enabled"] is False and "rules" in data
+    with pytest.raises(Exception):
+        settings_service.get_reconciliation_settings(db_session)  # INSERT ... ON CONFLICT is refused read-only
+    db_session.rollback()
+
+
 def test_account_map_route_is_ingest_scoped(client):
     put = client.put("/settings/reconciliation", headers=S, json={"account_map": {"mail/信用卡/國泰世華": 1},
                                                                   "dirty_enabled": False, "rules": {}})
@@ -1646,6 +1894,38 @@ def test_account_map(worker_api, client):
     assert mapping == {"manual/國泰世華": 3} and len(version) == 16
 
 
+def test_guard_blocks_lease_routes_before_sending(client):
+    lost = {"v": False}
+    guarded = api.ApiClient(client, W_TOKEN, guard=lambda: lost["v"])
+    lease = guarded.create_run("owner_cli", "live", "tester")
+    lost["v"] = True
+    with pytest.raises(api.LeaseLost):
+        guarded.register_file(lease, "ab" * 32, 1, "card", "by-sha/x.pdf")
+    assert guarded.queued_runs() == []  # non-lease reads still work
+
+
+def test_run_state_round_trip(tmp_path, worker_api):
+    lease = worker_api.create_run("owner_cli", "live", "tester")
+    state = api.RunState(tmp_path / "run.json")
+    state.save(lease)
+    assert oct((tmp_path / "run.json").stat().st_mode)[-3:] == "600"
+    assert state.load() == lease
+    state.clear()
+    assert state.load() is None
+
+
+def test_lease_keeper_flags_transport_errors(worker_api, monkeypatch):
+    lease = worker_api.create_run("owner_cli", "live", "tester")
+
+    def boom(l):
+        raise ConnectionError("down")
+
+    monkeypatch.setattr(worker_api, "renew", boom)
+    with api.LeaseKeeper(worker_api, lease, interval_s=0.05) as keeper:
+        time.sleep(0.2)
+        assert keeper.lost
+
+
 def test_lease_keeper_renews_and_flags_loss(worker_api, monkeypatch):
     lease = worker_api.create_run("owner_cli", "live", "tester")
     calls = []
@@ -1683,12 +1963,25 @@ class AccountMapOut(BaseModel):
     mapping_version: str
 ```
 
-In `app/routers/statements.py`, next to the other ingest-scope routes:
+Also in `settings_service.py`:
+
+```python
+def read_reconciliation_settings(db: Session) -> dict:
+    """SELECT-only variant for read-only transactions (ruling 12): defaults when the row does not exist."""
+    row = db.get(ReconciliationSettings, 1)
+    return _reconciliation_dict(row) if row is not None else _reconciliation_dict(ReconciliationSettings(id=1, data={}, version=0))
+
+
+def read_reconciliation_rules(db: Session) -> dict:
+    return read_reconciliation_settings(db)["rules"]
+```
+
+(check `_reconciliation_dict` tolerates a transient, un-added `ReconciliationSettings` instance — it reads `row.data` and `row.version` only; adjust the constructor kwargs to the model's columns). Switch `GET /settings/reconciliation` to `read_reconciliation_settings`. In `app/routers/statements.py`, next to the other ingest-scope routes:
 
 ```python
 @router.get("/statements/account-map", response_model=AccountMapOut, dependencies=INGEST)
 def read_account_map(db: Session = Depends(get_db)):
-    data = settings_service.get_reconciliation_settings(db)
+    data = settings_service.read_reconciliation_settings(db)
     return AccountMapOut(account_map=data.get("account_map") or {},
                          mapping_version=settings_service.mapping_version(data.get("account_map") or {}))
 ```
@@ -1699,8 +1992,12 @@ def read_account_map(db: Session = Depends(get_db)):
 """The worker's only way to application state: the ingest API over HTTP under a run lease (§4.1, §8)."""
 from __future__ import annotations
 
+import json
+import os
 import threading
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
 
 import httpx
 
@@ -1729,10 +2026,12 @@ class Lease:
 
 
 class ApiClient:
-    def __init__(self, client: httpx.Client, token: str):
-        self.client, self.headers = client, {"Authorization": f"Bearer {token}"}
+    def __init__(self, client: httpx.Client, token: str, *, guard: Callable[[], bool] | None = None):
+        self.client, self.headers, self.guard = client, {"Authorization": f"Bearer {token}"}, guard
 
     def _call(self, method: str, path: str, *, json=None, params=None, lease_route: bool = False):
+        if lease_route and self.guard is not None and self.guard():
+            raise LeaseLost(409, "lease lost (local guard)")
         response = self.client.request(method, path, json=json, params=params, headers=self.headers)
         if response.status_code >= 400:
             body = response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text
@@ -1802,7 +2101,7 @@ class LeaseKeeper:
         while not self._stop.wait(self.interval_s):
             try:
                 self.client.renew(self.lease)
-            except ApiError:
+            except Exception:  # noqa: BLE001 — ApiError, httpx transport errors, OSError: all mean "not renewed"
                 self.lost = True
                 return
 
@@ -1813,9 +2112,31 @@ class LeaseKeeper:
     def __exit__(self, *exc):
         self._stop.set()
         self._thread.join(timeout=5)
+        return False
+
+
+class RunState:
+    """The claimed lease on disk (0600) so a restarted worker resumes its own run (§4.1)."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def save(self, lease: Lease) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(lease.__dict__, fh)
+
+    def load(self) -> Lease | None:
+        if not self.path.exists():
+            return None
+        return Lease(**json.loads(self.path.read_text(encoding="utf-8")))
+
+    def clear(self) -> None:
+        self.path.unlink(missing_ok=True)
 ```
 
-Note on `FileRegisterIn.sha256`: check its validator in `app/schemas/statements.py:89-94` (64 hex, any case) and `FileUpdateIn` field names; the client passes them through unchanged.
+`FileRegisterIn.sha256` accepts 64 hex of any case; `FileUpdateIn` field names are as in the schema; the client passes them through unchanged. Add `credential_version: str | None = None`, `mapping_version: str | None = None`, `parser_version: str | None = None` to `FileOut` (read-only schema addition, no migration) and `def list_files(self) -> list[dict]: return self._call("GET", "/statements/files") or []` to `ApiClient`.
 
 - [ ] **Step 4:** run `tests/worker/test_api.py tests/integration/test_statement_ingest_api.py` → all pass (the `TestClient` raises on 4xx only if `raise_server_exceptions`; our client inspects status codes).
 - [ ] **Step 5:** commit `feat(accounting): account-map route for the worker; worker API client and lease keeper`.
@@ -1829,13 +2150,17 @@ Note on `FileRegisterIn.sha256`: check its validator in `app/schemas/statements.
 - Test: `tests/worker/test_pipeline.py` (end to end: fake rclone, fake claude, real API through `TestClient`, synthetic encrypted PDFs)
 
 **Interfaces:**
-- `pipeline.Services(cfg, api: ApiClient, drive: Drive, inbox: Inbox, index: SourceIndex, store: ObjectStore, parser: Parser, candidates: Candidates, credential_version: str, masker: Masker)` assembled by `pipeline.build(cfg, client: httpx.Client, runner: Runner) -> Services` (reads the token file, password file, identity).
+- `pipeline.Services(cfg, api: ApiClient, drive: Drive, inbox: Inbox, index: SourceIndex, retries: RetryLog, store: ObjectStore, parser: Parser, gate: Gate, candidates: Candidates, credential_version: str, masker: Masker, runner)` assembled by `pipeline.build(cfg, client: httpx.Client, runner: Runner) -> Services` (reads the token file, password file, identity). `pipeline.RetryLog(path)` (`<state_dir>/retries.json`, 0600): per sha256 `{transient_attempts: int, store_pending: bool}` — the worker's own transient epoch (reset on any non-transient outcome; AGENT-95 Should) and the "object not yet stored" flag (ruling 10).
 - `pipeline.run(services, *, trigger: str, mode: str = "live", initiator_hint: str | None = None, acknowledge_live_periods: bool = False) -> dict` (the summary): creates and claims the run, lists Drive, acquires new/changed sources, processes every file that is `new` or retry-eligible, marks removed sources, finishes the run. Returns the summary dict `{"listed", "new_files", "parsed", "needs_review", "failed", "ignored", "skipped", "unchanged", "transient", "cases_opened", "live_revisions", "errors": [...]}` with counts only (no file names). `unchanged` = files whose row is not retry-eligible this run (parsed, or failed with the same version); `skipped` = files not processed because the parser was disabled during this run. An item whose `(drive_file_id, md5)` is in the `SourceIndex` and whose file row exists in `GET /statements/files` is not downloaded; its bytes are read from the inbox only when it needs processing (missing inbox object → re-acquire).
-- `pipeline.process_file(services, lease, file_row: dict, source: dict, listed: Listed) -> str` returns the final status and performs: mapping (`account_map[f"{root}/{folder[:2 levels]}"]` else `ignored/mapping`), unlock (`failed/password` on `PasswordError`, index not persisted), extract (`needs_review/no_text_layer`, `needs_review/too_large`, `failed/transient` on timeout), mask + render, parse (`failed/parse` on schema/exit/timeout; `failed/sandbox` on sandbox → `services.parser_disabled = True` and every later file is `skipped`), submit (`parsed`, or `needs_review/guardrail` when `guardrail_ok` is false; the revision is still stored by the API), `LeaseLost` propagates and aborts the run.
-- Retry eligibility (`pipeline.retry_due(file_row, now, credential_version, mapping_version, parser_version) -> bool`): `failure == 'transient'` and (`next_retry_at` is None or ≤ now) and `attempts < 5`; `failure == 'password'` and `credential_version` differs; `failure == 'mapping'` and `mapping_version` differs; `failure in ('parse','guardrail','sandbox')` and `parser_version` differs; `status in ('new','unlocked')` always. Backoff for `transient`: `next_retry_at = now + {1: 1h, 2: 6h, 3+: 24h}[attempts]`.
-- Live-period acknowledgement: for `mode == "backfill"`, before submitting, count statements whose account has `statement_live_from` set and `period_end ≥` it (the API answers this through the revision's `mode` only after submission, so the worker asks `GET /statements/files` is not enough): the pipeline submits with `kind`/`period_end` and reads `RevisionOut.mode`; when `mode == "live"` and `acknowledge_live_periods` is False it records `errors: ["live period without acknowledgement"]` and aborts the run **before any other file is submitted** by a dry pre-check: the first live revision response aborts. Simpler and exact: `backfill` without the flag refuses to start (`RuntimeError`) — the count printed is the number of mapped accounts with `statement_live_from` set, read from `GET /statements/account-map` accounts via `/accounts/{id}`? The worker cannot read accounts (`ingest` only). **Ruling:** `backfill` requires `--acknowledge-live-periods`; without it the CLI exits 2 with the message `backfill may touch live periods; pass --acknowledge-live-periods` and no run is created. The live-period count is reported in the run summary afterwards (`live_revisions`).
-- `pipeline.singleton(cfg) -> contextmanager` using `fcntl.flock(LOCK_EX | LOCK_NB)` on `cfg.lock_path`; raises `pipeline.AlreadyRunning`.
-- CLI (`python -m worker <cmd>`): `run` (`--trigger timer|owner_cli`, default `owner_cli`), `poll` (claim queued runs: for each queued run → `claim` → the same processing under that lease, `trigger='enqueue'`), `backfill` (`--acknowledge-live-periods`), `gate` (prints the `GateReport` as JSON, exit 1 when not ok), `export-masked` and `verify` (Task 8). Exit codes: 0 ok, 1 run failed, 2 usage/refused, 3 already running.
+- `pipeline.process_file(services, lease, file_row: dict, listed: Listed, data: bytes, account_map, mapping_version, summary) -> str` returns the final status and performs: mapping (`account_map[f"{root}/{folder[:2 levels]}"]` else `ignored/mapping`), unlock (`failed/password` on `PasswordError`, index not persisted; `failed/parse` on `pdf.Malformed`), extract (`needs_review/no_text_layer`, `needs_review/too_large`, `failed/transient` on timeout), mask + render, parse (`failed/parse` on schema/exit; `failed/transient` on timeout; `failed/sandbox` on `sandbox`/`cli_version`/`auth` → `services.gate.latch(...)`, every later file of this run is `skipped`, and the run finishes **`failed`** with `errors: ["parser_disabled"]` — ruling 9), submit (`parsed`, or `needs_review/guardrail` when `guardrail_ok` is false; the revision is still stored by the API). `LeaseLost` (from the API or the local guard) propagates and aborts the run.
+- Retry eligibility (`pipeline.retry_due(file_row, retry: dict, now, credential_version, mapping_version, parser_version) -> bool`): `status in ('new','unlocked')` always; `failure == 'transient'` and (`next_retry_at` is None or ≤ now) and `retry['transient_attempts'] < 5` (the worker's own epoch, not the server's cumulative `attempts`); `failure == 'password'` and `credential_version` differs; `failure == 'mapping'` and `mapping_version` differs; `failure in ('parse','guardrail','no_text_layer','too_large')` and `parser_version` differs; `failure == 'sandbox'` only when the latch is clear **and** `parser_version` differs or the gate evidence is newer than the file's `parsed_at`/update (sandbox recovery is operator-driven, ruling 9). Backoff for `transient`: `next_retry_at = now + {1: 1h, 2: 6h, 3+: 24h}[transient_attempts]`; any non-transient outcome resets `transient_attempts` to 0. Tests pin the 1h/6h/24h steps and the max-5 boundary.
+- Live-period acknowledgement (ruling 13): `backfill` requires `--acknowledge-live-periods`; without it the CLI exits 2 with `backfill may touch live periods; pass --acknowledge-live-periods` and no run is created. The live-period count is reported in the run summary afterwards (`live_revisions`).
+- Full runs (`trigger in ('timer','owner_cli')`, i.e. `run`/`backfill`, not `poll`) end with the daily sweep: `POST /reconciliation/sweep` under the lease (`api.sweep(lease) -> dict`); its counts go to `summary.sweep` (`reconciled`, `busy`, `errors`), a 409 there is recorded as `sweep: busy`, not an abort (ruling 13, §4.6).
+- Run summary `versions`: `{"parser_version", "cli_version", "model", "credential_version", "mapping_version"}` (ruling 13).
+- Restart recovery: `run()` first consults `api.RunState(<state_dir>/run.json)`; a saved lease that still renews is resumed (`summary.resumed = True`, same run id, no new run), otherwise the file is discarded and a new run is created. The state file is written right after the claim and removed after `finish`.
+- `pipeline.singleton(cfg) -> contextmanager` using `fcntl.flock(LOCK_EX | LOCK_NB)` on `cfg.lock_path` (state dir created 0700 first); raises `pipeline.AlreadyRunning`.
+- Every run starts with `services.gate.ensure(services.parser)` (ruling 9); `ParserDisabled` there makes the run finish `failed` with `errors: ["parser_disabled"]` after the acquisition phase (files are still acquired and registered so nothing is lost; none is parsed).
+- CLI (`python -m worker <cmd>`): sets `os.umask(0o077)` first; `run` (`--trigger timer|owner_cli`, default `owner_cli`), `poll` (claim queued runs: for each queued run → `claim` → the same processing under that lease, `trigger='enqueue'`), `backfill` (`--acknowledge-live-periods`), `gate` (runs `Gate.run_operator_gate`, prints the report as JSON, exit 1 when not ok — the only way to clear the latch), `export-masked` and `verify` (Task 8). Exit codes: 0 ok **and** `already running` (timers must not fail), 1 run failed, 2 usage/refused.
 
 - [ ] **Step 1: Write the failing end-to-end test** `tests/worker/test_pipeline.py`:
 
@@ -1924,6 +2249,10 @@ def _counts(db_session):
             for t in ("statement_file", "statement_source", "account_statement", "statement_revision", "ingest_run")}
 
 
+def _file_rows(db_session):
+    return db_session.execute(text("select status, failure from statement_file order by id")).all()
+
+
 def test_end_to_end_parses_and_is_idempotent(world, db_session, client):
     services, _, cfg = world
     summary = pipeline.run(services, trigger="owner_cli")
@@ -1937,8 +2266,24 @@ def test_end_to_end_parses_and_is_idempotent(world, db_session, client):
     assert second["new_files"] == 0 and second["parsed"] == 0 and second["unchanged"] == 1 and second["skipped"] == 0
     assert services.drive_downloads == 1  # the second run did not download again (see Step 3: count in the test Runner)
     assert _counts(db_session)["statement_revision"] == 1  # unchanged, successful file is a no-op
-    run_status = db_session.execute(text("select status from ingest_run order by id")).scalars().all()
-    assert run_status == ["done", "done"]
+    run_status = db_session.execute(text("select status, summary from ingest_run order by id")).all()
+    assert [r[0] for r in run_status] == ["done", "done"]
+    assert run_status[0][1]["versions"]["parser_version"].startswith("claude-cli-2.1.296-")
+    assert "sweep" in run_status[0][1] and (cfg.state_dir / "gate.json").exists()
+    assert not (cfg.state_dir / "run.json").exists()
+    sources = db_session.execute(text("select last_seen_at from statement_source")).scalars().all()
+    assert len(sources) == 1  # re-registered every listing (ruling 10): last_seen_at moved on the second run
+
+
+def test_rename_in_drive_updates_path_history_without_a_download(world, db_session):
+    services, drive_files, cfg = world
+    pipeline.run(services, trigger="owner_cli")
+    path, data = drive_files["id-1"]
+    drive_files["id-1"] = (path.replace("2026-09_", "2026-09_renamed_"), data)
+    second = pipeline.run(services, trigger="owner_cli")
+    assert services.drive_downloads == 1
+    hist = db_session.execute(text("select drive_path, path_history from statement_source")).one()
+    assert "renamed" in hist[0] and hist[1] and hist[1][0]["path"] == path
 
 
 def test_wrong_password_then_credential_change_retries(world, db_session, tmp_path):
@@ -1966,14 +2311,70 @@ def test_unmapped_folder_is_ignored_and_remapping_requeues(world, db_session, cl
     assert pipeline.run(services, trigger="owner_cli")["parsed"] == 1
 
 
-def test_sandbox_violation_disables_parsing_for_the_run(world, db_session, tmp_path):
+def test_sandbox_violation_latches_and_fails_the_run(world, db_session, tmp_path):
     services, drive_files, cfg = world
+    services.gate.ensure(services.parser)  # a valid cached gate, so the violation happens on real input
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))
     drive_files["id-2"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([statement_lines(30)]), "A123456789"))
     summary = pipeline.run(services, trigger="owner_cli")
-    assert summary["failed"] == 1 and summary["skipped"] == 1 and "sandbox" in " ".join(summary["errors"])
-    statuses = sorted(db_session.execute(text("select status, failure from statement_file")).all())
-    assert ("failed", "sandbox") in statuses and ("new", None) in statuses
+    assert summary["failed"] == 1 and summary["skipped"] == 1 and "parser_disabled" in summary["errors"]
+    assert sorted(_file_rows(db_session)) == [("failed", "sandbox"), ("new", None)]
+    assert db_session.execute(text("select status from ingest_run")).scalar_one() == "failed"
+    assert (cfg.state_dir / "parser-disabled.json").exists()
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    again = pipeline.run(services, trigger="owner_cli")  # still latched: nothing parsed, run failed
+    assert again["parsed"] == 0 and "parser_disabled" in again["errors"]
+    assert services.gate.run_operator_gate(services.parser).ok
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] >= 1
+
+
+def test_gate_runs_before_the_first_parse(world, db_session, tmp_path):
+    services, _, cfg = world
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 0 and summary["skipped"] == 1 and "parser_disabled" in summary["errors"]
+    assert _file_rows(db_session) == [("new", None)]  # acquired and registered, never parsed
+
+
+def test_store_pending_is_retried_independently_of_parse(world, db_session, monkeypatch):
+    services, _, cfg = world
+    calls = {"put": 0}
+
+    class FlakyStore:
+        def exists(self, key):
+            return calls["put"] > 0
+
+        def put(self, key, path):
+            calls["put"] += 1
+            if calls["put"] == 1:
+                raise RuntimeError("minio down")
+
+    services.store = FlakyStore()
+    first = pipeline.run(services, trigger="owner_cli")
+    assert first["transient"] == 1 and _file_rows(db_session) == [("failed", "transient")]
+    second = pipeline.run(services, trigger="owner_cli")
+    assert calls["put"] == 2 and second["parsed"] == 1 and services.drive_downloads == 1
+
+
+def test_transient_backoff_uses_the_worker_epoch(world, db_session, monkeypatch):
+    services, _, cfg = world
+    services.drive.download = lambda item, dest: (_ for _ in ()).throw(__import__("worker.drive", fromlist=["x"]).DownloadError("x"))
+    for _ in range(2):
+        pipeline.run(services, trigger="owner_cli")
+    # pre-registration failures: no row, no durable backoff (documented); now a registered transient failure:
+    services.drive.download = services.drive.__class__.download.__get__(services.drive)
+    monkeypatch.setattr(services.store, "put", lambda key, path: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(services.store, "exists", lambda key: False)
+    times = []
+    for n in range(6):
+        summary = pipeline.run(services, trigger="owner_cli")
+        row = db_session.execute(text("select next_retry_at from statement_file")).scalar_one()
+        times.append(row)
+        monkeypatch.setattr(pipeline, "_now", lambda r=row: r + __import__("datetime").timedelta(seconds=1))
+    retry = services.retries.get(db_session.execute(text("select sha256 from statement_file")).scalar_one())
+    assert retry["transient_attempts"] == 5 and summary["unchanged"] == 0 and summary["deferred"] == 1
+    deltas = [(times[1] - times[0]), (times[2] - times[1])]
+    assert deltas[0] >= __import__("datetime").timedelta(hours=5, minutes=59) and deltas[1] >= __import__("datetime").timedelta(hours=23, minutes=59)
 
 
 def test_md5_mismatch_is_transient(world, db_session, tmp_path):
@@ -1990,18 +2391,36 @@ def test_md5_mismatch_is_transient(world, db_session, tmp_path):
     assert summary["transient"] == 1
 
 
-def test_lease_lost_aborts_without_marking_parsed(world, db_session, monkeypatch):
+def test_lease_lost_during_parse_blocks_the_submission(world, db_session, monkeypatch):
     services, _, cfg = world
-    original = services.api.submit_revision
+    original = services.parser.parse
+    sent = []
 
-    def expire_then_submit(lease, body):
-        services.api.finish(lease, "failed", {"test": "expired"})
-        return original(lease, body)
+    def parse_then_lose(text_):
+        out = original(text_)
+        services.keeper.lost = True  # the renew thread reported a loss while the parse was in flight
+        return out
 
-    monkeypatch.setattr(services.api, "submit_revision", expire_then_submit)
+    monkeypatch.setattr(services.parser, "parse", parse_then_lose)
+    real_submit = services.api.submit_revision
+    monkeypatch.setattr(services.api, "submit_revision", lambda lease, body: sent.append(1) or real_submit(lease, body))
     with pytest.raises(pipeline.RunAborted):
         pipeline.run(services, trigger="owner_cli")
+    assert sent == [] and db_session.execute(text("select count(*) from statement_revision")).scalar_one() == 0
     assert db_session.execute(text("select status from statement_file")).scalar_one() != "parsed"
+
+
+def test_crash_after_claim_resumes_the_same_run(world, db_session, monkeypatch):
+    services, _, cfg = world
+    monkeypatch.setattr(services.drive, "list_pdfs", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.run(services, trigger="owner_cli")
+    assert (cfg.state_dir / "run.json").exists()
+    monkeypatch.undo()
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["resumed"] is True and summary["parsed"] == 1
+    assert db_session.execute(text("select count(*) from ingest_run")).scalar_one() == 1
+    assert not (cfg.state_dir / "run.json").exists()
 
 
 def test_backfill_needs_acknowledgement(world):
@@ -2016,33 +2435,48 @@ def test_singleton(world, tmp_path):
         with pytest.raises(pipeline.AlreadyRunning):
             with pipeline.singleton(cfg):
                 pass
+    assert oct(cfg.state_dir.stat().st_mode)[-3:] == "700"
+
+
+def test_summary_carries_codes_not_text(world, monkeypatch):
+    services, _, cfg = world
+    from worker import drive as drive_mod
+    monkeypatch.setattr(services.drive, "list_pdfs", lambda: (_ for _ in ()).throw(drive_mod.ListingError("rclone lsjson exit 3: /secret/path")))
+    with pytest.raises(pipeline.RunAborted):
+        pipeline.run(services, trigger="owner_cli")
+    summary = services.api.client.get("/statements/ingest-runs", headers={"Authorization": "Bearer worker-token"}).json()[-1]["summary"]
+    assert summary["errors"] == ["listing"] and "/secret" not in json.dumps(summary)
 ```
 
 - [ ] **Step 2:** run → import errors.
 - [ ] **Step 3: Implement** `worker/pipeline.py`:
 
 ```python
-"""Run orchestration and the per-file state machine (§4.1, §4.2, §5.1–5.6, rulings 3–5)."""
+"""Run orchestration and the per-file state machine (§4.1, §4.2, §5.1–5.6, rulings 3–5, 9–10, 13)."""
 from __future__ import annotations
 
 import fcntl
+import json
 import logging
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 
 from worker import drive as drive_mod
 from worker import inbox as inbox_mod
 from worker import mask, parse_schema, parser as parser_mod, passwords, pdf
-from worker.api import ApiClient, ApiError, Lease, LeaseKeeper, LeaseLost
+from worker.api import ApiClient, ApiError, Lease, LeaseKeeper, LeaseLost, RunState
 from worker.config import WorkerConfig
 from worker.runner import Runner
 
 log = logging.getLogger("worker")
 BACKOFF = {1: timedelta(hours=1), 2: timedelta(hours=6)}
 MAX_TRANSIENT = 5
+FULL_RUN_TRIGGERS = ("timer", "owner_cli")
 
 
 class RunAborted(RuntimeError):
@@ -2057,6 +2491,26 @@ class AlreadyRunning(RuntimeError):
     pass
 
 
+class RetryLog:
+    """Per-sha transient epoch and store_pending flag (0600 JSON)."""
+
+    def __init__(self, path: Path):
+        self.path, self.data = path, {}
+        if path.exists():
+            self.data = json.loads(path.read_text(encoding="utf-8"))
+
+    def get(self, sha: str) -> dict:
+        return dict(self.data.get(sha) or {"transient_attempts": 0, "store_pending": False})
+
+    def set(self, sha: str, **fields) -> None:
+        self.data[sha] = {**self.get(sha), **fields}
+        tmp = self.path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(self.data, fh)
+        os.replace(tmp, self.path)
+
+
 @dataclass
 class Services:
     cfg: WorkerConfig
@@ -2064,32 +2518,37 @@ class Services:
     drive: drive_mod.Drive
     inbox: inbox_mod.Inbox
     index: inbox_mod.SourceIndex
+    retries: RetryLog
     store: inbox_mod.ObjectStore
     parser: parser_mod.Parser
+    gate: parser_mod.Gate
     candidates: passwords.Candidates
     credential_version: str
     masker: mask.Masker
     runner: Runner
+    keeper: LeaseKeeper | None = None
     parser_disabled: bool = False
     parser_version: str = ""
+    cli_version: str = ""
 
 
 def build(cfg: WorkerConfig, client: httpx.Client, runner: Runner) -> Services:
+    inbox_mod.private_dir(cfg.state_dir)
     token = cfg.api_token_file.read_text(encoding="utf-8").strip()
     candidates, credential_version = passwords.load(cfg.password_file)
-    api = ApiClient(client, token)
-    prs = parser_mod.Parser(cfg, runner)
-    services = Services(cfg, api, drive_mod.Drive(cfg, runner), inbox_mod.Inbox(cfg),
-                        inbox_mod.SourceIndex(cfg.state_dir / "sources.json"), inbox_mod.store_for(cfg), prs,
-                        candidates, credential_version, mask.Masker(mask.identity_from_password_file(cfg.password_file)),
-                        runner)
-    services.parser_version = parse_schema.version(prs.cli_version() or "unknown", cfg.parser_model)
+    services = Services(cfg, None, drive_mod.Drive(cfg, runner), inbox_mod.Inbox(cfg),
+                        inbox_mod.SourceIndex(cfg.state_dir / "sources.json"), RetryLog(cfg.state_dir / "retries.json"),
+                        inbox_mod.store_for(cfg), parser_mod.Parser(cfg, runner), parser_mod.Gate(cfg), candidates,
+                        credential_version, mask.Masker(passwords.identity(cfg.password_file)), runner)
+    services.api = ApiClient(client, token, guard=lambda: services.keeper is not None and services.keeper.lost)
+    services.cli_version = services.parser.cli_version() or "unknown"
+    services.parser_version = parse_schema.version(services.cli_version, cfg.parser_model)
     return services
 
 
 @contextmanager
 def singleton(cfg: WorkerConfig):
-    cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    inbox_mod.private_dir(cfg.state_dir)
     with cfg.lock_path.open("w") as fh:
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -2102,7 +2561,8 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def retry_due(row: dict, now: datetime, credential_version: str, mapping_version: str, parser_version: str) -> bool:
+def retry_due(row: dict, retry: dict, now: datetime, credential_version: str, mapping_version: str,
+              parser_version: str, *, latched: bool) -> bool:
     status, failure = row["status"], row.get("failure")
     if status in ("new", "unlocked"):
         return True
@@ -2111,13 +2571,15 @@ def retry_due(row: dict, now: datetime, credential_version: str, mapping_version
     if failure == "transient":
         nxt = row.get("next_retry_at")
         due = nxt is None or datetime.fromisoformat(nxt) <= now
-        return due and (row.get("attempts") or 0) < MAX_TRANSIENT
+        return due and retry["transient_attempts"] < MAX_TRANSIENT
     if failure == "password":
         return row.get("credential_version") != credential_version
     if failure == "mapping":
         return row.get("mapping_version") != mapping_version
-    if failure in ("parse", "guardrail", "sandbox", "no_text_layer", "too_large"):
+    if failure in ("parse", "guardrail", "no_text_layer", "too_large"):
         return row.get("parser_version") != parser_version
+    if failure == "sandbox":
+        return not latched and row.get("parser_version") != parser_version
     return False
 
 
@@ -2136,99 +2598,104 @@ class Summary:
     ignored: int = 0
     skipped: int = 0
     unchanged: int = 0
+    deferred: int = 0
     transient: int = 0
+    too_large: int = 0
     cases_opened: int = 0
     live_revisions: int = 0
+    resumed: bool = False
     errors: list[str] = field(default_factory=list)
+    sweep: dict = field(default_factory=dict)
+    versions: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
 
 
-def _fail(services: Services, lease: Lease, file_id: int, failure: str, summary: Summary, *, attempts: int = 0,
-          **versions) -> str:
+def _fail(services: Services, lease: Lease, file_row: dict, failure: str, summary: Summary, **versions) -> str:
+    sha = file_row["sha256"]
     fields = {"status": "failed", "failure": failure, **versions}
     if failure == "transient":
-        fields["next_retry_at"] = (_now() + BACKOFF.get(attempts + 1, timedelta(hours=24))).isoformat()
+        attempts = services.retries.get(sha)["transient_attempts"] + 1
+        services.retries.set(sha, transient_attempts=attempts)
+        fields["next_retry_at"] = (_now() + BACKOFF.get(attempts, timedelta(hours=24))).isoformat()
         summary.transient += 1
     else:
+        services.retries.set(sha, transient_attempts=0)
         summary.failed += 1
-    services.api.update_file(lease, file_id, **fields)
+    services.api.update_file(lease, file_row["id"], **fields)
     return "failed"
+
+
+def _review(services: Services, lease: Lease, file_row: dict, failure: str, summary: Summary, **fields) -> str:
+    services.retries.set(file_row["sha256"], transient_attempts=0)
+    services.api.update_file(lease, file_row["id"], status="needs_review", failure=failure,
+                             parser_version=services.parser_version, **fields)
+    summary.needs_review += 1
+    return "needs_review"
 
 
 def process_file(services: Services, lease: Lease, file_row: dict, listed: drive_mod.Listed, data: bytes,
                  account_map: dict[str, int], mapping_version: str, summary: Summary) -> str:
-    file_id = file_row["id"]
-    key = _folder_key(listed)
-    account_id = account_map.get(key)
+    account_id = account_map.get(_folder_key(listed))
     if account_id is None:
-        services.api.update_file(lease, file_id, status="ignored", failure="mapping", mapping_version=mapping_version)
+        services.api.update_file(lease, file_row["id"], status="ignored", failure="mapping",
+                                 mapping_version=mapping_version)
         summary.ignored += 1
         return "ignored"
     if services.parser_disabled:
         summary.skipped += 1
         return "skipped"
-    folder = drive_mod.folder_of(listed)
-    candidates = services.candidates.get(passwords.password_key(listed.root, folder), [])
+    candidates = services.candidates.get(passwords.password_key(listed.root, drive_mod.folder_of(listed)), [])
     try:
         unlocked = pdf.unlock(data, candidates)
-    except pdf.PasswordError:
-        return _fail(services, lease, file_id, "password", summary, credential_version=services.credential_version)
-    password = candidates[unlocked.password_index] if unlocked.password_index is not None else None
-    try:
+        password = candidates[unlocked.password_index] if unlocked.password_index is not None else None
         extracted = pdf.extract(data, password)
+    except pdf.PasswordError:
+        return _fail(services, lease, file_row, "password", summary, credential_version=services.credential_version)
+    except pdf.Malformed:
+        return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
     except pdf.NoTextLayer:
-        services.api.update_file(lease, file_id, status="needs_review", failure="no_text_layer", has_text_layer=False,
-                                 parser_version=services.parser_version)
-        summary.needs_review += 1
-        return "needs_review"
+        return _review(services, lease, file_row, "no_text_layer", summary, has_text_layer=False)
     except pdf.TooLarge:
-        services.api.update_file(lease, file_id, status="needs_review", failure="too_large",
-                                 parser_version=services.parser_version)
-        summary.needs_review += 1
-        return "needs_review"
+        return _review(services, lease, file_row, "too_large", summary)
     except pdf.ExtractTimeout:
-        return _fail(services, lease, file_id, "transient", summary, attempts=file_row.get("attempts") or 0)
-    services.api.update_file(lease, file_id, status="unlocked", failure=None, has_text_layer=True,
+        return _fail(services, lease, file_row, "transient", summary)
+    services.api.update_file(lease, file_row["id"], status="unlocked", failure=None, has_text_layer=True,
                              text_chars=len(extracted.text), pages=extracted.pages,
                              credential_version=services.credential_version)
     masked = services.masker.render(extracted)
     if len(masked.encode("utf-8")) > parser_mod.STDIN_CAP:
-        services.api.update_file(lease, file_id, status="needs_review", failure="too_large",
-                                 parser_version=services.parser_version)
-        summary.needs_review += 1
-        return "needs_review"
+        return _review(services, lease, file_row, "too_large", summary)
     try:
         parsed = services.parser.parse(masked)
     except parser_mod.ParseError as exc:
-        if exc.reason in ("sandbox", "cli_version"):
+        if exc.reason in ("sandbox", "cli_version", "auth"):
             services.parser_disabled = True
-            summary.errors.append(f"parser disabled: {exc.reason}")
-            return _fail(services, lease, file_id, "sandbox", summary, parser_version=services.parser_version)
+            services.gate.latch(f"{exc.reason} on real input", services.gate.key(services.parser))
+            if "parser_disabled" not in summary.errors:
+                summary.errors.append("parser_disabled")
+            return _fail(services, lease, file_row, "sandbox", summary, parser_version=services.parser_version)
         if exc.reason == "timeout":
-            return _fail(services, lease, file_id, "transient", summary, attempts=file_row.get("attempts") or 0)
-        return _fail(services, lease, file_id, "parse", summary, parser_version=services.parser_version)
-    body = revision_body(parsed, file_id=file_id, account_id=account_id, parser_version=services.parser_version)
+            return _fail(services, lease, file_row, "transient", summary)
+        return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
+    body = revision_body(parsed, file_id=file_row["id"], account_id=account_id, parser_version=services.parser_version)
     try:
         out = services.api.submit_revision(lease, body)
     except LeaseLost:
         raise
     except ApiError as exc:
         if exc.status == 422:
-            return _fail(services, lease, file_id, "parse", summary, parser_version=services.parser_version)
+            return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
         raise
     summary.cases_opened += len(out.get("case_ids") or [])
-    if out.get("mode") == "live":
-        summary.live_revisions += 1
-    if out.get("guardrail_ok"):
-        services.api.update_file(lease, file_id, status="parsed", failure=None, parser_version=services.parser_version)
-        summary.parsed += 1
-        return "parsed"
-    services.api.update_file(lease, file_id, status="needs_review", failure="guardrail",
-                             parser_version=services.parser_version)
-    summary.needs_review += 1
-    return "needs_review"
+    summary.live_revisions += 1 if out.get("mode") == "live" else 0
+    if not out.get("guardrail_ok"):
+        return _review(services, lease, file_row, "guardrail", summary)
+    services.retries.set(file_row["sha256"], transient_attempts=0)
+    services.api.update_file(lease, file_row["id"], status="parsed", failure=None, parser_version=services.parser_version)
+    summary.parsed += 1
+    return "parsed"
 
 
 def revision_body(parsed: parse_schema.StatementParse, *, file_id: int, account_id: int, parser_version: str) -> dict:
@@ -2242,44 +2709,86 @@ def revision_body(parsed: parse_schema.StatementParse, *, file_id: int, account_
             "minimum_payment": parsed.minimum_payment, "lines": lines, "raw": {"notes": parsed.notes}}
 
 
-def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, summary: Summary) -> tuple[dict, bytes] | None:
-    """Download by id, verify, publish, register file + source. None when the item is skipped this run."""
-    cfg = services.cfg
-    staged = cfg.staging_dir / f"{listed.drive_file_id}.tmp"
+def _download_verified(services: Services, listed: drive_mod.Listed, summary: Summary):
+    """Download by id, verify, publish; on a mismatch re-list once (the file may have been replaced).
+    Returns (Published, Listed-as-verified) or None (transient, counted)."""
+    staged = services.cfg.staging_dir / f"{listed.drive_file_id}.tmp"
+    inbox_mod.private_dir(services.cfg.staging_dir)
+    for attempt in (1, 2):
+        try:
+            services.drive.download(listed, staged)
+            return services.inbox.publish(staged, expected_md5=listed.md5, expected_size=listed.size), listed
+        except inbox_mod.VerifyError:
+            if attempt == 2:
+                break
+            try:
+                fresh = next((i for i in services.drive.list_pdfs() if i.drive_file_id == listed.drive_file_id), None)
+            except drive_mod.ListingError:
+                break
+            if fresh is None or fresh.md5 == listed.md5:
+                break
+            listed = fresh
+        except drive_mod.DownloadError:
+            break
+    summary.transient += 1
+    if "download" not in summary.errors:
+        summary.errors.append("download")
+    return None
+
+
+def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_path: Path, summary: Summary) -> bool:
+    key = f"by-sha/{file_row['sha256']}.pdf"
+    if services.store.exists(key):
+        services.retries.set(file_row["sha256"], store_pending=False)
+        return True
     try:
-        services.drive.download(listed, staged)
-        published = services.inbox.publish(staged, expected_md5=listed.md5, expected_size=listed.size)
-    except inbox_mod.VerifyError:
-        try:  # re-list once (the file may have been replaced), then skip as transient for this run
-            fresh = next((i for i in services.drive.list_pdfs() if i.drive_file_id == listed.drive_file_id), None)
-            if fresh is not None and fresh.md5 != listed.md5:
-                services.drive.download(fresh, staged)
-                published = services.inbox.publish(staged, expected_md5=fresh.md5, expected_size=fresh.size)
-                listed = fresh
-            else:
-                raise inbox_mod.VerifyError("still mismatched")
-        except (inbox_mod.VerifyError, drive_mod.DownloadError, drive_mod.ListingError) as exc:
-            summary.transient += 1
-            summary.errors.append(f"acquire transient: {type(exc).__name__}")
-            return None
-    except drive_mod.DownloadError as exc:
-        summary.transient += 1
-        summary.errors.append(f"download: {exc}")
+        services.store.put(key, published_path)
+    except Exception:  # noqa: BLE001 — MinIO failures are transient by the §5.1 matrix
+        if "store" not in summary.errors:
+            summary.errors.append("store")
+        services.retries.set(file_row["sha256"], store_pending=True)
+        _fail(services, lease, file_row, "transient", summary)
+        return False
+    services.retries.set(file_row["sha256"], store_pending=False)
+    return True
+
+
+def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: dict[str, dict], summary: Summary):
+    """Ruling 10: fetch bytes only when the index does not know them; register the source every listing;
+    ensure the object is stored. Returns (file_row, bytes-or-None, listed) or None when skipped this run."""
+    if listed.size > inbox_mod.MAX_PDF_BYTES:
+        summary.too_large += 1
         return None
+    sha = services.index.get(listed.drive_file_id, listed.md5)
+    path = services.cfg.inbox_dir / f"{sha}.pdf" if sha else None
+    data = None
+    if not (sha and sha in known and path.exists()):
+        got = _download_verified(services, listed, summary)
+        if got is None:
+            return None
+        published, listed = got
+        sha, path = published.sha256, published.path
+        data = path.read_bytes()
+        services.index.put(listed.drive_file_id, listed.md5, sha)
     kind = "bank" if drive_mod.folder_of(listed).startswith("銀行帳戶") else "card"
-    data = published.path.read_bytes()
-    file_row = services.api.register_file(lease, published.sha256, len(data), kind, published.object_key)
+    file_row = services.api.register_file(lease, sha, path.stat().st_size, kind, f"by-sha/{sha}.pdf")
+    if sha not in known:
+        summary.new_files += 1
+        known[sha] = file_row
     services.api.register_source(lease, file_row["id"], listed.root, listed.drive_file_id, listed.path, listed.md5,
                                  listed.size)
-    services.index.put(listed.drive_file_id, listed.md5, published.sha256)
-    if not services.store.exists(published.object_key):
-        try:
-            services.store.put(published.object_key, published.path)
-        except Exception as exc:  # noqa: BLE001 — MinIO failures are transient by the §5.1 matrix
-            summary.errors.append(f"store: {type(exc).__name__}")
-            _fail(services, lease, file_row["id"], "transient", summary, attempts=file_row.get("attempts") or 0)
-            return None
-    return file_row, data
+    if not _ensure_stored(services, lease, file_row, path, summary):
+        return None
+    return file_row, data, listed
+
+
+def _sweep(services: Services, lease: Lease, summary: Summary) -> None:
+    try:
+        summary.sweep = services.api.sweep(lease)
+    except LeaseLost:
+        raise
+    except ApiError as exc:
+        summary.sweep = {"error": "busy" if exc.status == 409 else "failed"}
 
 
 def run(services: Services, *, trigger: str, mode: str = "live", initiator_hint: str | None = None,
@@ -2287,56 +2796,78 @@ def run(services: Services, *, trigger: str, mode: str = "live", initiator_hint:
     if mode == "backfill" and not acknowledge_live_periods:
         raise Refused("backfill may touch live periods; pass --acknowledge-live-periods")
     summary = Summary()
+    state = RunState(services.cfg.state_dir / "run.json")
     if lease is None:
-        lease = services.api.create_run(trigger, mode, initiator_hint)
+        saved = state.load()
+        if saved is not None:
+            try:
+                services.api.renew(saved)
+                lease, summary.resumed = saved, True
+            except ApiError:
+                state.clear()
+        if lease is None:
+            lease = services.api.create_run(trigger, mode, initiator_hint)
+            state.save(lease)
+    summary.versions = {"parser_version": services.parser_version, "cli_version": services.cli_version,
+                        "model": services.cfg.parser_model, "credential_version": services.credential_version}
     status = "failed"
     try:
         with LeaseKeeper(services.api, lease) as keeper:
+            services.keeper = keeper
+            try:
+                services.gate.ensure(services.parser)
+            except parser_mod.ParserDisabled:
+                services.parser_disabled = True
+                summary.errors.append("parser_disabled")
             account_map, mapping_version = services.api.account_map()
+            summary.versions["mapping_version"] = mapping_version
             try:
                 listing = services.drive.list_pdfs()
             except drive_mod.ListingError as exc:
-                summary.errors.append(f"listing: {exc}")
+                summary.errors.append("listing")
                 raise RunAborted("listing") from exc
             summary.listed = len(listing)
-            known = {f["sha256"]: f for f in services.api.list_files()}  # see Step 4 note
+            known = {f["sha256"]: f for f in services.api.list_files()}
+            latched = services.gate.latch_path.exists()
             for listed in listing:
                 if keeper.lost:
                     raise RunAborted("lease lost")
-                sha = services.index.get(listed.drive_file_id, listed.md5)
-                inbox_path = services.cfg.inbox_dir / f"{sha}.pdf" if sha else None
-                if sha and sha in known and inbox_path.exists():
-                    file_row, data = known[sha], None  # already acquired: bytes read only if processing is due
-                else:
-                    acquired = _acquire(services, lease, listed, summary)
-                    if acquired is None:
-                        continue
-                    file_row, data = acquired
-                    if file_row["sha256"] not in known:
-                        summary.new_files += 1
-                        known[file_row["sha256"]] = file_row
-                if not retry_due(file_row, _now(), services.credential_version, mapping_version, services.parser_version):
-                    summary.unchanged += 1
+                acquired = _acquire(services, lease, listed, known, summary)
+                if acquired is None:
+                    continue
+                file_row, data, listed = acquired
+                retry = services.retries.get(file_row["sha256"])
+                if not retry_due(file_row, retry, _now(), services.credential_version, mapping_version,
+                                 services.parser_version, latched=latched):
+                    if file_row["status"] == "parsed":
+                        summary.unchanged += 1
+                    else:
+                        summary.deferred += 1
                     continue
                 if data is None:
                     data = (services.cfg.inbox_dir / f"{file_row['sha256']}.pdf").read_bytes()
                 process_file(services, lease, file_row, listed, data, account_map, mapping_version, summary)
             services.api.mark_removed(lease, [i.drive_file_id for i in listing], allow_empty=not listing)
-            status = "done" if not keeper.lost else "failed"
+            if trigger in FULL_RUN_TRIGGERS:
+                _sweep(services, lease, summary)
             if keeper.lost:
                 raise RunAborted("lease lost")
+            status = "failed" if "parser_disabled" in summary.errors else "done"
     except LeaseLost as exc:
-        summary.errors.append("lease lost")
+        if "lease_lost" not in summary.errors:
+            summary.errors.append("lease_lost")
         raise RunAborted("lease lost") from exc
     finally:
+        services.keeper = None
         try:
             services.api.finish(lease, status, summary.as_dict())
+            state.clear()
         except ApiError:
             pass
     return summary.as_dict()
 ```
 
-Step-4 note: `ApiClient.list_files()` = `GET /statements/files` (ingest scope, returns every file with `sha256`): add it to `worker/api.py` (`def list_files(self) -> list[dict]: return self._call("GET", "/statements/files") or []`) and check `FileOut` includes `sha256` (line 111 of the schema) — the pipeline's `known` map and `retry_due` rely on `status`, `failure`, `attempts`, `next_retry_at`, `credential_version`, `mapping_version`, `parser_version` from `FileOut`; if `FileOut` lacks the three version fields, add them to the schema (read-only addition, no migration).
+`ApiClient.sweep(lease) -> dict` = `POST /reconciliation/sweep` with the lease body (route exists since R1b; `ingest` scope). The pipeline's `known` map and `retry_due` rely on `status`, `failure`, `next_retry_at`, `credential_version`, `mapping_version`, `parser_version` from `FileOut` (Task 6 added the three version fields). On `KeyboardInterrupt`/`SystemExit` inside `run`, the `finally` still calls `finish(...)` — change that: only `ApiError`-free normal completion or `RunAborted` finish the run; an interrupt (`BaseException` that is not `Exception`) leaves the run `claimed`/`running` with `run.json` intact so the next start resumes it (`test_crash_after_claim_resumes_the_same_run`). Implement by catching `BaseException` around the body: `except Exception` paths finish, `except BaseException: raise` without finishing.
 
 `worker/cli.py`:
 
@@ -2372,13 +2903,14 @@ def main(argv: list[str] | None = None) -> int:
     p_v = sub.add_parser("verify")
     p_v.add_argument("--limit", type=int, default=None)
     args = ap.parse_args(argv)
+    os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = config.load()
     runner = SubprocessRunner()
     if args.cmd == "gate":
-        from worker.parser import Parser
+        from worker.parser import Gate, Parser
 
-        report = Parser(cfg, runner).gate()
+        report = Gate(cfg).run_operator_gate(Parser(cfg, runner))
         print(json.dumps(report.__dict__, ensure_ascii=False, indent=2))
         return 0 if report.ok else 1
     if args.cmd in ("export-masked", "verify"):
@@ -2392,10 +2924,13 @@ def main(argv: list[str] | None = None) -> int:
                     print(json.dumps(verify.run(cfg, runner, limit=args.limit), ensure_ascii=False))
         except pipeline.AlreadyRunning:
             print("already running")
-            return 3
+            return 0
+        except pipeline.Refused as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         return 0
     try:
-        with pipeline.singleton(cfg), httpx.Client(base_url=cfg.api_url, timeout=60) as client:
+        with pipeline.singleton(cfg), httpx.Client(base_url=cfg.api_url, timeout=60) as client:  # noqa: SIM117
             services = pipeline.build(cfg, client, runner)
             hint = os.environ.get("USER")
             if args.cmd == "run":
@@ -2413,7 +2948,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if summary.get("errors") else 0
     except pipeline.AlreadyRunning:
         print("already running")
-        return 3
+        return 0
     except pipeline.Refused as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -2428,7 +2963,7 @@ if __name__ == "__main__":
 
 `worker/__main__.py`: `from worker.cli import main; raise SystemExit(main())`.
 
-- [ ] **Step 4:** run `tests/worker/test_pipeline.py -v`; fix the `FileOut` field availability as noted (`FileOut` has `sha256` but not `credential_version`/`mapping_version`/`parser_version` at a4a9207: add the three optional strings); `test_md5_mismatch_is_transient` expects no `statement_file` row (publish refused before registration). All 8 pass; then the whole suite.
+- [ ] **Step 4:** run `tests/worker/test_pipeline.py -v`; `test_md5_mismatch_is_transient` expects no `statement_file` row (publish refused before registration). All 15 pass; then the whole suite.
 - [ ] **Step 5:** commit `feat(worker): pipeline, retry rules, singleton, CLI`.
 
 ---
@@ -2440,9 +2975,9 @@ if __name__ == "__main__":
 - Test: `tests/worker/test_verify.py`
 
 **Interfaces:**
-- `verify.export_masked(cfg, runner, *, folder: str | None, limit: int | None) -> dict`: lists Drive, downloads every PDF not yet exported (by sha256 of the bytes, computed after download into staging; no inbox publish, no API, no MinIO), unlocks, extracts, masks, and writes `verify_dir/masked/<sha256>.txt` (mode 600) plus `verify_dir/masked/<sha256>.json` (`{"root", "folder", "name", "kind", "drive_file_id"}`); returns counts `{"listed", "exported", "password", "no_text_layer", "too_large", "errors"}` (no names).
-- `verify.run(cfg, runner, *, limit) -> dict`: for every masked snapshot, parse through `Parser` (cache `verify_dir/parsed/<sha>.<parser_version>.json`), map the folder to an account through `account_map_file` (JSON, same key format) or the DB settings, then `dry_run_match(session, account_id, parsed) -> MatchResult` and write `verify_dir/reports/<timestamp>.json` with per-statement rows `{sha: …, account_id, period_end, lines, claims, cases_by_kind, unmatched_entries, guardrail_ok}` and a totals block; returns the totals. The DB session: `create_engine(cfg.verify_db_url or app.database.SQLALCHEMY_DATABASE_URL)`, one transaction opened with `SET TRANSACTION READ ONLY` as its first statement.
-- `verify.dry_run_match(db, account_id: int, parsed: StatementParse) -> tuple[matching.MatchResult, derive.GuardrailResult]`: derive lines with `derive.derive_lines(kind, [derive.LineIn(...)])`, guardrails with `derive.guardrails(kind, derive.Header(...), account.currency, derived)`, `matching.Line` per derived line (`id = event_id = seq`), candidates via `reconciliation_service.load_candidates(db, StandIn(id=0, account_id, period_start, period_end, current_revision_id=None), participating_accounts(db, account_id), window_days=rules.candidate_window_days, include_reward=<any reward line>)`, `rules = reconciliation_service.rules_for(settings_service.reconciliation_rules(db), period_end)`, `plan_map = reconciliation_service.plan_map(db, account_id)`, `fee_expected = lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow)` (import `proposed_fx_fee` from where `reconciliation_service` imports it), `matching.match(kind, lines, entries, groups, plan_map, fee_expected, rules, account.currency)`.
+- `verify.export_masked(cfg, runner, *, folder: str | None, limit: int | None) -> dict`: lists Drive, and for every listed PDF whose `(drive_file_id, md5)` is not in the verify `SourceIndex` (`verify_dir/sources.json`): downloads into a private staging dir, verifies md5/size (`inbox.Inbox` with `inbox_dir = verify_dir/pdf-cache` — the same verified acquisition as the run path, AGENT-95 Must 6), unlocks, extracts, masks, caps the masked text at `STDIN_CAP` (else counted `too_large`), and writes `verify_dir/masked/<sha256>.txt` (0600) **then** `verify_dir/masked/<sha256>.json` (`{"root", "folder", "name", "kind", "drive_file_id", "md5"}`) — the `.json` is written last so a crash never leaves a snapshot without its metadata; the index entry is written after both. Replacement bytes under an exported id get a new sha and a new snapshot. No inbox publish into the run state dir, no API, no MinIO. Returns counts `{"listed", "exported", "password", "no_text_layer", "too_large", "errors"}` (no names).
+- `verify.run(cfg, runner, *, limit) -> dict`: requires `cfg.verify_db_url` (else `Refused("STATEMENT_VERIFY_DB_URL is required for verify")`) and opens one transaction with `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY` as its first statement (one snapshot for the whole report; the role is read-only too, ruling 11). It calls `Gate.ensure` on a verify `Parser` built with `config_dir=cfg.verify_parser_config_dir, credentials_writable=False`. For every masked snapshot: parse (cache `verify_dir/parsed/<sha>.<parser_version>.json`), map the folder to an account through `account_map_file` (JSON, same key format) or `settings_service.read_reconciliation_settings` (ruling 12), then `dry_run_match(session, account_id, parsed)`; write `verify_dir/reports/<timestamp>.json` with per-statement rows `{sha256, account_id, period_end, existing_statement_id, lines, claims, unmatched_lines, unmatched_entries, cases_by_kind, guardrail_ok, matched: bool}` and a totals block; returns the totals. An `auth` parse error stops the run with `errors: ["auth"]` (the operator refreshes the login through `gate`, never verify).
+- `verify.dry_run_match(db, account_id: int, parsed: StatementParse) -> verify.DryRun(result: matching.MatchResult | None, guard: derive.GuardrailResult, existing_statement_id: int | None)`: derive lines with `derive.derive_lines(kind, [derive.LineIn(...)])`, guardrails with `derive.guardrails(kind, derive.Header(...), account.currency, derived)`; **when the guardrails fail, `result` is `None`** (the real `reconcile` never matches a failed revision — AGENT-95 Must 10). Otherwise `matching.Line` per derived line (`id = event_id = seq`), `existing = select(AccountStatement.id).where(account_id, currency, period_end)` (the statement identity), stand-in `SimpleNamespace(id=existing or 0, account_id, kind, currency, period_start, period_end, current_revision_id=None)` so an already-ingested statement's own claims are excluded exactly as on a re-reconcile, candidates via `reconciliation_service.load_candidates(db, stand_in, participating_accounts(db, account_id), window_days=rules.candidate_window_days, include_reward=<any reward line>)` (the shared loader keeps the account/currency gates), `rules = reconciliation_service.rules_for(settings_service.read_reconciliation_rules(db), period_end)`, `plan_map = reconciliation_service.plan_map(db, account_id)`, `fee_expected = lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow)` (`from app.services.entry_write_service import proposed_fx_fee`), `matching.match(kind, lines, entries, groups, plan_map, fee_expected, rules, parsed.currency)`.
 
 - [ ] **Step 1: Write the failing tests** `tests/worker/test_verify.py`:
 
@@ -2460,20 +2995,57 @@ from worker import config, parse_schema, verify
 from worker.runner import FakeRunner, Result, SubprocessRunner
 
 
+TABLES = ("statement_coverage", "reconciliation_case", "account_statement", "statement_revision", "ledger_entry",
+          "coverage_dirty", "reconciliation_settings")
+
+
+def _counts(db_session):
+    return {t: db_session.execute(text(f"select count(*) from {t}")).scalar_one() for t in TABLES}
+
+
 def test_dry_run_match_claims_an_exact_entry_without_writing(db_session, seed):
     account = seed.account("卡", is_credit=True)
     seed.entry(account, "-80", day=date(2026, 9, 4), name="COFFEE")
     seed.entry(account, "-500", day=date(2026, 9, 10), name="BOOKS")
     db_session.commit()
-    before = {t: db_session.execute(text(f"select count(*) from {t}")).scalar_one()
-              for t in ("statement_coverage", "reconciliation_case", "account_statement", "ledger_entry")}
+    before = _counts(db_session)
     parsed = parse_schema.StatementParse.model_validate(fake_claude.GOOD)
-    result, guard = verify.dry_run_match(db_session, account.id, parsed)
-    assert guard.ok and len(result.claims) == 2 and result.cases == []
+    dry = verify.dry_run_match(db_session, account.id, parsed)
+    assert dry.guard.ok and len(dry.result.claims) == 2 and dry.result.cases == [] and dry.existing_statement_id is None
     db_session.rollback()
-    after = {t: db_session.execute(text(f"select count(*) from {t}")).scalar_one()
-             for t in ("statement_coverage", "reconciliation_case", "account_statement", "ledger_entry")}
-    assert after == before
+    assert _counts(db_session) == before
+
+
+def test_dry_run_skips_matching_on_guardrail_failure(db_session, seed):
+    account = seed.account("卡", is_credit=True)
+    db_session.commit()
+    parsed = parse_schema.StatementParse.model_validate({**fake_claude.GOOD, "statement_total": "999"})
+    dry = verify.dry_run_match(db_session, account.id, parsed)
+    assert not dry.guard.ok and dry.result is None
+
+
+def test_dry_run_respects_currency_and_combined_accounts(db_session, seed):
+    account = seed.account("卡", is_credit=True)
+    usd_child = seed.account("USD子", currency="USD", combined_account_id=account.id)
+    seed.entry(usd_child, "-80", day=date(2026, 9, 4), name="COFFEE")  # same number, wrong currency
+    db_session.commit()
+    dry = verify.dry_run_match(db_session, account.id, parse_schema.StatementParse.model_validate(fake_claude.GOOD))
+    assert dry.result.claims == []
+
+
+def test_dry_run_of_an_existing_statement_excludes_its_own_claims(client, db_session, seed, card):
+    from tests.integration.test_statement_ingest_api import _claim, _revision
+    seed.entry(card, "-80", day=date(2026, 9, 4), name="COFFEE")
+    seed.entry(card, "-500", day=date(2026, 9, 10), name="BOOKS")
+    db_session.commit()
+    lease = _claim(client)
+    body = {**_revision(lease, card, fake_claude.GOOD["lines"], "580"), "period_start": "2026-09-01", "period_end": "2026-09-30"}
+    assert client.post("/statements/revisions", headers={"Authorization": "Bearer worker-token"}, json=body).status_code == 201
+    statement_id = db_session.execute(text("select id from account_statement")).scalar_one()
+    client.post(f"/accounts/{card.id}/statements/{statement_id}/reconcile", headers={"Authorization": "Bearer spa-token"})
+    assert db_session.execute(text("select count(*) from statement_coverage where status='active'")).scalar_one() == 2
+    dry = verify.dry_run_match(db_session, card.id, parse_schema.StatementParse.model_validate(fake_claude.GOOD))
+    assert dry.existing_statement_id == statement_id and len(dry.result.claims) == 2  # not "claimed by another"
 
 
 def test_export_masked_writes_snapshots_only(tmp_path):
@@ -2500,12 +3072,65 @@ def test_export_masked_writes_snapshots_only(tmp_path):
     assert out["exported"] == 1 and out["password"] == 0
     snaps = list((tmp_path / "v" / "masked").glob("*.txt"))
     assert len(snaps) == 1 and oct(snaps[0].stat().st_mode)[-3:] == "600"
+    assert oct((tmp_path / "v" / "masked").stat().st_mode)[-3:] == "700"
     assert "A123456789" not in snaps[0].read_text(encoding="utf-8")
     assert not (tmp_path / "s" / "inbox").exists()
     assert verify.export_masked(cfg, FakeRunner({"rclone": rclone}), folder=None, limit=None)["exported"] == 0
+    # replacement bytes under the same Drive id are exported again
+    pdf_bytes = encrypt(make_pdf([statement_lines(26)]), "A123456789")
+    assert verify.export_masked(cfg, FakeRunner({"rclone": rclone}), folder=None, limit=None)["exported"] == 1
+    assert len(list((tmp_path / "v" / "masked").glob("*.txt"))) == 2
 
 
-def test_verify_run_reports_aggregates_and_caches_parses(tmp_path, db_session, seed, pg_engine, monkeypatch):
+def test_export_masked_refuses_mismatched_bytes(tmp_path):
+    pdf_bytes = encrypt(make_pdf([statement_lines()]), "A123456789")
+
+    def rclone(args, stdin):
+        if args[1] == "lsjson":
+            if not args[-1].endswith("/銀行"):
+                return Result(0, b"[]", b"")
+            return Result(0, json.dumps([{"Path": "信用卡/國泰世華/x.pdf", "Name": "x.pdf", "Size": len(pdf_bytes),
+                                          "ModTime": "x", "Hashes": {"md5": "00" * 16}, "ID": "id-1",
+                                          "MimeType": "application/pdf"}]).encode(), b"")
+        from pathlib import Path
+        Path(args[5]).write_bytes(pdf_bytes)
+        return Result(0, b"", b"")
+
+    pw = tmp_path / "pw.env"
+    pw.write_text("STATEMENT_ID_NUMBER=A123456789\n信用卡/國泰世華=$ID\n", encoding="utf-8")
+    cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s"), "STATEMENT_VERIFY_DIR": str(tmp_path / "v"),
+                       "STATEMENT_PASSWORD_FILE": str(pw)})
+    out = verify.export_masked(cfg, FakeRunner({"rclone": rclone}), folder=None, limit=None)
+    assert out["exported"] == 0 and out["errors"] == 1 and not list((tmp_path / "v" / "masked").glob("*"))
+
+
+@pytest.fixture
+def ro_url(pg_engine):
+    """A SELECT-only role on the test database (ruling 11), dropped afterwards."""
+    from sqlalchemy import create_engine
+    with pg_engine.connect() as conn:
+        conn.execute(text("DROP ROLE IF EXISTS verify_ro"))
+        conn.execute(text("CREATE ROLE verify_ro LOGIN PASSWORD 'ro'"))
+        conn.execute(text("GRANT USAGE ON SCHEMA public TO verify_ro"))
+        conn.execute(text("GRANT SELECT ON ALL TABLES IN SCHEMA public TO verify_ro"))
+        conn.execute(text("ALTER ROLE verify_ro SET default_transaction_read_only = on"))
+        conn.commit()
+    url = pg_engine.url.set(username="verify_ro", password="ro")
+    yield url.render_as_string(hide_password=False)
+    with pg_engine.connect() as conn:
+        conn.execute(text("REASSIGN OWNED BY verify_ro TO CURRENT_USER"))
+        conn.execute(text("DROP OWNED BY verify_ro"))
+        conn.execute(text("DROP ROLE verify_ro"))
+        conn.commit()
+
+
+def test_verify_requires_the_read_only_url(tmp_path):
+    cfg = config.load({"STATEMENT_VERIFY_DIR": str(tmp_path / "v")})
+    with pytest.raises(Exception, match="STATEMENT_VERIFY_DB_URL"):
+        verify.run(cfg, SubprocessRunner(), limit=None)
+
+
+def test_verify_run_reports_aggregates_and_caches_parses(tmp_path, db_session, seed, pg_engine, ro_url, monkeypatch):
     account = seed.account("卡", is_credit=True)
     seed.entry(account, "-80", day=date(2026, 9, 4), name="COFFEE")
     db_session.commit()
@@ -2516,31 +3141,51 @@ def test_verify_run_reports_aggregates_and_caches_parses(tmp_path, db_session, s
                                                             "kind": "card", "drive_file_id": "id-1"}), encoding="utf-8")
     (tmp_path / "map.json").write_text(json.dumps({"mail/信用卡/國泰世華": account.id}), encoding="utf-8")
     cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
-    cfg = config.load({"STATEMENT_VERIFY_DIR": str(tmp_path / "v"), "STATEMENT_PARSER_CLI": str(cli),
-                       "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_TIMEOUT": "5",
-                       "STATEMENT_PARSER_ATTEMPTS": "1", "STATEMENT_ACCOUNT_MAP_FILE": str(tmp_path / "map.json"),
-                       "STATEMENT_VERIFY_DB_URL": pg_engine.url.render_as_string(hide_password=False)})
+    cfg = config.load({"STATEMENT_VERIFY_DIR": str(tmp_path / "v"), "STATEMENT_STATE_DIR": str(tmp_path / "s"),
+                       "STATEMENT_PARSER_CLI": str(cli), "STATEMENT_PARSER_SANDBOX": "false",
+                       "STATEMENT_PARSER_TIMEOUT": "5", "STATEMENT_PARSER_ATTEMPTS": "1",
+                       "STATEMENT_ACCOUNT_MAP_FILE": str(tmp_path / "map.json"), "STATEMENT_VERIFY_DB_URL": ro_url})
+    before = _counts(db_session)
     totals = verify.run(cfg, SubprocessRunner(), limit=None)
-    assert totals["statements"] == 1 and totals["lines"] == 2 and totals["claims"] == 1
-    assert totals["cases"]["line_unmatched"] == 1 or totals["unmatched_lines"] == 1
+    assert totals["statements"] == 1 and totals["lines"] == 2 and totals["claims"] == 1 and totals["unmatched_lines"] == 1
     report = json.loads(next((tmp_path / "v" / "reports").glob("*.json")).read_text(encoding="utf-8"))
-    assert report["rows"][0]["account_id"] == account.id and "merchant" not in json.dumps(report)
-    assert len(list((tmp_path / "v" / "parsed").glob("*.json"))) == 1
+    assert report["rows"][0]["account_id"] == account.id and "merchant" not in json.dumps(report).lower()
+    assert "COFFEE" not in json.dumps(report) and "BOOKS" not in json.dumps(report)
+    assert len(list((tmp_path / "v" / "parsed").glob("*.json"))) == 1 and (tmp_path / "s" / "gate.json").exists()
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))  # would fail if re-parsed
     assert verify.run(cfg, SubprocessRunner(), limit=None)["statements"] == 1
-    assert db_session.execute(text("select count(*) from account_statement")).scalar_one() == 0
+    assert _counts(db_session) == before
+
+
+def test_verify_without_map_file_reads_settings_read_only(tmp_path, db_session, seed, ro_url, client):
+    """Policies/settings exist in the DB (PUT once as the owner); verify reads them SELECT-only and writes nothing."""
+    account = seed.account("卡", is_credit=True)
+    db_session.commit()
+    client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
+               json={"account_map": {"mail/信用卡/國泰世華": account.id}, "dirty_enabled": True, "rules": {}})
+    masked = tmp_path / "v" / "masked"
+    masked.mkdir(parents=True)
+    (masked / ("cd" * 32 + ".txt")).write_text("masked", encoding="utf-8")
+    (masked / ("cd" * 32 + ".json")).write_text(json.dumps({"root": "mail", "folder": "信用卡/國泰世華", "name": "n",
+                                                            "kind": "card", "drive_file_id": "id-9", "md5": "0" * 32}), encoding="utf-8")
+    cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    cfg = config.load({"STATEMENT_VERIFY_DIR": str(tmp_path / "v"), "STATEMENT_STATE_DIR": str(tmp_path / "s"),
+                       "STATEMENT_PARSER_CLI": str(cli), "STATEMENT_PARSER_SANDBOX": "false",
+                       "STATEMENT_PARSER_TIMEOUT": "5", "STATEMENT_PARSER_ATTEMPTS": "1", "STATEMENT_VERIFY_DB_URL": ro_url})
+    before = _counts(db_session)
+    assert verify.run(cfg, SubprocessRunner(), limit=None)["statements"] == 1
+    assert _counts(db_session) == before
 ```
 
 - [ ] **Step 2:** run → import error.
 - [ ] **Step 3: Implement** `worker/verify.py`:
 
 ```python
-"""Verify mode (§5.8, ruling 6): masked snapshots from the worker, then parse + pure matching, read-only, report only."""
+"""Verify mode (§5.8, rulings 6, 11, 12): masked snapshots from the worker, then parse + pure matching, read-only."""
 from __future__ import annotations
 
-import hashlib
 import json
-import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -2550,44 +3195,51 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from worker import drive as drive_mod
+from worker import inbox as inbox_mod
 from worker import mask, parse_schema, parser as parser_mod, passwords, pdf
 from worker.config import WorkerConfig
 from worker.runner import Runner
 
 
+class Refused(RuntimeError):
+    pass
+
+
 def _write_private(path: Path, data: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    inbox_mod.private_dir(path.parent)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    fd = __import__("os").open(tmp, __import__("os").O_WRONLY | __import__("os").O_CREAT | __import__("os").O_TRUNC, 0o600)
+    with __import__("os").fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(data)
+    __import__("os").replace(tmp, path)
 
 
 def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limit: int | None) -> dict:
     candidates, _ = passwords.load(cfg.password_file)
-    masker = mask.Masker(mask.identity_from_password_file(cfg.password_file))
+    masker = mask.Masker(passwords.identity(cfg.password_file))
     drv = drive_mod.Drive(cfg, runner)
+    verify_cfg = __import__("dataclasses").replace(cfg, state_dir=cfg.verify_dir)  # inbox under verify_dir/inbox, staging under verify_dir/staging
+    box, index = inbox_mod.Inbox(verify_cfg), inbox_mod.SourceIndex(cfg.verify_dir / "sources.json")
     out = {"listed": 0, "exported": 0, "password": 0, "no_text_layer": 0, "too_large": 0, "errors": 0}
-    masked_dir = cfg.verify_dir / "masked"
-    masked_dir.mkdir(parents=True, exist_ok=True)
-    exported_ids = {json.loads(p.read_text(encoding="utf-8")).get("drive_file_id") for p in masked_dir.glob("*.json")}
+    masked_dir = inbox_mod.private_dir(cfg.verify_dir / "masked")
     listing = [i for i in drv.list_pdfs() if folder is None or drive_mod.folder_of(i).startswith(folder)]
     out["listed"] = len(listing)
-    staging = cfg.verify_dir / "staging"
     for item in listing:
-        if item.drive_file_id in exported_ids:
-            continue
         if limit is not None and out["exported"] >= limit:
             break
-        staged = staging / f"{item.drive_file_id}.tmp"
+        if index.get(item.drive_file_id, item.md5):
+            continue
+        if item.size > inbox_mod.MAX_PDF_BYTES:
+            out["too_large"] += 1
+            continue
+        staged = inbox_mod.private_dir(verify_cfg.staging_dir) / f"{item.drive_file_id}.tmp"
         try:
             drv.download(item, staged)
-            data = staged.read_bytes()
-        except drive_mod.DownloadError:
+            published = box.publish(staged, expected_md5=item.md5, expected_size=item.size)
+        except (drive_mod.DownloadError, inbox_mod.VerifyError, inbox_mod.CollisionError):
             out["errors"] += 1
             continue
-        finally:
-            staged.unlink(missing_ok=True)
-        sha = hashlib.sha256(data).hexdigest()
+        data = published.path.read_bytes()
         key = passwords.password_key(item.root, drive_mod.folder_of(item))
         try:
             unlocked = pdf.unlock(data, candidates.get(key, []))
@@ -2599,14 +3251,19 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
         except pdf.NoTextLayer:
             out["no_text_layer"] += 1
             continue
-        except (pdf.TooLarge, pdf.ExtractTimeout):
+        except (pdf.TooLarge, pdf.ExtractTimeout, pdf.Malformed):
+            out["too_large"] += 1
+            continue
+        rendered = masker.render(extracted)
+        if len(rendered.encode("utf-8")) > parser_mod.STDIN_CAP:
             out["too_large"] += 1
             continue
         kind = "bank" if drive_mod.folder_of(item).startswith("銀行帳戶") else "card"
-        _write_private(masked_dir / f"{sha}.txt", masker.render(extracted))
-        _write_private(masked_dir / f"{sha}.json", json.dumps({"root": item.root, "folder": drive_mod.folder_of(item),
-                                                               "name": item.name, "kind": kind,
-                                                               "drive_file_id": item.drive_file_id}, ensure_ascii=False))
+        _write_private(masked_dir / f"{published.sha256}.txt", rendered)
+        _write_private(masked_dir / f"{published.sha256}.json", json.dumps(
+            {"root": item.root, "folder": drive_mod.folder_of(item), "name": item.name, "kind": kind,
+             "drive_file_id": item.drive_file_id, "md5": item.md5}, ensure_ascii=False))
+        index.put(item.drive_file_id, item.md5, published.sha256)
         out["exported"] += 1
     return out
 
@@ -2616,15 +3273,23 @@ def _account_map(cfg: WorkerConfig, db: Session) -> dict[str, int]:
         return {k: int(v) for k, v in json.loads(cfg.account_map_file.read_text(encoding="utf-8")).items()}
     from app.services import settings_service
 
-    return settings_service.get_reconciliation_settings(db).get("account_map") or {}
+    return settings_service.read_reconciliation_settings(db).get("account_map") or {}
 
 
-def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementParse):
+@dataclass
+class DryRun:
+    result: object | None  # matching.MatchResult
+    guard: object  # derive.GuardrailResult
+    existing_statement_id: int | None
+
+
+def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementParse) -> DryRun:
     from app.models.ledger import Account
+    from app.models.statements import AccountStatement
     from app.services import reconciliation_service, settings_service
     from app.services.coverage_service import participating_accounts
+    from app.services.entry_write_service import proposed_fx_fee
     from app.services.statements import derive, matching
-    from app.services.entry_write_service import proposed_fx_fee  # the same helper reconcile() uses
 
     accounts = participating_accounts(db, account_id)
     accounts_by_id = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(accounts))).scalars()}
@@ -2641,13 +3306,18 @@ def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementPa
                            Decimal(parsed.statement_total),
                            Decimal(parsed.minimum_payment) if parsed.minimum_payment else None, parsed.currency)
     guard = derive.guardrails(parsed.kind, header, account.currency, derived)
+    existing = db.execute(select(AccountStatement.id).where(
+        AccountStatement.account_id == account_id, AccountStatement.currency == parsed.currency,
+        AccountStatement.period_end == parsed.period_end)).scalar_one_or_none()
+    if not guard.ok:
+        return DryRun(None, guard, existing)
     lines = [matching.Line(id=d.seq, event_id=d.seq, posted_date=d.line.posted_date, txn_date=d.line.txn_date,
                            flow=d.flow_amount, foreign_amount=d.line.foreign_amount,
                            foreign_currency=d.line.foreign_currency, line_kind=d.line.line_kind,
                            merchant_norm=d.merchant_norm, installment_seq=d.line.installment_seq,
                            installment_total=d.line.installment_total) for d in derived]
-    rules = reconciliation_service.rules_for(settings_service.reconciliation_rules(db), parsed.period_end)
-    stand_in = SimpleNamespace(id=0, account_id=account_id, period_start=parsed.period_start,
+    rules = reconciliation_service.rules_for(settings_service.read_reconciliation_rules(db), parsed.period_end)
+    stand_in = SimpleNamespace(id=existing or 0, account_id=account_id, period_start=parsed.period_start,
                                period_end=parsed.period_end, current_revision_id=None, kind=parsed.kind,
                                currency=parsed.currency)
     entries, groups = reconciliation_service.load_candidates(
@@ -2655,26 +3325,23 @@ def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementPa
         include_reward=any(l.line_kind == "reward" for l in lines))
     result = matching.match(parsed.kind, lines, entries, groups, reconciliation_service.plan_map(db, account_id),
                             lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, parsed.currency)
-    return result, guard
+    return DryRun(result, guard, existing)
 
 
 def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
-    prs = parser_mod.Parser(cfg, runner)
+    if not cfg.verify_db_url:
+        raise Refused("STATEMENT_VERIFY_DB_URL is required for verify (read-only role, ruling 11)")
+    prs = parser_mod.Parser(cfg, runner, config_dir=cfg.verify_parser_config_dir, credentials_writable=False)
+    parser_mod.Gate(cfg).ensure(prs)  # raises ParserDisabled (ruling 9)
     version = parse_schema.version(prs.cli_version() or "unknown", cfg.parser_model)
-    masked_dir, parsed_dir, reports = cfg.verify_dir / "masked", cfg.verify_dir / "parsed", cfg.verify_dir / "reports"
-    parsed_dir.mkdir(parents=True, exist_ok=True)
-    reports.mkdir(parents=True, exist_ok=True)
-    url = cfg.verify_db_url
-    if url is None:
-        from app.database import SQLALCHEMY_DATABASE_URL
-
-        url = SQLALCHEMY_DATABASE_URL
-    engine = create_engine(url)
+    masked_dir, parsed_dir = cfg.verify_dir / "masked", inbox_mod.private_dir(cfg.verify_dir / "parsed")
+    reports = inbox_mod.private_dir(cfg.verify_dir / "reports")
+    engine = create_engine(cfg.verify_db_url)
     rows: list[dict] = []
     totals = {"statements": 0, "lines": 0, "claims": 0, "unmatched_lines": 0, "unmatched_entries": 0,
-              "guardrail_failed": 0, "parse_failed": 0, "unmapped": 0, "cases": {}}
+              "guardrail_failed": 0, "parse_failed": 0, "unmapped": 0, "existing": 0, "cases": {}, "errors": []}
     with Session(engine) as db:
-        db.execute(text("SET TRANSACTION READ ONLY"))
+        db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
         account_map = _account_map(cfg, db)
         for meta_path in sorted(masked_dir.glob("*.json")):
             if limit is not None and totals["statements"] + totals["parse_failed"] + totals["unmapped"] >= limit:
@@ -2695,27 +3362,34 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
                 except parser_mod.ParseError as exc:
                     totals["parse_failed"] += 1
                     rows.append({"sha256": sha, "account_id": account_id, "error": exc.reason})
-                    if exc.reason in ("sandbox", "cli_version"):
+                    if exc.reason in ("sandbox", "cli_version", "auth"):
+                        totals["errors"].append(exc.reason)
                         break
                     continue
                 _write_private(cache, parsed.model_dump_json())
-            result, guard = dry_run_match(db, account_id, parsed)
-            cases: dict[str, int] = {}
-            for case in result.cases:
-                cases[case.kind] = cases.get(case.kind, 0) + 1
-                totals["cases"][case.kind] = totals["cases"].get(case.kind, 0) + 1
-            claimed_lines = {c.line_id for c in result.claims}
+            dry = dry_run_match(db, account_id, parsed)
             row = {"sha256": sha, "account_id": account_id, "period_end": parsed.period_end.isoformat(),
-                   "lines": len(parsed.lines), "claims": len(result.claims),
-                   "unmatched_lines": len([l for l in parsed.lines if not l.is_subtotal and l.seq not in claimed_lines]),
-                   "unmatched_entries": len(result.unmatched_entry_ids), "cases_by_kind": cases, "guardrail_ok": guard.ok}
-            rows.append(row)
+                   "existing_statement_id": dry.existing_statement_id, "lines": len(parsed.lines),
+                   "guardrail_ok": dry.guard.ok, "matched": dry.result is not None}
             totals["statements"] += 1
             totals["lines"] += row["lines"]
-            totals["claims"] += row["claims"]
-            totals["unmatched_lines"] += row["unmatched_lines"]
-            totals["unmatched_entries"] += row["unmatched_entries"]
-            totals["guardrail_failed"] += 0 if guard.ok else 1
+            totals["existing"] += 1 if dry.existing_statement_id else 0
+            if dry.result is None:
+                totals["guardrail_failed"] += 1
+                row.update(claims=0, unmatched_lines=None, unmatched_entries=None, cases_by_kind={})
+            else:
+                cases: dict[str, int] = {}
+                for case in dry.result.cases:
+                    cases[case.kind] = cases.get(case.kind, 0) + 1
+                    totals["cases"][case.kind] = totals["cases"].get(case.kind, 0) + 1
+                claimed = {c.line_id for c in dry.result.claims}
+                row.update(claims=len(dry.result.claims),
+                           unmatched_lines=len([l for l in parsed.lines if not l.is_subtotal and l.seq not in claimed]),
+                           unmatched_entries=len(dry.result.unmatched_entry_ids), cases_by_kind=cases)
+                totals["claims"] += row["claims"]
+                totals["unmatched_lines"] += row["unmatched_lines"]
+                totals["unmatched_entries"] += row["unmatched_entries"]
+            rows.append(row)
         db.rollback()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     _write_private(reports / f"{stamp}.json", json.dumps({"parser_version": version, "totals": totals, "rows": rows},
@@ -2723,9 +3397,8 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
     return totals
 ```
 
-Check `Claim`'s field for the line id in `matching.py:122` (`line_id` or `line`) and `Case.kind` (`matching.py:128`) and both are as written (`Claim.line_id`, `Case.kind`, checked at a4a9207).
-
-- [ ] **Step 4:** run → 3 passed; then the whole suite.
+`Claim.line_id` and `Case.kind` are the real field names (checked at a4a9207). `dataclasses.replace(cfg, state_dir=cfg.verify_dir)` gives verify its own inbox/staging under `verify_dir` without touching the run state dir. Check `Claim`'s field for the line id in `matching.py:122` (`line_id` or `line`) and `Case.kind` (`matching.py:128`) and 
+- [ ] **Step 4:** run → 9 passed; then the whole suite. The `ro_url` fixture needs the test role to be creatable by the test connection (the suite's Postgres user is a superuser on `stonk-postgres-1`; if not, skip the two `ro_url` tests with a clear reason and keep `test_verify_requires_the_read_only_url`).
 - [ ] **Step 5:** commit `feat(worker): export-masked snapshots and the read-only verify runner`.
 
 ---
@@ -2733,38 +3406,82 @@ Check `Claim`'s field for the line id in `matching.py:122` (`line_id` or `line`)
 ### Task 9: Ops files, docs, spec notes, openspec
 
 **Files:**
-- Create: `services/accounting-service/deploy/statements/homehub-statements.service`, `homehub-statements.timer`, `homehub-statements-daily.timer`, `gate.sh`, `README.md`
+- Create: `services/accounting-service/deploy/statements/homehub-statements-poll.service`, `homehub-statements-poll.timer`, `homehub-statements.service`, `homehub-statements-daily.timer`, `gate.sh`, `README.md`
 - Modify: `services/accounting-service/README.md` (worker section), `docs/superpowers/specs/2026-10-08-statement-reconciliation-design.md` (§17 R2 notes), create `openspec/changes/add-statement-reconciliation-r2/{proposal.md,tasks.md,.openspec.yaml,specs/accounting-reconciliation/spec.md}`
 
-- [ ] **Step 1:** systemd **user** units (interim principal `opc`; the same files move to `homehub-worker` later):
+- [ ] **Step 1:** systemd **user** units (interim principal `opc`; the same files move to `homehub-worker` later). Two services, two timers (AGENT-95 Must 8):
 
-`homehub-statements.service`:
+`homehub-statements-poll.service` (every 5 min: claim enqueued runs only):
 ```ini
 [Unit]
-Description=HomeHub statement ingest worker (one run)
+Description=HomeHub statement worker: claim enqueued runs
 [Service]
 Type=oneshot
 WorkingDirectory=%h/workspace/home-hub/services/accounting-service
 EnvironmentFile=-%h/.config/homehub-statements.env
+UMask=0077
 ExecStart=%h/workspace/home-hub/services/accounting-service/.venv/bin/python -m worker poll
-ExecStartPost=%h/workspace/home-hub/services/accounting-service/.venv/bin/python -m worker run --trigger timer
 Nice=10
 ```
-`homehub-statements.timer`: `OnBootSec=5min`, `OnUnitActiveSec=5min`, `Persistent=false`, `[Install] WantedBy=timers.target`. `homehub-statements-daily.timer`: `OnCalendar=*-*-* 03:30:00 Asia/Taipei` (`Persistent=true`) starting the same service. Note in `deploy/statements/README.md`: `poll` claims enqueued runs every 5 min, the daily tick runs the full `run`; enable with `systemctl --user enable --now homehub-statements.timer homehub-statements-daily.timer` (linger already on for `opc`).
+`homehub-statements-poll.timer`: `OnBootSec=5min`, `OnUnitActiveSec=5min`, `Persistent=false`, `[Install] WantedBy=timers.target`.
 
-`gate.sh` (operator evidence, §5.5): runs `python -m worker gate`, then the bwrap-side checks: `find <config dir> -newer <stamp>` must list only `.credentials.json`; `ps -o pid,ppid,cmd --forest` captured during the canary shows no child beyond the CLI; the sandbox cannot read `/etc/passwd` (`bwrap … -- cat /etc/passwd` fails) nor `$HOME/.ssh`; prints a JSON evidence block with the pinned version, model, the gate report, and the three checks.
+`homehub-statements.service` (daily full run; includes the sweep, ruling 13):
+```ini
+[Unit]
+Description=HomeHub statement worker: daily full run
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/home-hub/services/accounting-service
+EnvironmentFile=-%h/.config/homehub-statements.env
+UMask=0077
+ExecStart=%h/workspace/home-hub/services/accounting-service/.venv/bin/python -m worker run --trigger timer
+Nice=10
+```
+`homehub-statements-daily.timer`: `OnCalendar=*-*-* 03:30:00 Asia/Taipei`, `Persistent=true`, `[Install] WantedBy=timers.target`.
+
+`deploy/statements/README.md`: enable with `systemctl --user enable --now homehub-statements-poll.timer homehub-statements-daily.timer` (linger already on for `opc`); `already running` exits 0 so overlapping ticks never fail the unit; the read-only DB role creation (ruling 11, exact SQL), the verify parser login copy (`STATEMENT_VERIFY_PARSER_CONFIG_DIR`, chmod 500 dir / 400 files, refreshed by copying after a successful operator `gate`), and the §3 checklist for the dedicated users.
+
+`gate.sh` (operator evidence, §5.5/§16 C7; runs as the worker principal, prints one JSON block, exits non-zero on any failed check):
+```bash
+#!/bin/sh
+# usage: deploy/statements/gate.sh  (env: STATEMENT_* as for the worker)
+set -eu
+cd "$(dirname "$0")/../.."
+PY=.venv/bin/python
+CFG_DIR="${STATEMENT_PARSER_CONFIG_DIR:-$HOME/.local/state/home-hub-parser/claude}"
+STAMP=$(mktemp)
+sleep 1
+# 1. the worker's own gate (ruling 9) — writes gate.json / clears or sets the latch
+GATE_JSON=$($PY -m worker gate) || { echo "$GATE_JSON"; exit 1; }
+# 2. nothing but the credentials file changed in the login dir during the canary
+CHANGED=$(find "$CFG_DIR" -newer "$STAMP" -type f ! -name .credentials.json | wc -l)
+# 3. the sandbox cannot read the host: /etc/passwd and $HOME are absent inside
+CMD=$($PY - <<'EOF'
+from worker import config, parser
+cfg = config.load()
+print(" ".join(parser.command(cfg, "{}")[:parser.command(cfg, "{}").index("--")]))
+EOF
+)
+if $CMD -- /usr/bin/cat /etc/passwd >/dev/null 2>&1; then PASSWD=readable; else PASSWD=unreadable; fi
+if $CMD -- /usr/bin/ls "$HOME" >/dev/null 2>&1; then HOMEDIR=readable; else HOMEDIR=unreadable; fi
+# 4. no stray child processes after the canary (the CLI's own children die with the session)
+STRAY=$(pgrep -u "$(id -u)" -f "/opt/claude/claude" | wc -l)
+printf '{"gate": %s, "login_dir_changed_files": %s, "etc_passwd": "%s", "home": "%s", "stray_parser_processes": %s}\n' \
+  "$GATE_JSON" "$CHANGED" "$PASSWD" "$HOMEDIR" "$STRAY"
+[ "$CHANGED" = 0 ] && [ "$PASSWD" = unreadable ] && [ "$HOMEDIR" = unreadable ] && [ "$STRAY" = 0 ]
+```
 
 - [ ] **Step 2:** README section "Statement ingest worker (R2)": env table (Task 2), commands, the interim-principal note (ruling 3), the parser config dir setup (`mkdir -p ~/.local/state/home-hub-parser/claude && cp ~/.claude/.credentials.json ~/.local/state/home-hub-parser/claude/ && chmod 700 … && chmod 600 …/.credentials.json`), token file (`ACCOUNTING_API_TOKENS` worker label value, mode 600), `verify` flow (`export-masked --for-verify` then `verify`), report location, and the §3 checklist for the dedicated users.
-- [ ] **Step 3:** spec §17, new sub-heading "R2 implementation notes (2026-10-xx, PR 'R2')" with rulings 1–8 verbatim and the stream-json evidence (tools `['StructuredOutput']`, `num_turns == 2`).
-- [ ] **Step 4:** openspec change `add-statement-reconciliation-r2` in the R1a/R1b style: requirements "Drive acquisition" (complete listing, download by id, verified atomic publish, removed only after a complete listing), "Unlock and masking" (candidate order, index not persisted, canary classes), "Parser sandbox and gate" (ruling 2 shape, bounds, disable on violation), "Worker runs under a lease" (renew, abort on loss, singleton, retry triggers table), "Account map route", "Verify mode writes nothing"; 2–3 scenarios each mirroring the tests. `openspec validate add-statement-reconciliation-r2` passes.
+- [ ] **Step 3:** spec §17, new sub-heading "R2 implementation notes (2026-10-xx, PR 'R2')" with rulings 1–13 verbatim, the stream-json evidence (tools `['StructuredOutput']`, `num_turns == 2`), and the explicit statement that ruling 3/11 is an accepted interim deviation from §3, not compliance.
+- [ ] **Step 4:** openspec change `add-statement-reconciliation-r2` in the R1a/R1b style: requirements "Drive acquisition" (complete listing, download by id, verified atomic publish, source re-registered every listing, removed only after a complete listing), "Unlock and masking" (candidate order, index not persisted, canary classes incl. CJK-adjacent), "Parser sandbox and gate" (ruling 2 shape, bounds, mandatory gate, latch until operator gate), "Worker runs under a lease" (renew, guard before writes, resume after crash, singleton, retry table with the worker epoch), "Account map route and read-only settings reader", "Verify mode writes nothing" (read-only role required, guardrail failure skips matching, existing statement identity); 2–3 scenarios each mirroring the tests. `openspec validate add-statement-reconciliation-r2` passes.
 - [ ] **Step 5:** commit `docs(worker): units, gate script, README, spec §17 R2 notes, openspec delta`.
 
 ---
 
 ### Task 10: Whole-branch verification and PR
 
-- [ ] **Step 1:** `.venv/bin/pytest -q` → 1378 + the new worker tests (≈ 50) pass; `openspec validate --all` clean; `alembic heads` unchanged (`f3b1d2c4a9e7`).
+- [ ] **Step 1:** `.venv/bin/pytest -q` → 1378 + the new worker tests (≈ 85) pass; `openspec validate --all` clean; `alembic heads` unchanged (`f3b1d2c4a9e7`).
 - [ ] **Step 2:** `coderabbit review --agent --base main -t committed`; fix Critical/Warning items.
-- [ ] **Step 3:** operator smoke as `opc` (no production writes): `python -m worker gate` with `STATEMENT_PARSER_SANDBOX=true` against the real CLI and the copied credentials → report `ok: true` (evidence pasted into the PR as counts/booleans only); `python -m worker export-masked --for-verify --limit 2` then `python -m worker verify --limit 2` with a two-entry `STATEMENT_ACCOUNT_MAP_FILE` → a report file exists, totals printed (aggregates only), `select count(*)` of `account_statement` unchanged.
+- [ ] **Step 3:** operator smoke as `opc` (no production writes), **only after the owner creates the read-only role (ruling 11) and confirms the interim principal**: `deploy/statements/gate.sh` with `STATEMENT_PARSER_SANDBOX=true` against the real CLI and the copied credentials → JSON block with `gate.ok true`, `login_dir_changed_files 0`, `etc_passwd unreadable`, `home unreadable`, `stray_parser_processes 0` (pasted into the PR as is — no secrets in it); `python -m worker export-masked --for-verify --limit 2` then `python -m worker verify --limit 2` with a two-entry `STATEMENT_ACCOUNT_MAP_FILE` and `STATEMENT_VERIFY_DB_URL` on the read-only role → a report file exists, totals printed (aggregates only), and every table's `count(*)` unchanged (checked with the same `TABLES` list as the test).
 - [ ] **Step 4:** final whole-branch review (most capable model), one fix round, scoped re-review.
-- [ ] **Step 5:** push `feat/reconciliation-r2`, PR "feat(accounting): statement ingest worker R2 — Drive acquisition, sandboxed parser, verify mode" with: scope, rulings 1–8, the interim-principal deploy notes and the §3 checklist, no migration, no env change for the API (one new ingest-scope route behind the flag), verification counts; Multica non-author review issue for lead-claude.
+- [ ] **Step 5:** push `feat/reconciliation-r2`, PR "feat(accounting): statement ingest worker R2 — Drive acquisition, sandboxed parser, verify mode" with: scope, rulings 1–13, the interim-principal deploy notes and the §3 checklist, no migration, no env change for the API (one new ingest-scope route behind the flag; `GET /settings/reconciliation` now SELECT-only), verification counts and the gate evidence block; Multica non-author review issue for lead-claude.
