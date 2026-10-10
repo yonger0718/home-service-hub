@@ -943,3 +943,42 @@ def test_hook_tolerates_a_deadlock_but_not_other_driver_errors(seed, db_session,
     stmt = db_session.get(AccountStatement, stmt.id)
     assert stmt.current_revision_id == res.revision.id and stmt.needs_recheck is True
     assert _active(db_session, stmt.id) == []
+
+
+# --- currency and account gates on every claimable row (M1) ------------------------------------------------------
+
+def _usd_child_card(seed, db, card):
+    usd = seed.account("美金卡", currency="USD", is_credit=True, combined_account_id=card.id)
+    db.commit()
+    return usd
+
+
+def test_entry_in_another_currency_is_never_claimed(seed, db_session, run):
+    card = _card(seed, db_session)
+    usd = _usd_child_card(seed, db_session, card)
+    seed.entry(usd, "-580", day=date(2026, 9, 3), merchant="全聯")  # same date, merchant and number, but USD
+    db_session.commit()
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    assert _active(db_session, stmt.id) == []
+    assert [(c.kind, c.line_id) for c in _cases(db_session, stmt.id, "open")] == [("line_unmatched", ls[0].id)]
+
+
+def test_group_with_a_member_in_another_currency_is_not_claimed(seed, db_session, run):
+    card = _card(seed, db_session)
+    usd = _usd_child_card(seed, db_session, card)
+    group = seed.group("split")
+    seed.entry(card, "-300", day=date(2026, 9, 12), merchant="餐廳", group_id=group.id)
+    seed.entry(usd, "-200", day=date(2026, 9, 12), merchant="餐廳", group_id=group.id)
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 12), "餐廳", 500)])
+    assert _active(db_session, stmt.id) == []
+
+
+def test_child_in_another_currency_does_not_complete_its_parent(seed, db_session, run):
+    card = _card(seed, db_session)
+    usd = _usd_child_card(seed, db_session, card)
+    parent = seed.entry(card, "-100", day=date(2026, 9, 5), merchant="書店")
+    seed.entry(usd, "-2", kind="fee", day=date(2026, 9, 5), parent_entry_id=parent.id)
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 5), "書店", 102)])
+    assert _active(db_session, stmt.id) == []

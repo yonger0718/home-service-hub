@@ -155,7 +155,9 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     period, no `balance_adjustment`, `reward` only when the statement prints a reward line (`include_reward` None:
     read from the current revision), none claimed by another statement; children attached to their parent as
     `matching.Child` (never as rows); groups carry ALL their top-level members (a member outside the window leaves
-    the group partial, which matching rejects)."""
+    the group partial, which matching rejects). Every claimable row (parent or child) is on a participating account
+    AND in the statement's currency (a combined child account may hold another currency); a group member failing
+    that gate is not an entry, so its group is partial too."""
     if include_reward is None:
         include_reward = any(line.line_kind == "reward" for line in _current_lines(db, statement))
     lo = statement.period_start - timedelta(days=window_days)
@@ -165,13 +167,15 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     claimed = coverage_service.claimed_entry_ids(db, exclude_statement_id=statement.id)
     parents = [e for e in db.execute(
         select(LedgerEntry)
-        .where(LedgerEntry.account_id.in_(accounts), LedgerEntry.parent_entry_id.is_(None), day >= lo, day <= hi,
-               LedgerEntry.kind.not_in(kinds_out))
+        .where(LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == statement.currency,
+               LedgerEntry.parent_entry_id.is_(None), day >= lo, day <= hi, LedgerEntry.kind.not_in(kinds_out))
         .order_by(LedgerEntry.id)).scalars() if e.id not in claimed]
     ids = [e.id for e in parents]
     children: dict[int, list[matching.Child]] = defaultdict(list)
     if ids:
-        for c in db.execute(select(LedgerEntry).where(LedgerEntry.parent_entry_id.in_(ids))
+        for c in db.execute(select(LedgerEntry)
+                            .where(LedgerEntry.parent_entry_id.in_(ids), LedgerEntry.account_id.in_(accounts),
+                                   LedgerEntry.currency == statement.currency)
                             .order_by(LedgerEntry.id)).scalars():
             if c.id not in claimed:
                 children[c.parent_entry_id].append(matching.Child(c.id, c.kind, Decimal(c.amount)))
@@ -191,7 +195,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     group_ids = sorted({e.group_id for e in parents if e.group_id is not None})
     groups: dict[int, matching.Group] = {}
     if group_ids:
-        members: dict[int, list[int]] = defaultdict(list)
+        members: dict[int, list[int]] = defaultdict(list)  # ungated on purpose: a gated-out member makes it partial
         for member_id, group_id in db.execute(
                 select(LedgerEntry.id, LedgerEntry.group_id)
                 .where(LedgerEntry.group_id.in_(group_ids), LedgerEntry.parent_entry_id.is_(None))
