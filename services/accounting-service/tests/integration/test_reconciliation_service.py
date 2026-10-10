@@ -911,6 +911,7 @@ def test_reparse_hook_never_waits_for_the_barrier(seed, db_session, run, pg_engi
     out = _interleave(pg_engine, ingest, writer, paused, go)
 
     assert out == {"first": "committed", "second": "committed"}, out
+    assert calls and calls[0].get("wait") is False, calls  # the hook try-locks; a waiting barrier must not be masked
     db_session.expire_all()
     stmt = db_session.get(AccountStatement, stmt_id)
     assert stmt.current_revision_id == submitted[0] and stmt.needs_recheck is True
