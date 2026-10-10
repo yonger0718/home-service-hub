@@ -402,3 +402,23 @@ def test_reconcile_and_sweep_routes_report_lock_conflicts(client, card, seed, db
     assert swept.status_code == 200 and swept.json()["errors"] == [{"statement_id": statement_id, "error": "sweep_barrier_busy"}]
     done = client.post(url, headers=S)
     assert done.status_code == 200 and done.json()["claims"] == 1
+
+
+def test_read_only_settings_reader_never_inserts(db_session):
+    from app.services import settings_service
+    db_session.execute(text("SET TRANSACTION READ ONLY"))
+    data = settings_service.read_reconciliation_settings(db_session)
+    assert data["account_map"] == {} and data["dirty_enabled"] is False and "rules" in data
+    with pytest.raises(Exception):
+        settings_service.get_reconciliation_settings(db_session)  # INSERT ... ON CONFLICT is refused read-only
+    db_session.rollback()
+
+
+def test_account_map_route_is_ingest_scoped(client):
+    put = client.put("/settings/reconciliation", headers=S, json={"account_map": {"mail/信用卡/國泰世華": 1},
+                                                                  "dirty_enabled": False, "rules": {}})
+    assert put.status_code == 200
+    assert client.get("/statements/account-map", headers=H).status_code == 403
+    got = client.get("/statements/account-map", headers=W)
+    assert got.status_code == 200
+    assert got.json()["account_map"] == {"mail/信用卡/國泰世華": 1} and len(got.json()["mapping_version"]) == 16

@@ -1,6 +1,8 @@
 """Settings reads and writes. Task 5: preference; Task 16 adds accounts, groups, categories, projects, counterparties."""
 
+import json
 from dataclasses import fields
+from hashlib import sha256
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -143,6 +145,22 @@ def reconciliation_rules(db: Session) -> dict:
 
 def get_reconciliation_settings(db: Session) -> dict:
     return _reconciliation_dict(_reconciliation_row(db))
+
+
+def read_reconciliation_settings(db: Session) -> dict:
+    """SELECT-only variant for read-only transactions (ruling 12): defaults (version 1, as the inserted row would have) when the row does not exist."""
+    row = db.get(ReconciliationSettings, 1)
+    return _reconciliation_dict(row if row is not None else ReconciliationSettings(id=1, data={}, version=1))
+
+
+def read_reconciliation_rules(db: Session) -> dict:
+    return read_reconciliation_settings(db)["rules"]
+
+
+def mapping_version(account_map: dict) -> str:
+    """Stable 16-hex digest of the account map (the worker's `mapping_version` retry trigger)."""
+    canonical = json.dumps(account_map or {}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def update_reconciliation_settings(db: Session, data: dict) -> dict:
