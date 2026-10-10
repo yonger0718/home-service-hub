@@ -1,6 +1,8 @@
 """Settings reads and writes. Task 5: preference; Task 16 adds accounts, groups, categories, projects, counterparties."""
 
+import json
 from dataclasses import fields
+from hashlib import sha256
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -84,15 +86,15 @@ def _reconciliation_dict(row: ReconciliationSettings) -> dict:
 
 
 def _check_account_map(account_map) -> None:
-    """Keys are Drive folders `<root>/<folder>/<subfolder>` (the shape the revision folder check builds); values
+    """Keys are `mail/<folder>/<subfolder>` or `manual/<folder>` (the shape the revision folder check builds); values
     are account ids."""
     if not isinstance(account_map, dict):
         raise ValidationError("account_map", "must be an object")
     for key, value in account_map.items():
         parts = key.split("/") if isinstance(key, str) else []
-        if (len(parts) != 3 or any(not part or part != part.strip() for part in parts)
-                or parts[0] not in STATEMENT_SOURCE_ROOTS):
-            raise ValidationError("account_map", f"key {key!r} is not <root>/<folder>/<subfolder>")
+        shape_ok = (len(parts), parts[0] if parts else None) in ((3, "mail"), (2, "manual"))
+        if not shape_ok or any(not part or part != part.strip() for part in parts):
+            raise ValidationError("account_map", f"key {key!r} is not mail/<folder>/<subfolder> or manual/<folder>")
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValidationError("account_map", f"value for {key!r} is not an account id")
 
@@ -143,6 +145,22 @@ def reconciliation_rules(db: Session) -> dict:
 
 def get_reconciliation_settings(db: Session) -> dict:
     return _reconciliation_dict(_reconciliation_row(db))
+
+
+def read_reconciliation_settings(db: Session) -> dict:
+    """SELECT-only variant for read-only transactions (ruling 12): defaults (version 1, as the inserted row would have) when the row does not exist."""
+    row = db.get(ReconciliationSettings, 1)
+    return _reconciliation_dict(row if row is not None else ReconciliationSettings(id=1, data={}, version=1))
+
+
+def read_reconciliation_rules(db: Session) -> dict:
+    return read_reconciliation_settings(db)["rules"]
+
+
+def mapping_version(account_map: dict) -> str:
+    """Stable 16-hex digest of the account map (the worker's `mapping_version` retry trigger)."""
+    canonical = json.dumps(account_map or {}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def update_reconciliation_settings(db: Session, data: dict) -> dict:

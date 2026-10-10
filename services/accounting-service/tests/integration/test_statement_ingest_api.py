@@ -402,3 +402,51 @@ def test_reconcile_and_sweep_routes_report_lock_conflicts(client, card, seed, db
     assert swept.status_code == 200 and swept.json()["errors"] == [{"statement_id": statement_id, "error": "sweep_barrier_busy"}]
     done = client.post(url, headers=S)
     assert done.status_code == 200 and done.json()["claims"] == 1
+
+
+def test_read_only_settings_reader_never_inserts(db_session):
+    from app.services import settings_service
+    db_session.execute(text("SET TRANSACTION READ ONLY"))
+    data = settings_service.read_reconciliation_settings(db_session)
+    assert data["account_map"] == {} and data["dirty_enabled"] is False and "rules" in data
+    with pytest.raises(Exception):
+        settings_service.get_reconciliation_settings(db_session)  # INSERT ... ON CONFLICT is refused read-only
+    db_session.rollback()
+
+
+def test_account_map_route_is_ingest_scoped(client):
+    put = client.put("/settings/reconciliation", headers=S, json={"account_map": {"mail/信用卡/國泰世華": 1},
+                                                                  "dirty_enabled": False, "rules": {}})
+    assert put.status_code == 200
+    assert client.get("/statements/account-map", headers=H).status_code == 403
+    got = client.get("/statements/account-map", headers=W)
+    assert got.status_code == 200
+    assert got.json()["account_map"] == {"mail/信用卡/國泰世華": 1} and len(got.json()["mapping_version"]) == 16
+
+
+def test_settings_put_accepts_manual_and_mail_key_shapes_only(client, card):
+    ok = client.put("/settings/reconciliation", headers=S, json={"account_map": {"manual/國泰世華": card.id, "mail/信用卡/國泰世華": card.id}})
+    assert ok.status_code == 200, ok.text
+    for bad in ("manual/a/b", "mail/a", "other/a/b"):
+        assert client.put("/settings/reconciliation", headers=S, json={"account_map": {bad: card.id}}).status_code == 422, bad
+
+
+def test_manual_root_file_folder_map(client, card, seed, db_session):
+    other = seed.account("另一張卡", is_credit=True)
+    db_session.commit()
+
+    def attempt(mapped_id, sha):
+        assert client.put("/settings/reconciliation", headers=S, json={"account_map": {"manual/國泰世華": mapped_id}}).status_code == 200
+        lease = _claim(client)
+        ids = {"run_id": lease["run_id"], "lease_token": lease["lease_token"]}
+        file = client.post("/statements/files", headers=W, json=ids | {"sha256": sha * 64, "size": 10, "kind": "card", "object_key": sha * 64}).json()
+        source = client.post("/statements/sources", headers=W, json=ids | {"file_id": file["id"], "root": "manual", "drive_file_id": "m" + sha,
+                                                                         "drive_path": "國泰世華/2510.pdf", "drive_md5": "b" * 32, "drive_size": 10})
+        assert source.status_code == 201, source.text
+        response = client.post("/statements/revisions", headers=W, json=_revision(lease, card, [], "0") | {"file_id": file["id"]})
+        assert client.post(f"/statements/ingest-runs/{lease['run_id']}/finish", headers=W, json=ids | {"status": "done", "summary": {}}).status_code == 200
+        return response
+
+    assert attempt(card.id, "c").status_code == 201
+    wrong = attempt(other.id, "d")
+    assert wrong.status_code == 422 and wrong.json()["detail"][0]["loc"][-1] == "account_id"

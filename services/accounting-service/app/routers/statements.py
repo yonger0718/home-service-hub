@@ -14,6 +14,7 @@ from ..auth import require, require_feature
 from ..database import get_db
 from ..models import AccountStatement
 from ..schemas.statements import (
+    AccountMapOut,
     FileOut,
     FileRegisterIn,
     FileStatus,
@@ -245,6 +246,14 @@ def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
     return {**totals, "errors": errors, "links_filled": links}
 
 
+@router.get("/statements/account-map", response_model=AccountMapOut, dependencies=INGEST)
+def read_account_map(db: Session = Depends(get_db)):
+    data = settings_service.read_reconciliation_settings(db)
+    db.commit()
+    account_map = data.get("account_map") or {}
+    return AccountMapOut(account_map=account_map, mapping_version=settings_service.mapping_version(account_map))
+
+
 @router.get("/reconciliation/cases", response_model=list[CaseOut], dependencies=READ)
 def list_cases(status: CaseStatus | None = None, account_id: int | None = None, kind: CaseKind | None = None,
                limit: int = Query(200, ge=1, le=1000), db: Session = Depends(get_db)):
@@ -254,7 +263,7 @@ def list_cases(status: CaseStatus | None = None, account_id: int | None = None, 
 # ---- settings ----
 @router.get("/settings/reconciliation", response_model=ReconciliationSettingsOut, dependencies=READ)
 def get_reconciliation_settings(db: Session = Depends(get_db)):
-    settings = settings_service.get_reconciliation_settings(db)
+    settings = settings_service.read_reconciliation_settings(db)
     db.commit()
     return settings
 

@@ -123,6 +123,15 @@ class FileOut(BaseModel):
     first_seen_at: datetime
     parsed_at: datetime | None
     run_id: int | None
+    credential_version: str | None = None
+    mapping_version: str | None = None
+    parser_version: str | None = None
+
+
+class AccountMapOut(BaseModel):
+    model_config = Strict
+    account_map: dict[str, int]
+    mapping_version: str
 
 
 # ---- sources ----
