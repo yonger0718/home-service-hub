@@ -198,6 +198,103 @@ are Asia/Taipei local `YYYY-MM-DD`. Through Caddy the paths carry the `/api/acco
     # daily summary (from the calendar PR; 404 until that lands)
     curl -sf -H "$AUTH" "$HUB/entries/summary/daily?month=2026-10"
 
+Statement ingest worker (R2)
+----------------------------
+
+`worker/` is a separate package (same venv; install `requirements-worker.txt`) that turns the owner's Google Drive
+statement PDFs into statement revisions through the ingest API (design
+`docs/superpowers/specs/2026-10-08-statement-reconciliation-design.md`, section 17 "R2 implementation notes").
+The run path talks to the API only over HTTP and never imports `app.database`; `verify` reads the ledger in-process
+through a read-only role. Ops files (systemd user units, `gate.sh`, the read-only role SQL, the section 3 checklist)
+are in `deploy/statements/README.md`.
+
+    python -m worker run [--trigger timer|owner_cli]   # full run: list, download, unlock, mask, parse, submit, sweep
+    python -m worker poll                              # claim enqueued runs only (timer, every 5 minutes)
+    python -m worker backfill --acknowledge-live-periods
+    python -m worker gate                              # operator gate: canaries + host checks (deploy/statements/gate.sh)
+    python -m worker export-masked --for-verify [--folder PREFIX] [--limit N]
+    python -m worker verify [--limit N]
+
+Exit codes: `0` success (a `done` run with transient codes in `errors` is still 0; `already running` is 0 so timers never
+fail on overlap); `1` a run `failed` or `aborted`, `parser_disabled`, any verify/export error, a failed gate;
+`2` refused (missing token or password file, `backfill` without `--acknowledge-live-periods`, `verify` without
+`STATEMENT_VERIFY_DB_URL`). Output is one JSON line of codes and counts (never text, names or paths).
+
+Interim principal (accepted deviation, not compliance). The dedicated users of design section 3 do not exist yet, so the
+worker runs as `opc`, accepted by the owner on 2026-10-10 ("ok ruling 11"). Scope: `export-masked` and `verify` only
+(under the read-only `accounting_ro` role); no real-data `run`/`backfill` and the reconciliation feature flag stays off
+until the section 3 users exist (checklist in `deploy/statements/README.md`); the residual host access of `opc` is
+acknowledged. Expiry = the section 3 user split.
+
+Configuration (all optional; empty means default):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `STATEMENT_API_URL` | `http://127.0.0.1:8000` | accounting API base URL |
+| `STATEMENT_API_TOKEN_FILE` | `~/.config/homehub-statement-token` | file holding only the `worker` label's token value (the one in `ACCOUNTING_API_TOKENS`, scope `ingest`), mode 0600 |
+| `STATEMENT_STATE_DIR` | `~/.local/state/home-hub-statements` | run state, lock, inbox, staging, gate evidence, latch (0700) |
+| `STATEMENT_PASSWORD_FILE` | `~/.config/homehub-statement-passwords.env` | per-folder PDF passwords and identity (mode 0600) |
+| `STATEMENT_RCLONE_REMOTE` | `gdrive:` | rclone remote |
+| `STATEMENT_DRIVE_ROOT` | `財務對帳單` | Drive root; the worker lists `<root>/銀行` and `<root>/手動下載` |
+| `STATEMENT_MINIO_ENDPOINT` | unset | object store; unset skips the put (`object_key` is still `by-sha/<sha256>.pdf`) |
+| `STATEMENT_MINIO_BUCKET` | `homehub-statements` | bucket |
+| `STATEMENT_MINIO_KEY_FILE` | unset | access/secret key file (two lines) |
+| `STATEMENT_PARSER_CLI` | `/home/opc/.local/bin/claude` | Claude Code CLI binary |
+| `STATEMENT_PARSER_CLI_VERSION` | `2.1.296` | pinned CLI version; any other version disables parsing (`failed/sandbox`) |
+| `STATEMENT_PARSER_MODEL` | `claude-sonnet-5-5` | pinned model |
+| `STATEMENT_PARSER_CONFIG_DIR` | `~/.local/state/home-hub-parser/claude` | parser login directory (worker) |
+| `STATEMENT_PARSER_SANDBOX` | `true` | run the parser under bubblewrap |
+| `STATEMENT_PARSER_ALLOW_UNSANDBOXED` | `false` | must be `true` for `STATEMENT_PARSER_SANDBOX=false`; otherwise the parser refuses to start (tests only) |
+| `STATEMENT_PARSER_TIMEOUT` | `120` | seconds per parser attempt |
+| `STATEMENT_PARSER_ATTEMPTS` | `3` | attempts per file |
+| `STATEMENT_VERIFY_DIR` | `~/.local/state/home-hub-verify` | verify area: `masked/`, `parsed/`, `reports/`, `pdf-cache/`, `sources.json` |
+| `STATEMENT_VERIFY_DB_URL` | unset | read-only role URL; required by `verify`, no fallback; keep it only in `~/.config/homehub-statements.env` (0600) |
+| `STATEMENT_VERIFY_PARSER_CONFIG_DIR` | `~/.local/state/home-hub-parser/claude-verify` | read-only copy of the parser login for `verify` (chmod 500 dir, 400 files) |
+| `STATEMENT_ACCOUNT_MAP_FILE` | unset | account map JSON for `verify` while the feature flag is off (same key format as settings) |
+
+Parser login. The parser runs in a sandbox that sees only a copy of the CLI login:
+
+    mkdir -p ~/.local/state/home-hub-parser/claude
+    cp ~/.claude/.credentials.json ~/.local/state/home-hub-parser/claude/
+    chmod 700 ~/.local/state/home-hub-parser/claude
+    chmod 600 ~/.local/state/home-hub-parser/claude/.credentials.json
+
+The worker's run may refresh that file; `verify` never does (its copy is read-only and an expired token fails the
+verify with `auth`). Refresh the verify copy after a successful `gate` as described in `deploy/statements/README.md`.
+Grant the worker its token by adding a `worker:<token>` item to `ACCOUNTING_API_TOKENS` and `worker=ingest` to
+`ACCOUNTING_TOKEN_SCOPES`, and put just the token value into `STATEMENT_API_TOKEN_FILE` (`chmod 600`).
+
+Password file. One `folder=value` line per Drive folder (suffix `.alt`, `.alt2` ... for alternatives; tokens such as
+`$ID`, `$BIRTH8`, `$BIRTH6`, `$BIRTH4` with optional slices, `$BIRTH{FORMAT}`, parts joined with `+`), plus the identity keys `STATEMENT_ID_NUMBER`,
+`STATEMENT_BIRTH_DATE`, `STATEMENT_HOLDER_NAMES` that drive masking. An inline comment starts with two spaces and `#`.
+A literal `+` in a password value is not supported (the grammar splits on `+` to join parts, e.g. `$ID+$BIRTH4`): a bank
+whose password contains a plus sign cannot be configured in R2. The values never appear in logs, errors, reports or API calls.
+
+Gate and latch. Every `run`, `poll`, `backfill` and `verify` first checks `<state_dir>/gate-<hash>.json` (one evidence
+file per parser configuration, valid for 24 h while the CLI version, model, login directory listing, argv template and
+sandbox flag are unchanged) and otherwise runs the canary. Any violation (gate or real input: a second tool call, a tool
+other than `StructuredOutput`, `num_turns` other than 2, a changed CLI version, an `auth` failure) writes
+`<state_dir>/parser-disabled.json`. While it exists nothing parses: runs finish `failed` with `parser_disabled` and the
+command exits 1. Only a successful operator `python -m worker gate` (worker canary, verify canary and the host checks)
+removes it; a file that failed `sandbox` becomes due again once a newer successful gate exists.
+
+Verify flow (read-only against the live ledger; writes only its report):
+
+    python -m worker export-masked --for-verify --limit 5     # download, unlock, mask: snapshots under <verify_dir>/masked
+    python -m worker verify                                   # parse (cached by sha256 + parser version), match, report
+
+`verify` parses first, then opens one short `REPEATABLE READ READ ONLY` transaction on `STATEMENT_VERIFY_DB_URL` for the
+matching, and writes `<verify_dir>/reports/<UTC timestamp>.json` (0600) containing `parser_version`, `totals` and per-statement
+`rows`. Reporting rule: only aggregates leave the machine. Quote `totals` (counts of statements, lines, claims,
+unmatched lines and entries, guardrail and parse failures, unmapped, cases by kind) in chats, PRs and reviews; never paste
+`rows`, merchant text, amounts, file names, Drive paths or hashes of real statements. The verify area also holds raw
+(encrypted) PDFs in `pdf-cache`; see `deploy/statements/README.md` for retention and purging.
+
+Run summary keys (JSON on stdout and `finish.summary`): `listed`, `new_files`, `parsed`, `needs_review`, `failed`,
+`ignored`, `skipped`, `unchanged`, `deferred`, `transient`, `too_large`, `cases_opened`, `live_revisions`, `resumed`,
+`errors` (bounded codes), `sweep`, and `versions` (`parser_version`, `credential_version`, `mapping_version`,
+`cli_version`, `model`). `poll` adds `claimed` and `bad_runs`.
+
 Tests
 -----
 

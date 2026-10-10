@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub statement worker: daily full run
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/home-hub/services/accounting-service
+EnvironmentFile=-%h/.config/homehub-statements.env
+UMask=0077
+ExecStart=%h/workspace/home-hub/services/accounting-service/.venv/bin/python -m worker run --trigger timer
+Nice=10

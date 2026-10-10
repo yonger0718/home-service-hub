@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub statement worker: daily full run at 03:30 Asia/Taipei
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Taipei
+Persistent=true
+Unit=homehub-statements.service
+
+[Install]
+WantedBy=timers.target
