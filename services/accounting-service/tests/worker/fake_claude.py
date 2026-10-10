@@ -25,9 +25,11 @@ def transcript(output=GOOD, *, tools=("StructuredOutput",), tool_name="Structure
                num_turns=2, subtype="success", hook_event=False, duplicate_result=False, garbage_line=False,
                message_not_object=False, user_extra_block=False, tool_result_id_mismatch=False,
                assistant_extra_tool_use_after_text=False, no_ids=False, deep_json_line=False,
-               thinking_prelude=False, other_system_subtype=False, assistant_after_user=False, sleep_after=0,
+               thinking_prelude=False, ui_invalidate_first=False, other_system_subtype=False, assistant_after_user=False, sleep_after=0,
                flood_after=False):
     events = [{"type": "system", "subtype": "init", "tools": list(tools) if isinstance(tools, (tuple, list)) else tools, "claude_code_version": "2.1.296"}]
+    if ui_invalidate_first:
+        events.insert(0, {"type": "system", "subtype": "ui_invalidate"})
     if hook_event:
         events.append({"type": "system", "subtype": "hook_started"})
     content = [{"type": "tool_use", "id": "toolu_1", "name": tool_name, "input": output}]

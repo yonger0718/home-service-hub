@@ -315,10 +315,13 @@ def test_thinking_prelude_parses(cfg, tmp_path):
     assert parser.Parser(cfg, SubprocessRunner()).parse("x").statement_total == "580"
 
 
-def test_thinking_tokens_only_between_init_and_result():
+def test_ignored_system_subtypes_are_accepted_anywhere(cfg, tmp_path):
     v = parser.StreamValidator()
     v.feed(b'{"type":"system","subtype":"thinking_tokens"}')
-    assert v.violation
+    assert v.violation is None
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(ui_invalidate_first=True))
+    assert parser.Parser(cfg, SubprocessRunner()).parse("x").statement_total == "580"
+
 
 
 def test_failed_gate_keeps_the_observed_events(cfg, tmp_path):

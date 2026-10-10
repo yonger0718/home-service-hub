@@ -25,6 +25,7 @@ STDOUT_CAP = 2 * 1024 * 1024
 STRUCTURED_TOOL = "StructuredOutput"
 CANARY = "MASKED STATEMENT CANARY\n" + "\n".join(f"2026/09/{i:02d} CANARY SHOP {i} 100" for i in range(1, 12))
 GATE_MAX_AGE = timedelta(hours=24)
+IGNORED_SYSTEM_SUBTYPES = ("thinking_tokens", "ui_invalidate")  # CLI housekeeping, ignored anywhere
 FORBIDDEN_PREFIXES = ("hook", "subagent", "permission")
 
 
@@ -144,9 +145,7 @@ class StreamValidator:
                     self._bad(f"tools exposed: {len(tools)}")
             self._expect = "assistant"
             return
-        if kind == "system" and sub == "thinking_tokens":
-            if self._expect in ("init", "end"):
-                self._bad("thinking_tokens out of order")
+        if kind == "system" and sub in IGNORED_SYSTEM_SUBTYPES:
             return
         blocks: list[dict] = []
         if kind in ("assistant", "user"):
