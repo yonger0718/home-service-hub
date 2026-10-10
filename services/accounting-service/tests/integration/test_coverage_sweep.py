@@ -6,7 +6,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, event, func, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
@@ -671,6 +671,49 @@ def test_barrier_taken_then_a_failing_timeout_restore_does_not_leak_it(pg_engine
         monkeypatch.undo()
         assert len(calls) == 2
         session.rollback()
+    finally:
+        session.close()
+    with pg_engine.connect() as conn:
+        held = None
+        for _ in range(40):  # an invalidated backend may take a moment to exit
+            held = conn.execute(text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = :key "
+                                     "AND pid = :pid"), {"key": cov.DIRTY_BARRIER_KEY, "pid": pid}).scalar_one()
+            if held == 0:
+                break
+            conn.rollback()
+            time.sleep(0.05)
+        assert held == 0
+        assert conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": cov.DIRTY_BARRIER_KEY}).scalar_one()
+        conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": cov.DIRTY_BARRIER_KEY})
+
+
+def test_barrier_taken_then_a_failing_release_savepoint_does_not_leak_it(pg_engine):
+    """RELEASE SAVEPOINT of the lock_timeout savepoint fails (a real SQL error) after the barrier was acquired inside
+    it: the session-level barrier must not stay on the pooled connection, whichever path cleans it up."""
+    state = {"locked": False, "fired": []}
+
+    def before(conn, cursor, statement, params, context, executemany):
+        upper = statement.upper()
+        if "PG_ADVISORY_LOCK(" in upper and "TRY" not in upper:
+            state["locked"] = True
+        elif state["locked"] and upper.startswith("RELEASE SAVEPOINT") and not state["fired"]:
+            state["fired"].append(statement)
+            cursor.execute("SELECT 1/0")
+
+    session = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:
+        pid = session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        event.listen(pg_engine, "before_cursor_execute", before)
+        try:
+            with pytest.raises(Exception):
+                cov._committed_cap(session)
+        finally:
+            event.remove(pg_engine, "before_cursor_execute", before)
+        assert state["fired"]
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001  (the connection may already be invalidated)
+            pass
     finally:
         session.close()
     with pg_engine.connect() as conn:
