@@ -88,7 +88,7 @@ login (`STATEMENT_PARSER_CONFIG_DIR`, default `~/.local/state/home-hub-parser/cl
 owner's interactive CLI and the Multica agents.
 
     dst=~/.local/state/home-hub-parser/claude-verify
-    chmod u+w "$dst" 2>/dev/null; mkdir -p "$dst"
+    chmod u+w "$dst" "$dst"/.credentials.json 2>/dev/null; mkdir -p "$dst"   # a re-login rewrites the 0400 file
     CLAUDE_CONFIG_DIR="$dst" claude /login
     chmod 400 "$dst"/.credentials.json; chmod 500 "$dst"
 

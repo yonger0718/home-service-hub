@@ -39,9 +39,6 @@ class Malformed(RuntimeError):
 
 
 # every library failure on hostile or corrupt input becomes Malformed; messages never carry file content
-_LIBRARY_ERRORS = (PdfReadError, PDFException, PdfminerException, MalformedPDFException,
-                   ValueError, KeyError, TypeError, IndexError, NotImplementedError)
-
 
 @dataclass
 class Unlocked:
