@@ -383,3 +383,35 @@ def test_verify_with_a_transient_canary_failure_reports_gate_unavailable_without
     result = verify.run(cfg, SubprocessRunner(), limit=None)
     assert result["errors"] == ["gate_unavailable"]
     assert not (cfg.state_dir / "parser-disabled.json").exists()
+
+
+def test_read_only_snapshot_is_asserted(db_session):
+    class Session:
+        def __init__(self, values):
+            self.values, self.sql = list(values), []
+
+        def execute(self, stmt):
+            self.sql.append(str(stmt))
+            outer = self
+
+            class R:
+                def scalar_one(self):
+                    return outer.values.pop(0)
+            return R()
+
+    good = Session(["repeatable read", "on"])
+    verify._read_only_snapshot(good)
+    assert "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY" in good.sql[0]
+    assert [q for q in good.sql[1:]] == ["SHOW transaction_isolation", "SHOW transaction_read_only"]
+    for bad in (["read committed", "on"], ["repeatable read", "off"]):
+        with pytest.raises(verify.Refused, match="not read-only"):
+            verify._read_only_snapshot(Session(bad))
+
+
+def test_verify_exit_code_covers_parse_and_verify_failures(monkeypatch, tmp_path, capsys):
+    from worker import cli
+    cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s")})
+    monkeypatch.setattr(config, "load", lambda *a, **k: cfg)
+    for result, code in (({"parse_failed": 1}, 1), ({"verify_errors": 2}, 1), ({"errors": []}, 0)):
+        monkeypatch.setattr(verify, "run", lambda *a, _r=result, **k: _r)
+        assert cli.main(["verify"]) == code

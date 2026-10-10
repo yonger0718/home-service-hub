@@ -365,3 +365,97 @@ def test_host_evidence_records_the_canary_report(tmp_path, monkeypatch):
     out = parser.host_evidence(cfg, prs)
     assert out["ok_by_check"]["canary"] is False
     assert out["canary_reasons"] == failed.reasons and out["canary_events"] == ["system/init", "system/foo"]
+
+
+# ---- host evidence: observations required, both mounts ----
+class _Done:
+    def __init__(self, rc, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = rc, stdout, stderr
+
+
+def _sandbox_cfg(tmp_path):
+    return config.load({"STATEMENT_PARSER_SANDBOX": "true", "STATEMENT_PARSER_CONFIG_DIR": str(tmp_path / "cfg"),
+                        "STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_STATE_DIR": str(tmp_path / "s")})
+
+
+def _fake_subprocess(ps):
+    """Probes behave like a correct sandbox; `ps` is whatever the test supplies (callable(pid_str) -> _Done | raises)."""
+    def fake_run(cmd, **kw):
+        if cmd[0] == "ps":
+            return ps(cmd[-1])
+        tail = cmd[cmd.index("--") + 1:]
+        denied = tail[:2] == ["/usr/bin/test", "-e"] or tail in (["/usr/bin/touch", "/cfg/x"],
+                                                                  ["/usr/bin/touch", "/cfg/.credentials.json"])
+        return _Done(1 if denied else 0)
+    return fake_run
+
+
+def _ok_canary(prs, monkeypatch, *, start=True):
+    import types
+    report = parser.GateReport(True, [], {"events": []})
+
+    def gate(on_start=None):
+        if start and on_start:
+            on_start(types.SimpleNamespace(pid=1))
+        return report
+
+    monkeypatch.setattr(prs, "gate", gate)
+
+
+@pytest.mark.parametrize("name,ps,expected", [
+    ("claude seen", lambda pid: _Done(0, "7 claude\n") if pid == "1" else _Done(1), True),
+    ("claude and a stray python", lambda pid: _Done(0, "7 claude\n8 python3\n") if pid == "1" else _Done(1), False),
+    ("empty rc 0", lambda pid: _Done(0, ""), False),
+    ("rc 1 only", lambda pid: _Done(1, ""), False),
+    ("ps rc 2", lambda pid: _Done(2, "7 claude\n"), False),
+    ("ps raises", lambda pid: (_ for _ in ()).throw(OSError("no ps")), False),
+])
+def test_only_cli_processes_needs_a_clean_observation(tmp_path, monkeypatch, name, ps, expected):
+    cfg = _sandbox_cfg(tmp_path)
+    prs = parser.Parser(cfg, SubprocessRunner())
+    _ok_canary(prs, monkeypatch)
+    monkeypatch.setattr(parser.subprocess, "run", _fake_subprocess(ps))
+    out = parser.host_evidence(cfg, prs)
+    assert out["ok_by_check"]["only_cli_processes"] is expected, name
+
+
+def test_a_canary_that_finishes_before_any_sample_fails_the_check(tmp_path, monkeypatch):
+    cfg = _sandbox_cfg(tmp_path)
+    prs = parser.Parser(cfg, SubprocessRunner())
+    _ok_canary(prs, monkeypatch, start=False)  # on_start never called
+    monkeypatch.setattr(parser.subprocess, "run", _fake_subprocess(lambda pid: _Done(0, "7 claude\n")))
+    assert parser.host_evidence(cfg, prs)["ok_by_check"]["only_cli_processes"] is False
+
+
+def test_operator_gate_samples_both_mounts_and_clears_only_when_both_pass(tmp_path, monkeypatch):
+    cfg = _sandbox_cfg(tmp_path)
+    prs = parser.Parser(cfg, _VersionOnly())
+    verify_prs = parser.Parser(cfg, _VersionOnly(), config_dir=tmp_path / "ro", credentials_writable=False)
+    for p in (prs, verify_prs):
+        _ok_canary(p, monkeypatch)
+    monkeypatch.setattr(parser.subprocess, "run", _fake_subprocess(
+        lambda pid: _Done(0, "7 claude\n") if pid == "1" else _Done(1)))
+    gate = parser.Gate(cfg)
+    gate.latch("earlier", {})
+    report = gate.run_operator_gate(prs, verify_parser=verify_prs)
+    assert report.ok and not gate.latch_path.exists()
+    assert set(report.evidence["host"]) == {"worker", "verify_login"}
+    # the verify mount's credentials file must not be writable: make that probe succeed -> fail the gate
+    def writable_creds(cmd, **kw):
+        if cmd[0] != "ps" and cmd[-2:] == ["/usr/bin/touch", "/cfg/.credentials.json"]:
+            return _Done(0)
+        return _fake_subprocess(lambda pid: _Done(0, "7 claude\n") if pid == "1" else _Done(1))(cmd, **kw)
+
+    monkeypatch.setattr(parser.subprocess, "run", writable_creds)
+    bad = gate.run_operator_gate(prs, verify_parser=verify_prs)
+    assert not bad.ok and any(r.startswith("host.verify_login:") for r in bad.reasons) and gate.latch_path.exists()
+
+
+@pytest.mark.parametrize("stderr,reason", [(b"Error: Not logged in. Please run /login", "auth"),
+                                           (b"API Error: 529 overloaded", "exit"),
+                                           (b"x" * 5000 + b" oauth", "exit")])  # marker beyond 4 KB is ignored
+def test_auth_detection_needs_a_marker_in_the_first_4kb(cfg, tmp_path, stderr, reason):
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), exit_code=1, stderr_bytes=stderr)
+    with pytest.raises(parser.ParseError) as exc:
+        parser.Parser(cfg, SubprocessRunner())._run_once(b"x")
+    assert exc.value.reason == reason

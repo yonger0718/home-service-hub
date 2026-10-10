@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from worker.config import WorkerConfig
-from worker.inbox import private_dir
+from worker.inbox import MAX_PDF_BYTES, private_dir
 from worker.runner import Runner
 
 
@@ -69,11 +72,47 @@ class Drive:
     def list_pdfs(self) -> list[Listed]:
         return self._list_root("mail", self.cfg.mail_root) + self._list_root("manual", self.cfg.manual_root)
 
-    def download(self, item: Listed, dest: Path) -> None:
+    def download(self, item: Listed, dest: Path, *, max_bytes: int = MAX_PDF_BYTES, timeout_s: float = 600,
+                 poll_s: float = 0.25) -> None:
+        """Download by id, watching the destination: the process group is killed the moment `dest` exceeds
+        `max_bytes` (DownloadError "too_large") or `timeout_s` passes (DownloadError "timeout")."""
         private_dir(dest.parent)
         dest.unlink(missing_ok=True)  # never let a stale file pass for a fresh download
         args = ["rclone", "backend", "copyid", self.cfg.rclone_remote, item.drive_file_id, str(dest)]
-        result = self.runner.run(args, timeout=600)
-        if result.returncode != 0 or not dest.exists():
-            raise DownloadError(f"rclone copyid exit {result.returncode}")
+        proc = self.runner.start(args)
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                rc = proc.wait(timeout=poll_s)
+            except subprocess.TimeoutExpired:
+                rc = None
+            try:
+                over = dest.exists() and dest.stat().st_size > max_bytes
+            except OSError:
+                over = False
+            if over:
+                _kill_group(proc)
+                dest.unlink(missing_ok=True)
+                raise DownloadError("too_large")
+            if rc is not None:
+                break
+            if time.monotonic() > deadline:
+                _kill_group(proc)
+                raise DownloadError("timeout")
+        if rc != 0 or not dest.exists():
+            raise DownloadError(f"rclone copyid exit {rc}")
         os.chmod(dest, 0o600)
+
+
+def _kill_group(proc) -> None:
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (AttributeError, ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except Exception:  # noqa: BLE001
+        pass

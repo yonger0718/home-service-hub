@@ -61,6 +61,10 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
         staged = inbox_mod.private_dir(verify_cfg.staging_dir) / f"{item.drive_file_id}.tmp"
         try:
             drv.download(item, staged)
+            if staged.stat().st_size > inbox_mod.MAX_PDF_BYTES:
+                staged.unlink(missing_ok=True)
+                out["too_large"] += 1
+                continue
             published = box.publish(staged, expected_md5=item.md5, expected_size=item.size)
         except (drive_mod.DownloadError, inbox_mod.VerifyError, inbox_mod.CollisionError):
             out["errors"] += 1
@@ -83,7 +87,7 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
         except (pdf.ExtractTimeout, pdf.Malformed):
             out["errors"] += 1
             continue
-        rendered = masker.render(extracted)
+        rendered = masker.render(extracted, candidates.get(key, []))
         if len(rendered.encode("utf-8")) > parser_mod.STDIN_CAP:
             out["too_large"] += 1
             continue
@@ -176,6 +180,14 @@ def _key(meta: dict) -> str:
     return "/".join([meta["root"], *[p for p in meta["folder"].split("/") if p][:2]])
 
 
+def _read_only_snapshot(db: Session) -> None:
+    """Open the snapshot and prove the session really is repeatable-read and read-only before anything is read."""
+    db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+    if (db.execute(text("SHOW transaction_isolation")).scalar_one() != "repeatable read"
+            or db.execute(text("SHOW transaction_read_only")).scalar_one() != "on"):
+        raise Refused("verify session is not read-only")
+
+
 def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
     if not cfg.verify_db_url:
         raise Refused("STATEMENT_VERIFY_DB_URL is required for verify (read-only role, ruling 11)")
@@ -201,7 +213,7 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
         aborted = False
         if file_map is None:
             with Session(engine) as db:
-                db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+                _read_only_snapshot(db)
                 account_map = _account_map(cfg, db)
                 db.rollback()
         else:
@@ -241,7 +253,7 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
         # Phase 2: one read-only snapshot, held only while matching.
         if pending and not aborted:
             with Session(engine) as db:
-                db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+                _read_only_snapshot(db)
                 for sha, account_id, parsed in pending:
                     try:
                         with db.begin_nested():  # a failed statement must not poison the shared snapshot

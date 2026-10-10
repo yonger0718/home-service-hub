@@ -18,7 +18,28 @@ class Runner(Protocol):
             env: dict | None = None) -> Result: ...
 
 
+class _Finished:
+    """What FakeRunner.start returns: a process that already ended."""
+
+    def __init__(self, returncode: int):
+        self.returncode = returncode
+
+    def wait(self, timeout=None) -> int:
+        return self.returncode
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def kill(self) -> None:
+        return None
+
+
 class SubprocessRunner:
+    def start(self, args):
+        """Start a long-running child (own session, output discarded) for callers that watch it themselves."""
+        return subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+
     def run(self, args, *, stdin=None, timeout=None, env=None) -> Result:
         try:
             done = subprocess.run(args, input=stdin, capture_output=True, timeout=timeout, env=env,
@@ -36,6 +57,10 @@ class FakeRunner:
     def __init__(self, handlers: dict[str, Callable[[list[str], bytes | None], Result]]):
         self.handlers = handlers
         self.calls: list[list[str]] = []
+
+    def start(self, args):
+        self.calls.append(list(args))
+        return _Finished(self.handlers[args[0]](list(args), None).returncode)
 
     def run(self, args, *, stdin=None, timeout=None, env=None) -> Result:
         self.calls.append(list(args))

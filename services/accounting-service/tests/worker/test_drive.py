@@ -1,3 +1,4 @@
+import os
 import json
 
 import pytest
@@ -136,3 +137,20 @@ def test_download_removes_stale_dest_first(tmp_path):
 def test_subprocess_runner_missing_binary_maps_to_127():
     result = SubprocessRunner().run(["home-hub-no-such-binary-xyz"])
     assert result.returncode == 127 and result.stdout == b""
+
+
+def test_download_is_killed_when_the_file_outgrows_the_cap(tmp_path, monkeypatch):
+    from worker.runner import SubprocessRunner
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "rclone"
+    # writes 100 KB every 0.1 s forever (the dest is $5); a marker shows whether it was allowed to finish
+    script.write_text('#!/bin/sh\nwhile true; do head -c 100000 /dev/zero >> "$5"; sleep 0.1; done\n')
+    script.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s")})
+    item = drive.Listed("id-1", "x.pdf", "x.pdf", 1, "ab" * 16, "", "mail")
+    dest = tmp_path / "s" / "out.pdf"
+    with pytest.raises(drive.DownloadError, match="too_large"):
+        drive.Drive(cfg, SubprocessRunner()).download(item, dest, max_bytes=250_000, timeout_s=20)
+    assert not dest.exists()

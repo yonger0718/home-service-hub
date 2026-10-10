@@ -257,7 +257,7 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
     services.api.update_file(lease, file_row["id"], status="unlocked", failure=None, has_text_layer=True,
                              text_chars=len(extracted.text), pages=extracted.pages,
                              credential_version=services.credential_version)
-    masked = services.masker.render(extracted)
+    masked = services.masker.render(extracted, candidates)
     if len(masked.encode("utf-8")) > parser_mod.STDIN_CAP:
         return _review(services, lease, file_row, "too_large", summary)
     try:
@@ -318,7 +318,7 @@ def _download_verified(services: Services, listed: drive_mod.Listed, summary: Su
                 summary.too_large += 1
                 return None
             services.drive.download(listed, staged)
-            if staged.stat().st_size > inbox_mod.MAX_PDF_BYTES:  # the download itself is byte-bounded
+            if staged.stat().st_size > inbox_mod.MAX_PDF_BYTES:  # belt and braces: Drive.download kills at the cap
                 staged.unlink(missing_ok=True)
                 summary.too_large += 1
                 return None
@@ -335,7 +335,11 @@ def _download_verified(services: Services, listed: drive_mod.Listed, summary: Su
             if fresh is None or fresh.md5 == listed.md5:
                 break
             listed = fresh
-        except drive_mod.DownloadError:
+        except drive_mod.DownloadError as exc:
+            if str(exc) == "too_large":
+                staged.unlink(missing_ok=True)
+                summary.too_large += 1
+                return None
             break
     attempts = backoff["attempts"] + 1
     services.retries.set(ident, attempts=attempts, next_at=(_now() + BACKOFF.get(attempts, timedelta(hours=24))).isoformat())
@@ -355,16 +359,22 @@ def store_id_for(cfg: WorkerConfig) -> str:
 
 def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_path: Path, summary: Summary) -> bool:
     """Storage has its own due/attempt ladder (AGENT-96 Must 4). Returns False only when the file may not proceed
-    to parsing this run (never parsed + object not stored); a parsed file keeps its status whatever the store says.
-    A confirmation is valid only for the store that gave it (`confirmed_by`): a NullStore "yes" never satisfies a
-    MinIO configured later."""
+    to parsing this run (an in-flight row whose object is not stored). A settled row (parsed, needs_review, ignored,
+    failed for another reason) keeps its status whatever the store says: only the store ladder advances.
+    A confirmation and a ladder belong to the store that produced them (`confirmed_by`, `for_store`): a NullStore
+    "yes" never satisfies a MinIO configured later, and a new endpoint or bucket starts a fresh ladder."""
     sha = file_row["sha256"]
     store_id = store_id_for(services.cfg)
     store = services.retries.get(sha)["store"]
     if not store["pending"] and store.get("confirmed_by") == store_id:
         return True
+    if store.get("for_store") != store_id:
+        store = {"pending": True, "attempts": 0, "next_at": None, "confirmed_by": store.get("confirmed_by"),
+                 "for_store": store_id}
+    in_flight = (file_row.get("status") in ("new", "unlocked")
+                 or (file_row.get("status") == "failed" and file_row.get("failure") == "transient"))
     if (store["next_at"] and (_dt(store["next_at"]) or _now()) > _now()) or store["attempts"] >= MAX_TRANSIENT:
-        if file_row["status"] == "parsed":
+        if not in_flight:
             return True
         summary.deferred += 1
         return False
@@ -375,14 +385,16 @@ def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_p
     except Exception:  # noqa: BLE001 — MinIO failures are transient by the §5.1 matrix
         attempts = store["attempts"] + 1
         services.retries.set(sha, store={"pending": True, "attempts": attempts, "confirmed_by": None,
+                                         "for_store": store_id,
                                          "next_at": (_now() + BACKOFF.get(attempts, timedelta(hours=24))).isoformat()})
         if "store" not in summary.errors:
             summary.errors.append("store")
-        if file_row["status"] == "parsed":
+        if not in_flight:
             return True
         _fail(services, lease, file_row, "transient", summary, _epoch=False)
         return False
-    services.retries.set(sha, store={"pending": False, "attempts": 0, "next_at": None, "confirmed_by": store_id})
+    services.retries.set(sha, store={"pending": False, "attempts": 0, "next_at": None, "confirmed_by": store_id,
+                                     "for_store": store_id})
     return True
 
 

@@ -107,6 +107,8 @@ Bump the pin: copy the new binary, update `STATEMENT_PARSER_CLI` and `STATEMENT_
 The parser version changes, so files that failed `parse`/`guardrail`/`no_text_layer`/`too_large` are re-parsed once
 (one model call per file).
 
+`verify` exits 1 when its totals show `errors`, `listing_failed`, `parse_failed > 0` or `verify_errors > 0`, 2 when refused, 3 when another worker holds the lock.
+
 ## Operator gate (`gate.sh`)
 
 Run it after any change to the CLI, model, sandbox flags or login directory, and to clear a latch
@@ -114,10 +116,13 @@ Run it after any change to the CLI, model, sandbox flags or login directory, and
 
     services/accounting-service/deploy/statements/gate.sh
 
-It runs the canary with the worker login, the canary with the verify login, and the host checks (positive control
-`/usr/bin/true` inside bwrap; `/etc/passwd` and `$HOME` absent inside; login directory unchanged across a canary;
-only bwrap/claude descendants observed during each canary). Evidence is written to `<state_dir>/gate-<hash>.json`
-(one file per parser configuration); the latch is removed only when every check ran and passed.
+It runs two canaries, one per mount (worker login, verify login), and the host checks for each mount: positive control
+`/usr/bin/true` inside bwrap; `/etc/passwd` and `$HOME` absent inside; only `/tmp` writable (for the verify mount
+`/cfg/.credentials.json` must be read-only too); login directory content digest unchanged across the canary; and the
+descendants of the sandbox child sampled at t=0 and every 50 ms during the canary, which passes only when `claude` or
+`bwrap` was actually observed and nothing but bwrap/claude/git was. A failing, empty or erroring sampler fails the check.
+Evidence is written to `<state_dir>/gate-<hash>.json` (`host.worker` and `host.verify_login`; one file per parser
+configuration); the latch is removed only when every check of both mounts ran and passed.
 
 ## Raw PDFs on disk
 

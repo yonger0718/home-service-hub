@@ -216,7 +216,7 @@ are in `deploy/statements/README.md`.
     python -m worker verify [--limit N]
 
 Exit codes: `0` success (a `done` run with transient codes in `errors` is still 0; `already running` is 0 for `run`/`poll` so timers never
-fail on overlap, and 3 for `gate`, `verify` and `export-masked`, which operators must notice); `1` a run `failed` or `aborted`, `parser_disabled`, any verify/export error, a failed gate;
+fail on overlap, and 3 for `gate`, `verify` and `export-masked`, which operators must notice); `1` a run `failed` or `aborted`, `parser_disabled`, any verify/export error (`verify` also exits 1 on `parse_failed > 0` or `verify_errors > 0`), a failed gate;
 `2` refused (missing token or password file for `run`, `poll` and `backfill` only; `backfill` without `--acknowledge-live-periods`, `verify` without
 `STATEMENT_VERIFY_DB_URL`). Output is one JSON line of codes and counts (never text, names or paths).
 

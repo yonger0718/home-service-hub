@@ -55,7 +55,9 @@ class Masker:
             return raw  # printed compact dates such as 20260930 are not account numbers
         return f"[NUM…{digits[-4:]}]"
 
-    def text(self, s: str) -> str:
+    def text(self, s: str, extra_literals=()) -> str:
+        for literal in sorted((x for x in extra_literals if len(x) >= 4), key=len, reverse=True):
+            s = s.replace(literal, "[PW]")  # the file's own password candidates, before any other rule
         if self.identity.id_number:
             s = s.replace(self.identity.id_number, "[ID]")
         s = _ID.sub("[ID]", s)
@@ -68,14 +70,14 @@ class Masker:
         s = _DIGIT_RUN.sub(self._digits, s)
         return s
 
-    def tables(self, tables: list[list[list[str]]]) -> list[list[list[str]]]:
-        return [[[self.text(cell) for cell in row] for row in table] for table in tables]
+    def tables(self, tables: list[list[list[str]]], extra_literals=()) -> list[list[list[str]]]:
+        return [[[self.text(cell, extra_literals) for cell in row] for row in table] for table in tables]
 
-    def render(self, extracted: pdf.Extracted) -> str:
-        parts = [self.text(extracted.text)]
+    def render(self, extracted: pdf.Extracted, extra_literals=()) -> str:
+        parts = [self.text(extracted.text, extra_literals)]
         if extracted.tables:
             parts.append("\n\n[tables]\n")
-            for table in self.tables(extracted.tables):
+            for table in self.tables(extracted.tables, extra_literals):
                 parts.extend(" | ".join(row) + "\n" for row in table)
                 parts.append("\n")
         return "".join(parts)

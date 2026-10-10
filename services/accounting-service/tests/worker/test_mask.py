@@ -97,3 +97,11 @@ def test_holder_names_shorter_than_two_characters_are_ignored():
 ])
 def test_compact_yyyymmdd_dates_are_kept_others_masked(s, expected):
     assert mask.Masker(IDENT).text(s) == expected
+
+
+def test_password_candidates_are_masked_before_other_rules():
+    from worker import pdf
+    masker = mask.Masker(passwords.Identity(None, None, []))
+    extracted = pdf.Extracted("hello Secret99 world ab12", [[["Secret99xx", "ok"]]], 1, 300)
+    out = masker.render(extracted, ["Secret99", "Secret99xx", "ab1"])  # longest first; "ab1" < 4 chars is ignored
+    assert "Secret99" not in out and "[PW]" in out and "ab12" in out

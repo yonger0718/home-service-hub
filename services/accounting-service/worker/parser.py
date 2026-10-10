@@ -374,8 +374,8 @@ class Parser:
         if envelope.violations:  # sandbox precedence over exit/schema (AGENT-95 Must 3)
             raise ParseError("sandbox", "; ".join(envelope.violations)[:300])
         if proc.returncode != 0 or envelope.result_subtype != "success":
-            text = bytes(io.err).decode("utf-8", "replace")
-            if "auth" in text.lower() or "login" in text.lower():
+            text = bytes(io.err[:4096]).decode("utf-8", "replace").lower()
+            if proc.returncode != 0 and any(marker in text for marker in AUTH_MARKERS):
                 raise ParseError("auth")
             raise ParseError("exit", f"rc={proc.returncode} subtype_success={envelope.result_subtype == 'success'}")
         return envelope
@@ -524,25 +524,37 @@ class Gate:
         except Exception as exc:
             self._key_failure(exc)
             return GateReport(False, [f"key: {type(exc).__name__}"], {})
-        report = parser.gate()
+        sandbox = self.cfg.parser_sandbox
+        host: dict = {}
+        host_failed: list[str] = []
+
+        def canary(which: str, prs: Parser) -> GateReport:
+            if not sandbox:
+                return prs.gate()
+            try:
+                report, checks = host_gate(self.cfg, prs)
+            except Exception as exc:  # noqa: BLE001
+                host_failed.append(f"host.{which}: error {type(exc).__name__}")
+                return GateReport(False, ["error: host checks"], {})
+            host[which] = checks
+            host_failed.extend(f"host.{which}: {k}" for k, ok in checks["ok_by_check"].items() if not ok)
+            return report
+
+        report = canary("worker", parser)
         evidence: dict = {"worker": report.evidence}
         reasons = list(report.reasons)
         checks_ran = {"worker": True, "verify_login": False, "host": False}
         if verify_parser is None:
             reasons.append("verify login missing")
         else:
-            vreport = verify_parser.gate()
+            vreport = canary("verify_login", verify_parser)
             checks_ran["verify_login"] = True
             evidence["verify_login"] = vreport.evidence
             reasons += [f"verify: {r}" for r in vreport.reasons]
-        if self.cfg.parser_sandbox:
-            try:
-                checks = host_evidence(self.cfg, parser)
-                checks_ran["host"] = True
-                evidence["host"] = checks
-                reasons += [f"host: {k}" for k, ok in checks["ok_by_check"].items() if not ok]
-            except Exception as exc:
-                reasons.append(f"host: error {type(exc).__name__}")
+        if sandbox:
+            checks_ran["host"] = "worker" in host and (verify_parser is None or "verify_login" in host)
+            evidence["host"] = host
+            reasons += host_failed
         evidence["checks_ran"] = checks_ran
         self._write(self.evidence_path_for(key), {"ok": not reasons, "reasons": reasons, "evidence": evidence, "key": key,
                                          "checked_at": datetime.now(timezone.utc).isoformat()})
@@ -553,13 +565,22 @@ class Gate:
         return GateReport(not reasons, reasons, evidence)
 
 
+AUTH_MARKERS = ("not logged in", "please run /login", "authentication_error", "invalid api key", "oauth")
+SAMPLE_INTERVAL_S = 0.05
+ALLOWED_COMMS = {"bwrap", "claude", "git"}  # git = the CLI's own child
+
+
 def _descendant_comms(pid: int) -> set[str]:
-    """`comm` of every descendant of `pid` (recursive over `ps --ppid`)."""
+    """`comm` of every descendant of `pid` (recursive over `ps --ppid`). Raises RuntimeError when `ps` misbehaves:
+    rc 0, or rc 1 with nothing on stdout/stderr (a leaf: no children), are the only normal outcomes."""
     seen: set[str] = set()
     stack = [pid]
     while stack:
-        out = subprocess.run(["ps", "-o", "pid=,comm=", "--ppid", str(stack.pop())], capture_output=True, text=True,
-                             timeout=5).stdout
+        result = subprocess.run(["ps", "-o", "pid=,comm=", "--ppid", str(stack.pop())], capture_output=True, text=True,
+                                timeout=5)
+        out = result.stdout or ""
+        if result.returncode not in (0, 1) or (result.returncode == 1 and (out.strip() or getattr(result, "stderr", ""))):
+            raise RuntimeError("ps failed")
         for line in out.splitlines():
             parts = line.split(None, 1)
             if len(parts) == 2 and parts[0].isdigit():
@@ -568,12 +589,47 @@ def _descendant_comms(pid: int) -> set[str]:
     return seen
 
 
-def host_evidence(cfg: WorkerConfig, parser: Parser) -> dict:
-    """Host-side checks (§5.5/§16 C7): positive controls, host paths absent inside the sandbox, login dir unchanged
-    across a canary, and only bwrap/claude/git (the CLI's own git child) descendants of the sandbox child observed DURING the canary (100 ms)."""
-    argv = parser.argv()
+class ProcessSampler:
+    """Samples descendants of the sandbox child: once immediately (t=0, in `on_start`), then every 50 ms. The check
+    passes only when the sampler never failed, saw at least one of claude/bwrap, and saw nothing else but git."""
+
+    def __init__(self):
+        self.seen: set[str] = set()
+        self.failed = False
+        self.started = False
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _once(self, pid: int) -> None:
+        try:
+            self.seen.update(_descendant_comms(pid))
+        except Exception:  # noqa: BLE001 — any sampler problem is a failed check, never a pass
+            self.failed = True
+
+    def _loop(self, pid: int) -> None:
+        while not self._stop.wait(SAMPLE_INTERVAL_S):
+            self._once(pid)
+
+    def on_start(self, proc: subprocess.Popen) -> None:
+        self.started = True
+        self._once(proc.pid)
+        self._thread = threading.Thread(target=self._loop, args=(proc.pid,), daemon=True)
+        self._thread.start()
+
+    def finish(self) -> bool:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(2)
+        return (self.started and not self.failed and bool(self.seen & {"bwrap", "claude"})
+                and self.seen <= ALLOWED_COMMS)
+
+
+def host_gate(cfg: WorkerConfig, parser: Parser) -> tuple[GateReport, dict]:
+    """Static sandbox probes for this parser's argv plus ONE canary sampled for descendants (§5.5/§16 C7).
+    Returns the canary report and the host checks (`ok_by_check` has no canary key; the report carries it)."""
     if not cfg.parser_sandbox:
-        return {"ok_by_check": {"sandbox_enabled": False}}
+        return parser.gate(), {"ok_by_check": {"sandbox_enabled": False}}
+    argv = parser.argv()
     prefix = argv[:argv.index("--")]
     checks: dict[str, bool] = {}
 
@@ -587,34 +643,24 @@ def host_evidence(cfg: WorkerConfig, parser: Parser) -> dict:
     checks["etc_passwd_absent"] = run(["/usr/bin/test", "-e", "/etc/passwd"]) == 1  # 1 = absent; other = broken
     checks["home_absent"] = run(["/usr/bin/test", "-e", os.path.expanduser("~")]) == 1
     cfg_rc = run(["/usr/bin/touch", "/cfg/x"])
-    checks["credentials_only_writable"] = run(["/usr/bin/touch", "/tmp/x"]) == 0 and cfg_rc is not None and cfg_rc != 0
-    before = {p: p.stat().st_mtime for p in parser.config_dir.rglob("*") if p.is_file()}
-    seen: set[str] = set()
-    sampler_failed = threading.Event()
-    stop = threading.Event()
+    creds_ok = cfg_rc is not None and cfg_rc != 0
+    if not parser.credentials_writable:  # the verify mount: even the credentials file is read-only
+        creds_rc = run(["/usr/bin/touch", "/cfg/.credentials.json"])
+        creds_ok = creds_ok and creds_rc is not None and creds_rc != 0
+    checks["credentials_only_writable"] = run(["/usr/bin/touch", "/tmp/x"]) == 0 and creds_ok
+    before = _dir_digest(parser.config_dir)
+    sampler = ProcessSampler()
+    report = parser.gate(sampler.on_start)
+    checks["only_cli_processes"] = sampler.finish()
+    checks["login_dir_unchanged"] = before is not None and before == _dir_digest(parser.config_dir)
+    return report, {"ok_by_check": checks, "processes_seen": sorted(sampler.seen),
+                    "sampler_failed": sampler.failed, "canary_reasons": report.reasons,
+                    "canary_events": report.evidence.get("events")}
 
-    def sample(pid: int) -> None:
-        while not stop.wait(0.1):
-            try:
-                seen.update(_descendant_comms(pid))
-            except (subprocess.TimeoutExpired, OSError):
-                sampler_failed.set()
 
-    sampler: list[threading.Thread] = []
-
-    def on_start(proc: subprocess.Popen) -> None:
-        thread = threading.Thread(target=sample, args=(proc.pid,), daemon=True)
-        sampler.append(thread)
-        thread.start()
-
-    report = parser.gate(on_start)
-    stop.set()
-    for thread in sampler:
-        thread.join(2)
-    after = {p: p.stat().st_mtime for p in parser.config_dir.rglob("*") if p.is_file()}
-    changed = sorted(str(p.relative_to(parser.config_dir)) for p in after if before.get(p) != after[p])
-    checks["login_dir_unchanged"] = changed in ([], [".credentials.json"])
-    checks["only_cli_processes"] = bool(sampler) and not sampler_failed.is_set() and seen <= {"bwrap", "claude", "git"}
-    checks["canary"] = report.ok
-    return {"ok_by_check": checks, "processes_seen": sorted(seen), "changed_files": changed,
-            "canary_reasons": report.reasons, "canary_events": report.evidence.get("events")}
+def host_evidence(cfg: WorkerConfig, parser: Parser) -> dict:
+    """`host_gate` as one dict, with the canary result as a check of its own."""
+    report, host = host_gate(cfg, parser)
+    if "canary_reasons" in host:
+        host["ok_by_check"]["canary"] = report.ok
+    return host

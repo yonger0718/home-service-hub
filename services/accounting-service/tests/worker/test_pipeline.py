@@ -66,9 +66,12 @@ def world(tmp_path, client, card):
             self.fake, self.real = FakeRunner({"rclone": rclone}), SubprocessRunner()
             self.downloads = 0
 
-        def run(self, args, **kw):
-            if args[0] == "rclone" and args[1:3] == ["backend", "copyid"]:
+        def start(self, args):
+            if args[1:3] == ["backend", "copyid"]:
                 self.downloads += 1
+            return self.fake.start(args)
+
+        def run(self, args, **kw):
             return self.fake.run(args, **kw) if args[0] == "rclone" else self.real.run(args, **kw)
 
     runner = Runner()
@@ -562,3 +565,43 @@ def test_stale_staging_files_are_swept_at_run_start(world):
     (cfg.staging_dir / "old.tmp").write_bytes(b"x")
     pipeline.run(services, trigger="owner_cli")
     assert not (cfg.staging_dir / "old.tmp").exists()
+
+
+def test_store_failure_never_changes_a_settled_status(world, db_session):
+    services, _, _ = world
+    pipeline.run(services, trigger="owner_cli")
+    db_session.execute(text("update statement_file set status = 'needs_review', failure = 'guardrail'"))
+    db_session.commit()
+    sha = db_session.execute(text("select sha256 from statement_file")).scalar_one()
+    services.retries.set(sha, store={"pending": True, "attempts": 0, "next_at": None, "confirmed_by": None})
+
+    class Down:
+        def exists(self, key):
+            raise ConnectionError("down")
+
+    services.store = Down()
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert "store" in summary["errors"] and _file_rows(db_session) == [("needs_review", "guardrail")]
+    assert services.retries.get(sha)["store"]["attempts"] == 1
+
+
+def test_a_new_endpoint_starts_a_fresh_store_ladder(world, db_session):
+    import dataclasses
+    services, _, cfg = world
+    pipeline.run(services, trigger="owner_cli")
+    sha = db_session.execute(text("select sha256 from statement_file")).scalar_one()
+    services.retries.set(sha, store={"pending": True, "attempts": 5, "next_at": None, "confirmed_by": None,
+                                     "for_store": "old:9000/b"})
+    puts = []
+
+    class Minio:
+        def exists(self, key):
+            return False
+
+        def put(self, key, path):
+            puts.append(key)
+
+    services.cfg = dataclasses.replace(cfg, minio_endpoint="new:9000")
+    services.store = Minio()
+    pipeline.run(services, trigger="owner_cli")
+    assert len(puts) == 1 and _file_rows(db_session) == [("parsed", None)]

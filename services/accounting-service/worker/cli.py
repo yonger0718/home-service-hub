@@ -81,7 +81,8 @@ def main(argv: list[str] | None = None) -> int:
         except ParserDisabled as exc:
             print(f"parser disabled: {exc}", file=sys.stderr)
             return 1
-        return 1 if result.get("errors") or result.get("listing_failed") else 0
+        bad = result.get("errors") or result.get("listing_failed") or result.get("parse_failed") or result.get("verify_errors")
+        return 1 if bad else 0
     for what, path in (("API token file", cfg.api_token_file), ("password file", cfg.password_file)):
         if not path.is_file():
             print(f"{what} is missing or not a file", file=sys.stderr)
