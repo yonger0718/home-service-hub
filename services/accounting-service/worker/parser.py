@@ -429,12 +429,16 @@ class Gate:
 
     def __init__(self, cfg: WorkerConfig):
         self.cfg = cfg
-        self.evidence_path = cfg.state_dir / "gate.json"
         self.latch_path = cfg.state_dir / "parser-disabled.json"
+
+    def evidence_path_for(self, key: dict) -> Path:
+        """One evidence file per parser configuration, so a verify run never overwrites the worker's evidence."""
+        digest = hashlib.sha256((str(key.get("argv_sha256", "")) + str(key.get("sandbox", "")) + str(key.get("config_dir", ""))).encode()).hexdigest()[:12]
+        return self.cfg.state_dir / f"gate-{digest}.json"
 
     def key(self, parser: Parser) -> dict:
         return {"cli_version": parser.cli_version(), "model": self.cfg.parser_model,
-                "config_dir_digest": _dir_digest(parser.config_dir),
+                "config_dir": str(parser.config_dir), "config_dir_digest": _dir_digest(parser.config_dir),
                 "argv_sha256": hashlib.sha256("\0".join(parser.argv()).encode()).hexdigest(),
                 "sandbox": self.cfg.parser_sandbox}
 
@@ -455,7 +459,7 @@ class Gate:
 
     def _fresh(self, key: dict) -> bool:
         try:
-            evidence = json.loads(self.evidence_path.read_text(encoding="utf-8"))
+            evidence = json.loads(self.evidence_path_for(key).read_text(encoding="utf-8"))
             checked = datetime.fromisoformat(evidence["checked_at"])
             if checked.tzinfo is None:
                 return False
@@ -466,7 +470,7 @@ class Gate:
 
     def _key_failure(self, exc: Exception) -> None:
         reason = f"key: {type(exc).__name__}"
-        self._write(self.evidence_path, {"ok": False, "reasons": [reason], "evidence": {}, "key": {},
+        self._write(self.evidence_path_for({}), {"ok": False, "reasons": [reason], "evidence": {}, "key": {},
                                          "checked_at": datetime.now(timezone.utc).isoformat()})
         self.latch(reason, {})
 
@@ -481,7 +485,7 @@ class Gate:
         if self._fresh(key):
             return
         report = parser.gate()
-        self._write(self.evidence_path, {"ok": report.ok, "reasons": report.reasons, "evidence": report.evidence,
+        self._write(self.evidence_path_for(key), {"ok": report.ok, "reasons": report.reasons, "evidence": report.evidence,
                                          "key": key, "checked_at": datetime.now(timezone.utc).isoformat()})
         if not report.ok:
             self.latch("; ".join(report.reasons), key)
@@ -515,7 +519,7 @@ class Gate:
             except Exception as exc:
                 reasons.append(f"host: error {type(exc).__name__}")
         evidence["checks_ran"] = checks_ran
-        self._write(self.evidence_path, {"ok": not reasons, "reasons": reasons, "evidence": evidence, "key": key,
+        self._write(self.evidence_path_for(key), {"ok": not reasons, "reasons": reasons, "evidence": evidence, "key": key,
                                          "checked_at": datetime.now(timezone.utc).isoformat()})
         if reasons:
             self.latch("; ".join(reasons), key)

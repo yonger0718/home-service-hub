@@ -195,7 +195,7 @@ def test_verify_run_reports_aggregates_and_caches_parses(tmp_path, db_session, s
     report = json.loads(next((tmp_path / "v" / "reports").glob("*.json")).read_text(encoding="utf-8"))
     assert report["rows"][0]["account_id"] == account.id and "merchant" not in json.dumps(report).lower()
     assert "COFFEE" not in json.dumps(report) and "BOOKS" not in json.dumps(report)
-    assert len(list((tmp_path / "v" / "parsed").glob("*.json"))) == 1 and (tmp_path / "s" / "gate.json").exists()
+    assert len(list((tmp_path / "v" / "parsed").glob("*.json"))) == 1 and len(list((tmp_path / "s").glob("gate-*.json"))) == 1
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))  # would fail if re-parsed
     assert verify.run(cfg, SubprocessRunner(), limit=None)["statements"] == 1
     assert _state_digest(db_session) == before
@@ -216,7 +216,8 @@ def test_verify_latches_on_a_real_input_violation(tmp_path, db_session, seed, ro
                        "STATEMENT_PARSER_TIMEOUT": "5", "STATEMENT_PARSER_ATTEMPTS": "1",
                        "STATEMENT_ACCOUNT_MAP_FILE": str(tmp_path / "map.json"), "STATEMENT_VERIFY_DB_URL": ro_url})
     from worker import parser as parser_mod
-    parser_mod.Gate(cfg).ensure(parser_mod.Parser(cfg, SubprocessRunner()))  # good canary cached
+    parser_mod.Gate(cfg).ensure(parser_mod.Parser(cfg, SubprocessRunner(), config_dir=cfg.verify_parser_config_dir,
+                                                  credentials_writable=False))  # good canary cached (verify key)
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))
     totals = verify.run(cfg, SubprocessRunner(), limit=None)
     assert totals["errors"] == ["sandbox"] and (tmp_path / "s" / "parser-disabled.json").exists()
@@ -251,3 +252,103 @@ def test_verify_without_map_file_reads_settings_read_only(tmp_path, db_session, 
     before = _state_digest(db_session)
     assert verify.run(cfg, SubprocessRunner(), limit=None)["statements"] == 1
     assert _state_digest(db_session) == before
+
+
+def _snapshot(masked, sha, folder="信用卡/國泰世華", drive_id="id-x"):
+    masked.mkdir(parents=True, exist_ok=True)
+    (masked / f"{sha}.txt").write_text("masked", encoding="utf-8")
+    (masked / f"{sha}.json").write_text(json.dumps({"root": "mail", "folder": folder, "name": "n", "kind": "card",
+                                                    "drive_file_id": drive_id, "md5": "0" * 32}), encoding="utf-8")
+
+
+def _verify_cfg(tmp_path, cli, ro_url, map_name="map.json"):
+    return config.load({"STATEMENT_VERIFY_DIR": str(tmp_path / "v"), "STATEMENT_STATE_DIR": str(tmp_path / "s"),
+                        "STATEMENT_PARSER_CLI": str(cli), "STATEMENT_PARSER_SANDBOX": "false",
+                        "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true", "STATEMENT_PARSER_TIMEOUT": "5",
+                        "STATEMENT_PARSER_ATTEMPTS": "1", "STATEMENT_ACCOUNT_MAP_FILE": str(tmp_path / map_name),
+                        "STATEMENT_VERIFY_DB_URL": ro_url})
+
+
+def test_verify_leaves_the_worker_gate_evidence_untouched(tmp_path, db_session, seed, ro_url):
+    from worker import parser as parser_mod
+    account = seed.account("卡", is_credit=True)
+    db_session.commit()
+    _snapshot(tmp_path / "v" / "masked", "ab" * 32)
+    (tmp_path / "map.json").write_text(json.dumps({"mail/信用卡/國泰世華": account.id}), encoding="utf-8")
+    cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    cfg = _verify_cfg(tmp_path, cli, ro_url)
+    gate = parser_mod.Gate(cfg)
+    worker_parser = parser_mod.Parser(cfg, SubprocessRunner())
+    gate.ensure(worker_parser)
+    worker_file = gate.evidence_path_for(gate.key(worker_parser))
+    before = worker_file.read_bytes()
+    verify.run(cfg, SubprocessRunner(), limit=None)
+    verify_parser = parser_mod.Parser(cfg, SubprocessRunner(), config_dir=cfg.verify_parser_config_dir, credentials_writable=False)
+    assert gate.evidence_path_for(gate.key(verify_parser)) != worker_file and worker_file.read_bytes() == before
+
+
+def test_verify_contains_a_per_statement_failure(tmp_path, db_session, seed, ro_url):
+    account = seed.account("卡", is_credit=True)
+    db_session.commit()
+    masked = tmp_path / "v" / "masked"
+    _snapshot(masked, "ab" * 32)
+    (masked / ("cd" * 32 + ".txt")).write_text("masked", encoding="utf-8")
+    (masked / ("cd" * 32 + ".json")).write_text("{not json", encoding="utf-8")
+    _snapshot(masked, "ef" * 32, drive_id="id-y")
+    (tmp_path / "map.json").write_text(json.dumps({"mail/信用卡/國泰世華": account.id + 9999}), encoding="utf-8")
+    cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    totals = verify.run(_verify_cfg(tmp_path, cli, ro_url), SubprocessRunner(), limit=None)
+    assert totals["verify_errors"] == 3 and totals["statements"] == 0
+    report = json.loads(next((tmp_path / "v" / "reports").glob("*.json")).read_text(encoding="utf-8"))
+    assert all(r == {"sha256": r["sha256"], "error": "verify_error"} for r in report["rows"]) and len(report["rows"]) == 3
+
+
+@pytest.mark.parametrize("content,bad", [({"mail/x": 1}, "mail/x"), ({"mail/a/b": True}, "mail/a/b"),
+                                          ({"mail/a/b": "1"}, "mail/a/b"), ({"manual/a/b": 1}, "manual/a/b")])
+def test_account_map_file_is_validated(tmp_path, content, bad):
+    (tmp_path / "map.json").write_text(json.dumps(content), encoding="utf-8")
+    cfg = config.load({"STATEMENT_ACCOUNT_MAP_FILE": str(tmp_path / "map.json")})
+    with pytest.raises(verify.Refused, match="account map file") as exc:
+        verify._account_map(cfg, None)
+    assert bad in str(exc.value)
+
+
+def _drive_world(tmp_path, pdfs, pw_text="STATEMENT_ID_NUMBER=A123456789\n信用卡/國泰世華=$ID\n", failing=False):
+    import hashlib
+    from pathlib import Path
+
+    def rclone(args, stdin):
+        if args[1] == "lsjson":
+            if failing:
+                return Result(1, b"", b"boom")
+            if not args[-1].endswith("/銀行"):
+                return Result(0, b"[]", b"")
+            return Result(0, json.dumps([{"Path": f"信用卡/國泰世華/{i}.pdf", "Name": f"{i}.pdf", "Size": len(b),
+                                          "ModTime": "x", "Hashes": {"md5": hashlib.md5(b).hexdigest()}, "ID": i,
+                                          "MimeType": "application/pdf"} for i, b in pdfs.items()]).encode(), b"")
+        Path(args[5]).write_bytes(pdfs[args[4]])
+        return Result(0, b"", b"")
+
+    pw = tmp_path / "pw.env"
+    pw.write_text(pw_text, encoding="utf-8")
+    cfg = config.load({"STATEMENT_STATE_DIR": str(tmp_path / "s"), "STATEMENT_VERIFY_DIR": str(tmp_path / "v"),
+                       "STATEMENT_PASSWORD_FILE": str(pw)})
+    return cfg, FakeRunner({"rclone": rclone})
+
+
+def test_export_masked_listing_error_and_limit(tmp_path):
+    cfg, runner = _drive_world(tmp_path, {}, failing=True)
+    out = verify.export_masked(cfg, runner, folder=None, limit=None)
+    assert out["errors"] == 1 and out["listing_failed"] is True and out["exported"] == 0
+    pdfs = {"a": encrypt(make_pdf([statement_lines()]), "A123456789"), "b": encrypt(make_pdf([statement_lines(26)]), "A123456789")}
+    cfg, runner = _drive_world(tmp_path, pdfs)
+    out = verify.export_masked(cfg, runner, folder=None, limit=1)
+    assert out["listed"] == 2 and out["exported"] == 1
+
+
+def test_export_masked_cap_counts_too_large(tmp_path, monkeypatch):
+    from worker import parser as parser_mod
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([statement_lines()]), "A123456789")})
+    monkeypatch.setattr(parser_mod, "STDIN_CAP", 5)
+    out = verify.export_masked(cfg, runner, folder=None, limit=None)
+    assert out["too_large"] == 1 and out["exported"] == 0 and not list((tmp_path / "v" / "masked").glob("*.json"))

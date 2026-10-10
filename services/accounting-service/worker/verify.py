@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -76,8 +77,11 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
         except pdf.NoTextLayer:
             out["no_text_layer"] += 1
             continue
-        except (pdf.TooLarge, pdf.ExtractTimeout, pdf.Malformed):
+        except pdf.TooLarge:
             out["too_large"] += 1
+            continue
+        except (pdf.ExtractTimeout, pdf.Malformed):
+            out["errors"] += 1
             continue
         rendered = masker.render(extracted)
         if len(rendered.encode("utf-8")) > parser_mod.STDIN_CAP:
@@ -93,12 +97,21 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
     return out
 
 
-def _account_map(cfg: WorkerConfig, db: Session) -> dict[str, int]:
-    if cfg.account_map_file is not None:
-        return {k: int(v) for k, v in json.loads(cfg.account_map_file.read_text(encoding="utf-8")).items()}
-    from app.services import settings_service
+def _account_map(cfg: WorkerConfig, db: Session | None) -> dict[str, int]:
+    if cfg.account_map_file is None:
+        from app.services import settings_service
 
-    return settings_service.read_reconciliation_settings(db).get("account_map") or {}
+        return settings_service.read_reconciliation_settings(db).get("account_map") or {}
+    raw = json.loads(cfg.account_map_file.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise Refused("account map file: not an object")
+    for key, value in raw.items():
+        parts = key.split("/") if isinstance(key, str) else []
+        shape_ok = (len(parts), parts[0] if parts else None) in ((3, "mail"), (2, "manual"))
+        if not shape_ok or any(not part or part != part.strip() for part in parts) \
+                or isinstance(value, bool) or not isinstance(value, int):
+            raise Refused(f"account map file: {key!r} invalid")
+    return dict(raw)
 
 
 @dataclass
@@ -153,6 +166,10 @@ def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementPa
     return DryRun(result, guard, existing)
 
 
+def _key(meta: dict) -> str:
+    return "/".join([meta["root"], *[p for p in meta["folder"].split("/") if p][:2]])
+
+
 def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
     if not cfg.verify_db_url:
         raise Refused("STATEMENT_VERIFY_DB_URL is required for verify (read-only role, ruling 11)")
@@ -160,72 +177,102 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
     gate = parser_mod.Gate(cfg)
     gate.ensure(prs)  # raises ParserDisabled (ruling 9)
     version = parse_schema.version(prs.cli_version() or "unknown", cfg.parser_model)
+    vtag = hashlib.sha256(version.encode("utf-8")).hexdigest()[:16]
     masked_dir, parsed_dir = cfg.verify_dir / "masked", inbox_mod.private_dir(cfg.verify_dir / "parsed")
     reports = inbox_mod.private_dir(cfg.verify_dir / "reports")
-    engine = create_engine(cfg.verify_db_url)
-    try:
-        return _run_report(cfg, prs, gate, version, engine, masked_dir, parsed_dir, reports, limit)
-    finally:
-        engine.dispose()
-
-
-def _run_report(cfg, prs, gate, version, engine, masked_dir, parsed_dir, reports, limit) -> dict:
+    file_map = _account_map(cfg, None) if cfg.account_map_file is not None else None
     rows: list[dict] = []
     totals = {"statements": 0, "lines": 0, "claims": 0, "unmatched_lines": 0, "unmatched_entries": 0,
-              "guardrail_failed": 0, "parse_failed": 0, "unmapped": 0, "existing": 0, "cases": {}, "errors": []}
-    with Session(engine) as db:
-        db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
-        account_map = _account_map(cfg, db)
+              "guardrail_failed": 0, "parse_failed": 0, "unmapped": 0, "existing": 0, "verify_errors": 0,
+              "cases": {}, "errors": []}
+    engine = create_engine(cfg.verify_db_url)
+    try:
+        # Phase 1: parse (or load the cache) with no database connection open.
+        pending: list[tuple[str, int, parse_schema.StatementParse]] = []
+        aborted = False
+        if file_map is None:
+            with Session(engine) as db:
+                db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+                account_map = _account_map(cfg, db)
+                db.rollback()
+        else:
+            account_map = file_map
         for meta_path in sorted(masked_dir.glob("*.json")):
-            if limit is not None and totals["statements"] + totals["parse_failed"] + totals["unmapped"] >= limit:
+            if limit is not None and len(pending) + totals["parse_failed"] + totals["unmapped"] + totals["verify_errors"] >= limit:
                 break
             sha = meta_path.stem
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            key = "/".join([meta["root"], *[p for p in meta["folder"].split("/") if p][:2]])
-            account_id = account_map.get(key)
-            if account_id is None:
-                totals["unmapped"] += 1
-                continue
-            cache = parsed_dir / f"{sha}.{version}.json"
-            if cache.exists():
-                parsed = parse_schema.StatementParse.model_validate_json(cache.read_text(encoding="utf-8"))
-            else:
-                try:
-                    parsed = prs.parse((masked_dir / f"{sha}.txt").read_text(encoding="utf-8"))
-                except parser_mod.ParseError as exc:
-                    totals["parse_failed"] += 1
-                    rows.append({"sha256": sha, "account_id": account_id, "error": exc.reason})
-                    if exc.reason in ("sandbox", "cli_version", "auth"):
-                        gate.latch(f"{exc.reason} on verify input", gate.key(prs))  # ruling 14
-                        totals["errors"].append(exc.reason)
-                        break
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                account_id = account_map.get(_key(meta))
+                if account_id is None:
+                    totals["unmapped"] += 1
                     continue
-                _write_private(cache, parsed.model_dump_json())
-            dry = dry_run_match(db, account_id, parsed)
-            row = {"sha256": sha, "account_id": account_id, "period_end": parsed.period_end.isoformat(),
-                   "existing_statement_id": dry.existing_statement_id, "lines": len(parsed.lines),
-                   "guardrail_ok": dry.guard.ok, "matched": dry.result is not None}
-            totals["statements"] += 1
-            totals["lines"] += row["lines"]
-            totals["existing"] += 1 if dry.existing_statement_id else 0
-            if dry.result is None:
-                totals["guardrail_failed"] += 1
-                row.update(claims=0, unmatched_lines=None, unmatched_entries=None, cases_by_kind={})
-            else:
-                cases: dict[str, int] = {}
-                for case in dry.result.cases:
-                    cases[case.kind] = cases.get(case.kind, 0) + 1
-                    totals["cases"][case.kind] = totals["cases"].get(case.kind, 0) + 1
-                claimed = {c.line_id for c in dry.result.claims}
-                row.update(claims=len(dry.result.claims),
-                           unmatched_lines=len([l for l in parsed.lines if not l.is_subtotal and l.seq not in claimed]),
-                           unmatched_entries=len(dry.result.unmatched_entry_ids), cases_by_kind=cases)
-                totals["claims"] += row["claims"]
-                totals["unmatched_lines"] += row["unmatched_lines"]
-                totals["unmatched_entries"] += row["unmatched_entries"]
-            rows.append(row)
-        db.rollback()
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                cache = parsed_dir / f"{sha}.{vtag}.json"
+                if cache.exists():
+                    parsed = parse_schema.StatementParse.model_validate_json(cache.read_text(encoding="utf-8"))
+                else:
+                    try:
+                        parsed = prs.parse((masked_dir / f"{sha}.txt").read_text(encoding="utf-8"))
+                    except parser_mod.ParseError as exc:
+                        totals["parse_failed"] += 1
+                        rows.append({"sha256": sha, "account_id": account_id, "error": exc.reason})
+                        if exc.reason in ("sandbox", "cli_version", "auth"):
+                            gate.latch(f"{exc.reason} on verify input", gate.key(prs))  # ruling 14
+                            totals["errors"].append(exc.reason)
+                            aborted = True
+                            break
+                        continue
+                    _write_private(cache, parsed.model_dump_json())
+                pending.append((sha, account_id, parsed))
+            except Exception:
+                totals["verify_errors"] += 1
+                rows.append({"sha256": sha, "error": "verify_error"})
+        # Phase 2: one read-only snapshot, held only while matching.
+        if pending and not aborted:
+            with Session(engine) as db:
+                db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+                for sha, account_id, parsed in pending:
+                    try:
+                        with db.begin_nested():  # a failed statement must not poison the shared snapshot
+                            _report_one(db, sha, account_id, parsed, rows, totals)
+                    except Exception:
+                        totals["verify_errors"] += 1
+                        rows.append({"sha256": sha, "error": "verify_error"})
+                db.rollback()
+    finally:
+        engine.dispose()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     _write_private(reports / f"{stamp}.json", json.dumps({"parser_version": version, "totals": totals, "rows": rows},
                                                          ensure_ascii=False, indent=1))
     return totals
+
+
+def _report_one(db: Session, sha: str, account_id: int, parsed: parse_schema.StatementParse, rows: list[dict],
+                totals: dict) -> None:
+    dry = dry_run_match(db, account_id, parsed)
+    real = [l for l in parsed.lines if not l.is_subtotal]
+    row = {"sha256": sha, "account_id": account_id, "period_end": parsed.period_end.isoformat(),
+           "existing_statement_id": dry.existing_statement_id, "lines": len(real),
+           "guardrail_ok": dry.guard.ok, "matched": dry.result is not None}
+    if dry.result is None:
+        row.update(claims=0, unmatched_lines=None, unmatched_entries=None, cases_by_kind={})
+    else:
+        cases: dict[str, int] = {}
+        for case in dry.result.cases:
+            cases[case.kind] = cases.get(case.kind, 0) + 1
+        claimed = {c.line_id for c in dry.result.claims}
+        row.update(claims=len(dry.result.claims), unmatched_lines=len([l for l in real if l.seq not in claimed]),
+                   unmatched_entries=len(dry.result.unmatched_entry_ids), cases_by_kind=cases)
+    # totals are only touched once the row is complete, so a failure above leaves them consistent
+    totals["statements"] += 1
+    totals["lines"] += row["lines"]
+    totals["existing"] += 1 if dry.existing_statement_id else 0
+    if dry.result is None:
+        totals["guardrail_failed"] += 1
+    else:
+        for kind, n in row["cases_by_kind"].items():
+            totals["cases"][kind] = totals["cases"].get(kind, 0) + n
+        totals["claims"] += row["claims"]
+        totals["unmatched_lines"] += row["unmatched_lines"]
+        totals["unmatched_entries"] += row["unmatched_entries"]
+    rows.append(row)

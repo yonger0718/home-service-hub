@@ -137,12 +137,12 @@ def _dt(value) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def gate_checked_at(gate: parser_mod.Gate) -> datetime | None:
-    """`checked_at` of gate.json when the last gate run was ok, else None."""
+def gate_checked_at(gate: parser_mod.Gate, parser: parser_mod.Parser) -> datetime | None:
+    """`checked_at` of the worker parser's gate evidence when its last gate run was ok, else None."""
     try:
-        evidence = json.loads(gate.evidence_path.read_text(encoding="utf-8"))
+        evidence = json.loads(gate.evidence_path_for(gate.key(parser)).read_text(encoding="utf-8"))
         return _dt(evidence["checked_at"]) if evidence.get("ok") else None
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
         return None
 
 
@@ -484,7 +484,7 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
             summary.listed = len(listing)
             known = {f["sha256"]: f for f in services.api.list_files()}
             latched = services.gate.latch_path.exists()
-            gate_ok_at = gate_checked_at(services.gate)
+            gate_ok_at = gate_checked_at(services.gate, services.parser)
             for listed in listing:
                 if keeper.lost:
                     raise RunAborted("lease lost")

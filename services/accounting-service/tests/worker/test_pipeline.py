@@ -107,7 +107,7 @@ def test_end_to_end_parses_and_is_idempotent(world, db_session, client):
     run_status = db_session.execute(text("select status, summary from ingest_run order by id")).all()
     assert [r[0] for r in run_status] == ["done", "done"]
     assert run_status[0][1]["versions"]["parser_version"].startswith("claude-cli-2.1.296-")
-    assert "sweep" in run_status[0][1] and (cfg.state_dir / "gate.json").exists()
+    assert "sweep" in run_status[0][1] and services.gate.evidence_path_for(services.gate.key(services.parser)).exists()
     assert not (cfg.state_dir / "run.json").exists()
     db_session.expire_all()
     sources = db_session.execute(text("select last_seen_at from statement_source")).scalars().all()

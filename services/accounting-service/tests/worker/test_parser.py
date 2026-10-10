@@ -155,7 +155,7 @@ def test_operator_gate_clears_only_when_everything_passes(cfg, tmp_path):
     assert gate.run_operator_gate(prs, verify_parser=good_verify).ok and not gate.latch_path.exists()
     missing = gate.run_operator_gate(prs)  # no verify-login canary -> never clears
     assert not missing.ok and "verify login missing" in missing.reasons and gate.latch_path.exists()
-    assert json.loads(gate.evidence_path.read_text())["evidence"]["checks_ran"]["verify_login"] is False
+    assert json.loads(gate.evidence_path_for(gate.key(prs)).read_text())["evidence"]["checks_ran"]["verify_login"] is False
     assert gate.run_operator_gate(prs, verify_parser=good_verify).ok and not gate.latch_path.exists()
     bad_cli = fake_claude.write(tmp_path / "claude2", fake_claude.transcript(extra_tool=True))
     bad_cfg = config.load({"STATEMENT_PARSER_CLI": str(bad_cli), "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true",
@@ -169,12 +169,12 @@ def test_gate_ensure_caches_and_latches(cfg, tmp_path):
     prs = parser.Parser(cfg, SubprocessRunner())
     gate = parser.Gate(cfg)
     gate.ensure(prs)  # runs the canary once
-    assert (cfg.state_dir / "gate.json").exists()
+    assert gate.evidence_path_for(gate.key(prs)).exists()
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))
     gate.ensure(prs)  # cached evidence, same key → no new canary, still allowed
-    stale = json.loads((cfg.state_dir / "gate.json").read_text())
+    stale = json.loads(gate.evidence_path_for(gate.key(prs)).read_text())
     stale["checked_at"] = "2000-01-01T00:00:00+00:00"
-    (cfg.state_dir / "gate.json").write_text(json.dumps(stale))
+    gate.evidence_path_for(gate.key(prs)).write_text(json.dumps(stale))
     with pytest.raises(parser.ParserDisabled):
         gate.ensure(prs)  # stale → re-run → violation → latch
     assert (cfg.state_dir / "parser-disabled.json").exists()
@@ -229,20 +229,20 @@ def test_missing_cli_binary_is_a_gate_failure_and_latches(tmp_path):
     gate = parser.Gate(cfg)
     with pytest.raises(parser.ParserDisabled):
         gate.ensure(prs)
-    assert gate.latch_path.exists() and gate.evidence_path.exists()
+    assert gate.latch_path.exists() and gate.evidence_path_for(gate.key(prs)).exists()
 
 
 def test_corrupt_or_naive_gate_evidence_is_stale_not_a_crash(cfg):
     prs = parser.Parser(cfg, SubprocessRunner())
     gate = parser.Gate(cfg)
     gate.ensure(prs)
-    gate.evidence_path.write_text("{not json")
+    gate.evidence_path_for(gate.key(prs)).write_text("{not json")
     gate.ensure(prs)
-    data = json.loads(gate.evidence_path.read_text())
+    data = json.loads(gate.evidence_path_for(gate.key(prs)).read_text())
     data["checked_at"] = "2026-10-10T00:00:00"  # naive
-    gate.evidence_path.write_text(json.dumps(data))
+    gate.evidence_path_for(gate.key(prs)).write_text(json.dumps(data))
     gate.ensure(prs)
-    assert json.loads(gate.evidence_path.read_text())["checked_at"].endswith("+00:00")
+    assert json.loads(gate.evidence_path_for(gate.key(prs)).read_text())["checked_at"].endswith("+00:00")
 
 
 def test_gate_key_tracks_the_login_dir_but_not_credentials(cfg, tmp_path):
@@ -271,7 +271,7 @@ def test_unlaunchable_cli_latches_with_evidence(tmp_path, kind):
     gate = parser.Gate(cfg)
     with pytest.raises(parser.ParserDisabled):
         gate.ensure(prs)
-    assert gate.latch_path.exists() and json.loads(gate.evidence_path.read_text())["ok"] is False
+    assert gate.latch_path.exists() and json.loads(gate.evidence_path_for(gate.key(prs)).read_text())["ok"] is False
 
 
 def test_key_failure_latches(cfg):
@@ -281,7 +281,7 @@ def test_key_failure_latches(cfg):
     gate = parser.Gate(cfg)
     with pytest.raises(parser.ParserDisabled):
         gate.ensure(parser.Parser(cfg, Boom()))
-    assert json.loads(gate.evidence_path.read_text())["reasons"] == ["key: PermissionError"] and gate.latch_path.exists()
+    assert json.loads(gate.evidence_path_for({}).read_text())["reasons"] == ["key: PermissionError"] and gate.latch_path.exists()
     gate.clear()
     report = gate.run_operator_gate(parser.Parser(cfg, Boom()))
     assert not report.ok and report.reasons == ["key: PermissionError"] and gate.latch_path.exists()
