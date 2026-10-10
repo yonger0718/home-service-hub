@@ -57,7 +57,11 @@ class Masker:
 
     def text(self, s: str, extra_literals=()) -> str:
         for literal in sorted((x for x in extra_literals if len(x) >= 4), key=len, reverse=True):
-            s = s.replace(literal, "[PW]")  # the file's own password candidates, before any other rule
+            # token boundaries: an all-digit literal is not replaced inside a longer digit run (a date such as
+            # 20260930 or 2026/09/30 survives a candidate 0115 or 2026), any other literal not inside a longer alphanumeric run.
+            # A standalone all-digit candidate is masked only when it stands alone as a token.
+            guard = (r"(?<!\d)(?<!\d[/.-])", r"(?!\d)(?![/.-]\d)") if literal.isdigit() else (r"(?<![A-Za-z0-9])", r"(?![A-Za-z0-9])")
+            s = re.sub(guard[0] + re.escape(literal) + guard[1], "[PW]", s)  # before any other rule
         if self.identity.id_number:
             s = s.replace(self.identity.id_number, "[ID]")
         s = _ID.sub("[ID]", s)

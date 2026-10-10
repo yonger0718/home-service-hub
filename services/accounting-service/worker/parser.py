@@ -565,6 +565,7 @@ class Gate:
         return GateReport(not reasons, reasons, evidence)
 
 
+PS_TIMEOUT_S = 5
 AUTH_MARKERS = ("not logged in", "please run /login", "authentication_error", "invalid api key", "oauth")
 SAMPLE_INTERVAL_S = 0.05
 # git and sh = the CLI's own children (its `sh -c git ...` repo probe). Comm sampling cannot tell those from a tool
@@ -579,7 +580,7 @@ def _descendant_comms(pid: int) -> set[str]:
     stack = [pid]
     while stack:
         result = subprocess.run(["ps", "-o", "pid=,comm=", "--ppid", str(stack.pop())], capture_output=True, text=True,
-                                timeout=5)
+                                timeout=PS_TIMEOUT_S)
         out = result.stdout or ""
         if result.returncode not in (0, 1) or (result.returncode == 1 and (out.strip() or getattr(result, "stderr", ""))):
             raise RuntimeError("ps failed")
@@ -593,7 +594,7 @@ def _descendant_comms(pid: int) -> set[str]:
 
 class ProcessSampler:
     """Samples descendants of the sandbox child: once immediately (t=0, in `on_start`), then every 50 ms. The check
-    passes only when the sampler never failed, saw at least one of claude/bwrap, and saw nothing else but git."""
+    passes only when the sampler never failed, saw at least one of claude/bwrap, and saw nothing else but bwrap/claude/git/sh (the CLI's own children)."""
 
     def __init__(self):
         self.seen: set[str] = set()
@@ -603,6 +604,8 @@ class ProcessSampler:
         self._thread: threading.Thread | None = None
 
     def _once(self, pid: int) -> None:
+        if self._stop.is_set():  # never issue a ps after finish() (the child is reaped)
+            return
         try:
             self.seen.update(_descendant_comms(pid))
         except Exception:  # noqa: BLE001 — any sampler problem is a failed check, never a pass
@@ -621,7 +624,9 @@ class ProcessSampler:
     def finish(self) -> bool:
         self._stop.set()
         if self._thread is not None:
-            self._thread.join(2)
+            self._thread.join(PS_TIMEOUT_S + 1)  # covers an in-flight ps; read seen/failed only after this
+            if self._thread.is_alive():
+                self.failed = True
         return (self.started and not self.failed and bool(self.seen & {"bwrap", "claude"})
                 and self.seen <= ALLOWED_COMMS)
 

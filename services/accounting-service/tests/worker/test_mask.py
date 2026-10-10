@@ -105,3 +105,15 @@ def test_password_candidates_are_masked_before_other_rules():
     extracted = pdf.Extracted("hello Secret99 world ab12", [[["Secret99xx", "ok"]]], 1, 300)
     out = masker.render(extracted, ["Secret99", "Secret99xx", "ab1"])  # longest first; "ab1" < 4 chars is ignored
     assert "Secret99" not in out and "[PW]" in out and "ab12" in out
+
+
+def test_password_literals_respect_token_boundaries():
+    from worker import pdf
+    masker = mask.Masker(passwords.Identity(None, None, []))
+    ex = lambda t: pdf.Extracted(t, [], 1, 300)  # noqa: E731
+    assert "2026/09/30" in masker.render(ex("on 2026/09/30"), ["2026"])
+    assert "20260930" in masker.render(ex("ref 20260930"), ["2026"])
+    assert "20260115" in masker.render(ex("ref 20260115"), ["0115"])
+    assert "[PW]" in masker.render(ex("pin 0115 end"), ["0115"])
+    assert "Secret991" in masker.render(ex("a Secret991 b"), ["Secret99"])
+    assert "[PW]" in masker.render(ex("a Secret99 b"), ["Secret99"])

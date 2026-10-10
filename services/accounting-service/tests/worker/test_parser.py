@@ -461,3 +461,23 @@ def test_auth_detection_needs_a_marker_in_the_first_4kb(cfg, tmp_path, stderr, r
     with pytest.raises(parser.ParseError) as exc:
         parser.Parser(cfg, SubprocessRunner())._run_once(b"x")
     assert exc.value.reason == reason
+
+
+def test_sampler_waits_for_an_inflight_ps(monkeypatch):
+    import types
+    import time as _t
+    calls = []
+
+    def slow_ps(cmd, **kw):
+        calls.append(1)
+        if len(calls) > 1:
+            _t.sleep(1.5)  # the sample in flight when finish() is called
+        return _Done(0, "7 claude\n") if cmd[-1] == "1" else _Done(1)
+
+    monkeypatch.setattr(parser.subprocess, "run", slow_ps)
+    monkeypatch.setattr(parser, "SAMPLE_INTERVAL_S", 0.01)
+    sampler = parser.ProcessSampler()
+    sampler.on_start(types.SimpleNamespace(pid=1))
+    _t.sleep(0.1)  # second sample now sleeping inside ps
+    ok = sampler.finish()
+    assert ok is True and not sampler.failed and not sampler._thread.is_alive()
