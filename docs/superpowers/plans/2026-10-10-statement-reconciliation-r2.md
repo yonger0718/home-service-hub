@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, pydantic 2.14, httpx 0.28 (Starlette's `TestClient` is an `httpx.Client`, so tests inject it as the API client), `pypdf` 6 + `cryptography` 50 (unlock), `pdfplumber` 0.11 (text + tables), `minio` (optional object store), rclone 1.73 (`gdrive:` remote), bubblewrap, Claude Code CLI **2.1.296** (native aarch64 binary at `/home/opc/.local/bin/claude`).
 
-**Spec:** `docs/superpowers/specs/2026-10-08-statement-reconciliation-design.md` v4 (§3, §4.1, §4.2, §5 incl. the "as v2"/"as v3" text of commits `eef3b31` and `6aabdc9`, §8, §9.1, §11, §13, §16 C7/C9/S1 acceptance items, §17 notes). Base: `main` a4a9207 (R1b merged). Revision 2 after the Multica plan review (AGENT-95, dev-astra): 11 Must + 5 Should folded in; see the rulings 9–13.
+**Spec:** `docs/superpowers/specs/2026-10-08-statement-reconciliation-design.md` v4 (§3, §4.1, §4.2, §5 incl. the "as v2"/"as v3" text of commits `eef3b31` and `6aabdc9`, §8, §9.1, §11, §13, §16 C7/C9/S1 acceptance items, §17 notes). Base: `main` a4a9207 (R1b merged). Revision 2 after the Multica plan review (AGENT-95, dev-astra): 11 Must + 5 Should folded in; see the rulings 9–13. Revision 3 after the re-review (AGENT-96): 8 Must + 4 Should folded in; rulings 14–16.
 
 ## Global Constraints
 
@@ -20,6 +20,7 @@
 - **Run lease** (§4.1): every submission carries `run_id` + `lease_token`; the worker renews every 5 minutes; a 409 on renew or submit aborts the run (`failed`, reason `lease`).
 - **Idempotency**: files by sha256, sources by `(drive_file_id, drive_md5)`, object key `by-sha/<sha256>.pdf`; a crash at any boundary is safe to re-run.
 - **Singleton**: `flock` on `<state_dir>/.lock`; a second worker prints `already running` and exits 0 (timer units must not fail).
+- **Expected counts in this plan** (`→ N passed`) are targets for the implementer, never evidence; the ledger records the real numbers.
 - **Private by construction**: the CLI sets `umask 0o077` first thing; every directory the worker creates is 0700 and every file 0600 (state, staging, inbox, verify dirs, reports, caches). A listed PDF larger than 20 MB is skipped before download (counted `too_large`, never registered).
 - **Error text discipline**: run summaries, reports and API payloads carry bounded codes and counts only (`errors: ["listing", "download", "store", …]`), never exception text, paths, names or identities.
 - **No owner financial data in tests**; synthetic PDFs built by the test helper. Commits carry `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`; the PR body ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
@@ -37,8 +38,11 @@
 8. **Pinned model** default `claude-sonnet-5-5` (`STATEMENT_PARSER_MODEL`); the parser version string is `claude-cli-<cli version>-<model>-<instruction sha256[:8]>-<schema sha256[:8]>`.
 9. **The gate is mandatory and latched** (AGENT-95 Must 2). Every `run`, `poll`, `backfill` and `verify` calls `parser.Gate.ensure()` before the first parse: it passes when `<state_dir>/gate.json` holds a successful gate whose key (`cli_version`, `model`, `config dir mtime`, sha256 of the full argv template, sandbox flag) matches and is younger than 24 h; otherwise it runs the canary now. A violation anywhere (gate or real input) writes `<state_dir>/parser-disabled.json` (reason, time, key); while that latch exists no process parses, runs finish `failed` with `errors: ["parser_disabled"]`, and only a successful operator `python -m worker gate` removes it. `deploy/statements/gate.sh` adds the host-side evidence (mounts, processes, `/etc` and `$HOME` unreadable) and is the §16 C7 artefact.
 10. **`SourceIndex` is a download cache, never the authority.** Every complete listing re-registers every listed source through `POST /statements/sources` (idempotent upsert; path history, `removed_at` reset) and re-checks the object store for every file that lacks a stored object (`store_pending` tracked locally), regardless of the index. The index only decides whether bytes must be fetched again.
-11. **Verify reads through a dedicated read-only database role** (AGENT-95 Must 9/11, owner decision pending at plan time): `STATEMENT_VERIFY_DB_URL` is **required** for `verify` (no fallback to the application URL) and must name a role with `SELECT` only and `default_transaction_read_only = on` (ops step in Task 9's README: `CREATE ROLE accounting_ro LOGIN PASSWORD … ; GRANT CONNECT ON DATABASE accounting_db; GRANT USAGE ON SCHEMA public; GRANT SELECT ON ALL TABLES IN SCHEMA public; ALTER ROLE accounting_ro SET default_transaction_read_only = on`). The verify transaction is `REPEATABLE READ READ ONLY`. Verify's parser child binds the login directory read-only with **no** writable credentials file (`STATEMENT_VERIFY_PARSER_CONFIG_DIR`, a copy refreshed by the operator's `gate` run); an expired token fails verify with `auth`, it never refreshes. The Linux principal stays `opc` in the interim (ruling 3), recorded as an accepted deviation from §3, not as compliance; the flag stays off and no real-data `run` happens until the §3 users exist.
+11. **Verify reads through a dedicated read-only database role** (AGENT-95 Must 9/11; **owner accepted on 2026-10-10 ("ok ruling 11")** — §17 records it as an accepted interim deviation with the scope below): `STATEMENT_VERIFY_DB_URL` is **required** for `verify` (no fallback to the application URL) and must name a role with `SELECT` only and `default_transaction_read_only = on` (ops step in Task 9's README: `CREATE ROLE accounting_ro LOGIN PASSWORD … ; GRANT CONNECT ON DATABASE accounting_db; GRANT USAGE ON SCHEMA public; GRANT SELECT ON ALL TABLES IN SCHEMA public; ALTER ROLE accounting_ro SET default_transaction_read_only = on`; exact SQL in Task 9 with every `TO accounting_ro` and a privilege audit query). Accepted scope: principal `opc`; commands `export-masked` and `verify` only; no real-data `run`/`backfill` until the §3 users exist; residual host access of `opc` acknowledged; expiry = the §3 user split. The verify transaction is `REPEATABLE READ READ ONLY`. Verify's parser child binds the login directory read-only with **no** writable credentials file (`STATEMENT_VERIFY_PARSER_CONFIG_DIR`, a copy refreshed by the operator's `gate` run); an expired token fails verify with `auth`, it never refreshes. The Linux principal stays `opc` in the interim (ruling 3), recorded as an accepted deviation from §3, not as compliance; the flag stays off and no real-data `run` happens until the §3 users exist.
 12. **Settings are read SELECT-only where a read-only transaction may hold them**: new `settings_service.read_reconciliation_settings(db)` (no insert, defaults applied) and `read_reconciliation_rules(db)` are used by `GET /settings/reconciliation`, `GET /statements/account-map` and verify; the inserting `_reconciliation_row` stays for writers.
+14. **Every real-input violation latches** (AGENT-96 Must 1): `verify` latches exactly like `run` on `sandbox`/`cli_version`/`auth`, and the CLI exits 1 whenever `totals.errors` or `summary.errors` is non-empty. Sandbox recovery: a file failed `sandbox` becomes due again when `gate.json` is ok **and** its `checked_at` is newer than the file's `sandbox_failed_at` recorded in the worker's `RetryLog` (no parser-version change needed).
+15. **The stream is validated incrementally** (AGENT-96 Must 2): `_ChildIO` feeds every complete line to a `StreamValidator` while reading; the first violation is remembered and the child is killed at once, so a forbidden tool followed by a hang or flood is still `sandbox`. Typed checks: `message` must be an object with a `content` list; assistant blocks only `text`/`tool_use`, exactly one `tool_use`; the user message is exactly one `tool_result` whose `tool_use_id` equals that `tool_use.id`; everything else is a violation.
+16. **Operator gate = worker gate + host checks in one Python command** (AGENT-96 Must 3): `python -m worker gate` runs, in order, the canary with the worker login, the canary with the verify login (read-only mount), and the host checks (positive control `/usr/bin/true` must exit 0 inside bwrap; `/etc/passwd` and `$HOME` must be *absent* inside the sandbox, distinguished from a broken bwrap by the positive control; the login dir diff; and process sampling **during** each canary via `ps` every 100 ms). The latch is cleared only when every check passes; `gate.sh` is a thin wrapper that prints the JSON and sets the exit code.
 13. **Narrowed contracts** (AGENT-95 Should): no regex-parser registry in R2 (ruling 7 is "none", the pipeline has a single parser); run provenance (`parser_version`, `credential_version`, `mapping_version`, `cli_version`, `model`) travels in the run's finish `summary.versions` (the `ingest_run` columns stay for R1c's API change); `backfill` prints no pre-execution live-period count (the worker cannot read accounts) — the CLI refuses without `--acknowledge-live-periods` and the summary reports `live_revisions` afterwards; the daily sweep (`POST /reconciliation/sweep`) runs at the end of every full run under its lease.
 
 ## Review Focus
@@ -1164,8 +1168,8 @@ class Masker:
 **Interfaces:**
 - `parse_schema.ParsedLine`, `parse_schema.StatementParse` (pydantic, `extra="forbid"`): fields as `RevisionIn`/`LineIn` of `app/schemas/statements.py` but amounts as decimal **strings** (`pattern ^-?\d{1,15}(\.\d{1,4})?$`), `kind: Literal["card","bank"]`, `currency: str (3 upper)`, `lines ≤ 2000`, `merchant_raw ≤ 256`, `notes: str | None ≤ 500`; `parse_schema.json_schema() -> dict` (`StatementParse.model_json_schema()`), `parse_schema.INSTRUCTION` (fixed text below), `parse_schema.version(cli_version, model) -> str` (ruling 8).
 - `parser.Parser(cfg, runner, *, config_dir: Path | None = None, credentials_writable: bool = True)`: `cli_version() -> str` (`claude --version` first token), `parse(masked_text: str) -> StatementParse` raising `parser.ParseError(reason)` with reasons `cli_version`, `stdin_too_large`, `timeout`, `output_too_large`, `exit`, `schema`, `sandbox`, `auth`; `gate() -> parser.GateReport(ok: bool, reasons: list[str], evidence: dict)` running the canary; `parser.command(cfg, schema_json: str, *, config_dir, credentials_writable) -> list[str]` builds the full argv (bwrap prefix when `cfg.parser_sandbox`; with `credentials_writable=False` there is no `--bind` of `.credentials.json`, the whole dir is `--ro-bind` — verify's mode, ruling 11).
-- Stream rules (ruling 2) implemented in `parser.consume(stream: Iterable[bytes]) -> parser.Envelope` which validates **while consuming** against the exact allowed sequence `system/init → assistant(one tool_use StructuredOutput, optional text blocks) → user(tool_result) → [rate_limit_event]* → result/success` and records every deviation in `envelope.violations` (unknown or malformed event, any `hook*`/`subagent*`/`permission*` type **or subtype**, a second init or result, an assistant block that is not `text` or `tool_use`, a `tool_use` with another name, more than one assistant message, a user message without a `tool_result`, `num_turns != 2`, `tools != ["StructuredOutput"]`). `parser.check_envelope(env) -> list[str]` returns those violations. **Precedence** (AGENT-95 Must 3): violations are checked before exit status, schema and everything else, so a forbidden stream that also exits non-zero is `sandbox`, never a retried `exit`.
-- I/O (AGENT-95 Must 4): stdin is written by a helper thread (so a child that stops reading cannot block the deadline loop; a `BrokenPipeError` there is recorded, not raised), stdout/stderr are drained with `selectors` and `os.read(fd, 65536)` under one deadline, every read is bounded by the caps (`STDOUT_CAP` each), the final drain after exit is bounded too, and any failure path kills the process group (`killpg(SIGKILL)`) and reaps it.
+- Stream rules (ruling 2, 15) implemented in `parser.StreamValidator` (`feed(line: bytes) -> None`, `envelope: Envelope`, `violation: str | None` set at the first problem, `finish() -> Envelope`) used incrementally by `_ChildIO` and by `parser.consume(stream) -> Envelope` (a convenience that feeds every line); it validates against the exact allowed sequence `system/init → assistant(one tool_use StructuredOutput, optional text blocks) → user(tool_result) → [rate_limit_event]* → result/success` and records every deviation in `envelope.violations` (unknown or malformed event, any `hook*`/`subagent*`/`permission*` type **or subtype**, a second init or result, an assistant block that is not `text` or `tool_use`, a `tool_use` with another name, more than one assistant message, a user message without a `tool_result`, `num_turns != 2`, `tools != ["StructuredOutput"]`, a non-object `message` or non-list `content`, an assistant `text`/`tool_use` mix with more than one `tool_use`, a user message that is not exactly one `tool_result` with `tool_use_id == <the tool_use id>`). `parser.check_envelope(env) -> list[str]` returns those violations. **Precedence** (AGENT-95 Must 3): violations are checked before exit status, schema and everything else, so a forbidden stream that also exits non-zero is `sandbox`, never a retried `exit`.
+- I/O (AGENT-95 Must 4, AGENT-96 Should): stdin is written by a helper thread (so a child that stops reading cannot block the deadline loop; a `BrokenPipeError` there is recorded, not raised), stdout/stderr are drained with `selectors` and `os.read(fd, 65536)` under one deadline, every read is bounded by the caps (`STDOUT_CAP` each), stdout lines are fed to the `StreamValidator` as they complete and the first violation kills the child immediately (ruling 15), `Popen.wait(timeout)`'s `TimeoutExpired` is translated to `ParseError("timeout")` (a child that closes its pipes but stays alive), and **every** exit path (success, violation, timeout, schema) runs the same cleanup: `killpg(SIGKILL)` of the session, `wait`, selector close, pipe close, stdin-writer join.
 - `parser.Gate(cfg)`: `key(parser) -> dict` (`cli_version`, `model`, `config_dir_mtime`, `argv_sha256`, `sandbox`), `ensure(parser) -> None` (ruling 9: raises `parser.ParserDisabled` when `<state_dir>/parser-disabled.json` exists; otherwise reads `<state_dir>/gate.json` and returns when it is ok, same key and younger than 24 h; otherwise runs `parser.gate()` now, writes `gate.json`, and on failure writes the latch and raises `ParserDisabled`), `latch(reason: str, key: dict) -> None`, `clear() -> None` (only `python -m worker gate` after a success).
 
 - [ ] **Step 1: Write the fake CLI helper** `tests/worker/fake_claude.py`:
@@ -1288,6 +1292,9 @@ def test_version_pin(cfg, tmp_path):
     ({"extra_tool": True}, "sandbox"), ({"tool_name": "Bash"}, "sandbox"), ({"tools": ("StructuredOutput", "Bash")}, "sandbox"),
     ({"num_turns": 3}, "sandbox"), ({"hook_event": True}, "sandbox"), ({"duplicate_result": True}, "sandbox"),
     ({"garbage_line": True}, "sandbox"), ({"extra_tool": True, "exit_code": 1}, "sandbox"),
+    ({"message_not_object": True}, "sandbox"), ({"user_extra_block": True}, "sandbox"),
+    ({"tool_result_id_mismatch": True}, "sandbox"), ({"assistant_extra_tool_use_after_text": True}, "sandbox"),
+    ({"extra_tool": True, "sleep_after": 30}, "sandbox"), ({"extra_tool": True, "flood_after": True}, "sandbox"),
     ({"subtype": "error_max_turns"}, "exit"), ({"exit_code": 1}, "exit"),
     ({"output": {**fake_claude.GOOD, "statement_total": "abc"}}, "schema")])
 def test_envelope_violations_and_precedence(cfg, tmp_path, variant, reason):
@@ -1311,6 +1318,16 @@ def test_timeout_kills_the_whole_process_group(cfg, tmp_path):
     time.sleep(0.2)
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)  # the grandchild died with the group
+
+
+def test_child_that_closes_pipes_but_stays_alive_is_a_timeout(cfg, tmp_path):
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), close_pipes_then_sleep=30)
+    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_SANDBOX": "false",
+                       "STATEMENT_PARSER_TIMEOUT": "1", "STATEMENT_PARSER_ATTEMPTS": "1",
+                       "STATEMENT_STATE_DIR": str(tmp_path / "state")})
+    with pytest.raises(parser.ParseError) as err:
+        parser.Parser(cfg, SubprocessRunner()).parse("x")
+    assert err.value.reason == "timeout"
 
 
 def test_child_that_never_reads_stdin_still_times_out(cfg, tmp_path):
@@ -1346,6 +1363,20 @@ def test_gate_passes_on_the_canary_and_fails_on_a_second_tool(cfg, tmp_path):
     assert not report.ok and any("tool" in r for r in report.reasons)
 
 
+def test_operator_gate_clears_only_when_everything_passes(cfg, tmp_path):
+    prs = parser.Parser(cfg, SubprocessRunner())
+    gate = parser.Gate(cfg)
+    gate.latch("earlier", gate.key(prs))
+    good_verify = parser.Parser(cfg, SubprocessRunner(), config_dir=tmp_path / "ro", credentials_writable=False)
+    assert gate.run_operator_gate(prs, verify_parser=good_verify).ok and not gate.latch_path.exists()
+    bad_cli = fake_claude.write(tmp_path / "claude2", fake_claude.transcript(extra_tool=True))
+    bad_cfg = config.load({"STATEMENT_PARSER_CLI": str(bad_cli), "STATEMENT_PARSER_SANDBOX": "false",
+                           "STATEMENT_STATE_DIR": str(cfg.state_dir)})
+    bad_verify = parser.Parser(bad_cfg, SubprocessRunner(), config_dir=tmp_path / "ro", credentials_writable=False)
+    report = gate.run_operator_gate(prs, verify_parser=bad_verify)
+    assert not report.ok and gate.latch_path.exists() and any(r.startswith("verify:") for r in report.reasons)
+
+
 def test_gate_ensure_caches_and_latches(cfg, tmp_path):
     prs = parser.Parser(cfg, SubprocessRunner())
     gate = parser.Gate(cfg)
@@ -1370,7 +1401,7 @@ def test_parser_version_string():
     assert v.startswith("claude-cli-2.1.296-claude-sonnet-5-5-") and len(v.split("-")[-1]) == 8
 ```
 
-The fake CLI helper gains: `exit_code=` (exit status after printing), `stderr_bytes=` (written to stderr), `read_stdin=False` (skip the `cat >/dev/null`), `grandchild_pid_file=` (the script starts `sleep 60 &` and writes its pid there before sleeping), and `transcript(..., hook_event=True)` (inserts `{"type": "system", "subtype": "hook_started"}` after init), `duplicate_result=True` (a second `result` line), `garbage_line=True` (a non-JSON line before the result).
+The fake CLI helper gains: `exit_code=` (exit status after printing), `stderr_bytes=` (written to stderr), `read_stdin=False` (skip the `cat >/dev/null`), `grandchild_pid_file=` (the script starts `sleep 60 &` and writes its pid there before sleeping), `close_pipes_then_sleep=N` (`exec >&- 2>&-; sleep N`), and `transcript(...)` options `hook_event=True` (inserts `{"type": "system", "subtype": "hook_started"}` after init), `duplicate_result=True` (a second `result` line), `garbage_line=True` (a non-JSON line before the result), `message_not_object=True` (`"message": "x"` on the assistant event), `user_extra_block=True` (a second block in the user message), `tool_result_id_mismatch=True` (`tool_use_id` ≠ the assistant `tool_use.id`; the good transcript carries matching ids `toolu_1`), `assistant_extra_tool_use_after_text=True` (text block then two tool_use blocks), `sleep_after=N` (the script sleeps N s after printing the assistant line, before the rest — the violation must be detected and the child killed before the deadline), `flood_after=True` (3 MB of `x` after the assistant line).
 
 - [ ] **Step 3:** run → import errors.
 - [ ] **Step 4: Implement** `worker/parse_schema.py`:
@@ -1536,84 +1567,130 @@ def command(cfg: WorkerConfig, schema_json: str, *, config_dir: Path | None = No
 
 
 def consume(lines: Iterable[bytes]) -> Envelope:
-    """Validate the exact allowed sequence while consuming (ruling 2; AGENT-95 Must 3)."""
-    env = Envelope()
-    expect = "init"
+    """Convenience (tests): feed every line to a StreamValidator and finish."""
+    validator = StreamValidator()
     for raw in lines:
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            event = json.loads(raw)
-        except json.JSONDecodeError:
-            env.violations.append("non-json line")
-            continue
-        if not isinstance(event, dict):
-            env.violations.append("non-object event")
-            continue
-        kind, sub = str(event.get("type", "")), str(event.get("subtype", "") or "")
-        env.events.append(f"{kind}/{sub}")
-        if kind.startswith(FORBIDDEN_PREFIXES) or sub.startswith(FORBIDDEN_PREFIXES):
-            env.violations.append(f"forbidden event {kind}/{sub}")
-            continue
-        if kind == "system" and sub == "init":
-            if expect != "init":
-                env.violations.append("duplicate init")
-            env.tools = list(event.get("tools") or [])
-            expect = "assistant"
-        elif kind == "assistant":
-            env.assistant_messages += 1
-            if expect != "assistant":
-                env.violations.append("assistant out of order")
-            blocks = (event.get("message") or {}).get("content") or []
-            for block in blocks:
-                btype = block.get("type") if isinstance(block, dict) else None
-                if btype == "tool_use":
-                    env.tool_names.append(str(block.get("name", "")))
-                elif btype != "text":
-                    env.violations.append(f"assistant block {btype}")
-            expect = "user"
-        elif kind == "user":
-            blocks = (event.get("message") or {}).get("content") or []
-            if expect != "user" or not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in blocks):
-                env.violations.append("user message without tool_result or out of order")
-            expect = "result"
-        elif kind == "rate_limit_event":
-            continue
-        elif kind == "result":
-            if env.result_subtype is not None:
-                env.violations.append("duplicate result")
-            if expect != "result":
-                env.violations.append("result out of order")
-            env.result_subtype = sub
-            env.num_turns = event.get("num_turns")
-            env.structured_output = event.get("structured_output")
-            expect = "end"
-        else:
-            env.violations.append(f"unknown event {kind}/{sub}")
-    if env.tools != [STRUCTURED_TOOL]:
-        env.violations.append(f"tools exposed: {env.tools}")
-    if env.tool_names != [STRUCTURED_TOOL]:
-        env.violations.append(f"tool calls: {env.tool_names}")
-    if env.assistant_messages != 1:
-        env.violations.append(f"assistant messages: {env.assistant_messages}")
-    if env.num_turns != 2:
-        env.violations.append(f"num_turns: {env.num_turns}")
-    return env
+        validator.feed(raw)
+    return validator.finish()
 
 
 def check_envelope(env: Envelope) -> list[str]:
     return list(env.violations)
 
 
+class StreamValidator:
+    """Ruling 15: incremental validation of the stream-json lines; `violation` is set at the first problem."""
+
+    def __init__(self):
+        self.envelope = Envelope()
+        self.violation: str | None = None
+        self._expect = "init"
+        self._tool_use_id: str | None = None
+
+    def _bad(self, why: str) -> None:
+        self.envelope.violations.append(why)
+        if self.violation is None:
+            self.violation = why
+
+    def feed(self, raw: bytes) -> None:
+        raw = raw.strip()
+        if not raw:
+            return
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._bad("non-json line")
+        if not isinstance(event, dict):
+            return self._bad("non-object event")
+        kind, sub = str(event.get("type", "")), str(event.get("subtype", "") or "")
+        env = self.envelope
+        env.events.append(f"{kind}/{sub}")
+        if kind.startswith(FORBIDDEN_PREFIXES) or sub.startswith(FORBIDDEN_PREFIXES):
+            return self._bad(f"forbidden event {kind}/{sub}")
+        if kind == "system" and sub == "init":
+            if self._expect != "init":
+                self._bad("duplicate init")
+            env.tools = list(event.get("tools") or [])
+            self._expect = "assistant"
+            return
+        blocks: list[dict] = []
+        if kind in ("assistant", "user"):
+            message = event.get("message")
+            if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+                return self._bad(f"{kind} message is not an object with a content list")
+            blocks = [b for b in message["content"] if isinstance(b, dict)]
+            if len(blocks) != len(message["content"]):
+                return self._bad(f"{kind} block is not an object")
+        if kind == "assistant":
+            env.assistant_messages += 1
+            if self._expect != "assistant":
+                self._bad("assistant out of order")
+            uses = [b for b in blocks if b.get("type") == "tool_use"]
+            if any(b.get("type") not in ("text", "tool_use") for b in blocks):
+                self._bad("assistant block of another type")
+            if len(uses) != 1:
+                self._bad(f"assistant tool_use count {len(uses)}")
+            for b in uses:
+                env.tool_names.append(str(b.get("name", "")))
+                self._tool_use_id = b.get("id")
+            self._expect = "user"
+            return
+        if kind == "user":
+            if self._expect != "user":
+                self._bad("user out of order")
+            if len(blocks) != 1 or blocks[0].get("type") != "tool_result":
+                self._bad("user message is not exactly one tool_result")
+            elif blocks[0].get("tool_use_id") != self._tool_use_id:
+                self._bad("tool_result id mismatch")
+            self._expect = "result"
+            return
+        if kind == "rate_limit_event":
+            return
+        if kind == "result":
+            if env.result_subtype is not None:
+                self._bad("duplicate result")
+            if self._expect != "result":
+                self._bad("result out of order")
+            env.result_subtype = sub
+            env.num_turns = event.get("num_turns")
+            env.structured_output = event.get("structured_output")
+            self._expect = "end"
+            return
+        self._bad(f"unknown event {kind}/{sub}")
+
+    def finish(self) -> Envelope:
+        env = self.envelope
+        if env.tools != [STRUCTURED_TOOL]:
+            self._bad(f"tools exposed: {env.tools}")
+        if env.tool_names != [STRUCTURED_TOOL]:
+            self._bad(f"tool calls: {env.tool_names}")
+        if env.assistant_messages != 1:
+            self._bad(f"assistant messages: {env.assistant_messages}")
+        if env.num_turns != 2:
+            self._bad(f"num_turns: {env.num_turns}")
+        return env
+
+
 class _ChildIO:
-    """Bounded, deadline-driven I/O with the child: stdin from a thread, stdout/stderr via selectors."""
+    """Bounded, deadline-driven I/O with the child: stdin from a thread, stdout/stderr via selectors, stdout lines
+    validated as they complete (ruling 15)."""
 
     def __init__(self, proc: subprocess.Popen, stdin: bytes, deadline: float):
         self.proc, self.deadline = proc, deadline
         self.out, self.err = bytearray(), bytearray()
+        self.validator = StreamValidator()
+        self._pending = bytearray()
         self.stdin_error: str | None = None
         self._writer = threading.Thread(target=self._write, args=(stdin,), daemon=True)
+
+    def _feed_lines(self, chunk: bytes) -> None:
+        self._pending.extend(chunk)
+        while b"\n" in self._pending:
+            line, _, rest = bytes(self._pending).partition(b"\n")
+            self._pending = bytearray(rest)
+            self.validator.feed(line)
+            if self.validator.violation:
+                raise ParseError("sandbox", self.validator.violation)
 
     def _write(self, data: bytes) -> None:
         try:
@@ -1641,8 +1718,24 @@ class _ChildIO:
                 key.data.extend(chunk)
                 if len(key.data) > STDOUT_CAP:
                     raise ParseError("output_too_large")
-        if self.proc.wait(timeout=max(0.0, self.deadline - time.monotonic())) is None:
-            raise ParseError("timeout")
+                if key.data is self.out:
+                    self._feed_lines(chunk)
+        try:
+            self.proc.wait(timeout=max(0.0, self.deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as exc:
+            raise ParseError("timeout") from exc
+        if self._pending:
+            self.validator.feed(bytes(self._pending))
+            if self.validator.violation:
+                raise ParseError("sandbox", self.validator.violation)
+
+    def close(self) -> None:
+        for pipe in (self.proc.stdout, self.proc.stderr, self.proc.stdin):
+            try:
+                pipe.close()
+            except (OSError, ValueError):
+                pass
+        self._writer.join(timeout=1)
 
 
 def _kill(proc: subprocess.Popen) -> None:
@@ -1682,13 +1775,10 @@ class Parser:
         io = _ChildIO(proc, stdin, time.monotonic() + self.cfg.parser_timeout_s)
         try:
             io.pump()
-        except BaseException:
-            _kill(proc)
-            raise
         finally:
-            if proc.poll() is None:
-                _kill(proc)
-        envelope = consume(bytes(io.out).splitlines())
+            _kill(proc)  # every path: the session (and any descendant) dies, then the pipes close
+            io.close()
+        envelope = io.validator.finish()
         if envelope.violations:  # sandbox precedence over exit/schema (AGENT-95 Must 3)
             raise ParseError("sandbox", "; ".join(envelope.violations)[:500])
         if proc.returncode != 0 or envelope.result_subtype != "success":
@@ -1782,20 +1872,70 @@ class Gate:
             self.latch("; ".join(report.reasons), key)
             raise ParserDisabled("gate failed")
 
-    def run_operator_gate(self, parser: Parser) -> GateReport:
-        """`python -m worker gate`: the only path that clears the latch (on success)."""
+    def run_operator_gate(self, parser: Parser, *, verify_parser: Parser | None = None,
+                          host_checks: bool = False) -> GateReport:
+        """`python -m worker gate` (ruling 16): worker canary, verify-login canary, host checks; the latch is
+        cleared only when everything passed, else (re)latched."""
         report = parser.gate()
+        evidence = {"worker": report.evidence}
+        reasons = list(report.reasons)
+        if verify_parser is not None:
+            vreport = verify_parser.gate()
+            evidence["verify_login"] = vreport.evidence
+            reasons += [f"verify: {r}" for r in vreport.reasons]
+        if host_checks:
+            checks = host_evidence(self.cfg, parser)
+            evidence["host"] = checks
+            reasons += [f"host: {k}" for k, ok in checks["ok_by_check"].items() if not ok]
         key = self.key(parser)
-        self._write(self.evidence_path, {"ok": report.ok, "reasons": report.reasons, "evidence": report.evidence,
-                                         "key": key, "checked_at": datetime.now(timezone.utc).isoformat()})
-        if report.ok:
-            self.clear()
+        self._write(self.evidence_path, {"ok": not reasons, "reasons": reasons, "evidence": evidence, "key": key,
+                                         "checked_at": datetime.now(timezone.utc).isoformat()})
+        if reasons:
+            self.latch("; ".join(reasons), key)
         else:
-            self.latch("; ".join(report.reasons), key)
-        return report
+            self.clear()
+        return GateReport(not reasons, reasons, evidence)
+
+
+def host_evidence(cfg: WorkerConfig, parser: Parser) -> dict:
+    """Host-side checks (§5.5/§16 C7): positive control, host paths absent inside the sandbox, login dir unchanged
+    across a canary, no stray processes observed DURING the canary (sampled every 100 ms)."""
+    argv = parser.argv()
+    if not cfg.parser_sandbox:
+        return {"ok_by_check": {"sandbox_enabled": False}}
+    prefix = argv[:argv.index("--")]
+    checks: dict[str, bool] = {}
+
+    def run(cmd: list[str]) -> int:
+        return subprocess.run([*prefix, "--", *cmd], capture_output=True, timeout=30).returncode
+
+    checks["positive_control"] = run(["/usr/bin/true"]) == 0
+    checks["etc_passwd_absent"] = run(["/usr/bin/test", "-e", "/etc/passwd"]) == 1  # 1 = absent; other = broken
+    checks["home_absent"] = run(["/usr/bin/test", "-e", os.path.expanduser("~")]) == 1
+    checks["credentials_only_writable"] = run(["/usr/bin/sh", "-c", "touch /cfg/x 2>/dev/null"]) != 0
+    before = {p: p.stat().st_mtime for p in parser.config_dir.rglob("*") if p.is_file()}
+    seen: set[str] = set()
+    stop = threading.Event()
+
+    def sample() -> None:
+        while not stop.wait(0.1):
+            out = subprocess.run(["ps", "-u", str(os.getuid()), "-o", "comm="], capture_output=True, text=True).stdout
+            seen.update(line.strip() for line in out.splitlines() if line.strip() in ("claude", "bwrap", "node", "sh", "bash", "python3"))
+
+    sampler = threading.Thread(target=sample, daemon=True)
+    sampler.start()
+    report = parser.gate()
+    stop.set()
+    sampler.join(1)
+    after = {p: p.stat().st_mtime for p in parser.config_dir.rglob("*") if p.is_file()}
+    changed = sorted(str(p.relative_to(parser.config_dir)) for p in after if before.get(p) != after[p])
+    checks["login_dir_unchanged"] = changed in ([], [".credentials.json"])
+    checks["only_cli_processes"] = seen <= {"claude", "bwrap", "python3"}  # python3 = this worker
+    checks["canary"] = report.ok
+    return {"ok_by_check": checks, "processes_seen": sorted(seen), "changed_files": changed}
 ```
 
-- [ ] **Step 5:** run → 24 passed. The sandbox test only builds argv; a real `bwrap` run is the operator's gate (Task 9 script).
+- [ ] **Step 5:** run → expected 33 passed. The sandbox test only builds argv; a real `bwrap` run is the operator's gate (`host_evidence`, exercised by Task 10's smoke).
 - [ ] **Step 6:** commit `feat(worker): StatementParse schema, sandboxed parser child, envelope gate`.
 
 ---
@@ -1812,7 +1952,7 @@ class Gate:
 - `settings_service.read_reconciliation_settings(db) -> dict` and `read_reconciliation_rules(db) -> dict` (ruling 12): `db.get(ReconciliationSettings, 1)` without the insert; when the row is absent they return the same defaults `_reconciliation_dict` would produce for an empty row (`account_map {}`, `dirty_enabled False`, `rules` = `RULE_DEFAULTS`, `version 0`). `GET /settings/reconciliation` and `GET /statements/account-map` use them; `PUT` keeps `_reconciliation_row(lock=True)`. Test: in a session that ran `SET TRANSACTION READ ONLY`, `read_reconciliation_settings` succeeds on an empty table and `get_reconciliation_settings` raises.
 - `GET /statements/account-map` → `AccountMapOut(account_map: dict[str, int], mapping_version: str)`, scope `ingest`, behind the feature gate.
 - `api.ApiClient(client: httpx.Client, token: str, *, guard: Callable[[], bool] | None = None)`: `guard` (the pipeline passes `lambda: keeper.lost`) is consulted **before every lease-route request**; when it returns True the client raises `LeaseLost` without sending (AGENT-95 Must 7: a lease lost during a parse blocks the submission that follows). Methods: `create_run(trigger, mode, initiator_hint) -> api.Lease(run_id, lease_token, lease_expires_at, attempt)` (`POST /statements/ingest-runs`), `queued_runs() -> list[dict]`, `claim(run_id) -> Lease`, `renew(lease) -> None`, `finish(lease, status, summary) -> None`, `account_map() -> tuple[dict[str, int], str]`, `register_file(lease, sha256, size, kind, object_key) -> dict`, `update_file(lease, file_id, **fields) -> dict`, `register_source(lease, file_id, root, drive_file_id, drive_path, drive_md5, drive_size) -> dict`, `mark_removed(lease, seen_ids: list[str], allow_empty=False) -> int`, `submit_revision(lease, body: dict) -> dict`. Every call raises `api.LeaseLost` on 409 from a lease route or submission, `api.ApiError(status, body)` otherwise. Requests carry `Authorization: Bearer <token>`.
-- `api.LeaseKeeper(client: ApiClient, lease: Lease, interval_s=300)`: context manager running a daemon thread that renews; **any** exception from a renew (`ApiError`, `httpx.HTTPError`, `OSError`) sets `keeper.lost = True` and stops the thread; `__exit__` joins the thread (bounded) and never raises. `api.RunState(path)` persists `{run_id, lease_token, attempt, started_at}` at `<state_dir>/run.json` (0600) after a claim and deletes it after `finish`; on start the pipeline reads it and, when `renew` succeeds, **resumes** that run (same lease), otherwise discards the file (§4.1 restart recovery; AGENT-95 Must 7).
+- `api.LeaseKeeper(client: ApiClient, lease: Lease, interval_s=300)`: context manager running a daemon thread that renews with its own short request timeout (`client.renew(lease, timeout=10)`); **any** exception from a renew (`ApiError`, `httpx.HTTPError`, `OSError`) sets `keeper.lost = True` and stops the thread; `__exit__` joins the thread up to 15 s (longer than the renew timeout, so no renew is in flight afterwards) and never raises; `keeper.lost` stays readable after exit (the pipeline keeps the guard active through `finish`). `api.RunState(path)` persists `{run_id, lease_token, lease_expires_at, attempt, trigger, mode}` at `<state_dir>/run.json` (0600, **atomic**: tmp file + `os.replace`) after **every** claim — `create_run`, `poll`'s `claim`, and a reclaim — and deletes it after `finish`. On start (`run` **and** `poll`, before any queue work) the pipeline reads it: `renew` ok → resume with the same lease; `renew` 409 (expired/finished) → `claim(run_id)` on the same run (the API re-claims an `expired` run with a new token and `attempt + 1`) → resume with the new lease; claim refused → the run is finished elsewhere, discard the file (§4.1 restart recovery; AGENT-95 Must 7, AGENT-96 Must 5). A truncated/unparseable `run.json` is discarded with `errors: ["run_state_corrupt"]`, never a crash.
 
 - [ ] **Step 1: Write the failing API test** (append to `tests/integration/test_statement_ingest_api.py`):
 
@@ -1907,9 +2047,11 @@ def test_guard_blocks_lease_routes_before_sending(client):
 def test_run_state_round_trip(tmp_path, worker_api):
     lease = worker_api.create_run("owner_cli", "live", "tester")
     state = api.RunState(tmp_path / "run.json")
-    state.save(lease)
+    state.save(lease, trigger="owner_cli", mode="live")
     assert oct((tmp_path / "run.json").stat().st_mode)[-3:] == "600"
-    assert state.load() == lease
+    assert state.load() == (lease, "owner_cli", "live")
+    (tmp_path / "run.json").write_text("{trunc")
+    assert state.load() is None and not (tmp_path / "run.json").exists()
     state.clear()
     assert state.load() is None
 
@@ -2029,10 +2171,12 @@ class ApiClient:
     def __init__(self, client: httpx.Client, token: str, *, guard: Callable[[], bool] | None = None):
         self.client, self.headers, self.guard = client, {"Authorization": f"Bearer {token}"}, guard
 
-    def _call(self, method: str, path: str, *, json=None, params=None, lease_route: bool = False):
+    def _call(self, method: str, path: str, *, json=None, params=None, lease_route: bool = False,
+              timeout: float | None = None):
         if lease_route and self.guard is not None and self.guard():
             raise LeaseLost(409, "lease lost (local guard)")
-        response = self.client.request(method, path, json=json, params=params, headers=self.headers)
+        extra = {"timeout": timeout} if timeout is not None else {}
+        response = self.client.request(method, path, json=json, params=params, headers=self.headers, **extra)
         if response.status_code >= 400:
             body = response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text
             if response.status_code == 409 and (lease_route or any(path.endswith(r) or r in path for r in LEASE_ROUTES)):
@@ -2054,9 +2198,9 @@ class ApiClient:
     def claim(self, run_id: int) -> Lease:
         return self._lease(self._call("POST", f"/statements/ingest-runs/{run_id}/claim", lease_route=True))
 
-    def renew(self, lease: Lease) -> None:
+    def renew(self, lease: Lease, *, timeout: float | None = None) -> None:
         self._call("POST", f"/statements/ingest-runs/{lease.run_id}/renew", json={"lease_token": lease.lease_token},
-                   lease_route=True)
+                   lease_route=True, timeout=timeout)
 
     def finish(self, lease: Lease, status: str, summary: dict) -> None:
         self._call("POST", f"/statements/ingest-runs/{lease.run_id}/finish",
@@ -2100,7 +2244,7 @@ class LeaseKeeper:
     def _loop(self) -> None:
         while not self._stop.wait(self.interval_s):
             try:
-                self.client.renew(self.lease)
+                self.client.renew(self.lease, timeout=10)
             except Exception:  # noqa: BLE001 — ApiError, httpx transport errors, OSError: all mean "not renewed"
                 self.lost = True
                 return
@@ -2111,7 +2255,7 @@ class LeaseKeeper:
 
     def __exit__(self, *exc):
         self._stop.set()
-        self._thread.join(timeout=5)
+        self._thread.join(timeout=15)  # > the renew timeout: no renew is in flight after this
         return False
 
 
@@ -2121,16 +2265,25 @@ class RunState:
     def __init__(self, path: Path):
         self.path = path
 
-    def save(self, lease: Lease) -> None:
+    def save(self, lease: Lease, *, trigger: str, mode: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        tmp = self.path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(lease.__dict__, fh)
+            json.dump({**lease.__dict__, "trigger": trigger, "mode": mode}, fh)
+        os.replace(tmp, self.path)
 
-    def load(self) -> Lease | None:
+    def load(self) -> tuple[Lease, str, str] | None:
+        """(lease, trigger, mode) or None; a corrupt file is removed and reported as None."""
         if not self.path.exists():
             return None
-        return Lease(**json.loads(self.path.read_text(encoding="utf-8")))
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            lease = Lease(data["run_id"], data["lease_token"], data["lease_expires_at"], data["attempt"])
+            return lease, data.get("trigger", "owner_cli"), data.get("mode", "live")
+        except (ValueError, KeyError, TypeError):
+            self.clear()
+            return None
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)
@@ -2150,11 +2303,12 @@ class RunState:
 - Test: `tests/worker/test_pipeline.py` (end to end: fake rclone, fake claude, real API through `TestClient`, synthetic encrypted PDFs)
 
 **Interfaces:**
-- `pipeline.Services(cfg, api: ApiClient, drive: Drive, inbox: Inbox, index: SourceIndex, retries: RetryLog, store: ObjectStore, parser: Parser, gate: Gate, candidates: Candidates, credential_version: str, masker: Masker, runner)` assembled by `pipeline.build(cfg, client: httpx.Client, runner: Runner) -> Services` (reads the token file, password file, identity). `pipeline.RetryLog(path)` (`<state_dir>/retries.json`, 0600): per sha256 `{transient_attempts: int, store_pending: bool}` — the worker's own transient epoch (reset on any non-transient outcome; AGENT-95 Should) and the "object not yet stored" flag (ruling 10).
+- `pipeline.Services(cfg, api: ApiClient, drive: Drive, inbox: Inbox, index: SourceIndex, retries: RetryLog, store: ObjectStore, parser: Parser, gate: Gate, candidates: Candidates, credential_version: str, masker: Masker, runner)` assembled by `pipeline.build(cfg, client: httpx.Client, runner: Runner) -> Services` (reads the token file, password file, identity). `pipeline.RetryLog(path)` (`<state_dir>/retries.json`, 0600): per sha256 `{transient_attempts: int, sandbox_failed_at: str | None, store: {pending: bool, attempts: int, next_at: str | None}}` and per Drive identity `acquire:<drive_file_id>:<md5>` → `{attempts, next_at}` (durable backoff for pre-registration failures, AGENT-96 Should). Storage has its own due/attempt state (AGENT-96 Must 4): `store.attempts` follows the same 1h/6h/24h/max-5 ladder; a missing object for an already **parsed** file never changes the file's API status (local `store.pending` only); only a file that was never parsed gets `failed/transient` from a storage failure. `exists()` and `put()` are both guarded.
 - `pipeline.run(services, *, trigger: str, mode: str = "live", initiator_hint: str | None = None, acknowledge_live_periods: bool = False) -> dict` (the summary): creates and claims the run, lists Drive, acquires new/changed sources, processes every file that is `new` or retry-eligible, marks removed sources, finishes the run. Returns the summary dict `{"listed", "new_files", "parsed", "needs_review", "failed", "ignored", "skipped", "unchanged", "transient", "cases_opened", "live_revisions", "errors": [...]}` with counts only (no file names). `unchanged` = files whose row is not retry-eligible this run (parsed, or failed with the same version); `skipped` = files not processed because the parser was disabled during this run. An item whose `(drive_file_id, md5)` is in the `SourceIndex` and whose file row exists in `GET /statements/files` is not downloaded; its bytes are read from the inbox only when it needs processing (missing inbox object → re-acquire).
 - `pipeline.process_file(services, lease, file_row: dict, listed: Listed, data: bytes, account_map, mapping_version, summary) -> str` returns the final status and performs: mapping (`account_map[f"{root}/{folder[:2 levels]}"]` else `ignored/mapping`), unlock (`failed/password` on `PasswordError`, index not persisted; `failed/parse` on `pdf.Malformed`), extract (`needs_review/no_text_layer`, `needs_review/too_large`, `failed/transient` on timeout), mask + render, parse (`failed/parse` on schema/exit; `failed/transient` on timeout; `failed/sandbox` on `sandbox`/`cli_version`/`auth` → `services.gate.latch(...)`, every later file of this run is `skipped`, and the run finishes **`failed`** with `errors: ["parser_disabled"]` — ruling 9), submit (`parsed`, or `needs_review/guardrail` when `guardrail_ok` is false; the revision is still stored by the API). `LeaseLost` (from the API or the local guard) propagates and aborts the run.
-- Retry eligibility (`pipeline.retry_due(file_row, retry: dict, now, credential_version, mapping_version, parser_version) -> bool`): `status in ('new','unlocked')` always; `failure == 'transient'` and (`next_retry_at` is None or ≤ now) and `retry['transient_attempts'] < 5` (the worker's own epoch, not the server's cumulative `attempts`); `failure == 'password'` and `credential_version` differs; `failure == 'mapping'` and `mapping_version` differs; `failure in ('parse','guardrail','no_text_layer','too_large')` and `parser_version` differs; `failure == 'sandbox'` only when the latch is clear **and** `parser_version` differs or the gate evidence is newer than the file's `parsed_at`/update (sandbox recovery is operator-driven, ruling 9). Backoff for `transient`: `next_retry_at = now + {1: 1h, 2: 6h, 3+: 24h}[transient_attempts]`; any non-transient outcome resets `transient_attempts` to 0. Tests pin the 1h/6h/24h steps and the max-5 boundary.
+- Retry eligibility (`pipeline.retry_due(file_row, retry: dict, now, credential_version, mapping_version, parser_version) -> bool`): `status in ('new','unlocked')` always; `failure == 'transient'` and (`next_retry_at` is None or ≤ now) and `retry['transient_attempts'] < 5` (the worker's own epoch, not the server's cumulative `attempts`); `failure == 'password'` and `credential_version` differs; `failure == 'mapping'` and `mapping_version` differs; `failure in ('parse','guardrail','no_text_layer','too_large')` and `parser_version` differs; `failure == 'sandbox'` only when the latch is clear **and** (`parser_version` differs **or** `gate.json` is ok with `checked_at` newer than `retry['sandbox_failed_at']`) (ruling 14). Backoff for `transient`: `next_retry_at = now + {1: 1h, 2: 6h, 3+: 24h}[transient_attempts]`; any non-transient outcome resets `transient_attempts` to 0. Tests pin the 1h/6h/24h steps and the max-5 boundary.
 - Live-period acknowledgement (ruling 13): `backfill` requires `--acknowledge-live-periods`; without it the CLI exits 2 with `backfill may touch live periods; pass --acknowledge-live-periods` and no run is created. The live-period count is reported in the run summary afterwards (`live_revisions`).
+- `pipeline.poll(services, *, initiator_hint) -> dict`: first `resume_or_none` (a crashed poll run is resumed/reclaimed before any new queue work), then for each queued run → `claim` → `run(..., trigger='enqueue', lease=claimed)`; returns the last summary with `claimed` = number of runs processed.
 - Full runs (`trigger in ('timer','owner_cli')`, i.e. `run`/`backfill`, not `poll`) end with the daily sweep: `POST /reconciliation/sweep` under the lease (`api.sweep(lease) -> dict`); its counts go to `summary.sweep` (`reconciled`, `busy`, `errors`), a 409 there is recorded as `sweep: busy`, not an abort (ruling 13, §4.6).
 - Run summary `versions`: `{"parser_version", "cli_version", "model", "credential_version", "mapping_version"}` (ruling 13).
 - Restart recovery: `run()` first consults `api.RunState(<state_dir>/run.json)`; a saved lease that still renews is resumed (`summary.resumed = True`, same run id, no new run), otherwise the file is discarded and a new run is created. The state file is written right after the claim and removed after `finish`.
@@ -2336,13 +2490,21 @@ def test_gate_runs_before_the_first_parse(world, db_session, tmp_path):
     assert _file_rows(db_session) == [("new", None)]  # acquired and registered, never parsed
 
 
+def _shift(monkeypatch, hours):
+    import datetime as dt
+    monkeypatch.setattr(pipeline, "_now", lambda: dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=hours))
+
+
 def test_store_pending_is_retried_independently_of_parse(world, db_session, monkeypatch):
     services, _, cfg = world
-    calls = {"put": 0}
+    calls = {"put": 0, "exists": 0}
 
     class FlakyStore:
         def exists(self, key):
-            return calls["put"] > 0
+            calls["exists"] += 1
+            if calls["exists"] == 2:
+                raise ConnectionError("stat failed")  # transport failure on stat is guarded too
+            return calls["put"] > 1
 
         def put(self, key, path):
             calls["put"] += 1
@@ -2352,43 +2514,53 @@ def test_store_pending_is_retried_independently_of_parse(world, db_session, monk
     services.store = FlakyStore()
     first = pipeline.run(services, trigger="owner_cli")
     assert first["transient"] == 1 and _file_rows(db_session) == [("failed", "transient")]
-    second = pipeline.run(services, trigger="owner_cli")
-    assert calls["put"] == 2 and second["parsed"] == 1 and services.drive_downloads == 1
+    sha = db_session.execute(text("select sha256 from statement_file")).scalar_one()
+    assert services.retries.get(sha)["store"]["attempts"] == 1 and services.retries.get(sha)["transient_attempts"] == 0
+    immediate = pipeline.run(services, trigger="owner_cli")  # not due yet: no second put, no ladder bump
+    assert calls["put"] == 1 and immediate["deferred"] == 1 and services.retries.get(sha)["store"]["attempts"] == 1
+    _shift(monkeypatch, 2)
+    third = pipeline.run(services, trigger="owner_cli")  # due: stat raises → attempt 2, still not parsed
+    assert calls["exists"] == 2 and services.retries.get(sha)["store"]["attempts"] == 2 and third["parsed"] == 0
+    _shift(monkeypatch, 9)
+    fourth = pipeline.run(services, trigger="owner_cli")  # due again: put succeeds, parse proceeds
+    assert calls["put"] == 2 and fourth["parsed"] == 1 and services.drive_downloads == 1
 
 
-def test_transient_backoff_uses_the_worker_epoch(world, db_session, monkeypatch):
+def test_enabling_minio_later_never_touches_a_parsed_file(world, db_session):
     services, _, cfg = world
-    services.drive.download = lambda item, dest: (_ for _ in ()).throw(__import__("worker.drive", fromlist=["x"]).DownloadError("x"))
-    for _ in range(2):
-        pipeline.run(services, trigger="owner_cli")
-    # pre-registration failures: no row, no durable backoff (documented); now a registered transient failure:
-    services.drive.download = services.drive.__class__.download.__get__(services.drive)
-    monkeypatch.setattr(services.store, "put", lambda key, path: (_ for _ in ()).throw(RuntimeError("down")))
-    monkeypatch.setattr(services.store, "exists", lambda key: False)
-    times = []
-    for n in range(6):
-        summary = pipeline.run(services, trigger="owner_cli")
-        row = db_session.execute(text("select next_retry_at from statement_file")).scalar_one()
-        times.append(row)
-        monkeypatch.setattr(pipeline, "_now", lambda r=row: r + __import__("datetime").timedelta(seconds=1))
-    retry = services.retries.get(db_session.execute(text("select sha256 from statement_file")).scalar_one())
-    assert retry["transient_attempts"] == 5 and summary["unchanged"] == 0 and summary["deferred"] == 1
-    deltas = [(times[1] - times[0]), (times[2] - times[1])]
-    assert deltas[0] >= __import__("datetime").timedelta(hours=5, minutes=59) and deltas[1] >= __import__("datetime").timedelta(hours=23, minutes=59)
+    pipeline.run(services, trigger="owner_cli")  # NullStore: parsed
+    sha = db_session.execute(text("select sha256 from statement_file")).scalar_one()
+    services.retries.set(sha, store={"pending": True, "attempts": 0, "next_at": None})  # as if MinIO was just configured
 
+    class Down:
+        def exists(self, key):
+            return False
 
-def test_md5_mismatch_is_transient(world, db_session, tmp_path):
-    services, drive_files, cfg = world
-    real = services.drive.download
+        def put(self, key, path):
+            raise RuntimeError("down")
 
-    def corrupt(item, dest):
-        real(item, dest)
-        dest.write_bytes(b"%PDF-1.4 corrupted")
-
-    services.drive.download = corrupt
+    services.store = Down()
     summary = pipeline.run(services, trigger="owner_cli")
-    assert summary["failed"] == 0 and summary["errors"] and _counts(db_session)["statement_file"] == 0
-    assert summary["transient"] == 1
+    assert _file_rows(db_session) == [("parsed", None)] and summary["unchanged"] == 1 and "store" in summary["errors"]
+
+
+def test_transient_backoff_ladders(world, db_session, monkeypatch):
+    """Acquisition failures: identity-keyed 1h/6h/24h backoff; storage failures: per-sha ladder, max 5."""
+    services, drive_files, cfg = world
+    from worker import drive as drive_mod
+    import hashlib
+    ident = "acquire:id-1:" + hashlib.md5(drive_files["id-1"][1]).hexdigest()
+    real_download = services.drive.download
+    services.drive.download = lambda item, dest: (_ for _ in ()).throw(drive_mod.DownloadError("x"))
+    pipeline.run(services, trigger="owner_cli")
+    assert services.retries.get(ident)["attempts"] == 1 and pipeline.run(services, trigger="owner_cli")["deferred"] == 1
+    _shift(monkeypatch, 2)
+    pipeline.run(services, trigger="owner_cli")
+    assert services.retries.get(ident)["attempts"] == 2  # 1h step passed, second failure
+    _shift(monkeypatch, 9)
+    services.drive.download = real_download
+    pipeline.run(services, trigger="owner_cli")  # 6h step passed: success resets the identity ladder
+    assert services.retries.get(ident)["attempts"] == 0 and _file_rows(db_session) == [("parsed", None)]
 
 
 def test_lease_lost_during_parse_blocks_the_submission(world, db_session, monkeypatch):
@@ -2402,8 +2574,14 @@ def test_lease_lost_during_parse_blocks_the_submission(world, db_session, monkey
         return out
 
     monkeypatch.setattr(services.parser, "parse", parse_then_lose)
-    real_submit = services.api.submit_revision
-    monkeypatch.setattr(services.api, "submit_revision", lambda lease, body: sent.append(1) or real_submit(lease, body))
+    real_request = services.api.client.request
+
+    def spy(method, url, **kw):  # the transport boundary: a blocked call never reaches here
+        if str(url).endswith("/statements/revisions"):
+            sent.append(1)
+        return real_request(method, url, **kw)
+
+    monkeypatch.setattr(services.api.client, "request", spy)
     with pytest.raises(pipeline.RunAborted):
         pipeline.run(services, trigger="owner_cli")
     assert sent == [] and db_session.execute(text("select count(*) from statement_revision")).scalar_one() == 0
@@ -2421,6 +2599,44 @@ def test_crash_after_claim_resumes_the_same_run(world, db_session, monkeypatch):
     assert summary["resumed"] is True and summary["parsed"] == 1
     assert db_session.execute(text("select count(*) from ingest_run")).scalar_one() == 1
     assert not (cfg.state_dir / "run.json").exists()
+
+
+def test_expired_lease_is_reclaimed_on_restart(world, db_session, monkeypatch):
+    services, _, cfg = world
+    monkeypatch.setattr(services.drive, "list_pdfs", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.run(services, trigger="owner_cli")
+    monkeypatch.undo()
+    db_session.execute(text("update ingest_run set lease_expires_at = now() - interval '1 hour'"))
+    db_session.commit()
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["resumed"] is True and summary["parsed"] == 1
+    assert db_session.execute(text("select count(*), max(attempt) from ingest_run")).one() == (1, 2)
+
+
+def test_poll_resumes_its_own_crashed_run_first(world, db_session, monkeypatch, client):
+    services, _, cfg = world
+    client.post("/statements/ingest/run", headers={"Authorization": "Bearer hermes-token"})
+    monkeypatch.setattr(services.drive, "list_pdfs", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.poll(services, initiator_hint="t")
+    assert (cfg.state_dir / "run.json").exists()
+    monkeypatch.undo()
+    summary = pipeline.poll(services, initiator_hint="t")
+    assert summary["resumed"] is True and summary["claimed"] == 1 and summary["parsed"] == 1
+    assert db_session.execute(text("select count(*) from ingest_run")).scalar_one() == 1
+
+
+def test_sandbox_recovery_after_an_operator_gate_at_the_same_version(world, db_session, tmp_path):
+    services, _, cfg = world
+    services.gate.ensure(services.parser)
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))
+    pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "sandbox")]
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    assert services.gate.run_operator_gate(services.parser).ok
+    summary = pipeline.run(services, trigger="owner_cli")  # same parser_version, newer gate → due again
+    assert summary["parsed"] == 1 and _file_rows(db_session) == [("parsed", None)]
 
 
 def test_backfill_needs_acknowledgement(world):
@@ -2499,8 +2715,10 @@ class RetryLog:
         if path.exists():
             self.data = json.loads(path.read_text(encoding="utf-8"))
 
-    def get(self, sha: str) -> dict:
-        return dict(self.data.get(sha) or {"transient_attempts": 0, "store_pending": False})
+    def get(self, key: str) -> dict:
+        default = {"transient_attempts": 0, "sandbox_failed_at": None,
+                   "store": {"pending": True, "attempts": 0, "next_at": None}, "attempts": 0, "next_at": None}
+        return {**default, **(self.data.get(key) or {})}
 
     def set(self, sha: str, **fields) -> None:
         self.data[sha] = {**self.get(sha), **fields}
@@ -2612,16 +2830,17 @@ class Summary:
         return dict(self.__dict__)
 
 
-def _fail(services: Services, lease: Lease, file_row: dict, failure: str, summary: Summary, **versions) -> str:
+def _fail(services: Services, lease: Lease, file_row: dict, failure: str, summary: Summary, _epoch: bool = True,
+          **versions) -> str:
     sha = file_row["sha256"]
     fields = {"status": "failed", "failure": failure, **versions}
     if failure == "transient":
-        attempts = services.retries.get(sha)["transient_attempts"] + 1
+        attempts = services.retries.get(sha)["transient_attempts"] + (1 if _epoch else 0)
         services.retries.set(sha, transient_attempts=attempts)
-        fields["next_retry_at"] = (_now() + BACKOFF.get(attempts, timedelta(hours=24))).isoformat()
+        fields["next_retry_at"] = (_now() + BACKOFF.get(max(attempts, 1), timedelta(hours=24))).isoformat()
         summary.transient += 1
     else:
-        services.retries.set(sha, transient_attempts=0)
+        services.retries.set(sha, transient_attempts=0, sandbox_failed_at=_now().isoformat() if failure == "sandbox" else None)
         summary.failed += 1
     services.api.update_file(lease, file_row["id"], **fields)
     return "failed"
@@ -2714,10 +2933,24 @@ def _download_verified(services: Services, listed: drive_mod.Listed, summary: Su
     Returns (Published, Listed-as-verified) or None (transient, counted)."""
     staged = services.cfg.staging_dir / f"{listed.drive_file_id}.tmp"
     inbox_mod.private_dir(services.cfg.staging_dir)
+    ident = f"acquire:{listed.drive_file_id}:{listed.md5}"
+    backoff = services.retries.get(ident)
+    if backoff["next_at"] and datetime.fromisoformat(backoff["next_at"]) > _now():
+        summary.deferred += 1
+        return None
     for attempt in (1, 2):
         try:
+            if listed.size > inbox_mod.MAX_PDF_BYTES:  # re-checked for a refreshed identity (AGENT-96 Must 8)
+                summary.too_large += 1
+                return None
             services.drive.download(listed, staged)
-            return services.inbox.publish(staged, expected_md5=listed.md5, expected_size=listed.size), listed
+            if staged.stat().st_size > inbox_mod.MAX_PDF_BYTES:  # the download itself is byte-bounded
+                staged.unlink(missing_ok=True)
+                summary.too_large += 1
+                return None
+            published = services.inbox.publish(staged, expected_md5=listed.md5, expected_size=listed.size)
+            services.retries.set(ident, attempts=0, next_at=None)
+            return published, listed
         except inbox_mod.VerifyError:
             if attempt == 2:
                 break
@@ -2730,6 +2963,8 @@ def _download_verified(services: Services, listed: drive_mod.Listed, summary: Su
             listed = fresh
         except drive_mod.DownloadError:
             break
+    attempts = backoff["attempts"] + 1
+    services.retries.set(ident, attempts=attempts, next_at=(_now() + BACKOFF.get(attempts, timedelta(hours=24))).isoformat())
     summary.transient += 1
     if "download" not in summary.errors:
         summary.errors.append("download")
@@ -2737,19 +2972,30 @@ def _download_verified(services: Services, listed: drive_mod.Listed, summary: Su
 
 
 def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_path: Path, summary: Summary) -> bool:
-    key = f"by-sha/{file_row['sha256']}.pdf"
-    if services.store.exists(key):
-        services.retries.set(file_row["sha256"], store_pending=False)
+    """Storage has its own due/attempt ladder (AGENT-96 Must 4). Returns False only when the file may not proceed
+    to parsing this run (never parsed + object not stored); a parsed file keeps its status whatever the store says."""
+    sha = file_row["sha256"]
+    store = services.retries.get(sha)["store"]
+    if not store["pending"]:
         return True
+    if store["next_at"] and datetime.fromisoformat(store["next_at"]) > _now():
+        return file_row["status"] == "parsed"
+    if store["attempts"] >= MAX_TRANSIENT:
+        return file_row["status"] == "parsed"
+    key = f"by-sha/{sha}.pdf"
     try:
-        services.store.put(key, published_path)
+        if not services.store.exists(key):
+            services.store.put(key, published_path)
     except Exception:  # noqa: BLE001 — MinIO failures are transient by the §5.1 matrix
+        attempts = store["attempts"] + 1
+        services.retries.set(sha, store={"pending": True, "attempts": attempts,
+                                         "next_at": (_now() + BACKOFF.get(attempts, timedelta(hours=24))).isoformat()})
         if "store" not in summary.errors:
             summary.errors.append("store")
-        services.retries.set(file_row["sha256"], store_pending=True)
-        _fail(services, lease, file_row, "transient", summary)
-        return False
-    services.retries.set(file_row["sha256"], store_pending=False)
+        if file_row["status"] != "parsed":
+            _fail(services, lease, file_row, "transient", summary, _epoch=False)
+        return file_row["status"] == "parsed"
+    services.retries.set(sha, store={"pending": False, "attempts": 0, "next_at": None})
     return True
 
 
@@ -2791,6 +3037,28 @@ def _sweep(services: Services, lease: Lease, summary: Summary) -> None:
         summary.sweep = {"error": "busy" if exc.status == 409 else "failed"}
 
 
+def resume_or_none(services: Services, state: RunState, summary: Summary) -> Lease | None:
+    """§4.1 restart recovery: renew → resume; expired → reclaim the same run; refused → discard."""
+    saved = state.load()
+    if saved is None:
+        return None
+    lease, trigger, mode = saved
+    try:
+        services.api.renew(lease)
+        summary.resumed = True
+        return lease
+    except ApiError:
+        pass
+    try:
+        fresh = services.api.claim(lease.run_id)
+        summary.resumed = True
+        state.save(fresh, trigger=trigger, mode=mode)
+        return fresh
+    except ApiError:
+        state.clear()
+        return None
+
+
 def run(services: Services, *, trigger: str, mode: str = "live", initiator_hint: str | None = None,
         acknowledge_live_periods: bool = False, lease: Lease | None = None) -> dict:
     if mode == "backfill" and not acknowledge_live_periods:
@@ -2798,16 +3066,12 @@ def run(services: Services, *, trigger: str, mode: str = "live", initiator_hint:
     summary = Summary()
     state = RunState(services.cfg.state_dir / "run.json")
     if lease is None:
-        saved = state.load()
-        if saved is not None:
-            try:
-                services.api.renew(saved)
-                lease, summary.resumed = saved, True
-            except ApiError:
-                state.clear()
+        lease = resume_or_none(services, state, summary)
         if lease is None:
             lease = services.api.create_run(trigger, mode, initiator_hint)
-            state.save(lease)
+            state.save(lease, trigger=trigger, mode=mode)
+    else:
+        state.save(lease, trigger=trigger, mode=mode)  # poll's claimed lease is persisted too (AGENT-96 Must 5)
     summary.versions = {"parser_version": services.parser_version, "cli_version": services.cli_version,
                         "model": services.cfg.parser_model, "credential_version": services.credential_version}
     status = "failed"
@@ -2858,16 +3122,35 @@ def run(services: Services, *, trigger: str, mode: str = "live", initiator_hint:
             summary.errors.append("lease_lost")
         raise RunAborted("lease lost") from exc
     finally:
-        services.keeper = None
-        try:
+        try:  # the guard stays armed (services.keeper is still set) so a lost lease cannot "finish" either
             services.api.finish(lease, status, summary.as_dict())
             state.clear()
         except ApiError:
             pass
+        services.keeper = None
     return summary.as_dict()
 ```
 
-`ApiClient.sweep(lease) -> dict` = `POST /reconciliation/sweep` with the lease body (route exists since R1b; `ingest` scope). The pipeline's `known` map and `retry_due` rely on `status`, `failure`, `next_retry_at`, `credential_version`, `mapping_version`, `parser_version` from `FileOut` (Task 6 added the three version fields). On `KeyboardInterrupt`/`SystemExit` inside `run`, the `finally` still calls `finish(...)` — change that: only `ApiError`-free normal completion or `RunAborted` finish the run; an interrupt (`BaseException` that is not `Exception`) leaves the run `claimed`/`running` with `run.json` intact so the next start resumes it (`test_crash_after_claim_resumes_the_same_run`). Implement by catching `BaseException` around the body: `except Exception` paths finish, `except BaseException: raise` without finishing.
+`ApiClient.sweep(lease) -> dict` = `POST /reconciliation/sweep` with the lease body (route exists since R1b; `ingest` scope). `pipeline.poll` is:
+
+```python
+def poll(services: Services, *, initiator_hint: str | None) -> dict:
+    summary: dict = {"claimed": 0}
+    state = RunState(services.cfg.state_dir / "run.json")
+    saved = state.load()
+    resumed = resume_or_none(services, state, Summary())
+    if resumed is not None:
+        summary = run(services, trigger=saved[1] if saved else "enqueue", mode=saved[2] if saved else "live",
+                      lease=resumed, initiator_hint=initiator_hint)
+        summary["claimed"] = 1
+    for queued in services.api.queued_runs():
+        lease = services.api.claim(queued["id"])
+        summary = run(services, trigger="enqueue", lease=lease, initiator_hint=initiator_hint)
+        summary["claimed"] = summary.get("claimed", 0) + 1
+    return summary
+```
+
+(`run(..., lease=resumed)` sees `summary.resumed` only through its own `state.save` path; set `summary["resumed"] = True` in `poll` when `resumed` came from the state file.) The pipeline's `known` map and `retry_due` rely on `status`, `failure`, `next_retry_at`, `credential_version`, `mapping_version`, `parser_version` from `FileOut` (Task 6 added the three version fields). On `KeyboardInterrupt`/`SystemExit` inside `run`, the `finally` still calls `finish(...)` — change that: only `ApiError`-free normal completion or `RunAborted` finish the run; an interrupt (`BaseException` that is not `Exception`) leaves the run `claimed`/`running` with `run.json` intact so the next start resumes it (`test_crash_after_claim_resumes_the_same_run`). Implement by catching `BaseException` around the body: `except Exception` paths finish, `except BaseException: raise` without finishing.
 
 `worker/cli.py`:
 
@@ -2910,25 +3193,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "gate":
         from worker.parser import Gate, Parser
 
-        report = Gate(cfg).run_operator_gate(Parser(cfg, runner))
-        print(json.dumps(report.__dict__, ensure_ascii=False, indent=2))
+        worker_parser = Parser(cfg, runner)
+        verify_parser = Parser(cfg, runner, config_dir=cfg.verify_parser_config_dir, credentials_writable=False) \
+            if cfg.verify_parser_config_dir.exists() else None
+        report = Gate(cfg).run_operator_gate(worker_parser, verify_parser=verify_parser, host_checks=cfg.parser_sandbox)
+        print(json.dumps(report.__dict__, ensure_ascii=False, indent=2, default=str))
         return 0 if report.ok else 1
     if args.cmd in ("export-masked", "verify"):
         from worker import verify
+        from worker.parser import ParserDisabled
 
         try:
             with pipeline.singleton(cfg):
                 if args.cmd == "export-masked":
-                    print(json.dumps(verify.export_masked(cfg, runner, folder=args.folder, limit=args.limit)))
+                    result = verify.export_masked(cfg, runner, folder=args.folder, limit=args.limit)
                 else:
-                    print(json.dumps(verify.run(cfg, runner, limit=args.limit), ensure_ascii=False))
+                    result = verify.run(cfg, runner, limit=args.limit)
+                print(json.dumps(result, ensure_ascii=False))
         except pipeline.AlreadyRunning:
             print("already running")
             return 0
-        except pipeline.Refused as exc:
+        except (pipeline.Refused, verify.Refused) as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        return 0
+        except ParserDisabled as exc:
+            print(f"parser disabled: {exc}", file=sys.stderr)
+            return 1
+        return 1 if result.get("errors") or result.get("listing_failed") else 0
     try:
         with pipeline.singleton(cfg), httpx.Client(base_url=cfg.api_url, timeout=60) as client:  # noqa: SIM117
             services = pipeline.build(cfg, client, runner)
@@ -2939,11 +3230,7 @@ def main(argv: list[str] | None = None) -> int:
                 summary = pipeline.run(services, trigger="owner_cli", mode="backfill", initiator_hint=hint,
                                        acknowledge_live_periods=args.acknowledge_live_periods)
             else:
-                summary = {"claimed": 0}
-                for queued in services.api.queued_runs():
-                    lease = services.api.claim(queued["id"])
-                    summary = pipeline.run(services, trigger="enqueue", lease=lease, initiator_hint=hint)
-                    summary["claimed"] = 1
+                summary = pipeline.poll(services, initiator_hint=hint)
             print(json.dumps(summary, ensure_ascii=False))
             return 1 if summary.get("errors") else 0
     except pipeline.AlreadyRunning:
@@ -2963,7 +3250,7 @@ if __name__ == "__main__":
 
 `worker/__main__.py`: `from worker.cli import main; raise SystemExit(main())`.
 
-- [ ] **Step 4:** run `tests/worker/test_pipeline.py -v`; `test_md5_mismatch_is_transient` expects no `statement_file` row (publish refused before registration). All 15 pass; then the whole suite.
+- [ ] **Step 4:** run `tests/worker/test_pipeline.py -v`; `test_md5_mismatch_is_transient` expects no `statement_file` row (publish refused before registration). Expected: all 20 pass; then the whole suite.
 - [ ] **Step 5:** commit `feat(worker): pipeline, retry rules, singleton, CLI`.
 
 ---
@@ -3106,25 +3393,37 @@ def test_export_masked_refuses_mismatched_bytes(tmp_path):
 
 @pytest.fixture
 def ro_url(pg_engine):
-    """A SELECT-only role on the test database (ruling 11), dropped afterwards."""
-    from sqlalchemy import create_engine
-    with pg_engine.connect() as conn:
-        conn.execute(text("DROP ROLE IF EXISTS verify_ro"))
-        conn.execute(text("CREATE ROLE verify_ro LOGIN PASSWORD 'ro'"))
-        conn.execute(text("GRANT USAGE ON SCHEMA public TO verify_ro"))
-        conn.execute(text("GRANT SELECT ON ALL TABLES IN SCHEMA public TO verify_ro"))
-        conn.execute(text("ALTER ROLE verify_ro SET default_transaction_read_only = on"))
-        conn.commit()
-    url = pg_engine.url.set(username="verify_ro", password="ro")
-    yield url.render_as_string(hide_password=False)
-    with pg_engine.connect() as conn:
-        conn.execute(text("REASSIGN OWNED BY verify_ro TO CURRENT_USER"))
-        conn.execute(text("DROP OWNED BY verify_ro"))
-        conn.execute(text("DROP ROLE verify_ro"))
-        conn.commit()
+    """A SELECT-only role (ruling 11) with a unique, fixture-owned name; only what this fixture created is dropped."""
+    import uuid
+    name = f"verify_ro_{uuid.uuid4().hex[:12]}"
+    created = False
+    try:
+        with pg_engine.connect() as conn:
+            conn.execute(text(f"CREATE ROLE {name} LOGIN PASSWORD 'ro'"))
+            created = True
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {name}"))
+            conn.execute(text(f"GRANT SELECT ON ALL TABLES IN SCHEMA public TO {name}"))
+            conn.execute(text(f"ALTER ROLE {name} SET default_transaction_read_only = on"))
+            conn.commit()
+        yield pg_engine.url.set(username=name, password="ro").render_as_string(hide_password=False)
+    finally:
+        if created:
+            with pg_engine.connect() as conn:
+                conn.execute(text(f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM {name}"))
+                conn.execute(text(f"REVOKE ALL PRIVILEGES ON SCHEMA public FROM {name}"))
+                conn.execute(text(f"DROP ROLE {name}"))
+                conn.commit()
 
 
-def test_verify_requires_the_read_only_url(tmp_path):
+def _state_digest(db_session) -> dict:
+    """Content digest of EVERY public table (counts miss UPDATEs): md5 over all rows in their text form."""
+    names = db_session.execute(text("select table_name from information_schema.tables where table_schema='public' "
+                                    "and table_type='BASE TABLE' and table_name <> 'alembic_version'")).scalars().all()
+    return {t: db_session.execute(text(f'select coalesce(md5(string_agg(x::text, \'|\' order by x::text)), \'empty\') '
+                                       f'from (select r.* from "{t}" r) x')).scalar_one() for t in names}
+
+
+def test_verify_requires_the_read_only_url(tmp_path):def test_verify_requires_the_read_only_url(tmp_path):
     cfg = config.load({"STATEMENT_VERIFY_DIR": str(tmp_path / "v")})
     with pytest.raises(Exception, match="STATEMENT_VERIFY_DB_URL"):
         verify.run(cfg, SubprocessRunner(), limit=None)
@@ -3145,7 +3444,7 @@ def test_verify_run_reports_aggregates_and_caches_parses(tmp_path, db_session, s
                        "STATEMENT_PARSER_CLI": str(cli), "STATEMENT_PARSER_SANDBOX": "false",
                        "STATEMENT_PARSER_TIMEOUT": "5", "STATEMENT_PARSER_ATTEMPTS": "1",
                        "STATEMENT_ACCOUNT_MAP_FILE": str(tmp_path / "map.json"), "STATEMENT_VERIFY_DB_URL": ro_url})
-    before = _counts(db_session)
+    before = _state_digest(db_session)
     totals = verify.run(cfg, SubprocessRunner(), limit=None)
     assert totals["statements"] == 1 and totals["lines"] == 2 and totals["claims"] == 1 and totals["unmatched_lines"] == 1
     report = json.loads(next((tmp_path / "v" / "reports").glob("*.json")).read_text(encoding="utf-8"))
@@ -3154,15 +3453,47 @@ def test_verify_run_reports_aggregates_and_caches_parses(tmp_path, db_session, s
     assert len(list((tmp_path / "v" / "parsed").glob("*.json"))) == 1 and (tmp_path / "s" / "gate.json").exists()
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))  # would fail if re-parsed
     assert verify.run(cfg, SubprocessRunner(), limit=None)["statements"] == 1
-    assert _counts(db_session) == before
+    assert _state_digest(db_session) == before
 
 
-def test_verify_without_map_file_reads_settings_read_only(tmp_path, db_session, seed, ro_url, client):
-    """Policies/settings exist in the DB (PUT once as the owner); verify reads them SELECT-only and writes nothing."""
+def test_verify_latches_on_a_real_input_violation(tmp_path, db_session, seed, ro_url):
     account = seed.account("卡", is_credit=True)
+    db_session.commit()
+    masked = tmp_path / "v" / "masked"
+    masked.mkdir(parents=True)
+    (masked / ("ef" * 32 + ".txt")).write_text("masked", encoding="utf-8")
+    (masked / ("ef" * 32 + ".json")).write_text(json.dumps({"root": "mail", "folder": "信用卡/國泰世華", "name": "n",
+                                                            "kind": "card", "drive_file_id": "id-8", "md5": "0" * 32}), encoding="utf-8")
+    (tmp_path / "map.json").write_text(json.dumps({"mail/信用卡/國泰世華": account.id}), encoding="utf-8")
+    cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    cfg = config.load({"STATEMENT_VERIFY_DIR": str(tmp_path / "v"), "STATEMENT_STATE_DIR": str(tmp_path / "s"),
+                       "STATEMENT_PARSER_CLI": str(cli), "STATEMENT_PARSER_SANDBOX": "false",
+                       "STATEMENT_PARSER_TIMEOUT": "5", "STATEMENT_PARSER_ATTEMPTS": "1",
+                       "STATEMENT_ACCOUNT_MAP_FILE": str(tmp_path / "map.json"), "STATEMENT_VERIFY_DB_URL": ro_url})
+    from worker import parser as parser_mod
+    parser_mod.Gate(cfg).ensure(parser_mod.Parser(cfg, SubprocessRunner()))  # good canary cached
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(extra_tool=True))
+    totals = verify.run(cfg, SubprocessRunner(), limit=None)
+    assert totals["errors"] == ["sandbox"] and (tmp_path / "s" / "parser-disabled.json").exists()
+    with pytest.raises(parser_mod.ParserDisabled):
+        verify.run(cfg, SubprocessRunner(), limit=None)
+
+
+def test_verify_without_map_file_reads_settings_read_only(tmp_path, db_session, seed, ro_url, client, card):
+    """Settings with dirty triggers on, a live account and a reconciled statement with coverage exist (the closest
+    R2 can get to "policies enabled": the policy engine itself is R1c, so this acceptance is re-run there with a
+    seeded enabled policy); verify reads SELECT-only and the content digest of every table is unchanged."""
+    from tests.integration.test_statement_ingest_api import _claim, _revision
+    account = card
+    seed.entry(card, "-80", day=date(2026, 9, 4), name="COFFEE")
     db_session.commit()
     client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
                json={"account_map": {"mail/信用卡/國泰世華": account.id}, "dirty_enabled": True, "rules": {}})
+    lease = _claim(client)
+    body = {**_revision(lease, card, fake_claude.GOOD["lines"][:1], "80"), "period_start": "2026-09-01", "period_end": "2026-09-30"}
+    assert client.post("/statements/revisions", headers={"Authorization": "Bearer worker-token"}, json=body).status_code == 201
+    sid = db_session.execute(text("select id from account_statement")).scalar_one()
+    client.post(f"/accounts/{card.id}/statements/{sid}/reconcile", headers={"Authorization": "Bearer spa-token"})
     masked = tmp_path / "v" / "masked"
     masked.mkdir(parents=True)
     (masked / ("cd" * 32 + ".txt")).write_text("masked", encoding="utf-8")
@@ -3172,9 +3503,9 @@ def test_verify_without_map_file_reads_settings_read_only(tmp_path, db_session, 
     cfg = config.load({"STATEMENT_VERIFY_DIR": str(tmp_path / "v"), "STATEMENT_STATE_DIR": str(tmp_path / "s"),
                        "STATEMENT_PARSER_CLI": str(cli), "STATEMENT_PARSER_SANDBOX": "false",
                        "STATEMENT_PARSER_TIMEOUT": "5", "STATEMENT_PARSER_ATTEMPTS": "1", "STATEMENT_VERIFY_DB_URL": ro_url})
-    before = _counts(db_session)
+    before = _state_digest(db_session)
     assert verify.run(cfg, SubprocessRunner(), limit=None)["statements"] == 1
-    assert _counts(db_session) == before
+    assert _state_digest(db_session) == before
 ```
 
 - [ ] **Step 2:** run → import error.
@@ -3222,7 +3553,12 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
     box, index = inbox_mod.Inbox(verify_cfg), inbox_mod.SourceIndex(cfg.verify_dir / "sources.json")
     out = {"listed": 0, "exported": 0, "password": 0, "no_text_layer": 0, "too_large": 0, "errors": 0}
     masked_dir = inbox_mod.private_dir(cfg.verify_dir / "masked")
-    listing = [i for i in drv.list_pdfs() if folder is None or drive_mod.folder_of(i).startswith(folder)]
+    try:
+        listing = [i for i in drv.list_pdfs() if folder is None or drive_mod.folder_of(i).startswith(folder)]
+    except drive_mod.ListingError:
+        out["errors"] += 1
+        out["listing_failed"] = True  # bounded code; the exception text (with paths) never leaves the process
+        return out
     out["listed"] = len(listing)
     for item in listing:
         if limit is not None and out["exported"] >= limit:
@@ -3332,7 +3668,8 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
     if not cfg.verify_db_url:
         raise Refused("STATEMENT_VERIFY_DB_URL is required for verify (read-only role, ruling 11)")
     prs = parser_mod.Parser(cfg, runner, config_dir=cfg.verify_parser_config_dir, credentials_writable=False)
-    parser_mod.Gate(cfg).ensure(prs)  # raises ParserDisabled (ruling 9)
+    gate = parser_mod.Gate(cfg)
+    gate.ensure(prs)  # raises ParserDisabled (ruling 9)
     version = parse_schema.version(prs.cli_version() or "unknown", cfg.parser_model)
     masked_dir, parsed_dir = cfg.verify_dir / "masked", inbox_mod.private_dir(cfg.verify_dir / "parsed")
     reports = inbox_mod.private_dir(cfg.verify_dir / "reports")
@@ -3363,6 +3700,7 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
                     totals["parse_failed"] += 1
                     rows.append({"sha256": sha, "account_id": account_id, "error": exc.reason})
                     if exc.reason in ("sandbox", "cli_version", "auth"):
+                        gate.latch(f"{exc.reason} on verify input", gate.key(prs))  # ruling 14
                         totals["errors"].append(exc.reason)
                         break
                     continue
@@ -3397,8 +3735,8 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
     return totals
 ```
 
-`Claim.line_id` and `Case.kind` are the real field names (checked at a4a9207). `dataclasses.replace(cfg, state_dir=cfg.verify_dir)` gives verify its own inbox/staging under `verify_dir` without touching the run state dir. Check `Claim`'s field for the line id in `matching.py:122` (`line_id` or `line`) and `Case.kind` (`matching.py:128`) and 
-- [ ] **Step 4:** run → 9 passed; then the whole suite. The `ro_url` fixture needs the test role to be creatable by the test connection (the suite's Postgres user is a superuser on `stonk-postgres-1`; if not, skip the two `ro_url` tests with a clear reason and keep `test_verify_requires_the_read_only_url`).
+`Claim.line_id` and `Case.kind` are the real field names (checked at a4a9207). `dataclasses.replace(cfg, state_dir=cfg.verify_dir)` gives verify its own inbox/staging under `verify_dir` without touching the run state dir.
+- [ ] **Step 4:** run → expected 12 passed; then the whole suite. The `ro_url` fixture needs `CREATEROLE` on the test connection (the suite's Postgres user is a superuser on `stonk-postgres-1`). If it is not available, the role-backed tests **fail** (not skip) with a clear message: the no-state-change acceptance is part of the PR's verification and must be reported as unverified, never as passed. The `card` fixture is the one from `tests/integration/test_statement_ingest_api.py` (import it) or a local copy with `statement_live_from=date(2026, 9, 1)`.
 - [ ] **Step 5:** commit `feat(worker): export-masked snapshots and the read-only verify runner`.
 
 ---
@@ -3441,35 +3779,34 @@ Nice=10
 
 `deploy/statements/README.md`: enable with `systemctl --user enable --now homehub-statements-poll.timer homehub-statements-daily.timer` (linger already on for `opc`); `already running` exits 0 so overlapping ticks never fail the unit; the read-only DB role creation (ruling 11, exact SQL), the verify parser login copy (`STATEMENT_VERIFY_PARSER_CONFIG_DIR`, chmod 500 dir / 400 files, refreshed by copying after a successful operator `gate`), and the §3 checklist for the dedicated users.
 
-`gate.sh` (operator evidence, §5.5/§16 C7; runs as the worker principal, prints one JSON block, exits non-zero on any failed check):
+`gate.sh` (operator evidence, §5.5/§16 C7; ruling 16 — the checks live in `worker.parser.host_evidence`, this is the wrapper the deploy notes reference):
 ```bash
 #!/bin/sh
-# usage: deploy/statements/gate.sh  (env: STATEMENT_* as for the worker)
+# usage: deploy/statements/gate.sh  (env: STATEMENT_* as for the worker; STATEMENT_PARSER_SANDBOX must be true)
 set -eu
 cd "$(dirname "$0")/../.."
-PY=.venv/bin/python
-CFG_DIR="${STATEMENT_PARSER_CONFIG_DIR:-$HOME/.local/state/home-hub-parser/claude}"
-STAMP=$(mktemp)
-sleep 1
-# 1. the worker's own gate (ruling 9) — writes gate.json / clears or sets the latch
-GATE_JSON=$($PY -m worker gate) || { echo "$GATE_JSON"; exit 1; }
-# 2. nothing but the credentials file changed in the login dir during the canary
-CHANGED=$(find "$CFG_DIR" -newer "$STAMP" -type f ! -name .credentials.json | wc -l)
-# 3. the sandbox cannot read the host: /etc/passwd and $HOME are absent inside
-CMD=$($PY - <<'EOF'
-from worker import config, parser
-cfg = config.load()
-print(" ".join(parser.command(cfg, "{}")[:parser.command(cfg, "{}").index("--")]))
-EOF
-)
-if $CMD -- /usr/bin/cat /etc/passwd >/dev/null 2>&1; then PASSWD=readable; else PASSWD=unreadable; fi
-if $CMD -- /usr/bin/ls "$HOME" >/dev/null 2>&1; then HOMEDIR=readable; else HOMEDIR=unreadable; fi
-# 4. no stray child processes after the canary (the CLI's own children die with the session)
-STRAY=$(pgrep -u "$(id -u)" -f "/opt/claude/claude" | wc -l)
-printf '{"gate": %s, "login_dir_changed_files": %s, "etc_passwd": "%s", "home": "%s", "stray_parser_processes": %s}\n' \
-  "$GATE_JSON" "$CHANGED" "$PASSWD" "$HOMEDIR" "$STRAY"
-[ "$CHANGED" = 0 ] && [ "$PASSWD" = unreadable ] && [ "$HOMEDIR" = unreadable ] && [ "$STRAY" = 0 ]
+exec .venv/bin/python -m worker gate
 ```
+
+Read-only role recipe (ruling 11; run as the database superuser, `docker exec stonk-postgres-1 psql -U "$POSTGRES_USER" accounting_db`):
+```sql
+CREATE ROLE accounting_ro LOGIN PASSWORD '<generated>';
+GRANT CONNECT ON DATABASE accounting_db TO accounting_ro;
+GRANT USAGE ON SCHEMA public TO accounting_ro;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO accounting_ro;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO accounting_ro;
+ALTER ROLE accounting_ro SET default_transaction_read_only = on;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+-- audit (attach the output to the PR; it lists privileges only):
+SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolinherit FROM pg_roles WHERE rolname = 'accounting_ro';
+SELECT grantee, table_name, privilege_type FROM information_schema.role_table_grants
+ WHERE grantee IN ('accounting_ro', 'PUBLIC') AND table_schema = 'public' AND privilege_type <> 'SELECT';
+SELECT r.rolname AS member_of FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
+ JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = 'accounting_ro';
+-- denied write check against a disposable synthetic table only:
+-- as accounting_ro: SHOW transaction_read_only; (on)  INSERT INTO <synthetic> VALUES (1); (must fail: read-only)
+```
+Expected audit: no superuser/createrole/createdb, no non-SELECT grants for `accounting_ro` or `PUBLIC`, no role memberships. The URL goes into `~/.config/homehub-statements.env` as `STATEMENT_VERIFY_DB_URL` (0600) and nowhere else.
 
 - [ ] **Step 2:** README section "Statement ingest worker (R2)": env table (Task 2), commands, the interim-principal note (ruling 3), the parser config dir setup (`mkdir -p ~/.local/state/home-hub-parser/claude && cp ~/.claude/.credentials.json ~/.local/state/home-hub-parser/claude/ && chmod 700 … && chmod 600 …/.credentials.json`), token file (`ACCOUNTING_API_TOKENS` worker label value, mode 600), `verify` flow (`export-masked --for-verify` then `verify`), report location, and the §3 checklist for the dedicated users.
 - [ ] **Step 3:** spec §17, new sub-heading "R2 implementation notes (2026-10-xx, PR 'R2')" with rulings 1–13 verbatim, the stream-json evidence (tools `['StructuredOutput']`, `num_turns == 2`), and the explicit statement that ruling 3/11 is an accepted interim deviation from §3, not compliance.
@@ -3482,6 +3819,6 @@ printf '{"gate": %s, "login_dir_changed_files": %s, "etc_passwd": "%s", "home": 
 
 - [ ] **Step 1:** `.venv/bin/pytest -q` → 1378 + the new worker tests (≈ 85) pass; `openspec validate --all` clean; `alembic heads` unchanged (`f3b1d2c4a9e7`).
 - [ ] **Step 2:** `coderabbit review --agent --base main -t committed`; fix Critical/Warning items.
-- [ ] **Step 3:** operator smoke as `opc` (no production writes), **only after the owner creates the read-only role (ruling 11) and confirms the interim principal**: `deploy/statements/gate.sh` with `STATEMENT_PARSER_SANDBOX=true` against the real CLI and the copied credentials → JSON block with `gate.ok true`, `login_dir_changed_files 0`, `etc_passwd unreadable`, `home unreadable`, `stray_parser_processes 0` (pasted into the PR as is — no secrets in it); `python -m worker export-masked --for-verify --limit 2` then `python -m worker verify --limit 2` with a two-entry `STATEMENT_ACCOUNT_MAP_FILE` and `STATEMENT_VERIFY_DB_URL` on the read-only role → a report file exists, totals printed (aggregates only), and every table's `count(*)` unchanged (checked with the same `TABLES` list as the test).
+- [ ] **Step 3:** operator smoke as `opc` (no production writes), after the read-only role exists (ruling 11, owner-accepted 2026-10-10) — evidence attached to the PR, in this order (AGENT-96 M9 list): (1) the acceptance statement (principal `opc`, this plan/code SHA, scope `export-masked`+`verify` only, no real-data `run`, expiry = §3 user split); (2) the role audit output of Task 9 plus `SHOW transaction_read_only` / `SHOW transaction_isolation` from a verify session and the denied synthetic INSERT; (3) `deploy/statements/gate.sh` with `STATEMENT_PARSER_SANDBOX=true` against the real CLI, both logins (worker writable, verify read-only with a refresh attempt denied), the host checks all true and the processes-seen list; (4) the synthetic no-state-change test output (`_state_digest` equality) and, from the real run, `python -m worker export-masked --for-verify --limit 2` then `python -m worker verify --limit 2` with a two-entry `STATEMENT_ACCOUNT_MAP_FILE` → a report file exists, totals printed (aggregates only), and the `_state_digest` of the production database taken before and after by the owner session is identical.
 - [ ] **Step 4:** final whole-branch review (most capable model), one fix round, scoped re-review.
 - [ ] **Step 5:** push `feat/reconciliation-r2`, PR "feat(accounting): statement ingest worker R2 — Drive acquisition, sandboxed parser, verify mode" with: scope, rulings 1–13, the interim-principal deploy notes and the §3 checklist, no migration, no env change for the API (one new ingest-scope route behind the flag; `GET /settings/reconciliation` now SELECT-only), verification counts and the gate evidence block; Multica non-author review issue for lead-claude.
