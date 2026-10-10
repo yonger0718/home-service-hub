@@ -143,6 +143,10 @@ class StreamValidator:
                     self._bad(f"tools exposed: {len(tools)}")
             self._expect = "assistant"
             return
+        if kind == "system" and sub == "thinking_tokens":
+            if self._expect in ("init", "end"):
+                self._bad("thinking_tokens out of order")
+            return
         blocks: list[dict] = []
         if kind in ("assistant", "user"):
             message = event.get("message")
@@ -156,11 +160,12 @@ class StreamValidator:
             if self._expect != "assistant":
                 self._bad("assistant out of order")
             uses = [b for b in blocks if b.get("type") == "tool_use"]
-            if any(b.get("type") not in ("text", "tool_use") for b in blocks):
+            if any(b.get("type") not in ("thinking", "text", "tool_use") for b in blocks):
                 self._bad("assistant block of another type")
-            if len(uses) != 1:
-                self._bad(f"assistant tool_use count {len(uses)}")
-            self._tool_use_id = None
+            if len(uses) > 1 or (uses and env.tool_names):
+                self._bad(f"assistant tool_use count {len(uses) + len(env.tool_names)}")
+            if not uses:  # thinking/text only: the tool_use message is still to come
+                return
             for b in uses:
                 env.tool_names.append(str(b.get("name", ""))[:64])
                 if b.get("name") != STRUCTURED_TOOL:
@@ -206,8 +211,6 @@ class StreamValidator:
         if env.result_subtype is not None:  # a stream that never reached a result is an exit/timeout, not a violation
             if env.tool_names != [STRUCTURED_TOOL]:
                 self._bad(f"tool calls: {len(env.tool_names)}")
-            if env.assistant_messages != 1:
-                self._bad(f"assistant messages: {env.assistant_messages}")
         return env
 
 
@@ -538,14 +541,14 @@ def _descendant_comms(pid: int) -> set[str]:
         for line in out.splitlines():
             parts = line.split(None, 1)
             if len(parts) == 2 and parts[0].isdigit():
-                seen.add(parts[1].strip())
+                seen.add(parts[1].strip().removesuffix(" <defunct>"))
                 stack.append(int(parts[0]))
     return seen
 
 
 def host_evidence(cfg: WorkerConfig, parser: Parser) -> dict:
     """Host-side checks (§5.5/§16 C7): positive controls, host paths absent inside the sandbox, login dir unchanged
-    across a canary, and only bwrap/claude descendants of the sandbox child observed DURING the canary (100 ms)."""
+    across a canary, and only bwrap/claude/git (the CLI's own git child) descendants of the sandbox child observed DURING the canary (100 ms)."""
     argv = parser.argv()
     if not cfg.parser_sandbox:
         return {"ok_by_check": {"sandbox_enabled": False}}
@@ -589,6 +592,6 @@ def host_evidence(cfg: WorkerConfig, parser: Parser) -> dict:
     after = {p: p.stat().st_mtime for p in parser.config_dir.rglob("*") if p.is_file()}
     changed = sorted(str(p.relative_to(parser.config_dir)) for p in after if before.get(p) != after[p])
     checks["login_dir_unchanged"] = changed in ([], [".credentials.json"])
-    checks["only_cli_processes"] = bool(sampler) and not sampler_failed.is_set() and seen <= {"bwrap", "claude"}
+    checks["only_cli_processes"] = bool(sampler) and not sampler_failed.is_set() and seen <= {"bwrap", "claude", "git"}
     checks["canary"] = report.ok
     return {"ok_by_check": checks, "processes_seen": sorted(seen), "changed_files": changed}

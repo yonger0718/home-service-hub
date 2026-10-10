@@ -24,7 +24,8 @@ class Transcript(str):
 def transcript(output=GOOD, *, tools=("StructuredOutput",), tool_name="StructuredOutput", extra_tool=False,
                num_turns=2, subtype="success", hook_event=False, duplicate_result=False, garbage_line=False,
                message_not_object=False, user_extra_block=False, tool_result_id_mismatch=False,
-               assistant_extra_tool_use_after_text=False, no_ids=False, deep_json_line=False, sleep_after=0,
+               assistant_extra_tool_use_after_text=False, no_ids=False, deep_json_line=False,
+               thinking_prelude=False, other_system_subtype=False, assistant_after_user=False, sleep_after=0,
                flood_after=False):
     events = [{"type": "system", "subtype": "init", "tools": list(tools) if isinstance(tools, (tuple, list)) else tools, "claude_code_version": "2.1.296"}]
     if hook_event:
@@ -39,12 +40,20 @@ def transcript(output=GOOD, *, tools=("StructuredOutput",), tool_name="Structure
         for block in content:
             block.pop("id", None)
     assistant = {"type": "assistant", "message": "x" if message_not_object else {"content": content}}
+    if thinking_prelude:
+        events += [{"type": "system", "subtype": "thinking_tokens", "estimated_tokens": n,
+                    "estimated_tokens_delta": n} for n in (10, 20, 30)]
+        events.append({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": ""}]}})
+    if other_system_subtype:
+        events.append({"type": "system", "subtype": "other_subtype"})
     events.append(assistant)
     result_block = {"type": "tool_result", "tool_use_id": "toolu_other" if tool_result_id_mismatch else "toolu_1"}
     if no_ids:
         result_block.pop("tool_use_id")
     blocks = [result_block] + ([{"type": "text", "text": "extra"}] if user_extra_block else [])
     events.append({"type": "user", "message": {"content": blocks}})
+    if assistant_after_user:
+        events.append({"type": "assistant", "message": {"content": [{"type": "text", "text": "late"}]}})
     result = {"type": "result", "subtype": subtype, "num_turns": num_turns, "is_error": subtype != "success",
               "structured_output": output if subtype == "success" else None}
     if deep_json_line:

@@ -79,6 +79,8 @@ def test_version_pin(cfg, tmp_path):
     ({"tool_name": "Bash", "flood_after": True}, "sandbox"),
     ({"deep_json_line": True}, "sandbox"), ({"tools": 5}, "sandbox"), ({"tools": {"StructuredOutput": 1}}, "sandbox"),
     ({"no_ids": True}, "sandbox"),
+    ({"other_system_subtype": True}, "sandbox"), ({"assistant_after_user": True}, "sandbox"),
+    ({"thinking_prelude": True, "assistant_extra_tool_use_after_text": True}, "sandbox"),
     ({"subtype": "error_max_turns"}, "exit"), ({"exit_code": 1}, "exit"),
     ({"output": {**fake_claude.GOOD, "statement_total": "abc"}}, "schema")])
 def test_envelope_violations_and_precedence(cfg, tmp_path, variant, reason):
@@ -306,3 +308,14 @@ def test_raising_on_start_hook_surfaces_its_own_error(cfg):
         raise KeyError("hook")
     report = parser.Parser(cfg, SubprocessRunner()).gate(hook)
     assert not report.ok and report.reasons == ["error: KeyError"]
+
+
+def test_thinking_prelude_parses(cfg, tmp_path):
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(thinking_prelude=True))
+    assert parser.Parser(cfg, SubprocessRunner()).parse("x").statement_total == "580"
+
+
+def test_thinking_tokens_only_between_init_and_result():
+    v = parser.StreamValidator()
+    v.feed(b'{"type":"system","subtype":"thinking_tokens"}')
+    assert v.violation
