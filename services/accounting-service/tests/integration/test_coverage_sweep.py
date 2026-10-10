@@ -1,6 +1,7 @@
 """Dirty sweep (spec §4.6 "Dirty events" / "Sweep protocol"): the watermark scan over coverage_dirty releases claims
 whose ledger rows changed, opens/reopens recheck cases in live mode only and flags population changes."""
 import threading
+import time
 from datetime import date
 from decimal import Decimal
 
@@ -639,6 +640,51 @@ def test_a_failed_barrier_unlock_invalidates_the_connection(pg_engine, monkeypat
         assert _barrier_holders(pg_engine) == 0
     finally:
         fresh.close()
+
+
+@pytest.mark.parametrize("failure", ["python", "sql"])
+def test_barrier_taken_then_a_failing_timeout_restore_does_not_leak_it(pg_engine, monkeypatch, failure):
+    """The lock_timeout restore after the barrier was acquired fails (a Python error, or an SQL error that aborts the
+    transaction): the session-level barrier must not stay on the pooled connection."""
+    calls = []
+
+    class FuncProxy:
+        def __getattr__(self, name):
+            if name != "set_config":
+                return getattr(func, name)
+
+            def set_config(*args):
+                calls.append(args)
+                if len(calls) < 2:  # the bounded timeout; the second call restores it after the lock was taken
+                    return func.set_config(*args)
+                if failure == "python":
+                    raise RuntimeError("restore failed")
+                return func.set_config_no_such_function(*args)
+            return set_config
+
+    session = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:
+        pid = session.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        monkeypatch.setattr(cov, "func", FuncProxy())
+        with pytest.raises(Exception):
+            cov._committed_cap(session)
+        monkeypatch.undo()
+        assert len(calls) == 2
+        session.rollback()
+    finally:
+        session.close()
+    with pg_engine.connect() as conn:
+        held = None
+        for _ in range(40):  # an invalidated backend may take a moment to exit
+            held = conn.execute(text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = :key "
+                                     "AND pid = :pid"), {"key": cov.DIRTY_BARRIER_KEY, "pid": pid}).scalar_one()
+            if held == 0:
+                break
+            conn.rollback()
+            time.sleep(0.05)
+        assert held == 0
+        assert conn.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": cov.DIRTY_BARRIER_KEY}).scalar_one()
+        conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": cov.DIRTY_BARRIER_KEY})
 
 
 def test_dirty_id_sequence_is_not_cached(db_session):

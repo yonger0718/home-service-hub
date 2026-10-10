@@ -225,26 +225,55 @@ def _unlock_barrier(db: Session) -> None:
         raise RuntimeError("the dirty barrier was not held at unlock; connection invalidated")
 
 
-def _take_barrier(db: Session) -> None:
-    """The exclusive session-level barrier, waiting at most BARRIER_LOCK_TIMEOUT (a transaction-local lock_timeout set
-    and restored around the wait). The wait runs in a savepoint so a timeout leaves the session usable; it raises
-    `CodedConflictError("sweep_barrier_busy")`."""
-    previous = db.execute(select(func.current_setting("lock_timeout"))).scalar_one()
+def _restore_lock_timeout(db: Session, previous: str) -> None:
+    db.execute(select(func.set_config("lock_timeout", previous, True)))
+
+
+def _drop_barrier_after_failure(db: Session) -> None:
+    """The barrier is held but its owner failed before handing it on: unlock it, or (when the transaction can no
+    longer run the unlock) invalidate the connection so the server drops the session lock with the backend."""
     try:
-        with db.begin_nested():
-            db.execute(select(func.set_config("lock_timeout", BARRIER_LOCK_TIMEOUT, True)))
-            db.execute(select(func.pg_advisory_lock(DIRTY_BARRIER_KEY)))
-    except OperationalError as exc:
-        if isinstance(exc.orig, (LockNotAvailable, QueryCanceled)):
-            raise CodedConflictError(SWEEP_BARRIER_BUSY, "a ledger write held the dirty barrier too long") from exc
+        _unlock_barrier(db)  # invalidates the connection itself when the unlock fails or returns false
+    except Exception:  # noqa: BLE001  (the original error is re-raised by the caller)
+        try:
+            db.connection().invalidate()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _take_barrier(db: Session, *, wait: bool = True) -> None:
+    """The exclusive session-level barrier. `wait=True`: wait at most BARRIER_LOCK_TIMEOUT (a transaction-local
+    lock_timeout set in a savepoint, so a timeout leaves the session usable, and restored once the lock is held).
+    `wait=False` (the revision hook, whose transaction already holds coverage rows a writer may wait on): one
+    `pg_try_advisory_lock`, never a wait. Either way a busy barrier raises `CodedConflictError("sweep_barrier_busy")`.
+    Once acquired, any failure before returning releases the lock (or invalidates the connection) before re-raising,
+    so the lock never stays on a pooled connection."""
+    if not wait:
+        if not db.execute(select(func.pg_try_advisory_lock(DIRTY_BARRIER_KEY))).scalar_one():
+            raise CodedConflictError(SWEEP_BARRIER_BUSY, "a ledger write holds the dirty barrier")
+        return
+    previous = db.execute(select(func.current_setting("lock_timeout"))).scalar_one()
+    acquired = False
+    try:
+        try:
+            with db.begin_nested():  # rolled back on a timeout, which also reverts the SET LOCAL
+                db.execute(select(func.set_config("lock_timeout", BARRIER_LOCK_TIMEOUT, True)))
+                db.execute(select(func.pg_advisory_lock(DIRTY_BARRIER_KEY)))
+                acquired = True
+        except OperationalError as exc:
+            if not acquired and isinstance(exc.orig, (LockNotAvailable, QueryCanceled)):
+                raise CodedConflictError(SWEEP_BARRIER_BUSY, "a ledger write held the dirty barrier too long") from exc
+            raise
+        _restore_lock_timeout(db, previous)
+    except BaseException:
+        if acquired:
+            _drop_barrier_after_failure(db)
         raise
-    finally:
-        db.execute(select(func.set_config("lock_timeout", previous, True)))
 
 
-def _committed_cap(db: Session) -> int | None:
+def _committed_cap(db: Session, *, barrier_wait: bool = True) -> int | None:
     """max(coverage_dirty.id) read under the exclusive barrier (module docstring); None when there are no events."""
-    _take_barrier(db)
+    _take_barrier(db, wait=barrier_wait)
     try:
         with db.begin_nested():  # a failing read must not leave the transaction unable to unlock
             return db.execute(select(func.max(CoverageDirty.id))).scalar_one()
@@ -252,7 +281,8 @@ def _committed_cap(db: Session) -> int | None:
         _unlock_barrier(db)
 
 
-def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None) -> SweepResult:
+def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None,
+          barrier_wait: bool = True) -> SweepResult:
     """Apply every coverage_dirty event past the statement's watermark that touches it, then advance the watermark
     to the highest id scanned (relevant or not). Precondition: the caller holds the statement row FOR UPDATE (§7.4:
     writers never lock statements, so a writer committing after this sweep gets a higher id the next sweep sees).
@@ -261,10 +291,10 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
     config, a combined child relinked to or away from the account) set `needs_recheck` in live mode. Events of
     actions applied on this statement are skipped. Only ids <= the committed cap read under the writer barrier are
     scanned (module docstring). That argument needs READ COMMITTED isolation and `coverage_dirty_id_seq` with CACHE 1
-    (a cached block would let a later-allocated lower id commit after the cap). Never deletes events and never
-    commits."""
+    (a cached block would let a later-allocated lower id commit after the cap). `barrier_wait=False` try-locks the
+    barrier instead of waiting (`_take_barrier`). Never deletes events and never commits."""
     live = statement.mode == "live"
-    cap = _committed_cap(db)
+    cap = _committed_cap(db, barrier_wait=barrier_wait)
     accounts = set(participating_accounts(db, statement.account_id))
     active = active_rows(db, statement.id)
     lines_by_entry: dict[int, set[int]] = defaultdict(set)
