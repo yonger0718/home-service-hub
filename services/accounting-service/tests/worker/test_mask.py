@@ -87,3 +87,13 @@ def test_phone_forms_are_masked(s):
 def test_holder_names_shorter_than_two_characters_are_ignored():
     m = mask.Masker(passwords.Identity(None, None, ["A", "王小明"]))
     assert m.text("A 王小明") == "A [NAME]"
+
+
+@pytest.mark.parametrize("s,expected", [
+    ("20260930", "20260930"),
+    ("12345678", "[NUM…5678]"),
+    ("20261399", "[NUM…1399]"),
+    ("TXN 20260930 12345678", "TXN 20260930 [NUM…5678]"),
+])
+def test_compact_yyyymmdd_dates_are_kept_others_masked(s, expected):
+    assert mask.Masker(IDENT).text(s) == expected

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 
 from worker import pdf
 from worker.passwords import Identity
@@ -25,6 +26,17 @@ def _birth_patterns(ymd: str) -> list[str]:
             f"{m}/{d}/{y}", f"{y}年{int(m)}月{int(d)}日", f"{int(y) - 1911}/{m}/{d}", f"{int(y) - 1911}{m}{d}"]
 
 
+def _compact_date(raw: str) -> bool:
+    """Exactly eight ASCII digits forming a Gregorian YYYYMMDD with year 1990..2039."""
+    if not re.fullmatch(r"[0-9]{8}", raw):
+        return False
+    try:
+        date.fromisoformat(f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}")
+    except ValueError:
+        return False
+    return 1990 <= int(raw[0:4]) <= 2039
+
+
 class Masker:
     def __init__(self, identity: Identity):
         self.identity = identity
@@ -39,6 +51,8 @@ class Masker:
         digits = re.sub(r"\D", "", raw)
         if (" " in raw or "-" in raw) and len(digits) < 8:
             return raw  # dates and short references such as "000 2026" are not account numbers
+        if _compact_date(raw):
+            return raw  # printed compact dates such as 20260930 are not account numbers
         return f"[NUM…{digits[-4:]}]"
 
     def text(self, s: str) -> str:
