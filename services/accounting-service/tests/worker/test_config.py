@@ -12,6 +12,8 @@ def test_defaults_expand_home():
     assert cfg.inbox_dir == cfg.state_dir / "inbox" / "by-sha"
     assert cfg.mail_root == "財務對帳單/銀行" and cfg.manual_root == "財務對帳單/手動下載"
     assert cfg.parser_sandbox is True and cfg.minio_endpoint is None
+    assert cfg.parser_allow_unsandboxed is False
+    assert config.load({"STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true"}).parser_allow_unsandboxed is True
 
 
 def test_env_overrides_and_booleans(tmp_path):

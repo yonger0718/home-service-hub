@@ -13,7 +13,7 @@ from worker.runner import SubprocessRunner
 def cfg(tmp_path):
     cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
     return config.load({"STATEMENT_STATE_DIR": str(tmp_path / "state"), "STATEMENT_PARSER_CLI": str(cli),
-                        "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_TIMEOUT": "5",
+                        "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true", "STATEMENT_PARSER_TIMEOUT": "5",
                         "STATEMENT_PARSER_ATTEMPTS": "1"})
 
 
@@ -74,6 +74,11 @@ def test_version_pin(cfg, tmp_path):
     ({"message_not_object": True}, "sandbox"), ({"user_extra_block": True}, "sandbox"),
     ({"tool_result_id_mismatch": True}, "sandbox"), ({"assistant_extra_tool_use_after_text": True}, "sandbox"),
     ({"extra_tool": True, "sleep_after": 30}, "sandbox"), ({"extra_tool": True, "flood_after": True}, "sandbox"),
+    ({"tool_name": "Bash", "sleep_after": 30}, "sandbox"),
+    ({"tools": ("StructuredOutput", "Bash"), "sleep_after": 30}, "sandbox"),
+    ({"tool_name": "Bash", "flood_after": True}, "sandbox"),
+    ({"deep_json_line": True}, "sandbox"), ({"tools": 5}, "sandbox"), ({"tools": {"StructuredOutput": 1}}, "sandbox"),
+    ({"no_ids": True}, "sandbox"),
     ({"subtype": "error_max_turns"}, "exit"), ({"exit_code": 1}, "exit"),
     ({"output": {**fake_claude.GOOD, "statement_total": "abc"}}, "schema")])
 def test_envelope_violations_and_precedence(cfg, tmp_path, variant, reason):
@@ -87,7 +92,7 @@ def test_envelope_violations_and_precedence(cfg, tmp_path, variant, reason):
 def test_timeout_kills_the_whole_process_group(cfg, tmp_path):
     marker = tmp_path / "grandchild.pid"
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(), sleep=30, grandchild_pid_file=marker)
-    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_SANDBOX": "false",
+    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true",
                        "STATEMENT_PARSER_TIMEOUT": "1", "STATEMENT_PARSER_ATTEMPTS": "1",
                        "STATEMENT_STATE_DIR": str(tmp_path / "state")})
     with pytest.raises(parser.ParseError) as err:
@@ -101,7 +106,7 @@ def test_timeout_kills_the_whole_process_group(cfg, tmp_path):
 
 def test_child_that_closes_pipes_but_stays_alive_is_a_timeout(cfg, tmp_path):
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(), close_pipes_then_sleep=30)
-    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_SANDBOX": "false",
+    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true",
                        "STATEMENT_PARSER_TIMEOUT": "1", "STATEMENT_PARSER_ATTEMPTS": "1",
                        "STATEMENT_STATE_DIR": str(tmp_path / "state")})
     with pytest.raises(parser.ParseError) as err:
@@ -111,7 +116,7 @@ def test_child_that_closes_pipes_but_stays_alive_is_a_timeout(cfg, tmp_path):
 
 def test_child_that_never_reads_stdin_still_times_out(cfg, tmp_path):
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(), sleep=30, read_stdin=False)
-    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_SANDBOX": "false",
+    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "claude"), "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true",
                        "STATEMENT_PARSER_TIMEOUT": "1", "STATEMENT_PARSER_ATTEMPTS": "1",
                        "STATEMENT_STATE_DIR": str(tmp_path / "state")})
     started = time.monotonic()
@@ -148,8 +153,12 @@ def test_operator_gate_clears_only_when_everything_passes(cfg, tmp_path):
     gate.latch("earlier", gate.key(prs))
     good_verify = parser.Parser(cfg, SubprocessRunner(), config_dir=tmp_path / "ro", credentials_writable=False)
     assert gate.run_operator_gate(prs, verify_parser=good_verify).ok and not gate.latch_path.exists()
+    missing = gate.run_operator_gate(prs)  # no verify-login canary -> never clears
+    assert not missing.ok and "verify login missing" in missing.reasons and gate.latch_path.exists()
+    assert json.loads(gate.evidence_path.read_text())["evidence"]["checks_ran"]["verify_login"] is False
+    assert gate.run_operator_gate(prs, verify_parser=good_verify).ok and not gate.latch_path.exists()
     bad_cli = fake_claude.write(tmp_path / "claude2", fake_claude.transcript(extra_tool=True))
-    bad_cfg = config.load({"STATEMENT_PARSER_CLI": str(bad_cli), "STATEMENT_PARSER_SANDBOX": "false",
+    bad_cfg = config.load({"STATEMENT_PARSER_CLI": str(bad_cli), "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true",
                            "STATEMENT_STATE_DIR": str(cfg.state_dir)})
     bad_verify = parser.Parser(bad_cfg, SubprocessRunner(), config_dir=tmp_path / "ro", credentials_writable=False)
     report = gate.run_operator_gate(prs, verify_parser=bad_verify)
@@ -172,9 +181,77 @@ def test_gate_ensure_caches_and_latches(cfg, tmp_path):
     fake_claude.write(tmp_path / "claude", fake_claude.transcript())
     with pytest.raises(parser.ParserDisabled):
         gate.ensure(prs)  # latched until an operator gate clears it
-    assert gate.run_operator_gate(prs).ok and not (cfg.state_dir / "parser-disabled.json").exists()
+    good_verify = parser.Parser(cfg, SubprocessRunner(), config_dir=tmp_path / "ro", credentials_writable=False)
+    assert gate.run_operator_gate(prs, verify_parser=good_verify).ok
+    assert not (cfg.state_dir / "parser-disabled.json").exists()
 
 
 def test_parser_version_string():
     v = parse_schema.version("2.1.296", "claude-sonnet-5-5")
     assert v.startswith("claude-cli-2.1.296-claude-sonnet-5-5-") and len(v.split("-")[-1]) == 8
+
+
+def test_unsandboxed_parser_is_refused_without_the_flag(tmp_path):
+    cfg = config.load({"STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_STATE_DIR": str(tmp_path)})
+    with pytest.raises(RuntimeError, match="unsandboxed parser is refused"):
+        parser.Parser(cfg, SubprocessRunner())
+
+
+def test_schema_error_does_not_leak_input_values(cfg, tmp_path):
+    bad = {**fake_claude.GOOD, "statement_total": "王小明 [NUM…1234]", "secret_key_name": 1}
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(bad))
+    with pytest.raises(parser.ParseError) as err:
+        parser.Parser(cfg, SubprocessRunner()).parse("x")
+    assert err.value.reason == "schema" and "statement_total" in str(err.value)
+    assert "王小明" not in str(err.value) and "NUM" not in str(err.value) and "secret_key_name" not in str(err.value)
+    assert len(str(err.value)) < 400
+
+
+def test_sandbox_message_does_not_echo_model_names(cfg, tmp_path):
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(tool_name="EvilTool"))
+    with pytest.raises(parser.ParseError) as err:
+        parser.Parser(cfg, SubprocessRunner()).parse("x")
+    assert err.value.reason == "sandbox" and "EvilTool" not in str(err.value)
+
+
+class _VersionOnly:
+    def run(self, args, *, stdin=None, timeout=None, env=None):
+        from worker.runner import Result
+        return Result(0, b"2.1.296 (Claude Code)\n", b"")
+
+
+def test_missing_cli_binary_is_a_gate_failure_and_latches(tmp_path):
+    cfg = config.load({"STATEMENT_PARSER_CLI": str(tmp_path / "nope"), "STATEMENT_PARSER_SANDBOX": "false",
+                       "STATEMENT_PARSER_ALLOW_UNSANDBOXED": "true", "STATEMENT_STATE_DIR": str(tmp_path / "state")})
+    prs = parser.Parser(cfg, _VersionOnly())  # version check passes, Popen raises FileNotFoundError
+    report = prs.gate()
+    assert not report.ok and report.reasons
+    gate = parser.Gate(cfg)
+    with pytest.raises(parser.ParserDisabled):
+        gate.ensure(prs)
+    assert gate.latch_path.exists() and gate.evidence_path.exists()
+
+
+def test_corrupt_or_naive_gate_evidence_is_stale_not_a_crash(cfg):
+    prs = parser.Parser(cfg, SubprocessRunner())
+    gate = parser.Gate(cfg)
+    gate.ensure(prs)
+    gate.evidence_path.write_text("{not json")
+    gate.ensure(prs)
+    data = json.loads(gate.evidence_path.read_text())
+    data["checked_at"] = "2026-10-10T00:00:00"  # naive
+    gate.evidence_path.write_text(json.dumps(data))
+    gate.ensure(prs)
+    assert json.loads(gate.evidence_path.read_text())["checked_at"].endswith("+00:00")
+
+
+def test_gate_key_tracks_the_login_dir_but_not_credentials(cfg, tmp_path):
+    login = tmp_path / "login"
+    login.mkdir()
+    prs = parser.Parser(cfg, SubprocessRunner(), config_dir=login)
+    gate = parser.Gate(cfg)
+    first = gate.key(prs)["config_dir_digest"]
+    (login / ".credentials.json").write_text("{}")
+    assert gate.key(prs)["config_dir_digest"] == first
+    (login / "settings.json").write_text("{}")
+    assert gate.key(prs)["config_dir_digest"] != first

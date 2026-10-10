@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from pydantic import ValidationError
 
@@ -95,7 +95,8 @@ def check_envelope(env: Envelope) -> list[str]:
 
 
 class StreamValidator:
-    """Ruling 15: incremental validation of the stream-json lines; `violation` is set at the first problem."""
+    """Ruling 15: incremental validation of the stream-json lines; `violation` is set at the first problem, at the
+    moment it appears. Messages carry counts and our own constants, never model-controlled strings."""
 
     def __init__(self):
         self.envelope = Envelope()
@@ -109,24 +110,37 @@ class StreamValidator:
             self.violation = why
 
     def feed(self, raw: bytes) -> None:
+        try:
+            self._feed(raw)
+        except Exception:  # RecursionError from json.loads, TypeError on odd shapes, ...: a violation, never a crash
+            self._bad("malformed event")
+
+    def _feed(self, raw: bytes) -> None:
         raw = raw.strip()
         if not raw:
             return
         try:
             event = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return self._bad("non-json line")
         if not isinstance(event, dict):
             return self._bad("non-object event")
         kind, sub = str(event.get("type", "")), str(event.get("subtype", "") or "")
         env = self.envelope
-        env.events.append(f"{kind}/{sub}")
+        if len(env.events) < 50:
+            env.events.append(f"{kind[:40]}/{sub[:40]}")
         if kind.startswith(FORBIDDEN_PREFIXES) or sub.startswith(FORBIDDEN_PREFIXES):
-            return self._bad(f"forbidden event {kind}/{sub}")
+            return self._bad("forbidden event type")
         if kind == "system" and sub == "init":
             if self._expect != "init":
                 self._bad("duplicate init")
-            env.tools = list(event.get("tools") or [])
+            tools = event.get("tools")
+            if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+                self._bad("tools exposed: invalid")
+            else:
+                env.tools = list(tools)
+                if tools != [STRUCTURED_TOOL]:
+                    self._bad(f"tools exposed: {len(tools)}")
             self._expect = "assistant"
             return
         blocks: list[dict] = []
@@ -146,9 +160,16 @@ class StreamValidator:
                 self._bad("assistant block of another type")
             if len(uses) != 1:
                 self._bad(f"assistant tool_use count {len(uses)}")
+            self._tool_use_id = None
             for b in uses:
-                env.tool_names.append(str(b.get("name", "")))
-                self._tool_use_id = b.get("id")
+                env.tool_names.append(str(b.get("name", ""))[:64])
+                if b.get("name") != STRUCTURED_TOOL:
+                    self._bad("tool call other than StructuredOutput")
+                tool_id = b.get("id")
+                if not isinstance(tool_id, str) or not tool_id:
+                    self._bad("tool_use without an id")
+                else:
+                    self._tool_use_id = tool_id
             self._expect = "user"
             return
         if kind == "user":
@@ -156,11 +177,15 @@ class StreamValidator:
                 self._bad("user out of order")
             if len(blocks) != 1 or blocks[0].get("type") != "tool_result":
                 self._bad("user message is not exactly one tool_result")
-            elif blocks[0].get("tool_use_id") != self._tool_use_id:
-                self._bad("tool_result id mismatch")
+            else:
+                ref = blocks[0].get("tool_use_id")
+                if not isinstance(ref, str) or not ref or ref != self._tool_use_id:
+                    self._bad("tool_result id missing or mismatched")
             self._expect = "result"
             return
         if kind == "rate_limit_event":
+            if self._expect != "result":
+                self._bad("rate_limit_event out of order")
             return
         if kind == "result":
             if env.result_subtype is not None:
@@ -170,20 +195,19 @@ class StreamValidator:
             env.result_subtype = sub
             env.num_turns = event.get("num_turns")
             env.structured_output = event.get("structured_output")
+            if type(env.num_turns) is not int or env.num_turns != 2:
+                self._bad("num_turns is not 2")
             self._expect = "end"
             return
-        self._bad(f"unknown event {kind}/{sub}")
+        self._bad("unknown event type")
 
     def finish(self) -> Envelope:
         env = self.envelope
-        if env.tools != [STRUCTURED_TOOL]:
-            self._bad(f"tools exposed: {env.tools}")
-        if env.tool_names != [STRUCTURED_TOOL]:
-            self._bad(f"tool calls: {env.tool_names}")
-        if env.assistant_messages != 1:
-            self._bad(f"assistant messages: {env.assistant_messages}")
-        if env.num_turns != 2:
-            self._bad(f"num_turns: {env.num_turns}")
+        if env.result_subtype is not None:  # a stream that never reached a result is an exit/timeout, not a violation
+            if env.tool_names != [STRUCTURED_TOOL]:
+                self._bad(f"tool calls: {len(env.tool_names)}")
+            if env.assistant_messages != 1:
+                self._bad(f"assistant messages: {env.assistant_messages}")
         return env
 
 
@@ -197,55 +221,63 @@ class _ChildIO:
         self.validator = StreamValidator()
         self._pending = bytearray()
         self.stdin_error: str | None = None
+        self._sel = selectors.DefaultSelector()
         self._writer = threading.Thread(target=self._write, args=(stdin,), daemon=True)
 
+    def _check_violation(self) -> None:
+        if self.validator.violation:
+            raise ParseError("sandbox", self.validator.violation)
+
     def _feed_lines(self, chunk: bytes) -> None:
-        self._pending.extend(chunk)
-        while b"\n" in self._pending:
-            line, _, rest = bytes(self._pending).partition(b"\n")
-            self._pending = bytearray(rest)
+        if b"\n" not in chunk:
+            self._pending.extend(chunk)
+            return
+        *lines, rest = (bytes(self._pending) + chunk).split(b"\n")
+        self._pending = bytearray(rest)
+        for line in lines:
             self.validator.feed(line)
-            if self.validator.violation:
-                raise ParseError("sandbox", self.validator.violation)
+            self._check_violation()
 
     def _write(self, data: bytes) -> None:
         try:
             self.proc.stdin.write(data)
             self.proc.stdin.close()
-        except (BrokenPipeError, OSError):
+        except (BrokenPipeError, OSError, ValueError):
             self.stdin_error = "stdin closed by the child"
 
     def pump(self) -> None:
         self._writer.start()
-        sel = selectors.DefaultSelector()
-        sel.register(self.proc.stdout, selectors.EVENT_READ, self.out)
-        sel.register(self.proc.stderr, selectors.EVENT_READ, self.err)
+        self._sel.register(self.proc.stdout, selectors.EVENT_READ, self.out)
+        self._sel.register(self.proc.stderr, selectors.EVENT_READ, self.err)
         open_pipes = 2
         while open_pipes:
             remaining = self.deadline - time.monotonic()
             if remaining <= 0:
                 raise ParseError("timeout")
-            for key, _ in sel.select(timeout=min(remaining, 0.25)):
+            for key, _ in self._sel.select(timeout=min(remaining, 0.25)):
+                if time.monotonic() >= self.deadline:
+                    raise ParseError("timeout")
                 chunk = os.read(key.fileobj.fileno(), 65536)
                 if not chunk:
-                    sel.unregister(key.fileobj)
+                    self._sel.unregister(key.fileobj)
                     open_pipes -= 1
                     continue
                 key.data.extend(chunk)
+                if key.data is self.out:
+                    self._feed_lines(chunk)  # a violation in this chunk wins over the cap below
                 if len(key.data) > STDOUT_CAP:
                     raise ParseError("output_too_large")
-                if key.data is self.out:
-                    self._feed_lines(chunk)
+        if self._pending:
+            self.validator.feed(bytes(self._pending))
+            self._check_violation()
         try:
             self.proc.wait(timeout=max(0.0, self.deadline - time.monotonic()))
         except subprocess.TimeoutExpired as exc:
-            raise ParseError("timeout") from exc
-        if self._pending:
-            self.validator.feed(bytes(self._pending))
-            if self.validator.violation:
-                raise ParseError("sandbox", self.validator.violation)
+            if self.proc.poll() is None:  # exited right at the deadline is not a timeout
+                raise ParseError("timeout") from exc
 
     def close(self) -> None:
+        self._sel.close()
         for pipe in (self.proc.stdout, self.proc.stderr, self.proc.stdin):
             try:
                 pipe.close()
@@ -255,6 +287,8 @@ class _ChildIO:
 
 
 def _kill(proc: subprocess.Popen) -> None:
+    """SIGKILL the child's session. Under bwrap the CLI runs in its own session (--new-session) inside bwrap's pid
+    namespace; --die-with-parent plus killing bwrap's group (which is what start_new_session gave us) ends it."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -265,9 +299,22 @@ def _kill(proc: subprocess.Popen) -> None:
         pass
 
 
+def _safe_errors(exc: ValidationError) -> str:
+    """Pydantic errors reduced to `loc: type` (no input values, no model-controlled key names)."""
+    parts = []
+    for err in exc.errors(include_input=False, include_url=False):
+        loc = list(err["loc"])
+        if err["type"] == "extra_forbidden" and loc:
+            loc[-1] = "<extra>"
+        parts.append(f"{'.'.join(str(x) for x in loc)}: {err['type']}")
+    return "; ".join(parts)[:300]
+
+
 class Parser:
     def __init__(self, cfg: WorkerConfig, runner: Runner, *, config_dir: Path | None = None,
                  credentials_writable: bool = True):
+        if not cfg.parser_sandbox and not cfg.parser_allow_unsandboxed:
+            raise RuntimeError("unsandboxed parser is refused; set STATEMENT_PARSER_ALLOW_UNSANDBOXED=true")
         self.cfg, self.runner = cfg, runner
         self.config_dir, self.credentials_writable = config_dir or cfg.parser_config_dir, credentials_writable
         self._schema = json.dumps(parse_schema.json_schema(), ensure_ascii=False, separators=(",", ":"))
@@ -277,38 +324,49 @@ class Parser:
 
     def cli_version(self) -> str:
         result = self.runner.run([str(self.cfg.parser_cli), "--version"], timeout=30)
-        return result.stdout.decode("utf-8", "replace").split()[0] if result.returncode == 0 and result.stdout else ""
+        words = result.stdout.decode("utf-8", "replace").split() if result.returncode == 0 else []
+        return words[0] if words else ""
 
     def _check_version(self) -> None:
         found = self.cli_version()
         if found != self.cfg.parser_cli_version:
             raise ParseError("cli_version", f"found {found or 'none'}, pinned {self.cfg.parser_cli_version}")
 
-    def _run_once(self, stdin: bytes) -> Envelope:
+    def _run_once(self, stdin: bytes, on_start: Callable[[subprocess.Popen], None] | None = None) -> Envelope:
         env = {"HOME": os.environ.get("HOME", "/tmp"), "PATH": os.environ.get("PATH", "/usr/bin")}
-        proc = subprocess.Popen(self.argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                env=env, start_new_session=True)
+        try:
+            proc = subprocess.Popen(self.argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    env=env, start_new_session=True)
+        except OSError as exc:
+            raise ParseError("exit", f"cannot start the parser ({type(exc).__name__})") from exc
         io = _ChildIO(proc, stdin, time.monotonic() + self.cfg.parser_timeout_s)
         try:
-            io.pump()
+            if on_start is not None:
+                on_start(proc)
+            try:
+                io.pump()
+            except ParseError as exc:
+                if exc.reason != "sandbox" and io.validator.envelope.violations:  # a violation beats I/O failures
+                    raise ParseError("sandbox", "; ".join(io.validator.envelope.violations)[:300]) from exc
+                raise
         finally:
             _kill(proc)  # every path: the session (and any descendant) dies, then the pipes close
             io.close()
         envelope = io.validator.finish()
         if envelope.violations:  # sandbox precedence over exit/schema (AGENT-95 Must 3)
-            raise ParseError("sandbox", "; ".join(envelope.violations)[:500])
+            raise ParseError("sandbox", "; ".join(envelope.violations)[:300])
         if proc.returncode != 0 or envelope.result_subtype != "success":
             text = bytes(io.err).decode("utf-8", "replace")
             if "auth" in text.lower() or "login" in text.lower():
                 raise ParseError("auth")
-            raise ParseError("exit", f"rc={proc.returncode} subtype={envelope.result_subtype}")
+            raise ParseError("exit", f"rc={proc.returncode} subtype_success={envelope.result_subtype == 'success'}")
         return envelope
 
     def _validated(self, envelope: Envelope) -> parse_schema.StatementParse:
         try:
             return parse_schema.StatementParse.model_validate(envelope.structured_output or {})
         except ValidationError as exc:
-            raise ParseError("schema", str(exc)[:500]) from exc
+            raise ParseError("schema", _safe_errors(exc)) from exc
 
     def parse(self, masked_text: str) -> parse_schema.StatementParse:
         stdin = masked_text.encode("utf-8")
@@ -326,21 +384,38 @@ class Parser:
         assert last is not None
         raise last
 
-    def gate(self) -> GateReport:
+    def gate(self, on_start: Callable[[subprocess.Popen], None] | None = None) -> GateReport:
         reasons: list[str] = []
         evidence: dict = {"pinned": self.cfg.parser_cli_version, "model": self.cfg.parser_model,
                           "sandbox": self.cfg.parser_sandbox}
         try:
             self._check_version()
-            envelope = self._run_once(CANARY.encode())
+            envelope = self._run_once(CANARY.encode(), on_start)
             evidence.update(num_turns=envelope.num_turns, tools=envelope.tools, tool_calls=envelope.tool_names,
                             events=envelope.events)
             parse_schema.StatementParse.model_validate(envelope.structured_output or {})
         except ParseError as exc:
-            reasons.append(f"{exc.reason}: {exc}"[:300])
+            reasons.append(str(exc)[:300])
         except ValidationError as exc:
-            reasons.append(f"schema: {str(exc)[:200]}")
+            reasons.append(f"schema: {_safe_errors(exc)}")
+        except Exception as exc:  # a missing bwrap/CLI or any surprise is a gate failure, never a crash
+            reasons.append(f"error: {type(exc).__name__}")
         return GateReport(not reasons, reasons, evidence)
+
+
+def _dir_digest(directory: Path) -> str | None:
+    """sha256 over (relative name, size, mtime) of every file in the login dir except .credentials.json."""
+    digest = hashlib.sha256()
+    try:
+        for path in sorted(directory.rglob("*")):
+            rel = path.relative_to(directory)
+            if str(rel) == ".credentials.json" or not path.is_file():
+                continue
+            st = path.stat()
+            digest.update(f"{rel}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+    except OSError:
+        return None
+    return digest.hexdigest()
 
 
 class Gate:
@@ -352,19 +427,19 @@ class Gate:
         self.latch_path = cfg.state_dir / "parser-disabled.json"
 
     def key(self, parser: Parser) -> dict:
-        try:
-            mtime = parser.config_dir.stat().st_mtime
-        except FileNotFoundError:
-            mtime = None
-        return {"cli_version": parser.cli_version(), "model": self.cfg.parser_model, "config_dir_mtime": mtime,
+        return {"cli_version": parser.cli_version(), "model": self.cfg.parser_model,
+                "config_dir_digest": _dir_digest(parser.config_dir),
                 "argv_sha256": hashlib.sha256("\0".join(parser.argv()).encode()).hexdigest(),
                 "sandbox": self.cfg.parser_sandbox}
 
     def _write(self, path: Path, data: dict) -> None:
         self.cfg.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.unlink(missing_ok=True)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, default=str)
+        os.replace(tmp, path)
 
     def latch(self, reason: str, key: dict) -> None:
         self._write(self.latch_path, {"reason": reason[:300], "at": datetime.now(timezone.utc).isoformat(), "key": key})
@@ -372,15 +447,23 @@ class Gate:
     def clear(self) -> None:
         self.latch_path.unlink(missing_ok=True)
 
+    def _fresh(self, key: dict) -> bool:
+        try:
+            evidence = json.loads(self.evidence_path.read_text(encoding="utf-8"))
+            checked = datetime.fromisoformat(evidence["checked_at"])
+            if checked.tzinfo is None:
+                return False
+            age = datetime.now(timezone.utc) - checked
+            return bool(evidence.get("ok")) and evidence.get("key") == key and timedelta(0) <= age < GATE_MAX_AGE
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False  # missing, corrupt or odd evidence is stale: re-run the canary
+
     def ensure(self, parser: Parser) -> None:
         if self.latch_path.exists():
             raise ParserDisabled("parser disabled until an operator gate succeeds")
         key = self.key(parser)
-        if self.evidence_path.exists():
-            evidence = json.loads(self.evidence_path.read_text(encoding="utf-8"))
-            checked = datetime.fromisoformat(evidence.get("checked_at", "2000-01-01T00:00:00+00:00"))
-            if evidence.get("ok") and evidence.get("key") == key and datetime.now(timezone.utc) - checked < GATE_MAX_AGE:
-                return
+        if self._fresh(key):
+            return
         report = parser.gate()
         self._write(self.evidence_path, {"ok": report.ok, "reasons": report.reasons, "evidence": report.evidence,
                                          "key": key, "checked_at": datetime.now(timezone.utc).isoformat()})
@@ -388,21 +471,29 @@ class Gate:
             self.latch("; ".join(report.reasons), key)
             raise ParserDisabled("gate failed")
 
-    def run_operator_gate(self, parser: Parser, *, verify_parser: Parser | None = None,
-                          host_checks: bool = False) -> GateReport:
-        """`python -m worker gate` (ruling 16): worker canary, verify-login canary, host checks; the latch is
-        cleared only when everything passed, else (re)latched."""
+    def run_operator_gate(self, parser: Parser, *, verify_parser: Parser | None = None) -> GateReport:
+        """`python -m worker gate` (ruling 16): the latch clears only when the worker canary passed, a verify-login
+        canary ran and passed, and (sandbox on) every host check ran and passed; otherwise it is (re)latched."""
         report = parser.gate()
-        evidence = {"worker": report.evidence}
+        evidence: dict = {"worker": report.evidence}
         reasons = list(report.reasons)
-        if verify_parser is not None:
+        checks_ran = {"worker": True, "verify_login": False, "host": False}
+        if verify_parser is None:
+            reasons.append("verify login missing")
+        else:
             vreport = verify_parser.gate()
+            checks_ran["verify_login"] = True
             evidence["verify_login"] = vreport.evidence
             reasons += [f"verify: {r}" for r in vreport.reasons]
-        if host_checks:
-            checks = host_evidence(self.cfg, parser)
-            evidence["host"] = checks
-            reasons += [f"host: {k}" for k, ok in checks["ok_by_check"].items() if not ok]
+        if self.cfg.parser_sandbox:
+            try:
+                checks = host_evidence(self.cfg, parser)
+                checks_ran["host"] = True
+                evidence["host"] = checks
+                reasons += [f"host: {k}" for k, ok in checks["ok_by_check"].items() if not ok]
+            except Exception as exc:
+                reasons.append(f"host: error {type(exc).__name__}")
+        evidence["checks_ran"] = checks_ran
         key = self.key(parser)
         self._write(self.evidence_path, {"ok": not reasons, "reasons": reasons, "evidence": evidence, "key": key,
                                          "checked_at": datetime.now(timezone.utc).isoformat()})
@@ -413,39 +504,67 @@ class Gate:
         return GateReport(not reasons, reasons, evidence)
 
 
+def _descendant_comms(pid: int) -> set[str]:
+    """`comm` of every descendant of `pid` (recursive over `ps --ppid`)."""
+    seen: set[str] = set()
+    stack = [pid]
+    while stack:
+        out = subprocess.run(["ps", "-o", "pid=,comm=", "--ppid", str(stack.pop())], capture_output=True, text=True,
+                             timeout=5).stdout
+        for line in out.splitlines():
+            parts = line.split(None, 1)
+            if len(parts) == 2 and parts[0].isdigit():
+                seen.add(parts[1].strip())
+                stack.append(int(parts[0]))
+    return seen
+
+
 def host_evidence(cfg: WorkerConfig, parser: Parser) -> dict:
-    """Host-side checks (§5.5/§16 C7): positive control, host paths absent inside the sandbox, login dir unchanged
-    across a canary, no stray processes observed DURING the canary (sampled every 100 ms)."""
+    """Host-side checks (§5.5/§16 C7): positive controls, host paths absent inside the sandbox, login dir unchanged
+    across a canary, and only bwrap/claude descendants of the sandbox child observed DURING the canary (100 ms)."""
     argv = parser.argv()
     if not cfg.parser_sandbox:
         return {"ok_by_check": {"sandbox_enabled": False}}
     prefix = argv[:argv.index("--")]
     checks: dict[str, bool] = {}
 
-    def run(cmd: list[str]) -> int:
-        return subprocess.run([*prefix, "--", *cmd], capture_output=True, timeout=30).returncode
+    def run(cmd: list[str]) -> int | None:
+        try:
+            return subprocess.run([*prefix, "--", *cmd], capture_output=True, timeout=30).returncode
+        except subprocess.TimeoutExpired:
+            return None
 
     checks["positive_control"] = run(["/usr/bin/true"]) == 0
     checks["etc_passwd_absent"] = run(["/usr/bin/test", "-e", "/etc/passwd"]) == 1  # 1 = absent; other = broken
     checks["home_absent"] = run(["/usr/bin/test", "-e", os.path.expanduser("~")]) == 1
-    checks["credentials_only_writable"] = run(["/usr/bin/sh", "-c", "touch /cfg/x 2>/dev/null"]) != 0
+    cfg_rc = run(["/usr/bin/touch", "/cfg/x"])
+    checks["credentials_only_writable"] = run(["/usr/bin/touch", "/tmp/x"]) == 0 and cfg_rc is not None and cfg_rc != 0
     before = {p: p.stat().st_mtime for p in parser.config_dir.rglob("*") if p.is_file()}
     seen: set[str] = set()
+    sampler_failed = threading.Event()
     stop = threading.Event()
 
-    def sample() -> None:
+    def sample(pid: int) -> None:
         while not stop.wait(0.1):
-            out = subprocess.run(["ps", "-u", str(os.getuid()), "-o", "comm="], capture_output=True, text=True).stdout
-            seen.update(line.strip() for line in out.splitlines() if line.strip() in ("claude", "bwrap", "node", "sh", "bash", "python3"))
+            try:
+                seen.update(_descendant_comms(pid))
+            except (subprocess.TimeoutExpired, OSError):
+                sampler_failed.set()
 
-    sampler = threading.Thread(target=sample, daemon=True)
-    sampler.start()
-    report = parser.gate()
+    sampler: list[threading.Thread] = []
+
+    def on_start(proc: subprocess.Popen) -> None:
+        thread = threading.Thread(target=sample, args=(proc.pid,), daemon=True)
+        sampler.append(thread)
+        thread.start()
+
+    report = parser.gate(on_start)
     stop.set()
-    sampler.join(1)
+    for thread in sampler:
+        thread.join(2)
     after = {p: p.stat().st_mtime for p in parser.config_dir.rglob("*") if p.is_file()}
     changed = sorted(str(p.relative_to(parser.config_dir)) for p in after if before.get(p) != after[p])
     checks["login_dir_unchanged"] = changed in ([], [".credentials.json"])
-    checks["only_cli_processes"] = seen <= {"claude", "bwrap", "python3"}  # python3 = this worker
+    checks["only_cli_processes"] = bool(sampler) and not sampler_failed.is_set() and seen <= {"bwrap", "claude"}
     checks["canary"] = report.ok
     return {"ok_by_check": checks, "processes_seen": sorted(seen), "changed_files": changed}

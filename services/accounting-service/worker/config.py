@@ -39,6 +39,7 @@ class WorkerConfig:
     parser_model: str
     parser_config_dir: Path
     parser_sandbox: bool
+    parser_allow_unsandboxed: bool
     parser_timeout_s: int
     parser_attempts: int
     verify_dir: Path
@@ -85,6 +86,7 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         parser_model=_str(env, "STATEMENT_PARSER_MODEL", "claude-sonnet-5-5"),
         parser_config_dir=_path(env, "STATEMENT_PARSER_CONFIG_DIR", "~/.local/state/home-hub-parser/claude"),
         parser_sandbox=_str(env, "STATEMENT_PARSER_SANDBOX", "true").lower() in TRUE,
+        parser_allow_unsandboxed=_str(env, "STATEMENT_PARSER_ALLOW_UNSANDBOXED", "false").lower() in TRUE,
         parser_timeout_s=int(_str(env, "STATEMENT_PARSER_TIMEOUT", "120")),
         parser_attempts=int(_str(env, "STATEMENT_PARSER_ATTEMPTS", "3")),
         verify_dir=_path(env, "STATEMENT_VERIFY_DIR", "~/.local/state/home-hub-verify"),
