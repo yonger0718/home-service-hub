@@ -39,25 +39,41 @@ class AlreadyRunning(RuntimeError):
 
 
 class RetryLog:
-    """Per-sha transient epoch and store_pending flag (0600 JSON)."""
+    """Per-sha transient epoch and store state, per Drive identity acquisition backoff (0600 JSON).
+    A missing, empty, corrupt or non-object file loads as empty (a retry log is advisory)."""
 
     def __init__(self, path: Path):
         self.path, self.data = path, {}
-        if path.exists():
-            self.data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except (OSError, UnicodeDecodeError, ValueError):
+            raw = {}
+        if isinstance(raw, dict):
+            self.data = {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, dict)}
 
     def get(self, key: str) -> dict:
         default = {"transient_attempts": 0, "sandbox_failed_at": None,
-                   "store": {"pending": True, "attempts": 0, "next_at": None}, "attempts": 0, "next_at": None}
+                   "store": {"pending": True, "attempts": 0, "next_at": None, "confirmed_by": None},
+                   "attempts": 0, "next_at": None}
         return {**default, **(self.data.get(key) or {})}
 
-    def set(self, sha: str, **fields) -> None:
-        self.data[sha] = {**self.get(sha), **fields}
+    def _write(self) -> None:
+        inbox_mod.private_dir(self.path.parent)
         tmp = self.path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(self.data, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, self.path)
+
+    def set(self, sha: str, **fields) -> None:
+        self.data[sha] = {**self.get(sha), **fields}
+        self._write()
+
+    def delete(self, key: str) -> None:
+        if self.data.pop(key, None) is not None:
+            self._write()
 
 
 @dataclass
@@ -249,7 +265,7 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
             if "parser_disabled" not in summary.errors:
                 summary.errors.append("parser_disabled")
             return _fail(services, lease, file_row, "sandbox", summary, parser_version=services.parser_version)
-        if exc.reason == "timeout":
+        if exc.reason in ("timeout", "exit"):  # CLI non-zero, rate limit, outage: retry on the ladder
             return _fail(services, lease, file_row, "transient", summary)
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
     body = revision_body(parsed, file_id=file_row["id"], account_id=account_id, parser_version=services.parser_version)
@@ -303,7 +319,7 @@ def _download_verified(services: Services, listed: drive_mod.Listed, summary: Su
                 summary.too_large += 1
                 return None
             published = services.inbox.publish(staged, expected_md5=listed.md5, expected_size=listed.size)
-            services.retries.set(ident, attempts=0, next_at=None)
+            services.retries.delete(ident)
             return published, listed
         except inbox_mod.VerifyError:
             if attempt == 2:
@@ -327,10 +343,13 @@ def _download_verified(services: Services, listed: drive_mod.Listed, summary: Su
 
 def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_path: Path, summary: Summary) -> bool:
     """Storage has its own due/attempt ladder (AGENT-96 Must 4). Returns False only when the file may not proceed
-    to parsing this run (never parsed + object not stored); a parsed file keeps its status whatever the store says."""
+    to parsing this run (never parsed + object not stored); a parsed file keeps its status whatever the store says.
+    A confirmation is valid only for the store that gave it (`confirmed_by`): a NullStore "yes" never satisfies a
+    MinIO configured later."""
     sha = file_row["sha256"]
+    store_id = services.cfg.minio_endpoint or "null"
     store = services.retries.get(sha)["store"]
-    if not store["pending"]:
+    if not store["pending"] and store.get("confirmed_by") == store_id:
         return True
     if (store["next_at"] and (_dt(store["next_at"]) or _now()) > _now()) or store["attempts"] >= MAX_TRANSIENT:
         if file_row["status"] == "parsed":
@@ -343,7 +362,7 @@ def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_p
             services.store.put(key, published_path)
     except Exception:  # noqa: BLE001 — MinIO failures are transient by the §5.1 matrix
         attempts = store["attempts"] + 1
-        services.retries.set(sha, store={"pending": True, "attempts": attempts,
+        services.retries.set(sha, store={"pending": True, "attempts": attempts, "confirmed_by": None,
                                          "next_at": (_now() + BACKOFF.get(attempts, timedelta(hours=24))).isoformat()})
         if "store" not in summary.errors:
             summary.errors.append("store")
@@ -351,7 +370,7 @@ def _ensure_stored(services: Services, lease: Lease, file_row: dict, published_p
             return True
         _fail(services, lease, file_row, "transient", summary, _epoch=False)
         return False
-    services.retries.set(sha, store={"pending": False, "attempts": 0, "next_at": None})
+    services.retries.set(sha, store={"pending": False, "attempts": 0, "next_at": None, "confirmed_by": store_id})
     return True
 
 
@@ -367,6 +386,9 @@ def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: 
     if not (sha and sha in known and path.exists()):
         got = _download_verified(services, listed, summary)
         if got is None:
+            if sha and sha in known:  # ruling 10: every listed source is re-registered every run
+                services.api.register_source(lease, known[sha]["id"], listed.root, listed.drive_file_id, listed.path,
+                                             listed.md5, listed.size)
             return None
         published, listed = got
         sha, path = published.sha256, published.path
@@ -385,16 +407,13 @@ def _acquire(services: Services, lease: Lease, listed: drive_mod.Listed, known: 
 
 
 def _sweep(services: Services, lease: Lease, summary: Summary) -> None:
-    try:
-        summary.sweep = services.api.sweep(lease)
-    except LeaseLost:
-        raise
-    except ApiError as exc:
-        summary.sweep = {"error": "busy" if exc.status == 409 else "failed"}
+    # a sweep 409 is a lease failure (LeaseLost) and aborts the run; other API errors propagate to _execute
+    summary.sweep = services.api.sweep(lease)
 
 
 def resume_or_none(services: Services, state: RunState, summary: Summary):
-    """§4.1 restart recovery: renew -> resume; expired -> reclaim the same run; refused -> discard.
+    """§4.1 restart recovery: renew -> resume; expired -> reclaim the same run; discard run.json only when both
+    renew and claim say 404/409. Any other API error keeps run.json and aborts (resume_unavailable).
     Returns (lease, trigger, mode) or None."""
     saved = state.load()
     if saved is api_mod.CORRUPT:
@@ -407,16 +426,19 @@ def resume_or_none(services: Services, state: RunState, summary: Summary):
         services.api.renew(lease)
         summary.resumed = True
         return lease, trigger, mode
-    except ApiError:
-        pass
+    except ApiError as exc:
+        if exc.status not in (404, 409):
+            raise RunAborted("resume_unavailable") from exc
     try:
         fresh = services.api.claim(lease.run_id)
-        summary.resumed = True
-        state.save(fresh, trigger=trigger, mode=mode)
-        return fresh, trigger, mode
-    except ApiError:
+    except ApiError as exc:
+        if exc.status not in (404, 409):
+            raise RunAborted("resume_unavailable") from exc
         state.clear()
         return None
+    summary.resumed = True
+    state.save(fresh, trigger=trigger, mode=mode)
+    return fresh, trigger, mode
 
 
 def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, mode: str) -> dict:
@@ -450,21 +472,38 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
             for listed in listing:
                 if keeper.lost:
                     raise RunAborted("lease lost")
-                acquired = _acquire(services, lease, listed, known, summary)
-                if acquired is None:
-                    continue
-                file_row, data, listed = acquired
-                retry = services.retries.get(file_row["sha256"])
-                if not retry_due(file_row, retry, _now(), services.credential_version, mapping_version,
-                                 services.parser_version, latched=latched, gate_ok_at=gate_ok_at):
-                    if file_row.get("failure") == "transient":
-                        summary.deferred += 1
-                    else:
-                        summary.unchanged += 1
-                    continue
-                if data is None:
-                    data = (services.cfg.inbox_dir / f"{file_row['sha256']}.pdf").read_bytes()
-                process_file(services, lease, file_row, listed, data, account_map, mapping_version, summary)
+                row = None
+                try:
+                    acquired = _acquire(services, lease, listed, known, summary)
+                    if acquired is None:
+                        continue
+                    file_row, data, listed = acquired
+                    row = file_row
+                    retry = services.retries.get(file_row["sha256"])
+                    if not retry_due(file_row, retry, _now(), services.credential_version, mapping_version,
+                                     services.parser_version, latched=latched, gate_ok_at=gate_ok_at):
+                        if file_row.get("failure") == "transient":
+                            summary.deferred += 1
+                        else:
+                            summary.unchanged += 1
+                        continue
+                    if data is None:
+                        data = (services.cfg.inbox_dir / f"{file_row['sha256']}.pdf").read_bytes()
+                    process_file(services, lease, file_row, listed, data, account_map, mapping_version, summary)
+                except (LeaseLost, RunAborted, httpx.TransportError, drive_mod.ListingError):
+                    raise
+                except Exception:  # noqa: BLE001 — one bad file must not stop the run
+                    log.exception("file failed")
+                    if "file_error" not in summary.errors:
+                        summary.errors.append("file_error")
+                    row = row or known.get(services.index.get(listed.drive_file_id, listed.md5) or "")
+                    if row is not None and row.get("status") != "parsed":
+                        try:
+                            _fail(services, lease, row, "transient", summary)
+                        except (LeaseLost, httpx.TransportError):
+                            raise
+                        except Exception:  # noqa: BLE001
+                            log.warning("could not record the file failure")
             services.api.mark_removed(lease, [i.drive_file_id for i in listing], allow_empty=not listing)
             if trigger in FULL_RUN_TRIGGERS:
                 _sweep(services, lease, summary)
@@ -504,6 +543,9 @@ def run(services: Services, *, trigger: str, mode: str = "live", initiator_hint:
     if lease is None:
         resumed = resume_or_none(services, RunState(services.cfg.state_dir / "run.json"), summary)
         if resumed is not None:
+            if (resumed[1], resumed[2]) != (trigger, mode):
+                log.info("resuming run %s as %s/%s (requested %s/%s)", resumed[0].run_id, resumed[1], resumed[2],
+                         trigger, mode)
             lease, trigger, mode = resumed
         else:
             lease = services.api.create_run(trigger, mode, initiator_hint)
@@ -511,19 +553,35 @@ def run(services: Services, *, trigger: str, mode: str = "live", initiator_hint:
 
 
 def poll(services: Services, *, initiator_hint: str | None) -> dict:
-    """Resume a crashed run of our own first, then claim every queued run in turn."""
-    out: dict = {"claimed": 0}
-    claimed = 0
+    """Resume a crashed run of our own first, then claim every queued run in turn. The result is the last summary
+    plus `claimed` and `bad_runs` (runs that finished failed or aborted)."""
+    out: dict = {"claimed": 0, "bad_runs": 0}
+    claimed = bad = 0
     summary = Summary()
     resumed = resume_or_none(services, RunState(services.cfg.state_dir / "run.json"), summary)
+    todo: list[tuple[Summary, Lease, str, str]] = []
     if resumed is not None:
-        lease, trigger, mode = resumed
-        out = _execute(services, summary, lease, trigger, mode)
-        claimed = 1
-        out["claimed"] = claimed
-    for queued in services.api.queued_runs():
-        lease = services.api.claim(queued["id"])
-        out = _execute(services, Summary(), lease, "enqueue", "live")
-        claimed += 1
-        out["claimed"] = claimed
+        todo.append((summary, *resumed))
+    seen = {resumed[0].run_id} if resumed else set()
+    for step in range(2):  # the resumed run first; queued runs are fetched after it
+        if step == 1:
+            for queued in services.api.queued_runs():
+                if queued["id"] in seen:
+                    continue
+                try:
+                    lease = services.api.claim(queued["id"])
+                except LeaseLost:  # someone else claimed it
+                    continue
+                todo.append((Summary(), lease, "enqueue", "live"))
+        for item_summary, lease, trigger, mode in todo:
+            claimed += 1
+            try:
+                out = _execute(services, item_summary, lease, trigger, mode)
+            except RunAborted:
+                bad += 1
+                continue
+            if "parser_disabled" in out["errors"]:
+                bad += 1
+        todo = []
+    out["claimed"], out["bad_runs"] = claimed, bad
     return out

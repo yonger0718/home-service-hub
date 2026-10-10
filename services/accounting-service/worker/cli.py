@@ -31,15 +31,23 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.cmd == "backfill" and not args.acknowledge_live_periods:  # before anything is read or spawned
+        print("backfill may touch live periods; pass --acknowledge-live-periods", file=sys.stderr)
+        return 2
     cfg = config.load()
     runner = SubprocessRunner()
     if args.cmd == "gate":
         from worker.parser import Gate, Parser
 
-        worker_parser = Parser(cfg, runner)
-        verify_parser = Parser(cfg, runner, config_dir=cfg.verify_parser_config_dir, credentials_writable=False) \
-            if cfg.verify_parser_config_dir.exists() else None
-        report = Gate(cfg).run_operator_gate(worker_parser, verify_parser=verify_parser)
+        try:
+            with pipeline.singleton(cfg):
+                worker_parser = Parser(cfg, runner)
+                verify_parser = Parser(cfg, runner, config_dir=cfg.verify_parser_config_dir,
+                                       credentials_writable=False) if cfg.verify_parser_config_dir.exists() else None
+                report = Gate(cfg).run_operator_gate(worker_parser, verify_parser=verify_parser)
+        except pipeline.AlreadyRunning:
+            print("already running")
+            return 0
         print(json.dumps(report.__dict__, ensure_ascii=False, indent=2, default=str))
         return 0 if report.ok else 1
     if args.cmd in ("export-masked", "verify"):
@@ -63,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"parser disabled: {exc}", file=sys.stderr)
             return 1
         return 1 if result.get("errors") or result.get("listing_failed") else 0
+    for what, path in (("API token file", cfg.api_token_file), ("password file", cfg.password_file)):
+        if not path.is_file():
+            print(f"{what} is missing or not a file", file=sys.stderr)
+            return 2
     try:
         with pipeline.singleton(cfg), httpx.Client(base_url=cfg.api_url, timeout=60) as client:  # noqa: SIM117
             services = pipeline.build(cfg, client, runner)
@@ -75,7 +87,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 summary = pipeline.poll(services, initiator_hint=hint)
             print(json.dumps(summary, ensure_ascii=False))
-            return 1 if summary.get("errors") else 0
+            # 0 when the run finished done (transient codes in errors included); 1 when a run failed or aborted
+            bad = summary.get("bad_runs", 0) or ("parser_disabled" in summary.get("errors", []))
+            return 1 if bad else 0
     except pipeline.AlreadyRunning:
         print("already running")
         return 0

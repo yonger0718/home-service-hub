@@ -99,6 +99,7 @@ def test_end_to_end_parses_and_is_idempotent(world, db_session, client):
     row = db_session.execute(text("select status, failure, has_text_layer, credential_version from statement_file")).one()
     assert row[0] == "parsed" and row[1] is None and row[2] is True and len(row[3]) == 64
     assert list(cfg.inbox_dir.iterdir())[0].suffix == ".pdf"
+    seen_before = db_session.execute(text("select last_seen_at from statement_source")).scalar_one()
     second = pipeline.run(services, trigger="owner_cli")
     assert second["new_files"] == 0 and second["parsed"] == 0 and second["unchanged"] == 1 and second["skipped"] == 0
     assert services.runner.downloads == 1  # the second run did not download again (counted by the test Runner)
@@ -108,8 +109,9 @@ def test_end_to_end_parses_and_is_idempotent(world, db_session, client):
     assert run_status[0][1]["versions"]["parser_version"].startswith("claude-cli-2.1.296-")
     assert "sweep" in run_status[0][1] and (cfg.state_dir / "gate.json").exists()
     assert not (cfg.state_dir / "run.json").exists()
+    db_session.expire_all()
     sources = db_session.execute(text("select last_seen_at from statement_source")).scalars().all()
-    assert len(sources) == 1  # re-registered every listing (ruling 10): last_seen_at moved on the second run
+    assert len(sources) == 1 and sources[0] > seen_before  # re-registered every listing (ruling 10): last_seen_at moved on the second run
 
 
 def test_rename_in_drive_updates_path_history_without_a_download(world, db_session):
@@ -209,22 +211,112 @@ def test_store_pending_is_retried_independently_of_parse(world, db_session, monk
     assert calls["put"] == 2 and fourth["parsed"] == 1 and services.runner.downloads == 1
 
 
-def test_enabling_minio_later_never_touches_a_parsed_file(world, db_session):
+def test_enabling_minio_later_uploads_but_never_touches_a_parsed_file(world, db_session):
+    import dataclasses
     services, _, cfg = world
-    pipeline.run(services, trigger="owner_cli")  # NullStore: parsed
-    sha = db_session.execute(text("select sha256 from statement_file")).scalar_one()
-    services.retries.set(sha, store={"pending": True, "attempts": 0, "next_at": None})  # as if MinIO was just configured
+    pipeline.run(services, trigger="owner_cli")  # NullStore confirms "null": parsed
+    puts = []
 
-    class Down:
+    class Minio:
         def exists(self, key):
             return False
 
         def put(self, key, path):
+            puts.append(key)
+
+    services.cfg = dataclasses.replace(cfg, minio_endpoint="minio:9000")  # MinIO configured later
+    services.store = Minio()
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert len(puts) == 1 and _file_rows(db_session) == [("parsed", None)] and summary["unchanged"] == 1
+    pipeline.run(services, trigger="owner_cli")
+    assert len(puts) == 1  # confirmed by this endpoint now
+
+    class Down(Minio):
+        def put(self, key, path):
             raise RuntimeError("down")
 
+    services.cfg = dataclasses.replace(cfg, minio_endpoint="other:9000")
     services.store = Down()
     summary = pipeline.run(services, trigger="owner_cli")
-    assert _file_rows(db_session) == [("parsed", None)] and summary["unchanged"] == 1 and "store" in summary["errors"]
+    assert _file_rows(db_session) == [("parsed", None)] and "store" in summary["errors"]
+
+
+def test_store_ladder_stops_after_five_attempts(world, db_session, monkeypatch):
+    services, _, cfg = world
+    calls = []
+
+    class Down:
+        def exists(self, key):
+            calls.append(1)
+            raise ConnectionError("down")
+
+    services.store = Down()
+    for hours in (0, 2, 9, 40, 80, 200):
+        _shift(monkeypatch, hours)
+        pipeline.run(services, trigger="owner_cli")
+    sha = db_session.execute(text("select sha256 from statement_file")).scalar_one()
+    assert services.retries.get(sha)["store"]["attempts"] == 5 and len(calls) == 5  # the sixth run did not try
+
+
+def test_corrupt_retry_log_loads_empty(world, tmp_path):
+    services, _, cfg = world
+    (cfg.state_dir / "retries.json").write_text("{not json")
+    assert pipeline.build(cfg, services.api.client, services.runner).retries.data == {}
+    (cfg.state_dir / "retries.json").write_text("[1]")
+    assert pipeline.RetryLog(cfg.state_dir / "retries.json").data == {}
+
+
+def test_a_failing_file_is_contained(world, db_session, monkeypatch):
+    from worker.api import ApiError
+    services, drive_files, _ = world
+    drive_files["id-2"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([statement_lines(30)]), "A123456789"))
+    real = services.api.submit_revision
+    calls = []
+
+    def boom(lease, body):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ApiError(500, "x")
+        return real(lease, body)
+
+    monkeypatch.setattr(services.api, "submit_revision", boom)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["file_error"] and summary["parsed"] == 1 and summary["transient"] == 1
+    assert sorted(_file_rows(db_session)) == [("failed", "transient"), ("parsed", None)]
+    assert db_session.execute(text("select status from ingest_run")).scalar_one() == "done"
+
+
+def test_cli_exit_is_transient(world, db_session, tmp_path):
+    services, _, cfg = world
+    services.gate.ensure(services.parser)
+    fake_claude.write(tmp_path / "claude", fake_claude.transcript(), exit_code=1)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["transient"] == 1 and summary["failed"] == 0
+    assert db_session.execute(text("select status, failure, next_retry_at is not null from statement_file")).one() \
+        == ("failed", "transient", True)
+
+
+def test_resume_unavailable_keeps_run_json(world, monkeypatch):
+    from worker.api import ApiError
+    services, _, cfg = world
+    real_list = services.drive.list_pdfs
+    services.drive.list_pdfs = lambda: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.run(services, trigger="owner_cli")
+    services.drive.list_pdfs = real_list
+    monkeypatch.setattr(services.api, "renew", lambda *a, **k: (_ for _ in ()).throw(ApiError(503, "down")))
+    with pytest.raises(pipeline.RunAborted, match="resume_unavailable"):
+        pipeline.run(services, trigger="owner_cli")
+    assert (cfg.state_dir / "run.json").exists()
+
+
+def test_cli_missing_token_file_exits_2(world, monkeypatch, capsys):
+    import dataclasses
+    from worker import cli
+    _, _, cfg = world
+    monkeypatch.setattr(config, "load", lambda *a, **k: dataclasses.replace(cfg, api_token_file=cfg.state_dir / "nope"))
+    assert cli.main(["run"]) == 2
+    assert "token" in capsys.readouterr().err
 
 
 def test_transient_backoff_ladders(world, db_session, monkeypatch):
