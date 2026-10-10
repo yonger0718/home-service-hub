@@ -422,3 +422,31 @@ def test_account_map_route_is_ingest_scoped(client):
     got = client.get("/statements/account-map", headers=W)
     assert got.status_code == 200
     assert got.json()["account_map"] == {"mail/信用卡/國泰世華": 1} and len(got.json()["mapping_version"]) == 16
+
+
+def test_settings_put_accepts_manual_and_mail_key_shapes_only(client, card):
+    ok = client.put("/settings/reconciliation", headers=S, json={"account_map": {"manual/國泰世華": card.id, "mail/信用卡/國泰世華": card.id}})
+    assert ok.status_code == 200, ok.text
+    for bad in ("manual/a/b", "mail/a", "other/a/b"):
+        assert client.put("/settings/reconciliation", headers=S, json={"account_map": {bad: card.id}}).status_code == 422, bad
+
+
+def test_manual_root_file_folder_map(client, card, seed, db_session):
+    other = seed.account("另一張卡", is_credit=True)
+    db_session.commit()
+
+    def attempt(mapped_id, sha):
+        assert client.put("/settings/reconciliation", headers=S, json={"account_map": {"manual/國泰世華": mapped_id}}).status_code == 200
+        lease = _claim(client)
+        ids = {"run_id": lease["run_id"], "lease_token": lease["lease_token"]}
+        file = client.post("/statements/files", headers=W, json=ids | {"sha256": sha * 64, "size": 10, "kind": "card", "object_key": sha * 64}).json()
+        source = client.post("/statements/sources", headers=W, json=ids | {"file_id": file["id"], "root": "manual", "drive_file_id": "m" + sha,
+                                                                         "drive_path": "國泰世華/2510.pdf", "drive_md5": "b" * 32, "drive_size": 10})
+        assert source.status_code == 201, source.text
+        response = client.post("/statements/revisions", headers=W, json=_revision(lease, card, [], "0") | {"file_id": file["id"]})
+        assert client.post(f"/statements/ingest-runs/{lease['run_id']}/finish", headers=W, json=ids | {"status": "done", "summary": {}}).status_code == 200
+        return response
+
+    assert attempt(card.id, "c").status_code == 201
+    wrong = attempt(other.id, "d")
+    assert wrong.status_code == 422 and wrong.json()["detail"][0]["loc"][-1] == "account_id"

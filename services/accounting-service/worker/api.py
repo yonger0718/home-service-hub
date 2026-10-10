@@ -13,8 +13,21 @@ import httpx
 LEASE_ROUTES = ("/renew", "/finish", "/files", "/sources", "/revisions")
 
 
+def _redact(body):
+    """Drop echoed request `input` and mask lease tokens before a body reaches a message or log."""
+    if isinstance(body, dict):
+        return {k: ("***" if k == "lease_token" else _redact(v)) for k, v in body.items() if k != "input"}
+    if isinstance(body, list):
+        return [_redact(v) for v in body]
+    return body
+
+
+CORRUPT = object()  # RunState.load result for an unreadable run.json (the pipeline records run_state_corrupt)
+
+
 class ApiError(RuntimeError):
     def __init__(self, status: int, body):
+        body = _redact(body)
         super().__init__(f"api {status}: {str(body)[:300]}")
         self.status, self.body = status, body
 
@@ -45,7 +58,12 @@ class ApiClient:
         extra = {"timeout": timeout} if timeout is not None else {}
         response = self.client.request(method, path, json=json, params=params, headers=self.headers, **extra)
         if response.status_code >= 400:
-            body = response.json() if response.headers.get("content-type", "").startswith("application/json") else response.text
+            body = response.text[:300]
+            if response.headers.get("content-type", "").startswith("application/json"):
+                try:
+                    body = response.json()
+                except ValueError:
+                    pass
             if response.status_code == 409 and (lease_route or any(path.endswith(r) or r in path for r in LEASE_ROUTES)):
                 raise LeaseLost(response.status_code, body)
             raise ApiError(response.status_code, body)
@@ -108,7 +126,8 @@ class ApiClient:
 class LeaseKeeper:
     """Renews the lease every `interval_s` on a daemon thread; `lost` becomes True after a failed renew."""
 
-    def __init__(self, client: ApiClient, lease: Lease, interval_s: float = 300):
+    def __init__(self, client: ApiClient, lease: Lease, interval_s: float = 300, retry_s: float = 1.0):
+        self.retry_s = retry_s
         self.client, self.lease, self.interval_s = client, lease, interval_s
         self.lost = False
         self._stop = threading.Event()
@@ -116,11 +135,14 @@ class LeaseKeeper:
 
     def _loop(self) -> None:
         while not self._stop.wait(self.interval_s):
-            try:
-                self.client.renew(self.lease, timeout=10)
-            except Exception:  # noqa: BLE001 — ApiError, httpx transport errors, OSError: all mean "not renewed"
-                self.lost = True
-                return
+            for attempt in (1, 2):  # one retry after 1 s before the lease counts as lost
+                try:
+                    self.client.renew(self.lease, timeout=10)
+                    break
+                except Exception:  # noqa: BLE001 — ApiError, httpx transport errors, OSError: all mean "not renewed"
+                    if attempt == 2 or self._stop.wait(self.retry_s):
+                        self.lost = True
+                        return
 
     def __enter__(self):
         self._thread.start()
@@ -146,8 +168,8 @@ class RunState:
             json.dump({**lease.__dict__, "trigger": trigger, "mode": mode}, fh)
         os.replace(tmp, self.path)
 
-    def load(self) -> tuple[Lease, str, str] | None:
-        """(lease, trigger, mode) or None; a corrupt file is removed and reported as None."""
+    def load(self):
+        """(lease, trigger, mode), None when absent, or CORRUPT (file removed) when unreadable."""
         if not self.path.exists():
             return None
         try:
@@ -156,7 +178,7 @@ class RunState:
             return lease, data.get("trigger", "owner_cli"), data.get("mode", "live")
         except (ValueError, KeyError, TypeError):
             self.clear()
-            return None
+            return CORRUPT
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)

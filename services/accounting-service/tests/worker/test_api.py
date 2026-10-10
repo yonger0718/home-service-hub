@@ -49,9 +49,9 @@ def test_lease_lost_on_submission_with_a_stale_token(worker_api):
 
 def test_account_map(worker_api, client):
     client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
-               json={"account_map": {"mail/信用卡/國泰世華": 3}, "dirty_enabled": False, "rules": {}})
+               json={"account_map": {"manual/國泰世華": 3}, "dirty_enabled": False, "rules": {}})
     mapping, version = worker_api.account_map()
-    assert mapping == {"mail/信用卡/國泰世華": 3} and len(version) == 16
+    assert mapping == {"manual/國泰世華": 3} and len(version) == 16
 
 
 def test_guard_blocks_lease_routes_before_sending(client):
@@ -71,7 +71,7 @@ def test_run_state_round_trip(tmp_path, worker_api):
     assert oct((tmp_path / "run.json").stat().st_mode)[-3:] == "600"
     assert state.load() == (lease, "owner_cli", "live")
     (tmp_path / "run.json").write_text("{trunc")
-    assert state.load() is None and not (tmp_path / "run.json").exists()
+    assert state.load() is api.CORRUPT and not (tmp_path / "run.json").exists()
     state.clear()
     assert state.load() is None
 
@@ -83,7 +83,7 @@ def test_lease_keeper_flags_transport_errors(worker_api, monkeypatch):
         raise ConnectionError("down")
 
     monkeypatch.setattr(worker_api, "renew", boom)
-    with api.LeaseKeeper(worker_api, lease, interval_s=0.05) as keeper:
+    with api.LeaseKeeper(worker_api, lease, interval_s=0.05, retry_s=0.01) as keeper:
         time.sleep(0.2)
         assert keeper.lost
 
@@ -98,10 +98,67 @@ def test_lease_keeper_renews_and_flags_loss(worker_api, monkeypatch):
         return real(l, **kw)
 
     monkeypatch.setattr(worker_api, "renew", renew)
-    with api.LeaseKeeper(worker_api, lease, interval_s=0.05) as keeper:
+    with api.LeaseKeeper(worker_api, lease, interval_s=0.05, retry_s=0.01) as keeper:
         time.sleep(0.2)
         assert calls and not keeper.lost
         worker_api.finish(lease, "done", {})
         time.sleep(0.2)
         assert keeper.lost
     assert not any(t.name.startswith("lease-keeper") and t.is_alive() for t in threading.enumerate())
+
+
+class _Resp:
+    def __init__(self, status, body, text, ctype="application/json"):
+        self.status_code, self._body, self.text = status, body, text
+        self.headers, self.content = {"content-type": ctype}, b"x"
+
+    def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
+        return self._body
+
+
+class _Fake:
+    def __init__(self, resp):
+        self.resp = resp
+
+    def request(self, *a, **k):
+        return self.resp
+
+
+def test_api_error_redacts_input_and_lease_token():
+    body = {"detail": [{"loc": ["body"], "input": {"lease_token": "secret" * 5}, "ctx": {"lease_token": "secret"}}],
+            "lease_token": "secret"}
+    client = api.ApiClient(_Fake(_Resp(422, body, "")), "t")
+    with pytest.raises(api.ApiError) as err:
+        client.queued_runs()
+    assert "secret" not in str(err.value) and "secret" not in str(err.value.body)
+    assert err.value.body["lease_token"] == "***" and "input" not in err.value.body["detail"][0]
+
+
+def test_mislabelled_json_error_is_an_api_error():
+    client = api.ApiClient(_Fake(_Resp(502, ValueError("bad"), "<html>bad gateway</html>")), "t")
+    with pytest.raises(api.ApiError) as err:
+        client.queued_runs()
+    assert err.value.status == 502 and "bad gateway" in str(err.value)
+
+
+def _keeper_with(outcomes):
+    calls = iter(outcomes)
+
+    class C:
+        def renew(self, lease, timeout=None):
+            if next(calls, "ok") == "boom":
+                raise ConnectionError("x")
+
+    return C()
+
+
+def test_lease_keeper_retries_once_before_declaring_loss():
+    lease = api.Lease(1, "t" * 32, "x", 1)
+    with api.LeaseKeeper(_keeper_with(["boom", "ok", "ok", "ok"]), lease, interval_s=0.05, retry_s=0.01) as keeper:
+        time.sleep(0.3)
+        assert not keeper.lost
+    with api.LeaseKeeper(_keeper_with(["boom", "boom"]), lease, interval_s=0.05, retry_s=0.01) as keeper:
+        time.sleep(0.3)
+        assert keeper.lost

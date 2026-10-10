@@ -86,15 +86,15 @@ def _reconciliation_dict(row: ReconciliationSettings) -> dict:
 
 
 def _check_account_map(account_map) -> None:
-    """Keys are Drive folders `<root>/<folder>/<subfolder>` (the shape the revision folder check builds); values
+    """Keys are `mail/<folder>/<subfolder>` or `manual/<folder>` (the shape the revision folder check builds); values
     are account ids."""
     if not isinstance(account_map, dict):
         raise ValidationError("account_map", "must be an object")
     for key, value in account_map.items():
         parts = key.split("/") if isinstance(key, str) else []
-        if (len(parts) != 3 or any(not part or part != part.strip() for part in parts)
-                or parts[0] not in STATEMENT_SOURCE_ROOTS):
-            raise ValidationError("account_map", f"key {key!r} is not <root>/<folder>/<subfolder>")
+        shape_ok = (len(parts), parts[0] if parts else None) in ((3, "mail"), (2, "manual"))
+        if not shape_ok or any(not part or part != part.strip() for part in parts):
+            raise ValidationError("account_map", f"key {key!r} is not mail/<folder>/<subfolder> or manual/<folder>")
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValidationError("account_map", f"value for {key!r} is not an account id")
 
