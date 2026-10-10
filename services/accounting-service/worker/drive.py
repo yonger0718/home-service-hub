@@ -66,6 +66,7 @@ class Drive:
 
     def download(self, item: Listed, dest: Path) -> None:
         private_dir(dest.parent)
+        dest.unlink(missing_ok=True)  # never let a stale file pass for a fresh download
         args = ["rclone", "backend", "copyid", self.cfg.rclone_remote, item.drive_file_id, str(dest)]
         result = self.runner.run(args, timeout=600)
         if result.returncode != 0 or not dest.exists():

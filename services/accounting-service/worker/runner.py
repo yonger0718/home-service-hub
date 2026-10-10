@@ -25,6 +25,8 @@ class SubprocessRunner:
                                   start_new_session=True, check=False)
         except subprocess.TimeoutExpired as exc:
             return Result(-1, exc.stdout or b"", (exc.stderr or b"") + b"\ntimeout")
+        except FileNotFoundError:
+            return Result(127, b"", b"not found")
         return Result(done.returncode, done.stdout, done.stderr)
 
 
