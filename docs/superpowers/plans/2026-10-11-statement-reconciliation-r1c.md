@@ -61,6 +61,8 @@
 
 30. **(AGENT-103 S2) Promotion updates existing lineage rows** rather than inserting duplicates.
 
+31. **(Task 4 review) Effect slots for non-ledger actions are per case version.** `match`, `unmatch`, `dismiss`, `defer_next_period` use `effect_slot = f"v{case.version}"` (the `ActionBase` default; `slot=None`); ledger-effect actions set a fixed `slot` (`create`, `fee`, `amount`, `move`, `split`, `balance`, `plan`); `revert` keeps `r<id>`. A reopened case (new version) may be matched again; the idempotency key still replays within a version. Coverage match kinds by actor (Tasks 9/10): owner → `manual`, policy-applied agent proposal → `agent`, policy's own creations → `auto`; ruling 16 preservation covers `manual` and `agent`.
+
 ## Review Focus
 
 1. Two concurrent `apply` calls for the same case and params must produce one effect: the second either replays (same idempotency key) or fails with `duplicate_effect`/`case_moved`, never a second ledger row — Task 4 (race test with `tests/helpers.race`).
