@@ -10,6 +10,14 @@ class ValidationError(Exception):
         self.message = message
 
 
+class CodedValidationError(ValidationError):
+    """A 422 whose message starts with a stable code: `<code>` or `<code>: <detail>` (reconciliation actions)."""
+
+    def __init__(self, field: str, code: str, detail: str | None = None):
+        super().__init__(field, code if detail is None else f"{code}: {detail}")
+        self.code = code
+
+
 class ConflictError(Exception):
     """The write conflicts with existing rows (in use, reward entry, ...); HTTP 409."""
 

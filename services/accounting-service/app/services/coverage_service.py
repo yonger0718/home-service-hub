@@ -93,6 +93,12 @@ def release_line(db: Session, statement: AccountStatement, line_id: int, *, reas
     return _release(db, [StatementCoverage.statement_id == statement.id, StatementCoverage.line_id == line_id], reason)
 
 
+def release_rows(db: Session, coverage_ids, *, reason: str) -> int:
+    """Release the given coverage rows (those still active); the reconciliation revert path."""
+    ids = sorted(set(coverage_ids))
+    return _release(db, [StatementCoverage.id.in_(ids)], reason) if ids else 0
+
+
 def release_statement(db: Session, statement: AccountStatement, *, reason: str) -> int:
     return _release(db, [StatementCoverage.statement_id == statement.id], reason)
 
@@ -269,6 +275,26 @@ def _take_barrier(db: Session, *, wait: bool = True) -> None:
         if acquired:
             _drop_barrier_after_failure(db)
         raise
+
+
+def take_barrier_xact(db: Session) -> None:
+    """The exclusive writer barrier for the rest of this TRANSACTION (rulings 15/26, `balance_adjustment_asof`):
+    once held, no ledger writer is between its dirty insert and its commit, and none can commit until this
+    transaction ends. Waits at most BARRIER_LOCK_TIMEOUT (a transaction-local lock_timeout inside a savepoint,
+    restored once the lock is held); a timeout raises `CodedConflictError("sweep_barrier_busy")` and leaves the
+    session usable. PostgreSQL releases the lock at commit or rollback (or when an enclosing savepoint is rolled
+    back) on the same backend: no unlock, no `finally`, nothing left on a pooled connection. The holder's own
+    ledger writes still pass (a backend is never blocked by its own advisory lock)."""
+    previous = db.execute(select(func.current_setting("lock_timeout"))).scalar_one()
+    try:
+        with db.begin_nested():  # rolled back on a timeout, which also reverts the SET LOCAL
+            db.execute(select(func.set_config("lock_timeout", BARRIER_LOCK_TIMEOUT, True)))
+            db.execute(select(func.pg_advisory_xact_lock(DIRTY_BARRIER_KEY)))
+    except OperationalError as exc:
+        if isinstance(exc.orig, (LockNotAvailable, QueryCanceled)):
+            raise CodedConflictError(SWEEP_BARRIER_BUSY, "a ledger write held the dirty barrier too long") from exc
+        raise
+    _restore_lock_timeout(db, previous)
 
 
 def _committed_cap(db: Session, *, barrier_wait: bool = True) -> int | None:
