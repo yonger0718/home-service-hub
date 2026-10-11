@@ -13,47 +13,24 @@ from app.models import (
     AccountStatement, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
     StatementLine,
 )
-from app.schemas.statements import LineIn, RevisionIn
 from app.schemas.writes import EntryUpdateIn, SplitIn
 from app.services import coverage_service as cov
 from app.services import entry_write_service as ews
 from app.services import split_service as ss
-from app.services import statement_ingest_service as ing
-from app.services import statement_revision_service as revs
 from app.services.statements import matching
 from tests.helpers import set_dirty, wait_until_blocked
+from tests.integration.statement_fixtures import OCT, SEP, _card, _line, run  # noqa: F401  (run is a fixture)
+from tests.integration.statement_fixtures import _submit as submit_revision
 
 # These tests isolate their service: submit_revision runs without the reconcile pass (conftest.matcher_off).
 pytestmark = pytest.mark.usefixtures("matcher_off")
 
-SEP = (date(2026, 9, 1), date(2026, 9, 30))
-OCT = (date(2026, 10, 1), date(2026, 10, 31))
-
-
-@pytest.fixture
-def run(db_session):
-    r = ing.create_worker_run(db_session, trigger="timer", initiator_hint=None, mode="live")
-    r, token = ing.claim_run(db_session, r.id, label="worker")
-    return r, token
-
 
 def _submit(db, run, card, period=SEP) -> tuple[AccountStatement, list[StatementLine]]:
-    r, token = run
-    lines = [LineIn(seq=i, posted_date=period[0].replace(day=3), merchant_raw="全聯", printed_amount=Decimal("580"),
-                    line_kind="purchase") for i in (1, 2)]
-    rev = RevisionIn(run_id=r.id, lease_token=token, file_id=None, account_id=card.id, kind="card", parser="t",
-                     parser_version="1", currency="TWD", period_start=period[0], period_end=period[1],
-                     opening_balance=None, statement_total=Decimal("1160"), lines=lines, raw={})
-    res = revs.submit_revision(db, r, rev, account_map={})
-    db.flush()
-    ls = db.query(StatementLine).filter_by(revision_id=res.revision.id).order_by(StatementLine.seq).all()
-    return res.statement, ls
-
-
-def _card(seed, db, *, live=True, name="卡"):
-    card = seed.account(name, is_credit=True, statement_live_from=date(2026, 9, 1) if live else None)
-    db.commit()
-    return card
+    """Two identical 580 purchases on the 3rd of the period (the shared submit; no reconcile pass: matcher_off)."""
+    lines = [_line(i, period[0].replace(day=3), "全聯", 580) for i in (1, 2)]
+    stmt, ls, _ = submit_revision(db, run, card, lines, period=period)
+    return stmt, ls
 
 
 def _claim(db, stmt, line, entries, groups=None, roles=None):
