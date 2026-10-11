@@ -138,7 +138,7 @@ def test_installment_group_sum_mismatch_is_not_admissible():
 - Test: `tests/integration/test_statement_ingest_api.py` (settings round trip), `tests/integration/test_reconciliation_service.py` (sibling candidates)
 
 **Interfaces:**
-- Produces in `settings_service`: `POLICY_DEFAULTS = {"enabled": False, "accept_agent_proposals": False, "per_statement_count": 5, "per_statement_total": "5000", "monthly_total": "20000", "actions": {"create_system_entry": {"enabled": False, "max_amount": "2000"}, "attach_fee": {"enabled": False, "max_amount": "500"}}}`; `_check_policy(policy: dict) -> dict` (unknown keys refused; booleans; non-negative Decimal strings; ints 0..1000; only the two action names); `_check_siblings(db, siblings: dict) -> dict[str, list[int]]` (keys int-strings of existing accounts; values distinct existing, non-archived accounts of the same currency, not the key); `reconciliation_policy(db) -> dict` (defaults ⊕ stored, SELECT only); `account_siblings(db, account_id) -> list[int]`; `policy_version` = `f"r1c-{version}"` bumped when the effective policy changes (same pattern as `rules_version`).
+- Produces in `settings_service`: `POLICY_DEFAULTS = {"enabled": False, "accept_agent_proposals": False, "per_statement_count": 5, "per_statement_total": "5000", "monthly_total": "20000", "actions": {"create_system_entry": {"enabled": False, "max_amount": "2000"}, "attach_fee": {"enabled": False, "max_amount": "500"}}, "per_currency_enabled": ["TWD"]}` (`per_currency_enabled`: list of ISO codes policy may touch; statements in other currencies are skipped with audit `policy_skipped currency`); `_check_policy(policy: dict) -> dict` (unknown keys refused; booleans; non-negative Decimal strings; ints 0..1000; only the two action names); `_check_siblings(db, siblings: dict) -> dict[str, list[int]]` (keys int-strings of existing accounts; values distinct existing, non-archived accounts of the same currency, not the key); `reconciliation_policy(db) -> dict` (defaults ⊕ stored, SELECT only); `account_siblings(db, account_id) -> list[int]`; `policy_version` = `f"r1c-{version}"` bumped when the effective policy changes (same pattern as `rules_version`).
 - `ReconciliationSettingsIn` gains `policy: dict = {}` and `account_siblings: dict[str, list[Int32]] = {}`; `ReconciliationSettingsOut` gains `policy`, `policy_version`, `account_siblings`.
 - `reconciliation_service._desired_cases`: for `line_unmatched` cases when `account_siblings(db, statement.account_id)` is non-empty, add `context["sibling_candidates"]` = up to 5 dicts `{entry_id, account_id, flow: str, posted_date: iso}` from `ledger_entry` rows on sibling accounts, `currency == statement.currency`, `parent_entry_id IS NULL`, `group_id IS NULL`, `abs(amount) == abs(line.flow)`, `|posted_date − line.posted_date| ≤ rules.exact_window_days`, not in `claimed_entry_ids`. Ordered by date distance then id. (`_key` already hashes context, so a changed candidate list refreshes the case.)
 
@@ -152,7 +152,7 @@ def test_installment_group_sum_mismatch_is_not_admissible():
 
 **Files:**
 - Create: `app/services/reconciliation_actions/__init__.py` (registry), `base.py`, `snapshots.py`, `audit.py`, `engine.py`, `coverage_actions.py` (`match`, `unmatch`)
-- Create: `app/schemas/reconciliation.py` (`ActionIn`, `ActionOut`, `AuditOut`)
+- Create: `app/schemas/reconciliation.py` (`ActionIn`, `ActionOut`, `AuditOut`), `tests/integration/statement_fixtures.py` (shared `_submit/_card/_line/_transfer` helpers moved out of `test_reconciliation_service.py` and `test_coverage_sweep.py`, which then import them)
 - Test: `tests/integration/test_reconciliation_actions_engine.py`
 
 **Interfaces (binding for Tasks 5–11):**
@@ -195,6 +195,7 @@ class Action(Protocol):
     case_kinds: frozenset[str]                     # kinds the action is allowed on
     actors: frozenset[str] = frozenset({"owner"})  # policy-eligible actions add "policy"
     def effect_slot(self, ctx: Context, params) -> str: ...
+    def validate_before(self, ctx: Context, params, prepared, before: dict) -> None: ...  # id scoping, protected rules; default no-op in ActionBase
     def lock_targets(self, ctx: Context, params) -> LockSet: ...   # entry ids, group ids, extra statement ids, account lock?
     def prepare(self, ctx: Context, params) -> Any: ...            # no locks held; FX fetch, reference checks
     def apply(self, ctx: Context, params, prepared, effect: Effect) -> None: ...  # locks held; GUC set
@@ -302,7 +303,7 @@ def revert_action(db, *, action_id: int, actor: str, label: str, request_id=None
 
 **Files:**
 - Create: `app/services/reconciliation_actions/case_actions.py`
-- Modify: registry
+- Modify: registry, `app/services/reconciliation_service.py::_write_deferrals` (owner-resolved deferrals survive)
 - Test: `tests/integration/test_reconciliation_actions_case.py`
 
 **Interfaces:**
