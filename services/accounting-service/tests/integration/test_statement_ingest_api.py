@@ -313,7 +313,8 @@ def test_cases_listing_needs_read_and_validates_status(client, card, seed, db_se
 
 def test_settings_expose_rules_and_validate_rule_keys(client, card):
     current = client.get("/settings/reconciliation", headers=H).json()
-    assert set(current) == {"account_map", "dirty_enabled", "rules", "rules_version", "version"}
+    assert set(current) == {"account_map", "dirty_enabled", "rules", "rules_version", "version", "policy", "policy_version",
+                            "account_siblings"}
     assert current["rules"]["accept"] == "0.80" and "period_end" not in current["rules"]
     for bad in ({"nope": 1}, {"period_end": "2026-09-30"}, {"deferral_days": "x"}, {"deferral_days": True},
                 {"accept": 0.8}, {"bank_only_patterns": "年費"}, {"bank_only_patterns": [1]}):
@@ -450,3 +451,68 @@ def test_manual_root_file_folder_map(client, card, seed, db_session):
     assert attempt(card.id, "c").status_code == 201
     wrong = attempt(other.id, "d")
     assert wrong.status_code == 422 and wrong.json()["detail"][0]["loc"][-1] == "account_id"
+
+
+# --- policy / siblings settings (R1c Task 3) ----------------------------------------------------------------------
+
+def _put(client, body):
+    return client.put("/settings/reconciliation", headers=S, json=body)
+
+
+def test_settings_default_policy_and_siblings(client):
+    from app.services import settings_service
+    got = client.get("/settings/reconciliation", headers=H).json()
+    assert got["policy"] == settings_service.POLICY_DEFAULTS
+    assert got["policy_version"] == "r1c-1" and got["account_siblings"] == {}
+
+
+def test_policy_put_validates(client):
+    bad = [
+        {"enabled": True, "actions": {"teleport": {"enabled": True}}},
+        {"actions": {"match": {"max_amount": "-1"}}},
+        {"actions": {"match": {"max_amount": "abc"}}},
+        {"actions": {"match": {"bogus": 1}}},
+        {"bogus": 1},
+        {"enabled": "yes"},
+        {"per_statement_count": 1001},
+        {"per_statement_count": -1},
+        {"per_statement_count": True},
+        {"monthly_total": "-5"},
+        {"per_currency_enabled": ["twd"]},
+        {"per_currency_enabled": ["TWDX"]},
+        {"per_currency_enabled": "TWD"},
+        {"actions": []},
+    ]
+    for policy in bad:
+        assert _put(client, {"policy": policy}).status_code == 422, policy
+    ok = _put(client, {"policy": {"enabled": True, "per_statement_count": 0, "per_currency_enabled": ["TWD", "USD"],
+                                  "actions": {"attach_fee": {"enabled": True, "max_amount": "10.5"}}}})
+    assert ok.status_code == 200, ok.text
+    policy = ok.json()["policy"]
+    assert policy["enabled"] is True and policy["per_statement_count"] == 0
+    assert policy["actions"]["attach_fee"] == {"enabled": True, "max_amount": "10.5"}
+    assert policy["actions"]["match"] == {"enabled": False, "max_amount": "0"}  # defaults overlaid
+    assert client.get("/settings/reconciliation", headers=H).json() == ok.json()
+
+
+def test_policy_version_bumps_only_when_the_policy_changes(client):
+    first = _put(client, {"policy": {"enabled": True}}).json()
+    assert first["policy_version"] == "r1c-%d" % first["version"]
+    same = _put(client, {"policy": {"enabled": True}, "dirty_enabled": True}).json()
+    assert same["version"] == first["version"] + 1 and same["policy_version"] == first["policy_version"]
+    changed = _put(client, {"policy": {"enabled": True, "monthly_total": "1"}}).json()
+    assert changed["policy_version"] == "r1c-%d" % changed["version"] != first["policy_version"]
+
+
+def test_siblings_put_validates(client, seed, db_session):
+    a, b = seed.account("甲"), seed.account("乙")
+    gone = seed.account("封存", is_archived=True)
+    usd = seed.account("美元", currency="USD")
+    db_session.commit()
+    for siblings in ({str(a.id): [usd.id]}, {str(a.id): [gone.id]}, {str(a.id): [a.id]}, {str(a.id): [b.id, b.id]},
+                     {str(a.id): [999999]}, {"999999": [b.id]}, {"x": [b.id]}, {str(gone.id): [b.id]}):
+        assert _put(client, {"account_siblings": siblings}).status_code == 422, siblings
+    ok = _put(client, {"account_siblings": {str(a.id): [b.id], str(b.id): [a.id]}})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["account_siblings"] == {str(a.id): [b.id], str(b.id): [a.id]}
+    assert client.get("/settings/reconciliation", headers=H).json() == ok.json()

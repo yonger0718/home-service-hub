@@ -1025,3 +1025,64 @@ def test_bank_transfer_in_line_claims_a_recurring_transfer_in_instance(seed, db_
     db_session.commit()
     stmt, ls, _ = _submit(db_session, run, bank, [_line(1, date(2026, 9, 3), "房租", 3000, "transfer_in")], kind="bank")
     assert [(r.line_id, r.entry_id) for r in _active(db_session, stmt.id)] == [(ls[0].id, entry.id)]
+
+
+# --- sibling candidates on unmatched lines (R1c Task 3) -------------------------------------------------------------
+
+def _set_siblings(db, mapping):
+    settings_service.update_reconciliation_settings(db, {"account_siblings": {str(k): [v.id for v in vs] for k, vs in mapping.items()}})
+    db.commit()
+
+
+def _sibling_case(db, stmt):
+    (case,) = [c for c in _cases(db, stmt.id, "open") if c.kind == "line_unmatched"]
+    return case
+
+
+def test_unmatched_line_lists_sibling_candidates(seed, db_session, run):
+    card = _card(seed, db_session, "甲卡")
+    sibling = seed.account("姊妹")
+    stranger = seed.account("路人")
+    near = seed.entry(sibling, "-777", day=date(2026, 9, 12), merchant="誤記")
+    seed.entry(sibling, "-777", day=date(2026, 9, 20), merchant="太遠")
+    seed.entry(sibling, "-778", day=date(2026, 9, 10), merchant="金額不同")
+    seed.entry(stranger, "-777", day=date(2026, 9, 10), merchant="非姊妹")
+    db_session.commit()
+    _set_siblings(db_session, {card.id: [sibling]})
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 10), "誤記", 777)])
+    case = _sibling_case(db_session, stmt)
+    assert case.context["sibling_candidates"] == [
+        {"entry_id": near.id, "account_id": sibling.id, "flow": "-777.0000", "posted_date": "2026-09-12"}]
+
+
+def test_no_siblings_leaves_the_context_alone(seed, db_session, run):
+    card = _card(seed, db_session, "甲卡")
+    other = seed.account("他")
+    seed.entry(other, "-777", day=date(2026, 9, 10), merchant="誤記")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 10), "誤記", 777)])
+    assert "sibling_candidates" not in _sibling_case(db_session, stmt).context
+
+
+def test_claimed_sibling_entry_is_not_listed(seed, db_session, run):
+    card = _card(seed, db_session, "甲卡")
+    sibling = _card(seed, db_session, "乙卡")
+    taken = seed.entry(sibling, "-777", day=date(2026, 9, 10), merchant="已對")
+    db_session.commit()
+    _submit(db_session, run, sibling, [_line(1, date(2026, 9, 10), "已對", 777)])  # claims the sibling's entry
+    _set_siblings(db_session, {card.id: [sibling]})
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 10), "誤記", 777)])
+    assert "sibling_candidates" not in _sibling_case(db_session, stmt).context
+
+
+def test_sibling_candidates_capped_and_ordered(seed, db_session, run):
+    card = _card(seed, db_session, "甲卡")
+    sibling = seed.account("姊妹")
+    entries = [seed.entry(sibling, "-777", day=date(2026, 9, d), merchant=f"m{d}") for d in (11, 9, 12, 8, 10, 13, 7)]
+    db_session.commit()
+    _set_siblings(db_session, {card.id: [sibling]})
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 10), "誤記", 777)])
+    got = _sibling_case(db_session, stmt).context["sibling_candidates"]
+    by_day = {e.id: e for e in entries}
+    assert [c["posted_date"] for c in got] == ["2026-09-10", "2026-09-11", "2026-09-09", "2026-09-12", "2026-09-08"]
+    assert len(got) == 5 and all(c["entry_id"] in by_day for c in got)

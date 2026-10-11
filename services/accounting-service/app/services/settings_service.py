@@ -76,13 +76,35 @@ def _rule_default(value):
 RULE_DEFAULTS = {f.name: _rule_default(f.default) for f in fields(matching.Rules) if f.name != "period_end"}
 
 
+POLICY_VERSION_PREFIX = "r1c"
+POLICY_DEFAULTS = {
+    "enabled": False, "accept_agent_proposals": False, "per_statement_count": 5, "per_statement_total": "5000",
+    "monthly_total": "20000",
+    "actions": {"create_system_entry": {"enabled": False, "max_amount": "2000"},
+                "attach_fee": {"enabled": False, "max_amount": "500"},
+                "match": {"enabled": False, "max_amount": "0"}},
+    "per_currency_enabled": ["TWD"],
+}
+
+
+def _effective_policy(stored) -> dict:
+    """POLICY_DEFAULTS overlaid with the stored keys (`actions` merged per action)."""
+    stored = stored if isinstance(stored, dict) else {}
+    actions = stored.get("actions") if isinstance(stored.get("actions"), dict) else {}
+    merged_actions = {name: {**default, **(actions.get(name) or {})} for name, default in POLICY_DEFAULTS["actions"].items()}
+    return {**POLICY_DEFAULTS, **{k: v for k, v in stored.items() if k != "actions"}, "actions": merged_actions}
+
+
 def _reconciliation_dict(row: ReconciliationSettings) -> dict:
     """Stored data plus defaults: `rules` = the matching.Rules defaults overlaid with the stored keys, and
     `rules_version` (bumped whenever the defaults change meaning)."""
     data = dict(row.data or {})
     rules = {**RULE_DEFAULTS, **(data.get("rules") or {})}
     return {**data, "account_map": data.get("account_map") or {}, "dirty_enabled": data.get("dirty_enabled") is True,
-            "rules": rules, "rules_version": data.get("rules_version") or RULES_VERSION, "version": row.version}
+            "rules": rules, "rules_version": data.get("rules_version") or RULES_VERSION, "version": row.version,
+            "policy": _effective_policy(data.get("policy")),
+            "policy_version": data.get("policy_version") or f"{POLICY_VERSION_PREFIX}-1",
+            "account_siblings": data.get("account_siblings") or {}}
 
 
 def _check_account_map(account_map) -> None:
@@ -135,6 +157,99 @@ def _check_rules(rules) -> dict:
     return out
 
 
+def _check_amount(field: str, name: str, value) -> str:
+    try:
+        ok = isinstance(value, str) and Decimal(value).is_finite() and Decimal(value) >= 0
+    except ArithmeticError:
+        ok = False
+    if not ok:
+        raise ValidationError(field, f"{name!r} must be a non-negative decimal string")
+    return value
+
+
+def _check_policy(policy) -> dict:
+    """The agent-autonomy policy overrides, validated and returned as given (defaults are overlaid on read): unknown
+    keys are refused at every level, only the three action names are allowed."""
+    if not isinstance(policy, dict):
+        raise ValidationError("policy", "must be an object")
+    out = {}
+    for key, value in policy.items():
+        if key not in POLICY_DEFAULTS:
+            raise ValidationError("policy", f"unknown key {key!r}")
+        if key in ("enabled", "accept_agent_proposals"):
+            if not isinstance(value, bool):
+                raise ValidationError("policy", f"{key!r} must be a boolean")
+        elif key == "per_statement_count":
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 1000:
+                raise ValidationError("policy", f"{key!r} must be an integer in 0..1000")
+        elif key in ("per_statement_total", "monthly_total"):
+            _check_amount("policy", key, value)
+        elif key == "per_currency_enabled":
+            if not isinstance(value, list) or not all(
+                    isinstance(c, str) and len(c) == 3 and c.isascii() and c.isalpha() and c.isupper() for c in value):
+                raise ValidationError("policy", f"{key!r} must be a list of uppercase 3-letter currency codes")
+        elif key == "actions":
+            if not isinstance(value, dict):
+                raise ValidationError("policy", "'actions' must be an object")
+            value = dict(value)
+            for name, action in value.items():
+                if name not in POLICY_DEFAULTS["actions"]:
+                    raise ValidationError("policy", f"unknown action {name!r}")
+                if not isinstance(action, dict):
+                    raise ValidationError("policy", f"action {name!r} must be an object")
+                for akey, avalue in action.items():
+                    if akey == "enabled":
+                        if not isinstance(avalue, bool):
+                            raise ValidationError("policy", f"{name}.enabled must be a boolean")
+                    elif akey == "max_amount":
+                        _check_amount("policy", f"{name}.max_amount", avalue)
+                    else:
+                        raise ValidationError("policy", f"unknown key {akey!r} in action {name!r}")
+        out[key] = value
+    return out
+
+
+def _check_siblings(db: Session, siblings) -> dict[str, list[int]]:
+    """`{account id: [sibling account ids]}`: every account exists and is not archived; siblings share the key
+    account's currency, are distinct and are not the key itself. Keys are normalised to int strings."""
+    if not isinstance(siblings, dict):
+        raise ValidationError("account_siblings", "must be an object")
+    parsed: dict[int, list[int]] = {}
+    for key, values in siblings.items():
+        if not isinstance(key, str) or not key.isascii() or not key.isdigit():
+            raise ValidationError("account_siblings", f"key {key!r} is not an account id")
+        if not isinstance(values, list) or any(isinstance(v, bool) or not isinstance(v, int) for v in values):
+            raise ValidationError("account_siblings", f"value for {key!r} must be a list of account ids")
+        if len(set(values)) != len(values):
+            raise ValidationError("account_siblings", f"siblings of {key} are not distinct")
+        if int(key) in values:
+            raise ValidationError("account_siblings", f"account {key} cannot be its own sibling")
+        parsed[int(key)] = list(values)
+    ids = set(parsed) | {v for values in parsed.values() for v in values}
+    accounts = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(ids))).scalars()} if ids else {}
+    for key, values in parsed.items():
+        for account_id in (key, *values):
+            account = accounts.get(account_id)
+            if account is None:
+                raise ValidationError("account_siblings", f"account {account_id} does not exist")
+            if account.is_archived:
+                raise ValidationError("account_siblings", f"account {account_id} is archived")
+        for sibling in values:
+            if accounts[sibling].currency != accounts[key].currency:
+                raise ValidationError("account_siblings", f"account {sibling} has a different currency than {key}")
+    return {str(key): values for key, values in parsed.items()}
+
+
+def reconciliation_policy(db: Session) -> dict:
+    """The effective policy (defaults overlaid with the stored keys), SELECT only."""
+    return read_reconciliation_settings(db)["policy"]
+
+
+def account_siblings(db: Session, account_id: int) -> list[int]:
+    """The sibling accounts configured for `account_id` (SELECT only)."""
+    return list(read_reconciliation_settings(db)["account_siblings"].get(str(account_id)) or [])
+
+
 def reconciliation_rules(db: Session) -> dict:
     """The matching rules (defaults overlaid with the stored keys), read without inserting the settings row: the
     reconcile transaction writes nothing outside its statement."""
@@ -170,10 +285,16 @@ def update_reconciliation_settings(db: Session, data: dict) -> dict:
     if not isinstance(data.get("dirty_enabled", False), bool):
         raise ValidationError("dirty_enabled", "must be a boolean")
     rules = _check_rules(data.get("rules", {}))
+    policy = _check_policy(data.get("policy", {}))
+    siblings = _check_siblings(db, data.get("account_siblings", {}))
     row = _reconciliation_row(db, lock=True)
     before = _reconciliation_dict(row)
-    row.data = {**data, "rules": rules}
+    row.data = {**data, "rules": rules, "policy": policy, "account_siblings": siblings}
     row.version = row.version + 1
+    if _effective_policy(policy) != before["policy"]:
+        row.data = {**row.data, "policy_version": f"{POLICY_VERSION_PREFIX}-{row.version}"}
+    else:
+        row.data = {**row.data, "policy_version": before["policy_version"]}
     if {**RULE_DEFAULTS, **rules} != before["rules"]:
         row.data = {**row.data, "rules_version": f"r1b-{row.version}"}
     else:

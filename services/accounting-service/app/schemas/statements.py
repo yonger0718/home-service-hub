@@ -314,6 +314,8 @@ class ReconciliationSettingsIn(BaseModel):
     account_map: dict[str, Int32] = {}
     dirty_enabled: bool = False
     rules: dict = {}  # matching.Rules overrides (settings_service validates keys and types); {} = the defaults
+    policy: dict = {}  # agent-autonomy policy overrides (settings_service validates); {} = the defaults
+    account_siblings: dict[str, list[Int32]] = {}  # account id -> sibling account ids (same currency)
 
 
 class ReconciliationSettingsOut(BaseModel):
@@ -322,6 +324,9 @@ class ReconciliationSettingsOut(BaseModel):
     dirty_enabled: bool
     rules: dict
     rules_version: str
+    policy: dict
+    policy_version: str
+    account_siblings: dict[str, list[int]]
     version: int
 
 

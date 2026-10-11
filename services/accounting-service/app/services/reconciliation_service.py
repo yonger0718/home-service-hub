@@ -361,10 +361,41 @@ def _sweep_note(case: ReconciliationCase) -> dict | None:
     return context.get(SWEEP_NOTE)
 
 
+SIBLING_CANDIDATE_LIMIT = 5
+
+
+def _sibling_candidates(db: Session, statement: AccountStatement, siblings: list[int], line: StatementLine,
+                        window_days: int, claimed: set[int]) -> list[dict]:
+    """Unclaimed top-level, ungrouped entries on the statement account's sibling accounts with the line's amount
+    and currency within the exact window of its date: nearest date first, then id (at most five)."""
+    day = func.coalesce(LedgerEntry.posted_date, LedgerEntry.entry_date)
+    rows = db.execute(
+        select(LedgerEntry.id, LedgerEntry.account_id, LedgerEntry.amount, day)
+        .where(LedgerEntry.account_id.in_(siblings), LedgerEntry.currency == statement.currency,
+               LedgerEntry.parent_entry_id.is_(None), LedgerEntry.group_id.is_(None),
+               func.abs(LedgerEntry.amount) == abs(Decimal(line.flow_amount)),
+               day >= line.posted_date - timedelta(days=window_days),
+               day <= line.posted_date + timedelta(days=window_days))
+        .order_by(LedgerEntry.id)).all()
+    rows = sorted((r for r in rows if r.id not in claimed), key=lambda r: (abs((r[3] - line.posted_date).days), r.id))
+    return [{"entry_id": r.id, "account_id": r.account_id, "flow": str(r.amount), "posted_date": r[3].isoformat()}
+            for r in rows[:SIBLING_CANDIDATE_LIMIT]]
+
+
 def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int], result: matching.MatchResult,
-                   lines: dict[int, StatementLine], entries: dict[int, matching.Entry]) -> list[dict]:
-    out = [_case(c.kind, event_id=lines[c.line_id].event_id, line_id=c.line_id, entry_id=c.entry_id,
-                 candidates=c.candidates, context=c.context) for c in result.cases]
+                   lines: dict[int, StatementLine], entries: dict[int, matching.Entry],
+                   rules: matching.Rules) -> list[dict]:
+    siblings = settings_service.account_siblings(db, statement.account_id)
+    claimed = coverage_service.claimed_entry_ids(db) if siblings else set()
+    out = []
+    for c in result.cases:
+        context = c.context
+        if siblings and c.kind == "line_unmatched":
+            found = _sibling_candidates(db, statement, siblings, lines[c.line_id], rules.exact_window_days, claimed)
+            if found:
+                context = {**(context or {}), "sibling_candidates": found}
+        out.append(_case(c.kind, event_id=lines[c.line_id].event_id, line_id=c.line_id, entry_id=c.entry_id,
+                         candidates=c.candidates, context=context))
     for entry_id in result.unmatched_entry_ids:
         why = result.explained.get(entry_id)
         if why == DEFERRED:
@@ -594,7 +625,7 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     created: list[int] = []
     if live:
         by_id = {e.id: e for e in entries if e.claimable}
-        created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id))
+        created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id, rules))
         evaluated = set(by_id) | {c.id for e in entries for c in e.children}
         _write_deferrals(db, statement, accounts_by_id[statement.account_id], deferred, evaluated)
     _link_earlier_deferrals(db, statement)
