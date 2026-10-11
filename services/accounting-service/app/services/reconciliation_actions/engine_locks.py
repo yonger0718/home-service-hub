@@ -1,8 +1,11 @@
 """The action engine's lock steps (spec §7.4, D32, R1b errata; rulings 15, 22, 26): statements ascending with their
-sweeps, then — after the case checks — the account row and the writer barrier when asked, then schedule rows,
-groups and entries NOWAIT. Ledger writers lock an entry first and then need coverage/case rows the action already
-holds (ON DELETE SET NULL), so every row lock after the statement is NOWAIT: a held row raises 409 `action_busy`
-instead of closing a cycle."""
+sweeps, then the action row (revert) and the case row, then — after the case checks — the account row and the
+writer barrier when asked, then schedule rows, groups and entries NOWAIT. Ledger writers lock an entry first and
+then need coverage/case rows the action already holds (ON DELETE SET NULL), so the schedule, group and entry locks
+are NOWAIT: a held row raises 409 `action_busy` instead of closing a cycle. The case, action and account locks
+wait by design: no ledger writer locks a case or action row, and `balance_adjustment_asof` (the only account
+locker) takes no entry or group lock, so those waits cannot close a cycle. The barrier waits at most
+BARRIER_LOCK_TIMEOUT (409 `sweep_barrier_busy`)."""
 from __future__ import annotations
 
 from typing import Iterable

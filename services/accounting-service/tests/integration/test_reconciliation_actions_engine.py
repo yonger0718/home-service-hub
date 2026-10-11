@@ -168,8 +168,7 @@ class FakeCreate(base.ActionBase):
 class FakeDismiss(base.ActionBase):
     name = "dismiss"
     Params = _NoParams
-    case_kinds = frozenset(registry.KIND_ACTIONS)
-    slot = "dismiss"
+    case_kinds = frozenset(registry.KIND_ACTIONS)  # no ledger write: the default v<version> slot (ruling 31)
 
     def apply(self, ctx, params, prepared, effect):
         effect.case_status = "dismissed"
@@ -214,7 +213,7 @@ def test_match_claims_resolves_recounts_and_audits(unmatched, db_session):
         s.line.id, s.entry.id, "principal", "manual", "owner")
     action = db_session.get(ReconciliationAction, row.id)
     assert (action.action, action.effect_slot, action.status, action.actor, action.event_id, action.case_id) == (
-        "match", "match", "applied", "owner", s.line.event_id, s.case.id)
+        "match", f"v{version}", "applied", "owner", s.line.event_id, s.case.id)
     assert action.params == {"line_id": s.line.id, "entry_id": s.entry.id, "group_id": None, "with_children": False,
                              "allow_sibling": False}
     assert (action.touched_entry_ids, action.created_entry_ids, action.deleted_entry_ids) == ([s.entry.id], [], [])
@@ -285,7 +284,7 @@ def test_replay_returns_the_stored_action_and_a_revert_frees_the_key(unmatched, 
     case = db_session.get(ReconciliationCase, s.case.id)
     key = engine.idempotency_key(case.id, case.version, "match",
                                  engine.canonical_params(MatchAction.Params(**_match(s))))
-    db_session.add(ReconciliationAction(idempotency_key=key, event_id=s.line.event_id, effect_slot="match",
+    db_session.add(ReconciliationAction(idempotency_key=key, event_id=s.line.event_id, effect_slot=f"v{case.version}",
                                         case_id=case.id, action="match", params=_match(s), actor="owner",
                                         status="reverted"))
     db_session.commit()
@@ -296,17 +295,56 @@ def test_replay_returns_the_stored_action_and_a_revert_frees_the_key(unmatched, 
 
 # --- 3. duplicate effect on a new case version --------------------------------------------------------------------
 
-def test_same_effect_on_a_new_case_version_is_a_duplicate_effect(unmatched, db_session):
+def test_a_match_on_a_reopened_case_claims_again(unmatched, db_session):
+    """Ruling 31: coverage-only actions are one effect per case VERSION (slot v<version>): after the sweep released
+    the owner's claim and reopened the case, the owner can match the event again."""
     s = unmatched()
-    _apply(db_session, s.case, params=_match(s))
+    first, _ = _apply(db_session, s.case, params=_match(s))
     stmt = rec._lock_statement(db_session, s.stmt.id)
-    cov.release_line(db_session, stmt, s.line.id, reason="dirty:test")
+    cov.release_line(db_session, stmt, s.line.id, reason="dirty:test")  # what the sweep does on a dirty edit
     db_session.commit()
     _reopen(db_session, s.case.id)
 
-    exc = _refuse(db_session, lambda: _apply(db_session, s.case, params=_match(s)))
+    again, replayed = _apply(db_session, s.case, params=_match(s))
+
+    assert replayed is False and again.id != first.id
+    assert (first.effect_slot, again.effect_slot) == ("v1", "v2")
+    assert [(c.line_id, c.entry_id, c.match_kind) for c in _active(db_session, s.stmt.id)] == [
+        (s.line.id, s.entry.id, "manual")]
+    assert [a.status for a in _actions(db_session)] == ["applied", "applied"]
+    assert db_session.get(ReconciliationCase, s.case.id).status == "resolved"
+
+
+def test_a_second_match_on_the_same_case_version_is_a_duplicate_effect(unmatched, seed, db_session):
+    """Within one case version the slot still guards: a different-params match (a new idempotency key) on the same
+    event and version is refused by the partial unique index."""
+    s = unmatched()
+    other = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    _apply(db_session, s.case, params=_match(s))
+    stmt = rec._lock_statement(db_session, s.stmt.id)
+    cov.release_line(db_session, stmt, s.line.id, reason="test")
+    case = db_session.get(ReconciliationCase, s.case.id)
+    case.status = "open"  # open again WITHOUT a version bump
+    db_session.commit()
+
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, params={"line_id": s.line.id,
+                                                                          "entry_id": other.id}))
     assert isinstance(exc, ValidationError) and exc.code == "duplicate_effect" and exc.field == "action"
     assert _active(db_session, s.stmt.id) == [] and len(_actions(db_session)) == 1
+
+
+def test_a_failed_row_under_the_key_is_action_failed(unmatched, db_session):
+    s = unmatched()
+    key = engine.idempotency_key(s.case.id, s.case.version, "match",
+                                 engine.canonical_params(MatchAction.Params(**_match(s))))
+    db_session.add(ReconciliationAction(idempotency_key=key, event_id=s.line.event_id, effect_slot="v1",
+                                        case_id=s.case.id, action="match", params=_match(s), actor="owner",
+                                        status="failed"))
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, params=_match(s)))
+    assert isinstance(exc, CodedConflictError) and exc.code == "action_failed"
+    assert _active(db_session, s.stmt.id) == []
 
 
 # --- 4. participating accounts and siblings ------------------------------------------------------------------------
@@ -390,10 +428,9 @@ def test_concurrent_identical_matches_produce_one_effect(unmatched, db_session, 
 
     outcome = race(pg_engine, act, act)
 
-    assert outcome == "committed" or _code(outcome) == "case_moved", outcome
-    if outcome == "committed":
-        (first, replayed_first), (second, replayed_second) = results
-        assert second == first and (replayed_first, replayed_second) == (False, True)
+    assert outcome == "committed", outcome  # the loser replays under the statement lock (ruling 24)
+    (first, replayed_first), (second, replayed_second) = results
+    assert second == first and (replayed_first, replayed_second) == (False, True)
     assert len(_active(db_session, s.stmt.id)) == 1 and len(_actions(db_session)) == 1
 
 

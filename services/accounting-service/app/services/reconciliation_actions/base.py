@@ -106,16 +106,20 @@ class Action(Protocol):
 
 
 class ActionBase:
-    """Defaults: slot from `slot`, no extra validation, nothing locked, `prepare` = the expected snapshot of the
+    """Defaults: the effect slot (below), no extra validation, nothing locked, `prepare` = the expected snapshot of the
     lock targets' rows (`snapshots.expected_set`), no inverse, and revert locks taken from the action row."""
     name: ClassVar[str]
     Params: ClassVar[type[ActionParams]]
     case_kinds: ClassVar[frozenset[str]] = frozenset()
     actors: ClassVar[frozenset[str]] = frozenset({OWNER})
-    slot: ClassVar[str]
+    slot: ClassVar[str | None] = None  # ledger-effect actions set their fixed slot (ruling 7)
 
     def effect_slot(self, ctx: Context, params) -> str:
-        return self.slot
+        """Ruling 31: an action that writes no ledger rows (match, unmatch, dismiss, defer_next_period) is one effect
+        per case VERSION, `v<version>` (the version the idempotency key was built from, under the case lock), so a
+        reopened case can be acted on again; ledger-effect actions keep their fixed slot (`create`, `fee`, `amount`,
+        `move`, `split`, `balance`, `plan`) and stay one-shot per event while applied."""
+        return self.slot if self.slot is not None else f"v{ctx.case.version}"
 
     def validate_before(self, ctx: Context, params, prepared: Prepared, before: dict) -> None:
         return None

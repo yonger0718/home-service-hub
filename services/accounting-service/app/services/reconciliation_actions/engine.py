@@ -4,7 +4,7 @@ transaction per action, never committed here (the router commits; policy commits
 `apply_action`: registry lookup and params → idempotency key from the case version → replay of a stored row →
 `prepare` without locks (the C6 expected snapshot; FX on its own session) → inside one attempt savepoint: the shared
 import key → [policy budget row] → statements ascending, each swept → idempotency again under the lock → the case
-FOR UPDATE (version, precheck, status, allowed, historical) → [account row, writer barrier] → schedule rows, groups,
+FOR UPDATE (version, status, allowed, historical, precheck) → [account row, writer barrier] → schedule rows, groups,
 entries NOWAIT → `before` = the expected ids re-read (any difference: 409 `snapshot_conflict`) → `validate_before`
 → creation-family check → the action row (status `applied`, flushed first: the partial unique index refuses a
 duplicate effect before any ledger write) → the `app.reconciliation_action_id` GUC → `apply` → conservation →
@@ -96,9 +96,12 @@ def _by_key(db: Session, key: str) -> ReconciliationAction | None:
 
 
 def _replay(db: Session, row: ReconciliationAction, statement_id: int, *, label: str, run_id, request_id):
-    """Ruling 6: an applied row replays (no new effect, audited); any other status is 409 `action_reverted`."""
-    if row.status != "applied":
+    """Ruling 6: an applied row replays (no new effect, audited); a reverted one is 409 `action_reverted`, a failed
+    one (never written in R1c) 409 `action_failed`."""
+    if row.status == "reverted":
         raise CodedConflictError("action_reverted", f"action {row.id}")
+    if row.status != "applied":
+        raise CodedConflictError("action_failed", f"action {row.id}")
     audit.record(db, event="action_replayed", actor=label, statement_id=statement_id, case_id=row.case_id,
                  action_id=row.id, run_id=run_id, request_id=request_id, detail={"action": row.action})
     return row, True
@@ -165,9 +168,9 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
                  precheck: Callable[[Context], None] | None = None) -> tuple[ReconciliationAction, bool]:
     """Apply `action` with `params` to case `case_id` (module docstring for the steps); returns (row, replayed).
     Raises ValidationError 422 (`unknown action`, params, actor, not allowed, `historical_statement`,
-    `duplicate_effect`, the action's own codes), CodedConflictError 409 (`action_reverted`, `case_moved`,
-    `case_closed`, `action_busy`, `snapshot_conflict`, `sweep_barrier_busy`, `reconcile_busy`), NotFoundError.
-    Never commits; on any error nothing is written."""
+    `duplicate_effect`, the action's own codes), CodedConflictError 409 (`action_reverted`, `action_failed`,
+    `case_moved`, `case_closed`, `action_busy`, `snapshot_conflict`, `sweep_barrier_busy`, `reconcile_busy`),
+    NotFoundError. Never commits; on any error nothing is written."""
     impl = _lookup(action)
     parsed = _parse(impl, params)
     if actor not in impl.actors:
@@ -198,14 +201,14 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
             raise CodedConflictError("case_moved", f"case {case.id} is at version {case.version}")
         statement = statements[case.statement_id]
         ctx = _context(db, case, statement, actor=actor, label=label, run_id=run_id, request_id=request_id)
-        if precheck is not None:
-            precheck(ctx)
         if case.status not in OPEN_STATUSES:
             raise CodedConflictError("case_closed", f"case {case.id} is {case.status}")
         if action not in allowed(case):
             raise ValidationError("action", "not allowed for this case")
         if statement.mode == "historical" and action not in COVERAGE_ACTIONS:
             raise CodedValidationError("action", "historical_statement")
+        if precheck is not None:  # policy re-validation under the locks, after the case checks (ruling 22)
+            precheck(ctx)
         locks.lock_account_and_barrier(db, targets, statement)
         locks.lock_rows(db, targets, prepared.expected)
         before = snapshots.snapshot_set(db, *snapshots.ids_of(prepared.expected))
