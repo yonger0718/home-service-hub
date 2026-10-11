@@ -1002,3 +1002,26 @@ def test_mapped_instance_beyond_the_window_gets_the_drift_hint(seed, db_session,
     (case,) = _cases(db_session, stmt.id, "open")
     assert (case.kind, case.line_id) == ("line_unmatched", ls[0].id)
     assert case.context == {"hint": "installment_date_drift", "entry_id": late.id, "definition_id": definition.id}
+
+
+def test_bank_payment_line_claims_a_scheduled_loan_installment_group(seed, db_session, run):
+    bank = seed.account("銀行", opening="0", statement_live_from=date(2026, 9, 1))
+    definition = seed.definition([seed.line("expense", bank, "10500")], kind="installment", name="房貸", times=12)
+    group = seed.group("installment")
+    principal = seed.entry(bank, "-10000", kind="payable", is_settlement=True, day=date(2026, 9, 3), group_id=group.id)
+    interest = seed.entry(bank, "-500", kind="interest", day=date(2026, 9, 3), group_id=group.id)
+    seed.instance(definition, 3, date(2026, 9, 3), status="posted", entries=[principal, interest])
+    db_session.commit()
+    stmt, ls, _ = _submit(db_session, run, bank, [_line(1, date(2026, 9, 3), "房貸", -10500, "payment")], kind="bank")
+    assert sorted((r.line_id, r.entry_id, r.match_rule) for r in _active(db_session, stmt.id)) == sorted(
+        [(ls[0].id, principal.id, "installment_group"), (ls[0].id, interest.id, "installment_group")])
+
+
+def test_bank_transfer_in_line_claims_a_recurring_transfer_in_instance(seed, db_session, run):
+    bank = seed.account("銀行", opening="0", statement_live_from=date(2026, 9, 1))
+    definition = seed.definition([seed.line("transfer_in", bank, "3000")], kind="recurring", name="房租")
+    entry = seed.entry(bank, "3000", kind="transfer_in", day=date(2026, 9, 3))
+    seed.instance(definition, 1, date(2026, 9, 3), status="posted", entries=[entry])
+    db_session.commit()
+    stmt, ls, _ = _submit(db_session, run, bank, [_line(1, date(2026, 9, 3), "房租", 3000, "transfer_in")], kind="bank")
+    assert [(r.line_id, r.entry_id) for r in _active(db_session, stmt.id)] == [(ls[0].id, entry.id)]

@@ -138,14 +138,14 @@ def _instances(db: Session, ids: list[int]) -> dict[int, matching.InstanceRef]:
         chunk = ids[start:start + 200]
         rows = db.execute(
             select(ScheduleInstance.posted_entry_ids, ScheduleInstance.definition_id, ScheduleInstance.seq,
-                   ScheduleDefinition.times)
+                   ScheduleDefinition.times, ScheduleDefinition.kind)
             .join(ScheduleDefinition, ScheduleDefinition.id == ScheduleInstance.definition_id)
             .where(or_(*(ScheduleInstance.posted_entry_ids.contains([i]) for i in chunk)))
             .order_by(ScheduleInstance.id))
-        for posted, definition_id, seq, times in rows:
+        for posted, definition_id, seq, times, definition_kind in rows:
             for entry_id in posted or []:
                 if isinstance(entry_id, int) and entry_id in wanted:
-                    out.setdefault(entry_id, matching.InstanceRef(definition_id, seq, times))
+                    out.setdefault(entry_id, matching.InstanceRef(definition_id, seq, times, definition_kind))
     return out
 
 
