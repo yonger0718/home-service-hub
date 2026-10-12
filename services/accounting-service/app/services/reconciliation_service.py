@@ -567,19 +567,36 @@ def _link_earlier_deferrals(db: Session, statement: AccountStatement) -> int:
 
 def fill_deferral_links(db: Session) -> int:
     """Link every unlinked deferral case to the statement of the same account and currency whose period_end is its
-    `deferred_to_period_end`; returns the number linked. Case rows only, no statement lock taken (the foreign key's
-    KEY SHARE may wait for a running reconcile of the target: call it in its own transaction, e.g. after the batch)."""
+    `deferred_to_period_end`; returns the number linked. Ruling 29: linking serializes with confirm through the
+    target's statement row — the candidates are read without locks, then each target in ascending id order, one per
+    savepoint, is locked FOR UPDATE (waiting for a running confirm or reconcile of it to commit) and re-read, and its
+    cases are linked under that lock with the deferral conditions re-checked. A `reconciled` target is linked too: the
+    link shows as `incoming_deferrals_pending` until its next confirm processes it; no flag is set. Call it in its own
+    transaction (e.g. after the batch)."""
     own, target = aliased(AccountStatement), aliased(AccountStatement)
-    target_id = (select(target.id)
-                 .join(own, and_(own.account_id == target.account_id, own.currency == target.currency))
-                 .where(own.id == ReconciliationCase.statement_id,
-                        target.period_end == ReconciliationCase.deferred_to_period_end)
-                 .limit(1).scalar_subquery())
-    count = db.execute(
-        update(ReconciliationCase)
-        .where(*_deferral_conditions(), ReconciliationCase.deferred_to_period_end.is_not(None), target_id.is_not(None))
-        .values(deferred_to_statement_id=target_id)
-        .execution_options(synchronize_session=False)).rowcount
+    candidates = db.execute(
+        select(ReconciliationCase.id, target.id)
+        .join(own, own.id == ReconciliationCase.statement_id)
+        .join(target, and_(target.account_id == own.account_id, target.currency == own.currency,
+                           target.period_end == ReconciliationCase.deferred_to_period_end))
+        .where(*_deferral_conditions(), ReconciliationCase.deferred_to_period_end.is_not(None))
+        .order_by(target.id, ReconciliationCase.id)).all()
+    by_target: dict[int, list[int]] = defaultdict(list)
+    for case_id, target_id in candidates:
+        by_target[target_id].append(case_id)
+    count = 0
+    for target_id in sorted(by_target):
+        with db.begin_nested():
+            statement = _lock_statement(db, target_id)  # FOR UPDATE, re-read (populate_existing)
+            same_cycle = select(AccountStatement.id).where(AccountStatement.account_id == statement.account_id,
+                                                           AccountStatement.currency == statement.currency)
+            count += db.execute(
+                update(ReconciliationCase)
+                .where(ReconciliationCase.id.in_(by_target[target_id]), *_deferral_conditions(),
+                       ReconciliationCase.deferred_to_period_end == statement.period_end,
+                       ReconciliationCase.statement_id.in_(same_cycle))
+                .values(deferred_to_statement_id=statement.id)
+                .execution_options(synchronize_session=False)).rowcount
     db.flush()
     return count
 

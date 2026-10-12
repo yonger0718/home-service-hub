@@ -5,8 +5,12 @@
 opens cases in live mode. Event state (current line, retirement) follows the CURRENT revision only: a revision that
 does not become current (guardrail failure, twin/header change, conflict) records its lineage but moves nothing
 (§5.7 "no transfers"). When it does become current, `identical`/`normalised` pairs carry the event's active coverage
-to the new line and `changed`/`unpaired` events holding coverage or applied effects are quarantined (§5.7). Services
-never commit; routers do.
+to the new line and `changed`/`unpaired` events holding coverage or applied effects are quarantined (§5.7).
+
+Storing and activating are separate steps: `_insert_lines` persists a revision as not current (lines, its own events
+retired, lineage rows untransferred) and `_activate` makes a persisted revision current from its stored rows.
+`submit_revision` runs both when the revision becomes current; `promote_revision` (a `statement_conflict` resolved
+with `keep=new`, ruling 28) runs `_activate` alone on a revision stored earlier. Services never commit; routers do.
 """
 
 from collections import Counter
@@ -14,7 +18,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
 from psycopg2.errors import DeadlockDetected
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -37,7 +41,7 @@ from app.models import (
 from app.schemas.statements import RevisionIn
 from app.services import coverage_service
 from app.services.reconciliation_actions import audit
-from app.services.errors import ConflictError, NotFoundError, ValidationError
+from app.services.errors import CodedConflictError, ConflictError, NotFoundError, ValidationError
 from app.services.statements import derive, lineage
 
 HEADER_COLUMNS = ("period_start", "period_end", "closing_date", "due_date", "opening_balance", "statement_total",
@@ -123,13 +127,15 @@ def _assert_folder_maps(db: Session, file_id: int, account_id: int, account_map:
         raise ValidationError("account_id", "folder maps elsewhere")
 
 
-def _lock_statement(db: Session, run: IngestRun, payload: RevisionIn, mode: str) -> tuple[AccountStatement, bool]:
-    """Fetch the statement identity FOR UPDATE, creating it first when absent (concurrent creators do not raise)."""
+def _lock_statement(db: Session, run: IngestRun, payload: RevisionIn, mode: str,
+                    origin: str) -> tuple[AccountStatement, bool]:
+    """Fetch the statement identity FOR UPDATE, creating it first when absent (concurrent creators do not raise);
+    `origin` and `mode` apply only to a statement created here."""
     db.flush()  # populate_existing below must not discard pending changes
     created_id = db.execute(
         pg_insert(AccountStatement)
         .values(account_id=payload.account_id, kind=payload.kind, currency=payload.currency, mode=mode,
-                origin="import" if payload.file_id is not None else "manual", created_run_id=run.id,
+                origin=origin, created_run_id=run.id,
                 **_header_columns(payload))
         .on_conflict_do_nothing(constraint="uq_account_statement_identity")
         .returning(AccountStatement.id)
@@ -213,25 +219,36 @@ def _open_quarantine_case(db: Session, statement: AccountStatement, revision: St
     return item.id
 
 
-def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision: StatementRevision,
-                             derived: list[derive.DerivedLine], pairings: list[lineage.Pairing],
-                             becomes_current: bool) -> tuple[dict[str, int], list[int]]:
-    """Events for unpaired and `changed` new lines first (statement_line.event_id is NOT NULL), then lines, then event
-    pointers, transfers, quarantines and lineage rows. Only `identical`/`normalised` pairs move the old event to the
-    new line; a `changed` pair gives the new line a new event (§5.7).
+def _stored_new_lines(rows: list[StatementLine]) -> list[lineage.New]:
+    """A stored revision's lines (in seq order, the order `derive.derive_lines` produced them in) as pairing input."""
+    return [lineage.New(index=i, logical_key=row.logical_key, canonical_key=row.canonical_key,
+                        merchant_norm=row.merchant_norm,
+                        kind_fields=(row.posted_date, row.txn_date, row.flow_amount, row.foreign_amount,
+                                     row.foreign_currency, row.line_kind, row.installment_seq, row.installment_total))
+            for i, row in enumerate(rows)]
 
-    Transfer rules, applied only when the revision becomes current: `identical` → the event's active coverage moves to
-    the new line (lineage `transferred`); `normalised` → the same, plus the event is flagged `text_changed` and its
-    pending proposals are superseded; `changed`/unpaired old → when the event holds active coverage or an applied
-    action, its coverage is released (`lineage:<equivalence>`), it becomes `quarantined` and, in live mode, gets one
-    open `parse_review` case; otherwise it is `retired`. A first revision (nothing to pair with) writes no lineage
-    rows. Returns the lineage counts and the ids of the quarantine cases opened or reused."""
+
+def _revision_lines(db: Session, revision: StatementRevision) -> list[StatementLine]:
+    return list(db.execute(select(StatementLine).where(StatementLine.revision_id == revision.id)
+                           .order_by(StatementLine.seq)).scalars())
+
+
+def _moves_event(pairing: lineage.Pairing) -> bool:
+    """`identical`/`normalised`: the old event moves to the new line; any other new line gets an event of its own."""
+    return pairing.old is not None and pairing.new is not None and pairing.equivalence != "changed"
+
+
+def _insert_lines(db: Session, statement: AccountStatement, revision: StatementRevision,
+                  derived: list[derive.DerivedLine], pairings: list[lineage.Pairing]) -> dict[str, int]:
+    """Persist a revision as NOT current: events for unpaired and `changed` new lines first (statement_line.event_id
+    is NOT NULL; `retired`, no current line, `first_line_id` set), then the lines (an `identical`/`normalised` line
+    rides its old event), then one `line_lineage` row per pairing with `transferred=False` — none for a first revision
+    (nothing to pair with). Moves nothing: `_activate` makes the revision current. Returns the lineage counts."""
     record_lineage = statement.current_revision_id is not None
     new_events: dict[int, StatementEvent] = {}
     for pairing in pairings:
-        if pairing.new is not None and (pairing.old is None or pairing.equivalence == "changed"):
-            event = StatementEvent(statement_id=statement.id, first_revision_id=revision.id,
-                                   status="live" if becomes_current else "retired")
+        if pairing.new is not None and not _moves_event(pairing):
+            event = StatementEvent(statement_id=statement.id, first_revision_id=revision.id, status="retired")
             db.add(event)
             new_events[pairing.new.index] = event
     db.flush()
@@ -252,30 +269,95 @@ def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision:
         db.add(line)
         lines[pairing.new.index] = line
     db.flush()
-    paired_events: dict[int, StatementEvent] = {}
-    coverage_by_event: dict[int, list] = {}
-    with_effects: set[int] = set()
-    if becomes_current and record_lineage:
-        event_ids = [p.old.event_id for p in pairings if p.old is not None]
-        paired_events = {e.id: e for e in db.execute(
-            select(StatementEvent).where(StatementEvent.id.in_(event_ids)).with_for_update()).scalars()}
-        for rows in coverage_service.active_rows(db, statement.id).values():
-            for row in rows:
-                coverage_by_event.setdefault(row.event_id, []).append(row)
-        with_effects = _events_with_applied_effects(db, event_ids)
     counts = Counter({"identical": 0, "normalised": 0, "changed": 0, "unpaired_old": 0, "new": 0})
-    case_ids: list[int] = []
     for pairing in pairings:
         new_line = lines.get(pairing.new.index) if pairing.new is not None else None
         new_event = new_events.get(pairing.new.index) if pairing.new is not None else None
         if new_event is not None:
             new_event.first_line_id = new_line.id
-            new_event.current_line_id = new_line.id if becomes_current else None
+        if pairing.old is None:
+            counts["new"] += 1
+        elif pairing.new is None:
+            counts["unpaired_old"] += 1
+        else:
+            counts[pairing.equivalence] += 1
+        if record_lineage:
+            db.add(LineLineage(
+                event_id=pairing.old.event_id if pairing.old is not None else new_event.id,
+                old_line_id=pairing.old.line_id if pairing.old is not None else None,
+                new_line_id=new_line.id if new_line is not None else None,
+                equivalence=pairing.equivalence, transferred=False))
+    db.flush()
+    return dict(counts)
+
+
+def _lineage_rows(db: Session, new_line_ids: list[int], unpaired_old_ids: list[int]) -> dict[tuple, LineLineage]:
+    """The recorded lineage rows of a revision's pairings, by (old_line_id, new_line_id): each of its lines' rows,
+    and the `new_line_id IS NULL` rows of its unpaired old lines (the newest when several revisions recorded one)."""
+    conds = []
+    if new_line_ids:
+        conds.append(LineLineage.new_line_id.in_(new_line_ids))
+    if unpaired_old_ids:
+        conds.append(and_(LineLineage.old_line_id.in_(unpaired_old_ids), LineLineage.new_line_id.is_(None)))
+    if not conds:
+        return {}
+    return {(row.old_line_id, row.new_line_id): row for row in db.execute(
+        select(LineLineage).where(or_(*conds)).order_by(LineLineage.id)).scalars()}
+
+
+def _activate(db: Session, statement: AccountStatement, revision: StatementRevision,
+              old_lines: list[lineage.Old]) -> list[int]:
+    """Make a persisted revision current, from its stored rows only (no statement_line is written): re-pair the
+    current revision's lines (`old_lines`) with the revision's lines through `lineage.pair`, then apply the transfer
+    rules (§5.7), flip the event pointers, settle the lineage rows, copy the revision's header onto the statement and
+    point `current_revision_id` at it. `submit_revision` calls it right after `_insert_lines` (when the revision
+    becomes current), `promote_revision` on a revision stored earlier as non-current (ruling 28).
+
+    Transfer rules: `identical` → the old event's active coverage moves to the new line (lineage `transferred`);
+    `normalised` → the same, plus the event is flagged `text_changed` and its pending proposals are superseded;
+    `changed`/unpaired old → when the event holds active coverage or an applied action, its coverage is released
+    (`lineage:<equivalence>`), it becomes `quarantined` and, in live mode, gets one open `parse_review` case;
+    otherwise it is `retired`. The revision's own events (unpaired/`changed` new lines) become `live` on their line;
+    events retired earlier stay retired. Lineage rows: the recorded row of each pairing gets `transferred` set to the
+    outcome; a pairing without one gets a new row (none for a first revision). Raises `CodedConflictError`
+    (`conflict_stale`) when a stored line's event no longer fits the re-pairing (the current revision moved since the
+    revision was stored). Returns the ids of the quarantine cases opened or reused."""
+    record_lineage = statement.current_revision_id is not None
+    rows = _revision_lines(db, revision)
+    pairings = lineage.pair(old_lines, _stored_new_lines(rows))
+    own_events = {e.id: e for e in db.execute(
+        select(StatementEvent).where(StatementEvent.statement_id == statement.id,
+                                     StatementEvent.first_revision_id == revision.id)).scalars()}
+    paired_events: dict[int, StatementEvent] = {}
+    coverage_by_event: dict[int, list] = {}
+    with_effects: set[int] = set()
+    if record_lineage:
+        event_ids = [p.old.event_id for p in pairings if p.old is not None]
+        paired_events = {e.id: e for e in db.execute(
+            select(StatementEvent).where(StatementEvent.id.in_(event_ids)).with_for_update()).scalars()}
+        for active in coverage_service.active_rows(db, statement.id).values():
+            for row in active:
+                coverage_by_event.setdefault(row.event_id, []).append(row)
+        with_effects = _events_with_applied_effects(db, event_ids)
+    recorded = _lineage_rows(db, [row.id for row in rows],
+                             [p.old.line_id for p in pairings if p.old is not None and p.new is None]) \
+        if record_lineage else {}
+    case_ids: list[int] = []
+    for pairing in pairings:
+        new_line = rows[pairing.new.index] if pairing.new is not None else None
+        moves = _moves_event(pairing)
+        if new_line is not None:
+            fits = new_line.event_id == pairing.old.event_id if moves else new_line.event_id in own_events
+            if not fits:
+                raise CodedConflictError("conflict_stale", f"line {new_line.id} no longer pairs as stored")
+            if not moves:
+                own = own_events[new_line.event_id]
+                own.status, own.current_line_id = "live", new_line.id
         transferred = False
-        if pairing.old is not None and becomes_current:
+        if pairing.old is not None:
             old_event = paired_events[pairing.old.event_id]
             covered = coverage_by_event.get(old_event.id, [])
-            if new_event is None and pairing.new is not None:  # identical / normalised: the event moves
+            if moves:  # identical / normalised: the event moves
                 old_event.current_line_id = new_line.id
                 for row in covered:
                     row.line_id = new_line.id
@@ -299,21 +381,37 @@ def _write_lines_and_lineage(db: Session, statement: AccountStatement, revision:
                             "new_line_id": new_line.id if new_line is not None else None}))
                 else:
                     old_event.status = "retired"
-        if pairing.old is None:
-            counts["new"] += 1
-        elif pairing.new is None:
-            counts["unpaired_old"] += 1
-        else:
-            counts[pairing.equivalence] += 1
         if not record_lineage:
             continue
-        db.add(LineLineage(
-            event_id=pairing.old.event_id if pairing.old is not None else new_events[pairing.new.index].id,
-            old_line_id=pairing.old.line_id if pairing.old is not None else None,
-            new_line_id=new_line.id if new_line is not None else None,
-            equivalence=pairing.equivalence, transferred=transferred))
+        key = (pairing.old.line_id if pairing.old is not None else None, new_line.id if new_line is not None else None)
+        row = recorded.get(key)
+        if row is not None:
+            row.transferred = transferred
+        else:
+            db.add(LineLineage(event_id=pairing.old.event_id if pairing.old is not None else new_line.event_id,
+                               old_line_id=key[0], new_line_id=key[1], equivalence=pairing.equivalence,
+                               transferred=transferred))
+    statement.current_revision_id = revision.id
+    for column in HEADER_COLUMNS:
+        setattr(statement, column, getattr(revision, column))
     db.flush()
-    return dict(counts), case_ids
+    return case_ids
+
+
+def promote_revision(db: Session, statement: AccountStatement, revision: StatementRevision) -> list[int]:
+    """Ruling 28: make a revision stored as non-current (a `statement_conflict` submission) the current one, from the
+    persisted rows only — `_activate` against the current revision's lines (it inserts no `statement_line`), then
+    the statement-level parse_reviews are superseded and the counts recomputed. The caller holds the statement lock
+    and reconciles afterwards. Returns the quarantine case ids."""
+    if revision.statement_id != statement.id:
+        raise ValidationError("revision_id", "not a revision of this statement")
+    if revision.id == statement.current_revision_id:
+        raise ValidationError("revision_id", "already the current revision")
+    case_ids = _activate(db, statement, revision, _old_lines(db, statement))
+    _supersede_parse_reviews(db, statement)
+    _recount(db, statement)
+    db.flush()
+    return case_ids
 
 
 def _open_case(db: Session, statement: AccountStatement, revision: StatementRevision, kind: str, *,
@@ -349,7 +447,10 @@ def _recount(db: Session, statement: AccountStatement) -> None:
     ).scalar_one()
 
 
-def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account_map: dict[str, int]) -> SubmitResult:
+def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account_map: dict[str, int],
+                    origin: str | None = None) -> SubmitResult:
+    """Store one revision (module docstring). `origin` names a statement created here: default `import` with a file,
+    `manual` without one (R1a); the manual-statement route passes `manual`."""
     # 1. account, kind, folder mapping
     account = db.get(Account, payload.account_id)
     if account is None:
@@ -371,7 +472,8 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     # 3. mode (only used when the statement is created; an existing statement keeps its mode)
     live = account.statement_live_from is not None and payload.period_end >= account.statement_live_from
     # 4. statement identity, locked
-    statement, created = _lock_statement(db, run, payload, "live" if live else "historical")
+    origin = origin or ("import" if payload.file_id is not None else "manual")
+    statement, created = _lock_statement(db, run, payload, "live" if live else "historical", origin)
     # 5. revision
     old, new = _old_lines(db, statement), _new_lines(derived)
     pairings = lineage.pair(old, new)
@@ -393,13 +495,10 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
                    "header_changes": header_changes})
     db.add(revision)
     db.flush()
-    # 6. lines, events, lineage
-    counts, quarantine_case_ids = _write_lines_and_lineage(db, statement, revision, derived, pairings, becomes_current)
-    # 7. current revision / conflict
-    if becomes_current:
-        statement.current_revision_id = revision.id
-        for column, value in _header_columns(payload).items():
-            setattr(statement, column, value)
+    # 6. lines, events, lineage (stored as not current)
+    counts = _insert_lines(db, statement, revision, derived, pairings)
+    # 7. current revision (transfers, quarantines, event pointers, header) / conflict
+    quarantine_case_ids = _activate(db, statement, revision, old) if becomes_current else []
     if conflict:
         statement.conflict_open = True
     if correction:

@@ -38,8 +38,9 @@ def _flow(kind: str, line: LineIn) -> Decimal:
     return flow_amount(kind, line.line_kind, line.printed_amount)
 
 
-def _submit(db, run, account, lines, *, kind="card", period=SEP, opening=None, total=None):
-    """Submit a revision whose header passes the guardrails (unless `total` overrides it); the hook reconciles."""
+def _submit(db, run, account, lines, *, kind="card", period=SEP, opening=None, total=None, **header):
+    """Submit a revision whose header passes the guardrails (unless `total` overrides it); the hook reconciles.
+    `header`: further RevisionIn header fields (closing_date, due_date, minimum_payment)."""
     r, token = run
     flows = sum((_flow(kind, line) for line in lines), Decimal(0))
     if kind == "card":
@@ -50,7 +51,7 @@ def _submit(db, run, account, lines, *, kind="card", period=SEP, opening=None, t
     rev = RevisionIn(run_id=r.id, lease_token=token, file_id=None, account_id=account.id, kind=kind, parser="t",
                      parser_version="1", currency=account.currency, period_start=period[0], period_end=period[1],
                      opening_balance=opening, statement_total=expected if total is None else Decimal(total),
-                     lines=lines, raw={})
+                     lines=lines, raw={}, **header)
     res = revs.submit_revision(db, r, rev, account_map={})
     db.commit()
     lines = db.query(StatementLine).filter_by(revision_id=res.revision.id).order_by(StatementLine.seq).all()

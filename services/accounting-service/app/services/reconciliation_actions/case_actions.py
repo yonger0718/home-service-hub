@@ -1,10 +1,12 @@
-"""Case actions that write no ledger rows (R1c; spec §4.9, rulings 29, 31): `dismiss` accepts a case as an exception,
-`defer_next_period` explains an unmatched entry as belonging to the next statement (owner deferrals are
+"""Case actions that write no ledger rows (R1c; spec §4.9, rulings 23, 28, 29, 30, 31): `dismiss` accepts a case as an
+exception, `defer_next_period` explains an unmatched entry as belonging to the next statement (owner deferrals are
 authoritative for the reconcile), `link_installment_plan` confirms a card installment plan and re-reconciles so the
-line is claimed in the same transaction. None sets an effect slot: each is one effect per case version."""
+line is claimed in the same transaction, `resolve_conflict` settles a `statement_conflict` (promote the stored
+revision or keep the current one). None sets an effect slot: each is one effect per case version."""
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Literal
 
 from pydantic import Field
 from sqlalchemy import select
@@ -12,10 +14,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models import (
     InstallmentPlanMap, ReconciliationAction, ReconciliationCase, ScheduleDefinition, ScheduleInstance,
-    StatementCoverage,
+    StatementCoverage, StatementRevision,
 )
 from app.schemas.writes import Int32
 from app.services import reconciliation_service as rec
+from app.services import statement_revision_service as revisions
 from app.services.errors import CodedConflictError, CodedValidationError, ValidationError
 
 from . import register
@@ -183,6 +186,58 @@ class LinkInstallmentPlanAction(ActionBase):
         return Effect(touched_entry_ids=list(action.touched_entry_ids or ()))
 
 
+# --- resolve_conflict ---------------------------------------------------------------------------------------------
+
+class ResolveConflictParams(ActionParams):
+    keep: Literal["current", "new"]
+
+
+class ResolveConflictAction(ActionBase):
+    """Rulings 23/28/30. The case's revision (`case.revision_id`, stored as non-current by the conflicting
+    submission) must still be the statement's newest non-rejected revision (409 `conflict_stale`). `keep=new`
+    promotes it (`statement_revision_service.promote_revision`: persisted rows only — coverage transferred or
+    quarantined by lineage, event pointers, header, current revision), clears `conflict_open`, reopens the statement
+    (`status='open'`) and reconciles it in this transaction (`barrier_wait=False`: the action holds row locks);
+    `keep=current` marks the revision `rejected` and clears `conflict_open` (the statement stays `reconciled`).
+    Either resolves the case. Not revertable: the owner re-submits instead."""
+    name = "resolve_conflict"
+    Params = ResolveConflictParams
+    case_kinds = frozenset({"statement_conflict"})
+
+    @staticmethod
+    def _revision(ctx: Context) -> StatementRevision:
+        revision = ctx.db.get(StatementRevision, ctx.case.revision_id)
+        newest = ctx.db.execute(
+            select(StatementRevision.id).where(StatementRevision.statement_id == ctx.statement.id,
+                                               StatementRevision.rejected.is_(False))
+            .order_by(StatementRevision.revision.desc()).limit(1)).scalar_one_or_none()
+        if (revision is None or revision.statement_id != ctx.statement.id or revision.id != newest
+                or revision.id == ctx.statement.current_revision_id):
+            raise CodedConflictError("conflict_stale", f"revision {ctx.case.revision_id} is not the newest pending one")
+        return revision
+
+    def validate_before(self, ctx: Context, params: ResolveConflictParams, prepared: Prepared, before: dict) -> None:
+        self._revision(ctx)
+
+    def apply(self, ctx: Context, params: ResolveConflictParams, prepared: Prepared, effect: Effect) -> None:
+        db, statement = ctx.db, ctx.statement
+        revision = self._revision(ctx)
+        effect.inverse = {"keep": params.keep, "previous_current_revision_id": statement.current_revision_id}
+        if params.keep == "new":
+            revisions.promote_revision(db, statement, revision)
+            statement.conflict_open, statement.status = False, "open"
+            db.flush()
+            rec.reconcile(db, statement.id, locked=True, barrier_wait=False)
+        else:
+            revision.rejected = True
+            statement.conflict_open = False
+            db.flush()
+
+    def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
+        raise NotRevertable("a conflict resolution is not revertable; submit the statement again")
+
+
 register(DismissAction())
 register(DeferNextPeriodAction())
 register(LinkInstallmentPlanAction())
+register(ResolveConflictAction())

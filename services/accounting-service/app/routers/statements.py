@@ -3,10 +3,12 @@
 Every route sits behind `require_feature()` (404 while ACCOUNTING_RECONCILIATION_ENABLED is off) and names its own
 scope: `enqueue` to queue a run, `ingest` for the worker's run/file/source/revision calls (each fenced by the run's
 lease, checked against the caller's label), `read` for statement reads and cases, `write` to reconcile one statement,
-`admin` to change the settings.
+`admin` to change the settings. `write` also covers the owner's manual statement and the statement confirm (R1c
+Task 11).
 
-The reconcile, revision (live statements) and sweep routes run the policy (`policy_service.run_policy_safe`, R1c
-Task 10) after their own commit; it commits per candidate and a policy error never fails the route.
+The reconcile, revision and manual-statement (live statements) and sweep routes run the policy
+(`policy_service.run_policy_safe`, R1c Task 10) after their own commit; it commits per candidate and a policy error
+never fails the route.
 """
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -25,7 +27,10 @@ from ..schemas.statements import (
     CaseKind,
     CaseOut,
     CaseStatus,
+    ConfirmIn,
+    ConfirmOut,
     Lease,
+    ManualStatementIn,
     ReconcileOut,
     ReconciliationSettingsIn,
     ReconciliationSettingsOut,
@@ -46,7 +51,7 @@ from ..schemas.statements import (
     StatementOut,
     SweepOut,
 )
-from ..services import policy_service
+from ..services import confirm_service, policy_service
 from ..services import reconciliation_service as recon
 from ..services import settings_service
 from ..services import statement_ingest_service as ingest
@@ -175,21 +180,56 @@ def mark_removed_sources(body: SourcesMarkRemovedIn, request: Request, db: Sessi
 
 
 # ---- revisions ----
+def _revision_out(result) -> dict:
+    return {
+        "statement_id": result.statement.id, "revision_id": result.revision.id,
+        "revision": result.revision.revision, "guardrail_ok": result.revision.guardrail_ok,
+        "mode": result.statement.mode, "conflict": result.revision.conflict,
+        "lineage": result.lineage_counts, "case_ids": result.case_ids,
+    }
+
+
 @router.post("/statements/revisions", response_model=RevisionOut, status_code=201, dependencies=INGEST)
 def submit_revision(body: RevisionIn, request: Request, db: Session = Depends(get_db)):
     with service_errors():
         run = ingest.require_lease(db, body.run_id, body.lease_token, label=_label(request))
         account_map = settings_service.get_reconciliation_settings(db).get("account_map", {})
         result = ingest.submit_revision(db, run, body, account_map=account_map)
-        out = {
-            "statement_id": result.statement.id, "revision_id": result.revision.id,
-            "revision": result.revision.revision, "guardrail_ok": result.revision.guardrail_ok,
-            "mode": result.statement.mode, "conflict": result.revision.conflict,
-            "lineage": result.lineage_counts, "case_ids": result.case_ids,
-        }
+        out = _revision_out(result)
     db.commit()
     if out["mode"] == "live":
         policy_service.run_policy_safe(db, out["statement_id"], run_id=body.run_id)
+    return out
+
+
+# ---- owner statements: manual entry, confirm ----
+@router.post("/accounts/{account_id}/statements", response_model=RevisionOut, status_code=201, dependencies=WRITE)
+def create_manual_statement(account_id: int, body: ManualStatementIn, request: Request, db: Session = Depends(get_db)):
+    """An owner-entered statement: submitted like an import on an owner_cli run of its own (`origin='manual'`)."""
+    with service_errors():
+        result = ingest.create_manual_statement(db, account_id=account_id, payload=body,
+                                                label=_label(request) or "owner")
+        out = _revision_out(result)
+        run_id = result.revision.run_id
+    db.commit()
+    if out["mode"] == "live":
+        policy_service.run_policy_safe(db, out["statement_id"], run_id=run_id)
+    return out
+
+
+@router.post("/accounts/{account_id}/statements/{statement_id}/confirm", response_model=ConfirmOut,
+             dependencies=WRITE)
+def confirm_statement(account_id: int, statement_id: int, body: ConfirmIn, request: Request,
+                      db: Session = Depends(get_db)):
+    """409 `confirm_refused: <checks JSON>` when a check fails without `force`; 409 `confirm_retry` when a deferral
+    was linked during the call; 422 `note_required` for `force` without a note."""
+    with service_errors():
+        result = confirm_service.confirm_statement(
+            db, account_id=account_id, statement_id=statement_id, force=body.force, note=body.note,
+            label=_label(request) or "owner", request_id=request.headers.get("x-request-id"))
+        out = {"status": result.status, "checks": result.checks, "reopened_cases": result.reopened_cases,
+               "forced": result.forced}
+    db.commit()
     return out
 
 

@@ -8,6 +8,7 @@ import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import case, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -25,15 +26,16 @@ from app.models import (
     StatementRevision,
     StatementSource,
 )
-from app.schemas.statements import FileRegisterIn, FileUpdateIn, SourceRegisterIn
-from app.services import coverage_service, proposal_service
-from app.services.errors import ConflictError, NotFoundError
+from app.schemas.statements import FileRegisterIn, FileUpdateIn, ManualStatementIn, RevisionIn, SourceRegisterIn
+from app.services import coverage_service, proposal_service, settings_service
+from app.services.errors import ConflictError, NotFoundError, ValidationError
+from app.services.reconciliation_actions import audit
 from app.services.statement_revision_service import SubmitResult, submit_revision
 
 __all__ = [
     "LEASE", "TERMINAL", "SubmitResult", "enqueue_run", "create_worker_run", "list_runs", "claim_run", "renew_lease",
     "finish_run", "require_lease", "lease_is_live", "register_file", "register_source", "update_file", "mark_removed_sources",
-    "submit_revision", "list_statements", "get_statement", "list_cases",
+    "submit_revision", "create_manual_statement", "list_statements", "get_statement", "list_cases",
 ]
 
 LEASE = timedelta(minutes=30)
@@ -192,6 +194,31 @@ def finish_run(db: Session, run_id: int, token: str, *, status: str, summary: di
     run.summary = {**(run.summary or {}), **summary}
     db.flush()
     return run
+
+
+def create_manual_statement(db: Session, *, account_id: int, payload: ManualStatementIn, label: str) -> SubmitResult:
+    """An owner-entered statement (spec §8): its own owner_cli run (created, claimed and finished `done` with
+    `{"manual": True}` in this transaction), a `RevisionIn` built from the payload (`file_id=None`, `parser="manual"`,
+    `parser_version="1"`, `raw={}`) and `submit_revision(..., origin="manual")` — the same derivation, guardrails,
+    lineage, cases and reconcile hook as an import. Audited `manual_statement_created`. Never commits; the route runs
+    the policy after its commit when the statement is live."""
+    if db.get(Account, account_id) is None:
+        raise NotFoundError(f"account {account_id} not found")
+    created = create_worker_run(db, trigger="owner_cli", initiator_hint=label, mode="live")
+    run, token = claim_run(db, created.id, label=label)
+    try:
+        revision_in = RevisionIn(run_id=run.id, lease_token=token, file_id=None, account_id=account_id,
+                                 parser="manual", parser_version="1", raw={}, **payload.model_dump())
+    except PydanticValidationError as exc:  # unreachable: ManualStatementIn carries the same field rules
+        first = exc.errors()[0]
+        raise ValidationError(".".join(str(p) for p in first.get("loc", ())) or "body", first.get("msg")) from exc
+    result = submit_revision(db, run, revision_in,
+                             account_map=settings_service.get_reconciliation_settings(db)["account_map"],
+                             origin="manual")
+    finish_run(db, run.id, token, status="done", summary={"manual": True})
+    audit.record(db, event="manual_statement_created", actor=label, statement_id=result.statement.id, run_id=run.id,
+                 detail={"revision_id": result.revision.id, "revision": result.revision.revision})
+    return result
 
 
 # ---- files and sources ----

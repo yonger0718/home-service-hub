@@ -186,6 +186,14 @@ class LineIn(BaseModel):
     is_subtotal: bool = False
 
 
+def unique_line_seq(lines: list[LineIn]) -> list[LineIn]:
+    """Stored (non-subtotal) lines are unique by seq within a revision; refuse duplicates as 422, not a 500."""
+    seqs = [line.seq for line in lines if not line.is_subtotal]
+    if len(seqs) != len(set(seqs)):
+        raise ValueError("duplicate seq")
+    return lines
+
+
 class RevisionIn(Lease):
     file_id: Int32 | None = None
     account_id: Int32
@@ -203,14 +211,41 @@ class RevisionIn(Lease):
     lines: list[LineIn] = Field(max_length=2000)
     raw: dict
 
-    @field_validator("lines")
-    @classmethod
-    def _unique_seq(cls, lines: list[LineIn]) -> list[LineIn]:
-        """Stored (non-subtotal) lines are unique by seq within a revision; refuse duplicates as 422, not a 500."""
-        seqs = [line.seq for line in lines if not line.is_subtotal]
-        if len(seqs) != len(set(seqs)):
-            raise ValueError("duplicate seq")
-        return lines
+    _unique_seq = field_validator("lines")(unique_line_seq)
+
+
+class ManualStatementIn(BaseModel):
+    """An owner-entered statement (`POST /accounts/{account_id}/statements`): the header and lines of a `RevisionIn`
+    without the worker's run, lease, file and parser fields (the service builds the `RevisionIn`: `file_id=None`,
+    `parser="manual"`, `parser_version="1"`, `raw={}`, its own owner_cli run). Same field rules as `RevisionIn`."""
+    model_config = Strict
+    kind: StatementKind
+    currency: Currency
+    period_start: date
+    period_end: date
+    closing_date: date | None = None
+    due_date: date | None = None
+    opening_balance: SignedMoney | None = None
+    statement_total: SignedMoney
+    minimum_payment: SignedMoney | None = None
+    lines: list[LineIn] = Field(default=[], max_length=2000)
+
+    _unique_seq = field_validator("lines")(unique_line_seq)
+
+
+class ConfirmIn(BaseModel):
+    """`force` confirms despite failing checks and then needs a `note` (422 `note_required`)."""
+    model_config = Strict
+    force: bool = False
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ConfirmOut(BaseModel):
+    model_config = Strict
+    status: str
+    checks: dict[str, bool]
+    reopened_cases: list[int]
+    forced: bool
 
 
 class RevisionOut(BaseModel):
