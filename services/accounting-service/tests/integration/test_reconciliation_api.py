@@ -1,0 +1,228 @@
+"""Reconciliation routes (R1c Task 8): case detail, owner actions, dismiss, revert, action and audit listings.
+Synthetic data only."""
+from datetime import date
+
+import pytest
+from sqlalchemy import select, text
+
+from app import auth
+from app.models import LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementCoverage
+from app.services import coverage_service, settings_service
+from app.services import reconciliation_service as rec
+from tests.helpers import set_dirty
+from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
+    OCT, _card, _cases, _line, _reconcile, _submit, run,
+)
+
+TOKENS = "spa:spa-token,hermes:hermes-token,worker:worker-token"
+SCOPES = "spa=legacy; hermes=read,propose,enqueue; worker=ingest"
+S = {"Authorization": "Bearer spa-token"}
+H = {"Authorization": "Bearer hermes-token"}
+W = {"Authorization": "Bearer worker-token"}
+DAY = date(2026, 9, 3)
+
+
+@pytest.fixture(autouse=True)
+def recon_env(monkeypatch):
+    monkeypatch.setenv(auth.TOKENS_ENV, TOKENS)
+    monkeypatch.setenv(auth.SCOPES_ENV, SCOPES)
+    monkeypatch.setenv(auth.FEATURE_ENV, "true")
+
+
+@pytest.fixture
+def unmatched(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "神秘", 77)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    return card, stmt, line, case
+
+
+@pytest.fixture
+def stray(seed, db_session, run):
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=DAY, merchant="全聯")
+    entry = seed.entry(card, "-77", day=date(2026, 9, 10), merchant="早餐")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    return card, stmt, entry, case
+
+
+def test_case_detail_line_unmatched(client, unmatched):
+    _, stmt, line, case = unmatched
+    assert client.get(f"/reconciliation/cases/{case.id}", headers=W).status_code == 403
+    body = client.get(f"/reconciliation/cases/{case.id}", headers=H).json()
+    assert body["id"] == case.id and body["statement_id"] == stmt.id
+    assert body["revision_id"] == stmt.current_revision_id
+    assert body["line"]["id"] == line.id and body["line"]["matched"] is False
+    assert body["pending_proposals"] == []
+    assert body["resolved_by"] is None and body["note"] is None
+    assert set(body["actions_allowed"]) >= {"dismiss", "create_entry"}
+
+
+def test_case_detail_entry_unmatched_has_no_line_and_other_actions(client, stray):
+    _, _, entry, case = stray
+    body = client.get(f"/reconciliation/cases/{case.id}", headers=S).json()
+    assert body["line"] is None and body["entry_id"] == entry.id
+    assert "dismiss" in body["actions_allowed"] and "create_entry" not in body["actions_allowed"]
+
+
+def test_case_detail_unknown_is_404(client):
+    assert client.get("/reconciliation/cases/999999", headers=S).status_code == 404
+
+
+def test_dismiss_then_replay_then_revert(client, db_session, unmatched):
+    _, stmt, _, case = unmatched
+    url = f"/reconciliation/cases/{case.id}/dismiss"
+    assert client.post(url, headers=H, json={"note": "x"}).status_code == 403
+    assert client.post(url, headers=W, json={"note": "x"}).status_code == 403
+    first = client.post(url, headers={**S, "x-request-id": "req-abc"}, json={"note": "not mine"})
+    assert first.status_code == 201, first.text
+    row = first.json()
+    assert row["action"] == "dismiss" and row["actor"] == "owner" and row["replayed"] is False
+    detail = client.get(f"/reconciliation/cases/{case.id}", headers=S).json()
+    assert detail["status"] == "dismissed" and detail["resolved_by"] == "owner"
+    assert detail["resolved_action_id"] == row["id"] and detail["actions_allowed"] == []
+    # revert
+    assert client.post(f"/reconciliation/actions/{row['id']}/revert", headers=H).status_code == 403
+    rev = client.post(f"/reconciliation/actions/{row['id']}/revert", headers=S)
+    assert rev.status_code == 201, rev.text
+    assert rev.json()["id"] != row["id"]
+    assert client.get(f"/reconciliation/cases/{case.id}", headers=S).json()["status"] == "open"
+    assert client.post("/reconciliation/actions/999999/revert", headers=S).status_code == 404
+    # request id in the audit row
+    db_session.expire_all()
+    audits = db_session.execute(select(ReconciliationAudit).where(ReconciliationAudit.action_id == row["id"])).scalars().all()
+    assert any(a.request_id == "req-abc" for a in audits)
+
+
+def test_action_replay_returns_200_with_replayed_flag(client, stray):
+    _, _, entry, case = stray
+    url = f"/reconciliation/cases/{case.id}/actions"
+    body = {"action": "defer_next_period", "params": {"entry_id": entry.id}}
+    first = client.post(url, headers=S, json=body)
+    assert first.status_code == 201 and first.json()["replayed"] is False, first.text
+    second = client.post(url, headers=S, json=body)
+    assert second.status_code == 200, second.text
+    assert second.json()["replayed"] is True and second.json()["id"] == first.json()["id"]
+
+
+def test_action_errors(client, unmatched):
+    _, _, _, case = unmatched
+    assert client.post("/reconciliation/cases/999999/actions", headers=S,
+                       json={"action": "dismiss", "params": {"note": "x"}}).status_code == 404
+    assert client.post("/reconciliation/cases/999999/dismiss", headers=S, json={"note": "x"}).status_code == 404
+    bad = client.post(f"/reconciliation/cases/{case.id}/actions", headers=S, json={"action": "nope", "params": {}})
+    assert bad.status_code == 422
+    for who in (H, W):
+        assert client.post(f"/reconciliation/cases/{case.id}/actions", headers=who,
+                           json={"action": "dismiss", "params": {"note": "x"}}).status_code == 403
+
+
+def test_action_and_audit_listings(client, db_session, unmatched):
+    _, stmt, _, case = unmatched
+    assert client.get("/reconciliation/actions", headers=W).status_code == 403
+    assert client.get("/reconciliation/audit", headers=W).status_code == 403
+    row = client.post(f"/reconciliation/cases/{case.id}/dismiss", headers=S, json={"note": "n"}).json()
+    client.post(f"/reconciliation/actions/{row['id']}/revert", headers=S)
+    by_case = client.get(f"/reconciliation/actions?case_id={case.id}", headers=H).json()
+    assert [a["id"] for a in by_case][0] != row["id"] or len(by_case) == 2
+    assert row["id"] in {a["id"] for a in by_case} and len(by_case) == 2
+    by_stmt = client.get(f"/reconciliation/actions?statement_id={stmt.id}", headers=H).json()
+    assert {a["id"] for a in by_stmt} == {a["id"] for a in by_case}
+    other = client.get(f"/reconciliation/actions?statement_id={stmt.id + 1000}", headers=H).json()
+    assert other == []
+    assert len(client.get("/reconciliation/actions?limit=1", headers=H).json()) == 1
+    audit = client.get(f"/reconciliation/audit?statement_id={stmt.id}", headers=H).json()
+    ids = [a["id"] for a in audit]
+    assert ids == sorted(ids, reverse=True) and len(ids) >= 2  # newest first, as the actions listing
+    assert [a["id"] for a in client.get(f"/reconciliation/audit?statement_id={stmt.id}&limit=1",
+                                        headers=H).json()] == ids[:1]
+    assert client.get("/reconciliation/audit?limit=0", headers=H).status_code == 422
+
+
+def _two_statements(seed, db_session, run):
+    card = _card(seed, db_session)
+    sep, _, _ = _submit(db_session, run, card, [_line(1, DAY, "甲", 10)])
+    octo, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 3), "乙", 20)], period=OCT)
+    return card, sep, octo
+
+
+def _defer(db_session, sep, octo, *, processed):
+    (case,) = _cases(db_session, sep.id, "open")
+    ctx = '{"resolved_in_statement_id": 1}' if processed else "{}"
+    db_session.execute(text(
+        "UPDATE reconciliation_case SET status='resolved', explanation='deferred_next_period', "
+        "deferred_to_statement_id=:t, context=CAST(:c AS jsonb) WHERE id=:i"), {"t": octo.id, "c": ctx, "i": case.id})
+    db_session.commit()
+
+
+def test_incoming_deferrals_pending_on_both_get_shapes(client, seed, db_session, run):
+    card, sep, octo = _two_statements(seed, db_session, run)
+
+    def counts():
+        listing = {s["id"]: s for s in client.get(f"/accounts/{card.id}/statements", headers=S).json()}
+        detail = client.get(f"/accounts/{card.id}/statements/{octo.id}", headers=S).json()
+        assert listing[octo.id]["incoming_deferrals_pending"] == detail["incoming_deferrals_pending"]
+        return detail["incoming_deferrals_pending"], listing[sep.id]["incoming_deferrals_pending"]
+
+    assert counts() == (0, 0)
+    _defer(db_session, sep, octo, processed=False)
+    assert counts() == (1, 0)
+    db_session.execute(text("UPDATE reconciliation_case SET context=CAST('{\"resolved_in_statement_id\": 5}' AS jsonb) "
+                            "WHERE deferred_to_statement_id=:t"), {"t": octo.id})
+    db_session.commit()
+    assert counts() == (0, 0)
+
+
+# --- ruling 36: coverage-only effect slots are per case id and version (Multica AGENT-107) ------------------------
+
+def test_a_match_on_the_replacement_case_after_a_dirty_edit_claims_again(client, seed, db_session, run):
+    """An owner sibling match, a dirty merchant edit on the claimed entry, then a reconcile: the sweep releases the
+    claim and reopens the case, and `_write_cases` replaces it with a NEW case (version 1) on the same event. A match
+    on the replacement is a new effect (slot `c<case.id>v<version>`), not a duplicate of the old case's v1 match; a
+    second match with other params on the same case version still is."""
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (old,) = _cases(db_session, stmt.id, "open")
+    sibling = seed.account("姊妹")
+    theirs = seed.entry(sibling, "-580", day=DAY, merchant="全聯")
+    other = seed.entry(sibling, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    settings_service.update_reconciliation_settings(db_session, {"account_siblings": {str(card.id): [sibling.id]}})
+    db_session.commit()
+    set_dirty(db_session, True)  # after the settings write, which replaces the settings document
+
+    def match(case_id, entry_id):
+        return client.post(f"/reconciliation/cases/{case_id}/actions", headers=S, json={
+            "action": "match", "params": {"line_id": line.id, "entry_id": entry_id, "allow_sibling": True}})
+
+    first = match(old.id, theirs.id)
+    assert first.status_code == 201, first.text
+
+    db_session.expire_all()
+    db_session.get(LedgerEntry, theirs.id).merchant = "全聯福利中心"  # a dirty edit on the claimed entry
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+
+    db_session.expire_all()
+    assert db_session.get(ReconciliationCase, old.id).status == "superseded"
+    (new,) = [c for c in _cases(db_session, stmt.id, "open") if c.event_id == line.event_id]
+    assert (new.id != old.id, new.version, new.event_id) == (True, 1, old.event_id)
+
+    again = match(new.id, theirs.id)
+    assert again.status_code == 201, again.text
+    assert again.json()["replayed"] is False
+    assert (first.json()["effect_slot"], again.json()["effect_slot"]) == (f"c{old.id}v1", f"c{new.id}v1")
+    db_session.expire_all()
+    active = db_session.execute(select(StatementCoverage).where(StatementCoverage.statement_id == stmt.id,
+                                                                StatementCoverage.status == "active")).scalars().all()
+    assert [(c.line_id, c.entry_id, c.match_kind) for c in active] == [(line.id, theirs.id, "manual")]
+
+    # same case, same version, other params: still one effect per slot
+    locked = rec._lock_statement(db_session, stmt.id)
+    coverage_service.release_line(db_session, locked, line.id, reason="test")
+    db_session.get(ReconciliationCase, new.id).status = "open"  # open again WITHOUT a version bump
+    db_session.commit()
+    duplicate = match(new.id, other.id)
+    assert duplicate.status_code == 422 and "duplicate_effect" in duplicate.text, duplicate.text

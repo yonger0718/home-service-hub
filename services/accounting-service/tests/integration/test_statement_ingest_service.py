@@ -266,7 +266,7 @@ def test_get_and_list_statements(db_session, card, run):
     db_session.add(CoverageDirty(kind="entry", row_id=1, op="insert", new_account_id=card.id))
     db_session.flush()
     assert svc.get_statement(db_session, res.statement.id)["stale_events_pending"] is True
-    assert [s.id for s in svc.list_statements(db_session, card.id)] == [res.statement.id]
+    assert [s["id"] for s in svc.list_statements(db_session, card.id)] == [res.statement.id]
     assert db_session.query(AccountStatement).count() == 1
 
 

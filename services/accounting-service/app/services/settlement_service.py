@@ -91,8 +91,9 @@ def settle(
     return entry.id
 
 
-def refund(db: Session, entry_id: int, payload: RefundIn) -> int:
-    """A refund entry of +amount with the original's category, name and merchant.
+def refund(db: Session, entry_id: int, payload: RefundIn, *, source: str = "manual") -> int:
+    """A refund entry of +amount with the original's category, name and merchant; `source` is the new row's
+    (`statement` from the reconciliation action `create_refund`).
 
     A group member is an ordinary entry and may be refunded; a group has no entry id, so it cannot be targeted.
     """
@@ -117,7 +118,7 @@ def refund(db: Session, entry_id: int, payload: RefundIn) -> int:
         merchant=original.merchant,
         description=payload.description,
         refunds_entry_id=original.id,
-        source="manual",
+        source=source,
     )
     db.add(entry)
     db.flush()

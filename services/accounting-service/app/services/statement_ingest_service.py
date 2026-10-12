@@ -17,21 +17,24 @@ from app.models import (
     AccountStatement,
     CoverageDirty,
     IngestRun,
+    ReconciliationAction,
+    ReconciliationAudit,
     ReconciliationCase,
     StatementFile,
     StatementLine,
     StatementRevision,
     StatementSource,
 )
-from app.schemas.statements import FileRegisterIn, FileUpdateIn, SourceRegisterIn
-from app.services import coverage_service
+from app.schemas.statements import FileRegisterIn, FileUpdateIn, ManualStatementIn, RevisionIn, SourceRegisterIn
+from app.services import coverage_service, proposal_service, settings_service
 from app.services.errors import ConflictError, NotFoundError
+from app.services.reconciliation_actions import audit
 from app.services.statement_revision_service import SubmitResult, submit_revision
 
 __all__ = [
     "LEASE", "TERMINAL", "SubmitResult", "enqueue_run", "create_worker_run", "list_runs", "claim_run", "renew_lease",
     "finish_run", "require_lease", "lease_is_live", "register_file", "register_source", "update_file", "mark_removed_sources",
-    "submit_revision", "list_statements", "get_statement", "list_cases",
+    "submit_revision", "create_manual_statement", "list_statements", "get_statement", "list_cases",
 ]
 
 LEASE = timedelta(minutes=30)
@@ -192,6 +195,29 @@ def finish_run(db: Session, run_id: int, token: str, *, status: str, summary: di
     return run
 
 
+def create_manual_statement(db: Session, *, account_id: int, payload: ManualStatementIn, label: str) -> SubmitResult:
+    """An owner-entered statement (spec §8): its own owner_cli run (created, claimed and finished `done` with
+    `{"manual": True}` in this transaction), a `RevisionIn` built from the payload (`file_id=None`, `parser="manual"`,
+    `parser_version="1"`, `raw={}`) and `submit_revision(..., origin="manual")` — the same derivation, guardrails,
+    lineage, cases and reconcile hook as an import. Audited `manual_statement_created`. Never commits; the route runs
+    the policy after its commit when the statement is live."""
+    if db.get(Account, account_id) is None:
+        raise NotFoundError(f"account {account_id} not found")
+    created = create_worker_run(db, trigger="owner_cli", initiator_hint=label, mode="live")
+    run, token = claim_run(db, created.id, label=label)
+    # No validation can fail here: ManualStatementIn carries RevisionIn's field rules (the route validated them), and
+    # the run id and its 48-character lease token satisfy the Lease fields.
+    revision_in = RevisionIn(run_id=run.id, lease_token=token, file_id=None, account_id=account_id,
+                             parser="manual", parser_version="1", raw={}, **payload.model_dump())
+    result = submit_revision(db, run, revision_in,
+                             account_map=settings_service.get_reconciliation_settings(db)["account_map"],
+                             origin="manual")
+    finish_run(db, run.id, token, status="done", summary={"manual": True})
+    audit.record(db, event="manual_statement_created", actor=label, statement_id=result.statement.id, run_id=run.id,
+                 detail={"revision_id": result.revision.id, "revision": result.revision.revision})
+    return result
+
+
 # ---- files and sources ----
 def register_file(db: Session, run: IngestRun, payload: FileRegisterIn) -> StatementFile:
     """Idempotent by sha256: concurrent duplicates insert nothing and read the existing row."""
@@ -286,6 +312,8 @@ LINE_FIELDS = ("id", "event_id", "seq", "txn_date", "posted_date", "merchant_raw
                "flow_amount", "foreign_amount", "foreign_currency", "line_kind", "installment_seq", "installment_total")
 CASE_FIELDS = ("id", "kind", "status", "event_id", "line_id", "entry_id", "explanation", "candidates", "context",
                "version", "created_at")
+PROPOSAL_FIELDS = ("id", "case_id", "case_version", "event_id", "action", "params", "rationale", "confidence", "author",
+                   "status", "created_at", "decided_at", "applied_action_id")
 COVERAGE_FIELDS = ("entry_id", "group_id", "role", "match_rule", "match_kind", "status")
 REVISION_FIELDS = ("id", "revision", "file_id", "parser", "parser_version", "guardrail_ok", "conflict", "rejected",
                    "created_at")
@@ -295,13 +323,31 @@ def _row(obj, fields) -> dict:
     return {name: getattr(obj, name) for name in fields}
 
 
-def list_statements(db: Session, account_id: int) -> list[AccountStatement]:
+def _incoming_deferrals(db: Session, statement_ids: list[int]) -> dict[int, int]:
+    """Ruling 29: cases deferred INTO each statement that its confirm has not processed yet (ruling 11: confirm
+    marks each `resolved_in_statement_id` or reopens it)."""
+    if not statement_ids:
+        return {}
+    rows = db.execute(
+        select(ReconciliationCase.deferred_to_statement_id, func.count())
+        .where(ReconciliationCase.deferred_to_statement_id.in_(statement_ids),
+               ReconciliationCase.explanation == "deferred_next_period",
+               ReconciliationCase.status == "resolved",
+               ReconciliationCase.context.op("?")("resolved_in_statement_id").is_(False))
+        .group_by(ReconciliationCase.deferred_to_statement_id)
+    ).all()
+    return {sid: n for sid, n in rows}
+
+
+def list_statements(db: Session, account_id: int) -> list[dict]:
     if db.get(Account, account_id) is None:
         raise NotFoundError(f"account {account_id} not found")
-    return list(db.execute(
+    statements = list(db.execute(
         select(AccountStatement).where(AccountStatement.account_id == account_id)
         .order_by(AccountStatement.period_end.desc(), AccountStatement.id.desc())
     ).scalars())
+    pending = _incoming_deferrals(db, [s.id for s in statements])
+    return [{**_row(s, HEADER_FIELDS), "incoming_deferrals_pending": pending.get(s.id, 0)} for s in statements]
 
 
 def get_statement(db: Session, statement_id: int) -> dict:
@@ -329,6 +375,7 @@ def get_statement(db: Session, statement_id: int) -> dict:
     stale = coverage_service.has_pending_events(db, statement)
     return {
         **_row(statement, HEADER_FIELDS),
+        "incoming_deferrals_pending": _incoming_deferrals(db, [statement.id]).get(statement.id, 0),
         "lines": [{**_row(line, LINE_FIELDS), "matched": bool(coverage.get(line.id)),
                    "coverage": [{**_row(r, COVERAGE_FIELDS), "flow": r.snapshot.get("flow")}
                                       for r in coverage.get(line.id, [])]} for line in lines],
@@ -352,3 +399,52 @@ def list_cases(db: Session, *, status: str | None = None, account_id: int | None
             select(AccountStatement.id).where(AccountStatement.account_id == account_id)))
     q = q.order_by(ReconciliationCase.created_at.desc(), ReconciliationCase.id.desc()).limit(limit)
     return [_row(item, CASE_FIELDS) for item in db.execute(q).scalars()]
+
+
+CASE_DETAIL_FIELDS = CASE_FIELDS + ("statement_id", "revision_id", "resolved_by", "resolved_action_id", "resolved_at",
+                                    "deferred_to_period_end", "deferred_to_statement_id", "note")
+ACTION_FIELDS = ("id", "case_id", "proposal_id", "action", "params", "actor", "status", "effect_slot",
+                 "created_entry_ids", "deleted_entry_ids", "touched_entry_ids", "touched_group_ids",
+                 "reverted_by_action_id", "created_at")
+AUDIT_FIELDS = ("id", "statement_id", "case_id", "action_id", "run_id", "event", "actor", "request_id", "detail",
+                "created_at")
+
+
+def get_case(db: Session, case_id: int) -> dict:
+    """One case with its source line (matched/coverage as in the statement detail) and the actions it offers now."""
+    from app.services import reconciliation_actions
+
+    proposal_service.supersede_stale(db, case_id=case_id)  # the caller commits it (the route does)
+    item = db.get(ReconciliationCase, case_id)
+    if item is None:
+        raise NotFoundError(f"case {case_id} not found")
+    line = None
+    if item.line_id is not None:
+        row = db.get(StatementLine, item.line_id)
+        coverage = coverage_service.active_rows(db, item.statement_id).get(row.id, [])
+        line = {**_row(row, LINE_FIELDS), "matched": bool(coverage),
+                "coverage": [{**_row(r, COVERAGE_FIELDS), "flow": r.snapshot.get("flow")} for r in coverage]}
+    return {**_row(item, CASE_DETAIL_FIELDS), "actions_allowed": reconciliation_actions.allowed(item),
+            "pending_proposals": [_row(p, PROPOSAL_FIELDS) for p in proposal_service.pending_for_case(db, item.id)],
+            "line": line}
+
+
+def list_actions(db: Session, *, statement_id: int | None = None, case_id: int | None = None,
+                 limit: int = 200) -> list[ReconciliationAction]:
+    """Actions newest first, optionally of one case or of one statement's cases."""
+    q = select(ReconciliationAction)
+    if case_id is not None:
+        q = q.where(ReconciliationAction.case_id == case_id)
+    if statement_id is not None:
+        q = q.where(ReconciliationAction.case_id.in_(
+            select(ReconciliationCase.id).where(ReconciliationCase.statement_id == statement_id)))
+    return list(db.execute(q.order_by(ReconciliationAction.id.desc()).limit(limit)).scalars())
+
+
+def list_audit(db: Session, *, statement_id: int | None = None, limit: int = 200) -> list[dict]:
+    """Audit rows newest first (as `list_actions`); with `limit`, the latest `limit` rows."""
+    q = select(ReconciliationAudit)
+    if statement_id is not None:
+        q = q.where(ReconciliationAudit.statement_id == statement_id)
+    q = q.order_by(ReconciliationAudit.id.desc()).limit(limit)
+    return [_row(r, AUDIT_FIELDS) for r in db.execute(q).scalars()]

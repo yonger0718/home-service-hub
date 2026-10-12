@@ -164,6 +164,125 @@ the finished items stay committed. One statement is reconciled with
 `POST /accounts/{id}/statements/{statement_id}/reconcile` (`write`); `GET /reconciliation/cases` lists cases (`read`;
 `status`, `account_id`, `kind`, `limit` 1..1000, default 200).
 
+Actions, proposals, policy and confirm (R1c; design §17 "R1c implementation notes"). The owner acts on a case through
+one idempotent, snapshot-checked, audited action engine; the policy engine ships **off**. No migration and no
+environment variable: the new settings are JSON keys. All routes sit behind the reconciliation feature flag (404
+otherwise). Amounts are strings; a 422 message starts with a stable code (`code` or `code: detail`), a 409 detail is
+`code` or `code: detail`.
+
+| Method and path | Scope | Body → response |
+| --- | --- | --- |
+| `GET /reconciliation/cases/{id}` | `read` | → `CaseDetailOut`: the case row (R1b `CaseOut` fields plus `statement_id`, `revision_id`, `resolved_by`, `resolved_action_id`, `resolved_at`, `deferred_to_period_end`, `deferred_to_statement_id`, `note`), `actions_allowed`, `pending_proposals`, `line` with `matched` and `coverage`. Stale proposals are superseded first. 404 unknown |
+| `POST /reconciliation/cases/{id}/actions` | `write` | `{action, params}` → `ActionOut` (201; 200 with `replayed: true` for an identical earlier request) |
+| `POST /reconciliation/cases/{id}/dismiss` | `write` | `{note}` (1..1000) → `ActionOut`; the `dismiss` action |
+| `GET /reconciliation/actions` | `read` | query `statement_id`, `case_id`, `limit` 1..1000 (200) → `ActionOut[]`, newest first |
+| `POST /reconciliation/actions/{id}/revert` | `write` | → the new `revert` `ActionOut` (201); the original becomes `reverted`, its case reopens at `version + 1` |
+| `GET /reconciliation/audit` | `read` | query `statement_id`, `limit` 1..1000 (200) → `AuditOut[]` (`event`, `actor`, `detail`, `request_id`, ...), newest first |
+| `POST /reconciliation/cases/{id}/proposals` | `propose` | `{action, params, rationale, confidence}` → `ProposalOut` (201); the case becomes `proposed` |
+| `GET /reconciliation/proposals` | `read` | query `status` (`pending`, `applied`, `rejected`, `superseded`), `case_id`, `limit` → `ProposalOut[]`; stale pending rows are superseded first |
+| `POST /reconciliation/proposals/{id}/apply` | `write` | → `ActionOut` (the stored action applied as `owner`; 201, 200 on replay) |
+| `POST /reconciliation/proposals/{id}/reject` | `write` | optional `{note}` → `ProposalOut`; reopens the case when it was the only live proposal |
+| `POST /accounts/{id}/statements` | `write` | `ManualStatementIn` (the import header and up to 2000 `lines`, no run/lease/file fields) → `RevisionOut` (201); `origin='manual'`, audited, policy runs after the commit when live |
+| `POST /accounts/{id}/statements/{sid}/confirm` | `write` | `{force=false, note?}` → `{status, checks, reopened_cases, forced}` |
+
+Changed R1b routes: `POST /accounts/{id}/statements/{sid}/reconcile` also returns `policy: {applied, proposed}`;
+statement list and detail carry `incoming_deferrals_pending`; `PUT /settings/reconciliation` accepts `policy` and
+`account_siblings` (below). `hermes` (`read,propose`) gets 403 on every other mutation route.
+
+Actions (`params`; the kinds a case must have; `actions_allowed` lists what a case offers now):
+
+| Action | Params | Case kinds | Policy |
+| --- | --- | --- | --- |
+| `match` | `line_id`, `entry_id` xor `group_id`, `with_children=false`, `allow_sibling=false` | `line_unmatched`, `ambiguous`, `amount_delta`, `recheck` | agent proposals only |
+| `unmatch` | `line_id` | `duplicate_claim`, `recheck` | no |
+| `dismiss` | `note` | all but `statement_conflict` | no |
+| `defer_next_period` | `entry_id` | `entry_unmatched` | no |
+| `link_installment_plan` | `definition_id` | `line_unmatched` (hint `installment_unmapped`) | no |
+| `create_entry` | `kind` (`expense`/`income`), `category_id`, `name?`, `project_id?` | `line_unmatched` | no |
+| `create_system_entry` | `kind` (`fee`/`interest`/`reward`) | `line_unmatched` (bank-only hint or fee/interest/reward line) | yes |
+| `create_refund` | `original_entry_id` | `line_unmatched` (refund line) | no |
+| `attach_fee` | `entry_id` | `amount_delta` with `fee_matches` (bundled fee only) | yes |
+| `adjust_amount` | `entry_id`, `line_id` | `amount_delta` | no |
+| `move_account` | `entry_id`, `account_id` | `entry_unmatched` | no |
+| `split_entry` | `entry_id`, `parts[{amount, category_id, name?}]` (2 or more) | `amount_delta`, `line_unmatched` naming the entry | no |
+| `balance_adjustment_asof` | none | `balance_gap` (needs `dirty_enabled`) | no |
+| `resolve_conflict` | `keep` (`current`/`new`) | `statement_conflict` | no |
+
+Actions on historical statements: only `match` and `unmatch` (coverage); cases exist on live statements only, so there is
+no line route yet. Created rows carry `source='statement'`, `needs_review` (except `create_entry`) and a description
+starting `對帳建立`. `revert` works while the touched rows still equal what the action left; `resolve_conflict` cannot be
+reverted (submit the statement again).
+
+Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `dirty_enabled`, `rules`, `policy` and
+`account_siblings` wholesale, so send the current values of the ones you keep; `admin` scope):
+
+- `policy` (default, ships off): `{"enabled": false, "accept_agent_proposals": false, "per_statement_count": 5,
+  "per_statement_total": "5000", "monthly_total": "20000", "per_currency_enabled": ["TWD"], "actions":
+  {"create_system_entry": {"enabled": false, "max_amount": "2000"}, "attach_fee": {"enabled": false, "max_amount": "500"},
+  "match": {"enabled": false, "max_amount": "0"}}}`. Any subset may be sent (actions merge per action); unknown keys,
+  non-boolean flags, a count outside 0..1000, non-amount strings and non-ISO currency codes are 422. `policy_version` is
+  `r1c-<settings version>` and changes with the effective policy.
+- `account_siblings` (default `{}`): `{"<account id>": [account ids]}` for the 綜合月結單 case. Siblings must exist, not be
+  archived, share the key account's currency, be distinct and not the key itself (422 otherwise). Unmatched lines of that
+  account then list up to five `context.sibling_candidates` (`entry_id`, `account_id`, `flow`, `posted_date`); the owner
+  matches one with `match {..., "allow_sibling": true}`. Agents cannot propose `allow_sibling`.
+
+Enabling the policy (it does nothing until every step is done): (1) keep `dirty_enabled` on and reconcile working;
+(2) set `per_currency_enabled` and the caps first, `PUT /settings/reconciliation` with the full body and a `policy` that
+still has `enabled: false`; (3) enable ONE action (`actions.create_system_entry.enabled: true`, with its `max_amount`),
+then set `policy.enabled: true`; (4) watch `GET /reconciliation/audit` for `policy_applied`, `policy_proposed` and
+`policy_skipped` and `GET /reconciliation/actions`; revert anything wrong promptly: a policy action can be reverted only
+until the next reconcile of its statement rewrites its coverage (the claim becomes an `exact`/`auto` one and no longer
+matches the action's recorded coverage and snapshot, so the revert is refused); after that, edit or delete the booked
+entry instead; (5) add `attach_fee`, and only last `accept_agent_proposals: true` with `actions.match.enabled: true` and
+a `max_amount` above 0 (the default `"0"` means an agent match is never applied). The policy runs after the matching transaction committed (reconcile route, revision submit
+and manual statement of a live statement, each statement of the daily sweep). It acts only on live statements without an
+open `parse_review` or `statement_conflict`, `conflict_open` or `needs_recheck`; it books only a bank-only fee, interest or
+reward line (`create_system_entry`), attaches the expected FX fee (`attach_fee`) and, when accepted, applies an agent
+`match` on an `ambiguous` case with exactly one admissible representation. Caps: `max_amount` per action, `per_statement_count`
+and `per_statement_total` per statement (counted from applied policy actions), and `monthly_total` per month (the calendar
+month of the application day) and currency in `policy_budget`. A candidate over a cap becomes a proposal authored `policy`
+for the owner; a candidate that fails is rolled back and audited `policy_skipped`. A revert does not refund the budget.
+Turn it off with `policy.enabled: false`.
+
+Confirm (`POST /accounts/{id}/statements/{sid}/confirm`): first processes the deferrals other statements pointed here (an
+entry this statement claimed stays resolved; one still unclaimed reopens the earlier statement's case at `version + 1`,
+audited `deferral_reopened`), then runs the checks `current_revision`, `guardrail_ok`, `conflict_open`, `needs_recheck`,
+`open_cases`, `pending_proposals` (stale ones are superseded first) and `conserved`. A failing check is 409
+`confirm_refused` with the checks as JSON; `force: true` needs a non-blank `note` (422 `note_required`) and confirms anyway
+(audited `statement_confirmed_forced`). Incoming deferrals are never a reason to refuse; a set `needs_recheck` is. 409
+`confirm_retry`: a deferral link appeared while the locks were taken; repeat the call. Confirming again is allowed.
+
+Action error codes (422 unless noted):
+
+| Code | Meaning |
+| --- | --- |
+| `action` "not allowed for this case"; `actor` | the action is not offered for the case kind/context, or not served for that actor |
+| `historical_statement` | a historical statement allows only `match`/`unmatch` |
+| `duplicate_effect` | the effect slot is taken (one creation per statement event; one coverage-only effect per case version, slot `c<case id>v<version>`) |
+| `line_not_in_case`, `line_claimed`, `not_claimed` | line problems (`match`, `unmatch`, creation family) |
+| `entry_out_of_scope`, `id_out_of_scope` | the id is not among the case's candidates/context (`id_out_of_scope` also for proposals) |
+| `not_found`, `wrong_account`, `wrong_currency`, `entry_claimed`, `child_entry`, `entry_in_group`, `empty_group`, `not_conserved` | `match` and entry gates |
+| `line_not_printed`, `kind_sign`, `refund_sign`, `refund_exceeds`, `not_refundable` | creation family (`line_not_printed`: the case's line is not in the current revision; also `attach_fee`, `adjust_amount`) |
+| `fee_sign`, `fee_out_of_bounds`, `fee_quantum`, `fee_unexpected`, `not_foreign`, `not_standalone` | `attach_fee` (also `not_standalone` for `adjust_amount`) |
+| `fx_pair_required`, `foreign_zero`, `kind_sign` | `adjust_amount` (`fx_pair_required`: an FX entry needs the line's printed pair, and a line printing only half of it is refused) |
+| `not_movable`, `archived`, `currency`, `same_account`, `account_id` not found | `move_account` |
+| `not_splittable`, `parts_sum` | `split_entry` |
+| `dirty_disabled`, `zero_delta` | `balance_adjustment_asof` |
+| `note_required` | `confirm` with `force` and no note |
+| `sibling_not_proposable` | `allow_sibling` in a proposal |
+| `not_revertable` | revert of a revert, a reverted action, a later action on the same rows or the same case, released coverage, or an action without inverse |
+| 409 `action_busy` | a row the action needs is locked by another write (retry) |
+| 409 `snapshot_conflict` | a row changed between the read and the locks (reload the case) |
+| 409 `case_moved`, `case_closed` | the case version moved on, or the case is not open/proposed |
+| 409 `action_reverted`, `action_failed` | an earlier action under the same key |
+| 409 `protected`, `has_settlements`, `fee_exists`, `plan_already_mapped` | the entry/plan state forbids the action |
+| 409 `conflict_stale`, `conflict_guardrail_failed` | `resolve_conflict` |
+| 409 `proposal_not_pending`, `proposal_superseded`, `proposal_mismatch` | proposal apply/reject |
+| 409 `sweep_barrier_busy`, `reconcile_busy`, `import_running` | a writer barrier, a candidate row or an import is in the way (retry) |
+| 409 `budget_exceeded`, `cap_exceeded`, `policy_disabled`, `action_disabled`, `statement_excluded`, `candidate_changed`, `not_single_admissible` | policy outcomes, never an HTTP error: a candidate over a cap or the monthly budget becomes a proposal authored `policy` (audited `policy_proposed`); only an agent's own proposal over a cap is audited `policy_skipped` (it stays pending for the owner); `action_disabled` is only counted, not audited; the rest are audited `policy_skipped` |
+| 409 `confirm_refused`, `confirm_retry` | confirm |
+
 Migrations (R1b adds two revisions after `d1f3a7c2e9b4`, run `alembic upgrade head` before restarting): `e2a9c4d1b7f0`
 replaces the dirty trigger functions so every ledger writer takes the shared advisory lock `0x44495254` (the sweep takes it
 exclusively to read a committed event cap; triggers and table unchanged, downgrade restores the old bodies), and

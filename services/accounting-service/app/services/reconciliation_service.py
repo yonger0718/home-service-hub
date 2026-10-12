@@ -20,7 +20,9 @@ from `fill_deferral_links`.
 
 Re-running is idempotent: a line whose active claim equals the new claim (same rows, roles, rule and snapshots)
 keeps its coverage rows; every other active row of the statement (including orphans whose entry was deleted) is
-released with reason `reconcile` and the new claim written. Likewise an open/proposed matcher case equal to a newly
+released with reason `reconcile` and the new claim written. Owner and agent coverage (`match_kind` manual/agent, R1c rulings 16 and 31) is
+never touched here: its lines leave the matcher input, its entries leave the population, and only the sweep (a dirty
+edit of a covered row) or revision lineage releases it. Likewise an open/proposed matcher case equal to a newly
 derived one (kind, event/entry, candidates, context without the carried `sweep` note) is kept (its line pointer refreshed), every other open matcher
 case is superseded (version bumped) and the rest are created. Dismissed cases are never reopened. Cases, including
 deferral explanations, are written in live mode only (§5.8)."""
@@ -118,6 +120,14 @@ def next_period_end(period_end: date, closing_day: int | None) -> date:
         year, month = following(year, month)
 
 
+def deferral_period_end(statement: AccountStatement, account: Account) -> date:
+    """The period end a deferral from `statement` points at — the one rule shared by the matcher's own deferrals
+    (`_write_deferrals`) and the owner's `defer_next_period`: a card statement steps by the account's `closing_day`,
+    or by its own `period_end` day when the account has none; a bank statement goes to the next month's end."""
+    closing_day = (account.closing_day or statement.period_end.day) if statement.kind == "card" else None
+    return next_period_end(statement.period_end, closing_day)
+
+
 def _current_lines(db: Session, statement: AccountStatement) -> list[StatementLine]:
     return list(db.execute(select(StatementLine).where(StatementLine.revision_id == statement.current_revision_id)
                            .order_by(StatementLine.id)).scalars())
@@ -138,33 +148,35 @@ def _instances(db: Session, ids: list[int]) -> dict[int, matching.InstanceRef]:
         chunk = ids[start:start + 200]
         rows = db.execute(
             select(ScheduleInstance.posted_entry_ids, ScheduleInstance.definition_id, ScheduleInstance.seq,
-                   ScheduleDefinition.times)
+                   ScheduleDefinition.times, ScheduleDefinition.kind)
             .join(ScheduleDefinition, ScheduleDefinition.id == ScheduleInstance.definition_id)
             .where(or_(*(ScheduleInstance.posted_entry_ids.contains([i]) for i in chunk)))
             .order_by(ScheduleInstance.id))
-        for posted, definition_id, seq, times in rows:
+        for posted, definition_id, seq, times, definition_kind in rows:
             for entry_id in posted or []:
                 if isinstance(entry_id, int) and entry_id in wanted:
-                    out.setdefault(entry_id, matching.InstanceRef(definition_id, seq, times))
+                    out.setdefault(entry_id, matching.InstanceRef(definition_id, seq, times, definition_kind))
     return out
 
 
 def load_candidates(db: Session, statement: AccountStatement, accounts: list[int], *, window_days: int = 10,
-                    include_reward: bool | None = None) -> tuple[list[matching.Entry], dict[int, matching.Group]]:
+                    include_reward: bool | None = None,
+                    exclude: Iterable[int] = ()) -> tuple[list[matching.Entry], dict[int, matching.Group]]:
     """The §6.1 population: entries of `accounts` dated (posted_date, else entry_date) within `window_days` of the
     period, no `balance_adjustment`, `reward` only when the statement prints a reward line (`include_reward` None:
     read from the current revision), none claimed by another statement; children attached to their parent as
     `matching.Child` (never as rows); groups carry ALL their top-level members (a member outside the window leaves
     the group partial, which matching rejects). Every claimable row (parent or child) is on a participating account
     AND in the statement's currency (a combined child account may hold another currency); a group member failing
-    that gate is not an entry, so its group is partial too."""
+    that gate is not an entry, so its group is partial too. `exclude`: ids treated as claimed (this statement's
+    owner coverage, ruling 16)."""
     if include_reward is None:
         include_reward = any(line.line_kind == "reward" for line in _current_lines(db, statement))
     lo = statement.period_start - timedelta(days=window_days)
     hi = statement.period_end + timedelta(days=window_days)
     day = func.coalesce(LedgerEntry.posted_date, LedgerEntry.entry_date)
     kinds_out = ["balance_adjustment"] + ([] if include_reward else ["reward"])
-    claimed = coverage_service.claimed_entry_ids(db, exclude_statement_id=statement.id)
+    claimed = coverage_service.claimed_entry_ids(db, exclude_statement_id=statement.id) | set(exclude)
     parents = [e for e in db.execute(
         select(LedgerEntry)
         .where(LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == statement.currency,
@@ -302,9 +314,26 @@ def _claim_unchanged(rows: list[StatementCoverage], claim: matching.Claim, locke
     return True
 
 
+OWNED_KINDS = ("manual", "agent")  # ruling 16 + 31: coverage a reconcile never rewrites
+
+
+def _manual_claims(db: Session, statement: AccountStatement) -> dict[int, set[int]]:
+    """Lines with active owner or agent coverage (`match_kind` manual/agent) → the entry ids behind them (column or, after a SET
+    NULL delete, snapshot id). Read after the sweep, which alone releases them on a dirty edit (ruling 16)."""
+    out: dict[int, set[int]] = {}
+    for line_id, rows in coverage_service.active_rows(db, statement.id).items():
+        if any(r.match_kind in OWNED_KINDS for r in rows):
+            out[line_id] = {i for r in rows for i in (r.entry_id, (r.snapshot or {}).get("id")) if i is not None}
+    return out
+
+
 def _write_coverage(db: Session, statement: AccountStatement, result: matching.MatchResult,
-                    lines: dict[int, StatementLine], locked: dict[int, LedgerEntry], run_id: int | None) -> None:
-    active = coverage_service.active_rows(db, statement.id)
+                    lines: dict[int, StatementLine], locked: dict[int, LedgerEntry], run_id: int | None,
+                    keep_lines: Iterable[int] = ()) -> None:
+    """`keep_lines` (owner coverage) are never released, whatever the matcher derived."""
+    keep = set(keep_lines)
+    active = {line_id: rows for line_id, rows in coverage_service.active_rows(db, statement.id).items()
+              if line_id not in keep}
     claims = {c.line_id: c for c in result.claims}
     kept = {line_id for line_id, rows in active.items()
             if line_id in claims and _claim_unchanged(rows, claims[line_id], locked)}
@@ -361,13 +390,45 @@ def _sweep_note(case: ReconciliationCase) -> dict | None:
     return context.get(SWEEP_NOTE)
 
 
+SIBLING_CANDIDATE_LIMIT = 5
+
+
+def _sibling_candidates(db: Session, statement: AccountStatement, siblings: list[int], line: StatementLine,
+                        window_days: int, claimed: set[int]) -> list[dict]:
+    """Unclaimed top-level, ungrouped entries on the statement account's sibling accounts with the line's amount
+    and currency within the exact window of its date: nearest date first, then id (at most five)."""
+    day = func.coalesce(LedgerEntry.posted_date, LedgerEntry.entry_date)
+    rows = db.execute(
+        select(LedgerEntry.id, LedgerEntry.account_id, LedgerEntry.amount, day)
+        .where(LedgerEntry.account_id.in_(siblings), LedgerEntry.currency == statement.currency,
+               LedgerEntry.parent_entry_id.is_(None), LedgerEntry.group_id.is_(None),
+               func.abs(LedgerEntry.amount) == abs(Decimal(line.flow_amount)),
+               day >= line.posted_date - timedelta(days=window_days),
+               day <= line.posted_date + timedelta(days=window_days))
+        .order_by(LedgerEntry.id)).all()
+    rows = sorted((r for r in rows if r.id not in claimed), key=lambda r: (abs((r[3] - line.posted_date).days), r.id))
+    return [{"entry_id": r.id, "account_id": r.account_id, "flow": str(r.amount), "posted_date": r[3].isoformat()}
+            for r in rows[:SIBLING_CANDIDATE_LIMIT]]
+
+
 def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int], result: matching.MatchResult,
-                   lines: dict[int, StatementLine], entries: dict[int, matching.Entry]) -> list[dict]:
-    out = [_case(c.kind, event_id=lines[c.line_id].event_id, line_id=c.line_id, entry_id=c.entry_id,
-                 candidates=c.candidates, context=c.context) for c in result.cases]
+                   lines: dict[int, StatementLine], entries: dict[int, matching.Entry],
+                   rules: matching.Rules) -> list[dict]:
+    siblings = settings_service.account_siblings(db, statement.account_id)
+    claimed = coverage_service.claimed_entry_ids(db) if siblings else set()
+    owner_deferred = _owner_deferred_entries(db, statement)
+    out = []
+    for c in result.cases:
+        context = c.context
+        if siblings and c.kind == "line_unmatched":
+            found = _sibling_candidates(db, statement, siblings, lines[c.line_id], rules.exact_window_days, claimed)
+            if found:
+                context = {**(context or {}), "sibling_candidates": found}
+        out.append(_case(c.kind, event_id=lines[c.line_id].event_id, line_id=c.line_id, entry_id=c.entry_id,
+                         candidates=c.candidates, context=context))
     for entry_id in result.unmatched_entry_ids:
         why = result.explained.get(entry_id)
-        if why == DEFERRED:
+        if why == DEFERRED or entry_id in owner_deferred:  # an owner deferral stands in for the automatic case
             continue
         if why == UNCOVERED_CHILD:
             out.append(_case("entry_unmatched", entry_id=entry_id, context={"hint": UNCOVERED_CHILD}))
@@ -382,6 +443,15 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
         if gap != 0:
             out.append(_case("balance_gap", context={"gap": str(gap)}))
     return out
+
+
+def _owner_deferred_entries(db: Session, statement: AccountStatement) -> set[int]:
+    """Entries the owner deferred (`defer_next_period`): resolved entry_unmatched cases with resolved_by='owner'."""
+    return set(db.execute(
+        select(ReconciliationCase.entry_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "entry_unmatched",
+               ReconciliationCase.status == "resolved", ReconciliationCase.explanation == DEFERRED,
+               ReconciliationCase.resolved_by == "owner", ReconciliationCase.entry_id.is_not(None))).scalars())
 
 
 def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
@@ -448,20 +518,22 @@ def _write_cases(db: Session, statement: AccountStatement, desired: list[dict]) 
 def _write_deferrals(db: Session, statement: AccountStatement, account: Account, deferred: list[int],
                      evaluated: set[int]) -> None:
     """Resolved `entry_unmatched` cases explaining `deferred_next_period` (resolved_by NULL: the matcher's own) with
-    `deferred_to_period_end` from the account's cycle. `deferred_to_statement_id` is never set here (the later
+    `deferred_to_period_end` from the account's cycle (an owner-resolved deferral is authoritative and left alone). `deferred_to_statement_id` is never set here (the later
     statement links it); an existing link is kept, and cleared only when the period end itself moved (a cycle
     change). Refreshed in place; one whose entry was evaluated this run and is no longer deferred is superseded; one
     whose entry left the population (e.g. covered by the next statement) keeps its explanation."""
-    closing_day = (account.closing_day or statement.period_end.day) if statement.kind == "card" else None
-    end = next_period_end(statement.period_end, closing_day)
+    end = deferral_period_end(statement, account)
     current = {c.entry_id: c for c in db.execute(
         select(ReconciliationCase)
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "entry_unmatched",
                ReconciliationCase.status == "resolved", ReconciliationCase.explanation == DEFERRED,
                ReconciliationCase.resolved_by.is_(None))
         .order_by(ReconciliationCase.id)).scalars()}
+    owner = _owner_deferred_entries(db, statement)  # authoritative: neither refreshed nor duplicated here
     for entry_id in deferred:
         case = current.get(entry_id)
+        if entry_id in owner:
+            continue
         if case is None:
             db.add(ReconciliationCase(
                 statement_id=statement.id, revision_id=statement.current_revision_id, kind="entry_unmatched",
@@ -502,24 +574,45 @@ def _link_earlier_deferrals(db: Session, statement: AccountStatement) -> int:
 
 def fill_deferral_links(db: Session) -> int:
     """Link every unlinked deferral case to the statement of the same account and currency whose period_end is its
-    `deferred_to_period_end`; returns the number linked. Case rows only, no statement lock taken (the foreign key's
-    KEY SHARE may wait for a running reconcile of the target: call it in its own transaction, e.g. after the batch)."""
+    `deferred_to_period_end`; returns the number linked. Ruling 29: linking serializes with confirm through the
+    target's statement row — the candidates are read without locks, then each target in ascending id order, one per
+    savepoint, is locked FOR UPDATE (waiting for a running confirm or reconcile of it to commit) and re-read, and its
+    cases are linked under that lock with the deferral conditions re-checked. The savepoint only scopes a failure:
+    every target row lock taken stays held until the CALLER commits, which is safe because the targets are taken in
+    ascending id order, the order confirm and the engine lock statements in. A `reconciled` target is linked too: the
+    link shows as `incoming_deferrals_pending` until its next confirm processes it; no flag is set. Call it in its own
+    transaction (e.g. after the batch) and commit right after."""
     own, target = aliased(AccountStatement), aliased(AccountStatement)
-    target_id = (select(target.id)
-                 .join(own, and_(own.account_id == target.account_id, own.currency == target.currency))
-                 .where(own.id == ReconciliationCase.statement_id,
-                        target.period_end == ReconciliationCase.deferred_to_period_end)
-                 .limit(1).scalar_subquery())
-    count = db.execute(
-        update(ReconciliationCase)
-        .where(*_deferral_conditions(), ReconciliationCase.deferred_to_period_end.is_not(None), target_id.is_not(None))
-        .values(deferred_to_statement_id=target_id)
-        .execution_options(synchronize_session=False)).rowcount
+    candidates = db.execute(
+        select(ReconciliationCase.id, target.id)
+        .join(own, own.id == ReconciliationCase.statement_id)
+        .join(target, and_(target.account_id == own.account_id, target.currency == own.currency,
+                           target.period_end == ReconciliationCase.deferred_to_period_end))
+        .where(*_deferral_conditions(), ReconciliationCase.deferred_to_period_end.is_not(None))
+        .order_by(target.id, ReconciliationCase.id)).all()
+    by_target: dict[int, list[int]] = defaultdict(list)
+    for case_id, target_id in candidates:
+        by_target[target_id].append(case_id)
+    count = 0
+    for target_id in sorted(by_target):
+        with db.begin_nested():
+            statement = _lock_statement(db, target_id)  # FOR UPDATE, re-read (populate_existing)
+            same_cycle = select(AccountStatement.id).where(AccountStatement.account_id == statement.account_id,
+                                                           AccountStatement.currency == statement.currency)
+            count += db.execute(
+                update(ReconciliationCase)
+                .where(ReconciliationCase.id.in_(by_target[target_id]), *_deferral_conditions(),
+                       ReconciliationCase.deferred_to_period_end == statement.period_end,
+                       ReconciliationCase.statement_id.in_(same_cycle))
+                .values(deferred_to_statement_id=statement.id)
+                .execution_options(synchronize_session=False)).rowcount
     db.flush()
     return count
 
 
 def _recount(db: Session, statement: AccountStatement) -> None:
+    """Counts only (ruling 29): `needs_recheck` is cleared by a completed `reconcile` alone, never here (the action
+    engine and confirm recount too)."""
     def count(*conds):
         return db.execute(select(func.count()).select_from(ReconciliationCase)
                           .where(ReconciliationCase.statement_id == statement.id, *conds)).scalar_one()
@@ -531,7 +624,6 @@ def _recount(db: Session, statement: AccountStatement) -> None:
         and_(ReconciliationCase.status == "resolved", ReconciliationCase.explanation.is_not(None)),
         ReconciliationCase.status == "dismissed"))
     statement.open_case_count = count(ReconciliationCase.status.in_(OPEN))
-    statement.needs_recheck = False
     db.flush()
 
 
@@ -570,17 +662,20 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     accounts = participating_accounts(db, statement.account_id)
     accounts_by_id = {a.id: a for a in db.execute(select(Account).where(Account.id.in_(accounts))).scalars()}
     rules = rules_for(settings_service.reconciliation_rules(db), statement.period_end)
-    line_rows = _current_lines(db, statement)
-    include_reward = any(line.line_kind == "reward" for line in line_rows)
+    all_lines = _current_lines(db, statement)
+    include_reward = any(line.line_kind == "reward" for line in all_lines)
+    manual = _manual_claims(db, statement)  # owner coverage: kept as is (ruling 16)
+    line_rows = [line for line in all_lines if line.id not in manual]
+    owned = set().union(*manual.values()) if manual else set()
     # population before the locks, to know what to lock; re-read under the locks
     entries, groups = load_candidates(db, statement, accounts, window_days=rules.candidate_window_days,
-                                      include_reward=include_reward)
+                                      include_reward=include_reward, exclude=owned)
     wanted = {e.id for e in entries if e.claimable} | {c.id for e in entries for c in e.children}
     transfers = {e.transfer_group_id for e in entries if e.transfer_group_id is not None}
     locked_rows = _lock_candidates(db, sorted(groups), wanted, {UUID(t) for t in transfers})
     first_groups = {e.id: e.group_id for e in entries}
     entries, groups = load_candidates(db, statement, accounts, window_days=rules.candidate_window_days,
-                                      include_reward=include_reward)
+                                      include_reward=include_reward, exclude=owned)
     # rows that joined the population after the first read are not locked, and a row whose group changed in between
     # belongs to a group we did not lock: both are left to the next sweep/recheck
     entries = [_with_children(e, locked_rows) for e in entries
@@ -589,17 +684,19 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
         statement.kind, [_as_line(row) for row in line_rows], entries, groups, plan_map(db, statement.account_id),
         lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, statement.currency)
     lines = {row.id: row for row in line_rows}
-    _write_coverage(db, statement, result, lines, locked_rows, run_id)
+    _write_coverage(db, statement, result, lines, locked_rows, run_id, keep_lines=manual)
     deferred = [entry_id for entry_id in result.unmatched_entry_ids if result.explained.get(entry_id) == DEFERRED]
     created: list[int] = []
     if live:
         by_id = {e.id: e for e in entries if e.claimable}
-        created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id))
+        created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id, rules))
         evaluated = set(by_id) | {c.id for e in entries for c in e.children}
         _write_deferrals(db, statement, accounts_by_id[statement.account_id], deferred, evaluated)
     _link_earlier_deferrals(db, statement)
     coverage_service.assert_conserved(db, statement)
     _recount(db, statement)
+    statement.needs_recheck = False  # matching ran to completion: the only place the flag is discharged (ruling 29)
+    db.flush()
     return ReconcileResult(claims=len(result.claims), cases_opened=created, explained=len(deferred),
                            unmatched_entries=len(result.unmatched_entry_ids) - len(deferred))
 

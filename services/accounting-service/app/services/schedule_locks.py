@@ -53,11 +53,15 @@ def get_instance(db: Session, instance_id: int) -> ScheduleInstance:
     return instance
 
 
-def lock_definition(db: Session, definition_id: int, *, share: bool = False) -> ScheduleDefinition:
+def lock_definition(
+    db: Session, definition_id: int, *, share: bool = False, nowait: bool = False
+) -> ScheduleDefinition:
+    """FOR UPDATE (FOR SHARE with `share`); `nowait` raises LockNotAvailable instead of waiting (reconciliation
+    actions, which hold statement and case rows a ledger writer may need)."""
     definition = db.execute(
         select(ScheduleDefinition)
         .where(ScheduleDefinition.id == definition_id)
-        .with_for_update(read=share)
+        .with_for_update(read=share, nowait=nowait)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
     if definition is None:
@@ -65,12 +69,15 @@ def lock_definition(db: Session, definition_id: int, *, share: bool = False) -> 
     return definition
 
 
-def lock_instance(db: Session, instance_id: int, *, skip_locked: bool = False) -> ScheduleInstance | None:
-    """The instance FOR UPDATE (SKIP LOCKED for the job: an instance the owner is acting on is left to the owner)."""
+def lock_instance(
+    db: Session, instance_id: int, *, skip_locked: bool = False, nowait: bool = False
+) -> ScheduleInstance | None:
+    """The instance FOR UPDATE (SKIP LOCKED for the job: an instance the owner is acting on is left to the owner;
+    NOWAIT for reconciliation actions: a held row raises LockNotAvailable)."""
     return db.execute(
         select(ScheduleInstance)
         .where(ScheduleInstance.id == instance_id)
-        .with_for_update(skip_locked=skip_locked)
+        .with_for_update(skip_locked=skip_locked, nowait=nowait)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()
 

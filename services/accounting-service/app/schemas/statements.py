@@ -186,6 +186,14 @@ class LineIn(BaseModel):
     is_subtotal: bool = False
 
 
+def unique_line_seq(lines: list[LineIn]) -> list[LineIn]:
+    """Stored (non-subtotal) lines are unique by seq within a revision; refuse duplicates as 422, not a 500."""
+    seqs = [line.seq for line in lines if not line.is_subtotal]
+    if len(seqs) != len(set(seqs)):
+        raise ValueError("duplicate seq")
+    return lines
+
+
 class RevisionIn(Lease):
     file_id: Int32 | None = None
     account_id: Int32
@@ -203,14 +211,41 @@ class RevisionIn(Lease):
     lines: list[LineIn] = Field(max_length=2000)
     raw: dict
 
-    @field_validator("lines")
-    @classmethod
-    def _unique_seq(cls, lines: list[LineIn]) -> list[LineIn]:
-        """Stored (non-subtotal) lines are unique by seq within a revision; refuse duplicates as 422, not a 500."""
-        seqs = [line.seq for line in lines if not line.is_subtotal]
-        if len(seqs) != len(set(seqs)):
-            raise ValueError("duplicate seq")
-        return lines
+    _unique_seq = field_validator("lines")(unique_line_seq)
+
+
+class ManualStatementIn(BaseModel):
+    """An owner-entered statement (`POST /accounts/{account_id}/statements`): the header and lines of a `RevisionIn`
+    without the worker's run, lease, file and parser fields (the service builds the `RevisionIn`: `file_id=None`,
+    `parser="manual"`, `parser_version="1"`, `raw={}`, its own owner_cli run). Same field rules as `RevisionIn`."""
+    model_config = Strict
+    kind: StatementKind
+    currency: Currency
+    period_start: date
+    period_end: date
+    closing_date: date | None = None
+    due_date: date | None = None
+    opening_balance: SignedMoney | None = None
+    statement_total: SignedMoney
+    minimum_payment: SignedMoney | None = None
+    lines: list[LineIn] = Field(default=[], max_length=2000)
+
+    _unique_seq = field_validator("lines")(unique_line_seq)
+
+
+class ConfirmIn(BaseModel):
+    """`force` confirms despite failing checks and then needs a `note` (422 `note_required`)."""
+    model_config = Strict
+    force: bool = False
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ConfirmOut(BaseModel):
+    model_config = Strict
+    status: str
+    checks: dict[str, bool]
+    reopened_cases: list[int]
+    forced: bool
 
 
 class RevisionOut(BaseModel):
@@ -274,6 +309,37 @@ class CaseOut(BaseModel):
     created_at: datetime
 
 
+class ProposalOut(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+    id: int
+    case_id: int
+    case_version: int
+    event_id: int | None
+    action: str
+    params: dict
+    rationale: str
+    confidence: Decimal
+    author: str
+    status: str
+    created_at: datetime
+    decided_at: datetime | None
+    applied_action_id: int | None
+
+
+class CaseDetailOut(CaseOut):
+    statement_id: int
+    revision_id: int
+    resolved_by: str | None
+    resolved_action_id: int | None
+    resolved_at: datetime | None
+    deferred_to_period_end: date | None
+    deferred_to_statement_id: int | None
+    note: str | None
+    actions_allowed: list[str]
+    pending_proposals: list[ProposalOut] = []
+    line: LineOut | None
+
+
 class StatementOut(BaseModel):
     model_config = Strict
     id: int
@@ -296,6 +362,7 @@ class StatementOut(BaseModel):
     matched_count: int
     explained_count: int
     open_case_count: int
+    incoming_deferrals_pending: int
 
 
 class StatementDetailOut(StatementOut):
@@ -314,6 +381,8 @@ class ReconciliationSettingsIn(BaseModel):
     account_map: dict[str, Int32] = {}
     dirty_enabled: bool = False
     rules: dict = {}  # matching.Rules overrides (settings_service validates keys and types); {} = the defaults
+    policy: dict = {}  # agent-autonomy policy overrides (settings_service validates); {} = the defaults
+    account_siblings: dict[str, list[Int32]] = {}  # account id -> sibling account ids (same currency)
 
 
 class ReconciliationSettingsOut(BaseModel):
@@ -322,7 +391,16 @@ class ReconciliationSettingsOut(BaseModel):
     dirty_enabled: bool
     rules: dict
     rules_version: str
+    policy: dict
+    policy_version: str
+    account_siblings: dict[str, list[int]]
     version: int
+
+
+class PolicyCountsOut(BaseModel):
+    model_config = Strict
+    applied: int
+    proposed: int
 
 
 class ReconcileOut(BaseModel):
@@ -332,6 +410,7 @@ class ReconcileOut(BaseModel):
     explained: int
     unmatched_entries: int
     skipped: str | None
+    policy: PolicyCountsOut  # the policy pass run after the matching commit (R1c Task 10; zeros while it is off)
 
 
 class SweepError(BaseModel):

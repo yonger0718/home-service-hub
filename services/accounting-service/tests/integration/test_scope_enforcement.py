@@ -34,7 +34,7 @@ def _fill(path: str) -> str:
 @pytest.mark.parametrize("method,path", list(_mutation_routes()))
 def test_hermes_token_cannot_mutate_anything_except_proposals(scoped, client, method, path):
     if path.endswith("/proposals"):
-        pytest.skip("propose is the one mutation hermes may perform; covered in test_ingest_api")
+        pytest.skip("propose is the one mutation hermes may perform; covered in test_reconciliation_proposals.py")
     response = client.request(method, _fill(path), headers={"Authorization": "Bearer hermes-token"}, json={})
     assert response.status_code == 403, (method, path, response.text)
     assert response.json()["message"] == "scope"

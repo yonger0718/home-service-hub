@@ -21,7 +21,8 @@ def E(i, posted, flow, kind="expense", merchant="全聯", **kw):
                    group_id=kw.get("group_id"), parent_entry_id=kw.get("parent_entry_id"),
                    is_settlement=kw.get("is_settlement", False), refunds_entry_id=kw.get("refunds_entry_id"),
                    transfer_group_id=kw.get("transfer_group_id"), transfer_peer_is_card=kw.get("peer_is_card"),
-                   children=tuple(kw.get("children", ())), instance=kw.get("instance"), in_reverse=kw.get("in_reverse", True))
+                   children=tuple(kw.get("children", ())), instance=kw.get("instance"), in_reverse=kw.get("in_reverse", True),
+                   claimable=kw.get("claimable", True))
 
 
 def run(lines, entries, groups=None, plan_map=None, fee=lambda e: None, kind="card"):
@@ -284,3 +285,70 @@ def test_non_claimable_entries_only_feed_the_installment_drift_hint():
     res = run([L(1, date(2026, 9, 6), "-1000", kind="installment", merchant="APPLE", seq=2, total=12)], [late],
               plan_map={"APPLE|12|1000.0000": 7})
     assert res.claims == [] and res.cases[0].context == {"hint": "installment_date_drift", "entry_id": 40, "definition_id": 7}
+
+
+SEP3 = date(2026, 9, 3)
+INST = lambda kind, did=8: m.InstanceRef(definition_id=did, seq=3, times=12 if kind == "installment" else None, definition_kind=kind)
+
+
+def _loan(principal_flow="-10000", interest_flow="-500", **kw):
+    g = m.Group(id=99, kind="installment", member_ids=(10, 11))
+    entries = [E(10, SEP3, principal_flow, kind="payable", group_id=99, is_settlement=True, instance=INST("installment")),
+               E(11, SEP3, interest_flow, kind="interest", group_id=99, instance=INST("installment"), **kw)]
+    return entries, {99: g}
+
+
+def test_bank_payment_line_never_claims_an_unrelated_expense():   # AGENT-101 M5
+    res = run([L(1, SEP3, "-5000", kind="payment", merchant="")], [E(10, SEP3, "-5000", kind="expense", merchant="家樂福")], kind="bank")
+    assert not res.claims and res.cases[0].kind == "line_unmatched"
+
+
+def test_installment_group_members_of_different_definitions_are_not_admissible():
+    entries, groups = _loan()
+    entries[1] = dataclasses.replace(entries[1], instance=INST("installment", did=9))
+    assert not run([L(1, SEP3, "-10500", kind="payment")], entries, groups=groups, kind="bank").claims
+
+
+def test_installment_group_with_a_member_outside_the_population_is_partial():
+    entries, groups = _loan()
+    assert not run([L(1, SEP3, "-10500", kind="payment")], entries[:1], groups=groups, kind="bank").claims
+
+
+def test_bank_payment_line_claims_settlement_out():
+    res = run([L(1, SEP3, "-5000", kind="payment")], [E(10, SEP3, "-5000", kind="payable", is_settlement=True)], kind="bank")
+    assert [c.representation.rule for c in res.claims] == ["payment"]
+
+
+def test_bank_purchase_line_claims_expense():
+    res = run([L(1, SEP3, "-120", kind="purchase")], [E(10, SEP3, "-120", kind="expense")], kind="bank")
+    assert [r.entry_id for r in res.claims[0].representation.rows] == [10]
+
+
+def test_recurring_instance_is_standalone_but_installment_instance_is_not():
+    line = L(1, SEP3, "3000", kind="transfer_in")
+    assert run([line], [E(10, SEP3, "3000", kind="transfer_in", instance=INST("recurring"))], kind="bank").claims
+    assert not run([line], [E(11, SEP3, "3000", kind="transfer_in", instance=INST("installment"))], kind="bank").claims
+
+
+def test_bank_payment_line_claims_a_complete_installment_group():
+    entries, groups = _loan()
+    res = run([L(1, SEP3, "-10500", kind="payment")], entries, groups=groups, kind="bank")
+    assert res.claims and res.claims[0].representation.rule == "installment_group"
+    assert sorted(r.entry_id for r in res.claims[0].representation.rows) == [10, 11]
+
+
+def test_partial_installment_group_is_not_admissible():
+    entries, groups = _loan(claimable=False)   # the interest member is claimed elsewhere
+    res = run([L(1, SEP3, "-10500", kind="payment")], entries, groups=groups, kind="bank")
+    assert not res.claims and res.cases[0].kind == "line_unmatched"
+
+
+def test_card_purchase_never_uses_installment_group():
+    entries, groups = _loan()
+    assert not run([L(1, SEP3, "-10500", kind="purchase")], entries, groups=groups, kind="card").claims
+
+
+def test_installment_group_sum_mismatch_is_not_admissible():
+    entries, groups = _loan()
+    res = run([L(1, SEP3, "-10000", kind="payment")], entries, groups=groups, kind="bank")
+    assert not res.claims   # the group sums to -10500; a lone member is never admissible either

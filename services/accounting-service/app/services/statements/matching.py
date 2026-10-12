@@ -35,6 +35,7 @@ class InstanceRef:
     definition_id: int
     seq: int
     times: int | None
+    definition_kind: str = "installment"
 
 
 @dataclass(frozen=True)
@@ -159,6 +160,8 @@ BANK_GATES = {
     "interest": frozenset({"interest"}),
     "refund": frozenset({"refund"}),
     "reward": frozenset({"reward"}),
+    "payment": frozenset({"settlement_out", "transfer_out"}),
+    "purchase": frozenset({"expense"}),
 }
 
 
@@ -223,7 +226,8 @@ def _installment_score(line: Line, entry: Entry, rules: Rules) -> tuple[Decimal,
 
 
 def _standalone(entry: Entry) -> bool:
-    return entry.group_id is None and entry.parent_entry_id is None and entry.instance is None
+    return entry.group_id is None and entry.parent_entry_id is None \
+        and (entry.instance is None or entry.instance.definition_kind != "installment")
 
 
 def _peer_ok(kind: str, line: Line, entry: Entry) -> bool:
@@ -302,6 +306,21 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
                     score, reasons = _score(line, tuple(members), rules.exact_window_days)
                     if score > ZERO:
                         out.append(Representation(variant, rows, score, variant, reasons))
+    if kind == "bank" and line.line_kind in ("payment", "withdrawal"):
+        by_id = {e.id: e for e in entries}
+        for g in groups.values():
+            if g.kind != "installment":
+                continue
+            members = [by_id.get(i) for i in g.member_ids]
+            if any(mem is None or mem.id in claimed or not mem.claimable or mem.instance is None for mem in members):
+                continue  # partial, reserved or instance-less groups are never admissible
+            if len({mem.instance.definition_id for mem in members}) != 1:
+                continue
+            rows = tuple(Row(mem.id, "member", mem.flow, g.id) for mem in members)
+            if rows and conserved(rows, line.flow):
+                score, reasons = _score(line, tuple(members), rules.exact_window_days)
+                if score > ZERO:
+                    out.append(Representation("installment_group", rows, score, "installment_group", reasons))
     return [r for r in out if conserved(r.rows, line.flow)]
 
 
