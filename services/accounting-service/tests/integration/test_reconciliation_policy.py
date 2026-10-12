@@ -19,6 +19,7 @@ from app.models import (
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import entry_write_service as ews
+from app.services.errors import CodedConflictError
 from app.services import policy_service, proposal_service, settings_service
 from app.services import reconciliation_service as rec
 from app.services.policy_service import PolicyResult
@@ -98,6 +99,22 @@ def _fee_statement(seed, db, run, lines=None, *, name="卡", **card):
     cases = [c for c in _cases(db, stmt.id, "open") if c.kind == "line_unmatched"]
     assert cases and all((c.context or {}).get("hint") == "bank_only" for c in cases)
     return SimpleNamespace(card=account, stmt=stmt, lines=printed, cases=cases)
+
+
+def _fx_fee_statement(seed, db, run, *, existing_child=False):
+    """A live September card statement whose 1015 AMAZON line meets a −1000 USD entry: one open amount_delta case
+    with fee_matches (expected FX fee 1.5 % = 15). `existing_child=True` books the fee child beforehand (fee_exists)."""
+    card = _card(seed, db, fx_fee_pct=Decimal("1.5"))
+    entry = seed.entry(card, "-1000", day=date(2026, 9, 15), merchant="AMAZON", original_amount=Decimal("-30"),
+                       original_currency="USD")
+    if existing_child:
+        seed.entry(card, "-5", kind="fee", day=date(2026, 9, 15), parent_entry_id=entry.id, name=ews.FX_FEE_CHILD_NAME)
+    db.commit()
+    stmt, lines, _ = _submit(db, run, card, [
+        _line(1, date(2026, 9, 15), "AMAZON", 1015, foreign_amount=Decimal("-30"), foreign_currency="USD")])
+    (case,) = [c for c in _cases(db, stmt.id, "open") if c.kind == "amount_delta"]
+    assert case.context["fee_matches"] is True
+    return SimpleNamespace(card=card, stmt=stmt, case=case, entry=entry, fee=Decimal("15"))
 
 
 def _only_candidate(session, statement_id, case_id=None):
@@ -560,3 +577,22 @@ def test_sweep_route_runs_policy_per_statement(client, seed, db_session, run):
     assert response.status_code == 200, response.text
     (row,) = _actions(db_session)
     assert (row.actor, row.run_id) == ("policy", worker_run.id)
+
+
+def test_attach_fee_candidate_is_recomputed_under_the_lock(seed, db_session, run):
+    s = _fx_fee_statement(seed, db_session, run)
+    _set_policy(db_session, {"enabled": True, "actions": {"attach_fee": {"enabled": True}}})
+    statement, candidate = _only_candidate(db_session, s.stmt.id, s.case.id)
+    assert (candidate.action, candidate.amount) == ("attach_fee", s.fee)
+
+    # the entry is edited after the reconcile (dirty tracking off: no sweep release, context.residual is stale)
+    entry = db_session.get(LedgerEntry, s.entry.id)
+    entry.amount = Decimal(entry.amount) - Decimal("1")
+    db_session.commit()
+
+    with pytest.raises(CodedConflictError) as info:
+        policy_service.apply_candidate(db_session, statement, candidate, month=MONTH)
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert _budget(db_session) is None or _budget(db_session).used_count == 0
+    assert _actions(db_session) == []

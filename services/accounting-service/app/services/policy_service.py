@@ -29,7 +29,9 @@ from functools import partial
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatement, ReconciliationAction, ReconciliationCase, ReconciliationProposal
+from app.models import (
+    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementLine,
+)
 from app.schemas.reconciliation import ProposalIn
 from app.services import coverage_service, ledger_service, proposal_service, settings_service
 from app.services import reconciliation_service as rec
@@ -89,6 +91,19 @@ def _money(value) -> Decimal | None:
     return Decimal(format(amount.normalize(), "f")) if amount.is_finite() else None
 
 
+def _fee_now(db: Session, case: ReconciliationCase, line: StatementLine | None) -> Decimal | None:
+    """R1d item 4: the fee `attach_fee` would book now — `entry.amount − line.flow_amount` from the rows as they are
+    (the case's `context.residual` is the reconcile-time value and goes stale when the entry is edited before the
+    next sweep). None without a line or an entry."""
+    entry_id = (case.context or {}).get("entry_id")
+    if line is None or not isinstance(entry_id, int) or isinstance(entry_id, bool):
+        return None
+    entry = db.get(LedgerEntry, entry_id)
+    if entry is None:
+        return None
+    return _money(Decimal(entry.amount) - Decimal(line.flow_amount))
+
+
 # --- candidates ---------------------------------------------------------------------------------------------------
 
 def _system_entry_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
@@ -106,9 +121,12 @@ def _system_entry_candidate(db: Session, case: ReconciliationCase, statement: Ac
 def _attach_fee_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
     """An open `amount_delta` whose residual is the expected FX fee (`fee_matches`) → attach it to the entry."""
     context = case.context or {}
-    entry_id, amount = context.get("entry_id"), _money(context.get("residual"))
-    if case.kind != "amount_delta" or context.get("fee_matches") is not True or amount is None \
+    entry_id = context.get("entry_id")
+    if case.kind != "amount_delta" or context.get("fee_matches") is not True \
             or not isinstance(entry_id, int) or isinstance(entry_id, bool):
+        return None
+    amount = _fee_now(db, case, current_line(db, case, statement))
+    if amount is None:
         return None
     return Candidate(case.id, case.kind, case.status, "attach_fee", {"entry_id": entry_id}, amount, entry_id=entry_id)
 
@@ -198,7 +216,7 @@ def _cap_reason(db: Session, statement_id: int, candidate: Candidate, policy: di
 
 def _amount_now(ctx: Context, candidate: Candidate) -> Decimal | None:
     if candidate.action == "attach_fee":
-        return _money((ctx.case.context or {}).get("residual"))
+        return _fee_now(ctx.db, ctx.case, ctx.line)  # R1d item 4: recomputed under the lock, not context.residual
     return None if ctx.line is None else _money(ctx.line.flow_amount)
 
 
