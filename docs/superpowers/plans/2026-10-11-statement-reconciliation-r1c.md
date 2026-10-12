@@ -70,6 +70,8 @@
 
 35. **(Final review I3) Only the first locked statement's sweep waits at the writer barrier**; later statements' sweeps try-lock (`barrier_wait=False` → 409 `sweep_barrier_busy`), because the first sweep may already hold coverage/case rows; `coverage_service._take_barrier` maps `DeadlockDetected` to 409 like `take_barrier_xact`. Also from the final review: `link_installment_plan` records only the case line's coverage ids (its revert never releases other lines); one shared deferral period-end helper for the owner and automatic paths; `adjust_amount` refuses a half FX pair; `list_audit` is newest-first; `split_entry` members carry `source="statement"`. Deferred to the follow-up PR (before policy is enabled): policy-created coverage must survive reconcile to stay revertable; stale residual charged to the budget; `supersede_stale` lock order.
 
+36. **(Multica AGENT-107) Coverage-only effect slots are `c<case.id>v<version>`**, not `v<version>`: `_write_cases` may replace a reopened case with a new case (version 1) on the same event, and the unique index keys the event, so the old applied action's slot would collide. Slots are guarded to ≤ 16 characters. `revert` is also refused while any later applied action exists on the same case (a deferral records no touched rows, so the overlap check alone missed it).
+
 ## Review Focus
 
 1. Two concurrent `apply` calls for the same case and params must produce one effect: the second either replays (same idempotency key) or fails with `duplicate_effect`/`case_moved`, never a second ledger row — Task 4 (race test with `tests/helpers.race`).
