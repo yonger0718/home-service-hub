@@ -689,10 +689,18 @@ def test_a_superseded_agent_proposal_is_marked_and_skipped_once(ambiguous, db_se
         return verdict
 
     monkeypatch.setattr(policy_service, "_prefilter", prefilter)
+    real_skip, entered_in_transaction = policy_service._skip, []
+
+    def skip(db, *args, **kwargs):  # the supersede mark must be committed before the skip takes its locks
+        entered_in_transaction.append(db.in_transaction())
+        return real_skip(db, *args, **kwargs)
+
+    monkeypatch.setattr(policy_service, "_skip", skip)
     result = PolicyResult()
 
     policy_service._run_candidate(db_session, s.stmt.id, candidate, result, month=MONTH, run_id=None)
 
+    assert entered_in_transaction == [False]
     assert result.skipped == {"proposal_superseded": 1}
     assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "superseded"
     (skipped,) = _audit(db_session, "policy_skipped")
