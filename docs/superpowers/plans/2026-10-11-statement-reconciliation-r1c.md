@@ -66,6 +66,8 @@
 32. **(Task 6) `adjust_amount` records the printed-pair rate with `fx_source="manual"`**: no `statement` enum value exists and R1c adds no migration; the pair itself is authoritative.
 33. **(Task 7) `balance_adjustment_asof` takes the account row `FOR UPDATE` first, then the transaction-scoped exclusive barrier.** An in-flight insert on the account holds `FOR KEY SHARE` on the account row (FK) and takes the shared barrier in its AFTER trigger, so barrier-first would deadlock against every plain insert on that account; the remaining multi-account-writer cycle (transfer legs) is resolved by the deadlock detector aborting one side.
 
+34. **(Task 11) `statement_conflict` cases resolve only through `resolve_conflict`** (`dismiss` is not offered for that kind); `keep=new` refuses a revision whose guardrails failed (409 `conflict_guardrail_failed`, R1a §17); on either outcome every other open `statement_conflict` case for an older revision is superseded (audit `conflict_superseded`) and, for `keep=current`, those revisions are rejected too, so `conflict_open` and the open conflict cases never diverge.
+
 ## Review Focus
 
 1. Two concurrent `apply` calls for the same case and params must produce one effect: the second either replays (same idempotency key) or fails with `duplicate_effect`/`case_moved`, never a second ledger row — Task 4 (race test with `tests/helpers.race`).
