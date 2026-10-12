@@ -68,6 +68,8 @@
 
 34. **(Task 11) `statement_conflict` cases resolve only through `resolve_conflict`** (`dismiss` is not offered for that kind); `keep=new` refuses a revision whose guardrails failed (409 `conflict_guardrail_failed`, R1a §17); on either outcome every other open `statement_conflict` case for an older revision is superseded (audit `conflict_superseded`) and, for `keep=current`, those revisions are rejected too, so `conflict_open` and the open conflict cases never diverge.
 
+35. **(Final review I3) Only the first locked statement's sweep waits at the writer barrier**; later statements' sweeps try-lock (`barrier_wait=False` → 409 `sweep_barrier_busy`), because the first sweep may already hold coverage/case rows; `coverage_service._take_barrier` maps `DeadlockDetected` to 409 like `take_barrier_xact`. Also from the final review: `link_installment_plan` records only the case line's coverage ids (its revert never releases other lines); one shared deferral period-end helper for the owner and automatic paths; `adjust_amount` refuses a half FX pair; `list_audit` is newest-first; `split_entry` members carry `source="statement"`. Deferred to the follow-up PR (before policy is enabled): policy-created coverage must survive reconcile to stay revertable; stale residual charged to the budget; `supersede_stale` lock order.
+
 ## Review Focus
 
 1. Two concurrent `apply` calls for the same case and params must produce one effect: the second either replays (same idempotency key) or fails with `duplicate_effect`/`case_moved`, never a second ledger row — Task 4 (race test with `tests/helpers.race`).
@@ -291,7 +293,7 @@ def apply_action(db, *, case_id: int, action: str, params: dict, actor: str, lab
     #   take_import_key_shared(db)
     #   if budget: _reserve_budget(db, *budget)  (INSERT … ON CONFLICT DO NOTHING; SELECT … FOR UPDATE; cap check by caller)
     #   lock statements ascending (case.statement_id ∪ lock_targets.statement_ids) via reconciliation_service._lock_statement
-    #   coverage_service.sweep(db, statement, run_id=run_id, barrier_wait=True) for each locked statement
+    #   coverage_service.sweep(...) for each locked statement — barrier_wait=True for the first, False for the rest (ruling 35)
     #   idempotency re-check under the lock → replay / action_reverted (ruling 24, ruling 6)
     #   re-read case FOR UPDATE; if case.version != key_version → CodedConflictError("case_moved")
     #   if precheck: precheck(ctx)   (policy re-validation under the lock, ruling 22)
