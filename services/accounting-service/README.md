@@ -259,7 +259,7 @@ Action error codes (422 unless noted):
 | --- | --- |
 | `action` "not allowed for this case"; `actor` | the action is not offered for the case kind/context, or not served for that actor |
 | `historical_statement` | a historical statement allows only `match`/`unmatch` |
-| `duplicate_effect` | the effect slot is taken (one creation per statement event; one effect per slot) |
+| `duplicate_effect` | the effect slot is taken (one creation per statement event; one coverage-only effect per case version, slot `c<case id>v<version>`) |
 | `line_not_in_case`, `line_claimed`, `not_claimed` | line problems (`match`, `unmatch`, creation family) |
 | `entry_out_of_scope`, `id_out_of_scope` | the id is not among the case's candidates/context (`id_out_of_scope` also for proposals) |
 | `not_found`, `wrong_account`, `wrong_currency`, `entry_claimed`, `child_entry`, `entry_in_group`, `empty_group`, `not_conserved` | `match` and entry gates |
@@ -271,7 +271,7 @@ Action error codes (422 unless noted):
 | `dirty_disabled`, `zero_delta` | `balance_adjustment_asof` |
 | `note_required` | `confirm` with `force` and no note |
 | `sibling_not_proposable` | `allow_sibling` in a proposal |
-| `not_revertable` | revert of a revert, a reverted action, a later action on the same rows, released coverage, or an action without inverse |
+| `not_revertable` | revert of a revert, a reverted action, a later action on the same rows or the same case, released coverage, or an action without inverse |
 | 409 `action_busy` | a row the action needs is locked by another write (retry) |
 | 409 `snapshot_conflict` | a row changed between the read and the locks (reload the case) |
 | 409 `case_moved`, `case_closed` | the case version moved on, or the case is not open/proposed |
