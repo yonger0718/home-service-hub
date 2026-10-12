@@ -27,7 +27,7 @@
 
 1. A policy `create_system_entry` claim followed by an **owner reconcile** must keep the same `statement_coverage` rows (ids, `match_kind='agent'`) and the action must still revert (Task 2 test `test_policy_coverage_survives_a_reconcile_and_reverts`).
 2. `GET /reconciliation/proposals` while another transaction holds the **statement** (not yet the case) must not wait and must not deadlock on the audit's FK (Task 6 tests `test_global_supersede_skips_a_locked_statement`, `test_scoped_supersede_waits_for_the_statement_lock`); the stale proposal it could not supersede must not read as `pending` (`test_listing_hides_a_stale_pending_proposal_it_could_not_supersede`).
-3. Reverting a plan link whose claims live on **two statements** must release both and flag the second, and the second statement's next reconcile must open `installment_unmapped` again (Task 7 test `test_reverting_a_link_releases_the_plans_claims_on_other_statements`); while the second statement's reconcile holds an uncommitted claim the revert must be `action_busy`, while the revert is open that reconcile must be `reconcile_busy`, and an instance posted + claimed after the revert's discovery must make the revert `action_busy` with nothing mutated — no orphan claim in any of them (`test_reverting_a_link_is_busy_while_another_statement_reconciles`, `test_another_statements_reconcile_is_busy_during_a_link_revert`, `test_an_instance_posted_after_discovery_makes_the_revert_retry`).
+3. Reverting a plan link whose claims live on **two statements** must release both and flag the second, and the second statement's next reconcile must open `installment_unmapped` again (Task 7 test `test_reverting_a_link_releases_the_plans_claims_on_other_statements`); while the second statement's reconcile holds an uncommitted claim the revert must be `action_busy`, while the revert is open that reconcile must be `reconcile_busy`, and an instance posted + claimed after the revert's discovery must make the revert `action_busy` with nothing mutated — no orphan claim in any of them (`test_reverting_a_link_is_busy_while_another_statement_reconciles`, `test_another_statements_reconcile_is_busy_during_a_link_revert`, `test_an_instance_posted_after_discovery_makes_the_revert_retry`); the real posting lock must conflict both ways (`test_a_posting_in_flight_makes_the_revert_busy`, `test_a_posting_waits_behind_an_open_link_revert`).
 4. An `attach_fee` candidate whose entry was **edited after the reconcile** (stale `context.residual`) must be `candidate_changed`, charging nothing (Task 3 test `test_attach_fee_candidate_is_recomputed_under_the_lock`); two runs skipping the same candidate at once must audit it **once** (Task 4 test `test_concurrent_skips_audit_once`).
 5. A proposal by the **owner's own token** (`spa`, legacy scope) must never be auto-applied as an agent proposal (Task 5 test `test_only_propose_only_tokens_are_agents`).
 
@@ -385,12 +385,13 @@ def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine, monkeypat
         assert thread.is_alive(), "B must wait for A's statement lock"
         order.append(("commit", "A"))
         real_commit()
-        thread.join(5)
-        assert not thread.is_alive(), "B is still blocked after A committed"
-        outcome.get_nowait()
     finally:
         a.close()
+        thread.join(5)  # reclaimed after A is released; B rolls back / closes its own session below
+        assert not thread.is_alive(), "B is still blocked after A committed"
+        b.rollback()
         b.close()
+    outcome.get_nowait()
     assert order == [("locked", "A"), ("insert", "A"), ("commit", "A"), ("locked", "B")]
     (skipped,) = _audit(db_session, "policy_skipped")
     assert skipped.detail["case_version"] == _reload(db_session, ReconciliationCase, s.case.id).version
@@ -399,7 +400,7 @@ def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine, monkeypat
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_policy.py -k "audited_once or skips_audit_once" -q`
-Expected: both FAIL — two `policy_skipped` rows (no `case_version` in the detail). In the race test the old `_skip` takes no statement lock, so B does not wait at `("locked", "B")` (the assertion `thread.is_alive()` fails: B runs through and, blocked only on the audit FK's KEY SHARE, finishes right after A's commit with a second row).
+Expected: both FAIL — two `policy_skipped` rows (no `case_version` in the detail). In the race test the old `_skip` takes no statement lock, so B never waits: the assertion `thread.is_alive()` fails (B completes before A's commit with a second row — both audit inserts take compatible KEY SHARE locks).
 
 - [ ] **Step 3: Serialise and dedupe the audit**
 
@@ -715,24 +716,48 @@ git commit -m "fix(accounting): supersede_stale locks statements, cases, then pr
 
 - [ ] **Step 1: Write the failing tests**
 
-Bounded helpers first (every race below runs the call under test in a worker thread with a join timeout and releases the holder in `finally`; a call that degenerates into a wait fails the test instead of hanging it):
+Bounded helpers first (every race below runs the call under test in a worker thread that owns its session; the holder is released in `finally` and only then is the worker joined with a timeout and its result or exception collected — a call that degenerates into a wait fails the test explicitly instead of hanging it or racing the session close):
 
 ```python
-def _worker(fn, timeout=5.0):
-    """Run fn() in a thread; return its result or the exception it raised; fail if it is still running after
-    `timeout` seconds (a NOWAIT path that waited)."""
-    out: queue.Queue = queue.Queue()
+class _Run:
+    """Run fn() in a daemon thread and keep the handle: `waiting(grace)` = still running after `grace` seconds,
+    `result(timeout)` = the return value or the exception, failing explicitly when the thread is still alive after
+    `timeout` (a NOWAIT path that waited). fn owns its own session and must roll it back / close it itself."""
 
-    def run():
+    def __init__(self, fn):
+        self.out: queue.Queue = queue.Queue()
+        self.thread = threading.Thread(target=self._go, args=(fn,), daemon=True)
+        self.thread.start()
+
+    def _go(self, fn):
         try:
-            out.put(fn())
+            self.out.put(fn())
         except Exception as exc:  # noqa: BLE001  (asserted by the caller)
-            out.put(exc)
-    thread = threading.Thread(target=run, daemon=True)
-    thread.start()
-    thread.join(timeout)
-    assert not thread.is_alive(), f"still running after {timeout} s: the call waited instead of refusing"
-    return out.get_nowait()
+            self.out.put(exc)
+
+    def waiting(self, grace=0.5) -> bool:
+        self.thread.join(grace)
+        return self.thread.is_alive()
+
+    def result(self, timeout=5.0):
+        self.thread.join(timeout)
+        assert not self.thread.is_alive(), f"still running after {timeout} s: the call waited instead of refusing"
+        return self.out.get_nowait()
+
+
+def _own_session(pg_engine, fn, *, commit=False):
+    """A worker body that opens, uses and closes its own session (rolled back unless `commit`)."""
+    def body():
+        session = sessionmaker(bind=pg_engine, autoflush=False)()
+        try:
+            value = fn(session)
+            if commit:
+                session.commit()
+            return value
+        finally:
+            session.rollback()
+            session.close()
+    return body
 
 
 def _busy(outcome, code):
@@ -847,18 +872,19 @@ def test_reverting_a_link_is_busy_while_another_statement_reconciles(db_session,
     the revert must be action_busy (map intact); after that commit the retry releases the claim."""
     s = unmapped_twice
     row = _link(db_session, s)
-    factory = sessionmaker(bind=pg_engine, autoflush=False)
-    holder, worker = factory(), factory()
+    holder = sessionmaker(bind=pg_engine, autoflush=False)()
+    run = None
     try:
         rec.reconcile(holder, s.oct.id)  # holds October's statement + entry, claim written, not committed
-        outcome = _worker(lambda: engine.revert_action(worker, action_id=row.id, actor="owner", label="owner-test"))
-        _busy(outcome, "action_busy")
-        worker.rollback()
+        run = _Run(_own_session(pg_engine, lambda db: engine.revert_action(
+            db, action_id=row.id, actor="owner", label="owner-test")))
+        _busy(run.result(), "action_busy")
         assert holder.execute(select(InstallmentPlanMap)).scalars().one() is not None
         holder.commit()
     finally:
         holder.close()
-        worker.close()
+        if run is not None:
+            run.result()  # the worker thread is reclaimed (bounded) after the holder is released
     _revert(db_session, row.id)  # the retry sees the committed claim, locks October and releases it
     assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
     assert _active(db_session, s.oct.id) == [] and _fresh(db_session, AccountStatement, s.oct.id).needs_recheck is True
@@ -869,17 +895,17 @@ def test_another_statements_reconcile_is_busy_during_a_link_revert(db_session, u
     commits it finds no map and writes no claim."""
     s = unmapped_twice
     row = _link(db_session, s)
-    factory = sessionmaker(bind=pg_engine, autoflush=False)
-    reverter, worker = factory(), factory()
+    reverter = sessionmaker(bind=pg_engine, autoflush=False)()
+    run = None
     try:
         engine.revert_action(reverter, action_id=row.id, actor="owner", label="owner-test")  # not committed yet
-        outcome = _worker(lambda: rec.reconcile(worker, s.oct.id))
-        _busy(outcome, "reconcile_busy")
-        worker.rollback()
+        run = _Run(_own_session(pg_engine, lambda db: rec.reconcile(db, s.oct.id)))
+        _busy(run.result(), "reconcile_busy")
         reverter.commit()
     finally:
         reverter.close()
-        worker.close()
+        if run is not None:
+            run.result()
     _reconcile(db_session, s.oct.id)
     assert _active(db_session, s.oct.id) == []
     assert [c.context["hint"] for c in _cases(db_session, s.oct.id, "open") if c.kind == "line_unmatched"] == [
@@ -906,11 +932,11 @@ def test_an_instance_posted_after_discovery_makes_the_revert_retry(db_session, u
         return targets
 
     monkeypatch.setattr(LinkInstallmentPlanAction, "revert_lock_targets", discovery_then_posting)
-    worker = factory()
+    run = None
     try:
-        outcome = _worker(lambda: engine.revert_action(worker, action_id=row.id, actor="owner", label="owner-test"))
-        _busy(outcome, "action_busy")
-        worker.rollback()
+        run = _Run(_own_session(pg_engine, lambda db: engine.revert_action(
+            db, action_id=row.id, actor="owner", label="owner-test")))
+        _busy(run.result(), "action_busy")
         # nothing mutated: map, action and case as before, no revert row
         assert holder.execute(select(InstallmentPlanMap)).scalars().one() is not None
         assert _fresh(db_session, ReconciliationAction, row.id).status == "applied"
@@ -920,20 +946,65 @@ def test_an_instance_posted_after_discovery_makes_the_revert_retry(db_session, u
         holder.commit()  # B's claim lands
     finally:
         holder.close()
-        worker.close()
+        if run is not None:
+            run.result()
     (claim,) = _active(db_session, s.oct.id)
     assert claim.entry_id == fired[0]
     _revert(db_session, row.id)  # the retry discovers the posted entry and October, locks and releases
     assert _active(db_session, s.oct.id) == [] and _fresh(db_session, AccountStatement, s.oct.id).needs_recheck is True
     assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
+
+
+def test_a_posting_in_flight_makes_the_revert_busy(db_session, unmapped_then_pending, pg_engine):
+    """AGENT-110 Should 1: the real posting lock (`lock_definition_for_post`, FOR SHARE) conflicts with the
+    revert's FOR UPDATE NOWAIT on the definition: the revert is action_busy at once, nothing mutated."""
+    s = unmapped_then_pending
+    row = _link(db_session, s)
+    poster = sessionmaker(bind=pg_engine, autoflush=False)()
+    run = None
+    try:
+        schedule_posting.lock_definition_for_post(poster, s.definition.id)  # a posting holds the definition
+        run = _Run(_own_session(pg_engine, lambda db: engine.revert_action(
+            db, action_id=row.id, actor="owner", label="owner-test")))
+        _busy(run.result(), "action_busy")
+        assert poster.execute(select(InstallmentPlanMap)).scalars().one() is not None
+        assert _fresh(db_session, ReconciliationAction, row.id).status == "applied"
+        poster.commit()
+    finally:
+        poster.close()
+        if run is not None:
+            run.result()
+    _revert(db_session, row.id)  # released: the retry succeeds
+    assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
+
+
+def test_a_posting_waits_behind_an_open_link_revert(db_session, unmapped_then_pending, pg_engine):
+    """The mirror: while the revert holds the definition FOR UPDATE, a posting's FOR SHARE cannot complete; it
+    finishes only after the revert commits (bounded both ways)."""
+    s = unmapped_then_pending
+    row = _link(db_session, s)
+    reverter = sessionmaker(bind=pg_engine, autoflush=False)()
+    run = None
+    try:
+        engine.revert_action(reverter, action_id=row.id, actor="owner", label="owner-test")  # holds the definition
+        run = _Run(_own_session(pg_engine, lambda db: schedule_posting.lock_definition_for_post(
+            db, s.definition.id).id, commit=True))
+        assert run.waiting(0.5), "the posting must wait behind the revert's exclusive definition lock"
+        reverter.commit()
+        assert run.result(5.0) == s.definition.id  # released: the posting's lock is granted and it completes
+    finally:
+        reverter.close()
+        if run is not None:
+            run.result()
+    assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
 ```
 
-(Imports to add as needed: `json`, `queue`, `threading`, `OCT`, `SimpleNamespace`, `sessionmaker`, `Account`, `AccountStatement`, `LedgerEntry`, `InstallmentPlanMap`, `ScheduleInstance`, `StatementCoverage`, `CodedConflictError`, `engine`, `rec`, `confirm_service`, `LinkInstallmentPlanAction` from `app.services.reconciliation_actions.case_actions`, `Seed` from `tests.conftest`; `_reconcile` is in `statement_fixtures.py`. If `_apply` in this file returns a tuple, unpack it in `_link`. `seed.instance(..., status="pending")` without `entries` must create an unposted instance — read `make_instance` in `tests/conftest.py` and pass `entries=[]` if required.)
+(Imports to add as needed: `json`, `queue`, `threading`, `OCT`, `SimpleNamespace`, `sessionmaker`, `Account`, `AccountStatement`, `LedgerEntry`, `InstallmentPlanMap`, `ScheduleInstance`, `StatementCoverage`, `CodedConflictError`, `engine`, `rec`, `confirm_service`, `schedule_posting` from `app.services`, `LinkInstallmentPlanAction` from `app.services.reconciliation_actions.case_actions`, `Seed` from `tests.conftest`; `_reconcile` is in `statement_fixtures.py`. If `_apply` in this file returns a tuple, unpack it in `_link`. `seed.instance(..., status="pending")` without `entries` must create an unposted instance — read `make_instance` in `tests/conftest.py` and pass `entries=[]` if required.)
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_actions_case.py -k "unmapped_twice or other_statement or busy or posted_after" -q`
-Expected: all five FAIL — October's claim stays active after the revert; the confirmed variant keeps `matched_count` 1; the busy variant's revert succeeds while the claim is uncommitted (no `action_busy`); the mirror's reconcile succeeds while the revert is open; the posted-after-discovery variant's revert succeeds and leaves October's claim active (an orphan).
+Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_actions_case.py -k "unmapped_twice or other_statement or busy or posted_after or posting" -q`
+Expected: all seven FAIL — October's claim stays active after the revert; the confirmed variant keeps `matched_count` 1; the busy variant's revert succeeds while the claim is uncommitted (no `action_busy`); the mirror's reconcile succeeds while the revert is open; the posted-after-discovery variant's revert succeeds and leaves October's claim active (an orphan); the posting-in-flight variant's revert succeeds (FOR SHARE and FOR SHARE are compatible) and the posting-waits variant's `waiting` assertion fails for the same reason.
 
 - [ ] **Step 3: Carry the lock set on the context; exclusive definition locks**
 
@@ -1047,7 +1118,7 @@ and rewrite `invert` so that every check precedes the first mutation:
         return Effect(touched_entry_ids=list(action.touched_entry_ids or ()))
 ```
 
-(The engine's `_recount(db, statements)` after `invert` recounts every locked statement, the released ones included; the engine's attempt savepoint rolls back its own revert row on the 409, so a refused revert leaves no trace but the audit the router writes.)
+(The engine's `_recount(db, statements)` after `invert` recounts every locked statement, the released ones included; the engine's attempt savepoint rolls back its own revert row on the 409, so a refused revert leaves no trace.)
 
 - [ ] **Step 5: Run the case-action and engine tests**
 
