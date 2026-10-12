@@ -721,11 +721,13 @@ Bounded helpers first (every race below runs the call under test in a worker thr
 ```python
 class _Run:
     """Run fn() in a daemon thread and keep the handle: `waiting(grace)` = still running after `grace` seconds,
-    `result(timeout)` = the return value or the exception, failing explicitly when the thread is still alive after
-    `timeout` (a NOWAIT path that waited). fn owns its own session and must roll it back / close it itself."""
+    `result(timeout)` = the return value or the exception (cached: safe to call in the body and again in
+    `finally`), failing explicitly when the thread is still alive after `timeout` (a NOWAIT path that waited).
+    fn owns its own session and must roll it back / close it itself."""
 
     def __init__(self, fn):
         self.out: queue.Queue = queue.Queue()
+        self.outcome = None  # cached by result(): it is called once in the body and again in `finally`
         self.thread = threading.Thread(target=self._go, args=(fn,), daemon=True)
         self.thread.start()
 
@@ -740,9 +742,12 @@ class _Run:
         return self.thread.is_alive()
 
     def result(self, timeout=5.0):
-        self.thread.join(timeout)
-        assert not self.thread.is_alive(), f"still running after {timeout} s: the call waited instead of refusing"
-        return self.out.get_nowait()
+        """Idempotent: the first call joins and takes the outcome, later calls return the same outcome."""
+        if self.outcome is None:
+            self.thread.join(timeout)
+            assert not self.thread.is_alive(), f"still running after {timeout} s: the call waited instead of refusing"
+            self.outcome = (self.out.get_nowait(),)
+        return self.outcome[0]
 
 
 def _own_session(pg_engine, fn, *, commit=False):
