@@ -6,9 +6,12 @@ import pytest
 from sqlalchemy import select, text
 
 from app import auth
-from app.models import ReconciliationAudit, ReconciliationCase
+from app.models import LedgerEntry, ReconciliationAudit, ReconciliationCase, StatementCoverage
+from app.services import coverage_service, settings_service
+from app.services import reconciliation_service as rec
+from tests.helpers import set_dirty
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    OCT, _card, _cases, _line, _submit, run,
+    OCT, _card, _cases, _line, _reconcile, _submit, run,
 )
 
 TOKENS = "spa:spa-token,hermes:hermes-token,worker:worker-token"
@@ -170,3 +173,56 @@ def test_incoming_deferrals_pending_on_both_get_shapes(client, seed, db_session,
                             "WHERE deferred_to_statement_id=:t"), {"t": octo.id})
     db_session.commit()
     assert counts() == (0, 0)
+
+
+# --- ruling 36: coverage-only effect slots are per case id and version (Multica AGENT-107) ------------------------
+
+def test_a_match_on_the_replacement_case_after_a_dirty_edit_claims_again(client, seed, db_session, run):
+    """An owner sibling match, a dirty merchant edit on the claimed entry, then a reconcile: the sweep releases the
+    claim and reopens the case, and `_write_cases` replaces it with a NEW case (version 1) on the same event. A match
+    on the replacement is a new effect (slot `c<case.id>v<version>`), not a duplicate of the old case's v1 match; a
+    second match with other params on the same case version still is."""
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (old,) = _cases(db_session, stmt.id, "open")
+    sibling = seed.account("姊妹")
+    theirs = seed.entry(sibling, "-580", day=DAY, merchant="全聯")
+    other = seed.entry(sibling, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    settings_service.update_reconciliation_settings(db_session, {"account_siblings": {str(card.id): [sibling.id]}})
+    db_session.commit()
+    set_dirty(db_session, True)  # after the settings write, which replaces the settings document
+
+    def match(case_id, entry_id):
+        return client.post(f"/reconciliation/cases/{case_id}/actions", headers=S, json={
+            "action": "match", "params": {"line_id": line.id, "entry_id": entry_id, "allow_sibling": True}})
+
+    first = match(old.id, theirs.id)
+    assert first.status_code == 201, first.text
+
+    db_session.expire_all()
+    db_session.get(LedgerEntry, theirs.id).merchant = "全聯福利中心"  # a dirty edit on the claimed entry
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+
+    db_session.expire_all()
+    assert db_session.get(ReconciliationCase, old.id).status == "superseded"
+    (new,) = [c for c in _cases(db_session, stmt.id, "open") if c.event_id == line.event_id]
+    assert (new.id != old.id, new.version, new.event_id) == (True, 1, old.event_id)
+
+    again = match(new.id, theirs.id)
+    assert again.status_code == 201, again.text
+    assert again.json()["replayed"] is False
+    assert (first.json()["effect_slot"], again.json()["effect_slot"]) == (f"c{old.id}v1", f"c{new.id}v1")
+    db_session.expire_all()
+    active = db_session.execute(select(StatementCoverage).where(StatementCoverage.statement_id == stmt.id,
+                                                                StatementCoverage.status == "active")).scalars().all()
+    assert [(c.line_id, c.entry_id, c.match_kind) for c in active] == [(line.id, theirs.id, "manual")]
+
+    # same case, same version, other params: still one effect per slot
+    locked = rec._lock_statement(db_session, stmt.id)
+    coverage_service.release_line(db_session, locked, line.id, reason="test")
+    db_session.get(ReconciliationCase, new.id).status = "open"  # open again WITHOUT a version bump
+    db_session.commit()
+    duplicate = match(new.id, other.id)
+    assert duplicate.status_code == 422 and "duplicate_effect" in duplicate.text, duplicate.text

@@ -111,6 +111,17 @@ class Action(Protocol):
     def revert_lock_targets(self, ctx: Context, action: ReconciliationAction) -> LockSet: ...
 
 
+EFFECT_SLOT_LENGTH = ReconciliationAction.__table__.c.effect_slot.type.length  # String(16)
+
+
+def check_effect_slot(slot: str) -> str:
+    """The slot must fit `reconciliation_action.effect_slot`; a longer one is a programming error (it would fail the
+    insert with a database error, or be silently truncated by a looser column), never a client error."""
+    if not slot or len(slot) > EFFECT_SLOT_LENGTH:
+        raise RuntimeError(f"effect slot {slot!r} does not fit effect_slot (1..{EFFECT_SLOT_LENGTH} characters)")
+    return slot
+
+
 class ActionBase:
     """Defaults: the effect slot (below), no extra validation, nothing locked, `prepare` = the expected snapshot of the
     lock targets' rows (`snapshots.expected_set`), no inverse, and revert locks taken from the action row."""
@@ -121,11 +132,13 @@ class ActionBase:
     slot: ClassVar[str | None] = None  # ledger-effect actions set their fixed slot (ruling 7)
 
     def effect_slot(self, ctx: Context, params) -> str:
-        """Ruling 31: an action that writes no ledger rows (match, unmatch, dismiss, defer_next_period) is one effect
-        per case VERSION, `v<version>` (the version the idempotency key was built from, under the case lock), so a
-        reopened case can be acted on again; ledger-effect actions keep their fixed slot (`create`, `fee`, `amount`,
-        `move`, `split`, `balance`, `plan`) and stay one-shot per event while applied."""
-        return self.slot if self.slot is not None else f"v{ctx.case.version}"
+        """Rulings 31 and 36: an action that writes no ledger rows (match, unmatch, dismiss, defer_next_period) is one
+        effect per case VERSION, `c<case.id>v<version>` (the version the idempotency key was built from, under the
+        case lock), so a reopened case can be acted on again and so can the new case `_write_cases` puts on the same
+        event (it starts again at version 1; the index keys the event, not the case); ledger-effect actions keep their
+        fixed slot (`create`, `fee`, `amount`, `move`, `split`, `balance`, `plan`) and stay one-shot per event while
+        applied. The engine checks the slot fits the column (`check_effect_slot`)."""
+        return self.slot if self.slot is not None else f"c{ctx.case.id}v{ctx.case.version}"
 
     def check_before_locks(self, ctx: Context, params) -> None:
         """Under the statement and case locks, after the case checks and the precheck, before the account row, the

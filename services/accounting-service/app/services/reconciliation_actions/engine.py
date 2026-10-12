@@ -15,9 +15,10 @@ GUC → `apply` → conservation → `after`/`inverse`/ids → case resolution o
 superseded → audit → counts. Any failure rolls the attempt savepoint back (row locks included) and nothing is
 written.
 
-`revert_action` takes the same locks for the action's recorded rows, refuses when a later action touched them,
-when they differ from the action's `after` (409) or when its coverage is gone (422), then inverts, releases the
-action's coverage, marks it `reverted` and reopens its case at a new version (so a re-apply computes a new key)."""
+`revert_action` takes the same locks for the action's recorded rows, refuses when a later action touched them or
+was applied on the same case, when they differ from the action's `after` (409) or when its coverage is gone (422),
+then inverts, releases the action's coverage, marks it `reverted` and reopens its case at a new version (so a
+re-apply computes a new key)."""
 from __future__ import annotations
 
 import hashlib
@@ -43,7 +44,9 @@ from app.services.schedule_locks import take_import_key_shared
 
 from . import ACTIONS, COVERAGE_ACTIONS, OPEN_STATUSES, allowed, audit, snapshots
 from . import engine_locks as locks
-from .base import POLICY, Action, ActionParams, Context, Effect, LockSet, NotRevertable, current_line
+from .base import (
+    POLICY, Action, ActionParams, Context, Effect, LockSet, NotRevertable, check_effect_slot, current_line,
+)
 
 __all__ = ["BudgetExceeded", "NotRevertable", "apply_action", "canonical_params", "idempotency_key", "revert_action"]
 
@@ -254,7 +257,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         before = snapshots.snapshot_set(db, *snapshots.ids_of(prepared.expected))
         _check_snapshots(prepared.expected, before)
         impl.validate_before(ctx, parsed, prepared, before)
-        slot = impl.effect_slot(ctx, parsed)
+        slot = check_effect_slot(impl.effect_slot(ctx, parsed))
         _check_creation_family(db, case, slot)
         row = _insert(db, ReconciliationAction(
             idempotency_key=key, event_id=case.event_id, effect_slot=slot, case_id=case.id, proposal_id=proposal_id,
@@ -366,17 +369,17 @@ def _revertable(row: ReconciliationAction) -> Action:
 
 
 def _refuse_later(db: Session, row: ReconciliationAction) -> None:
-    """Ruling 14: a later applied action (not a revert) touching the same entries or groups blocks the revert."""
+    """Ruling 14: a later applied action (not a revert) touching the same entries or groups blocks the revert; so
+    does any later applied action on the same case (Multica AGENT-107), since an action that records no rows
+    (`defer_next_period`, `dismiss`) would otherwise be reverted over a later resolution of its case."""
     entries = sorted(set(row.touched_entry_ids or ()) | set(row.created_entry_ids or ()))
     groups = sorted(set(row.touched_group_ids or ()))
-    overlaps = []
+    overlaps = [ReconciliationAction.case_id == row.case_id]  # NOT NULL
     if entries:
         overlaps += [ReconciliationAction.touched_entry_ids.overlap(entries),
                      ReconciliationAction.created_entry_ids.overlap(entries)]
     if groups:
         overlaps.append(ReconciliationAction.touched_group_ids.overlap(groups))
-    if not overlaps:
-        return
     later = db.execute(select(ReconciliationAction.id).where(
         ReconciliationAction.id > row.id, ReconciliationAction.status == "applied",
         ReconciliationAction.action != "revert", or_(*overlaps)).order_by(ReconciliationAction.id).limit(1)
@@ -429,9 +432,9 @@ def revert_action(db: Session, *, action_id: int, actor: str, label: str,
         _check_snapshots(expected, current)
         _coverage_still_active(db, after.get("coverage_ids", []))
         row = _insert(db, ReconciliationAction(
-            idempotency_key=revert_key(action_id), event_id=original.event_id, effect_slot=f"r{action_id}",
-            case_id=original.case_id, action="revert", params={"action_id": action_id}, actor=actor,
-            status="applied", before=current),
+            idempotency_key=revert_key(action_id), event_id=original.event_id,
+            effect_slot=check_effect_slot(f"r{action_id}"), case_id=original.case_id, action="revert",
+            params={"action_id": action_id}, actor=actor, status="applied", before=current),
             indexes=(EFFECT_INDEX, KEY_INDEX),
             duplicate=lambda: NotRevertable(f"action {action_id} is already reverted"))
         _set_guc(db, row.id)

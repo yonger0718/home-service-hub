@@ -168,7 +168,7 @@ class FakeCreate(base.ActionBase):
 class FakeDismiss(base.ActionBase):
     name = "dismiss"
     Params = _NoParams
-    case_kinds = frozenset(registry.KIND_ACTIONS)  # no ledger write: the default v<version> slot (ruling 31)
+    case_kinds = frozenset(registry.KIND_ACTIONS)  # no ledger write: the default c<case.id>v<version> slot
 
     def apply(self, ctx, params, prepared, effect):
         effect.case_status = "dismissed"
@@ -213,7 +213,7 @@ def test_match_claims_resolves_recounts_and_audits(unmatched, db_session):
         s.line.id, s.entry.id, "principal", "manual", "owner")
     action = db_session.get(ReconciliationAction, row.id)
     assert (action.action, action.effect_slot, action.status, action.actor, action.event_id, action.case_id) == (
-        "match", f"v{version}", "applied", "owner", s.line.event_id, s.case.id)
+        "match", f"c{s.case.id}v{version}", "applied", "owner", s.line.event_id, s.case.id)
     assert action.params == {"line_id": s.line.id, "entry_id": s.entry.id, "group_id": None, "with_children": False,
                              "allow_sibling": False}
     assert (action.touched_entry_ids, action.created_entry_ids, action.deleted_entry_ids) == ([s.entry.id], [], [])
@@ -284,9 +284,9 @@ def test_replay_returns_the_stored_action_and_a_revert_frees_the_key(unmatched, 
     case = db_session.get(ReconciliationCase, s.case.id)
     key = engine.idempotency_key(case.id, case.version, "match",
                                  engine.canonical_params(MatchAction.Params(**_match(s))))
-    db_session.add(ReconciliationAction(idempotency_key=key, event_id=s.line.event_id, effect_slot=f"v{case.version}",
-                                        case_id=case.id, action="match", params=_match(s), actor="owner",
-                                        status="reverted"))
+    db_session.add(ReconciliationAction(idempotency_key=key, event_id=s.line.event_id,
+                                        effect_slot=f"c{case.id}v{case.version}", case_id=case.id, action="match",
+                                        params=_match(s), actor="owner", status="reverted"))
     db_session.commit()
     exc = _refuse(db_session, lambda: _apply(db_session, s.case, params=_match(s)))
     assert isinstance(exc, CodedConflictError) and exc.code == "action_reverted"
@@ -296,8 +296,8 @@ def test_replay_returns_the_stored_action_and_a_revert_frees_the_key(unmatched, 
 # --- 3. duplicate effect on a new case version --------------------------------------------------------------------
 
 def test_a_match_on_a_reopened_case_claims_again(unmatched, db_session):
-    """Ruling 31: coverage-only actions are one effect per case VERSION (slot v<version>): after the sweep released
-    the owner's claim and reopened the case, the owner can match the event again."""
+    """Rulings 31/36: coverage-only actions are one effect per case VERSION (slot c<case.id>v<version>): after the
+    sweep released the owner's claim and reopened the case, the owner can match the event again."""
     s = unmatched()
     first, _ = _apply(db_session, s.case, params=_match(s))
     stmt = rec._lock_statement(db_session, s.stmt.id)
@@ -308,7 +308,7 @@ def test_a_match_on_a_reopened_case_claims_again(unmatched, db_session):
     again, replayed = _apply(db_session, s.case, params=_match(s))
 
     assert replayed is False and again.id != first.id
-    assert (first.effect_slot, again.effect_slot) == ("v1", "v2")
+    assert (first.effect_slot, again.effect_slot) == (f"c{s.case.id}v1", f"c{s.case.id}v2")
     assert [(c.line_id, c.entry_id, c.match_kind) for c in _active(db_session, s.stmt.id)] == [
         (s.line.id, s.entry.id, "manual")]
     assert [a.status for a in _actions(db_session)] == ["applied", "applied"]
@@ -334,11 +334,20 @@ def test_a_second_match_on_the_same_case_version_is_a_duplicate_effect(unmatched
     assert _active(db_session, s.stmt.id) == [] and len(_actions(db_session)) == 1
 
 
+
+def test_effect_slots_must_fit_the_column():
+    """Ruling 36: `c<case.id>v<version>` is checked against `effect_slot`'s String(16) before the insert."""
+    assert base.EFFECT_SLOT_LENGTH == 16
+    assert base.check_effect_slot("c2147483647v9999") == "c2147483647v9999"  # the largest int4 id fits
+    for bad in ("", "c2147483647v10000"):
+        with pytest.raises(RuntimeError, match="does not fit effect_slot"):
+            base.check_effect_slot(bad)
+
 def test_a_failed_row_under_the_key_is_action_failed(unmatched, db_session):
     s = unmatched()
     key = engine.idempotency_key(s.case.id, s.case.version, "match",
                                  engine.canonical_params(MatchAction.Params(**_match(s))))
-    db_session.add(ReconciliationAction(idempotency_key=key, event_id=s.line.event_id, effect_slot="v1",
+    db_session.add(ReconciliationAction(idempotency_key=key, event_id=s.line.event_id, effect_slot=f"c{s.case.id}v1",
                                         case_id=s.case.id, action="match", params=_match(s), actor="owner",
                                         status="failed"))
     db_session.commit()

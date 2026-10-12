@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.models import (
     AccountStatement, InstallmentPlanMap, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
 )
+from app.services import confirm_service
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ValidationError
 from app.services.reconciliation_actions import engine
@@ -92,7 +93,7 @@ def unmapped(seed, db_session, run):
 def test_dismiss_resolves_with_the_note_and_counts_as_explained(db_session, unmatched):
     _, stmt, _, case = unmatched
     row, replayed = _apply(db_session, case, "dismiss", {"note": "銀行誤植"})
-    assert replayed is False and row.effect_slot == f"v{case.version}"
+    assert replayed is False and row.effect_slot == f"c{case.id}v{case.version}"
     case = _fresh(db_session, ReconciliationCase, case.id)
     assert (case.status, case.explanation, case.note, case.resolved_by, case.resolved_action_id) == (
         "dismissed", "accepted_exception", "銀行誤植", "owner", row.id)
@@ -128,7 +129,7 @@ def test_reverting_a_dismiss_reopens_the_case_and_keeps_the_note_in_context(db_s
     stmt = _fresh(db_session, AccountStatement, stmt.id)
     assert (stmt.explained_count, stmt.open_case_count) == (0, 1)
     again, _ = _apply(db_session, case, "dismiss", {"note": "再略過"})  # a new case version: acted on again
-    assert again.id != row.id and again.effect_slot == f"v{case.version}"
+    assert again.id != row.id and again.effect_slot == f"c{case.id}v{case.version}"
 
 
 # --- defer_next_period --------------------------------------------------------------------------------------------
@@ -210,6 +211,39 @@ def test_an_owner_deferral_survives_a_reconcile_and_the_later_statement_links_it
     _reconcile(db_session, stmt.id)  # and a re-reconcile of the earlier one keeps the link
     assert _fresh(db_session, ReconciliationCase, case.id).deferred_to_statement_id == later.id
 
+
+
+def test_a_defer_is_not_revertable_after_a_later_action_on_its_case(seed, db_session, stray, run):
+    """Multica AGENT-107: a `defer_next_period` touches no rows, so the row-overlap rule alone let it be reverted
+    after the next statement's confirm reopened the case and the owner dismissed it, clearing the dismissal while the
+    dismiss row stayed applied. A later applied action on the same case blocks the revert; the latest still reverts."""
+    card, _, entry, case = stray
+    deferred, _ = _apply(db_session, case, "defer_next_period", {"entry_id": entry.id})
+    seed.entry(card, "-120", day=date(2026, 10, 5), merchant="超商")
+    db_session.commit()
+    later, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 5), "超商", 120)],
+                          period=(date(2026, 10, 1), date(2026, 10, 30)))
+    assert later.open_case_count == 0
+    result = confirm_service.confirm_statement(db_session, account_id=card.id, statement_id=later.id, force=False,
+                                               note=None, label="owner-test", request_id=None)
+    db_session.commit()
+    assert result.reopened_cases == [case.id]  # the deferred entry is unclaimed there: the case reopens
+    reopened = _fresh(db_session, ReconciliationCase, case.id)
+    assert (reopened.status, reopened.version) == ("open", 2)
+
+    dismissed, _ = _apply(db_session, case, "dismiss", {"note": "不追了"})
+
+    error = _refuse(db_session, lambda: _revert(db_session, deferred.id))
+    assert _code(error) == "not_revertable" and f"later action {dismissed.id}" in str(error)
+    assert _fresh(db_session, ReconciliationAction, dismissed.id).status == "applied"
+    assert _fresh(db_session, ReconciliationAction, deferred.id).status == "applied"
+    case = _fresh(db_session, ReconciliationCase, case.id)
+    assert (case.status, case.explanation, case.note, case.resolved_action_id) == (
+        "dismissed", "accepted_exception", "不追了", dismissed.id)
+
+    _revert(db_session, dismissed.id)  # the latest action on the case still reverts
+    assert _fresh(db_session, ReconciliationAction, dismissed.id).status == "reverted"
+    assert _fresh(db_session, ReconciliationCase, case.id).status == "open"
 
 # --- link_installment_plan ----------------------------------------------------------------------------------------
 

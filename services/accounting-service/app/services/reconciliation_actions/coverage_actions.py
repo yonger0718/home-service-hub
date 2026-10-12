@@ -61,7 +61,7 @@ class MatchAction(ActionBase):
     name = "match"
     Params = MatchParams
     case_kinds = frozenset({"line_unmatched", "ambiguous", "amount_delta", "recheck"})
-    actors = frozenset({OWNER, POLICY})  # coverage only: effect slot v<case version> (ruling 31)
+    actors = frozenset({OWNER, POLICY})  # coverage only: effect slot c<case.id>v<version> (rulings 31, 36)
 
     def lock_targets(self, ctx: Context, params: MatchParams) -> LockSet:
         return lockset_for(ctx.db, entry_ids=() if params.entry_id is None else (params.entry_id,),
@@ -145,7 +145,7 @@ class UnmatchParams(ActionParams):
 class UnmatchAction(ActionBase):
     name = "unmatch"
     Params = UnmatchParams
-    case_kinds = frozenset({"duplicate_claim", "recheck"})  # coverage only: effect slot v<case version> (ruling 31)
+    case_kinds = frozenset({"duplicate_claim", "recheck"})  # coverage only: slot c<case.id>v<version> (31, 36)
 
     @staticmethod
     def _rows(ctx: Context, line_id: int) -> list[StatementCoverage]:
