@@ -9,7 +9,7 @@ from typing import Callable
 
 from sqlalchemy.orm import object_session
 
-from app.models import AccountStatement, ReconciliationCase, StatementLine
+from app.models import ReconciliationCase, StatementLine
 
 from .base import Action
 
@@ -37,12 +37,23 @@ def _context(case: ReconciliationCase) -> dict:
     return case.context or {}
 
 
-def _card_refund_line(case: ReconciliationCase) -> bool:
+SYSTEM_LINE_KINDS = frozenset({"fee", "interest", "reward"})
+
+
+def _line_kind(case: ReconciliationCase) -> str | None:
     db = object_session(case)
     if db is None or case.line_id is None:
-        return False
-    line, statement = db.get(StatementLine, case.line_id), db.get(AccountStatement, case.statement_id)
-    return line is not None and statement is not None and statement.kind == "card" and line.line_kind == "refund"
+        return None
+    line = db.get(StatementLine, case.line_id)
+    return None if line is None else line.line_kind
+
+
+def _refund_line(case: ReconciliationCase) -> bool:  # card and bank refund lines alike
+    return _line_kind(case) == "refund"
+
+
+def _system_line(case: ReconciliationCase) -> bool:  # a bank-only hint, or any fee/interest/reward line
+    return _context(case).get("hint") == "bank_only" or _line_kind(case) in SYSTEM_LINE_KINDS
 
 
 def _names_an_entry(case: ReconciliationCase) -> bool:  # ruling 19: split on line_unmatched needs a named entry
@@ -50,8 +61,8 @@ def _names_an_entry(case: ReconciliationCase) -> bool:  # ruling 19: split on li
 
 
 CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
-    ("line_unmatched", "create_system_entry"): lambda case: _context(case).get("hint") == "bank_only",
-    ("line_unmatched", "create_refund"): _card_refund_line,
+    ("line_unmatched", "create_system_entry"): _system_line,
+    ("line_unmatched", "create_refund"): _refund_line,
     ("line_unmatched", "link_installment_plan"): lambda case: _context(case).get("hint") == "installment_unmapped",
     ("line_unmatched", "split_entry"): _names_an_entry,
     ("amount_delta", "attach_fee"): lambda case: _context(case).get("fee_matches") is True,
@@ -78,4 +89,4 @@ def allowed(case: ReconciliationCase) -> list[str]:
     return out
 
 
-from . import case_actions, coverage_actions  # noqa: E402,F401  (register match / unmatch / dismiss / defer / link)
+from . import case_actions, coverage_actions, ledger_actions  # noqa: E402,F401  (register every action module)
