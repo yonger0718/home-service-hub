@@ -405,6 +405,7 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
                    rules: matching.Rules) -> list[dict]:
     siblings = settings_service.account_siblings(db, statement.account_id)
     claimed = coverage_service.claimed_entry_ids(db) if siblings else set()
+    owner_deferred = _owner_deferred_entries(db, statement)
     out = []
     for c in result.cases:
         context = c.context
@@ -416,7 +417,7 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
                          candidates=c.candidates, context=context))
     for entry_id in result.unmatched_entry_ids:
         why = result.explained.get(entry_id)
-        if why == DEFERRED:
+        if why == DEFERRED or entry_id in owner_deferred:  # an owner deferral stands in for the automatic case
             continue
         if why == UNCOVERED_CHILD:
             out.append(_case("entry_unmatched", entry_id=entry_id, context={"hint": UNCOVERED_CHILD}))
@@ -431,6 +432,15 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
         if gap != 0:
             out.append(_case("balance_gap", context={"gap": str(gap)}))
     return out
+
+
+def _owner_deferred_entries(db: Session, statement: AccountStatement) -> set[int]:
+    """Entries the owner deferred (`defer_next_period`): resolved entry_unmatched cases with resolved_by='owner'."""
+    return set(db.execute(
+        select(ReconciliationCase.entry_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "entry_unmatched",
+               ReconciliationCase.status == "resolved", ReconciliationCase.explanation == DEFERRED,
+               ReconciliationCase.resolved_by == "owner", ReconciliationCase.entry_id.is_not(None))).scalars())
 
 
 def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
@@ -497,7 +507,7 @@ def _write_cases(db: Session, statement: AccountStatement, desired: list[dict]) 
 def _write_deferrals(db: Session, statement: AccountStatement, account: Account, deferred: list[int],
                      evaluated: set[int]) -> None:
     """Resolved `entry_unmatched` cases explaining `deferred_next_period` (resolved_by NULL: the matcher's own) with
-    `deferred_to_period_end` from the account's cycle. `deferred_to_statement_id` is never set here (the later
+    `deferred_to_period_end` from the account's cycle (an owner-resolved deferral is authoritative and left alone). `deferred_to_statement_id` is never set here (the later
     statement links it); an existing link is kept, and cleared only when the period end itself moved (a cycle
     change). Refreshed in place; one whose entry was evaluated this run and is no longer deferred is superseded; one
     whose entry left the population (e.g. covered by the next statement) keeps its explanation."""
@@ -509,8 +519,11 @@ def _write_deferrals(db: Session, statement: AccountStatement, account: Account,
                ReconciliationCase.status == "resolved", ReconciliationCase.explanation == DEFERRED,
                ReconciliationCase.resolved_by.is_(None))
         .order_by(ReconciliationCase.id)).scalars()}
+    owner = _owner_deferred_entries(db, statement)  # authoritative: neither refreshed nor duplicated here
     for entry_id in deferred:
         case = current.get(entry_id)
+        if entry_id in owner:
+            continue
         if case is None:
             db.add(ReconciliationCase(
                 statement_id=statement.id, revision_id=statement.current_revision_id, kind="entry_unmatched",

@@ -402,10 +402,11 @@ def test_match_refusals_write_nothing(unmatched, seed, db_session, run):
 
 def test_allowed_actions_follow_the_kind_table(unmatched, db_session, fakes):
     s = unmatched()
-    assert registry.allowed(s.case) == ["match"]
+    assert registry.allowed(s.case) == ["match", "dismiss"]  # the real dismiss (Task 5) is registered
     recheck = _case(db_session, s.stmt, s.line, "recheck")
     duplicate = _case(db_session, s.stmt, s.line, "duplicate_claim")
-    assert registry.allowed(recheck) == ["match", "unmatch"] and registry.allowed(duplicate) == ["unmatch"]
+    assert registry.allowed(recheck) == ["match", "unmatch", "dismiss"]
+    assert registry.allowed(duplicate) == ["unmatch", "dismiss"]
     fakes(FakeCreate("create_entry"), FakeCreate("create_system_entry"), FakeDismiss())
     assert registry.allowed(s.case) == ["match", "create_entry", "dismiss"]
     s.case.context = {"hint": "bank_only"}

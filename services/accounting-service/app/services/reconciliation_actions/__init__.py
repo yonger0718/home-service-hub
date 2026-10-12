@@ -78,4 +78,4 @@ def allowed(case: ReconciliationCase) -> list[str]:
     return out
 
 
-from . import coverage_actions  # noqa: E402,F401  (registers match / unmatch)
+from . import case_actions, coverage_actions  # noqa: E402,F401  (register match / unmatch / dismiss / defer / link)
