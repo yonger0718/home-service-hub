@@ -29,7 +29,7 @@ Every ledger write of an action SHALL run after `SELECT set_config('app.reconcil
 #### Scenario: A reopened case can be matched again
 - **GIVEN** a `match` that was reverted (case at version + 1)
 - **WHEN** `match` is applied again
-- **THEN** the slot `v<version + 1>` SHALL be free and the line SHALL be claimed again
+- **THEN** the slot `c<case id>v<version + 1>` SHALL be free and the line SHALL be claimed again
 
 #### Scenario: Concurrent identical requests produce one effect
 - **WHEN** two identical `match` requests race
