@@ -1,5 +1,7 @@
 """Agent proposals (R1c Task 9; rulings 21, 27, 31): create, list with supersession on read, apply through the
 engine, reject, the locking races and `agent` coverage surviving reconcile. Synthetic data only."""
+import queue
+import threading
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
@@ -14,6 +16,7 @@ from app.models import (
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import proposal_service
+from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.coverage_actions import MatchAction
@@ -511,3 +514,90 @@ def test_a_version_bump_during_prepare_is_persisted_as_superseded_by_the_route(c
     assert _reload(db_session, ReconciliationProposal, pid).status == "superseded"
     assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
     assert _actions(db_session) == []
+
+
+def _proposals(db, **where):
+    db.expire_all()
+    return db.execute(select(ReconciliationProposal).filter_by(**where)
+                      .order_by(ReconciliationProposal.id)).scalars().all()
+
+
+def _stale_pending(db, s):
+    """A pending proposal on s.case made at the previous version (the case moved on); returns its id."""
+    pid = _make(db, s)
+    db.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+               .values(version=ReconciliationCase.version + 1))
+    db.commit()
+    return pid
+
+
+def _hold_case(db, s):
+    db.execute(select(ReconciliationCase).where(ReconciliationCase.id == s.case.id).with_for_update())
+
+
+def _hold_statement(db, s):
+    rec._lock_statement(db, s.stmt.id)
+
+
+def _global_supersede_while(pg_engine, hold, s):
+    """Run the global helper while `hold(session, s)` keeps a row locked; returns (its result, whether it waited)."""
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder, other = factory(), factory()
+    out: queue.Queue = queue.Queue()
+    try:
+        hold(holder, s)
+        thread = threading.Thread(target=lambda: out.put(proposal_service.supersede_stale(other)), daemon=True)
+        thread.start()
+        thread.join(2)
+        waited = thread.is_alive()
+        holder.commit()
+        thread.join(5)
+        assert not thread.is_alive()
+        result = out.get_nowait()
+        other.commit()
+        return result, waited
+    finally:
+        holder.close()
+        other.close()
+
+
+@pytest.mark.parametrize("hold", [_hold_case, _hold_statement], ids=["case", "statement"])
+def test_global_supersede_skips_a_locked_row(unmatched, db_session, pg_engine, hold):
+    s = unmatched
+    _stale_pending(db_session, s)
+    result, waited = _global_supersede_while(pg_engine, hold, s)
+    assert (result, waited) == (0, False), "the global helper must neither wait nor supersede a held row"
+    assert proposal_service.supersede_stale(db_session) == 1  # released: the next call does it durably
+    db_session.commit()
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+
+
+@pytest.mark.parametrize("hold", [_hold_case, _hold_statement], ids=["case", "statement"])
+def test_scoped_supersede_waits_for_the_lock(unmatched, db_session, pg_engine, hold):
+    s = unmatched
+    _stale_pending(db_session, s)
+    outcome = race(pg_engine, first=lambda db: hold(db, s),
+                   second=lambda db: proposal_service.supersede_stale(db, case_id=s.case.id))
+    assert outcome == "committed"
+    (proposal,) = _proposals(db_session, case_id=s.case.id)
+    assert proposal.status == "superseded"
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+
+
+def test_listing_hides_a_stale_pending_proposal_it_could_not_supersede(unmatched, db_session, pg_engine):
+    s = unmatched
+    pid = _stale_pending(db_session, s)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder = factory()
+    try:
+        _hold_case(holder, s)
+        listed = proposal_service.list_proposals(db_session)  # global supersede skips the held case
+        db_session.commit()
+        assert [p.id for p in listed] == []
+        assert _proposals(db_session, case_id=s.case.id)[0].status == "pending"  # still pending in the table
+        holder.commit()
+    finally:
+        holder.close()
+    listed = proposal_service.list_proposals(db_session)
+    db_session.commit()
+    assert [(p.id, p.status) for p in listed] == [(pid, "superseded")]
