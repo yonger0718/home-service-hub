@@ -16,7 +16,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from psycopg2.errors import LockNotAvailable, QueryCanceled
+from psycopg2.errors import DeadlockDetected, LockNotAvailable, QueryCanceled
 
 from sqlalchemy import Integer, and_, exists, func, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -281,7 +281,8 @@ def take_barrier_xact(db: Session) -> None:
     """The exclusive writer barrier for the rest of this TRANSACTION (rulings 15/26, `balance_adjustment_asof`):
     once held, no ledger writer is between its dirty insert and its commit, and none can commit until this
     transaction ends. Waits at most BARRIER_LOCK_TIMEOUT (a transaction-local lock_timeout inside a savepoint,
-    restored once the lock is held); a timeout raises `CodedConflictError("sweep_barrier_busy")` and leaves the
+    restored once the lock is held); a timeout (or a deadlock detected at the wait: the transaction is aborted
+    either way, and a 409 beats a 500) raises `CodedConflictError("sweep_barrier_busy")` and leaves the
     session usable. PostgreSQL releases the lock at commit or rollback (or when an enclosing savepoint is rolled
     back) on the same backend: no unlock, no `finally`, nothing left on a pooled connection. The holder's own
     ledger writes still pass (a backend is never blocked by its own advisory lock)."""
@@ -291,7 +292,7 @@ def take_barrier_xact(db: Session) -> None:
             db.execute(select(func.set_config("lock_timeout", BARRIER_LOCK_TIMEOUT, True)))
             db.execute(select(func.pg_advisory_xact_lock(DIRTY_BARRIER_KEY)))
     except OperationalError as exc:
-        if isinstance(exc.orig, (LockNotAvailable, QueryCanceled)):
+        if isinstance(exc.orig, (LockNotAvailable, QueryCanceled, DeadlockDetected)):
             raise CodedConflictError(SWEEP_BARRIER_BUSY, "a ledger write held the dirty barrier too long") from exc
         raise
     _restore_lock_timeout(db, previous)

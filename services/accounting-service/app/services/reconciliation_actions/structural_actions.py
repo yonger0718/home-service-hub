@@ -60,12 +60,13 @@ def _active_coverage_on(db: Session, entry_ids) -> set[int]:
 
 
 def _reconcile_keeping_case(db: Session, case: ReconciliationCase, statement_ids) -> None:
-    """Reconcile each statement (all locked by the engine) in ascending id order. A reconcile that retires the case
-    the action is answering (its entry left the population) gives it back its status and version: the engine
-    resolves (or reopens) it itself."""
+    """Reconcile each statement (all locked by the engine) in ascending id order. The action already holds entry
+    and coverage row locks, so the sweep never waits at the writer barrier (`barrier_wait=False`, as the revision
+    hook): a busy barrier is 409 `sweep_barrier_busy`. A reconcile that retires the case the action is answering
+    (its entry left the population) gives it back its status and version: the engine resolves (or reopens) it."""
     status, version = case.status, case.version
     for sid in sorted(set(statement_ids)):
-        rec.reconcile(db, sid, locked=True)
+        rec.reconcile(db, sid, locked=True, barrier_wait=False)
     if case.status == "superseded":
         case.status, case.version = status, version
         db.flush()
@@ -136,6 +137,9 @@ class MoveAccountAction(ActionBase):
             raise _refuse("account_id", "currency", f"{target.currency} vs {entry.currency}")
         if target.id == entry.account_id:
             raise _refuse("account_id", "same_account", f"account {target.id}")
+        if target.id in coverage_service.participating_accounts(db, ctx.statement.account_id):
+            # still in this statement's population: the next reconcile would reopen the case
+            raise _refuse("account_id", "not_movable", f"account {target.id} is part of statement {ctx.statement.id}")
         has_children = db.execute(select(exists().where(LedgerEntry.parent_entry_id == entry.id))).scalar_one()
         if (entry.group_id is not None or entry.parent_entry_id is not None or entry.transfer_group_id is not None
                 or has_children or any(schedule_rows(db, [entry.id]))):
@@ -386,13 +390,13 @@ class BalanceAdjustmentAsOfAction(ActionBase):
     def lock_targets(self, ctx: Context, params: BalanceAdjustmentParams) -> LockSet:
         return LockSet(account_lock=True, barrier=True)
 
-    def validate_before(self, ctx: Context, params: BalanceAdjustmentParams, prepared: Prepared,
-                        before: dict) -> None:
+    def check_before_locks(self, ctx: Context, params: BalanceAdjustmentParams) -> None:
+        """Before the account row and the barrier are taken (the triggers take the barrier only while on)."""
         if not settings_service.read_reconciliation_settings(ctx.db)["dirty_enabled"]:
             raise _refuse("action", "dirty_disabled", "the writer barrier needs the dirty triggers")
 
     def apply(self, ctx: Context, params: BalanceAdjustmentParams, prepared: Prepared, effect: Effect) -> None:
-        self.validate_before(ctx, params, prepared, effect.before)
+        self.check_before_locks(ctx, params)
         db, statement = ctx.db, ctx.statement
         end = statement.period_end
         delta = Decimal(statement.statement_total) - ledger_service.account_balance(db, statement.account_id,

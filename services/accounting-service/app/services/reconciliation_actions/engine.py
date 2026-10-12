@@ -4,12 +4,13 @@ transaction per action, never committed here (the router commits; policy commits
 `apply_action`: registry lookup and params → idempotency key from the case version → replay of a stored row →
 `prepare` without locks (the C6 expected snapshot; FX on its own session) → inside one attempt savepoint: the shared
 import key → [policy budget row] → statements ascending, each swept → idempotency again under the lock → the case
-FOR UPDATE (version, status, allowed, historical, precheck) → [account row, writer barrier] → schedule rows, groups,
-entries NOWAIT → `before` = the expected ids re-read (any difference: 409 `snapshot_conflict`) → `validate_before`
-→ creation-family check → the action row (status `applied`, flushed first: the partial unique index refuses a
-duplicate effect before any ledger write) → the `app.reconciliation_action_id` GUC → `apply` → conservation →
-`after`/`inverse`/ids → case resolution or context → other pending proposals superseded → audit → counts. Any
-failure rolls the attempt savepoint back (row locks included) and nothing is written.
+FOR UPDATE (version, status, allowed, historical, precheck, the action's `check_before_locks`) → [account row,
+writer barrier] → schedule rows, groups, entries NOWAIT → `before` = the expected ids re-read (any difference: 409
+`snapshot_conflict`) → `validate_before` → creation-family check → the action row (status `applied`, flushed first:
+the partial unique index refuses a duplicate effect before any ledger write) → the `app.reconciliation_action_id`
+GUC → `apply` → conservation → `after`/`inverse`/ids → case resolution or context → other pending proposals
+superseded → audit → counts. Any failure rolls the attempt savepoint back (row locks included) and nothing is
+written.
 
 `revert_action` takes the same locks for the action's recorded rows, refuses when a later action touched them,
 when they differ from the action's `after` (409) or when its coverage is gone (422), then inverts, releases the
@@ -210,6 +211,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
             raise CodedValidationError("action", "historical_statement")
         if precheck is not None:  # policy re-validation under the locks, after the case checks (ruling 22)
             precheck(ctx)
+        impl.check_before_locks(ctx, parsed)
         locks.lock_account_and_barrier(db, targets, statement)
         locks.lock_rows(db, targets, prepared.expected)
         before = snapshots.snapshot_set(db, *snapshots.ids_of(prepared.expected))

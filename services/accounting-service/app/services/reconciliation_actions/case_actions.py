@@ -137,7 +137,9 @@ class LinkInstallmentPlanAction(ActionBase):
                 db.flush()
         except IntegrityError as exc:
             raise CodedConflictError("plan_already_mapped", f"plan {plan.plan_key}") from exc
-        rec.reconcile(db, ctx.statement.id, locked=True)  # claims the line (rule installment) in this transaction
+        # claims the line (rule installment) in this transaction; the action holds row locks, so the sweep never
+        # waits at the writer barrier (a busy barrier is 409 sweep_barrier_busy)
+        rec.reconcile(db, ctx.statement.id, locked=True, barrier_wait=False)
         if case.status == "superseded":
             # the reconcile retired the case it just answered; the engine resolves it (with the action as
             # resolved_action_id), so give it back its status and version
@@ -176,7 +178,8 @@ class LinkInstallmentPlanAction(ActionBase):
         db.flush()
         _reopen(ctx.case)  # so the reconcile keeps this case instead of opening a twin
         db.flush()
-        rec.reconcile(db, ctx.statement.id, locked=True)  # the installment claim is no longer derived: released
+        # the installment claim is no longer derived: released (barrier_wait=False as in apply)
+        rec.reconcile(db, ctx.statement.id, locked=True, barrier_wait=False)
         return Effect(touched_entry_ids=list(action.touched_entry_ids or ()))
 
 

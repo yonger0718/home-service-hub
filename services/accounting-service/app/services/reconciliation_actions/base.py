@@ -95,6 +95,8 @@ class Action(Protocol):
 
     def effect_slot(self, ctx: Context, params) -> str: ...
 
+    def check_before_locks(self, ctx: Context, params) -> None: ...
+
     def validate_before(self, ctx: Context, params, prepared: Prepared, before: dict) -> None: ...
 
     def lock_targets(self, ctx: Context, params) -> LockSet: ...
@@ -123,6 +125,11 @@ class ActionBase:
         reopened case can be acted on again; ledger-effect actions keep their fixed slot (`create`, `fee`, `amount`,
         `move`, `split`, `balance`, `plan`) and stay one-shot per event while applied."""
         return self.slot if self.slot is not None else f"v{ctx.case.version}"
+
+    def check_before_locks(self, ctx: Context, params) -> None:
+        """Under the statement and case locks, after the case checks and the precheck, before the account row, the
+        writer barrier and any row lock (a refusal here takes none of them)."""
+        return None
 
     def validate_before(self, ctx: Context, params, prepared: Prepared, before: dict) -> None:
         return None

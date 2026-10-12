@@ -3,6 +3,7 @@ re-homes an unmatched entry and re-reconciles both statements, `split_entry` con
 and claims the line on the member that equals it, `balance_adjustment_asof` books the gap as of the period end
 under the transaction-scoped writer barrier. Refusals write nothing; each revert is exact. Synthetic data only."""
 import threading
+import time
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from app.models import (
 from app.services import coverage_service as cov
 from app.services import entry_write_service as ews
 from app.services import ledger_service
+from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ValidationError
 from app.services.reconciliation_actions import engine, snapshots
 from app.services.reconciliation_actions import structural_actions as structural
@@ -166,6 +168,48 @@ def test_move_account_re_reconciles_both_statements_and_reverts(dirty_on, move, 
     assert revert.action == "revert"
 
 
+def test_move_account_refuses_a_participating_account_of_the_case_statement(move, seed, db_session):
+    """A move inside the statement's own population would resolve the case only until the next reconcile."""
+    child = seed.account("附卡", combined_account_id=move.a.id)
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, move.case, "move_account",
+                                             {"entry_id": move.entry.id, "account_id": child.id}))
+    assert (_code(exc), exc.field) == ("not_movable", "account_id")
+    assert _actions(db_session) == []
+    assert _fresh(db_session, LedgerEntry, move.entry.id).account_id == move.a.id
+
+
+def test_move_account_yields_when_a_writer_holds_the_barrier_at_its_reconcile(dirty_on, move, db_session,
+                                                                              pg_engine, monkeypatch):
+    """The in-action reconcile runs while the action holds entry and coverage row locks, so its sweep must never
+    wait at the writer barrier: a writer holding the shared side makes it 409 `sweep_barrier_busy` at once (no
+    5 s wait), nothing moved, no action row."""
+    holder = pg_engine.connect()
+    original = rec.reconcile
+    calls = []
+
+    def squeezed(db, statement_id, **kwargs):
+        if not calls:
+            holder.execute(text("SELECT pg_advisory_xact_lock_shared(:k)"), {"k": DIRTY_BARRIER_KEY})
+        calls.append(kwargs)
+        return original(db, statement_id, **kwargs)
+
+    monkeypatch.setattr(rec, "reconcile", squeezed)
+    started = time.monotonic()
+    try:
+        exc = _refuse(db_session, lambda: _apply(db_session, move.case, "move_account",
+                                                 {"entry_id": move.entry.id, "account_id": move.b.id}))
+    finally:
+        holder.rollback()
+        holder.close()
+    assert _code(exc) == "sweep_barrier_busy"
+    assert time.monotonic() - started < 3  # never waited out the 5 s barrier timeout
+    assert calls and all(call.get("barrier_wait") is False for call in calls)
+    assert _actions(db_session) == []
+    assert _fresh(db_session, LedgerEntry, move.entry.id).account_id == move.a.id
+    assert _active(db_session, move.stmt_b.id) == []
+
+
 # --- split_entry (ruling 19) --------------------------------------------------------------------------------------
 
 @pytest.fixture
@@ -310,9 +354,14 @@ def _income(account, amount, day=date(2026, 9, 10)) -> LedgerEntry:
                        entry_date=day, posted_date=day, source="manual")
 
 
-def test_balance_adjustment_refuses_when_dirty_tracking_is_off(gap, db_session):
+def test_balance_adjustment_refuses_when_dirty_tracking_is_off(gap, db_session, monkeypatch):
+    taken = []
+    original = engine.locks.lock_account_and_barrier
+    monkeypatch.setattr(engine.locks, "lock_account_and_barrier",
+                        lambda *args: taken.append(args) or original(*args))
     exc = _refuse(db_session, lambda: _apply(db_session, gap.case, "balance_adjustment_asof"))
     assert (_code(exc), exc.field) == ("dirty_disabled", "action")
+    assert taken == []  # refused before the account row and the barrier were taken
     assert _actions(db_session) == [] and _adjustments(db_session) == []
 
 
@@ -351,9 +400,11 @@ def test_balance_adjustment_double_submit_replays(dirty_on, gap, db_session):
     assert len(_adjustments(db_session)) == 1
 
 
-def test_balance_adjustment_waits_for_an_inflight_writer_and_counts_its_row(dirty_on, gap, db_session, pg_engine):
-    """AGENT-101 M3 (out-of-order commit): writer A inserted an entry on the account and holds the shared barrier,
-    uncommitted; the action blocks on the exclusive barrier until A commits and then sees A's row."""
+def test_balance_adjustment_end_to_end_c4_counts_an_inflight_writer(dirty_on, gap, db_session, pg_engine):
+    """C4 end to end (AGENT-101 M3, out-of-order commit): writer A inserted an entry on the account and holds the
+    shared barrier, uncommitted; the action waits for A (at its sweep's barrier, and at the account row A's insert
+    holds KEY SHARE on) and then books the gap including A's row. It passes without the transaction-scoped barrier
+    too; `test_the_action_barrier_waits_for_a_writer_that_started_after_its_sweep` is the proof of that barrier."""
     factory = sessionmaker(bind=pg_engine, autoflush=False)
     writer, actor = factory(), factory()
     out: dict = {}
@@ -472,9 +523,10 @@ def test_a_barrier_wait_beyond_the_timeout_is_409_with_no_row(dirty_on, gap, db_
 
 def test_the_action_barrier_waits_for_a_writer_that_started_after_its_sweep(dirty_on, gap, db_session, pg_engine,
                                                                            monkeypatch):
-    """C4 at the transaction-scoped barrier itself: after the action's sweep and account lock, writer W edits an
-    existing entry on the account (no account-row lock in its way) and holds the shared barrier uncommitted; the
-    action's `take_barrier_xact` waits for W's commit and then reads W's amount."""
+    """The proof of the transaction-scoped barrier (rulings 15/26): after the action's sweep and account lock,
+    writer W edits an existing entry on the account (no account-row lock in its way) and holds the shared barrier
+    uncommitted; the action's `take_barrier_xact` waits for W's commit and then reads W's amount. Without that
+    barrier the action would book 90 from the stale 10 (verified by disabling it: this test fails)."""
     existing = _income(gap.bank, "10")
     db_session.add(existing)
     db_session.commit()
