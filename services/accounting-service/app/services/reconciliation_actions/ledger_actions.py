@@ -46,7 +46,9 @@ def _refuse(field: str, code: str, detail: str | None = None) -> CodedValidation
 
 
 def _match_kind(ctx: Context) -> str:
-    return "auto" if ctx.actor == POLICY else "manual"
+    if ctx.actor == POLICY:
+        return "agent" if ctx.proposal_id is not None else "auto"  # ruling 31
+    return "manual"  # an owner-applied proposal is the owner's decision
 
 
 def _note(ctx: Context, line: StatementLine) -> str:

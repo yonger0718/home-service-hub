@@ -39,6 +39,7 @@ class Context:
     run_id: int | None
     request_id: str | None
     rules: matching.Rules
+    proposal_id: int | None = None  # the agent proposal being applied (ruling 31: policy + proposal = `agent` coverage)
 
 
 @dataclass

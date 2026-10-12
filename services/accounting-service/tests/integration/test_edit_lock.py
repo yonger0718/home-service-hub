@@ -189,6 +189,10 @@ EXPECTED_WRITES = {
     ("/statements/sources", "POST"), ("/statements/sources/mark-removed", "POST"),
     ("/statements/revisions", "POST"), ("/settings/reconciliation", "PUT"),
     ("/accounts/{account_id}/statements/{statement_id}/reconcile", "POST"), ("/reconciliation/sweep", "POST"),
+    # Reconciliation actions (engine: ledger writes under the action's own locks) and proposals (proposal rows only).
+    ("/reconciliation/cases/{case_id}/actions", "POST"), ("/reconciliation/cases/{case_id}/dismiss", "POST"),
+    ("/reconciliation/actions/{action_id}/revert", "POST"), ("/reconciliation/cases/{case_id}/proposals", "POST"),
+    ("/reconciliation/proposals/{proposal_id}/apply", "POST"), ("/reconciliation/proposals/{proposal_id}/reject", "POST"),
 }
 
 

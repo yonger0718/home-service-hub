@@ -4,17 +4,24 @@ Behind `require_feature()` like the statements router. Owner actions need `write
 never commits and these handlers do; policy does not run after owner actions.
 """
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.orm import Session
 
 from ..auth import require, require_feature
 from ..database import get_db
-from ..schemas.reconciliation import ActionIn, ActionOut, AuditOut, DismissIn
+from ..schemas.reconciliation import (
+    ActionIn, ActionOut, AuditOut, DismissIn, ProposalIn, ProposalOut, ProposalRejectIn,
+)
 from ..schemas.statements import CaseDetailOut
+from ..services import proposal_service
 from ..services import statement_ingest_service as ingest
 from ..services.reconciliation_actions import engine
 from .errors import service_errors
 from .statements import READ, WRITE, _label
+
+PROPOSE = [Depends(require("propose"))]
 
 router = APIRouter(tags=["Reconciliation"], dependencies=[Depends(require_feature())])
 
@@ -76,3 +83,57 @@ def revert_action(action_id: int, request: Request, db: Session = Depends(get_db
 def list_audit(statement_id: int | None = None, limit: int = Query(200, ge=1, le=1000),
                db: Session = Depends(get_db)):
     return ingest.list_audit(db, statement_id=statement_id, limit=limit)
+
+
+# --- agent proposals (Task 9) ---------------------------------------------------------------------------------------
+
+@router.post("/reconciliation/cases/{case_id}/proposals", response_model=ProposalOut, status_code=201,
+             dependencies=PROPOSE)
+def create_proposal(case_id: int, body: ProposalIn, request: Request, db: Session = Depends(get_db)):
+    with service_errors():
+        row = proposal_service.create_proposal(db, case_id=case_id, payload=body, author=_label(request) or "unknown")
+        out = ProposalOut.model_validate(row)
+    db.commit()
+    return out
+
+
+@router.get("/reconciliation/proposals", response_model=list[ProposalOut], dependencies=READ)
+def list_proposals(status: Literal["pending", "applied", "rejected", "superseded"] | None = None,
+                   case_id: int | None = None, limit: int = Query(200, ge=1, le=1000),
+                   db: Session = Depends(get_db)):
+    proposal_service.supersede_stale(db)
+    db.commit()  # durable even if the rest of the request fails
+    return proposal_service.list_proposals(db, status=status, case_id=case_id, limit=limit)
+
+
+@router.post("/reconciliation/proposals/{proposal_id}/apply", response_model=ActionOut, status_code=201,
+             dependencies=WRITE)
+def apply_proposal(proposal_id: int, request: Request, response: Response, db: Session = Depends(get_db)):
+    proposal_service.supersede_stale(db)
+    db.commit()  # a stale proposal reads back superseded even though the apply below is refused
+    try:
+        with service_errors():
+            row, replayed = proposal_service.apply_proposal(
+                db, proposal_id=proposal_id, label=_label(request) or "unknown",
+                request_id=request.headers.get("x-request-id"))
+            out = _action_out(row, replayed=replayed)
+    except HTTPException as exc:
+        db.rollback()
+        proposal_service.supersede_stale(db)  # the engine saw a newer case version under its locks
+        db.commit()
+        raise exc
+    db.commit()
+    response.status_code = 200 if replayed else 201
+    return out
+
+
+@router.post("/reconciliation/proposals/{proposal_id}/reject", response_model=ProposalOut, dependencies=WRITE)
+def reject_proposal(proposal_id: int, request: Request, body: ProposalRejectIn | None = None,
+                    db: Session = Depends(get_db)):
+    with service_errors():
+        row = proposal_service.reject_proposal(
+            db, proposal_id=proposal_id, label=_label(request) or "unknown", note=body.note if body else None,
+            request_id=request.headers.get("x-request-id"))
+        out = ProposalOut.model_validate(row)
+    db.commit()
+    return out

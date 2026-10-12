@@ -306,12 +306,15 @@ def _claim_unchanged(rows: list[StatementCoverage], claim: matching.Claim, locke
     return True
 
 
+OWNED_KINDS = ("manual", "agent")  # ruling 16 + 31: coverage a reconcile never rewrites
+
+
 def _manual_claims(db: Session, statement: AccountStatement) -> dict[int, set[int]]:
-    """Lines with active owner coverage (`match_kind='manual'`) → the entry ids behind them (column or, after a SET
+    """Lines with active owner or agent coverage (`match_kind` manual/agent) → the entry ids behind them (column or, after a SET
     NULL delete, snapshot id). Read after the sweep, which alone releases them on a dirty edit (ruling 16)."""
     out: dict[int, set[int]] = {}
     for line_id, rows in coverage_service.active_rows(db, statement.id).items():
-        if any(r.match_kind == "manual" for r in rows):
+        if any(r.match_kind in OWNED_KINDS for r in rows):
             out[line_id] = {i for r in rows for i in (r.entry_id, (r.snapshot or {}).get("id")) if i is not None}
     return out
 

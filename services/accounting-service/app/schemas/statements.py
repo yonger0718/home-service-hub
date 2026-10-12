@@ -274,6 +274,23 @@ class CaseOut(BaseModel):
     created_at: datetime
 
 
+class ProposalOut(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+    id: int
+    case_id: int
+    case_version: int
+    event_id: int | None
+    action: str
+    params: dict
+    rationale: str
+    confidence: Decimal
+    author: str
+    status: str
+    created_at: datetime
+    decided_at: datetime | None
+    applied_action_id: int | None
+
+
 class CaseDetailOut(CaseOut):
     statement_id: int
     revision_id: int
@@ -284,7 +301,7 @@ class CaseDetailOut(CaseOut):
     deferred_to_statement_id: int | None
     note: str | None
     actions_allowed: list[str]
-    pending_proposals: list[dict] = []  # filled by Task 9 (proposals); always empty until then
+    pending_proposals: list[ProposalOut] = []
     line: LineOut | None
 
 

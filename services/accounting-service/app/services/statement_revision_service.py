@@ -36,6 +36,7 @@ from app.models import (
 )
 from app.schemas.statements import RevisionIn
 from app.services import coverage_service
+from app.services.reconciliation_actions import audit
 from app.services.errors import ConflictError, NotFoundError, ValidationError
 from app.services.statements import derive, lineage
 
@@ -175,9 +176,16 @@ def _events_with_applied_effects(db: Session, event_ids: list[int]) -> set[int]:
 
 
 def _supersede_pending_proposals(db: Session, event_id: int) -> None:
-    db.execute(update(ReconciliationProposal)
-               .where(ReconciliationProposal.event_id == event_id, ReconciliationProposal.status == "pending")
-               .values(status="superseded").execution_options(synchronize_session="fetch"))
+    rows = db.execute(update(ReconciliationProposal)
+                      .where(ReconciliationProposal.event_id == event_id, ReconciliationProposal.status == "pending")
+                      .values(status="superseded", decided_at=func.now())
+                      .returning(ReconciliationProposal.id, ReconciliationProposal.case_id)
+                      .execution_options(synchronize_session="fetch")).all()
+    for proposal_id, case_id in sorted(rows):
+        statement_id = db.execute(select(ReconciliationCase.statement_id)
+                                  .where(ReconciliationCase.id == case_id)).scalar_one()
+        audit.record(db, event="proposal_superseded", actor="system", statement_id=statement_id, case_id=case_id,
+                     detail={"proposal_id": proposal_id, "by": "lineage", "event_id": event_id})
 
 
 def _open_quarantine_case(db: Session, statement: AccountStatement, revision: StatementRevision,

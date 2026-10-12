@@ -26,7 +26,7 @@ from app.models import (
     StatementSource,
 )
 from app.schemas.statements import FileRegisterIn, FileUpdateIn, SourceRegisterIn
-from app.services import coverage_service
+from app.services import coverage_service, proposal_service
 from app.services.errors import ConflictError, NotFoundError
 from app.services.statement_revision_service import SubmitResult, submit_revision
 
@@ -288,6 +288,8 @@ LINE_FIELDS = ("id", "event_id", "seq", "txn_date", "posted_date", "merchant_raw
                "flow_amount", "foreign_amount", "foreign_currency", "line_kind", "installment_seq", "installment_total")
 CASE_FIELDS = ("id", "kind", "status", "event_id", "line_id", "entry_id", "explanation", "candidates", "context",
                "version", "created_at")
+PROPOSAL_FIELDS = ("id", "case_id", "case_version", "event_id", "action", "params", "rationale", "confidence", "author",
+                   "status", "created_at", "decided_at", "applied_action_id")
 COVERAGE_FIELDS = ("entry_id", "group_id", "role", "match_rule", "match_kind", "status")
 REVISION_FIELDS = ("id", "revision", "file_id", "parser", "parser_version", "guardrail_ok", "conflict", "rejected",
                    "created_at")
@@ -397,7 +399,8 @@ def get_case(db: Session, case_id: int) -> dict:
         line = {**_row(row, LINE_FIELDS), "matched": bool(coverage),
                 "coverage": [{**_row(r, COVERAGE_FIELDS), "flow": r.snapshot.get("flow")} for r in coverage]}
     return {**_row(item, CASE_DETAIL_FIELDS), "actions_allowed": reconciliation_actions.allowed(item),
-            "pending_proposals": [], "line": line}
+            "pending_proposals": [_row(p, PROPOSAL_FIELDS) for p in proposal_service.pending_for_case(db, item.id)],
+            "line": line}
 
 
 def list_actions(db: Session, *, statement_id: int | None = None, case_id: int | None = None,

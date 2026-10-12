@@ -73,7 +73,8 @@ class MatchAction(ActionBase):
     def apply(self, ctx: Context, params: MatchParams, prepared: Prepared, effect: Effect) -> None:
         line, rows, by_id = self._claim(ctx, params)
         written = coverage_service.write_claim(ctx.db, ctx.statement, line, rows, entries_by_id=by_id,
-                                               match_kind=MANUAL, match_rule=OWNER_RULE, run_id=ctx.run_id)
+                                               match_kind=("agent" if ctx.actor == POLICY and ctx.proposal_id is not None else MANUAL),
+                                               match_rule=OWNER_RULE, run_id=ctx.run_id)
         effect.coverage_ids = [c.id for c in written]
         effect.touched_entry_ids = [r.entry_id for r in rows]
         effect.touched_group_ids = [] if params.group_id is None else [params.group_id]

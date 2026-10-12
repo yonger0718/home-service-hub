@@ -4,7 +4,7 @@ transaction per action, never committed here (the router commits; policy commits
 `apply_action`: registry lookup and params → idempotency key from the case version → replay of a stored row →
 `prepare` without locks (the C6 expected snapshot; FX on its own session) → inside one attempt savepoint: the shared
 import key → [policy budget row] → statements ascending, each swept → idempotency again under the lock → the case
-FOR UPDATE (version, status, allowed, historical, precheck, the action's `check_before_locks`) → [account row,
+FOR UPDATE → [the proposal FOR UPDATE: pending, written at this case version] (version, status, allowed, historical, precheck, the action's `check_before_locks`) → [account row,
 writer barrier] → schedule rows, groups, entries NOWAIT → `before` = the expected ids re-read (any difference: 409
 `snapshot_conflict`) → `validate_before` → creation-family check → the action row (status `applied`, flushed first:
 the partial unique index refuses a duplicate effect before any ledger write) → the `app.reconciliation_action_id`
@@ -84,11 +84,11 @@ def _parse(impl: Action, params: dict | None) -> ActionParams:
 
 
 def _context(db: Session, case: ReconciliationCase, statement: AccountStatement, *, actor: str, label: str,
-             run_id: int | None, request_id: str | None) -> Context:
+             run_id: int | None, request_id: str | None, proposal_id: int | None = None) -> Context:
     rules = rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)
     return Context(db=db, case=case, statement=statement, account=db.get(Account, statement.account_id),
                    line=current_line(db, case, statement), actor=actor, label=label, run_id=run_id,
-                   request_id=request_id, rules=rules)
+                   request_id=request_id, rules=rules, proposal_id=proposal_id)
 
 
 def _by_key(db: Session, key: str) -> ReconciliationAction | None:
@@ -186,7 +186,8 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
     if found is not None:
         return _replay(db, found, case.statement_id, label=label, run_id=run_id, request_id=request_id)
     statement = db.get(AccountStatement, case.statement_id)
-    ctx0 = _context(db, case, statement, actor=actor, label=label, run_id=run_id, request_id=request_id)
+    ctx0 = _context(db, case, statement, actor=actor, label=label, run_id=run_id, request_id=request_id,
+                    proposal_id=proposal_id)
     targets = impl.lock_targets(ctx0, parsed)  # read without locks; C6 covers what changes before the locks
     prepared = impl.prepare(ctx0, parsed)
     prepared.lock_set = targets
@@ -199,10 +200,12 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         if found is not None:
             return _replay(db, found, case.statement_id, label=label, run_id=run_id, request_id=request_id)
         case = locks.lock_case(db, case_id)
+        proposal = _lock_proposal(db, proposal_id, case) if proposal_id is not None else None
         if case.version != key_version:
             raise CodedConflictError("case_moved", f"case {case.id} is at version {case.version}")
         statement = statements[case.statement_id]
-        ctx = _context(db, case, statement, actor=actor, label=label, run_id=run_id, request_id=request_id)
+        ctx = _context(db, case, statement, actor=actor, label=label, run_id=run_id, request_id=request_id,
+                       proposal_id=proposal_id)
         if case.status not in OPEN_STATUSES:
             raise CodedConflictError("case_closed", f"case {case.id} is {case.status}")
         if action not in allowed(case):
@@ -231,6 +234,10 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         _record_effect(db, row, effect)
         _resolve(case, effect, actor, row)
         _supersede_proposals(db, case, proposal_id, row, label=label, run_id=run_id, request_id=request_id)
+        if proposal is not None:
+            proposal.status, proposal.applied_action_id, proposal.decided_at = "applied", row.id, func.now()
+            audit.record(db, event="proposal_applied", actor=label, statement_id=case.statement_id, case_id=case.id,
+                         action_id=row.id, run_id=run_id, request_id=request_id, detail={"proposal_id": proposal.id})
         audit.record(db, event="action_applied", actor=label, statement_id=case.statement_id, case_id=case.id,
                      action_id=row.id, run_id=run_id, request_id=request_id,
                      detail={"action": action, "actor": actor, "params": row.params, "effect_slot": slot,
@@ -272,6 +279,23 @@ def _resolve(case: ReconciliationCase, effect: Effect, actor: str, row: Reconcil
         case.resolved_by, case.resolved_action_id, case.resolved_at = actor, row.id, func.now()
     else:
         case.context = {**(case.context or {}), **effect.case_context}
+
+
+def _lock_proposal(db: Session, proposal_id: int, case: ReconciliationCase) -> ReconciliationProposal:
+    """Ruling 27: the proposal row FOR UPDATE after the statement and case locks; it must still be pending (a reject
+    or another apply committed meanwhile: 409 `proposal_not_pending`) and written against this case version (409
+    `proposal_superseded`). The error rolls the attempt back, so the caller (the route) persists the superseded status
+    through `proposal_service.supersede_stale`."""
+    proposal = db.execute(select(ReconciliationProposal).where(ReconciliationProposal.id == proposal_id)
+                          .with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
+    if proposal is None or proposal.case_id != case.id:
+        raise NotFoundError(f"proposal {proposal_id} not found")
+    if proposal.status != "pending":
+        raise CodedConflictError("proposal_not_pending", f"proposal {proposal.id} is {proposal.status}")
+    if proposal.case_version != case.version:
+        raise CodedConflictError("proposal_superseded", f"proposal {proposal.id} was made at version "
+                                                       f"{proposal.case_version}, the case is at {case.version}")
+    return proposal
 
 
 def _supersede_proposals(db: Session, case: ReconciliationCase, proposal_id: int | None, row: ReconciliationAction,

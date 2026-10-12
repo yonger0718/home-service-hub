@@ -1,10 +1,11 @@
 """Request/response schemas for reconciliation actions and their audit trail (R1c)."""
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .statements import Strict
+from .statements import ProposalOut, Strict  # noqa: F401  (ProposalOut lives with CaseDetailOut)
 
 
 class ActionIn(BaseModel):
@@ -49,3 +50,17 @@ class AuditOut(BaseModel):
     request_id: str | None
     detail: dict
     created_at: datetime
+
+
+class ProposalIn(BaseModel):
+    model_config = Strict
+    action: str = Field(min_length=1, max_length=32)
+    params: dict = Field(default_factory=dict)
+    rationale: str = Field(min_length=1, max_length=1000)
+    confidence: Decimal = Field(ge=0, le=1)
+
+
+class ProposalRejectIn(BaseModel):
+    model_config = Strict
+    note: str | None = Field(default=None, max_length=1000)
+
