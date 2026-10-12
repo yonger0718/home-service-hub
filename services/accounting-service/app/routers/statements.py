@@ -4,6 +4,9 @@ Every route sits behind `require_feature()` (404 while ACCOUNTING_RECONCILIATION
 scope: `enqueue` to queue a run, `ingest` for the worker's run/file/source/revision calls (each fenced by the run's
 lease, checked against the caller's label), `read` for statement reads and cases, `write` to reconcile one statement,
 `admin` to change the settings.
+
+The reconcile, revision (live statements) and sweep routes run the policy (`policy_service.run_policy_safe`, R1c
+Task 10) after their own commit; it commits per candidate and a policy error never fails the route.
 """
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -43,6 +46,7 @@ from ..schemas.statements import (
     StatementOut,
     SweepOut,
 )
+from ..services import policy_service
 from ..services import reconciliation_service as recon
 from ..services import settings_service
 from ..services import statement_ingest_service as ingest
@@ -184,6 +188,8 @@ def submit_revision(body: RevisionIn, request: Request, db: Session = Depends(ge
             "lineage": result.lineage_counts, "case_ids": result.case_ids,
         }
     db.commit()
+    if out["mode"] == "live":
+        policy_service.run_policy_safe(db, out["statement_id"], run_id=body.run_id)
     return out
 
 
@@ -215,7 +221,8 @@ def reconcile_statement(account_id: int, statement_id: int, db: Session = Depend
         out = {"claims": result.claims, "cases_opened": result.cases_opened, "explained": result.explained,
                "unmatched_entries": result.unmatched_entries, "skipped": result.skipped}
     db.commit()
-    return out
+    policy = policy_service.run_policy_safe(db, statement_id)
+    return {**out, "policy": {"applied": len(policy.applied), "proposed": len(policy.proposed)}}
 
 
 @router.post("/reconciliation/sweep", response_model=SweepOut, dependencies=INGEST)
@@ -237,6 +244,8 @@ def sweep(body: Lease, request: Request, db: Session = Depends(get_db)):
                 totals["claims"] += item["result"].claims
                 totals["cases_opened"] += len(item["result"].cases_opened)
             db.commit()  # the items done so far stay committed
+            if "error" not in item:
+                policy_service.run_policy_safe(db, item["statement_id"], run_id=body.run_id)
             if index < len(pending) - 1 and not ingest.lease_is_live(db, body.run_id, body.lease_token, label):
                 db.rollback()  # release the read transaction before refusing
                 raise ConflictError("lease")

@@ -3,10 +3,12 @@ transaction per action, never committed here (the router commits; policy commits
 
 `apply_action`: registry lookup and params → idempotency key from the case version → replay of a stored row →
 `prepare` without locks (the C6 expected snapshot; FX on its own session) → inside one attempt savepoint: the shared
-import key → [policy budget row] → statements ascending, each swept → the case FOR UPDATE → [the proposal FOR
+import key → [policy budget row: inserted if absent, FOR UPDATE, refused when the month's total would pass
+`monthly_total` (`BudgetExceeded`)] → statements ascending, each swept → the case FOR UPDATE → [the proposal FOR
 UPDATE: pending, written at this case version, same action and params; checked before the replay, which a proposal
 apply takes only here] → idempotency again under the lock → the case checks (version, status, allowed, historical,
-precheck, the action's `check_before_locks`) → [account row, writer barrier] → schedule rows, groups, entries NOWAIT → `before` = the expected ids re-read (any difference: 409
+precheck) → [the budget row charged: `used_amount += amount`, `used_count += 1`, only now that the precheck passed]
+→ the action's `check_before_locks` → [account row, writer barrier] → schedule rows, groups, entries NOWAIT → `before` = the expected ids re-read (any difference: 409
 `snapshot_conflict`) → `validate_before` → creation-family check → the action row (status `applied`, flushed first:
 the partial unique index refuses a duplicate effect before any ledger write) → the `app.reconciliation_action_id`
 GUC → `apply` → conservation → `after`/`inverse`/ids → case resolution or context → other pending proposals
@@ -26,11 +28,13 @@ from typing import Callable
 
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import exists, func, or_, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
-    Account, AccountStatement, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementCoverage,
+    Account, AccountStatement, PolicyBudget, ReconciliationAction, ReconciliationCase, ReconciliationProposal,
+    StatementCoverage,
 )
 from app.services import coverage_service, settings_service
 from app.services import reconciliation_service as rec
@@ -39,9 +43,9 @@ from app.services.schedule_locks import take_import_key_shared
 
 from . import ACTIONS, COVERAGE_ACTIONS, OPEN_STATUSES, allowed, audit, snapshots
 from . import engine_locks as locks
-from .base import Action, ActionParams, Context, Effect, LockSet, NotRevertable, current_line
+from .base import POLICY, Action, ActionParams, Context, Effect, LockSet, NotRevertable, current_line
 
-__all__ = ["NotRevertable", "apply_action", "canonical_params", "idempotency_key", "revert_action"]
+__all__ = ["BudgetExceeded", "NotRevertable", "apply_action", "canonical_params", "idempotency_key", "revert_action"]
 
 EFFECT_INDEX = "ux_reconciliation_action_effect"
 KEY_INDEX = "uq_reconciliation_action_idempotency"
@@ -109,10 +113,34 @@ def _replay(db: Session, row: ReconciliationAction, statement_id: int, *, label:
     return row, True
 
 
-def _reserve_budget(db: Session, month: date, currency: str, amount: Decimal) -> None:
-    """Policy budget reservation (ruling 10/22): the hook Task 10 implements (INSERT … ON CONFLICT DO NOTHING, then
-    the row FOR UPDATE, before the statement lock)."""
-    raise NotImplementedError("policy budget reservation lands with the policy engine (Task 10)")
+class BudgetExceeded(CodedConflictError):
+    """409 `budget_exceeded`: the policy's monthly total for the currency would be passed (`reason` names the cap the
+    policy proposal's rationale cites)."""
+    reason = "monthly_total"
+
+    def __init__(self, detail: str | None = None):
+        super().__init__("budget_exceeded", detail)
+
+
+def _reserve_budget(db: Session, month: date, currency: str, amount: Decimal) -> PolicyBudget:
+    """Ruling 10/22: the `(month, currency)` budget row, inserted when absent (`ON CONFLICT DO NOTHING`: a concurrent
+    insert waits for the first one's commit), then locked FOR UPDATE before any statement lock and re-read under it;
+    `used_amount + amount > monthly_total` → `BudgetExceeded`. Nothing is charged here: `_charge_budget` runs only
+    after the policy precheck passed under the statement lock."""
+    db.execute(pg_insert(PolicyBudget).values(month=month, currency=currency)
+               .on_conflict_do_nothing(index_elements=["month", "currency"]))
+    row = db.execute(select(PolicyBudget).where(PolicyBudget.month == month, PolicyBudget.currency == currency)
+                     .with_for_update().execution_options(populate_existing=True)).scalar_one()
+    total = Decimal(str(settings_service.reconciliation_policy(db)["monthly_total"]))
+    if Decimal(row.used_amount) + amount > total:
+        raise BudgetExceeded(f"{currency} {month:%Y-%m}: {row.used_amount} used of {total}, {amount} asked")
+    return row
+
+
+def _charge_budget(db: Session, row: PolicyBudget, amount: Decimal) -> None:
+    row.used_amount = Decimal(row.used_amount) + amount
+    row.used_count = row.used_count + 1
+    db.flush()
 
 
 def _check_snapshots(expected: dict, current: dict) -> None:
@@ -172,11 +200,14 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
     Raises ValidationError 422 (`unknown action`, params, actor, not allowed, `historical_statement`,
     `duplicate_effect`, the action's own codes), CodedConflictError 409 (`action_reverted`, `action_failed`,
     `case_moved`, `case_closed`, `action_busy`, `snapshot_conflict`, `sweep_barrier_busy`, `reconcile_busy`),
-    NotFoundError. Never commits; on any error nothing is written."""
+    NotFoundError; with `budget` (policy only: `(month, currency, amount)`) also `BudgetExceeded` 409. Never commits;
+    on any error nothing is written (the budget charge included)."""
     impl = _lookup(action)
     parsed = _parse(impl, params)
     if actor not in impl.actors:
         raise ValidationError("actor", f"{action} cannot be applied by {actor}")
+    if budget is not None and actor != POLICY:
+        raise ValidationError("actor", "only the policy spends the policy budget")
     case = db.get(ReconciliationCase, case_id)
     if case is None:
         raise NotFoundError(f"case {case_id} not found")
@@ -194,8 +225,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
     prepared.lock_set = targets
     with db.begin_nested():  # the attempt savepoint: any failure rolls back every write and row lock below
         take_import_key_shared(db)
-        if budget is not None:
-            _reserve_budget(db, *budget)
+        reserved = _reserve_budget(db, *budget) if budget is not None else None
         statements = locks.lock_statements(db, [case.statement_id, *targets.statement_ids], run_id=run_id)
         case = locks.lock_case(db, case_id)
         # the proposal checks come before the replay: a rejected or superseded proposal is 409, never a 200 replay
@@ -216,6 +246,8 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
             raise CodedValidationError("action", "historical_statement")
         if precheck is not None:  # policy re-validation under the locks, after the case checks (ruling 22)
             precheck(ctx)
+        if reserved is not None:  # ruling 22: charged only once the precheck passed; a later failure rolls it back
+            _charge_budget(db, reserved, budget[2])
         impl.check_before_locks(ctx, parsed)
         locks.lock_account_and_barrier(db, targets, statement)
         locks.lock_rows(db, targets, prepared.expected)
@@ -234,6 +266,10 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         impl.apply(ctx, parsed, prepared, effect)
         _finish(db, statements)
         _record_effect(db, row, effect)
+        if budget is not None:  # what this row spent: the per-statement caps are recounted from it
+            month, currency, amount = budget
+            row.after = {**row.after, "policy_budget": {"month": month.isoformat(), "currency": currency,
+                                                        "amount": str(amount)}}
         _resolve(case, effect, actor, row)
         _supersede_proposals(db, case, proposal_id, row, label=label, run_id=run_id, request_id=request_id)
         if proposal is not None:

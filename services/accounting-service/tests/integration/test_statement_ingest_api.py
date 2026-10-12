@@ -226,7 +226,7 @@ def test_reconcile_route_needs_write_and_the_statements_account(client, card, se
     assert client.post(f"/accounts/{other.id}/statements/{statement_id}/reconcile", headers=S).status_code == 404
     done = client.post(url, headers=S)
     assert done.status_code == 200, done.text
-    assert set(done.json()) == {"claims", "cases_opened", "explained", "unmatched_entries", "skipped"}
+    assert set(done.json()) == {"claims", "cases_opened", "explained", "unmatched_entries", "skipped", "policy"}
     assert done.json()["claims"] == 1 and done.json()["skipped"] is None
 
 

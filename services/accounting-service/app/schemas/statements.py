@@ -362,6 +362,12 @@ class ReconciliationSettingsOut(BaseModel):
     version: int
 
 
+class PolicyCountsOut(BaseModel):
+    model_config = Strict
+    applied: int
+    proposed: int
+
+
 class ReconcileOut(BaseModel):
     model_config = Strict
     claims: int
@@ -369,6 +375,7 @@ class ReconcileOut(BaseModel):
     explained: int
     unmatched_entries: int
     skipped: str | None
+    policy: PolicyCountsOut  # the policy pass run after the matching commit (R1c Task 10; zeros while it is off)
 
 
 class SweepError(BaseModel):
