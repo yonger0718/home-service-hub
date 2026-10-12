@@ -27,7 +27,7 @@
 
 1. A policy `create_system_entry` claim followed by an **owner reconcile** must keep the same `statement_coverage` rows (ids, `match_kind='agent'`) and the action must still revert (Task 2 test `test_policy_coverage_survives_a_reconcile_and_reverts`).
 2. `GET /reconciliation/proposals` while another transaction holds the **statement** (not yet the case) must not wait and must not deadlock on the audit's FK (Task 6 tests `test_global_supersede_skips_a_locked_statement`, `test_scoped_supersede_waits_for_the_statement_lock`); the stale proposal it could not supersede must not read as `pending` (`test_listing_hides_a_stale_pending_proposal_it_could_not_supersede`).
-3. Reverting a plan link whose claims live on **two statements** must release both and flag the second, and the second statement's next reconcile must open `installment_unmapped` again (Task 7 test `test_reverting_a_link_releases_the_plans_claims_on_other_statements`); while the second statement's reconcile holds the plan's entry the revert must be `action_busy`, and while the revert holds it the reconcile must be `reconcile_busy` — no orphan claim either way (`test_reverting_a_link_is_busy_while_another_statement_reconciles`, `test_another_statements_reconcile_is_busy_during_a_link_revert`).
+3. Reverting a plan link whose claims live on **two statements** must release both and flag the second, and the second statement's next reconcile must open `installment_unmapped` again (Task 7 test `test_reverting_a_link_releases_the_plans_claims_on_other_statements`); while the second statement's reconcile holds an uncommitted claim the revert must be `action_busy`, while the revert is open that reconcile must be `reconcile_busy`, and an instance posted + claimed after the revert's discovery must make the revert `action_busy` with nothing mutated — no orphan claim in any of them (`test_reverting_a_link_is_busy_while_another_statement_reconciles`, `test_another_statements_reconcile_is_busy_during_a_link_revert`, `test_an_instance_posted_after_discovery_makes_the_revert_retry`).
 4. An `attach_fee` candidate whose entry was **edited after the reconcile** (stale `context.residual`) must be `candidate_changed`, charging nothing (Task 3 test `test_attach_fee_candidate_is_recomputed_under_the_lock`); two runs skipping the same candidate at once must audit it **once** (Task 4 test `test_concurrent_skips_audit_once`).
 5. A proposal by the **owner's own token** (`spa`, legacy scope) must never be auto-applied as an agent proposal (Task 5 test `test_only_propose_only_tokens_are_agents`).
 
@@ -332,7 +332,7 @@ git commit -m "fix(accounting): attach_fee policy candidate recomputed from the 
 
 - [ ] **Step 1: Write the failing tests**
 
-With Task 3's `_fx_fee_statement(..., existing_child=True)` (the `attach_fee` candidate meets an existing FX fee child → `fee_exists`, rolled back and audited, deterministic on every run). Imports: `from app.services import reconciliation_service as rec`, `from app.services.reconciliation_actions import audit`, `race` from `tests.helpers`.
+With Task 3's `_fx_fee_statement(..., existing_child=True)` (the `attach_fee` candidate meets an existing FX fee child → `fee_exists`, rolled back and audited, deterministic on every run). Imports: `threading`, `queue`, `from app.services import reconciliation_service as rec`, `from app.services.reconciliation_actions import audit`.
 
 ```python
 def test_a_deterministic_skip_is_audited_once_per_case_version(seed, db_session, run):
@@ -348,34 +348,58 @@ def test_a_deterministic_skip_is_audited_once_per_case_version(seed, db_session,
         s.case.id, "fee_exists", _reload(db_session, ReconciliationCase, s.case.id).version)
 
 
-def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine):
-    """Two runs skip the same candidate at once: the first holds statement → case and has written its audit row
-    (a skip in flight); the second must wait for those locks and then find the row."""
+def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine, monkeypatch):
+    """Two real `_skip` calls for the same candidate: A takes statement → case, inserts and (deferred here) commits;
+    B must acquire the statement only after A's commit, find the row and insert nothing. The hooks record the
+    order in which the locks were ACQUIRED and the inserts happened."""
     s = _fx_fee_statement(seed, db_session, run, existing_child=True)
     _set_policy(db_session, {"enabled": True, "actions": {"attach_fee": {"enabled": True}}})
     statement, candidate = _only_candidate(db_session, s.stmt.id, s.case.id)
-    version = _reload(db_session, ReconciliationCase, s.case.id).version
     db_session.commit()
+    order: list[tuple[str, str]] = []
+    real_lock, real_record = rec._lock_statement, audit.record
 
-    def first(db):
-        rec._lock_statement(db, s.stmt.id)
-        db.execute(select(ReconciliationCase).where(ReconciliationCase.id == s.case.id).with_for_update())
-        audit.record(db, event="policy_skipped", actor="policy", statement_id=s.stmt.id, case_id=s.case.id,
-                     detail={"code": "fee_exists", "action": "attach_fee", "reason": None, "proposal_id": None,
-                             "case_version": version})
+    def lock(db, statement_id):
+        row = real_lock(db, statement_id)
+        order.append(("locked", db.info["name"]))
+        return row
 
-    def second(db):
-        policy_service._skip(db, s.stmt.id, candidate, "fee_exists", PolicyResult(), run_id=None)
+    def record(db, **kw):
+        order.append(("insert", db.info["name"]))
+        return real_record(db, **kw)
 
-    assert race(pg_engine, first, second) == "committed"
+    monkeypatch.setattr(rec, "_lock_statement", lock)
+    monkeypatch.setattr(audit, "record", record)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    a, b = factory(), factory()
+    a.info["name"], b.info["name"] = "A", "B"
+    real_commit = a.commit
+    monkeypatch.setattr(a, "commit", lambda: None)  # A's _skip returns still holding its locks
+    outcome: queue.Queue = queue.Queue()
+    try:
+        policy_service._skip(a, s.stmt.id, candidate, "fee_exists", PolicyResult(), run_id=None)
+        thread = threading.Thread(target=lambda: outcome.put(
+            policy_service._skip(b, s.stmt.id, candidate, "fee_exists", PolicyResult(), run_id=None)), daemon=True)
+        thread.start()
+        thread.join(0.5)
+        assert thread.is_alive(), "B must wait for A's statement lock"
+        order.append(("commit", "A"))
+        real_commit()
+        thread.join(5)
+        assert not thread.is_alive(), "B is still blocked after A committed"
+        outcome.get_nowait()
+    finally:
+        a.close()
+        b.close()
+    assert order == [("locked", "A"), ("insert", "A"), ("commit", "A"), ("locked", "B")]
     (skipped,) = _audit(db_session, "policy_skipped")
-    assert skipped.detail["case_version"] == version
+    assert skipped.detail["case_version"] == _reload(db_session, ReconciliationCase, s.case.id).version
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_policy.py -k "audited_once or skips_audit_once" -q`
-Expected: both FAIL — two `policy_skipped` rows (no `case_version` in the detail); the race test fails `race`'s "must wait" assertion (nothing locks).
+Expected: both FAIL — two `policy_skipped` rows (no `case_version` in the detail). In the race test the old `_skip` takes no statement lock, so B does not wait at `("locked", "B")` (the assertion `thread.is_alive()` fails: B runs through and, blocked only on the audit FK's KEY SHARE, finishes right after A's commit with a second row).
 
 - [ ] **Step 3: Serialise and dedupe the audit**
 
@@ -679,18 +703,42 @@ git commit -m "fix(accounting): supersede_stale locks statements, cases, then pr
 ### Task 7: Reverting a plan link releases its claims on other statements (spec item 3)
 
 **Files:**
-- Modify: `services/accounting-service/app/services/reconciliation_actions/base.py:30-42` (`Context` gains `lock_set`)
+- Modify: `services/accounting-service/app/services/reconciliation_actions/base.py:30-42,61-69` (`Context.lock_set`; `LockSet.exclusive_definition_ids`)
+- Modify: `services/accounting-service/app/services/reconciliation_actions/engine_locks.py:69-95` (`lock_rows`: exclusive definitions)
 - Modify: `services/accounting-service/app/services/reconciliation_actions/engine.py` (`apply_action` and `revert_action` set `ctx.lock_set = targets` once the locked context exists)
 - Modify: `services/accounting-service/app/services/reconciliation_actions/case_actions.py:94-188` (`LinkInstallmentPlanAction`)
 - Test: `services/accounting-service/tests/integration/test_reconciliation_actions_case.py`
 
 **Interfaces:**
-- Consumes: `LockSet.statement_ids` (extra statements the engine locks ascending with the case's, each swept; the engine's `_recount(db, statements)` after `invert` recounts every locked statement); `lockset_for(db, *, entry_ids, group_ids, statement_ids)`; `snapshots.ids_of(action.after)`; `locks.lock_rows` (every `LockSet.entry_ids` row `FOR UPDATE NOWAIT` → 409 `action_busy`); `coverage_service.release_rows(db, ids, *, reason)`; `AccountStatement.needs_recheck`; `engine_locks.ACTION_BUSY`; `rec.reconcile` (`_lock_candidates` locks candidate entries `NOWAIT` → 409 `reconcile_busy`); the plan-map claim rule `"installment"` (`matching.py` ~263); `confirm_service.confirm_statement(db, *, account_id, statement_id, force, note, …)` (read its signature; the checks JSON is the `confirm_refused` error's detail); the `unmapped` fixture pattern, `_submit(..., period=OCT)`, `_reconcile`, `_apply`, `_revert`, `_refuse`, `_active`, `_cases`, `_fresh`, `PLAN_KEY`.
-- Produces: `Context.lock_set: LockSet | None` (what the engine locked for this attempt); `LinkInstallmentPlanAction._plan_entries(db, definition_id) -> set[int]`, `_other_claims(db, definition_id, statement_id) -> list[StatementCoverage]`; a revert locks the plan's posted entries NOWAIT and the other claiming statements, releases those rows (reason `plan_unmapped`) and flags their statements; a statement discovered only after the locks is 409 `action_busy`.
+- Consumes: `LockSet.statement_ids` (extra statements the engine locks ascending with the case's, each swept; the engine's `_recount(db, statements)` after `invert` recounts every locked statement); `lockset_for(db, *, entry_ids, group_ids, statement_ids)`; `snapshots.ids_of(action.after)`; `locks.lock_rows` (definitions `lock_definition(db, id, share=True, nowait=True)`, instances, groups, entries `FOR UPDATE NOWAIT` → 409 `action_busy`); `schedule_locks.lock_definition(db, definition_id, *, share=False, nowait=False)` (FOR UPDATE unless `share`); `schedule_posting.lock_definition_for_post` (FOR SHARE for an ordinary posting, waits); `coverage_service.release_rows(db, ids, *, reason)`; `AccountStatement.needs_recheck`; `engine_locks.ACTION_BUSY`; `rec.reconcile` (`_lock_candidates` locks candidate entries `NOWAIT` before the map is read → 409 `reconcile_busy`); the plan-map claim rule `"installment"` (`matching.py` ~263); `confirm_service.confirm_statement(db, *, account_id, statement_id, force, note, label, request_id)` (the checks JSON is the `confirm_refused` error's `detail`); `tests.conftest.Seed`; the `unmapped` fixture pattern, `_submit(..., period=OCT)`, `_reconcile`, `_apply`, `_revert`, `_refuse`, `_active`, `_cases`, `_fresh`, `PLAN_KEY`.
+- Produces: `Context.lock_set: LockSet | None` (what the engine locked for this attempt); `LockSet.exclusive_definition_ids: tuple[int, ...]` (definitions locked FOR UPDATE NOWAIT instead of FOR SHARE, in the same ordered step); `LinkInstallmentPlanAction._plan_entries(db, definition_id) -> set[int]`, `_other_claims(db, definition_id, statement_id) -> list[StatementCoverage]`, `_check_lock_set(ctx, definition_id) -> list[StatementCoverage]` (the pre-mutation re-derivation: 409 `action_busy` when the posted-entry set or the other-statement set grew); a revert releases those rows (reason `plan_unmapped`) and flags their statements.
 
 - [ ] **Step 1: Write the failing tests**
 
+Bounded helpers first (every race below runs the call under test in a worker thread with a join timeout and releases the holder in `finally`; a call that degenerates into a wait fails the test instead of hanging it):
+
 ```python
+def _worker(fn, timeout=5.0):
+    """Run fn() in a thread; return its result or the exception it raised; fail if it is still running after
+    `timeout` seconds (a NOWAIT path that waited)."""
+    out: queue.Queue = queue.Queue()
+
+    def run():
+        try:
+            out.put(fn())
+        except Exception as exc:  # noqa: BLE001  (asserted by the caller)
+            out.put(exc)
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    assert not thread.is_alive(), f"still running after {timeout} s: the call waited instead of refusing"
+    return out.get_nowait()
+
+
+def _busy(outcome, code):
+    assert isinstance(outcome, CodedConflictError) and outcome.code == code, outcome
+
+
 @pytest.fixture
 def unmapped_twice(seed, db_session, run):
     """The same unconfirmed plan printed on September (seq 2) and October (seq 3): two installment_unmapped cases."""
@@ -712,8 +760,39 @@ def unmapped_twice(seed, db_session, run):
                            sep_entry=sep_entry, oct_entry=oct_entry)
 
 
+@pytest.fixture
+def unmapped_then_pending(seed, db_session, run):
+    """September posted (seq 2); October's instance (seq 3) still PENDING — no October entry exists yet."""
+    card = _card(seed, db_session)
+    definition = seed.definition([seed.line("expense", card, "1000")], kind="installment", name="手機", times=12)
+    sep_entry = seed.entry(card, "-1000", day=date(2026, 9, 5), merchant="手機")
+    seed.instance(definition, 2, date(2026, 9, 5), status="posted", entries=[sep_entry])
+    oct_instance = seed.instance(definition, 3, date(2026, 10, 5), status="pending")
+    db_session.commit()
+    sep, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 6), "手機", 1000, "installment",
+                                                    installment_seq=2, installment_total=12)])
+    oct, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 6), "手機", 1000, "installment",
+                                                    installment_seq=3, installment_total=12)], period=OCT)
+    (sep_case,) = [c for c in _cases(db_session, sep.id, "open") if c.kind == "line_unmatched"]
+    return SimpleNamespace(card=card, definition=definition, sep=sep, oct=oct, sep_case=sep_case,
+                           sep_entry=sep_entry, oct_instance=oct_instance)
+
+
 def _link(db, s):
     return _apply(db, s.sep_case, "link_installment_plan", {"definition_id": s.definition.id})
+
+
+def _post_october(pg_engine, s):
+    """Another transaction posts October's pending instance (a new posted entry appears) and commits."""
+    session = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:
+        entry = Seed(session).entry(session.get(Account, s.card.id), "-1000", day=date(2026, 10, 5), merchant="手機")
+        instance = session.get(ScheduleInstance, s.oct_instance.id)
+        instance.status, instance.posted_entry_ids = "posted", [entry.id]
+        session.commit()
+        return entry.id
+    finally:
+        session.close()
 
 
 def test_reverting_a_link_releases_the_plans_claims_on_other_statements(db_session, unmapped_twice):
@@ -745,7 +824,7 @@ def test_reverting_a_link_flags_a_confirmed_other_statement(db_session, unmapped
     row = _link(db_session, s)
     _reconcile(db_session, s.oct.id)
     confirm_service.confirm_statement(db_session, account_id=s.card.id, statement_id=s.oct.id, force=False, note=None,
-                                      label="owner-test")  # match the real signature
+                                      label="owner-test", request_id=None)
     db_session.commit()
     assert _fresh(db_session, AccountStatement, s.oct.id).status == "reconciled"
 
@@ -754,8 +833,9 @@ def test_reverting_a_link_flags_a_confirmed_other_statement(db_session, unmapped
     oct = _fresh(db_session, AccountStatement, s.oct.id)
     assert (oct.status, oct.needs_recheck, oct.matched_count, oct.open_case_count) == ("reconciled", True, 0, 0)
     exc = _refuse(db_session, lambda: confirm_service.confirm_statement(
-        db_session, account_id=s.card.id, statement_id=s.oct.id, force=False, note=None, label="owner-test"))
-    assert exc.code == "confirm_refused" and json.loads(exc.detail)["needs_recheck"] is False
+        db_session, account_id=s.card.id, statement_id=s.oct.id, force=False, note=None, label="owner-test",
+        request_id=None))
+    assert exc.code == "confirm_refused" and json.loads(exc.detail)["needs_recheck"] is False  # the check failed
 
     _reconcile(db_session, s.oct.id)
     oct = _fresh(db_session, AccountStatement, s.oct.id)
@@ -763,53 +843,115 @@ def test_reverting_a_link_flags_a_confirmed_other_statement(db_session, unmapped
 
 
 def test_reverting_a_link_is_busy_while_another_statement_reconciles(db_session, unmapped_twice, pg_engine):
-    """AGENT-109 Must 3: October's reconcile holds its candidate entry (it locks NOWAIT before it reads the map
-    and writes a claim); the revert must be action_busy, not delete the map under an uncommitted claim."""
+    """AGENT-109 Must 3: October's reconcile holds its candidate entry and an UNCOMMITTED claim through the map;
+    the revert must be action_busy (map intact); after that commit the retry releases the claim."""
     s = unmapped_twice
     row = _link(db_session, s)
-    holder = sessionmaker(bind=pg_engine, autoflush=False)()
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder, worker = factory(), factory()
     try:
-        rec._lock_statement(holder, s.oct.id)
-        holder.execute(select(LedgerEntry).where(LedgerEntry.id == s.oct_entry.id).with_for_update())
-        exc = _refuse(db_session, lambda: _revert(db_session, row.id))
-        assert isinstance(exc, CodedConflictError) and exc.code == "action_busy"
-        assert db_session.get(InstallmentPlanMap, row.inverse["plan_map_id"]) is not None
+        rec.reconcile(holder, s.oct.id)  # holds October's statement + entry, claim written, not committed
+        outcome = _worker(lambda: engine.revert_action(worker, action_id=row.id, actor="owner", label="owner-test"))
+        _busy(outcome, "action_busy")
+        worker.rollback()
+        assert holder.execute(select(InstallmentPlanMap)).scalars().one() is not None
         holder.commit()
     finally:
         holder.close()
-    _revert(db_session, row.id)  # released: the retry succeeds
+        worker.close()
+    _revert(db_session, row.id)  # the retry sees the committed claim, locks October and releases it
     assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
+    assert _active(db_session, s.oct.id) == [] and _fresh(db_session, AccountStatement, s.oct.id).needs_recheck is True
 
 
 def test_another_statements_reconcile_is_busy_during_a_link_revert(db_session, unmapped_twice, pg_engine):
     """The mirror: the revert holds the plan's entries; October's reconcile is reconcile_busy; after the revert
-    commits it finds no map and no claim is written."""
+    commits it finds no map and writes no claim."""
     s = unmapped_twice
     row = _link(db_session, s)
-    reverter = sessionmaker(bind=pg_engine, autoflush=False)()
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    reverter, worker = factory(), factory()
     try:
         engine.revert_action(reverter, action_id=row.id, actor="owner", label="owner-test")  # not committed yet
-        exc = _refuse(db_session, lambda: _reconcile(db_session, s.oct.id))
-        assert isinstance(exc, CodedConflictError) and exc.code == "reconcile_busy"
+        outcome = _worker(lambda: rec.reconcile(worker, s.oct.id))
+        _busy(outcome, "reconcile_busy")
+        worker.rollback()
         reverter.commit()
     finally:
         reverter.close()
+        worker.close()
     _reconcile(db_session, s.oct.id)
     assert _active(db_session, s.oct.id) == []
     assert [c.context["hint"] for c in _cases(db_session, s.oct.id, "open") if c.kind == "line_unmatched"] == [
         "installment_unmapped"]
+
+
+def test_an_instance_posted_after_discovery_makes_the_revert_retry(db_session, unmapped_then_pending, pg_engine,
+                                                                     monkeypatch):
+    """AGENT-110 Must 1: between the revert's unlocked discovery and its locks, October's instance is posted and
+    October's reconcile claims the new entry (uncommitted). The revert must notice the grown posted set under the
+    exclusive definition lock and refuse with nothing mutated; the retry after the commit releases the claim."""
+    s = unmapped_then_pending
+    row = _link(db_session, s)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder = factory()
+    real = LinkInstallmentPlanAction.revert_lock_targets
+    fired = []
+
+    def discovery_then_posting(self, ctx, action):
+        targets = real(self, ctx, action)
+        if not fired:
+            fired.append(_post_october(pg_engine, s))  # P: October posted + committed after the discovery
+            rec.reconcile(holder, s.oct.id)  # B: claims the new entry through the still-valid map, uncommitted
+        return targets
+
+    monkeypatch.setattr(LinkInstallmentPlanAction, "revert_lock_targets", discovery_then_posting)
+    worker = factory()
+    try:
+        outcome = _worker(lambda: engine.revert_action(worker, action_id=row.id, actor="owner", label="owner-test"))
+        _busy(outcome, "action_busy")
+        worker.rollback()
+        # nothing mutated: map, action and case as before, no revert row
+        assert holder.execute(select(InstallmentPlanMap)).scalars().one() is not None
+        assert _fresh(db_session, ReconciliationAction, row.id).status == "applied"
+        assert _fresh(db_session, ReconciliationCase, s.sep_case.id).status == "resolved"
+        assert db_session.execute(select(ReconciliationAction).where(ReconciliationAction.action == "revert")
+                                  ).scalars().all() == []
+        holder.commit()  # B's claim lands
+    finally:
+        holder.close()
+        worker.close()
+    (claim,) = _active(db_session, s.oct.id)
+    assert claim.entry_id == fired[0]
+    _revert(db_session, row.id)  # the retry discovers the posted entry and October, locks and releases
+    assert _active(db_session, s.oct.id) == [] and _fresh(db_session, AccountStatement, s.oct.id).needs_recheck is True
+    assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
 ```
 
-(Imports to add as needed: `json`, `OCT`, `SimpleNamespace`, `sessionmaker`, `StatementCoverage`, `AccountStatement`, `LedgerEntry`, `InstallmentPlanMap`, `CodedConflictError`, `engine`, `rec`, `confirm_service`; `_reconcile` is in `statement_fixtures.py`. If `_apply` in this file returns a tuple, unpack it in `_link`. `_refuse` must accept the `CodedConflictError` the reconcile raises — it does in the sibling test files.)
+(Imports to add as needed: `json`, `queue`, `threading`, `OCT`, `SimpleNamespace`, `sessionmaker`, `Account`, `AccountStatement`, `LedgerEntry`, `InstallmentPlanMap`, `ScheduleInstance`, `StatementCoverage`, `CodedConflictError`, `engine`, `rec`, `confirm_service`, `LinkInstallmentPlanAction` from `app.services.reconciliation_actions.case_actions`, `Seed` from `tests.conftest`; `_reconcile` is in `statement_fixtures.py`. If `_apply` in this file returns a tuple, unpack it in `_link`. `seed.instance(..., status="pending")` without `entries` must create an unposted instance — read `make_instance` in `tests/conftest.py` and pass `entries=[]` if required.)
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_actions_case.py -k "unmapped_twice or other_statement or busy" -q`
-Expected: all four FAIL — October's claim stays active after the revert; the confirmed variant keeps `matched_count` 1; the busy variant's revert succeeds while the entry is held (no `action_busy`); the mirror's reconcile succeeds while the revert is open.
+Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_actions_case.py -k "unmapped_twice or other_statement or busy or posted_after" -q`
+Expected: all five FAIL — October's claim stays active after the revert; the confirmed variant keeps `matched_count` 1; the busy variant's revert succeeds while the claim is uncommitted (no `action_busy`); the mirror's reconcile succeeds while the revert is open; the posted-after-discovery variant's revert succeeds and leaves October's claim active (an orphan).
 
-- [ ] **Step 3: Carry the lock set on the context**
+- [ ] **Step 3: Carry the lock set on the context; exclusive definition locks**
 
-`base.py` `Context`: add `lock_set: "LockSet | None" = None  # what the engine locked for this attempt (set after the locks; R1d)`. `engine.py`: in `apply_action`, right after the locked `ctx = _context(...)` line, `ctx.lock_set = targets`; in `revert_action`, after its `ctx = _context(...)`, `ctx.lock_set = targets`.
+`base.py`:
+- `Context`: add `lock_set: "LockSet | None" = None  # what the engine locked for this attempt (set after the locks; R1d)`.
+- `LockSet`: add `exclusive_definition_ids: tuple[int, ...] = ()  # definitions FOR UPDATE instead of FOR SHARE (R1d: a plan revert freezes the posted set)`.
+
+`engine_locks.py` `lock_rows`: replace the definition loop with
+
+```python
+            exclusive = set(targets.exclusive_definition_ids)
+            for definition_id in sorted({*targets.definition_ids, *exclusive}):
+                lock_definition(db, definition_id, share=definition_id not in exclusive, nowait=True)
+```
+
+and extend the docstring: "a definition in `exclusive_definition_ids` is taken FOR UPDATE (an ordinary posting takes it FOR SHARE, so the posted set cannot change while it is held)".
+
+`engine.py`: in `apply_action`, right after the locked `ctx = _context(...)` line, `ctx.lock_set = targets`; in `revert_action`, after its `ctx = _context(...)`, `ctx.lock_set = targets`.
 
 - [ ] **Step 4: Extend the revert**
 
@@ -839,54 +981,87 @@ In `case_actions.py` (imports: `AccountStatement`, `StatementCoverage` from `app
         plan = ctx.db.get(InstallmentPlanMap, (action.inverse or {}).get("plan_map_id"))
         if plan is None:
             return super().revert_lock_targets(ctx, action)
-        # R1d item 3: the plan's posted entries (NOWAIT: a reconcile claiming one holds it first → action_busy)
-        # and the other statements already claiming them (locked ascending with the case's, each swept)
+        # R1d item 3: the definition FOR UPDATE (freezes the posted set: a posting takes it FOR SHARE), the plan's
+        # posted entries (NOWAIT: a reconcile claiming one holds it first → action_busy) and the other statements
+        # already claiming them (locked ascending with the case's, each swept)
         entries, groups = snapshots.ids_of(action.after)
         others = {c.statement_id for c in self._other_claims(ctx.db, plan.definition_id, ctx.statement.id)}
         targets = lockset_for(ctx.db,
                               entry_ids={*entries, *(action.touched_entry_ids or ()), *(action.created_entry_ids or ()),
                                          *self._plan_entries(ctx.db, plan.definition_id)},
                               group_ids={*groups, *(action.touched_group_ids or ())}, statement_ids=others)
-        return replace(targets, definition_ids=tuple(sorted({*targets.definition_ids, plan.definition_id})))
-```
+        return replace(targets, definition_ids=tuple(i for i in targets.definition_ids if i != plan.definition_id),
+                       exclusive_definition_ids=(plan.definition_id,))
 
-and in `invert`, keep everything up to the own-statement reconcile, remembering `definition_id = plan.definition_id` before `db.delete(plan)`, then append before the `return`:
-
-```python
-        # R1d item 3: the plan's claims on other statements are no longer derived either. Every row that could
-        # produce one is held (the plan's entries, NOWAIT), so a claim is either committed and visible here or
-        # cannot be written until this transaction ends. A statement that gained a claim between the unlocked
-        # discovery and the locks is not in the lock set: 409, the retry locks and sweeps the full set.
-        others = self._other_claims(db, definition_id, ctx.statement.id)
-        statement_ids = sorted({c.statement_id for c in others})
-        held = set(ctx.lock_set.statement_ids) if ctx.lock_set is not None else set()
-        late = sorted(set(statement_ids) - held)
+    def _check_lock_set(self, ctx: Context, definition_id: int) -> list[StatementCoverage]:
+        """Under the locks, before any mutation: the posted-entry set and the other-statement set re-derived; an
+        entry or statement the engine did not lock (posted or claimed between the unlocked discovery and the
+        locks) is 409 action_busy — the retry discovers and locks the full set. Returns the other claims."""
+        held = ctx.lock_set or LockSet()
+        new_entries = sorted(self._plan_entries(ctx.db, definition_id) - set(held.entry_ids))
+        if new_entries:
+            raise CodedConflictError(ACTION_BUSY, f"entry {new_entries[0]} was posted after discovery; retry")
+        others = self._other_claims(ctx.db, definition_id, ctx.statement.id)
+        late = sorted({c.statement_id for c in others} - set(held.statement_ids))
         if late:
             raise CodedConflictError(ACTION_BUSY, f"statement {late[0]} gained a plan claim after discovery; retry")
-        if others:
+        return others
+```
+
+and rewrite `invert` so that every check precedes the first mutation:
+
+```python
+    def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
+        db = ctx.db
+        plan = db.get(InstallmentPlanMap, action.inverse["plan_map_id"])
+        if plan is None:
+            raise NotRevertable("the plan mapping is gone")
+        definition_id = plan.definition_id
+        posted = db.execute(select(ScheduleInstance.posted_entry_ids)
+                            .where(ScheduleInstance.definition_id == definition_id)).scalars()
+        entries = sorted({i for ids in posted for i in ids or [] if isinstance(i, int)}
+                         | set(action.touched_entry_ids or ()))
+        if entries:
+            later = db.execute(select(ReconciliationAction.id).where(
+                ReconciliationAction.id > action.id, ReconciliationAction.status == "applied",
+                ReconciliationAction.action != "revert",
+                ReconciliationAction.touched_entry_ids.overlap(entries)).order_by(ReconciliationAction.id).limit(1)
+            ).scalar_one_or_none()
+            if later is not None:
+                raise NotRevertable(f"later action {later} touched the plan's entries")
+        others = self._check_lock_set(ctx, definition_id)  # R1d item 3: the last check before any write
+        # --- mutations ---
+        db.delete(plan)
+        db.flush()
+        _reopen(ctx.case)  # so the reconcile keeps this case instead of opening a twin
+        db.flush()
+        # the installment claim is no longer derived: released (barrier_wait=False as in apply)
+        rec.reconcile(db, ctx.statement.id, locked=True, barrier_wait=False)
+        if others:  # R1d item 3: the plan's claims on other statements are no longer derived either
             coverage_service.release_rows(db, [c.id for c in others], reason="plan_unmapped")
+            statement_ids = sorted({c.statement_id for c in others})
             for statement in db.execute(select(AccountStatement).where(AccountStatement.id.in_(statement_ids))
                                         .execution_options(populate_existing=True)).scalars():
                 statement.needs_recheck = True  # ruling 29: a matching reason; its next reconcile raises the case
             db.flush()
+        return Effect(touched_entry_ids=list(action.touched_entry_ids or ()))
 ```
 
-(The engine's `_recount(db, statements)` after `invert` recounts every locked statement, the released ones included; no manual recount.)
+(The engine's `_recount(db, statements)` after `invert` recounts every locked statement, the released ones included; the engine's attempt savepoint rolls back its own revert row on the 409, so a refused revert leaves no trace but the audit the router writes.)
 
 - [ ] **Step 5: Run the case-action and engine tests**
 
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_actions_case.py tests/integration/test_reconciliation_actions_engine.py -q`
-Expected: all PASS (the existing single-statement link/revert tests unchanged).
+Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_actions_case.py tests/integration/test_reconciliation_actions_engine.py tests/integration/test_reconciliation_actions_structural.py -q`
+Expected: all PASS (the existing single-statement link/revert tests unchanged; the structural tests prove `lock_rows` still locks ordinary definitions FOR SHARE).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add services/accounting-service/app/services/reconciliation_actions/ services/accounting-service/tests/integration/test_reconciliation_actions_case.py
-git commit -m "fix(accounting): reverting a plan link releases its claims on other statements (R1d 3)"
+git commit -m "fix(accounting): reverting a plan link freezes the plan and releases its claims everywhere (R1d 3)"
 ```
 
 ---
-
 ### Task 8: Docs — spec §17 R1d notes, README, openspec change, full suite
 
 **Files:**
@@ -911,7 +1086,7 @@ Shipped as designed (items 1–7 above). Facts a reader of the code needs:
 - `policy_skipped` audit rows carry `case_version`; the same `(case, version, code, reason)` is audited once, the check serialised under the statement → case locks.
 - `policy_service._agent_authors`: propose-only labels (scopes configured) or every non-policy author (compatibility).
 - `supersede_stale`: statements, then cases, locked ascending first (`SKIP LOCKED` global, `FOR UPDATE` scoped) because the audit row's FK takes `FOR KEY SHARE` on the statement; `list_proposals` hides a stale pending proposal it could not supersede; `get_case` (scoped) now waits for the statement like `create_proposal`.
-- Reverting `link_installment_plan` locks the plan's posted entries NOWAIT (the serialisation with other statements' reconciles) and the other claiming statements (ascending, swept), releases their claims (`stale_reason='plan_unmapped'`) and flags them `needs_recheck` (status unchanged, confirm refused until the next reconcile reopens the case); a statement discovered only after the locks is 409 `action_busy`.
+- Reverting `link_installment_plan` locks the plan's definition FOR UPDATE (freezes the posted set: posting takes it FOR SHARE), its posted entries NOWAIT (the serialisation with other statements' reconciles) and the other claiming statements (ascending, swept); before any mutation it re-derives both sets under the locks and is 409 `action_busy` when either grew; then it releases their claims (`stale_reason='plan_unmapped'`) and flags them `needs_recheck` (status unchanged, confirm refused until the next reconcile reopens the case). `LockSet.exclusive_definition_ids` is the new engine knob.
 - The engine refuses `actor='policy'` without a budget (422 `budget`).
 
 Still deferred (unchanged): budget refund on revert, separate FX fee lines / credit residuals, `move_account` typed exceptions, the historical-statement line route, card-identity hints, OCR.
