@@ -2,11 +2,12 @@
 
 `confirm_statement` lock order: the shared import key → DISCOVER, without locks, the earlier statements holding a
 pending deferral linked to this one → those statements and this one FOR UPDATE in ascending id order, each swept
-(`engine_locks.lock_statements`; no row lock is held yet, so the sweep may wait at the writer barrier) → the link set
-re-read under the locks, its case rows FOR UPDATE (a link that appeared meanwhile on a statement not locked here →
-409 `confirm_retry`; linkers serialize with confirm through the target's statement row, ruling 29, so no link can
-land here once this statement is locked) → ruling 11 per linked case → counts-only recounts → stale proposals
-superseded → the checks → `reconciled` → audit.
+(`engine_locks.lock_statements`: only the first sweep may wait at the writer barrier, as no row lock is held yet;
+a later statement's sweep may already hold rows an earlier sweep wrote, so it try-locks, 409 `sweep_barrier_busy`
+when busy) → the link set re-read under the locks, its case rows FOR UPDATE (a link that appeared meanwhile on a
+statement not locked here → 409 `confirm_retry`; linkers serialize with confirm through the target's statement row,
+ruling 29, so no link can land here once this statement is locked) → ruling 11 per linked case → counts-only
+recounts → stale proposals superseded → the checks → `reconciled` → audit.
 
 Ruling 11: a pending incoming deferral (an earlier statement's resolved `deferred_next_period` case linked here and
 not yet processed) whose entry this statement claims stays resolved and gets `context.resolved_in_statement_id`;

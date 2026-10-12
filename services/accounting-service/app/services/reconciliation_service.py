@@ -120,6 +120,14 @@ def next_period_end(period_end: date, closing_day: int | None) -> date:
         year, month = following(year, month)
 
 
+def deferral_period_end(statement: AccountStatement, account: Account) -> date:
+    """The period end a deferral from `statement` points at — the one rule shared by the matcher's own deferrals
+    (`_write_deferrals`) and the owner's `defer_next_period`: a card statement steps by the account's `closing_day`,
+    or by its own `period_end` day when the account has none; a bank statement goes to the next month's end."""
+    closing_day = (account.closing_day or statement.period_end.day) if statement.kind == "card" else None
+    return next_period_end(statement.period_end, closing_day)
+
+
 def _current_lines(db: Session, statement: AccountStatement) -> list[StatementLine]:
     return list(db.execute(select(StatementLine).where(StatementLine.revision_id == statement.current_revision_id)
                            .order_by(StatementLine.id)).scalars())
@@ -514,8 +522,7 @@ def _write_deferrals(db: Session, statement: AccountStatement, account: Account,
     statement links it); an existing link is kept, and cleared only when the period end itself moved (a cycle
     change). Refreshed in place; one whose entry was evaluated this run and is no longer deferred is superseded; one
     whose entry left the population (e.g. covered by the next statement) keeps its explanation."""
-    closing_day = (account.closing_day or statement.period_end.day) if statement.kind == "card" else None
-    end = next_period_end(statement.period_end, closing_day)
+    end = deferral_period_end(statement, account)
     current = {c.entry_id: c for c in db.execute(
         select(ReconciliationCase)
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "entry_unmatched",

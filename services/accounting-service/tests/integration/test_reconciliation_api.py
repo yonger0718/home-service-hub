@@ -132,7 +132,9 @@ def test_action_and_audit_listings(client, db_session, unmatched):
     assert len(client.get("/reconciliation/actions?limit=1", headers=H).json()) == 1
     audit = client.get(f"/reconciliation/audit?statement_id={stmt.id}", headers=H).json()
     ids = [a["id"] for a in audit]
-    assert ids == sorted(ids) and len(ids) >= 2
+    assert ids == sorted(ids, reverse=True) and len(ids) >= 2  # newest first, as the actions listing
+    assert [a["id"] for a in client.get(f"/reconciliation/audit?statement_id={stmt.id}&limit=1",
+                                        headers=H).json()] == ids[:1]
     assert client.get("/reconciliation/audit?limit=0", headers=H).status_code == 422
 
 

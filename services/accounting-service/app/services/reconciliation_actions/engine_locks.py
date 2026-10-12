@@ -29,11 +29,14 @@ ACTION_BUSY = "action_busy"
 
 def lock_statements(db: Session, statement_ids: Iterable[int], *, run_id: int | None) -> dict[int, AccountStatement]:
     """Every statement FOR UPDATE in ascending id order, then `coverage_service.sweep` on each (the sweep needs the
-    statement lock and must run before any group/entry lock)."""
+    statement lock and must run before any group/entry lock). Only the FIRST sweep may wait at the writer barrier:
+    it holds no row a ledger writer could need yet. A later sweep may hold coverage/case rows the earlier ones wrote
+    (a writer's ON DELETE SET NULL waits on them while it holds the shared barrier), so it try-locks
+    (`barrier_wait=False`): a busy barrier is 409 `sweep_barrier_busy` instead of a deadlock."""
     locked = {sid: rec._lock_statement(db, sid) for sid in sorted(set(statement_ids))}
     db.flush()  # the sweep runs on a clean session
-    for statement in locked.values():
-        coverage_service.sweep(db, statement, run_id=run_id, barrier_wait=True)
+    for index, statement in enumerate(locked.values()):
+        coverage_service.sweep(db, statement, run_id=run_id, barrier_wait=index == 0)
     return locked
 
 

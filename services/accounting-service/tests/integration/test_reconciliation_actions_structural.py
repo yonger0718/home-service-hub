@@ -262,6 +262,7 @@ def test_split_converts_and_claims_the_matching_member(split, db_session):
     assert (member.amount, member.group_id, member.category_id, member.name, member.account_id) == (
         Decimal("-580"), gid, s.gift.id, "禮物", s.card.id)
     assert (member.entry_date, member.posted_date, member.tags, member.kind) == (DAY, DAY, ["週末"], "expense")
+    assert (anchor.source, member.source) == ("manual", "statement")  # a new member is the statement's (M3)
     (claim,) = _active(db_session, s.stmt.id)
     assert (claim.line_id, claim.entry_id, claim.role, claim.match_kind, claim.match_rule) == (
         s.line.id, new_id, "principal", "manual", "split_entry")

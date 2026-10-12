@@ -250,8 +250,10 @@ def _drop_barrier_after_failure(db: Session) -> None:
 def _take_barrier(db: Session, *, wait: bool = True) -> None:
     """The exclusive session-level barrier. `wait=True`: wait at most BARRIER_LOCK_TIMEOUT (a transaction-local
     lock_timeout set in a savepoint, so a timeout leaves the session usable, and restored once the lock is held).
-    `wait=False` (the revision hook, whose transaction already holds coverage rows a writer may wait on): one
-    `pg_try_advisory_lock`, never a wait. Either way a busy barrier raises `CodedConflictError("sweep_barrier_busy")`.
+    `wait=False` (the revision hook, an action's in-transaction reconcile, a second statement's sweep: the
+    transaction already holds coverage/case rows a writer may wait on): one `pg_try_advisory_lock`, never a wait.
+    Either way a busy barrier raises `CodedConflictError("sweep_barrier_busy")` — so does a deadlock detected at the
+    wait (the transaction is aborted either way, and a 409 beats a 500).
     Once acquired, any failure before returning releases the lock (or invalidates the connection) before re-raising,
     so the lock never stays on a pooled connection."""
     if not wait:
@@ -267,7 +269,7 @@ def _take_barrier(db: Session, *, wait: bool = True) -> None:
                 db.execute(select(func.pg_advisory_lock(DIRTY_BARRIER_KEY)))
                 acquired = True
         except OperationalError as exc:
-            if not acquired and isinstance(exc.orig, (LockNotAvailable, QueryCanceled)):
+            if not acquired and isinstance(exc.orig, (LockNotAvailable, QueryCanceled, DeadlockDetected)):
                 raise CodedConflictError(SWEEP_BARRIER_BUSY, "a ledger write held the dirty barrier too long") from exc
             raise
         _restore_lock_timeout(db, previous)

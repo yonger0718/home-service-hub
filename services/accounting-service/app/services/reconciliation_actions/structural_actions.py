@@ -322,7 +322,7 @@ class SplitEntryAction(ActionBase):
     def apply(self, ctx: Context, params: SplitEntryParams, prepared: Prepared, effect: Effect) -> None:
         db = ctx.db
         entry, split_in = self._plan(ctx, params)
-        result = split_service.convert_to_split(db, entry.id, split_in)
+        result = split_service.convert_to_split(db, entry.id, split_in, source=STATEMENT_SOURCE)
         gid = result.group_id
         member_ids = [entry_id for entry_id, _ in result.members]
         members = [db.get(LedgerEntry, mid) for mid in member_ids]

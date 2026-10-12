@@ -324,7 +324,8 @@ def _row(obj, fields) -> dict:
 
 
 def _incoming_deferrals(db: Session, statement_ids: list[int]) -> dict[int, int]:
-    """Ruling 29: cases deferred INTO each statement that its sweep has not processed yet."""
+    """Ruling 29: cases deferred INTO each statement that its confirm has not processed yet (ruling 11: confirm
+    marks each `resolved_in_statement_id` or reopens it)."""
     if not statement_ids:
         return {}
     rows = db.execute(
@@ -441,8 +442,9 @@ def list_actions(db: Session, *, statement_id: int | None = None, case_id: int |
 
 
 def list_audit(db: Session, *, statement_id: int | None = None, limit: int = 200) -> list[dict]:
-    """Audit rows in id order (oldest first); with `limit`, the first `limit` rows."""
+    """Audit rows newest first (as `list_actions`); with `limit`, the latest `limit` rows."""
     q = select(ReconciliationAudit)
     if statement_id is not None:
         q = q.where(ReconciliationAudit.statement_id == statement_id)
-    return [_row(r, AUDIT_FIELDS) for r in db.execute(q.order_by(ReconciliationAudit.id).limit(limit)).scalars()]
+    q = q.order_by(ReconciliationAudit.id.desc()).limit(limit)
+    return [_row(r, AUDIT_FIELDS) for r in db.execute(q).scalars()]

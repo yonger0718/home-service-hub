@@ -74,8 +74,7 @@ class DeferNextPeriodAction(ActionBase):
             raise ValidationError("entry_id", "must be the case's entry")
 
     def apply(self, ctx: Context, params: DeferParams, prepared: Prepared, effect: Effect) -> None:
-        closing_day = ctx.account.closing_day if ctx.account.is_credit else None
-        ctx.case.deferred_to_period_end = rec.next_period_end(ctx.statement.period_end, closing_day)
+        ctx.case.deferred_to_period_end = rec.deferral_period_end(ctx.statement, ctx.account)
         # never the statement link (ruling 29): the target's reconcile (or the batch) fills it
         ctx.case.deferred_to_statement_id = None
         effect.case_status, effect.explanation = "resolved", rec.DEFERRED
@@ -125,8 +124,11 @@ class LinkInstallmentPlanAction(ActionBase):
 
     @staticmethod
     def _active_coverage(ctx: Context) -> set[int]:
+        """The active coverage on the case's own event: the in-action reconcile may also claim other lines (an entry
+        booked since the last reconcile); those claims are not this action's and its revert must not release them."""
         return set(ctx.db.execute(select(StatementCoverage.id).where(
-            StatementCoverage.statement_id == ctx.statement.id, StatementCoverage.status == "active")).scalars())
+            StatementCoverage.statement_id == ctx.statement.id, StatementCoverage.event_id == ctx.case.event_id,
+            StatementCoverage.status == "active")).scalars())
 
     def apply(self, ctx: Context, params: LinkParams, prepared: Prepared, effect: Effect) -> None:
         db, case = ctx.db, ctx.case

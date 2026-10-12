@@ -419,11 +419,13 @@ def _refuse_anchor(db: Session, anchor: LedgerEntry) -> None:
     assert_editable(anchor)
 
 
-def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=None) -> SplitResult:
+def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=None,
+                     source: str = "manual") -> SplitResult:
     """PUT /entries/{entry_id}/split (§1.6): the anchor joins a new split group and is rewritten in place (its id
-    is stable); the other members are inserted. Phases as update_split; the only row lock is the anchor (it
-    belongs to no group, and the new group row is invisible to other transactions until commit). A concurrent
-    convert of the same entry waits on that lock and then answers already_grouped."""
+    is stable); the other members are inserted with `source` (the reconciliation `split_entry` action passes
+    'statement'). Phases as update_split; the only row lock is the anchor (it belongs to no group, and the new group
+    row is invisible to other transactions until commit). A concurrent convert of the same entry waits on that lock
+    and then answers already_grouped."""
     # 1. cardinality, 404, refusals on the unlocked read
     _check_convert_cardinality(entry_id, payload)
     _refuse_anchor(db, get_entry(db, entry_id))
@@ -451,7 +453,8 @@ def convert_to_split(db: Session, entry_id: int, payload: SplitIn, *, http_get=N
         if member.action == "full":
             apply_prepared_update(db, anchor, member.prepared)
         else:
-            member.entry_id = insert_prepared(db, member.prepared, group_id=group.id, remember=False)
+            member.entry_id = insert_prepared(db, member.prepared, group_id=group.id, remember=False,
+                                              source=source)
     db.flush()
     remember_all_defaults(db, [member.prepared for member in members])
     return SplitResult(group.id, [(member.entry_id, member.item.client_key) for member in members])

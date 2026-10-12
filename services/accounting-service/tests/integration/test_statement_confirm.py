@@ -15,7 +15,7 @@ from app.models import (
     AccountStatement, LineLineage, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
     ReconciliationProposal, StatementCoverage, StatementEvent, StatementLine, StatementRevision,
 )
-from app.services import confirm_service, reconciliation_actions
+from app.services import confirm_service, coverage_service, reconciliation_actions
 from app.services import reconciliation_service as rec
 from app.services import statement_ingest_service as ing
 from app.services.errors import CodedConflictError, CodedValidationError, ValidationError
@@ -291,6 +291,47 @@ def test_a_dirty_flag_refuses_even_though_the_incoming_deferral_was_processed(db
     octo = _fresh(db_session, AccountStatement, octo.id)
     assert (octo.needs_recheck, octo.status) == (True, "open")
     assert _pending(db_session, octo.id) == 1
+
+
+def test_the_second_statements_sweep_never_waits_at_the_barrier(pg_engine, db_session, run, card, deferred,
+                                                                monkeypatch):
+    """Final review I3: with 2+ statements locked, only the first sweep may wait at the writer barrier; a later one
+    may already hold rows the first sweep wrote (a ledger writer waiting on them while holding the shared barrier
+    would close a cycle), so it try-locks: a busy barrier is 409 `sweep_barrier_busy` at once, nothing changed."""
+    sep, _, case = deferred
+    octo = _october(db_session, run, card, claimed=False)
+    assert sep.id < octo.id and _pending(db_session, octo.id) == 1
+    monkeypatch.setattr(coverage_service, "BARRIER_LOCK_TIMEOUT", "30s")  # a waiting sweep would outlast the holder
+    original, swept = coverage_service.sweep, []
+    holder = pg_engine.connect()
+    release = threading.Timer(2.0, holder.rollback)
+
+    def sweep_then_a_writer_arrives(db, statement, **kwargs):
+        result = original(db, statement, **kwargs)
+        swept.append((statement.id, kwargs.get("barrier_wait")))
+        if len(swept) == 1:  # a ledger writer mid-transaction: holds the shared barrier for two seconds
+            holder.execute(text("SELECT pg_advisory_xact_lock_shared(:key)"),
+                           {"key": coverage_service.DIRTY_BARRIER_KEY})
+            release.start()
+        return result
+
+    monkeypatch.setattr(coverage_service, "sweep", sweep_then_a_writer_arrives)
+    try:
+        with pytest.raises(CodedConflictError) as info:
+            confirm_service.confirm_statement(db_session, account_id=octo.account_id, statement_id=octo.id,
+                                              force=False, note=None, label="owner-test", request_id=None)
+        db_session.rollback()
+    finally:
+        release.cancel()
+        release.join(5)
+        holder.rollback()
+        holder.close()
+    assert info.value.code == "sweep_barrier_busy"
+    assert swept == [(sep.id, True)]  # the second sweep never got the barrier
+    case = _fresh(db_session, ReconciliationCase, case.id)
+    assert (case.status, case.version, case.deferred_to_statement_id) == ("resolved", 1, octo.id)
+    assert _fresh(db_session, AccountStatement, octo.id).status == "open"
+    assert _pending(db_session, octo.id) == 1 and _audit(db_session, "deferral_reopened") == []
 
 
 @pytest.fixture(params=[True, False], ids=["claimed", "unclaimed"])

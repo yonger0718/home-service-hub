@@ -177,7 +177,7 @@ otherwise). Amounts are strings; a 422 message starts with a stable code (`code`
 | `POST /reconciliation/cases/{id}/dismiss` | `write` | `{note}` (1..1000) → `ActionOut`; the `dismiss` action |
 | `GET /reconciliation/actions` | `read` | query `statement_id`, `case_id`, `limit` 1..1000 (200) → `ActionOut[]`, newest first |
 | `POST /reconciliation/actions/{id}/revert` | `write` | → the new `revert` `ActionOut` (201); the original becomes `reverted`, its case reopens at `version + 1` |
-| `GET /reconciliation/audit` | `read` | query `statement_id`, `limit` → `AuditOut[]` (`event`, `actor`, `detail`, `request_id`, ...) |
+| `GET /reconciliation/audit` | `read` | query `statement_id`, `limit` 1..1000 (200) → `AuditOut[]` (`event`, `actor`, `detail`, `request_id`, ...), newest first |
 | `POST /reconciliation/cases/{id}/proposals` | `propose` | `{action, params, rationale, confidence}` → `ProposalOut` (201); the case becomes `proposed` |
 | `GET /reconciliation/proposals` | `read` | query `status` (`pending`, `applied`, `rejected`, `superseded`), `case_id`, `limit` → `ProposalOut[]`; stale pending rows are superseded first |
 | `POST /reconciliation/proposals/{id}/apply` | `write` | → `ActionOut` (the stored action applied as `owner`; 201, 200 on replay) |
@@ -231,9 +231,11 @@ Enabling the policy (it does nothing until every step is done): (1) keep `dirty_
 (2) set `per_currency_enabled` and the caps first, `PUT /settings/reconciliation` with the full body and a `policy` that
 still has `enabled: false`; (3) enable ONE action (`actions.create_system_entry.enabled: true`, with its `max_amount`),
 then set `policy.enabled: true`; (4) watch `GET /reconciliation/audit` for `policy_applied`, `policy_proposed` and
-`policy_skipped` and `GET /reconciliation/actions`; revert anything wrong; (5) add `attach_fee`, and only last
-`accept_agent_proposals: true` with `actions.match.enabled: true` and a `max_amount` above 0 (the default `"0"` means an
-agent match is never applied). The policy runs after the matching transaction committed (reconcile route, revision submit
+`policy_skipped` and `GET /reconciliation/actions`; revert anything wrong promptly: a policy action can be reverted only
+until the next reconcile of its statement rewrites its coverage (the claim becomes an `exact`/`auto` one and no longer
+matches the action's recorded coverage and snapshot, so the revert is refused); after that, edit or delete the booked
+entry instead; (5) add `attach_fee`, and only last `accept_agent_proposals: true` with `actions.match.enabled: true` and
+a `max_amount` above 0 (the default `"0"` means an agent match is never applied). The policy runs after the matching transaction committed (reconcile route, revision submit
 and manual statement of a live statement, each statement of the daily sweep). It acts only on live statements without an
 open `parse_review` or `statement_conflict`, `conflict_open` or `needs_recheck`; it books only a bank-only fee, interest or
 reward line (`create_system_entry`), attaches the expected FX fee (`attach_fee`) and, when accepted, applies an agent
@@ -258,12 +260,12 @@ Action error codes (422 unless noted):
 | `action` "not allowed for this case"; `actor` | the action is not offered for the case kind/context, or not served for that actor |
 | `historical_statement` | a historical statement allows only `match`/`unmatch` |
 | `duplicate_effect` | the effect slot is taken (one creation per statement event; one effect per slot) |
-| `line_not_in_case`, `line_claimed`, `line_not_printed`, `not_claimed` | line problems (`match`, `unmatch`, creation family) |
+| `line_not_in_case`, `line_claimed`, `not_claimed` | line problems (`match`, `unmatch`, creation family) |
 | `entry_out_of_scope`, `id_out_of_scope` | the id is not among the case's candidates/context (`id_out_of_scope` also for proposals) |
 | `not_found`, `wrong_account`, `wrong_currency`, `entry_claimed`, `child_entry`, `entry_in_group`, `empty_group`, `not_conserved` | `match` and entry gates |
-| `kind_sign`, `refund_sign`, `refund_exceeds`, `not_refundable` | creation family |
+| `line_not_printed`, `kind_sign`, `refund_sign`, `refund_exceeds`, `not_refundable` | creation family (`line_not_printed`: the case's line is not in the current revision; also `attach_fee`, `adjust_amount`) |
 | `fee_sign`, `fee_out_of_bounds`, `fee_quantum`, `fee_unexpected`, `not_foreign`, `not_standalone` | `attach_fee` (also `not_standalone` for `adjust_amount`) |
-| `fx_pair_required`, `foreign_zero` | `adjust_amount` |
+| `fx_pair_required`, `foreign_zero`, `kind_sign` | `adjust_amount` (`fx_pair_required`: an FX entry needs the line's printed pair, and a line printing only half of it is refused) |
 | `not_movable`, `archived`, `currency`, `same_account`, `account_id` not found | `move_account` |
 | `not_splittable`, `parts_sum` | `split_entry` |
 | `dirty_disabled`, `zero_delta` | `balance_adjustment_asof` |
@@ -278,7 +280,7 @@ Action error codes (422 unless noted):
 | 409 `conflict_stale`, `conflict_guardrail_failed` | `resolve_conflict` |
 | 409 `proposal_not_pending`, `proposal_superseded`, `proposal_mismatch` | proposal apply/reject |
 | 409 `sweep_barrier_busy`, `reconcile_busy`, `import_running` | a writer barrier, a candidate row or an import is in the way (retry) |
-| 409 `budget_exceeded`, `cap_exceeded`, `policy_disabled`, `action_disabled`, `statement_excluded`, `candidate_changed`, `not_single_admissible` | policy outcomes (audited `policy_skipped`, never an HTTP error) |
+| 409 `budget_exceeded`, `cap_exceeded`, `policy_disabled`, `action_disabled`, `statement_excluded`, `candidate_changed`, `not_single_admissible` | policy outcomes, never an HTTP error: a candidate over a cap or the monthly budget becomes a proposal authored `policy` (audited `policy_proposed`); only an agent's own proposal over a cap is audited `policy_skipped` (it stays pending for the owner); `action_disabled` is only counted, not audited; the rest are audited `policy_skipped` |
 | 409 `confirm_refused`, `confirm_retry` | confirm |
 
 Migrations (R1b adds two revisions after `d1f3a7c2e9b4`, run `alembic upgrade head` before restarting): `e2a9c4d1b7f0`

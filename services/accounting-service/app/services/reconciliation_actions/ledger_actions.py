@@ -353,6 +353,8 @@ class AdjustAmountAction(ActionBase):
             raise CodedConflictError("has_settlements", f"entry {entry.id}")
         if entry.original_currency is not None and line.foreign_amount is None:
             raise _refuse("line_id", "fx_pair_required", f"entry {entry.id} is in {entry.original_currency}")
+        if (line.foreign_amount is None) != (line.foreign_currency is None):
+            raise _refuse("line_id", "fx_pair_required", f"line {line.id} prints half a foreign pair")
         flow = Decimal(line.flow_amount)
         amount = ews.signed(entry.kind, abs(flow)) if entry.kind in ews.SIGN_BY_KIND else flow
         if amount != flow:

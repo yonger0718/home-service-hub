@@ -156,6 +156,24 @@ def test_defer_on_a_card_uses_the_closing_day(db_session, stray):
     assert _fresh(db_session, AccountStatement, stmt.id).explained_count == 1
 
 
+def test_defer_on_a_card_without_a_closing_day_uses_the_matcher_period_end(seed, db_session, run):
+    """Final review I1: a card with no closing_day defers to the period end the matcher's own deferrals use (the
+    statement's period_end day), so the next statement links it instead of it being lost."""
+    card = _card(seed, db_session, closing_day=None)
+    seed.entry(card, "-580", day=DAY, merchant="全聯")
+    entry = seed.entry(card, "-77", day=date(2026, 9, 10), merchant="早餐")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    _apply(db_session, case, "defer_next_period", {"entry_id": entry.id})
+    statement, account = _fresh(db_session, AccountStatement, stmt.id), card
+    assert _fresh(db_session, ReconciliationCase, case.id).deferred_to_period_end == date(2026, 10, 30)
+    assert rec.deferral_period_end(statement, account) == date(2026, 10, 30)
+    later, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 12), "早餐", 77)],
+                          period=(date(2026, 10, 1), date(2026, 10, 30)))
+    assert _fresh(db_session, ReconciliationCase, case.id).deferred_to_statement_id == later.id
+
+
 def test_defer_on_a_bank_account_uses_the_month_end(seed, db_session, run):
     bank = seed.account("銀行", statement_live_from=date(2026, 9, 1))
     seed.entry(bank, "-77", day=date(2026, 9, 10), merchant="早餐")
@@ -268,3 +286,30 @@ def test_a_link_is_not_revertable_after_a_later_action_touched_its_entries(db_se
     error = _refuse(db_session, lambda: _revert(db_session, row.id))
     assert _code(error) == "not_revertable"
     assert db_session.execute(select(InstallmentPlanMap)).scalars().all() != []
+
+
+def test_reverting_a_link_keeps_the_claim_its_reconcile_made_for_another_line(seed, db_session, run):
+    """Final review C1: the link's in-action reconcile also claims a second line whose entry was booked after the
+    last reconcile; the link records (and its revert releases) only coverage on its own case's line."""
+    card = _card(seed, db_session)
+    definition = seed.definition([seed.line("expense", card, "1000")], kind="installment", name="手機", times=12)
+    entry = seed.entry(card, "-1000", day=date(2026, 9, 5), merchant="手機")
+    seed.instance(definition, 2, date(2026, 9, 5), status="posted", entries=[entry])
+    db_session.commit()
+    stmt, (line, other), _ = _submit(db_session, run, card, [
+        _line(1, date(2026, 9, 6), "手機", 1000, "installment", installment_seq=2, installment_total=12),
+        _line(2, date(2026, 9, 7), "早餐", 77)])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert [c.kind for c in _cases(db_session, stmt.id, "open") if c.line_id == other.id] == ["line_unmatched"]
+    late = seed.entry(card, "-77", day=date(2026, 9, 7), merchant="早餐")  # booked after the reconcile
+    db_session.commit()
+
+    row, _ = _apply(db_session, case, "link_installment_plan", {"definition_id": definition.id})
+    claims = {c.line_id: c for c in _active(db_session, stmt.id)}
+    assert {(c.line_id, c.entry_id) for c in claims.values()} == {(line.id, entry.id), (other.id, late.id)}
+    assert row.after["coverage_ids"] == [claims[line.id].id]
+    assert row.touched_entry_ids == [entry.id]
+
+    _revert(db_session, row.id)
+    assert [(c.line_id, c.entry_id) for c in _active(db_session, stmt.id)] == [(other.id, late.id)]
+    assert [c.line_id for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched"] == [line.id]

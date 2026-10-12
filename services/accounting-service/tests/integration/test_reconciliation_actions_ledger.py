@@ -400,10 +400,12 @@ def test_attach_fee_refusals_write_no_child(seed, db_session, run, printed, kind
 @pytest.fixture
 def near_pair(seed, db_session, run):
     """build(foreign=…, **entry_fields): a card line of 1015 (USD −31 unless `foreign` is None), a −1000 entry
-    booked after the reconcile, and a hand-made amount_delta case naming it."""
-    def build(*, foreign: Decimal | None = Decimal("-31"), **entry_fields):
+    booked after the reconcile, and a hand-made amount_delta case naming it. `pair` replaces the line's printed
+    foreign fields outright (e.g. only one half of the pair)."""
+    def build(*, foreign: Decimal | None = Decimal("-31"), pair: dict | None = None, **entry_fields):
         card = _card(seed, db_session)
         extra = {} if foreign is None else {"foreign_amount": foreign, "foreign_currency": "USD"}
+        extra = extra if pair is None else pair
         stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 15), "AMAZON", 1015, **extra)])
         entry_fields.setdefault("description", "原說明")
         entry = seed.entry(card, "-1000", day=date(2026, 9, 14), merchant="AMAZON", **entry_fields)
@@ -458,6 +460,17 @@ def test_adjust_amount_of_an_fx_entry_needs_the_printed_pair(near_pair, db_sessi
     exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount", _adjust(s)))
     assert _code(exc) == "fx_pair_required"
     assert _fresh(db_session, LedgerEntry, s.entry.id).amount == Decimal("-1000") and _actions(db_session) == []
+
+
+@pytest.mark.parametrize("pair", [{"foreign_amount": Decimal("-31")}, {"foreign_currency": "USD"}],
+                         ids=["no_currency", "no_amount"])
+def test_adjust_amount_refuses_half_a_printed_pair(near_pair, db_session, pair):
+    """Final review M1: a line printing only one half of the foreign pair cannot rewrite the entry's fx fields."""
+    s = near_pair(pair=pair)
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount", _adjust(s)))
+    assert _code(exc) == "fx_pair_required"
+    entry = _fresh(db_session, LedgerEntry, s.entry.id)
+    assert (entry.amount, entry.original_currency) == (Decimal("-1000"), None) and _actions(db_session) == []
 
 
 def test_adjust_amount_of_a_plain_entry_without_a_pair(near_pair, db_session):
