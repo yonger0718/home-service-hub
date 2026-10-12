@@ -907,3 +907,17 @@ def test_a_dirty_edit_releases_a_manual_claim_through_the_sweep(unmatched, db_se
     assert old.status == "stale" and old.stale_reason.startswith("dirty:update:")
     assert _active(db_session, s.stmt.id) == []
     assert any(c.event_id == s.line.event_id for c in _cases(db_session, s.stmt.id, "open"))
+
+
+def test_policy_actor_without_budget_is_refused(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
+    (case,) = _cases(db_session, stmt.id, "open")
+
+    exc = _refuse(db_session, lambda: _apply(db_session, case, "create_system_entry", {"kind": "fee"},
+                                             actor="policy", label="policy"))
+
+    assert isinstance(exc, ValidationError) and exc.field == "budget"
+    db_session.expire_all()
+    assert db_session.execute(select(ReconciliationAction)).scalars().all() == []
+    assert db_session.get(ReconciliationCase, case.id).status == "open"

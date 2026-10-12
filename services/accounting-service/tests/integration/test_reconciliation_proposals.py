@@ -1,6 +1,7 @@
 """Agent proposals (R1c Task 9; rulings 21, 27, 31): create, list with supersession on read, apply through the
 engine, reject, the locking races and `agent` coverage surviving reconcile. Synthetic data only."""
 from datetime import date
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -239,7 +240,7 @@ def test_a_policy_applied_proposal_writes_agent_coverage_that_reconcile_keeps(cl
     pid = _propose(client, s)["id"]
     row, _ = engine.apply_action(db_session, case_id=s.case.id, action="match",
                                  params={"line_id": s.line.id, "entry_id": s.entry.id}, actor="policy",
-                                 label="policy", proposal_id=pid)
+                                 label="policy", proposal_id=pid, budget=(date(2026, 10, 1), "TWD", Decimal("580")))
     db_session.commit()
     (claim,) = _active(db_session, s.stmt.id)
     assert claim.match_kind == "agent" and row.proposal_id == pid
@@ -415,7 +416,8 @@ def test_the_engine_refuses_an_action_that_is_not_the_proposals(unmatched, db_se
     with pytest.raises(CodedConflictError) as info:
         engine.apply_action(db_session, case_id=s.case.id, action="match",
                             params={"line_id": s.line.id, "entry_id": s.entry.id, "with_children": True},
-                            actor="policy", label="policy", proposal_id=pid)
+                            actor="policy", label="policy", proposal_id=pid,
+                            budget=(date(2026, 10, 1), "TWD", Decimal("580")))
     db_session.rollback()
     assert info.value.code == "proposal_mismatch"
     with pytest.raises(CodedConflictError) as info:

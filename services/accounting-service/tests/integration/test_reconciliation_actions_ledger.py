@@ -200,7 +200,8 @@ def test_create_system_entry_books_a_bank_only_fee_for_policy_and_reverts(seed, 
     (case,) = _cases(db_session, stmt.id, "open")
     assert case.context.get("hint") == "bank_only"
 
-    row = _apply(db_session, case, "create_system_entry", {"kind": "fee"}, actor="policy", label="policy")
+    row = _apply(db_session, case, "create_system_entry", {"kind": "fee"}, actor="policy", label="policy",
+                 budget=(date(2026, 10, 1), "TWD", Decimal("1200")))
 
     (entry,) = _booked(db_session)
     assert (entry.kind, entry.amount, entry.category_id, entry.needs_review, entry.entry_date, entry.posted_date) == (
@@ -338,7 +339,8 @@ def test_attach_fee_books_the_expected_fee_claims_both_and_reverts(fx_pair, db_s
 
 def test_attach_fee_policy_claims_as_auto(fx_pair, db_session):
     s = fx_pair
-    _apply(db_session, s.case, "attach_fee", {"entry_id": s.entry.id}, actor="policy", label="policy")
+    _apply(db_session, s.case, "attach_fee", {"entry_id": s.entry.id}, actor="policy", label="policy",
+           budget=(date(2026, 10, 1), "TWD", Decimal("15")))
     assert {r.match_kind for r in _active(db_session, s.stmt.id)} == {"auto"}
 
 
