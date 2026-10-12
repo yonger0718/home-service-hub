@@ -47,7 +47,9 @@ def _refuse(field: str, code: str, detail: str | None = None) -> CodedValidation
 
 def _match_kind(ctx: Context) -> str:
     if ctx.actor == POLICY:
-        return "agent" if ctx.proposal_id is not None else "auto"  # ruling 31
+        # R1d item 1: never `auto` — a reconcile keeps only `manual`/`agent` rows (ruling 16), so an `auto` claim
+        # written by the policy was rewritten by the next reconcile and its action could not be reverted
+        return "agent"
     return "manual"  # an owner-applied proposal is the owner's decision
 
 

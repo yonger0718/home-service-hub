@@ -20,6 +20,7 @@ from app.models import (
 from app.schemas.reconciliation import ProposalIn
 from app.services import entry_write_service as ews
 from app.services import policy_service, proposal_service, settings_service
+from app.services import reconciliation_service as rec
 from app.services.policy_service import PolicyResult
 from app.services.reconciliation_actions import engine
 from tests.helpers import race, wait_until_blocked
@@ -120,7 +121,28 @@ def test_policy_off_does_nothing_and_audits_nothing(seed, db_session, run):
     assert _reload(db_session, ReconciliationCase, s.cases[0].id).status == "open"
 
 
-def test_policy_on_books_a_bank_only_fee_as_auto_and_charges_the_budget(seed, db_session, run):
+def test_policy_coverage_survives_a_reconcile_and_reverts(seed, db_session, run):
+    s = _fee_statement(seed, db_session, run)
+    _set_policy(db_session, SYSTEM_ON)
+    policy_service.run_policy(db_session, s.stmt.id)
+    (row,) = _actions(db_session)
+    (claim,) = _active(db_session, s.stmt.id)
+    assert claim.match_kind == "agent" and claim.id in row.after["coverage_ids"]
+
+    rec.reconcile(db_session, s.stmt.id)  # the owner's reconcile must not rewrite the policy's claim
+    db_session.commit()
+
+    (same,) = _active(db_session, s.stmt.id)
+    assert (same.id, same.match_kind, same.match_rule) == (claim.id, "agent", "create_system_entry")
+
+    engine.revert_action(db_session, action_id=row.id, actor="owner", label="owner-test")
+    db_session.commit()
+    assert _booked(db_session) == [] and _active(db_session, s.stmt.id) == []
+    assert _reload(db_session, ReconciliationAction, row.id).status == "reverted"
+    assert _reload(db_session, ReconciliationCase, s.cases[0].id).status == "open"
+
+
+def test_policy_on_books_a_bank_only_fee_as_agent_and_charges_the_budget(seed, db_session, run):
     s = _fee_statement(seed, db_session, run)
     _set_policy(db_session, SYSTEM_ON)
 
@@ -135,7 +157,7 @@ def test_policy_on_books_a_bank_only_fee_as_auto_and_charges_the_budget(seed, db
     assert (entry.kind, entry.amount, entry.source, entry.account_id) == ("fee", Decimal("-1200"), "statement",
                                                                          s.card.id)
     (claim,) = _active(db_session, s.stmt.id)
-    assert (claim.entry_id, claim.match_kind) == (entry.id, "auto")
+    assert (claim.entry_id, claim.match_kind) == (entry.id, "agent")
     budget = _budget(db_session)
     assert (budget.used_count, budget.used_amount) == (1, Decimal("1200"))
     assert _reload(db_session, ReconciliationCase, s.cases[0].id).status == "resolved"
