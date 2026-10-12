@@ -274,6 +274,20 @@ class CaseOut(BaseModel):
     created_at: datetime
 
 
+class CaseDetailOut(CaseOut):
+    statement_id: int
+    revision_id: int
+    resolved_by: str | None
+    resolved_action_id: int | None
+    resolved_at: datetime | None
+    deferred_to_period_end: date | None
+    deferred_to_statement_id: int | None
+    note: str | None
+    actions_allowed: list[str]
+    pending_proposals: list[dict] = []  # filled by Task 9 (proposals); always empty until then
+    line: LineOut | None
+
+
 class StatementOut(BaseModel):
     model_config = Strict
     id: int
@@ -296,6 +310,7 @@ class StatementOut(BaseModel):
     matched_count: int
     explained_count: int
     open_case_count: int
+    incoming_deferrals_pending: int
 
 
 class StatementDetailOut(StatementOut):

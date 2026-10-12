@@ -191,8 +191,7 @@ def submit_revision(body: RevisionIn, request: Request, db: Session = Depends(ge
 @router.get("/accounts/{account_id}/statements", response_model=list[StatementOut], dependencies=READ)
 def list_statements(account_id: int, db: Session = Depends(get_db)):
     with service_errors():
-        statements = ingest.list_statements(db, account_id)
-    return [_out(StatementOut, statement) for statement in statements]
+        return ingest.list_statements(db, account_id)
 
 
 @router.get("/accounts/{account_id}/statements/{statement_id}", response_model=StatementDetailOut, dependencies=READ)

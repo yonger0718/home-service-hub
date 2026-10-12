@@ -13,6 +13,11 @@ class ActionIn(BaseModel):
     params: dict = Field(default_factory=dict)
 
 
+class DismissIn(BaseModel):
+    model_config = Strict
+    note: str = Field(min_length=1, max_length=1000)
+
+
 class ActionOut(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
     id: int
