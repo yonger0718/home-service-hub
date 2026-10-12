@@ -1,0 +1,15 @@
+## 1. R1c implementation (plan `docs/superpowers/plans/2026-10-11-statement-reconciliation-r1c.md`; commit ranges from `git log --oneline 41d29ad..HEAD`)
+
+- [x] 1. Branch, baseline, facts file (plan commits `3a4bc26`, `69e56a6`, `a36472f`, `ee443ab`, `a1fce50`, `c0f0358`)
+- [x] 2. Matching-rule fixes, pure (`212adeb`)
+- [x] 3. Settings: policy, caps, siblings (`e1c46f0`)
+- [x] 4. Action engine: framework, snapshots, audit, `match`/`unmatch` (`d6bd0ad`, `0afc49e`, `56eb3b9`, `bed924d`)
+- [x] 5. Case actions without ledger writes: `dismiss`, `defer_next_period`, `link_installment_plan` (`53d4402`)
+- [x] 6. Ledger-writing actions: `create_entry`, `create_system_entry`, `create_refund`, `attach_fee`, `adjust_amount` (`f948317`)
+- [x] 7. `move_account`, `split_entry`, `balance_adjustment_asof` (`181e535`, plan `a06df2c`)
+- [x] 8. Routes for cases, actions, revert; case read model (`dbb293c`, `978beae`)
+- [x] 9. Agent proposals (`246074f`, `164e1b4`)
+- [x] 10. Policy engine and budget, shipped off (`4089e3e`)
+- [x] 11. Confirm, manual statements, deferral resolution, `resolve_conflict` (`348cbf5`, `96af142`, plan `d5b100c`)
+- [x] 12. OpenSpec delta, README, spec section 17 R1c notes (this commit)
+- [ ] 13. Whole-branch verification and PR
