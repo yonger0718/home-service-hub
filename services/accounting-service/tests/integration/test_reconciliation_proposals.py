@@ -43,6 +43,7 @@ def unmatched(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
     (case,) = _cases(db_session, stmt.id, "open")
+    seed.entry(card, "-1", day=DAY, merchant="墊高編號")  # keeps entry ids apart from the line id
     entry = seed.entry(card, "-580", day=DAY, merchant="全聯")
     stray = seed.entry(card, "-999", day=DAY, merchant="別的")
     db_session.commit()
@@ -365,3 +366,146 @@ def test_lineage_supersession_writes_an_audit_row(unmatched, db_session):
     assert _reload(db_session, ReconciliationProposal, pid).status == "superseded"
     (row,) = _audit(db_session, "proposal_superseded")
     assert row.case_id == s.case.id and row.detail["proposal_id"] == pid
+
+
+# --- fix round 1: typed id scoping, proposal mismatch, check order, no dangling `proposed` -------------------------
+
+def _scoped(client, s, **params):
+    return client.post(_url(s.case), headers=H, json={**_body(s), "params": {"line_id": s.line.id, **params}})
+
+
+def test_entry_id_equal_to_a_candidates_account_id_is_out_of_scope(client, db_session, unmatched):
+    s = unmatched
+    case = _reload(db_session, ReconciliationCase, s.case.id)
+    case.candidates = [{"entry_id": s.entry.id, "account_id": s.stray.id}]
+    db_session.commit()
+    response = _scoped(client, s, entry_id=s.stray.id)
+    assert response.status_code == 422 and "id_out_of_scope" in response.text
+    assert _scoped(client, s, entry_id=s.entry.id).status_code == 201  # the real candidate still passes
+
+
+def test_entry_id_equal_to_the_cases_line_id_is_out_of_scope(client, unmatched):
+    s = unmatched
+    response = _scoped(client, s, entry_id=s.line.id)
+    assert response.status_code == 422 and "id_out_of_scope" in response.text
+
+
+def test_entry_id_equal_to_a_context_statement_id_is_out_of_scope(client, db_session, unmatched):
+    s = unmatched
+    case = _reload(db_session, ReconciliationCase, s.case.id)
+    case.context = {"statement_id": s.stray.id, "old_line_id": 424242}
+    db_session.commit()
+    assert "id_out_of_scope" in _scoped(client, s, entry_id=s.stray.id).text
+    assert _scoped(client, s, entry_id=s.entry.id).status_code == 201
+
+
+def test_line_id_scope_accepts_old_and_new_line_ids(client, db_session, unmatched):
+    s = unmatched
+    case = _reload(db_session, ReconciliationCase, s.case.id)
+    case.context = {"old_line_id": 424242}
+    db_session.commit()
+    ok = client.post(_url(s.case), headers=H, json={
+        **_body(s), "params": {"line_id": 424242, "entry_id": s.entry.id}})
+    assert ok.status_code == 201, ok.text
+
+
+def test_the_engine_refuses_an_action_that_is_not_the_proposals(unmatched, db_session):
+    s = unmatched
+    pid = _make(db_session, s)
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=s.case.id, action="match",
+                            params={"line_id": s.line.id, "entry_id": s.entry.id, "with_children": True},
+                            actor="policy", label="policy", proposal_id=pid)
+    db_session.rollback()
+    assert info.value.code == "proposal_mismatch"
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=s.case.id, action="dismiss", params={"note": "x"},
+                            actor="owner", label="policy", proposal_id=pid)
+    db_session.rollback()
+    assert info.value.code == "proposal_mismatch"
+    assert _actions(db_session) == [] and _reload(db_session, ReconciliationProposal, pid).status == "pending"
+
+
+def test_a_rejected_proposal_is_409_even_when_the_identical_action_already_exists(unmatched, db_session):
+    s = unmatched
+    pid = _make(db_session, s)
+    params = {"line_id": s.line.id, "entry_id": s.entry.id}
+    proposal_service.reject_proposal(db_session, proposal_id=pid, label="t", note=None)
+    db_session.commit()
+    engine.apply_action(db_session, case_id=s.case.id, action="match", params=params, actor="owner", label="o")
+    db_session.commit()
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=s.case.id, action="match", params=params, actor="owner",
+                            label="o", proposal_id=pid)
+    db_session.rollback()
+    assert info.value.code == "proposal_not_pending"
+
+
+def test_supersede_stale_reopens_a_case_left_proposed(unmatched, db_session):
+    s = unmatched
+    _make(db_session, s)
+    db_session.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                       .values(version=ReconciliationCase.version + 1))
+    db_session.commit()
+    assert proposal_service.supersede_stale(db_session) == 1
+    db_session.commit()
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+
+
+def test_lineage_supersession_reopens_a_proposed_case(unmatched, db_session):
+    from app.services import statement_revision_service as revs
+    s = unmatched
+    _make(db_session, s)
+    revs._supersede_pending_proposals(db_session, s.case.event_id)
+    db_session.commit()
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+
+
+def test_reject_ignores_stale_pending_rows_when_reopening(unmatched, db_session):
+    s = unmatched
+    first = proposal_service.create_proposal(db_session, case_id=s.case.id, payload=_payload(s), author="a")
+    second = proposal_service.create_proposal(db_session, case_id=s.case.id, payload=_payload(s), author="b")
+    db_session.commit()
+    first_id, second_id = first.id, second.id
+    db_session.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                       .values(version=ReconciliationCase.version + 1))
+    db_session.commit()
+    proposal_service.reject_proposal(db_session, proposal_id=first_id, label="t", note=None)
+    db_session.commit()
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+    assert second_id  # the other row is stale, not a live proposal
+
+
+def test_case_detail_supersedes_stale_proposals_first(client, db_session, unmatched):
+    s = unmatched
+    _make(db_session, s)
+    db_session.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                       .values(version=ReconciliationCase.version + 1))
+    db_session.commit()
+    detail = client.get(f"/reconciliation/cases/{s.case.id}", headers=S).json()
+    assert detail["pending_proposals"] == [] and detail["status"] == "open"
+
+
+def test_a_version_bump_during_prepare_is_persisted_as_superseded_by_the_route(client, db_session, pg_engine,
+                                                                                unmatched, monkeypatch):
+    s = unmatched
+    pid = _propose(client, s)["id"]
+    real = MatchAction.prepare
+
+    def prepare_then_bump(self, ctx, params):
+        prepared = real(self, ctx, params)
+        other = sessionmaker(bind=pg_engine, autoflush=False)()
+        try:
+            other.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                          .values(version=ReconciliationCase.version + 1))
+            other.commit()
+        finally:
+            other.close()
+        return prepared
+
+    monkeypatch.setattr(MatchAction, "prepare", prepare_then_bump)
+    response = client.post(f"/reconciliation/proposals/{pid}/apply", headers=S)
+    assert response.status_code == 409 and response.json()["message"].startswith("proposal_superseded")
+    assert _reload(db_session, ReconciliationProposal, pid).status == "superseded"
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+    assert _actions(db_session) == []

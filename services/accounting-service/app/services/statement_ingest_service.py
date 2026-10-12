@@ -389,6 +389,7 @@ def get_case(db: Session, case_id: int) -> dict:
     """One case with its source line (matched/coverage as in the statement detail) and the actions it offers now."""
     from app.services import reconciliation_actions
 
+    proposal_service.supersede_stale(db, case_id=case_id)  # the caller commits it (the route does)
     item = db.get(ReconciliationCase, case_id)
     if item is None:
         raise NotFoundError(f"case {case_id} not found")

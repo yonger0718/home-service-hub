@@ -1,6 +1,6 @@
 """Coverage-only actions (R1c; spec §4.9 action table, rulings 4, 8, 14, 16, 25, 29): `match` claims a line with an
-entry (optionally with its children) or a complete group as owner coverage (`match_kind='manual'`,
-`match_rule='owner'`, kept by reconcile); `unmatch` releases a line's coverage and flags the statement for matching
+entry (optionally with its children) or a complete group as owner coverage (`match_kind='manual'`, or
+`'agent'` when policy applies an agent proposal; `match_rule='owner'`, kept by reconcile); `unmatch` releases a line's coverage and flags the statement for matching
 again. Neither writes a ledger row, so neither emits a dirty event."""
 from __future__ import annotations
 

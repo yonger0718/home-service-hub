@@ -186,6 +186,9 @@ def _supersede_pending_proposals(db: Session, event_id: int) -> None:
                                   .where(ReconciliationCase.id == case_id)).scalar_one()
         audit.record(db, event="proposal_superseded", actor="system", statement_id=statement_id, case_id=case_id,
                      detail={"proposal_id": proposal_id, "by": "lineage", "event_id": event_id})
+    if rows:
+        from app.services import proposal_service  # local: proposal_service imports the action engine
+        proposal_service.reopen_idle(db, [case_id for _, case_id in rows])
 
 
 def _open_quarantine_case(db: Session, statement: AccountStatement, revision: StatementRevision,

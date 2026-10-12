@@ -3,9 +3,10 @@ transaction per action, never committed here (the router commits; policy commits
 
 `apply_action`: registry lookup and params → idempotency key from the case version → replay of a stored row →
 `prepare` without locks (the C6 expected snapshot; FX on its own session) → inside one attempt savepoint: the shared
-import key → [policy budget row] → statements ascending, each swept → idempotency again under the lock → the case
-FOR UPDATE → [the proposal FOR UPDATE: pending, written at this case version] (version, status, allowed, historical, precheck, the action's `check_before_locks`) → [account row,
-writer barrier] → schedule rows, groups, entries NOWAIT → `before` = the expected ids re-read (any difference: 409
+import key → [policy budget row] → statements ascending, each swept → the case FOR UPDATE → [the proposal FOR
+UPDATE: pending, written at this case version, same action and params; checked before the replay, which a proposal
+apply takes only here] → idempotency again under the lock → the case checks (version, status, allowed, historical,
+precheck, the action's `check_before_locks`) → [account row, writer barrier] → schedule rows, groups, entries NOWAIT → `before` = the expected ids re-read (any difference: 409
 `snapshot_conflict`) → `validate_before` → creation-family check → the action row (status `applied`, flushed first:
 the partial unique index refuses a duplicate effect before any ledger write) → the `app.reconciliation_action_id`
 GUC → `apply` → conservation → `after`/`inverse`/ids → case resolution or context → other pending proposals
@@ -182,7 +183,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
     canonical = canonical_params(parsed)
     key_version = case.version
     key = idempotency_key(case.id, key_version, action, canonical)
-    found = _by_key(db, key)
+    found = _by_key(db, key) if proposal_id is None else None  # a proposal apply replays only under its lock
     if found is not None:
         return _replay(db, found, case.statement_id, label=label, run_id=run_id, request_id=request_id)
     statement = db.get(AccountStatement, case.statement_id)
@@ -196,11 +197,12 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         if budget is not None:
             _reserve_budget(db, *budget)
         statements = locks.lock_statements(db, [case.statement_id, *targets.statement_ids], run_id=run_id)
+        case = locks.lock_case(db, case_id)
+        # the proposal checks come before the replay: a rejected or superseded proposal is 409, never a 200 replay
+        proposal = _lock_proposal(db, proposal_id, case, action, canonical) if proposal_id is not None else None
         found = _by_key(db, key)  # ruling 24: a concurrent identical request replays
         if found is not None:
             return _replay(db, found, case.statement_id, label=label, run_id=run_id, request_id=request_id)
-        case = locks.lock_case(db, case_id)
-        proposal = _lock_proposal(db, proposal_id, case) if proposal_id is not None else None
         if case.version != key_version:
             raise CodedConflictError("case_moved", f"case {case.id} is at version {case.version}")
         statement = statements[case.statement_id]
@@ -281,7 +283,8 @@ def _resolve(case: ReconciliationCase, effect: Effect, actor: str, row: Reconcil
         case.context = {**(case.context or {}), **effect.case_context}
 
 
-def _lock_proposal(db: Session, proposal_id: int, case: ReconciliationCase) -> ReconciliationProposal:
+def _lock_proposal(db: Session, proposal_id: int, case: ReconciliationCase, action: str,
+                   canonical: str) -> ReconciliationProposal:
     """Ruling 27: the proposal row FOR UPDATE after the statement and case locks; it must still be pending (a reject
     or another apply committed meanwhile: 409 `proposal_not_pending`) and written against this case version (409
     `proposal_superseded`). The error rolls the attempt back, so the caller (the route) persists the superseded status
@@ -295,6 +298,9 @@ def _lock_proposal(db: Session, proposal_id: int, case: ReconciliationCase) -> R
     if proposal.case_version != case.version:
         raise CodedConflictError("proposal_superseded", f"proposal {proposal.id} was made at version "
                                                        f"{proposal.case_version}, the case is at {case.version}")
+    stored = ACTIONS[proposal.action].Params(**proposal.params) if proposal.action in ACTIONS else None
+    if proposal.action != action or stored is None or canonical_params(stored) != canonical:
+        raise CodedConflictError("proposal_mismatch", f"proposal {proposal.id} proposes {proposal.action}")
     return proposal
 
 

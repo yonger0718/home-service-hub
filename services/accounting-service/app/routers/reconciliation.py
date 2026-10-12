@@ -45,7 +45,9 @@ def _apply(db: Session, request: Request, response: Response, case_id: int, acti
 @router.get("/reconciliation/cases/{case_id}", response_model=CaseDetailOut, dependencies=READ)
 def get_case(case_id: int, db: Session = Depends(get_db)):
     with service_errors():
-        return ingest.get_case(db, case_id)
+        out = ingest.get_case(db, case_id)
+    db.commit()  # stale proposals superseded on read stay superseded
+    return out
 
 
 @router.post("/reconciliation/cases/{case_id}/actions", response_model=ActionOut, status_code=201,

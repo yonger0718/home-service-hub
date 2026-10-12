@@ -11,7 +11,7 @@ from __future__ import annotations
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.models import ReconciliationCase, ReconciliationProposal
+from app.models import AccountStatement, ReconciliationCase, ReconciliationProposal
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, CodedValidationError, NotFoundError, ValidationError
 from app.services.reconciliation_actions import ACTIONS, OPEN_STATUSES, allowed, audit, engine
@@ -20,30 +20,52 @@ from app.services.reconciliation_actions.base import ActionParams
 # Free choices validated by the action itself (a category or project is not part of the case's evidence).
 UNSCOPED_IDS = frozenset({"category_id", "project_id"})
 SIBLING_KEY = "sibling_candidates"
+# Which keys of the case's candidates/context name the ids a param of each type may take; the case's own
+# `entry_id` / `line_id` columns are added in `_allowed_ids`. `account_id` is handled separately.
+ID_KEYS = {
+    "entry_id": ("entry_id",), "original_entry_id": ("entry_id",),
+    "line_id": ("line_id", "old_line_id", "new_line_id"),
+    "group_id": ("group_id", "split_group_id"),
+    "definition_id": ("definition_id",),
+}
 
 
-def _ids_in(value) -> set[int]:
-    """Every integer under a key ending in `_id`, at any depth."""
+def _ids_under(value, keys: tuple[str, ...]) -> set[int]:
+    """Every integer stored under one of `keys`, at any depth."""
     out: set[int] = set()
     if isinstance(value, dict):
         for key, item in value.items():
-            if isinstance(key, str) and key.endswith("_id") and isinstance(item, int) and not isinstance(item, bool):
+            if key in keys and isinstance(item, int) and not isinstance(item, bool):
                 out.add(item)
             else:
-                out |= _ids_in(item)
+                out |= _ids_under(item, keys)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            out |= _ids_in(item)
+            out |= _ids_under(item, keys)
     return out
 
 
-def _scope(case: ReconciliationCase) -> set[int]:
+def _allowed_ids(db: Session, case: ReconciliationCase, name: str) -> set[int]:
     context = {k: v for k, v in (case.context or {}).items() if k != SIBLING_KEY}
-    ids = _ids_in(list(case.candidates or [])) | _ids_in(context)
-    return ids | {i for i in (case.line_id, case.entry_id) if i is not None}
+    evidence = [list(case.candidates or []), context]
+    if name == "account_id":  # a candidate's account, or the account of the statement a move hint names
+        out = set().union(*(_ids_under(e, ("account_id",)) for e in evidence))
+        hinted = context.get("statement_id")
+        if isinstance(hinted, int) and not isinstance(hinted, bool):
+            account = db.execute(select(AccountStatement.account_id).where(AccountStatement.id == hinted)
+                                 ).scalar_one_or_none()
+            if account is not None:
+                out.add(account)
+        return out
+    keys = ID_KEYS.get(name)
+    if keys is None:
+        return set()
+    out = set().union(*(_ids_under(e, keys) for e in evidence))
+    own = case.line_id if name == "line_id" else case.entry_id if name in ("entry_id", "original_entry_id") else None
+    return out | ({own} if own is not None else set())
 
 
-def _validate(case: ReconciliationCase, action: str, params: dict) -> ActionParams:
+def _validate(db: Session, case: ReconciliationCase, action: str, params: dict) -> ActionParams:
     if action not in ACTIONS or action not in allowed(case):
         raise ValidationError("action", "not allowed for this case")
     if params.get("allow_sibling") is True:
@@ -51,16 +73,17 @@ def _validate(case: ReconciliationCase, action: str, params: dict) -> ActionPara
     parsed = engine._parse(ACTIONS[action], params)
     if getattr(parsed, "allow_sibling", False):
         raise CodedValidationError("params", "sibling_not_proposable", "allow_sibling is for the owner")
-    scope = _scope(case)
     for name in type(parsed).model_fields:
         value = getattr(parsed, name)
-        if name.endswith("_id") and name not in UNSCOPED_IDS and value is not None and value not in scope:
+        if name.endswith("_id") and name not in UNSCOPED_IDS and value is not None \
+                and value not in _allowed_ids(db, case, name):
             raise CodedValidationError("params", "id_out_of_scope", f"{name} {value}")
     return parsed
 
 
 def _lock_case_chain(db: Session, case_id: int) -> ReconciliationCase:
-    """Statement → case, both FOR UPDATE (the statement id read without a lock, re-checked under it)."""
+    """Statement → case, both FOR UPDATE; the case row is re-read under its lock (`populate_existing`), so the
+    caller sees its current status and version."""
     probe = db.get(ReconciliationCase, case_id)
     if probe is None:
         raise NotFoundError(f"case {case_id} not found")
@@ -83,7 +106,7 @@ def create_proposal(db: Session, *, case_id: int, payload, author: str) -> Recon
     case = _lock_case_chain(db, case_id)
     if case.status not in OPEN_STATUSES:
         raise CodedConflictError("case_closed", f"case {case.id} is {case.status}")
-    parsed = _validate(case, payload.action, payload.params)
+    parsed = _validate(db, case, payload.action, payload.params)
     for previous in _pending(db, case.id, author=author):
         previous.status, previous.decided_at = "superseded", func.now()
         audit.record(db, event="proposal_superseded", actor=author, statement_id=case.statement_id, case_id=case.id,
@@ -100,13 +123,26 @@ def create_proposal(db: Session, *, case_id: int, payload, author: str) -> Recon
     return row
 
 
-def supersede_stale(db: Session) -> int:
-    """Pending proposals whose case moved on (`case_version < case.version`) → superseded, audited. Returns how many."""
+def reopen_idle(db: Session, case_ids) -> None:
+    """A `proposed` case with no pending proposal left goes back to `open`."""
+    if not case_ids:
+        return
+    live = select(ReconciliationProposal.id).where(ReconciliationProposal.case_id == ReconciliationCase.id,
+                                                   ReconciliationProposal.status == "pending").exists()
+    db.execute(update(ReconciliationCase).where(ReconciliationCase.id.in_(sorted(set(case_ids))),
+                                                ReconciliationCase.status == "proposed", ~live)
+               .values(status="open").execution_options(synchronize_session="fetch"))
+
+
+def supersede_stale(db: Session, *, case_id: int | None = None) -> int:
+    """Pending proposals whose case moved on (`case_version < case.version`) → superseded, audited, and a `proposed`
+    case left without a live proposal reopens. `case_id` limits it to one case. Returns how many."""
     stale = (select(ReconciliationCase.id).where(ReconciliationCase.id == ReconciliationProposal.case_id,
                                                  ReconciliationProposal.case_version < ReconciliationCase.version)
              .exists())
     rows = db.execute(update(ReconciliationProposal)
-                      .where(ReconciliationProposal.status == "pending", stale)
+                      .where(ReconciliationProposal.status == "pending", stale,
+                             *([ReconciliationProposal.case_id == case_id] if case_id is not None else []))
                       .values(status="superseded", decided_at=func.now())
                       .returning(ReconciliationProposal.id, ReconciliationProposal.case_id)
                       .execution_options(synchronize_session=False)).all()
@@ -115,6 +151,7 @@ def supersede_stale(db: Session) -> int:
                                   .where(ReconciliationCase.id == case_id)).scalar_one()
         audit.record(db, event="proposal_superseded", actor="system", statement_id=statement_id, case_id=case_id,
                      detail={"proposal_id": proposal_id, "by": "case_version"})
+    reopen_idle(db, [case_id for _, case_id in rows])
     if rows:
         db.expire_all()
     return len(rows)
@@ -168,7 +205,8 @@ def reject_proposal(db: Session, *, proposal_id: int, label: str, note: str | No
         raise CodedConflictError("proposal_not_pending", f"proposal {proposal.id} is {proposal.status}")
     proposal.status, proposal.decided_at = "rejected", func.now()
     db.flush()
-    if case.status == "proposed" and not [p for p in _pending(db, case.id) if p.id != proposal.id]:
+    live = [p for p in _pending(db, case.id) if p.id != proposal.id and p.case_version == case.version]
+    if case.status == "proposed" and not live:
         case.status = "open"
     audit.record(db, event="proposal_rejected", actor=label, statement_id=case.statement_id, case_id=case.id,
                  request_id=request_id, detail={"proposal_id": proposal.id, "note": note})

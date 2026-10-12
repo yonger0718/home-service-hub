@@ -20,7 +20,7 @@ from `fill_deferral_links`.
 
 Re-running is idempotent: a line whose active claim equals the new claim (same rows, roles, rule and snapshots)
 keeps its coverage rows; every other active row of the statement (including orphans whose entry was deleted) is
-released with reason `reconcile` and the new claim written. Owner coverage (`match_kind='manual'`, R1c ruling 16) is
+released with reason `reconcile` and the new claim written. Owner and agent coverage (`match_kind` manual/agent, R1c rulings 16 and 31) is
 never touched here: its lines leave the matcher input, its entries leave the population, and only the sweep (a dirty
 edit of a covered row) or revision lineage releases it. Likewise an open/proposed matcher case equal to a newly
 derived one (kind, event/entry, candidates, context without the carried `sweep` note) is kept (its line pointer refreshed), every other open matcher
