@@ -89,4 +89,5 @@ def allowed(case: ReconciliationCase) -> list[str]:
     return out
 
 
-from . import case_actions, coverage_actions, ledger_actions  # noqa: E402,F401  (register every action module)
+# register every action module
+from . import case_actions, coverage_actions, ledger_actions, structural_actions  # noqa: E402,F401

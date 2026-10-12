@@ -72,9 +72,12 @@ class LockSet:
 class Prepared:
     """`prepare`'s result: `expected` = `snapshots.snapshot_set` of every row the action will touch, read without
     locks (C6); the engine re-reads exactly those ids under the locks and refuses on any difference. `data` carries
-    whatever else the action computed outside the locks (FX quotes, reference checks)."""
+    whatever else the action computed outside the locks (FX quotes, reference checks). `lock_set` is what the
+    engine locked for this attempt (its own unlocked `lock_targets` read, set by the engine after `prepare`), so
+    `validate_before` can re-derive a target under the locks and refuse when it differs (move_account)."""
     expected: dict
     data: dict = field(default_factory=dict)
+    lock_set: LockSet = field(default_factory=LockSet)
 
 
 class NotRevertable(CodedValidationError):

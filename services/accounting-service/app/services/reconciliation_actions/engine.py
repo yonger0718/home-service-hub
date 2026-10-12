@@ -188,6 +188,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
     ctx0 = _context(db, case, statement, actor=actor, label=label, run_id=run_id, request_id=request_id)
     targets = impl.lock_targets(ctx0, parsed)  # read without locks; C6 covers what changes before the locks
     prepared = impl.prepare(ctx0, parsed)
+    prepared.lock_set = targets
     with db.begin_nested():  # the attempt savepoint: any failure rolls back every write and row lock below
         take_import_key_shared(db)
         if budget is not None:
