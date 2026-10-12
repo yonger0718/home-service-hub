@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, text, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app import auth
@@ -20,7 +21,7 @@ from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.coverage_actions import MatchAction
-from tests.helpers import race
+from tests.helpers import race, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _code, _line, _reconcile, _submit, run,
 )
@@ -546,7 +547,13 @@ def _global_supersede_while(pg_engine, hold, s):
     out: queue.Queue = queue.Queue()
     try:
         hold(holder, s)
-        thread = threading.Thread(target=lambda: out.put(proposal_service.supersede_stale(other)), daemon=True)
+        def work():
+            try:
+                out.put(proposal_service.supersede_stale(other))
+            except Exception as exc:  # noqa: BLE001  (re-raised below)
+                out.put(exc)
+
+        thread = threading.Thread(target=work, daemon=True)
         thread.start()
         thread.join(2)
         waited = thread.is_alive()
@@ -554,6 +561,8 @@ def _global_supersede_while(pg_engine, hold, s):
         thread.join(5)
         assert not thread.is_alive()
         result = out.get_nowait()
+        if isinstance(result, Exception):
+            raise result
         other.commit()
         return result, waited
     finally:
@@ -589,15 +598,75 @@ def test_listing_hides_a_stale_pending_proposal_it_could_not_supersede(unmatched
     pid = _stale_pending(db_session, s)
     factory = sessionmaker(bind=pg_engine, autoflush=False)
     holder = factory()
+    out: queue.Queue = queue.Queue()
+
+    def list_in_worker():
+        worker = factory()
+        try:
+            listed = proposal_service.list_proposals(worker)  # global supersede skips the held case
+            worker.commit()
+            out.put([p.id for p in listed])
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            out.put(exc)
+        finally:
+            worker.close()
+
     try:
         _hold_case(holder, s)
-        listed = proposal_service.list_proposals(db_session)  # global supersede skips the held case
-        db_session.commit()
-        assert [p.id for p in listed] == []
+        thread = threading.Thread(target=list_in_worker, daemon=True)
+        thread.start()
+        thread.join(2)
+        assert not thread.is_alive(), "the listing must not wait for a held case"
+        assert out.get_nowait() == []
         assert _proposals(db_session, case_id=s.case.id)[0].status == "pending"  # still pending in the table
-        holder.commit()
     finally:
+        holder.commit()
         holder.close()
+        thread.join(5)
     listed = proposal_service.list_proposals(db_session)
     db_session.commit()
     assert [(p.id, p.status) for p in listed] == [(pid, "superseded")]
+
+
+def test_scoped_supersede_holds_nothing_while_it_waits_for_the_statement(unmatched, db_session, pg_engine):
+    """AGENT-109 Must 1: a scoped helper waiting for the statement must not already hold the case or the proposal."""
+    s = unmatched
+    pid = _stale_pending(db_session, s)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder, worker = factory(), factory()
+    out: queue.Queue = queue.Queue()
+
+    def work():
+        try:
+            proposal_service.supersede_stale(worker, case_id=s.case.id)
+            worker.commit()
+            out.put("committed")
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            out.put(exc)
+
+    thread = None
+    try:
+        rec._lock_statement(holder, s.stmt.id)
+        holder_pid = holder.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        worker_pid = worker.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        wait_until_blocked(pg_engine, worker_pid, blocker_pid=holder_pid)
+        try:
+            holder.execute(select(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                           .with_for_update(nowait=True))
+            holder.execute(select(ReconciliationProposal).where(ReconciliationProposal.id == pid)
+                           .with_for_update(nowait=True))
+        except OperationalError as exc:
+            pytest.fail(f"the waiting scoped helper already holds the case or the proposal: {exc}")
+    finally:
+        holder.commit()
+        holder.close()
+        if thread is not None:
+            thread.join(5)
+    assert not thread.is_alive()
+    assert out.get_nowait() == "committed"
+    worker.close()
+    (proposal,) = _proposals(db_session, case_id=s.case.id)
+    assert proposal.status == "superseded"
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
