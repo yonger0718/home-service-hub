@@ -10,7 +10,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import sessionmaker
 
 from app import auth
@@ -611,6 +611,14 @@ def test_a_deterministic_skip_is_audited_once_per_case_version(seed, db_session,
     assert (skipped.case_id, skipped.detail["code"], skipped.detail["case_version"]) == (
         s.case.id, "fee_exists", _reload(db_session, ReconciliationCase, s.case.id).version)
 
+    first_version = skipped.detail["case_version"]
+    db_session.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                       .values(version=ReconciliationCase.version + 1))
+    db_session.commit()
+    policy_service.run_policy(db_session, s.stmt.id)
+    rows = _audit(db_session, "policy_skipped")
+    assert sorted(r.detail["case_version"] for r in rows) == [first_version, first_version + 1]
+
 
 def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine, monkeypatch):
     """Two real `_skip` calls for the same candidate: A takes statement -> case, inserts and (deferred here) commits;
@@ -640,6 +648,7 @@ def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine, monkeypat
     real_commit = a.commit
     monkeypatch.setattr(a, "commit", lambda: None)  # A's _skip returns still holding its locks
     outcome: queue.Queue = queue.Queue()
+    thread = None
     try:
         policy_service._skip(a, s.stmt.id, candidate, "fee_exists", PolicyResult(), run_id=None)
         thread = threading.Thread(target=lambda: outcome.put(
@@ -651,11 +660,40 @@ def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine, monkeypat
         real_commit()
     finally:
         a.close()
-        thread.join(5)  # reclaimed after A is released; B rolls back / closes its own session below
-        assert not thread.is_alive(), "B is still blocked after A committed"
+        if thread is not None:
+            thread.join(5)  # reclaimed after A is released; B rolls back / closes its own session below
+            assert not thread.is_alive(), "B is still blocked after A committed"
         b.rollback()
         b.close()
     outcome.get_nowait()
     assert order == [("locked", "A"), ("insert", "A"), ("commit", "A"), ("locked", "B")]
     (skipped,) = _audit(db_session, "policy_skipped")
     assert skipped.detail["case_version"] == _reload(db_session, ReconciliationCase, s.case.id).version
+
+
+def test_a_superseded_agent_proposal_is_marked_and_skipped_once(ambiguous, db_session, monkeypatch):
+    """The case version moves on between the pre-filter and the engine's locks: the engine raises
+    `proposal_superseded`; the policy persists the mark, commits, then audits the skip once."""
+    s = ambiguous
+    _set_policy(db_session, MATCH_ON)
+    s.second.amount = Decimal("-581")
+    db_session.commit()
+    statement, candidate = _only_candidate(db_session, s.stmt.id, s.case.id)
+    real_prefilter = policy_service._prefilter
+
+    def prefilter(db, cand, policy):
+        verdict = real_prefilter(db, cand, policy)
+        db.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                   .values(version=ReconciliationCase.version + 1))
+        db.commit()
+        return verdict
+
+    monkeypatch.setattr(policy_service, "_prefilter", prefilter)
+    result = PolicyResult()
+
+    policy_service._run_candidate(db_session, s.stmt.id, candidate, result, month=MONTH, run_id=None)
+
+    assert result.skipped == {"proposal_superseded": 1}
+    assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "superseded"
+    (skipped,) = _audit(db_session, "policy_skipped")
+    assert skipped.detail["code"] == "proposal_superseded"

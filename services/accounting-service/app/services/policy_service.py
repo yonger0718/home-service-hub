@@ -347,6 +347,7 @@ def _skip(db: Session, statement_id: int, candidate: Candidate, code: str, resul
     try:
         rec._lock_statement(db, statement_id)
     except NotFoundError:
+        db.rollback()
         return
     version = db.execute(select(ReconciliationCase.version).where(ReconciliationCase.id == candidate.case_id)
                          .with_for_update()).scalar_one_or_none()
@@ -407,6 +408,7 @@ def _run_candidate(db: Session, statement_id: int, candidate: Candidate, result:
         code = _code(exc)
         if code == "proposal_superseded":  # persist what the engine found (its savepoint rolled the mark back)
             proposal_service.supersede_stale(db, case_id=candidate.case_id)
+            db.commit()  # release its proposal/audit locks: _skip must take statement -> case first
         _skip(db, statement_id, candidate, code, result, run_id=run_id)
         return
     if row is None:
