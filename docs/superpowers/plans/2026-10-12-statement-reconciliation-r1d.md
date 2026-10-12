@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - Lock order (§7.4, R1c engine): `import advisory key (shared) → policy_budget row → account_statement rows (FOR UPDATE, ascending id, each swept) → reconciliation_action row (revert) → reconciliation_case row → reconciliation_proposal row → [account row, writer barrier] → schedule definitions/instances, groups, entries NOWAIT`. A new lock must fit this order or be `NOWAIT`; nothing waits on a statement after the case lock.
+- **Audit FK rule (AGENT-109 Must 1):** `audit.record(statement_id=S)` inserts a row whose FK takes `FOR KEY SHARE` on statement S, which conflicts with another transaction's `FOR UPDATE` on S. Any code path that holds a case (or proposal) row and then audits must already hold that statement's lock (statement → case → … → audit), or it can deadlock with the engine / `create_proposal`. No helper may take a case lock without its statement lock first.
 - Services never commit; routers do. Documented exceptions stay: `policy_service.run_policy` commits per candidate; `_skip`/`_propose` commit their own audit.
 - Every coverage write goes through `coverage_service.write_claim`; every release through `coverage_service.release_rows` / `release_line`; the transaction ends with `coverage_service.assert_conserved` where the engine already calls it.
 - `MATCH_KINDS = ("auto", "manual", "agent")` is a Postgres enum: no new value (that would be a migration). The policy's claims use `agent`.
@@ -25,9 +26,9 @@
 ## Review Focus
 
 1. A policy `create_system_entry` claim followed by an **owner reconcile** must keep the same `statement_coverage` rows (ids, `match_kind='agent'`) and the action must still revert (Task 2 test `test_policy_coverage_survives_a_reconcile_and_reverts`).
-2. `GET /reconciliation/proposals` while an action holds the case lock must **not wait** on that case (SKIP LOCKED) and must not deadlock the action (Task 6 test `test_global_supersede_skips_a_locked_case`).
-3. Reverting a plan link whose claims live on **two statements** must release both and flag the second, and the second statement's next reconcile must open `installment_unmapped` again (Task 7 test `test_reverting_a_link_releases_the_plans_claims_on_other_statements`).
-4. An `attach_fee` candidate whose entry was **edited after the reconcile** (stale `context.residual`) must be `candidate_changed`, charging nothing (Task 3 test `test_attach_fee_candidate_is_recomputed_under_the_lock`).
+2. `GET /reconciliation/proposals` while another transaction holds the **statement** (not yet the case) must not wait and must not deadlock on the audit's FK (Task 6 tests `test_global_supersede_skips_a_locked_statement`, `test_scoped_supersede_waits_for_the_statement_lock`); the stale proposal it could not supersede must not read as `pending` (`test_listing_hides_a_stale_pending_proposal_it_could_not_supersede`).
+3. Reverting a plan link whose claims live on **two statements** must release both and flag the second, and the second statement's next reconcile must open `installment_unmapped` again (Task 7 test `test_reverting_a_link_releases_the_plans_claims_on_other_statements`); while the second statement's reconcile holds the plan's entry the revert must be `action_busy`, and while the revert holds it the reconcile must be `reconcile_busy` — no orphan claim either way (`test_reverting_a_link_is_busy_while_another_statement_reconciles`, `test_another_statements_reconcile_is_busy_during_a_link_revert`).
+4. An `attach_fee` candidate whose entry was **edited after the reconcile** (stale `context.residual`) must be `candidate_changed`, charging nothing (Task 3 test `test_attach_fee_candidate_is_recomputed_under_the_lock`); two runs skipping the same candidate at once must audit it **once** (Task 4 test `test_concurrent_skips_audit_once`).
 5. A proposal by the **owner's own token** (`spa`, legacy scope) must never be auto-applied as an agent proposal (Task 5 test `test_only_propose_only_tokens_are_agents`).
 
 ---
@@ -326,12 +327,12 @@ git commit -m "fix(accounting): attach_fee policy candidate recomputed from the 
 - Test: `services/accounting-service/tests/integration/test_reconciliation_policy.py`
 
 **Interfaces:**
-- Consumes: `_skip(db, statement_id, candidate, code, result, *, run_id, reason=None)`; `audit.record`; `ReconciliationAudit.detail` (JSONB).
-- Produces: a `policy_skipped` audit row carries `detail.case_version`; a second skip with the same `(case_id, case_version, code, reason)` is counted in `result.skipped` but not audited again.
+- Consumes: `_skip(db, statement_id, candidate, code, result, *, run_id, reason=None)` (runs after the candidate's rollback, in its own transaction, and commits); `rec._lock_statement(db, statement_id)`; `audit.record`; `ReconciliationAudit.detail` (JSONB); Task 3's `_fx_fee_statement(seed, db, run, *, existing_child=False)`; `tests.helpers.race`.
+- Produces: a `policy_skipped` audit row carries `detail.case_version`; a second skip with the same `(case_id, case_version, code, reason)` is counted in `result.skipped` but not audited again; the read-version → check → insert sequence runs under the statement → case locks (the engine's order; the audit's `FOR KEY SHARE` on the statement is then already held).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-With Task 3's `_fx_fee_statement(..., existing_child=True)` (the `attach_fee` candidate meets an existing FX fee child → `fee_exists`, rolled back and audited, deterministic on every run):
+With Task 3's `_fx_fee_statement(..., existing_child=True)` (the `attach_fee` candidate meets an existing FX fee child → `fee_exists`, rolled back and audited, deterministic on every run). Imports: `from app.services import reconciliation_service as rec`, `from app.services.reconciliation_actions import audit`, `race` from `tests.helpers`.
 
 ```python
 def test_a_deterministic_skip_is_audited_once_per_case_version(seed, db_session, run):
@@ -345,14 +346,38 @@ def test_a_deterministic_skip_is_audited_once_per_case_version(seed, db_session,
     (skipped,) = _audit(db_session, "policy_skipped")
     assert (skipped.case_id, skipped.detail["code"], skipped.detail["case_version"]) == (
         s.case.id, "fee_exists", _reload(db_session, ReconciliationCase, s.case.id).version)
+
+
+def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine):
+    """Two runs skip the same candidate at once: the first holds statement → case and has written its audit row
+    (a skip in flight); the second must wait for those locks and then find the row."""
+    s = _fx_fee_statement(seed, db_session, run, existing_child=True)
+    _set_policy(db_session, {"enabled": True, "actions": {"attach_fee": {"enabled": True}}})
+    statement, candidate = _only_candidate(db_session, s.stmt.id, s.case.id)
+    version = _reload(db_session, ReconciliationCase, s.case.id).version
+    db_session.commit()
+
+    def first(db):
+        rec._lock_statement(db, s.stmt.id)
+        db.execute(select(ReconciliationCase).where(ReconciliationCase.id == s.case.id).with_for_update())
+        audit.record(db, event="policy_skipped", actor="policy", statement_id=s.stmt.id, case_id=s.case.id,
+                     detail={"code": "fee_exists", "action": "attach_fee", "reason": None, "proposal_id": None,
+                             "case_version": version})
+
+    def second(db):
+        policy_service._skip(db, s.stmt.id, candidate, "fee_exists", PolicyResult(), run_id=None)
+
+    assert race(pg_engine, first, second) == "committed"
+    (skipped,) = _audit(db_session, "policy_skipped")
+    assert skipped.detail["case_version"] == version
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [ ] **Step 2: Run them to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_policy.py::test_a_deterministic_skip_is_audited_once_per_case_version -q`
-Expected: FAIL — two `policy_skipped` rows (and no `case_version` in the detail).
+Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_policy.py -k "audited_once or skips_audit_once" -q`
+Expected: both FAIL — two `policy_skipped` rows (no `case_version` in the detail); the race test fails `race`'s "must wait" assertion (nothing locks).
 
-- [ ] **Step 3: Dedupe the audit**
+- [ ] **Step 3: Serialise and dedupe the audit**
 
 ```python
 def _skip(db: Session, statement_id: int, candidate: Candidate, code: str, result: PolicyResult, *,
@@ -360,13 +385,18 @@ def _skip(db: Session, statement_id: int, candidate: Candidate, code: str, resul
     result.skipped[code] = result.skipped.get(code, 0) + 1
     if code == ACTION_DISABLED:
         return
-    version = db.execute(select(ReconciliationCase.version)
-                         .where(ReconciliationCase.id == candidate.case_id)).scalar_one_or_none()
-    # R1d item 5: a deterministic skip repeats on every run; audit it once per case version
+    # R1d item 5: a deterministic skip repeats on every run; audit it once per (case, version, code, reason).
+    # Read-version → check → insert under the statement → case locks (the engine's order: the audit row's FK takes
+    # FOR KEY SHARE on the statement, which must already be held). This runs after the candidate's rollback in
+    # its own transaction and commits below.
+    rec._lock_statement(db, statement_id)
+    version = db.execute(select(ReconciliationCase.version).where(ReconciliationCase.id == candidate.case_id)
+                         .with_for_update()).scalar_one_or_none()
+    stored_version = ReconciliationAudit.detail["case_version"].astext
     already = db.execute(select(ReconciliationAudit.id).where(
         ReconciliationAudit.event == "policy_skipped", ReconciliationAudit.case_id == candidate.case_id,
         ReconciliationAudit.detail["code"].astext == code,
-        ReconciliationAudit.detail["case_version"].astext == (str(version) if version is not None else None),
+        stored_version.is_(None) if version is None else stored_version == str(version),
         func.coalesce(ReconciliationAudit.detail["reason"].astext, "") == (reason or "")).limit(1)).first()
     if already is None:
         audit.record(db, event="policy_skipped", actor=POLICY, statement_id=statement_id, case_id=candidate.case_id,
@@ -375,7 +405,7 @@ def _skip(db: Session, statement_id: int, candidate: Candidate, code: str, resul
     db.commit()
 ```
 
-(`ReconciliationAudit` from `app.models`, `func` from `sqlalchemy`; `detail["case_version"].astext == None` renders `IS NULL` — when `version` is None (case gone) compare with `.is_(None)` explicitly: `ReconciliationAudit.detail["case_version"].astext.is_(None)` if `version is None` else `== str(version)`.)
+(`ReconciliationAudit` from `app.models`, `func` from `sqlalchemy`; `rec` is already imported in `policy_service`. `_lock_statement` raises `NotFoundError` for a vanished statement — `_run_candidate`'s callers never reach `_skip` for one, but wrap the lock in `try/except NotFoundError: return` after counting, to keep the loop going.)
 
 - [ ] **Step 4: Run the policy tests**
 
@@ -386,7 +416,7 @@ Expected: all PASS (any existing test asserting a `policy_skipped` detail dict m
 
 ```bash
 git add services/accounting-service/app/services/policy_service.py services/accounting-service/tests/integration/test_reconciliation_policy.py
-git commit -m "fix(accounting): audit a policy skip once per case version (R1d 5)"
+git commit -m "fix(accounting): audit a policy skip once per case version, serialised (R1d 5)"
 ```
 
 ---
@@ -464,19 +494,19 @@ git commit -m "fix(accounting): only propose-only tokens count as agents for the
 
 ---
 
-### Task 6: `supersede_stale` locks cases before proposals (spec item 2)
+### Task 6: `supersede_stale` locks statements, then cases, then proposals (spec item 2)
 
 **Files:**
-- Modify: `services/accounting-service/app/services/proposal_service.py:137-157` (`supersede_stale`)
+- Modify: `services/accounting-service/app/services/proposal_service.py:137-169` (`supersede_stale`, `list_proposals`)
 - Test: `services/accounting-service/tests/integration/test_reconciliation_proposals.py`
 
 **Interfaces:**
-- Consumes: `supersede_stale(db, *, case_id=None) -> int`; `reopen_idle(db, case_ids)`; callers: `routers/reconciliation.py` (global, before `list_proposals` / `apply_proposal`, after an apply refusal), `statement_ingest_service.get_case` (scoped), `confirm_service._supersede_stale_proposals` (scoped, under the statement locks), `policy_service._run_candidate` (scoped, after a rollback), `list_proposals` (global); the `unmatched` fixture and `_make(db, s)` (creates a pending proposal) in the proposals test; `tests.helpers.race`.
-- Produces: the same signature and return; the global form never waits on a locked case (SKIP LOCKED) and leaves it to that case's own action; the scoped form waits for the case lock (`FOR UPDATE`), consistent with the engine's statement → case → proposal order.
+- Consumes: `supersede_stale(db, *, case_id=None) -> int`; `reopen_idle(db, case_ids)`; `rec._lock_statement`; callers: `routers/reconciliation.py` (global, before `list_proposals` / `apply_proposal`, after an apply refusal), `statement_ingest_service.get_case` (scoped), `confirm_service._supersede_stale_proposals` (scoped, under the statement locks), `policy_service._run_candidate` (scoped, after a rollback), `list_proposals` (global); the `unmatched` fixture and `_make(db, s)` (creates a pending proposal) in the proposals test; `tests.helpers.race`.
+- Produces: the same signature and return; the global form never waits on a held statement or case (SKIP LOCKED on both) and leaves them to that transaction's own path; the scoped form waits for the statement, then the case (`FOR UPDATE`), the engine's order; `list_proposals` never returns a pending proposal whose `case_version` is behind its case.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `test_reconciliation_proposals.py` (imports: `threading`, `queue`, `sessionmaker` from `sqlalchemy.orm`, `race` from `tests.helpers`, `update`, `select`):
+In `test_reconciliation_proposals.py` (imports: `threading`, `queue`, `sessionmaker` from `sqlalchemy.orm`, `race` from `tests.helpers`, `update`, `select`, `AccountStatement`, `rec` = `reconciliation_service`; add a `_proposals(db, **where)` helper like the policy test's if the file has none):
 
 ```python
 def _stale_pending(db, s):
@@ -487,74 +517,119 @@ def _stale_pending(db, s):
     db.commit()
 
 
-def test_global_supersede_skips_a_locked_case(unmatched, db_session, pg_engine):
-    s = unmatched
-    _stale_pending(db_session, s)
+def _hold_case(db, s):
+    db.execute(select(ReconciliationCase).where(ReconciliationCase.id == s.case.id).with_for_update())
+
+
+def _hold_statement(db, s):
+    rec._lock_statement(db, s.stmt.id)
+
+
+def _global_supersede_while(pg_engine, hold, s):
+    """Run the global helper while `hold(session, s)` keeps a row locked; returns (its result, whether it waited)."""
     factory = sessionmaker(bind=pg_engine, autoflush=False)
     holder, other = factory(), factory()
     out: queue.Queue = queue.Queue()
     try:
-        holder.execute(select(ReconciliationCase).where(ReconciliationCase.id == s.case.id).with_for_update())
+        hold(holder, s)
         thread = threading.Thread(target=lambda: out.put(proposal_service.supersede_stale(other)), daemon=True)
         thread.start()
         thread.join(2)
-        assert not thread.is_alive(), "the global supersede must not wait on a case an action holds"
-        assert out.get_nowait() == 0  # skipped, left to the holder's own path
-        other.commit()
+        waited = thread.is_alive()
         holder.commit()
-        assert proposal_service.supersede_stale(other) == 1
+        thread.join(5)
+        assert not thread.is_alive()
+        result = out.get_nowait()
         other.commit()
+        return result, waited
     finally:
         holder.close()
         other.close()
+
+
+@pytest.mark.parametrize("hold", [_hold_case, _hold_statement], ids=["case", "statement"])
+def test_global_supersede_skips_a_locked_row(unmatched, db_session, pg_engine, hold):
+    s = unmatched
+    _stale_pending(db_session, s)
+    result, waited = _global_supersede_while(pg_engine, hold, s)
+    assert (result, waited) == (0, False), "the global helper must neither wait nor supersede a held row"
+    assert proposal_service.supersede_stale(db_session) == 1  # released: the next call does it durably
+    db_session.commit()
     assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
 
 
-def test_scoped_supersede_waits_for_the_case_lock(unmatched, db_session, pg_engine):
+@pytest.mark.parametrize("hold", [_hold_case, _hold_statement], ids=["case", "statement"])
+def test_scoped_supersede_waits_for_the_lock(unmatched, db_session, pg_engine, hold):
     s = unmatched
     _stale_pending(db_session, s)
-    outcome = race(
-        pg_engine,
-        first=lambda db: db.execute(select(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
-                                    .with_for_update()),
-        second=lambda db: proposal_service.supersede_stale(db, case_id=s.case.id))
+    outcome = race(pg_engine, first=lambda db: hold(db, s),
+                   second=lambda db: proposal_service.supersede_stale(db, case_id=s.case.id))
     assert outcome == "committed"
     (proposal,) = _proposals(db_session, case_id=s.case.id)
     assert proposal.status == "superseded"
     assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+
+
+def test_listing_hides_a_stale_pending_proposal_it_could_not_supersede(unmatched, db_session, pg_engine):
+    s = unmatched
+    _stale_pending(db_session, s)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder = factory()
+    try:
+        _hold_case(holder, s)
+        listed = proposal_service.list_proposals(db_session)  # global supersede skips the held case
+        db_session.commit()
+        assert [p.id for p in listed] == []
+        assert _proposals(db_session, case_id=s.case.id)[0].status == "pending"  # still pending in the table
+        holder.commit()
+    finally:
+        holder.close()
+    listed = proposal_service.list_proposals(db_session)
+    db_session.commit()
+    assert [(p.id, p.status) for p in listed] == [(s.proposal.id if hasattr(s, "proposal") else listed[0].id, "superseded")]
 ```
 
-(If the file has no `_proposals(db, **where)` helper, add one like the policy test's.)
+(The statement-held variants are the AGENT-109 Must 1 sequence: another transaction holds the statement and has not yet taken the case; the old helper took the case, updated the proposal and then blocked on the audit row's `FOR KEY SHARE` of the statement.)
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_proposals.py -k "supersede" -q`
-Expected: `test_global_supersede_skips_a_locked_case` FAILS (the UPDATE on the proposal does not block, so the global call returns 1 while the case is held — the wrong order the item fixes; the assertion `== 0` fails); `test_scoped_supersede_waits_for_the_case_lock` FAILS at `race`'s "must wait" assertion (nothing locks the case first).
+Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_proposals.py -k "supersede or hides_a_stale" -q`
+Expected: the global `case` variant FAILS (returns 1 while the case is held); the global `statement` variant FAILS (the helper blocks on the audit FK → `waited` is True); both scoped variants FAIL at `race`'s "must wait" assertion; the listing test FAILS (the stale proposal is listed as `pending`).
 
-- [ ] **Step 3: Lock the cases first**
+- [ ] **Step 3: Lock statements, then cases, then proposals; filter the listing**
 
 ```python
 def supersede_stale(db: Session, *, case_id: int | None = None) -> int:
     """Pending proposals whose case moved on (`case_version < case.version`) → superseded, audited, and a `proposed`
     case left without a live proposal reopens. `case_id` limits it to one case. Returns how many.
-    R1d item 2: the cases are locked first, ascending — `FOR UPDATE SKIP LOCKED` in the global form (a case inside
-    an action is superseded by that action's own path) and `FOR UPDATE` when scoped — so the engine's
-    statement → case → proposal order holds; the helper never takes a statement lock, so no cycle exists."""
+    R1d item 2: the statements of those cases are locked first (ascending), then the cases (ascending), then the
+    proposals are updated — `FOR UPDATE SKIP LOCKED` on statements and cases in the global form (a held row is
+    left to its holder's own path or the next call) and `FOR UPDATE` when scoped. The statement lock is required:
+    the audit row's FK takes FOR KEY SHARE on the statement, which conflicts with a FOR UPDATE held elsewhere;
+    taking it first makes this helper's order a prefix of the engine's and of `create_proposal`'s."""
     stale_case = (select(ReconciliationProposal.id)
                   .where(ReconciliationProposal.case_id == ReconciliationCase.id,
                          ReconciliationProposal.status == "pending",
                          ReconciliationProposal.case_version < ReconciliationCase.version).exists())
     scope = [ReconciliationCase.id == case_id] if case_id is not None else []
-    locked = list(db.execute(select(ReconciliationCase.id).where(stale_case, *scope)
-                             .order_by(ReconciliationCase.id)
-                             .with_for_update(skip_locked=case_id is None)).scalars())
-    if not locked:
+    skip = case_id is None
+    statements = list(db.execute(
+        select(AccountStatement.id)
+        .where(AccountStatement.id.in_(select(ReconciliationCase.statement_id).where(stale_case, *scope)))
+        .order_by(AccountStatement.id).with_for_update(skip_locked=skip)).scalars())
+    if not statements:
+        return 0
+    cases = list(db.execute(
+        select(ReconciliationCase.id)
+        .where(stale_case, ReconciliationCase.statement_id.in_(statements), *scope)
+        .order_by(ReconciliationCase.id).with_for_update(skip_locked=skip)).scalars())
+    if not cases:
         return 0
     stale = (select(ReconciliationCase.id)
              .where(ReconciliationCase.id == ReconciliationProposal.case_id,
                     ReconciliationProposal.case_version < ReconciliationCase.version).exists())
     rows = db.execute(update(ReconciliationProposal)
-                      .where(ReconciliationProposal.status == "pending", ReconciliationProposal.case_id.in_(locked), stale)
+                      .where(ReconciliationProposal.status == "pending", ReconciliationProposal.case_id.in_(cases), stale)
                       .values(status="superseded", decided_at=func.now())
                       .returning(ReconciliationProposal.id, ReconciliationProposal.case_id)
                       .execution_options(synchronize_session=False)).all()
@@ -563,21 +638,40 @@ def supersede_stale(db: Session, *, case_id: int | None = None) -> int:
                                   .where(ReconciliationCase.id == proposal_case_id)).scalar_one()
         audit.record(db, event="proposal_superseded", actor="system", statement_id=statement_id,
                      case_id=proposal_case_id, detail={"proposal_id": proposal_id, "by": "case_version"})
-    reopen_idle(db, locked)
+    reopen_idle(db, cases)
     db.expire_all()
     return len(rows)
+
+
+def list_proposals(db: Session, *, status: str | None = None, case_id: int | None = None,
+                   limit: int = 200) -> list[ReconciliationProposal]:
+    """After the global supersede: a pending proposal whose case moved on but whose rows were held (SKIP LOCKED)
+    is not listed — it is superseded durably by its holder's own path or the next call (ruling 21)."""
+    supersede_stale(db)
+    current = or_(ReconciliationProposal.status != "pending",
+                  ReconciliationProposal.case_version == ReconciliationCase.version)
+    q = (select(ReconciliationProposal)
+         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationProposal.case_id).where(current))
+    if status is not None:
+        q = q.where(ReconciliationProposal.status == status)
+    if case_id is not None:
+        q = q.where(ReconciliationProposal.case_id == case_id)
+    return list(db.execute(q.order_by(ReconciliationProposal.id.desc()).limit(limit)
+                           .execution_options(populate_existing=True)).scalars())
 ```
 
-- [ ] **Step 4: Run the proposals, policy, confirm and API tests**
+(`AccountStatement` from `app.models`, `or_` from `sqlalchemy` — add to the imports.) Note for `statement_ingest_service.get_case` (scoped, a GET): it now waits for the case's statement lock as `create_proposal` already does; acceptable, document in Task 8.
 
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_proposals.py tests/integration/test_reconciliation_policy.py tests/integration/test_statement_confirm.py tests/integration/test_reconciliation_api.py -q`
+- [ ] **Step 4: Run the proposals, policy, confirm, ingest and API tests**
+
+Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_proposals.py tests/integration/test_reconciliation_policy.py tests/integration/test_statement_confirm.py tests/integration/test_reconciliation_api.py tests/integration/test_statement_ingest_service.py -q`
 Expected: all PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add services/accounting-service/app/services/proposal_service.py services/accounting-service/tests/integration/test_reconciliation_proposals.py
-git commit -m "fix(accounting): supersede_stale locks cases before proposals (R1d 2)"
+git commit -m "fix(accounting): supersede_stale locks statements, cases, then proposals (R1d 2)"
 ```
 
 ---
@@ -585,14 +679,16 @@ git commit -m "fix(accounting): supersede_stale locks cases before proposals (R1
 ### Task 7: Reverting a plan link releases its claims on other statements (spec item 3)
 
 **Files:**
+- Modify: `services/accounting-service/app/services/reconciliation_actions/base.py:30-42` (`Context` gains `lock_set`)
+- Modify: `services/accounting-service/app/services/reconciliation_actions/engine.py` (`apply_action` and `revert_action` set `ctx.lock_set = targets` once the locked context exists)
 - Modify: `services/accounting-service/app/services/reconciliation_actions/case_actions.py:94-188` (`LinkInstallmentPlanAction`)
 - Test: `services/accounting-service/tests/integration/test_reconciliation_actions_case.py`
 
 **Interfaces:**
-- Consumes: `LockSet.statement_ids` (extra statements the engine locks ascending with the case's, each swept); `coverage_service.release_rows(db, ids, *, reason)`, `coverage_service._recount(db, statement)`; `AccountStatement.needs_recheck`; `engine_locks.ACTION_BUSY`, `psycopg2.errors.LockNotAvailable`, `sqlalchemy.exc.OperationalError`; the plan-map claim rule `"installment"` (`matching.py` ~263); the `unmapped` fixture pattern, `_submit(..., period=OCT)`, `_reconcile`, `_apply`, `_revert`, `_active`, `_cases`, `_fresh`, `PLAN_KEY`.
-- Produces: `LinkInstallmentPlanAction._plan_entries(db, definition_id) -> set[int]`, `_other_claims(db, definition_id, statement_id) -> list[StatementCoverage]`; a revert releases those rows (reason `plan_unmapped`), recounts and flags their statements.
+- Consumes: `LockSet.statement_ids` (extra statements the engine locks ascending with the case's, each swept; the engine's `_recount(db, statements)` after `invert` recounts every locked statement); `lockset_for(db, *, entry_ids, group_ids, statement_ids)`; `snapshots.ids_of(action.after)`; `locks.lock_rows` (every `LockSet.entry_ids` row `FOR UPDATE NOWAIT` → 409 `action_busy`); `coverage_service.release_rows(db, ids, *, reason)`; `AccountStatement.needs_recheck`; `engine_locks.ACTION_BUSY`; `rec.reconcile` (`_lock_candidates` locks candidate entries `NOWAIT` → 409 `reconcile_busy`); the plan-map claim rule `"installment"` (`matching.py` ~263); `confirm_service.confirm_statement(db, *, account_id, statement_id, force, note, …)` (read its signature; the checks JSON is the `confirm_refused` error's detail); the `unmapped` fixture pattern, `_submit(..., period=OCT)`, `_reconcile`, `_apply`, `_revert`, `_refuse`, `_active`, `_cases`, `_fresh`, `PLAN_KEY`.
+- Produces: `Context.lock_set: LockSet | None` (what the engine locked for this attempt); `LinkInstallmentPlanAction._plan_entries(db, definition_id) -> set[int]`, `_other_claims(db, definition_id, statement_id) -> list[StatementCoverage]`; a revert locks the plan's posted entries NOWAIT and the other claiming statements, releases those rows (reason `plan_unmapped`) and flags their statements; a statement discovered only after the locks is 409 `action_busy`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
 @pytest.fixture
@@ -616,9 +712,13 @@ def unmapped_twice(seed, db_session, run):
                            sep_entry=sep_entry, oct_entry=oct_entry)
 
 
+def _link(db, s):
+    return _apply(db, s.sep_case, "link_installment_plan", {"definition_id": s.definition.id})
+
+
 def test_reverting_a_link_releases_the_plans_claims_on_other_statements(db_session, unmapped_twice):
     s = unmapped_twice
-    row, _ = _apply(db_session, s.sep_case, "link_installment_plan", {"definition_id": s.definition.id})
+    row = _link(db_session, s)
     _reconcile(db_session, s.oct.id)  # October now claims its line through the confirmed map
     (oct_claim,) = _active(db_session, s.oct.id)
     assert oct_claim.entry_id == s.oct_entry.id
@@ -628,25 +728,92 @@ def test_reverting_a_link_releases_the_plans_claims_on_other_statements(db_sessi
     assert _active(db_session, s.sep.id) == [] and _active(db_session, s.oct.id) == []
     released = _fresh(db_session, StatementCoverage, oct_claim.id)
     assert (released.status, released.stale_reason) == ("stale", "plan_unmapped")
-    assert _fresh(db_session, AccountStatement, s.oct.id).needs_recheck is True
+    oct = _fresh(db_session, AccountStatement, s.oct.id)
+    assert (oct.needs_recheck, oct.matched_count, oct.open_case_count) == (True, 0, 0)
     assert _fresh(db_session, ReconciliationAction, row.id).status == "reverted"
 
     _reconcile(db_session, s.oct.id)  # the October case is raised again
     reopened = [c for c in _cases(db_session, s.oct.id, "open") if c.kind == "line_unmatched"]
     assert [c.context["hint"] for c in reopened] == ["installment_unmapped"]
     assert _fresh(db_session, AccountStatement, s.oct.id).needs_recheck is False
+
+
+def test_reverting_a_link_flags_a_confirmed_other_statement(db_session, unmapped_twice):
+    """AGENT-109 S3: an already reconciled October keeps its status, loses the claim, refuses confirm until its
+    next reconcile reopens the case."""
+    s = unmapped_twice
+    row = _link(db_session, s)
+    _reconcile(db_session, s.oct.id)
+    confirm_service.confirm_statement(db_session, account_id=s.card.id, statement_id=s.oct.id, force=False, note=None,
+                                      label="owner-test")  # match the real signature
+    db_session.commit()
+    assert _fresh(db_session, AccountStatement, s.oct.id).status == "reconciled"
+
+    _revert(db_session, row.id)
+
+    oct = _fresh(db_session, AccountStatement, s.oct.id)
+    assert (oct.status, oct.needs_recheck, oct.matched_count, oct.open_case_count) == ("reconciled", True, 0, 0)
+    exc = _refuse(db_session, lambda: confirm_service.confirm_statement(
+        db_session, account_id=s.card.id, statement_id=s.oct.id, force=False, note=None, label="owner-test"))
+    assert exc.code == "confirm_refused" and json.loads(exc.detail)["needs_recheck"] is False
+
+    _reconcile(db_session, s.oct.id)
+    oct = _fresh(db_session, AccountStatement, s.oct.id)
+    assert (oct.status, oct.needs_recheck, oct.open_case_count) == ("reconciled", False, 1)
+
+
+def test_reverting_a_link_is_busy_while_another_statement_reconciles(db_session, unmapped_twice, pg_engine):
+    """AGENT-109 Must 3: October's reconcile holds its candidate entry (it locks NOWAIT before it reads the map
+    and writes a claim); the revert must be action_busy, not delete the map under an uncommitted claim."""
+    s = unmapped_twice
+    row = _link(db_session, s)
+    holder = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:
+        rec._lock_statement(holder, s.oct.id)
+        holder.execute(select(LedgerEntry).where(LedgerEntry.id == s.oct_entry.id).with_for_update())
+        exc = _refuse(db_session, lambda: _revert(db_session, row.id))
+        assert isinstance(exc, CodedConflictError) and exc.code == "action_busy"
+        assert db_session.get(InstallmentPlanMap, row.inverse["plan_map_id"]) is not None
+        holder.commit()
+    finally:
+        holder.close()
+    _revert(db_session, row.id)  # released: the retry succeeds
+    assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
+
+
+def test_another_statements_reconcile_is_busy_during_a_link_revert(db_session, unmapped_twice, pg_engine):
+    """The mirror: the revert holds the plan's entries; October's reconcile is reconcile_busy; after the revert
+    commits it finds no map and no claim is written."""
+    s = unmapped_twice
+    row = _link(db_session, s)
+    reverter = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:
+        engine.revert_action(reverter, action_id=row.id, actor="owner", label="owner-test")  # not committed yet
+        exc = _refuse(db_session, lambda: _reconcile(db_session, s.oct.id))
+        assert isinstance(exc, CodedConflictError) and exc.code == "reconcile_busy"
+        reverter.commit()
+    finally:
+        reverter.close()
+    _reconcile(db_session, s.oct.id)
+    assert _active(db_session, s.oct.id) == []
+    assert [c.context["hint"] for c in _cases(db_session, s.oct.id, "open") if c.kind == "line_unmatched"] == [
+        "installment_unmapped"]
 ```
 
-(`OCT`, `SimpleNamespace`, `StatementCoverage`, `AccountStatement` — add imports as needed; `_reconcile` is in `statement_fixtures.py`. If `_apply` in this file returns only the row, drop the tuple unpacking.)
+(Imports to add as needed: `json`, `OCT`, `SimpleNamespace`, `sessionmaker`, `StatementCoverage`, `AccountStatement`, `LedgerEntry`, `InstallmentPlanMap`, `CodedConflictError`, `engine`, `rec`, `confirm_service`; `_reconcile` is in `statement_fixtures.py`. If `_apply` in this file returns a tuple, unpack it in `_link`. `_refuse` must accept the `CodedConflictError` the reconcile raises — it does in the sibling test files.)
 
-- [ ] **Step 2: Run it to verify it fails**
+- [ ] **Step 2: Run them to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_actions_case.py::test_reverting_a_link_releases_the_plans_claims_on_other_statements -q`
-Expected: FAIL — October's claim is still active after the revert and `needs_recheck` is False.
+Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_actions_case.py -k "unmapped_twice or other_statement or busy" -q`
+Expected: all four FAIL — October's claim stays active after the revert; the confirmed variant keeps `matched_count` 1; the busy variant's revert succeeds while the entry is held (no `action_busy`); the mirror's reconcile succeeds while the revert is open.
 
-- [ ] **Step 3: Extend the revert**
+- [ ] **Step 3: Carry the lock set on the context**
 
-In `case_actions.py` (imports: `update` from `sqlalchemy`, `OperationalError` from `sqlalchemy.exc`, `LockNotAvailable` from `psycopg2.errors`, `AccountStatement`, `StatementCoverage` from `app.models`, `coverage_service`, `ACTION_BUSY` from `.engine_locks` — or the string `"action_busy"` if importing `engine_locks` makes a cycle):
+`base.py` `Context`: add `lock_set: "LockSet | None" = None  # what the engine locked for this attempt (set after the locks; R1d)`. `engine.py`: in `apply_action`, right after the locked `ctx = _context(...)` line, `ctx.lock_set = targets`; in `revert_action`, after its `ctx = _context(...)`, `ctx.lock_set = targets`.
+
+- [ ] **Step 4: Extend the revert**
+
+In `case_actions.py` (imports: `AccountStatement`, `StatementCoverage` from `app.models`; `coverage_service`; `snapshots`, `lockset_for` from `.base` / `.snapshots`; `ACTION_BUSY` from `.engine_locks` — or the literal `"action_busy"` if that import is circular):
 
 ```python
     PLAN_RULE = "installment"  # matching.py: Representation("installment", …, rule="installment") for a plan-map claim
@@ -669,49 +836,52 @@ In `case_actions.py` (imports: `update` from `sqlalchemy`, `OperationalError` fr
             .order_by(StatementCoverage.id)).scalars())
 
     def revert_lock_targets(self, ctx: Context, action: ReconciliationAction) -> LockSet:
-        targets = super().revert_lock_targets(ctx, action)
         plan = ctx.db.get(InstallmentPlanMap, (action.inverse or {}).get("plan_map_id"))
         if plan is None:
-            return targets
+            return super().revert_lock_targets(ctx, action)
+        # R1d item 3: the plan's posted entries (NOWAIT: a reconcile claiming one holds it first → action_busy)
+        # and the other statements already claiming them (locked ascending with the case's, each swept)
+        entries, groups = snapshots.ids_of(action.after)
         others = {c.statement_id for c in self._other_claims(ctx.db, plan.definition_id, ctx.statement.id)}
-        return replace(targets, definition_ids=tuple(sorted({*targets.definition_ids, plan.definition_id})),
-                       statement_ids=tuple(sorted({*targets.statement_ids, *others})))
+        targets = lockset_for(ctx.db,
+                              entry_ids={*entries, *(action.touched_entry_ids or ()), *(action.created_entry_ids or ()),
+                                         *self._plan_entries(ctx.db, plan.definition_id)},
+                              group_ids={*groups, *(action.touched_group_ids or ())}, statement_ids=others)
+        return replace(targets, definition_ids=tuple(sorted({*targets.definition_ids, plan.definition_id})))
 ```
 
 and in `invert`, keep everything up to the own-statement reconcile, remembering `definition_id = plan.definition_id` before `db.delete(plan)`, then append before the `return`:
 
 ```python
-        # R1d item 3: the plan's claims on other statements are no longer derived either
+        # R1d item 3: the plan's claims on other statements are no longer derived either. Every row that could
+        # produce one is held (the plan's entries, NOWAIT), so a claim is either committed and visible here or
+        # cannot be written until this transaction ends. A statement that gained a claim between the unlocked
+        # discovery and the locks is not in the lock set: 409, the retry locks and sweeps the full set.
         others = self._other_claims(db, definition_id, ctx.statement.id)
+        statement_ids = sorted({c.statement_id for c in others})
+        held = set(ctx.lock_set.statement_ids) if ctx.lock_set is not None else set()
+        late = sorted(set(statement_ids) - held)
+        if late:
+            raise CodedConflictError(ACTION_BUSY, f"statement {late[0]} gained a plan claim after discovery; retry")
         if others:
-            statement_ids = sorted({c.statement_id for c in others})
-            try:  # already locked by the engine (ascending, swept); a late one is taken only if free
-                with db.begin_nested():
-                    db.execute(select(AccountStatement.id).where(AccountStatement.id.in_(statement_ids))
-                               .with_for_update(nowait=True))
-            except OperationalError as exc:
-                if isinstance(exc.orig, LockNotAvailable):
-                    raise CodedConflictError(ACTION_BUSY, "a statement holding the plan's claims is locked") from exc
-                raise
             coverage_service.release_rows(db, [c.id for c in others], reason="plan_unmapped")
             for statement in db.execute(select(AccountStatement).where(AccountStatement.id.in_(statement_ids))
                                         .execution_options(populate_existing=True)).scalars():
                 statement.needs_recheck = True  # ruling 29: a matching reason; its next reconcile raises the case
-                coverage_service._recount(db, statement)
             db.flush()
 ```
 
-`matching.py` line ~263 builds the plan-map representation with rule `"installment"`; if that literal has a named constant there, import it instead of repeating the string.
+(The engine's `_recount(db, statements)` after `invert` recounts every locked statement, the released ones included; no manual recount.)
 
-- [ ] **Step 4: Run the case-action tests**
+- [ ] **Step 5: Run the case-action and engine tests**
 
 Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_actions_case.py tests/integration/test_reconciliation_actions_engine.py -q`
 Expected: all PASS (the existing single-statement link/revert tests unchanged).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add services/accounting-service/app/services/reconciliation_actions/case_actions.py services/accounting-service/tests/integration/test_reconciliation_actions_case.py
+git add services/accounting-service/app/services/reconciliation_actions/ services/accounting-service/tests/integration/test_reconciliation_actions_case.py
 git commit -m "fix(accounting): reverting a plan link releases its claims on other statements (R1d 3)"
 ```
 
@@ -736,12 +906,12 @@ Append after the R1d design:
 ### R1d implementation notes (2026-10-12, PR "R1d")
 
 Shipped as designed (items 1–7 above). Facts a reader of the code needs:
-- `match_kind='agent'` now means "automation's decision" (the agent's proposal applied by the owner or the policy, or the policy's own booking); `auto` is the matcher's. `OWNED_KINDS` keeps both `manual` and `agent` across reconciles.
+- `match_kind='agent'` now means "automation's decision" (an agent proposal applied by the policy, or the policy's own booking; an agent proposal the owner applies stays `manual`); `auto` is the matcher's. `OWNED_KINDS` keeps both `manual` and `agent` across reconciles.
 - `policy_service._fee_now` is the single source of an `attach_fee` candidate's amount (collect time and under the lock).
-- `policy_skipped` audit rows carry `case_version`; the same `(case, version, code, reason)` is audited once.
+- `policy_skipped` audit rows carry `case_version`; the same `(case, version, code, reason)` is audited once, the check serialised under the statement → case locks.
 - `policy_service._agent_authors`: propose-only labels (scopes configured) or every non-policy author (compatibility).
-- `supersede_stale`: cases locked ascending first (`SKIP LOCKED` global, `FOR UPDATE` scoped); never a statement lock.
-- Reverting `link_installment_plan` releases the plan's claims on other statements (`stale_reason='plan_unmapped'`), recounts and flags them `needs_recheck`; those statements are locked through the revert's lock targets (ascending, swept) and NOWAIT when discovered late (409 `action_busy`).
+- `supersede_stale`: statements, then cases, locked ascending first (`SKIP LOCKED` global, `FOR UPDATE` scoped) because the audit row's FK takes `FOR KEY SHARE` on the statement; `list_proposals` hides a stale pending proposal it could not supersede; `get_case` (scoped) now waits for the statement like `create_proposal`.
+- Reverting `link_installment_plan` locks the plan's posted entries NOWAIT (the serialisation with other statements' reconciles) and the other claiming statements (ascending, swept), releases their claims (`stale_reason='plan_unmapped'`) and flags them `needs_recheck` (status unchanged, confirm refused until the next reconcile reopens the case); a statement discovered only after the locks is 409 `action_busy`.
 - The engine refuses `actor='policy'` without a budget (422 `budget`).
 
 Still deferred (unchanged): budget refund on revert, separate FX fee lines / credit residuals, `move_account` typed exceptions, the historical-statement line route, card-identity hints, OCR.
@@ -751,7 +921,7 @@ and in "Deferred from R1c" mark the seven resolved bullets with "→ R1d" (do no
 
 - [ ] **Step 2: README**
 
-In the R1c section: replace the sentence that says a policy action's claim is rewritten by the next reconcile ("edit or delete the booked entry instead") with "policy claims are `agent` coverage, kept across reconciles and revertable like the owner's (R1d)"; add one line each for: `policy_skipped` once per case version, agents = propose-only tokens (`ACCOUNTING_TOKEN_SCOPES`: `propose` without `write`/`legacy`), `revert` of a plan link releasing other statements' claims (`plan_unmapped`, `needs_recheck`), and `422 budget` for a policy apply without a budget. Keep the "Enabling the policy" checklist and add step: "(0) deploy R1d first".
+In the R1c section: replace the sentence that says a policy action's claim is rewritten by the next reconcile ("edit or delete the booked entry instead") with "policy claims are `agent` coverage, kept across reconciles and revertable like the owner's (R1d)"; note that `GET /reconciliation/cases/{id}` and the proposal listing take the statement lock briefly (supersede order) and that the listing hides a stale pending proposal it could not supersede; add one line each for: `policy_skipped` once per case version, agents = propose-only tokens (`ACCOUNTING_TOKEN_SCOPES`: `propose` without `write`/`legacy`), `revert` of a plan link releasing other statements' claims (`plan_unmapped`, `needs_recheck`), and `422 budget` for a policy apply without a budget. Keep the "Enabling the policy" checklist and add step: "(0) deploy R1d first".
 
 - [ ] **Step 3: openspec change**
 
@@ -759,8 +929,8 @@ In the R1c section: replace the sentence that says a policy action's claim is re
 
 - [ ] **Step 4: Full suite**
 
-Run: `cd services/accounting-service && .venv/bin/python -m pytest -q 2>&1 | tail -3`
-Expected: all passed (1 skipped as before), no new warnings about the changed modules.
+Run: `cd services/accounting-service && .venv/bin/python -m pytest -q > /tmp/r1d-suite.txt; echo exit=$?; tail -3 /tmp/r1d-suite.txt`
+Expected: `exit=0`, all passed (1 skipped as before), no new warnings about the changed modules.
 
 - [ ] **Step 5: Commit**
 
