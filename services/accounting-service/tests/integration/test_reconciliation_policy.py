@@ -424,9 +424,8 @@ def test_a_foreign_currency_statement_is_skipped(seed, db_session, run):
 
 # --- agent proposals ----------------------------------------------------------------------------------------------
 
-@pytest.fixture
-def ambiguous(seed, db_session, run):
-    """Two identical 580 entries for one 580 line → an ambiguous case; hermes proposes the first."""
+def _ambiguous_case(seed, db_session, run, *, author="hermes"):
+    """Two identical 580 entries for one 580 line → an ambiguous case; `author` proposes the first."""
     card = _card(seed, db_session)
     seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
     first = seed.entry(card, "-580", day=DAY, merchant="全聯")
@@ -435,12 +434,17 @@ def ambiguous(seed, db_session, run):
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
     (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "ambiguous"]
     proposal = proposal_service.create_proposal(
-        db_session, case_id=case.id, author="hermes",
+        db_session, case_id=case.id, author=author,
         payload=ProposalIn(action="match", params={"line_id": line.id, "entry_id": first.id},
                            rationale="same day", confidence=Decimal("0.7")))
     db_session.commit()
     return SimpleNamespace(card=card, stmt=stmt, line=line, case=case, first=first, second=second,
                            proposal=proposal)
+
+
+@pytest.fixture
+def ambiguous(seed, db_session, run):
+    return _ambiguous_case(seed, db_session, run)
 
 
 MATCH_ON = {"enabled": True, "accept_agent_proposals": True,
@@ -458,6 +462,24 @@ def test_agent_proposals_stay_pending_while_accept_is_off(ambiguous, db_session)
     assert result.applied == [] and _actions(db_session) == []
     assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "pending"
     assert _reload(db_session, ReconciliationCase, s.case.id).status == "proposed"
+
+
+@pytest.mark.parametrize("author", ["spa", "worker", "nobody"])
+def test_only_propose_only_tokens_are_agents(seed, db_session, run, author):
+    s = _ambiguous_case(seed, db_session, run, author=author)
+    _set_policy(db_session, MATCH_ON)
+    s.second.amount = Decimal("-581")
+    db_session.commit()
+
+    result = policy_service.run_policy(db_session, s.stmt.id)
+
+    assert result.applied == [] and _actions(db_session) == []
+    assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "pending"
+
+
+def test_agent_authors_without_scopes_are_every_non_policy_author(monkeypatch):
+    monkeypatch.delenv(auth.SCOPES_ENV, raising=False)
+    assert policy_service._agent_authors(["hermes", "spa", "policy"]) == {"hermes", "spa"}
 
 
 def test_a_single_admissible_agent_match_is_applied_as_agent(ambiguous, db_session):

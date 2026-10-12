@@ -25,10 +25,12 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from functools import partial
+from typing import Iterable
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app import auth
 from app.models import (
     AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
     ReconciliationProposal, StatementLine,
@@ -135,9 +137,21 @@ def _attach_fee_candidate(db: Session, case: ReconciliationCase, statement: Acco
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate}
 
 
+def _agent_authors(authors: Iterable[str]) -> set[str]:
+    """R1d item 7: an agent is a propose-only token — configured with `propose` and neither `write` nor `legacy`
+    (an owner token's proposal is the owner's own draft, never auto-applied). With scopes unconfigured
+    (compatibility mode) every author but the policy counts, as before."""
+    candidates = {author for author in authors if author != POLICY}
+    if not auth.scopes_configured():
+        return candidates
+    scopes = auth.configured_scopes()
+    return {author for author in candidates
+            if "propose" in scopes.get(author, frozenset()) and not ({"write", "legacy"} & scopes.get(author, frozenset()))}
+
+
 def _agent_candidates(db: Session, statement: AccountStatement) -> list[Candidate]:
-    """Pending `match` proposals by an agent (any author but the policy) on `ambiguous` cases of the statement,
-    written at the case's current version."""
+    """Pending `match` proposals by an agent — a propose-only token, `_agent_authors` — on `ambiguous` cases of the
+    statement, written at the case's current version."""
     rows = db.execute(
         select(ReconciliationProposal, ReconciliationCase)
         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationProposal.case_id)
@@ -147,7 +161,10 @@ def _agent_candidates(db: Session, statement: AccountStatement) -> list[Candidat
                ReconciliationProposal.case_version == ReconciliationCase.version)
         .order_by(ReconciliationProposal.id)).all()
     out = []
+    agents = _agent_authors({proposal.author for proposal, _ in rows})
     for proposal, case in rows:
+        if proposal.author not in agents:
+            continue
         line = current_line(db, case, statement)
         if line is not None:
             out.append(Candidate(case.id, case.kind, case.status, "match", dict(proposal.params),
