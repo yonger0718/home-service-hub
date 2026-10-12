@@ -21,7 +21,7 @@ from app.services import reconciliation_service as rec
 from app.services import statement_revision_service as revisions
 from app.services.errors import CodedConflictError, CodedValidationError, ValidationError
 
-from . import register
+from . import audit, register
 from .base import ActionBase, ActionParams, Context, Effect, LockSet, NotRevertable, Prepared
 
 OPEN_AGAIN = "open"
@@ -42,7 +42,7 @@ class DismissAction(ActionBase):
     name = "dismiss"
     Params = DismissParams
     case_kinds = frozenset({"line_unmatched", "ambiguous", "amount_delta", "entry_unmatched", "balance_gap",
-                            "duplicate_claim", "recheck", "parse_review", "statement_conflict"})
+                            "duplicate_claim", "recheck", "parse_review"})  # not statement_conflict (ruling 34)
 
     def apply(self, ctx: Context, params: DismissParams, prepared: Prepared, effect: Effect) -> None:
         ctx.case.note = params.note
@@ -193,13 +193,16 @@ class ResolveConflictParams(ActionParams):
 
 
 class ResolveConflictAction(ActionBase):
-    """Rulings 23/28/30. The case's revision (`case.revision_id`, stored as non-current by the conflicting
+    """Rulings 23/28/30/34. The case's revision (`case.revision_id`, stored as non-current by the conflicting
     submission) must still be the statement's newest non-rejected revision (409 `conflict_stale`). `keep=new`
     promotes it (`statement_revision_service.promote_revision`: persisted rows only — coverage transferred or
-    quarantined by lineage, event pointers, header, current revision), clears `conflict_open`, reopens the statement
-    (`status='open'`) and reconciles it in this transaction (`barrier_wait=False`: the action holds row locks);
-    `keep=current` marks the revision `rejected` and clears `conflict_open` (the statement stays `reconciled`).
-    Either resolves the case. Not revertable: the owner re-submits instead."""
+    quarantined by lineage, event pointers, header, current revision), reopens the statement (`status='open'`) and
+    reconciles it in this transaction (`barrier_wait=False`: the action holds row locks); a guardrail-failed revision
+    never replaces the current one (409 `conflict_guardrail_failed`, R1a §17). `keep=current` marks the revision
+    `rejected` (the statement stays `reconciled`). Ruling 34: on either outcome every other open `statement_conflict`
+    case of the statement (an older revision's) is superseded (version bumped, audited `conflict_superseded`) and,
+    for `keep=current`, its revision rejected too — so clearing `conflict_open` matches the cases. Either resolves
+    the case. Not revertable: the owner re-submits instead."""
     name = "resolve_conflict"
     Params = ResolveConflictParams
     case_kinds = frozenset({"statement_conflict"})
@@ -216,13 +219,44 @@ class ResolveConflictAction(ActionBase):
             raise CodedConflictError("conflict_stale", f"revision {ctx.case.revision_id} is not the newest pending one")
         return revision
 
+    @classmethod
+    def _checked(cls, ctx: Context, params: ResolveConflictParams) -> StatementRevision:
+        revision = cls._revision(ctx)
+        if params.keep == "new" and not revision.guardrail_ok:
+            raise CodedConflictError("conflict_guardrail_failed",
+                                     f"revision {revision.revision} failed its guardrails; keep the current one")
+        return revision
+
     def validate_before(self, ctx: Context, params: ResolveConflictParams, prepared: Prepared, before: dict) -> None:
-        self._revision(ctx)
+        self._checked(ctx, params)
+
+    @staticmethod
+    def _supersede_older(ctx: Context, revision: StatementRevision, keep: str) -> None:
+        """Ruling 34: the statement's other open/proposed statement_conflict cases (older revisions) → superseded,
+        their revisions rejected when the current one is kept."""
+        db = ctx.db
+        older = db.execute(
+            select(ReconciliationCase)
+            .join(StatementRevision, StatementRevision.id == ReconciliationCase.revision_id)
+            .where(ReconciliationCase.statement_id == ctx.statement.id,
+                   ReconciliationCase.kind == "statement_conflict", ReconciliationCase.id != ctx.case.id,
+                   ReconciliationCase.status.in_(("open", "proposed")),
+                   StatementRevision.revision < revision.revision)
+            .order_by(ReconciliationCase.id).with_for_update(of=ReconciliationCase)).scalars().all()
+        for case in older:
+            case.status, case.version = "superseded", case.version + 1
+            if keep == "current" and case.revision_id != ctx.statement.current_revision_id:
+                db.get(StatementRevision, case.revision_id).rejected = True
+            audit.record(db, event="conflict_superseded", actor=ctx.label, statement_id=ctx.statement.id,
+                         case_id=case.id, run_id=ctx.run_id, request_id=ctx.request_id,
+                         detail={"by_case_id": ctx.case.id, "revision_id": case.revision_id, "keep": keep})
+        db.flush()
 
     def apply(self, ctx: Context, params: ResolveConflictParams, prepared: Prepared, effect: Effect) -> None:
         db, statement = ctx.db, ctx.statement
-        revision = self._revision(ctx)
+        revision = self._checked(ctx, params)
         effect.inverse = {"keep": params.keep, "previous_current_revision_id": statement.current_revision_id}
+        self._supersede_older(ctx, revision, params.keep)
         if params.keep == "new":
             revisions.promote_revision(db, statement, revision)
             statement.conflict_open, statement.status = False, "open"

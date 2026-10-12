@@ -10,6 +10,7 @@ EVENTS = frozenset({
     "action_applied", "action_replayed", "action_reverted", "case_dismissed", "proposal_created", "proposal_applied",
     "proposal_rejected", "proposal_superseded", "policy_applied", "policy_proposed", "policy_skipped",
     "statement_confirmed", "statement_confirmed_forced", "deferral_reopened", "manual_statement_created",
+    "conflict_superseded",
 })
 
 

@@ -29,7 +29,7 @@ KIND_ACTIONS: dict[str, tuple[str, ...]] = {
     "duplicate_claim": ("unmatch", "dismiss"),
     "recheck": ("match", "unmatch", "dismiss"),
     "parse_review": ("dismiss",),  # resolved by a new revision; the owner may only dismiss it
-    "statement_conflict": ("resolve_conflict", "dismiss"),
+    "statement_conflict": ("resolve_conflict",),  # ruling 34: a dismissed conflict would leave conflict_open set
 }
 
 

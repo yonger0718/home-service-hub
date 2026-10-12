@@ -8,7 +8,6 @@ import hmac
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy import case, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -28,7 +27,7 @@ from app.models import (
 )
 from app.schemas.statements import FileRegisterIn, FileUpdateIn, ManualStatementIn, RevisionIn, SourceRegisterIn
 from app.services import coverage_service, proposal_service, settings_service
-from app.services.errors import ConflictError, NotFoundError, ValidationError
+from app.services.errors import ConflictError, NotFoundError
 from app.services.reconciliation_actions import audit
 from app.services.statement_revision_service import SubmitResult, submit_revision
 
@@ -206,12 +205,10 @@ def create_manual_statement(db: Session, *, account_id: int, payload: ManualStat
         raise NotFoundError(f"account {account_id} not found")
     created = create_worker_run(db, trigger="owner_cli", initiator_hint=label, mode="live")
     run, token = claim_run(db, created.id, label=label)
-    try:
-        revision_in = RevisionIn(run_id=run.id, lease_token=token, file_id=None, account_id=account_id,
-                                 parser="manual", parser_version="1", raw={}, **payload.model_dump())
-    except PydanticValidationError as exc:  # unreachable: ManualStatementIn carries the same field rules
-        first = exc.errors()[0]
-        raise ValidationError(".".join(str(p) for p in first.get("loc", ())) or "body", first.get("msg")) from exc
+    # No validation can fail here: ManualStatementIn carries RevisionIn's field rules (the route validated them), and
+    # the run id and its 48-character lease token satisfy the Lease fields.
+    revision_in = RevisionIn(run_id=run.id, lease_token=token, file_id=None, account_id=account_id,
+                             parser="manual", parser_version="1", raw={}, **payload.model_dump())
     result = submit_revision(db, run, revision_in,
                              account_map=settings_service.get_reconciliation_settings(db)["account_map"],
                              origin="manual")

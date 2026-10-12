@@ -15,10 +15,10 @@ from app.models import (
     AccountStatement, LineLineage, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
     ReconciliationProposal, StatementCoverage, StatementEvent, StatementLine, StatementRevision,
 )
-from app.services import confirm_service
+from app.services import confirm_service, reconciliation_actions
 from app.services import reconciliation_service as rec
 from app.services import statement_ingest_service as ing
-from app.services.errors import CodedConflictError, CodedValidationError
+from app.services.errors import CodedConflictError, CodedValidationError, ValidationError
 from app.services.reconciliation_actions import engine
 from tests.helpers import wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
@@ -450,7 +450,12 @@ def test_a_new_revision_of_a_confirmed_statement_opens_a_conflict_and_confirm_re
     assert (stmt.status, stmt.conflict_open, stmt.current_revision_id) == ("reconciled", True, first.id)
     case = _conflict_case(db_session, stmt.id, 2)
     assert case.revision_id == second.revision.id
-    assert "resolve_conflict" in __import__("app.services.reconciliation_actions", fromlist=["allowed"]).allowed(case)
+    # ruling 34: a conflict resolves only through resolve_conflict (a dismissed one would leave conflict_open set)
+    assert reconciliation_actions.allowed(case) == ["resolve_conflict"]
+    with pytest.raises(ValidationError):
+        engine.apply_action(db_session, case_id=case.id, action="dismiss", params={"note": "x"}, actor="owner",
+                            label="owner-test")
+    db_session.rollback()
     checks = _refused(db_session, stmt)
     assert checks["conflict_open"] is False and checks["open_cases"] is False
 
@@ -558,6 +563,60 @@ def test_resolving_an_older_conflict_revision_is_conflict_stale(db_session, run,
     assert db_session.execute(select(ReconciliationAction)).scalars().all() == []
     _apply(db_session, _conflict_case(db_session, stmt.id, 3), {"keep": "new"})  # the newest one resolves
     assert _fresh(db_session, AccountStatement, stmt.id).due_date == date(2026, 10, 17)
+
+
+def _same_lines(db, run, card, *, due, total=None):
+    """The reconciled fixture's lines again with another due date (header-only change: no quarantine on promotion)."""
+    return _submit(db, run, card, [
+        _line(1, DAY, "全聯", 580), _line(2, date(2026, 9, 5), "PAYPAL *Spotify", 300),
+        _line(3, date(2026, 9, 7), "超商", 120)], due_date=due, total=total)
+
+
+def test_keep_new_refuses_a_guardrail_failed_revision_and_keep_current_rejects_it(db_session, run, card,
+                                                                                    reconciled):
+    stmt, (l1, _, _), _, first = reconciled
+    _, _, failed = _same_lines(db_session, run, card, due=date(2026, 10, 16), total="999")
+    assert (failed.revision.conflict, failed.revision.guardrail_ok) == (True, False)
+    case = _conflict_case(db_session, stmt.id, 2)
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=case.id, action="resolve_conflict", params={"keep": "new"},
+                            actor="owner", label="owner-test")
+    db_session.rollback()
+    assert info.value.code == "conflict_guardrail_failed"
+    stmt = _fresh(db_session, AccountStatement, stmt.id)  # untouched
+    assert (stmt.status, stmt.conflict_open, stmt.current_revision_id, stmt.due_date) == (
+        "reconciled", True, first.id, date(2026, 10, 15))
+    assert _fresh(db_session, ReconciliationCase, case.id).status == "open"
+    assert db_session.get(StatementEvent, l1.event_id).current_line_id == l1.id
+    assert db_session.execute(select(ReconciliationAction)).scalars().all() == []
+    _apply(db_session, case, {"keep": "current"})
+    assert _fresh(db_session, StatementRevision, failed.revision.id).rejected is True
+    stmt = _fresh(db_session, AccountStatement, stmt.id)
+    assert (stmt.status, stmt.conflict_open, stmt.current_revision_id) == ("reconciled", False, first.id)
+
+
+@pytest.mark.parametrize("keep", ["current", "new"])
+def test_resolving_the_newest_conflict_supersedes_the_older_ones(db_session, run, card, reconciled, keep):
+    """Ruling 34: conflict_open and the open statement_conflict cases never diverge."""
+    stmt, _, _, first = reconciled
+    _, _, r2 = _same_lines(db_session, run, card, due=date(2026, 10, 16))
+    _, _, r3 = _same_lines(db_session, run, card, due=date(2026, 10, 17))
+    older, newest = _conflict_case(db_session, stmt.id, 2), _conflict_case(db_session, stmt.id, 3)
+    _apply(db_session, newest, {"keep": keep})
+    older = _fresh(db_session, ReconciliationCase, older.id)
+    assert (older.status, older.version) == ("superseded", 2)
+    assert [c.id for c in _cases(db_session, stmt.id, "open", "proposed") if c.kind == "statement_conflict"] == []
+    rejected = keep == "current"
+    assert _fresh(db_session, StatementRevision, r2.revision.id).rejected is rejected
+    assert _fresh(db_session, StatementRevision, r3.revision.id).rejected is rejected
+    stmt = _fresh(db_session, AccountStatement, stmt.id)
+    assert stmt.conflict_open is False
+    assert stmt.current_revision_id == (first.id if rejected else r3.revision.id)
+    (row,) = _audit(db_session, "conflict_superseded")
+    assert (row.statement_id, row.case_id, row.actor) == (stmt.id, older.id, "owner-test")
+    assert row.detail["revision_id"] == r2.revision.id and row.detail["by_case_id"] == newest.id
+    result = _confirm(db_session, stmt)
+    assert result.checks["open_cases"] is True and result.status == "reconciled"
 
 
 # --- route --------------------------------------------------------------------------------------------------------

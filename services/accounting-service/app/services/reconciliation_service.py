@@ -570,9 +570,11 @@ def fill_deferral_links(db: Session) -> int:
     `deferred_to_period_end`; returns the number linked. Ruling 29: linking serializes with confirm through the
     target's statement row — the candidates are read without locks, then each target in ascending id order, one per
     savepoint, is locked FOR UPDATE (waiting for a running confirm or reconcile of it to commit) and re-read, and its
-    cases are linked under that lock with the deferral conditions re-checked. A `reconciled` target is linked too: the
+    cases are linked under that lock with the deferral conditions re-checked. The savepoint only scopes a failure:
+    every target row lock taken stays held until the CALLER commits, which is safe because the targets are taken in
+    ascending id order, the order confirm and the engine lock statements in. A `reconciled` target is linked too: the
     link shows as `incoming_deferrals_pending` until its next confirm processes it; no flag is set. Call it in its own
-    transaction (e.g. after the batch)."""
+    transaction (e.g. after the batch) and commit right after."""
     own, target = aliased(AccountStatement), aliased(AccountStatement)
     candidates = db.execute(
         select(ReconciliationCase.id, target.id)
