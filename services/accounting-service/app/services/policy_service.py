@@ -26,11 +26,12 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from functools import partial
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementLine,
+    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
+    ReconciliationProposal, StatementLine,
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import coverage_service, ledger_service, proposal_service, settings_service
@@ -339,9 +340,26 @@ def _skip(db: Session, statement_id: int, candidate: Candidate, code: str, resul
     result.skipped[code] = result.skipped.get(code, 0) + 1
     if code == ACTION_DISABLED:
         return
-    audit.record(db, event="policy_skipped", actor=POLICY, statement_id=statement_id, case_id=candidate.case_id,
-                 run_id=run_id, detail={"code": code, "action": candidate.action, "reason": reason,
-                                        "proposal_id": candidate.proposal_id})
+    # R1d item 5: a deterministic skip repeats on every run; audit it once per (case, version, code, reason).
+    # Read-version -> check -> insert under the statement -> case locks (the engine's order: the audit row's FK takes
+    # FOR KEY SHARE on the statement, which must already be held). This runs after the candidate's rollback in
+    # its own transaction and commits below.
+    try:
+        rec._lock_statement(db, statement_id)
+    except NotFoundError:
+        return
+    version = db.execute(select(ReconciliationCase.version).where(ReconciliationCase.id == candidate.case_id)
+                         .with_for_update()).scalar_one_or_none()
+    stored_version = ReconciliationAudit.detail["case_version"].astext
+    already = db.execute(select(ReconciliationAudit.id).where(
+        ReconciliationAudit.event == "policy_skipped", ReconciliationAudit.case_id == candidate.case_id,
+        ReconciliationAudit.detail["code"].astext == code,
+        stored_version.is_(None) if version is None else stored_version == str(version),
+        func.coalesce(ReconciliationAudit.detail["reason"].astext, "") == (reason or "")).limit(1)).first()
+    if already is None:
+        audit.record(db, event="policy_skipped", actor=POLICY, statement_id=statement_id, case_id=candidate.case_id,
+                     run_id=run_id, detail={"code": code, "action": candidate.action, "reason": reason,
+                                            "proposal_id": candidate.proposal_id, "case_version": version})
     db.commit()
 
 

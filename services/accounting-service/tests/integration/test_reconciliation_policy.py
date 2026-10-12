@@ -3,6 +3,7 @@ entries and matching FX fees applied by policy under per-action, per-statement a
 reserved before the statement lock and charged only after the precheck under the lock, over-cap candidates turned
 into policy proposals, agent `match` proposals accepted only with a single admissible representation, and the
 reconcile / revision / sweep routes running it after their commit. Synthetic data only."""
+import queue
 import threading
 from datetime import date
 from decimal import Decimal
@@ -23,7 +24,7 @@ from app.services.errors import CodedConflictError
 from app.services import policy_service, proposal_service, settings_service
 from app.services import reconciliation_service as rec
 from app.services.policy_service import PolicyResult
-from app.services.reconciliation_actions import engine
+from app.services.reconciliation_actions import audit, engine
 from tests.helpers import race, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _line, _submit, run,
@@ -596,3 +597,65 @@ def test_attach_fee_candidate_is_recomputed_under_the_lock(seed, db_session, run
     assert info.value.code == "candidate_changed"
     assert _budget(db_session) is None or _budget(db_session).used_count == 0
     assert _actions(db_session) == []
+
+
+def test_a_deterministic_skip_is_audited_once_per_case_version(seed, db_session, run):
+    s = _fx_fee_statement(seed, db_session, run, existing_child=True)
+    _set_policy(db_session, {"enabled": True, "actions": {"attach_fee": {"enabled": True}}})
+
+    first = policy_service.run_policy(db_session, s.stmt.id)
+    second = policy_service.run_policy(db_session, s.stmt.id)
+
+    assert first.skipped == second.skipped == {"fee_exists": 1}
+    (skipped,) = _audit(db_session, "policy_skipped")
+    assert (skipped.case_id, skipped.detail["code"], skipped.detail["case_version"]) == (
+        s.case.id, "fee_exists", _reload(db_session, ReconciliationCase, s.case.id).version)
+
+
+def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine, monkeypatch):
+    """Two real `_skip` calls for the same candidate: A takes statement -> case, inserts and (deferred here) commits;
+    B must acquire the statement only after A's commit, find the row and insert nothing. The hooks record the
+    order in which the locks were ACQUIRED and the inserts happened."""
+    s = _fx_fee_statement(seed, db_session, run, existing_child=True)
+    _set_policy(db_session, {"enabled": True, "actions": {"attach_fee": {"enabled": True}}})
+    statement, candidate = _only_candidate(db_session, s.stmt.id, s.case.id)
+    db_session.commit()
+    order: list[tuple[str, str]] = []
+    real_lock, real_record = rec._lock_statement, audit.record
+
+    def lock(db, statement_id):
+        row = real_lock(db, statement_id)
+        order.append(("locked", db.info["name"]))
+        return row
+
+    def record(db, **kw):
+        order.append(("insert", db.info["name"]))
+        return real_record(db, **kw)
+
+    monkeypatch.setattr(rec, "_lock_statement", lock)
+    monkeypatch.setattr(audit, "record", record)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    a, b = factory(), factory()
+    a.info["name"], b.info["name"] = "A", "B"
+    real_commit = a.commit
+    monkeypatch.setattr(a, "commit", lambda: None)  # A's _skip returns still holding its locks
+    outcome: queue.Queue = queue.Queue()
+    try:
+        policy_service._skip(a, s.stmt.id, candidate, "fee_exists", PolicyResult(), run_id=None)
+        thread = threading.Thread(target=lambda: outcome.put(
+            policy_service._skip(b, s.stmt.id, candidate, "fee_exists", PolicyResult(), run_id=None)), daemon=True)
+        thread.start()
+        thread.join(0.5)
+        assert thread.is_alive(), "B must wait for A's statement lock"
+        order.append(("commit", "A"))
+        real_commit()
+    finally:
+        a.close()
+        thread.join(5)  # reclaimed after A is released; B rolls back / closes its own session below
+        assert not thread.is_alive(), "B is still blocked after A committed"
+        b.rollback()
+        b.close()
+    outcome.get_nowait()
+    assert order == [("locked", "A"), ("insert", "A"), ("commit", "A"), ("locked", "B")]
+    (skipped,) = _audit(db_session, "policy_skipped")
+    assert skipped.detail["case_version"] == _reload(db_session, ReconciliationCase, s.case.id).version
