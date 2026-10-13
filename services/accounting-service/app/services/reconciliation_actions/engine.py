@@ -243,6 +243,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         statement = statements[case.statement_id]
         ctx = _context(db, case, statement, actor=actor, label=label, run_id=run_id, request_id=request_id,
                        proposal_id=proposal_id)
+        ctx.lock_set = targets
         if case.status not in OPEN_STATUSES:
             raise CodedConflictError("case_closed", f"case {case.id} is {case.status}")
         if action not in allowed(case):
@@ -423,6 +424,7 @@ def revert_action(db: Session, *, action_id: int, actor: str, label: str,
         case = locks.lock_case(db, original.case_id)
         statement = statements[case.statement_id]
         ctx = _context(db, case, statement, actor=actor, label=label, run_id=None, request_id=request_id)
+        ctx.lock_set = targets
         if statement.mode == "historical" and original.action not in COVERAGE_ACTIONS:
             raise CodedValidationError("action", "historical_statement")
         locks.lock_account_and_barrier(db, targets, statement)

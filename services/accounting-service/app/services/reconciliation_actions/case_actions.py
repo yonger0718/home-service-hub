@@ -11,18 +11,21 @@ from typing import Literal
 from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.models import (
-    InstallmentPlanMap, ReconciliationAction, ReconciliationCase, ScheduleDefinition, ScheduleInstance,
-    StatementCoverage, StatementRevision,
+    AccountStatement, InstallmentPlanMap, ReconciliationAction, ReconciliationCase, ScheduleDefinition,
+    ScheduleInstance, StatementCoverage, StatementRevision,
 )
 from app.schemas.writes import Int32
+from app.services import coverage_service
 from app.services import reconciliation_service as rec
 from app.services import statement_revision_service as revisions
 from app.services.errors import CodedConflictError, CodedValidationError, ValidationError
 
-from . import audit, register
-from .base import ActionBase, ActionParams, Context, Effect, LockSet, NotRevertable, Prepared
+from . import audit, register, snapshots
+from .base import ActionBase, ActionParams, Context, Effect, LockSet, NotRevertable, Prepared, lockset_for
+from .engine_locks import ACTION_BUSY
 
 OPEN_AGAIN = "open"
 
@@ -155,22 +158,62 @@ class LinkInstallmentPlanAction(ActionBase):
 
     # --- revert -------------------------------------------------------------------------------------------------
 
+    PLAN_RULE = "installment"  # matching.py: Representation("installment", …, rule="installment") for a plan-map claim
+
+    @staticmethod
+    def _plan_entries(db: Session, definition_id: int) -> set[int]:
+        posted = db.execute(select(ScheduleInstance.posted_entry_ids)
+                            .where(ScheduleInstance.definition_id == definition_id)).scalars()
+        return {i for ids in posted for i in ids or [] if isinstance(i, int)}
+
+    @classmethod
+    def _other_claims(cls, db: Session, definition_id: int, statement_id: int) -> list[StatementCoverage]:
+        """R1d item 3: active plan-rule coverage of the plan's posted entries on OTHER statements of the account."""
+        entries = sorted(cls._plan_entries(db, definition_id))
+        if not entries:
+            return []
+        return list(db.execute(select(StatementCoverage).where(
+            StatementCoverage.status == "active", StatementCoverage.match_rule == cls.PLAN_RULE,
+            StatementCoverage.entry_id.in_(entries), StatementCoverage.statement_id != statement_id)
+            .order_by(StatementCoverage.id)).scalars())
+
     def revert_lock_targets(self, ctx: Context, action: ReconciliationAction) -> LockSet:
-        targets = super().revert_lock_targets(ctx, action)
         plan = ctx.db.get(InstallmentPlanMap, (action.inverse or {}).get("plan_map_id"))
         if plan is None:
-            return targets
-        return replace(targets, definition_ids=tuple(sorted({*targets.definition_ids, plan.definition_id})))
+            return super().revert_lock_targets(ctx, action)
+        # R1d item 3: the definition FOR UPDATE (freezes the posted set: a posting takes it FOR SHARE), the plan's
+        # posted entries (NOWAIT: a reconcile claiming one holds it first → action_busy) and the other statements
+        # already claiming them (locked ascending with the case's, each swept)
+        entries, groups = snapshots.ids_of(action.after)
+        others = {c.statement_id for c in self._other_claims(ctx.db, plan.definition_id, ctx.statement.id)}
+        targets = lockset_for(ctx.db,
+                              entry_ids={*entries, *(action.touched_entry_ids or ()), *(action.created_entry_ids or ()),
+                                         *self._plan_entries(ctx.db, plan.definition_id)},
+                              group_ids={*groups, *(action.touched_group_ids or ())}, statement_ids=others)
+        return replace(targets, definition_ids=tuple(i for i in targets.definition_ids if i != plan.definition_id),
+                       exclusive_definition_ids=(plan.definition_id,))
+
+    def _check_lock_set(self, ctx: Context, definition_id: int) -> list[StatementCoverage]:
+        """Under the locks, before any mutation: the posted-entry set and the other-statement set re-derived; an
+        entry or statement the engine did not lock (posted or claimed between the unlocked discovery and the
+        locks) is 409 action_busy — the retry discovers and locks the full set. Returns the other claims."""
+        held = ctx.lock_set or LockSet()
+        new_entries = sorted(self._plan_entries(ctx.db, definition_id) - set(held.entry_ids))
+        if new_entries:
+            raise CodedConflictError(ACTION_BUSY, f"entry {new_entries[0]} was posted after discovery; retry")
+        others = self._other_claims(ctx.db, definition_id, ctx.statement.id)
+        late = sorted({c.statement_id for c in others} - set(held.statement_ids))
+        if late:
+            raise CodedConflictError(ACTION_BUSY, f"statement {late[0]} gained a plan claim after discovery; retry")
+        return others
 
     def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
         db = ctx.db
         plan = db.get(InstallmentPlanMap, action.inverse["plan_map_id"])
         if plan is None:
             raise NotRevertable("the plan mapping is gone")
-        posted = db.execute(select(ScheduleInstance.posted_entry_ids)
-                            .where(ScheduleInstance.definition_id == plan.definition_id)).scalars()
-        entries = sorted({i for ids in posted for i in ids or [] if isinstance(i, int)}
-                         | set(action.touched_entry_ids or ()))
+        definition_id = plan.definition_id
+        entries = sorted(self._plan_entries(db, definition_id) | set(action.touched_entry_ids or ()))
         if entries:
             later = db.execute(select(ReconciliationAction.id).where(
                 ReconciliationAction.id > action.id, ReconciliationAction.status == "applied",
@@ -179,12 +222,21 @@ class LinkInstallmentPlanAction(ActionBase):
             ).scalar_one_or_none()
             if later is not None:
                 raise NotRevertable(f"later action {later} touched the plan's entries")
+        others = self._check_lock_set(ctx, definition_id)  # R1d item 3: the last check before any write
+        # --- mutations ---
         db.delete(plan)
         db.flush()
         _reopen(ctx.case)  # so the reconcile keeps this case instead of opening a twin
         db.flush()
         # the installment claim is no longer derived: released (barrier_wait=False as in apply)
         rec.reconcile(db, ctx.statement.id, locked=True, barrier_wait=False)
+        if others:  # R1d item 3: the plan's claims on other statements are no longer derived either
+            coverage_service.release_rows(db, [c.id for c in others], reason="plan_unmapped")
+            statement_ids = sorted({c.statement_id for c in others})
+            for statement in db.execute(select(AccountStatement).where(AccountStatement.id.in_(statement_ids))
+                                        .execution_options(populate_existing=True)).scalars():
+                statement.needs_recheck = True  # ruling 29: a matching reason; its next reconcile raises the case
+            db.flush()
         return Effect(touched_entry_ids=list(action.touched_entry_ids or ()))
 
 
