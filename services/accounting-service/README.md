@@ -172,14 +172,14 @@ otherwise). Amounts are strings; a 422 message starts with a stable code (`code`
 
 | Method and path | Scope | Body → response |
 | --- | --- | --- |
-| `GET /reconciliation/cases/{id}` | `read` | → `CaseDetailOut`: the case row (R1b `CaseOut` fields plus `statement_id`, `revision_id`, `resolved_by`, `resolved_action_id`, `resolved_at`, `deferred_to_period_end`, `deferred_to_statement_id`, `note`), `actions_allowed`, `pending_proposals`, `line` with `matched` and `coverage`. Stale proposals are superseded first. 404 unknown |
+| `GET /reconciliation/cases/{id}` | `read` | → `CaseDetailOut`: the case row (R1b `CaseOut` fields plus `statement_id`, `revision_id`, `resolved_by`, `resolved_action_id`, `resolved_at`, `deferred_to_period_end`, `deferred_to_statement_id`, `note`), `actions_allowed`, `pending_proposals`, `line` with `matched` and `coverage`. Stale proposals are superseded first, which waits briefly for the case's statement lock (R1d). 404 unknown |
 | `POST /reconciliation/cases/{id}/actions` | `write` | `{action, params}` → `ActionOut` (201; 200 with `replayed: true` for an identical earlier request) |
 | `POST /reconciliation/cases/{id}/dismiss` | `write` | `{note}` (1..1000) → `ActionOut`; the `dismiss` action |
 | `GET /reconciliation/actions` | `read` | query `statement_id`, `case_id`, `limit` 1..1000 (200) → `ActionOut[]`, newest first |
 | `POST /reconciliation/actions/{id}/revert` | `write` | → the new `revert` `ActionOut` (201); the original becomes `reverted`, its case reopens at `version + 1` |
 | `GET /reconciliation/audit` | `read` | query `statement_id`, `limit` 1..1000 (200) → `AuditOut[]` (`event`, `actor`, `detail`, `request_id`, ...), newest first |
 | `POST /reconciliation/cases/{id}/proposals` | `propose` | `{action, params, rationale, confidence}` → `ProposalOut` (201); the case becomes `proposed` |
-| `GET /reconciliation/proposals` | `read` | query `status` (`pending`, `applied`, `rejected`, `superseded`), `case_id`, `limit` → `ProposalOut[]`; stale pending rows are superseded first |
+| `GET /reconciliation/proposals` | `read` | query `status` (`pending`, `applied`, `rejected`, `superseded`), `case_id`, `limit` → `ProposalOut[]`; stale pending rows are superseded first; one that could not be (its case is locked by another transaction) is hidden from the listing until it is |
 | `POST /reconciliation/proposals/{id}/apply` | `write` | → `ActionOut` (the stored action applied as `owner`; 201, 200 on replay) |
 | `POST /reconciliation/proposals/{id}/reject` | `write` | optional `{note}` → `ProposalOut`; reopens the case when it was the only live proposal |
 | `POST /accounts/{id}/statements` | `write` | `ManualStatementIn` (the import header and up to 2000 `lines`, no run/lease/file fields) → `RevisionOut` (201); `origin='manual'`, audited, policy runs after the commit when live |
@@ -227,14 +227,11 @@ Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `d
   account then list up to five `context.sibling_candidates` (`entry_id`, `account_id`, `flow`, `posted_date`); the owner
   matches one with `match {..., "allow_sibling": true}`. Agents cannot propose `allow_sibling`.
 
-Enabling the policy (it does nothing until every step is done): (1) keep `dirty_enabled` on and reconcile working;
+Enabling the policy (it does nothing until every step is done): (0) deploy R1d first (the policy's claims, budget, skip audit, supersede order and plan-revert fixes are not in R1c); (1) keep `dirty_enabled` on and reconcile working;
 (2) set `per_currency_enabled` and the caps first, `PUT /settings/reconciliation` with the full body and a `policy` that
 still has `enabled: false`; (3) enable ONE action (`actions.create_system_entry.enabled: true`, with its `max_amount`),
 then set `policy.enabled: true`; (4) watch `GET /reconciliation/audit` for `policy_applied`, `policy_proposed` and
-`policy_skipped` and `GET /reconciliation/actions`; revert anything wrong promptly: a policy action can be reverted only
-until the next reconcile of its statement rewrites its coverage (the claim becomes an `exact`/`auto` one and no longer
-matches the action's recorded coverage and snapshot, so the revert is refused); after that, edit or delete the booked
-entry instead; (5) add `attach_fee`, and only last `accept_agent_proposals: true` with `actions.match.enabled: true` and
+`policy_skipped` and `GET /reconciliation/actions`; revert anything wrong with `POST /reconciliation/actions/{id}/revert`: policy claims are `agent` coverage, kept across reconciles and revertable like the owner's (R1d), until the booked rows are edited (the revert is then refused); (5) add `attach_fee`, and only last `accept_agent_proposals: true` with `actions.match.enabled: true` and
 a `max_amount` above 0 (the default `"0"` means an agent match is never applied). The policy runs after the matching transaction committed (reconcile route, revision submit
 and manual statement of a live statement, each statement of the daily sweep). It acts only on live statements without an
 open `parse_review` or `statement_conflict`, `conflict_open` or `needs_recheck`; it books only a bank-only fee, interest or
@@ -243,6 +240,7 @@ reward line (`create_system_entry`), attaches the expected FX fee (`attach_fee`)
 and `per_statement_total` per statement (counted from applied policy actions), and `monthly_total` per month (the calendar
 month of the application day) and currency in `policy_budget`. A candidate over a cap becomes a proposal authored `policy`
 for the owner; a candidate that fails is rolled back and audited `policy_skipped`. A revert does not refund the budget.
+R1d behaviours: a deterministic skip is audited `policy_skipped` once per case version (`detail.case_version`); "agents" for `accept_agent_proposals` are propose-only tokens (`ACCOUNTING_TOKEN_SCOPES`: `propose` without `write`/`legacy`; an owner token's proposal is the owner's draft, and with scopes unconfigured every non-policy author counts); the engine answers 422 `budget` to a policy apply without a budget; the `attach_fee` amount is recomputed under the lock (a changed one is skipped as `candidate_changed`); `revert` of a `link_installment_plan` locks the plan and releases the claims it produced on the account's other statements (reason `plan_unmapped`, those statements get `needs_recheck`, a confirmed one keeps its status but refuses confirm until its next reconcile), answering 409 `action_busy` when a posting or claim raced it (retry). Known limitation: two plan maps for one definition under different `plan_key`s on an account are not refused, and reverting one releases the other's claims too (self-healing on the next reconcile).
 Turn it off with `policy.enabled: false`.
 
 Confirm (`POST /accounts/{id}/statements/{sid}/confirm`): first processes the deferrals other statements pointed here (an
