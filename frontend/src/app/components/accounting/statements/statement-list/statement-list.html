@@ -1,0 +1,81 @@
+<section class="statements">
+  <header class="st-header">
+    @if (isPhone()) {
+      <a
+        [routerLink]="['/accounting/accounts', accountId()]"
+        class="back-link"
+        aria-label="返回存摺"
+        >‹</a
+      >
+    }
+    <h2>對帳帳單</h2>
+  </header>
+
+  @if (loadError()) {
+    <div class="load-error-block">
+      <p class="load-error">帳單讀取失敗</p>
+      <button type="button" class="retry" (click)="retry()">重試</button>
+    </div>
+  } @else if (loading()) {
+    <app-skeleton rows="3" />
+  } @else {
+    <h3 class="section">對帳中</h3>
+    @for (statement of live(); track statement.id) {
+      <a
+        class="row statement-row"
+        [routerLink]="['/accounting/accounts', accountId(), 'statements', statement.id]"
+      >
+        <span class="name">{{ periodText(statement.period_start, statement.period_end) }}</span>
+        <span class="sub"
+          >對帳 {{ reconProgress(statement).k }}/{{ reconProgress(statement).n }}</span
+        >
+        <span class="pills">
+          @for (chip of statementChips(statement); track chip.label) {
+            <span
+              class="pill"
+              [class.warn]="chip.tone === 'warn'"
+              [class.ok]="chip.tone === 'ok'"
+              >{{ chip.label }}</span
+            >
+          }
+        </span>
+      </a>
+    } @empty {
+      <p class="muted">沒有進行中的帳單</p>
+    }
+
+    <h3 class="section">歷史期間</h3>
+    <table class="history">
+      <thead>
+        <tr>
+          <th>期間</th>
+          <th>已對上</th>
+          <th>已說明</th>
+          <th>未對上</th>
+          <th>一致</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (statement of historical(); track statement.id) {
+          <tr>
+            <td>
+              <a [routerLink]="['/accounting/accounts', accountId(), 'statements', statement.id]">
+                {{ periodText(statement.period_start, statement.period_end) }}
+              </a>
+            </td>
+            <td>{{ statement.matched_count }}</td>
+            <td>{{ statement.explained_count }}</td>
+            <td>{{ statement.open_case_count }}</td>
+            <td [attr.aria-label]="periodConsistent(statement) ? '一致' : '不一致'">
+              {{ periodConsistent(statement) ? '✓' : '✗' }}
+            </td>
+          </tr>
+        } @empty {
+          <tr>
+            <td class="empty-history" colspan="5">沒有歷史期間</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  }
+</section>

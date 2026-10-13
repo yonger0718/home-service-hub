@@ -1,0 +1,103 @@
+:host {
+  display: block;
+}
+
+.statements {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.st-header {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+
+  h2 {
+    font-size: 1.15rem;
+    font-weight: 800;
+    margin: 0;
+  }
+}
+
+.back-link {
+  color: var(--app-primary);
+  font-size: 1.5rem;
+  font-weight: 700;
+  padding: 0 0.4rem 0 0;
+  text-decoration: none;
+}
+
+.section {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  margin: 14px 0 4px;
+}
+
+.muted,
+.empty-history {
+  color: var(--app-text-muted);
+  margin: 8px 0;
+}
+
+.load-error {
+  color: var(--tone-neg, var(--c-red));
+  margin: 8px 0 4px;
+}
+
+.retry {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 4px 12px;
+}
+
+.statement-row {
+  grid-template-areas:
+    'name'
+    'sub'
+    'pills';
+  grid-template-columns: minmax(0, 1fr);
+  text-decoration: none;
+}
+
+.pill.warn {
+  background: var(--app-state-warning-bg);
+}
+
+.pill.ok {
+  background: var(--app-surface-soft);
+}
+
+.history {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  width: 100%;
+
+  th,
+  td {
+    border-bottom: 1px solid var(--app-border);
+    padding: 8px 4px;
+    text-align: right;
+  }
+
+  th:first-child,
+  td:first-child {
+    text-align: left;
+  }
+
+  th {
+    color: var(--app-text-muted);
+    font-size: 0.72rem;
+    font-weight: 800;
+  }
+
+  a {
+    color: inherit;
+    font-weight: 700;
+  }
+}

@@ -18,6 +18,8 @@ const PAGES: [string, string][] = [
   ['/accounting/accounts/new', 'app-account-settings'],
   ['/accounting/accounts/5', 'app-accounting-account-entries'],
   ['/accounting/accounts/5/settings', 'app-account-settings'],
+  ['/accounting/accounts/5/statements', 'app-statement-list'],
+  ['/accounting/accounts/5/statements/2', 'app-statement-detail'],
   ['/accounting/accounts/5/entries/9', 'app-entry-detail'],
   ['/accounting/accounts/5/entries/9/group', 'app-split-group'],
   ['/accounting/entry', 'app-entry-form'],

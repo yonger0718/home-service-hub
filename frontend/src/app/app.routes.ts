@@ -14,6 +14,8 @@ import { phoneLayoutGuard, wideLayoutGuard } from './services/layout-mode.servic
 const PANE_PAGES: readonly { path: string; list: 'timeline' | 'accounts'; page: AccountingPage }[] = [
   { path: 'accounts/new', list: 'accounts', page: 'accountSettings' },
   { path: 'accounts/:id/settings', list: 'accounts', page: 'accountSettings' },
+  { path: 'accounts/:id/statements/:sid', list: 'accounts', page: 'statementDetail' },
+  { path: 'accounts/:id/statements', list: 'accounts', page: 'statementList' },
   // An entry opened from a passbook keeps the passbook in its URL (✕ / delete return there; ↑ ↓ stay in it).
   { path: 'accounts/:id/entries/:eid/group', list: 'accounts', page: 'splitGroup' },
   { path: 'accounts/:id/entries/:eid', list: 'accounts', page: 'entryDetail' },
