@@ -293,7 +293,7 @@ export function confirmRefusal(err: unknown): FailedCheck[] | null {
   return failed;
 }
 
-/** Open `parse_review` events the detail can attach 資料已變更，待確認 to. */
+/** Open `parse_review` events named by `context.quarantined_event_id`. */
 export function quarantinedEventIds(cases: readonly ReconciliationCase[]): Set<number> {
   const ids = new Set<number>();
   for (const item of cases) {
@@ -304,18 +304,23 @@ export function quarantinedEventIds(cases: readonly ReconciliationCase[]): Set<n
     if (typeof marked === 'number') {
       ids.add(marked);
     }
-    if (
-      item.event_id != null &&
-      (marked != null || typeof item.context?.['equivalence'] === 'string')
-    ) {
-      ids.add(item.event_id);
-    }
   }
   return ids;
 }
 
 export function lineTextChanged(line: StatementLine): boolean {
-  return line.flag === 'text_changed';
+  return line.event_flag === 'text_changed';
+}
+
+/** A line is quarantined from its own status, or from an open parse review of that event. */
+export function lineQuarantined(
+  line: StatementLine,
+  quarantinedEvents: ReadonlySet<number>,
+): boolean {
+  return (
+    line.event_status === 'quarantined' ||
+    (line.event_id != null && quarantinedEvents.has(line.event_id))
+  );
 }
 
 export function buildSegments(
@@ -372,7 +377,7 @@ function lineRow(
       (line.event_id != null && item.event_id === line.event_id && item.kind !== 'entry_unmatched'),
   );
   const textChanged = lineTextChanged(line);
-  const isQuarantined = line.event_id != null && quarantined.has(line.event_id);
+  const isQuarantined = lineQuarantined(line, quarantined);
   const pills = rowPills(textChanged, isQuarantined, related);
   const covered = line.coverage.map((coverage) => coveredRow(coverage, entries));
   return {

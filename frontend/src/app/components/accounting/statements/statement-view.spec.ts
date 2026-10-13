@@ -184,7 +184,8 @@ describe('segments', () => {
             installment_seq: null,
             installment_total: null,
             matched: true,
-            flag: 'text_changed',
+            event_flag: 'text_changed',
+            event_status: 'live',
             coverage: [
               {
                 entry_id: 40,
@@ -313,5 +314,96 @@ describe('segments', () => {
     );
     expect(segments.statementOnly.map((row) => row.title)).toEqual(['資料已變更，待確認']);
     expect(segments.statementOnly[0].quarantined).toBe(true);
+  });
+
+  it('uses event_flag for 文字已變更 and either quarantine signal for 資料已變更', () => {
+    const segments = buildSegments(
+      detail({
+        lines: [
+          {
+            id: 1,
+            event_id: 10,
+            seq: 1,
+            txn_date: null,
+            posted_date: '2026-09-01',
+            merchant_raw: '改過的店',
+            merchant_norm: '改過的店',
+            printed_amount: '-10.0000',
+            flow_amount: '-10.0000',
+            foreign_amount: null,
+            foreign_currency: null,
+            line_kind: 'purchase',
+            installment_seq: null,
+            installment_total: null,
+            matched: true,
+            event_flag: 'text_changed',
+            event_status: 'live',
+            coverage: [],
+          },
+          {
+            id: 2,
+            event_id: 12,
+            seq: 2,
+            txn_date: null,
+            posted_date: '2026-09-02',
+            merchant_raw: '隔離列',
+            merchant_norm: '隔離列',
+            printed_amount: '-20.0000',
+            flow_amount: '-20.0000',
+            foreign_amount: null,
+            foreign_currency: null,
+            line_kind: 'purchase',
+            installment_seq: null,
+            installment_total: null,
+            matched: false,
+            event_flag: null,
+            event_status: 'quarantined',
+            coverage: [],
+          },
+          {
+            id: 3,
+            event_id: 13,
+            seq: 3,
+            txn_date: null,
+            posted_date: '2026-09-04',
+            merchant_raw: '普通列',
+            merchant_norm: '普通列',
+            printed_amount: '-30.0000',
+            flow_amount: '-30.0000',
+            foreign_amount: null,
+            foreign_currency: null,
+            line_kind: 'purchase',
+            installment_seq: null,
+            installment_total: null,
+            matched: false,
+            coverage: [],
+          },
+        ],
+        cases: [
+          {
+            id: 1,
+            kind: 'parse_review',
+            status: 'open',
+            event_id: 13,
+            line_id: 3,
+            entry_id: null,
+            explanation: null,
+            candidates: [],
+            context: { equivalence: 'changed' },
+            version: 1,
+            created_at: '2026-09-21T00:00:00Z',
+          },
+        ],
+      }),
+      new Map(),
+    );
+
+    expect(segments.matched[0].pills).toContain('文字已變更');
+    expect(segments.matched[0].pills).not.toContain('資料已變更，待確認');
+    const quarantined = segments.statementOnly.find((row) => row.title === '隔離列');
+    const plain = segments.statementOnly.find((row) => row.title === '普通列');
+    expect(quarantined?.pills).toContain('資料已變更，待確認');
+    expect(plain?.quarantined).toBe(false);
+    expect(plain?.pills).not.toContain('資料已變更，待確認');
   });
 });

@@ -230,7 +230,7 @@ describe('StatementDetailComponent', () => {
   it('splits the three segments and shows a matched row read-only', () => {
     const body = statement({
       lines: [
-        line({ flag: 'text_changed' }),
+        line({ event_flag: 'text_changed', event_status: 'live' }),
         line({
           id: 2,
           event_id: 11,

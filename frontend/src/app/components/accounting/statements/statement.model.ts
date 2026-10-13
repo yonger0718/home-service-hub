@@ -54,10 +54,12 @@ export interface StatementLine {
   matched: boolean;
   coverage: StatementCoverage[];
   /**
-   * `statement_event.flag`. The current read model does not send it; the row shows 文字已變更 when it is
-   * `text_changed`.
+   * `statement_event.flag`. Optional so a payload from before the field still loads.
+   * The row shows 文字已變更 when this is `text_changed`.
    */
-  flag?: string | null;
+  event_flag?: string | null;
+  /** `live`, `retired`, `quarantined`, or absent on an older payload. */
+  event_status?: string | null;
 }
 
 export interface ReconciliationCase {

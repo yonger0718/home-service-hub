@@ -103,6 +103,8 @@ describe('StatementListComponent', () => {
     expect(text(live.querySelector('.sub'))).toBe('對帳 37/51');
     expect(text(live.querySelector('.pill'))).toBe('對帳中');
 
+    expect(Array.from(el.querySelectorAll('.history th')).map(text)).toContain('未結案');
+    expect(el.querySelector('.history')?.textContent).not.toContain('未對上');
     const rows = Array.from(el.querySelectorAll('.history tbody tr'));
     expect(rows.map((row) => text(row))).toEqual([
       expect.stringContaining('40'),
