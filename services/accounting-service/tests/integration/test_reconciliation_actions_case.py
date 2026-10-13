@@ -409,6 +409,30 @@ def _busy(outcome, code):
     assert isinstance(outcome, CodedConflictError) and outcome.code == code, outcome
 
 
+UNTOUCHED = {"maps": 1, "action": "applied", "case": "resolved", "reverts": 0}
+
+
+def _refused_revert(row, case):
+    """A worker `fn` for `_own_session`: the revert, and when it is refused, `(exc, snapshot)` read in the SAME
+    session before its rollback (anything the refused attempt left in the transaction shows up here, flushed
+    first: the session does not autoflush). A revert that succeeds returns `(row, None)`."""
+    def fn(db):
+        try:
+            return engine.revert_action(db, action_id=row.id, actor="owner", label="owner-test"), None
+        except CodedConflictError as exc:
+            db.flush()
+            return exc, {
+                "maps": db.execute(select(func.count()).select_from(InstallmentPlanMap)).scalar_one(),
+                "action": db.execute(select(ReconciliationAction.status)
+                                     .where(ReconciliationAction.id == row.id)).scalar_one(),
+                "case": db.execute(select(ReconciliationCase.status)
+                                   .where(ReconciliationCase.id == case.id)).scalar_one(),
+                "reverts": db.execute(select(func.count()).select_from(ReconciliationAction)
+                                      .where(ReconciliationAction.action == "revert")).scalar_one(),
+            }
+    return fn
+
+
 @pytest.fixture
 def unmapped_twice(seed, db_session, run):
     """The same unconfirmed plan printed on September (seq 2) and October (seq 3): two installment_unmapped cases."""
@@ -528,10 +552,10 @@ def test_reverting_a_link_is_busy_while_another_statement_reconciles(db_session,
     run = None
     try:
         rec.reconcile(holder, s.oct.id)  # holds October's statement + entry, claim written, not committed
-        run = _Run(_own_session(pg_engine, lambda db: engine.revert_action(
-            db, action_id=row.id, actor="owner", label="owner-test")))
-        _busy(run.result(), "action_busy")
-        assert holder.execute(select(InstallmentPlanMap)).scalars().one() is not None
+        run = _Run(_own_session(pg_engine, _refused_revert(row, s.sep_case)))
+        exc, snapshot = run.result()
+        _busy(exc, "action_busy")
+        assert snapshot == UNTOUCHED  # read in the refused revert's own transaction
         holder.commit()
     finally:
         holder.close()
@@ -586,15 +610,12 @@ def test_an_instance_posted_after_discovery_makes_the_revert_retry(db_session, u
     monkeypatch.setattr(LinkInstallmentPlanAction, "revert_lock_targets", discovery_then_posting)
     run = None
     try:
-        run = _Run(_own_session(pg_engine, lambda db: engine.revert_action(
-            db, action_id=row.id, actor="owner", label="owner-test")))
-        _busy(run.result(), "action_busy")
-        # nothing mutated: map, action and case as before, no revert row
-        assert holder.execute(select(InstallmentPlanMap)).scalars().one() is not None
-        assert _fresh(db_session, ReconciliationAction, row.id).status == "applied"
-        assert _fresh(db_session, ReconciliationCase, s.sep_case.id).status == "resolved"
-        assert db_session.execute(select(ReconciliationAction).where(ReconciliationAction.action == "revert")
-                                  ).scalars().all() == []
+        run = _Run(_own_session(pg_engine, _refused_revert(row, s.sep_case)))
+        exc, snapshot = run.result()
+        _busy(exc, "action_busy")
+        assert "was posted after discovery" in str(exc)  # _check_lock_set's posted-set branch, not a lock conflict
+        # nothing mutated: map, action and case as before, no revert row (read in the revert's own transaction)
+        assert snapshot == UNTOUCHED
         holder.commit()  # B's claim lands
     finally:
         holder.close()
@@ -603,6 +624,41 @@ def test_an_instance_posted_after_discovery_makes_the_revert_retry(db_session, u
     (claim,) = _active(db_session, s.oct.id)
     assert claim.entry_id == fired[0]
     _revert(db_session, row.id)  # the retry discovers the posted entry and October, locks and releases
+    assert _active(db_session, s.oct.id) == [] and _fresh(db_session, AccountStatement, s.oct.id).needs_recheck is True
+    assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
+
+
+def test_a_claim_committed_after_discovery_makes_the_revert_retry(db_session, unmapped_twice, pg_engine, monkeypatch):
+    """`_check_lock_set`'s late-statement branch: between the revert's unlocked discovery (no other statement claims
+    the plan yet) and its locks, October's reconcile commits a claim through the still-valid map. The posted set did
+    not grow, so only the statement re-derivation can notice: action_busy with nothing mutated; the retry discovers
+    October, locks it and releases the claim."""
+    s = unmapped_twice
+    row = _link(db_session, s)
+    real = LinkInstallmentPlanAction.revert_lock_targets
+    fired = []
+
+    def discovery_then_claim(self, ctx, action):
+        targets = real(self, ctx, action)
+        if not fired:
+            fired.append(True)
+            _own_session(pg_engine, lambda db: rec.reconcile(db, s.oct.id), commit=True)()  # October claims, commits
+        return targets
+
+    monkeypatch.setattr(LinkInstallmentPlanAction, "revert_lock_targets", discovery_then_claim)
+    run = None
+    try:
+        run = _Run(_own_session(pg_engine, _refused_revert(row, s.sep_case)))
+        exc, snapshot = run.result()
+        _busy(exc, "action_busy")
+        assert "gained a plan claim" in str(exc)
+        assert snapshot == UNTOUCHED  # read in the refused revert's own transaction
+    finally:
+        if run is not None:
+            run.result()
+    (claim,) = _active(db_session, s.oct.id)
+    assert claim.entry_id == s.oct_entry.id
+    _revert(db_session, row.id)  # the hook has fired: the retry discovers October, locks it and releases the claim
     assert _active(db_session, s.oct.id) == [] and _fresh(db_session, AccountStatement, s.oct.id).needs_recheck is True
     assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
 
@@ -616,11 +672,10 @@ def test_a_posting_in_flight_makes_the_revert_busy(db_session, unmapped_then_pen
     run = None
     try:
         schedule_posting.lock_definition_for_post(poster, s.definition.id)  # a posting holds the definition
-        run = _Run(_own_session(pg_engine, lambda db: engine.revert_action(
-            db, action_id=row.id, actor="owner", label="owner-test")))
-        _busy(run.result(), "action_busy")
-        assert poster.execute(select(InstallmentPlanMap)).scalars().one() is not None
-        assert _fresh(db_session, ReconciliationAction, row.id).status == "applied"
+        run = _Run(_own_session(pg_engine, _refused_revert(row, s.sep_case)))
+        exc, snapshot = run.result()
+        _busy(exc, "action_busy")
+        assert snapshot == UNTOUCHED  # read in the refused revert's own transaction
         poster.commit()
     finally:
         poster.close()
