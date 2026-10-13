@@ -65,6 +65,7 @@ export class StatementDetailComponent implements DirtyAware {
   readonly dirty = inject(DirtyFormRegistry);
 
   private requestId = 0;
+  private entriesRequest = 0;
 
   readonly accountId = signal(0);
   readonly statementId = signal(0);
@@ -72,6 +73,7 @@ export class StatementDetailComponent implements DirtyAware {
   readonly summary = signal<AccountPeriodSummary | null>(null);
   readonly entries = signal<ReadonlyMap<number, LedgerEntry>>(new Map());
   readonly entriesTruncated = signal(false);
+  readonly entriesError = signal(false);
   readonly loading = signal(true);
   readonly loadError = signal(false);
   readonly summaryError = signal(false);
@@ -161,6 +163,15 @@ export class StatementDetailComponent implements DirtyAware {
 
   retry(): void {
     this.load();
+  }
+
+  /** Re-reads the period entries without blanking the statement. */
+  retryEntries(): void {
+    const detail = this.detail();
+    if (!detail) {
+      return;
+    }
+    this.loadEntries(this.requestId, detail);
   }
 
   setSegment(key: SegmentKey): void {
@@ -321,6 +332,7 @@ export class StatementDetailComponent implements DirtyAware {
     this.loading.set(true);
     this.loadError.set(false);
     this.summaryError.set(false);
+    this.entriesError.set(false);
     this.detail.set(null);
     this.summary.set(null);
     this.entries.set(new Map());
@@ -362,6 +374,11 @@ export class StatementDetailComponent implements DirtyAware {
           }
         },
       });
+    this.loadEntries(id, detail);
+  }
+
+  private loadEntries(id: number, detail: StatementDetail): void {
+    const ticket = ++this.entriesRequest;
     this.accounting
       .getEntries(detail.account_id, {
         date_from: detail.period_start,
@@ -370,16 +387,20 @@ export class StatementDetailComponent implements DirtyAware {
       })
       .subscribe({
         next: (page) => {
-          if (id !== this.requestId) {
+          if (id !== this.requestId || ticket !== this.entriesRequest) {
             return;
           }
+          this.entriesError.set(false);
           this.entries.set(new Map(page.items.map((entry) => [entry.id, entry])));
           this.entriesTruncated.set(page.total > page.items.length);
         },
         error: () => {
-          if (id === this.requestId) {
-            this.entries.set(new Map());
+          if (id !== this.requestId || ticket !== this.entriesRequest) {
+            return;
           }
+          this.entriesError.set(true);
+          this.entries.set(new Map());
+          this.entriesTruncated.set(false);
         },
       });
   }

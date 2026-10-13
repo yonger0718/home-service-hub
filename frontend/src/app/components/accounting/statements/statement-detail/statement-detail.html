@@ -124,49 +124,56 @@
         <p class="muted">帳本記錄超過 {{ 500 }} 筆，僅顯示前 500 筆。</p>
       }
 
-      @for (row of rows(); track row.key) {
-        <button
-          type="button"
-          class="row"
-          [attr.aria-expanded]="expanded() === row.key"
-          (click)="toggle(row.key)"
-        >
-          <span class="ico">·</span>
-          <span class="name">{{ row.title }}</span>
-          <span class="sub">{{ row.sub }}</span>
-          <span class="amt" [class.neg]="+row.amount < 0" [class.pos]="+row.amount > 0">
-            {{ formatMoney(row.amount, statement.currency, { sign: true }) }}
-          </span>
-          <span class="pills">
-            @for (pill of row.pills; track pill) {
-              <span
-                class="pill"
-                [class.review]="pill === '文字已變更' || pill === '資料已變更，待確認'"
-                >{{ pill }}</span
-              >
-            }
-          </span>
-        </button>
-        @if (expanded() === row.key) {
-          <div class="match-panel">
-            @if (row.matchRules.length > 0) {
-              <p>對帳規則：{{ ruleText(row) }}</p>
-            }
-            @for (covered of row.covered; track $index) {
-              <p class="covered">
-                {{ roleLabel(covered.role) }} {{ covered.title }}
-                @if (covered.flow) {
-                  <span>{{ formatMoney(covered.flow, statement.currency, { sign: true }) }}</span>
-                }
-              </p>
-            }
-            @if (row.caseId !== null) {
-              <p class="muted">待處理，操作在下一步。</p>
-            }
-          </div>
+      @if (entriesError() && (segment() === 'matched' || segment() === 'ledger')) {
+        <div class="load-error-block entries-error">
+          <p class="load-error">帳本讀取失敗</p>
+          <button type="button" class="retry entries-retry" (click)="retryEntries()">重試</button>
+        </div>
+      } @else {
+        @for (row of rows(); track row.key) {
+          <button
+            type="button"
+            class="row"
+            [attr.aria-expanded]="expanded() === row.key"
+            (click)="toggle(row.key)"
+          >
+            <span class="ico">·</span>
+            <span class="name">{{ row.title }}</span>
+            <span class="sub">{{ row.sub }}</span>
+            <span class="amt" [class.neg]="+row.amount < 0" [class.pos]="+row.amount > 0">
+              {{ formatMoney(row.amount, statement.currency, { sign: true }) }}
+            </span>
+            <span class="pills">
+              @for (pill of row.pills; track pill) {
+                <span
+                  class="pill"
+                  [class.review]="pill === '文字已變更' || pill === '資料已變更，待確認'"
+                  >{{ pill }}</span
+                >
+              }
+            </span>
+          </button>
+          @if (expanded() === row.key) {
+            <div class="match-panel">
+              @if (row.matchRules.length > 0) {
+                <p>對帳規則：{{ ruleText(row) }}</p>
+              }
+              @for (covered of row.covered; track $index) {
+                <p class="covered">
+                  {{ roleLabel(covered.role) }} {{ covered.title }}
+                  @if (covered.flow) {
+                    <span>{{ formatMoney(covered.flow, statement.currency, { sign: true }) }}</span>
+                  }
+                </p>
+              }
+              @if (row.caseId !== null) {
+                <p class="muted">待處理，操作在下一步。</p>
+              }
+            </div>
+          }
+        } @empty {
+          <p class="muted">這個分類沒有項目</p>
         }
-      } @empty {
-        <p class="muted">這個分類沒有項目</p>
       }
     }
   }

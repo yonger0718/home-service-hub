@@ -220,6 +220,67 @@ describe('StatementDetailComponent', () => {
     expect(el.querySelector('.load-error-block')).toBeNull();
   });
 
+  it('shows 帳本讀取失敗 instead of an empty segment when entries fail, then renders rows after retry', () => {
+    const body = statement({
+      lines: [
+        line(),
+        line({
+          id: 2,
+          event_id: 11,
+          merchant_raw: '屈臣氏',
+          merchant_norm: '屈臣氏',
+          printed_amount: '-50.0000',
+          flow_amount: '-50.0000',
+          matched: false,
+          coverage: [],
+        }),
+      ],
+      cases: [
+        item({ id: 8, kind: 'entry_unmatched', event_id: null, line_id: null, entry_id: 40 }),
+      ],
+    });
+    const fixture = render();
+    http.expectOne('/api/accounting/accounts/6/statements/1').flush(body);
+    http.expectOne((r) => r.url === '/api/accounting/accounts/6/summary').flush(summary());
+    http
+      .expectOne((r) => r.url === '/api/accounting/accounts/6/entries')
+      .flush('nope', { status: 500, statusText: 'Server Error' });
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+
+    expect(text(el.querySelector('.entries-error .load-error'))).toBe('帳本讀取失敗');
+    expect(el.textContent).not.toContain('這個分類沒有項目');
+    expect(el.querySelector('.row')).toBeNull();
+
+    el.querySelectorAll<HTMLButtonElement>('[role="radio"]')[2].click();
+    fixture.detectChanges();
+    expect(text(el.querySelector('.entries-error .load-error'))).toBe('帳本讀取失敗');
+    expect(el.textContent).not.toContain('這個分類沒有項目');
+    expect(el.querySelector('.row')).toBeNull();
+
+    el.querySelectorAll<HTMLButtonElement>('[role="radio"]')[1].click();
+    fixture.detectChanges();
+    expect(el.querySelector('.entries-error')).toBeNull();
+    expect(text(el.querySelector('.row .name'))).toBe('屈臣氏');
+
+    el.querySelectorAll<HTMLButtonElement>('[role="radio"]')[0].click();
+    fixture.detectChanges();
+    el.querySelector<HTMLButtonElement>('.entries-retry')!.click();
+    fixture.detectChanges();
+    const retry = http.expectOne((r) => r.url === '/api/accounting/accounts/6/entries');
+    expect(retry.request.params.get('date_from')).toBe('2026-08-21');
+    expect(retry.request.params.get('date_to')).toBe('2026-09-20');
+    retry.flush({ items: [LUNCH], total: 1, limit: 500, offset: 0 });
+    fixture.detectChanges();
+
+    expect(el.querySelector('.entries-error')).toBeNull();
+    expect(el.textContent).not.toContain('這個分類沒有項目');
+    expect(text(el.querySelector('.row .name'))).toBe('誠品書店');
+    el.querySelector<HTMLButtonElement>('.row')!.click();
+    fixture.detectChanges();
+    expect(text(el.querySelector('.match-panel'))).toContain('本金 午餐');
+  });
+
   it('hides actions on a historical statement', () => {
     const fixture = loaded(statement({ mode: 'historical', status: 'reconciled' }));
     const el = fixture.nativeElement as HTMLElement;
