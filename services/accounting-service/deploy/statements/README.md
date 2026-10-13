@@ -93,7 +93,7 @@ owner's interactive CLI and the Multica agents.
     chmod 400 "$dst"/.credentials.json; chmod 500 "$dst"
 
 The worker login is created the same way (`.../claude`, then `chmod 700` the directory and `chmod 600 .credentials.json`).
-After a new login run `gate.sh` again so the gate key (which hashes the contents of the login directory's files up to 1 MiB, `size:mtime_ns` above that, excluding the top-level `.credentials.json`) matches. The operator gate runs the canary with this login too when the directory exists.
+After a new login run `gate.sh` again so the gate key (which hashes the contents of the login directory's files up to 1 MiB, `size:mtime_ns` above that, excluding the top-level `.credentials.json`) matches. The operator gate runs the canary with this login too when the directory exists. An expired OAuth access token makes the sandboxed CLI emit `system/api_retry` events before it refreshes (the parser ignores them since 2026-10-13); the read-only `claude-verify` copy cannot refresh, so re-take it (chmod 500/400) after any refresh, or `verify` fails with `auth`.
 
 ## Pinned CLI copy
 
