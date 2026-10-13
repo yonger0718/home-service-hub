@@ -25,7 +25,7 @@ STDOUT_CAP = 2 * 1024 * 1024
 STRUCTURED_TOOL = "StructuredOutput"
 CANARY = "MASKED STATEMENT CANARY\n" + "\n".join(f"2026/09/{i:02d} CANARY SHOP {i} 100" for i in range(1, 12))
 GATE_MAX_AGE = timedelta(hours=24)
-IGNORED_SYSTEM_SUBTYPES = ("thinking_tokens", "ui_invalidate")  # CLI housekeeping, ignored anywhere
+IGNORED_SYSTEM_SUBTYPES = ("thinking_tokens", "ui_invalidate", "api_retry")  # CLI housekeeping and API retries, ignored anywhere
 FORBIDDEN_PREFIXES = ("hook", "subagent", "permission")
 
 

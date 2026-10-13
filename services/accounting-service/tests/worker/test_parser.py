@@ -338,6 +338,16 @@ def test_ignored_system_subtypes_are_accepted_anywhere(cfg, tmp_path):
 
 
 
+def test_api_retry_system_events_are_accepted_anywhere():
+    """The CLI emits `system/api_retry` while it retries a failed API call (a 401 on an expired OAuth access token,
+    a 5xx); the stream goes on to the refresh/retry and the normal messages. Rejecting it as unknown aborted the
+    parser before the retry could succeed (Phase B gate, 2026-10-13)."""
+    v = parser.StreamValidator()
+    v.feed(b'{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":566,"error_status":401,"error":"authentication_failed"}')
+    v.feed(b'{"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"retry_delay_ms":1066,"error_status":401,"error":"authentication_failed"}')
+    assert v.violation is None
+
+
 def test_failed_gate_keeps_the_observed_events(cfg, tmp_path):
     fake_claude.write(tmp_path / "claude", fake_claude.transcript(other_system_subtype=True))
     report = parser.Parser(cfg, SubprocessRunner()).gate()
