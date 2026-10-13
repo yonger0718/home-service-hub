@@ -200,7 +200,8 @@ def test_create_system_entry_books_a_bank_only_fee_for_policy_and_reverts(seed, 
     (case,) = _cases(db_session, stmt.id, "open")
     assert case.context.get("hint") == "bank_only"
 
-    row = _apply(db_session, case, "create_system_entry", {"kind": "fee"}, actor="policy", label="policy")
+    row = _apply(db_session, case, "create_system_entry", {"kind": "fee"}, actor="policy", label="policy",
+                 budget=(date(2026, 10, 1), "TWD", Decimal("1200")))
 
     (entry,) = _booked(db_session)
     assert (entry.kind, entry.amount, entry.category_id, entry.needs_review, entry.entry_date, entry.posted_date) == (
@@ -208,7 +209,7 @@ def test_create_system_entry_books_a_bank_only_fee_for_policy_and_reverts(seed, 
     assert db_session.get(Category, entry.category_id).kind == "fee"
     assert entry.description.startswith(PREFIX)
     (claim,) = _active(db_session, stmt.id)
-    assert (claim.entry_id, claim.match_kind, claim.match_rule) == (entry.id, "auto", "create_system_entry")
+    assert (claim.entry_id, claim.match_kind, claim.match_rule) == (entry.id, "agent", "create_system_entry")
     assert row.effect_slot == "create"
 
     _revert(db_session, row.id)
@@ -336,10 +337,26 @@ def test_attach_fee_books_the_expected_fee_claims_both_and_reverts(fx_pair, db_s
     assert [c.id for c in _fee_children(db_session, s.entry.id)] == [child.id]
 
 
-def test_attach_fee_policy_claims_as_auto(fx_pair, db_session):
+def test_attach_fee_policy_claims_as_agent(fx_pair, db_session):
     s = fx_pair
-    _apply(db_session, s.case, "attach_fee", {"entry_id": s.entry.id}, actor="policy", label="policy")
-    assert {r.match_kind for r in _active(db_session, s.stmt.id)} == {"auto"}
+    _apply(db_session, s.case, "attach_fee", {"entry_id": s.entry.id}, actor="policy", label="policy",
+           budget=(date(2026, 10, 1), "TWD", Decimal("15")))
+    assert {r.match_kind for r in _active(db_session, s.stmt.id)} == {"agent"}
+
+
+def test_policy_attach_fee_survives_a_reconcile_and_reverts(db_session, fx_pair):
+    s = fx_pair
+    row = _apply(db_session, s.case, "attach_fee", {"entry_id": s.entry.id}, actor="policy", label="policy",
+                 budget=(date(2026, 10, 1), "TWD", Decimal("15")))
+    before = sorted(c.id for c in _active(db_session, s.stmt.id))
+    assert {c.match_kind for c in _active(db_session, s.stmt.id)} == {"agent"}
+
+    _reconcile(db_session, s.stmt.id)
+
+    assert sorted(c.id for c in _active(db_session, s.stmt.id)) == before
+    _revert(db_session, row.id)
+    assert _active(db_session, s.stmt.id) == []
+    assert _fresh(db_session, ReconciliationAction, row.id).status == "reverted"
 
 
 def test_a_second_fee_on_the_same_entry_is_fee_exists(fx_pair, db_session):

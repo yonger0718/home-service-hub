@@ -1,0 +1,10 @@
+## 1. R1d implementation (plan `docs/superpowers/plans/2026-10-12-statement-reconciliation-r1d.md`; commit ranges from `git log --oneline 5995943..HEAD`)
+
+- [x] 1. Policy claims are `agent` coverage (`8dc9d9f`, `97eb447`)
+- [x] 2. `supersede_stale` statement, case, proposal order; listing hides stale rows (`24f3930`, `d67433d`)
+- [x] 3. Reverting a plan link releases the plan's claims everywhere (`87a0737`, `0e0ae29`)
+- [x] 4. `attach_fee` amount recomputed under the lock (`3a28da7`)
+- [x] 5. `policy_skipped` audited once per case version (`81acbf0`, `7e197dd`, `57ffd9b`)
+- [x] 6. Engine requires a budget for the policy actor (`6796361`)
+- [x] 7. Agent proposals come from propose-only tokens (`03d05a2`)
+- [x] 8. OpenSpec delta, README, spec section 17 R1d notes, full suite (this commit)

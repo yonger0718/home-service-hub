@@ -1,10 +1,14 @@
 """Agent proposals (R1c Task 9; rulings 21, 27, 31): create, list with supersession on read, apply through the
 engine, reject, the locking races and `agent` coverage surviving reconcile. Synthetic data only."""
+import queue
+import threading
 from datetime import date
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, text, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app import auth
@@ -13,10 +17,11 @@ from app.models import (
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import proposal_service
+from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.coverage_actions import MatchAction
-from tests.helpers import race
+from tests.helpers import race, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _code, _line, _reconcile, _submit, run,
 )
@@ -239,7 +244,7 @@ def test_a_policy_applied_proposal_writes_agent_coverage_that_reconcile_keeps(cl
     pid = _propose(client, s)["id"]
     row, _ = engine.apply_action(db_session, case_id=s.case.id, action="match",
                                  params={"line_id": s.line.id, "entry_id": s.entry.id}, actor="policy",
-                                 label="policy", proposal_id=pid)
+                                 label="policy", proposal_id=pid, budget=(date(2026, 10, 1), "TWD", Decimal("580")))
     db_session.commit()
     (claim,) = _active(db_session, s.stmt.id)
     assert claim.match_kind == "agent" and row.proposal_id == pid
@@ -247,6 +252,16 @@ def test_a_policy_applied_proposal_writes_agent_coverage_that_reconcile_keeps(cl
     _reconcile(db_session, s.stmt.id)
     (kept,) = _active(db_session, s.stmt.id)
     assert kept.id == claim.id and kept.match_kind == "agent"
+
+
+def test_a_policy_match_without_a_proposal_still_writes_agent_coverage(db_session, unmatched):
+    s = unmatched
+    engine.apply_action(db_session, case_id=s.case.id, action="match",
+                        params={"line_id": s.line.id, "entry_id": s.entry.id}, actor="policy",
+                        label="policy", budget=(date(2026, 10, 1), "TWD", Decimal("580")))
+    db_session.commit()
+    (claim,) = _active(db_session, s.stmt.id)
+    assert claim.match_kind == "agent"
 
 
 # --- races ---------------------------------------------------------------------------------------------------------
@@ -415,7 +430,8 @@ def test_the_engine_refuses_an_action_that_is_not_the_proposals(unmatched, db_se
     with pytest.raises(CodedConflictError) as info:
         engine.apply_action(db_session, case_id=s.case.id, action="match",
                             params={"line_id": s.line.id, "entry_id": s.entry.id, "with_children": True},
-                            actor="policy", label="policy", proposal_id=pid)
+                            actor="policy", label="policy", proposal_id=pid,
+                            budget=(date(2026, 10, 1), "TWD", Decimal("580")))
     db_session.rollback()
     assert info.value.code == "proposal_mismatch"
     with pytest.raises(CodedConflictError) as info:
@@ -509,3 +525,158 @@ def test_a_version_bump_during_prepare_is_persisted_as_superseded_by_the_route(c
     assert _reload(db_session, ReconciliationProposal, pid).status == "superseded"
     assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
     assert _actions(db_session) == []
+
+
+def _proposals(db, **where):
+    db.expire_all()
+    return db.execute(select(ReconciliationProposal).filter_by(**where)
+                      .order_by(ReconciliationProposal.id)).scalars().all()
+
+
+def _stale_pending(db, s):
+    """A pending proposal on s.case made at the previous version (the case moved on); returns its id."""
+    pid = _make(db, s)
+    db.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+               .values(version=ReconciliationCase.version + 1))
+    db.commit()
+    return pid
+
+
+def _hold_case(db, s):
+    db.execute(select(ReconciliationCase).where(ReconciliationCase.id == s.case.id).with_for_update())
+
+
+def _hold_statement(db, s):
+    rec._lock_statement(db, s.stmt.id)
+
+
+def _global_supersede_while(pg_engine, hold, s):
+    """Run the global helper while `hold(session, s)` keeps a row locked; returns (its result, whether it waited)."""
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder, other = factory(), factory()
+    out: queue.Queue = queue.Queue()
+    try:
+        hold(holder, s)
+        def work():
+            try:
+                out.put(proposal_service.supersede_stale(other))
+            except Exception as exc:  # noqa: BLE001  (re-raised below)
+                out.put(exc)
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        thread.join(2)
+        waited = thread.is_alive()
+        holder.commit()
+        thread.join(5)
+        assert not thread.is_alive()
+        result = out.get_nowait()
+        if isinstance(result, Exception):
+            raise result
+        other.commit()
+        return result, waited
+    finally:
+        holder.close()
+        other.close()
+
+
+@pytest.mark.parametrize("hold", [_hold_case, _hold_statement], ids=["case", "statement"])
+def test_global_supersede_skips_a_locked_row(unmatched, db_session, pg_engine, hold):
+    s = unmatched
+    _stale_pending(db_session, s)
+    result, waited = _global_supersede_while(pg_engine, hold, s)
+    assert (result, waited) == (0, False), "the global helper must neither wait nor supersede a held row"
+    assert proposal_service.supersede_stale(db_session) == 1  # released: the next call does it durably
+    db_session.commit()
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+
+
+@pytest.mark.parametrize("hold", [_hold_case, _hold_statement], ids=["case", "statement"])
+def test_scoped_supersede_waits_for_the_lock(unmatched, db_session, pg_engine, hold):
+    s = unmatched
+    _stale_pending(db_session, s)
+    outcome = race(pg_engine, first=lambda db: hold(db, s),
+                   second=lambda db: proposal_service.supersede_stale(db, case_id=s.case.id))
+    assert outcome == "committed"
+    (proposal,) = _proposals(db_session, case_id=s.case.id)
+    assert proposal.status == "superseded"
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"
+
+
+def test_listing_hides_a_stale_pending_proposal_it_could_not_supersede(unmatched, db_session, pg_engine):
+    s = unmatched
+    pid = _stale_pending(db_session, s)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder = factory()
+    out: queue.Queue = queue.Queue()
+
+    def list_in_worker():
+        worker = factory()
+        try:
+            listed = proposal_service.list_proposals(worker)  # global supersede skips the held case
+            worker.commit()
+            out.put([p.id for p in listed])
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            out.put(exc)
+        finally:
+            worker.close()
+
+    try:
+        _hold_case(holder, s)
+        thread = threading.Thread(target=list_in_worker, daemon=True)
+        thread.start()
+        thread.join(2)
+        assert not thread.is_alive(), "the listing must not wait for a held case"
+        assert out.get_nowait() == []
+        assert _proposals(db_session, case_id=s.case.id)[0].status == "pending"  # still pending in the table
+    finally:
+        holder.commit()
+        holder.close()
+        thread.join(5)
+    listed = proposal_service.list_proposals(db_session)
+    db_session.commit()
+    assert [(p.id, p.status) for p in listed] == [(pid, "superseded")]
+
+
+def test_scoped_supersede_holds_nothing_while_it_waits_for_the_statement(unmatched, db_session, pg_engine):
+    """AGENT-109 Must 1: a scoped helper waiting for the statement must not already hold the case or the proposal."""
+    s = unmatched
+    pid = _stale_pending(db_session, s)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    holder, worker = factory(), factory()
+    out: queue.Queue = queue.Queue()
+
+    def work():
+        try:
+            proposal_service.supersede_stale(worker, case_id=s.case.id)
+            worker.commit()
+            out.put("committed")
+        except Exception as exc:  # noqa: BLE001  (asserted below)
+            out.put(exc)
+
+    thread = None
+    try:
+        rec._lock_statement(holder, s.stmt.id)
+        holder_pid = holder.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        worker_pid = worker.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+        wait_until_blocked(pg_engine, worker_pid, blocker_pid=holder_pid)
+        try:
+            holder.execute(select(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                           .with_for_update(nowait=True))
+            holder.execute(select(ReconciliationProposal).where(ReconciliationProposal.id == pid)
+                           .with_for_update(nowait=True))
+        except OperationalError as exc:
+            pytest.fail(f"the waiting scoped helper already holds the case or the proposal: {exc}")
+    finally:
+        holder.commit()
+        holder.close()
+        if thread is not None:
+            thread.join(5)
+    assert not thread.is_alive()
+    assert out.get_nowait() == "committed"
+    worker.close()
+    (proposal,) = _proposals(db_session, case_id=s.case.id)
+    assert proposal.status == "superseded"
+    assert _reload(db_session, ReconciliationCase, s.case.id).status == "open"

@@ -8,7 +8,7 @@ before they select or answer, so "superseded on read" is durable even when the r
 commit."""
 from __future__ import annotations
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models import AccountStatement, ReconciliationCase, ReconciliationProposal
@@ -136,31 +136,57 @@ def reopen_idle(db: Session, case_ids) -> None:
 
 def supersede_stale(db: Session, *, case_id: int | None = None) -> int:
     """Pending proposals whose case moved on (`case_version < case.version`) → superseded, audited, and a `proposed`
-    case left without a live proposal reopens. `case_id` limits it to one case. Returns how many."""
-    stale = (select(ReconciliationCase.id).where(ReconciliationCase.id == ReconciliationProposal.case_id,
-                                                 ReconciliationProposal.case_version < ReconciliationCase.version)
-             .exists())
+    case left without a live proposal reopens. `case_id` limits it to one case. Returns how many.
+    R1d item 2: the statements of those cases are locked first (ascending), then the cases (ascending), then the
+    proposals are updated — `FOR UPDATE SKIP LOCKED` on statements and cases in the global form (a held row is
+    left to its holder's own path or the next call) and `FOR UPDATE` when scoped. The statement lock is required:
+    the audit row's FK takes FOR KEY SHARE on the statement, which conflicts with a FOR UPDATE held elsewhere;
+    taking it first makes this helper's order a prefix of the engine's and of `create_proposal`'s."""
+    stale_case = (select(ReconciliationProposal.id)
+                  .where(ReconciliationProposal.case_id == ReconciliationCase.id,
+                         ReconciliationProposal.status == "pending",
+                         ReconciliationProposal.case_version < ReconciliationCase.version).exists())
+    scope = [ReconciliationCase.id == case_id] if case_id is not None else []
+    skip = case_id is None
+    statements = list(db.execute(
+        select(AccountStatement.id)
+        .where(AccountStatement.id.in_(select(ReconciliationCase.statement_id).where(stale_case, *scope)))
+        .order_by(AccountStatement.id).with_for_update(skip_locked=skip)).scalars())
+    if not statements:
+        return 0
+    cases = list(db.execute(
+        select(ReconciliationCase.id)
+        .where(stale_case, ReconciliationCase.statement_id.in_(statements), *scope)
+        .order_by(ReconciliationCase.id).with_for_update(skip_locked=skip)).scalars())
+    if not cases:
+        return 0
+    stale = (select(ReconciliationCase.id)
+             .where(ReconciliationCase.id == ReconciliationProposal.case_id,
+                    ReconciliationProposal.case_version < ReconciliationCase.version).exists())
     rows = db.execute(update(ReconciliationProposal)
-                      .where(ReconciliationProposal.status == "pending", stale,
-                             *([ReconciliationProposal.case_id == case_id] if case_id is not None else []))
+                      .where(ReconciliationProposal.status == "pending", ReconciliationProposal.case_id.in_(cases), stale)
                       .values(status="superseded", decided_at=func.now())
                       .returning(ReconciliationProposal.id, ReconciliationProposal.case_id)
                       .execution_options(synchronize_session=False)).all()
-    for proposal_id, case_id in sorted(rows):
+    for proposal_id, proposal_case_id in sorted(rows):
         statement_id = db.execute(select(ReconciliationCase.statement_id)
-                                  .where(ReconciliationCase.id == case_id)).scalar_one()
-        audit.record(db, event="proposal_superseded", actor="system", statement_id=statement_id, case_id=case_id,
-                     detail={"proposal_id": proposal_id, "by": "case_version"})
-    reopen_idle(db, [case_id for _, case_id in rows])
-    if rows:
-        db.expire_all()
+                                  .where(ReconciliationCase.id == proposal_case_id)).scalar_one()
+        audit.record(db, event="proposal_superseded", actor="system", statement_id=statement_id,
+                     case_id=proposal_case_id, detail={"proposal_id": proposal_id, "by": "case_version"})
+    reopen_idle(db, cases)
+    db.expire_all()
     return len(rows)
 
 
 def list_proposals(db: Session, *, status: str | None = None, case_id: int | None = None,
                    limit: int = 200) -> list[ReconciliationProposal]:
+    """After the global supersede: a pending proposal whose case moved on but whose rows were held (SKIP LOCKED)
+    is not listed — it is superseded durably by its holder's own path or the next call (ruling 21)."""
     supersede_stale(db)
-    q = select(ReconciliationProposal)
+    current = or_(ReconciliationProposal.status != "pending",
+                  ReconciliationProposal.case_version == ReconciliationCase.version)
+    q = (select(ReconciliationProposal)
+         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationProposal.case_id).where(current))
     if status is not None:
         q = q.where(ReconciliationProposal.status == status)
     if case_id is not None:

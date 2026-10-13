@@ -25,11 +25,16 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from functools import partial
+from typing import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import AccountStatement, ReconciliationAction, ReconciliationCase, ReconciliationProposal
+from app import auth
+from app.models import (
+    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
+    ReconciliationProposal, StatementLine,
+)
 from app.schemas.reconciliation import ProposalIn
 from app.services import coverage_service, ledger_service, proposal_service, settings_service
 from app.services import reconciliation_service as rec
@@ -89,6 +94,19 @@ def _money(value) -> Decimal | None:
     return Decimal(format(amount.normalize(), "f")) if amount.is_finite() else None
 
 
+def _fee_now(db: Session, case: ReconciliationCase, line: StatementLine | None) -> Decimal | None:
+    """R1d item 4: the fee `attach_fee` would book now — |entry.amount − line.flow_amount| from the rows as they are
+    (the case's `context.residual` is the reconcile-time value and goes stale when the entry is edited before the
+    next sweep). None without a line or an entry."""
+    entry_id = (case.context or {}).get("entry_id")
+    if line is None or not isinstance(entry_id, int) or isinstance(entry_id, bool):
+        return None
+    entry = db.get(LedgerEntry, entry_id)
+    if entry is None:
+        return None
+    return _money(Decimal(entry.amount) - Decimal(line.flow_amount))
+
+
 # --- candidates ---------------------------------------------------------------------------------------------------
 
 def _system_entry_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
@@ -106,9 +124,12 @@ def _system_entry_candidate(db: Session, case: ReconciliationCase, statement: Ac
 def _attach_fee_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
     """An open `amount_delta` whose residual is the expected FX fee (`fee_matches`) → attach it to the entry."""
     context = case.context or {}
-    entry_id, amount = context.get("entry_id"), _money(context.get("residual"))
-    if case.kind != "amount_delta" or context.get("fee_matches") is not True or amount is None \
+    entry_id = context.get("entry_id")
+    if case.kind != "amount_delta" or context.get("fee_matches") is not True \
             or not isinstance(entry_id, int) or isinstance(entry_id, bool):
+        return None
+    amount = _fee_now(db, case, current_line(db, case, statement))
+    if amount is None:
         return None
     return Candidate(case.id, case.kind, case.status, "attach_fee", {"entry_id": entry_id}, amount, entry_id=entry_id)
 
@@ -116,9 +137,21 @@ def _attach_fee_candidate(db: Session, case: ReconciliationCase, statement: Acco
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate}
 
 
+def _agent_authors(authors: Iterable[str]) -> set[str]:
+    """R1d item 7: an agent is a propose-only token — configured with `propose` and neither `write` nor `legacy`
+    (an owner token's proposal is the owner's own draft, never auto-applied). With scopes unconfigured
+    (compatibility mode) every author but the policy counts, as before."""
+    candidates = {author for author in authors if author != POLICY}
+    if not auth.scopes_configured():
+        return candidates
+    scopes = auth.configured_scopes()
+    return {author for author in candidates
+            if "propose" in scopes.get(author, frozenset()) and not ({"write", "legacy"} & scopes.get(author, frozenset()))}
+
+
 def _agent_candidates(db: Session, statement: AccountStatement) -> list[Candidate]:
-    """Pending `match` proposals by an agent (any author but the policy) on `ambiguous` cases of the statement,
-    written at the case's current version."""
+    """Pending `match` proposals by an agent — a propose-only token, `_agent_authors` — on `ambiguous` cases of the
+    statement, written at the case's current version."""
     rows = db.execute(
         select(ReconciliationProposal, ReconciliationCase)
         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationProposal.case_id)
@@ -128,7 +161,10 @@ def _agent_candidates(db: Session, statement: AccountStatement) -> list[Candidat
                ReconciliationProposal.case_version == ReconciliationCase.version)
         .order_by(ReconciliationProposal.id)).all()
     out = []
+    agents = _agent_authors({proposal.author for proposal, _ in rows})
     for proposal, case in rows:
+        if proposal.author not in agents:
+            continue
         line = current_line(db, case, statement)
         if line is not None:
             out.append(Candidate(case.id, case.kind, case.status, "match", dict(proposal.params),
@@ -198,7 +234,7 @@ def _cap_reason(db: Session, statement_id: int, candidate: Candidate, policy: di
 
 def _amount_now(ctx: Context, candidate: Candidate) -> Decimal | None:
     if candidate.action == "attach_fee":
-        return _money((ctx.case.context or {}).get("residual"))
+        return _fee_now(ctx.db, ctx.case, ctx.line)  # R1d item 4: recomputed under the lock, not context.residual
     return None if ctx.line is None else _money(ctx.line.flow_amount)
 
 
@@ -321,9 +357,27 @@ def _skip(db: Session, statement_id: int, candidate: Candidate, code: str, resul
     result.skipped[code] = result.skipped.get(code, 0) + 1
     if code == ACTION_DISABLED:
         return
-    audit.record(db, event="policy_skipped", actor=POLICY, statement_id=statement_id, case_id=candidate.case_id,
-                 run_id=run_id, detail={"code": code, "action": candidate.action, "reason": reason,
-                                        "proposal_id": candidate.proposal_id})
+    # R1d item 5: a deterministic skip repeats on every run; audit it once per (case, version, code, reason).
+    # Read-version -> check -> insert under the statement -> case locks (the engine's order: the audit row's FK takes
+    # FOR KEY SHARE on the statement, which must already be held). This runs after the candidate's rollback in
+    # its own transaction and commits below.
+    try:
+        rec._lock_statement(db, statement_id)
+    except NotFoundError:
+        db.rollback()
+        return
+    version = db.execute(select(ReconciliationCase.version).where(ReconciliationCase.id == candidate.case_id)
+                         .with_for_update()).scalar_one_or_none()
+    stored_version = ReconciliationAudit.detail["case_version"].astext
+    already = db.execute(select(ReconciliationAudit.id).where(
+        ReconciliationAudit.event == "policy_skipped", ReconciliationAudit.case_id == candidate.case_id,
+        ReconciliationAudit.detail["code"].astext == code,
+        stored_version.is_(None) if version is None else stored_version == str(version),
+        func.coalesce(ReconciliationAudit.detail["reason"].astext, "") == (reason or "")).limit(1)).first()
+    if already is None:
+        audit.record(db, event="policy_skipped", actor=POLICY, statement_id=statement_id, case_id=candidate.case_id,
+                     run_id=run_id, detail={"code": code, "action": candidate.action, "reason": reason,
+                                            "proposal_id": candidate.proposal_id, "case_version": version})
     db.commit()
 
 
@@ -371,6 +425,7 @@ def _run_candidate(db: Session, statement_id: int, candidate: Candidate, result:
         code = _code(exc)
         if code == "proposal_superseded":  # persist what the engine found (its savepoint rolled the mark back)
             proposal_service.supersede_stale(db, case_id=candidate.case_id)
+            db.commit()  # release its proposal/audit locks: _skip must take statement -> case first
         _skip(db, statement_id, candidate, code, result, run_id=run_id)
         return
     if row is None:

@@ -40,6 +40,7 @@ class Context:
     request_id: str | None
     rules: matching.Rules
     proposal_id: int | None = None  # the agent proposal being applied (ruling 31: policy + proposal = `agent` coverage)
+    lock_set: "LockSet | None" = None  # what the engine locked for this attempt (set after the locks; R1d)
 
 
 @dataclass
@@ -65,6 +66,8 @@ class LockSet:
     statement_ids: tuple[int, ...] = ()  # extra statements (move_account target)
     definition_ids: tuple[int, ...] = ()  # schedule definitions/instances of touched entries (D32), locked after
     instance_ids: tuple[int, ...] = ()  # the statements, before the groups
+    # definitions FOR UPDATE instead of FOR SHARE (R1d: a plan revert freezes the posted set)
+    exclusive_definition_ids: tuple[int, ...] = ()
     account_lock: bool = False  # balance_adjustment_asof only
     barrier: bool = False  # balance_adjustment_asof only (ruling 15)
 

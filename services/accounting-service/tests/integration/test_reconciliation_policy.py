@@ -3,13 +3,14 @@ entries and matching FX fees applied by policy under per-action, per-statement a
 reserved before the statement lock and charged only after the precheck under the lock, over-cap candidates turned
 into policy proposals, agent `match` proposals accepted only with a single admissible representation, and the
 reconcile / revision / sweep routes running it after their commit. Synthetic data only."""
+import queue
 import threading
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import sessionmaker
 
 from app import auth
@@ -19,9 +20,11 @@ from app.models import (
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import entry_write_service as ews
+from app.services.errors import CodedConflictError
 from app.services import policy_service, proposal_service, settings_service
+from app.services import reconciliation_service as rec
 from app.services.policy_service import PolicyResult
-from app.services.reconciliation_actions import engine
+from app.services.reconciliation_actions import audit, engine
 from tests.helpers import race, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _line, _submit, run,
@@ -99,6 +102,22 @@ def _fee_statement(seed, db, run, lines=None, *, name="卡", **card):
     return SimpleNamespace(card=account, stmt=stmt, lines=printed, cases=cases)
 
 
+def _fx_fee_statement(seed, db, run, *, existing_child=False):
+    """A live September card statement whose 1015 AMAZON line meets a −1000 USD entry: one open amount_delta case
+    with fee_matches (expected FX fee 1.5 % = 15). `existing_child=True` books the fee child beforehand (fee_exists)."""
+    card = _card(seed, db, fx_fee_pct=Decimal("1.5"))
+    entry = seed.entry(card, "-1000", day=date(2026, 9, 15), merchant="AMAZON", original_amount=Decimal("-30"),
+                       original_currency="USD")
+    if existing_child:
+        seed.entry(card, "-5", kind="fee", day=date(2026, 9, 15), parent_entry_id=entry.id, name=ews.FX_FEE_CHILD_NAME)
+    db.commit()
+    stmt, lines, _ = _submit(db, run, card, [
+        _line(1, date(2026, 9, 15), "AMAZON", 1015, foreign_amount=Decimal("-30"), foreign_currency="USD")])
+    (case,) = [c for c in _cases(db, stmt.id, "open") if c.kind == "amount_delta"]
+    assert case.context["fee_matches"] is True
+    return SimpleNamespace(card=card, stmt=stmt, case=case, entry=entry, fee=Decimal("15"))
+
+
 def _only_candidate(session, statement_id, case_id=None):
     statement = session.get(AccountStatement, statement_id)
     found = policy_service.collect_candidates(session, statement, settings_service.reconciliation_policy(session))
@@ -120,7 +139,28 @@ def test_policy_off_does_nothing_and_audits_nothing(seed, db_session, run):
     assert _reload(db_session, ReconciliationCase, s.cases[0].id).status == "open"
 
 
-def test_policy_on_books_a_bank_only_fee_as_auto_and_charges_the_budget(seed, db_session, run):
+def test_policy_coverage_survives_a_reconcile_and_reverts(seed, db_session, run):
+    s = _fee_statement(seed, db_session, run)
+    _set_policy(db_session, SYSTEM_ON)
+    policy_service.run_policy(db_session, s.stmt.id)
+    (row,) = _actions(db_session)
+    (claim,) = _active(db_session, s.stmt.id)
+    assert claim.match_kind == "agent" and claim.id in row.after["coverage_ids"]
+
+    rec.reconcile(db_session, s.stmt.id)  # the owner's reconcile must not rewrite the policy's claim
+    db_session.commit()
+
+    (same,) = _active(db_session, s.stmt.id)
+    assert (same.id, same.match_kind, same.match_rule) == (claim.id, "agent", "create_system_entry")
+
+    engine.revert_action(db_session, action_id=row.id, actor="owner", label="owner-test")
+    db_session.commit()
+    assert _booked(db_session) == [] and _active(db_session, s.stmt.id) == []
+    assert _reload(db_session, ReconciliationAction, row.id).status == "reverted"
+    assert _reload(db_session, ReconciliationCase, s.cases[0].id).status == "open"
+
+
+def test_policy_on_books_a_bank_only_fee_as_agent_and_charges_the_budget(seed, db_session, run):
     s = _fee_statement(seed, db_session, run)
     _set_policy(db_session, SYSTEM_ON)
 
@@ -135,7 +175,7 @@ def test_policy_on_books_a_bank_only_fee_as_auto_and_charges_the_budget(seed, db
     assert (entry.kind, entry.amount, entry.source, entry.account_id) == ("fee", Decimal("-1200"), "statement",
                                                                          s.card.id)
     (claim,) = _active(db_session, s.stmt.id)
-    assert (claim.entry_id, claim.match_kind) == (entry.id, "auto")
+    assert (claim.entry_id, claim.match_kind) == (entry.id, "agent")
     budget = _budget(db_session)
     assert (budget.used_count, budget.used_amount) == (1, Decimal("1200"))
     assert _reload(db_session, ReconciliationCase, s.cases[0].id).status == "resolved"
@@ -384,9 +424,8 @@ def test_a_foreign_currency_statement_is_skipped(seed, db_session, run):
 
 # --- agent proposals ----------------------------------------------------------------------------------------------
 
-@pytest.fixture
-def ambiguous(seed, db_session, run):
-    """Two identical 580 entries for one 580 line → an ambiguous case; hermes proposes the first."""
+def _ambiguous_case(seed, db_session, run, *, author="hermes"):
+    """Two identical 580 entries for one 580 line → an ambiguous case; `author` proposes the first."""
     card = _card(seed, db_session)
     seed.entry(card, "-1", day=date(2026, 8, 1), merchant="墊高編號")  # keeps entry ids apart from the line id
     first = seed.entry(card, "-580", day=DAY, merchant="全聯")
@@ -395,12 +434,17 @@ def ambiguous(seed, db_session, run):
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
     (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "ambiguous"]
     proposal = proposal_service.create_proposal(
-        db_session, case_id=case.id, author="hermes",
+        db_session, case_id=case.id, author=author,
         payload=ProposalIn(action="match", params={"line_id": line.id, "entry_id": first.id},
                            rationale="same day", confidence=Decimal("0.7")))
     db_session.commit()
     return SimpleNamespace(card=card, stmt=stmt, line=line, case=case, first=first, second=second,
                            proposal=proposal)
+
+
+@pytest.fixture
+def ambiguous(seed, db_session, run):
+    return _ambiguous_case(seed, db_session, run)
 
 
 MATCH_ON = {"enabled": True, "accept_agent_proposals": True,
@@ -418,6 +462,24 @@ def test_agent_proposals_stay_pending_while_accept_is_off(ambiguous, db_session)
     assert result.applied == [] and _actions(db_session) == []
     assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "pending"
     assert _reload(db_session, ReconciliationCase, s.case.id).status == "proposed"
+
+
+@pytest.mark.parametrize("author", ["spa", "worker", "nobody"])
+def test_only_propose_only_tokens_are_agents(seed, db_session, run, author):
+    s = _ambiguous_case(seed, db_session, run, author=author)
+    _set_policy(db_session, MATCH_ON)
+    s.second.amount = Decimal("-581")
+    db_session.commit()
+
+    result = policy_service.run_policy(db_session, s.stmt.id)
+
+    assert result.applied == [] and _actions(db_session) == []
+    assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "pending"
+
+
+def test_agent_authors_without_scopes_are_every_non_policy_author(monkeypatch):
+    monkeypatch.delenv(auth.SCOPES_ENV, raising=False)
+    assert policy_service._agent_authors(["hermes", "spa", "policy"]) == {"hermes", "spa"}
 
 
 def test_a_single_admissible_agent_match_is_applied_as_agent(ambiguous, db_session):
@@ -538,3 +600,130 @@ def test_sweep_route_runs_policy_per_statement(client, seed, db_session, run):
     assert response.status_code == 200, response.text
     (row,) = _actions(db_session)
     assert (row.actor, row.run_id) == ("policy", worker_run.id)
+
+
+def test_attach_fee_candidate_is_recomputed_under_the_lock(seed, db_session, run):
+    s = _fx_fee_statement(seed, db_session, run)
+    _set_policy(db_session, {"enabled": True, "actions": {"attach_fee": {"enabled": True}}})
+    statement, candidate = _only_candidate(db_session, s.stmt.id, s.case.id)
+    assert (candidate.action, candidate.amount) == ("attach_fee", s.fee)
+
+    # the entry is edited after the reconcile (dirty tracking off: no sweep release, context.residual is stale)
+    entry = db_session.get(LedgerEntry, s.entry.id)
+    entry.amount = Decimal(entry.amount) - Decimal("1")
+    db_session.commit()
+
+    with pytest.raises(CodedConflictError) as info:
+        policy_service.apply_candidate(db_session, statement, candidate, month=MONTH)
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert _budget(db_session) is None or _budget(db_session).used_count == 0
+    assert _actions(db_session) == []
+
+
+def test_a_deterministic_skip_is_audited_once_per_case_version(seed, db_session, run):
+    s = _fx_fee_statement(seed, db_session, run, existing_child=True)
+    _set_policy(db_session, {"enabled": True, "actions": {"attach_fee": {"enabled": True}}})
+
+    first = policy_service.run_policy(db_session, s.stmt.id)
+    second = policy_service.run_policy(db_session, s.stmt.id)
+
+    assert first.skipped == second.skipped == {"fee_exists": 1}
+    (skipped,) = _audit(db_session, "policy_skipped")
+    assert (skipped.case_id, skipped.detail["code"], skipped.detail["case_version"]) == (
+        s.case.id, "fee_exists", _reload(db_session, ReconciliationCase, s.case.id).version)
+
+    first_version = skipped.detail["case_version"]
+    db_session.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                       .values(version=ReconciliationCase.version + 1))
+    db_session.commit()
+    policy_service.run_policy(db_session, s.stmt.id)
+    rows = _audit(db_session, "policy_skipped")
+    assert sorted(r.detail["case_version"] for r in rows) == [first_version, first_version + 1]
+
+
+def test_concurrent_skips_audit_once(seed, db_session, run, pg_engine, monkeypatch):
+    """Two real `_skip` calls for the same candidate: A takes statement -> case, inserts and (deferred here) commits;
+    B must acquire the statement only after A's commit, find the row and insert nothing. The hooks record the
+    order in which the locks were ACQUIRED and the inserts happened."""
+    s = _fx_fee_statement(seed, db_session, run, existing_child=True)
+    _set_policy(db_session, {"enabled": True, "actions": {"attach_fee": {"enabled": True}}})
+    statement, candidate = _only_candidate(db_session, s.stmt.id, s.case.id)
+    db_session.commit()
+    order: list[tuple[str, str]] = []
+    real_lock, real_record = rec._lock_statement, audit.record
+
+    def lock(db, statement_id):
+        row = real_lock(db, statement_id)
+        order.append(("locked", db.info["name"]))
+        return row
+
+    def record(db, **kw):
+        order.append(("insert", db.info["name"]))
+        return real_record(db, **kw)
+
+    monkeypatch.setattr(rec, "_lock_statement", lock)
+    monkeypatch.setattr(audit, "record", record)
+    factory = sessionmaker(bind=pg_engine, autoflush=False)
+    a, b = factory(), factory()
+    a.info["name"], b.info["name"] = "A", "B"
+    real_commit = a.commit
+    monkeypatch.setattr(a, "commit", lambda: None)  # A's _skip returns still holding its locks
+    outcome: queue.Queue = queue.Queue()
+    thread = None
+    try:
+        policy_service._skip(a, s.stmt.id, candidate, "fee_exists", PolicyResult(), run_id=None)
+        thread = threading.Thread(target=lambda: outcome.put(
+            policy_service._skip(b, s.stmt.id, candidate, "fee_exists", PolicyResult(), run_id=None)), daemon=True)
+        thread.start()
+        thread.join(0.5)
+        assert thread.is_alive(), "B must wait for A's statement lock"
+        order.append(("commit", "A"))
+        real_commit()
+    finally:
+        a.close()
+        if thread is not None:
+            thread.join(5)  # reclaimed after A is released; B rolls back / closes its own session below
+            assert not thread.is_alive(), "B is still blocked after A committed"
+        b.rollback()
+        b.close()
+    outcome.get_nowait()
+    assert order == [("locked", "A"), ("insert", "A"), ("commit", "A"), ("locked", "B")]
+    (skipped,) = _audit(db_session, "policy_skipped")
+    assert skipped.detail["case_version"] == _reload(db_session, ReconciliationCase, s.case.id).version
+
+
+def test_a_superseded_agent_proposal_is_marked_and_skipped_once(ambiguous, db_session, monkeypatch):
+    """The case version moves on between the pre-filter and the engine's locks: the engine raises
+    `proposal_superseded`; the policy persists the mark, commits, then audits the skip once."""
+    s = ambiguous
+    _set_policy(db_session, MATCH_ON)
+    s.second.amount = Decimal("-581")
+    db_session.commit()
+    statement, candidate = _only_candidate(db_session, s.stmt.id, s.case.id)
+    real_prefilter = policy_service._prefilter
+
+    def prefilter(db, cand, policy):
+        verdict = real_prefilter(db, cand, policy)
+        db.execute(update(ReconciliationCase).where(ReconciliationCase.id == s.case.id)
+                   .values(version=ReconciliationCase.version + 1))
+        db.commit()
+        return verdict
+
+    monkeypatch.setattr(policy_service, "_prefilter", prefilter)
+    real_skip, entered_in_transaction = policy_service._skip, []
+
+    def skip(db, *args, **kwargs):  # the supersede mark must be committed before the skip takes its locks
+        entered_in_transaction.append(db.in_transaction())
+        return real_skip(db, *args, **kwargs)
+
+    monkeypatch.setattr(policy_service, "_skip", skip)
+    result = PolicyResult()
+
+    policy_service._run_candidate(db_session, s.stmt.id, candidate, result, month=MONTH, run_id=None)
+
+    assert entered_in_transaction == [False]
+    assert result.skipped == {"proposal_superseded": 1}
+    assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "superseded"
+    (skipped,) = _audit(db_session, "policy_skipped")
+    assert skipped.detail["code"] == "proposal_superseded"

@@ -1,6 +1,6 @@
 """Coverage-only actions (R1c; spec §4.9 action table, rulings 4, 8, 14, 16, 25, 29): `match` claims a line with an
 entry (optionally with its children) or a complete group as owner coverage (`match_kind='manual'`, or
-`'agent'` when policy applies an agent proposal; `match_rule='owner'`, kept by reconcile); `unmatch` releases a line's coverage and flags the statement for matching
+`'agent'` whenever actor='policy' applies it; `match_rule='owner'`, kept by reconcile); `unmatch` releases a line's coverage and flags the statement for matching
 again. Neither writes a ledger row, so neither emits a dirty event."""
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ class MatchAction(ActionBase):
     def apply(self, ctx: Context, params: MatchParams, prepared: Prepared, effect: Effect) -> None:
         line, rows, by_id = self._claim(ctx, params)
         written = coverage_service.write_claim(ctx.db, ctx.statement, line, rows, entries_by_id=by_id,
-                                               match_kind=("agent" if ctx.actor == POLICY and ctx.proposal_id is not None else MANUAL),
+                                               match_kind=("agent" if ctx.actor == POLICY else MANUAL),
                                                match_rule=OWNER_RULE, run_id=ctx.run_id)
         effect.coverage_ids = [c.id for c in written]
         effect.touched_entry_ids = [r.entry_id for r in rows]

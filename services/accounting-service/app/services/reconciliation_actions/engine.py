@@ -201,7 +201,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
                  precheck: Callable[[Context], None] | None = None) -> tuple[ReconciliationAction, bool]:
     """Apply `action` with `params` to case `case_id` (module docstring for the steps); returns (row, replayed).
     Raises ValidationError 422 (`unknown action`, params, actor, not allowed, `historical_statement`,
-    `duplicate_effect`, the action's own codes), CodedConflictError 409 (`action_reverted`, `action_failed`,
+    `duplicate_effect`, `budget`, the action's own codes), CodedConflictError 409 (`action_reverted`, `action_failed`,
     `case_moved`, `case_closed`, `action_busy`, `snapshot_conflict`, `sweep_barrier_busy`, `reconcile_busy`),
     NotFoundError; with `budget` (policy only: `(month, currency, amount)`) also `BudgetExceeded` 409. Never commits;
     on any error nothing is written (the budget charge included)."""
@@ -211,6 +211,8 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         raise ValidationError("actor", f"{action} cannot be applied by {actor}")
     if budget is not None and actor != POLICY:
         raise ValidationError("actor", "only the policy spends the policy budget")
+    if actor == POLICY and budget is None:
+        raise ValidationError("budget", "the policy must spend the policy budget")  # R1d item 6
     case = db.get(ReconciliationCase, case_id)
     if case is None:
         raise NotFoundError(f"case {case_id} not found")
@@ -241,6 +243,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         statement = statements[case.statement_id]
         ctx = _context(db, case, statement, actor=actor, label=label, run_id=run_id, request_id=request_id,
                        proposal_id=proposal_id)
+        ctx.lock_set = targets
         if case.status not in OPEN_STATUSES:
             raise CodedConflictError("case_closed", f"case {case.id} is {case.status}")
         if action not in allowed(case):
@@ -421,6 +424,7 @@ def revert_action(db: Session, *, action_id: int, actor: str, label: str,
         case = locks.lock_case(db, original.case_id)
         statement = statements[case.statement_id]
         ctx = _context(db, case, statement, actor=actor, label=label, run_id=None, request_id=request_id)
+        ctx.lock_set = targets
         if statement.mode == "historical" and original.action not in COVERAGE_ACTIONS:
             raise CodedValidationError("action", "historical_statement")
         locks.lock_account_and_barrier(db, targets, statement)

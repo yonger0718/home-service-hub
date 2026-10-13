@@ -71,7 +71,8 @@ def lock_rows(db: Session, targets: LockSet, expected: dict) -> dict[int, Ledger
     (FOR UPDATE), ascending; groups ascending; then the entries — the targets, every row of the expected snapshot,
     their children and every top-level leg of their transfers — in ONE ordered SELECT … FOR UPDATE. All NOWAIT,
     inside a savepoint: `LockNotAvailable` → 409 `action_busy` (the caller's attempt savepoint rolls back the
-    rest)."""
+    rest). A definition in `exclusive_definition_ids` is taken FOR UPDATE (an ordinary posting takes it FOR SHARE,
+    so the posted set cannot change while it is held)."""
     entry_ids = {*targets.entry_ids, *(int(i) for i in (expected or {}).get("entries", {}))}
     group_ids = sorted({*targets.group_ids, *(int(i) for i in (expected or {}).get("groups", {}))})
     if entry_ids:
@@ -82,8 +83,9 @@ def lock_rows(db: Session, targets: LockSet, expected: dict) -> dict[int, Ledger
         if entry_ids else set()
     try:
         with db.begin_nested():
-            for definition_id in sorted(set(targets.definition_ids)):
-                lock_definition(db, definition_id, share=True, nowait=True)
+            exclusive = set(targets.exclusive_definition_ids)
+            for definition_id in sorted({*targets.definition_ids, *exclusive}):
+                lock_definition(db, definition_id, share=definition_id not in exclusive, nowait=True)
             for instance_id in sorted(set(targets.instance_ids)):
                 lock_instance(db, instance_id, nowait=True)
             for group_id in group_ids:

@@ -2,7 +2,7 @@
 `create_system_entry` and `create_refund` book the case's statement line as a new row (effect slot `create`, one
 creation per event whichever action made it), `attach_fee` books the foreign-transaction fee a bundled card line
 carries as a child of the purchase (slot `fee`), `adjust_amount` rewrites a near entry to the printed amount (slot
-`amount`). Each claims the line on what it wrote (`match_kind` manual, `auto` when policy applies it, `agent` when policy applies an agent proposal;
+`amount`). Each claims the line on what it wrote (`match_kind` manual, or `agent` for every policy apply — R1d;
 `match_rule` = the action name) and reverts only while its rows equal the action's `after` (the engine checks).
 
 Created rows carry `source='statement'`, the statement's account and currency, `entry_date` = the line's
@@ -47,7 +47,9 @@ def _refuse(field: str, code: str, detail: str | None = None) -> CodedValidation
 
 def _match_kind(ctx: Context) -> str:
     if ctx.actor == POLICY:
-        return "agent" if ctx.proposal_id is not None else "auto"  # ruling 31
+        # R1d item 1: never `auto` — a reconcile keeps only `manual`/`agent` rows (ruling 16), so an `auto` claim
+        # written by the policy was rewritten by the next reconcile and its action could not be reverted
+        return "agent"
     return "manual"  # an owner-applied proposal is the owner's decision
 
 
