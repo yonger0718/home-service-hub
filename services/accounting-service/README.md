@@ -172,7 +172,7 @@ otherwise). Amounts are strings; a 422 message starts with a stable code (`code`
 
 | Method and path | Scope | Body → response |
 | --- | --- | --- |
-| `GET /reconciliation/cases/{id}` | `read` | → `CaseDetailOut`: the case row (R1b `CaseOut` fields plus `statement_id`, `revision_id`, `resolved_by`, `resolved_action_id`, `resolved_at`, `deferred_to_period_end`, `deferred_to_statement_id`, `note`), `actions_allowed`, `pending_proposals`, `line` with `matched` and `coverage`. Stale proposals are superseded first, which waits briefly for the case's statement lock (R1d). 404 unknown |
+| `GET /reconciliation/cases/{id}` | `read` | → `CaseDetailOut`: the case row (R1b `CaseOut` fields plus `statement_id`, `revision_id`, `resolved_by`, `resolved_action_id`, `resolved_at`, `deferred_to_period_end`, `deferred_to_statement_id`, `note`), `actions_allowed`, `pending_proposals`, `line` with `matched`, `coverage`, `event_flag` (`text_changed` after a normalised re-parse, else null) and `event_status` (`live`/`retired`/`quarantined`) — the statement detail's `lines[]` carry the same two fields (R3). Stale proposals are superseded first, which waits briefly for the case's statement lock (R1d). 404 unknown |
 | `POST /reconciliation/cases/{id}/actions` | `write` | `{action, params}` → `ActionOut` (201; 200 with `replayed: true` for an identical earlier request) |
 | `POST /reconciliation/cases/{id}/dismiss` | `write` | `{note}` (1..1000) → `ActionOut`; the `dismiss` action |
 | `GET /reconciliation/actions` | `read` | query `statement_id`, `case_id`, `limit` 1..1000 (200) → `ActionOut[]`, newest first |

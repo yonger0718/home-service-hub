@@ -21,6 +21,7 @@ from app.models import (
     ReconciliationAudit,
     ReconciliationCase,
     StatementFile,
+    StatementEvent,
     StatementLine,
     StatementRevision,
     StatementSource,
@@ -323,6 +324,22 @@ def _row(obj, fields) -> dict:
     return {name: getattr(obj, name) for name in fields}
 
 
+def _event_fields(db: Session, event_ids) -> dict[int, dict]:
+    """`{event_id: {"event_flag", "event_status"}}` for the lines' events (R3: the UI shows 文字已變更 from the flag)."""
+    ids = sorted({i for i in event_ids if i is not None})
+    if not ids:
+        return {}
+    rows = db.execute(select(StatementEvent.id, StatementEvent.flag, StatementEvent.status)
+                      .where(StatementEvent.id.in_(ids))).all()
+    return {event_id: {"event_flag": flag, "event_status": status} for event_id, flag, status in rows}
+
+
+def _line_out(line: StatementLine, coverage: list, events: dict[int, dict]) -> dict:
+    return {**_row(line, LINE_FIELDS), "matched": bool(coverage),
+            "coverage": [{**_row(r, COVERAGE_FIELDS), "flow": r.snapshot.get("flow")} for r in coverage],
+            **events.get(line.event_id, {"event_flag": None, "event_status": None})}
+
+
 def _incoming_deferrals(db: Session, statement_ids: list[int]) -> dict[int, int]:
     """Ruling 29: cases deferred INTO each statement that its confirm has not processed yet (ruling 11: confirm
     marks each `resolved_in_statement_id` or reopens it)."""
@@ -371,14 +388,14 @@ def get_statement(db: Session, statement_id: int) -> dict:
         select(StatementRevision).where(StatementRevision.statement_id == statement.id)
         .order_by(StatementRevision.revision.desc())
     ).scalars()
+    lines = list(lines)
     coverage = coverage_service.active_rows(db, statement.id)
+    events = _event_fields(db, (line.event_id for line in lines))
     stale = coverage_service.has_pending_events(db, statement)
     return {
         **_row(statement, HEADER_FIELDS),
         "incoming_deferrals_pending": _incoming_deferrals(db, [statement.id]).get(statement.id, 0),
-        "lines": [{**_row(line, LINE_FIELDS), "matched": bool(coverage.get(line.id)),
-                   "coverage": [{**_row(r, COVERAGE_FIELDS), "flow": r.snapshot.get("flow")}
-                                      for r in coverage.get(line.id, [])]} for line in lines],
+        "lines": [_line_out(line, coverage.get(line.id, []), events) for line in lines],
         "cases": [_row(item, CASE_FIELDS) for item in cases],
         "revisions": [_row(item, REVISION_FIELDS) for item in revisions],
         "stale_events_pending": stale,
@@ -422,8 +439,7 @@ def get_case(db: Session, case_id: int) -> dict:
     if item.line_id is not None:
         row = db.get(StatementLine, item.line_id)
         coverage = coverage_service.active_rows(db, item.statement_id).get(row.id, [])
-        line = {**_row(row, LINE_FIELDS), "matched": bool(coverage),
-                "coverage": [{**_row(r, COVERAGE_FIELDS), "flow": r.snapshot.get("flow")} for r in coverage]}
+        line = _line_out(row, coverage, _event_fields(db, [row.event_id]))
     return {**_row(item, CASE_DETAIL_FIELDS), "actions_allowed": reconciliation_actions.allowed(item),
             "pending_proposals": [_row(p, PROPOSAL_FIELDS) for p in proposal_service.pending_for_case(db, item.id)],
             "line": line}

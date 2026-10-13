@@ -516,3 +516,20 @@ def test_siblings_put_validates(client, seed, db_session):
     assert ok.status_code == 200, ok.text
     assert ok.json()["account_siblings"] == {str(a.id): [b.id], str(b.id): [a.id]}
     assert client.get("/settings/reconciliation", headers=H).json() == ok.json()
+
+
+def test_detail_lines_carry_their_event_flag_and_status(client, card, seed, db_session):
+    """R3: the statement detail (and a case's line) expose the live event's `flag` (`text_changed` after a normalised
+    re-parse) and `status`, so the UI can show 文字已變更 without a second request."""
+    statement_id, _ = _submit(client, card)
+    detail = client.get(f"/accounts/{card.id}/statements/{statement_id}", headers=H).json()
+    (line,) = detail["lines"]
+    assert (line["event_flag"], line["event_status"]) == (None, "live")
+
+    db_session.execute(text("UPDATE statement_event SET flag = 'text_changed' WHERE id = :e"), {"e": line["event_id"]})
+    db_session.commit()
+    (line,) = client.get(f"/accounts/{card.id}/statements/{statement_id}", headers=H).json()["lines"]
+    assert (line["event_flag"], line["event_status"]) == ("text_changed", "live")
+    (case,) = detail["cases"]
+    case_line = client.get(f"/reconciliation/cases/{case['id']}", headers=H).json()["line"]
+    assert (case_line["event_flag"], case_line["event_status"]) == ("text_changed", "live")

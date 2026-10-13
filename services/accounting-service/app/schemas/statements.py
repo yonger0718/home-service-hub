@@ -292,6 +292,8 @@ class LineOut(BaseModel):
     installment_total: int | None
     matched: bool
     coverage: list[CoverageOut]
+    event_flag: str | None = None  # the line's event flag: `text_changed` after a normalised re-parse (§5.7)
+    event_status: str | None = None  # live | retired | quarantined (None when the line has no event)
 
 
 class CaseOut(BaseModel):
