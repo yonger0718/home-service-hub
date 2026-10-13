@@ -2,7 +2,7 @@
 
 ### Requirement: Action engine
 
-`engine.apply_action` with `actor='policy'` and no `budget` SHALL be 422 `budget` ("the policy must spend the policy budget"), before any lock, mirroring the existing refusal of a non-policy actor that passes a budget. A `LockSet` MAY name `exclusive_definition_ids`; the engine SHALL lock those schedule definitions `FOR UPDATE` (the rest stay `FOR SHARE`) and SHALL hand the resolved `lock_set` to the action through `Context.lock_set`.
+`engine.apply_action` with `actor='policy'` and no `budget` SHALL be 422 `budget` ("the policy must spend the policy budget"), before any lock, mirroring the existing refusal of a non-policy actor that passes a budget (422 `actor`, unchanged). A `LockSet` MAY name `exclusive_definition_ids`; the engine SHALL lock those schedule definitions `FOR UPDATE` (the rest stay `FOR SHARE`) and SHALL hand the resolved `lock_set` to the action through `Context.lock_set`.
 
 #### Scenario: A policy apply without a budget is 422
 - **GIVEN** an open `line_unmatched` case
@@ -12,7 +12,7 @@
 #### Scenario: An owner apply with a budget is still refused
 - **GIVEN** an open case
 - **WHEN** an `owner` apply passes a budget
-- **THEN** 422 `budget` ("only the policy spends the policy budget")
+- **THEN** 422 `actor` ("only the policy spends the policy budget"), the pre-existing refusal; only a policy apply without a budget is field `budget`
 
 ### Requirement: Policy engine and budget
 
@@ -70,14 +70,19 @@ The `attach_fee` candidate's amount SHALL be `policy_service._fee_now`, the abso
 
 ### Requirement: Owner actions
 
-Reverting `link_installment_plan` SHALL lock the plan's schedule definition `FOR UPDATE`, its posted entries `NOWAIT` and the other statements of the account that hold an active installment claim on those entries (ascending, each swept). Before any mutation `LinkInstallmentPlanAction._check_lock_set` SHALL re-derive the posted entries (`_plan_entries`) and the claiming statements (`_other_claims`) under the locks and SHALL answer 409 `action_busy` when an entry "was posted after discovery" or a statement "gained a plan claim". It SHALL then delete the map, release the other statements' installment claims (`stale_reason='plan_unmapped'`) and set their `needs_recheck=True`; their status SHALL be unchanged, `confirm` SHALL be refused until their next reconcile, and the engine SHALL recount every locked statement.
+Reverting `link_installment_plan` SHALL lock the plan's schedule definition `FOR UPDATE`, its posted entries on the map's account scope `NOWAIT` and the other statements of the map's account that hold an active installment claim on those entries (ascending, each swept). `installment_plan_map` is per account and a template MAY post to several accounts, so the entries SHALL be only those on the account's participating accounts (`coverage_service.participating_accounts`) and the statements only the account's own; another account's map, claims and statements SHALL be untouched. Before any mutation `LinkInstallmentPlanAction._check_lock_set` SHALL re-derive the posted entries (`_plan_entries`) and the claiming statements (`_other_claims`) under the locks and SHALL answer 409 `action_busy` when an entry "was posted after discovery" or a statement "gained a plan claim". It SHALL then delete the map, release the other statements' installment claims (`stale_reason='plan_unmapped'`) and set their `needs_recheck=True`; their status SHALL be unchanged, `confirm` SHALL be refused until their next reconcile, and the engine SHALL recount every locked statement.
 
 Two `installment_plan_map` rows for one definition under different `plan_key`s on one account are NOT refused; reverting one SHALL release the other's claims too, and the next reconcile SHALL claim through the remaining map.
 
 #### Scenario: Reverting a plan link releases claims on another statement
-- **GIVEN** a plan linked on statement A whose entries are also claimed on statement B
+- **GIVEN** a plan linked on statement A whose entries are also claimed on statement B of the same account
 - **WHEN** the link is reverted
 - **THEN** both claims SHALL be released with reason `plan_unmapped`, B SHALL have `needs_recheck=True` and B's next reconcile SHALL open the `installment_unmapped` case again
+
+#### Scenario: Another account's map on the same definition is untouched
+- **GIVEN** a definition posting to cards A and B, each card's statement linked through its own map
+- **WHEN** A's link is reverted
+- **THEN** only A's claim SHALL be released and A's map deleted; B's map, claim ids, `matched_count` and `needs_recheck=False` SHALL be unchanged and B's link SHALL stay revertable
 
 #### Scenario: A confirmed statement keeps its status
 - **GIVEN** B was confirmed before the revert

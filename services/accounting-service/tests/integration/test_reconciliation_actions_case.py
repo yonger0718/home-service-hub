@@ -7,7 +7,7 @@ from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
@@ -20,6 +20,7 @@ from app.services.errors import CodedConflictError, ValidationError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.case_actions import LinkInstallmentPlanAction
 from tests.conftest import Seed
+from tests.helpers import wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     OCT, _active, _card, _cases, _code, _line, _reconcile, _submit, run,
 )
@@ -360,8 +361,7 @@ def test_reverting_a_link_keeps_the_claim_its_reconcile_made_for_another_line(se
 # --- link_installment_plan revert across statements (R1d item 3) ----------------------------------------------------
 
 class _Run:
-    """Run fn() in a daemon thread and keep the handle: `waiting(grace)` = still running after `grace` seconds,
-    `result(timeout)` = the return value or the exception (cached: safe to call in the body and again in
+    """Run fn() in a daemon thread and keep the handle: `result(timeout)` = the return value or the exception (cached: safe to call in the body and again in
     `finally`), failing explicitly when the thread is still alive after `timeout` (a NOWAIT path that waited).
     fn owns its own session and must roll it back / close it itself."""
 
@@ -376,10 +376,6 @@ class _Run:
             self.out.put(fn())
         except Exception as exc:  # noqa: BLE001  (asserted by the caller)
             self.out.put(exc)
-
-    def waiting(self, grace=0.5) -> bool:
-        self.thread.join(grace)
-        return self.thread.is_alive()
 
     def result(self, timeout=5.0):
         """Idempotent: the first call joins and takes the outcome, later calls return the same outcome."""
@@ -470,6 +466,56 @@ def unmapped_then_pending(seed, db_session, run):
     (sep_case,) = [c for c in _cases(db_session, sep.id, "open") if c.kind == "line_unmatched"]
     return SimpleNamespace(card=card, definition=definition, sep=sep, oct=oct, sep_case=sep_case,
                            sep_entry=sep_entry, oct_instance=oct_instance)
+
+
+@pytest.fixture
+def unmapped_two_accounts(seed, db_session, run):
+    """Must (AGENT-111): one installment definition whose template posts to two cards (A 1000, B 500); one posted
+    instance (seq 2) with an entry on each; a September statement per card printing its own seq-2 line, each an
+    installment_unmapped case. Each card's map is its own (`installment_plan_map` is per account)."""
+    a, b = _card(seed, db_session, "A卡"), _card(seed, db_session, "B卡")
+    definition = seed.definition([seed.line("expense", a, "1000"), seed.line("expense", b, "500")],
+                                 kind="installment", name="手機", times=12)
+    entry_a = seed.entry(a, "-1000", day=date(2026, 9, 5), merchant="手機")
+    entry_b = seed.entry(b, "-500", day=date(2026, 9, 5), merchant="手機")
+    seed.instance(definition, 2, date(2026, 9, 5), status="posted", entries=[entry_a, entry_b])
+    db_session.commit()
+    stmt_a, _, _ = _submit(db_session, run, a, [_line(1, date(2026, 9, 6), "手機", 1000, "installment",
+                                                      installment_seq=2, installment_total=12)])
+    stmt_b, _, _ = _submit(db_session, run, b, [_line(1, date(2026, 9, 6), "手機", 500, "installment",
+                                                      installment_seq=2, installment_total=12)])
+    (case_a,) = [c for c in _cases(db_session, stmt_a.id, "open") if c.kind == "line_unmatched"]
+    (case_b,) = [c for c in _cases(db_session, stmt_b.id, "open") if c.kind == "line_unmatched"]
+    assert case_a.context["hint"] == case_b.context["hint"] == "installment_unmapped"
+    return SimpleNamespace(a=a, b=b, definition=definition, stmt_a=stmt_a, stmt_b=stmt_b, case_a=case_a,
+                           case_b=case_b, entry_a=entry_a, entry_b=entry_b)
+
+
+def test_reverting_a_link_leaves_another_accounts_map_and_claims_alone(db_session, unmapped_two_accounts):
+    """AGENT-111 Must: B linked first, then A; reverting A's link releases only A's claim and removes only A's map.
+    B's claim, flags, counts and map stay, and B's own link stays revertable."""
+    s = unmapped_two_accounts
+    row_b, _ = _apply(db_session, s.case_b, "link_installment_plan", {"definition_id": s.definition.id})
+    claims_b = [(c.id, c.entry_id) for c in _active(db_session, s.stmt_b.id)]
+    assert [entry for _, entry in claims_b] == [s.entry_b.id]
+    matched_b = _fresh(db_session, AccountStatement, s.stmt_b.id).matched_count
+    row_a, _ = _apply(db_session, s.case_a, "link_installment_plan", {"definition_id": s.definition.id})
+    (claim_a,) = _active(db_session, s.stmt_a.id)
+    assert claim_a.entry_id == s.entry_a.id
+
+    _revert(db_session, row_a.id)
+
+    assert _active(db_session, s.stmt_a.id) == []
+    assert _fresh(db_session, StatementCoverage, claim_a.id).status == "stale"
+    assert [(c.id, c.entry_id) for c in _active(db_session, s.stmt_b.id)] == claims_b
+    stmt_b = _fresh(db_session, AccountStatement, s.stmt_b.id)
+    assert (stmt_b.needs_recheck, stmt_b.matched_count) == (False, matched_b)
+    maps = db_session.execute(select(InstallmentPlanMap.account_id)).scalars().all()
+    assert maps == [s.b.id]  # A's map gone, B's kept
+
+    _revert(db_session, row_b.id)  # B's coverage is intact: its link is still revertable
+    assert db_session.execute(select(InstallmentPlanMap)).scalars().all() == []
+    assert _active(db_session, s.stmt_b.id) == []
 
 
 def _link(db, s):
@@ -687,16 +733,22 @@ def test_a_posting_in_flight_makes_the_revert_busy(db_session, unmapped_then_pen
 
 def test_a_posting_waits_behind_an_open_link_revert(db_session, unmapped_then_pending, pg_engine):
     """The mirror: while the revert holds the definition FOR UPDATE, a posting's FOR SHARE cannot complete; it
-    finishes only after the revert commits (bounded both ways)."""
+    blocks on a lock the reverter's backend holds (pg_blocking_pids) and finishes only after the revert commits."""
     s = unmapped_then_pending
     row = _link(db_session, s)
     reverter = sessionmaker(bind=pg_engine, autoflush=False)()
+    pids: queue.Queue = queue.Queue()
+
+    def posting(db):
+        pids.put(db.execute(text("SELECT pg_backend_pid()")).scalar_one())  # pins the worker's connection first
+        return schedule_posting.lock_definition_for_post(db, s.definition.id).id
+
     run = None
     try:
         engine.revert_action(reverter, action_id=row.id, actor="owner", label="owner-test")  # holds the definition
-        run = _Run(_own_session(pg_engine, lambda db: schedule_posting.lock_definition_for_post(
-            db, s.definition.id).id, commit=True))
-        assert run.waiting(0.5), "the posting must wait behind the revert's exclusive definition lock"
+        reverter_pid = reverter.execute(text("SELECT pg_backend_pid()")).scalar_one()  # same open transaction
+        run = _Run(_own_session(pg_engine, posting, commit=True))
+        wait_until_blocked(pg_engine, pids.get(timeout=5.0), blocker_pid=reverter_pid)
         reverter.commit()
         assert run.result(5.0) == s.definition.id  # released: the posting's lock is granted and it completes
     finally:

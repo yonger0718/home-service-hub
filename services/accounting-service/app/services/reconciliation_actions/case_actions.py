@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountStatement, InstallmentPlanMap, ReconciliationAction, ReconciliationCase, ScheduleDefinition,
+    AccountStatement, InstallmentPlanMap, LedgerEntry, ReconciliationAction, ReconciliationCase, ScheduleDefinition,
     ScheduleInstance, StatementCoverage, StatementRevision,
 )
 from app.schemas.writes import Int32
@@ -161,20 +161,33 @@ class LinkInstallmentPlanAction(ActionBase):
     PLAN_RULE = "installment"  # matching.py: Representation("installment", …, rule="installment") for a plan-map claim
 
     @staticmethod
-    def _plan_entries(db: Session, definition_id: int) -> set[int]:
+    def _plan_entries(db: Session, definition_id: int, account_id: int) -> set[int]:
+        """The definition's posted entries on the map's account scope: `installment_plan_map` is per account and a
+        template may post to several accounts, so only entries on the account's participating accounts (the
+        matcher's population for its statements: a combined sibling's entry is in, another account's is not)."""
         posted = db.execute(select(ScheduleInstance.posted_entry_ids)
                             .where(ScheduleInstance.definition_id == definition_id)).scalars()
-        return {i for ids in posted for i in ids or [] if isinstance(i, int)}
+        ids = sorted({i for ids in posted for i in ids or [] if isinstance(i, int)})
+        if not ids:
+            return set()
+        accounts = coverage_service.participating_accounts(db, account_id)
+        return set(db.execute(select(LedgerEntry.id).where(LedgerEntry.id.in_(ids),
+                                                           LedgerEntry.account_id.in_(accounts))).scalars())
 
     @classmethod
-    def _other_claims(cls, db: Session, definition_id: int, statement_id: int) -> list[StatementCoverage]:
-        """R1d item 3: active plan-rule coverage of the plan's posted entries on OTHER statements of the account."""
-        entries = sorted(cls._plan_entries(db, definition_id))
+    def _other_claims(cls, db: Session, definition_id: int, account_id: int,
+                      statement_id: int) -> list[StatementCoverage]:
+        """R1d item 3: active plan-rule coverage of the plan's posted entries (account-scoped, `_plan_entries`) on
+        OTHER statements of the map's account; another account's statements answer to that account's own map."""
+        entries = sorted(cls._plan_entries(db, definition_id, account_id))
         if not entries:
             return []
-        return list(db.execute(select(StatementCoverage).where(
-            StatementCoverage.status == "active", StatementCoverage.match_rule == cls.PLAN_RULE,
-            StatementCoverage.entry_id.in_(entries), StatementCoverage.statement_id != statement_id)
+        return list(db.execute(
+            select(StatementCoverage)
+            .join(AccountStatement, AccountStatement.id == StatementCoverage.statement_id)
+            .where(StatementCoverage.status == "active", StatementCoverage.match_rule == cls.PLAN_RULE,
+                   StatementCoverage.entry_id.in_(entries), StatementCoverage.statement_id != statement_id,
+                   AccountStatement.account_id == account_id)
             .order_by(StatementCoverage.id)).scalars())
 
     def revert_lock_targets(self, ctx: Context, action: ReconciliationAction) -> LockSet:
@@ -183,12 +196,14 @@ class LinkInstallmentPlanAction(ActionBase):
             return super().revert_lock_targets(ctx, action)
         # R1d item 3: the definition FOR UPDATE (freezes the posted set: a posting takes it FOR SHARE), the plan's
         # posted entries (NOWAIT: a reconcile claiming one holds it first → action_busy) and the other statements
-        # already claiming them (locked ascending with the case's, each swept)
+        # already claiming them (locked ascending with the case's, each swept); entries and statements are scoped to
+        # the map's account (the case statement's), the definition lock stays per definition
+        account_id = ctx.statement.account_id
         entries, groups = snapshots.ids_of(action.after)
-        others = {c.statement_id for c in self._other_claims(ctx.db, plan.definition_id, ctx.statement.id)}
+        others = {c.statement_id for c in self._other_claims(ctx.db, plan.definition_id, account_id, ctx.statement.id)}
         targets = lockset_for(ctx.db,
                               entry_ids={*entries, *(action.touched_entry_ids or ()), *(action.created_entry_ids or ()),
-                                         *self._plan_entries(ctx.db, plan.definition_id)},
+                                         *self._plan_entries(ctx.db, plan.definition_id, account_id)},
                               group_ids={*groups, *(action.touched_group_ids or ())}, statement_ids=others)
         return replace(targets, definition_ids=tuple(i for i in targets.definition_ids if i != plan.definition_id),
                        exclusive_definition_ids=(plan.definition_id,))
@@ -196,12 +211,14 @@ class LinkInstallmentPlanAction(ActionBase):
     def _check_lock_set(self, ctx: Context, definition_id: int) -> list[StatementCoverage]:
         """Under the locks, before any mutation: the posted-entry set and the other-statement set re-derived; an
         entry or statement the engine did not lock (posted or claimed between the unlocked discovery and the
-        locks) is 409 action_busy — the retry discovers and locks the full set. Returns the other claims."""
+        locks) is 409 action_busy — the retry discovers and locks the full set. Returns the other claims. Same account
+        scope as the discovery (`revert_lock_targets`): the map's account and its participating accounts."""
         held = ctx.lock_set or LockSet()
-        new_entries = sorted(self._plan_entries(ctx.db, definition_id) - set(held.entry_ids))
+        account_id = ctx.statement.account_id
+        new_entries = sorted(self._plan_entries(ctx.db, definition_id, account_id) - set(held.entry_ids))
         if new_entries:
             raise CodedConflictError(ACTION_BUSY, f"entry {new_entries[0]} was posted after discovery; retry")
-        others = self._other_claims(ctx.db, definition_id, ctx.statement.id)
+        others = self._other_claims(ctx.db, definition_id, account_id, ctx.statement.id)
         late = sorted({c.statement_id for c in others} - set(held.statement_ids))
         if late:
             raise CodedConflictError(ACTION_BUSY, f"statement {late[0]} gained a plan claim after discovery; retry")
@@ -213,7 +230,8 @@ class LinkInstallmentPlanAction(ActionBase):
         if plan is None:
             raise NotRevertable("the plan mapping is gone")
         definition_id = plan.definition_id
-        entries = sorted(self._plan_entries(db, definition_id) | set(action.touched_entry_ids or ()))
+        entries = sorted(self._plan_entries(db, definition_id, ctx.statement.account_id)
+                         | set(action.touched_entry_ids or ()))
         if entries:
             later = db.execute(select(ReconciliationAction.id).where(
                 ReconciliationAction.id > action.id, ReconciliationAction.status == "applied",
