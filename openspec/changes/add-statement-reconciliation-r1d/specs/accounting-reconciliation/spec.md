@@ -18,7 +18,7 @@
 
 A claim written by any action applied with `actor='policy'` SHALL have `match_kind='agent'` (`ledger_actions._match_kind`); a proposal the owner applies SHALL stay `manual`; `auto` SHALL remain the matcher's. A reconcile SHALL keep `manual` and `agent` coverage (`OWNED_KINDS`), so a policy action SHALL stay revertable after the next reconcile of its statement.
 
-The `attach_fee` candidate's amount SHALL be `policy_service._fee_now`, `line.flow_amount - entry.amount` read from the rows, at collect time and again under the statement lock; a different amount under the lock SHALL be `candidate_changed` (skipped, audited) and the budget SHALL be charged only the fee the action books.
+The `attach_fee` candidate's amount SHALL be `policy_service._fee_now`, the absolute difference |entry.amount - line.flow_amount| read from the rows, at collect time and again under the statement lock; a different amount under the lock SHALL be `candidate_changed` (skipped, audited) and the budget SHALL be charged only the fee the action books.
 
 `policy_skipped` SHALL carry `detail.case_version` and SHALL be audited once per `(case_id, case_version, code, reason)`; the check and insert SHALL run in the skip's own transaction under the statement lock, then the case lock, after `_run_candidate` committed any scoped supersede. The run result SHALL still count every skip.
 

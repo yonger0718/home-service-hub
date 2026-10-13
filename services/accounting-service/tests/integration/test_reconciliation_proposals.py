@@ -254,6 +254,16 @@ def test_a_policy_applied_proposal_writes_agent_coverage_that_reconcile_keeps(cl
     assert kept.id == claim.id and kept.match_kind == "agent"
 
 
+def test_a_policy_match_without_a_proposal_still_writes_agent_coverage(db_session, unmatched):
+    s = unmatched
+    engine.apply_action(db_session, case_id=s.case.id, action="match",
+                        params={"line_id": s.line.id, "entry_id": s.entry.id}, actor="policy",
+                        label="policy", budget=(date(2026, 10, 1), "TWD", Decimal("580")))
+    db_session.commit()
+    (claim,) = _active(db_session, s.stmt.id)
+    assert claim.match_kind == "agent"
+
+
 # --- races ---------------------------------------------------------------------------------------------------------
 
 def _actions(db):

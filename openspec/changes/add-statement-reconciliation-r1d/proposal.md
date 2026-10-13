@@ -16,6 +16,8 @@ R1c shipped the action engine and the policy engine, off. Its final review and t
 
 ## Capabilities
 
+This delta's requirements are MODIFIED relative to the R1c change `add-statement-reconciliation-r1c`, which must be archived first (no `openspec/specs/accounting-reconciliation/` exists yet).
+
 ### New Capabilities
 
 None.
