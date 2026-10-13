@@ -106,8 +106,9 @@ def list_proposals(status: Literal["pending", "applied", "rejected", "superseded
     proposal_service.supersede_stale(db)
     db.commit()  # durable even if the rest of the request fails
     rows = proposal_service.list_proposals(db, status=status, case_id=case_id, limit=limit)
+    out = [ProposalOut.model_validate(row) for row in rows]  # before the commit: no per-row reload afterwards
     db.commit()  # list_proposals supersedes again and takes SKIP LOCKED locks; persist what the response shows
-    return rows
+    return out
 
 
 @router.post("/reconciliation/proposals/{proposal_id}/apply", response_model=ActionOut, status_code=201,

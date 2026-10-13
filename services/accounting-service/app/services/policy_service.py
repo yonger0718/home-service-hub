@@ -95,7 +95,7 @@ def _money(value) -> Decimal | None:
 
 
 def _fee_now(db: Session, case: ReconciliationCase, line: StatementLine | None) -> Decimal | None:
-    """R1d item 4: the fee `attach_fee` would book now — `entry.amount − line.flow_amount` from the rows as they are
+    """R1d item 4: the fee `attach_fee` would book now — |entry.amount − line.flow_amount| from the rows as they are
     (the case's `context.residual` is the reconcile-time value and goes stale when the entry is edited before the
     next sweep). None without a line or an entry."""
     entry_id = (case.context or {}).get("entry_id")
