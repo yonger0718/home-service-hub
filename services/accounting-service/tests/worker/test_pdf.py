@@ -117,3 +117,22 @@ def test_library_logging_never_carries_pdf_content(caplog):
             pass
     assert "A123456789" not in caplog.text
     assert all("A123456789" not in r.getMessage() for r in caplog.records)
+
+
+def test_cid_garbage_is_no_text_layer():
+    garbage = ["(cid:12)(cid:40) (cid:7)(cid:9)(cid:33) (cid:5) (cid:88)(cid:2) 1,234 (cid:4)"] * 30
+    with pytest.raises(pdf.NoTextLayer, match="font garbage"):
+        pdf.extract(make_pdf([garbage]), None)
+
+
+def test_is_font_garbage_threshold():
+    assert pdf.is_font_garbage("(cid:1) a b c d e f g h i") is True         # exactly 1 of 10
+    assert pdf.is_font_garbage("(cid:1) a b c d e f g h i j") is False       # 1 of 11
+    assert pdf.is_font_garbage("") is False and pdf.is_font_garbage("   \n ") is False
+    assert pdf.is_font_garbage(" ".join(["MERCHANT(cid:7)"] + ["row"] * 20)) is False  # one cid-like token amid real text
+
+
+def test_garbage_rule_looks_at_page_one_only():
+    garbage = ["(cid:12)(cid:40) (cid:7)(cid:9)(cid:33) (cid:5) (cid:88)(cid:2) (cid:4)"] * 30
+    out = pdf.extract(make_pdf([statement_lines(), garbage]), None)  # page 2 garbage: the text layer is used as today
+    assert out.pages == 2 and "MERCHANT 003" in out.text

@@ -189,8 +189,23 @@ def test_gate_ensure_caches_and_latches(cfg, tmp_path):
 
 
 def test_parser_version_string():
-    v = parse_schema.version("2.1.296", "claude-sonnet-5-5")
-    assert v.startswith("claude-cli-2.1.296-claude-sonnet-5-5-") and len(v.split("-")[-1]) == 8
+    v = parse_schema.version("2.1.296", "claude-sonnet-5-5", "1.4.4+5.14.0+layout1")
+    assert v.startswith("claude-cli-2.1.296-claude-sonnet-5-5-") and len(v.split("-")[-1]) == 12 and len(v) <= 64
+    assert parse_schema.version("2.1.296", "claude-sonnet-5-5", "1.4.5+5.14.0+layout1") != v
+
+
+def test_version_is_bounded_for_long_config_and_distinct():
+    long_model = "claude-sonnet-5-5-20261001-preview-extended-context-x" * 2  # 106 chars
+    a = parse_schema.version("2.1.296", long_model, "f")
+    b = parse_schema.version("2.1.296", long_model + "z", "f")
+    assert len(a) <= 64 and len(b) <= 64 and a != b and a.startswith("claude-cli-2.1.296-")
+    assert parse_schema.version("2.1.2960", "claude-sonnet-5-5", "f") != parse_schema.version("2.1.296", "claude-sonnet-5-5", "f")
+    longest = parse_schema.version("x" * 64, "y" * 64, "z")
+    assert len(longest) == 61 == parse_schema.VERSION_MAX - 3
+
+
+def test_instruction_states_the_card_credit_rule():
+    assert "never label a negative card row balance_adjustment" in parse_schema.INSTRUCTION and "分期調整" in parse_schema.INSTRUCTION
 
 
 def test_unsandboxed_parser_is_refused_without_the_flag(tmp_path):

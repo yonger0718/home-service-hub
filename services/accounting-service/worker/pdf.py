@@ -98,6 +98,17 @@ class _Alarm:
         raise ExtractTimeout("extraction timed out")
 
 
+GARBAGE_TOKEN = "(cid:"
+GARBAGE_SHARE = 0.10
+
+
+def is_font_garbage(text: str) -> bool:
+    """R5.1: a Type3 font without a ToUnicode map extracts as `(cid:NNN)` tokens; at least 10 % of the whitespace-separated
+    tokens being such tokens means there is no usable text layer."""
+    tokens = text.split()
+    return bool(tokens) and sum(1 for t in tokens if GARBAGE_TOKEN in t) / len(tokens) >= GARBAGE_SHARE
+
+
 def extract(data: bytes, password: str | None, *, max_pages: int = 40, max_bytes: int = 20_000_000,
             timeout_s: int = 60) -> Extracted:
     if len(data) > max_bytes:
@@ -118,6 +129,8 @@ def extract(data: bytes, password: str | None, *, max_pages: int = 40, max_bytes
                 page1 = len(texts[0].strip()) if texts else 0
                 if page1 < 200:
                     raise NoTextLayer(f"page 1 has {page1} characters") from None
+                if is_font_garbage(texts[0]):
+                    raise NoTextLayer("page 1 is font garbage") from None
                 return Extracted("\f".join(texts), tables, npages, page1)
         except (PasswordError, NoTextLayer, TooLarge, ExtractTimeout):
             raise

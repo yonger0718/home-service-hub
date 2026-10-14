@@ -14,7 +14,7 @@ import httpx
 
 from worker import drive as drive_mod
 from worker import inbox as inbox_mod
-from worker import mask, parse_schema, parser as parser_mod, passwords, pdf
+from worker import mask, ocr as ocr_mod, parse_schema, parser as parser_mod, passwords, pdf
 from worker import api as api_mod
 from worker.api import ApiClient, ApiError, Lease, LeaseKeeper, LeaseLost, RunState
 from worker.config import WorkerConfig
@@ -107,7 +107,7 @@ def build(cfg: WorkerConfig, client: httpx.Client, runner: Runner) -> Services:
                         credential_version, mask.Masker(passwords.identity(cfg.password_file)), runner)
     services.api = ApiClient(client, token, guard=lambda: services.keeper is not None and services.keeper.lost)
     services.cli_version = services.parser.cli_version() or "unknown"
-    services.parser_version = parse_schema.version(services.cli_version, cfg.parser_model)
+    services.parser_version = parse_schema.version(services.cli_version, cfg.parser_model, ocr_mod.FINGERPRINT)
     return services
 
 
