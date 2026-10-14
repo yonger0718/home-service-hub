@@ -298,8 +298,9 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
     note = (f"ocr: mean_confidence={result.mean_confidence:.2f} boxes={result.boxes} "
             f"empty_pages={result.empty_pages} scale={ocr_mod.SCALE}\nocr: fallback after text-layer parse failure")
-    # the second parser call: the text attempt's exception is long gone (its handler returned), and `final` makes
-    # every second-attempt failure end as failed/parse at this version (the latch is still set for violations)
+    # the second parser call: the text attempt's exception is long gone (its handler returned); `final` makes a
+    # timeout or exit end as failed/parse at this version, while a sandbox/auth/CLI-version failure keeps its
+    # failed/sandbox semantics (host fault: latch, operator gate, then the file is processed again)
     status = _parse_submit(services, lease, file_row, account_id, result.extracted, candidates, note, summary, final=True)
     if status is PARSE_FAILED:
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
@@ -314,9 +315,10 @@ def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: 
     """Mask → STDIN_CAP → parser → submit → guardrail/parsed. Returns the file's terminal status, or PARSE_FAILED
     when the parser (parse/schema) or the API (422) rejected the text, so the caller can decide on the R5.3
     fallback; every other outcome (sandbox latch, transient, too_large, guardrail) is terminal here. `final` (the
-    fallback's second attempt, AGENT-118 ruling 2026-10-14): every parser failure is PARSE_FAILED — the row ends
-    failed/parse at this version and is retried only on a version change — while sandbox/auth/CLI-version failures
-    still set the parser latch, which is the operator's signal."""
+    fallback's second attempt, AGENT-118 ruling 2026-10-14): a timeout or exit is PARSE_FAILED — the row ends
+    failed/parse at this version and is retried only on a version change — while a sandbox, auth or CLI-version
+    failure is a host fault and keeps its first-attempt semantics: the latch is set and the row is failed/sandbox,
+    so it is processed again (and may fall back again) once the operator has repaired the host."""
     masked = services.masker.mask_ocr(extracted.text, candidates) if ocr_note else services.masker.render(extracted, candidates)
     if len(masked.encode("utf-8")) > parser_mod.STDIN_CAP:
         return _review(services, lease, file_row, "too_large", summary)
@@ -328,8 +330,6 @@ def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: 
             services.gate.latch(f"{exc.reason} on real input", services.gate.key(services.parser))
             if "parser_disabled" not in summary.errors:
                 summary.errors.append("parser_disabled")
-            if final:
-                return PARSE_FAILED
             return _fail(services, lease, file_row, "sandbox", summary, parser_version=services.parser_version)
         if exc.reason in ("timeout", "exit") and not final:  # CLI non-zero, rate limit, outage: retry on the ladder
             return _fail(services, lease, file_row, "transient", summary)

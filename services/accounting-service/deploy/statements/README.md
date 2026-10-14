@@ -187,10 +187,11 @@ statement) is OCR'd once in the same run and parsed once more — the **fallback
 `parser=claude-cli+ocr` and a second note line `ocr: fallback after text-layer parse failure`, `has_text_layer`
 stays true. It never fires on guardrail, transient, sandbox, password, mapping or too_large outcomes, nor while the
 parser latch is set. If OCR is unavailable the file stays `failed/parse` and the run reports `ocr_unavailable`; any
-other OCR outcome leaves it `failed/parse`. Whatever the second parse's failure (timeout, exit, schema, sandbox,
-auth, CLI version), the row ends `failed/parse` at the current parser version and retries only at the next one, so
-the fallback costs at most one OCR start and one extra parser call per file per version; a sandbox, auth or
-CLI-version failure on that second call still sets the parser latch. OCR text that is not UTF-8 is rejected at the
+other OCR outcome leaves it `failed/parse`. A timeout, exit or schema failure on the second parse ends
+`failed/parse` at the current parser version and retries only at the next one, so the fallback costs at most one
+OCR start and one extra parser call per file per version; a sandbox, auth or CLI-version failure on that second
+call is a host fault: the parser latch is set and the row is `failed/sandbox`, and once `gate.sh` clears the latch
+the file is processed again (it may fall back again). OCR text that is not UTF-8 is rejected at the
 same pre-mask boundary (`failed/parse`, or `errors` in export-masked). The run summary counts `ocr_trigger` and
 `ocr_fallback` at the moment the child is started, whatever follows, and the journal carries one line per OCR
 outcome with the outcome class only (`ocr trigger: OCRTimeout`, `ocr fallback: text too_large`).

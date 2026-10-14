@@ -1114,14 +1114,12 @@ def test_second_parser_call_carries_no_first_attempt_exception(world, tmp_path, 
     _assert_canary_free(raised[1], worker_log)
 
 
-@pytest.mark.parametrize("reason", ["timeout", "exit", "schema", "sandbox", "auth", "cli_version"])
-def test_second_attempt_failure_is_final_at_this_version(world, tmp_path, db_session, reason):
-    """Must 2 ruling: whatever the second parse's failure, the row is failed/parse at the current version; sandbox,
-    auth and CLI-version failures still set the latch; a second run makes no OCR start and no parser call."""
+@pytest.mark.parametrize("reason", ["timeout", "exit", "schema"])
+def test_second_attempt_parse_failure_is_final_at_this_version(world, tmp_path, db_session, reason):
+    """Must 2 ruling: a timeout, exit or schema failure on the second parse ends failed/parse at the current version;
+    a second run makes no OCR start and no parser call."""
     from worker import parser as parser_mod
     services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
-    if reason in ("sandbox", "auth", "cli_version"):
-        services.gate.ensure(services.parser)  # a valid cached gate, so the violation latches on real input
     calls = []
 
     def parse(masked):
@@ -1131,13 +1129,40 @@ def test_second_attempt_failure_is_final_at_this_version(world, tmp_path, db_ses
     summary = pipeline.run(services, trigger="owner_cli")
     assert calls == ["text", "ocr"] and services.ocr.starts == 1 and summary["ocr_fallback"] == 1
     assert db_session.execute(text("select status, failure, has_text_layer, parser_version from statement_file")).one() == ("failed", "parse", True, services.parser_version)
-    latched = reason in ("sandbox", "auth", "cli_version")
-    assert services.parser_disabled is latched and ("parser_disabled" in summary["errors"]) is latched
-    assert services.gate.latch_path.exists() is latched
-    if latched:
-        assert _operator_gate(services).ok  # clear the latch so the second run can parse at all
+    assert services.parser_disabled is False and "parser_disabled" not in summary["errors"]
     again = pipeline.run(services, trigger="owner_cli")
     assert again["unchanged"] == 1 and calls == ["text", "ocr"] and services.ocr.starts == 1
+
+
+@pytest.mark.parametrize("reason", ["sandbox", "auth", "cli_version"])
+def test_second_attempt_host_fault_is_sandbox_with_the_latch(world, tmp_path, db_session, reason):
+    """Must 2 ruling (realigned): a sandbox, auth or CLI-version failure on the second parse is a host fault — the
+    latch is set and the row is failed/sandbox exactly as on a first attempt; after the operator gate clears the
+    latch the file is processed again and may fall back again (the accepted exception to once-per-version)."""
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    services.gate.ensure(services.parser)  # a valid cached gate, so the violation latches on real input
+    calls = []
+    real = services.parser.parse
+    broken = [True]
+
+    def parse(masked):
+        calls.append("ocr" if "OCRMARK" in masked else "text")
+        if "OCRMARK" in masked and not broken[0]:
+            return real(masked)  # host repaired: the OCR text parses
+        raise parser_mod.ParseError(reason if "OCRMARK" in masked else "schema", "synthetic")
+    services.parser.parse = parse
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert calls == ["text", "ocr"] and services.ocr.starts == 1 and summary["ocr_fallback"] == 1
+    assert _file_rows(db_session) == [("failed", "sandbox")] and summary["failed"] == 1
+    assert services.parser_disabled is True and "parser_disabled" in summary["errors"] and services.gate.latch_path.exists()
+    latched = pipeline.run(services, trigger="owner_cli")  # latched: the sandbox row is not due, nothing parses
+    assert "parser_disabled" in latched["errors"] and latched["unchanged"] == 1 and calls == ["text", "ocr"]
+    assert _operator_gate(services).ok  # the operator repairs the host and clears the latch
+    broken[0] = False
+    again = pipeline.run(services, trigger="owner_cli")
+    assert again["parsed"] == 1 and again["ocr_fallback"] == 1 and calls == ["text", "ocr", "text", "ocr"] and services.ocr.starts == 2
+    assert _file_rows(db_session) == [("parsed", None)]
 
 
 def test_counters_count_at_ocr_start_and_log_the_outcome_class(world, tmp_path, db_session, worker_log):
