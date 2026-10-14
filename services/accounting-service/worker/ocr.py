@@ -85,6 +85,11 @@ class OCRConfigError(ValueError):
     """A protected path overlaps a sandbox bind, or the child command is unparsable."""
 
 
+class OCRThreadError(RuntimeError):
+    """`Engine.read`/`preflight` called from a thread other than the one that created the Engine (fail closed:
+    bwrap's --die-with-parent is bound to the spawning thread, so a short-lived caller would tear the child down)."""
+
+
 @dataclass
 class OcrResult:
     extracted: pdf.Extracted = field(repr=False)
@@ -174,11 +179,16 @@ class Engine:
     def __init__(self, cfg: WorkerConfig):
         check_config(cfg)
         self.cfg = cfg
+        self._owner_thread = threading.get_ident()
         self.starts = 0
         self.last_pgid: int | None = None
         self.last_stdout_bytes = 0
         self._unavailable = False
         self._ready = False
+
+    def _check_thread(self) -> None:
+        if threading.get_ident() != self._owner_thread:
+            raise OCRThreadError("ocr engine used off its owning thread")
 
     def reset(self) -> None:
         """Run boundary: a host that was broken may have been fixed between runs, and vice versa."""
@@ -207,6 +217,7 @@ class Engine:
         invalid or non-ready response, a crash) latches `unavailable` until `reset()`. Two outcomes do not latch
         (AGENT-118 ruling on Must 1b): a self-test that reports `resource` → OCRResource, and an observed deadline or
         SIGXCPU → OCRTimeout; the next call runs the self-test again."""
+        self._check_thread()
         if self._unavailable:
             raise OCRUnavailable("ocr unavailable")
         if self._ready:
@@ -226,7 +237,9 @@ class Engine:
 
     def read(self, data: bytes, password: str | None) -> OcrResult:
         """Call from a long-lived thread (the worker's main thread, as the parser does): bwrap's --die-with-parent
-        is tied to the thread that spawned it, so a short-lived caller thread would tear the child down itself."""
+        is tied to the thread that spawned it, so a short-lived caller thread would tear the child down itself. Fails
+        closed (OCRThreadError) when called off the thread that created the Engine."""
+        self._check_thread()
         self.preflight()
         self.starts += 1
         outcome, payload = self._exchange(_header(password, len(data)) + data, self.argv(), self.cfg.ocr_timeout_s)

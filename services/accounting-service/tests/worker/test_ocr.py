@@ -309,6 +309,20 @@ def test_protected_paths_include_the_config_directory_and_env_file():
     assert str(ocr.service_dir().parent.parent / ".env") in paths or os.path.realpath(str(ocr.service_dir().parent.parent / ".env")) in paths
 
 
+def test_read_off_the_owning_thread_fails_closed(tmp_path):
+    engine = ocr.Engine(cfg_with(tmp_path, fake_ocr_child.ok()))
+    seen: list = []
+
+    def off_thread():
+        try:
+            engine.read(b"%PDF", None)
+        except BaseException as exc:  # noqa: BLE001
+            seen.append(exc)
+    t = threading.Thread(target=off_thread); t.start(); t.join(5)
+    assert [type(e) for e in seen] == [ocr.OCRThreadError] and engine.starts == 0 and seen[0].__context__ is None
+    assert engine.read(b"%PDF", None).extracted.pages == 1  # the owning thread still works
+
+
 def test_fingerprint_shape():
     assert ocr.FINGERPRINT.count("+") == 2 and ocr.FINGERPRINT.endswith("layout1")
 
