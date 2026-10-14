@@ -109,6 +109,33 @@ The parser version changes, so files that failed `parse`/`guardrail`/`no_text_la
 
 `verify` exits 1 when its totals show `errors`, `listing_failed`, `parse_failed > 0` or `verify_errors > 0`, 2 when refused, 3 when another worker holds the lock.
 
+## OCR child boundary (R5a)
+
+`worker/ocr_child.py` renders a PDF with pypdfium2 and reads it with RapidOCR (models ship in the
+`rapidocr-onnxruntime` wheel; nothing is downloaded). `worker/ocr.py` starts it as
+`<real interpreter> -B -m worker.ocr_child --threads N --rlimit-as-mb M --rlimit-cpu-s S` with an explicit minimal
+environment and, with `STATEMENT_PARSER_SANDBOX=true`, under bubblewrap: `--unshare-all` (no network),
+`--die-with-parent --new-session --cap-drop ALL`, read-only binds of `/usr`, `/lib`, `/lib64`, the interpreter's
+prefix, the venv's `site-packages` and `worker/` at `/work/worker`; `/etc`, home, state and config directories are
+absent, and a configuration whose protected paths fall under a bound prefix is refused (`OCRConfigError`).
+
+Child order: rlimits (no core dumps, address space, CPU) → fd 1 moved to `/dev/null` with the protocol line written on
+a saved descriptor → readiness (imports, engine, self-test) → header line read byte by byte → exactly `pdf_len`
+bytes → page bound → per page a pixel bound before any allocation → recognise → one JSON line. The parent streams
+stdout with a 2 MB cap, enforces the wall-clock deadline by killing the child's session group, and classifies by
+what it observed: deadline or SIGXCPU → retry later (`OCRTimeout`), `resource` (MemoryError in the child) →
+retry later, `unavailable` or a failed start → `OCRUnavailable` (cached for the run), cap overflow / crash / any
+other non-zero exit / invalid response → `Malformed`. Nothing of the statement reaches disk, logs or exceptions.
+
+R5a is not wired into the pipeline (R5c does that). Operator evidence on the host, as the worker user:
+
+```
+cd ~/workspace/home-hub/services/accounting-service
+.venv/bin/python -m pytest tests/worker/test_ocr.py tests/worker/test_ocr_child.py -q        # includes real-bwrap teardown and path-denial tests
+RUN_OCR_MODEL_TESTS=1 .venv/bin/python -m pytest tests/worker/test_ocr_models.py -q -rs -s   # real engine inside the sandbox; 2 passed, 0 skipped
+```
+Record the printed JSON (SHA, platform, Python, OCR fingerprint) with the release.
+
 ## Operator gate (`gate.sh`)
 
 Run it after any change to the CLI, model, sandbox flags or login directory, and to clear a latch

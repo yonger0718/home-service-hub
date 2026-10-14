@@ -45,3 +45,15 @@ def test_verify_db_url_hidden_from_repr():
     cfg = config.load({"STATEMENT_VERIFY_DB_URL": "postgresql://ro:synthpw@localhost/db"})
     assert cfg.verify_db_url.endswith("synthpw@localhost/db")
     assert "synthpw" not in repr(cfg)
+
+
+def test_ocr_defaults():
+    cfg = config.load({})
+    assert (cfg.ocr_enabled, cfg.ocr_threads, cfg.ocr_timeout_s, cfg.ocr_rlimit_mb, cfg.ocr_child) == (True, 2, 120, 2048, None)
+
+
+def test_ocr_overrides():
+    cfg = config.load({"STATEMENT_OCR": "false", "STATEMENT_OCR_THREADS": "4", "STATEMENT_OCR_TIMEOUT": "30",
+                       "STATEMENT_OCR_RLIMIT_MB": "512", "STATEMENT_OCR_CHILD": "/usr/bin/sh -c 'exit 0'"})
+    assert (cfg.ocr_enabled, cfg.ocr_threads, cfg.ocr_timeout_s, cfg.ocr_rlimit_mb) == (False, 4, 30, 512)
+    assert cfg.ocr_child == "/usr/bin/sh -c 'exit 0'"
