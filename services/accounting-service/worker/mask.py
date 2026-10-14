@@ -8,7 +8,10 @@ from datetime import date
 from worker import pdf
 from worker.passwords import Identity
 
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# the local part is possessive and may not start inside a run: a match can only begin where a run begins and the
+# engine never re-scans a run from each later position, so a long dotted line without "@" costs linear time (the
+# greedy form was quadratic); the matches are the same, because a run character is never "@"
+_EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]++@[\w-]+(?:\.[\w-]+)+")
 # boundaries on ASCII letters/digits only: CJK neighbours must not protect a secret (AGENT-95 Must 1)
 _ID = re.compile(r"(?<![A-Za-z0-9])[A-Z][12]\d{8}(?![A-Za-z0-9])")
 # Taiwan mobile, international mobile, and landlines only when written with parentheses or dashes
@@ -25,16 +28,23 @@ _DIGIT_RUN = re.compile(r"(?<!\d)(?:\d{6,}|\d{3,}(?:[ \-]\d{3,})+)(?!\d)")
 # OCR entry point first normalises (NFKC, invisible characters dropped) and matches *views* of each line — compacted
 # (no whitespace), alphanumeric-only (for names) and digit-only (for card/account numbers) — against the configured
 # literals and generic identifier shapes, every view carrying a map back to line positions. Only matched spans are
-# replaced. Confusables (O/o→0, I/l/|→1) are corrected only inside runs of tokens that carry digits and are mostly
-# digits, never in merchant text. Matching is per line: an identifier wrapped across two OCR lines is a known
-# limitation (the parser never sees a line twice, and the text-layer path has the same limit).
+# replaced. Confusables (O/o→0, I/l/|→1) are corrected inside runs of digit-like tokens that are mostly digits, or
+# that are at least 12 characters long (a whole card group read as letters), never in merchant text. Matching is per
+# line: an identifier wrapped across two OCR lines is a known limitation (the text-layer path has the same limit; the
+# external parser receives both lines in one stdin blob).
 _OCR_TOKEN = re.compile(r"\S+")
 _OCR_DIGIT_LIKE = re.compile(r"^[0-9OoIl|]+$")
 _OCR_MIXED_LIKE = re.compile(r"^[A-Za-z][0-9OoIl|]{4,}$")  # an ID whose digits carry confusables (A12345678O)
 _OCR_CONFUSABLE = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1"})
-_OCR_ID_CORE = re.compile(r"[A-Za-z][12]\d{8}")
+# Cyrillic and Greek lookalikes of a Latin capital, accepted only at the ID-letter position of an ID-shaped span
+# (the compact view is casefolded, so the lower-case forms are listed)
+_OCR_ID_LETTER_HOMOGLYPHS = "авекмнорстху" "αβεζηικμνορτυχ"
+_OCR_ID_CORE = re.compile(rf"[A-Za-z{_OCR_ID_LETTER_HOMOGLYPHS}][12]\d{{8}}")
 _OCR_LONG_DIGITS = re.compile(r"\d{12,}")
-_OCR_SEPARATOR = set("-\u2013\u2014\u2010.\u00b7\u30fb")  # between digit groups: dash, en/em dash, hyphen, dot, middle dots
+# group separators between digit groups, dropped from the compact and digits views: dash, en/em dash, hyphen, minus
+# sign, dot, middle dots, slash, pipe (table borders)
+_OCR_SEPARATOR = set("-\u2013\u2014\u2010\u2212.\u00b7\u30fb/|")
+OCR_CONFUSABLE_RUN_MIN = 12  # a digit-like run this long is corrected whatever its digit share
 _OCR_DATE_TOKEN = re.compile(r"^\d{2,4}[-/.]\d{1,2}[-/.]\d{1,2}$|^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$")  # separated dates, incl. ROC years
 
 
@@ -44,14 +54,23 @@ OCR_CONFUSABLE_MIN_DIGIT_SHARE = 0.7
 
 
 def _ocr_clean(line: str) -> str:
-    """NFKC, then invisible format characters (zero-width, BOM, soft hyphen) dropped."""
-    return "".join(ch for ch in unicodedata.normalize("NFKC", line) if unicodedata.category(ch) != "Cf")
+    """NFKC, then invisible format characters (zero-width, BOM, soft hyphen, bidi controls) and nonspacing marks that
+    did not compose (a stray combining accent inside an identifier) dropped."""
+    return "".join(ch for ch in unicodedata.normalize("NFKC", line) if unicodedata.category(ch) not in ("Cf", "Mn"))
+
+
+def _ocr_run_token(tok: str) -> bool:
+    """A token that can belong to a digit-like run: digits and the O/o/I/l/| confusables, including a token that is
+    all letters (a group read as OOOO or llll); a token made only of pipes is a table border, never part of a run."""
+    return bool(_OCR_DIGIT_LIKE.match(tok)) and set(tok) != {"|"}
 
 
 def _ocr_fix_confusables(line: str) -> str:
-    """Maximal runs of whitespace-separated digit-like tokens that carry digits and are mostly (>= 70 %) ASCII digits
-    get their OCR confusables corrected; a lone `|` or letter, or a run that is mostly letters (OllO12), is left alone.
-    A mixed token such as A12345678O (letter + mostly-digit remainder) is corrected in its remainder."""
+    """Maximal runs of whitespace-separated digit-like tokens get their OCR confusables corrected when the run is at
+    least OCR_CONFUSABLE_RUN_MIN characters long (a card or account number, even if whole groups were read as
+    letters) or when it is at least 4 characters and mostly (>= 70 %) ASCII digits. A lone `|`, a short run that is
+    mostly letters (OllO12, a lone 4lll, I0O1) and merchant text are left alone. A mixed token such as A12345678O
+    (letter + mostly-digit remainder) is corrected in its remainder."""
     toks = [(m.start(), m.end(), m.group(0)) for m in _OCR_TOKEN.finditer(line)]
     out = list(line)
     i = 0
@@ -62,14 +81,15 @@ def _ocr_fix_confusables(line: str) -> str:
             out[s_:e_] = list(tok[0] + tok[1:].translate(_OCR_CONFUSABLE))
             i += 1
             continue
-        if not _OCR_DIGIT_LIKE.match(tok) or not any(c.isdigit() for c in tok):
+        if not _ocr_run_token(tok):
             i += 1
             continue
         j = i
-        while j < len(toks) and _OCR_DIGIT_LIKE.match(toks[j][2]) and any(c.isdigit() for c in toks[j][2]):
+        while j < len(toks) and _ocr_run_token(toks[j][2]):
             j += 1
         chars = "".join(t[2] for t in toks[i:j])
-        if len(chars) >= 4 and sum(c.isdigit() for c in chars) / len(chars) >= OCR_CONFUSABLE_MIN_DIGIT_SHARE:
+        share = sum(c.isdigit() for c in chars) / len(chars)
+        if len(chars) >= OCR_CONFUSABLE_RUN_MIN or (len(chars) >= 4 and share >= OCR_CONFUSABLE_MIN_DIGIT_SHARE):
             for s_, e_, t in toks[i:j]:
                 out[s_:e_] = list(t.translate(_OCR_CONFUSABLE))
         i = j
@@ -87,27 +107,25 @@ class _View:
 
 
 def _ocr_views(line: str, blanked: list[tuple[int, int]]) -> tuple[_View, _View, _View]:
-    """compact (no whitespace, casefolded char by char), alnum (letters and digits only, casefolded), digits (digits
-    only, with the `blanked` spans — printed dates and spans already claimed by a literal or an ID — turned into
-    non-digits so a card/account run never crosses them, and group separators dropped)."""
+    """compact (no whitespace and no group separators, casefolded char by char), alnum (letters and digits only,
+    casefolded), digits (digits only, with the `blanked` spans — printed dates and spans already claimed by a literal
+    or an ID — turned into non-digits so a card/account run never crosses them, and group separators dropped)."""
     c_text, c_pos, a_text, a_pos, d_text, d_pos = [], [], [], [], [], []
     in_date = [False] * (len(line) + 1)
     for s_, e_ in blanked:
         for i in range(s_, e_):
             in_date[i] = True
     for i, ch in enumerate(line):
-        if ch.isspace():
-            continue
+        if ch.isspace() or ch in _OCR_SEPARATOR:
+            continue  # whitespace and a separator between groups (B12-345-6789, 4111/2222/…) never break a span
         folded = ch.casefold()
         c_text.append(folded); c_pos.extend([i] * len(folded))
         if ch.isalnum():
             a_text.append(folded); a_pos.extend([i] * len(folded))
         if ch.isdigit() and ch.isascii():
             d_text.append("#" if in_date[i] else ch); d_pos.append(i)
-        elif ch in _OCR_SEPARATOR:
-            continue  # a separator between digit groups does not break a run
         else:
-            d_text.append("x"); d_pos.append(i)  # anything else does
+            d_text.append("x"); d_pos.append(i)  # anything else breaks a digit run
     return _View("".join(c_text), c_pos), _View("".join(a_text), a_pos), _View("".join(d_text), d_pos)
 
 
@@ -168,12 +186,12 @@ class Masker:
     # ---- R5b: OCR entry point -------------------------------------------------------------------------------------
 
     def _ocr_literals(self, extra_literals=()) -> list[tuple[str, str, str]]:
-        """(tag, view, literal) with the literal NFKC-normalised, whitespace removed, casefolded, in the view it is
-        matched against: names in the alphanumeric view (punctuation between parts ignored), the ID and numeric
-        literals in the compact view. Longest first so a longer match wins. Empty literals are skipped."""
+        """(tag, view, literal) with the literal NFKC-normalised, whitespace and group separators removed, casefolded,
+        in the view it is matched against: names in the alphanumeric view (punctuation between parts ignored), the ID
+        and numeric literals in the compact view. Longest first so a longer match wins. Empty literals are skipped."""
         def norm(x: str, alnum: bool) -> str:
             x = _ocr_clean(x)
-            return "".join(ch.casefold() for ch in x if (ch.isalnum() if alnum else not ch.isspace()))
+            return "".join(ch.casefold() for ch in x if (ch.isalnum() if alnum else not (ch.isspace() or ch in _OCR_SEPARATOR)))
 
         lits: list[tuple[str, str, str]] = []
         if self.identity.id_number:
@@ -195,8 +213,9 @@ class Masker:
         spans: list[tuple[int, int, str]] = []
 
         def edge_ok(s_: int, e_: int, numeric: bool) -> bool:
-            """Boundaries judged on the real line: the character before/after the span must not be alphanumeric
-            (numeric spans: not a digit, and not a separated date fragment such as the 2026 of 2026/09/01)."""
+            """Boundaries judged on the real line: the character before/after the span must not be an ASCII letter
+            or digit — a CJK neighbour (持卡人WANG…先生, 身分證A12…末) never protects a secret, as on the text path's
+            `_ID` — (numeric spans: not a digit, and not a separated date fragment such as the 2026 of 2026/09/01)."""
             before = line[s_ - 1] if s_ > 0 else ""
             after = line[e_] if e_ < len(line) else ""
             if numeric:
@@ -207,7 +226,7 @@ class Masker:
                 if after in "/.-" and after2.isdigit():
                     return False
                 return not (before in "/.-" and before2.isdigit())
-            return not (before.isalnum() or after.isalnum())
+            return not ((before.isascii() and before.isalnum()) or (after.isascii() and after.isalnum()))
 
         def add(s_: int, e_: int, tag: str) -> None:
             spans.append((s_, e_, tag))
@@ -225,7 +244,7 @@ class Masker:
                 if not guarded or edge_ok(s_, e_, numeric):
                     add(s_, e_, tag)
                 start = k + 1
-        for m in _OCR_ID_CORE.finditer(compact.text):  # any ID-shaped span, configured or not, upper or lower case
+        for m in _OCR_ID_CORE.finditer(compact.text):  # any ID-shaped span, configured or not, any case, homoglyph letter
             s_, e_ = compact.span(m.start(), m.end() - m.start())
             if edge_ok(s_, e_, False):
                 add(s_, e_, "[ID]")
@@ -250,7 +269,8 @@ class Masker:
     def mask_ocr(self, s: str, extra_literals=()) -> str:
         """R5b: mask OCR text line by line. Spans only — other columns of a row survive. Known limitations (ruling
         2026-10-14): a standalone numeric token equal to a password candidate is masked exactly as on the text-layer
-        path, and an identifier wrapped across two OCR lines is not reassembled."""
+        path, and an identifier wrapped across two OCR lines is not reassembled (the external parser receives both
+        lines)."""
         return "\n".join(self.mask_ocr_line(line, extra_literals) for line in s.split("\n"))
 
     def tables(self, tables: list[list[list[str]]], extra_literals=()) -> list[list[list[str]]]:
