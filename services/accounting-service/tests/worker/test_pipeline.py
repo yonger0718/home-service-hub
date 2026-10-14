@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 import json
 from datetime import date
@@ -7,12 +8,12 @@ from sqlalchemy import text
 
 from app import auth
 from tests.integration.test_statement_ingest_api import SCOPES, TOKENS
-from tests.worker import fake_claude
+from tests.worker import fake_claude, fake_ocr_child
 from tests.worker.pdfgen import encrypt, make_pdf, statement_lines
-from worker import config, pipeline
+from worker import config, parse_schema, pipeline
 from worker.runner import FakeRunner, Result, SubprocessRunner
 
-PW_FILE = "STATEMENT_ID_NUMBER=A123456789\nSTATEMENT_BIRTH_DATE=19900101\nSTATEMENT_HOLDER_NAMES=王小明\n信用卡/國泰世華=$ID\n"
+PW_FILE = "STATEMENT_ID_NUMBER=A123456789\nSTATEMENT_BIRTH_DATE=19900101\nSTATEMENT_HOLDER_NAMES=王小明,WANG XIAO MING\n信用卡/國泰世華=$ID\n"
 
 
 @pytest.fixture(autouse=True)
@@ -605,3 +606,231 @@ def test_a_new_endpoint_starts_a_fresh_store_ladder(world, db_session):
     services.store = Minio()
     pipeline.run(services, trigger="owner_cli")
     assert len(puts) == 1 and _file_rows(db_session) == [("parsed", None)]
+
+
+# ---- R5.3: the OCR branch ----------------------------------------------------------------------------------------
+
+def _ocr_world(world, tmp_path, response=None, pdf_pages=(["short"],), name="ocr-child.sh", **kw):
+    """Drive holds a PDF without a text layer; the OCR child is a fake script (unsandboxed, like the fake CLI)."""
+    services, drive_files, cfg = world
+    drive_files["id-1"] = ("信用卡/國泰世華/2026-09_國泰世華.pdf", encrypt(make_pdf(list(pdf_pages)), "A123456789"))
+    child = fake_ocr_child.write(tmp_path / name, response, **kw)
+    cfg = dataclasses.replace(cfg, ocr_child=str(child), ocr_timeout_s=2)
+    services.cfg = cfg
+    from worker import ocr
+    services.ocr = ocr.Engine(cfg)
+    return services, drive_files, cfg
+
+
+RAW_OCR_TEXT = ("\n".join(statement_lines()) + "\n2026/09/01   COFFEE   1,234\n卡號 4111    2222　　3333    4444"
+                "\n持卡人 王 小 明\nWANG XIAO  MING\n身分證 A12 345 6789\n4lll 2222 3333 444O")
+
+
+def _record_parser(services):
+    seen = []
+    real = services.parser.parse
+
+    def parse(masked):
+        seen.append(masked)
+        return real(masked)
+    services.parser.parse = parse
+    return seen
+
+
+def test_ocr_path_parses_and_records_provenance(world, tmp_path, db_session):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT, boxes=42))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and summary["errors"] == [] and services.ocr.starts == 1
+    assert db_session.execute(text("select status, has_text_layer, text_chars from statement_file")).one() == ("parsed", False, len(RAW_OCR_TEXT))
+    rev = db_session.execute(text("select parser, raw from statement_revision")).one()
+    assert rev[0] == "claude-cli+ocr" and rev[1]["notes"] == "ocr: mean_confidence=0.93 boxes=42 empty_pages=0 scale=3.0"
+
+
+def test_ocr_parser_stdin_canary(world, tmp_path):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT))
+    seen = _record_parser(services)
+    pipeline.run(services, trigger="owner_cli")
+    assert len(seen) == 1
+    compact = "".join(seen[0].split())
+    for secret in ("4111", "2222", "3333", "王小明", "WANGXIAOMING", "A123456789", "4111222233334440"):
+        assert secret not in compact, secret
+    assert "2026/09/01   COFFEE   1,234" in seen[0] and "MERCHANT 001" in seen[0]
+    leaky = "".join(services.masker.text(RAW_OCR_TEXT).split())  # control: the text-layer masker leaks on the same text
+    assert "4111" in leaky and "王小明" in leaky
+
+
+def test_text_layer_file_makes_zero_ocr_calls(world, tmp_path):
+    services, _, cfg = world
+    from worker import ocr
+    services.ocr = ocr.Engine(dataclasses.replace(cfg, ocr_child=str(fake_ocr_child.write(tmp_path / "never.sh", None, exit_code=7))))
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] == 1 and services.ocr.starts == 0
+
+
+def test_password_reaches_the_ocr_child(world, tmp_path):
+    hdr = tmp_path / "hdr"
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(), name="recorder.sh", record_header_to=hdr)
+    pipeline.run(services, trigger="owner_cli")
+    assert json.loads(hdr.read_text())["password"] == "A123456789"
+
+
+def test_ocr_disabled_keeps_todays_behaviour(world, tmp_path, db_session):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok())
+    services.ocr = None
+    assert pipeline.run(services, trigger="owner_cli")["needs_review"] == 1
+    assert _file_rows(db_session) == [("needs_review", "no_text_layer")]
+    assert db_session.execute(text("select has_text_layer from statement_file")).scalar_one() is False
+
+
+@pytest.mark.parametrize("response,kw,expected", [
+    ({"ok": False, "code": "low_confidence"}, {}, ("needs_review", "no_text_layer")),
+    ({"ok": False, "code": "resource"}, {}, ("needs_review", "no_text_layer")),
+    ({"ok": False, "code": "too_large"}, {}, ("needs_review", "too_large")),
+    ({"ok": False, "code": "malformed"}, {}, ("failed", "parse")),
+    ({"ok": True, "pages": "SECRET", "text": "x"}, {}, ("failed", "parse")),
+    (None, {"exit_code": 139}, ("failed", "parse")),
+    (fake_ocr_child.ok(), {"sleep": 30}, ("needs_review", "no_text_layer")),
+])
+def test_ocr_outcomes(world, tmp_path, db_session, response, kw, expected):
+    services, _, _ = _ocr_world(world, tmp_path, response, **kw)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [expected] and summary["errors"] == []
+    assert db_session.execute(text("select has_text_layer from statement_file")).scalar_one() is False
+    if expected[0] == "failed":
+        assert db_session.execute(text("select parser_version from statement_file")).scalar_one() == services.parser_version
+
+
+def test_ocr_timeout_then_next_file_runs(world, tmp_path, db_session):
+    services, drive_files, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    drive_files["id-2"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([statement_lines(26)]), "A123456789"))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["needs_review"] == 1 and summary["parsed"] == 1 and services.ocr.starts == 1
+
+
+def test_ocr_unavailable_exits_1_and_files_wait(world, tmp_path, db_session):
+    services, drive_files, cfg = _ocr_world(world, tmp_path, fake_ocr_child.ok(), selftest="unavailable")
+    drive_files["id-2"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([["tiny"]]), "A123456789"))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["ocr_unavailable"] and summary["skipped"] == 2 and summary["failed"] == 0
+    assert services.ocr.starts == 0  # the self-test failed once; no file was offered to the child
+    assert _file_rows(db_session) == [("new", None), ("new", None)]
+    assert db_session.execute(text("select status from ingest_run order by id desc limit 1")).scalar_one() == "done"
+    from worker import cli
+    assert cli._bad(summary) is True
+    with pytest.MonkeyPatch.context() as mp:  # scoped: the autouse env fixture must survive for the second run
+        mp.setattr(pipeline, "build", lambda c, client, runner: services)
+        mp.setattr(pipeline, "run", lambda *a, **k: summary)
+        for key, value in (("STATEMENT_API_TOKEN_FILE", cfg.api_token_file), ("STATEMENT_PASSWORD_FILE", cfg.password_file),
+                           ("STATEMENT_STATE_DIR", cfg.state_dir), ("STATEMENT_API_URL", cfg.api_url)):
+            mp.setenv(key, str(value))
+        assert cli.main(["run"]) == 1
+    fake_ocr_child.write(tmp_path / "ocr-child.sh", fake_ocr_child.ok())  # host fixed: the next run resets the cache
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] == 2 and services.ocr.starts == 2
+
+
+def test_ocr_unavailable_in_the_child_itself_is_one_code_and_one_start(world, tmp_path, db_session):
+    services, drive_files, _ = _ocr_world(world, tmp_path, {"ok": False, "code": "unavailable"})  # self-test ok, read says unavailable
+    drive_files["id-2"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([["tiny"]]), "A123456789"))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["ocr_unavailable"] and summary["skipped"] == 2 and services.ocr.starts == 1
+    assert _file_rows(db_session) == [("new", None), ("new", None)]
+
+
+def test_ocr_unavailable_leaves_an_existing_needs_review_row_alone(world, tmp_path, db_session):
+    services, _, cfg = _ocr_world(world, tmp_path, {"ok": False, "code": "low_confidence"})
+    pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("needs_review", "no_text_layer")]
+    db_session.execute(text("update statement_file set parser_version='old'"))
+    db_session.commit()
+    fake_ocr_child.write(tmp_path / "ocr-child.sh", None, selftest="unavailable")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["ocr_unavailable"] and summary["skipped"] == 1
+    assert _file_rows(db_session) == [("needs_review", "no_text_layer")]
+    assert db_session.execute(text("select parser_version from statement_file")).scalar_one() == "old"
+
+
+def test_poll_keeps_the_degraded_code(world, tmp_path, db_session, client, monkeypatch):
+    """A degraded run (resumed) followed by a clean queued one in the same poll: the result still carries
+    ocr_unavailable, so the unit exits 1 and the operator sees the host problem."""
+    services, drive_files, cfg = _ocr_world(world, tmp_path, None, selftest="unavailable")
+    hermes = {"Authorization": "Bearer hermes-token"}
+    assert client.post("/statements/ingest/run", headers=hermes).status_code == 202
+    real_list = services.drive.list_pdfs
+    services.drive.list_pdfs = lambda: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.poll(services, initiator_hint="t")  # claimed, then interrupted: run.json stays for the resume
+    services.drive.list_pdfs = real_list
+    db_session.execute(text("update ingest_run set lease_expires_at = now() - interval '1 hour'"))  # dead lease: no coalescing
+    db_session.commit()
+    assert client.post("/statements/ingest/run", headers=hermes).status_code == 202  # a second, queued run
+    calls = []
+    real = pipeline._execute
+
+    def execute(services_, summary, lease, trigger, mode):
+        calls.append(1)
+        if len(calls) == 2:  # second run: host fixed, Drive now text-layer only
+            fake_ocr_child.write(tmp_path / "ocr-child.sh", fake_ocr_child.ok())
+            drive_files["id-1"] = ("信用卡/國泰世華/2026-09_國泰世華.pdf", encrypt(make_pdf([statement_lines()]), "A123456789"))
+        return real(services_, summary, lease, trigger, mode)
+    monkeypatch.setattr(pipeline, "_execute", execute)
+    out = pipeline.poll(services, initiator_hint="t")
+    assert out["claimed"] == 2 and out["errors"] == ["ocr_unavailable"] and out["bad_runs"] == 0 and out["parsed"] == 1
+    from worker import cli
+    assert cli._bad(out) is True
+    clean = pipeline.poll(services, initiator_hint="t")  # nothing queued: a clean poll
+    assert clean["claimed"] == 0 and clean["errors"] == [] and cli._bad(clean) is False
+
+
+def _big_text_child(tmp_path, line_len: int, lines: int):
+    """A fake child whose text is `lines` lines of `line_len` x's (built in the shell: a literal that long would be slow)."""
+    script = tmp_path / "big.sh"
+    script.write_text("#!/bin/sh\nif [ \"$1\" = \"--selftest\" ]; then printf '{\"ready\": true}\\n'; exit 0; fi\ncat >/dev/null\n"
+                      "printf '{\"ok\": true, \"pages\": 1, \"empty_pages\": 0, \"boxes\": 2, \"mean_confidence\": 0.9, \"text\": \"'\n"
+                      f"i=0; while [ $i -lt {lines} ]; do head -c {line_len} /dev/zero | tr '\\0' x; printf '\\\\n'; i=$((i+1)); done\n"
+                      "printf '\"}\\n'\n")
+    script.chmod(0o700)
+    return script
+
+
+@pytest.mark.parametrize("line_len,lines", [(1024, 401), (pipeline.OCR_LINE_MAX + 1, 1)])
+def test_ocr_text_over_the_pre_mask_bound_is_too_large_without_masking_or_a_parser_call(world, tmp_path, db_session, line_len, lines, monkeypatch):
+    """Over the parser's STDIN_CAP (400 KB) in total, or one line over OCR_LINE_MAX: the masker (quadratic in the line
+    length) and the parser are never called; the file goes to review as too_large."""
+    from worker import ocr
+    services, _, _ = _ocr_world(world, tmp_path, None, name="unused.sh")
+    services.cfg = dataclasses.replace(services.cfg, ocr_child=str(_big_text_child(tmp_path, line_len, lines)))
+    services.ocr = ocr.Engine(services.cfg)
+    seen = _record_parser(services)
+    monkeypatch.setattr(services.masker, "mask_ocr", lambda *a, **k: (_ for _ in ()).throw(AssertionError("masker called")))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert seen == [] and _file_rows(db_session) == [("needs_review", "too_large")] and services.ocr.starts == 1
+    assert summary["errors"] == []
+
+
+def test_ocr_text_too_large_rule():
+    assert pipeline.ocr_text_too_large("x" * pipeline.OCR_LINE_MAX + "\n" + "y" * 10) is False
+    assert pipeline.ocr_text_too_large("x" * (pipeline.OCR_LINE_MAX + 1)) is True
+    assert pipeline.ocr_text_too_large("\n".join(["x" * 1000] * 410)) is True  # 410 KB in short lines
+
+
+def test_parser_notes_survive_beside_the_ocr_note(world, tmp_path, db_session):
+    from worker import parser as parser_mod
+    services, _, cfg = _ocr_world(world, tmp_path, fake_ocr_child.ok())
+    noted = fake_claude.write(tmp_path / "claude-noted", fake_claude.transcript({**fake_claude.GOOD, "notes": "parser note"}))
+    services.parser = parser_mod.Parser(dataclasses.replace(cfg, parser_cli=noted), services.runner)
+    pipeline.run(services, trigger="owner_cli")
+    notes = db_session.execute(text("select raw->>'notes' from statement_revision")).scalar_one()
+    assert notes == "parser note\nocr: mean_confidence=0.93 boxes=2 empty_pages=0 scale=3.0"
+
+
+def test_build_creates_an_engine_only_when_enabled(world, client):
+    services, _, cfg = world
+    assert services.ocr is not None and services.ocr.cfg is cfg
+    assert pipeline.build(dataclasses.replace(cfg, ocr_enabled=False), client, services.runner).ocr is None
+
+
+def test_revision_body_parser_and_notes():
+    parsed = parse_schema.StatementParse.model_validate(fake_claude.GOOD)
+    plain = pipeline.revision_body(parsed, file_id=1, account_id=2, parser_version="v")
+    assert plain["parser"] == "claude-cli" and plain["raw"]["notes"] == parsed.notes
+    ocr = pipeline.revision_body(parsed, file_id=1, account_id=2, parser_version="v", parser="claude-cli+ocr", extra_note="ocr: x")
+    assert ocr["parser"] == "claude-cli+ocr" and ocr["raw"]["notes"].endswith("ocr: x")

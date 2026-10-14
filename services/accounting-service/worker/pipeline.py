@@ -92,6 +92,7 @@ class Services:
     masker: mask.Masker
     runner: Runner
     keeper: LeaseKeeper | None = None
+    ocr: ocr_mod.Engine | None = None  # R5.3: None when STATEMENT_OCR=false; files without a text layer then wait in review
     parser_disabled: bool = False
     parser_version: str = ""
     cli_version: str = ""
@@ -106,6 +107,7 @@ def build(cfg: WorkerConfig, client: httpx.Client, runner: Runner) -> Services:
                         inbox_mod.store_for(cfg), parser_mod.Parser(cfg, runner), parser_mod.Gate(cfg), candidates,
                         credential_version, mask.Masker(passwords.identity(cfg.password_file)), runner)
     services.api = ApiClient(client, token, guard=lambda: services.keeper is not None and services.keeper.lost)
+    services.ocr = ocr_mod.Engine(cfg) if cfg.ocr_enabled else None
     services.cli_version = services.parser.cli_version() or "unknown"
     services.parser_version = parse_schema.version(services.cli_version, cfg.parser_model, ocr_mod.FINGERPRINT)
     return services
@@ -240,24 +242,31 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
         summary.skipped += 1
         return "skipped"
     candidates = services.candidates.get(passwords.password_key(listed.root, drive_mod.folder_of(listed)), [])
+    password = None
     try:
         unlocked = pdf.unlock(data, candidates)
         password = candidates[unlocked.password_index] if unlocked.password_index is not None else None
         extracted = pdf.extract(data, password)
+        ocr_note: str | None = None
     except pdf.PasswordError:
         return _fail(services, lease, file_row, "password", summary, credential_version=services.credential_version)
     except pdf.Malformed:
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
     except pdf.NoTextLayer:
-        return _review(services, lease, file_row, "no_text_layer", summary, has_text_layer=False)
+        if services.ocr is None:
+            return _review(services, lease, file_row, "no_text_layer", summary, has_text_layer=False)
+        outcome = _ocr(services, lease, file_row, data, password, summary)
+        if isinstance(outcome, str):
+            return outcome
+        extracted, ocr_note = outcome
     except pdf.TooLarge:
         return _review(services, lease, file_row, "too_large", summary)
     except pdf.ExtractTimeout:
         return _fail(services, lease, file_row, "transient", summary)
-    services.api.update_file(lease, file_row["id"], status="unlocked", failure=None, has_text_layer=True,
+    services.api.update_file(lease, file_row["id"], status="unlocked", failure=None, has_text_layer=ocr_note is None,
                              text_chars=len(extracted.text), pages=extracted.pages,
                              credential_version=services.credential_version)
-    masked = services.masker.render(extracted, candidates)
+    masked = services.masker.mask_ocr(extracted.text, candidates) if ocr_note else services.masker.render(extracted, candidates)
     if len(masked.encode("utf-8")) > parser_mod.STDIN_CAP:
         return _review(services, lease, file_row, "too_large", summary)
     try:
@@ -272,7 +281,8 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
         if exc.reason in ("timeout", "exit"):  # CLI non-zero, rate limit, outage: retry on the ladder
             return _fail(services, lease, file_row, "transient", summary)
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
-    body = revision_body(parsed, file_id=file_row["id"], account_id=account_id, parser_version=services.parser_version)
+    body = revision_body(parsed, file_id=file_row["id"], account_id=account_id, parser_version=services.parser_version,
+                         parser="claude-cli+ocr" if ocr_note else "claude-cli", extra_note=ocr_note)
     try:
         out = services.api.submit_revision(lease, body)
     except LeaseLost:
@@ -291,15 +301,59 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
     return "parsed"
 
 
-def revision_body(parsed: parse_schema.StatementParse, *, file_id: int, account_id: int, parser_version: str) -> dict:
+OCR_LINE_MAX = 4096  # characters per OCR line offered to the masker
+
+
+def ocr_text_too_large(text: str) -> bool:
+    """R5.3 pre-mask bound for text the child produced (untrusted: the sandbox contains the renderer, not the PDF's
+    influence on it). The masker's cost grows with the square of a line's length (measured 0.08 s at 4 000
+    characters), so a line over OCR_LINE_MAX or a text over the parser's STDIN_CAP is too_large before any masking;
+    a real statement row is a few hundred characters."""
+    return len(text.encode("utf-8")) > parser_mod.STDIN_CAP or any(len(line) > OCR_LINE_MAX for line in text.splitlines())
+
+
+def _ocr(services: Services, lease: Lease, file_row: dict, data: bytes, password: str | None,
+         summary: Summary) -> str | tuple[pdf.Extracted, str]:
+    """R5.3: the OCR child reads the pages of a file without a text layer. Returns the file's terminal status, or
+    (extracted, provenance note) and the path continues as the text-layer one. Called on the worker's main thread
+    only (Engine.read fails closed elsewhere). `OCRUnavailable` (host cannot run the child) leaves the row as it is
+    — `new` stays `new`, an existing review row keeps its failure — and the run reports `ocr_unavailable` once;
+    `OCRTimeout`/`OCRResource`/`OCRLowConfidence` → needs_review/no_text_layer (retried at the next parser version);
+    `TooLarge` (the child's page bounds, or text over the pre-mask bound) → needs_review/too_large; `Malformed` (bad
+    PDF, crash, invalid response) → failed/parse."""
+    try:
+        result = services.ocr.read(data, password)
+    except ocr_mod.OCRUnavailable:
+        if "ocr_unavailable" not in summary.errors:
+            summary.errors.append("ocr_unavailable")
+        summary.skipped += 1
+        return "skipped"
+    except (ocr_mod.OCRTimeout, ocr_mod.OCRResource, ocr_mod.OCRLowConfidence):
+        return _review(services, lease, file_row, "no_text_layer", summary, has_text_layer=False)
+    except pdf.TooLarge:
+        return _review(services, lease, file_row, "too_large", summary, has_text_layer=False)
+    except pdf.Malformed:
+        return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version, has_text_layer=False)
+    if ocr_text_too_large(result.extracted.text):
+        return _review(services, lease, file_row, "too_large", summary, has_text_layer=False)
+    note = (f"ocr: mean_confidence={result.mean_confidence:.2f} boxes={result.boxes} "
+            f"empty_pages={result.empty_pages} scale={ocr_mod.SCALE}")
+    return result.extracted, note
+
+
+def revision_body(parsed: parse_schema.StatementParse, *, file_id: int, account_id: int, parser_version: str,
+                  parser: str = "claude-cli", extra_note: str | None = None) -> dict:
+    """`parser` names the path that produced the text (R5.3: `claude-cli+ocr`); `extra_note` is appended to the
+    parser's own notes on its own line."""
     lines = [line.model_dump(mode="json") for line in parsed.lines]
-    return {"file_id": file_id, "account_id": account_id, "kind": parsed.kind, "parser": "claude-cli",
+    notes = parsed.notes if extra_note is None else ((parsed.notes + "\n") if parsed.notes else "") + extra_note
+    return {"file_id": file_id, "account_id": account_id, "kind": parsed.kind, "parser": parser,
             "parser_version": parser_version, "currency": parsed.currency,
             "period_start": parsed.period_start.isoformat(), "period_end": parsed.period_end.isoformat(),
             "closing_date": parsed.closing_date.isoformat() if parsed.closing_date else None,
             "due_date": parsed.due_date.isoformat() if parsed.due_date else None,
             "opening_balance": parsed.opening_balance, "statement_total": parsed.statement_total,
-            "minimum_payment": parsed.minimum_payment, "lines": lines, "raw": {"notes": parsed.notes}}
+            "minimum_payment": parsed.minimum_payment, "lines": lines, "raw": {"notes": notes}}
 
 
 def _download_verified(services: Services, listed: drive_mod.Listed, summary: Summary):
@@ -475,6 +529,8 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
     state = RunState(services.cfg.state_dir / "run.json")
     state.save(lease, trigger=trigger, mode=mode)  # right after the claim (also for poll's claimed leases)
     services.parser_disabled = False
+    if services.ocr is not None:
+        services.ocr.reset()  # run boundary: an OCR host broken during the last run gets one fresh self-test
     for stale in services.cfg.staging_dir.glob("*.tmp"):  # leftovers of crashed runs (the singleton guarantees none is live)
         stale.unlink(missing_ok=True)
     summary.versions = {"parser_version": services.parser_version, "cli_version": services.cli_version,
@@ -598,8 +654,9 @@ def run(services: Services, *, trigger: str, mode: str = "live", initiator_hint:
 def poll(services: Services, *, initiator_hint: str | None) -> dict:
     """Resume a crashed run of our own first, then claim every queued run in turn. The result is the last summary
     plus `claimed` and `bad_runs` (runs that finished failed or aborted)."""
-    out: dict = {"claimed": 0, "bad_runs": 0}
+    out: dict = {"claimed": 0, "bad_runs": 0, "errors": []}
     claimed = bad = 0
+    codes: set[str] = set()  # the union of the executed runs' codes: a degraded run is not hidden by a later clean one
     summary = Summary()
     resumed = resume_or_none(services, RunState(services.cfg.state_dir / "run.json"), summary)
     todo: list[tuple[Summary, Lease, str, str]] = []
@@ -623,8 +680,9 @@ def poll(services: Services, *, initiator_hint: str | None) -> dict:
             except RunAborted:
                 bad += 1
                 continue
+            codes.update(out["errors"])
             if "parser_disabled" in out["errors"]:
                 bad += 1
         todo = []
-    out["claimed"], out["bad_runs"] = claimed, bad
+    out["claimed"], out["bad_runs"], out["errors"] = claimed, bad, sorted(codes)
     return out
