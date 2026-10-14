@@ -138,20 +138,29 @@ Record the printed JSON (SHA, platform, Python, OCR fingerprint) with the releas
 ## OCR masking (R5b)
 
 `Masker.mask_ocr` is the OCR-path entry point (not wired until R5c; the text-layer path `Masker.text`/`render` is
-unchanged). Per line: NFKC and invisible characters dropped → OCR confusables corrected only inside runs of
-digit-carrying tokens that are at least 70 % digits (and in the digit part of an ID-shaped token) → three views of
-the line, each mapped back to line positions: compacted (no whitespace, casefolded per character), alphanumeric-only
-(holder names, so punctuation between name parts is ignored) and digits-only (printed dates and spans already claimed
-by a literal or an ID blanked, group separators such as dashes and middle dots dropped) → literal spans (the ID,
-holder names, birth patterns, password candidates ≥ 4 characters, boundaries judged on the real line with the text
-path's date exclusions), any ID-shaped span `[A-Za-z][12]\d{8}`, any run of 12 or more digits → only the matched
-spans are replaced (overlaps merged), so the other columns of a row survive → then the shared rules (`text`).
+unchanged). Per line: NFKC, then invisible format characters and nonspacing marks that did not compose dropped →
+OCR confusables (O/o → 0, I/l/| → 1) corrected inside runs of digit-like tokens that are at least 70 % digits, or
+that are 12 or more characters long whatever their digit share (a card group read as OOOO or llll; a token made only
+of pipes is a table border and never joins a run), and in the digit part of an ID-shaped token → three views of the
+line, each mapped back to line positions: compacted (no whitespace and no group separators — dash, en/em dash,
+hyphen, minus sign, dot, middle dots, slash, pipe — casefolded per character), alphanumeric-only (holder names, so
+punctuation between name parts is ignored) and digits-only (printed dates and spans already claimed by a literal or
+an ID blanked, the same separators dropped) → literal spans (the ID, holder names, birth patterns, password
+candidates ≥ 4 characters, boundaries judged on the real line: an ASCII letter or digit next to the span blocks it,
+a CJK neighbour does not, plus the text path's date exclusions for numeric spans), any ID-shaped span
+`[A-Za-z][12]\d{8}` whose letter may also be a Cyrillic or Greek lookalike (only at that position), any run of 12 or
+more digits → only the matched spans are replaced (overlaps merged), so the other columns of a row survive → then
+the shared rules (`text`). The email rule is linear in the line length (possessive local part that cannot start
+inside a run; same matches as before).
 
 Known limitations (ruling 2026-10-14): a standalone numeric token equal to a password candidate is masked exactly as
 on the text path (privacy over completeness; a balance broken that way fails the guardrail and goes to review);
 single-spaced digit groups of three or more digits mask as on the text path, so a row of bare amounts without
-thousands separators masks the same way on both paths; an identifier wrapped across two OCR lines is not
-reassembled; NFKC also rewrites compatibility characters in unmasked text (① → 1, full-width punctuation).
+thousands separators masks the same way on both paths, and pipes or dashes between short numbers count like spaces
+(`350 | 1200 | 15000` is one 12-digit run); an identifier wrapped across two OCR lines is not reassembled and the
+external parser receives both lines in one stdin blob (`4111 2222 3333` / `4444` → `[NUM…3333]` / `4444`); a
+decimal amount whose digits equal a password candidate masks (`12.34` with candidate `1234`); NFKC also rewrites
+compatibility characters in unmasked text (① → 1, full-width punctuation).
 
 ## Operator gate (`gate.sh`)
 
