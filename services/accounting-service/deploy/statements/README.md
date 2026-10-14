@@ -109,6 +109,17 @@ The parser version changes, so files that failed `parse`/`guardrail`/`no_text_la
 
 `verify` exits 1 when its totals show `errors`, `listing_failed`, `parse_failed > 0` or `verify_errors > 0`, 2 when refused, 3 when another worker holds the lock.
 
+## OCR masking (R5b)
+
+`Masker.mask_ocr` is the OCR-path entry point (not wired until R5c; the text-layer path `Masker.text`/`render` is
+unchanged). Per line: NFKC → OCR confusables corrected only inside runs of digit-like tokens that are at least 70 %
+digits → a compacted view of the line is matched against compacted, casefolded literals (the ID, holder names,
+birth patterns, password candidates ≥ 4 characters, with the same digit-boundary rules as the text path), any
+ID-shaped span `[A-Z][12]\d{8}`, and any run of 12 or more compacted digits that is not a printed date → only the
+matched spans are replaced, so the other columns of a row survive → then the shared rules (`text`). Known limitation
+(ruling 2026-10-14): a standalone numeric token equal to a password candidate is masked exactly as on the text path,
+privacy over completeness; a balance broken that way fails the guardrail and goes to review.
+
 ## Operator gate (`gate.sh`)
 
 Run it after any change to the CLI, model, sandbox flags or login directory, and to clear a latch

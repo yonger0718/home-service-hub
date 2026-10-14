@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import date
 
 from worker import pdf
@@ -18,6 +19,40 @@ _PHONE = re.compile(
 )
 # a run is >= 6 contiguous digits, or >= 2 groups of >= 3 digits joined by one space or dash
 _DIGIT_RUN = re.compile(r"(?<!\d)(?:\d{6,}|\d{3,}(?:[ \-]\d{3,})+)(?!\d)")
+
+
+# R5b (OCR path only): OCR splits identifiers across boxes and pads columns with wide or full-width spaces, so the
+# OCR entry point first normalises (NFKC) and matches a *compacted* view of each line against compacted literals and
+# generic identifier shapes, then replaces only the matched spans. Confusables (O/o→0, I/l/|→1) are corrected only
+# inside runs of digit-like tokens that are mostly digits, never in merchant text.
+_OCR_WS = re.compile(r"\s+")
+_OCR_TOKEN = re.compile(r"\S+")
+_OCR_DIGIT_LIKE = re.compile(r"^[0-9OoIl|]+$")
+_OCR_CONFUSABLE = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1"})
+_OCR_ID = re.compile(r"(?<![A-Za-z0-9])[A-Z][12]\d{8}(?![A-Za-z0-9])")
+_OCR_LONG_DIGITS = re.compile(r"\d{12,}")
+OCR_CONFUSABLE_MIN_DIGIT_SHARE = 0.7
+
+
+def _ocr_fix_confusables(line: str) -> str:
+    """Maximal runs of whitespace-separated digit-like tokens whose characters are mostly ASCII digits get their
+    OCR confusables corrected; a run that is mostly letters (OllO12) is left alone."""
+    toks = [(m.start(), m.end(), m.group(0)) for m in _OCR_TOKEN.finditer(line)]
+    out = list(line)
+    i = 0
+    while i < len(toks):
+        if not _OCR_DIGIT_LIKE.match(toks[i][2]):
+            i += 1
+            continue
+        j = i
+        while j < len(toks) and _OCR_DIGIT_LIKE.match(toks[j][2]):
+            j += 1
+        chars = "".join(t[2] for t in toks[i:j])
+        if len(chars) >= 4 and sum(c.isdigit() for c in chars) / len(chars) >= OCR_CONFUSABLE_MIN_DIGIT_SHARE:
+            for s_, e_, t in toks[i:j]:
+                out[s_:e_] = list(t.translate(_OCR_CONFUSABLE))
+        i = j
+    return "".join(out)
 
 
 def _birth_patterns(ymd: str) -> list[str]:
@@ -73,6 +108,85 @@ class Masker:
         s = _PHONE.sub("[PHONE]", s)
         s = _DIGIT_RUN.sub(self._digits, s)
         return s
+
+    # ---- R5b: OCR entry point -------------------------------------------------------------------------------------
+
+    def _ocr_literals(self, extra_literals=()) -> list[tuple[str, str, bool]]:
+        """(tag, compacted casefolded literal, numeric) — the ID, holder names, birth patterns, password candidates
+        (>= 4 chars, like `text`). Longest first so a longer match wins."""
+        lits: list[tuple[str, str, bool]] = []
+        if self.identity.id_number:
+            lits.append(("[ID]", self.identity.id_number.casefold(), False))
+        for name in self.names:
+            lits.append(("[NAME]", "".join(name.split()).casefold(), False))
+        for birth in self.literals:
+            lits.append(("[BIRTH]", "".join(birth.split()).casefold(), birth.isdigit()))
+        for cand in extra_literals:
+            if len(cand) >= 4:
+                lits.append(("[PW]", "".join(cand.split()).casefold(), cand.isdigit()))
+        return sorted(lits, key=lambda t: -len(t[1]))
+
+    def mask_ocr_line(self, line: str, extra_literals=()) -> str:
+        line = _ocr_fix_confusables(unicodedata.normalize("NFKC", line))
+        pos = [i for i, ch in enumerate(line) if not ch.isspace()]
+        compact = "".join(line[i] for i in pos)
+        folded = compact.casefold()
+        toks = [(m.start(), m.end(), m.group(0)) for m in _OCR_TOKEN.finditer(line)]
+        spans: list[tuple[int, int, str]] = []  # (start, end, tag) in line coordinates
+
+        def free(s_: int, e_: int) -> bool:
+            return all(e_ <= a or s_ >= b for a, b, _ in spans)
+
+        def tokens_in(s_: int, e_: int):
+            return [t for a, b, t in toks if a < e_ and b > s_]
+
+        def boundary_ok(k: int, length: int) -> bool:
+            """The masker's digit-boundary rule in compact coordinates: a numeric literal is not matched inside a
+            longer digit run nor as a fragment of a separated date (2026/09/01 keeps 2026)."""
+            before = compact[k - 1] if k > 0 else ""
+            before2 = compact[k - 2] if k > 1 else ""
+            after = compact[k + length] if k + length < len(compact) else ""
+            after2 = compact[k + length + 1] if k + length + 1 < len(compact) else ""
+            if before.isdigit() or after.isdigit():
+                return False
+            if after in "/.-" and after2.isdigit():
+                return False
+            if before in "/.-" and before2.isdigit():
+                return False
+            return True
+
+        for tag, lit, numeric in self._ocr_literals(extra_literals):
+            start = 0
+            while True:
+                k = folded.find(lit, start)
+                if k < 0:
+                    break
+                s_, e_ = pos[k], pos[k + len(lit) - 1] + 1
+                if (not numeric or boundary_ok(k, len(lit))) and free(s_, e_):
+                    spans.append((s_, e_, tag))
+                start = k + 1
+        for m in _OCR_ID.finditer(compact):  # any ID-shaped span, configured or not
+            s_, e_ = pos[m.start()], pos[m.end() - 1] + 1
+            if free(s_, e_):
+                spans.append((s_, e_, "[ID]"))
+        for m in _OCR_LONG_DIGITS.finditer(compact):  # card/account numbers in any grouping; dates excluded
+            s_, e_ = pos[m.start()], pos[m.end() - 1] + 1
+            if any(_compact_date(t) for t in tokens_in(s_, e_)):
+                continue
+            if free(s_, e_):
+                spans.append((s_, e_, f"[NUM…{m.group(0)[-4:]}]"))
+        out, last = [], 0
+        for s_, e_, tag in sorted(spans):
+            out.append(line[last:s_])
+            out.append(tag)
+            last = e_
+        out.append(line[last:])
+        return self.text("".join(out), extra_literals)
+
+    def mask_ocr(self, s: str, extra_literals=()) -> str:
+        """R5b: mask OCR text. Spans only — other columns of a row survive. Known limitation (ruling 2026-10-14): a
+        standalone numeric token equal to a password candidate is masked exactly as on the text-layer path."""
+        return "\n".join(self.mask_ocr_line(line, extra_literals) for line in s.split("\n"))
 
     def tables(self, tables: list[list[list[str]]], extra_literals=()) -> list[list[list[str]]]:
         return [[[self.text(cell, extra_literals) for cell in row] for row in table] for table in tables]
