@@ -127,7 +127,7 @@ what it observed: deadline or SIGXCPU → retry later (`OCRTimeout`), `resource`
 retry later, `unavailable` or a failed start → `OCRUnavailable` (cached for the run), cap overflow / crash / any
 other non-zero exit / invalid response → `Malformed`. Nothing of the statement reaches disk, logs or exceptions.
 
-R5a is not wired into the pipeline (R5c does that). Operator evidence on the host, as the worker user:
+R5c wires the child into the pipeline and `export-masked` (next sections). Operator evidence on the host, as the worker user:
 
 ```
 cd ~/workspace/home-hub/services/accounting-service
@@ -137,7 +137,7 @@ RUN_OCR_MODEL_TESTS=1 .venv/bin/python -m pytest tests/worker/test_ocr_models.py
 Record the printed JSON (SHA, platform, Python, OCR fingerprint) with the release.
 ## OCR masking (R5b)
 
-`Masker.mask_ocr` is the OCR-path entry point (not wired until R5c; the text-layer path `Masker.text`/`render` is
+`Masker.mask_ocr` is the OCR-path entry point (wired by R5c; the text-layer path `Masker.text`/`render` is
 unchanged). Per line: NFKC, then invisible format characters and nonspacing marks that did not compose dropped →
 OCR confusables (O/o → 0, I/l/| → 1) corrected inside runs of digit-like tokens that are at least 70 % digits, or
 that are 12 or more characters long whatever their digit share (a card group read as OOOO or llll; a token made only
@@ -161,6 +161,53 @@ thousands separators masks the same way on both paths, and pipes or dashes betwe
 external parser receives both lines in one stdin blob (`4111 2222 3333` / `4444` → `[NUM…3333]` / `4444`); a
 decimal amount whose digits equal a password candidate masks (`12.34` with candidate `1234`); NFKC also rewrites
 compatibility characters in unmasked text (① → 1, full-width punctuation).
+
+## OCR integration (R5c)
+
+Install both venvs (worker and verify) with the frozen constraints, so the OCR wheels and everything under them are
+the versions the evidence tests ran against:
+
+    uv pip install --python .venv/bin/python -r requirements.txt -r requirements-worker.txt -c requirements-worker-constraints-aarch64-py313.txt
+
+A file whose page 1 has fewer than 200 characters of text, or whose page 1 tokens are at least 10 % `(cid:NNN)` glyph
+references (a Type3 font without a ToUnicode map), has no usable text layer. With `STATEMENT_OCR=true` the worker
+hands the PDF bytes and the unlock password to the R5a child on its main thread (the engine fails closed from any
+other thread) and the file then takes the text-layer path: the OCR text goes through `Masker.mask_ocr`, the parser
+`STDIN_CAP` and the sandboxed parser; the revision's `parser` is `claude-cli+ocr` and `raw.notes` ends with one line
+`ocr: mean_confidence=0.93 boxes=262 empty_pages=0 scale=3.0` after the parser's own notes. The guardrails are the
+check, as for every other file; `has_text_layer` stays false. `STATEMENT_OCR=false` restores the old behaviour
+(`needs_review/no_text_layer`).
+
+Outcomes: the host cannot start the child or the engine (`unavailable`) → the file keeps its status (`new` stays
+`new`, a review row keeps its failure), the run reports `ocr_unavailable` once, finishes `done`, and `run` and
+`poll` exit 1 so the unit shows failed (`poll` carries the union of its runs' codes, so a degraded run followed by a
+clean one still exits 1); a deadline, CPU limit, memory exhaustion or low confidence → `needs_review/no_text_layer`;
+page or pixel bounds, OCR text over 400 KB or any OCR line over 4 096 characters (the child's text is untrusted and
+the masker's cost grows with the square of a line's length) → `needs_review/too_large` before any masking; a bad
+PDF, a crash or an invalid response → `failed/parse` at the current parser version. The engine's self-test runs once
+per run; a host fixed between runs recovers at the next run without a restart.
+
+The parser version is `claude-cli-<cli>-<model>-<12-hex digest>` over the full CLI version, model id, instruction,
+schema and OCR fingerprint (engine versions + layout rules), 61 characters at most. Deploying R5 re-parses every
+`needs_review`/`failed` file whose failure is `parse`/`guardrail`/`no_text_layer`/`too_large` once, never a `parsed`
+one. The operator gate keys on the parser argv (the instruction is part of it), so this release re-runs `gate.sh`;
+an OCR-only bump later does not. `STATEMENT_PARSER_CLI_VERSION` and `STATEMENT_PARSER_MODEL` must match
+`[A-Za-z0-9._-]{1,64}` or the worker refuses to start.
+
+`export-masked` takes the same branch: each snapshot's `.json` meta carries `extraction` (`text` or `ocr`) and, for
+OCR, `ocr_fingerprint`; the summary counts `ocr` and sets `ocr_unavailable: true` once (those files count as
+`errors`, so the command exits 1). Snapshots are cached by Drive identity: to refresh an OCR snapshot after an
+engine change delete its `<sha>.txt` and `.json` and run `export-masked` again. `verify` caches parses by parser
+version, so this release re-parses every snapshot once.
+
+Operator evidence before the first real input, as the worker user, at the deployed SHA:
+
+    RUN_OCR_MODEL_TESTS=1 .venv/bin/python -m pytest tests/worker/test_ocr_models.py -q -rs -s -p no:cacheprovider   # 2 passed, 0 skipped; keep the JSON line
+
+Rollout (owner go for each step): install both venvs with the constraints; the evidence line above; `gate.sh`; one
+`python -m worker run` (expect the OCR-class files `parsed`, text-layer counts unchanged, no `ocr_unavailable`,
+exit 0); `coredumpctl list` shows nothing for the worker. R3b/R3c: an "OCR" chip on the statement detail when
+`revision.parser` ends with `+ocr`.
 
 ## Operator gate (`gate.sh`)
 
