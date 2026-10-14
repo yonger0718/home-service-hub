@@ -178,7 +178,9 @@ def test_resource_envelope_reaches_the_parent_as_ocr_resource(tmp_path, patch):
     with pytest.raises(ocr.OCRResource) as info:
         engine.read(make_pdf([statement_lines()]), None)
     assert info.value.__context__ is None and engine.starts == 1
-    assert engine.read(make_pdf([statement_lines()]), None) if False else True  # no latch: the next call would run again
+    with pytest.raises(ocr.OCRResource):  # no latch: the next call runs the child again and gets the same answer
+        engine.read(make_pdf([statement_lines()]), None)
+    assert engine.starts == 2
 
 
 def test_resource_envelope_does_not_reinterpret_crashes(tmp_path):
@@ -323,6 +325,27 @@ def test_read_off_the_owning_thread_fails_closed(tmp_path):
     assert engine.read(b"%PDF", None).extracted.pages == 1  # the owning thread still works
 
 
+def test_finished_owner_thread_cannot_be_impersonated(tmp_path):
+    """An Engine created on a thread that has since finished is unusable by any later thread — including one that
+    received the owner's recycled identifier, and the main thread. Ownership is the Thread object, not its id."""
+    cfg = cfg_with(tmp_path, fake_ocr_child.ok())
+    holder: list = []
+    a = threading.Thread(target=lambda: holder.append(ocr.Engine(cfg))); a.start(); a.join(5)
+    engine = holder[0]
+    seen: list = []
+
+    def successor():
+        try:
+            engine.preflight()
+        except BaseException as exc:  # noqa: BLE001
+            seen.append(exc)
+    b = threading.Thread(target=successor); b.start(); b.join(5)
+    assert [type(e) for e in seen] == [ocr.OCRThreadError] and engine.starts == 0
+    with pytest.raises(ocr.OCRThreadError):
+        engine.read(b"%PDF", None)  # the main thread is not the owner either
+    assert engine.starts == 0 and ocr.Engine(cfg).read(b"%PDF", None).extracted.pages == 1  # a main-thread Engine works
+
+
 def test_fingerprint_shape():
     assert ocr.FINGERPRINT.count("+") == 2 and ocr.FINGERPRINT.endswith("layout1")
 
@@ -420,6 +443,14 @@ def _teardown_scenario(engine, marker: str) -> dict:
     alive (a positive witness: pid, start time, SigIgn); then report whether that exact process is gone afterwards.
     Zombies count as present (a reaped descendant has no /proc entry)."""
     witness: list = []
+    leaders: list[subprocess.Popen] = []
+    real_popen = ocr.subprocess.Popen
+
+    class RecordingPopen(real_popen):  # capture the actual session leader the Engine spawns (not the watcher's `ps`)
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            if kwargs.get("start_new_session"):
+                leaders.append(self)
 
     def watch():
         deadline = time.monotonic() + 5
@@ -433,13 +464,16 @@ def _teardown_scenario(engine, marker: str) -> dict:
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
     errors: list[BaseException] = []
+    ocr.subprocess.Popen = RecordingPopen
     try:
         engine.read(b"%PDF", None)
     except BaseException as exc:  # noqa: BLE001
         errors.append(exc)
+    finally:
+        ocr.subprocess.Popen = real_popen
     watcher.join(timeout=6)
     if not witness:
-        raise LookupError("no grandchild was observed: nothing was launched")
+        raise LookupError(f"no grandchild was observed: nothing was launched ({[type(e).__name__ + ':' + str(e) for e in errors]})")
     pid, (start, sigign) = witness[0]
     assert int(sigign, 16) & (1 << (int(signal.SIGTERM) - 1)), "the grandchild must ignore SIGTERM"
     gone = False
@@ -450,7 +484,9 @@ def _teardown_scenario(engine, marker: str) -> dict:
             gone = True
             break
         time.sleep(0.05)
-    return {"pid": pid, "gone": gone, "errors": errors}
+    leader = leaders[-1] if leaders else None  # the read's leader (the self-test's came first)
+    return {"pid": pid, "gone": gone, "errors": errors, "leader": leader,
+            "leader_reaped": leader is not None and leader.returncode is not None and _proc_identity(leader.pid) is None}
 
 
 def _teardown_cfg(tmp_path, marker: str):
@@ -468,7 +504,28 @@ def test_real_bwrap_teardown_reaps_a_witnessed_sigterm_ignoring_grandchild(tmp_p
     report = _teardown_scenario(engine, marker)
     assert [type(e) for e in report["errors"]] == [ocr.OCRTimeout]
     assert report["gone"], report
+    assert report["leader_reaped"], report  # the session leader was waited for: no zombie, no /proc entry
     assert engine.last_pgid is not None and _group_gone(engine.last_pgid)
+
+
+@pytest.mark.skipif(not HAS_BWRAP, reason="bubblewrap required")
+def test_teardown_scenario_fails_when_the_leader_is_not_reaped(tmp_path, monkeypatch):
+    """Mutation control: a group SIGKILL without the wait leaves the leader a zombie; the scenario reports it."""
+    marker = f"sleep 300 0.{os.getpid()}4"
+    engine = ocr.Engine(_teardown_cfg(tmp_path, marker))
+    def kill_without_wait(proc):  # the real _kill minus its proc.wait
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    monkeypatch.setattr(ocr, "_kill", kill_without_wait)
+    report = _teardown_scenario(engine, marker)
+    try:
+        assert report["gone"] is True and report["leader_reaped"] is False, report
+        assert report["leader"].returncode is None and _proc_identity(report["leader"].pid) is not None  # a zombie
+    finally:
+        if report["leader"] is not None:
+            report["leader"].wait(timeout=5)
 
 
 @pytest.mark.skipif(not HAS_BWRAP, reason="bubblewrap required")
@@ -493,6 +550,7 @@ def test_teardown_scenario_fails_when_the_group_kill_is_disabled(tmp_path, monke
         except subprocess.TimeoutExpired:
             pass
     monkeypatch.setattr(ocr, "_kill", no_kill)
+    report = None
     try:
         report = _teardown_scenario(engine, marker)
         assert report["gone"] is False, report
@@ -506,6 +564,11 @@ def test_teardown_scenario_fails_when_the_group_kill_is_disabled(tmp_path, monke
             try:
                 os.killpg(engine.last_pgid, signal.SIGKILL)
             except OSError:
+                pass
+        if report is not None and report["leader"] is not None:  # reap the captured leader of this control
+            try:
+                report["leader"].wait(timeout=5)
+            except subprocess.TimeoutExpired:
                 pass
 
 

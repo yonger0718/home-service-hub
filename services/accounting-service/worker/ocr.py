@@ -86,8 +86,9 @@ class OCRConfigError(ValueError):
 
 
 class OCRThreadError(RuntimeError):
-    """`Engine.read`/`preflight` called from a thread other than the one that created the Engine (fail closed:
-    bwrap's --die-with-parent is bound to the spawning thread, so a short-lived caller would tear the child down)."""
+    """`Engine.read`/`preflight` called from a thread other than the Thread object that created the Engine (fail
+    closed: bwrap's --die-with-parent is bound to the spawning thread, so a short-lived caller would tear the child
+    down; the creating thread is the anchor, and it must be a long-lived one — the worker's main thread)."""
 
 
 @dataclass
@@ -179,7 +180,7 @@ class Engine:
     def __init__(self, cfg: WorkerConfig):
         check_config(cfg)
         self.cfg = cfg
-        self._owner_thread = threading.get_ident()
+        self._owner = threading.current_thread()  # the Thread object, not its id: ids are recycled after a join
         self.starts = 0
         self.last_pgid: int | None = None
         self.last_stdout_bytes = 0
@@ -187,7 +188,11 @@ class Engine:
         self._ready = False
 
     def _check_thread(self) -> None:
-        if threading.get_ident() != self._owner_thread:
+        """Fail closed unless the caller is the very Thread object that created the Engine (a finished owner cannot
+        be impersonated by a later thread that received its recycled identifier). Callers must not invoke this under
+        an active exception handler: Python attaches the handler's exception as __context__ regardless of `from
+        None`, so the boundary is the caller's (R5c: no OCR call inside a handler)."""
+        if threading.current_thread() is not self._owner:
             raise OCRThreadError("ocr engine used off its owning thread")
 
     def reset(self) -> None:
