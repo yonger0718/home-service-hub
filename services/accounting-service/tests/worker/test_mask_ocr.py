@@ -217,20 +217,26 @@ def test_short_latin_name_edges_are_ascii_only():
     assert m.mask_ocr("戶名LI先生") == "戶名[NAME]先生"                   # a CJK neighbour is not
 
 
-# ---- Should 4: the email rule is linear, with the same matches as before ------------------------------------------
+# ---- Should 4: the email rule stays as on main; the substitution is skipped when no "@" is present ---------------
 
-_EMAIL_LEGACY = mask.re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_EMAIL_MAIN = mask.re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")  # the pattern at main 73e8d18
 
 
-def test_email_rule_matches_exactly_as_before():
+def test_email_rule_matches_exactly_as_on_main():
+    """`Masker.text` runs the unchanged main pattern under an `"@" in s` guard; the guard cannot change any output
+    because the pattern needs a literal "@". Glued second addresses (the re-review's leak) mask on both paths."""
+    assert mask._EMAIL.pattern == _EMAIL_MAIN.pattern
     import random
     rnd = random.Random(20261014)
-    alphabet = "ab.+-@_ 1X\u00e9\u738b"
-    for _ in range(3000):
-        s = "".join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 24)))
-        assert _EMAIL_LEGACY.sub("[EMAIL]", s) == mask._EMAIL.sub("[EMAIL]", s), s
+    alphabet = ["a", "b", ".", "+", "-", "@", "_", " ", "1", "X", "\u00e9", "\u738b", "@x.co", ".com", "+tag"]
+    for _ in range(4000):
+        s = "".join(rnd.choice(alphabet) for _ in range(rnd.randint(0, 12)))
+        expected = _EMAIL_MAIN.sub("[EMAIL]", s)
+        assert M.text(s).count("[EMAIL]") == expected.count("[EMAIL]"), s
+    for s in ("user@example.com+tag@other.com", "user@example.com.@other.com"):
+        assert M.text(s) == "[EMAIL][EMAIL]" and M.mask_ocr(s) == "[EMAIL][EMAIL]"
     for s in ("a.b@example.com", "x..@@c.d", ".@c.d", "mail: first.last+tag@sub.example.co.uk ok", "@@", "a@b", "a@b.c@d.e"):
-        assert _EMAIL_LEGACY.sub("[EMAIL]", s) == mask._EMAIL.sub("[EMAIL]", s), s
+        assert M.text(s) == _EMAIL_MAIN.sub("[EMAIL]", s), s
 
 
 def test_long_dotted_line_without_an_at_sign_is_fast():

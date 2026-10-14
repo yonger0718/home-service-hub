@@ -8,10 +8,7 @@ from datetime import date
 from worker import pdf
 from worker.passwords import Identity
 
-# the local part is possessive and may not start inside a run: a match can only begin where a run begins and the
-# engine never re-scans a run from each later position, so a long dotted line without "@" costs linear time (the
-# greedy form was quadratic); the matches are the same, because a run character is never "@"
-_EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]++@[\w-]+(?:\.[\w-]+)+")
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 # boundaries on ASCII letters/digits only: CJK neighbours must not protect a secret (AGENT-95 Must 1)
 _ID = re.compile(r"(?<![A-Za-z0-9])[A-Z][12]\d{8}(?![A-Za-z0-9])")
 # Taiwan mobile, international mobile, and landlines only when written with parentheses or dashes
@@ -176,7 +173,8 @@ class Masker:
         s = _ID.sub("[ID]", s)
         for name in self.names:
             s = s.replace(name, "[NAME]")
-        s = _EMAIL.sub("[EMAIL]", s)
+        if "@" in s:  # the pattern cannot match without "@"; the guard keeps a long dotted line linear (R5b review)
+            s = _EMAIL.sub("[EMAIL]", s)
         for literal in self.literals:
             s = s.replace(literal, "[BIRTH]")
         s = _PHONE.sub("[PHONE]", s)
