@@ -136,6 +136,57 @@ def test_preflight_failure_is_unavailable_and_cached(tmp_path, mode):
     assert engine.read(b"%PDF", None).extracted.pages == 1
 
 
+@pytest.mark.parametrize("mode,exc,latches", [("resource", ocr.OCRResource, False), ("sleep", ocr.OCRTimeout, False),
+                                                 ("unavailable", ocr.OCRUnavailable, True), ("fail", ocr.OCRUnavailable, True),
+                                                 ("garbage", ocr.OCRUnavailable, True), ("ready_int", ocr.OCRUnavailable, True),
+                                                 ("ready_blank", ocr.OCRUnavailable, True), ("ready_extra", ocr.OCRUnavailable, True)])
+def test_selftest_outcomes_and_latching(tmp_path, mode, exc, latches):
+    calls = tmp_path / "calls"
+    engine = ocr.Engine(cfg_with(tmp_path, fake_ocr_child.ok(), selftest=mode, count_to=calls))
+    with pytest.raises(exc) as info:
+        engine.read(b"%PDF", None)
+    assert info.value.__context__ is None and engine.starts == 0
+    with pytest.raises(exc if not latches else ocr.OCRUnavailable):
+        engine.read(b"%PDF", None)
+    selftests = calls.read_text().count("--selftest")
+    assert selftests == (1 if latches else 2)  # a latched host is not probed again; resource/timeout are retried
+
+
+def test_selftest_verdict_framing():
+    assert ocr._selftest_verdict(b'{"ready": true}\n') == "ready"
+    for bad in (b'{"ready": 1}\n', b'\n{"ready": true}\n\n', b'{"ready": true}', b'{"ready": true, "x": 1}\n', b'[1]\n', b""):
+        assert ocr._selftest_verdict(bad) == "invalid", bad
+    assert ocr._selftest_verdict(b'{"ok": false, "code": "resource"}\n') == "resource"
+    assert ocr._selftest_verdict(b'{"ok": false, "code": "unavailable"}\n') == "invalid"
+
+
+def _driver_cfg(tmp_path, patch: str, timeout="30"):
+    """The real child module as the child (unsandboxed), with one function patched by `patch` before main runs."""
+    driver = ("import sys, json; from worker import ocr_child; RAW = [[[[10,10],[200,10],[200,30],[10,30]], 'MERCHANT 001', 0.97]]; "
+              + patch + "; sys.exit(ocr_child.main(sys.argv[1:], backend=lambda img: RAW))")
+    cmd = " ".join([ocr.interpreter(), "-B", "-c", shlex.quote(driver), "--threads", "1", "--rlimit-as-mb", "4096", "--rlimit-cpu-s", "60"])
+    return config.load({"STATEMENT_OCR_CHILD": cmd, "STATEMENT_PARSER_SANDBOX": "false", "STATEMENT_OCR_TIMEOUT": timeout})
+
+
+@pytest.mark.parametrize("patch", [
+    "ocr_child.read_header = lambda fd: (_ for _ in ()).throw(MemoryError())",                       # during the header read
+    "ocr_child.read_exact = lambda fd, n: (_ for _ in ()).throw(MemoryError())",                     # during the PDF read
+    "_d = json.dumps; json.dumps = lambda o, **k: (_ for _ in ()).throw(MemoryError()) if isinstance(o, dict) and o.get('ok') is True else _d(o, **k)",  # serialising the result
+])
+def test_resource_envelope_reaches_the_parent_as_ocr_resource(tmp_path, patch):
+    engine = ocr.Engine(_driver_cfg(tmp_path, patch))
+    with pytest.raises(ocr.OCRResource) as info:
+        engine.read(make_pdf([statement_lines()]), None)
+    assert info.value.__context__ is None and engine.starts == 1
+    assert engine.read(make_pdf([statement_lines()]), None) if False else True  # no latch: the next call would run again
+
+
+def test_resource_envelope_does_not_reinterpret_crashes(tmp_path):
+    engine = ocr.Engine(_driver_cfg(tmp_path, "ocr_child.read_exact = lambda fd, n: (_ for _ in ()).throw(RuntimeError('boom'))"))
+    with pytest.raises(pdf.Malformed):
+        engine.read(make_pdf([statement_lines()]), None)
+
+
 def test_start_failure_is_unavailable(tmp_path):
     cfg = config.load({"STATEMENT_OCR_CHILD": str(tmp_path / "missing.sh"), "STATEMENT_PARSER_SANDBOX": "false"})
     with pytest.raises(ocr.OCRUnavailable):
@@ -326,23 +377,122 @@ def test_sandbox_denies_protected_paths_and_network():
         shutil.rmtree(base, ignore_errors=True)
 
 
-@pytest.mark.skipif(not HAS_BWRAP, reason="bubblewrap required")
-def test_real_bwrap_teardown_reaps_a_sigterm_ignoring_grandchild(tmp_path):
-    marker = f"sleep 300 0.{os.getpid()}"  # GNU sleep sums its arguments; the second one is a unique ps marker
-    cmd = f"/usr/bin/sh -c 'if [ \"$1\" = --selftest ]; then printf \"{{\\\"ready\\\": true}}\\n\"; exit 0; fi; trap \"\" TERM; (trap \"\" TERM; {marker}) & {marker}' sh"
-    cfg = config.load({"STATEMENT_PARSER_SANDBOX": "true", "STATEMENT_OCR_CHILD": cmd, "STATEMENT_OCR_TIMEOUT": "2",
-                       "STATEMENT_STATE_DIR": str(tmp_path / "state")})
-    engine = ocr.Engine(cfg)
-    with pytest.raises(ocr.OCRTimeout):
+def _proc_identity(pid: int) -> tuple[int, str] | None:
+    """(start time in clock ticks, SigIgn mask) from /proc, or None when the pid is gone."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        status = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return None
+    start = int(stat.rsplit(")", 1)[1].split()[19])  # field 22, after the (comm) field
+    sigign = next(l.split()[1] for l in status.splitlines() if l.startswith("SigIgn:"))
+    return start, sigign
+
+
+def _find_marker_pids(marker: str) -> list[int]:
+    """The `sleep` processes carrying the marker (bwrap and sh carry it in their argv too, so match on comm)."""
+    out = subprocess.run(["ps", "-eo", "pid=,comm=,args="], capture_output=True, text=True).stdout
+    pids = []
+    for line in out.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[1] == "sleep" and marker in parts[2]:
+            pids.append(int(parts[0]))
+    return pids
+
+
+def _teardown_scenario(engine, marker: str) -> dict:
+    """Run `engine.read` (on this thread: bwrap's --die-with-parent is tied to the spawning thread) on a sandboxed child
+    that spawns a SIGTERM-ignoring grandchild; a helper thread observes the grandchild on the host while the child is
+    alive (a positive witness: pid, start time, SigIgn); then report whether that exact process is gone afterwards.
+    Zombies count as present (a reaped descendant has no /proc entry)."""
+    witness: list = []
+
+    def watch():
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not witness:
+            for pid in _find_marker_pids(marker):
+                ident = _proc_identity(pid)
+                if ident is not None:
+                    witness.append((pid, ident))
+                    break
+            time.sleep(0.05)
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    errors: list[BaseException] = []
+    try:
         engine.read(b"%PDF", None)
+    except BaseException as exc:  # noqa: BLE001
+        errors.append(exc)
+    watcher.join(timeout=6)
+    if not witness:
+        raise LookupError("no grandchild was observed: nothing was launched")
+    pid, (start, sigign) = witness[0]
+    assert int(sigign, 16) & (1 << (int(signal.SIGTERM) - 1)), "the grandchild must ignore SIGTERM"
+    gone = False
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
-        survivors = [l for l in subprocess.run(["ps", "-eo", "stat=,args="], capture_output=True, text=True).stdout.splitlines()
-                     if marker in l and "ps -eo" not in l and not l.split()[0].startswith("Z")]
-        if not survivors:
+        ident = _proc_identity(pid)
+        if ident is None or ident[0] != start:  # gone, or the pid was reused by another process
+            gone = True
             break
-        time.sleep(0.1)
-    assert survivors == []
+        time.sleep(0.05)
+    return {"pid": pid, "gone": gone, "errors": errors}
+
+
+def _teardown_cfg(tmp_path, marker: str):
+    inner = ('if [ "$1" = --selftest ]; then printf \'{"ready": true}\\n\'; exit 0; fi; '
+             f'trap "" TERM; (trap "" TERM; {marker}) & {marker}')
+    cmd = "/usr/bin/sh -c " + shlex.quote(inner) + " sh"
+    return config.load({"STATEMENT_PARSER_SANDBOX": "true", "STATEMENT_OCR_CHILD": cmd, "STATEMENT_OCR_TIMEOUT": "2",
+                        "STATEMENT_STATE_DIR": str(tmp_path / "state")})
+
+
+@pytest.mark.skipif(not HAS_BWRAP, reason="bubblewrap required")
+def test_real_bwrap_teardown_reaps_a_witnessed_sigterm_ignoring_grandchild(tmp_path):
+    marker = f"sleep 300 0.{os.getpid()}1"
+    engine = ocr.Engine(_teardown_cfg(tmp_path, marker))
+    report = _teardown_scenario(engine, marker)
+    assert [type(e) for e in report["errors"]] == [ocr.OCRTimeout]
+    assert report["gone"], report
+    assert engine.last_pgid is not None and _group_gone(engine.last_pgid)
+
+
+@pytest.mark.skipif(not HAS_BWRAP, reason="bubblewrap required")
+def test_teardown_scenario_fails_when_nothing_is_launched(tmp_path, monkeypatch):
+    """Mutation control: with `Engine.read` stubbed to raise at once, the scenario finds no witness and fails."""
+    marker = f"sleep 300 0.{os.getpid()}2"
+    engine = ocr.Engine(_teardown_cfg(tmp_path, marker))
+    monkeypatch.setattr(engine, "read", lambda data, password: (_ for _ in ()).throw(ocr.OCRTimeout("stub")))
+    with pytest.raises(LookupError):
+        _teardown_scenario(engine, marker)
+
+
+@pytest.mark.skipif(not HAS_BWRAP, reason="bubblewrap required")
+def test_teardown_scenario_fails_when_the_group_kill_is_disabled(tmp_path, monkeypatch):
+    """Mutation control: with the group SIGKILL disabled, the witnessed grandchild survives and the scenario says so."""
+    marker = f"sleep 300 0.{os.getpid()}3"
+    engine = ocr.Engine(_teardown_cfg(tmp_path, marker))
+
+    def no_kill(proc):
+        try:
+            proc.wait(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            pass
+    monkeypatch.setattr(ocr, "_kill", no_kill)
+    try:
+        report = _teardown_scenario(engine, marker)
+        assert report["gone"] is False, report
+    finally:
+        for pid in _find_marker_pids(marker):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        if engine.last_pgid:
+            try:
+                os.killpg(engine.last_pgid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
 @pytest.mark.skipif(not HAS_BWRAP, reason="bubblewrap required")

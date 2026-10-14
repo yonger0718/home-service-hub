@@ -216,27 +216,35 @@ def main(argv: list[str] | None = None, *, backend=None, stdin_fd: int = 0, stdo
     os.close(devnull)
 
     def emit(result: dict) -> int:
-        write_all(proto_fd, (json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8", "replace"))
+        line = (json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8", "replace")
+        write_all(proto_fd, line)
         os.close(proto_fd)
         return 0
 
     try:
-        ready = backend if backend is not None else load_engine(args.threads)
-        import pypdfium2  # noqa: F401, PLC0415
-    except Resource:
-        return emit({"ok": False, "code": "resource"})
-    except Exception as exc:  # noqa: BLE001
-        return emit({"ok": False, "code": "resource" if _is_resource(exc) else "unavailable"})
-    if args.selftest:
-        return emit({"ready": True})
-    header = read_header(stdin_fd)
-    if header is None or type(header.get("pdf_len")) is not int or not (0 <= header["pdf_len"] <= MAX_PDF_LEN):
-        return emit({"ok": False, "code": "malformed"})
-    data = read_exact(stdin_fd, header["pdf_len"])
-    if data is None:
-        return emit({"ok": False, "code": "malformed"})
-    return emit(run(header, data, ready))
-
+        try:
+            ready = backend if backend is not None else load_engine(args.threads)
+            import pypdfium2  # noqa: F401, PLC0415
+        except Resource:
+            return emit({"ok": False, "code": "resource"})
+        except Exception as exc:  # noqa: BLE001
+            return emit({"ok": False, "code": "resource" if _is_resource(exc) else "unavailable"})
+        if args.selftest:
+            return emit({"ready": True})
+        header = read_header(stdin_fd)
+        if header is None or type(header.get("pdf_len")) is not int or not (0 <= header["pdf_len"] <= MAX_PDF_LEN):
+            return emit({"ok": False, "code": "malformed"})
+        data = read_exact(stdin_fd, header["pdf_len"])
+        if data is None:
+            return emit({"ok": False, "code": "malformed"})
+        return emit(run(header, data, ready))
+    except MemoryError:
+        # the resource envelope (AGENT-118 Must 1a): an allocation failure while reading the header or the payload or
+        # while serialising the result is still a resource outcome, written when it can be; nothing else is caught here
+        try:
+            return emit({"ok": False, "code": "resource"})
+        except BaseException:  # noqa: BLE001 — the descriptor may be gone; a non-zero exit is then the parent's signal
+            return 1
 
 if __name__ == "__main__":
     sys.exit(main())

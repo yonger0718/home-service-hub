@@ -16,6 +16,10 @@ def write(path: Path, response, *, sleep: float = 0, exit_code: int = 0, flood: 
         lines.append(f"echo \"$@\" >> {shlex.quote(str(count_to))}")
     selftest_body = {"ok": "printf '{\"ready\": true}\\n'; exit 0", "fail": "exit 1",
                      "unavailable": "printf '{\"ok\": false, \"code\": \"unavailable\"}\\n'; exit 0",
+                     "resource": "printf '{\"ok\": false, \"code\": \"resource\"}\\n'; exit 0",
+                     "sleep": "sleep 30; exit 0", "ready_int": "printf '{\"ready\": 1}\\n'; exit 0",
+                     "ready_blank": "printf '\\n{\"ready\": true}\\n\\n'; exit 0",
+                     "ready_extra": "printf '{\"ready\": true, \"x\": 1}\\n'; exit 0",
                      "garbage": "printf 'hello\\n'; exit 0"}[selftest]
     lines.append(f'if [ "$1" = "--selftest" ]; then {selftest_body}; fi')
     if record_header_to is not None:

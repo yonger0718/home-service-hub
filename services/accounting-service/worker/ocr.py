@@ -48,7 +48,6 @@ RLIMIT_CPU_S = 150
 STDOUT_CAP = 2 * 1024 * 1024
 READ_CHUNK = 65536
 KILL_WAIT_S = 10
-SELFTEST_TIMEOUT_S = 120
 CONFIDENCE_FLOOR = 0.80
 TIMEOUT_SIGNALS = {int(signal.SIGXCPU)}
 CODES = {"unavailable", "resource", "too_large", "malformed", "low_confidence"}
@@ -203,25 +202,31 @@ class Engine:
                 "OMP_NUM_THREADS": threads, "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "MALLOC_ARENA_MAX": "2"}
 
     def preflight(self) -> None:
-        """Once per run: the child with --selftest must start inside the sandbox, load the engine and report ready."""
+        """Once per run: the child with --selftest must start inside the sandbox, load the engine and report
+        `{"ready": true}` as exactly one terminated line. A readiness or start failure (sandbox, imports, engine, an
+        invalid or non-ready response, a crash) latches `unavailable` until `reset()`. Two outcomes do not latch
+        (AGENT-118 ruling on Must 1b): a self-test that reports `resource` → OCRResource, and an observed deadline or
+        SIGXCPU → OCRTimeout; the next call runs the self-test again."""
         if self._unavailable:
             raise OCRUnavailable("ocr unavailable")
         if self._ready:
             return
-        outcome, payload = self._exchange(b"", self.argv("--selftest"), SELFTEST_TIMEOUT_S)
-        ready = False
+        outcome, payload = self._exchange(b"", self.argv("--selftest"), self.cfg.ocr_timeout_s)
+        if outcome == "timeout":
+            raise OCRTimeout("ocr timed out")
         if outcome == "ok":
-            try:
-                lines = [line for line in payload.decode("utf-8").split("\n") if line != ""]
-                ready = len(lines) == 1 and payload.endswith(b"\n") and json.loads(lines[0]) == {"ready": True}
-            except (UnicodeDecodeError, ValueError, RecursionError):
-                ready = False
-        if not ready:
-            self._unavailable = True
-            raise OCRUnavailable("ocr unavailable")
-        self._ready = True
+            verdict = _selftest_verdict(payload)
+            if verdict == "ready":
+                self._ready = True
+                return
+            if verdict == "resource":
+                raise OCRResource("ocr out of memory")
+        self._unavailable = True
+        raise OCRUnavailable("ocr unavailable")
 
     def read(self, data: bytes, password: str | None) -> OcrResult:
+        """Call from a long-lived thread (the worker's main thread, as the parser does): bwrap's --die-with-parent
+        is tied to the thread that spawned it, so a short-lived caller thread would tear the child down itself."""
         self.preflight()
         self.starts += 1
         outcome, payload = self._exchange(_header(password, len(data)) + data, self.argv(), self.cfg.ocr_timeout_s)
@@ -339,6 +344,22 @@ def _close_stdout(proc: subprocess.Popen) -> None:
         proc.stdout.close()
     except (OSError, ValueError):
         pass
+
+
+def _selftest_verdict(payload: bytes) -> str:
+    """'ready' for exactly one terminated line `{"ready": true}` (the key set exact, the value the boolean True),
+    'resource' for a well-formed resource response, otherwise 'invalid'. Never raises."""
+    try:
+        if len(payload) > STDOUT_CAP or payload.count(b"\n") != 1 or not payload.endswith(b"\n"):
+            return "invalid"
+        obj = json.loads(payload[:-1].decode("utf-8"))
+        if isinstance(obj, dict) and set(obj) == {"ready"} and obj["ready"] is True:
+            return "ready"
+        if isinstance(obj, dict) and set(obj) == ERR_KEYS and obj["ok"] is False and obj["code"] == "resource":
+            return "resource"
+        return "invalid"
+    except (UnicodeDecodeError, ValueError, RecursionError, OverflowError):
+        return "invalid"
 
 
 def _number(value, lo: float, hi: float) -> float | None:
