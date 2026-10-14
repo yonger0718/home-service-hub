@@ -1,23 +1,27 @@
 """R5a: the OCR child. Started by worker/ocr.py as
-`<interpreter> -B -m worker.ocr_child --threads N --rlimit-as-mb M --rlimit-cpu-s S`, under bwrap with no network
-and a minimal environment. Nothing secret travels in argv; the password comes in the stdin header.
+`<interpreter> -B -m worker.ocr_child --threads N --rlimit-as-mb M --rlimit-cpu-s S [--selftest]`, under bwrap with
+no network and a minimal environment. Nothing secret travels in argv; the password comes in the stdin header.
 
 Order (AGENT-118 rulings): rlimits (core 0, address space, CPU) → fd isolation (fd 1 is moved to /dev/null and the
 protocol line is written on a saved descriptor, so native libraries cannot interleave with it) → readiness (import
-pypdfium2/numpy/rapidocr, build the engine, self-test on a 32x32 white image) → header line, read byte by byte,
-bounded → exactly `pdf_len` bytes → page bound → per page: pixel bound before any allocation, render, recognise, rows →
-confidence floor → one JSON line. Readiness therefore runs before any PDF byte is accepted, and a failing host never
-sees the statement. Nothing is written to disk; nothing but the protocol line reaches the saved descriptor.
+pypdfium2/numpy/rapidocr, build the engine, run detection and recognition once on synthetic images) → header line,
+read byte by byte, bounded → exactly `pdf_len` bytes → page bound → per page: pixel bound before any allocation,
+render, recognise, rows → confidence floor → one JSON line. Readiness therefore runs before any PDF byte is accepted,
+and a failing host never sees the statement. `--selftest` stops after readiness and reports `{"ready": true}`: the
+parent runs it once per run so a host that cannot start the sandbox or the engine is `unavailable`, not a per-file
+parse failure. Nothing is written to disk; nothing but the protocol line reaches the saved descriptor.
 
 Result codes: ok → {"ok": true, "pages", "empty_pages", "boxes", "mean_confidence", "text"}; otherwise
-{"ok": false, "code": "unavailable" | "resource" | "too_large" | "malformed" | "low_confidence"}. `resource` is a
-MemoryError anywhere (readiness or recognition) — a retryable condition, not a parse failure.
+{"ok": false, "code": "unavailable" | "resource" | "too_large" | "malformed" | "low_confidence"}. `resource` is
+memory exhaustion anywhere (Python MemoryError, ENOMEM/EAGAIN, an engine allocation failure) — retryable, not a
+parse failure.
 
 Thread setting (rapidocr-onnxruntime 1.4.4 on this host): RapidOCR(intra_op_num_threads=N, inter_op_num_threads=1).
 """
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import math
 import os
@@ -32,11 +36,28 @@ SELF_TEST_SIDE = 32
 DEFAULT_AS_MB = 2048
 DEFAULT_CPU_S = 150
 DEFAULT_THREADS = 2
+MAX_PDF_LEN = 20_000_000
+MAX_SCALE = 6.0
+MAX_PIXELS_CAP = 100_000_000
 CODES = ("unavailable", "resource", "too_large", "malformed", "low_confidence")
+_ALLOC_WORDS = ("bad_alloc", "failed to allocate", "out of memory", "cannot allocate")
 
 
 class Unavailable(RuntimeError):
     """Imports, engine construction or the self-test failed."""
+
+
+class Resource(RuntimeError):
+    """Memory exhaustion reported by the engine or the OS."""
+
+
+def _is_resource(exc: BaseException) -> bool:
+    if isinstance(exc, MemoryError):
+        return True
+    if isinstance(exc, OSError) and exc.errno in (errno.ENOMEM, errno.EAGAIN):
+        return True
+    text = str(exc).lower()
+    return any(word in text for word in _ALLOC_WORDS)
 
 
 def apply_rlimits(as_mb: int, cpu_s: int) -> None:
@@ -49,6 +70,15 @@ def apply_rlimits(as_mb: int, cpu_s: int) -> None:
         resource.setrlimit(res, (cap, hard))
 
 
+def _self_test(engine, np) -> None:
+    """Run detection on a white square and recognition on a synthetic high-contrast strip, so both model sessions are
+    exercised before any statement is read; results are not interpreted."""
+    engine(np.full((SELF_TEST_SIDE, SELF_TEST_SIDE, 3), 255, dtype=np.uint8))
+    strip = np.full((32, 128, 3), 255, dtype=np.uint8)
+    strip[8:24, 8:120:12] = 0
+    engine(strip, use_det=False, use_cls=False, use_rec=True)
+
+
 def load_engine(threads: int):
     """RapidOCR with the wheel's bundled models; returns a callable img -> [[quad, text, score], ...]."""
     try:
@@ -57,10 +87,10 @@ def load_engine(threads: int):
         from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
 
         engine = RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1)
-        engine(np.full((SELF_TEST_SIDE, SELF_TEST_SIDE, 3), 255, dtype=np.uint8))
-    except MemoryError:
-        raise
-    except Exception:  # noqa: BLE001 — the library text never leaves the child
+        _self_test(engine, np)
+    except Exception as exc:  # noqa: BLE001 — the library text never leaves the child
+        if _is_resource(exc):
+            raise Resource() from None
         raise Unavailable() from None
 
     def backend(img):
@@ -70,7 +100,7 @@ def load_engine(threads: int):
 
 
 def _render(page, scale: float):
-    return page.render(scale=scale, rev_byteorder=True).to_numpy()
+    return page.render(scale=scale).to_numpy()  # pdfium's native BGR, which RapidOCR expects
 
 
 def run(header: dict, data: bytes, backend, render=None) -> dict:
@@ -87,15 +117,15 @@ def run(header: dict, data: bytes, backend, render=None) -> dict:
         password = header.get("password")
         if password is not None and not isinstance(password, str):
             return {"ok": False, "code": "malformed"}
+        if not (math.isfinite(scale) and 0 < scale <= MAX_SCALE) or not (1 <= max_pages <= 100) or not (1 <= max_pixels <= MAX_PIXELS_CAP):
+            return {"ok": False, "code": "malformed"}
     except (TypeError, ValueError):
         return {"ok": False, "code": "malformed"}
     try:
         doc = pdfium.PdfDocument(BytesIO(data), password=password)
         npages = len(doc)
-    except MemoryError:
-        return {"ok": False, "code": "resource"}
-    except Exception:  # noqa: BLE001
-        return {"ok": False, "code": "malformed"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "code": "resource" if _is_resource(exc) else "malformed"}
     if npages < 1 or npages > max_pages:
         return {"ok": False, "code": "too_large"}
     texts: list[str] = []
@@ -119,10 +149,8 @@ def run(header: dict, data: bytes, backend, render=None) -> dict:
                 empty_pages += 1
             boxes_total += len(boxes)
             texts.append(ocr_text.layout(boxes))
-    except MemoryError:
-        return {"ok": False, "code": "resource"}
-    except Exception:  # noqa: BLE001 — render or engine failure on a page
-        return {"ok": False, "code": "malformed"}
+    except Exception as exc:  # noqa: BLE001 — render or engine failure on a page
+        return {"ok": False, "code": "resource" if _is_resource(exc) else "malformed"}
     mean = sum(scores) / len(scores) if scores else 0.0
     if boxes_total == 0 or mean < CONFIDENCE_FLOOR:
         return {"ok": False, "code": "low_confidence"}
@@ -144,7 +172,7 @@ def read_header(fd: int) -> dict | None:
         return None
     try:
         header = json.loads(bytes(buf))
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return header if isinstance(header, dict) else None
 
@@ -159,11 +187,19 @@ def read_exact(fd: int, length: int) -> bytes | None:
     return bytes(buf)
 
 
+def write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        n = os.write(fd, view)
+        view = view[n:]
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(prog="worker.ocr_child", add_help=False)
     ap.add_argument("--threads", type=int, default=DEFAULT_THREADS)
     ap.add_argument("--rlimit-as-mb", type=int, default=DEFAULT_AS_MB)
     ap.add_argument("--rlimit-cpu-s", type=int, default=DEFAULT_CPU_S)
+    ap.add_argument("--selftest", action="store_true")
     return ap.parse_args(argv)
 
 
@@ -180,19 +216,21 @@ def main(argv: list[str] | None = None, *, backend=None, stdin_fd: int = 0, stdo
     os.close(devnull)
 
     def emit(result: dict) -> int:
-        os.write(proto_fd, (json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8"))
+        write_all(proto_fd, (json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8", "replace"))
         os.close(proto_fd)
         return 0
 
     try:
         ready = backend if backend is not None else load_engine(args.threads)
         import pypdfium2  # noqa: F401, PLC0415
-    except MemoryError:
+    except Resource:
         return emit({"ok": False, "code": "resource"})
-    except Exception:  # noqa: BLE001
-        return emit({"ok": False, "code": "unavailable"})
+    except Exception as exc:  # noqa: BLE001
+        return emit({"ok": False, "code": "resource" if _is_resource(exc) else "unavailable"})
+    if args.selftest:
+        return emit({"ready": True})
     header = read_header(stdin_fd)
-    if header is None or type(header.get("pdf_len")) is not int or header["pdf_len"] < 0:
+    if header is None or type(header.get("pdf_len")) is not int or not (0 <= header["pdf_len"] <= MAX_PDF_LEN):
         return emit({"ok": False, "code": "malformed"})
     data = read_exact(stdin_fd, header["pdf_len"])
     if data is None:

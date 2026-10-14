@@ -1,4 +1,6 @@
-"""Stand-ins for the OCR child used by the parent tests: shell scripts run unsandboxed through STATEMENT_OCR_CHILD."""
+"""Stand-ins for the OCR child used by the parent tests: shell scripts run unsandboxed through STATEMENT_OCR_CHILD.
+The parent runs `<child> --selftest` once per run before any file; a stand-in answers that with {"ready": true}
+unless `selftest` says otherwise."""
 import json
 import shlex
 from pathlib import Path
@@ -6,8 +8,16 @@ from pathlib import Path
 
 def write(path: Path, response, *, sleep: float = 0, exit_code: int = 0, flood: bool = False, grandchild: bool = False,
           dump_env: bool = False, record_header_to: Path | None = None, record_stdin_to: Path | None = None,
-          signal: int | None = None) -> Path:
+          signal: int | None = None, selftest: str = "ok", count_to: Path | None = None) -> Path:
+    """`selftest`: "ok" → ready line; "fail" → exit 1 with no output; "unavailable" → the unavailable code;
+    "garbage" → a non-protocol line. `count_to`: append one line per invocation (argv) for call counting."""
     lines = ["#!/bin/sh"]
+    if count_to is not None:
+        lines.append(f"echo \"$@\" >> {shlex.quote(str(count_to))}")
+    selftest_body = {"ok": "printf '{\"ready\": true}\\n'; exit 0", "fail": "exit 1",
+                     "unavailable": "printf '{\"ok\": false, \"code\": \"unavailable\"}\\n'; exit 0",
+                     "garbage": "printf 'hello\\n'; exit 0"}[selftest]
+    lines.append(f'if [ "$1" = "--selftest" ]; then {selftest_body}; fi')
     if record_header_to is not None:
         lines.append(f"IFS= read -r line; printf '%s\\n' \"$line\" > {shlex.quote(str(record_header_to))}")  # byte-wise: nothing past the newline is consumed
     if record_stdin_to is not None:
@@ -15,7 +25,7 @@ def write(path: Path, response, *, sleep: float = 0, exit_code: int = 0, flood: 
     else:
         lines.append("cat >/dev/null")
     if grandchild:
-        lines.append("(trap '' TERM; sleep 300) &")
+        lines.append("(trap '' TERM; sleep 300) >/dev/null 2>&1 &")  # a straggler that does not hold the protocol pipe
     if sleep:
         lines.append(f"sleep {sleep}")
     if flood:

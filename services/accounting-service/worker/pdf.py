@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import signal
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 
 import pdfplumber
@@ -47,7 +47,7 @@ class Unlocked:
 
 @dataclass(frozen=True)
 class Extracted:
-    text: str
+    text: str = field(repr=False)  # statement content never prints through a repr (R5a)
     tables: list[list[list[str]]]
     pages: int
     text_chars_page1: int

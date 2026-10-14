@@ -216,3 +216,88 @@ def test_subprocess_limits_are_set_before_readiness():
     seen = json.loads(proc.stderr.decode().splitlines()[-1])
     assert seen == {"as": 777 * 1024 * 1024, "cpu": 33, "core": 0, "threads": 3}
     assert json.loads(proc.stdout)["ok"]
+
+
+# ---- review round: readiness order, selftest, resource classification, header clamps ------------------------------
+
+def test_selftest_reports_ready_without_touching_stdin():
+    r_in, w_in, r_out, w_out = _pipes()
+    os.write(w_in, b"never read"); os.close(w_in)
+    rc = ocr_child.main(CHILD_ARGS + ["--selftest"], backend=backend_of(RAW), stdin_fd=r_in, stdout_fd=w_out, limits=False)
+    os.close(w_out)
+    assert rc == 0 and json.loads(_collect(r_out)) == {"ready": True} and _collect(r_in) == b"never read"
+    os.close(r_out); os.close(r_in)
+
+
+def test_native_noise_during_readiness_never_reaches_the_protocol(monkeypatch):
+    r_in, w_in, r_out, w_out = _pipes()
+    data = make_pdf([statement_lines()])
+    _feed(w_in, {**HDR, "pdf_len": len(data)}, data)
+
+    def noisy_load(threads):
+        os.write(w_out, b"ORT banner during import\n")  # fd 1 in production
+        return backend_of(RAW)
+    monkeypatch.setattr(ocr_child, "load_engine", noisy_load)
+    rc = ocr_child.main(CHILD_ARGS, backend=None, stdin_fd=r_in, stdout_fd=w_out, limits=False)
+    os.close(w_out)
+    out = _collect(r_out)
+    os.close(r_out); os.close(r_in)
+    assert rc == 0 and out.count(b"\n") == 1 and json.loads(out)["ok"] and b"banner" not in out
+
+
+@pytest.mark.parametrize("exc,code", [(MemoryError(), "resource"), (OSError(12, "Cannot allocate memory"), "resource"),
+                                      (RuntimeError("[ONNXRuntimeError] : 1 : FAIL : bad_alloc"), "resource"),
+                                      (RuntimeError("Failed to allocate memory for requested buffer"), "resource"),
+                                      (RuntimeError("engine failed mid-page"), "malformed")])
+def test_backend_failures_are_classified(exc, code):
+    def failing(img):
+        raise exc
+    assert ocr_child.run(HDR, make_pdf([statement_lines()]), failing) == {"ok": False, "code": code}
+
+
+def test_readiness_failures_are_classified(monkeypatch):
+    for exc, code in ((OSError(12, "Cannot allocate memory"), "resource"), (RuntimeError("bad_alloc"), "resource"),
+                      (ImportError("no module"), "unavailable")):
+        def load(threads, exc=exc):
+            raise exc
+        monkeypatch.setattr(ocr_child, "load_engine", load)
+        r_in, w_in, r_out, w_out = _pipes()
+        os.write(w_in, b"{}\n"); os.close(w_in)
+        ocr_child.main(CHILD_ARGS, backend=None, stdin_fd=r_in, stdout_fd=w_out, limits=False)
+        os.close(w_out)
+        assert json.loads(_collect(r_out)) == {"ok": False, "code": code}
+        os.close(r_out); os.close(r_in)
+
+
+@pytest.mark.parametrize("header", [{**HDR, "scale": 0}, {**HDR, "scale": float("nan")}, {**HDR, "scale": 99},
+                                    {**HDR, "max_pixels": 0}, {**HDR, "max_pages": 0}, {**HDR, "max_pixels": 10 ** 12}])
+def test_header_bounds_are_clamped(header):
+    assert ocr_child.run(header, make_pdf([statement_lines()]), backend_of(RAW)) == {"ok": False, "code": "malformed"}
+
+
+def test_pdf_len_over_the_cap_is_malformed_before_reading():
+    r_in, w_in, r_out, w_out = _pipes()
+    os.write(w_in, json.dumps({**HDR, "pdf_len": ocr_child.MAX_PDF_LEN + 1}).encode() + b"\nXX"); os.close(w_in)
+    ocr_child.main(CHILD_ARGS, backend=backend_of(RAW), stdin_fd=r_in, stdout_fd=w_out, limits=False)
+    os.close(w_out)
+    assert json.loads(_collect(r_out)) == {"ok": False, "code": "malformed"} and _collect(r_in) == b"XX"
+    os.close(r_out); os.close(r_in)
+
+
+def test_subprocess_order_limits_then_isolation_then_readiness():
+    """Inside a real child: when readiness runs, the limits are already set and fd 1 is already /dev/null."""
+    script = ("import sys, os, json, resource, stat\nfrom worker import ocr_child\n"
+              "def load(threads):\n"
+              "    st = os.fstat(1); devnull = os.stat(os.devnull)\n"
+              "    print(json.dumps({'as': resource.getrlimit(resource.RLIMIT_AS)[0], 'core': resource.getrlimit(resource.RLIMIT_CORE)[0],"
+              " 'fd1_is_devnull': (st.st_dev, st.st_ino) == (devnull.st_dev, devnull.st_ino)}), file=sys.stderr)\n"
+              "    os.write(1, b'NOISE\\n'); return lambda img: %r\n"
+              "ocr_child.load_engine = load\n"
+              "sys.exit(ocr_child.main(sys.argv[1:]))\n" % (RAW,))
+    data = make_pdf([statement_lines()])
+    proc = subprocess.run([PY, "-c", script, "--threads", "1", "--rlimit-as-mb", "777", "--rlimit-cpu-s", "33"],
+                          input=json.dumps({**HDR, "pdf_len": len(data)}).encode() + b"\n" + data, capture_output=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr[:300]
+    seen = json.loads(proc.stderr.decode().splitlines()[-1])
+    assert seen == {"as": 777 * 1024 * 1024, "core": 0, "fd1_is_devnull": True}
+    assert proc.stdout.count(b"\n") == 1 and json.loads(proc.stdout)["ok"] and b"NOISE" not in proc.stdout
