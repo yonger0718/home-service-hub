@@ -150,8 +150,8 @@ candidates ≥ 4 characters, boundaries judged on the real line: an ASCII letter
 a CJK neighbour does not, plus the text path's date exclusions for numeric spans), any ID-shaped span
 `[A-Za-z][12]\d{8}` whose letter may also be a Cyrillic or Greek lookalike (only at that position), any run of 12 or
 more digits → only the matched spans are replaced (overlaps merged), so the other columns of a row survive → then
-the shared rules (`text`). The email rule is linear in the line length (possessive local part that cannot start
-inside a run; same matches as before).
+the shared rules (`text`). The email rule is main's pattern, applied only when the text contains `@`, so a long
+dotted line without an address stays linear.
 
 Known limitations (ruling 2026-10-14): a standalone numeric token equal to a password candidate is masked exactly as
 on the text path (privacy over completeness; a balance broken that way fails the guardrail and goes to review);
@@ -165,7 +165,10 @@ compatibility characters in unmasked text (① → 1, full-width punctuation).
 ## OCR integration (R5c)
 
 Install both venvs (worker and verify) with the frozen constraints, so the OCR wheels and everything under them are
-the versions the evidence tests ran against:
+the versions the evidence tests ran against. The file is generated fail-closed by `python -m worker.constraints
+--python .venv/bin/python --uv /usr/local/bin/uv` (every installed distribution exactly once as `name==version`; a
+URL, VCS, editable or unpinned requirement, a duplicate or an omission stops it; only the local editable shared
+library is exempt) and the operator evidence line carries the SHA-256 of its bytes:
 
     uv pip install --python .venv/bin/python -r requirements.txt -r requirements-worker.txt -c requirements-worker-constraints-aarch64-py313.txt
 
@@ -184,9 +187,13 @@ statement) is OCR'd once in the same run and parsed once more — the **fallback
 `parser=claude-cli+ocr` and a second note line `ocr: fallback after text-layer parse failure`, `has_text_layer`
 stays true. It never fires on guardrail, transient, sandbox, password, mapping or too_large outcomes, nor while the
 parser latch is set. If OCR is unavailable the file stays `failed/parse` and the run reports `ocr_unavailable`; any
-other OCR outcome leaves it `failed/parse`. A file that fails both attempts retries only at the next parser version,
-so the fallback costs at most one OCR start and one extra parser call per file per version. The run summary counts
-`ocr_trigger` and `ocr_fallback`.
+other OCR outcome leaves it `failed/parse`. Whatever the second parse's failure (timeout, exit, schema, sandbox,
+auth, CLI version), the row ends `failed/parse` at the current parser version and retries only at the next one, so
+the fallback costs at most one OCR start and one extra parser call per file per version; a sandbox, auth or
+CLI-version failure on that second call still sets the parser latch. OCR text that is not UTF-8 is rejected at the
+same pre-mask boundary (`failed/parse`, or `errors` in export-masked). The run summary counts `ocr_trigger` and
+`ocr_fallback` at the moment the child is started, whatever follows, and the journal carries one line per OCR
+outcome with the outcome class only (`ocr trigger: OCRTimeout`, `ocr fallback: text too_large`).
 
 Outcomes: the host cannot start the child or the engine (`unavailable`) → the file keeps its status (`new` stays
 `new`, a review row keeps its failure), the run reports `ocr_unavailable` once, finishes `done`, and `run` and

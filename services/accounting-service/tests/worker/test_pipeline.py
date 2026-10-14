@@ -952,7 +952,7 @@ def test_ocr_unavailable_during_fallback_keeps_parse_and_reports_the_code(world,
     _text_parse_fails(services, "schema")
     summary = pipeline.run(services, trigger="owner_cli")
     assert _file_rows(db_session) == [("failed", "parse")] and summary["errors"] == ["ocr_unavailable"]
-    assert summary["failed"] == 1 and summary["skipped"] == 0 and summary["ocr_fallback"] == 0
+    assert summary["failed"] == 1 and summary["skipped"] == 0 and summary["ocr_fallback"] == 1  # counted at the OCR start
     from worker import cli
     assert cli._bad(summary) is True
 
@@ -1013,3 +1013,238 @@ def test_ocr_child_starts_with_no_active_exception_on_the_fallback_path(world, t
     _text_parse_fails(services, "schema")
     seen = _exc_recorder(services.ocr)
     assert pipeline.run(services, trigger="owner_cli")["parsed"] == 1 and seen == [None]
+
+
+# ---- AGENT-124 fix round: exception context, final fallback, counters, poll union, UTF-8 boundary, raw-box canaries ----
+
+import logging
+import traceback
+
+CANARY = "CANARY-SECRET-7731"
+
+
+def _capture_read_errors(engine):
+    """Wrap Engine.read to keep every exception it raises (re-raised unchanged)."""
+    seen = []
+    real = engine.read
+
+    def read(data, password):
+        try:
+            return real(data, password)
+        except BaseException as exc:  # noqa: BLE001
+            seen.append(exc)
+            raise
+    engine.read = read
+    return seen
+
+
+class _Records(logging.Handler):
+    """Captures the worker logger directly (its propagation is not relied on)."""
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.lines: list[str] = []
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+
+@pytest.fixture
+def worker_log():
+    handler = _Records()
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+    loggers = [logging.getLogger("worker"), logging.getLogger()]
+    old = [(lg, lg.level, lg.disabled) for lg in loggers]
+    for lg in loggers:
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+        lg.disabled = False  # the app's logging config (imported by the API fixture) disables pre-existing loggers
+    try:
+        yield handler
+    finally:
+        for lg, level, disabled in old:
+            lg.removeHandler(handler)
+            lg.setLevel(level)
+            lg.disabled = disabled
+
+
+def _assert_canary_free(exc, log):
+    assert exc.__cause__ is None and (exc.__context__ is None or CANARY not in repr(exc.__context__))
+    assert CANARY not in "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    assert CANARY not in log.text
+
+
+def test_trigger_ocr_error_carries_no_extraction_exception(world, tmp_path, db_session, monkeypatch, worker_log):
+    """A content-bearing NoTextLayer, then an OCR timeout: the OCRTimeout has no context, no cause, no canary anywhere."""
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    monkeypatch.setattr(pipeline.pdf, "extract", lambda data, password, **kw: (_ for _ in ()).throw(pipeline.pdf.NoTextLayer(CANARY)))
+    seen = _capture_read_errors(services.ocr)
+    pipeline.run(services, trigger="owner_cli")
+    assert [type(e) for e in seen] == [pipeline.ocr_mod.OCRTimeout] and _file_rows(db_session) == [("needs_review", "no_text_layer")]
+    _assert_canary_free(seen[0], worker_log)
+
+
+def test_fallback_ocr_error_carries_no_parser_exception(world, tmp_path, db_session, worker_log):
+    """A content-bearing ParseError on the text attempt, then an OCR timeout in the fallback."""
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    services.parser.parse = lambda masked: (_ for _ in ()).throw(parser_mod.ParseError("schema", CANARY))
+    seen = _capture_read_errors(services.ocr)
+    pipeline.run(services, trigger="owner_cli")
+    assert [type(e) for e in seen] == [pipeline.ocr_mod.OCRTimeout] and _file_rows(db_session) == [("failed", "parse")]
+    _assert_canary_free(seen[0], worker_log)
+
+
+def test_second_parser_call_carries_no_first_attempt_exception(world, tmp_path, db_session, worker_log):
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    raised = []
+
+    def parse(masked):
+        exc = parser_mod.ParseError("timeout", "second attempt") if "OCRMARK" in masked else parser_mod.ParseError("schema", CANARY)
+        raised.append(exc)
+        raise exc
+    services.parser.parse = parse
+    pipeline.run(services, trigger="owner_cli")
+    assert len(raised) == 2 and _file_rows(db_session) == [("failed", "parse")]
+    _assert_canary_free(raised[1], worker_log)
+
+
+@pytest.mark.parametrize("reason", ["timeout", "exit", "schema", "sandbox", "auth", "cli_version"])
+def test_second_attempt_failure_is_final_at_this_version(world, tmp_path, db_session, reason):
+    """Must 2 ruling: whatever the second parse's failure, the row is failed/parse at the current version; sandbox,
+    auth and CLI-version failures still set the latch; a second run makes no OCR start and no parser call."""
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    if reason in ("sandbox", "auth", "cli_version"):
+        services.gate.ensure(services.parser)  # a valid cached gate, so the violation latches on real input
+    calls = []
+
+    def parse(masked):
+        calls.append("ocr" if "OCRMARK" in masked else "text")
+        raise parser_mod.ParseError(reason if "OCRMARK" in masked else "schema", "synthetic")
+    services.parser.parse = parse
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert calls == ["text", "ocr"] and services.ocr.starts == 1 and summary["ocr_fallback"] == 1
+    assert db_session.execute(text("select status, failure, has_text_layer, parser_version from statement_file")).one() == ("failed", "parse", True, services.parser_version)
+    latched = reason in ("sandbox", "auth", "cli_version")
+    assert services.parser_disabled is latched and ("parser_disabled" in summary["errors"]) is latched
+    assert services.gate.latch_path.exists() is latched
+    if latched:
+        assert _operator_gate(services).ok  # clear the latch so the second run can parse at all
+    again = pipeline.run(services, trigger="owner_cli")
+    assert again["unchanged"] == 1 and calls == ["text", "ocr"] and services.ocr.starts == 1
+
+
+def test_counters_count_at_ocr_start_and_log_the_outcome_class(world, tmp_path, db_session, worker_log):
+    """Should 1: a timeout on the trigger path still counts ocr_trigger; a pre-mask rejection logs its class."""
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["ocr_trigger"] == 1 and summary["ocr_fallback"] == 0 and "ocr trigger: OCRTimeout" in worker_log.text
+    fake_ocr_child.write(tmp_path / "ocr-child.sh", fake_ocr_child.ok(text="x" * (pipeline.OCR_LINE_MAX + 1)))
+    db_session.execute(text("update statement_file set parser_version='old'")); db_session.commit()
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["ocr_trigger"] == 1 and "ocr trigger: text too_large" in worker_log.text and _file_rows(db_session) == [("needs_review", "too_large")]
+
+
+def test_fallback_counter_counts_a_timed_out_ocr(world, tmp_path, db_session, worker_log):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    _text_parse_fails(services, "schema")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["ocr_fallback"] == 1 and "ocr fallback: OCRTimeout" in worker_log.text and _file_rows(db_session) == [("failed", "parse")]
+
+
+def test_poll_keeps_codes_of_an_aborted_run(world, tmp_path, db_session, client, monkeypatch):
+    """Should 2: ocr_unavailable in a run that then aborts, followed by a clean run: the union still carries it."""
+    from worker import api as api_mod
+    services, drive_files, cfg = _ocr_world(world, tmp_path, None, selftest="unavailable")
+    hermes = {"Authorization": "Bearer hermes-token"}
+    assert client.post("/statements/ingest/run", headers=hermes).status_code == 202
+    services.drive.list_pdfs = lambda: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.poll(services, initiator_hint="t")
+    del services.drive.list_pdfs
+    db_session.execute(text("update ingest_run set lease_expires_at = now() - interval '1 hour'")); db_session.commit()
+    assert client.post("/statements/ingest/run", headers=hermes).status_code == 202
+    real_removed = services.api.mark_removed
+    calls = []
+
+    def mark_removed(lease, ids, **kw):  # the first (degraded) run aborts after its files were processed
+        calls.append(1)
+        if len(calls) == 1:
+            raise api_mod.ApiError(500, {"detail": "synthetic"})
+        return real_removed(lease, ids, **kw)
+    monkeypatch.setattr(services.api, "mark_removed", mark_removed)
+    real_execute = pipeline._execute
+
+    def execute(services_, summary, lease, trigger, mode):
+        if len(calls) == 1:  # second run: host fixed, Drive text-layer only
+            fake_ocr_child.write(tmp_path / "ocr-child.sh", fake_ocr_child.ok())
+            drive_files["id-1"] = ("信用卡/國泰世華/2026-09_國泰世華.pdf", encrypt(make_pdf([statement_lines()]), "A123456789"))
+        return real_execute(services_, summary, lease, trigger, mode)
+    monkeypatch.setattr(pipeline, "_execute", execute)
+    out = pipeline.poll(services, initiator_hint="t")
+    assert out["claimed"] == 2 and out["bad_runs"] == 1 and "ocr_unavailable" in out["errors"] and out["parsed"] == 1
+
+
+@pytest.mark.parametrize("path", ["trigger", "fallback"])
+def test_non_utf8_ocr_text_is_rejected_at_the_boundary(world, tmp_path, db_session, path):
+    """Should 3: a lone surrogate in the child's JSON text is Malformed → failed/parse, no masker, no parser."""
+    body = '{"ok": true, "pages": 1, "empty_pages": 0, "boxes": 2, "mean_confidence": 0.9, "text": "MERCHANT \\ud800 1,234"}'
+    if path == "trigger":
+        services, _, _ = _ocr_world(world, tmp_path, body)
+    else:
+        services, _, _ = _text_layer_world(world, tmp_path, body)
+        _text_parse_fails(services, "schema")
+    seen = _record_parser(services) if path == "trigger" else []
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and summary["errors"] == [] and services.ocr.starts == 1 and seen == []
+
+
+# ---- Should 4: raw boxes → real layout → caller → sink, with mutation controls ------------------------------------
+
+def _boxes_text():
+    """Boxes as the child would produce them, laid out by the real ocr_text.layout: a card number split across
+    boxes with OCR confusables, a split holder name, a split ID, and ordinary rows."""
+    from worker import ocr_text
+    rows = [["2026/09/01", "COFFEE", "1,234"], ["MERCHANT 001", "", "5,678"], ["卡號", "4lll", "222O", "333O", "444O"],
+            ["持卡人", "王", "小", "明"], ["身分證", "A12", "345", "6789"], ["TOTAL", "", "6,912"]]
+    boxes = []
+    for r, cells in enumerate(rows):
+        x = 10.0
+        for cell in cells:
+            if cell:
+                boxes.append((x, 20.0 + r * 30.0, 8.0 * len(cell), 12.0, cell))
+            x += 8.0 * max(len(cell), 2) + 40.0
+    return ocr_text.layout(boxes)
+
+
+SECRETS = ("4111222233334440", "4lll", "444O", "王小明", "A123456789")
+
+
+def test_raw_boxes_reach_the_parser_masked(world, tmp_path):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=_boxes_text()))
+    seen = _record_parser(services)
+    pipeline.run(services, trigger="owner_cli")
+    compact = "".join(seen[0].split())
+    assert all(s not in compact for s in SECRETS), compact
+    assert "2026/09/01" in seen[0] and "COFFEE" in seen[0] and "6,912" in seen[0]
+
+
+@pytest.mark.parametrize("mutation", ["no_masking", "no_normalisation"])
+def test_raw_box_canary_discriminates(world, tmp_path, monkeypatch, mutation):
+    """Mutation controls: bypass masking, or bypass the confusable normalisation, and the parser sees a secret."""
+    from worker import mask
+    if mutation == "no_masking":
+        monkeypatch.setattr(mask.Masker, "mask_ocr", lambda self, s, extra_literals=(): s)
+    else:
+        monkeypatch.setattr(mask, "_ocr_fix_confusables", lambda line: line)
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=_boxes_text()))
+    seen = _record_parser(services)
+    pipeline.run(services, trigger="owner_cli")
+    compact = "".join(seen[0].split())
+    assert any(s in compact for s in SECRETS), compact

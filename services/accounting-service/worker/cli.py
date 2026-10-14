@@ -54,7 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "backfill" and not args.acknowledge_live_periods:  # before anything is read or spawned
         print("backfill may touch live periods; pass --acknowledge-live-periods", file=sys.stderr)
         return 2
-    cfg = config.load()
+    try:
+        cfg = config.load()
+    except config.ConfigError as exc:  # the message names the key and the rule, never the value
+        print(f"config: {exc}", file=sys.stderr)
+        return 2
     runner = SubprocessRunner()
     if args.cmd == "gate":
         from worker.parser import Gate, Parser

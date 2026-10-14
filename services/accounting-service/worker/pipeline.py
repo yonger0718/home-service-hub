@@ -268,11 +268,10 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
         if isinstance(outcome, str):
             return outcome
         extracted, ocr_note = outcome
-        summary.ocr_trigger += 1
     services.api.update_file(lease, file_row["id"], status="unlocked", failure=None, has_text_layer=ocr_note is None,
                              text_chars=len(extracted.text), pages=extracted.pages,
                              credential_version=services.credential_version)
-    status = _parse_submit(services, lease, file_row, account_id, extracted, candidates, ocr_note, summary)
+    status = _parse_submit(services, lease, file_row, account_id, extracted, candidates, ocr_note, summary, final=ocr_note is not None)
     if status is not PARSE_FAILED:
         return status
     # R5.3 fallback (AGENT-118 ruling 2026-10-14): the text-layer parse failed with parse/schema/422. Some issuers
@@ -282,21 +281,26 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
     # too_large/guardrail return above). has_text_layer stays true: the file does have a text layer.
     if services.ocr is None or ocr_note is not None or services.parser_disabled:
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
+    summary.ocr_fallback += 1  # counted at the OCR start, whatever the outcome (the counters are the record)
     try:
         result = services.ocr.read(data, password)
     except ocr_mod.OCRUnavailable:
+        log.info("ocr fallback: OCRUnavailable")
         if "ocr_unavailable" not in summary.errors:
             summary.errors.append("ocr_unavailable")
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
     except (ocr_mod.OCRTimeout, ocr_mod.OCRResource, ocr_mod.OCRLowConfidence, pdf.TooLarge, pdf.Malformed) as exc:
-        log.info("ocr fallback not usable: %s", type(exc).__name__)  # class only; the text attempt already failed
+        log.info("ocr fallback: %s", type(exc).__name__)  # class only; the text attempt already failed
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
-    if ocr_text_too_large(result.extracted.text):
+    rejected = ocr_text_rejected(result.extracted.text)
+    if rejected:
+        log.info("ocr fallback: %s", rejected)
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
-    summary.ocr_fallback += 1
     note = (f"ocr: mean_confidence={result.mean_confidence:.2f} boxes={result.boxes} "
             f"empty_pages={result.empty_pages} scale={ocr_mod.SCALE}\nocr: fallback after text-layer parse failure")
-    status = _parse_submit(services, lease, file_row, account_id, result.extracted, candidates, note, summary)
+    # the second parser call: the text attempt's exception is long gone (its handler returned), and `final` makes
+    # every second-attempt failure end as failed/parse at this version (the latch is still set for violations)
+    status = _parse_submit(services, lease, file_row, account_id, result.extracted, candidates, note, summary, final=True)
     if status is PARSE_FAILED:
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
     return status
@@ -306,10 +310,13 @@ PARSE_FAILED = "parse_failed"  # _parse_submit sentinel: the parser or the API r
 
 
 def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: int, extracted: pdf.Extracted,
-                  candidates: list[str], ocr_note: str | None, summary: Summary) -> str:
+                  candidates: list[str], ocr_note: str | None, summary: Summary, *, final: bool = False) -> str:
     """Mask → STDIN_CAP → parser → submit → guardrail/parsed. Returns the file's terminal status, or PARSE_FAILED
     when the parser (parse/schema) or the API (422) rejected the text, so the caller can decide on the R5.3
-    fallback; every other outcome (sandbox latch, transient, too_large, guardrail) is terminal here."""
+    fallback; every other outcome (sandbox latch, transient, too_large, guardrail) is terminal here. `final` (the
+    fallback's second attempt, AGENT-118 ruling 2026-10-14): every parser failure is PARSE_FAILED — the row ends
+    failed/parse at this version and is retried only on a version change — while sandbox/auth/CLI-version failures
+    still set the parser latch, which is the operator's signal."""
     masked = services.masker.mask_ocr(extracted.text, candidates) if ocr_note else services.masker.render(extracted, candidates)
     if len(masked.encode("utf-8")) > parser_mod.STDIN_CAP:
         return _review(services, lease, file_row, "too_large", summary)
@@ -321,8 +328,10 @@ def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: 
             services.gate.latch(f"{exc.reason} on real input", services.gate.key(services.parser))
             if "parser_disabled" not in summary.errors:
                 summary.errors.append("parser_disabled")
+            if final:
+                return PARSE_FAILED
             return _fail(services, lease, file_row, "sandbox", summary, parser_version=services.parser_version)
-        if exc.reason in ("timeout", "exit"):  # CLI non-zero, rate limit, outage: retry on the ladder
+        if exc.reason in ("timeout", "exit") and not final:  # CLI non-zero, rate limit, outage: retry on the ladder
             return _fail(services, lease, file_row, "transient", summary)
         return PARSE_FAILED
     body = revision_body(parsed, file_id=file_row["id"], account_id=account_id, parser_version=services.parser_version,
@@ -348,12 +357,31 @@ def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: 
 OCR_LINE_MAX = 4096  # characters per OCR line offered to the masker
 
 
+def ocr_text_encodable(text: str) -> bool:
+    """R5.3 pre-mask boundary: text the child produced must be UTF-8 encodable (a lone surrogate from the child's
+    JSON would otherwise raise UnicodeEncodeError in the parser's stdin or the snapshot write)."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def ocr_text_too_large(text: str) -> bool:
     """R5.3 pre-mask bound for text the child produced (untrusted: the sandbox contains the renderer, not the PDF's
     influence on it). The masker's cost grows with the square of a line's length (measured 0.08 s at 4 000
     characters), so a line over OCR_LINE_MAX or a text over the parser's STDIN_CAP is too_large before any masking;
-    a real statement row is a few hundred characters."""
-    return len(text.encode("utf-8")) > parser_mod.STDIN_CAP or any(len(line) > OCR_LINE_MAX for line in text.splitlines())
+    a real statement row is a few hundred characters. Call after `ocr_text_encodable`."""
+    return len(text.encode("utf-8", "surrogatepass")) > parser_mod.STDIN_CAP or any(len(line) > OCR_LINE_MAX for line in text.splitlines())
+
+
+def ocr_text_rejected(text: str) -> str | None:
+    """The pre-mask verdict on the child's text: "malformed" (not UTF-8), "too_large" (over the bounds) or None."""
+    if not ocr_text_encodable(text):
+        return "malformed"
+    if ocr_text_too_large(text):
+        return "too_large"
+    return None
 
 
 def _ocr(services: Services, lease: Lease, file_row: dict, data: bytes, password: str | None,
@@ -365,20 +393,30 @@ def _ocr(services: Services, lease: Lease, file_row: dict, data: bytes, password
     `OCRTimeout`/`OCRResource`/`OCRLowConfidence` → needs_review/no_text_layer (retried at the next parser version);
     `TooLarge` (the child's page bounds, or text over the pre-mask bound) → needs_review/too_large; `Malformed` (bad
     PDF, crash, invalid response) → failed/parse."""
+    summary.ocr_trigger += 1  # counted at the OCR start, whatever the outcome (the counters are the record)
     try:
         result = services.ocr.read(data, password)
     except ocr_mod.OCRUnavailable:
+        log.info("ocr trigger: OCRUnavailable")
         if "ocr_unavailable" not in summary.errors:
             summary.errors.append("ocr_unavailable")
         summary.skipped += 1
         return "skipped"
-    except (ocr_mod.OCRTimeout, ocr_mod.OCRResource, ocr_mod.OCRLowConfidence):
+    except (ocr_mod.OCRTimeout, ocr_mod.OCRResource, ocr_mod.OCRLowConfidence) as exc:
+        log.info("ocr trigger: %s", type(exc).__name__)
         return _review(services, lease, file_row, "no_text_layer", summary, has_text_layer=False)
-    except pdf.TooLarge:
+    except pdf.TooLarge as exc:
+        log.info("ocr trigger: %s", type(exc).__name__)
         return _review(services, lease, file_row, "too_large", summary, has_text_layer=False)
-    except pdf.Malformed:
+    except pdf.Malformed as exc:
+        log.info("ocr trigger: %s", type(exc).__name__)
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version, has_text_layer=False)
-    if ocr_text_too_large(result.extracted.text):
+    rejected = ocr_text_rejected(result.extracted.text)
+    if rejected == "malformed":
+        log.info("ocr trigger: text malformed")
+        return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version, has_text_layer=False)
+    if rejected == "too_large":
+        log.info("ocr trigger: text too_large")
         return _review(services, lease, file_row, "too_large", summary, has_text_layer=False)
     note = (f"ocr: mean_confidence={result.mean_confidence:.2f} boxes={result.boxes} "
             f"empty_pages={result.empty_pages} scale={ocr_mod.SCALE}")
@@ -724,7 +762,8 @@ def poll(services: Services, *, initiator_hint: str | None) -> dict:
             except RunAborted:
                 bad += 1
                 continue
-            codes.update(out["errors"])
+            finally:
+                codes.update(item_summary.errors)  # an aborted run keeps its codes too (ocr_unavailable before the abort)
             if "parser_disabled" in out["errors"]:
                 bad += 1
         todo = []

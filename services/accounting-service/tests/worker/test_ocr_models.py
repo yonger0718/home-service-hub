@@ -14,7 +14,9 @@ import sys
 import pytest
 
 from tests.worker.pdfgen import make_pdf
-from worker import config, ocr
+from worker import config, constraints, ocr
+
+CONSTRAINTS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "requirements-worker-constraints-aarch64-py313.txt")
 
 pytestmark = pytest.mark.ocr_models
 ENABLED = os.environ.get("RUN_OCR_MODEL_TESTS") == "1"
@@ -32,9 +34,12 @@ def test_real_child_offline_reads_digits():
     assert out.extracted.pages == 1 and out.mean_confidence >= 0.8 and out.boxes >= 20
     digits = out.extracted.text.replace(",", "").replace(".", "")
     assert "1234" in digits and "5678" in digits and "6912" in digits
-    print(json.dumps({"sha": subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
-                      "platform": platform.platform(), "python": sys.version.split()[0], "fingerprint": ocr.FINGERPRINT,
-                      "mean_confidence": round(out.mean_confidence, 3), "boxes": out.boxes}))
+    evidence = {"sha": subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
+                "platform": platform.platform(), "python": sys.version.split()[0], "fingerprint": ocr.FINGERPRINT,
+                "constraints_sha256": constraints.sha256_of(__import__("pathlib").Path(CONSTRAINTS)),
+                "mean_confidence": round(out.mean_confidence, 3), "boxes": out.boxes}
+    assert len(evidence["constraints_sha256"]) == 64  # the record carries the hash of the constraints bytes
+    print(json.dumps(evidence))
 
 
 @pytest.mark.skipif(not ENABLED, reason="set RUN_OCR_MODEL_TESTS=1")

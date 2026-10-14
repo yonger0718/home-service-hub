@@ -1,6 +1,6 @@
 import pytest
 
-from tests.worker.pdfgen import encrypt, make_pdf, make_pdf_glyphs, statement_lines
+from tests.worker.pdfgen import encrypt, make_pdf, make_pdf_cid, make_pdf_glyphs, statement_lines
 from worker import pdf
 
 
@@ -152,8 +152,29 @@ def test_zero_glyph_page_falls_under_the_short_rule():
         pdf.extract(make_pdf_glyphs([], 0, extra_pages=[statement_lines()]), None)
 
 
+def test_cid_tounicode_control_stays_on_the_text_path():
+    """A 國泰-shaped page: a CID font with a ToUnicode map carries the text (CJK included) and 37–40 % of the glyphs are
+    unmapped Type3 icons. The text layer is used; the CJK text is really mapped."""
+    import io
+    import pdfplumber
+    text = "\n".join(statement_lines()) + "\n國泰世華 信用卡 帳單 金額 合計"
+    for garbage in (500, 600):
+        data = make_pdf_cid(text, garbage)
+        with pdfplumber.open(io.BytesIO(data)) as doc:
+            share = pdf.glyph_garbage_share(doc.pages[0].chars)
+            fonts = {c.get("fontname") for c in doc.pages[0].chars}
+        assert 0.36 <= share <= 0.41 and "SynthSans" in fonts
+        out = pdf.extract(data, None)
+        assert "MERCHANT 003" in out.text and "國泰世華" in out.text and "(cid:" in out.text
+
+
 def test_garbage_rule_looks_at_page_one_only():
-    out = pdf.extract(make_pdf([statement_lines()]) if False else make_pdf_glyphs(statement_lines(), 0, extra_pages=[["(cid:1)"] * 30]), None)
-    assert out.pages == 2 and "MERCHANT 003" in out.text  # page 2 garbage: the text layer is used as today
-    data = make_pdf([statement_lines(), ["x"]])
-    assert pdf.extract(data, None).pages == 2
+    """Page 1 is a clean text page; page 2 is 60 % unmapped Type3 glyphs (real unmapped glyphs, not literal text)."""
+    import io
+    import pdfplumber
+    data = make_pdf_glyphs(statement_lines(), 0, extra_pages=[(["x" * 40] * 5, 300)])
+    with pdfplumber.open(io.BytesIO(data)) as doc:
+        page2 = pdf.glyph_garbage_share(doc.pages[1].chars)
+    assert page2 >= pdf.GARBAGE_GLYPH_SHARE  # a rule over all pages would fire here …
+    out = pdf.extract(data, None)             # … the page-1 rule does not: the text layer is used as today
+    assert out.pages == 2 and "MERCHANT 003" in out.text and "(cid:" in out.text

@@ -109,7 +109,11 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
             except pdf.Malformed:
                 out["errors"] += 1
                 continue
-            if pipeline.ocr_text_too_large(extracted.text):
+            rejected = pipeline.ocr_text_rejected(extracted.text)
+            if rejected == "malformed":  # not UTF-8 encodable: the child's text is rejected, never written
+                out["errors"] += 1
+                continue
+            if rejected == "too_large":
                 out["too_large"] += 1
                 continue
             from_ocr = True
