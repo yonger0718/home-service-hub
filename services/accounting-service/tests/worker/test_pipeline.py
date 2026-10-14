@@ -812,7 +812,8 @@ def test_ocr_text_too_large_rule_at_each_bound():
     assert pipeline.ocr_text_too_large("x" * line_max + "\n" + "y" * line_max) is False      # lines exactly at the bound
     assert pipeline.ocr_text_too_large("x" * (line_max + 1)) is True                           # one over
     assert pipeline.ocr_text_too_large("y\n" + "x" * (line_max + 1) + "\n") is True            # one over on a later line
-    exact = "\n".join(["x" * 1000] * (parser_mod.STDIN_CAP // 1000)) + "x" * (parser_mod.STDIN_CAP % 1000 - parser_mod.STDIN_CAP // 1000)
+    body = "\n".join(["x" * 1000] * (parser_mod.STDIN_CAP // 1000))
+    exact = body + "x" * (parser_mod.STDIN_CAP - len(body))  # the last line stays well under OCR_LINE_MAX
     assert len(exact.encode("utf-8")) == parser_mod.STDIN_CAP and pipeline.ocr_text_too_large(exact) is False  # total exactly at the cap
     assert pipeline.ocr_text_too_large(exact + "x") is True                                     # one byte over
     assert pipeline.ocr_text_too_large("中" * (parser_mod.STDIN_CAP // 3) + "x") is True          # bytes, not characters
