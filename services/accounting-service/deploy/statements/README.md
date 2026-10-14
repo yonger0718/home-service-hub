@@ -169,14 +169,24 @@ the versions the evidence tests ran against:
 
     uv pip install --python .venv/bin/python -r requirements.txt -r requirements-worker.txt -c requirements-worker-constraints-aarch64-py313.txt
 
-A file whose page 1 has fewer than 200 characters of text, or whose page 1 tokens are at least 10 % `(cid:NNN)` glyph
-references (a Type3 font without a ToUnicode map), has no usable text layer. With `STATEMENT_OCR=true` the worker
+A file whose page 1 has fewer than 200 characters of text, or whose page 1 glyphs are at least 45 % unmapped
+`(cid:N)` references (a Type3 font without a ToUnicode map: 遠東, 渣打; 國泰 cards sit at 36–40 % and stay on the text
+path), has no usable text layer. With `STATEMENT_OCR=true` the worker
 hands the PDF bytes and the unlock password to the R5a child on its main thread (the engine fails closed from any
 other thread) and the file then takes the text-layer path: the OCR text goes through `Masker.mask_ocr`, the parser
 `STDIN_CAP` and the sandboxed parser; the revision's `parser` is `claude-cli+ocr` and `raw.notes` ends with one line
 `ocr: mean_confidence=0.93 boxes=262 empty_pages=0 scale=3.0` after the parser's own notes. The guardrails are the
 check, as for every other file; `has_text_layer` stays false. `STATEMENT_OCR=false` restores the old behaviour
 (`needs_review/no_text_layer`).
+
+A text-layer file whose parse fails with parse/schema or an API 422 (中信存款's digits-only text, the odd 華南/元大
+statement) is OCR'd once in the same run and parsed once more — the **fallback**; the revision then carries
+`parser=claude-cli+ocr` and a second note line `ocr: fallback after text-layer parse failure`, `has_text_layer`
+stays true. It never fires on guardrail, transient, sandbox, password, mapping or too_large outcomes, nor while the
+parser latch is set. If OCR is unavailable the file stays `failed/parse` and the run reports `ocr_unavailable`; any
+other OCR outcome leaves it `failed/parse`. A file that fails both attempts retries only at the next parser version,
+so the fallback costs at most one OCR start and one extra parser call per file per version. The run summary counts
+`ocr_trigger` and `ocr_fallback`.
 
 Outcomes: the host cannot start the child or the engine (`unavailable`) → the file keeps its status (`new` stays
 `new`, a review row keeps its failure), the run reports `ocr_unavailable` once, finishes `done`, and `run` and

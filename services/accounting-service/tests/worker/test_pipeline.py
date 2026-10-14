@@ -842,3 +842,148 @@ def test_revision_body_parser_and_notes():
     assert plain["parser"] == "claude-cli" and plain["raw"]["notes"] == parsed.notes
     ocr = pipeline.revision_body(parsed, file_id=1, account_id=2, parser_version="v", parser="claude-cli+ocr", extra_note="ocr: x")
     assert ocr["parser"] == "claude-cli+ocr" and ocr["raw"]["notes"].endswith("ocr: x")
+
+
+# ---- R5.3 fallback: OCR after a failed text-layer parse (AGENT-118 ruling 2026-10-14) ------------------------------
+
+OCR_MARK_TEXT = "\n".join(statement_lines()) + "\nOCRMARK"
+
+
+def _text_parse_fails(services, reason="schema", mark="OCRMARK"):
+    """The real fake-CLI parse for OCR text (carries `mark`); a ParseError(`reason`) for the text-layer text."""
+    from worker import parser as parser_mod
+    calls = []
+    real = services.parser.parse
+
+    def parse(masked):
+        calls.append("ocr" if mark in masked else "text")
+        if mark in masked:
+            return real(masked)
+        raise parser_mod.ParseError(reason, "synthetic")
+    services.parser.parse = parse
+    return calls
+
+
+def _text_layer_world(world, tmp_path, response=None, **kw):
+    """Drive holds a text-layer PDF (the fixture's); the OCR child is a fake script."""
+    services, drive_files, cfg = world
+    child = fake_ocr_child.write(tmp_path / "ocr-child.sh", response, **kw)
+    services.cfg = dataclasses.replace(cfg, ocr_child=str(child), ocr_timeout_s=2)
+    from worker import ocr
+    services.ocr = ocr.Engine(services.cfg)
+    return services, drive_files, services.cfg
+
+
+def test_fallback_after_schema_failure_parses_with_provenance(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT, boxes=7))
+    calls = _text_parse_fails(services, "schema")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and summary["failed"] == 0 and summary["errors"] == []
+    assert summary["ocr_fallback"] == 1 and summary["ocr_trigger"] == 0 and services.ocr.starts == 1 and calls == ["text", "ocr"]
+    assert db_session.execute(text("select status, has_text_layer from statement_file")).one() == ("parsed", True)
+    rev = db_session.execute(text("select parser, raw->>'notes' from statement_revision")).one()
+    assert rev[0] == "claude-cli+ocr"
+    assert rev[1] == "ocr: mean_confidence=0.93 boxes=7 empty_pages=0 scale=3.0\nocr: fallback after text-layer parse failure"
+
+
+def test_fallback_after_api_422(world, tmp_path, db_session, monkeypatch):
+    from worker.api import ApiError
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    real_submit = services.api.submit_revision
+    seen = []
+
+    def submit(lease, body):
+        seen.append(body["parser"])
+        if body["parser"] == "claude-cli":
+            raise ApiError(422, {"detail": "synthetic"})
+        return real_submit(lease, body)
+    monkeypatch.setattr(services.api, "submit_revision", submit)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and summary["ocr_fallback"] == 1 and seen == ["claude-cli", "claude-cli+ocr"]
+    assert _file_rows(db_session) == [("parsed", None)]
+
+
+@pytest.mark.parametrize("reason,expected", [
+    ("timeout", ("failed", "transient")), ("exit", ("failed", "transient")), ("sandbox", ("failed", "sandbox")),
+])
+def test_excluded_parse_outcomes_do_not_fall_back(world, tmp_path, db_session, reason, expected):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    if reason == "sandbox":
+        services.gate.ensure(services.parser)  # a valid cached gate, so the violation latches on real input
+    calls = _text_parse_fails(services, reason)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [expected] and services.ocr.starts == 0 and calls == ["text"] and summary["ocr_fallback"] == 0
+
+
+def test_guardrail_failure_does_not_fall_back(world, tmp_path, db_session, monkeypatch):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    real_submit = services.api.submit_revision
+    monkeypatch.setattr(services.api, "submit_revision", lambda lease, body: {**real_submit(lease, body), "guardrail_ok": False})
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("needs_review", "guardrail")] and services.ocr.starts == 0 and summary["ocr_fallback"] == 0
+
+
+def test_password_mapping_and_too_large_never_reach_the_fallback(world, tmp_path, db_session, monkeypatch):
+    from worker import parser as parser_mod
+    services, drive_files, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    drive_files["id-1"] = ("信用卡/國泰世華/2026-09_國泰世華.pdf", encrypt(make_pdf([statement_lines()]), "WRONG"))
+    drive_files["id-2"] = ("信用卡/未知/2026-09_x.pdf", encrypt(make_pdf([statement_lines()]), "A123456789"))
+    drive_files["id-3"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([statement_lines(400)]), "A123456789"))
+    monkeypatch.setattr(parser_mod, "STDIN_CAP", 2000)
+    _text_parse_fails(services, "schema")
+    pipeline.run(services, trigger="owner_cli")
+    assert sorted(_file_rows(db_session)) == sorted([("failed", "password"), ("ignored", "mapping"), ("needs_review", "too_large")])
+    assert services.ocr.starts == 0
+
+
+def test_both_attempts_fail_is_parse_with_one_ocr_start(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = _text_parse_fails(services, "schema", mark="NEVER-PRESENT")  # both texts fail
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and services.ocr.starts == 1 and calls == ["text", "text"]
+    assert summary["failed"] == 1 and summary["parsed"] == 0 and summary["ocr_fallback"] == 1
+    assert db_session.execute(text("select has_text_layer, parser_version from statement_file")).one() == (True, services.parser_version)
+    again = pipeline.run(services, trigger="owner_cli")  # same parser version: no retry, no second OCR start
+    assert again["unchanged"] == 1 and services.ocr.starts == 1
+
+
+def test_ocr_unavailable_during_fallback_keeps_parse_and_reports_the_code(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, None, selftest="unavailable")
+    _text_parse_fails(services, "schema")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and summary["errors"] == ["ocr_unavailable"]
+    assert summary["failed"] == 1 and summary["skipped"] == 0 and summary["ocr_fallback"] == 0
+    from worker import cli
+    assert cli._bad(summary) is True
+
+
+@pytest.mark.parametrize("response,kw", [
+    ({"ok": False, "code": "low_confidence"}, {}), ({"ok": False, "code": "resource"}, {}), ({"ok": False, "code": "too_large"}, {}),
+    ({"ok": False, "code": "malformed"}, {}), (fake_ocr_child.ok(), {"sleep": 30}), (fake_ocr_child.ok(text="x" * 5000), {}),
+])
+def test_ocr_failure_during_fallback_stays_parse(world, tmp_path, db_session, response, kw):
+    services, _, _ = _text_layer_world(world, tmp_path, response, **kw)
+    _text_parse_fails(services, "schema")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and summary["errors"] == [] and services.ocr.starts == 1
+    assert db_session.execute(text("select has_text_layer from statement_file")).scalar_one() is True
+
+
+def test_fallback_is_refused_when_the_parser_latch_is_set(world, tmp_path, db_session):
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+
+    def parse(masked):  # a parse failure that also closed the gate (the latch is the only parser budget there is)
+        services.parser_disabled = True
+        raise parser_mod.ParseError("schema", "synthetic")
+    services.parser.parse = parse
+    pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and services.ocr.starts == 0
+
+
+def test_fallback_is_off_when_ocr_is_disabled(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    services.ocr = None
+    calls = _text_parse_fails(services, "schema")
+    pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and calls == ["text"]

@@ -98,15 +98,25 @@ class _Alarm:
         raise ExtractTimeout("extraction timed out")
 
 
-GARBAGE_TOKEN = "(cid:"
-GARBAGE_SHARE = 0.10
+GARBAGE_GLYPH = "(cid:"
+# R5.1 (AGENT-118 ruling 2026-10-14): share of page-1 glyph objects that no font maps to Unicode (pdfminer renders
+# them as `(cid:N)`). Measured on the owner's corpus: 遠東/渣打 (Type3, no ToUnicode) 53–56 %; 國泰 cards (CID with
+# ToUnicode, icons unmapped) 36–40 % and they parse from the text layer; 星展 1–2 %; every other issuer 0 %. The
+# threshold sits between the two populations (5 points under the garbage side, 8 over 國泰).
+GARBAGE_GLYPH_SHARE = 0.45
 
 
-def is_font_garbage(text: str) -> bool:
-    """R5.1: a Type3 font without a ToUnicode map extracts as `(cid:NNN)` tokens; at least 10 % of the whitespace-separated
-    tokens being such tokens means there is no usable text layer."""
-    tokens = text.split()
-    return bool(tokens) and sum(1 for t in tokens if GARBAGE_TOKEN in t) / len(tokens) >= GARBAGE_SHARE
+def glyph_garbage_share(chars) -> float:
+    """The share of glyph objects (pdfplumber `page.chars`) whose text is an unmapped `(cid:N)`; 0 for no glyphs."""
+    total = len(chars)
+    if not total:
+        return 0.0
+    return sum(1 for ch in chars if str(ch.get("text", "")).startswith(GARBAGE_GLYPH)) / total
+
+
+def is_font_garbage(chars) -> bool:
+    """R5.1: at least GARBAGE_GLYPH_SHARE of page 1's glyphs unmapped means there is no usable text layer."""
+    return glyph_garbage_share(chars) >= GARBAGE_GLYPH_SHARE
 
 
 def extract(data: bytes, password: str | None, *, max_pages: int = 40, max_bytes: int = 20_000_000,
@@ -129,7 +139,7 @@ def extract(data: bytes, password: str | None, *, max_pages: int = 40, max_bytes
                 page1 = len(texts[0].strip()) if texts else 0
                 if page1 < 200:
                     raise NoTextLayer(f"page 1 has {page1} characters") from None
-                if is_font_garbage(texts[0]):
+                if is_font_garbage(doc.pages[0].chars):
                     raise NoTextLayer("page 1 is font garbage") from None
                 return Extracted("\f".join(texts), tables, npages, page1)
         except (PasswordError, NoTextLayer, TooLarge, ExtractTimeout):

@@ -1,6 +1,6 @@
 import pytest
 
-from tests.worker.pdfgen import encrypt, make_pdf, statement_lines
+from tests.worker.pdfgen import encrypt, make_pdf, make_pdf_glyphs, statement_lines
 from worker import pdf
 
 
@@ -119,20 +119,41 @@ def test_library_logging_never_carries_pdf_content(caplog):
     assert all("A123456789" not in r.getMessage() for r in caplog.records)
 
 
-def test_cid_garbage_is_no_text_layer():
-    garbage = ["(cid:12)(cid:40) (cid:7)(cid:9)(cid:33) (cid:5) (cid:88)(cid:2) 1,234 (cid:4)"] * 30
+def _glyphs(cid: int, mapped: int) -> list[dict]:
+    return [{"text": f"(cid:{i})"} for i in range(cid)] + [{"text": "x"} for _ in range(mapped)]
+
+
+def test_glyph_garbage_share_rule_at_the_bound():
+    assert pdf.GARBAGE_GLYPH_SHARE == 0.45
+    assert pdf.is_font_garbage(_glyphs(45, 55)) is True                 # exactly 45 %
+    assert pdf.is_font_garbage(_glyphs(449, 551)) is False              # just below
+    assert pdf.is_font_garbage(_glyphs(40, 60)) is False                # 國泰-shaped page: icons unmapped, text mapped
+    assert pdf.is_font_garbage(_glyphs(53, 47)) is True                 # 遠東/渣打-shaped page
+    assert pdf.is_font_garbage([]) is False and pdf.glyph_garbage_share([]) == 0.0
+    assert pdf.is_font_garbage([{"text": "A(cid:1)"}]) is False         # only a glyph that IS an unmapped cid counts
+
+
+def test_cid_garbage_page_is_no_text_layer():
+    """A page 1 whose glyphs come 55 % from a Type3 font without a ToUnicode map (pdfminer: `(cid:N)`), 220 real characters."""
     with pytest.raises(pdf.NoTextLayer, match="font garbage"):
-        pdf.extract(make_pdf([garbage]), None)
+        pdf.extract(make_pdf_glyphs(["x" * 55] * 4, 270), None)
 
 
-def test_is_font_garbage_threshold():
-    assert pdf.is_font_garbage("(cid:1) a b c d e f g h i") is True         # exactly 1 of 10
-    assert pdf.is_font_garbage("(cid:1) a b c d e f g h i j") is False       # 1 of 11
-    assert pdf.is_font_garbage("") is False and pdf.is_font_garbage("   \n ") is False
-    assert pdf.is_font_garbage(" ".join(["MERCHANT(cid:7)"] + ["row"] * 20)) is False  # one cid-like token amid real text
+def test_glyph_rule_bounds_through_extract():
+    assert pdf.extract(make_pdf_glyphs(["x" * 55] * 4, 179), None).pages == 1          # 179/399 = 44.9 %: text path
+    with pytest.raises(pdf.NoTextLayer, match="font garbage"):
+        pdf.extract(make_pdf_glyphs(["x" * 55] * 4, 180), None)                         # 180/400 = exactly 45 %
+    out = pdf.extract(make_pdf_glyphs(statement_lines(), 500), None)                   # 500/1350 = 37 %, 國泰-like: text
+    assert out.pages == 1 and "MERCHANT 003" in out.text and "(cid:" in out.text
+
+
+def test_zero_glyph_page_falls_under_the_short_rule():
+    with pytest.raises(pdf.NoTextLayer, match="characters"):
+        pdf.extract(make_pdf_glyphs([], 0, extra_pages=[statement_lines()]), None)
 
 
 def test_garbage_rule_looks_at_page_one_only():
-    garbage = ["(cid:12)(cid:40) (cid:7)(cid:9)(cid:33) (cid:5) (cid:88)(cid:2) (cid:4)"] * 30
-    out = pdf.extract(make_pdf([statement_lines(), garbage]), None)  # page 2 garbage: the text layer is used as today
-    assert out.pages == 2 and "MERCHANT 003" in out.text
+    out = pdf.extract(make_pdf([statement_lines()]) if False else make_pdf_glyphs(statement_lines(), 0, extra_pages=[["(cid:1)"] * 30]), None)
+    assert out.pages == 2 and "MERCHANT 003" in out.text  # page 2 garbage: the text layer is used as today
+    data = make_pdf([statement_lines(), ["x"]])
+    assert pdf.extract(data, None).pages == 2
