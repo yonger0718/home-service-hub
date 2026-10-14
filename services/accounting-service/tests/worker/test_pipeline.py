@@ -806,10 +806,17 @@ def test_ocr_text_over_the_pre_mask_bound_is_too_large_without_masking_or_a_pars
     assert summary["errors"] == []
 
 
-def test_ocr_text_too_large_rule():
-    assert pipeline.ocr_text_too_large("x" * pipeline.OCR_LINE_MAX + "\n" + "y" * 10) is False
-    assert pipeline.ocr_text_too_large("x" * (pipeline.OCR_LINE_MAX + 1)) is True
-    assert pipeline.ocr_text_too_large("\n".join(["x" * 1000] * 410)) is True  # 410 KB in short lines
+def test_ocr_text_too_large_rule_at_each_bound():
+    from worker import parser as parser_mod
+    line_max = pipeline.OCR_LINE_MAX
+    assert pipeline.ocr_text_too_large("x" * line_max + "\n" + "y" * line_max) is False      # lines exactly at the bound
+    assert pipeline.ocr_text_too_large("x" * (line_max + 1)) is True                           # one over
+    assert pipeline.ocr_text_too_large("y\n" + "x" * (line_max + 1) + "\n") is True            # one over on a later line
+    exact = "\n".join(["x" * 1000] * (parser_mod.STDIN_CAP // 1000)) + "x" * (parser_mod.STDIN_CAP % 1000 - parser_mod.STDIN_CAP // 1000)
+    assert len(exact.encode("utf-8")) == parser_mod.STDIN_CAP and pipeline.ocr_text_too_large(exact) is False  # total exactly at the cap
+    assert pipeline.ocr_text_too_large(exact + "x") is True                                     # one byte over
+    assert pipeline.ocr_text_too_large("中" * (parser_mod.STDIN_CAP // 3) + "x") is True          # bytes, not characters
+    assert pipeline.ocr_text_too_large("") is False
 
 
 def test_parser_notes_survive_beside_the_ocr_note(world, tmp_path, db_session):
