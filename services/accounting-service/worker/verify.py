@@ -74,7 +74,7 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
         key = passwords.password_key(item.root, drive_mod.folder_of(item))
         literals = candidates.get(key, [])
         password = None
-        from_ocr = False
+        from_ocr = no_text_layer = False
         try:
             unlocked = pdf.unlock(data, literals)
             password = literals[unlocked.password_index] if unlocked.password_index is not None else None
@@ -83,6 +83,14 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
             out["password"] += 1
             continue
         except pdf.NoTextLayer:
+            no_text_layer = True  # the child is started below, outside the handler (no active exception)
+        except pdf.TooLarge:
+            out["too_large"] += 1
+            continue
+        except (pdf.ExtractTimeout, pdf.Malformed):
+            out["errors"] += 1
+            continue
+        if no_text_layer:
             if engine is None:
                 out["no_text_layer"] += 1
                 continue
@@ -105,12 +113,6 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
                 out["too_large"] += 1
                 continue
             from_ocr = True
-        except pdf.TooLarge:
-            out["too_large"] += 1
-            continue
-        except (pdf.ExtractTimeout, pdf.Malformed):
-            out["errors"] += 1
-            continue
         rendered = masker.mask_ocr(extracted.text, literals) if from_ocr else masker.render(extracted, literals)
         if len(rendered.encode("utf-8")) > parser_mod.STDIN_CAP:
             out["too_large"] += 1

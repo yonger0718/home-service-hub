@@ -987,3 +987,29 @@ def test_fallback_is_off_when_ocr_is_disabled(world, tmp_path, db_session):
     calls = _text_parse_fails(services, "schema")
     pipeline.run(services, trigger="owner_cli")
     assert _file_rows(db_session) == [("failed", "parse")] and calls == ["text"]
+
+
+def _exc_recorder(engine):
+    """Wrap Engine.read to record the active exception at call time (R5a handoff: no OCR call under a handler)."""
+    import sys
+    seen = []
+    real = engine.read
+
+    def read(data, password):
+        seen.append(sys.exc_info()[1])
+        return real(data, password)
+    engine.read = read
+    return seen
+
+
+def test_ocr_child_starts_with_no_active_exception_on_the_trigger_path(world, tmp_path):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT))
+    seen = _exc_recorder(services.ocr)
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] == 1 and seen == [None]
+
+
+def test_ocr_child_starts_with_no_active_exception_on_the_fallback_path(world, tmp_path):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    _text_parse_fails(services, "schema")
+    seen = _exc_recorder(services.ocr)
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] == 1 and seen == [None]

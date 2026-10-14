@@ -476,3 +476,18 @@ def test_export_masked_with_ocr_disabled(tmp_path):
     cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")})
     out = verify.export_masked(dataclasses.replace(cfg, ocr_enabled=False), runner, folder=None, limit=None)
     assert out["no_text_layer"] == 1 and out["ocr"] == 0 and "ocr_unavailable" not in out
+
+
+def test_export_masked_starts_the_child_with_no_active_exception(tmp_path, monkeypatch):
+    import sys
+    from worker import ocr
+    seen = []
+    real = ocr.Engine.read
+
+    def read(self, data, password):
+        seen.append(sys.exc_info()[1])
+        return real(self, data, password)
+    monkeypatch.setattr(ocr.Engine, "read", read)
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")})
+    out = verify.export_masked(_ocr_cfg(cfg, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT)), runner, folder=None, limit=None)
+    assert out["ocr"] == 1 and seen == [None]

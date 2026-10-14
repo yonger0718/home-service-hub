@@ -245,16 +245,23 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
         return "skipped"
     candidates = services.candidates.get(passwords.password_key(listed.root, drive_mod.folder_of(listed)), [])
     password = None
+    ocr_note: str | None = None
+    no_text_layer = False
     try:
         unlocked = pdf.unlock(data, candidates)
         password = candidates[unlocked.password_index] if unlocked.password_index is not None else None
         extracted = pdf.extract(data, password)
-        ocr_note: str | None = None
     except pdf.PasswordError:
         return _fail(services, lease, file_row, "password", summary, credential_version=services.credential_version)
     except pdf.Malformed:
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
     except pdf.NoTextLayer:
+        no_text_layer = True  # the OCR child is started below, outside the handler: no exception is active then
+    except pdf.TooLarge:
+        return _review(services, lease, file_row, "too_large", summary)
+    except pdf.ExtractTimeout:
+        return _fail(services, lease, file_row, "transient", summary)
+    if no_text_layer:
         if services.ocr is None:
             return _review(services, lease, file_row, "no_text_layer", summary, has_text_layer=False)
         outcome = _ocr(services, lease, file_row, data, password, summary)
@@ -262,10 +269,6 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
             return outcome
         extracted, ocr_note = outcome
         summary.ocr_trigger += 1
-    except pdf.TooLarge:
-        return _review(services, lease, file_row, "too_large", summary)
-    except pdf.ExtractTimeout:
-        return _fail(services, lease, file_row, "transient", summary)
     services.api.update_file(lease, file_row["id"], status="unlocked", failure=None, has_text_layer=ocr_note is None,
                              text_chars=len(extracted.text), pages=extracted.pages,
                              credential_version=services.credential_version)
