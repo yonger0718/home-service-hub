@@ -112,13 +112,20 @@ The parser version changes, so files that failed `parse`/`guardrail`/`no_text_la
 ## OCR masking (R5b)
 
 `Masker.mask_ocr` is the OCR-path entry point (not wired until R5c; the text-layer path `Masker.text`/`render` is
-unchanged). Per line: NFKC → OCR confusables corrected only inside runs of digit-like tokens that are at least 70 %
-digits → a compacted view of the line is matched against compacted, casefolded literals (the ID, holder names,
-birth patterns, password candidates ≥ 4 characters, with the same digit-boundary rules as the text path), any
-ID-shaped span `[A-Z][12]\d{8}`, and any run of 12 or more compacted digits that is not a printed date → only the
-matched spans are replaced, so the other columns of a row survive → then the shared rules (`text`). Known limitation
-(ruling 2026-10-14): a standalone numeric token equal to a password candidate is masked exactly as on the text path,
-privacy over completeness; a balance broken that way fails the guardrail and goes to review.
+unchanged). Per line: NFKC and invisible characters dropped → OCR confusables corrected only inside runs of
+digit-carrying tokens that are at least 70 % digits (and in the digit part of an ID-shaped token) → three views of
+the line, each mapped back to line positions: compacted (no whitespace, casefolded per character), alphanumeric-only
+(holder names, so punctuation between name parts is ignored) and digits-only (printed dates and spans already claimed
+by a literal or an ID blanked, group separators such as dashes and middle dots dropped) → literal spans (the ID,
+holder names, birth patterns, password candidates ≥ 4 characters, boundaries judged on the real line with the text
+path's date exclusions), any ID-shaped span `[A-Za-z][12]\d{8}`, any run of 12 or more digits → only the matched
+spans are replaced (overlaps merged), so the other columns of a row survive → then the shared rules (`text`).
+
+Known limitations (ruling 2026-10-14): a standalone numeric token equal to a password candidate is masked exactly as
+on the text path (privacy over completeness; a balance broken that way fails the guardrail and goes to review);
+single-spaced digit groups of three or more digits mask as on the text path, so a row of bare amounts without
+thousands separators masks the same way on both paths; an identifier wrapped across two OCR lines is not
+reassembled; NFKC also rewrites compatibility characters in unmasked text (① → 1, full-width punctuation).
 
 ## Operator gate (`gate.sh`)
 

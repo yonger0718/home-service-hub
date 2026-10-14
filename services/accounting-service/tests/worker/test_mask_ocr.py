@@ -94,3 +94,55 @@ def test_multiline_and_tags_keep_last_four():
 def test_email_and_phone_still_handled_by_the_shared_rules():
     out = M.mask_ocr("mail a.b@example.com 電話 0912-345-678")
     assert "[EMAIL]" in out and "[PHONE]" in out and "example.com" not in out
+
+
+# ---- review round (internal reviewer, 2026-10-14): exact outputs ---------------------------------------------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ("STRAßE CAFE 卡號 A123456789", "STRAßE CAFE 卡號 [ID]"),                     # casefold changes length (ß → ss)
+    ("İstanbul A12 345 6789", "İstanbul [ID]"),                                     # İ folds to two code points
+    ("ID NO B12 345 6789 TWD", "ID NO [ID] TWD"),                                   # letters on both sides of a split ID
+    ("B12 345 6789 1500", "[ID] 1500"),                                              # digits after a split ID
+    ("b123456789", "[ID]"),                                                          # lower-case ID letter
+    ("20260901 1234  5678  9012", "20260901 [NUM…9012]"),                            # a date next to a double-spaced account number
+    ("2026 | 350 | 1200", "2026 | 350 | 1200"),                                      # table borders are not digits
+    ("4111 - 2222 - 3333 - 4444", "[NUM…4444]"),                                    # dashed groups
+    ("4111 – 2222 – 3333 – 4444", "[NUM…4444]"),                      # en dashes
+    ("4111·2222·3333·4444", "[NUM…4444]"),                            # middle dots
+    ("2026-09-01 2026-09-03", "2026-09-01 2026-09-03"),                              # two dates are not a card number
+    ("WANG, XIAO-MING paid", "[NAME] paid"),                                         # punctuation inside a name
+    ("WANG/XIAO MING", "[NAME]"),
+    ("1990 01 01 1234", "[BIRTH] 1234"),                                             # birth date then an amount
+    ("19900101 1234", "[BIRTH] 1234"),
+    ("持卡人 王小明 身分證 A123456789", "持卡人 [NAME] 身分證 [ID]"),                  # two identifiers on one line
+    ("4111​2222 3333 4444", "[NUM…4444]"),                                      # zero-width space inside a group
+    ("A12345678O", "[ID]"),                                                          # confusable inside a mixed token
+    ("AI23456789", "[ID]"),
+])
+def test_review_cases_exact(raw, expected):
+    assert M.mask_ocr(raw) == expected
+
+
+def test_literals_are_nfkc_normalised_before_matching():
+    m = mask.Masker(passwords.Identity(id_number="Ａ１２３４５６７８９", birth_date="19900101", holder_names=["ＷＡＮＧ ＸＩＡＯ"]))
+    assert m.mask_ocr("A123456789 wang xiao") == "[ID] [NAME]"
+
+
+def test_short_latin_name_needs_word_edges():
+    m = mask.Masker(passwords.Identity(id_number=None, birth_date=None, holder_names=["LI"]))
+    assert m.mask_ocr("Linda at Alibaba") == "Linda at Alibaba"
+    assert m.mask_ocr("holder LI here") == "holder [NAME] here"
+
+
+def test_overlapping_names_merge():
+    m = mask.Masker(passwords.Identity(id_number=None, birth_date=None, holder_names=["王小明", "小明華"]))
+    assert m.mask_ocr("戶名 王小明華 先生") == "戶名 [NAME] 先生"
+
+
+def test_empty_or_blank_literals_are_ignored():
+    m = mask.Masker(passwords.Identity(id_number=None, birth_date=None, holder_names=["   "]))
+    assert m.mask_ocr("nothing to mask", extra_literals=["    "]) == "nothing to mask"
+
+
+def test_cross_line_split_is_a_documented_limitation():
+    assert M.mask_ocr("WANG XIAO\nMING") == "WANG XIAO\nMING"
