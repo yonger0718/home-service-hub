@@ -46,6 +46,11 @@ class WorkerConfig:
     verify_db_url: str | None = field(repr=False)  # may embed a password
     verify_parser_config_dir: Path
     account_map_file: Path | None
+    ocr_enabled: bool = True          # R5: OCR child for files without a text layer (wired in R5c)
+    ocr_threads: int = 2
+    ocr_timeout_s: int = 120
+    ocr_rlimit_mb: int = 2048
+    ocr_child: str | None = None      # tests only: a command (shell words) replacing `python -B -m worker.ocr_child …`
 
     @property
     def mail_root(self) -> str:
@@ -93,4 +98,9 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         verify_db_url=_opt(env, "STATEMENT_VERIFY_DB_URL"),
         verify_parser_config_dir=_path(env, "STATEMENT_VERIFY_PARSER_CONFIG_DIR", "~/.local/state/home-hub-parser/claude-verify"),
         account_map_file=Path(map_file).expanduser() if map_file else None,
+        ocr_enabled=_str(env, "STATEMENT_OCR", "true").lower() in TRUE,
+        ocr_threads=int(_str(env, "STATEMENT_OCR_THREADS", "2")),
+        ocr_timeout_s=int(_str(env, "STATEMENT_OCR_TIMEOUT", "120")),
+        ocr_rlimit_mb=int(_str(env, "STATEMENT_OCR_RLIMIT_MB", "2048")),
+        ocr_child=_opt(env, "STATEMENT_OCR_CHILD"),
     )

@@ -363,6 +363,11 @@ Configuration (all optional; empty means default):
 | `STATEMENT_PARSER_SANDBOX` | `true` | run the parser under bubblewrap |
 | `STATEMENT_PARSER_ALLOW_UNSANDBOXED` | `false` | must be `true` for `STATEMENT_PARSER_SANDBOX=false`; otherwise the parser refuses to start (tests only) |
 | `STATEMENT_PARSER_TIMEOUT` | `120` | seconds per parser attempt |
+| `STATEMENT_OCR` | `true` | OCR child boundary (R5a; wired in R5c) |
+| `STATEMENT_OCR_THREADS` | `2` | onnxruntime intra-op threads in the OCR child |
+| `STATEMENT_OCR_TIMEOUT` | `120` | wall-clock seconds per file for the OCR child, model load included |
+| `STATEMENT_OCR_RLIMIT_MB` | `2048` | RLIMIT_AS of the OCR child (measured peak 1.2 GB) |
+| `STATEMENT_OCR_CHILD` | unset | tests only: shell words replacing `<interpreter> -B -m worker.ocr_child …` |
 | `STATEMENT_PARSER_ATTEMPTS` | `3` | attempts per file |
 | `STATEMENT_VERIFY_DIR` | `~/.local/state/home-hub-verify` | verify area: `masked/`, `parsed/`, `reports/`, `pdf-cache/`, `sources.json` |
 | `STATEMENT_VERIFY_DB_URL` | unset | read-only role URL; required by `verify`, no fallback; keep it only in `~/.config/homehub-statements.env` (0600) |
