@@ -1,6 +1,6 @@
 import pytest
 
-from tests.worker.pdfgen import encrypt, make_pdf, statement_lines
+from tests.worker.pdfgen import encrypt, make_pdf, make_pdf_cid, make_pdf_glyphs, statement_lines
 from worker import pdf
 
 
@@ -117,3 +117,64 @@ def test_library_logging_never_carries_pdf_content(caplog):
             pass
     assert "A123456789" not in caplog.text
     assert all("A123456789" not in r.getMessage() for r in caplog.records)
+
+
+def _glyphs(cid: int, mapped: int) -> list[dict]:
+    return [{"text": f"(cid:{i})"} for i in range(cid)] + [{"text": "x"} for _ in range(mapped)]
+
+
+def test_glyph_garbage_share_rule_at_the_bound():
+    assert pdf.GARBAGE_GLYPH_SHARE == 0.45
+    assert pdf.is_font_garbage(_glyphs(45, 55)) is True                 # exactly 45 %
+    assert pdf.is_font_garbage(_glyphs(449, 551)) is False              # just below
+    assert pdf.is_font_garbage(_glyphs(40, 60)) is False                # 國泰-shaped page: icons unmapped, text mapped
+    assert pdf.is_font_garbage(_glyphs(53, 47)) is True                 # 遠東/渣打-shaped page
+    assert pdf.is_font_garbage([]) is False and pdf.glyph_garbage_share([]) == 0.0
+    assert pdf.is_font_garbage([{"text": "A(cid:1)"}]) is False         # only a glyph that IS an unmapped cid counts
+
+
+def test_cid_garbage_page_is_no_text_layer():
+    """A page 1 whose glyphs come 55 % from a Type3 font without a ToUnicode map (pdfminer: `(cid:N)`), 220 real characters."""
+    with pytest.raises(pdf.NoTextLayer, match="font garbage"):
+        pdf.extract(make_pdf_glyphs(["x" * 55] * 4, 270), None)
+
+
+def test_glyph_rule_bounds_through_extract():
+    assert pdf.extract(make_pdf_glyphs(["x" * 55] * 4, 179), None).pages == 1          # 179/399 = 44.9 %: text path
+    with pytest.raises(pdf.NoTextLayer, match="font garbage"):
+        pdf.extract(make_pdf_glyphs(["x" * 55] * 4, 180), None)                         # 180/400 = exactly 45 %
+    out = pdf.extract(make_pdf_glyphs(statement_lines(), 500), None)                   # 500/1350 = 37 %, 國泰-like: text
+    assert out.pages == 1 and "MERCHANT 003" in out.text and "(cid:" in out.text
+
+
+def test_zero_glyph_page_falls_under_the_short_rule():
+    with pytest.raises(pdf.NoTextLayer, match="characters"):
+        pdf.extract(make_pdf_glyphs([], 0, extra_pages=[statement_lines()]), None)
+
+
+def test_cid_tounicode_control_stays_on_the_text_path():
+    """A 國泰-shaped page: a CID font with a ToUnicode map carries the text (CJK included) and 37–40 % of the glyphs are
+    unmapped Type3 icons. The text layer is used; the CJK text is really mapped."""
+    import io
+    import pdfplumber
+    text = "\n".join(statement_lines()) + "\n國泰世華 信用卡 帳單 金額 合計"
+    for garbage in (500, 600):
+        data = make_pdf_cid(text, garbage)
+        with pdfplumber.open(io.BytesIO(data)) as doc:
+            share = pdf.glyph_garbage_share(doc.pages[0].chars)
+            fonts = {c.get("fontname") for c in doc.pages[0].chars}
+        assert 0.36 <= share <= 0.41 and "SynthSans" in fonts
+        out = pdf.extract(data, None)
+        assert "MERCHANT 003" in out.text and "國泰世華" in out.text and "(cid:" in out.text
+
+
+def test_garbage_rule_looks_at_page_one_only():
+    """Page 1 is a clean text page; page 2 is 60 % unmapped Type3 glyphs (real unmapped glyphs, not literal text)."""
+    import io
+    import pdfplumber
+    data = make_pdf_glyphs(statement_lines(), 0, extra_pages=[(["x" * 40] * 5, 300)])
+    with pdfplumber.open(io.BytesIO(data)) as doc:
+        page2 = pdf.glyph_garbage_share(doc.pages[1].chars)
+    assert page2 >= pdf.GARBAGE_GLYPH_SHARE  # a rule over all pages would fire here …
+    out = pdf.extract(data, None)             # … the page-1 rule does not: the text layer is used as today
+    assert out.pages == 2 and "MERCHANT 003" in out.text and "(cid:" in out.text

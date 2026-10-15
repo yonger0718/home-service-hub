@@ -23,6 +23,15 @@ def quiet_libraries() -> None:
         logging.getLogger(name).setLevel(logging.WARNING)
 
 
+DEGRADED_CODES = ("parser_disabled", "ocr_unavailable")
+
+
+def _bad(summary: dict) -> bool:
+    """Exit 1 for a failed or aborted run, a disabled parser, or an OCR child the host could not start (its files
+    wait for the next run; the unit shows failed so the operator looks)."""
+    return bool(summary.get("bad_runs", 0)) or any(code in summary.get("errors", []) for code in DEGRADED_CODES)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="worker")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -45,7 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "backfill" and not args.acknowledge_live_periods:  # before anything is read or spawned
         print("backfill may touch live periods; pass --acknowledge-live-periods", file=sys.stderr)
         return 2
-    cfg = config.load()
+    try:
+        cfg = config.load()
+    except config.ConfigError as exc:  # the message names the key and the rule, never the value
+        print(f"config: {exc}", file=sys.stderr)
+        return 2
     runner = SubprocessRunner()
     if args.cmd == "gate":
         from worker.parser import Gate, Parser
@@ -100,8 +113,8 @@ def main(argv: list[str] | None = None) -> int:
                 summary = pipeline.poll(services, initiator_hint=hint)
             print(json.dumps(summary, ensure_ascii=False))
             # 0 when the run finished done (transient codes in errors included); 1 when a run failed or aborted
-            bad = summary.get("bad_runs", 0) or ("parser_disabled" in summary.get("errors", []))
-            return 1 if bad else 0
+            # or finished degraded (poll carries the union of its runs' codes)
+            return 1 if _bad(summary) else 0
     except pipeline.AlreadyRunning:
         print("already running")
         return 0

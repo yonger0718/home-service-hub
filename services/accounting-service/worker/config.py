@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -73,6 +74,20 @@ class WorkerConfig:
         return self.state_dir / ".lock"
 
 
+_IDENT = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+class ConfigError(ValueError):
+    """A configuration value outside its allowed charset or length; reported before any run starts."""
+
+
+def _ident(env: Mapping[str, str], key: str, default: str) -> str:
+    value = _str(env, key, default)
+    if not _IDENT.match(value):
+        raise ConfigError(f"{key} must match [A-Za-z0-9._-]{{1,64}}")
+    return value
+
+
 def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
     key_file = _opt(env, "STATEMENT_MINIO_KEY_FILE")
     map_file = _opt(env, "STATEMENT_ACCOUNT_MAP_FILE")
@@ -87,8 +102,8 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         minio_bucket=_str(env, "STATEMENT_MINIO_BUCKET", "homehub-statements"),
         minio_key_file=Path(key_file).expanduser() if key_file else None,
         parser_cli=_path(env, "STATEMENT_PARSER_CLI", "/home/opc/.local/bin/claude"),
-        parser_cli_version=_str(env, "STATEMENT_PARSER_CLI_VERSION", "2.1.296"),
-        parser_model=_str(env, "STATEMENT_PARSER_MODEL", "claude-sonnet-5-5"),
+        parser_cli_version=_ident(env, "STATEMENT_PARSER_CLI_VERSION", "2.1.296"),
+        parser_model=_ident(env, "STATEMENT_PARSER_MODEL", "claude-sonnet-5-5"),
         parser_config_dir=_path(env, "STATEMENT_PARSER_CONFIG_DIR", "~/.local/state/home-hub-parser/claude"),
         parser_sandbox=_str(env, "STATEMENT_PARSER_SANDBOX", "true").lower() in TRUE,
         parser_allow_unsandboxed=_str(env, "STATEMENT_PARSER_ALLOW_UNSANDBOXED", "false").lower() in TRUE,

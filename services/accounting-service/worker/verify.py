@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from worker import drive as drive_mod
 from worker import inbox as inbox_mod
-from worker import mask, parse_schema, parser as parser_mod, passwords, pdf
+from worker import mask, ocr as ocr_mod, parse_schema, parser as parser_mod, passwords, pdf, pipeline
 from worker.config import WorkerConfig
 from worker.runner import Runner
 
@@ -38,10 +38,11 @@ def _write_private(path: Path, data: str) -> None:
 def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limit: int | None) -> dict:
     candidates, _ = passwords.load(cfg.password_file)
     masker = mask.Masker(passwords.identity(cfg.password_file))
+    engine = ocr_mod.Engine(cfg) if cfg.ocr_enabled else None  # R5.6: the same branch as the pipeline, main thread
     drv = drive_mod.Drive(cfg, runner)
     verify_cfg = dataclasses.replace(cfg, state_dir=cfg.verify_dir / "pdf-cache")  # own inbox + staging, never the run state dir
     box, index = inbox_mod.Inbox(verify_cfg), inbox_mod.SourceIndex(cfg.verify_dir / "sources.json")
-    out = {"listed": 0, "exported": 0, "password": 0, "no_text_layer": 0, "too_large": 0, "errors": 0}
+    out = {"listed": 0, "exported": 0, "ocr": 0, "password": 0, "no_text_layer": 0, "too_large": 0, "errors": 0}
     masked_dir = inbox_mod.private_dir(cfg.verify_dir / "masked")
     try:
         listing = [i for i in drv.list_pdfs() if folder is None or drive_mod.folder_of(i).startswith(folder)]
@@ -71,33 +72,65 @@ def export_masked(cfg: WorkerConfig, runner: Runner, *, folder: str | None, limi
             continue
         data = published.path.read_bytes()
         key = passwords.password_key(item.root, drive_mod.folder_of(item))
+        literals = candidates.get(key, [])
+        password = None
+        from_ocr = no_text_layer = False
         try:
-            unlocked = pdf.unlock(data, candidates.get(key, []))
-            password = candidates[key][unlocked.password_index] if unlocked.password_index is not None else None
+            unlocked = pdf.unlock(data, literals)
+            password = literals[unlocked.password_index] if unlocked.password_index is not None else None
             extracted = pdf.extract(data, password)
         except pdf.PasswordError:
             out["password"] += 1
             continue
         except pdf.NoTextLayer:
-            out["no_text_layer"] += 1
-            continue
+            no_text_layer = True  # the child is started below, outside the handler (no active exception)
         except pdf.TooLarge:
             out["too_large"] += 1
             continue
         except (pdf.ExtractTimeout, pdf.Malformed):
             out["errors"] += 1
             continue
-        rendered = masker.render(extracted, candidates.get(key, []))
+        if no_text_layer:
+            if engine is None:
+                out["no_text_layer"] += 1
+                continue
+            try:
+                extracted = engine.read(data, password).extracted
+            except ocr_mod.OCRUnavailable:
+                out["errors"] += 1
+                out["ocr_unavailable"] = True
+                continue
+            except (ocr_mod.OCRTimeout, ocr_mod.OCRResource, ocr_mod.OCRLowConfidence):
+                out["no_text_layer"] += 1
+                continue
+            except pdf.TooLarge:
+                out["too_large"] += 1
+                continue
+            except pdf.Malformed:
+                out["errors"] += 1
+                continue
+            rejected = pipeline.ocr_text_rejected(extracted.text)
+            if rejected == "malformed":  # not UTF-8 encodable: the child's text is rejected, never written
+                out["errors"] += 1
+                continue
+            if rejected == "too_large":
+                out["too_large"] += 1
+                continue
+            from_ocr = True
+        rendered = masker.mask_ocr(extracted.text, literals) if from_ocr else masker.render(extracted, literals)
         if len(rendered.encode("utf-8")) > parser_mod.STDIN_CAP:
             out["too_large"] += 1
             continue
         kind = drive_mod.kind_of(item)
+        meta = {"root": item.root, "folder": drive_mod.folder_of(item), "name": item.name, "kind": kind,
+                "drive_file_id": item.drive_file_id, "md5": item.md5, "extraction": "ocr" if from_ocr else "text"}
+        if from_ocr:
+            meta["ocr_fingerprint"] = ocr_mod.FINGERPRINT
         _write_private(masked_dir / f"{published.sha256}.txt", rendered)
-        _write_private(masked_dir / f"{published.sha256}.json", json.dumps(
-            {"root": item.root, "folder": drive_mod.folder_of(item), "name": item.name, "kind": kind,
-             "drive_file_id": item.drive_file_id, "md5": item.md5}, ensure_ascii=False))
+        _write_private(masked_dir / f"{published.sha256}.json", json.dumps(meta, ensure_ascii=False))
         index.put(item.drive_file_id, item.md5, published.sha256)
         out["exported"] += 1
+        out["ocr"] += 1 if from_ocr else 0
     return out
 
 
@@ -197,7 +230,7 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
         gate.ensure(prs)  # raises ParserDisabled (ruling 9)
     except parser_mod.GateUnavailable:  # transient canary failure: no latch, nothing parsed
         return {"errors": ["gate_unavailable"], "statements": 0}
-    version = parse_schema.version(prs.cli_version() or "unknown", cfg.parser_model)
+    version = parse_schema.version(prs.cli_version() or "unknown", cfg.parser_model, ocr_mod.FINGERPRINT)
     vtag = hashlib.sha256(version.encode("utf-8")).hexdigest()[:16]
     masked_dir, parsed_dir = cfg.verify_dir / "masked", inbox_mod.private_dir(cfg.verify_dir / "parsed")
     reports = inbox_mod.private_dir(cfg.verify_dir / "reports")

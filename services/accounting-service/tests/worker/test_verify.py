@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from datetime import date
 from decimal import Decimal
@@ -7,7 +8,7 @@ from sqlalchemy import text
 
 from app import auth
 from tests.integration.test_statement_ingest_api import SCOPES, TOKENS
-from tests.worker import fake_claude
+from tests.worker import fake_claude, fake_ocr_child
 from tests.worker.pdfgen import encrypt, make_pdf, statement_lines
 from worker import config, parse_schema, verify
 from worker.runner import FakeRunner, Result, SubprocessRunner
@@ -415,3 +416,201 @@ def test_verify_exit_code_covers_parse_and_verify_failures(monkeypatch, tmp_path
     for result, code in (({"parse_failed": 1}, 1), ({"verify_errors": 2}, 1), ({"errors": []}, 0)):
         monkeypatch.setattr(verify, "run", lambda *a, _r=result, **k: _r)
         assert cli.main(["verify"]) == code
+
+
+# ---- R5.6: export_masked takes the OCR branch ----------------------------------------------------------------------
+
+RAW_OCR_TEXT = ("\n".join(statement_lines()) + "\n2026/09/01   COFFEE   1,234\n卡號 4111    2222　　3333    4444"
+                "\n持卡人 王 小 明\n身分證 A12 345 6789")
+PW_NAMED = "STATEMENT_ID_NUMBER=A123456789\nSTATEMENT_HOLDER_NAMES=王小明\n信用卡/國泰世華=$ID\n"
+
+
+def _ocr_cfg(cfg, tmp_path, response, **kw):
+    """The fake child runs unsandboxed (like the fake CLI); production keeps bwrap."""
+    child = fake_ocr_child.write(tmp_path / "ocr-child.sh", response, **kw)
+    return dataclasses.replace(cfg, ocr_child=str(child), ocr_timeout_s=2, parser_sandbox=False, parser_allow_unsandboxed=True)
+
+
+def test_export_masked_snapshot_canary(tmp_path):
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")}, pw_text=PW_NAMED)
+    out = verify.export_masked(_ocr_cfg(cfg, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT)), runner, folder=None, limit=None)
+    assert out["exported"] == 1 and out["ocr"] == 1 and out["no_text_layer"] == 0
+    snap = next((tmp_path / "v" / "masked").glob("*.txt")).read_text(encoding="utf-8")
+    compact = "".join(snap.split())
+    for secret in ("4111", "2222", "王小明", "A123456789"):
+        assert secret not in compact
+    assert "2026/09/01   COFFEE   1,234" in snap and "MERCHANT 001" in snap
+    meta = json.loads(next((tmp_path / "v" / "masked").glob("*.json")).read_text(encoding="utf-8"))
+    from worker import ocr
+    assert meta["extraction"] == "ocr" and meta["ocr_fingerprint"] == ocr.FINGERPRINT
+
+
+def test_export_masked_text_layer_meta_says_text(tmp_path):
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([statement_lines()]), "A123456789")})
+    out = verify.export_masked(_ocr_cfg(cfg, tmp_path, None, exit_code=7, selftest="fail"), runner, folder=None, limit=None)
+    assert out["exported"] == 1 and out["ocr"] == 0
+    meta = json.loads(next((tmp_path / "v" / "masked").glob("*.json")).read_text(encoding="utf-8"))
+    assert meta["extraction"] == "text" and "ocr_fingerprint" not in meta
+
+
+@pytest.mark.parametrize("response,kw,counter", [
+    ({"ok": False, "code": "low_confidence"}, {}, "no_text_layer"), ({"ok": False, "code": "resource"}, {}, "no_text_layer"),
+    ({"ok": False, "code": "too_large"}, {}, "too_large"),
+    ({"ok": False, "code": "malformed"}, {}, "errors"), (None, {"exit_code": 139}, "errors"),
+    (fake_ocr_child.ok(), {"sleep": 30}, "no_text_layer"), ({"ok": True, "pages": "SECRET", "text": "x"}, {}, "errors"),
+    (fake_ocr_child.ok(text="x" * 5000), {}, "too_large")])
+def test_export_masked_ocr_failures_are_counted(tmp_path, response, kw, counter):
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")})
+    out = verify.export_masked(_ocr_cfg(cfg, tmp_path, response, **kw), runner, folder=None, limit=None)
+    assert out["exported"] == 0 and out["ocr"] == 0 and out[counter] == 1 and "ocr_unavailable" not in out
+    assert not list((tmp_path / "v" / "masked").glob("*"))
+
+
+def test_export_masked_unavailable_is_one_code_for_the_run(tmp_path):
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789"), "b": encrypt(make_pdf([["tiny"]]), "A123456789")})
+    out = verify.export_masked(_ocr_cfg(cfg, tmp_path, None, selftest="unavailable"), runner, folder=None, limit=None)
+    assert out["ocr_unavailable"] is True and out["exported"] == 0 and out["errors"] == 2
+
+
+def test_export_masked_with_ocr_disabled(tmp_path):
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")})
+    out = verify.export_masked(dataclasses.replace(cfg, ocr_enabled=False), runner, folder=None, limit=None)
+    assert out["no_text_layer"] == 1 and out["ocr"] == 0 and "ocr_unavailable" not in out
+
+
+def test_export_masked_starts_the_child_with_no_active_exception(tmp_path, monkeypatch):
+    import sys
+    from worker import ocr
+    seen = []
+    real = ocr.Engine.read
+
+    def read(self, data, password):
+        seen.append(sys.exc_info()[1])
+        return real(self, data, password)
+    monkeypatch.setattr(ocr.Engine, "read", read)
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")})
+    out = verify.export_masked(_ocr_cfg(cfg, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT)), runner, folder=None, limit=None)
+    assert out["ocr"] == 1 and seen == [None]
+
+
+CANARY = "CANARY-SECRET-7731"
+
+
+def test_export_masked_ocr_error_carries_no_extraction_exception(tmp_path, monkeypatch):
+    import logging
+    import traceback
+    from worker import ocr, pdf
+    lines: list[str] = []
+
+    class Records(logging.Handler):
+        def emit(self, record):
+            lines.append(self.format(record))
+    handler = Records(logging.DEBUG)
+    for lg in (logging.getLogger("worker"), logging.getLogger()):
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+        lg.disabled = False
+    seen = []
+    real = ocr.Engine.read
+
+    def read(self, data, password):
+        try:
+            return real(self, data, password)
+        except BaseException as exc:  # noqa: BLE001
+            seen.append(exc)
+            raise
+    monkeypatch.setattr(ocr.Engine, "read", read)
+    monkeypatch.setattr(pdf, "extract", lambda data, password, **kw: (_ for _ in ()).throw(pdf.NoTextLayer(CANARY)))
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")})
+    try:
+        out = verify.export_masked(_ocr_cfg(cfg, tmp_path, fake_ocr_child.ok(), sleep=30), runner, folder=None, limit=None)
+    finally:
+        for lg in (logging.getLogger("worker"), logging.getLogger()):
+            lg.removeHandler(handler)
+    assert out["no_text_layer"] == 1 and [type(e) for e in seen] == [ocr.OCRTimeout]
+    exc = seen[0]
+    assert exc.__cause__ is None and (exc.__context__ is None or CANARY not in repr(exc.__context__))
+    assert CANARY not in "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)) and CANARY not in "\n".join(lines)
+
+
+def test_export_masked_rejects_non_utf8_ocr_text(tmp_path):
+    body = '{"ok": true, "pages": 1, "empty_pages": 0, "boxes": 2, "mean_confidence": 0.9, "text": "MERCHANT \\ud800 1,234"}'
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")})
+    out = verify.export_masked(_ocr_cfg(cfg, tmp_path, body), runner, folder=None, limit=None)
+    assert out["errors"] == 1 and out["exported"] == 0 and not list((tmp_path / "v" / "masked").glob("*"))
+
+
+def _boxes_text():
+    from worker import ocr_text
+    rows = [["2026/09/01", "COFFEE", "1,234"], ["MERCHANT 001", "", "5,678"], ["卡號", "4lll", "222O", "333O", "444O"],
+            ["持卡人", "王", "小", "明"], ["身分證", "A12", "345", "6789"], ["TOTAL", "", "6,912"]]
+    boxes = []
+    for r, cells in enumerate(rows):
+        x = 10.0
+        for cell in cells:
+            if cell:
+                boxes.append((x, 20.0 + r * 30.0, 8.0 * len(cell), 12.0, cell))
+            x += 8.0 * max(len(cell), 2) + 40.0
+    return ocr_text.layout(boxes)
+
+
+SECRETS = ("4111222233334440", "4lll", "444O", "王小明", "A123456789")
+
+
+def test_raw_boxes_reach_the_snapshot_masked(tmp_path):
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")}, pw_text=PW_NAMED)
+    out = verify.export_masked(_ocr_cfg(cfg, tmp_path, fake_ocr_child.ok(text=_boxes_text())), runner, folder=None, limit=None)
+    snap = next((tmp_path / "v" / "masked").glob("*.txt")).read_text(encoding="utf-8")
+    compact = "".join(snap.split())
+    assert out["ocr"] == 1 and all(s not in compact for s in SECRETS), compact
+    assert "2026/09/01" in snap and "COFFEE" in snap and "6,912" in snap
+
+
+@pytest.mark.parametrize("mutation", ["no_masking", "no_normalisation"])
+def test_snapshot_canary_discriminates(tmp_path, monkeypatch, mutation):
+    from worker import mask
+    if mutation == "no_masking":
+        monkeypatch.setattr(mask.Masker, "mask_ocr", lambda self, s, extra_literals=(): s)
+    else:
+        monkeypatch.setattr(mask, "_ocr_fix_confusables", lambda line: line)
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")}, pw_text=PW_NAMED)
+    verify.export_masked(_ocr_cfg(cfg, tmp_path, fake_ocr_child.ok(text=_boxes_text())), runner, folder=None, limit=None)
+    snap = next((tmp_path / "v" / "masked").glob("*.txt")).read_text(encoding="utf-8")
+    compact = "".join(snap.split())
+    assert any(s in compact for s in SECRETS), compact
+
+
+def test_export_masked_thread_error_carries_no_extraction_exception(tmp_path, monkeypatch):
+    """Nit (dev-grok final re-check): an OCRThreadError at export's call site, after a content-bearing NoTextLayer
+    was handled, has no canary in its context, cause, traceback or the log."""
+    import logging
+    import traceback
+    from worker import ocr, pdf
+    lines: list[str] = []
+
+    class Records(logging.Handler):
+        def emit(self, record):
+            lines.append(self.format(record))
+    handler = Records(logging.DEBUG)
+    for lg in (logging.getLogger("worker"), logging.getLogger()):
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+        lg.disabled = False
+    seen = []
+
+    def read(self, data, password):
+        exc = ocr.OCRThreadError("ocr engine used off its owning thread")
+        seen.append(exc)
+        raise exc
+    monkeypatch.setattr(ocr.Engine, "read", read)
+    monkeypatch.setattr(pdf, "extract", lambda data, password, **kw: (_ for _ in ()).throw(pdf.NoTextLayer(CANARY)))
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")})
+    try:
+        with pytest.raises(ocr.OCRThreadError):  # a programming error: export does not contain it
+            verify.export_masked(_ocr_cfg(cfg, tmp_path, fake_ocr_child.ok()), runner, folder=None, limit=None)
+    finally:
+        for lg in (logging.getLogger("worker"), logging.getLogger()):
+            lg.removeHandler(handler)
+    exc = seen[0]
+    assert exc.__cause__ is None and (exc.__context__ is None or CANARY not in repr(exc.__context__))
+    assert CANARY not in "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)) and CANARY not in "\n".join(lines)

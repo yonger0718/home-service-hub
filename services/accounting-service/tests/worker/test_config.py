@@ -57,3 +57,16 @@ def test_ocr_overrides():
                        "STATEMENT_OCR_RLIMIT_MB": "512", "STATEMENT_OCR_CHILD": "/usr/bin/sh -c 'exit 0'"})
     assert (cfg.ocr_enabled, cfg.ocr_threads, cfg.ocr_timeout_s, cfg.ocr_rlimit_mb) == (False, 4, 30, 512)
     assert cfg.ocr_child == "/usr/bin/sh -c 'exit 0'"
+
+
+@pytest.mark.parametrize("key", ["STATEMENT_PARSER_CLI_VERSION", "STATEMENT_PARSER_MODEL"])
+@pytest.mark.parametrize("bad", ["2.1.296 beta", "model/with/slash", "x" * 65, "名稱", "a\nb"])
+def test_version_inputs_are_charset_checked(key, bad):
+    with pytest.raises(config.ConfigError, match=key) as err:
+        config.load({key: bad})
+    assert bad.strip() not in str(err.value)  # the message names the key and the rule, never the value
+
+
+def test_version_inputs_accept_the_identifier_charset():
+    cfg = config.load({"STATEMENT_PARSER_CLI_VERSION": "2.1.296-rc.1", "STATEMENT_PARSER_MODEL": "claude-sonnet-5-5_x"})
+    assert (cfg.parser_cli_version, cfg.parser_model) == ("2.1.296-rc.1", "claude-sonnet-5-5_x")

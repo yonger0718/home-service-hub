@@ -59,7 +59,9 @@ INSTRUCTION = (
     "merchant_raw as printed (masked tokens such as [NUM…1234] stay as they are). For foreign-currency rows set "
     "foreign_amount and foreign_currency (ISO code). For installment rows set installment_seq and installment_total "
     "from the printed 分期 n/N. Use line_kind unknown when a row cannot be classified. Do not invent rows; if the "
-    "text is not a statement, return zero lines and explain in notes."
+    "text is not a statement, return zero lines and explain in notes. On a card statement every negative row is a "
+    "credit: a payment received is payment, a cash-back or points credit is reward, and any other reversal (退款, 取消, "
+    "分期調整 / 轉分期 reversing a purchase) is refund; never label a negative card row balance_adjustment."
 )
 
 
@@ -67,7 +69,17 @@ def json_schema() -> dict:
     return StatementParse.model_json_schema()
 
 
-def version(cli_version: str, model: str) -> str:
-    instr = hashlib.sha256(INSTRUCTION.encode()).hexdigest()[:8]
-    schema = hashlib.sha256(json.dumps(json_schema(), sort_keys=True).encode()).hexdigest()[:8]
-    return f"claude-cli-{cli_version}-{model}-{instr}-{schema}"
+VERSION_MAX = 64  # RevisionIn.parser_version / statement_file.parser_version are String(64)
+
+
+def version(cli_version: str, model: str, ocr_fingerprint: str) -> str:
+    """One bounded version for every file (R5.4): the full CLI version, model id, instruction, schema and OCR
+    fingerprint fold into a 12-hex digest behind a display prefix cut to 12+24 characters (max 61 in all), so no
+    configuration can exceed the 64-character bound and truncated prefixes cannot collide."""
+    digest = hashlib.sha256("\n".join([cli_version, model, INSTRUCTION, json.dumps(json_schema(), sort_keys=True),
+                                       ocr_fingerprint]).encode()).hexdigest()[:12]
+    out = f"claude-cli-{cli_version[:12]}-{model[:24]}-{digest}"
+    assert len(out) <= VERSION_MAX
+    return out
+
+

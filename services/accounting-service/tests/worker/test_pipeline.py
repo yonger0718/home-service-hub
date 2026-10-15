@@ -1,3 +1,4 @@
+import dataclasses
 import hashlib
 import json
 from datetime import date
@@ -7,12 +8,12 @@ from sqlalchemy import text
 
 from app import auth
 from tests.integration.test_statement_ingest_api import SCOPES, TOKENS
-from tests.worker import fake_claude
+from tests.worker import fake_claude, fake_ocr_child
 from tests.worker.pdfgen import encrypt, make_pdf, statement_lines
-from worker import config, pipeline
+from worker import config, parse_schema, pipeline
 from worker.runner import FakeRunner, Result, SubprocessRunner
 
-PW_FILE = "STATEMENT_ID_NUMBER=A123456789\nSTATEMENT_BIRTH_DATE=19900101\nSTATEMENT_HOLDER_NAMES=王小明\n信用卡/國泰世華=$ID\n"
+PW_FILE = "STATEMENT_ID_NUMBER=A123456789\nSTATEMENT_BIRTH_DATE=19900101\nSTATEMENT_HOLDER_NAMES=王小明,WANG XIAO MING\n信用卡/國泰世華=$ID\n"
 
 
 @pytest.fixture(autouse=True)
@@ -605,3 +606,718 @@ def test_a_new_endpoint_starts_a_fresh_store_ladder(world, db_session):
     services.store = Minio()
     pipeline.run(services, trigger="owner_cli")
     assert len(puts) == 1 and _file_rows(db_session) == [("parsed", None)]
+
+
+# ---- R5.3: the OCR branch ----------------------------------------------------------------------------------------
+
+def _ocr_world(world, tmp_path, response=None, pdf_pages=(["short"],), name="ocr-child.sh", **kw):
+    """Drive holds a PDF without a text layer; the OCR child is a fake script (unsandboxed, like the fake CLI)."""
+    services, drive_files, cfg = world
+    drive_files["id-1"] = ("信用卡/國泰世華/2026-09_國泰世華.pdf", encrypt(make_pdf(list(pdf_pages)), "A123456789"))
+    child = fake_ocr_child.write(tmp_path / name, response, **kw)
+    cfg = dataclasses.replace(cfg, ocr_child=str(child), ocr_timeout_s=2)
+    services.cfg = cfg
+    from worker import ocr
+    services.ocr = ocr.Engine(cfg)
+    return services, drive_files, cfg
+
+
+RAW_OCR_TEXT = ("\n".join(statement_lines()) + "\n2026/09/01   COFFEE   1,234\n卡號 4111    2222　　3333    4444"
+                "\n持卡人 王 小 明\nWANG XIAO  MING\n身分證 A12 345 6789\n4lll 2222 3333 444O")
+
+
+def _record_parser(services):
+    seen = []
+    real = services.parser.parse
+
+    def parse(masked):
+        seen.append(masked)
+        return real(masked)
+    services.parser.parse = parse
+    return seen
+
+
+def test_ocr_path_parses_and_records_provenance(world, tmp_path, db_session):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT, boxes=42))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and summary["errors"] == [] and services.ocr.starts == 1
+    assert db_session.execute(text("select status, has_text_layer, text_chars from statement_file")).one() == ("parsed", False, len(RAW_OCR_TEXT))
+    rev = db_session.execute(text("select parser, raw from statement_revision")).one()
+    assert rev[0] == "claude-cli+ocr" and rev[1]["notes"] == "ocr: mean_confidence=0.93 boxes=42 empty_pages=0 scale=3.0"
+
+
+def test_ocr_parser_stdin_canary(world, tmp_path):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT))
+    seen = _record_parser(services)
+    pipeline.run(services, trigger="owner_cli")
+    assert len(seen) == 1
+    compact = "".join(seen[0].split())
+    for secret in ("4111", "2222", "3333", "王小明", "WANGXIAOMING", "A123456789", "4111222233334440"):
+        assert secret not in compact, secret
+    assert "2026/09/01   COFFEE   1,234" in seen[0] and "MERCHANT 001" in seen[0]
+    leaky = "".join(services.masker.text(RAW_OCR_TEXT).split())  # control: the text-layer masker leaks on the same text
+    assert "4111" in leaky and "王小明" in leaky
+
+
+def test_text_layer_file_makes_zero_ocr_calls(world, tmp_path):
+    services, _, cfg = world
+    from worker import ocr
+    services.ocr = ocr.Engine(dataclasses.replace(cfg, ocr_child=str(fake_ocr_child.write(tmp_path / "never.sh", None, exit_code=7))))
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] == 1 and services.ocr.starts == 0
+
+
+def test_password_reaches_the_ocr_child(world, tmp_path):
+    hdr = tmp_path / "hdr"
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(), name="recorder.sh", record_header_to=hdr)
+    pipeline.run(services, trigger="owner_cli")
+    assert json.loads(hdr.read_text())["password"] == "A123456789"
+
+
+def test_ocr_disabled_keeps_todays_behaviour(world, tmp_path, db_session):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok())
+    services.ocr = None
+    assert pipeline.run(services, trigger="owner_cli")["needs_review"] == 1
+    assert _file_rows(db_session) == [("needs_review", "no_text_layer")]
+    assert db_session.execute(text("select has_text_layer from statement_file")).scalar_one() is False
+
+
+@pytest.mark.parametrize("response,kw,expected", [
+    ({"ok": False, "code": "low_confidence"}, {}, ("needs_review", "no_text_layer")),
+    ({"ok": False, "code": "resource"}, {}, ("needs_review", "no_text_layer")),
+    ({"ok": False, "code": "too_large"}, {}, ("needs_review", "too_large")),
+    ({"ok": False, "code": "malformed"}, {}, ("failed", "parse")),
+    ({"ok": True, "pages": "SECRET", "text": "x"}, {}, ("failed", "parse")),
+    (None, {"exit_code": 139}, ("failed", "parse")),
+    (fake_ocr_child.ok(), {"sleep": 30}, ("needs_review", "no_text_layer")),
+])
+def test_ocr_outcomes(world, tmp_path, db_session, response, kw, expected):
+    services, _, _ = _ocr_world(world, tmp_path, response, **kw)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [expected] and summary["errors"] == []
+    assert db_session.execute(text("select has_text_layer from statement_file")).scalar_one() is False
+    if expected[0] == "failed":
+        assert db_session.execute(text("select parser_version from statement_file")).scalar_one() == services.parser_version
+
+
+def test_ocr_timeout_then_next_file_runs(world, tmp_path, db_session):
+    services, drive_files, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    drive_files["id-2"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([statement_lines(26)]), "A123456789"))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["needs_review"] == 1 and summary["parsed"] == 1 and services.ocr.starts == 1
+
+
+def test_ocr_unavailable_exits_1_and_files_wait(world, tmp_path, db_session):
+    services, drive_files, cfg = _ocr_world(world, tmp_path, fake_ocr_child.ok(), selftest="unavailable")
+    drive_files["id-2"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([["tiny"]]), "A123456789"))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["ocr_unavailable"] and summary["skipped"] == 2 and summary["failed"] == 0
+    assert services.ocr.starts == 0  # the self-test failed once; no file was offered to the child
+    assert _file_rows(db_session) == [("new", None), ("new", None)]
+    assert db_session.execute(text("select status from ingest_run order by id desc limit 1")).scalar_one() == "done"
+    from worker import cli
+    assert cli._bad(summary) is True
+    with pytest.MonkeyPatch.context() as mp:  # scoped: the autouse env fixture must survive for the second run
+        mp.setattr(pipeline, "build", lambda c, client, runner: services)
+        mp.setattr(pipeline, "run", lambda *a, **k: summary)
+        for key, value in (("STATEMENT_API_TOKEN_FILE", cfg.api_token_file), ("STATEMENT_PASSWORD_FILE", cfg.password_file),
+                           ("STATEMENT_STATE_DIR", cfg.state_dir), ("STATEMENT_API_URL", cfg.api_url)):
+            mp.setenv(key, str(value))
+        assert cli.main(["run"]) == 1
+    fake_ocr_child.write(tmp_path / "ocr-child.sh", fake_ocr_child.ok())  # host fixed: the next run resets the cache
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] == 2 and services.ocr.starts == 2
+
+
+def test_ocr_unavailable_in_the_child_itself_is_one_code_and_one_start(world, tmp_path, db_session):
+    services, drive_files, _ = _ocr_world(world, tmp_path, {"ok": False, "code": "unavailable"})  # self-test ok, read says unavailable
+    drive_files["id-2"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([["tiny"]]), "A123456789"))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["ocr_unavailable"] and summary["skipped"] == 2 and services.ocr.starts == 1
+    assert _file_rows(db_session) == [("new", None), ("new", None)]
+
+
+def test_ocr_unavailable_leaves_an_existing_needs_review_row_alone(world, tmp_path, db_session):
+    services, _, cfg = _ocr_world(world, tmp_path, {"ok": False, "code": "low_confidence"})
+    pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("needs_review", "no_text_layer")]
+    db_session.execute(text("update statement_file set parser_version='old'"))
+    db_session.commit()
+    fake_ocr_child.write(tmp_path / "ocr-child.sh", None, selftest="unavailable")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["errors"] == ["ocr_unavailable"] and summary["skipped"] == 1
+    assert _file_rows(db_session) == [("needs_review", "no_text_layer")]
+    assert db_session.execute(text("select parser_version from statement_file")).scalar_one() == "old"
+
+
+def test_poll_keeps_the_degraded_code(world, tmp_path, db_session, client, monkeypatch):
+    """A degraded run (resumed) followed by a clean queued one in the same poll: the result still carries
+    ocr_unavailable, so the unit exits 1 and the operator sees the host problem."""
+    services, drive_files, cfg = _ocr_world(world, tmp_path, None, selftest="unavailable")
+    hermes = {"Authorization": "Bearer hermes-token"}
+    assert client.post("/statements/ingest/run", headers=hermes).status_code == 202
+    real_list = services.drive.list_pdfs
+    services.drive.list_pdfs = lambda: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.poll(services, initiator_hint="t")  # claimed, then interrupted: run.json stays for the resume
+    services.drive.list_pdfs = real_list
+    db_session.execute(text("update ingest_run set lease_expires_at = now() - interval '1 hour'"))  # dead lease: no coalescing
+    db_session.commit()
+    assert client.post("/statements/ingest/run", headers=hermes).status_code == 202  # a second, queued run
+    calls = []
+    real = pipeline._execute
+
+    def execute(services_, summary, lease, trigger, mode):
+        calls.append(1)
+        if len(calls) == 2:  # second run: host fixed, Drive now text-layer only
+            fake_ocr_child.write(tmp_path / "ocr-child.sh", fake_ocr_child.ok())
+            drive_files["id-1"] = ("信用卡/國泰世華/2026-09_國泰世華.pdf", encrypt(make_pdf([statement_lines()]), "A123456789"))
+        return real(services_, summary, lease, trigger, mode)
+    monkeypatch.setattr(pipeline, "_execute", execute)
+    out = pipeline.poll(services, initiator_hint="t")
+    assert out["claimed"] == 2 and out["errors"] == ["ocr_unavailable"] and out["bad_runs"] == 0 and out["parsed"] == 1
+    from worker import cli
+    assert cli._bad(out) is True
+    clean = pipeline.poll(services, initiator_hint="t")  # nothing queued: a clean poll
+    assert clean["claimed"] == 0 and clean["errors"] == [] and cli._bad(clean) is False
+
+
+def _big_text_child(tmp_path, line_len: int, lines: int):
+    """A fake child whose text is `lines` lines of `line_len` x's (built in the shell: a literal that long would be slow)."""
+    script = tmp_path / "big.sh"
+    script.write_text("#!/bin/sh\nif [ \"$1\" = \"--selftest\" ]; then printf '{\"ready\": true}\\n'; exit 0; fi\ncat >/dev/null\n"
+                      "printf '{\"ok\": true, \"pages\": 1, \"empty_pages\": 0, \"boxes\": 2, \"mean_confidence\": 0.9, \"text\": \"'\n"
+                      f"i=0; while [ $i -lt {lines} ]; do head -c {line_len} /dev/zero | tr '\\0' x; printf '\\\\n'; i=$((i+1)); done\n"
+                      "printf '\"}\\n'\n")
+    script.chmod(0o700)
+    return script
+
+
+@pytest.mark.parametrize("line_len,lines", [(1024, 401), (pipeline.OCR_LINE_MAX + 1, 1)])
+def test_ocr_text_over_the_pre_mask_bound_is_too_large_without_masking_or_a_parser_call(world, tmp_path, db_session, line_len, lines, monkeypatch):
+    """Over the parser's STDIN_CAP (400 KB) in total, or one line over OCR_LINE_MAX: the masker (quadratic in the line
+    length) and the parser are never called; the file goes to review as too_large."""
+    from worker import ocr
+    services, _, _ = _ocr_world(world, tmp_path, None, name="unused.sh")
+    services.cfg = dataclasses.replace(services.cfg, ocr_child=str(_big_text_child(tmp_path, line_len, lines)))
+    services.ocr = ocr.Engine(services.cfg)
+    seen = _record_parser(services)
+    monkeypatch.setattr(services.masker, "mask_ocr", lambda *a, **k: (_ for _ in ()).throw(AssertionError("masker called")))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert seen == [] and _file_rows(db_session) == [("needs_review", "too_large")] and services.ocr.starts == 1
+    assert summary["errors"] == []
+
+
+def test_ocr_text_too_large_rule_at_each_bound():
+    from worker import parser as parser_mod
+    line_max = pipeline.OCR_LINE_MAX
+    assert pipeline.ocr_text_too_large("x" * line_max + "\n" + "y" * line_max) is False      # lines exactly at the bound
+    assert pipeline.ocr_text_too_large("x" * (line_max + 1)) is True                           # one over
+    assert pipeline.ocr_text_too_large("y\n" + "x" * (line_max + 1) + "\n") is True            # one over on a later line
+    body = "\n".join(["x" * 1000] * (parser_mod.STDIN_CAP // 1000))
+    exact = body + "x" * (parser_mod.STDIN_CAP - len(body))  # the last line stays well under OCR_LINE_MAX
+    assert len(exact.encode("utf-8")) == parser_mod.STDIN_CAP and pipeline.ocr_text_too_large(exact) is False  # total exactly at the cap
+    assert pipeline.ocr_text_too_large(exact + "x") is True                                     # one byte over
+    assert pipeline.ocr_text_too_large("中" * (parser_mod.STDIN_CAP // 3) + "x") is True          # bytes, not characters
+    assert pipeline.ocr_text_too_large("") is False
+
+
+def test_parser_notes_survive_beside_the_ocr_note(world, tmp_path, db_session):
+    from worker import parser as parser_mod
+    services, _, cfg = _ocr_world(world, tmp_path, fake_ocr_child.ok())
+    noted = fake_claude.write(tmp_path / "claude-noted", fake_claude.transcript({**fake_claude.GOOD, "notes": "parser note"}))
+    services.parser = parser_mod.Parser(dataclasses.replace(cfg, parser_cli=noted), services.runner)
+    pipeline.run(services, trigger="owner_cli")
+    notes = db_session.execute(text("select raw->>'notes' from statement_revision")).scalar_one()
+    assert notes == "parser note\nocr: mean_confidence=0.93 boxes=2 empty_pages=0 scale=3.0"
+
+
+def test_build_creates_an_engine_only_when_enabled(world, client):
+    services, _, cfg = world
+    assert services.ocr is not None and services.ocr.cfg is cfg
+    assert pipeline.build(dataclasses.replace(cfg, ocr_enabled=False), client, services.runner).ocr is None
+
+
+def test_revision_body_parser_and_notes():
+    parsed = parse_schema.StatementParse.model_validate(fake_claude.GOOD)
+    plain = pipeline.revision_body(parsed, file_id=1, account_id=2, parser_version="v")
+    assert plain["parser"] == "claude-cli" and plain["raw"]["notes"] == parsed.notes
+    ocr = pipeline.revision_body(parsed, file_id=1, account_id=2, parser_version="v", parser="claude-cli+ocr", extra_note="ocr: x")
+    assert ocr["parser"] == "claude-cli+ocr" and ocr["raw"]["notes"].endswith("ocr: x")
+
+
+# ---- R5.3 fallback: OCR after a failed text-layer parse (AGENT-118 ruling 2026-10-14) ------------------------------
+
+OCR_MARK_TEXT = "\n".join(statement_lines()) + "\nOCRMARK"
+
+
+def _text_parse_fails(services, reason="schema", mark="OCRMARK"):
+    """The real fake-CLI parse for OCR text (carries `mark`); a ParseError(`reason`) for the text-layer text."""
+    from worker import parser as parser_mod
+    calls = []
+    real = services.parser.parse
+
+    def parse(masked):
+        calls.append("ocr" if mark in masked else "text")
+        if mark in masked:
+            return real(masked)
+        raise parser_mod.ParseError(reason, "synthetic")
+    services.parser.parse = parse
+    return calls
+
+
+def _text_layer_world(world, tmp_path, response=None, **kw):
+    """Drive holds a text-layer PDF (the fixture's); the OCR child is a fake script."""
+    services, drive_files, cfg = world
+    child = fake_ocr_child.write(tmp_path / "ocr-child.sh", response, **kw)
+    services.cfg = dataclasses.replace(cfg, ocr_child=str(child), ocr_timeout_s=2)
+    from worker import ocr
+    services.ocr = ocr.Engine(services.cfg)
+    return services, drive_files, services.cfg
+
+
+def test_fallback_after_schema_failure_parses_with_provenance(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT, boxes=7))
+    calls = _text_parse_fails(services, "schema")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and summary["failed"] == 0 and summary["errors"] == []
+    assert summary["ocr_fallback"] == 1 and summary["ocr_trigger"] == 0 and services.ocr.starts == 1 and calls == ["text", "ocr"]
+    assert db_session.execute(text("select status, has_text_layer from statement_file")).one() == ("parsed", True)
+    rev = db_session.execute(text("select parser, raw->>'notes' from statement_revision")).one()
+    assert rev[0] == "claude-cli+ocr"
+    assert rev[1] == "ocr: mean_confidence=0.93 boxes=7 empty_pages=0 scale=3.0\nocr: fallback after text-layer parse failure"
+
+
+def test_fallback_after_api_422(world, tmp_path, db_session, monkeypatch):
+    from worker.api import ApiError
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    real_submit = services.api.submit_revision
+    seen = []
+
+    def submit(lease, body):
+        seen.append(body["parser"])
+        if body["parser"] == "claude-cli":
+            raise ApiError(422, {"detail": "synthetic"})
+        return real_submit(lease, body)
+    monkeypatch.setattr(services.api, "submit_revision", submit)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and summary["ocr_fallback"] == 1 and seen == ["claude-cli", "claude-cli+ocr"]
+    assert _file_rows(db_session) == [("parsed", None)]
+
+
+@pytest.mark.parametrize("reason,expected", [
+    ("timeout", ("failed", "transient")), ("exit", ("failed", "transient")), ("sandbox", ("failed", "sandbox")),
+])
+def test_excluded_parse_outcomes_do_not_fall_back(world, tmp_path, db_session, reason, expected):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    if reason == "sandbox":
+        services.gate.ensure(services.parser)  # a valid cached gate, so the violation latches on real input
+    calls = _text_parse_fails(services, reason)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [expected] and services.ocr.starts == 0 and calls == ["text"] and summary["ocr_fallback"] == 0
+
+
+def test_guardrail_failure_does_not_fall_back(world, tmp_path, db_session, monkeypatch):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    real_submit = services.api.submit_revision
+    monkeypatch.setattr(services.api, "submit_revision", lambda lease, body: {**real_submit(lease, body), "guardrail_ok": False})
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("needs_review", "guardrail")] and services.ocr.starts == 0 and summary["ocr_fallback"] == 0
+
+
+def test_password_mapping_and_too_large_never_reach_the_fallback(world, tmp_path, db_session, monkeypatch):
+    from worker import parser as parser_mod
+    services, drive_files, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    drive_files["id-1"] = ("信用卡/國泰世華/2026-09_國泰世華.pdf", encrypt(make_pdf([statement_lines()]), "WRONG"))
+    drive_files["id-2"] = ("信用卡/未知/2026-09_x.pdf", encrypt(make_pdf([statement_lines()]), "A123456789"))
+    drive_files["id-3"] = ("信用卡/國泰世華/2026-08_國泰世華.pdf", encrypt(make_pdf([statement_lines(400)]), "A123456789"))
+    monkeypatch.setattr(parser_mod, "STDIN_CAP", 2000)
+    _text_parse_fails(services, "schema")
+    pipeline.run(services, trigger="owner_cli")
+    assert sorted(_file_rows(db_session)) == sorted([("failed", "password"), ("ignored", "mapping"), ("needs_review", "too_large")])
+    assert services.ocr.starts == 0
+
+
+def test_both_attempts_fail_is_parse_with_one_ocr_start(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = _text_parse_fails(services, "schema", mark="NEVER-PRESENT")  # both texts fail
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and services.ocr.starts == 1 and calls == ["text", "text"]
+    assert summary["failed"] == 1 and summary["parsed"] == 0 and summary["ocr_fallback"] == 1
+    assert db_session.execute(text("select has_text_layer, parser_version from statement_file")).one() == (True, services.parser_version)
+    again = pipeline.run(services, trigger="owner_cli")  # same parser version: no retry, no second OCR start
+    assert again["unchanged"] == 1 and services.ocr.starts == 1
+
+
+def test_ocr_unavailable_during_fallback_keeps_parse_and_reports_the_code(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, None, selftest="unavailable")
+    _text_parse_fails(services, "schema")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and summary["errors"] == ["ocr_unavailable"]
+    assert summary["failed"] == 1 and summary["skipped"] == 0 and summary["ocr_fallback"] == 1  # counted at the OCR start
+    from worker import cli
+    assert cli._bad(summary) is True
+
+
+@pytest.mark.parametrize("response,kw", [
+    ({"ok": False, "code": "low_confidence"}, {}), ({"ok": False, "code": "resource"}, {}), ({"ok": False, "code": "too_large"}, {}),
+    ({"ok": False, "code": "malformed"}, {}), (fake_ocr_child.ok(), {"sleep": 30}), (fake_ocr_child.ok(text="x" * 5000), {}),
+])
+def test_ocr_failure_during_fallback_stays_parse(world, tmp_path, db_session, response, kw):
+    services, _, _ = _text_layer_world(world, tmp_path, response, **kw)
+    _text_parse_fails(services, "schema")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and summary["errors"] == [] and services.ocr.starts == 1
+    assert db_session.execute(text("select has_text_layer from statement_file")).scalar_one() is True
+
+
+def test_fallback_is_refused_when_the_parser_latch_is_set(world, tmp_path, db_session):
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+
+    def parse(masked):  # a parse failure that also closed the gate (the latch is the only parser budget there is)
+        services.parser_disabled = True
+        raise parser_mod.ParseError("schema", "synthetic")
+    services.parser.parse = parse
+    pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and services.ocr.starts == 0
+
+
+def test_fallback_is_off_when_ocr_is_disabled(world, tmp_path, db_session):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    services.ocr = None
+    calls = _text_parse_fails(services, "schema")
+    pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and calls == ["text"]
+
+
+def _exc_recorder(engine):
+    """Wrap Engine.read to record the active exception at call time (R5a handoff: no OCR call under a handler)."""
+    import sys
+    seen = []
+    real = engine.read
+
+    def read(data, password):
+        seen.append(sys.exc_info()[1])
+        return real(data, password)
+    engine.read = read
+    return seen
+
+
+def test_ocr_child_starts_with_no_active_exception_on_the_trigger_path(world, tmp_path):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT))
+    seen = _exc_recorder(services.ocr)
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] == 1 and seen == [None]
+
+
+def test_ocr_child_starts_with_no_active_exception_on_the_fallback_path(world, tmp_path):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    _text_parse_fails(services, "schema")
+    seen = _exc_recorder(services.ocr)
+    assert pipeline.run(services, trigger="owner_cli")["parsed"] == 1 and seen == [None]
+
+
+# ---- AGENT-124 fix round: exception context, final fallback, counters, poll union, UTF-8 boundary, raw-box canaries ----
+
+import logging
+import traceback
+
+CANARY = "CANARY-SECRET-7731"
+
+
+def _capture_read_errors(engine):
+    """Wrap Engine.read to keep every exception it raises (re-raised unchanged)."""
+    seen = []
+    real = engine.read
+
+    def read(data, password):
+        try:
+            return real(data, password)
+        except BaseException as exc:  # noqa: BLE001
+            seen.append(exc)
+            raise
+    engine.read = read
+    return seen
+
+
+class _Records(logging.Handler):
+    """Captures the worker logger directly (its propagation is not relied on)."""
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.lines: list[str] = []
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+
+@pytest.fixture
+def worker_log():
+    handler = _Records()
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+    loggers = [logging.getLogger("worker"), logging.getLogger()]
+    old = [(lg, lg.level, lg.disabled) for lg in loggers]
+    for lg in loggers:
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+        lg.disabled = False  # the app's logging config (imported by the API fixture) disables pre-existing loggers
+    try:
+        yield handler
+    finally:
+        for lg, level, disabled in old:
+            lg.removeHandler(handler)
+            lg.setLevel(level)
+            lg.disabled = disabled
+
+
+def _assert_canary_free(exc, log):
+    assert exc.__cause__ is None and (exc.__context__ is None or CANARY not in repr(exc.__context__))
+    assert CANARY not in "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    assert CANARY not in log.text
+
+
+def test_trigger_ocr_error_carries_no_extraction_exception(world, tmp_path, db_session, monkeypatch, worker_log):
+    """A content-bearing NoTextLayer, then an OCR timeout: the OCRTimeout has no context, no cause, no canary anywhere."""
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    monkeypatch.setattr(pipeline.pdf, "extract", lambda data, password, **kw: (_ for _ in ()).throw(pipeline.pdf.NoTextLayer(CANARY)))
+    seen = _capture_read_errors(services.ocr)
+    pipeline.run(services, trigger="owner_cli")
+    assert [type(e) for e in seen] == [pipeline.ocr_mod.OCRTimeout] and _file_rows(db_session) == [("needs_review", "no_text_layer")]
+    _assert_canary_free(seen[0], worker_log)
+
+
+def test_fallback_ocr_error_carries_no_parser_exception(world, tmp_path, db_session, worker_log):
+    """A content-bearing ParseError on the text attempt, then an OCR timeout in the fallback."""
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    services.parser.parse = lambda masked: (_ for _ in ()).throw(parser_mod.ParseError("schema", CANARY))
+    seen = _capture_read_errors(services.ocr)
+    pipeline.run(services, trigger="owner_cli")
+    assert [type(e) for e in seen] == [pipeline.ocr_mod.OCRTimeout] and _file_rows(db_session) == [("failed", "parse")]
+    _assert_canary_free(seen[0], worker_log)
+
+
+def test_second_parser_call_carries_no_first_attempt_exception(world, tmp_path, db_session, worker_log):
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    raised = []
+
+    def parse(masked):
+        exc = parser_mod.ParseError("timeout", "second attempt") if "OCRMARK" in masked else parser_mod.ParseError("schema", CANARY)
+        raised.append(exc)
+        raise exc
+    services.parser.parse = parse
+    pipeline.run(services, trigger="owner_cli")
+    assert len(raised) == 2 and _file_rows(db_session) == [("failed", "parse")]
+    _assert_canary_free(raised[1], worker_log)
+
+
+@pytest.mark.parametrize("reason", ["timeout", "exit", "schema"])
+def test_second_attempt_parse_failure_is_final_at_this_version(world, tmp_path, db_session, reason):
+    """Must 2 ruling: a timeout, exit or schema failure on the second parse ends failed/parse at the current version;
+    a second run makes no OCR start and no parser call."""
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    calls = []
+
+    def parse(masked):
+        calls.append("ocr" if "OCRMARK" in masked else "text")
+        raise parser_mod.ParseError(reason if "OCRMARK" in masked else "schema", "synthetic")
+    services.parser.parse = parse
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert calls == ["text", "ocr"] and services.ocr.starts == 1 and summary["ocr_fallback"] == 1
+    assert db_session.execute(text("select status, failure, has_text_layer, parser_version from statement_file")).one() == ("failed", "parse", True, services.parser_version)
+    assert services.parser_disabled is False and "parser_disabled" not in summary["errors"]
+    again = pipeline.run(services, trigger="owner_cli")
+    assert again["unchanged"] == 1 and calls == ["text", "ocr"] and services.ocr.starts == 1
+
+
+@pytest.mark.parametrize("reason", ["sandbox", "auth", "cli_version"])
+def test_second_attempt_host_fault_is_sandbox_with_the_latch(world, tmp_path, db_session, reason):
+    """Must 2 ruling (realigned): a sandbox, auth or CLI-version failure on the second parse is a host fault — the
+    latch is set and the row is failed/sandbox exactly as on a first attempt; after the operator gate clears the
+    latch the file is processed again and may fall back again (the accepted exception to once-per-version)."""
+    from worker import parser as parser_mod
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(text=OCR_MARK_TEXT))
+    services.gate.ensure(services.parser)  # a valid cached gate, so the violation latches on real input
+    calls = []
+    real = services.parser.parse
+    broken = [True]
+
+    def parse(masked):
+        calls.append("ocr" if "OCRMARK" in masked else "text")
+        if "OCRMARK" in masked and not broken[0]:
+            return real(masked)  # host repaired: the OCR text parses
+        raise parser_mod.ParseError(reason if "OCRMARK" in masked else "schema", "synthetic")
+    services.parser.parse = parse
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert calls == ["text", "ocr"] and services.ocr.starts == 1 and summary["ocr_fallback"] == 1
+    assert _file_rows(db_session) == [("failed", "sandbox")] and summary["failed"] == 1
+    assert services.parser_disabled is True and "parser_disabled" in summary["errors"] and services.gate.latch_path.exists()
+    latched = pipeline.run(services, trigger="owner_cli")  # latched: the sandbox row is not due, nothing parses
+    assert "parser_disabled" in latched["errors"] and latched["unchanged"] == 1 and calls == ["text", "ocr"]
+    assert _operator_gate(services).ok  # the operator repairs the host and clears the latch
+    broken[0] = False
+    again = pipeline.run(services, trigger="owner_cli")
+    assert again["parsed"] == 1 and again["ocr_fallback"] == 1 and calls == ["text", "ocr", "text", "ocr"] and services.ocr.starts == 2
+    assert _file_rows(db_session) == [("parsed", None)]
+
+
+def test_counters_count_at_ocr_start_and_log_the_outcome_class(world, tmp_path, db_session, worker_log):
+    """Should 1: a timeout on the trigger path still counts ocr_trigger; a pre-mask rejection logs its class."""
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["ocr_trigger"] == 1 and summary["ocr_fallback"] == 0 and "ocr trigger: OCRTimeout" in worker_log.text
+    fake_ocr_child.write(tmp_path / "ocr-child.sh", fake_ocr_child.ok(text="x" * (pipeline.OCR_LINE_MAX + 1)))
+    db_session.execute(text("update statement_file set parser_version='old'")); db_session.commit()
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["ocr_trigger"] == 1 and "ocr trigger: text too_large" in worker_log.text and _file_rows(db_session) == [("needs_review", "too_large")]
+
+
+def test_fallback_counter_counts_a_timed_out_ocr(world, tmp_path, db_session, worker_log):
+    services, _, _ = _text_layer_world(world, tmp_path, fake_ocr_child.ok(), sleep=30)
+    _text_parse_fails(services, "schema")
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["ocr_fallback"] == 1 and "ocr fallback: OCRTimeout" in worker_log.text and _file_rows(db_session) == [("failed", "parse")]
+
+
+def test_poll_keeps_codes_of_an_aborted_run(world, tmp_path, db_session, client, monkeypatch):
+    """Should 2: ocr_unavailable in a run that then aborts, followed by a clean run: the union still carries it."""
+    from worker import api as api_mod
+    services, drive_files, cfg = _ocr_world(world, tmp_path, None, selftest="unavailable")
+    hermes = {"Authorization": "Bearer hermes-token"}
+    assert client.post("/statements/ingest/run", headers=hermes).status_code == 202
+    services.drive.list_pdfs = lambda: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.poll(services, initiator_hint="t")
+    del services.drive.list_pdfs
+    db_session.execute(text("update ingest_run set lease_expires_at = now() - interval '1 hour'")); db_session.commit()
+    assert client.post("/statements/ingest/run", headers=hermes).status_code == 202
+    real_removed = services.api.mark_removed
+    calls = []
+
+    def mark_removed(lease, ids, **kw):  # the first (degraded) run aborts after its files were processed
+        calls.append(1)
+        if len(calls) == 1:
+            raise api_mod.ApiError(500, {"detail": "synthetic"})
+        return real_removed(lease, ids, **kw)
+    monkeypatch.setattr(services.api, "mark_removed", mark_removed)
+    real_execute = pipeline._execute
+
+    def execute(services_, summary, lease, trigger, mode):
+        if len(calls) == 1:  # second run: host fixed, Drive text-layer only
+            fake_ocr_child.write(tmp_path / "ocr-child.sh", fake_ocr_child.ok())
+            drive_files["id-1"] = ("信用卡/國泰世華/2026-09_國泰世華.pdf", encrypt(make_pdf([statement_lines()]), "A123456789"))
+        return real_execute(services_, summary, lease, trigger, mode)
+    monkeypatch.setattr(pipeline, "_execute", execute)
+    out = pipeline.poll(services, initiator_hint="t")
+    assert out["claimed"] == 2 and out["bad_runs"] == 1 and "ocr_unavailable" in out["errors"] and out["parsed"] == 1
+
+
+@pytest.mark.parametrize("path", ["trigger", "fallback"])
+def test_non_utf8_ocr_text_is_rejected_at_the_boundary(world, tmp_path, db_session, path):
+    """Should 3: a lone surrogate in the child's JSON text is Malformed → failed/parse, no masker, no parser."""
+    body = '{"ok": true, "pages": 1, "empty_pages": 0, "boxes": 2, "mean_confidence": 0.9, "text": "MERCHANT \\ud800 1,234"}'
+    if path == "trigger":
+        services, _, _ = _ocr_world(world, tmp_path, body)
+    else:
+        services, _, _ = _text_layer_world(world, tmp_path, body)
+        _text_parse_fails(services, "schema")
+    seen = _record_parser(services) if path == "trigger" else []
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _file_rows(db_session) == [("failed", "parse")] and summary["errors"] == [] and services.ocr.starts == 1 and seen == []
+
+
+# ---- Should 4: raw boxes → real layout → caller → sink, with mutation controls ------------------------------------
+
+def _boxes_text():
+    """Boxes as the child would produce them, laid out by the real ocr_text.layout: a card number split across
+    boxes with OCR confusables, a split holder name, a split ID, and ordinary rows."""
+    from worker import ocr_text
+    rows = [["2026/09/01", "COFFEE", "1,234"], ["MERCHANT 001", "", "5,678"], ["卡號", "4lll", "222O", "333O", "444O"],
+            ["持卡人", "王", "小", "明"], ["身分證", "A12", "345", "6789"], ["TOTAL", "", "6,912"]]
+    boxes = []
+    for r, cells in enumerate(rows):
+        x = 10.0
+        for cell in cells:
+            if cell:
+                boxes.append((x, 20.0 + r * 30.0, 8.0 * len(cell), 12.0, cell))
+            x += 8.0 * max(len(cell), 2) + 40.0
+    return ocr_text.layout(boxes)
+
+
+SECRETS = ("4111222233334440", "4lll", "444O", "王小明", "A123456789")
+
+
+def test_raw_boxes_reach_the_parser_masked(world, tmp_path):
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=_boxes_text()))
+    seen = _record_parser(services)
+    pipeline.run(services, trigger="owner_cli")
+    compact = "".join(seen[0].split())
+    assert all(s not in compact for s in SECRETS), compact
+    assert "2026/09/01" in seen[0] and "COFFEE" in seen[0] and "6,912" in seen[0]
+
+
+@pytest.mark.parametrize("mutation", ["no_masking", "no_normalisation"])
+def test_raw_box_canary_discriminates(world, tmp_path, monkeypatch, mutation):
+    """Mutation controls: bypass masking, or bypass the confusable normalisation, and the parser sees a secret."""
+    from worker import mask
+    if mutation == "no_masking":
+        monkeypatch.setattr(mask.Masker, "mask_ocr", lambda self, s, extra_literals=(): s)
+    else:
+        monkeypatch.setattr(mask, "_ocr_fix_confusables", lambda line: line)
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=_boxes_text()))
+    seen = _record_parser(services)
+    pipeline.run(services, trigger="owner_cli")
+    compact = "".join(seen[0].split())
+    assert any(s in compact for s in SECRETS), compact
+
+
+@pytest.mark.parametrize("reason", ["timeout", "exit"])
+def test_parser_timeout_after_a_triggered_ocr_is_transient(world, tmp_path, db_session, reason, monkeypatch):
+    """dev-grok final re-check Must: on the trigger path the first parser call is not final — a parser timeout or
+    exit after a successful OCR read is failed/transient with a backoff, and due again once it has passed."""
+    from worker import parser as parser_mod
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT))
+    calls = []
+    real = services.parser.parse
+    broken = [True]
+
+    def parse(masked):
+        calls.append(1)
+        if broken[0]:
+            raise parser_mod.ParseError(reason, "synthetic")
+        return real(masked)
+    services.parser.parse = parse
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["transient"] == 1 and summary["failed"] == 0 and summary["ocr_trigger"] == 1 and services.ocr.starts == 1
+    row = db_session.execute(text("select status, failure, has_text_layer, next_retry_at from statement_file")).one()
+    assert row[0:3] == ("failed", "transient", False) and row[3] is not None
+    retry = services.retries.get(db_session.execute(text("select sha256 from statement_file")).scalar_one())
+    assert retry["transient_attempts"] == 1
+    assert pipeline.run(services, trigger="owner_cli")["deferred"] == 1 and calls == [1]  # backoff: not due yet
+    _shift(monkeypatch, hours=2)
+    broken[0] = False
+    again = pipeline.run(services, trigger="owner_cli")
+    assert again["parsed"] == 1 and calls == [1, 1] and services.ocr.starts == 2  # due again: OCR'd and parsed
+
+
+def test_thread_error_from_the_caller_carries_no_extraction_exception(world, tmp_path, db_session, monkeypatch, worker_log):
+    """Nit (dev-grok final re-check): an OCRThreadError raised at the real call site, with a content-bearing
+    NoTextLayer handled just before, has no canary in its context, cause, traceback or the log."""
+    from worker import ocr as ocr_mod
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok())
+    monkeypatch.setattr(pipeline.pdf, "extract", lambda data, password, **kw: (_ for _ in ()).throw(pipeline.pdf.NoTextLayer(CANARY)))
+    seen = []
+
+    def read(data, password):
+        exc = ocr_mod.OCRThreadError("ocr engine used off its owning thread")
+        seen.append(exc)
+        raise exc
+    services.ocr.read = read
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert "file_error" in summary["errors"] and _file_rows(db_session) == [("failed", "transient")]  # contained per file
+    assert len(seen) == 1
+    _assert_canary_free(seen[0], worker_log)

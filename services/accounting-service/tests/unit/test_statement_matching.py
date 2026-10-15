@@ -105,6 +105,17 @@ def test_orphan_refund_is_eligible():
     assert res.claims[0].representation.rule == "refund"
 
 
+def test_refund_line_does_not_claim_an_expense_of_the_same_amount():
+    res = run([L(1, date(2026, 9, 12), "200", kind="refund")], [E(61, date(2026, 9, 12), "200", kind="expense")])
+    assert res.claims == []
+
+
+def test_refund_line_claims_a_refund_entry_only():
+    entries = [E(60, date(2026, 9, 12), "200", kind="refund", refunds_entry_id=None), E(61, date(2026, 9, 12), "200", kind="expense")]
+    res = run([L(1, date(2026, 9, 12), "200", kind="refund")], entries)
+    assert [(c.representation.rule, [r.entry_id for r in c.representation.rows]) for c in res.claims] == [("refund", [60])]
+
+
 def test_foreign_residual_equal_to_fee_is_a_delta_case_not_a_claim():
     entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY")]
     res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("-3000"), foreign_currency="JPY")], entries, fee=lambda e: D("10"))
