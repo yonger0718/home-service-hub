@@ -23,6 +23,7 @@ Owner decisions taken in the brainstorm (2026-10-15):
 3. **Statement as truth for bank accounts (owner's reframing, option A).** Instead of aligning MOZE opening balances by hand, the ledger is backfilled from statement lines and anchored at the first live statement's opening balance; from there every month's gap is a real missing entry. Scope: all bank accounts, all live months.
 4. **Cards too, with a grace period (C).** Card purchase lines still unmatched 14 days after the statement's period end are backfilled as uncategorised expenses. The grace keeps late MOZE entries from colliding with backfilled ones; when they do collide, the owner's entry wins.
 5. **Two stacks (A).** R6a (matcher rules, no ledger writes) ships and runs first; R6b (backfill, anchor, owner-wins) follows. Backfilling before the scoring fix would book lines that should have matched.
+6. **HomeHub becomes the primary ledger (A, 2026-10-15).** Backfilled entries live only in HomeHub (nothing is written back to MOZE). From the cutover (2026-10-31 at the latest) the owner categorises `對帳待分類` entries and records new transactions in HomeHub; MOZE is input only until its final import and is not kept in step afterwards. Owner's wording: new data from October is appended in HomeHub once the move is complete. The owner-wins rule (R6b.3) therefore matters mostly for the transition window and uses the drift window (15 days), not the exact window.
 
 Balance-gap evidence (`~/reports/home-hub-balance-gaps-20261015T050149Z/`): only one of ten accounts has a constant gap; the rest drift month to month, so an opening-balance edit alone would not close them. This is why 3 replaced the "align opening balance in MOZE" option.
 
@@ -120,7 +121,7 @@ The owner's existing `balance_adjustment_asof` (adjust at period end) stays avai
 
 ### R6b.3 `replace_backfill` — the owner's entry wins
 
-Matcher side (`reconciliation_service._desired_cases`, entry loop): for an unmatched claimable entry `e` (not deferred, not an uncovered child) find a line on the same statement with `_same(|flow|)`, conserved sign, gate containing `e`'s class, `dist ≤ exact_window_days`, whose current coverage is held by an entry `s` with `source == "statement"` created by a `backfill_entry` action (join coverage → entry → action by `created_entry_ids`). If exactly one such line: the `entry_unmatched` case carries `context = {"hint": "shadowed_by_backfill", "line_id", "system_entry_id", "action_id"}`. Fee/interest/reward system entries and balance adjustments are never shadows (no MOZE twin exists for them).
+Matcher side (`reconciliation_service._desired_cases`, entry loop): for an unmatched claimable entry `e` (not deferred, not an uncovered child) find a line on the same statement with `_same(|flow|)`, conserved sign, gate containing `e`'s class, `dist ≤ drift_window_days` (15: an owner entry dated on the purchase day while the line carries the posting day, or recorded late, must still replace its stand-in), whose current coverage is held by an entry `s` with `source == "statement"` created by a `backfill_entry` action (join coverage → entry → action by `created_entry_ids`). If exactly one such line: the `entry_unmatched` case carries `context = {"hint": "shadowed_by_backfill", "line_id", "system_entry_id", "action_id"}`. Fee/interest/reward system entries and balance adjustments are never shadows (no MOZE twin exists for them).
 
 Action `replace_backfill` (policy, enabled by default, no amount cap — the net ledger change is the owner's own entry replacing an uncategorised stand-in): in one transaction, `engine.revert_action(action_id)` (refuses when the backfilled entry no longer equals its `after` — the owner edited it — and the case stays open with the hint), then the existing `match` of `e` to the line (rule `replace_backfill`). The audit shows both rows. `_unchanged` compares entry amount/date, line id and the shadow's action id.
 
@@ -163,11 +164,19 @@ MOZE backup imports do not disturb this: `delete_moze_entries` removes only entr
 
 Spec review by Multica first (lead-claude, non-Claude reviewer at the exact SHA), then a plan per stack, then PRs `feat/reconciliation-r6a` and `feat/reconciliation-r6b` (R6b branches from main after R6a merges). Worktrees carry a copied `.env` (mode 600). R5 worktrees are removed before R6a starts.
 
-### 3.3 Non-goals
+### 3.3 Ledger ownership after the cutover
+
+Decision 6 fixes the direction of truth: statements → HomeHub ledger, owner edits in HomeHub. Consequences R6 relies on, none of which needs new code:
+
+- A MOZE backup import after the cutover is allowed but not expected; `delete_moze_entries` touches only MOZE-source rows, so HomeHub-created entries (backfill, system, manual, anchor) survive any import.
+- Backfilled entries are findable for categorisation: category `對帳待分類` per kind and `needs_review=True`; the owner edits them through the existing ledger entry API/UI. Editing the category or name does not change amount or date, so a later `replace_backfill` still finds the entry equal to its `after` only if `_Creation.invert`'s "unchanged" check is limited to amount, date and account — the plan must confirm which fields that check compares and, if it includes category, relax it for `replace_backfill` (an owner-categorised stand-in replaced by the owner's own MOZE entry is still the owner's intent).
+- Reports and budgets that read the HomeHub ledger see backfilled entries immediately; MOZE's own balance is no longer a reference after the final import.
+
+### 3.4 Non-goals
 
 Case UI (R3a, PR #69); MOZE write-back; historical statements (`period_end ≤ 2026-06-30`); owner-vs-owner MOZE duplicates (43 suspected, list file for the owner); auto-booking `unknown` lines beyond expense/income by sign, transfers, payments, installments; cross-statement transfer pairing (R6c); OCR changes; AGENT-126 (401 → `auth`) stays a separate maintenance PR.
 
-### 3.4 Success criteria
+### 3.5 Success criteria
 
 - After R6a: open cases ≤ 290 (from 354): the 1–3-day, receivable/payable and bank-only-by-kind classes close or become policy-eligible; near/drift classes move to `amount_delta` with candidates; zero single-candidate `ambiguous`; no previously claimed line lost (dry-run gate).
 - After R6b on bank accounts: bank `line_unmatched` without `needs_peer` ≈ 0; `balance_gap` only where `needs_peer` lines remain, with the gap equal to their sum (checked per account in the release record).
@@ -175,7 +184,7 @@ Case UI (R3a, PR #69); MOZE write-back; historical statements (`period_end ≤ 2
 
 ## 4. Risks and rulings
 
-- **Backfill books something the owner would have matched.** Mitigated by order (R6a first), grace (14 d), owner-wins (R6b.3) and caps. Remaining: an owner entry recorded > `exact_window_days` from the line after a backfill is not a shadow; it shows as `entry_unmatched` next to a backfilled line — the owner dismisses or reverts by hand.
+- **Backfill books something the owner would have matched.** Mitigated by order (R6a first), grace (14 d), owner-wins (R6b.3, 15-day window) and caps. Remaining: an owner entry dated more than `drift_window_days` from the line, or with a different amount, is not a shadow; it shows as `entry_unmatched` next to a backfilled line — the owner dismisses or reverts by hand. After the cutover (decision 6) the owner records in HomeHub and the collision cannot arise.
 - **Score rescale changes historical behaviour.** Historical statements are informational; the dry-run reports live statements only, and the service never rewrites coverage of claims already written.
 - **Transfers unbooked on 0-entry accounts.** Accepted; the gap is the measure. R6c when wanted.
 - **Stored rule overrides on the old scale.** Ignored with a warning, not migrated (ruling: the owner has no overrides today; settings v4 only changed policy keys).
