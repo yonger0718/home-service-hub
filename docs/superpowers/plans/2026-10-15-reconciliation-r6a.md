@@ -115,6 +115,31 @@ def test_zero_window_uses_txn_date_distance_too():
 
 def test_margin_default_is_five_hundredths():
     assert m.Rules(period_end=date(2026, 9, 30)).margin == D("0.05")
+
+
+def test_two_installment_representations_with_a_text_gap_now_resolve():
+    # the shared margin runs before _installment_case: two confirmed-plan reps whose text differs by >= 0.05 claim
+    # the better one (under margin 0.15 they stayed ambiguous because text <= 0.10)
+    entries = [E(40, date(2026, 9, 5), "-1000", merchant="APPLE STORE", instance=m.InstanceRef(definition_id=7, seq=2, times=12)),
+               E(41, date(2026, 9, 5), "-1000", merchant="家樂福", instance=m.InstanceRef(definition_id=7, seq=2, times=12))]
+    res = run([L(1, date(2026, 9, 5), "-1000", kind="installment", merchant="APPLE STORE", seq=2, total=12)], entries,
+              plan_map={"APPLE STORE|12|1000.0000": 7})
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [40]
+
+
+def test_claimed_by_earlier_line_hint_under_the_new_scale():
+    # line 1 (distance 0) claims entry 10; line 2 (distance 3, inside the window since R6a) sees exactly one shadow
+    # representation whose row is claimed → the hint names it (parent §6.3 rule unchanged, reachable more often now)
+    lines = [L(1, date(2026, 9, 3), "-580", merchant=""), L(2, date(2026, 9, 6), "-580", merchant="")]
+    res = run(lines, [E(10, date(2026, 9, 3), "-580", merchant="")])
+    assert [c.line_id for c in res.claims] == [1]
+    assert res.cases[0].line_id == 2 and res.cases[0].context == {"hint": "claimed_by_earlier_line", "entry_id": 10}
+```
+
+Also update `tests/integration/test_reconciliation_service.py:305` (`test_rules_for_coerces_settings_types`), which asserts the dataclass default `margin == Decimal("0.15")`:
+
+```python
+    assert rules.period_end == date(2026, 9, 30) and rules.margin == Decimal("0.05")
 ```
 
 Then change the existing `test_same_day_same_amount_different_merchants_is_ambiguous` (the spec's R6a.1 ruling: a same-day text difference of 0.10 now resolves) to:
@@ -128,8 +153,8 @@ def test_same_day_same_amount_merchant_text_resolves_on_the_new_scale():
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/unit/test_statement_matching.py -q -p no:cacheprovider -k "three_days or two_days or four_days or new_scale or closer_candidate or one_day_apart or reverse_the_date or exact_tie or zero_window or margin_default or merchant_text_resolves"`
-Expected: FAIL (`three_days`: no claim; `new_scale`: `0.9000 != ...`; `margin_default`: `0.15 != 0.05`; the rest accordingly).
+Run: `.venv/bin/python -m pytest tests/unit/test_statement_matching.py tests/integration/test_reconciliation_service.py::test_rules_for_coerces_settings_types -q -p no:cacheprovider -k "three_days or two_days or four_days or new_scale or closer_candidate or one_day_apart or reverse_the_date or exact_tie or zero_window or margin_default or merchant_text_resolves or installment_representations_with_a_text_gap or earlier_line_hint_under or coerces_settings_types"`
+Expected: RED for `three_days_apart`, `two_days_apart`, `new_scale`, `margin_default`, `merchant_text_resolves`, `installment_representations_with_a_text_gap`, `earlier_line_hint_under` and `coerces_settings_types` (`0.15 != 0.05`). The others (`four_days`, `closer_candidate`, `one_day_apart`, `reverse_the_date`, `exact_tie`, both `zero_window`) are already green on the old formula and stay as regression guards for the new one — they pin behaviour the rescale must not change (AGENT-130 Should).
 
 - [ ] **Step 3: Implement the new score and margin default**
 
@@ -291,9 +316,16 @@ CARD_GATES = {
     "reward": frozenset({"reward"}),
 }
 BANK_GATES = {
-    "deposit": frozenset({"income", "transfer_in", "interest", "settlement_in", "payable"}),
-    "withdrawal": frozenset({"expense", "transfer_out", "fee", "settlement_out", "receivable"}),
-    ...  # the other keys unchanged
+    "deposit": frozenset({"income", "transfer_in", "interest", "settlement_in", "payable"}),      # R6a.3: a payable I received
+    "withdrawal": frozenset({"expense", "transfer_out", "fee", "settlement_out", "receivable"}),  # R6a.3: a receivable I paid
+    "transfer_in": frozenset({"transfer_in"}),
+    "transfer_out": frozenset({"transfer_out"}),
+    "fee": frozenset({"fee"}),
+    "interest": frozenset({"interest"}),
+    "refund": frozenset({"refund"}),
+    "reward": frozenset({"reward"}),
+    "payment": frozenset({"settlement_out", "transfer_out"}),
+    "purchase": frozenset({"expense"}),
 }
 ```
 
@@ -347,7 +379,8 @@ def test_near_tolerance_is_five_percent():
     assert m.Rules(period_end=date(2026, 9, 30)).near_tolerance_pct == D("0.05")
     res = run([L(1, date(2026, 9, 3), "-1049", merchant="")], [E(10, date(2026, 9, 3), "-1000", merchant="")])
     assert res.cases[0].kind == "amount_delta"
-    res = run([L(1, date(2026, 9, 3), "-1051", merchant="")], [E(10, date(2026, 9, 3), "-1000", merchant="")])
+    # the tolerance base is the LINE amount (spec R6a.4 keeps `max(abs, pct·|line.flow|)`): 5 % of 1053 = 52.65 < 53
+    res = run([L(1, date(2026, 9, 3), "-1053", merchant="")], [E(10, date(2026, 9, 3), "-1000", merchant="")])
     assert res.cases[0].kind == "line_unmatched"
 
 
@@ -474,6 +507,15 @@ def test_drift_runs_after_near_and_before_bank_only():
     assert res.cases[0].context["hint"] == "date_drift"
 
 
+def test_exact_amount_four_days_apart_with_merchant_overlap_is_near_not_drift():
+    # near runs first and accepts delta 0 inside its 5-day window when the merchant text overlaps; drift takes the
+    # same pair only without text overlap. Both outcomes are proposals, never claims.
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], [E(10, date(2026, 9, 7), "-580", merchant="全聯 大安")])
+    assert res.claims == [] and res.cases[0].kind == "amount_delta" and "hint" not in res.cases[0].context
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], [E(10, date(2026, 9, 7), "-580", merchant="家樂福")])
+    assert res.cases[0].context["hint"] == "date_drift"
+
+
 def test_drift_respects_the_gate_and_peer_rule():
     res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 10), "-580", kind="refund", merchant="")])
     assert res.cases[0].kind == "line_unmatched"
@@ -482,12 +524,33 @@ def test_drift_respects_the_gate_and_peer_rule():
     assert res.cases[0].kind == "line_unmatched"
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [ ] **Step 2: Write the failing integration test (drift case round-trips and resolves with `match`)**
 
-Run: `.venv/bin/python -m pytest tests/unit/test_statement_matching.py -q -p no:cacheprovider -k drift`
-Expected: FAIL (`Rules` has no `drift_window_days`; cases are `line_unmatched`).
+In `tests/integration/test_reconciliation_service.py`, next to the other `run`/`seed` tests (helpers `_submit`, `_cases`, `_active`, `_line` come from `tests/integration/statement_fixtures.py`; `seed.account(name, currency="TWD", opening="0", **extra)` and `seed.entry(account, amount, *, kind="expense", day=..., source="manual", **extra)` are `tests/conftest.py:408,431`):
 
-- [ ] **Step 3: Implement**
+```python
+def test_date_drift_case_is_written_and_resolves_with_match(seed, db_session, run):
+    from app.services.reconciliation_actions import engine
+    card = seed.account("drift 卡", is_credit=True)
+    entry = seed.entry(card, "-580", day=date(2026, 9, 15), merchant="全聯")
+    stmt, lines, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 5), "全聯", 580, "purchase")])
+    case = next(c for c in _cases(db_session, stmt.id, "open") if c.kind == "amount_delta")
+    assert case.context["hint"] == "date_drift" and case.context["date_distance"] == 10 and case.entry_id == entry.id
+    assert case.candidates == [{"entry_id": entry.id, "reason": "date_drift", "date_distance": 10}]
+    engine.apply_action(db_session, case_id=case.id, action="match", params={"line_id": lines[0].id, "entry_id": entry.id},
+                        actor="owner", label="owner")
+    db_session.commit()
+    assert db_session.get(ReconciliationCase, case.id).status == "resolved" and len(_active(db_session, stmt.id)) == 1
+```
+
+(Line 5 Sep and entry 15 Sep: distance 10, inside the period, outside the near window; merchant text overlaps, so near would take it only inside 5 days.)
+
+- [ ] **Step 3: Run both to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/unit/test_statement_matching.py tests/integration/test_reconciliation_service.py -q -p no:cacheprovider -k "drift or near_not_drift"`
+Expected: FAIL (`Rules` has no `drift_window_days`; cases are `line_unmatched`; the integration test finds no `amount_delta` case).
+
+- [ ] **Step 4: Implement**
 
 Add to `Rules` (after `near_tolerance_pct`):
 
@@ -528,38 +591,12 @@ In `match()`, extend the fallback chain:
             or _drift_case(statement_kind, line, entries, claimed, rules)
 ```
 
-- [ ] **Step 4: Run the unit file**
+- [ ] **Step 5: Run both files to verify they pass**
 
-Run: `.venv/bin/python -m pytest tests/unit/test_statement_matching.py -q -p no:cacheprovider`
-Expected: PASS.
+Run: `.venv/bin/python -m pytest tests/unit/test_statement_matching.py tests/integration/test_reconciliation_service.py -q -p no:cacheprovider`
+Expected: PASS. If `engine.apply_action` refuses with `not allowed for this case`, the case kind is wrong — `KIND_ACTIONS["amount_delta"]` includes `match` on main.
 
-- [ ] **Step 5: Write the failing integration test (drift case round-trips and resolves with `match`)**
-
-In `tests/integration/test_reconciliation_service.py`, next to the other `run`/`seed` tests (see `_submit`, `_cases`, `_active` helpers in that file and `tests/integration/statement_fixtures.py`):
-
-```python
-def test_date_drift_case_is_written_and_resolves_with_match(seed, db_session, run):
-    from app.services.reconciliation_actions import engine
-    card = seed.account("drift 卡", is_credit=True)
-    entry = seed.entry(card, "-580", day=date(2026, 9, 15), merchant="全聯")
-    stmt, lines, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 5), "全聯", 580, "purchase")])
-    case = next(c for c in _cases(db_session, stmt.id, "open") if c.kind == "amount_delta")
-    assert case.context["hint"] == "date_drift" and case.context["date_distance"] == 10 and case.entry_id == entry.id
-    assert case.candidates == [{"entry_id": entry.id, "reason": "date_drift", "date_distance": 10}]
-    engine.apply_action(db_session, case_id=case.id, action="match", params={"line_id": lines[0].id, "entry_id": entry.id},
-                        actor="owner", label="owner")
-    db_session.commit()
-    assert db_session.get(ReconciliationCase, case.id).status == "resolved" and len(_active(db_session, stmt.id)) == 1
-```
-
-(Verified: `seed.account(name, currency="TWD", opening="0", **extra)` and `seed.entry(account, amount, *, kind="expense", day=..., source="manual", **extra)`, `tests/conftest.py:408,431`; `is_credit` is an `Account` column passed through `**extra`.)
-
-- [ ] **Step 6: Run it**
-
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_service.py -q -p no:cacheprovider -k date_drift`
-Expected: FAIL first only if Step 3 was not applied; otherwise PASS. If `engine.apply_action` refuses with `not allowed for this case`, the case kind is wrong — check `KIND_ACTIONS["amount_delta"]` includes `match` (it does on main).
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add app/services/statements/matching.py tests/unit/test_statement_matching.py tests/integration/test_reconciliation_service.py
@@ -607,14 +644,13 @@ Integration, in `tests/integration/test_reconciliation_policy.py` (helpers `_fee
 def test_policy_books_an_interest_line_without_a_pattern(seed, db_session, run):
     env = _fee_statement(seed, db_session, run, lines=[_line(1, DAY, "INTEREST CREDIT", 12, "interest")])
     assert env.cases[0].context == {"hint": "bank_only", "pattern": None}
-    _set_policy(db_session, {"enabled": True, "actions": {"create_system_entry": {"enabled": True, "max_amount": "2000"}}})
-    # run the policy the way the existing create_system_entry tests in this file do (same helper, same assertions)
-    ...
+    _set_policy(db_session, SYSTEM_ON)  # the file's constant enabling create_system_entry (see its first policy test, ~line 165)
+    result = policy_service.run_policy(db_session, env.stmt.id)
     booked = _booked(db_session, env.card.id)
-    assert len(booked) == 1 and booked[0].kind == "interest"
+    assert len(booked) == 1 and booked[0].kind == "interest" and result.applied == 1
 ```
 
-Replace the `...` with the exact policy invocation used by the first `create_system_entry` test in the file.
+(`policy_service.run_policy(db, statement_id)` is the entry point the file's existing tests call at `test_reconciliation_policy.py:167`; copy the exact result attribute the neighbouring test asserts if it is not `applied`.)
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -668,7 +704,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `matching.Rules` (Task 5's `drift_window_days`), `settings_service.reconciliation_rules(db) -> dict`.
-- Produces: `matching.population_window_days(rules) -> int`; `settings_service.RULES_VERSION == "r6a-1"`; `reconciliation_rules(db)` returns the rules dict **plus** `"rules_version"`; `rules_for(raw, period_end)` ignores `accept`/`margin`/`ambiguous_floor` overrides when `raw.get("rules_version", "").startswith("r1b")` and logs one warning per ignored key; `reconcile` loads candidates with `population_window_days(rules)`. Task 8 calls `population_window_days` through `load_candidates`.
+- Produces: `matching.population_window_days(rules) -> int`; `settings_service.RULES_VERSION == "r6a-1"`; `reconciliation_rules(db)` **and** `read_reconciliation_rules(db)` return the rules dict **plus** `"rules_version"`; a stored row that carries `rules` overrides but no `rules_version` reads as `r1b-1` (it was written before R6a); `rules_for(raw, period_end)` ignores `accept`/`margin`/`ambiguous_floor` overrides when `raw.get("rules_version", "").startswith("r1b")` and logs one warning per ignored key; `reconcile`, `worker/verify.py` and `policy_service` load candidates with `population_window_days(rules)`. Task 8 calls `population_window_days` through `load_candidates`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -683,6 +719,26 @@ def test_population_window_is_the_max_of_the_rule_windows():
     assert m.population_window_days(small) == 15
     wide = dc_replace(rules, candidate_window_days=20)
     assert m.population_window_days(wide) == 20
+
+
+def test_stored_overrides_without_a_version_read_as_r1b(db_session):
+    # a row PUT before R6a may carry rules overrides and no rules_version key: its scale overrides are stale too
+    row = settings_service._reconciliation_row(db_session)
+    row.data = {**(row.data or {}), "rules": {"margin": "0.15", "exact_window_days": 4}}
+    row.data.pop("rules_version", None)
+    db_session.flush()
+    raw = settings_service.reconciliation_rules(db_session)
+    assert raw["rules_version"] == "r1b-1" and settings_service.read_reconciliation_rules(db_session)["rules_version"] == "r1b-1"
+    rules = rec.rules_for(raw, date(2026, 9, 30))
+    assert rules.margin == Decimal("0.05") and rules.exact_window_days == 4
+    assert settings_service.get_reconciliation_settings(db_session)["rules_version"] == "r1b-1"
+
+
+def test_drift_window_is_validated_like_the_other_int_rules(db_session):
+    with pytest.raises(ValidationError):
+        settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "rules": {"drift_window_days": 10001}})
+    with pytest.raises(ValidationError):
+        settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "rules": {"drift_window_days": "15"}})
 
 
 def test_rules_for_ignores_old_scale_overrides_with_a_warning(caplog):
@@ -719,7 +775,7 @@ def test_drift_candidate_eleven_days_outside_the_period_is_loaded(seed, db_sessi
     assert case.context["hint"] == "date_drift" and case.entry_id == entry.id and case.context["date_distance"] == 13
 ```
 
-Replace the existing `test_rules_defaults_in_settings` with the version above (same name).
+Replace the existing `test_rules_defaults_in_settings` with the version above (same name). `ValidationError` is `app.services.settings_service.ValidationError` (import it as the file's other settings tests do). Also change `tests/integration/test_statement_ingest_api.py:330` from `f"r1b-{current['version'] + 1}"` to `f"r6a-{current['version'] + 1}"`.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -745,13 +801,31 @@ RULES_VERSION_PREFIX = "r6a"
 STALE_RULE_PREFIX = "r1b"  # overrides of the score-scale keys written on the old scale are ignored (R6a.1)
 ```
 
-In `reconciliation_rules`:
+Add one helper and use it in the three readers:
+
+```python
+def _stored_rules_version(data: dict) -> str:
+    """A row that carries rule overrides but no version was written before R6a: its scale overrides are stale."""
+    return data.get("rules_version") or (f"{STALE_RULE_PREFIX}-1" if data.get("rules") else RULES_VERSION)
+```
+
+`reconciliation_rules`:
 
 ```python
     row = db.get(ReconciliationSettings, 1)
     data = (row.data or {}) if row is not None else {}
-    return {**RULE_DEFAULTS, **(data.get("rules") or {}), "rules_version": data.get("rules_version") or RULES_VERSION}
+    return {**RULE_DEFAULTS, **(data.get("rules") or {}), "rules_version": _stored_rules_version(data)}
 ```
+
+`read_reconciliation_rules` (`settings_service.py:271-272`, used by `worker/verify.py:200`):
+
+```python
+def read_reconciliation_rules(db: Session) -> dict:
+    settings = read_reconciliation_settings(db)
+    return {**settings["rules"], "rules_version": settings["rules_version"]}
+```
+
+`_reconciliation_dict`: replace `data.get("rules_version") or RULES_VERSION` with `_stored_rules_version(data)` (the API then shows `r1b-1` for such a row, matching what `rules_for` applies).
 
 In `update_reconciliation_settings`, replace `f"r1b-{row.version}"` with `f"{RULES_VERSION_PREFIX}-{row.version}"`.
 
@@ -773,22 +847,34 @@ def rules_for(raw: dict, period_end: date) -> matching.Rules:
             log.warning("ignored stale rule override %s=%r (rules_version %s predates the R6a score scale)",
                         f.name, raw[f.name], raw.get("rules_version"))
             continue
-        ...  # the existing coercion body unchanged
+        value, default = raw[f.name], f.default
+        if isinstance(default, bool):  # before int: bool is an int subclass
+            value = value is True or str(value).lower() == "true"
+        elif isinstance(default, Decimal):
+            value = Decimal(str(value))
+        elif isinstance(default, tuple):
+            value = tuple(value)
+        elif isinstance(default, int):
+            value = int(value)
+        kwargs[f.name] = value
+    return matching.Rules(period_end=period_end, **kwargs)
 ```
 
-In `reconcile` (both `load_candidates` calls): `window_days=matching.population_window_days(rules)`.
-
-Check `grep -rn "candidate_window_days" app/` for other population loaders (e.g. `verify`, `engine.py:96` path) and switch any that pass it as the population window to `population_window_days(rules)`; leave installment uses (`_installment_score`, `_drifted_instances`) alone.
+Population loaders — switch every `window_days=...candidate_window_days` to `window_days=matching.population_window_days(rules)`:
+- `app/services/reconciliation_service.py` `reconcile`, both `load_candidates` calls (`:671`, `:675`);
+- `worker/verify.py:205` (the verify preview must load the same population as reconcile, else it omits drift/near candidates 11–15 days out; `rules` there is already a `matching.Rules`);
+- `app/services/policy_service.py:278` (`ctx.rules.candidate_window_days` → `matching.population_window_days(ctx.rules)`; safe at the defaults, and keeps the agent-match representation rebuild on the same population).
+Leave the installment uses alone: `_installment_score` (`matching.py:222`) and `_drifted_instances`. Confirm with `grep -rn "candidate_window_days" app/ worker/ scripts/` that only those remain.
 
 - [ ] **Step 4: Run the integration file and the unit file**
 
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_service.py tests/unit/test_statement_matching.py -q -p no:cacheprovider`
-Expected: PASS. `test_rules_for_coerces_settings_types` still passes (no `rules_version` key → not stale).
+Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_service.py tests/integration/test_statement_ingest_api.py tests/unit/test_statement_matching.py tests/worker/test_verify.py -q -p no:cacheprovider`
+Expected: PASS. `test_rules_for_coerces_settings_types` passes (a raw dict with no `rules_version` key is not stale; only stored rows are classified by `_stored_rules_version`).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/services/statements/matching.py app/services/reconciliation_service.py app/services/settings_service.py tests/integration/test_reconciliation_service.py
+git add app/services/statements/matching.py app/services/reconciliation_service.py app/services/settings_service.py app/services/policy_service.py worker/verify.py tests/integration/test_reconciliation_service.py tests/integration/test_statement_ingest_api.py
 git commit -m "feat(reconciliation): population window = max rule window, rules_version r6a, stale-scale overrides ignored
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
@@ -804,7 +890,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes (from whichever tree `PYTHONPATH` points at, both trees export these names): `app.database.SessionLocal` (or `get_engine`), `reconciliation_service.{participating_accounts, rules_for, _current_lines, _manual_claims, load_candidates, _as_line, plan_map, _desired_cases}`, `settings_service.reconciliation_rules`, `entry_write_service.proposed_fx_fee`, `statements.matching.match`, `coverage_service.claimed_entry_ids`.
-- Produces: `r6_case_dump.py --out PATH` writes JSON `{"sha": <git HEAD of the tree on PYTHONPATH>, "statements": {<id>: {"claims": [[event_id, rule, [entry_ids]]...], "cases": [[event_id|null, kind, hint|null, [candidate entry ids], entry_id|null]...]}}}`; `r6_dryrun.py --baseline PATH --candidate PATH --out-dir DIR` writes `summary.md` (counts by kind×hint before/after, and by attributed rule) and `delta.jsonl` (one line per changed statement line), both mode 600; exit 1 when the merge gate fails (any `ambiguous` with one candidate after, or any exact claim lost). The pure diff/attribution lives in importable functions `diff_dumps(before: dict, after: dict) -> list[dict]` and `attribute(change: dict) -> str` so they are unit-testable.
+- Produces: `r6_case_dump.py --out PATH` writes JSON `{"sha": <git HEAD of the tree that supplied the imported app package>, "watermark": [max reconciliation_case.id, max statement_coverage.id, max ledger_entry.id], "statements": {<id>: {"claims": [[event_id, rule, [entry_ids]]...], "cases": [[event_id|null, kind, hint|null, [candidate keys], entry_id|null]...]}}}` where a candidate key is the entry id or `"g<group_id>"` for a group representation; `r6_dryrun.py --baseline PATH --candidate PATH --out-dir DIR` writes `summary.md` (counts by kind×hint before/after, by attributed rule, both SHAs) and `delta.jsonl` (one line per changed statement line), both mode 600; exit 1 when the merge gate fails: any `ambiguous` with fewer than two candidate keys after, any exact claim lost, any change attributed `unattributed`, or the two dumps' watermarks differ (the database changed between the runs). The pure diff/attribution lives in importable functions `diff_dumps(before: dict, after: dict) -> list[dict]`, `attribute(change: dict) -> str` and `gate_failures(changes, after, before=None) -> list[str]` so they are unit-testable.
 
 - [ ] **Step 1: Write the failing unit test for the diff and attribution**
 
@@ -823,23 +909,34 @@ def _dump(statements):
     return {"sha": "x", "statements": statements}
 
 
+def _dump(statements, watermark=(1, 1, 1), sha="x"):
+    return {"sha": sha, "watermark": list(watermark), "statements": statements}
+
+
 def test_diff_attributes_each_change_to_a_rule():
     before = _dump({"1": {"claims": [], "cases": [[11, "ambiguous", None, [5], None], [12, "line_unmatched", None, [], None],
-                                               [13, "line_unmatched", None, [], None], [14, "line_unmatched", None, [], None]]}})
+                                               [13, "line_unmatched", None, [], None], [14, "line_unmatched", None, [], None],
+                                               [15, "amount_delta", None, [8], 8]]}})
     after = _dump({"1": {"claims": [[11, "exact", [5]], [12, "exact", [6]]],
-                         "cases": [[13, "amount_delta", "date_drift", [7], 7], [14, "line_unmatched", "bank_only", [], None]]}})
+                         "cases": [[13, "amount_delta", "date_drift", [7], 7], [14, "line_unmatched", "bank_only", [], None],
+                                   [15, "amount_delta", None, [8, 9], 8]]}})
     changes = dr.diff_dumps(before, after)
     by_event = {c["event_id"]: dr.attribute(c) for c in changes}
     assert by_event == {11: "R6a.2 single-candidate ambiguous now claims", 12: "R6a.1/R6a.3 new exact claim",
-                        13: "R6a.5 date_drift proposal", 14: "R6a.6 bank_only by kind"}
+                        13: "R6a.5 date_drift proposal", 14: "R6a.6 bank_only by kind", 15: "R6a.4 near candidates changed"}
 
 
-def test_gate_fails_on_lost_claim_or_single_candidate_ambiguous():
-    before = _dump({"1": {"claims": [[11, "exact", [5]]], "cases": []}})
-    after = _dump({"1": {"claims": [], "cases": [[11, "ambiguous", None, [5], None]]}})
+def test_gate_fails_on_lost_claim_single_candidate_ambiguous_unattributed_or_moved_watermark():
+    before = _dump({"1": {"claims": [[11, "exact", [5]]], "cases": [[12, "line_unmatched", None, [], None]]}})
+    after = _dump({"1": {"claims": [], "cases": [[11, "ambiguous", None, [5], None], [12, "recheck", None, [], None]]}})
     changes = dr.diff_dumps(before, after)
-    assert dr.gate_failures(changes, after) == ["event 11: exact claim lost", "event 11: ambiguous with one candidate"]
-    assert dr.gate_failures([], after=_dump({"1": {"claims": [], "cases": []}})) == []
+    assert dr.gate_failures(changes, after, before) == ["event 11: exact claim lost", "event 11: ambiguous with one candidate",
+                                                         "event 12: unattributed change"]
+    # a group representation counts as a candidate: standalone + split group stays a legal two-candidate ambiguous case
+    legal = _dump({"1": {"claims": [], "cases": [[11, "ambiguous", None, [5, "g7"], None]]}})
+    assert dr.gate_failures([], legal, legal) == []
+    moved = _dump({"1": {"claims": [], "cases": []}}, watermark=(2, 1, 1))
+    assert dr.gate_failures([], moved, legal) == ["database changed between the dumps (watermark 1,1,1 → 2,1,1)"]
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -854,16 +951,16 @@ Expected: FAIL (file not found).
 
 Run once with PYTHONPATH pointing at the baseline checkout's services/accounting-service and once at the working
 tree; r6_dryrun.py diffs the two files. Opens one transaction, SET TRANSACTION READ ONLY, never commits.
-Usage: python -I scripts/r6_case_dump.py --out /path/dump.json
+Usage: PYTHONPATH=<tree>/services/accounting-service python scripts/r6_case_dump.py --out /path/dump.json  (no -I/-E: they drop PYTHONPATH)
 """
 import argparse
 import json
 import os
 import subprocess
 import sys
-from decimal import Decimal
+from pathlib import Path
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from app.database import SessionLocal  # the tree on PYTHONPATH
 from app.models import Account, AccountStatement
@@ -874,8 +971,15 @@ from app.services.statements import matching
 
 
 def _sha() -> str:
-    tree = os.environ.get("PYTHONPATH", ".").split(os.pathsep)[0]
+    """HEAD of the tree that actually supplied the imported `app` package (not whatever PYTHONPATH says)."""
+    import app
+    tree = str(Path(app.__file__).resolve().parents[1])
     return subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _watermark(db) -> list[int]:
+    from app.models import LedgerEntry, ReconciliationCase, StatementCoverage
+    return [db.scalar(select(func.coalesce(func.max(t.id), 0))) for t in (ReconciliationCase, StatementCoverage, LedgerEntry)]
 
 
 def _statement(db, statement) -> dict:
@@ -896,9 +1000,18 @@ def _statement(db, statement) -> dict:
     by_id = {e.id: e for e in entries if e.claimable}
     desired = rec._desired_cases(db, statement, accounts, result, lines, by_id, rules)
     claims = [[lines[c.line_id].event_id, c.representation.rule, sorted(r.entry_id for r in c.representation.rows)] for c in result.claims]
-    cases = [[c.get("event_id"), c["kind"], (c.get("context") or {}).get("hint"),
-              sorted(x["entry_id"] for x in (c.get("candidates") or ()) if isinstance(x, dict) and x.get("entry_id") is not None),
-              c.get("entry_id")] for c in desired]
+    def _keys(cands):  # a candidate is an entry id, or "g<id>" for a group representation (matching._ambiguous)
+        out = []
+        for x in cands or ():
+            if not isinstance(x, dict):
+                continue
+            if x.get("entry_id") is not None:
+                out.append(x["entry_id"])
+            elif x.get("group_id") is not None:
+                out.append(f"g{x['group_id']}")
+        return sorted(out, key=str)
+    cases = [[c.get("event_id"), c["kind"], (c.get("context") or {}).get("hint"), _keys(c.get("candidates")), c.get("entry_id")]
+             for c in desired]
     return {"claims": sorted(claims), "cases": sorted(cases, key=lambda c: (c[0] or 0, c[1], c[2] or ""))}
 
 
@@ -909,6 +1022,7 @@ def main() -> int:
     out = {"sha": _sha(), "statements": {}}
     with SessionLocal() as db:
         db.execute(text("SET TRANSACTION READ ONLY"))
+        out["watermark"] = _watermark(db)
         for stmt in db.execute(select(AccountStatement).where(AccountStatement.mode == "live").order_by(AccountStatement.id)).scalars():
             if stmt.current_revision_id is None:
                 continue
@@ -931,8 +1045,9 @@ Verified while planning: `_desired_cases` returns dicts from `_case(...)` with k
 
 ```python
 """Diff two r6_case_dump.py files and write the R6a merge-gate evidence (summary.md + delta.jsonl, mode 600).
-Usage: python -I scripts/r6_dryrun.py --baseline before.json --candidate after.json --out-dir ~/reports/home-hub-r6a-dryrun-<ts>
-Exit 1 when the gate fails: an exact claim lost, or an ambiguous case with one candidate after."""
+Usage: python scripts/r6_dryrun.py --baseline before.json --candidate after.json --out-dir ~/reports/home-hub-r6a-dryrun-<ts>
+Exit 1 when the gate fails: an exact claim lost, an ambiguous case with fewer than two candidates after, an unattributed
+change, or a database change between the two dumps (watermarks differ)."""
 import argparse
 import json
 import os
@@ -973,6 +1088,8 @@ def attribute(change: dict) -> str:
             return "R6a.5 date_drift proposal"
         if kind == "amount_delta" and (before is None or before[1] != "amount_delta"):
             return "R6a.4 near proposal"
+        if kind == "amount_delta" and before[1] == "amount_delta":
+            return "R6a.4 near candidates changed"
         if kind == "line_unmatched" and hint == "bank_only" and (before is None or before[2] != "bank_only"):
             return "R6a.6 bank_only by kind"
         if kind == "ambiguous":
@@ -980,13 +1097,17 @@ def attribute(change: dict) -> str:
     return "unattributed"
 
 
-def gate_failures(changes: list[dict], after: dict) -> list[str]:
+def gate_failures(changes: list[dict], after: dict, before: dict | None = None) -> list[str]:
     failures = [f"event {c['event_id']}: exact claim lost" for c in changes
                 if c["before"] and c["before"][0] == "claim" and c["before"][1] == "exact" and not (c["after"] and c["after"][0] == "claim")]
     for st in after["statements"].values():
         for event_id, kind, _hint, cands, _entry in st["cases"]:
-            if kind == "ambiguous" and len(cands) == 1:
+            if kind == "ambiguous" and len(cands) < 2:  # group candidates count ("g<id>")
                 failures.append(f"event {event_id}: ambiguous with one candidate")
+    failures += [f"event {c['event_id']}: unattributed change" for c in changes if attribute(c) == "unattributed"]
+    if before is not None and before.get("watermark") != after.get("watermark"):
+        a, b = ",".join(map(str, before.get("watermark", []))), ",".join(map(str, after.get("watermark", [])))
+        failures.append(f"database changed between the dumps (watermark {a} → {b})")
     return failures
 
 
@@ -1009,7 +1130,7 @@ def main() -> int:
     os.makedirs(args.out_dir, mode=0o700, exist_ok=True)
     changes = diff_dumps(before, after)
     rules = Counter(attribute(c) for c in changes)
-    failures = gate_failures(changes, after)
+    failures = gate_failures(changes, after, before)
     cb, ca = _counts(before), _counts(after)
     lines = [f"# R6a dry-run — baseline {before['sha']} → candidate {after['sha']}", "",
              f"live statements: {len(after['statements'])}; changed lines: {len(changes)}", "",
@@ -1040,13 +1161,19 @@ Run as the owner (or the verify user with the read-only role) from the candidate
     BASE=/home/opc/srv/homehub-worker/checkout/services/accounting-service   # deployed checkout = baseline (merge-base)
     CAND=$PWD                                                                 # services/accounting-service of the branch
     TS=$(date -u +%Y%m%dT%H%M%SZ); OUT=~/reports/home-hub-r6a-dryrun-$TS; mkdir -m 700 -p $OUT
-    PYTHONPATH=$BASE .venv/bin/python -I scripts/r6_case_dump.py --out $OUT/before.json
-    PYTHONPATH=$CAND .venv/bin/python -I scripts/r6_case_dump.py --out $OUT/after.json
-    .venv/bin/python -I scripts/r6_dryrun.py --baseline $OUT/before.json --candidate $OUT/after.json --out-dir $OUT
+    PYTHONPATH=$BASE .venv/bin/python scripts/r6_case_dump.py --out $OUT/before.json    # prints "... at <baseline sha>"
+    PYTHONPATH=$CAND .venv/bin/python scripts/r6_case_dump.py --out $OUT/after.json     # prints "... at <candidate sha>"
+    .venv/bin/python scripts/r6_dryrun.py --baseline $OUT/before.json --candidate $OUT/after.json --out-dir $OUT
+
+Never pass `-I` or `-E` to the dump: both drop `PYTHONPATH`, and the dump would silently import the venv's editable
+install (the candidate) twice. The dump prints the SHA of the tree that actually supplied `app`; the two printed SHAs
+must differ and match `git rev-parse HEAD` of `$BASE` and `$CAND`. Run the two dumps back to back while the poll timer is
+idle (`systemctl --user status homehub-statements-poll.timer` as the worker user, or just between two ticks); the dump
+records a watermark (max case / coverage / entry ids) and the gate fails if it moved between the runs.
 
 `summary.md` carries counts only; `delta.jsonl` carries statement/event/entry ids (no amounts, no merchants) and stays
-mode 600 under ~/reports. Gate: exit 0, every changed line attributed to an R6a rule, no exact claim lost, no
-single-candidate ambiguous case. Record the two SHAs and the summary in the release record.
+mode 600 under ~/reports. Gate: exit 0 — every changed line attributed to an R6a rule, no exact claim lost, no
+ambiguous case with fewer than two candidates, same watermark. Record the two SHAs and the summary in the release record.
 ```
 
 (Replace the `BASE` path with the actual deployed worker checkout path from the R5 release record `~/reports/home-hub-r5-release-20261015T030215Z/RELEASE.md` when running; the plan does not hard-code it.)
@@ -1056,7 +1183,7 @@ single-candidate ambiguous case. Record the two SHAs and the summary in the rele
 Run: `.venv/bin/python -m pytest tests/unit/test_r6_dryrun.py -q -p no:cacheprovider`
 Expected: PASS.
 
-Smoke (no live DB needed): `PYTHONPATH=$PWD .venv/bin/python -I scripts/r6_case_dump.py --out /tmp/claude-1000/-home-opc/e725ec3e-bc74-45aa-a474-cf3d3532997f/scratchpad/dump.json` against the development database from `.env` — expect `dumped N live statements at <sha>` and no write (check `git status` is clean and the script contains no `commit`). If the development DB is the production DB on this host, the READ ONLY transaction is the guard; still run it only once here and keep the file in the scratchpad.
+Smoke: `PYTHONPATH=$PWD .venv/bin/python scripts/r6_case_dump.py --out /tmp/claude-1000/-home-opc/e725ec3e-bc74-45aa-a474-cf3d3532997f/scratchpad/dump.json` against the database from `.env` — expect `dumped N live statements at <sha>` where `<sha>` equals `git rev-parse HEAD` of this worktree, and no write (the script contains no `commit`; the READ ONLY transaction is the guard if `.env` points at the production database — run it once and keep the file in the scratchpad, mode 600).
 
 - [ ] **Step 7: Commit**
 
@@ -1072,7 +1199,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 9: Spec implementation notes and deploy README evidence step
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-10-15-reconciliation-r6-design.md` (append `## 5. R6a implementation notes`), `deploy/statements/README.md` (operator evidence section)
+- Modify: `docs/superpowers/specs/2026-10-15-reconciliation-r6-design.md` (append `## 5. R6a implementation notes`), `deploy/statements/README.md` (operator evidence section), `services/accounting-service/README.md:151-157` (rule defaults and version string)
 
 - [ ] **Step 1: Append the implementation notes to the spec**
 
@@ -1085,7 +1212,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Near: pct 0.05; token overlap only for `dist ≥ 1`.
 - `_bank_only` returns `{"hint": "bank_only", "pattern": <matched or null>}` for fee/interest/reward lines.
 - Population: `matching.population_window_days(rules)` (max of the four windows) replaces `candidate_window_days` as the load window; installments keep `candidate_window_days`.
-- Settings: `rules_version` `r6a-<version>`; `reconciliation_rules()` returns `rules_version`; `rules_for()` ignores `accept`/`margin`/`ambiguous_floor` overrides stored under `r1b-*` with a warning.
+- Settings: `rules_version` `r6a-<version>`; `reconciliation_rules()` / `read_reconciliation_rules()` return `rules_version`; a stored row with overrides and no version reads as `r1b-1`; `rules_for()` ignores `accept`/`margin`/`ambiguous_floor` overrides stored under `r1b-*` with a warning. The settings API still *displays* such a stored override (e.g. `margin: "0.15"`) while the matcher ignores it — the displayed value is not the live scale until the owner re-saves rules.
 - Evidence: `scripts/r6_case_dump.py` + `scripts/r6_dryrun.py` (README beside them); the release record keeps `summary.md` and both SHAs.
 ```
 
@@ -1099,6 +1226,10 @@ worktree as described in `services/accounting-service/scripts/README-r6-dryrun.m
 before it is moved, and keep `summary.md` in the release record. `gate.sh` stays the parser/OCR evidence.
 ```
 
+- [ ] **Step 2b: Update the service README rule defaults**
+
+In `services/accounting-service/README.md:151-157` change `near_tolerance_pct` (`"0.03"`) → (`"0.05"`), `margin` (`"0.15"`) → (`"0.05"`), add `drift_window_days` (15) to the list, and `rules_version` becomes `r6a-<settings version>`.
+
 - [ ] **Step 3: Full suite**
 
 Run: `.venv/bin/python -m pytest -q -p no:cacheprovider`
@@ -1107,8 +1238,8 @@ Expected: all passed (R5 count + the new tests), 0 failed, 0 errors. Paste the f
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/superpowers/specs/2026-10-15-reconciliation-r6-design.md deploy/statements/README.md
-git commit -m "docs: R6a implementation notes and pytest-free matcher evidence step
+git add docs/superpowers/specs/2026-10-15-reconciliation-r6-design.md deploy/statements/README.md services/accounting-service/README.md
+git commit -m "docs: R6a implementation notes, rule defaults, pytest-free matcher evidence step
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -1121,3 +1252,4 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - **Placeholders:** none; Task 6's integration test carries one `...` to be replaced by the file's existing policy invocation (named, not "implement later"); Task 8 names two import fallbacks explicitly.
 - **Type consistency:** `population_window_days(rules) -> int` used in Tasks 7 and 8; `_drift_case` signature identical in Task 5 and the `match()` call; `_bank_only` returns a dict in Task 6 and `match()` passes it as context; `reconciliation_rules()` carries `rules_version` (Task 7) and `rules_for` reads it.
 - **Review Focus:** 1 → Task 7 (`small` rules), 2 → Task 1 (`txn_date` zero window), 3 → Task 2 (group vs standalone), 4 → Task 4 (50 vs 58), 5 → Task 5 (claimed/grouped excluded).
+- **Plan rev 2 (AGENT-130, dev-grok):** Task 4 tolerance arithmetic fixed (1053 vs 1000); Task 8 drops `-I`, reports the SHA of the tree that supplied `app`, counts group candidates, fails on `unattributed` and on a moved watermark; Task 1 marks the already-green tests as regression guards and adds the installment text-gap, `claimed_by_earlier_line` and `margin` assertion updates; Task 5 writes the integration test before the code and adds the near-vs-drift overlap test; Task 7 treats a stored row without `rules_version` as `r1b-1`, carries the version through `read_reconciliation_rules` (verify), switches `worker/verify.py:205` and `policy_service.py:278` to the population window, fixes the ingest API test and adds the out-of-range `drift_window_days` test; Task 3 pastes the full `BANK_GATES`; Task 6 names `policy_service.run_policy`; Task 9 updates the service README defaults.
