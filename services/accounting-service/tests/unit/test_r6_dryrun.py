@@ -41,3 +41,21 @@ def test_gate_fails_on_lost_claim_single_candidate_ambiguous_unattributed_or_mov
     assert dr.gate_failures([], moved, legal_base) == ["database changed between the dumps (watermark 1,1,1 → 2,1,1)"]
     same_tree = _dump({"1": {"claims": [], "cases": []}}, sha="x")
     assert dr.gate_failures([], same_tree, _dump({"1": {"claims": [], "cases": []}}, sha="x")) == ["both dumps came from the same tree (sha x)"]
+
+
+def test_exact_claim_moving_to_another_entry_fails_the_gate_but_rule_change_alone_does_not():
+    before = _dump({"1": {"claims": [[21, "exact", [5]], [22, "exact", [8, 9]]], "cases": []}}, sha="base")
+    after = _dump({"1": {"claims": [[21, "exact", [6]], [22, "exact_children", [8, 9]]], "cases": []}})
+    changes = dr.diff_dumps(before, after)
+    by_event = {c["event_id"]: dr.attribute(c) for c in changes}
+    assert by_event == {21: "R6a.1 exact claim moved to another entry", 22: "claim rule changed"}
+    assert dr.gate_failures(changes, after, before) == ["event 21: exact claim changed"]
+
+
+def test_waive_moved_drops_only_moved_claim_failures():
+    changes = [{"statement_id": 1, "event_id": 21, "before": ("claim", "exact", (5,)), "after": ("claim", "exact", (6,))},
+               {"statement_id": 1, "event_id": 23, "before": ("claim", "exact", (7,)),
+                "after": ("case", "line_unmatched", "claimed_by_earlier_line", (), None)},
+               {"statement_id": 1, "event_id": 24, "before": ("claim", "exact", (9,)), "after": ("case", "recheck", None, (), None)}]
+    failures = ["event 21: exact claim changed", "event 23: exact claim lost", "event 24: exact claim lost", "event 25: unattributed change"]
+    assert dr.waive_moved(failures, changes) == ["event 24: exact claim lost", "event 25: unattributed change"]

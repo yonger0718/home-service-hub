@@ -21,8 +21,8 @@ mode 600 under ~/reports. Gate: exit 0 — every changed line attributed to an R
 ambiguous case with fewer than two candidates, same watermark, two different SHAs. Record the two SHAs and the summary
 in the release record.
 
-Reading an "exact claim lost" failure: lines match in id order, so a line that newly claims under R6a (distance 2–3,
+Reading an "exact claim lost" or "exact claim changed" failure (the claim moved to another entry): lines match in id order, so a line that newly claims under R6a (distance 2–3,
 below accept before) can take an entry that a later line held before; the later line then shows
-`claimed_by_earlier_line`. That pair is the rescale working, not a harness bug — note the pair in the release record
+`claimed_by_earlier_line` (lost), or takes another entry (changed). That pair is the rescale working, not a harness bug — note the pair in the release record
 and re-run the gate with `--allow-moved-claims` only after the owner has read the pair list (the flag turns those
-specific failures into an "exact claim moved" line in the summary; any other lost claim still fails).
+lost/changed failures into an "exact claims moved" line in the summary listing the event ids; any other lost claim still fails).

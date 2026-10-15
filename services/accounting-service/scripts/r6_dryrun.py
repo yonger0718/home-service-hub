@@ -33,6 +33,8 @@ def diff_dumps(before: dict, after: dict) -> list[dict]:
 def attribute(change: dict) -> str:
     before, after = change["before"], change["after"]
     if after and after[0] == "claim":
+        if before and before[0] == "claim":
+            return "R6a.1 exact claim moved to another entry" if before[2] != after[2] else "claim rule changed"
         if before and before[0] == "case" and before[1] == "ambiguous" and len(before[3]) == 1:
             return "R6a.2 single-candidate ambiguous now claims"
         return "R6a.1/R6a.3 new exact claim"
@@ -53,9 +55,26 @@ def attribute(change: dict) -> str:
     return "unattributed"
 
 
+def _claim_changed(c: dict) -> bool:
+    b, a = c["before"], c["after"]
+    return bool(b and a and b[0] == "claim" and a[0] == "claim" and b[1] == "exact" and b[2] != a[2])
+
+
+def _claim_moved_events(changes: list[dict]) -> list[int]:
+    return sorted(c["event_id"] for c in changes if _claim_changed(c) or (
+        c["before"] and c["before"][0] == "claim" and c["after"] and c["after"][0] == "case" and c["after"][2] == "claimed_by_earlier_line"))
+
+
+def waive_moved(failures: list[str], changes: list[dict]) -> list[str]:
+    """--allow-moved-claims: drop the lost/changed failures of exact claims that moved to an earlier line or another entry."""
+    waived = {f"event {e}: exact claim {w}" for e in _claim_moved_events(changes) for w in ("lost", "changed")}
+    return [f for f in failures if f not in waived]
+
+
 def gate_failures(changes: list[dict], after: dict, before: dict | None = None) -> list[str]:
     failures = [f"event {c['event_id']}: exact claim lost" for c in changes
                 if c["before"] and c["before"][0] == "claim" and c["before"][1] == "exact" and not (c["after"] and c["after"][0] == "claim")]
+    failures += [f"event {c['event_id']}: exact claim changed" for c in changes if _claim_changed(c)]
     for st in after["statements"].values():
         for event_id, kind, _hint, cands, _entry in st["cases"]:
             if kind == "ambiguous" and len(cands) < 2:  # group candidates count ("g<id>")
@@ -92,10 +111,9 @@ def main() -> int:
     changes = diff_dumps(before, after)
     rules = Counter(attribute(c) for c in changes)
     failures = gate_failures(changes, after, before)
-    moved = sorted(c["event_id"] for c in changes if c["before"] and c["before"][0] == "claim"
-                   and c["after"] and c["after"][0] == "case" and c["after"][2] == "claimed_by_earlier_line")
+    moved = _claim_moved_events(changes)
     if args.allow_moved_claims:
-        failures = [f for f in failures if not any(f == f"event {e}: exact claim lost" for e in moved)]
+        failures = waive_moved(failures, changes)
     cb, ca = _counts(before), _counts(after)
     lines = [f"# R6a dry-run — baseline {before['sha']} → candidate {after['sha']}", "",
              f"live statements: {len(after['statements'])}; changed lines: {len(changes)}", "",
@@ -103,7 +121,7 @@ def main() -> int:
     lines += [f"| {k} | {cb.get(k, 0)} | {ca.get(k, 0)} |" for k in sorted(set(cb) | set(ca))]
     lines += ["", "| attributed rule | lines |", "|---|---|"] + [f"| {k} | {v} |" for k, v in rules.most_common()]
     if moved:
-        lines += ["", f"exact claims moved to an earlier line (the rescale, see README): {len(moved)} — events {', '.join(map(str, moved))}"
+        lines += ["", f"exact claims moved to an earlier line or another entry (the rescale, see README): {len(moved)} — events {', '.join(map(str, moved))}"
                   + ("" if args.allow_moved_claims else " (failing the gate until --allow-moved-claims after the owner has read them)")]
     lines += ["", "gate: " + ("PASS" if not failures else "FAIL\n- " + "\n- ".join(failures))]
     for name, payload in (("summary.md", "\n".join(lines) + "\n"), ("delta.jsonl", "".join(json.dumps({**c, "rule": attribute(c)}) + "\n" for c in changes))):
