@@ -444,6 +444,9 @@ def test_rules_for_ignores_old_scale_overrides_with_a_warning(caplog, monkeypatc
         rules = rec.rules_for({"accept": "0.95", "margin": "0.15", "exact_window_days": "4", "rules_version": "r1b-7"}, date(2026, 9, 30))
     assert rules.accept == Decimal("0.80") and rules.margin == Decimal("0.05") and rules.exact_window_days == 4
     assert sum("ignored stale rule override" in r.message for r in caplog.records) == 2
+    caplog.clear()
+    plain = rec.rules_for({**settings_service.RULE_DEFAULTS, "rules_version": "r1b-1"}, date(2026, 9, 30))
+    assert plain.margin == Decimal("0.05") and not any("ignored stale rule override" in r.message for r in caplog.records)
     fresh = rec.rules_for({"accept": "0.95", "rules_version": "r6a-9"}, date(2026, 9, 30))
     assert fresh.accept == Decimal("0.95")
 

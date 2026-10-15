@@ -86,13 +86,16 @@ SCALE_KEYS = ("accept", "margin", "ambiguous_floor")  # meaningless across the R
 
 def rules_for(raw: dict, period_end: date) -> matching.Rules:
     """matching.Rules from the settings' JSON rules (unknown keys ignored, types from the dataclass defaults).
-    Score-scale overrides stored under an r1b-* rules_version are ignored with a warning (R6a.1)."""
+    Score-scale overrides stored under an r1b-* rules_version are ignored with a warning (R6a.1); a value equal to
+    the default is not an override (settings merge the defaults into `raw`) and applies silently."""
     stale = str(raw.get("rules_version") or "").startswith(settings_service.STALE_RULE_PREFIX)
     kwargs = {}
     for f in fields(matching.Rules):
         if f.name == "period_end" or f.name not in raw:
             continue
         if stale and f.name in SCALE_KEYS:
+            if Decimal(str(raw[f.name])) == f.default:  # a merged default is not an override
+                continue
             log.warning("ignored stale rule override %s=%r (rules_version %s predates the R6a score scale)",
                         f.name, raw[f.name], raw.get("rules_version"))
             continue
