@@ -497,3 +497,41 @@ def test_gates_list_receivable_and_payable():
     assert m.eligible_kinds("card", "installment") == frozenset({"expense", "receivable"})
     assert "receivable" in m.eligible_kinds("bank", "withdrawal") and "payable" in m.eligible_kinds("bank", "deposit")
     assert "payable" not in m.eligible_kinds("bank", "withdrawal") and "receivable" not in m.eligible_kinds("bank", "deposit")
+
+
+def test_near_same_day_needs_no_merchant_overlap():
+    # R6a.4: a MOZE memo rarely repeats the statement merchant text; on the same day amount proximity is enough
+    res = run([L(1, date(2026, 9, 3), "-1030", merchant="AMAZON JP")], [E(10, date(2026, 9, 3), "-1000", merchant="日亞")])
+    case = res.cases[0]
+    assert case.kind == "amount_delta" and case.entry_id == 10 and case.context["fee_matches"] is False
+    assert case.context["residual"] == "-30.0000" and res.claims == []
+
+
+def test_near_one_day_apart_still_needs_merchant_overlap():
+    res = run([L(1, date(2026, 9, 4), "-1030", merchant="AMAZON JP")], [E(10, date(2026, 9, 3), "-1000", merchant="日亞")])
+    assert res.cases[0].kind == "line_unmatched"
+    res = run([L(1, date(2026, 9, 4), "-1030", merchant="AMAZON JP")], [E(10, date(2026, 9, 3), "-1000", merchant="AMAZON JP")])
+    assert res.cases[0].kind == "amount_delta"
+
+
+def test_near_tolerance_is_five_percent():
+    assert m.Rules(period_end=date(2026, 9, 30)).near_tolerance_pct == D("0.05")
+    res = run([L(1, date(2026, 9, 3), "-1049", merchant="")], [E(10, date(2026, 9, 3), "-1000", merchant="")])
+    assert res.cases[0].kind == "amount_delta"
+    # the tolerance base is the LINE amount (spec R6a.4 keeps `max(abs, pct·|line.flow|)`): 5 % of 1053 = 52.65 < 53
+    res = run([L(1, date(2026, 9, 3), "-1053", merchant="")], [E(10, date(2026, 9, 3), "-1000", merchant="")])
+    assert res.cases[0].kind == "line_unmatched"
+
+
+def test_near_small_amounts_use_the_absolute_tolerance_and_never_claim():
+    # Review Focus 4: 50 vs 58 is 16 % but within abs 10 — a proposal, never a claim
+    res = run([L(1, date(2026, 9, 3), "-58", merchant="")], [E(10, date(2026, 9, 3), "-50", merchant="")])
+    assert res.claims == [] and res.cases[0].kind == "amount_delta" and res.cases[0].context["fee_matches"] is False
+
+
+def test_near_applies_to_card_payment_lines_through_peer_ok():
+    # a payment line meets a transfer_in leg whose peer is known not to be a card; same day, 1 % off
+    ok = E(10, date(2026, 9, 3), "20200", kind="transfer_in", peer_is_card=False)
+    card_peer = E(11, date(2026, 9, 3), "20200", kind="transfer_in", peer_is_card=True)
+    res = run([L(1, date(2026, 9, 3), "20000", kind="payment", merchant="")], [ok, card_peer])
+    assert res.cases[0].kind == "amount_delta" and [c["entry_id"] for c in res.cases[0].candidates] == [10]

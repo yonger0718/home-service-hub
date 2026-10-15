@@ -94,7 +94,7 @@ class Rules:
     foreign_window_days: int = 5
     near_window_days: int = 5
     near_tolerance_abs: Decimal = Decimal("10")
-    near_tolerance_pct: Decimal = Decimal("0.03")
+    near_tolerance_pct: Decimal = Decimal("0.05")
     accept: Decimal = Decimal("0.80")
     margin: Decimal = Decimal("0.05")
     ambiguous_floor: Decimal = Decimal("0.50")
@@ -384,6 +384,8 @@ def _foreign_case(kind: str, line: Line, entries: list[Entry], claimed: set[int]
 
 
 def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Case | None:
+    """R6a.4: same amount within max(abs, pct) and the near window. Merchant-token overlap (half of the union) is
+    required only for candidates on another day; on the same day amount proximity is enough. Never claims."""
     gate = eligible_kinds(kind, line.line_kind)
     mine = tokens(line.merchant_norm)
     tol = max(rules.near_tolerance_abs, (rules.near_tolerance_pct * abs(line.flow)).quantize(Q))
@@ -391,13 +393,14 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
     for e in entries:
         if e.id in claimed or _entry_class(e) not in gate or not _standalone(e) or not _peer_ok(kind, line, e):
             continue
-        theirs = tokens(normalise(e.merchant or "")) | tokens(normalise(e.name or ""))
-        if not mine or not theirs or 2 * len(mine & theirs) < len(mine | theirs):
-            continue
         delta = (line.flow - e.flow).quantize(Q)
         dist = _date_distance(line, e)
         if abs(delta) > tol or dist > rules.near_window_days:
             continue
+        if dist >= 1:
+            theirs = tokens(normalise(e.merchant or "")) | tokens(normalise(e.name or ""))
+            if not mine or not theirs or 2 * len(mine & theirs) < len(mine | theirs):
+                continue
         found.append((abs(delta), dist, e.id, delta))
     if not found:
         return None
