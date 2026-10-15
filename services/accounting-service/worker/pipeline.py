@@ -271,7 +271,9 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
     services.api.update_file(lease, file_row["id"], status="unlocked", failure=None, has_text_layer=ocr_note is None,
                              text_chars=len(extracted.text), pages=extracted.pages,
                              credential_version=services.credential_version)
-    status = _parse_submit(services, lease, file_row, account_id, extracted, candidates, ocr_note, summary, final=ocr_note is not None)
+    # the first parser call is never `final`: on the trigger path a parser timeout or exit after a successful OCR read
+    # is transient (backoff, retry), exactly as on the text-layer path; only the fallback's second call is final
+    status = _parse_submit(services, lease, file_row, account_id, extracted, candidates, ocr_note, summary)
     if status is not PARSE_FAILED:
         return status
     # R5.3 fallback (AGENT-118 ruling 2026-10-14): the text-layer parse failed with parse/schema/422. Some issuers

@@ -578,3 +578,39 @@ def test_snapshot_canary_discriminates(tmp_path, monkeypatch, mutation):
     snap = next((tmp_path / "v" / "masked").glob("*.txt")).read_text(encoding="utf-8")
     compact = "".join(snap.split())
     assert any(s in compact for s in SECRETS), compact
+
+
+def test_export_masked_thread_error_carries_no_extraction_exception(tmp_path, monkeypatch):
+    """Nit (dev-grok final re-check): an OCRThreadError at export's call site, after a content-bearing NoTextLayer
+    was handled, has no canary in its context, cause, traceback or the log."""
+    import logging
+    import traceback
+    from worker import ocr, pdf
+    lines: list[str] = []
+
+    class Records(logging.Handler):
+        def emit(self, record):
+            lines.append(self.format(record))
+    handler = Records(logging.DEBUG)
+    for lg in (logging.getLogger("worker"), logging.getLogger()):
+        lg.addHandler(handler)
+        lg.setLevel(logging.DEBUG)
+        lg.disabled = False
+    seen = []
+
+    def read(self, data, password):
+        exc = ocr.OCRThreadError("ocr engine used off its owning thread")
+        seen.append(exc)
+        raise exc
+    monkeypatch.setattr(ocr.Engine, "read", read)
+    monkeypatch.setattr(pdf, "extract", lambda data, password, **kw: (_ for _ in ()).throw(pdf.NoTextLayer(CANARY)))
+    cfg, runner = _drive_world(tmp_path, {"a": encrypt(make_pdf([["short"]]), "A123456789")})
+    try:
+        with pytest.raises(ocr.OCRThreadError):  # a programming error: export does not contain it
+            verify.export_masked(_ocr_cfg(cfg, tmp_path, fake_ocr_child.ok()), runner, folder=None, limit=None)
+    finally:
+        for lg in (logging.getLogger("worker"), logging.getLogger()):
+            lg.removeHandler(handler)
+    exc = seen[0]
+    assert exc.__cause__ is None and (exc.__context__ is None or CANARY not in repr(exc.__context__))
+    assert CANARY not in "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)) and CANARY not in "\n".join(lines)

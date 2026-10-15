@@ -18,7 +18,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
-EXEMPT = ("home-service-shared", "shared-python-lib")  # the local editable package and its path fragment
+EXEMPT_NAME = "home-service-shared"           # the repository's own shared library (distribution name)
+EXEMPT_PATH = "services/shared-python-lib"    # … and its checkout, as `uv pip freeze` reports the editable install
 _PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9][A-Za-z0-9.+!_-]*)$")
 
 
@@ -31,7 +32,15 @@ def normalize(name: str) -> str:
 
 
 def is_exempt(line: str) -> bool:
-    return any(token in line for token in EXEMPT)
+    """Exactly the local shared library: its normalized distribution name, or an editable (`-e`) line whose location
+    ends with its checkout directory. A similarly named external distribution is not exempt."""
+    text = line.strip()
+    if normalize(text) == EXEMPT_NAME:
+        return True
+    if text.startswith("-e "):
+        location = text[3:].strip().rstrip("/")
+        return location.endswith("/" + EXEMPT_PATH) or location == EXEMPT_PATH
+    return False
 
 
 def build(freeze_lines: list[str], installed: list[str]) -> list[str]:
@@ -56,7 +65,7 @@ def build(freeze_lines: list[str], installed: list[str]) -> list[str]:
             problems.append(f"duplicate: {name}")
             continue
         pins[name] = f"{m.group(1)}=={m.group(2)}"
-    wanted = {normalize(n) for n in installed if not is_exempt(n)}
+    wanted = {normalize(n) for n in installed if normalize(n) != EXEMPT_NAME}
     for missing in sorted(wanted - set(pins)):
         problems.append(f"missing from freeze: {missing}")
     for extra in sorted(set(pins) - wanted):

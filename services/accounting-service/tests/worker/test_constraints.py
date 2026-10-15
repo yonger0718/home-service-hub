@@ -44,7 +44,20 @@ def test_duplicate_and_omission_fail_closed():
 def test_only_the_local_shared_package_is_exempt():
     assert constraints.build(FREEZE, INSTALLED) == constraints.build(FREEZE[:-1], INSTALLED[:-1])
     assert constraints.is_exempt("-e file:///x/services/shared-python-lib") and constraints.is_exempt("home-service-shared")
-    assert not constraints.is_exempt("-e file:///x/services/other-lib")
+    assert constraints.is_exempt("-e /home/x/workspace/home-hub/services/shared-python-lib/") and constraints.is_exempt("Home_Service.Shared")
+    assert not constraints.is_exempt("-e file:///x/services/other-lib") and not constraints.is_exempt("-e file:///x/shared-python-lib-evil")
+
+
+@pytest.mark.parametrize("bad,installed", [
+    ("home-service-shared-evil @ git+https://example.invalid/x.git@abc", "home-service-shared-evil"),   # similar name, VCS
+    ("shared-python-lib-x>=1", "shared-python-lib-x"),                                                  # similar name, unpinned
+    ("-e file:///x/services/shared-python-lib-evil", "shared-python-lib-evil"),                        # similar path, editable
+])
+def test_similarly_named_external_distributions_are_not_exempt(bad, installed):
+    with pytest.raises(constraints.ConstraintsError):
+        constraints.build(FREEZE + [bad], INSTALLED + [installed])
+    with pytest.raises(constraints.ConstraintsError, match="missing from freeze"):
+        constraints.build(FREEZE, INSTALLED + [installed])  # installed but absent from the freeze: an omission
 
 
 def test_committed_file_is_exactly_what_the_generator_produces_from_this_venv(tmp_path):

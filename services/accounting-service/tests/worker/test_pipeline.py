@@ -1273,3 +1273,51 @@ def test_raw_box_canary_discriminates(world, tmp_path, monkeypatch, mutation):
     pipeline.run(services, trigger="owner_cli")
     compact = "".join(seen[0].split())
     assert any(s in compact for s in SECRETS), compact
+
+
+@pytest.mark.parametrize("reason", ["timeout", "exit"])
+def test_parser_timeout_after_a_triggered_ocr_is_transient(world, tmp_path, db_session, reason, monkeypatch):
+    """dev-grok final re-check Must: on the trigger path the first parser call is not final — a parser timeout or
+    exit after a successful OCR read is failed/transient with a backoff, and due again once it has passed."""
+    from worker import parser as parser_mod
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT))
+    calls = []
+    real = services.parser.parse
+    broken = [True]
+
+    def parse(masked):
+        calls.append(1)
+        if broken[0]:
+            raise parser_mod.ParseError(reason, "synthetic")
+        return real(masked)
+    services.parser.parse = parse
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["transient"] == 1 and summary["failed"] == 0 and summary["ocr_trigger"] == 1 and services.ocr.starts == 1
+    row = db_session.execute(text("select status, failure, has_text_layer, next_retry_at from statement_file")).one()
+    assert row[0:3] == ("failed", "transient", False) and row[3] is not None
+    retry = services.retries.get(db_session.execute(text("select sha256 from statement_file")).scalar_one())
+    assert retry["transient_attempts"] == 1
+    assert pipeline.run(services, trigger="owner_cli")["deferred"] == 1 and calls == [1]  # backoff: not due yet
+    _shift(monkeypatch, hours=2)
+    broken[0] = False
+    again = pipeline.run(services, trigger="owner_cli")
+    assert again["parsed"] == 1 and calls == [1, 1] and services.ocr.starts == 2  # due again: OCR'd and parsed
+
+
+def test_thread_error_from_the_caller_carries_no_extraction_exception(world, tmp_path, db_session, monkeypatch, worker_log):
+    """Nit (dev-grok final re-check): an OCRThreadError raised at the real call site, with a content-bearing
+    NoTextLayer handled just before, has no canary in its context, cause, traceback or the log."""
+    from worker import ocr as ocr_mod
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok())
+    monkeypatch.setattr(pipeline.pdf, "extract", lambda data, password, **kw: (_ for _ in ()).throw(pipeline.pdf.NoTextLayer(CANARY)))
+    seen = []
+
+    def read(data, password):
+        exc = ocr_mod.OCRThreadError("ocr engine used off its owning thread")
+        seen.append(exc)
+        raise exc
+    services.ocr.read = read
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert "file_error" in summary["errors"] and _file_rows(db_session) == [("failed", "transient")]  # contained per file
+    assert len(seen) == 1
+    _assert_canary_free(seen[0], worker_log)
