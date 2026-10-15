@@ -781,8 +781,8 @@ Replace the existing `test_rules_defaults_in_settings` with the version above (s
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_service.py -q -p no:cacheprovider -k "population_window or stale_rule or rules_defaults or r6a_prefix or eleven_days or without_a_version or drift_window_is_validated"`
-Expected: FAIL for `population_window`, `stale_rule`, `rules_defaults`, `r6a_prefix`, `eleven_days`, `without_a_version` (`population_window_days` missing; version `r1b-1` vs `r6a-1`; no warning; no drift case; no `rules_version` key in the read dicts). `drift_window_is_validated` is already green once Task 5 added the int field (`_check_rules` validates every int rule) — it locks the behaviour.
+Run: `.venv/bin/python -m pytest tests/integration/test_reconciliation_service.py -q -p no:cacheprovider -k "population_window or old_scale_overrides or rules_defaults or r6a_prefix or eleven_days or without_a_version or drift_window_is_validated"`
+Expected: FAIL for `population_window`, `old_scale_overrides`, `rules_defaults`, `r6a_prefix`, `eleven_days`, `without_a_version` (`population_window_days` missing; version `r1b-1` vs `r6a-1`; no warning; no drift case; no `rules_version` key in the read dicts). `drift_window_is_validated` is already green once Task 5 added the int field (`_check_rules` validates every int rule) — it locks the behaviour.
 
 - [ ] **Step 3: Implement**
 
@@ -932,7 +932,7 @@ def test_gate_fails_on_lost_claim_single_candidate_ambiguous_unattributed_or_mov
     before = _dump({"1": {"claims": [[11, "exact", [5]]], "cases": [[12, "line_unmatched", None, [], None]]}})
     after = _dump({"1": {"claims": [], "cases": [[11, "ambiguous", None, [5], None], [12, "recheck", None, [], None]]}})
     changes = dr.diff_dumps(before, after)
-    assert dr.gate_failures(changes, after, before) == ["event 11: exact claim lost", "event 11: ambiguous with one candidate",
+    assert dr.gate_failures(changes, after, before) == ["event 11: exact claim lost", "event 11: ambiguous with fewer than two candidates",
                                                          "event 12: unattributed change"]
     # a group representation counts as a candidate: standalone + split group stays a legal two-candidate ambiguous case
     legal = _dump({"1": {"claims": [], "cases": [[11, "ambiguous", None, [5, "g7"], None]]}})
@@ -1109,7 +1109,7 @@ def gate_failures(changes: list[dict], after: dict, before: dict | None = None) 
     for st in after["statements"].values():
         for event_id, kind, _hint, cands, _entry in st["cases"]:
             if kind == "ambiguous" and len(cands) < 2:  # group candidates count ("g<id>")
-                failures.append(f"event {event_id}: ambiguous with one candidate")  # or none: both are gate failures
+                failures.append(f"event {event_id}: ambiguous with fewer than two candidates")
     failures += [f"event {c['event_id']}: unattributed change" for c in changes if attribute(c) == "unattributed"]
     if before is not None and before.get("watermark") != after.get("watermark"):
         a, b = ",".join(map(str, before.get("watermark", []))), ",".join(map(str, after.get("watermark", [])))
@@ -1142,9 +1142,9 @@ def main() -> int:
     changes = diff_dumps(before, after)
     rules = Counter(attribute(c) for c in changes)
     failures = gate_failures(changes, after, before)
+    moved = sorted(c["event_id"] for c in changes if c["before"] and c["before"][0] == "claim"
+                   and c["after"] and c["after"][0] == "case" and c["after"][2] == "claimed_by_earlier_line")
     if args.allow_moved_claims:
-        moved = {c["event_id"] for c in changes if c["before"] and c["before"][0] == "claim"
-                 and c["after"] and c["after"][0] == "case" and c["after"][2] == "claimed_by_earlier_line"}
         failures = [f for f in failures if not any(f == f"event {e}: exact claim lost" for e in moved)]
     cb, ca = _counts(before), _counts(after)
     lines = [f"# R6a dry-run — baseline {before['sha']} → candidate {after['sha']}", "",
@@ -1152,6 +1152,9 @@ def main() -> int:
              "| kind/hint | before | after |", "|---|---|---|"]
     lines += [f"| {k} | {cb.get(k, 0)} | {ca.get(k, 0)} |" for k in sorted(set(cb) | set(ca))]
     lines += ["", "| attributed rule | lines |", "|---|---|"] + [f"| {k} | {v} |" for k, v in rules.most_common()]
+    if moved:
+        lines += ["", f"exact claims moved to an earlier line (the rescale, see README): {len(moved)} — events {', '.join(map(str, moved))}"
+                  + ("" if args.allow_moved_claims else " (failing the gate until --allow-moved-claims after the owner has read them)")]
     lines += ["", "gate: " + ("PASS" if not failures else "FAIL\n- " + "\n- ".join(failures))]
     for name, payload in (("summary.md", "\n".join(lines) + "\n"), ("delta.jsonl", "".join(json.dumps({**c, "rule": attribute(c)}) + "\n" for c in changes))):
         fd = os.open(os.path.join(args.out_dir, name), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1274,5 +1277,6 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - **Placeholders:** none (Task 6's policy invocation is `policy_service.run_policy`; Task 8's imports are verified).
 - **Type consistency:** `population_window_days(rules) -> int` used in Tasks 7 and 8; `_drift_case` signature identical in Task 5 and the `match()` call; `_bank_only` returns a dict in Task 6 and `match()` passes it as context; `reconciliation_rules()` carries `rules_version` (Task 7) and `rules_for` reads it.
 - **Review Focus:** 1 → Task 7 (`small` rules), 2 → Task 1 (`txn_date` zero window), 3 → Task 2 (group vs standalone), 4 → Task 4 (50 vs 58), 5 → Task 5 (claimed/grouped excluded).
+- **Plan rev 4 (AGENT-130 PASS, nits):** `-k old_scale_overrides`; "fewer than two candidates" wording; the summary now writes the "exact claims moved" line (count + event ids) whether or not `--allow-moved-claims` is set.
 - **Plan rev 3 (AGENT-130 re-review):** Task 6 asserts `result.applied == [row.id]`; `attribute()` has a `claimed_by_earlier_line` branch (R6a.1) with a unit row; the gate fails when both dumps carry the same SHA; `--allow-moved-claims` documents the line-order claim move as the rescale; Task 1's `claimed_by_earlier_line` test puts the farther line first so it is red on the old scale; Task 7's red run selects every new test and the int-validation test is labelled already-green; `git add` lists, line numbers, duplicate `_dump` and unclosed files fixed.
 - **Plan rev 2 (AGENT-130, dev-grok):** Task 4 tolerance arithmetic fixed (1053 vs 1000); Task 8 drops `-I`, reports the SHA of the tree that supplied `app`, counts group candidates, fails on `unattributed` and on a moved watermark; Task 1 marks the already-green tests as regression guards and adds the installment text-gap, `claimed_by_earlier_line` and `margin` assertion updates; Task 5 writes the integration test before the code and adds the near-vs-drift overlap test; Task 7 treats a stored row without `rules_version` as `r1b-1`, carries the version through `read_reconciliation_rules` (verify), switches `worker/verify.py:205` and `policy_service.py:278` to the population window, fixes the ingest API test and adds the out-of-range `drift_window_days` test; Task 3 pastes the full `BANK_GATES`; Task 6 names `policy_service.run_policy`; Task 9 updates the service README defaults.
