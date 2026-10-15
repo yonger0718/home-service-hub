@@ -441,7 +441,7 @@ def test_rules_for_ignores_old_scale_overrides_with_a_warning(caplog, monkeypatc
     # alembic's fileConfig (the session's in-process upgrade) disables loggers that already exist: re-enable ours
     monkeypatch.setattr(logging.getLogger("app.services.reconciliation_service"), "disabled", False)
     with caplog.at_level(logging.WARNING, logger="app.services.reconciliation_service"):
-        rules = rec.rules_for({"accept": "0.95", "margin": "0.15", "exact_window_days": "4", "rules_version": "r1b-7"}, date(2026, 9, 30))
+        rules = rec.rules_for({"accept": "0.95", "margin": "0.20", "exact_window_days": "4", "rules_version": "r1b-7"}, date(2026, 9, 30))
     assert rules.accept == Decimal("0.80") and rules.margin == Decimal("0.05") and rules.exact_window_days == 4
     assert sum("ignored stale rule override" in r.message for r in caplog.records) == 2
     caplog.clear()
@@ -449,6 +449,24 @@ def test_rules_for_ignores_old_scale_overrides_with_a_warning(caplog, monkeypatc
     assert plain.margin == Decimal("0.05") and not any("ignored stale rule override" in r.message for r in caplog.records)
     fresh = rec.rules_for({"accept": "0.95", "rules_version": "r6a-9"}, date(2026, 9, 30))
     assert fresh.accept == Decimal("0.95")
+
+
+def test_rules_for_stale_r1b_defaults_never_pin_the_old_values(caplog, monkeypatch):
+    import logging
+    monkeypatch.setattr(logging.getLogger("app.services.reconciliation_service"), "disabled", False)
+    pe = date(2026, 9, 30)
+    stale = {"rules_version": "r1b-1"}
+    with caplog.at_level(logging.WARNING, logger="app.services.reconciliation_service"):
+        r = rec.rules_for({**stale, "margin": "0.15", "near_tolerance_pct": "0.03", "exact_window_days": 4}, pe)
+        assert r.margin == Decimal("0.05") and r.near_tolerance_pct == Decimal("0.05") and r.exact_window_days == 4
+        assert not any("ignored stale rule override" in x.message for x in caplog.records)
+        r = rec.rules_for({**stale, "margin": "0.20"}, pe)
+        assert r.margin == Decimal("0.05")
+        assert sum("ignored stale rule override" in x.message for x in caplog.records) == 1
+        caplog.clear()
+        assert rec.rules_for({**stale, "near_tolerance_pct": "0.04"}, pe).near_tolerance_pct == Decimal("0.04")
+        assert rec.rules_for({"rules_version": "r6a-9", "near_tolerance_pct": "0.03"}, pe).near_tolerance_pct == Decimal("0.03")
+        assert not any("ignored stale rule override" in x.message for x in caplog.records)
 
 
 def test_rules_defaults_in_settings(db_session):

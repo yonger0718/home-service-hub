@@ -82,16 +82,21 @@ class ReconcileResult:
 log = logging.getLogger(__name__)
 
 SCALE_KEYS = ("accept", "margin", "ambiguous_floor")  # meaningless across the R6a rescale (spec R6a.1)
+# the R1b defaults of the keys whose defaults changed in R6a: a stored copy of one is a merged default, not a choice
+R1B_RULE_DEFAULTS = {"margin": "0.15", "near_tolerance_pct": "0.03"}
 
 
 def rules_for(raw: dict, period_end: date) -> matching.Rules:
     """matching.Rules from the settings' JSON rules (unknown keys ignored, types from the dataclass defaults).
-    Score-scale overrides stored under an r1b-* rules_version are ignored with a warning (R6a.1); a value equal to
-    the default is not an override (settings merge the defaults into `raw`) and applies silently."""
+    Under an r1b-* rules_version: a value equal to the old R1b default is skipped silently (never an owner choice,
+    the new default applies); any other score-scale override differing from the default is ignored with a warning
+    (R6a.1); a scale value equal to the default applies silently (settings merge the defaults into `raw`)."""
     stale = str(raw.get("rules_version") or "").startswith(settings_service.STALE_RULE_PREFIX)
     kwargs = {}
     for f in fields(matching.Rules):
         if f.name == "period_end" or f.name not in raw:
+            continue
+        if stale and f.name in R1B_RULE_DEFAULTS and Decimal(str(raw[f.name])) == Decimal(R1B_RULE_DEFAULTS[f.name]):
             continue
         if stale and f.name in SCALE_KEYS:
             if Decimal(str(raw[f.name])) == f.default:  # a merged default is not an override
