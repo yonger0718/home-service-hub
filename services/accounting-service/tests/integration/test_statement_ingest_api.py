@@ -327,7 +327,7 @@ def test_settings_expose_rules_and_validate_rule_keys(client, card):
     saved = client.put("/settings/reconciliation", headers=S, json={"rules": {"deferral_days": 3, "accept": "0.90"}})
     assert saved.status_code == 200, saved.text
     assert saved.json()["rules"]["deferral_days"] == 3 and saved.json()["rules"]["accept"] == "0.90"
-    assert saved.json()["rules_version"] == f"r1b-{current['version'] + 1}"
+    assert saved.json()["rules_version"] == f"r6a-{current['version'] + 1}"
     again = client.put("/settings/reconciliation", headers=S, json={"rules": {"deferral_days": 3, "accept": "0.90"}})
     assert again.json()["rules_version"] == saved.json()["rules_version"]  # unchanged rules keep the version
     edges = {"accept": "1", "margin": "0", "ambiguous_floor": "0.5", "near_tolerance_pct": "0", "near_tolerance_abs": "0"}

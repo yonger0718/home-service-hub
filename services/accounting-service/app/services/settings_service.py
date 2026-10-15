@@ -63,7 +63,9 @@ def _reconciliation_row(db: Session, *, lock: bool = False) -> ReconciliationSet
     return db.get(ReconciliationSettings, 1, populate_existing=True, with_for_update=lock)
 
 
-RULES_VERSION = "r1b-1"
+RULES_VERSION = "r6a-1"
+RULES_VERSION_PREFIX = "r6a"
+STALE_RULE_PREFIX = "r1b"  # overrides of the score-scale keys written on the old scale are ignored (R6a.1)
 
 
 def _rule_default(value):
@@ -95,13 +97,18 @@ def _effective_policy(stored) -> dict:
     return {**POLICY_DEFAULTS, **{k: v for k, v in stored.items() if k != "actions"}, "actions": merged_actions}
 
 
+def _stored_rules_version(data: dict) -> str:
+    """A row that carries rule overrides but no version was written before R6a: its scale overrides are stale."""
+    return data.get("rules_version") or (f"{STALE_RULE_PREFIX}-1" if data.get("rules") else RULES_VERSION)
+
+
 def _reconciliation_dict(row: ReconciliationSettings) -> dict:
     """Stored data plus defaults: `rules` = the matching.Rules defaults overlaid with the stored keys, and
     `rules_version` (bumped whenever the defaults change meaning)."""
     data = dict(row.data or {})
     rules = {**RULE_DEFAULTS, **(data.get("rules") or {})}
     return {**data, "account_map": data.get("account_map") or {}, "dirty_enabled": data.get("dirty_enabled") is True,
-            "rules": rules, "rules_version": data.get("rules_version") or RULES_VERSION, "version": row.version,
+            "rules": rules, "rules_version": _stored_rules_version(data), "version": row.version,
             "policy": _effective_policy(data.get("policy")),
             "policy_version": data.get("policy_version") or f"{POLICY_VERSION_PREFIX}-1",
             "account_siblings": data.get("account_siblings") or {}}
@@ -254,8 +261,8 @@ def reconciliation_rules(db: Session) -> dict:
     """The matching rules (defaults overlaid with the stored keys), read without inserting the settings row: the
     reconcile transaction writes nothing outside its statement."""
     row = db.get(ReconciliationSettings, 1)
-    stored = (row.data or {}).get("rules") if row is not None else None
-    return {**RULE_DEFAULTS, **(stored or {})}
+    data = (row.data or {}) if row is not None else {}
+    return {**RULE_DEFAULTS, **(data.get("rules") or {}), "rules_version": _stored_rules_version(data)}
 
 
 def get_reconciliation_settings(db: Session) -> dict:
@@ -269,7 +276,8 @@ def read_reconciliation_settings(db: Session) -> dict:
 
 
 def read_reconciliation_rules(db: Session) -> dict:
-    return read_reconciliation_settings(db)["rules"]
+    settings = read_reconciliation_settings(db)
+    return {**settings["rules"], "rules_version": settings["rules_version"]}
 
 
 def mapping_version(account_map: dict) -> str:
@@ -296,7 +304,7 @@ def update_reconciliation_settings(db: Session, data: dict) -> dict:
     else:
         row.data = {**row.data, "policy_version": before["policy_version"]}
     if {**RULE_DEFAULTS, **rules} != before["rules"]:
-        row.data = {**row.data, "rules_version": f"r1b-{row.version}"}
+        row.data = {**row.data, "rules_version": f"{RULES_VERSION_PREFIX}-{row.version}"}
     else:
         row.data = {**row.data, "rules_version": before["rules_version"]}
     db.flush()

@@ -202,7 +202,7 @@ def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementPa
                                period_end=parsed.period_end, current_revision_id=None, kind=parsed.kind,
                                currency=parsed.currency)
     entries, groups = reconciliation_service.load_candidates(
-        db, stand_in, accounts, window_days=rules.candidate_window_days,
+        db, stand_in, accounts, window_days=matching.population_window_days(rules),
         include_reward=any(l.line_kind == "reward" for l in lines))
     result = matching.match(parsed.kind, lines, entries, groups, reconciliation_service.plan_map(db, account_id),
                             lambda e: proposed_fx_fee(accounts_by_id[e.account_id], e.flow), rules, parsed.currency)

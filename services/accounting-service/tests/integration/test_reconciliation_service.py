@@ -406,11 +406,70 @@ def test_hook_leaves_the_pass_to_the_batch_while_an_import_runs(seed, db_session
     assert len(_active(db_session, stmt.id)) == 1
 
 
+def test_population_window_is_the_max_of_the_rule_windows():
+    from app.services.statements import matching as m
+    rules = m.Rules(period_end=date(2026, 9, 30))
+    assert m.population_window_days(rules) == 15
+    small = dc_replace(rules, candidate_window_days=5, drift_window_days=15)
+    assert m.population_window_days(small) == 15
+    wide = dc_replace(rules, candidate_window_days=20)
+    assert m.population_window_days(wide) == 20
+
+
+def test_stored_overrides_without_a_version_read_as_r1b(db_session):
+    # a row PUT before R6a may carry rules overrides and no rules_version key: its scale overrides are stale too
+    row = settings_service._reconciliation_row(db_session)
+    row.data = {**(row.data or {}), "rules": {"margin": "0.15", "exact_window_days": 4}}
+    row.data.pop("rules_version", None)
+    db_session.flush()
+    raw = settings_service.reconciliation_rules(db_session)
+    assert raw["rules_version"] == "r1b-1" and settings_service.read_reconciliation_rules(db_session)["rules_version"] == "r1b-1"
+    rules = rec.rules_for(raw, date(2026, 9, 30))
+    assert rules.margin == Decimal("0.05") and rules.exact_window_days == 4
+    assert settings_service.get_reconciliation_settings(db_session)["rules_version"] == "r1b-1"
+
+
+def test_drift_window_is_validated_like_the_other_int_rules(db_session):
+    with pytest.raises(settings_service.ValidationError):
+        settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "rules": {"drift_window_days": 10001}})
+    with pytest.raises(settings_service.ValidationError):
+        settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "rules": {"drift_window_days": "15"}})
+
+
+def test_rules_for_ignores_old_scale_overrides_with_a_warning(caplog, monkeypatch):
+    import logging
+    # alembic's fileConfig (the session's in-process upgrade) disables loggers that already exist: re-enable ours
+    monkeypatch.setattr(logging.getLogger("app.services.reconciliation_service"), "disabled", False)
+    with caplog.at_level(logging.WARNING, logger="app.services.reconciliation_service"):
+        rules = rec.rules_for({"accept": "0.95", "margin": "0.15", "exact_window_days": "4", "rules_version": "r1b-7"}, date(2026, 9, 30))
+    assert rules.accept == Decimal("0.80") and rules.margin == Decimal("0.05") and rules.exact_window_days == 4
+    assert sum("ignored stale rule override" in r.message for r in caplog.records) == 2
+    fresh = rec.rules_for({"accept": "0.95", "rules_version": "r6a-9"}, date(2026, 9, 30))
+    assert fresh.accept == Decimal("0.95")
+
+
 def test_rules_defaults_in_settings(db_session):
     settings = settings_service.get_reconciliation_settings(db_session)
-    assert settings["rules_version"] == "r1b-1"
-    assert settings["rules"]["accept"] == "0.80" and settings["rules"]["candidate_window_days"] == 10
+    assert settings["rules_version"] == "r6a-1"
+    assert settings["rules"]["accept"] == "0.80" and settings["rules"]["margin"] == "0.05"
+    assert settings["rules"]["candidate_window_days"] == 10 and settings["rules"]["drift_window_days"] == 15
     assert "period_end" not in settings["rules"] and "年費" in settings["rules"]["bank_only_patterns"]
+
+
+def test_rule_change_bumps_rules_version_with_the_r6a_prefix(db_session):
+    current = settings_service.get_reconciliation_settings(db_session)
+    out = settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": current["dirty_enabled"], "rules": {"drift_window_days": 20}})
+    assert out["rules_version"] == f"r6a-{out['version']}" and out["rules"]["drift_window_days"] == 20
+    assert settings_service.reconciliation_rules(db_session)["rules_version"] == out["rules_version"]
+
+
+def test_drift_candidate_eleven_days_outside_the_period_is_loaded(seed, db_session, run):
+    # an entry 11 days after period end is outside the old +-10 window but inside the drift window
+    card = _card(seed, db_session, "window 卡")
+    entry = seed.entry(card, "-580", day=date(2026, 10, 11), merchant="全聯")
+    stmt, lines, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 28), "全聯", 580, "purchase")])
+    case = next(c for c in _cases(db_session, stmt.id, "open") if c.kind == "amount_delta")
+    assert case.context["hint"] == "date_drift" and case.entry_id == entry.id and case.context["date_distance"] == 13
 
 
 def test_batch_records_a_failure_and_goes_on(seed, db_session, run, monkeypatch):

@@ -104,6 +104,12 @@ class Rules:
     bank_only_patterns: tuple[str, ...] = ("年費", "循環利息", "現金回饋", "跨行手續費", "轉帳手續費", "利息")
 
 
+def population_window_days(rules: Rules) -> int:
+    """R6b.0 (shipped with R6a): the orchestrator loads entries this many days around the period so that every
+    rule's candidates are present; `candidate_window_days` keeps its installment meaning."""
+    return max(rules.candidate_window_days, rules.drift_window_days, rules.near_window_days, rules.foreign_window_days)
+
+
 @dataclass(frozen=True)
 class Row:
     entry_id: int
