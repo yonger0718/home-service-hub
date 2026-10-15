@@ -1,0 +1,214 @@
+<section class="statement">
+  <header class="st-header">
+    @if (isPhone()) {
+      <a
+        [routerLink]="['/accounting/accounts', accountId(), 'statements']"
+        class="back-link"
+        aria-label="返回帳單"
+        >‹</a
+      >
+    }
+    <h2>對帳明細</h2>
+  </header>
+
+  @if (loadError()) {
+    <div class="load-error-block">
+      <p class="load-error">帳單讀取失敗</p>
+      <button type="button" class="retry" (click)="retry()">重試</button>
+    </div>
+  } @else if (loading() || !detail()) {
+    <app-skeleton rows="4" />
+  } @else {
+    @if (detail(); as statement) {
+      <p class="period">{{ periodText(statement.period_start, statement.period_end) }}</p>
+      <p class="chips">
+        @for (chip of chips(); track chip.label) {
+          <span class="mode" [class.warn]="chip.tone === 'warn'" [class.ok]="chip.tone === 'ok'">{{
+            chip.label
+          }}</span>
+        }
+      </p>
+
+      <div class="compare">
+        @if (comparison(); as comparison) {
+          <div>
+            <small>{{ comparison.statementLabel }}</small>
+            <b>{{ formatMoney(comparison.statementAmount, statement.currency) }}</b>
+          </div>
+          <div>
+            <small>{{ comparison.ledgerLabel }}</small>
+            <b>{{ formatMoney(comparison.ledgerAmount, statement.currency) }}</b>
+          </div>
+          <div>
+            <small>差額</small>
+            <b class="delta" [class.warn]="deltaWarns()">{{
+              formatMoney(comparison.delta, statement.currency, { sign: true })
+            }}</b>
+          </div>
+        } @else if (summaryError()) {
+          <p class="load-error">帳本讀取失敗</p>
+          <button type="button" class="retry" (click)="retry()">重試</button>
+        } @else {
+          <p class="muted">帳本讀取中…</p>
+        }
+      </div>
+
+      @if (statement.incoming_deferrals_pending > 0) {
+        <p class="muted">待處理遞延 {{ statement.incoming_deferrals_pending }}</p>
+      }
+
+      @if (showActions()) {
+        <div class="actions">
+          <button type="button" class="reconcile" [disabled]="busy()" (click)="reconcile()">
+            重新對帳
+          </button>
+          <button
+            type="button"
+            class="confirm"
+            [disabled]="busy() || !!confirmReason()"
+            (click)="confirm()"
+          >
+            全部確認
+          </button>
+          <button type="button" class="force" [disabled]="busy()" (click)="openForce()">
+            強制確認
+          </button>
+        </div>
+        @if (confirmReason(); as reason) {
+          <p class="reason">全部確認暫不可用：{{ reason }}</p>
+        }
+      }
+
+      @if (actionError(); as message) {
+        <p class="load-error" role="alert">{{ message }}</p>
+      }
+      @if (refusal(); as checks) {
+        <div class="refusal" role="alert">
+          <p>尚未確認</p>
+          <ul>
+            @for (check of checks; track check.key) {
+              <li>{{ check.label }}</li>
+            }
+          </ul>
+        </div>
+      }
+
+      <div class="tabs" role="radiogroup" aria-label="對帳分類">
+        <button
+          type="button"
+          role="radio"
+          [attr.aria-checked]="segment() === 'matched'"
+          (click)="setSegment('matched')"
+        >
+          已對帳 {{ segments()?.matched?.length ?? 0 }}
+        </button>
+        <button
+          type="button"
+          role="radio"
+          [attr.aria-checked]="segment() === 'statement'"
+          (click)="setSegment('statement')"
+        >
+          僅帳單有 {{ segments()?.statementOnly?.length ?? 0 }}
+        </button>
+        <button
+          type="button"
+          role="radio"
+          [attr.aria-checked]="segment() === 'ledger'"
+          (click)="setSegment('ledger')"
+        >
+          僅帳本有 {{ segments()?.ledgerOnly?.length ?? 0 }}
+        </button>
+      </div>
+
+      @if (entriesTruncated()) {
+        <p class="muted">帳本記錄超過 {{ 500 }} 筆，僅顯示前 500 筆。</p>
+      }
+
+      @if (entriesError() && (segment() === 'matched' || segment() === 'ledger')) {
+        <div class="load-error-block entries-error">
+          <p class="load-error">帳本讀取失敗</p>
+          <button type="button" class="retry entries-retry" (click)="retryEntries()">重試</button>
+        </div>
+      } @else {
+        @for (row of rows(); track row.key) {
+          <button
+            type="button"
+            class="row"
+            [attr.aria-expanded]="expanded() === row.key"
+            (click)="toggle(row.key)"
+          >
+            <span class="ico">·</span>
+            <span class="name">{{ row.title }}</span>
+            <span class="sub">{{ row.sub }}</span>
+            <span class="amt" [class.neg]="+row.amount < 0" [class.pos]="+row.amount > 0">
+              {{ formatMoney(row.amount, statement.currency, { sign: true }) }}
+            </span>
+            <span class="pills">
+              @for (pill of row.pills; track pill) {
+                <span
+                  class="pill"
+                  [class.review]="pill === '文字已變更' || pill === '資料已變更，待確認'"
+                  >{{ pill }}</span
+                >
+              }
+            </span>
+          </button>
+          @if (expanded() === row.key) {
+            <div class="match-panel">
+              @if (row.matchRules.length > 0) {
+                <p>對帳規則：{{ ruleText(row) }}</p>
+              }
+              @for (covered of row.covered; track $index) {
+                <p class="covered">
+                  {{ roleLabel(covered.role) }} {{ covered.title }}
+                  @if (covered.flow) {
+                    <span>{{ formatMoney(covered.flow, statement.currency, { sign: true }) }}</span>
+                  }
+                </p>
+              }
+              @if (row.caseId !== null) {
+                <p class="muted">待處理，操作在下一步。</p>
+              }
+            </div>
+          }
+        } @empty {
+          <p class="muted">這個分類沒有項目</p>
+        }
+      }
+    }
+  }
+</section>
+
+@if (forceOpen()) {
+  <div class="overlay" data-overlay>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="force-title" tabindex="-1">
+      <div class="grab"></div>
+      <h3 id="force-title">強制確認</h3>
+      <label class="note-label" for="force-note">備註</label>
+      <textarea
+        id="force-note"
+        class="force-note"
+        rows="3"
+        [value]="note()"
+        (input)="onNote($any($event.target).value)"
+      ></textarea>
+      @if (noteError(); as message) {
+        <p class="load-error" role="alert">{{ message }}</p>
+      }
+      @if (dirty.promptOpen()) {
+        <p class="discard">放棄未儲存的備註？</p>
+        <div class="sheet-actions">
+          <button type="button" class="discard-yes" (click)="dirty.confirmDiscard()">放棄</button>
+          <button type="button" (click)="dirty.cancelDiscard()">留下</button>
+        </div>
+      } @else {
+        <div class="sheet-actions">
+          <button type="button" (click)="requestCloseForce()">取消</button>
+          <button type="button" class="force-submit" [disabled]="busy()" (click)="submitForce()">
+            確認
+          </button>
+        </div>
+      }
+    </div>
+  </div>
+}

@@ -20,17 +20,25 @@
         <h3 class="section">信用卡帳單</h3>
       }
       @for (card of cardRows(); track card.accountId) {
-        <button type="button" class="card-row" (click)="openCard(card.accountId)">
-          <span class="ico">{{ card.icon }}</span>
-          <span class="name">{{ card.name }}</span>
-          <span class="countdown" [class.overdue]="card.overdue" [class.soon]="card.soon">{{ card.countdown }}</span>
-          <span class="figs">
-            @for (figure of card.figures; track figure.label) {
-              <span class="fig"><small>{{ figure.label }}</small> {{ figure.text }}</span>
-            }
-          </span>
-          <span class="due-date">{{ card.dueText }}</span>
-        </button>
+        <div class="card-item">
+          <button type="button" class="card-row" (click)="openCard(card.accountId)">
+            <span class="ico">{{ card.icon }}</span>
+            <span class="name">{{ card.name }}</span>
+            <span class="countdown" [class.overdue]="card.overdue" [class.soon]="card.soon">{{ card.countdown }}</span>
+            <span class="figs">
+              @for (figure of card.figures; track figure.label) {
+                <span class="fig"><small>{{ figure.label }}</small> {{ figure.text }}</span>
+              }
+            </span>
+            <span class="due-date">{{ card.dueText }}</span>
+          </button>
+          @if (card.recon) {
+            <a
+              class="recon-chip"
+              [routerLink]="['/accounting/accounts', card.accountId, 'statements', card.recon.statementId]"
+            >對帳 {{ card.recon.k }}/{{ card.recon.n }}</a>
+          }
+        </div>
       }
     }
 

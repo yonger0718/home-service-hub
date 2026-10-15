@@ -2,7 +2,10 @@
   <header class="entries-header">
     <a routerLink="/accounting/accounts" class="back-link" aria-label="返回帳戶">‹</a>
     <h2>{{ account()?.name ?? '帳戶 #' + accountId() }}</h2>
-    <a class="settings-link" [routerLink]="['/accounting/accounts', accountId(), 'settings']" aria-label="帳戶設定">⚙</a>
+    <span class="head-actions">
+      <a class="statements-link" [routerLink]="['/accounting/accounts', accountId(), 'statements']">對帳</a>
+      <a class="settings-link" [routerLink]="['/accounting/accounts', accountId(), 'settings']" aria-label="帳戶設定">⚙</a>
+    </span>
   </header>
 
   <div class="monthbar">
