@@ -453,3 +453,21 @@ def test_claimed_by_earlier_line_hint_under_the_new_scale():
     res = run(lines, [E(10, date(2026, 9, 3), "-580", merchant="")])
     assert [c.line_id for c in res.claims] == [1]
     assert res.cases[0].line_id == 2 and res.cases[0].context == {"hint": "claimed_by_earlier_line", "entry_id": 10}
+
+
+def test_single_representation_below_accept_is_never_ambiguous():
+    # R6a.2 contract: a lone candidate never stops a line as ambiguous; with accept raised to 0.95 a distance-0,
+    # text-0 representation (0.90) is below accept and must fall through to the fallback chain
+    rules = dataclasses.replace(R, accept=D("0.95"))
+    res = m.match("card", [L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 3), "-580", merchant="")], {}, {}, lambda e: None, rules, "TWD")
+    assert res.claims == [] and res.cases[0].kind != "ambiguous"
+
+
+def test_group_and_standalone_same_day_equal_text_stay_ambiguous():
+    # Review Focus 3: two representation shapes with equal scores compete globally; neither wins by position
+    g = m.Group(id=5, kind="split", member_ids=(21, 22))
+    entries = [E(10, date(2026, 9, 3), "-580", merchant=""), E(21, date(2026, 9, 3), "-300", group_id=5, merchant=""),
+               E(22, date(2026, 9, 3), "-280", group_id=5, merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries, groups={5: g})
+    assert res.claims == [] and res.cases[0].kind == "ambiguous"
+    assert {(c["entry_id"], c["group_id"]) for c in res.cases[0].candidates} == {(10, None), (None, 5)}

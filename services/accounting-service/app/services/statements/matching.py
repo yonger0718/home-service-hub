@@ -440,7 +440,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
         if line.line_kind == "installment":  # gated by the plan map only: never a generic, foreign or near match
             result.cases.append(_installment_case(line, reps, entries + hint_only, plan_map, claimed, rules))
             continue
-        if reps and reps[0].score >= rules.ambiguous_floor:  # ambiguity stops the line
+        if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:  # R6a.2: ambiguity needs two candidates
             result.cases.append(_ambiguous(line, reps))
             continue
         if not reps:
