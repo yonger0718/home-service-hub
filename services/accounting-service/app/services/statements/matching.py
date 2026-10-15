@@ -95,6 +95,7 @@ class Rules:
     near_window_days: int = 5
     near_tolerance_abs: Decimal = Decimal("10")
     near_tolerance_pct: Decimal = Decimal("0.05")
+    drift_window_days: int = 15  # R6a.5: exact amount, farther than the exact window → a date_drift proposal
     accept: Decimal = Decimal("0.80")
     margin: Decimal = Decimal("0.05")
     ambiguous_floor: Decimal = Decimal("0.50")
@@ -410,6 +411,28 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
     return Case(line.id, best_id, "amount_delta", cands, {"residual": str(best_delta), "fee_matches": False, "entry_id": best_id})
 
 
+def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Case | None:
+    """R6a.5: a standalone, gated, unclaimed entry with the same amount and sign, farther than the exact window but
+    within the drift window → an amount_delta proposal (residual 0) the owner confirms with `match`. Never claims."""
+    gate = eligible_kinds(kind, line.line_kind)
+    found: list[tuple[int, int]] = []
+    for e in entries:
+        if e.id in claimed or _entry_class(e) not in gate or not _standalone(e) or not _peer_ok(kind, line, e):
+            continue
+        if not _same(e.flow, line.flow):
+            continue
+        dist = _date_distance(line, e)
+        if rules.exact_window_days < dist <= rules.drift_window_days:
+            found.append((dist, e.id))
+    if not found:
+        return None
+    found.sort()
+    best_dist, best_id = found[0]
+    cands = tuple({"entry_id": eid, "reason": "date_drift", "date_distance": dist} for dist, eid in found)
+    return Case(line.id, best_id, "amount_delta", cands,
+                {"hint": "date_drift", "date_distance": best_dist, "entry_id": best_id, "residual": "0", "fee_matches": False})
+
+
 def _bank_only(line: Line, rules: Rules) -> str | None:
     if line.line_kind not in ("fee", "interest", "reward"):
         return None
@@ -452,7 +475,8 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
         case = _foreign_case(statement_kind, line, entries, claimed, fee_expected, rules, account_currency) \
-            or _near_case(statement_kind, line, entries, claimed, rules)
+            or _near_case(statement_kind, line, entries, claimed, rules) \
+            or _drift_case(statement_kind, line, entries, claimed, rules)
         if case is not None:
             result.cases.append(case)
             continue

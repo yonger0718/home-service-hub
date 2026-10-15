@@ -535,3 +535,60 @@ def test_near_applies_to_card_payment_lines_through_peer_ok():
     card_peer = E(11, date(2026, 9, 3), "20200", kind="transfer_in", peer_is_card=True)
     res = run([L(1, date(2026, 9, 3), "20000", kind="payment", merchant="")], [ok, card_peer])
     assert res.cases[0].kind == "amount_delta" and [c["entry_id"] for c in res.cases[0].candidates] == [10]
+
+
+def test_drift_window_default_and_settings_shape():
+    assert m.Rules(period_end=date(2026, 9, 30)).drift_window_days == 15
+
+
+def test_exact_amount_four_to_fifteen_days_apart_is_a_date_drift_proposal():
+    for days, expect in ((4, "amount_delta"), (15, "amount_delta"), (16, "line_unmatched")):
+        res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 3 + days), "-580", merchant="")])
+        case = res.cases[0]
+        assert case.kind == expect, days
+        if expect == "amount_delta":
+            assert res.claims == [] and case.entry_id == 10
+            assert case.context == {"hint": "date_drift", "date_distance": days, "entry_id": 10, "residual": "0", "fee_matches": False}
+            assert case.candidates == ({"entry_id": 10, "reason": "date_drift", "date_distance": days},)
+
+
+def test_drift_candidates_are_ordered_by_distance_then_id_and_skip_claimed_and_grouped():
+    # Review Focus 5: an entry claimed by an earlier line and a group member never appear. Line 2 sits 4 days from the
+    # claimed entry 10 (outside the exact window, so no claimed_by_earlier_line shadow) and 7 days from 11/12.
+    g = m.Group(id=5, kind="split", member_ids=(30, 31))
+    entries = [E(10, date(2026, 9, 3), "-580", merchant=""), E(12, date(2026, 9, 14), "-580", merchant=""),
+               E(11, date(2026, 9, 14), "-580", merchant=""), E(30, date(2026, 9, 9), "-580", group_id=5, merchant=""),
+               E(31, date(2026, 9, 9), "-1", group_id=5, merchant="")]
+    lines = [L(1, date(2026, 9, 3), "-580", merchant=""), L(2, date(2026, 9, 7), "-580", merchant="")]
+    res = run(lines, entries, groups={5: g})
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+    drift = next(c for c in res.cases if c.line_id == 2)
+    assert drift.kind == "amount_delta" and drift.context["hint"] == "date_drift"
+    assert [c["entry_id"] for c in drift.candidates] == [11, 12]
+
+
+def test_drift_runs_after_near_and_before_bank_only():
+    # a near candidate on the same day wins over a drift candidate ten days away
+    entries = [E(10, date(2026, 9, 3), "-1000", merchant=""), E(11, date(2026, 9, 13), "-1030", merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-1030", merchant="")], entries)
+    assert res.cases[0].context["entry_id"] == 10 and "hint" not in res.cases[0].context
+    # a fee line with a drift candidate is drift, not bank_only
+    res = run([L(1, date(2026, 9, 3), "-5", kind="fee", merchant="跨行手續費")], [E(10, date(2026, 9, 10), "-5", kind="fee", merchant="")])
+    assert res.cases[0].context["hint"] == "date_drift"
+
+
+def test_exact_amount_four_days_apart_with_merchant_overlap_is_near_not_drift():
+    # near runs first and accepts delta 0 inside its 5-day window when the merchant text overlaps; drift takes the
+    # same pair only without text overlap. Both outcomes are proposals, never claims.
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], [E(10, date(2026, 9, 7), "-580", merchant="全聯 大安")])
+    assert res.claims == [] and res.cases[0].kind == "amount_delta" and "hint" not in res.cases[0].context
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], [E(10, date(2026, 9, 7), "-580", merchant="家樂福")])
+    assert res.cases[0].context["hint"] == "date_drift"
+
+
+def test_drift_respects_the_gate_and_peer_rule():
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 10), "-580", kind="refund", merchant="")])
+    assert res.cases[0].kind == "line_unmatched"
+    card_peer = E(11, date(2026, 9, 10), "20000", kind="transfer_in", peer_is_card=True)
+    res = run([L(1, date(2026, 9, 3), "20000", kind="payment", merchant="")], [card_peer])
+    assert res.cases[0].kind == "line_unmatched"

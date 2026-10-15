@@ -962,3 +962,17 @@ def test_sibling_candidates_capped_and_ordered(seed, db_session, run):
     by_day = {e.id: e for e in entries}
     assert [c["posted_date"] for c in got] == ["2026-09-10", "2026-09-11", "2026-09-09", "2026-09-12", "2026-09-08"]
     assert len(got) == 5 and all(c["entry_id"] in by_day for c in got)
+
+
+def test_date_drift_case_is_written_and_resolves_with_match(seed, db_session, run):
+    from app.services.reconciliation_actions import engine
+    card = _card(seed, db_session, "drift 卡")
+    entry = seed.entry(card, "-580", day=date(2026, 9, 15), merchant="全聯")
+    stmt, lines, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 5), "全聯", 580, "purchase")])
+    case = next(c for c in _cases(db_session, stmt.id, "open") if c.kind == "amount_delta")
+    assert case.context["hint"] == "date_drift" and case.context["date_distance"] == 10 and case.entry_id == entry.id
+    assert case.candidates == [{"entry_id": entry.id, "reason": "date_drift", "date_distance": 10}]
+    engine.apply_action(db_session, case_id=case.id, action="match", params={"line_id": lines[0].id, "entry_id": entry.id},
+                        actor="owner", label="owner")
+    db_session.commit()
+    assert db_session.get(ReconciliationCase, case.id).status == "resolved" and len(_active(db_session, stmt.id)) == 1
