@@ -9,6 +9,7 @@ No DB, no I/O. Contract with callers (the orchestrator follows it):
   line are unavailable to later lines.
 - Known limit (deferred): the decision is greedy per line, so two equal-amount lines against two equal-amount
   entries a day apart can both end ambiguous where a global assignment would pair them.
+  Since R6a the exact window is real: distance alone never drops an in-window representation below accept.
 """
 from __future__ import annotations
 
@@ -95,7 +96,7 @@ class Rules:
     near_tolerance_abs: Decimal = Decimal("10")
     near_tolerance_pct: Decimal = Decimal("0.03")
     accept: Decimal = Decimal("0.80")
-    margin: Decimal = Decimal("0.15")
+    margin: Decimal = Decimal("0.05")
     ambiguous_floor: Decimal = Decimal("0.50")
     candidate_window_days: int = 10
     deferral_days: int = 2
@@ -208,12 +209,15 @@ def _text(line: Line, entries: tuple[Entry, ...]) -> Decimal:
 
 
 def _score(line: Line, entries: tuple[Entry, ...], window: int) -> tuple[Decimal, tuple[str, ...]]:
+    """R6a.1: any conserved exact-amount representation inside the window scores >= accept (0.80); the date term
+    (0.10, linear to the window edge) and the merchant-text term (0.10) only order candidates. A zero window keeps
+    same-day candidates only, with the full date term."""
     dist = min(_date_distance(line, e) for e in entries)
     if dist > window:
         return ZERO, ("date_out_of_window",)
-    date_term = (Decimal("0.30") * max(ZERO, Decimal(1) - Decimal(dist) / Decimal(4))).quantize(Q)
+    date_term = Decimal("0.10") if window == 0 else (Decimal("0.10") * (Decimal(1) - Decimal(dist) / Decimal(window))).quantize(Q)
     text = _text(line, entries)
-    return (Decimal("0.60") + date_term + text).quantize(Q), (f"date_distance={dist}", f"text={text}")
+    return (Decimal("0.80") + date_term + text).quantize(Q), (f"date_distance={dist}", f"text={text}")
 
 
 def _installment_score(line: Line, entry: Entry, rules: Rules) -> tuple[Decimal, tuple[str, ...]]:

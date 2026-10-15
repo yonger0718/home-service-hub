@@ -45,10 +45,10 @@ def test_merchant_signal_breaks_the_tie():
     assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
 
 
-def test_same_day_same_amount_different_merchants_is_ambiguous():
-    # text weighs at most 0.10, below the 0.15 margin: on equal dates ambiguity stops automation (§6.3)
+def test_same_day_same_amount_merchant_text_resolves_on_the_new_scale():
+    # R6a.1: text weighs 0.10, the margin is 0.05: on equal dates the better merchant match wins (global competition)
     res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], [E(10, date(2026, 9, 3), "-580", merchant="全聯 大安"), E(11, date(2026, 9, 3), "-580", merchant="家樂福")])
-    assert res.claims == [] and res.cases[0].kind == "ambiguous" and {c["entry_id"] for c in res.cases[0].candidates} == {10, 11}
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
 
 
 def test_group_claims_every_member_and_blocks_a_second_line():
@@ -363,3 +363,93 @@ def test_installment_group_sum_mismatch_is_not_admissible():
     entries, groups = _loan()
     res = run([L(1, SEP3, "-10000", kind="payment")], entries, groups=groups, kind="bank")
     assert not res.claims   # the group sums to -10500; a lone member is never admissible either
+
+
+def test_exact_amount_three_days_apart_claims_without_merchant_text():
+    # R6a.1: the configured 3-day window must work; under the old formula distance 3 scored 0.675 < accept
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 6), "-580", merchant="")])
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+    assert res.cases == []
+
+
+def test_exact_amount_two_days_apart_claims_without_merchant_text():
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 5), "-580", merchant="")])
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+
+
+def test_exact_amount_four_days_apart_is_not_a_representation():
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 7), "-580", merchant="")])
+    assert res.claims == [] and res.cases[0].line_id == 1 and res.cases[0].kind != "ambiguous"
+
+
+def test_score_orders_by_date_then_text_on_the_new_scale():
+    score0, _ = m._score(L(1, date(2026, 9, 3), "-580", merchant=""), (E(10, date(2026, 9, 3), "-580", merchant=""),), 3)
+    score3, _ = m._score(L(1, date(2026, 9, 3), "-580", merchant=""), (E(10, date(2026, 9, 6), "-580", merchant=""),), 3)
+    score_text, _ = m._score(L(1, date(2026, 9, 3), "-580", merchant="全聯 大安"), (E(10, date(2026, 9, 3), "-580", merchant="全聯 大安"),), 3)
+    assert (score0, score3, score_text) == (D("0.9000"), D("0.8000"), D("1.0000"))
+
+
+def test_closer_candidate_wins_when_two_days_apart_with_equal_text():
+    entries = [E(10, date(2026, 9, 5), "-580", merchant=""), E(11, date(2026, 9, 3), "-580", merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries)
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [11]
+
+
+def test_candidates_one_day_apart_with_equal_text_stay_ambiguous():
+    entries = [E(10, date(2026, 9, 4), "-580", merchant=""), E(11, date(2026, 9, 3), "-580", merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries)
+    assert res.claims == [] and res.cases[0].kind == "ambiguous" and {c["entry_id"] for c in res.cases[0].candidates} == {10, 11}
+
+
+def test_text_can_reverse_the_date_order():
+    # distance 0 / text 0 → 0.90; distance 2 / text 1 → 0.9333: inside the 0.05 margin → ambiguous, not the closer one
+    entries = [E(10, date(2026, 9, 3), "-580", merchant="家樂福"), E(11, date(2026, 9, 5), "-580", merchant="全聯 大安")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], entries)
+    assert res.claims == [] and res.cases[0].kind == "ambiguous"
+
+
+def test_exact_tie_stays_ambiguous():
+    entries = [E(10, date(2026, 9, 3), "-580", merchant=""), E(11, date(2026, 9, 3), "-580", merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries)
+    assert res.claims == [] and res.cases[0].kind == "ambiguous"
+
+
+def test_zero_window_scores_same_day_and_nothing_else():
+    rules = dataclasses.replace(R, exact_window_days=0)
+    same, _ = m._score(L(1, date(2026, 9, 3), "-580", merchant=""), (E(10, date(2026, 9, 3), "-580", merchant=""),), 0)
+    next_day, reasons = m._score(L(1, date(2026, 9, 3), "-580", merchant=""), (E(10, date(2026, 9, 4), "-580", merchant=""),), 0)
+    assert same == D("0.9000") and next_day == D("0") and reasons == ("date_out_of_window",)
+    res = m.match("card", [L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 3), "-580", merchant="")], {}, {}, lambda e: None, rules, "TWD")
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+
+
+def test_zero_window_uses_txn_date_distance_too():
+    # Review Focus 2: txn_date == entry_date counts as distance 0 even when posted dates differ
+    rules = dataclasses.replace(R, exact_window_days=0)
+    line = L(1, date(2026, 9, 5), "-580", merchant="", txn_date=date(2026, 9, 3))
+    res = m.match("card", [line], [E(10, date(2026, 9, 3), "-580", merchant="")], {}, {}, lambda e: None, rules, "TWD")
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+
+
+def test_margin_default_is_five_hundredths():
+    assert m.Rules(period_end=date(2026, 9, 30)).margin == D("0.05")
+
+
+def test_two_installment_representations_with_a_text_gap_now_resolve():
+    # the shared margin runs before _installment_case: two confirmed-plan reps whose text differs by >= 0.05 claim
+    # the better one (under margin 0.15 they stayed ambiguous because text <= 0.10)
+    entries = [E(40, date(2026, 9, 5), "-1000", merchant="APPLE STORE", instance=m.InstanceRef(definition_id=7, seq=2, times=12)),
+               E(41, date(2026, 9, 5), "-1000", merchant="家樂福", instance=m.InstanceRef(definition_id=7, seq=2, times=12))]
+    res = run([L(1, date(2026, 9, 5), "-1000", kind="installment", merchant="APPLE STORE", seq=2, total=12)], entries,
+              plan_map={"APPLE STORE|12|1000.0000": 7})
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [40]
+
+
+def test_claimed_by_earlier_line_hint_under_the_new_scale():
+    # lines run in id order. Line 1 is 3 days from the entry (old score 0.675: no claim, one-candidate ambiguous),
+    # line 2 is on the entry's day. Under R6a line 1 claims (0.80) and line 2 — which used to hold the exact claim —
+    # sees exactly one shadow representation whose row is claimed → the hint names it (parent §6.3, newly reachable)
+    lines = [L(1, date(2026, 9, 6), "-580", merchant=""), L(2, date(2026, 9, 3), "-580", merchant="")]
+    res = run(lines, [E(10, date(2026, 9, 3), "-580", merchant="")])
+    assert [c.line_id for c in res.claims] == [1]
+    assert res.cases[0].line_id == 2 and res.cases[0].context == {"hint": "claimed_by_earlier_line", "entry_id": 10}

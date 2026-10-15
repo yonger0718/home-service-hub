@@ -302,7 +302,7 @@ def test_rules_for_coerces_settings_types():
     rules = rec.rules_for({"accept": "0.9", "exact_window_days": "4", "bank_only_patterns": ["年費"], "x": 1},
                           date(2026, 9, 30))
     assert (rules.accept, rules.exact_window_days, rules.bank_only_patterns) == (Decimal("0.9"), 4, ("年費",))
-    assert rules.period_end == date(2026, 9, 30) and rules.margin == Decimal("0.15")
+    assert rules.period_end == date(2026, 9, 30) and rules.margin == Decimal("0.05")
 
 
 def test_next_period_end_rules():
