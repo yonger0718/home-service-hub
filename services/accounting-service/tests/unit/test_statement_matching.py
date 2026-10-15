@@ -139,6 +139,22 @@ def test_bank_only_line_is_hinted():
     assert res.cases[0].kind == "line_unmatched" and res.cases[0].context["hint"] == "bank_only"
 
 
+def test_bank_only_by_line_kind_without_any_pattern():
+    res = run([L(1, date(2026, 9, 30), "12", kind="interest", merchant="INTEREST CREDIT")], [], kind="bank")
+    assert res.cases[0].kind == "line_unmatched" and res.cases[0].context == {"hint": "bank_only", "pattern": None}
+
+
+def test_bank_only_keeps_the_matched_pattern_as_annotation():
+    res = run([L(1, date(2026, 9, 30), "-5", kind="fee", merchant="跨行手續費")], [])
+    assert res.cases[0].context == {"hint": "bank_only", "pattern": "跨行手續費"}
+
+
+def test_unknown_deposit_withdrawal_lines_are_never_bank_only():
+    for kind in ("unknown", "deposit", "withdrawal"):
+        res = run([L(1, date(2026, 9, 30), "12", kind=kind, merchant="利息")], [], kind="bank")
+        assert "hint" not in res.cases[0].context, kind
+
+
 def test_reverse_population_and_deferral():
     entries = [E(10, date(2026, 9, 3), "-580"), E(11, date(2026, 9, 29), "-90")]
     res = run([L(1, date(2026, 9, 3), "-580")], entries)

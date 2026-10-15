@@ -218,12 +218,12 @@ def test_create_system_entry_books_a_bank_only_fee_for_policy_and_reverts(seed, 
 
 
 def test_line_kind_and_refund_conditions(seed, db_session, run):
-    """create_system_entry also serves fee/interest/reward lines without a bank-only hint; create_refund serves
-    refund lines of card and bank statements alike."""
+    """create_system_entry serves fee/interest/reward lines, which since R6a always carry the bank_only hint (pattern
+    None when no pattern matched); create_refund serves refund lines of card and bank statements alike."""
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "點數折抵", -50, "reward")])
     (case,) = _cases(db_session, stmt.id, "open")
-    assert "hint" not in (case.context or {})
+    assert case.context == {"hint": "bank_only", "pattern": None}
     assert "create_system_entry" in registry.allowed(case) and "create_refund" not in registry.allowed(case)
 
     bank = seed.account("銀行", statement_live_from=date(2026, 9, 1))

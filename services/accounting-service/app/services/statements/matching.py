@@ -433,13 +433,15 @@ def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], 
                 {"hint": "date_drift", "date_distance": best_dist, "entry_id": best_id, "residual": "0", "fee_matches": False})
 
 
-def _bank_only(line: Line, rules: Rules) -> str | None:
-    if line.line_kind not in ("fee", "interest", "reward"):
+BANK_ONLY_KINDS = frozenset({"fee", "interest", "reward"})
+
+
+def _bank_only(line: Line, rules: Rules) -> dict | None:
+    """R6a.6: every fee/interest/reward line is bank-side automatic; the matched pattern (if any) only annotates."""
+    if line.line_kind not in BANK_ONLY_KINDS:
         return None
-    for pattern in rules.bank_only_patterns:
-        if pattern in line.merchant_norm:
-            return pattern
-    return None
+    pattern = next((p for p in rules.bank_only_patterns if p in line.merchant_norm), None)
+    return {"hint": "bank_only", "pattern": pattern}
 
 
 def _claimed_by_earlier_line(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
@@ -480,9 +482,9 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
         if case is not None:
             result.cases.append(case)
             continue
-        pattern = _bank_only(line, rules)
-        if pattern:
-            result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "bank_only", "pattern": pattern}))
+        bank_only = _bank_only(line, rules)
+        if bank_only:
+            result.cases.append(Case(line.id, None, "line_unmatched", (), bank_only))
             continue
         result.cases.append(Case(line.id, None, "line_unmatched", (), {}))
     unmatched: set[int] = set()
