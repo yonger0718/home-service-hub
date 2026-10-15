@@ -557,8 +557,8 @@ def test_drift_candidates_are_ordered_by_distance_then_id_and_skip_claimed_and_g
     # claimed entry 10 (outside the exact window, so no claimed_by_earlier_line shadow) and 7 days from 11/12.
     g = m.Group(id=5, kind="split", member_ids=(30, 31))
     entries = [E(10, date(2026, 9, 3), "-580", merchant=""), E(12, date(2026, 9, 14), "-580", merchant=""),
-               E(11, date(2026, 9, 14), "-580", merchant=""), E(30, date(2026, 9, 9), "-580", group_id=5, merchant=""),
-               E(31, date(2026, 9, 9), "-1", group_id=5, merchant="")]
+               E(11, date(2026, 9, 14), "-580", merchant=""), E(30, date(2026, 9, 14), "-580", group_id=5, merchant=""),
+               E(31, date(2026, 9, 14), "-1", group_id=5, merchant="")]
     lines = [L(1, date(2026, 9, 3), "-580", merchant=""), L(2, date(2026, 9, 7), "-580", merchant="")]
     res = run(lines, entries, groups={5: g})
     assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
