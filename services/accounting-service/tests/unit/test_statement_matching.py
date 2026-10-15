@@ -471,3 +471,29 @@ def test_group_and_standalone_same_day_equal_text_stay_ambiguous():
     res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries, groups={5: g})
     assert res.claims == [] and res.cases[0].kind == "ambiguous"
     assert {(c["entry_id"], c["group_id"]) for c in res.cases[0].candidates} == {(10, None), (None, 5)}
+
+
+def test_card_purchase_matches_a_receivable_i_paid_for_someone():
+    # R6a.3: a non-settlement receivable (amount < 0) conserves a purchase flow
+    res = run([L(1, date(2026, 9, 3), "-1200")], [E(10, date(2026, 9, 3), "-1200", kind="receivable")])
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+
+
+def test_card_purchase_never_matches_a_receivable_settlement():
+    # a collection (amount > 0, is_settlement) is class settlement_in: not in the purchase gate, and the sign differs anyway
+    res = run([L(1, date(2026, 9, 3), "-1200")], [E(10, date(2026, 9, 3), "1200", kind="receivable", is_settlement=True)])
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+
+
+def test_bank_withdrawal_matches_a_receivable_and_deposit_matches_a_payable():
+    entries = [E(10, date(2026, 9, 3), "-1200", kind="receivable"), E(11, date(2026, 9, 4), "5000", kind="payable")]
+    lines = [L(1, date(2026, 9, 3), "-1200", kind="withdrawal"), L(2, date(2026, 9, 4), "5000", kind="deposit")]
+    res = run(lines, entries, kind="bank")
+    assert sorted((c.line_id, c.representation.rows[0].entry_id) for c in res.claims) == [(1, 10), (2, 11)]
+
+
+def test_gates_list_receivable_and_payable():
+    assert m.eligible_kinds("card", "purchase") == frozenset({"expense", "receivable"})
+    assert m.eligible_kinds("card", "installment") == frozenset({"expense", "receivable"})
+    assert "receivable" in m.eligible_kinds("bank", "withdrawal") and "payable" in m.eligible_kinds("bank", "deposit")
+    assert "payable" not in m.eligible_kinds("bank", "withdrawal") and "receivable" not in m.eligible_kinds("bank", "deposit")

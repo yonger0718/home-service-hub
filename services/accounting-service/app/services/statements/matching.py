@@ -144,8 +144,8 @@ class MatchResult:
 
 
 CARD_GATES = {
-    "purchase": frozenset({"expense"}),
-    "installment": frozenset({"expense"}),
+    "purchase": frozenset({"expense", "receivable"}),      # R6a.3: a receivable I paid for someone looks like a purchase
+    "installment": frozenset({"expense", "receivable"}),
     "refund": frozenset({"refund"}),
     "payment": frozenset({"transfer_in"}),
     "fee": frozenset({"fee"}),
@@ -153,8 +153,8 @@ CARD_GATES = {
     "reward": frozenset({"reward"}),
 }
 BANK_GATES = {
-    "deposit": frozenset({"income", "transfer_in", "interest", "settlement_in"}),
-    "withdrawal": frozenset({"expense", "transfer_out", "fee", "settlement_out"}),
+    "deposit": frozenset({"income", "transfer_in", "interest", "settlement_in", "payable"}),      # R6a.3: a payable I received
+    "withdrawal": frozenset({"expense", "transfer_out", "fee", "settlement_out", "receivable"}),  # R6a.3: a receivable I paid
     "transfer_in": frozenset({"transfer_in"}),
     "transfer_out": frozenset({"transfer_out"}),
     "fee": frozenset({"fee"}),
