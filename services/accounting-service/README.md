@@ -149,11 +149,11 @@ Deploy order: run `.venv/bin/alembic upgrade head` before restarting the service
 Matching (R1b). `GET /settings/reconciliation` also returns `rules` (the matcher's tunables, defaults shown) and
 `rules_version`; `PUT /settings/reconciliation {"account_map": <current>, "dirty_enabled": <current>, "rules": {...}}`
 (the full body: a PUT replaces all three) overrides, inside `rules`, any subset of `exact_window_days` (3),
-`foreign_window_days` (5), `near_window_days` (5), `near_tolerance_abs` (`"10"`, at least 0), `near_tolerance_pct` (`"0.03"`),
-`accept` (`"0.80"`), `margin` (`"0.15"`), `ambiguous_floor` (`"0.50"`), `candidate_window_days` (10), `deferral_days` (2: entries posted later than `period_end` minus that many days are deferred)
+`foreign_window_days` (5), `near_window_days` (5), `near_tolerance_abs` (`"10"`, at least 0), `near_tolerance_pct` (`"0.05"`),
+`accept` (`"0.80"`), `margin` (`"0.05"`), `ambiguous_floor` (`"0.50"`), `candidate_window_days` (10), `drift_window_days` (15), `deferral_days` (2: entries posted later than `period_end` minus that many days are deferred)
 and `bank_only_patterns`. Decimals are strings; `accept`, `margin`, `ambiguous_floor` and `near_tolerance_pct` must lie in
 0..1, integers in 0..10000; unknown keys and `period_end` are refused with 422 on `rules`. A PUT replaces `account_map`,
-`dirty_enabled` and `rules` wholesale (send them all). `rules_version` becomes `r1b-<settings version>` when the effective
+`dirty_enabled` and `rules` wholesale (send them all). `rules_version` becomes `r6a-<settings version>` when the effective
 rules change.
 
 Daily sweep. The statement worker is expected to call `POST /reconciliation/sweep` (`ingest` scope, body `{run_id, lease_token}`) once a

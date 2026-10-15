@@ -34,7 +34,7 @@ def attribute(change: dict) -> str:
     before, after = change["before"], change["after"]
     if after and after[0] == "claim":
         if before and before[0] == "claim":
-            return "R6a.1 exact claim moved to another entry" if before[2] != after[2] else "claim rule changed"
+            return "R6a.1 claim moved to another entry" if before[2] != after[2] else "claim rule changed"
         if before and before[0] == "case" and before[1] == "ambiguous" and len(before[3]) == 1:
             return "R6a.2 single-candidate ambiguous now claims"
         return "R6a.1/R6a.3 new exact claim"

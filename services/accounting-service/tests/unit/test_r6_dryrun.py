@@ -48,7 +48,7 @@ def test_exact_claim_moving_to_another_entry_fails_the_gate_but_rule_change_alon
     after = _dump({"1": {"claims": [[21, "exact", [6]], [22, "exact_children", [8, 9]]], "cases": []}})
     changes = dr.diff_dumps(before, after)
     by_event = {c["event_id"]: dr.attribute(c) for c in changes}
-    assert by_event == {21: "R6a.1 exact claim moved to another entry", 22: "claim rule changed"}
+    assert by_event == {21: "R6a.1 claim moved to another entry", 22: "claim rule changed"}
     assert dr.gate_failures(changes, after, before) == ["event 21: exact claim changed"]
 
 

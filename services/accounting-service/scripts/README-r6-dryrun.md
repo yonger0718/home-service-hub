@@ -17,7 +17,7 @@ idle (`systemctl --user status homehub-statements-poll.timer` as the worker user
 records a watermark (max case / coverage / entry ids) and the gate fails if it moved between the runs.
 
 `summary.md` carries counts only; `delta.jsonl` carries statement/event/entry ids (no amounts, no merchants) and stays
-mode 600 under ~/reports. Gate: exit 0 — every changed line attributed to an R6a rule, no exact claim lost, no
+mode 600 under ~/reports. Gate: exit 0 — every changed line attributed to an R6a rule, no exact claim lost or changed, no
 ambiguous case with fewer than two candidates, same watermark, two different SHAs. Record the two SHAs and the summary
 in the release record.
 

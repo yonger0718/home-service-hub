@@ -238,3 +238,16 @@ Case UI (R3a, PR #69); MOZE write-back; historical statements (`period_end ≤ 2
 - **Anchor with pre-existing closing adjustments.** Refused until they are removed (R6b.2); the dry-run lists affected accounts before the enable step.
 
 - **Stored rule overrides on the old scale.** Ignored with a warning, not migrated (ruling: the owner has no overrides today; settings v4 only changed policy keys).
+
+## 5. R6a implementation notes (2026-10-15, PR "R6a")
+
+- Score: `_score` = `0.80 + 0.10·(1 − dist/window) + 0.10·text`; window 0 → date term 0.10 at dist 0. `margin` 0.05. The old unit test "same day, same amount, different merchants is ambiguous" flipped: a 0.10 text difference now resolves, which is the intended global competition.
+- `match()` emits `ambiguous` only with ≥ 2 representations; `_drift_case` sits after `_near_case` and before `_bank_only`.
+- Gates: `receivable` in card purchase/installment and bank withdrawal; `payable` in bank deposit.
+- Near: pct 0.05; token overlap only for `dist ≥ 1`.
+- `_bank_only` returns `{"hint": "bank_only", "pattern": <matched or null>}` for fee/interest/reward lines.
+- Population: `matching.population_window_days(rules)` (max of the four windows) replaces `candidate_window_days` as the load window; installments keep `candidate_window_days`.
+- Settings: `rules_version` `r6a-<version>`; `reconciliation_rules()` / `read_reconciliation_rules()` return `rules_version`; a stored row with overrides and no version reads as `r1b-1`; `rules_for()` ignores `accept`/`margin`/`ambiguous_floor` overrides stored under `r1b-*` with a warning. The settings API still *displays* such a stored override (e.g. `margin: "0.15"`) while the matcher ignores it — the displayed value is not the live scale until the owner re-saves rules.
+- Stale R1b defaults: a stored r1b-* row that carries margin "0.15" or near_tolerance_pct "0.03" (the old defaults, written back by a wholesale PUT) is treated as having no override for those keys (R1B_RULE_DEFAULTS); the new defaults apply silently. The settings API still displays the stored value until the owner re-saves rules.
+- Dry-run gate: an exact claim that moved to another entry fails as "exact claim changed"; a claim that only changed rule is attributed, not failed; --allow-moved-claims waives moved claims after the owner has read the list.
+- Evidence: `scripts/r6_case_dump.py` + `scripts/r6_dryrun.py` (README beside them); the release record keeps `summary.md` and both SHAs.
