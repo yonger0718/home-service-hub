@@ -1,6 +1,6 @@
 # Statement reconciliation R6 — matching rules and statement-as-truth (design)
 
-Date: 2026-10-15. Status: design approved in conversation (owner), spec for Multica review.
+Date: 2026-10-15. Status: design approved in conversation (owner), rev 3 (transfer pairing and suspense account added at the owner's decision 7), spec for Multica review (AGENT-128/129).
 Parent spec: `2026-10-08-statement-reconciliation-design.md` (§6 matching engine, §7 cases/actions/policy, §17 R1c/R1d/R5 notes). This document amends §6 and §7; where the two disagree, this one wins for R6 and later.
 
 ## 0. Why
@@ -23,7 +23,8 @@ Owner decisions taken in the brainstorm (2026-10-15):
 3. **Statement as truth for bank accounts (owner's reframing, option A).** Instead of aligning MOZE opening balances by hand, the ledger is backfilled from statement lines and anchored at the first live statement's opening balance; from there every month's gap is a real missing entry. Scope: all bank accounts, all live months.
 4. **Cards too, with a grace period (C).** Card purchase lines still unmatched 14 days after the statement's period end are backfilled as uncategorised expenses. The grace keeps late MOZE entries from colliding with backfilled ones; when they do collide, the owner's entry wins.
 5. **Two stacks (A).** R6a (matcher rules, no ledger writes) ships and runs first; R6b (backfill, anchor, owner-wins) follows. Backfilling before the scoring fix would book lines that should have matched.
-6. **HomeHub becomes the primary ledger (A, 2026-10-15).** Backfilled entries live only in HomeHub (nothing is written back to MOZE). From the cutover (2026-10-31 at the latest) the owner categorises `對帳待分類` entries and records new transactions in HomeHub; MOZE is input only until its final import and is not kept in step afterwards. Owner's wording: new data from October is appended in HomeHub once the move is complete. The owner-wins rule (R6b.3) therefore matters mostly for the transition window and uses the drift window (15 days), not the exact window.
+6. **HomeHub becomes the primary ledger (A, 2026-10-15).** Backfilled entries live only in HomeHub (nothing is written back to MOZE). From the cutover (2026-10-31 at the latest) the owner categorises `對帳待分類` entries and records new transactions in HomeHub; MOZE is input only until its final import and is not kept in step afterwards. Owner's wording: new data from October is appended in HomeHub once the move is complete. The owner-wins rule (R6b.5) therefore matters mostly for the transition window and uses the drift window (15 days), not the exact window.
+7. **Transfers are booked too (both, 2026-10-15).** Card payments and own-account transfers are the largest flow on the bank accounts with no ledger entries, so leaving `transfer_in/out` and `payment` lines open would keep a `balance_gap` case on most bank months. R6b pairs a line with its counterpart line on another live statement when both exist (R6b.3) and otherwise books it against a HomeHub-native suspense account `對帳待配對` (R6b.4). The non-goal "cross-statement transfer pairing (R6c)" of rev 2 is withdrawn.
 
 Balance-gap evidence (`~/reports/home-hub-balance-gaps-20261015T050149Z/`): only one of ten accounts has a constant gap; the rest drift month to month, so an opening-balance edit alone would not close them. This is why 3 replaced the "align opening balance in MOZE" option.
 
@@ -103,7 +104,7 @@ Candidate: a case with `kind == "line_unmatched"`, `status == "open"`, empty `ca
 | bank | `deposit` | `income` |
 | any | `unknown` with flow < 0 / > 0 | `expense` / `income` |
 
-Not backfilled, case gets `context.hint = "needs_peer"` (set by the matcher's fallback when the line kind is one of these): `transfer_in`, `transfer_out`, `payment`, `installment`, `balance_adjustment`, `refund` (a refund needs its parent; `create_refund` stays an owner action). Transfer entries are two-legged (`transfer_group_id`); a one-legged transfer is not in the model, and pairing a bank payment line with the card's payment line is a separate feature (R6c, out of scope). On accounts with no ledger entries the residual balance gap after backfill is therefore the sum of unbooked transfers — visible in the gap, by design.
+Not booked by `backfill_entry`: `transfer_in`, `transfer_out`, `payment` (handled by R6b.3 and R6b.4; the matcher's fallback tags such a case `context.hint = "needs_peer"` so the owner's `create_entry` is not offered for them), `installment` (plan mapping), `balance_adjustment`, `refund` (a refund needs its parent; `create_refund` stays an owner action).
 
 Booking: `_Creation._book` with `kind`, `category_id = backfill_category_id(db, kind)` (a fixed category `對帳待分類` per kind, created on demand like `system_category_id`), `needs_review=True`, `source="statement"`, merchant/description/dates from the line as today. The line is claimed (`coverage_service.write_claim`, rule `backfill_entry`), the case resolves, the action row records `params = {kind, category_id}` and `inverse = {created_entry_id}` so `revert_action` deletes the entry while it is unchanged.
 
@@ -119,7 +120,19 @@ Idempotence: refused (`already_anchored`) when the account already has a `balanc
 
 The owner's existing `balance_adjustment_asof` (adjust at period end) stays available for later months.
 
-### R6b.3 `replace_backfill` — the owner's entry wins
+### R6b.3 `pair_transfer` — both lines exist
+
+Policy-only action on a `line_unmatched` case with hint `needs_peer` whose line kind is `payment`, `transfer_out` or `transfer_in`. Candidate search (matcher side, `_desired_cases`, modelled on `_cross_account_line`, R10): an uncovered line of another live statement, any account outside the participating set, same currency, `flow_amount == −line.flow_amount`, posted within `pair_window_days` (policy setting, default 3) of the line, whose kind is a counterpart (`payment` out ↔ card `payment` in; `transfer_out` ↔ `transfer_in`; a bank `payment` ↔ a bank `transfer_in` is allowed, a `withdrawal`/`deposit` is not). Exactly one such line → `context = {"hint": "needs_peer", "peer_statement_id", "peer_line_id"}`; several → the hint stays `needs_peer` without a peer (the owner pairs by hand or the suspense path takes it after grace). Both lines must be unmatched; a peer line whose own case already names this line is the same pair seen from the other side, and the policy acts on the lower statement id only.
+
+Action: `transfer_service.create_transfer(TransferIn(from_account_id=<out side account>, to_account_id=<in side account>, out_amount=|flow|, entry_date=<out line txn/posted date>, posted_date=<out line posted date>, merchant/description from the out line), source="statement")`, both legs `needs_review=True`; then `coverage_service.write_claim` for each line against its leg (rule `pair_transfer`), both cases resolved. Locks: `LockSet(statement_ids=(peer_statement_id,))` plus the case statement, in the engine's existing statement-id order (as `move_account`); `validate_before` re-reads the peer line under the locks and refuses (`peer_taken`) if it is covered meanwhile. Caps: `actions.pair_transfer.max_amount` (default "300000"); over cap → proposal. Revert: delete the transfer group and release both claims (`inverse = {transfer_group_id, coverage_ids}`), refused when either leg changed.
+
+### R6b.4 `backfill_transfer` — suspense account
+
+Policy-only action, same candidate population as R6b.3 but with no peer line, and only after the grace (`period_end + backfill_grace_days ≤ today`), so a late peer statement (the card's statement arrives after the bank's) gets its chance to pair first. Books a two-legged transfer between the line's account and the suspense account `對帳待配對` (a HomeHub-native account created on demand: currency = statement currency, one per currency, `include_in_total=False`, no `moze_id`; MOZE imports upsert MOZE accounts only, so it survives them, as accounts 145/146 do), direction by the line's flow, `source="statement"`, both legs `needs_review=True`; the line is claimed against its leg (rule `backfill_transfer`). The suspense account's balance is then the sum of transfers whose counterpart is unknown, in one place; the owner re-points a leg to the right account through the existing ledger edit path, which the dirty triggers pick up. Caps as R6b.4 (`actions.backfill_transfer.max_amount`, default "300000"). Revert as R6b.4.
+
+Owner-wins (R6b.5) applies to both: a later owner transfer whose leg on this account exactly matches the line within the drift window replaces the paired or suspense transfer (revert, then match the owner's leg).
+
+### R6b.5 `replace_backfill` — the owner's entry wins
 
 Matcher side (`reconciliation_service._desired_cases`, entry loop): for an unmatched claimable entry `e` (not deferred, not an uncovered child) find a line on the same statement with `_same(|flow|)`, conserved sign, gate containing `e`'s class, `dist ≤ drift_window_days` (15: an owner entry dated on the purchase day while the line carries the posting day, or recorded late, must still replace its stand-in), whose current coverage is held by an entry `s` with `source == "statement"` created by a `backfill_entry` action (join coverage → entry → action by `created_entry_ids`). If exactly one such line: the `entry_unmatched` case carries `context = {"hint": "shadowed_by_backfill", "line_id", "system_entry_id", "action_id"}`. Fee/interest/reward system entries and balance adjustments are never shadows (no MOZE twin exists for them).
 
@@ -127,7 +140,7 @@ Action `replace_backfill` (policy, enabled by default, no amount cap — the net
 
 MOZE backup imports do not disturb this: `delete_moze_entries` removes only entries with a MOZE source or `moze_id`, and the import's balance arithmetic (`_moze_part`) sums MOZE-source entries only, so statement-source entries survive imports and the next run sees the owner's new entry as `entry_unmatched` → shadow → replace. The same holds for the anchor of R6b.2: every import resets `account.opening_balance` from the backup's `originalAmount`, which is why the anchor is an entry and not an opening-balance edit.
 
-### R6b.4 Settings (`settings_service`)
+### R6b.6 Settings (`settings_service`)
 
 `POLICY_DEFAULTS` gains:
 
@@ -136,28 +149,31 @@ MOZE backup imports do not disturb this: `delete_moze_entries` removes only entr
 "backfill_accounts": [],
 "actions": {
   ...,
-  "backfill_entry":   {"enabled": False, "max_amount": "5000"},
-  "anchor_opening":   {"enabled": False, "max_amount": "200000"},
-  "replace_backfill": {"enabled": True}
-}
+  "backfill_entry":    {"enabled": False, "max_amount": "5000"},
+  "pair_transfer":     {"enabled": False, "max_amount": "300000"},
+  "backfill_transfer": {"enabled": False, "max_amount": "300000"},
+  "anchor_opening":    {"enabled": False, "max_amount": "200000"},
+  "replace_backfill":  {"enabled": True}
+},
+"pair_window_days": 3
 ```
 
-`_check_policy` validates the new keys (int 0..365, list of int, action blocks with `enabled` bool and optional `max_amount` Decimal string). `policy_version` prefix becomes `r6b` (`r6b-<version>`). `SYSTEM_LINE_KINDS` and `create_system_entry` are unchanged.
+`_check_policy` validates the new keys (`backfill_grace_days` int 0..365, `pair_window_days` int 0..30, list of int, action blocks with `enabled` bool and optional `max_amount` Decimal string). `policy_version` prefix becomes `r6b` (`r6b-<version>`). `SYSTEM_LINE_KINDS` and `create_system_entry` are unchanged.
 
-### R6b.5 Evidence
+### R6b.7 Evidence
 
-`scripts/r6_dryrun.py --policy`: lists, per account, what `backfill_entry`, `anchor_opening` and `replace_backfill` would do under the current settings (counts in the summary; amounts only in the detail file). Run before each enable step; the release record keeps the summary.
+`scripts/r6_dryrun.py --policy`: lists, per account, what `backfill_entry`, `pair_transfer`, `backfill_transfer`, `anchor_opening` and `replace_backfill` would do under the current settings (counts in the summary; amounts only in the detail file). Run before each enable step; the release record keeps the summary.
 
-### R6b.6 Tests
+### R6b.8 Tests
 
-`tests/integration/test_reconciliation_policy.py`: backfill eligible after grace, refused before grace, transfer/payment line gets `needs_peer` and is skipped, over-cap becomes a proposal, account scoping, category created once, `_unchanged` refuses a changed amount; anchor books at `period_start − 1` with the opening-balance delta, idempotent on rerun, refused with dirty triggers off, over cap → proposal; replace: owner entry supersedes the backfilled one (entry deleted, line re-claimed, two action rows), refused when the backfilled entry was edited, never triggered by a fee system entry. `tests/unit/test_statement_matching.py`: `needs_peer` hint for each excluded line kind. Matcher/service test for the shadow detection with two candidate lines (no hint when not unique).
+`tests/integration/test_reconciliation_policy.py`: backfill eligible after grace, refused before grace, transfer/payment line gets `needs_peer` and is skipped, over-cap becomes a proposal, account scoping, category created once, `_unchanged` refuses a changed amount; anchor books at `period_start − 1` with the opening-balance delta, idempotent on rerun, refused with dirty triggers off, over cap → proposal; replace: owner entry supersedes the backfilled one (entry deleted, line re-claimed, two action rows), refused when the backfilled entry was edited, never triggered by a fee system entry; pair: bank payment ↔ card payment within 3 days books one transfer and claims both lines, two candidate peers → no peer, peer covered between read and lock → `peer_taken`, revert releases both; suspense: created once per currency, direction by flow, refused before grace, a later owner transfer replaces it. `tests/unit/test_statement_matching.py`: `needs_peer` hint for each excluded line kind. Matcher/service test for the shadow detection with two candidate lines (no hint when not unique).
 
 ## 3. Evidence, rollout, process
 
 ### 3.1 Rollout
 
 1. R6a: merge → deploy worker + API (detached checkouts, constraints file, `gate.sh`) → one manual run → open-case delta against the 354 baseline → owner ok. Release record `~/reports/home-hub-r6a-release-<ts>/` with a pytest-free evidence step (the deploy venv has no pytest; the README gets that step).
-2. R6b: merge → deploy; all new actions off except `replace_backfill`. Backup (`docker exec … pg_dump`, as on 2026-10-15). Enable `backfill_entry` with `backfill_accounts` = bank accounts → run → per-account `balance_gap` check → enable `anchor_opening` → run → cards (`backfill_accounts` emptied). Each step is one wholesale `PUT /settings/reconciliation` (ADMIN token) and a dry-run before it.
+2. R6b: merge → deploy; all new actions off except `replace_backfill`. Backup (`docker exec … pg_dump`, as on 2026-10-15). Enable `pair_transfer` → run; enable `backfill_entry` and `backfill_transfer` with `backfill_accounts` = bank accounts → run → per-account `balance_gap` check → enable `anchor_opening` → run → cards (`backfill_accounts` emptied). Each step is one wholesale `PUT /settings/reconciliation` (ADMIN token) and a dry-run before it.
 3. The sweep does not revisit untouched statements; after each enable the operator reconciles the affected statements explicitly (`POST /accounts/{acct}/statements/{id}/reconcile`) or waits for the daily run, which re-derives cases for statements the dirty triggers marked.
 
 ### 3.2 Process
@@ -169,22 +185,23 @@ Spec review by Multica first (lead-claude, non-Claude reviewer at the exact SHA)
 Decision 6 fixes the direction of truth: statements → HomeHub ledger, owner edits in HomeHub. Consequences R6 relies on, none of which needs new code:
 
 - A MOZE backup import after the cutover is allowed but not expected; `delete_moze_entries` touches only MOZE-source rows, so HomeHub-created entries (backfill, system, manual, anchor) survive any import.
-- Backfilled entries are findable for categorisation: category `對帳待分類` per kind and `needs_review=True`; the owner edits them through the existing ledger entry API/UI. Editing the category or name does not change amount or date, so a later `replace_backfill` still finds the entry equal to its `after` only if `_Creation.invert`'s "unchanged" check is limited to amount, date and account — the plan must confirm which fields that check compares and, if it includes category, relax it for `replace_backfill` (an owner-categorised stand-in replaced by the owner's own MOZE entry is still the owner's intent).
+- Backfilled entries are findable for categorisation: category `對帳待分類` per kind and `needs_review=True`; the owner edits them through the existing ledger entry API/UI. Editing the category or name does not change amount or date, so a later `replace_backfill` (R6b.5) still finds the entry equal to its `after` only if `_Creation.invert`'s "unchanged" check is limited to amount, date and account — the plan must confirm which fields that check compares and, if it includes category, relax it for `replace_backfill` (an owner-categorised stand-in replaced by the owner's own MOZE entry is still the owner's intent).
 - Reports and budgets that read the HomeHub ledger see backfilled entries immediately; MOZE's own balance is no longer a reference after the final import.
 
 ### 3.4 Non-goals
 
-Case UI (R3a, PR #69); MOZE write-back; historical statements (`period_end ≤ 2026-06-30`); owner-vs-owner MOZE duplicates (43 suspected, list file for the owner); auto-booking `unknown` lines beyond expense/income by sign, transfers, payments, installments; cross-statement transfer pairing (R6c); OCR changes; AGENT-126 (401 → `auth`) stays a separate maintenance PR.
+Case UI (R3a, PR #69); MOZE write-back; historical statements (`period_end ≤ 2026-06-30`); owner-vs-owner MOZE duplicates (43 suspected, list file for the owner); auto-booking `unknown` lines beyond expense/income by sign; installments (plan mapping stays an owner action); OCR changes; AGENT-126 (401 → `auth`) stays a separate maintenance PR.
 
 ### 3.5 Success criteria
 
 - After R6a: open cases ≤ 290 (from 354): the 1–3-day, receivable/payable and bank-only-by-kind classes close or become policy-eligible; near/drift classes move to `amount_delta` with candidates; zero single-candidate `ambiguous`; no previously claimed line lost (dry-run gate).
-- After R6b on bank accounts: bank `line_unmatched` without `needs_peer` ≈ 0; `balance_gap` only where `needs_peer` lines remain, with the gap equal to their sum (checked per account in the release record).
+- After R6b on bank accounts: bank `line_unmatched` ≈ 0 (remaining: `unknown` lines the owner classifies, refunds without a parent); `balance_gap` = 0 on every anchored account; the suspense account's balance equals the sum of transfers without a known counterpart (checked per account in the release record).
 - After R6b on cards: a MOZE entry recorded after a backfill replaces it within one run (integration test plus one real case in the release record).
 
 ## 4. Risks and rulings
 
-- **Backfill books something the owner would have matched.** Mitigated by order (R6a first), grace (14 d), owner-wins (R6b.3, 15-day window) and caps. Remaining: an owner entry dated more than `drift_window_days` from the line, or with a different amount, is not a shadow; it shows as `entry_unmatched` next to a backfilled line — the owner dismisses or reverts by hand. After the cutover (decision 6) the owner records in HomeHub and the collision cannot arise.
+- **Backfill books something the owner would have matched.** Mitigated by order (R6a first), grace (14 d), owner-wins (R6b.5, 15-day window) and caps. Remaining: an owner entry dated more than `drift_window_days` from the line, or with a different amount, is not a shadow; it shows as `entry_unmatched` next to a backfilled line — the owner dismisses or reverts by hand. After the cutover (decision 6) the owner records in HomeHub and the collision cannot arise.
 - **Score rescale changes historical behaviour.** Historical statements are informational; the dry-run reports live statements only, and the service never rewrites coverage of claims already written.
-- **Transfers unbooked on 0-entry accounts.** Accepted; the gap is the measure. R6c when wanted.
+- **Suspense account hides misdirected transfers.** A transfer to a third party and an own-account transfer whose peer statement never arrives look the same in the suspense account. Mitigation: `needs_review` on every leg, one account per currency, its balance in the release record; the owner re-points legs in HomeHub. Pairing before suspense (grace) keeps the suspense population small.
+- **Pairing across two statements.** Two statements are locked in one action (precedent: `move_account`); the peer line is re-read under the locks. The matcher derives the pair from the lower statement id only, so one run never proposes it twice.
 - **Stored rule overrides on the old scale.** Ignored with a warning, not migrated (ruling: the owner has no overrides today; settings v4 only changed policy keys).
