@@ -529,6 +529,20 @@ def test_two_admissible_representations_skip_the_agent_match(ambiguous, db_sessi
     assert _budget(db_session) is None or _budget(db_session).used_count == 0
 
 
+def test_preview_labels_an_agent_proposal_over_its_cap_as_a_skip(ambiguous, db_session):
+    # R6b.7: the skip:<code> label through a real preview, and run_policy agrees (the agent's proposal stays pending)
+    s = ambiguous
+    _set_policy(db_session, {**MATCH_ON, "actions": {"match": {"enabled": True, "max_amount": "100"}}})
+    s.second.amount = Decimal("-581")
+    db_session.commit()
+    statement = db_session.get(AccountStatement, s.stmt.id)
+    decisions = policy_service.preview(db_session, statement, settings_service.reconciliation_policy(db_session))
+    assert [(c.action, c.proposal_id, d) for c, d in decisions] == [("match", s.proposal.id, "skip:cap_exceeded")]
+    result = policy_service.run_policy(db_session, s.stmt.id)
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"cap_exceeded": 1})
+    assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "pending"
+
+
 # --- routes -------------------------------------------------------------------------------------------------------
 
 def test_reconcile_route_reports_policy_counts(client, seed, db_session, run):
@@ -760,7 +774,9 @@ def test_policy_backfills_after_the_grace_and_not_before(seed, db_session, run, 
     s = _purchase_statement(seed, db_session, run)
     _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 14})
     assert policy_service.run_policy(db_session, s.stmt.id).applied == [] and _booked(db_session) == []
-    assert policy_service.run_policy(db_session, s.stmt.id).skipped.get("not_eligible", 0) >= 0
+    before_grace = policy_service.run_policy(db_session, s.stmt.id)  # inside the grace the line is not a candidate
+    assert (before_grace.applied, before_grace.proposed, before_grace.skipped) == ([], [], {})
+    assert _booked(db_session) == [] and _actions(db_session) == [] and _proposals(db_session) == []
     _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 10})
     result = policy_service.run_policy(db_session, s.stmt.id)
     (row,) = _actions(db_session)
@@ -1081,7 +1097,7 @@ def test_policy_replaces_a_stand_in_with_zero_budget_and_counts_toward_the_state
     assert [c.entry_id for c in _active(db_session, stmt.id) if c.line_id == line.id] == [owner.id]
     _set_policy(db_session, {"enabled": True, "per_statement_count": 1})
     # a second replacement on the same statement would exceed the count cap → proposal
-    seed.entry(card, "-320", day=DAY, merchant="家樂福")
+    owner2 = seed.entry(card, "-320", day=DAY, merchant="家樂福")
     db_session.commit()
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
@@ -1093,6 +1109,8 @@ def test_policy_replaces_a_stand_in_with_zero_budget_and_counts_toward_the_state
     assert applied.status == "applied" and applied.actor == "owner"
     assert len([a for a in _actions(db_session) if a.action == "replace_stand_in"]) == 2
     assert [c.line_id for c in _active(db_session, stmt.id) if c.entry_id in {e.id for e in _booked(db_session)}] == []
+    assert [c.entry_id for c in _active(db_session, stmt.id) if c.line_id == second.id] == [owner2.id]
+    assert sorted(c.entry_id for c in _active(db_session, stmt.id)) == sorted([owner.id, owner2.id])
 
 
 @pytest.mark.parametrize("owner_day, outcome", [(date(2026, 11, 1), "applied"), (date(2026, 11, 2), "proposed"),

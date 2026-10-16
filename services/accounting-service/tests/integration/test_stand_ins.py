@@ -170,7 +170,9 @@ def test_ledger_delete_retires_the_creation_and_marks_the_event(seed, db_session
     db_session.commit()
     (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
     assert case.context.get("owner_deleted") is True
-    assert "create_entry" in registry.allowed(case) or action == "create_refund"
+    # the owner may re-run the same creation (and create_entry/match/dismiss); the policy may not (owner-deleted)
+    again = {"create_entry": "backfill_entry"}.get(action, action)  # a purchase line offers backfill_entry next to create_entry
+    assert registry.allowed(case) == ["match", "create_entry", again, "dismiss"]
 
 
 def test_a_creation_deleted_before_the_watermark_is_retired_by_the_catch_up_pass(seed, db_session, run, dirty_on, monkeypatch):
@@ -374,6 +376,51 @@ def test_a_dismissed_shadow_case_stays_dismissed_for_the_same_owner_entry(seed, 
         rec.reconcile(db_session, s.stmt.id)
         db_session.commit()
     assert [c for c in _cases(db_session, s.stmt.id, "open") if c.entry_id == x.id] == []
+
+
+def test_the_sweep_reopens_the_backfill_case_and_leaves_the_shadow_case_untouched(seed, db_session, run, dirty_on):
+    # Task 8 ruling (d): a released line reopens its OWN case (the resolved backfill case), never the newer
+    # entry_unmatched shadow case that names the same event
+    s = _backfilled(seed, db_session, run)
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (shadow,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    (line_case,) = [c for c in _cases(db_session, s.stmt.id, "resolved") if c.kind == "line_unmatched"]
+    assert shadow.entry_id == owner.id and shadow.event_id == line_case.event_id == s.line.event_id and shadow.id > line_case.id
+    shadow_version, line_version = shadow.version, line_case.version
+    s.stand_in.amount = Decimal("-581")  # structural edit → the sweep releases the stand-in's line
+    db_session.commit()
+    _sweep(db_session, s.stmt)
+    assert _active(db_session, s.stmt.id) == []
+    reopened = db_session.get(ReconciliationCase, line_case.id)
+    assert reopened.status == "open" and reopened.version == line_version + 1
+    assert reopened.context["previous_resolution"]["resolved_action_id"] == s.action.id
+    assert reopened.context["reopened_by_event"] and reopened.context["op"] == "update"
+    untouched = db_session.get(ReconciliationCase, shadow.id)
+    assert (untouched.status, untouched.version) == ("open", shadow_version)
+    assert "reopened_by_event" not in untouched.context
+
+
+def test_no_shadow_hint_when_one_owner_entry_conserves_two_held_lines(seed, db_session, run, dirty_on):
+    # spec R6b.5 uniqueness (by_owner == 2): one owner entry could take either of two stand-in-held lines → no hint
+    card = _card(seed, db_session)
+    stmt, (first, second), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, date(2026, 9, 5), "全聯", 580)])
+    for case in _cases(db_session, stmt.id, "open"):
+        engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+        db_session.commit()
+    owner = seed.entry(card, "-580", day=date(2026, 9, 4), merchant="全聯")
+    db_session.commit()
+    rules = rec.rules_for(settings_service.reconciliation_rules(db_session), stmt.period_end)
+    statement = db_session.get(AccountStatement, stmt.id)
+    assert set(stand_ins.held_by_stand_ins(db_session, statement, [card.id])) == {first.event_id, second.event_id}
+    assert stand_ins.shadows(db_session, statement, [card.id], rules) == []
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "entry_unmatched"]
+    assert case.entry_id == owner.id and "hint" not in (case.context or {})
+    assert "replace_stand_in" not in registry.allowed(case)
 
 
 def test_shadow_requires_a_unique_line_and_a_conserving_owner_entry(seed, db_session, run, dirty_on):

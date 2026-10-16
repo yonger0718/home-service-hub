@@ -1084,7 +1084,7 @@ def test_r6b_policy_defaults_and_validation(db_session):
     assert policy["actions"]["backfill_entry"] == {"enabled": False, "max_amount": "5000"}
     assert policy["actions"]["anchor_opening"] == {"enabled": False, "max_amount": "200000"}
     assert policy["actions"]["replace_stand_in"] == {"enabled": True, "max_amount": "0"}
-    assert settings["policy_version"].startswith("r6b-") or settings["policy_version"] == "r1c-1"
+    assert settings["policy_version"] == "r6b-1"  # no stored row: the default label
     out = settings_service.update_reconciliation_settings(
         db_session, {"dirty_enabled": False, "policy": {"backfill_grace_days": 7, "backfill_accounts": [3, 5]}})
     assert out["policy_version"] == f"r6b-{out['version']}" and out["policy"]["backfill_grace_days"] == 7
