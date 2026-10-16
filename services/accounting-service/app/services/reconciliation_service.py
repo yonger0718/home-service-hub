@@ -474,7 +474,7 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
     for s in shadow_by_entry.values():  # a shadow owner outside the period is not in unmatched_entry_ids at all
         out.append(_case("entry_unmatched", event_id=s["event_id"], line_id=s["line_id"], entry_id=s["entry_id"],
                          context={"hint": "shadowed_by_stand_in", "stand_in_entry_id": s["stand_in_entry_id"],
-                                  "backfill_action_id": s["backfill_action_id"]}))
+                                  "backfill_action_id": s["backfill_action_id"], "drift_days": s["drift_days"]}))
     for o in orphan_by_entry.values():
         out.append(_case("entry_unmatched", event_id=o["event_id"], line_id=o["line_id"], entry_id=o["entry_id"],
                          context={"hint": "orphaned_stand_in", "backfill_action_id": o["backfill_action_id"],

@@ -272,7 +272,8 @@ def test_shadow_case_when_the_owner_entry_arrives_while_the_stand_in_holds_the_l
     db_session.commit()
     (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
     assert case.entry_id == owner.id and case.event_id == s.line.event_id and case.line_id == s.line.id
-    assert case.context == {"hint": "shadowed_by_stand_in", "stand_in_entry_id": s.stand_in_id, "backfill_action_id": s.action.id}
+    assert case.context == {"hint": "shadowed_by_stand_in", "stand_in_entry_id": s.stand_in_id, "backfill_action_id": s.action.id,
+                            "drift_days": 13}
     assert "replace_stand_in" in registry.allowed(case)
     s.stand_in.category_id = seed.category("食").id  # cosmetic edit keeps the match and does not block replacement
     db_session.commit()
@@ -575,6 +576,7 @@ def test_policy_preview_matches_run_policy_decisions(seed, db_session, run, toda
 
 @pytest.mark.parametrize("result, label", [(("try", None, None), "apply"),
                                            (("propose", None, "max_amount"), "propose:max_amount"),
+                                           (("propose", None, "date_drift"), "propose:date_drift"),
                                            (("skip", "candidate_changed", None), "skip:candidate_changed")])
 def test_decision_label_pins_the_prefilter_tuples(result, label):
     assert policy_service._decision_label(result) == label

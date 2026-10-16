@@ -111,17 +111,25 @@ def owner_population(db: Session, statement: AccountStatement, accounts: list[in
     return [e for e in rows if e.id not in claimed]
 
 
+def drift_days(line: StatementLine, entry: LedgerEntry) -> int:
+    """The matcher's day distance between the line and the entry (posted dates, or the txn/entry dates when nearer):
+    the distance `_conserves` checks against the drift window and the policy against the exact window (C2)."""
+    from app.services import reconciliation_service  # local: reconciliation_service imports this module
+    return matching._date_distance(reconciliation_service._as_line(line), reconciliation_service.entry_view(entry))
+
+
 def _conserves(statement: AccountStatement, line: StatementLine, entry: LedgerEntry, rules) -> bool:
     """The entry alone takes the line: an eligible kind for the line, the same flow, within the drift window."""
     from app.services import reconciliation_service  # local: reconciliation_service imports this module
     ml = reconciliation_service._as_line(line)
     me = reconciliation_service.entry_view(entry)
     return (matching._entry_class(me) in matching.eligible_kinds(statement.kind, line.line_kind)
-            and matching._same(me.flow, ml.flow) and matching._date_distance(ml, me) <= rules.drift_window_days)
+            and matching._same(me.flow, ml.flow) and drift_days(line, entry) <= rules.drift_window_days)
 
 
 def shadows(db: Session, statement: AccountStatement, accounts: list[int], rules) -> list[dict]:
-    """R6b.5 shadowed_by_stand_in: reciprocally unique owner-entry ↔ stand-in-held line pairs."""
+    """R6b.5 shadowed_by_stand_in: reciprocally unique owner-entry ↔ stand-in-held line pairs, with the pair's
+    `drift_days` (the policy applies only exact-window shadows, C2)."""
     held = held_by_stand_ins(db, statement, accounts)
     if not held:
         return []
@@ -135,7 +143,7 @@ def shadows(db: Session, statement: AccountStatement, accounts: list[int], rules
         if by_owner[e.id] == 1 and by_event[event_id] == 1:
             line, stand_in_id, action_id = held[event_id]
             out.append({"entry_id": e.id, "event_id": event_id, "line_id": line.id, "stand_in_entry_id": stand_in_id,
-                        "backfill_action_id": action_id})
+                        "backfill_action_id": action_id, "drift_days": drift_days(line, e)})
     return out
 
 

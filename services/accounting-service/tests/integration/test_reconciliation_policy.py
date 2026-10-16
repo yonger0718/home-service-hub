@@ -1066,3 +1066,82 @@ def test_policy_replaces_a_stand_in_with_zero_budget_and_counts_toward_the_state
     assert applied.status == "applied" and applied.actor == "owner"
     assert len([a for a in _actions(db_session) if a.action == "replace_stand_in"]) == 2
     assert [c.line_id for c in _active(db_session, stmt.id) if c.entry_id in {e.id for e in _booked(db_session)}] == []
+
+
+@pytest.mark.parametrize("owner_day, outcome", [(date(2026, 11, 1), "applied"), (date(2026, 11, 2), "proposed"),
+                                                (date(2026, 11, 5), "proposed")])
+def test_the_policy_applies_only_exact_window_shadows_and_proposes_the_drifted_ones(seed, db_session, run, dirty_on, today,
+                                                                                   owner_day, outcome):
+    # final review C2: October's 2000 ATM line was backfilled after the grace; the owner then records an equal ATM
+    # withdrawal in November. Within exact_window_days (3) of the line the policy replaces the stand-in; farther (up
+    # to the drift window) it only proposes (date_drift) and the owner decides from the case.
+    today(date(2026, 11, 20))
+    bank = seed.account("銀行", opening="10000", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    oct_, (atm,), _ = _submit(db_session, run, bank, [_line(1, date(2026, 10, 29), "ATM", -2000, "withdrawal")], kind="bank",
+                              period=(date(2026, 10, 1), date(2026, 10, 31)), opening=Decimal("10000"))
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 14})
+    (backfill_id,) = policy_service.run_policy(db_session, oct_.id).applied
+    rec.reconcile(db_session, oct_.id)
+    db_session.commit()
+    stand_in_id = db_session.get(ReconciliationAction, backfill_id).created_entry_ids[0]
+    assert [c for c in _cases(db_session, oct_.id, "open") if c.kind == "balance_gap"] == []
+    owner = seed.entry(bank, "-2000", day=owner_day, merchant="ATM")
+    db_session.commit()
+    rec.reconcile(db_session, oct_.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, oct_.id, "open") if c.kind == "entry_unmatched"]
+    drift = (owner_day - atm.posted_date).days
+    assert case.entry_id == owner.id and case.context["hint"] == "shadowed_by_stand_in" and case.context["drift_days"] == drift
+    statement = db_session.get(AccountStatement, oct_.id)
+    (decision,) = [d for c, d in policy_service.preview(db_session, statement, settings_service.reconciliation_policy(db_session))
+                   if c.action == "replace_stand_in"]
+    result = policy_service.run_policy(db_session, oct_.id)
+    if outcome == "applied":
+        assert decision == "apply"
+        (row,) = [a for a in _actions(db_session) if a.action == "replace_stand_in"]
+        assert result.applied == [row.id] and result.proposed == []
+        assert db_session.get(LedgerEntry, stand_in_id) is None
+        assert [c.entry_id for c in _active(db_session, oct_.id)] == [owner.id]
+        return
+    assert decision == "propose:date_drift"
+    (p,) = _proposals(db_session, status="pending")
+    assert result.applied == [] and result.proposed == [p.id] and p.action == "replace_stand_in"
+    assert p.rationale == "policy: date_drift"
+    assert db_session.get(LedgerEntry, stand_in_id) is not None and db_session.get(LedgerEntry, owner.id) is not None
+    assert [c.entry_id for c in _active(db_session, oct_.id)] == [stand_in_id]
+    rec.reconcile(db_session, oct_.id)
+    db_session.commit()
+    assert [c for c in _cases(db_session, oct_.id, "open") if c.kind == "balance_gap"] == []  # October unchanged
+    assert policy_service.run_policy(db_session, oct_.id).applied == []  # the proposed case is not re-collected
+    (case,) = [c for c in _cases(db_session, oct_.id, "open", "proposed") if c.kind == "entry_unmatched"]
+    assert "replace_stand_in" in registry.allowed(case)
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+    db_session.commit()
+    assert row.status == "applied" and db_session.get(LedgerEntry, stand_in_id) is None
+    assert [c.entry_id for c in _active(db_session, oct_.id)] == [owner.id]
+
+
+def test_a_shadow_that_drifted_since_the_collect_is_refused_under_the_lock(seed, db_session, run, dirty_on):
+    # the owner entry sits after the period (10/1, 2 days from the 9/29 line): moving it to 10/10 stays outside the
+    # period, so no recheck is raised and the case keeps its collected drift_days; the lock re-measures the distance
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 29), "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+    db_session.commit()
+    owner = seed.entry(card, "-580", day=date(2026, 10, 1), merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    _set_policy(db_session, {"enabled": True})
+    statement, cand = _only_candidate(db_session, stmt.id)
+    assert cand.action == "replace_stand_in" and cand.evidence["drift_days"] == 2
+    owner.posted_date = owner.entry_date = date(2026, 10, 10)  # 11 days from the line now, still outside the period
+    db_session.commit()
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=cand.case_id, action="replace_stand_in", params={}, actor="policy", label="policy",
+                            budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert [a.action for a in _actions(db_session)] == ["backfill_entry"]

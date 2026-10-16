@@ -206,11 +206,12 @@ REPLACE_AMOUNT = Decimal("0.0000")  # a replacement moves no money: charged as z
 def _replace_evidence(case: ReconciliationCase) -> dict:
     context = case.context or {}
     return {"hint": context.get("hint"), "backfill_action_id": context.get("backfill_action_id"),
-            "entry_id": case.entry_id, "event_id": case.event_id}
+            "entry_id": case.entry_id, "event_id": case.event_id, "drift_days": context.get("drift_days")}
 
 
 def _replace_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
-    """R6b.5: an open entry_unmatched case with a stand-in hint → replace the stand-in (amount 0)."""
+    """R6b.5: an open entry_unmatched case with a stand-in hint → replace the stand-in (amount 0). A shadow's
+    evidence carries its `drift_days`: farther than the exact window it is only proposed (C2, `_prefilter`)."""
     if case.kind != "entry_unmatched" or (case.context or {}).get("hint") not in REPLACE_HINTS:
         return None
     return Candidate(case.id, case.kind, case.status, "replace_stand_in", {}, REPLACE_AMOUNT, entry_id=None,
@@ -371,13 +372,33 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
         from app.services.reconciliation_actions import structural_actions as sa
         return not sa.anchor_applied(ctx.db, ctx.statement.account_id) and _anchor_gate(ctx.db, ctx.statement.account_id)
     if candidate.action == "replace_stand_in":  # the hint, the backfill action, the entry and the event as collected
-        return _replace_evidence(case) == candidate.evidence
+        return _replace_evidence(case) == candidate.evidence and _shadow_in_exact_window(ctx)
     if candidate.action == "create_system_entry":
         return context.get("hint") == "bank_only" and ctx.line.line_kind == candidate.params.get("kind")
     if candidate.action == "backfill_entry":
         return not context.get("owner_deleted") and not case.candidates \
             and registry.backfill_eligibility(case) == candidate.params.get("kind")
     return True
+
+
+def _shadow_in_exact_window(ctx: Context) -> bool:
+    """C2, under the locks: a shadow's owner entry is still within the exact window of the line (the case context
+    is the last reconcile's; the entry may have moved since without a recheck). Orphans: always true."""
+    if (ctx.case.context or {}).get("hint") != "shadowed_by_stand_in":
+        return True
+    entry = ctx.db.get(LedgerEntry, ctx.case.entry_id) if ctx.case.entry_id is not None else None
+    return entry is not None and ctx.line is not None \
+        and stand_ins.drift_days(ctx.line, entry) <= ctx.rules.exact_window_days
+
+
+def _drifted(db: Session, case: ReconciliationCase, candidate: Candidate) -> bool:
+    """C2: a shadow whose owner entry lies farther than `exact_window_days` from the line (up to the 15-day drift
+    window discovery allows) is proposed, never applied, by the policy (spec decision 1's tiering)."""
+    drift = candidate.evidence.get("drift_days") if candidate.action == "replace_stand_in" else None
+    if drift is None:
+        return False
+    statement = db.get(AccountStatement, case.statement_id)
+    return drift > rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end).exact_window_days
 
 
 def _is_proposed(rep: matching.Representation, params: dict) -> bool:
@@ -438,8 +459,8 @@ def _policy_precheck(candidate: Candidate, ctx: Context) -> None:
 
 
 def _prefilter(db: Session, candidate: Candidate, policy: dict) -> tuple[str, str | None, str | None]:
-    """Unlocked: ("try", None, None), ("propose", None, cap reason) or ("skip", code, reason) — an agent's proposal
-    over a cap is skipped (it stays pending for the owner)."""
+    """Unlocked: ("try", None, None), ("propose", None, cap reason | "date_drift") or ("skip", code, reason) — an
+    agent's proposal over a cap is skipped (it stays pending for the owner)."""
     case = db.execute(select(ReconciliationCase).where(ReconciliationCase.id == candidate.case_id)
                       .execution_options(populate_existing=True)).scalar_one_or_none()
     if case is None or (case.status, case.kind) != (candidate.status, candidate.kind):
@@ -450,6 +471,8 @@ def _prefilter(db: Session, candidate: Candidate, policy: dict) -> tuple[str, st
             return "skip", "proposal_not_pending", None
     if _rule(policy, candidate.action).get("enabled") is not True:
         return "skip", ACTION_DISABLED, None
+    if _drifted(db, case, candidate):
+        return "propose", None, "date_drift"
     reason = _cap_reason(db, case.statement_id, candidate, policy)
     if reason is not None:
         return ("skip", "cap_exceeded", reason) if candidate.proposal_id is not None else ("propose", None, reason)
