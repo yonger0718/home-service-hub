@@ -69,18 +69,72 @@ def _statement(db, statement) -> dict:
     return {"claims": sorted(claims), "cases": sorted(cases, key=lambda c: (c[0] or 0, c[1], c[2] or ""))}
 
 
+def _bucket(amount) -> str:
+    """Aggregate-only: never the amount itself."""
+    value = abs(amount)
+    return "<1000" if value < 1000 else "<5000" if value < 5000 else ">=5000"
+
+
+def _count_hint(db, statements, hint: str) -> dict[str, int]:
+    """Open line_unmatched cases with this hint, per account."""
+    from app.models import ReconciliationCase
+    out: dict[str, int] = {}
+    for stmt in statements:
+        n = db.scalar(select(func.count(ReconciliationCase.id)).where(
+            ReconciliationCase.statement_id == stmt.id, ReconciliationCase.kind == "line_unmatched",
+            ReconciliationCase.status == "open", ReconciliationCase.context["hint"].astext == hint))
+        if n:
+            out[str(stmt.account_id)] = out.get(str(stmt.account_id), 0) + n
+    return out
+
+
+def _policy_section(db, statements) -> dict:
+    from app.models import LedgerEntry
+    from app.services import coverage_service, policy_service, stand_ins
+    from app.services.reconciliation_actions import structural_actions as sa
+    policy = settings_service.reconciliation_policy(db)
+    out = {"policy": {}, "anchor_blockers": [], "needs_peer": _count_hint(db, statements, "needs_peer"), "owner_deleted": {},
+           "retirements": {}, "sweep": {"would_release_old": 0, "would_release_new": 0, "kept_by_key": {}, "released_by_key": {}},
+           "structural_keys": sorted(coverage_service.STRUCTURAL_KEYS), "accounts": {str(s.id): s.account_id for s in statements}}
+    seen = set()
+    for stmt in statements:
+        out["policy"][str(stmt.id)] = [{"action": c.action, "kind": c.params.get("kind"), "amount_bucket": _bucket(c.amount), "decision": d}
+                                       for c, d in policy_service.preview(db, stmt, policy)]
+        out["owner_deleted"][str(stmt.id)] = len(stand_ins.owner_deleted_events(db, stmt))
+        out["retirements"][str(stmt.id)] = stand_ins.retirement_preview(db, stmt)
+        sw = coverage_service.sweep_preview(db, stmt)
+        for k in ("would_release_old", "would_release_new"):
+            out["sweep"][k] += sw[k]
+        for bucket in ("kept_by_key", "released_by_key"):
+            for key, n in sw[bucket].items():
+                out["sweep"][bucket][key] = out["sweep"][bucket].get(key, 0) + n
+        if stmt.kind == "bank" and stmt.account_id not in seen:
+            seen.add(stmt.account_id)
+            found = sa.anchor_delta(db, stmt.account_id)
+            if found is not None and db.scalar(select(func.count(LedgerEntry.id)).where(
+                    LedgerEntry.account_id == stmt.account_id, LedgerEntry.kind == "balance_adjustment",
+                    LedgerEntry.posted_date >= found[0])):
+                out["anchor_blockers"].append(stmt.account_id)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
+    ap.add_argument("--policy", action="store_true", help="also dump the R6b policy preview, sweep and retirement sections")
     args = ap.parse_args()
     out = {"sha": _sha(), "statements": {}}
     with SessionLocal() as db:
         db.execute(text("SET TRANSACTION READ ONLY"))
         out["watermark"] = _watermark(db)
+        dumped = []
         for stmt in db.execute(select(AccountStatement).where(AccountStatement.mode == "live").order_by(AccountStatement.id)).scalars():
             if stmt.current_revision_id is None:
                 continue
             out["statements"][str(stmt.id)] = _statement(db, stmt)
+            dumped.append(stmt)
+        if args.policy:
+            out.update(_policy_section(db, dumped))
         db.rollback()
     fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:

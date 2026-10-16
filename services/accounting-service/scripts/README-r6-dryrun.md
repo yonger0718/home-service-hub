@@ -34,3 +34,24 @@ below accept before) can take an entry that a later line held before; the later 
 `claimed_by_earlier_line` (lost), or takes another entry (changed). That pair is the rescale working, not a harness bug — note the pair in the release record
 and re-run the gate with `--allow-moved-claims` only after the owner has read the pair list (the flag turns those
 lost/changed failures into an "claims moved" line in the summary listing the event ids; any other lost claim still fails).
+
+## Policy mode (R6b)
+
+Two commands, run by the controller at release time against the live database (read-only transaction; never by an implementer):
+
+    PYTHONPATH=$CAND .venv/bin/python scripts/r6_case_dump.py --policy --out $OUT/after-policy.json
+    .venv/bin/python scripts/r6_dryrun.py --policy --baseline $OUT/before.json --candidate $OUT/after-policy.json --out-dir $OUT
+
+`--policy` on the dump adds aggregate sections (no amount, merchant or name; amounts appear only as `<1000` / `<5000` /
+`>=5000` buckets) computed by the service-side previews the integration tests share. `--policy` on the diff prints the
+summary and writes `policy-summary.md` (mode 600) next to the others, then exits 0; it is evidence, not a gate.
+
+- decision table (`| account | action | decision | lines |`): what `run_policy` would decide per candidate: `apply`,
+  `propose:<cap>`, `skip:<code>`, `disabled` (policy or action off), `excluded:<reason>` (statement not live, conflict,
+  recheck, blocking case, currency not enabled).
+- `anchor blocked by closing adjustments`: accounts whose opening anchor is refused because a `balance_adjustment` sits at or after the anchor date.
+- `needs_peer lines` / `owner-deleted events`: lines the policy never backfills (peer entry needed / the owner removed the created entry).
+- `retirements pending`: applied creations (by action type) whose entry is already gone; the next sweep retires them.
+- `sweep: old rule ... new rule ...`: lines with a pending entry update event the pre-R6b rule would release (every edit) vs the
+  R6b.0 rule (structural keys only), with the key breakdown (cosmetic keys kept, structural keys released) and the structural key set.
+  This table is the R6b.0 regression-gate evidence; nothing fails automatically, the release record keeps it with both SHAs.

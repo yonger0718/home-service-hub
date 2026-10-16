@@ -9,14 +9,14 @@ from app.models import AccountStatement, LedgerEntry, ReconciliationAction, Reco
 from app.services import coverage_service, policy_service
 from app.services import reconciliation_service as rec
 from app.services import reconciliation_actions as registry
-from app.services import stand_ins
+from app.services import settings_service, stand_ins
 from app.services.statements import matching
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.base import NotRevertable
 from tests.integration.statement_fixtures import _active, _card, _cases, _line, _submit, run  # noqa: F401
 from tests.integration.test_reconciliation_actions_ledger import _apply, _code, _refuse
-from tests.integration.test_reconciliation_policy import _budget, _reload, _set_policy
+from tests.integration.test_reconciliation_policy import BACKFILL_ON, _actions, _budget, _proposals, _reload, _set_policy
 
 DAY = date(2026, 9, 3)
 
@@ -539,3 +539,104 @@ def test_system_entries_never_shadow(seed, db_session, run, dirty_on):
     db_session.commit()
     cases = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "entry_unmatched"]
     assert cases and all("hint" not in (c.context or {}) for c in cases)
+
+
+# --- R6b.7 dry-run previews --------------------------------------------------------------------------------------
+
+def test_policy_preview_matches_run_policy_decisions(seed, db_session, run, today):
+    today(date(2026, 10, 3))
+    card = _card(seed, db_session)
+    stmt, (small, big), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "家樂福", 6000)])
+    policy = {**BACKFILL_ON, "backfill_grace_days": 0}
+    _set_policy(db_session, policy)
+    live = settings_service.reconciliation_policy(db_session)
+    by_line = {c.case_id: (c, d) for c, d in policy_service.preview(db_session, db_session.get(AccountStatement, stmt.id), live)}
+    cases = {c.line_id: c.id for c in _cases(db_session, stmt.id, "open")}
+    assert by_line[cases[small.id]][1] == "apply" and by_line[cases[big.id]][1] == "propose:max_amount"
+    assert {c.action for c, _ in by_line.values()} == {"backfill_entry"}
+
+    # the other labels: action off -> disabled; statement excluded -> excluded:<reason>
+    off = {**live, "actions": {"backfill_entry": {"enabled": False}}}
+    assert {d for _, d in policy_service.preview(db_session, db_session.get(AccountStatement, stmt.id), off)} == {"disabled"}
+    assert {d for _, d in policy_service.preview(db_session, db_session.get(AccountStatement, stmt.id), {**live, "enabled": False})} == {"disabled"}
+    db_session.get(AccountStatement, stmt.id).needs_recheck = True
+    db_session.commit()
+    decisions = policy_service.preview(db_session, db_session.get(AccountStatement, stmt.id), live)
+    assert decisions and {d for _, d in decisions} == {"excluded:needs_recheck"}
+    db_session.get(AccountStatement, stmt.id).needs_recheck = False
+    db_session.commit()
+
+    result = policy_service.run_policy(db_session, stmt.id)
+    (row,) = _actions(db_session)
+    (proposal,) = _proposals(db_session, status="pending")
+    assert result.applied == [row.id] and row.case_id == cases[small.id]
+    assert result.proposed == [proposal.id] and proposal.case_id == cases[big.id]
+
+
+@pytest.mark.parametrize("result, label", [(("try", None, None), "apply"),
+                                           (("propose", None, "max_amount"), "propose:max_amount"),
+                                           (("skip", "candidate_changed", None), "skip:candidate_changed")])
+def test_decision_label_pins_the_prefilter_tuples(result, label):
+    assert policy_service._decision_label(result) == label
+
+
+def test_sweep_preview_matches_the_sweep(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    renamed = seed.entry(card, "-580", day=DAY, merchant="全聯")
+    bumped = seed.entry(card, "-700", day=DAY, merchant="家樂福")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "家樂福", 700)])
+    assert len(_active(db_session, stmt.id)) == 2
+    renamed.name = "改名"
+    bumped.amount = Decimal("-701")
+    db_session.commit()
+    bumped.amount = Decimal("-700")  # restored before the sweep
+    db_session.commit()
+    before = db_session.get(AccountStatement, stmt.id).swept_through_event_id
+
+    preview = coverage_service.sweep_preview(db_session, db_session.get(AccountStatement, stmt.id))
+    assert preview == {"would_release_old": 2, "would_release_new": 0, "kept_by_key": {"name": 1}, "released_by_key": {}}
+    assert db_session.get(AccountStatement, stmt.id).swept_through_event_id == before  # read only
+
+    _sweep(db_session, stmt)
+    assert len(_active(db_session, stmt.id)) == 2 and _cases(db_session, stmt.id, "open") == []
+
+
+def test_sweep_preview_counts_structural_releases_once_per_line(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    entry = seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    entry.amount = Decimal("-581")
+    db_session.commit()
+    entry.name = "改名"
+    db_session.commit()
+    preview = coverage_service.sweep_preview(db_session, db_session.get(AccountStatement, stmt.id))
+    assert preview["would_release_old"] == 1 and preview["would_release_new"] == 1
+    assert preview["released_by_key"] == {"amount": 1, "flow": 1} and preview["kept_by_key"] == {}
+    _sweep(db_session, stmt)
+    assert _active(db_session, stmt.id) == []
+
+
+def test_retirement_preview_counts_by_action_type(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    stmt, (l1, l2, l3), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "手續費", 50, "fee"),
+                                                           _line(3, DAY, "家樂福", 700)])
+    cases = {c.line_id: c for c in _cases(db_session, stmt.id, "open")}
+    made = {}
+    for key, line, action, params in (("backfill_entry", l1, "backfill_entry", {"kind": "expense"}),
+                                      ("create_system_entry", l2, "create_system_entry", {"kind": "fee"}),
+                                      ("kept", l3, "backfill_entry", {"kind": "expense"})):
+        row, _ = engine.apply_action(db_session, case_id=cases[line.id].id, action=action, params=params, actor="owner", label="t")
+        made[key] = row.created_entry_ids[0]
+    db_session.commit()
+    live = db_session.get(AccountStatement, stmt.id)
+    assert stand_ins.retirement_preview(db_session, live) == {}
+    for key in ("backfill_entry", "create_system_entry"):
+        db_session.delete(db_session.get(LedgerEntry, made[key]))
+    db_session.commit()
+    assert stand_ins.retirement_preview(db_session, db_session.get(AccountStatement, stmt.id)) == {
+        "backfill_entry": 1, "create_system_entry": 1}
+    _sweep(db_session, stmt)  # the sweep retires exactly what the preview counted
+    assert stand_ins.retirement_preview(db_session, db_session.get(AccountStatement, stmt.id)) == {}
+    assert len(stand_ins.owner_deleted_events(db_session, db_session.get(AccountStatement, stmt.id))) == 2

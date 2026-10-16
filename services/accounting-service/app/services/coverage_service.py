@@ -427,6 +427,52 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
     return result
 
 
+def sweep_preview(db: Session, statement: AccountStatement) -> dict:
+    """R6b.7, read only: what the next sweep would do with the statement's pending entry `update` events over its
+    active coverage rows, computed as the sweep does (current entry row, snapshot compare), each line counted once
+    however many events touch it. `would_release_old`: every touched line (the pre-R6b rule); `would_release_new`:
+    the lines with a structural difference; `released_by_key` counts the structural keys of those lines and
+    `kept_by_key` the cosmetic keys (name, merchant) of the lines the new rule keeps."""
+    active = active_rows(db, statement.id)
+    lines_by_entry: dict[int, set[int]] = defaultdict(set)
+    for line_id, rows in active.items():
+        for r in rows:
+            for entry_id in {r.entry_id, (r.snapshot or {}).get("id")} - {None}:
+                lines_by_entry[entry_id].add(line_id)
+    skipped = _applied_action_ids(db, statement)
+    events = db.execute(
+        select(CoverageDirty.id, CoverageDirty.row_id, CoverageDirty.action_id)
+        .where(CoverageDirty.id > statement.swept_through_event_id, CoverageDirty.kind == "entry",
+               CoverageDirty.op == "update").order_by(CoverageDirty.id)).all()
+    structural: dict[int, set[str]] = defaultdict(set)
+    cosmetic: dict[int, set[str]] = defaultdict(set)
+    touched: set[int] = set()
+    for ev in events:
+        if (ev.action_id is not None and ev.action_id in skipped) or ev.row_id not in lines_by_entry:
+            continue
+        entry = db.get(LedgerEntry, ev.row_id, populate_existing=True)
+        for line_id in lines_by_entry[ev.row_id]:
+            touched.add(line_id)
+            for row in active.get(line_id, ()):
+                if row.entry_id != ev.row_id and (row.snapshot or {}).get("id") != ev.row_id:
+                    continue
+                if entry is None:
+                    structural[line_id].add("entry_missing")
+                    continue
+                structural[line_id].update(structurally_changed(row.snapshot, entry))
+                now = snapshot_entry(entry)
+                cosmetic[line_id].update(k for k in ("name", "merchant") if (row.snapshot or {}).get(k) != now.get(k))
+    released = {line_id for line_id in touched if structural[line_id]}
+    out = {"would_release_old": len(touched), "would_release_new": len(released), "kept_by_key": {}, "released_by_key": {}}
+    for line_id in released:
+        for key in structural[line_id]:
+            out["released_by_key"][key] = out["released_by_key"].get(key, 0) + 1
+    for line_id in touched - released:
+        for key in cosmetic[line_id]:
+            out["kept_by_key"][key] = out["kept_by_key"].get(key, 0) + 1
+    return out
+
+
 def _touches(s):
     """EXISTS: an event past the statement `s`'s watermark that may touch it: the account or a combined child on
     either side, an account event whose old or new `combined_account_id` is the account, or a group/entry its active

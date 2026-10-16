@@ -57,6 +57,23 @@ def owner_deleted_events(db: Session, statement: AccountStatement) -> set[int]:
     return {e for e, (status, inverse) in latest.items() if status == "reverted" and inverse.get("deleted_by_event")}
 
 
+def retirement_preview(db: Session, statement: AccountStatement) -> dict[str, int]:
+    """R6b.7, read only: applied creation actions (RETIRABLE_ACTIONS) of the statement's cases whose created entry
+    no longer exists — what the next sweep would retire — counted by action name."""
+    rows = db.execute(
+        select(ReconciliationAction.action, ReconciliationAction.created_entry_ids)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
+               ReconciliationAction.action.in_(coverage_service.RETIRABLE_ACTIONS))).all()
+    ids = {i for _, created in rows for i in (created or ())}
+    alive = set(db.execute(select(LedgerEntry.id).where(LedgerEntry.id.in_(ids))).scalars()) if ids else set()
+    out: dict[str, int] = {}
+    for action, created in rows:
+        if any(i not in alive for i in (created or ())):
+            out[action] = out.get(action, 0) + 1
+    return out
+
+
 # --- R6b.5 shadow / orphan discovery (own queries: nothing from the matcher result, M1) ------------------------------
 
 def held_by_stand_ins(db: Session, statement: AccountStatement,

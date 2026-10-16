@@ -80,3 +80,21 @@ def test_gate_covers_claims_of_every_rule_not_only_exact():
     waived = dr.waive_moved(failures, changes)
     assert "event 33: claim changed" not in waived and "event 32: claim lost" not in waived
     assert "event 31: claim lost" in waived and "event 34: claim lost" in waived
+
+
+def test_policy_summary_counts_by_account_action_and_decision():
+    after = _dump({"1": {"claims": [], "cases": []}})
+    after["policy"] = {"1": [{"action": "backfill_entry", "kind": "expense", "amount_bucket": "<1000", "decision": "apply"},
+                             {"action": "backfill_entry", "kind": "income", "amount_bucket": "<5000", "decision": "propose:max_amount"},
+                             {"action": "anchor_opening", "kind": None, "amount_bucket": ">=5000", "decision": "disabled"}]}
+    after.update({"anchor_blockers": [7], "needs_peer": {"3": 2}, "owner_deleted": {"1": 1},
+                  "retirements": {"1": {"backfill_entry": 1, "create_system_entry": 2}},
+                  "sweep": {"would_release_old": 5, "would_release_new": 2, "kept_by_key": {"name": 2, "merchant": 1}, "released_by_key": {"amount": 2}},
+                  "structural_keys": ["amount", "flow"], "accounts": {"1": 3}})
+    text = dr.policy_summary(after)
+    assert "| 3 | backfill_entry | apply | 1 |" in text and "| 3 | backfill_entry | propose:max_amount | 1 |" in text
+    assert "| 3 | anchor_opening | disabled | 1 |" in text
+    assert "anchor blocked by closing adjustments: 1 account" in text and "needs_peer lines: 2" in text
+    assert "retirements pending: backfill_entry 1, create_system_entry 2" in text
+    assert "sweep: old rule would release 5 lines, new rule 2 (kept by key: name 2, merchant 1; released by key: amount 2)" in text
+    assert "structural keys: amount, flow" in text

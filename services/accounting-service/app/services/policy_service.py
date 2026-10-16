@@ -260,6 +260,31 @@ def _statement_excluded(db: Session, statement: AccountStatement, policy: dict) 
     return None
 
 
+def preview(db: Session, statement: AccountStatement, policy: dict, today: date | None = None) -> list[tuple[Candidate, str]]:
+    """R6b.7: what run_policy's unlocked pass would decide per candidate, without applying anything."""
+    out = []
+    excluded = _statement_excluded(db, statement, policy)
+    for candidate in collect_candidates(db, statement, policy):
+        if policy.get("enabled") is not True or not _rule(policy, candidate.action).get("enabled"):
+            out.append((candidate, "disabled"))
+        elif excluded:
+            out.append((candidate, f"excluded:{excluded}"))
+        else:
+            out.append((candidate, _decision_label(_prefilter(db, candidate, policy))))
+    return out
+
+
+def _decision_label(result: tuple) -> str:
+    """_prefilter always returns (verb, code, reason): ("try", None, None) -> "apply"; ("propose", None, <cap reason>)
+    -> "propose:<reason>"; ("skip", <code>, None) -> "skip:<code>" (exact tuples pinned by the unit test)."""
+    verb, code, reason = result
+    if verb == "try":
+        return "apply"
+    if verb == "propose":
+        return f"propose:{reason}" if reason else "propose"
+    return f"skip:{code}" if code else "skip"
+
+
 def _applied_totals(db: Session, statement_id: int) -> tuple[int, Decimal]:
     """(count, total amount) of the applied `actor='policy'` rows on the statement's cases; the amount is what each
     row charged to the budget (`after.policy_budget.amount`)."""
