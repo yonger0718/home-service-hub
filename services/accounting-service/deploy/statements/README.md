@@ -256,10 +256,10 @@ Order (each step is a settings PUT with the full body). Production already runs 
 6. Cards last.
 
 Caps: `replace_stand_in` has amount 0 (no budget use) but counts toward `per_statement_count`. `per_statement_count`
-(default 5) bounds the policy's backfills plus replacements per statement for good (applied policy rows are counted);
+(default 5) bounds every applied policy row per statement for good (system entries, backfills and replacements all count);
 the rest become proposals. With the default `per_statement_total` "5000" and `monthly_total` "20000", a real anchor
 (often far above those, under its own `max_amount` "200000") becomes a proposal the owner confirms. The policy anchors
-only a target in the account's first live month; a target after it, or an earlier month that arrives later, is left
+only a target that starts less than one calendar month after `statement_live_from` and that no live bank statement of the account precedes; a target after it, or an earlier month that arrives later, is left
 to the owner (the dry-run line `anchor above an earlier statement` lists the accounts). A shadow farther than
 `exact_window_days` from its line is proposed (`date_drift`), not applied. Revert a wrong `anchor_opening` before any `balance_adjustment_asof` on that account (`closing_adjustments_present`).
 

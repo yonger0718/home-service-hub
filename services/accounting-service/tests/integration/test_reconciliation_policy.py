@@ -1039,6 +1039,26 @@ def test_the_policy_anchors_only_the_first_live_month_but_the_owner_may_anchor_l
     assert row.status == "applied" and len(_adjustments(db_session)) == 1
 
 
+def test_the_policy_does_not_anchor_past_an_earlier_live_statement_without_an_opening_balance(seed, db_session, run, dirty_on):
+    # M1 (final re-review): live from 8/15 → August is live but carries no opening balance, so September is the
+    # anchor target; the calendar bound alone admits it, the earlier-statement bound refuses it (the owner may)
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 8, 15))
+    db_session.commit()
+    aug, _, _ = _submit(db_session, run, bank, [_line(1, date(2026, 8, 20), "存入", 100, "deposit")], kind="bank",
+                        period=(date(2026, 8, 1), date(2026, 8, 31)), opening=Decimal("1000"))
+    db_session.get(AccountStatement, aug.id).opening_balance = None
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    from app.services.reconciliation_actions import structural_actions as sa
+    assert sa.anchor_target(db_session, bank.id).id == stmt.id
+    assert policy_service._anchor_gate(db_session, bank.id) is False
+    _set_policy(db_session, ANCHOR_ON)
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], []) and _actions(db_session) == []
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    assert "anchor_opening" in registry.allowed(case)
+
+
 @pytest.mark.parametrize("live_from", [None, date(2026, 9, 1), date(2026, 9, 20), date(2026, 8, 2)])
 def test_the_policy_anchors_a_target_in_the_first_live_month(live_from):
     target = SimpleNamespace(period_start=date(2026, 9, 1))

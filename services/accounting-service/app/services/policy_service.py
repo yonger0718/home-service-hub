@@ -135,11 +135,17 @@ def _first_live_month(target, account) -> bool:
 
 
 def _anchor_gate(db: Session, account_id: int) -> bool:
-    """The POLICY anchors only a target in the first live month: an earlier live month still to be ingested would
-    otherwise be absorbed by the anchor (the owner may anchor any target from the case)."""
+    """The POLICY anchors only a target in the first live month (`_first_live_month`) that no live bank statement of
+    the account precedes (an earlier live statement without an opening balance would be absorbed by the anchor);
+    an earlier live month still to be ingested is caught by the calendar bound. The owner may anchor any target."""
     from app.services.reconciliation_actions import structural_actions as sa
     target = sa.anchor_target(db, account_id)
-    return target is not None and _first_live_month(target, db.get(Account, account_id))
+    if target is None or not _first_live_month(target, db.get(Account, account_id)):
+        return False
+    earlier = select(AccountStatement.id).where(
+        AccountStatement.account_id == account_id, AccountStatement.kind == "bank", AccountStatement.mode == "live",
+        AccountStatement.period_start < target.period_start)
+    return db.execute(earlier.limit(1)).first() is None
 
 
 def _system_entry_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
