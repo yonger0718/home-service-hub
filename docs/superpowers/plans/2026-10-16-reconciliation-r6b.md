@@ -282,6 +282,13 @@ def test_transfer_group_parent_and_settlement_link_changes_release(seed, db_sess
     db_session.commit()
     _sweep(db_session, stmt3)
     assert _active(db_session, stmt3.id) == []
+    card4, entry4, stmt4, line4 = _claimed_line(seed, db_session, run, merchant="momo")
+    parent = seed.entry(card4, "-900", day=date(2026, 9, 2), merchant="momo")
+    db_session.commit()
+    entry4.parent_entry_id = parent.id  # parent link: the entry becomes a child → structural → release
+    db_session.commit()
+    _sweep(db_session, stmt4)
+    assert _active(db_session, stmt4.id) == []
 ```
 
 (`seed.group(kind)` exists in `tests/conftest.py:422`; if its signature differs, build an `EntryGroup` directly.)
@@ -797,11 +804,12 @@ def test_backfill_eligibility_matrix_through_allowed_and_the_policy(seed, db_ses
     plain, other, unknown = by_line[lines[0].id], by_line[lines[1].id], by_line[lines[2].id]
     assert "backfill_entry" in registry.allowed(plain) and policy_service._backfill_candidate(db_session, plain, stmt) is not None
     assert "backfill_entry" not in registry.allowed(unknown) and policy_service._backfill_candidate(db_session, unknown, stmt) is None
-    # owner-deleted event: owner may, policy may not
+    # owner-deleted event: owner may, policy may not. Task 6 adds the sweep retirement; in Task 5 the retired
+    # state is staged by hand (the marker is derived from the action row, so this is the same input Task 6 produces)
     row = _apply(db_session, plain, "backfill_entry", {"kind": "expense"})
     db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    row.status, row.inverse = "reverted", {**(row.inverse or {}), "deleted_by_event": 1}  # Task 6 replaces these two lines with `_sweep(db_session, stmt)`
     db_session.commit()
-    _sweep(db_session, stmt)
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
     (plain,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == lines[0].id]
@@ -841,7 +849,7 @@ def test_second_backfill_of_the_same_event_is_refused_while_the_first_is_applied
     assert len(_booked(db_session)) == 1
 ```
 
-(`_hand_case(db, stmt, line, kind, **fields)` exists in this file at line ~75; the matrix test needs `_sweep` (copy the three-line helper from Task 4's test file), `dataclasses`, `partial`, `policy_service`, `_set_policy` — import `_set_policy` from the policy test module or inline its two lines.)
+(`_hand_case(db, stmt, line, kind, **fields)` exists in this file at line ~75; the matrix test needs `dataclasses`, `partial`, `policy_service`, `_set_policy` — import `_set_policy` from the policy test module or inline its two lines. Task 6's Step 1 swaps the staged two lines for a real `_sweep`.)
 
 `tests/integration/test_reconciliation_policy.py` (helpers `_set_policy`, `_booked`, `_actions`, `_proposals`, `TODAY = 2026-10-12`, `DAY = 2026-09-03`; a September statement's `period_end` is 2026-09-30, so TODAY is 12 days after it):
 
@@ -1230,7 +1238,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 7: `anchor_opening` action and policy builder
 
 **Files:**
-- Modify: `app/services/reconciliation_actions/structural_actions.py` (`AnchorOpeningAction`), `app/services/reconciliation_actions/__init__.py` (`KIND_ACTIONS["balance_gap"]`, `CONDITIONS`), `app/services/policy_service.py` (`_anchor_candidate`, `collect_candidates` kinds, `_amount_now`, `_unchanged`)
+- Modify: `app/services/reconciliation_actions/structural_actions.py` (`AnchorOpeningAction`, `anchor_delta`), `app/services/reconciliation_actions/__init__.py` (`KIND_ACTIONS["balance_gap"]`, `CONDITIONS`), `app/services/reconciliation_actions/base.py` (`Context.budget_amount`), `app/services/reconciliation_actions/engine.py` (fill `budget_amount`; `ctx.lock_set` on the revert context), `app/services/policy_service.py` (`_anchor_candidate`, `collect_candidates` kinds, `_amount_now`, `_unchanged`, `amount_changed` skip, one anchor per account per run)
 - Test: `tests/integration/test_reconciliation_actions_structural.py`, `tests/integration/test_reconciliation_policy.py`
 
 **Interfaces:**
@@ -1320,16 +1328,16 @@ def test_anchor_revert_refuses_with_dirty_off_or_a_changed_statement_set(anchore
     real = sa.live_bank_statement_ids
     calls = []
 
-    def grown(db, account_id):
+    def grown(db, account_id):  # the locked re-read sees a statement id the discovery did not (a new live statement)
         calls.append(1)
         ids = real(db, account_id)
-        return ids if len(calls) > 1 else ids[:-1]
+        return ids if len(calls) == 1 else ids + (ids[-1] + 1000,)
     monkeypatch.setattr(sa, "live_bank_statement_ids", grown)
     assert _code(_refuse(db_session, lambda: _revert(db_session, row.id))) == "targets_changed"
     monkeypatch.undo()
     oct_, _, _ = _submit(db_session, run, a.bank, [_line(1, date(2026, 10, 5), "存入", 100, "deposit")], kind="bank",
                          period=(date(2026, 10, 1), date(2026, 10, 31)), opening=Decimal("1700"))
-    _revert(db_session, row.id)  # a statement added after the anchor is part of the recorded ∪ current set, not a change
+    _revert(db_session, row.id)  # a statement added BEFORE the revert's discovery is in recorded ∪ current on both reads: not a change
     assert _adjustments(db_session) == []
 
 
@@ -1393,21 +1401,26 @@ def test_policy_anchors_once_per_account_and_proposes_over_the_cap(seed, db_sess
 
 
 def test_policy_skips_statements_flagged_by_the_anchor_until_reconciled(seed, db_session, run, dirty_on):
-    # candidates run in case-id order: the fee line case precedes the balance_gap case, so run 1 books the fee and
-    # then the anchor; the anchor flags the statement, so run 2 is skipped (needs_recheck) until a reconcile clears it
+    # run 1: one fee line case (id lower) then the balance_gap case → fee booked, then the anchor, which flags the
+    # statement needs_recheck. A second fee line arrives on a new revision; run 2 is skipped (statement_excluded:
+    # needs_recheck) until a reconcile clears the flag; run 3 books the new fee.
     bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
     db_session.commit()
-    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "年費", 50, "fee"), _line(2, date(2026, 9, 5), "利息", 3, "interest")],
-                         kind="bank", opening=Decimal("1600"))
-    _set_policy(db_session, {**ANCHOR_ON, "per_statement_count": 2, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "年費", 50, "fee")], kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, {**ANCHOR_ON, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
     first = policy_service.run_policy(db_session, stmt.id)
-    assert [a.action for a in _actions(db_session)] == ["create_system_entry", "anchor_opening"]  # count cap 2 leaves the interest line
+    assert [a.action for a in _actions(db_session)] == ["create_system_entry", "anchor_opening"] and len(first.applied) == 2
+    db_session.expire_all()
     assert db_session.get(AccountStatement, stmt.id).needs_recheck is True
-    assert policy_service.run_policy(db_session, stmt.id).skipped == {"statement_excluded": 1}
-    rec.reconcile(db_session, stmt.id)
-    db_session.commit()
-    _set_policy(db_session, {**ANCHOR_ON, "per_statement_count": 5, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
-    assert [a.action for a in _actions(db_session)][-1:] == ["create_system_entry"] or len(policy_service.run_policy(db_session, stmt.id).applied) == 1
+    _submit(db_session, run, bank, [_line(1, DAY, "年費", 50, "fee"), _line(2, date(2026, 9, 5), "利息", 3, "interest")],
+            kind="bank", opening=Decimal("1600"))  # revision 2 adds an interest line; the hook's reconcile clears needs_recheck
+    db_session.expire_all()
+    if db_session.get(AccountStatement, stmt.id).needs_recheck:  # the hook did not reconcile (parse_review etc.): the policy must skip
+        assert policy_service.run_policy(db_session, stmt.id).skipped == {"statement_excluded": 1}
+        rec.reconcile(db_session, stmt.id)
+        db_session.commit()
+    third = policy_service.run_policy(db_session, stmt.id)
+    assert [a.action for a in _actions(db_session)][-1] == "create_system_entry" and len(third.applied) == 1
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1442,6 +1455,17 @@ def anchor_applied(db: Session, account_id: int) -> bool:
         AccountStatement.account_id == account_id)))
 
 
+def anchor_delta(db: Session, account_id: int) -> tuple[date, Decimal] | None:
+    """R6b.2: (as_of, target.opening_balance − balance(as_of)) at the account's anchor target, or None. Module
+    level, defined BEFORE the action class (one arithmetic for the action, the policy builder and the dry-run)."""
+    target = anchor_target(db, account_id)
+    if target is None:
+        return None
+    as_of = target.period_start - timedelta(days=1)
+    delta = (Decimal(target.opening_balance) - ledger_service.account_balance(db, account_id, as_of=as_of)).quantize(Decimal("0.0001"))
+    return as_of, delta
+
+
 class AnchorOpeningParams(ActionParams):
     pass
 
@@ -1469,16 +1493,6 @@ class AnchorOpeningAction(ActionBase):
         required = set(live_bank_statement_ids(ctx.db, ctx.statement.account_id)) | set(recorded)
         if required != set(locked):
             raise _refuse("action", "targets_changed", "the account's live statements changed; retry")
-
-
-def anchor_delta(db: Session, account_id: int) -> tuple[date, Decimal] | None:
-    """R6b.2: (as_of, target.opening_balance − balance(as_of)) at the account's anchor target, or None."""
-    target = anchor_target(db, account_id)
-    if target is None:
-        return None
-    as_of = target.period_start - timedelta(days=1)
-    delta = (Decimal(target.opening_balance) - ledger_service.account_balance(db, account_id, as_of=as_of)).quantize(Decimal("0.0001"))
-    return as_of, delta
 
     def apply(self, ctx: Context, params: AnchorOpeningParams, prepared: Prepared, effect: Effect) -> None:
         self.check_before_locks(ctx, params)
@@ -1562,7 +1576,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/services/reconciliation_actions/structural_actions.py app/services/reconciliation_actions/__init__.py app/services/policy_service.py tests/integration/test_reconciliation_actions_structural.py tests/integration/test_reconciliation_policy.py
+git add app/services/reconciliation_actions/structural_actions.py app/services/reconciliation_actions/__init__.py app/services/reconciliation_actions/base.py app/services/reconciliation_actions/engine.py app/services/policy_service.py tests/integration/test_reconciliation_actions_structural.py tests/integration/test_reconciliation_policy.py
 git commit -m "feat(reconciliation): R6b.2 anchor_opening action and policy builder
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
@@ -1649,6 +1663,31 @@ def test_orphan_replacement_succeeds_when_the_stand_in_is_untouched(seed, db_ses
     assert db_session.get(ReconciliationAction, s.action.id).reverted_by_action_id == row.id
 
 
+def test_replace_refuses_when_the_claimant_disappears_between_discovery_and_lock(seed, db_session, run, dirty_on, monkeypatch):
+    # R1: the discovery read (lock_targets) sees the claimant; the locked re-read sees none → claimant_changed, not no_claimant
+    s = _backfilled(seed, db_session, run)
+    coverage_service.release_line(db_session, s.stmt, s.line.id, reason="test")
+    db_session.commit()
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    from app.services.reconciliation_actions import ledger_actions as la
+    real = la.ReplaceStandInAction._claimant
+    calls = []
+
+    def vanishing(self, ctx):
+        calls.append(1)
+        return real(self, ctx) if len(calls) == 1 else None
+    monkeypatch.setattr(la.ReplaceStandInAction, "_claimant", vanishing)
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "claimant_changed"
+    monkeypatch.undo()
+    coverage_service.release_line(db_session, s.stmt, s.line.id, reason="test2")  # now genuinely no claimant at discovery
+    db_session.commit()
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "no_claimant"
+
+
 def test_replace_refuses_when_the_claimant_changed_between_discovery_and_lock(seed, db_session, run, dirty_on, monkeypatch):
     s = _backfilled(seed, db_session, run)
     coverage_service.release_line(db_session, s.stmt, s.line.id, reason="test")
@@ -1671,26 +1710,73 @@ def test_replace_refuses_when_the_claimant_changed_between_discovery_and_lock(se
     assert db_session.get(LedgerEntry, s.stand_in.id) is not None
 
 
-def test_replace_rolls_back_entirely_when_the_claim_fails_after_the_delete(seed, db_session, run, dirty_on, monkeypatch):
+def test_replace_rolls_back_entirely_when_a_failure_hits_after_the_delete(seed, db_session, run, dirty_on, monkeypatch):
+    # R3: the injected failure fires AFTER the stand-in was deleted and the creating action marked reverted (the audit
+    # call is the last statement of apply), run as the POLICY so the budget charge is part of what must roll back
     s = _backfilled(seed, db_session, run)
     owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
     db_session.commit()
     rec.reconcile(db_session, s.stmt.id)
     db_session.commit()
     (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
-    from app.services.reconciliation_actions import ledger_actions as la
-    monkeypatch.setattr(la, "_claim", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
-    with pytest.raises(RuntimeError):
-        engine.apply_action(db_session, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
-    db_session.rollback()
+    from app.services.reconciliation_actions import audit, ledger_actions as la
+    reached = {}
+
+    def boom(db, *, event, **kw):
+        if event == "stand_in_replaced":
+            reached["deleted"] = db.get(LedgerEntry, s.stand_in.id) is None  # proves the failure point is past the delete
+            reached["reverted"] = db.get(ReconciliationAction, s.action.id).status == "reverted"
+            raise RuntimeError("boom")
+        return audit.record(db, event=event, **kw)
+    monkeypatch.setattr(la.audit, "record", boom)
+    _set_policy(db_session, {"enabled": True})
+    result = policy_service.run_policy(db_session, s.stmt.id)
+    assert reached == {"deleted": True, "reverted": True}
+    assert result.applied == [] and result.skipped.get("error", 0) >= 1
+    db_session.expire_all()
     assert db_session.get(LedgerEntry, s.stand_in.id) is not None
     (cov,) = _active(db_session, s.stmt.id)
     assert cov.entry_id == s.stand_in.id
-    assert db_session.get(ReconciliationAction, s.action.id).status == "applied"
+    assert db_session.get(ReconciliationAction, s.action.id).status == "applied" and db_session.get(ReconciliationAction, s.action.id).reverted_by_action_id is None
     assert [a.action for a in db_session.execute(select(ReconciliationAction)).scalars()] == ["backfill_entry"]
+    assert _reload(db_session, ReconciliationCase, case.id).status == "open"
+    assert _budget(db_session) is None or _budget(db_session).used_count == 0
 
 
 def test_concurrent_delete_of_the_stand_in_is_refused(seed, db_session, run, dirty_on, pg_engine):
+    # R3: the entry locks are NOWAIT, so a replacement that meets a held row lock fails at once (`action_busy`);
+    # `tests.helpers.race` expects the second side to BLOCK, so this test drives two sessions by hand instead
+    from sqlalchemy.orm import sessionmaker
+    s = _backfilled(seed, db_session, run)
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    Session = sessionmaker(bind=pg_engine)
+    holder = Session()
+    holder.execute(select(LedgerEntry).where(LedgerEntry.id == s.stand_in.id).with_for_update())  # held, not committed
+    try:
+        with Session() as other, pytest.raises(CodedConflictError) as exc:
+            engine.apply_action(other, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+        assert exc.value.code == "action_busy"
+    finally:
+        holder.delete(holder.get(LedgerEntry, s.stand_in.id))
+        holder.commit()
+        holder.close()
+    with Session() as other:
+        with pytest.raises(CodedValidationError) as exc:
+            engine.apply_action(other, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+        assert exc.value.code == "stand_in_changed"
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, s.stand_in.id) is None and db_session.get(ReconciliationAction, s.action.id).status == "applied"
+
+
+@pytest.mark.parametrize("order", ["sweep_first", "replace_first"])
+def test_sweep_retirement_and_replacement_serialise_on_the_statement_lock(seed, db_session, run, dirty_on, pg_engine, order):
+    # R3: sweep-first — the owner deleted the stand-in and the sweep retired its action; the replacement then finds
+    # the stand-in gone → stand_in_changed, attribution stays NULL + deleted_by_event. Replace-first — the sweep then
+    # finds the action already reverted by the replacement → nothing to retire, attribution kept, no audit row.
     from tests.helpers import race
     s = _backfilled(seed, db_session, run)
     owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
@@ -1698,17 +1784,32 @@ def test_concurrent_delete_of_the_stand_in_is_refused(seed, db_session, run, dir
     rec.reconcile(db_session, s.stmt.id)
     db_session.commit()
     (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    if order == "sweep_first":
+        db_session.delete(db_session.get(LedgerEntry, s.stand_in.id))
+        db_session.commit()
 
-    def deleter(session):  # holds the stand-in row lock, then deletes it
-        session.execute(select(LedgerEntry).where(LedgerEntry.id == s.stand_in.id).with_for_update())
-        session.delete(session.get(LedgerEntry, s.stand_in.id))
+    def sweep(session):
+        st = session.get(AccountStatement, s.stmt.id)
+        rec._lock_statement(session, st.id)
+        coverage_service.sweep(session, st, run_id=None, barrier_wait=False)
 
-    def replacer(session):
+    def replace(session):
         engine.apply_action(session, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
-    outcome = race(pg_engine, deleter, replacer)
-    assert outcome != "committed"  # NOWAIT row lock → action_busy, or stand_in_changed after the delete commits
+
+    first, second = (sweep, replace) if order == "sweep_first" else (replace, sweep)
+    outcome = race(pg_engine, first, second)
     db_session.expire_all()
-    assert db_session.get(LedgerEntry, s.stand_in.id) is None and db_session.get(ReconciliationAction, s.action.id).status == "applied"
+    row = db_session.get(ReconciliationAction, s.action.id)
+    assert row.status == "reverted"
+    if order == "sweep_first":
+        assert outcome != "committed" and getattr(outcome, "code", None) == "stand_in_changed"
+        assert row.reverted_by_action_id is None and row.inverse.get("deleted_by_event")
+        assert len(_audit(db_session, "stand_in_retired")) == 1
+    else:
+        assert outcome == "committed" and row.reverted_by_action_id is not None and "deleted_by_event" not in (row.inverse or {})
+        assert _audit(db_session, "stand_in_retired") == []
+    _sweep(db_session, s.stmt)  # repeat: no double retirement
+    assert len(_audit(db_session, "stand_in_retired")) == (1 if order == "sweep_first" else 0)
 
 
 def test_orphan_case_after_the_sweep_released_the_stand_in(seed, db_session, run, dirty_on):
@@ -1757,7 +1858,7 @@ def test_system_entries_never_shadow(seed, db_session, run, dirty_on):
     assert cases and all("hint" not in (c.context or {}) for c in cases)
 ```
 
-(`_apply`, `_refuse`, `_code`, `SimpleNamespace`, `NotRevertable` imports as in the ledger-actions tests. The identical-reparse step re-submits the same lines for the same account/currency/period: `_submit` resolves the statement by identity and writes revision 2.)
+(`_apply`, `_refuse`, `_code`, `SimpleNamespace`, `NotRevertable`, `CodedConflictError`, `CodedValidationError` (from `app.services.reconciliation_actions.base`/`engine` — check where each is defined), `_set_policy`, `_budget`, `_reload`, `_audit` (copied from the policy test module) imports as in the ledger-actions tests. The identical-reparse step re-submits the same lines for the same account/currency/period: `_submit` resolves the statement by identity and writes revision 2. `policy_service.run_policy` turns an exception inside an apply into `skipped["error"]` via `run_candidate`'s error branch — verify the exact skip key in `policy_service.py:402–436` and use it.)
 
 `tests/integration/test_reconciliation_policy.py`:
 
@@ -1828,7 +1929,7 @@ def owner_population(db: Session, statement: AccountStatement, accounts: list[in
 
 def _conserves(statement: AccountStatement, line: StatementLine, entry: LedgerEntry, rules) -> bool:
     ml = reconciliation_service._as_line(line)
-    me = reconciliation_service.entry_view(entry)
+    me = reconciliation_service.entry_view(entry)  # the one entry_view signature: (entry) -> matching.Entry
     return (matching._entry_class(me) in matching.eligible_kinds(statement.kind, line.line_kind)
             and matching._same(me.flow, ml.flow) and matching._date_distance(ml, me) <= rules.drift_window_days)
 
@@ -1924,8 +2025,10 @@ class ReplaceStandInAction(ActionBase):
     actors = frozenset({OWNER, POLICY})
     slot = REPLACE
 
-    def _shape(self, ctx: Context) -> dict:
-        """Discovery (unlocked): the frozen evidence {shape, stand_in_id, other_id, action_id, event_id}."""
+    def _shape(self, ctx: Context, *, discovery: bool) -> dict:
+        """The evidence {shape, stand_in_id, other_id, action_id, event_id}. `discovery=True` (unlocked, once): a
+        missing orphan claimant is `no_claimant`. `discovery=False` (under the locks): a missing claimant means the
+        targets moved since discovery → `claimant_changed` (R1)."""
         context = ctx.case.context or {}
         hint = context.get("hint")
         if hint == "shadowed_by_stand_in":
@@ -1933,16 +2036,21 @@ class ReplaceStandInAction(ActionBase):
         elif hint == "orphaned_stand_in":
             stand_in, other = ctx.case.entry_id, self._claimant(ctx)
             if other is None:
-                raise _refuse("action", "no_claimant", "the orphan's line has no owner claim any more")
+                raise _refuse("action", "no_claimant" if discovery else "claimant_changed", "the orphan's line has no owner claim")
         else:
             raise _refuse("action", "not_a_stand_in_case")
         action = stand_ins.creation_for_entry(ctx.db, stand_in) if stand_in else None
         return {"shape": "shadow" if hint == "shadowed_by_stand_in" else "orphan", "stand_in_id": stand_in, "other_id": other,
                 "action_id": None if action is None else action.id, "event_id": ctx.case.event_id}
 
-    def prepare(self, ctx: Context, params: ReplaceStandInParams, targets: LockSet) -> Prepared:
-        prepared = super().prepare(ctx, params, targets)
-        prepared.data = self._shape(ctx)  # M2: frozen; validate_before re-derives under the locks and compares
+    def prepare(self, ctx: Context, params: ReplaceStandInParams) -> Prepared:
+        """Engine interface unchanged (`prepare(ctx, params)`, `base.py:157`). ONE discovery read is frozen here and
+        reused by lock_targets' caller order: the engine calls lock_targets first, then prepare; both must agree, so
+        lock_targets stores its discovery on ctx (`ctx.data`, a plain dict attribute the engine ignores) and prepare
+        freezes that same dict into Prepared.data together with the lock set it produced (R1)."""
+        prepared = super().prepare(ctx, params)
+        frozen = getattr(ctx, "_replace_discovery", None) or self._shape(ctx, discovery=True)
+        prepared.data = {**frozen, "locked_entry_ids": sorted({i for i in (frozen["stand_in_id"], frozen["other_id"]) if i})}
         return prepared
 
     def _claimant(self, ctx: Context) -> int | None:
@@ -1953,17 +2061,24 @@ class ReplaceStandInAction(ActionBase):
         return None
 
     def lock_targets(self, ctx: Context, params: ReplaceStandInParams) -> LockSet:
-        found = self._shape(ctx)
+        found = self._shape(ctx, discovery=True)
+        ctx._replace_discovery = found  # the single discovery read; prepare freezes it (R1)
         return LockSet(entry_ids=tuple(sorted({i for i in (found["stand_in_id"], found["other_id"]) if i})))
 
     def validate_before(self, ctx: Context, params: ReplaceStandInParams, prepared: Prepared, before: dict) -> None:
-        self._prove(ctx, prepared.data)
+        self._prove(ctx, prepared)
 
-    def _prove(self, ctx: Context, frozen: dict):
-        """M2: under the statement, case and entry locks, re-derive every target and refuse if it differs from the
-        frozen discovery; then prove the structural allowlist, the provenance, the claimant's gate and the coverage."""
+    def _prove(self, ctx: Context, prepared: Prepared):
+        """M2/R1: under the statement, case and entry locks — (1) the frozen discovery must name exactly the entry ids
+        the engine locked (`ctx.lock_set.entry_ids`) and snapshotted (`prepared.expected["entries"]`); (2) the
+        re-derived evidence must equal the frozen one; (3) then the structural allowlist, the provenance (creating
+        action read FOR UPDATE, this event, this statement), the claimant's gate and the coverage are proved."""
         db = ctx.db
-        now = self._shape(ctx)  # re-derived under the locks (the orphan claimant from current coverage)
+        frozen = {k: v for k, v in prepared.data.items() if k != "locked_entry_ids"}
+        locked_ids = sorted(ctx.lock_set.entry_ids) if ctx.lock_set else []
+        if prepared.data.get("locked_entry_ids") != locked_ids or set(map(str, locked_ids)) != set(prepared.expected.get("entries", {})):
+            raise _refuse("action", "claimant_changed", "the locked rows are not the discovered targets")
+        now = self._shape(ctx, discovery=False)  # re-derived under the locks (the orphan claimant from current coverage)
         if now != frozen:
             raise _refuse("action", "claimant_changed", "the replacement targets changed since discovery")
         shape, stand_in_id, other_id, action_id = now["shape"], now["stand_in_id"], now["other_id"], now["action_id"]
@@ -2001,7 +2116,7 @@ class ReplaceStandInAction(ActionBase):
         return shape, stand_in, other, line, held, action
 
     def apply(self, ctx: Context, params: ReplaceStandInParams, prepared: Prepared, effect: Effect) -> None:
-        shape, stand_in, other, line, held, action = self._prove(ctx, prepared.data)
+        shape, stand_in, other, line, held, action = self._prove(ctx, prepared)
         db = ctx.db
         effect.before = {"stand_in_entry_id": stand_in.id, "backfill_action_id": action.id, "claimant_entry_id": other.id, "shape": shape}
         if shape == "shadow":
@@ -2022,7 +2137,7 @@ class ReplaceStandInAction(ActionBase):
         raise NotRevertable("stand-in deleted")
 ```
 
-Engine hook: after `_record_effect` in `apply_action`, if `effect.inverse.get("backfill_action_id")` is set and the action name is `replace_stand_in`, set that action row's `reverted_by_action_id = row.id` (two lines in `engine.py`, guarded by the action name). `_line_for_event(ctx)` = `StatementLine` where `revision_id == statement.current_revision_id and event_id == case.event_id` (add to `base.py` next to `current_line`). `rec.entry_view(db, entry) -> matching.Entry` = the single-row version of the construction in `load_candidates` (factor the field mapping into a helper used by both). `KIND_ACTIONS["entry_unmatched"]` gains `"replace_stand_in"`; `CONDITIONS[("entry_unmatched", "replace_stand_in")] = lambda case: _context(case).get("hint") in ("shadowed_by_stand_in", "orphaned_stand_in")`.
+Engine hook: after `_record_effect` in `apply_action`, if `effect.inverse.get("backfill_action_id")` is set and the action name is `replace_stand_in`, set that action row's `reverted_by_action_id = row.id` (two lines in `engine.py`, guarded by the action name). `Context` gets a plain attribute slot for `_replace_discovery` (declare `_replace_discovery: dict | None = None` on the dataclass so assignment is legal). `_line_for_event(ctx)` = `StatementLine` where `revision_id == statement.current_revision_id and event_id == case.event_id` (add to `base.py` next to `current_line`). `reconciliation_service.entry_view(entry: LedgerEntry) -> matching.Entry` (ONE signature, no `db`: it maps columns only; `transfer_peer_is_card` is `None` in this view and `stand_in` is filled by the caller) = the single-row version of the construction in `load_candidates` (factor the field mapping into a helper used by both). Safety argument, stated precisely: the creating action row is read FOR UPDATE inside `_prove` (after the entry locks; it is an action row, not an entry or statement, so the engine's lock order is not involved); its case's statement is proven to be `ctx.statement`, which the engine already holds — so a concurrent sweep retirement or engine revert of that action waits on this statement lock, and vice versa. `KIND_ACTIONS["entry_unmatched"]` gains `"replace_stand_in"`; `CONDITIONS[("entry_unmatched", "replace_stand_in")] = lambda case: _context(case).get("hint") in ("shadowed_by_stand_in", "orphaned_stand_in")`.
 
 `policy_service.py`:
 
@@ -2055,7 +2170,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 9: Dry-run `--policy` mode, sweep regression table, retirement counts
 
 **Files:**
-- Modify: `scripts/r6_case_dump.py` (`--policy` flag → `policy` section), `scripts/r6_dryrun.py` (`--policy` summary), `scripts/README-r6-dryrun.md`
+- Modify: `app/services/policy_service.py` (`preview`, `_decision_label`), `app/services/coverage_service.py` (`sweep_preview`), `app/services/stand_ins.py` (`retirement_preview`), `scripts/r6_case_dump.py` (`--policy` flag → `policy` section), `scripts/r6_dryrun.py` (`--policy` summary), `scripts/README-r6-dryrun.md`
 - Test: `tests/unit/test_r6_dryrun.py`
 
 **Interfaces:**
@@ -2108,12 +2223,20 @@ def preview(db: Session, statement: AccountStatement, policy: dict, today: date 
         elif excluded:
             out.append((candidate, f"excluded:{excluded}"))
         else:
-            decision, _, reason = _prefilter(db, candidate, policy)  # the real signature
-            out.append((candidate, decision if reason is None else f"{decision}:{reason}"))
+            out.append((candidate, _decision_label(_prefilter(db, candidate, policy))))
     return out
+
+
+def _decision_label(result) -> str:
+    """_prefilter returns "try" for an eligible candidate, else a tuple (verb, proposal_or_None, code): map
+    "try" → "apply", ("propose", _, code) → "propose:<code>", ("skip", _, code) → "skip:<code>"."""
+    if result == "try":
+        return "apply"
+    verb, _, code = result
+    return f"{verb}:{code}" if code else verb
 ```
 
-(verify `_prefilter`'s exact return shape at `policy_service.py:311-329` and `_statement_excluded`'s signature; adapt the unpacking rather than the semantics.)
+(verify `_prefilter`'s exact return shape at `policy_service.py:311-329` and `_statement_excluded`'s signature; adapt `_decision_label`, not the semantics. The integration test `test_policy_preview_matches_run_policy_decisions` must cover all five labels: `apply`, `propose:<code>`, `skip:<code>`, `disabled`, `excluded:<reason>`.)
 
 `coverage_service.sweep_preview(db, statement) -> dict`: replicate the sweep's selection of pending entry `update` events over the statement's active rows and apply `_structural_update` logic per line **with the current entry row** (same `db.get` as the sweep) — old rule: every such line counts; new rule: only lines where `structurally_changed` is non-empty; `released_by_key`/`kept_by_key` count the differing keys (structural vs cosmetic: compare `snapshot_entry(entry)` plus `name`/`merchant` against the stored snapshot); each line counted once however many events touch it. Read-only.
 
@@ -2165,7 +2288,7 @@ Expected: PASS. The three integration tests ARE the collection-path evidence aga
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/r6_case_dump.py scripts/r6_dryrun.py scripts/README-r6-dryrun.md tests/unit/test_r6_dryrun.py
+git add app/services/policy_service.py app/services/coverage_service.py app/services/stand_ins.py scripts/r6_case_dump.py scripts/r6_dryrun.py scripts/README-r6-dryrun.md tests/unit/test_r6_dryrun.py tests/integration/test_stand_ins.py
 git commit -m "feat(reconciliation): R6b dry-run policy mode, sweep regression table, retirement counts
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
@@ -2217,5 +2340,6 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - **Survey flags folded:** F1/F2 (create_entry condition, needs_peer) → Task 3; F3 (single-valued hint) → `owner_deleted` key + hint only when free, Tasks 4/6; F4 (`current_line` needs `line_id`) → shadow/orphan cases carry `line_id` and the action resolves by event (`_line_for_event`), Task 8; F7 (revert path) → anchor overrides `revert_lock_targets`, re-checks dirty and targets in `invert`, Task 7; F8/F9 (`_unchanged`, `collect_candidates`) → Tasks 5/7/8; F10 (needs_recheck exclusion) → Task 7 test; F11/F12 → Tasks 6/2; F14 (stand-in coverage is agent/manual) → noted in Task 8; F15/F16 → Tasks 1/5/7/8; F19 → Task 1; F23 → Task 7.
 - **Placeholders:** none; the `STRUCTURAL_KEYS` literal is spelled out in Global Constraints (the odd expression in Task 2 is explicitly marked "do not copy"); Task 8's `rec.entry_view` and `_line_for_event` are defined in the same task.
 - **Type consistency:** `stand_ins.stand_in_entry_ids(db, account_ids)`, `creation_for_entry(db, entry_id)`, `owner_deleted_events(db, statement)`, `shadows(db, statement, lines, owners, rules)`, `orphans(db, statement, entries)` used identically in Tasks 4, 6, 8, 9; `backfill_kind(statement_kind, line_kind)` in Tasks 5 and 9; `live_bank_statement_ids`, `anchor_target`, `anchor_applied` in Tasks 7 and 9; audit event names in Tasks 1, 6, 7, 8.
+- **Plan rev 3 (AGENT-132 re-review):** R1 — `prepare(ctx, params)` keeps the engine interface; `lock_targets` makes the single discovery read and stores it on `ctx._replace_discovery`, `prepare` freezes it with the entry ids it produced, `_prove` checks those equal `ctx.lock_set.entry_ids` and the prepared snapshot ids before re-deriving; `_shape(discovery=False)` turns a vanished orphan claimant into `claimant_changed`, tests for both codes; R2 — `anchor_delta` is module level before the class, Task 7 files/commit include `base.py`/`engine.py`; R3 — fault injection after the delete and the status flip (audit hook) run as the policy with budget/case/attribution rollback asserted, NOWAIT concurrency driven by two sessions (`action_busy` then `stand_in_changed`), sweep-vs-replacement in both orders; S1 — revert `targets_changed` fixture introduces a new id, policy-order test rebuilt around a second revision; S2 — `_decision_label` maps `try → apply` and `(verb, _, code)`; Task 2 parent-link assertion; Task 5's owner-deleted row staged until Task 6's sweep; one `entry_view(entry)` signature; Task 9 files/commit include the service modules.
 - **Plan rev 2 (AGENT-132, dev-astra):** M1 — shadow/orphan discovery now queries current-revision held lines and the full eligible owner population itself (reciprocal uniqueness), fixture dates fixed; M2 — replacement evidence frozen in `Prepared.data`, re-derived and compared under the locks, creating action read FOR UPDATE with event/statement identity, claimant account/currency/claimability gate, "no coverage anywhere" for orphans; M3 — `Context.budget_amount`, anchor refuses `amount_changed` after the barrier, `anchor_delta` shared, drifting-balance regression; M4 — service-side `policy_service.preview`, `coverage_service.sweep_preview`, `stand_ins.retirement_preview` with collection-path integration tests, dump uses them, no implementer smoke on the live DB; M5 — two-order sweep-vs-revert race, orphan success, claimant-changed-between-discovery-and-lock, concurrent stand-in delete, fault injection after delete; Shoulds — red-run selectors, literal pre-R6b snapshot fixture + link cases, identical-reparse marker test, real release/self-heal path, eligibility matrix through `allowed`, anchor revert dirty-off/targets tests with the recorded ∪ current rule, policy ordering by case id, §3.5 wording.
 - **Review Focus:** 1 → Task 6 (`test_policy_skips_an_owner_deleted_fee_line_but_the_owner_may_rebook_it`), 2 → Task 4 (`test_stand_in_alone_self_heals_after_release`) + Task 5 (family-check test), 3 → Task 7 (`test_policy_skips_statements_flagged_by_the_anchor_until_reconciled`), 4 → Task 2 (cosmetic vs structural) + Task 8 (categorised replaced; amount-edited refused), 5 → Task 8 (`test_shadow_requires_a_unique_line_and_a_conserving_owner_entry`).
