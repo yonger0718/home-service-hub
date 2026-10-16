@@ -37,6 +37,10 @@ def test_gate_fails_on_lost_claim_single_candidate_ambiguous_unattributed_or_mov
     legal = _dump({"1": {"claims": [], "cases": [[11, "ambiguous", None, [5, "g7"], None]]}})
     legal_base = _dump(legal["statements"], sha="base")
     assert dr.gate_failures([], legal, legal_base) == []
+    clean = _dump({"1": {"claims": [], "cases": []}}, sha="cand")
+    assert dr.gate_failures([], clean, _dump(clean["statements"], sha="base-dirty")) == ["baseline dump came from a dirty tree (sha base-dirty)"]
+    assert dr.gate_failures([], _dump(clean["statements"], sha="cand-dirty"), _dump(clean["statements"], sha="base")) == [
+        "candidate dump came from a dirty tree (sha cand-dirty)"]
     moved = _dump({"1": {"claims": [], "cases": []}}, watermark=(2, 1, 1))
     assert dr.gate_failures([], moved, legal_base) == ["database changed between the dumps (watermark 1,1,1 → 2,1,1)"]
     same_tree = _dump({"1": {"claims": [], "cases": []}}, sha="x")

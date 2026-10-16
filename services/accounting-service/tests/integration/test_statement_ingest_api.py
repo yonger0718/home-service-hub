@@ -486,6 +486,26 @@ def test_stale_r1b_row_round_trips_the_effective_rules(client, db_session):
     assert (effective.margin, effective.near_tolerance_pct, effective.exact_window_days) == (Decimal("0.05"), Decimal("0.05"), 4)
 
 
+def test_noop_get_put_of_a_stale_r1b_row_keeps_the_version_and_drops_old_defaults(client, db_session):
+    from datetime import date
+    from app.services import reconciliation_service as rec, settings_service
+    row = settings_service._reconciliation_row(db_session)
+    row.data = {**(row.data or {}), "rules": {**settings_service.RULE_DEFAULTS, "margin": "0.15", "near_tolerance_pct": "0.03"},
+                "rules_version": "r1b-1"}
+    db_session.commit()
+    got = client.get("/settings/reconciliation", headers=H).json()
+    body = {k: got[k] for k in ("account_map", "dirty_enabled", "rules", "policy", "account_siblings")}
+    for _ in range(2):  # the second identical PUT is idempotent
+        put = _put(client, body)
+        assert put.status_code == 200, put.text
+        assert put.json()["rules_version"] == "r1b-1"
+        db_session.expire_all()
+        effective = rec.rules_for(settings_service.reconciliation_rules(db_session), date(2026, 9, 30))
+        assert (effective.margin, effective.near_tolerance_pct) == (Decimal("0.05"), Decimal("0.05"))
+        stored = settings_service._reconciliation_row(db_session).data
+        assert stored["rules"]["margin"] == "0.05" and stored["rules_version"] == "r1b-1"
+
+
 def test_policy_put_validates(client):
     bad = [
         {"enabled": True, "actions": {"teleport": {"enabled": True}}},

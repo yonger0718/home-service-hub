@@ -437,6 +437,22 @@ def test_drift_window_is_validated_like_the_other_int_rules(db_session):
         settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "rules": {"drift_window_days": "15"}})
 
 
+def test_settings_readers_log_stale_scale_overrides(db_session, caplog, monkeypatch):
+    import logging
+    monkeypatch.setattr(logging.getLogger("app.services.settings_service"), "disabled", False)
+    row = settings_service._reconciliation_row(db_session)
+    for margin, expected in (("0.20", 1), ("0.15", 0)):
+        row.data = {**(row.data or {}), "rules": {"margin": margin}, "rules_version": "r1b-1"}
+        db_session.flush()
+        for reader in (settings_service.reconciliation_rules, settings_service.read_reconciliation_rules):
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="app.services.settings_service"):
+                got = reader(db_session)
+            records = [r for r in caplog.records if "ignored stale rule override" in r.message]
+            assert len(records) == expected and all(r.name == "app.services.settings_service" for r in records)
+            assert got["margin"] == "0.05"
+
+
 def test_rules_for_ignores_old_scale_overrides_with_a_warning(caplog, monkeypatch):
     import logging
     # alembic's fileConfig (the session's in-process upgrade) disables loggers that already exist: re-enable ours

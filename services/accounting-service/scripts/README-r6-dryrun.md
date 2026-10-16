@@ -14,7 +14,7 @@ Run as the owner (or the verify user with the read-only role) from the candidate
 The baseline tree needs its own `.env` at its repo root (copy the candidate's, mode 600): the dump loads the `.env` of
 whichever tree supplied `app`. A `PYTHONPATH` that points at a missing directory is not an error: Python silently
 imports the candidate instead (the same-SHA gate catches it). Both trees must be clean: the dump appends `-dirty` to the
-SHA of a tree with uncommitted changes, and such a dump is not evidence.
+SHA of a tree with uncommitted changes, and such a dump is not evidence: a dirty dump fails the gate.
 
 Never pass `-I` or `-E` to the dump: both drop `PYTHONPATH`, and the dump would silently import the venv's editable
 install (the candidate) twice. The dump prints the SHA of the tree that actually supplied `app`; the two printed SHAs

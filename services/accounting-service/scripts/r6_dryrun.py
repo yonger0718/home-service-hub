@@ -85,6 +85,9 @@ def gate_failures(changes: list[dict], after: dict, before: dict | None = None) 
         failures.append(f"database changed between the dumps (watermark {a} → {b})")
     if before is not None and before.get("sha") == after.get("sha"):
         failures.append(f"both dumps came from the same tree (sha {after.get('sha')})")
+    for which, dump in (("baseline", before), ("candidate", after)):
+        if dump is not None and str(dump.get("sha", "")).endswith("-dirty"):
+            failures.append(f"{which} dump came from a dirty tree (sha {dump['sha']})")
     return failures
 
 
@@ -103,7 +106,8 @@ def main() -> int:
     ap.add_argument("--candidate", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--allow-moved-claims", action="store_true",
-                    help="a claim lost by a line whose entry is now held by an earlier line is reported, not failed")
+                    help="waive both moved-claim shapes (reported, not failed): a claim whose line is now claimed_by_earlier_line, "
+                         "and a claim whose entry set changed")
     args = ap.parse_args()
     with open(args.baseline) as fb, open(args.candidate) as fa:
         before, after = json.load(fb), json.load(fa)

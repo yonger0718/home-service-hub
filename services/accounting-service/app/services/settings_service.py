@@ -1,6 +1,7 @@
 """Settings reads and writes. Task 5: preference; Task 16 adds accounts, groups, categories, projects, counterparties."""
 
 import json
+import logging
 from dataclasses import fields
 from hashlib import sha256
 from decimal import Decimal
@@ -78,6 +79,8 @@ def _rule_default(value):
 RULE_DEFAULTS = {f.name: _rule_default(f.default) for f in fields(matching.Rules) if f.name != "period_end"}
 
 
+log = logging.getLogger(__name__)
+
 SCALE_KEYS = ("accept", "margin", "ambiguous_floor")  # meaningless across the R6a rescale (spec R6a.1)
 # the R1b defaults of the keys whose defaults changed in R6a: a stored copy of one is a merged default, not a choice
 R1B_RULE_DEFAULTS = {"margin": "0.15", "near_tolerance_pct": "0.03"}
@@ -100,6 +103,13 @@ def normalise_stale_rules(stored: dict, version: str) -> tuple[dict, list[str]]:
             continue
         out[key] = value
     return out, warned
+
+
+def _warn_stale_rules(stored: dict, version: str, warned: list[str]) -> None:
+    """One warning per ignored stale score-scale override (same shape as reconciliation_service.rules_for)."""
+    for key in warned:
+        log.warning("ignored stale rule override %s=%r (rules_version %s predates the R6a score scale)",
+                    key, stored[key], version)
 
 
 POLICY_VERSION_PREFIX = "r1c"
@@ -288,7 +298,10 @@ def reconciliation_rules(db: Session) -> dict:
     row = db.get(ReconciliationSettings, 1)
     data = (row.data or {}) if row is not None else {}
     version = _stored_rules_version(data)
-    return {**RULE_DEFAULTS, **normalise_stale_rules(data.get("rules") or {}, version)[0], "rules_version": version}
+    stored = data.get("rules") or {}
+    effective, warned = normalise_stale_rules(stored, version)
+    _warn_stale_rules(stored, version, warned)
+    return {**RULE_DEFAULTS, **effective, "rules_version": version}
 
 
 def get_reconciliation_settings(db: Session) -> dict:
@@ -303,6 +316,10 @@ def read_reconciliation_settings(db: Session) -> dict:
 
 def read_reconciliation_rules(db: Session) -> dict:
     settings = read_reconciliation_settings(db)
+    row = db.get(ReconciliationSettings, 1)
+    data = (row.data or {}) if row is not None else {}
+    stored = data.get("rules") or {}
+    _warn_stale_rules(stored, settings["rules_version"], normalise_stale_rules(stored, settings["rules_version"])[1])
     return {**settings["rules"], "rules_version": settings["rules_version"]}
 
 
