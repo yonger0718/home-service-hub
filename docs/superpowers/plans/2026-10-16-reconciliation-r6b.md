@@ -89,8 +89,8 @@ def test_audit_accepts_the_r6b_events(db_session):
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `.venv/bin/python -m pytest -q -p no:cacheprovider tests/integration/test_reconciliation_service.py::test_r6b_policy_defaults_and_validation tests/integration/test_reconciliation_actions_ledger.py -k "backfill_category or r6b_events"`
-Expected: FAIL (`KeyError: 'backfill_grace_days'`, `AttributeError: backfill_category_id`, missing events).
+Run: `.venv/bin/python -m pytest -q -p no:cacheprovider tests/integration/test_reconciliation_service.py tests/integration/test_reconciliation_actions_ledger.py -k "r6b_policy_defaults or backfill_category or r6b_events"`
+Expected: FAIL for all three (`KeyError: 'backfill_grace_days'`, `AttributeError: backfill_category_id`, missing events). (One `-k` expression over both files; a node id plus `-k` would deselect the node.)
 
 - [ ] **Step 3: Implement**
 
@@ -241,18 +241,50 @@ def test_refund_link_change_releases(seed, db_session, run):
     assert _active(db_session, stmt.id) == []
 
 
+PRE_R6B_SNAPSHOT_KEYS = {"id", "amount", "flow", "currency", "original_amount", "original_currency", "entry_date",
+                        "posted_date", "account_id", "kind", "group_id", "parent_entry_id", "transfer_group_id",
+                        "refunds_entry_id", "settles_entry_id", "is_settlement", "name", "merchant"}  # R1 write_claim shape
+
+
 def test_pre_r6b_snapshot_shape_is_compared_the_same_way(seed, db_session, run):
-    # existing coverage rows carry the same snapshot keys: a cosmetic edit keeps them, an amount edit releases them
+    # a coverage row written before R6b has exactly these keys (pinned literally): the projection applies to it as is
     _dirty(db_session)
     card, entry, stmt, line = _claimed_line(seed, db_session, run)
     (row,) = _active(db_session, stmt.id)
-    assert set(coverage_service.STRUCTURAL_KEYS) < set(row.snapshot)
-    assert coverage_service.structurally_changed(row.snapshot, entry) == []
+    assert set(row.snapshot) == PRE_R6B_SNAPSHOT_KEYS
+    assert coverage_service.STRUCTURAL_KEYS == PRE_R6B_SNAPSHOT_KEYS - {"id", "name", "merchant"}
+    old_shape = {k: row.snapshot[k] for k in PRE_R6B_SNAPSHOT_KEYS}  # an R1-era row, re-created literally
+    assert coverage_service.structurally_changed(old_shape, entry) == []
     entry.name = "x"
-    assert coverage_service.structurally_changed(row.snapshot, entry) == []
+    assert coverage_service.structurally_changed(old_shape, entry) == []
     entry.amount = Decimal("-1")
-    assert coverage_service.structurally_changed(row.snapshot, entry) == ["amount", "flow"]
+    assert coverage_service.structurally_changed(old_shape, entry) == ["amount", "flow"]
+
+
+def test_transfer_group_parent_and_settlement_link_changes_release(seed, db_session, run):
+    _dirty(db_session)
+    card, entry, stmt, line = _claimed_line(seed, db_session, run)
+    import uuid
+    entry.transfer_group_id = uuid.uuid4()
+    db_session.commit()
+    _sweep(db_session, stmt)
+    assert _active(db_session, stmt.id) == []
+    card2, entry2, stmt2, line2 = _claimed_line(seed, db_session, run, merchant="家樂福")
+    other = seed.entry(card2, "100", day=date(2026, 9, 5), kind="receivable", is_settlement=True)
+    db_session.commit()
+    entry2.settles_entry_id = other.id
+    db_session.commit()
+    _sweep(db_session, stmt2)
+    assert _active(db_session, stmt2.id) == []
+    card3, entry3, stmt3, line3 = _claimed_line(seed, db_session, run, merchant="7-11")
+    g = seed.group("split")
+    entry3.group_id = g.id
+    db_session.commit()
+    _sweep(db_session, stmt3)
+    assert _active(db_session, stmt3.id) == []
 ```
+
+(`seed.group(kind)` exists in `tests/conftest.py:422`; if its signature differs, build an `EntryGroup` directly.)
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -392,8 +424,8 @@ def test_create_entry_is_not_offered_on_a_needs_peer_case(seed, db_session, run)
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `.venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_statement_matching.py -k "stand_in or needs_peer" tests/integration/test_reconciliation_actions_ledger.py -k needs_peer`
-Expected: FAIL (`Entry` has no `stand_in`; context `{}`; `create_entry` offered).
+Run: `.venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_statement_matching.py tests/integration/test_reconciliation_actions_ledger.py -k "stand_in or needs_peer"`
+Expected: FAIL (`Entry` has no `stand_in`; context `{}`; `create_entry` offered). (One `-k` expression; two `-k` options keep only the last.)
 
 - [ ] **Step 3: Implement**
 
@@ -480,13 +512,24 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from app.models import LedgerEntry, ReconciliationAction, ReconciliationCase
+from app.models import AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationCase
+from app.services import coverage_service
 from app.services import reconciliation_service as rec
 from app.services import stand_ins
+from app.services.statements import matching
 from app.services.reconciliation_actions import engine
 from tests.integration.statement_fixtures import _active, _card, _cases, _line, _submit, run  # noqa: F401
 
 DAY = date(2026, 9, 3)
+
+
+def _sweep(db, stmt):
+    db.expire_all()
+    stmt = db.get(AccountStatement, stmt.id)
+    with db.begin_nested():
+        rec._lock_statement(db, stmt.id)
+        coverage_service.sweep(db, stmt, run_id=None, barrier_wait=False)
+    db.commit()
 
 
 def _fake_backfill(db, stmt, line, entry):
@@ -529,12 +572,21 @@ def test_population_marks_stand_ins_and_owner_entry_wins_on_reconcile(seed, db_s
     assert orphan  # Task 8 adds the orphaned_stand_in hint; here only the unmatched stand-in is asserted
 
 
-def test_stand_in_alone_self_heals_after_release(seed, db_session, run):
+def test_stand_in_alone_self_heals_after_a_real_release(seed, db_session, run, dirty_on):
+    # the stand-in holds the line (agent coverage) → a structural edit makes the sweep release it → the next reconcile
+    # re-claims it as an auto claim because nothing else competes
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
     stand_in = seed.entry(card, "-580", day=DAY, source="statement", merchant="全聯")
     db_session.commit()
     _fake_backfill(db_session, stmt, line, stand_in)
+    coverage_service.write_claim(db_session, stmt, line, [matching.Row(stand_in.id, "principal", Decimal("-580"))],
+                                 entries_by_id={stand_in.id: stand_in}, match_kind="agent", match_rule="backfill_entry", run_id=None)
+    db_session.commit()
+    stand_in.posted_date = date(2026, 9, 4)  # structural: released by the sweep (Task 2)
+    db_session.commit()
+    _sweep(db_session, stmt)
+    assert _active(db_session, stmt.id) == []
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
     (cov,) = _active(db_session, stmt.id)
@@ -559,6 +611,10 @@ def test_owner_deleted_events_are_derived_from_the_action_table(seed, db_session
     db_session.commit()
     (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
     assert case.context.get("owner_deleted") is True
+    _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])  # identical reparse: same statement identity, revision 2, same event, new line id
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.event_id == line.event_id]
+    assert case.context.get("owner_deleted") is True and case.line_id != line.id
     later = ReconciliationAction(idempotency_key="t-later", event_id=line.event_id, effect_slot="create", case_id=case.id,
                                  action="create_entry", params={}, actor="owner", status="applied", created_entry_ids=[])
     db_session.add(later)
@@ -731,6 +787,48 @@ def test_backfill_not_offered_on_needs_peer_fee_or_candidate_cases(seed, db_sess
     assert by_line[lines[2].id].kind == "amount_delta"  # date drift proposal: not a backfill case
 
 
+def test_backfill_eligibility_matrix_through_allowed_and_the_policy(seed, db_session, run, dirty_on, today):
+    # one row per cell of spec R6b.1's table, exercised through registry.allowed (owner column) and the policy
+    # builder (policy column); the grace is 0 so only the hint/candidate/kind rules differ
+    _set_policy(db_session, {"enabled": True, "backfill_grace_days": 0, "actions": {"backfill_entry": {"enabled": True, "max_amount": "5000"}}})
+    card = _card(seed, db_session)
+    stmt, lines, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "家樂福", 300), _line(3, DAY, "?", 10, "unknown")])
+    by_line = {c.line_id: c for c in _cases(db_session, stmt.id, "open")}
+    plain, other, unknown = by_line[lines[0].id], by_line[lines[1].id], by_line[lines[2].id]
+    assert "backfill_entry" in registry.allowed(plain) and policy_service._backfill_candidate(db_session, plain, stmt) is not None
+    assert "backfill_entry" not in registry.allowed(unknown) and policy_service._backfill_candidate(db_session, unknown, stmt) is None
+    # owner-deleted event: owner may, policy may not
+    row = _apply(db_session, plain, "backfill_entry", {"kind": "expense"})
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    db_session.commit()
+    _sweep(db_session, stmt)
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    (plain,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == lines[0].id]
+    assert plain.context["hint"] == "stand_in_deleted" and "backfill_entry" in registry.allowed(plain)
+    assert policy_service._backfill_candidate(db_session, plain, stmt) is None
+    # engine-revert reopened case: both may
+    row2 = _apply(db_session, other, "backfill_entry", {"kind": "expense"})
+    _revert(db_session, row2.id)
+    other = _reload(db_session, ReconciliationCase, other.id)
+    assert other.status == "open" and "reverted_action_id" in other.context
+    assert "backfill_entry" in registry.allowed(other) and policy_service._backfill_candidate(db_session, other, stmt) is not None
+    # candidates present (a drift case is amount_delta, not line_unmatched; a sibling-candidate case is line_unmatched with candidates)
+    other.candidates = [{"entry_id": 1}]
+    db_session.commit()
+    assert "backfill_entry" not in registry.allowed(other)
+    # changed amount under the lock → candidate_changed
+    other.candidates = []
+    db_session.commit()
+    cand = policy_service._backfill_candidate(db_session, other, stmt)
+    stale = dataclasses.replace(cand, amount=Decimal("1"))
+    with pytest.raises(Exception) as exc:
+        engine.apply_action(db_session, case_id=other.id, action="backfill_entry", params=stale.params, actor="policy", label="policy",
+                            budget=(date(2026, 10, 1), "TWD", stale.amount), precheck=partial(policy_service._policy_precheck, stale))
+    assert "candidate_changed" in str(exc.value)
+    db_session.rollback()
+
+
 def test_second_backfill_of_the_same_event_is_refused_while_the_first_is_applied(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
@@ -743,7 +841,7 @@ def test_second_backfill_of_the_same_event_is_refused_while_the_first_is_applied
     assert len(_booked(db_session)) == 1
 ```
 
-(`_hand_case(db, stmt, line, kind, **fields)` exists in this file at line ~75.)
+(`_hand_case(db, stmt, line, kind, **fields)` exists in this file at line ~75; the matrix test needs `_sweep` (copy the three-line helper from Task 4's test file), `dataclasses`, `partial`, `policy_service`, `_set_policy` — import `_set_policy` from the policy test module or inline its two lines.)
 
 `tests/integration/test_reconciliation_policy.py` (helpers `_set_policy`, `_booked`, `_actions`, `_proposals`, `TODAY = 2026-10-12`, `DAY = 2026-09-03`; a September statement's `period_end` is 2026-09-30, so TODAY is 12 days after it):
 
@@ -929,19 +1027,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing tests**
 
-`tests/integration/test_stand_ins.py`:
+`tests/integration/test_stand_ins.py` (the `_sweep` helper is already there from Task 4):
 
 ```python
 from app.services.reconciliation_actions import audit  # noqa: E402
-
-
-def _sweep(db, stmt):
-    db.expire_all()
-    stmt = db.get(AccountStatement, stmt.id)
-    with db.begin_nested():
-        rec._lock_statement(db, stmt.id)
-        coverage_service.sweep(db, stmt, run_id=None, barrier_wait=False)
-    db.commit()
 
 
 @pytest.mark.parametrize("action, line_kind, printed, params", [
@@ -986,6 +1075,50 @@ def test_retirement_never_overwrites_an_engine_revert_attribution(seed, db_sessi
     db_session.commit()
     (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
     assert "owner_deleted" not in (case.context or {})  # an engine revert is not an owner delete: the policy may backfill again
+
+
+@pytest.mark.parametrize("order", ["sweep_first", "revert_first"])
+def test_sweep_retirement_and_engine_revert_serialise_on_the_statement_lock(seed, db_session, run, dirty_on, pg_engine, order):
+    # both orders: whichever holds the statement lock first wins; the loser sees the committed state. Sweep-first:
+    # the revert then finds the entry gone → NotRevertable, the action stays retired with deleted_by_event and a NULL
+    # attribution. Revert-first: the sweep then finds the action already reverted → no retirement, attribution kept.
+    from tests.helpers import race
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+    db_session.commit()
+    entry_id = row.created_entry_ids[0]
+    if order == "sweep_first":
+        db_session.delete(db_session.get(LedgerEntry, entry_id))
+        db_session.commit()
+    outcome = {}
+
+    def sweep(session):
+        st = session.get(AccountStatement, stmt.id)
+        rec._lock_statement(session, st.id)
+        coverage_service.sweep(session, st, run_id=None, barrier_wait=False)
+
+    def revert(session):
+        try:
+            engine.revert_action(session, action_id=row.id, actor="owner", label="t")
+            outcome["revert"] = "ok"
+        except Exception as exc:  # NotRevertable / snapshot conflict are both acceptable losers
+            outcome["revert"] = type(exc).__name__
+            raise
+
+    first, second = (sweep, revert) if order == "sweep_first" else (revert, sweep)
+    result = race(pg_engine, first, second)
+    db_session.expire_all()
+    row = db_session.get(ReconciliationAction, row.id)
+    assert row.status == "reverted"
+    if order == "sweep_first":
+        assert result != "committed" and row.reverted_by_action_id is None and row.inverse.get("deleted_by_event")
+    else:
+        assert result == "committed" and row.reverted_by_action_id is not None and "deleted_by_event" not in (row.inverse or {})
+    assert len([a for a in _audit(db_session, "stand_in_retired")]) == (1 if order == "sweep_first" else 0)
+    _sweep(db_session, stmt)  # repeated sweep: no second audit row
+    assert len([a for a in _audit(db_session, "stand_in_retired")]) == (1 if order == "sweep_first" else 0)
 
 
 def test_edit_release_then_delete_still_retires(seed, db_session, run, dirty_on):
@@ -1074,7 +1207,7 @@ def _retire_creations(db: Session, statement: AccountStatement, ev, run_id) -> N
                      detail={"entry_id": ev.row_id, "dirty_event_id": ev.id, "action": row.action})
 ```
 
-(`audit` = `from app.services.reconciliation_actions import audit`; check `audit.record`'s exact keyword names in `audit.py` and match them.)
+(`audit` = `from app.services.reconciliation_actions import audit`; check `audit.record`'s exact keyword names in `audit.py` and match them. `_audit(db, *events)` is the helper from `test_reconciliation_policy.py:61` — copy it into the stand-ins test file; `race` is `tests/helpers.py:124`: `first` keeps its transaction open, `second` must block on the statement lock, then `first` commits.)
 
 `policy_service._system_entry_candidate`: first line becomes `if case.kind != "line_unmatched" or context.get("hint") != "bank_only" or context.get("owner_deleted"): return None`.
 
@@ -1101,7 +1234,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `tests/integration/test_reconciliation_actions_structural.py`, `tests/integration/test_reconciliation_policy.py`
 
 **Interfaces:**
-- Produces: `structural_actions.anchor_target(db, account_id) -> AccountStatement | None` (earliest live statement of the account with `opening_balance` not null); `structural_actions.anchor_applied(db, account_id) -> bool` (an applied `anchor_opening` action exists on any statement of the account); `structural_actions.live_bank_statement_ids(db, account_id) -> tuple[int, ...]`; action `anchor_opening` (case kind `balance_gap`, slot `"anchor"`, actors OWNER+POLICY, `lock_targets = LockSet(account_lock=True, barrier=True, statement_ids=live ids)`, `revert_lock_targets` the same from `inverse["statement_ids"]` ∪ current live ids); refusals `dirty_disabled`, `zero_delta`, `closing_adjustments_present`, `already_anchored`, `targets_changed`; audit `anchor_applied`; policy candidate amount `|delta|`.
+- Produces: `structural_actions.anchor_target(db, account_id) -> AccountStatement | None` (earliest live statement of the account with `opening_balance` not null); `structural_actions.anchor_applied(db, account_id) -> bool`; `structural_actions.live_bank_statement_ids(db, account_id) -> tuple[int, ...]`; `structural_actions.anchor_delta(db, account_id) -> tuple[date, Decimal] | None` (`(as_of, delta)` at the target, shared by the action and the policy); action `anchor_opening` (case kind `balance_gap`, slot `"anchor"`, actors OWNER+POLICY, `lock_targets = LockSet(account_lock=True, barrier=True, statement_ids=live ids)`, `revert_lock_targets` = account+barrier+(recorded ∪ current live ids)); refusals `dirty_disabled`, `zero_delta`, `closing_adjustments_present`, `already_anchored`, `targets_changed`, `amount_changed`; audit `anchor_applied`; `Context.budget_amount: Decimal | None` (new field the engine fills from `budget[2]` for policy applies) so the action can refuse when the post-barrier delta differs from the amount the policy reserved and charged; policy candidate amount `|delta|`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1175,6 +1308,52 @@ def test_anchor_refuses_when_the_statement_set_changed_between_discovery_and_loc
     assert _code(_refuse(db_session, lambda: _apply(db_session, a.cases[a.sep.id], "anchor_opening", {}))) == "targets_changed"
 
 
+def test_anchor_revert_refuses_with_dirty_off_or_a_changed_statement_set(anchored_bank, db_session, run, monkeypatch):
+    a = anchored_bank
+    row = _apply(db_session, a.cases[a.sep.id], "anchor_opening", {})
+    set_dirty(db_session, False)
+    db_session.commit()
+    assert _code(_refuse(db_session, lambda: _revert(db_session, row.id))) == "dirty_disabled"
+    set_dirty(db_session, True)
+    db_session.commit()
+    from app.services.reconciliation_actions import structural_actions as sa
+    real = sa.live_bank_statement_ids
+    calls = []
+
+    def grown(db, account_id):
+        calls.append(1)
+        ids = real(db, account_id)
+        return ids if len(calls) > 1 else ids[:-1]
+    monkeypatch.setattr(sa, "live_bank_statement_ids", grown)
+    assert _code(_refuse(db_session, lambda: _revert(db_session, row.id))) == "targets_changed"
+    monkeypatch.undo()
+    oct_, _, _ = _submit(db_session, run, a.bank, [_line(1, date(2026, 10, 5), "存入", 100, "deposit")], kind="bank",
+                         period=(date(2026, 10, 1), date(2026, 10, 31)), opening=Decimal("1700"))
+    _revert(db_session, row.id)  # a statement added after the anchor is part of the recorded ∪ current set, not a change
+    assert _adjustments(db_session) == []
+
+
+def test_anchor_refuses_when_a_writer_changed_the_balance_between_precheck_and_barrier(seed, db_session, run, dirty_on, monkeypatch):
+    # M3: the policy reserves and charges |delta| before the account/barrier locks; a ledger write committed in
+    # between must not be booked under the charged amount. Simulated by a balance that differs on the second read.
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    from app.services import ledger_service as ls
+    real = ls.account_balance
+    reads = []
+
+    def drifting(db, account_id, as_of=None):
+        reads.append(as_of)
+        value = real(db, account_id, as_of=as_of)
+        return value + Decimal("50") if len(reads) >= 3 else value  # candidate read, precheck read, then the post-barrier read
+    monkeypatch.setattr(ls, "account_balance", drifting)
+    _set_policy(db_session, ANCHOR_ON)
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert result.applied == [] and result.skipped.get("amount_changed", 0) == 1
+    assert _adjustments(db_session) == [] and (_budget(db_session) is None or _budget(db_session).used_count == 0)
+
+
 def test_later_closing_adjustment_books_only_the_residual_after_the_anchor(anchored_bank, db_session, run):
     a = anchored_bank
     _apply(db_session, a.cases[a.sep.id], "anchor_opening", {})
@@ -1214,16 +1393,21 @@ def test_policy_anchors_once_per_account_and_proposes_over_the_cap(seed, db_sess
 
 
 def test_policy_skips_statements_flagged_by_the_anchor_until_reconciled(seed, db_session, run, dirty_on):
+    # candidates run in case-id order: the fee line case precedes the balance_gap case, so run 1 books the fee and
+    # then the anchor; the anchor flags the statement, so run 2 is skipped (needs_recheck) until a reconcile clears it
     bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
     db_session.commit()
-    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "年費", 50, "fee")], kind="bank", opening=Decimal("1600"))
-    _set_policy(db_session, {**ANCHOR_ON, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "年費", 50, "fee"), _line(2, date(2026, 9, 5), "利息", 3, "interest")],
+                         kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, {**ANCHOR_ON, "per_statement_count": 2, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
     first = policy_service.run_policy(db_session, stmt.id)
-    assert len(first.applied) == 1  # the anchor; the fee waits: the statement is flagged needs_recheck now
-    assert policy_service.run_policy(db_session, stmt.id).skipped.get("statement_excluded", 0) >= 1
+    assert [a.action for a in _actions(db_session)] == ["create_system_entry", "anchor_opening"]  # count cap 2 leaves the interest line
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is True
+    assert policy_service.run_policy(db_session, stmt.id).skipped == {"statement_excluded": 1}
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
-    assert len(policy_service.run_policy(db_session, stmt.id).applied) == 1  # the fee
+    _set_policy(db_session, {**ANCHOR_ON, "per_statement_count": 5, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
+    assert [a.action for a in _actions(db_session)][-1:] == ["create_system_entry"] or len(policy_service.run_policy(db_session, stmt.id).applied) == 1
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1279,10 +1463,22 @@ class AnchorOpeningAction(ActionBase):
         if not settings_service.read_reconciliation_settings(ctx.db)["dirty_enabled"]:
             raise _refuse("action", "dirty_disabled", "the writer barrier needs the dirty triggers")
 
-    def _verify_targets(self, ctx: Context, locked: tuple[int, ...]) -> None:
-        now = live_bank_statement_ids(ctx.db, ctx.statement.account_id)
-        if set(now) != set(locked):
+    def _verify_targets(self, ctx: Context, locked: tuple[int, ...], recorded: tuple[int, ...] = ()) -> None:
+        """Apply: the locked set must equal the current live set. Revert: it must equal recorded ∪ current (a
+        statement that left the live set since the anchor is still re-flagged; one that joined is locked too)."""
+        required = set(live_bank_statement_ids(ctx.db, ctx.statement.account_id)) | set(recorded)
+        if required != set(locked):
             raise _refuse("action", "targets_changed", "the account's live statements changed; retry")
+
+
+def anchor_delta(db: Session, account_id: int) -> tuple[date, Decimal] | None:
+    """R6b.2: (as_of, target.opening_balance − balance(as_of)) at the account's anchor target, or None."""
+    target = anchor_target(db, account_id)
+    if target is None:
+        return None
+    as_of = target.period_start - timedelta(days=1)
+    delta = (Decimal(target.opening_balance) - ledger_service.account_balance(db, account_id, as_of=as_of)).quantize(Decimal("0.0001"))
+    return as_of, delta
 
     def apply(self, ctx: Context, params: AnchorOpeningParams, prepared: Prepared, effect: Effect) -> None:
         self.check_before_locks(ctx, params)
@@ -1291,13 +1487,14 @@ class AnchorOpeningAction(ActionBase):
         self._verify_targets(ctx, locked)
         if anchor_applied(db, account_id):
             raise _refuse("action", "already_anchored", f"account {account_id} is anchored")
-        target = anchor_target(db, account_id)
-        if target is None:
+        found = anchor_delta(db, account_id)  # under the account lock and the barrier: the balance is complete
+        if found is None:
             raise _refuse("action", "no_opening_balance", "no live statement carries an opening balance")
-        as_of = target.period_start - timedelta(days=1)
-        delta = (Decimal(target.opening_balance) - ledger_service.account_balance(db, account_id, as_of=as_of)).quantize(Decimal("0.0001"))
+        as_of, delta = found
         if delta == 0:
             raise _refuse("action", "zero_delta", f"account {account_id} balances at {as_of.isoformat()}")
+        if ctx.budget_amount is not None and abs(delta) != ctx.budget_amount:  # M3: a writer committed between the policy's charge and the barrier
+            raise _refuse("action", "amount_changed", f"anchor delta moved since the policy reserved {ctx.budget_amount}")
         if db.scalar(select(exists().where(LedgerEntry.account_id == account_id, LedgerEntry.kind == "balance_adjustment",
                                             LedgerEntry.posted_date >= as_of))):
             raise _refuse("action", "closing_adjustments_present", "revert or delete the account's closing adjustments first")
@@ -1322,7 +1519,7 @@ class AnchorOpeningAction(ActionBase):
     def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
         self.check_before_locks(ctx, None)
         locked = tuple(ctx.lock_set.statement_ids) if ctx.lock_set else ()
-        self._verify_targets(ctx, locked)
+        self._verify_targets(ctx, locked, recorded=tuple(action.inverse.get("statement_ids") or ()))
         entry_id = action.inverse["created_entry_id"]
         if ctx.db.get(LedgerEntry, entry_id) is None:
             raise NotRevertable(f"entry {entry_id} is gone")
@@ -1335,7 +1532,7 @@ class AnchorOpeningAction(ActionBase):
 register(AnchorOpeningAction())
 ```
 
-Check the engine: `ctx.lock_set` must be set on the revert context too (`engine.py` ~`:427` sets `ctx.lock_set = targets` — verify; if not, set it). `KIND_ACTIONS["balance_gap"] = ("balance_adjustment_asof", "anchor_opening", "dismiss")`; `CONDITIONS[("balance_gap", "anchor_opening")] = lambda case: _bank_statement(case) and not _anchored(case)` with two small helpers in `__init__.py` that look up the statement via `object_session(case)` and call `structural_actions.anchor_applied` lazily (local import to avoid the import cycle).
+Engine changes (small, named): (1) `Context` gains `budget_amount: Decimal | None = None`; `apply_action` sets `ctx.budget_amount = budget[2] if budget else None` when it builds `ctx`; `policy_service._run_candidate` maps a `CodedValidationError` with code `amount_changed` to a skip reason `amount_changed` (no proposal — the next run recomputes). (2) `ctx.lock_set` must be set on the revert context too (`engine.py` ~`:427` sets `ctx.lock_set = targets` — verify; if not, set it). (3) Policy ordering is by case id (`collect_candidates` sorts by `(case_id, proposal_id)`): the plan does not reorder; the anchor test above is written for that order. `KIND_ACTIONS["balance_gap"] = ("balance_adjustment_asof", "anchor_opening", "dismiss")`; `CONDITIONS[("balance_gap", "anchor_opening")] = lambda case: _bank_statement(case) and not _anchored(case)` with two small helpers in `__init__.py` that look up the statement via `object_session(case)` and call `structural_actions.anchor_applied` lazily (local import to avoid the import cycle).
 
 `policy_service.py`:
 
@@ -1355,7 +1552,7 @@ def _anchor_candidate(db: Session, case: ReconciliationCase, statement: AccountS
     return Candidate(case.id, case.kind, case.status, "anchor_opening", {}, _money(delta))
 ```
 
-`POLICY_ACTIONS["anchor_opening"] = _anchor_candidate`; `collect_candidates` kinds become `("line_unmatched", "amount_delta", "balance_gap", "entry_unmatched")`; `_amount_now`: `if candidate.action == "anchor_opening": return candidate.amount` is NOT acceptable (must be recomputed under the lock) — recompute with the same arithmetic as `_anchor_candidate` (factor a helper `_anchor_delta(db, account_id) -> Decimal | None` used by both); `_unchanged` for `anchor_opening`: `not sa.anchor_applied(...)`. `run_policy` must apply at most one anchor per account per run: keep a `set()` of anchored account ids in the loop and skip further anchor candidates for the same account with reason `anchored_this_run`.
+`POLICY_ACTIONS["anchor_opening"] = _anchor_candidate`; `collect_candidates` kinds become `("line_unmatched", "amount_delta", "balance_gap", "entry_unmatched")`; `_amount_now`: for `anchor_opening` return `abs(delta)` from `sa.anchor_delta(ctx.db, ctx.statement.account_id)` (recomputed at precheck time — before the barrier; the action's own post-barrier `amount_changed` check is the second line of defence, M3); `_unchanged` for `anchor_opening`: `not sa.anchor_applied(...)`; `_anchor_candidate` uses `sa.anchor_delta` too (one arithmetic, three call sites). `run_policy` must apply at most one anchor per account per run: keep a `set()` of anchored account ids in the loop and skip further anchor candidates for the same account with reason `anchored_this_run`.
 
 - [ ] **Step 4: Run both files, the engine suite and the policy suite**
 
@@ -1381,7 +1578,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `stand_ins.stand_in_entry_ids`, `creation_for_entry` (Task 4); `matching.eligible_kinds`, `_entry_class`, `_same` (R6a); `coverage_service.active_rows`, `release_rows`, `write_claim`; `ews.delete_entries_cascade`; `Rules.drift_window_days`.
-- Produces: `stand_ins.shadows(db, statement, accounts, unmatched_owner_entries: list[matching.Entry], rules) -> list[dict]` — for each unmatched non-stand-in entry, the unique line (event) on this statement whose active coverage is held by a stand-in and which the entry conserves within `drift_window_days`, as `{"entry_id", "event_id", "line_id", "stand_in_entry_id", "backfill_action_id"}`; `stand_ins.orphans(db, statement, unmatched_stand_in_entries) -> list[dict]` `{"entry_id", "event_id", "line_id", "backfill_action_id", "claimant_entry_id"}` where the stand-in's line event now has active non-stand-in coverage; `_desired_cases` emits `entry_unmatched` cases with those hints, `event_id` and `line_id` set; action `replace_stand_in` (no params, case kind `entry_unmatched`, slot `"replace"`, actors OWNER+POLICY, not revertable); refusals `no_claimant`, `stand_in_changed`, `stand_in_coverage_gone`, `owner_entry_taken`, `claimant_changed`; audit `stand_in_replaced`; policy candidate amount 0.
+- Produces: `stand_ins.shadows(db, statement, accounts, rules) -> list[dict]` — its own queries, independent of the matcher result (M1): the statement's **current-revision** lines whose active coverage is held by a stand-in (these lines are `keep_lines` for the matcher, so they are not in the matcher's `lines`), and the eligible owner population = claimable, non-stand-in, top-level entries of the participating accounts, same currency, not claimed by any active coverage, posted within `period ± drift_window_days`; a pair is reported only when it is **reciprocally unique** (that owner entry conserves exactly one held line and that line is conserved by exactly one owner entry); rows `{"entry_id", "event_id", "line_id", "stand_in_entry_id", "backfill_action_id"}`; `stand_ins.orphans(db, statement) -> list[dict]` — stand-ins of the participating accounts (applied `backfill_entry` provenance) that hold **no active coverage anywhere** while their creating action's event has active non-stand-in coverage on this statement's current revision, rows `{"entry_id", "event_id", "line_id", "backfill_action_id", "claimant_entry_id"}`; `_desired_cases` emits `entry_unmatched` cases with those hints, `event_id` and `line_id` set, and drops the plain `entry_unmatched` for an entry that got a hint; action `replace_stand_in` (no params, case kind `entry_unmatched`, slot `"replace"`, actors OWNER+POLICY, not revertable): discovery in `lock_targets`/`prepare` is frozen into `Prepared.data` and re-derived under the locks in `validate_before` (M2); refusals `no_claimant` (discovery only), `stand_in_changed`, `stand_in_coverage_gone`, `owner_entry_taken`, `claimant_changed`; audit `stand_in_replaced`; policy candidate amount 0.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1398,8 +1595,8 @@ def _backfilled(seed, db, run, merchant="全聯", day=DAY, printed=580):
 
 
 def test_shadow_case_when_the_owner_entry_arrives_while_the_stand_in_holds_the_line(seed, db_session, run, dirty_on):
-    s = _backfilled(seed, db_session, run)
-    owner = seed.entry(s.card, "-580", day=date(2026, 10, 12), merchant="全聯")  # 12 days outside the period, inside drift 15
+    s = _backfilled(seed, db_session, run, day=date(2026, 9, 28))
+    owner = seed.entry(s.card, "-580", day=date(2026, 10, 11), merchant="全聯")  # 13 days from the line, 11 days outside the period, inside drift 15
     db_session.commit()
     rec.reconcile(db_session, s.stmt.id)
     db_session.commit()
@@ -1430,6 +1627,88 @@ def test_shadow_requires_a_unique_line_and_a_conserving_owner_entry(seed, db_ses
     db_session.commit()
     cases = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
     assert {c.entry_id for c in cases} == {owner.id, other.id} and all("hint" not in (c.context or {}) for c in cases)
+
+
+def test_orphan_replacement_succeeds_when_the_stand_in_is_untouched(seed, db_session, run, dirty_on):
+    s = _backfilled(seed, db_session, run)
+    # release the stand-in's coverage without editing it: an unmatch of the line through the engine's coverage path
+    coverage_service.release_line(db_session, s.stmt, s.line.id, reason="test")
+    db_session.commit()
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == owner.id
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    assert case.context["hint"] == "orphaned_stand_in"
+    row = _apply(db_session, case, "replace_stand_in", {})
+    assert db_session.get(LedgerEntry, s.stand_in.id) is None and row.deleted_entry_ids == [s.stand_in.id]
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == owner.id and cov.match_kind == "auto"  # the orphan shape keeps the matcher's claim as is
+    assert db_session.get(ReconciliationAction, s.action.id).reverted_by_action_id == row.id
+
+
+def test_replace_refuses_when_the_claimant_changed_between_discovery_and_lock(seed, db_session, run, dirty_on, monkeypatch):
+    s = _backfilled(seed, db_session, run)
+    coverage_service.release_line(db_session, s.stmt, s.line.id, reason="test")
+    db_session.commit()
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    from app.services.reconciliation_actions import ledger_actions as la
+    real = la.ReplaceStandInAction._claimant
+    calls = []
+
+    def moved(self, ctx):
+        calls.append(1)
+        value = real(self, ctx)
+        return value if len(calls) == 1 else (value or 0) + 999999  # discovery sees the owner; the locked re-derivation sees someone else
+    monkeypatch.setattr(la.ReplaceStandInAction, "_claimant", moved)
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "claimant_changed"
+    assert db_session.get(LedgerEntry, s.stand_in.id) is not None
+
+
+def test_replace_rolls_back_entirely_when_the_claim_fails_after_the_delete(seed, db_session, run, dirty_on, monkeypatch):
+    s = _backfilled(seed, db_session, run)
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    from app.services.reconciliation_actions import ledger_actions as la
+    monkeypatch.setattr(la, "_claim", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with pytest.raises(RuntimeError):
+        engine.apply_action(db_session, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+    db_session.rollback()
+    assert db_session.get(LedgerEntry, s.stand_in.id) is not None
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == s.stand_in.id
+    assert db_session.get(ReconciliationAction, s.action.id).status == "applied"
+    assert [a.action for a in db_session.execute(select(ReconciliationAction)).scalars()] == ["backfill_entry"]
+
+
+def test_concurrent_delete_of_the_stand_in_is_refused(seed, db_session, run, dirty_on, pg_engine):
+    from tests.helpers import race
+    s = _backfilled(seed, db_session, run)
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+
+    def deleter(session):  # holds the stand-in row lock, then deletes it
+        session.execute(select(LedgerEntry).where(LedgerEntry.id == s.stand_in.id).with_for_update())
+        session.delete(session.get(LedgerEntry, s.stand_in.id))
+
+    def replacer(session):
+        engine.apply_action(session, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+    outcome = race(pg_engine, deleter, replacer)
+    assert outcome != "committed"  # NOWAIT row lock → action_busy, or stand_in_changed after the delete commits
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, s.stand_in.id) is None and db_session.get(ReconciliationAction, s.action.id).status == "applied"
 
 
 def test_orphan_case_after_the_sweep_released_the_stand_in(seed, db_session, run, dirty_on):
@@ -1478,7 +1757,7 @@ def test_system_entries_never_shadow(seed, db_session, run, dirty_on):
     assert cases and all("hint" not in (c.context or {}) for c in cases)
 ```
 
-(`_apply`, `_refuse`, `_code`, `SimpleNamespace`, `NotRevertable` imports as in the ledger-actions tests.)
+(`_apply`, `_refuse`, `_code`, `SimpleNamespace`, `NotRevertable` imports as in the ledger-actions tests. The identical-reparse step re-submits the same lines for the same account/currency/period: `_submit` resolves the statement by identity and writes revision 2.)
 
 `tests/integration/test_reconciliation_policy.py`:
 
@@ -1511,91 +1790,116 @@ Expected: FAIL (no hints; `replace_stand_in` unknown).
 
 - [ ] **Step 3: Implement**
 
-`stand_ins.py` additions:
+`stand_ins.py` additions (own queries; nothing from the matcher result — M1):
 
 ```python
-def _stand_in_coverage(db: Session, statement: AccountStatement) -> dict[int, tuple[int, int, int]]:
-    """event_id → (line_id, stand_in_entry_id, backfill_action_id) for active coverage held by a stand-in."""
-    ids = stand_in_entry_ids(db, [statement.account_id])
+def held_by_stand_ins(db: Session, statement: AccountStatement, accounts: list[int]) -> dict[int, tuple[StatementLine, int, int]]:
+    """event_id → (current-revision line, stand_in_entry_id, backfill_action_id) for this statement's active coverage
+    rows whose entry is a stand-in. Queried directly: these lines are keep_lines for the matcher."""
+    ids = stand_in_entry_ids(db, accounts)
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(StatementCoverage, StatementLine)
+        .join(StatementLine, StatementLine.id == StatementCoverage.line_id)
+        .where(StatementCoverage.statement_id == statement.id, StatementCoverage.status == "active",
+               StatementCoverage.entry_id.in_(ids), StatementLine.revision_id == statement.current_revision_id)).all()
     out = {}
-    for line_id, rows in coverage_service.active_rows(db, statement.id).items():
-        for r in rows:
-            if r.entry_id in ids:
-                action = creation_for_entry(db, r.entry_id)
-                if action is not None:
-                    out[r.event_id] = (line_id, r.entry_id, action.id)
+    for cov, line in rows:
+        action = creation_for_entry(db, cov.entry_id)
+        if action is not None:
+            out[line.event_id] = (line, cov.entry_id, action.id)
     return out
 
 
-def shadows(db: Session, statement: AccountStatement, lines: dict[int, StatementLine], owners: list, rules) -> list[dict]:
-    """R6b.5 shadowed_by_stand_in: owner entry ↔ the unique stand-in-held line it conserves within drift_window_days."""
-    held = _stand_in_coverage(db, statement)
+def owner_population(db: Session, statement: AccountStatement, accounts: list[int], rules) -> list[LedgerEntry]:
+    """Claimable, non-stand-in, top-level, unclaimed entries of the participating accounts in the statement's
+    currency, posted within period ± drift_window_days — inside or outside the period alike (M1)."""
+    lo = statement.period_start - timedelta(days=rules.drift_window_days)
+    hi = statement.period_end + timedelta(days=rules.drift_window_days)
+    day = func.coalesce(LedgerEntry.posted_date, LedgerEntry.entry_date)
+    claimed = coverage_service.claimed_entry_ids(db) | stand_in_entry_ids(db, accounts)
+    rows = db.execute(select(LedgerEntry).where(
+        LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == statement.currency,
+        LedgerEntry.parent_entry_id.is_(None), LedgerEntry.kind != "balance_adjustment", day >= lo, day <= hi)
+        .order_by(LedgerEntry.id)).scalars().all()
+    return [e for e in rows if e.id not in claimed]
+
+
+def _conserves(statement: AccountStatement, line: StatementLine, entry: LedgerEntry, rules) -> bool:
+    ml = reconciliation_service._as_line(line)
+    me = reconciliation_service.entry_view(entry)
+    return (matching._entry_class(me) in matching.eligible_kinds(statement.kind, line.line_kind)
+            and matching._same(me.flow, ml.flow) and matching._date_distance(ml, me) <= rules.drift_window_days)
+
+
+def shadows(db: Session, statement: AccountStatement, accounts: list[int], rules) -> list[dict]:
+    """R6b.5 shadowed_by_stand_in: reciprocally unique owner-entry ↔ stand-in-held line pairs."""
+    held = held_by_stand_ins(db, statement, accounts)
     if not held:
         return []
-    by_event = {lines[lid].event_id: lines[lid] for lid in lines if lines[lid].event_id in held}
+    owners = owner_population(db, statement, accounts, rules)
+    pairs = [(e, event_id) for e in owners for event_id, (line, _, _) in held.items() if _conserves(statement, line, e, rules)]
+    by_owner = collections.Counter(e.id for e, _ in pairs)
+    by_event = collections.Counter(ev for _, ev in pairs)
     out = []
-    for e in owners:
-        hits = []
-        for event_id, (line_id, stand_in_id, action_id) in held.items():
-            line = by_event.get(event_id)
-            if line is None:
-                continue
-            ml = reconciliation_service._as_line(line)
-            if matching._entry_class(e) not in matching.eligible_kinds(statement.kind, line.line_kind):
-                continue
-            if not matching._same(e.flow, ml.flow) or matching._date_distance(ml, e) > rules.drift_window_days:
-                continue
-            hits.append({"entry_id": e.id, "event_id": event_id, "line_id": line_id, "stand_in_entry_id": stand_in_id,
-                         "backfill_action_id": action_id})
-        if len(hits) == 1:
-            out.append(hits[0])
+    for e, event_id in pairs:
+        if by_owner[e.id] == 1 and by_event[event_id] == 1:
+            line, stand_in_id, action_id = held[event_id]
+            out.append({"entry_id": e.id, "event_id": event_id, "line_id": line.id, "stand_in_entry_id": stand_in_id,
+                        "backfill_action_id": action_id})
     return out
 
 
-def orphans(db: Session, statement: AccountStatement, stand_ins_unmatched: list) -> list[dict]:
-    """R6b.5 orphaned_stand_in: an unmatched stand-in whose creating action's event is now held by a non-stand-in."""
-    ids = stand_in_entry_ids(db, [statement.account_id])
-    active = coverage_service.active_rows(db, statement.id)
-    by_event = {r.event_id: (line_id, r.entry_id) for line_id, rows in active.items() for r in rows}
+def orphans(db: Session, statement: AccountStatement, accounts: list[int]) -> list[dict]:
+    """R6b.5 orphaned_stand_in: a stand-in with NO active coverage anywhere whose creating event's current line
+    is held by a non-stand-in entry on this statement."""
+    ids = stand_in_entry_ids(db, accounts)
+    if not ids:
+        return []
+    claimed = coverage_service.claimed_entry_ids(db)
+    rows = db.execute(
+        select(StatementCoverage, StatementLine)
+        .join(StatementLine, StatementLine.id == StatementCoverage.line_id)
+        .where(StatementCoverage.statement_id == statement.id, StatementCoverage.status == "active",
+               StatementLine.revision_id == statement.current_revision_id)).all()
+    by_event = {line.event_id: (line, cov.entry_id) for cov, line in rows if cov.entry_id is not None and cov.entry_id not in ids}
     out = []
-    for e in stand_ins_unmatched:
-        action = creation_for_entry(db, e.id)
+    for stand_in_id in sorted(ids - claimed):
+        action = creation_for_entry(db, stand_in_id)
         if action is None or action.event_id not in by_event:
             continue
-        line_id, claimant = by_event[action.event_id]
-        if claimant is None or claimant in ids:
-            continue
-        out.append({"entry_id": e.id, "event_id": action.event_id, "line_id": line_id, "backfill_action_id": action.id,
+        line, claimant = by_event[action.event_id]
+        out.append({"entry_id": stand_in_id, "event_id": action.event_id, "line_id": line.id, "backfill_action_id": action.id,
                     "claimant_entry_id": claimant})
     return out
 ```
 
+(`reconciliation_service.entry_view(entry: LedgerEntry) -> matching.Entry` = the single-row version of `load_candidates`' construction, factored out of it in this task; `stand_ins` imports `reconciliation_service` lazily inside the functions to avoid the import cycle, or `entry_view`/`_as_line` move to `matching` as `line_view`/`entry_view`. `collections`, `timedelta`, `func`, `StatementCoverage`, `StatementLine` imports as needed.)
+
 (To avoid a circular import, `stand_ins` imports `coverage_service`, `matching` and uses `reconciliation_service._as_line` through a local import inside `shadows`; or move `_as_line` into `matching` as `line_from_row` — the implementer picks one and keeps both modules importable.)
 
-`_desired_cases`: after the `for entry_id in result.unmatched_entry_ids:` loop, the owner-entry loop must not emit a plain `entry_unmatched` for an entry that gets a shadow hint, and the stand-in loop must emit orphans:
+`_desired_cases`: compute both maps before the unmatched-entry loop and emit them after it (a shadow owner outside the period is not in `unmatched_entry_ids` at all, so the shadow rows are emitted on their own, not inside that loop):
 
 ```python
-    owners = [entries[i] for i in result.unmatched_entry_ids if i in entries and not entries[i].stand_in]
-    shadow_by_entry = {s["entry_id"]: s for s in stand_ins.shadows(db, statement, lines, owners, rules)}
-    orphan_by_entry = {o["entry_id"]: o for o in stand_ins.orphans(db, statement, [entries[i] for i in result.unmatched_entry_ids if i in entries and entries[i].stand_in])}
+    shadow_by_entry = {s["entry_id"]: s for s in stand_ins.shadows(db, statement, accounts, rules)}
+    orphan_by_entry = {o["entry_id"]: o for o in stand_ins.orphans(db, statement, accounts)}
 ```
 
-and in the loop, before the `move_account` lookup:
+inside the loop, `if entry_id in shadow_by_entry or entry_id in orphan_by_entry: continue` (the plain case is replaced by the hinted one), and after the loop:
 
 ```python
-        if entry_id in shadow_by_entry:
-            s = shadow_by_entry[entry_id]
-            out.append(_case("entry_unmatched", event_id=s["event_id"], line_id=s["line_id"], entry_id=entry_id,
-                             context={"hint": "shadowed_by_stand_in", "stand_in_entry_id": s["stand_in_entry_id"],
-                                      "backfill_action_id": s["backfill_action_id"]}))
-            continue
-        if entry_id in orphan_by_entry:
-            o = orphan_by_entry[entry_id]
-            out.append(_case("entry_unmatched", event_id=o["event_id"], line_id=o["line_id"], entry_id=entry_id,
-                             context={"hint": "orphaned_stand_in", "backfill_action_id": o["backfill_action_id"],
-                                      "claimant_entry_id": o["claimant_entry_id"]}))
-            continue
+    for s in shadow_by_entry.values():
+        out.append(_case("entry_unmatched", event_id=s["event_id"], line_id=s["line_id"], entry_id=s["entry_id"],
+                         context={"hint": "shadowed_by_stand_in", "stand_in_entry_id": s["stand_in_entry_id"],
+                                  "backfill_action_id": s["backfill_action_id"]}))
+    for o in orphan_by_entry.values():
+        out.append(_case("entry_unmatched", event_id=o["event_id"], line_id=o["line_id"], entry_id=o["entry_id"],
+                         context={"hint": "orphaned_stand_in", "backfill_action_id": o["backfill_action_id"],
+                                  "claimant_entry_id": o["claimant_entry_id"]}))
 ```
+
+(`entry_unmatched` identity in `_write_cases` is `(kind, event_id, entry_id, candidates, context)`, so a shadow case is stable across runs while its evidence is; a reparse keeps `event_id` and only moves `line_id`.)
 
 Note (F14 of the survey): a stand-in's own coverage is `manual`/`agent`, so `_manual_claims` keeps its line out of matching and `exclude=owned` keeps the stand-in out of the population — the owner entry is therefore unmatched and reaches `shadows()`; nothing else changes.
 
@@ -1620,18 +1924,26 @@ class ReplaceStandInAction(ActionBase):
     actors = frozenset({OWNER, POLICY})
     slot = REPLACE
 
-    def _shape(self, ctx: Context) -> tuple[str, int, int]:
-        """('shadow', stand_in_id, owner_id) or ('orphan', stand_in_id, claimant_id), from the case alone."""
-        hint = (ctx.case.context or {}).get("hint")
+    def _shape(self, ctx: Context) -> dict:
+        """Discovery (unlocked): the frozen evidence {shape, stand_in_id, other_id, action_id, event_id}."""
+        context = ctx.case.context or {}
+        hint = context.get("hint")
         if hint == "shadowed_by_stand_in":
-            stand_in = (ctx.case.context or {}).get("stand_in_entry_id")
-            return "shadow", stand_in, ctx.case.entry_id
-        if hint == "orphaned_stand_in":
-            claimant = self._claimant(ctx)
-            if claimant is None:
+            stand_in, other = context.get("stand_in_entry_id"), ctx.case.entry_id
+        elif hint == "orphaned_stand_in":
+            stand_in, other = ctx.case.entry_id, self._claimant(ctx)
+            if other is None:
                 raise _refuse("action", "no_claimant", "the orphan's line has no owner claim any more")
-            return "orphan", ctx.case.entry_id, claimant
-        raise _refuse("action", "not_a_stand_in_case")
+        else:
+            raise _refuse("action", "not_a_stand_in_case")
+        action = stand_ins.creation_for_entry(ctx.db, stand_in) if stand_in else None
+        return {"shape": "shadow" if hint == "shadowed_by_stand_in" else "orphan", "stand_in_id": stand_in, "other_id": other,
+                "action_id": None if action is None else action.id, "event_id": ctx.case.event_id}
+
+    def prepare(self, ctx: Context, params: ReplaceStandInParams, targets: LockSet) -> Prepared:
+        prepared = super().prepare(ctx, params, targets)
+        prepared.data = self._shape(ctx)  # M2: frozen; validate_before re-derives under the locks and compares
+        return prepared
 
     def _claimant(self, ctx: Context) -> int | None:
         for rows in coverage_service.active_rows(ctx.db, ctx.statement.id).values():
@@ -1641,44 +1953,55 @@ class ReplaceStandInAction(ActionBase):
         return None
 
     def lock_targets(self, ctx: Context, params: ReplaceStandInParams) -> LockSet:
-        _, stand_in, other = self._shape(ctx)
-        return LockSet(entry_ids=tuple(sorted({stand_in, other})))
+        found = self._shape(ctx)
+        return LockSet(entry_ids=tuple(sorted({i for i in (found["stand_in_id"], found["other_id"]) if i})))
 
     def validate_before(self, ctx: Context, params: ReplaceStandInParams, prepared: Prepared, before: dict) -> None:
-        self._prove(ctx)
+        self._prove(ctx, prepared.data)
 
-    def _prove(self, ctx: Context):
+    def _prove(self, ctx: Context, frozen: dict):
+        """M2: under the statement, case and entry locks, re-derive every target and refuse if it differs from the
+        frozen discovery; then prove the structural allowlist, the provenance, the claimant's gate and the coverage."""
         db = ctx.db
-        shape, stand_in_id, other_id = self._shape(ctx)
+        now = self._shape(ctx)  # re-derived under the locks (the orphan claimant from current coverage)
+        if now != frozen:
+            raise _refuse("action", "claimant_changed", "the replacement targets changed since discovery")
+        shape, stand_in_id, other_id, action_id = now["shape"], now["stand_in_id"], now["other_id"], now["action_id"]
         stand_in = db.get(LedgerEntry, stand_in_id)
-        action = None if stand_in is None else stand_ins.creation_for_entry(db, stand_in_id)
-        if stand_in is None or stand_in.source != STATEMENT_SOURCE or action is None or action.action not in stand_ins.BACKFILL_ACTIONS:
-            raise _refuse("action", "stand_in_changed", "the stand-in is gone or is not a backfilled entry")
+        action = None if action_id is None else db.execute(select(ReconciliationAction).where(ReconciliationAction.id == action_id)
+                                                           .with_for_update()).scalar_one_or_none()
+        if stand_in is None or stand_in.source != STATEMENT_SOURCE or action is None or action.status != "applied" \
+                or action.action not in stand_ins.BACKFILL_ACTIONS or action.event_id != ctx.case.event_id \
+                or db.get(ReconciliationCase, action.case_id).statement_id != ctx.statement.id:
+            raise _refuse("action", "stand_in_changed", "the stand-in is gone, not a backfilled entry, or not this event's")
         after = ((action.after or {}).get("entries") or {}).get(str(stand_in_id)) or {}
         now = snapshots.snapshot_set(db, [stand_in_id], [])["entries"][str(stand_in_id)]
         if any(after.get(k) != now.get(k) for k in STAND_IN_FIELDS) or now.get("child_ids") or now.get("refund_ids") \
                 or now.get("settlement_ids") or now.get("reward_ids") or stand_in.transfer_group_id is not None:
             raise _refuse("action", "stand_in_changed", "the stand-in was edited structurally")
         line = _line_for_event(ctx)  # the event's current line on the statement's current revision
-        held = [r for r in coverage_service.active_rows(db, ctx.statement.id).get(line.id, ()) ]
+        held = list(coverage_service.active_rows(db, ctx.statement.id).get(line.id, ()))
         other = db.get(LedgerEntry, other_id)
-        if other is None or other.source == STATEMENT_SOURCE and other.id in stand_ins.stand_in_entry_ids(db, [ctx.statement.account_id]):
-            raise _refuse("action", "claimant_changed" if shape == "orphan" else "owner_entry_taken")
-        ml = rec._as_line(line)
-        me = rec.entry_view(db, other)  # a matching.Entry for one row (helper added in reconciliation_service, same construction as load_candidates)
-        if matching._entry_class(me) not in matching.eligible_kinds(ctx.statement.kind, line.line_kind) or not matching._same(me.flow, ml.flow) \
-                or matching._date_distance(ml, me) > ctx.rules.drift_window_days:
-            raise _refuse("action", "claimant_changed" if shape == "orphan" else "owner_entry_taken")
+        accounts = coverage_service.participating_accounts(db, ctx.statement.account_id)
+        bad = "claimant_changed" if shape == "orphan" else "owner_entry_taken"
+        if other is None or other.account_id not in accounts or other.currency != ctx.statement.currency \
+                or other.parent_entry_id is not None or other.id in stand_ins.stand_in_entry_ids(db, accounts):
+            raise _refuse("action", bad, "the claimant is not an eligible owner entry of this statement's accounts")
+        if not stand_ins._conserves(ctx.statement, line, other, ctx.rules):
+            raise _refuse("action", bad, "the claimant no longer conserves the line within the drift window")
+        anywhere = coverage_service.claimed_entry_ids(db)
         if shape == "shadow":
-            if not held or any(r.entry_id != stand_in_id for r in held) or other_id in coverage_service.claimed_entry_ids(db):
-                raise _refuse("action", "stand_in_coverage_gone" if not held else "owner_entry_taken")
+            if not held or any(r.entry_id != stand_in_id for r in held):
+                raise _refuse("action", "stand_in_coverage_gone")
+            if other_id in anywhere:
+                raise _refuse("action", "owner_entry_taken")
         else:
-            if not held or any(r.entry_id != other_id for r in held) or any(r.entry_id == stand_in_id for r in held):
+            if not held or any(r.entry_id != other_id for r in held) or stand_in_id in anywhere:  # no active coverage anywhere
                 raise _refuse("action", "claimant_changed")
         return shape, stand_in, other, line, held, action
 
     def apply(self, ctx: Context, params: ReplaceStandInParams, prepared: Prepared, effect: Effect) -> None:
-        shape, stand_in, other, line, held, action = self._prove(ctx)
+        shape, stand_in, other, line, held, action = self._prove(ctx, prepared.data)
         db = ctx.db
         effect.before = {"stand_in_entry_id": stand_in.id, "backfill_action_id": action.id, "claimant_entry_id": other.id, "shape": shape}
         if shape == "shadow":
@@ -1711,7 +2034,7 @@ def _replace_candidate(db: Session, case: ReconciliationCase, statement: Account
     return Candidate(case.id, case.kind, case.status, "replace_stand_in", {}, Decimal("0"), entry_id=None)
 ```
 
-`POLICY_ACTIONS["replace_stand_in"] = _replace_candidate`; `_amount_now`: `if candidate.action == "replace_stand_in": return Decimal("0")`; `_unchanged`: for `replace_stand_in` compare `context.get("backfill_action_id")` and `context.get("hint")` with the case as collected (store both in `Candidate.params`? no — params stay empty; keep them in a new optional `Candidate.evidence: dict` field defaulting to `{}` and compare that). Note `entry_id=None` in the candidate while `case.entry_id` is set: `_unchanged` compares `context.get("entry_id")` (None for these cases) — consistent.
+`POLICY_ACTIONS["replace_stand_in"] = _replace_candidate`; `_amount_now`: `if candidate.action == "replace_stand_in": return Decimal("0")`; `Candidate` gains `evidence: dict = field(default_factory=dict)` (frozen dataclass: use `dataclasses.field`); `_replace_candidate` fills `evidence={"hint": ..., "backfill_action_id": ..., "entry_id": case.entry_id, "event_id": case.event_id}`; `_unchanged` for `replace_stand_in` compares those four against the locked case. `entry_id=None` on the candidate while `case.entry_id` is set is consistent with `_unchanged`'s `context.get("entry_id")` comparison (None for these cases). Finish `test_policy_replaces_a_stand_in_with_zero_budget_and_counts_toward_the_statement_cap`: a second line/stand-in/owner triple on the same statement with `per_statement_count 1` → `result.proposed` holds one `replace_stand_in` proposal; `proposal_service.apply_proposal(..., actor="owner")` applies it uncapped.
 
 - [ ] **Step 4: Run the files and the full reconciliation suites**
 
@@ -1736,69 +2059,108 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Test: `tests/unit/test_r6_dryrun.py`
 
 **Interfaces:**
-- Produces: `r6_case_dump.py --policy` adds to the dump `{"policy": {"<statement_id>": [{"action", "kind", "amount_bucket"}], "anchor_blockers": [account_ids with closing adjustments], "needs_peer": {"<account_id>": n}, "owner_deleted": {"<statement_id>": n}, "sweep": {"would_release_old": n, "would_release_new": n, "kept_by_key": {"name": n, "merchant": n, ...}}}}` computed read-only (`collect_candidates` + `_prefilter` under the current settings, in the READ ONLY transaction; `amount_bucket` = one of `"<1000"`, `"<5000"`, `">=5000"` — never the amount); `r6_dryrun.py --policy` prints a per-account table of counts and the sweep table and exits 0 (no gate; evidence only).
+- Produces: `policy_service.preview(db, statement, policy, today) -> list[tuple[Candidate, str]]` — the read-only decision the policy would take per candidate: `"disabled"` (policy or action off), `"excluded:<reason>"` (`_statement_excluded`), `"apply"`, `"propose:<reason>"`, `"skip:<reason>"` (same code path as `run_policy`'s unlocked pass: `collect_candidates` + `_prefilter(db, candidate, policy)` — its real signature — after the statement exclusion); `coverage_service.sweep_preview(db, statement) -> dict` — for the statement's pending `coverage_dirty` entry `update` events (`id > swept_through_event_id`) over active coverage rows, computed exactly as the sweep will (current entry row via `db.get`, `structurally_changed(snapshot, entry)`, line-wide release, deduplicated per line): `{"would_release_old": lines, "would_release_new": lines, "kept_by_key": {key: n}, "released_by_key": {key: n}}`; `stand_ins.retirement_preview(db, statement) -> dict[str, int]` — applied creation actions (by action name) whose created entry no longer exists (would retire at the next sweep); `r6_case_dump.py --policy` writes `{"policy": {"<statement_id>": [{"action", "kind", "amount_bucket", "decision"}]}, "anchor_blockers": [...], "needs_peer": {...}, "owner_deleted": {...}, "retirements": {"<statement_id>": {action: n}}, "sweep": {...}, "structural_keys": [...], "accounts": {...}}` read-only (`amount_bucket` ∈ `"<1000"`, `"<5000"`, `">=5000"` — never the amount); `r6_dryrun.py --policy` prints the per-account decision table, the retirement table by action type, the sweep table with the key breakdown and both SHAs + key set, exit 0.
 
-- [ ] **Step 1: Write the failing unit test**
+- [ ] **Step 1: Write the failing tests (formatter unit test + collection-path integration tests)**
+
+Unit (`tests/unit/test_r6_dryrun.py`):
 
 ```python
-def test_policy_summary_counts_by_account_and_action():
+def test_policy_summary_counts_by_account_action_and_decision():
     after = _dump({"1": {"claims": [], "cases": []}})
-    after["policy"] = {"1": [{"action": "backfill_entry", "kind": "expense", "amount_bucket": "<1000"},
-                             {"action": "backfill_entry", "kind": "income", "amount_bucket": "<5000"},
-                             {"action": "anchor_opening", "kind": None, "amount_bucket": ">=5000"}],
-                       "anchor_blockers": [7], "needs_peer": {"3": 2}, "owner_deleted": {"1": 1},
-                       "sweep": {"would_release_old": 5, "would_release_new": 2, "kept_by_key": {"name": 2, "merchant": 1}}}
-    text = dr.policy_summary(after, accounts={"1": 3})
-    assert "| 3 | backfill_entry | 2 |" in text and "| 3 | anchor_opening | 1 |" in text
+    after["policy"] = {"1": [{"action": "backfill_entry", "kind": "expense", "amount_bucket": "<1000", "decision": "apply"},
+                             {"action": "backfill_entry", "kind": "income", "amount_bucket": "<5000", "decision": "propose:max_amount"},
+                             {"action": "anchor_opening", "kind": None, "amount_bucket": ">=5000", "decision": "disabled"}]}
+    after.update({"anchor_blockers": [7], "needs_peer": {"3": 2}, "owner_deleted": {"1": 1},
+                  "retirements": {"1": {"backfill_entry": 1, "create_system_entry": 2}},
+                  "sweep": {"would_release_old": 5, "would_release_new": 2, "kept_by_key": {"name": 2, "merchant": 1}, "released_by_key": {"amount": 2}},
+                  "structural_keys": ["amount", "flow"], "accounts": {"1": 3}})
+    text = dr.policy_summary(after)
+    assert "| 3 | backfill_entry | apply | 1 |" in text and "| 3 | backfill_entry | propose:max_amount | 1 |" in text
+    assert "| 3 | anchor_opening | disabled | 1 |" in text
     assert "anchor blocked by closing adjustments: 1 account" in text and "needs_peer lines: 2" in text
-    assert "sweep: old rule would release 5, new rule 2 (kept: name 2, merchant 1)" in text
+    assert "retirements pending: backfill_entry 1, create_system_entry 2" in text
+    assert "sweep: old rule would release 5 lines, new rule 2 (kept by key: name 2, merchant 1; released by key: amount 2)" in text
+    assert "structural keys: amount, flow" in text
 ```
+
+Integration (`tests/integration/test_stand_ins.py`): `test_policy_preview_matches_run_policy_decisions` (a statement with one backfill-eligible line, one over-cap line and the policy enabled → `preview` returns `apply` / `propose:max_amount`, and after `run_policy` the applied/proposed ids match those decisions); `test_sweep_preview_matches_the_sweep` (two covered entries, one name-edited and one amount-edited and then restored to its original amount before the sweep → `sweep_preview` says old 2 / new 0 with `kept_by_key` showing `name`, and the real sweep then releases nothing); `test_retirement_preview_counts_by_action_type` (delete a backfilled entry and a system entry in the ledger, no sweep yet → `{"backfill_entry": 1, "create_system_entry": 1}`).
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `.venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_r6_dryrun.py -k policy_summary`
-Expected: FAIL (`policy_summary` missing).
+Run: `.venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_r6_dryrun.py tests/integration/test_stand_ins.py -k "policy_summary or preview"`
+Expected: FAIL (`policy_summary`, `preview`, `sweep_preview`, `retirement_preview` missing).
 
 - [ ] **Step 3: Implement**
 
-`r6_case_dump.py`: add `--policy`; when set, after the statements loop:
+Service-side previews (so the dump and the tests share one code path — M4):
+
+`policy_service.preview(db, statement, policy, today=None) -> list[tuple[Candidate, str]]`:
 
 ```python
-def _policy_section(db, statements) -> dict:
-    from app.services import policy_service, settings_service, stand_ins
-    from app.services.reconciliation_actions import structural_actions as sa
-    policy = settings_service.reconciliation_policy(db)
-    out = {"anchor_blockers": [], "needs_peer": {}, "owner_deleted": {}, "sweep": _sweep_table(db, statements)}
-    seen_accounts = set()
-    for stmt in statements:
-        rows = []
-        for cand in policy_service.collect_candidates(db, stmt, policy):
-            decision = policy_service._prefilter(db, stmt, cand, policy)
-            rows.append({"action": cand.action, "kind": cand.params.get("kind"), "amount_bucket": _bucket(cand.amount),
-                         "decision": decision[0] if isinstance(decision, tuple) else str(decision)})
-        out[str(stmt.id)] = rows
-        out["owner_deleted"][str(stmt.id)] = len(stand_ins.owner_deleted_events(db, stmt))
-        if stmt.kind == "bank" and stmt.account_id not in seen_accounts:
-            seen_accounts.add(stmt.account_id)
-            target = sa.anchor_target(db, stmt.account_id)
-            if target is not None and db.scalar(select(func.count(LedgerEntry.id)).where(
-                    LedgerEntry.account_id == stmt.account_id, LedgerEntry.kind == "balance_adjustment",
-                    LedgerEntry.posted_date >= target.period_start)):
-                out["anchor_blockers"].append(stmt.account_id)
-    out["needs_peer"] = _count_hint(db, statements, "needs_peer")
+def preview(db: Session, statement: AccountStatement, policy: dict, today: date | None = None) -> list[tuple[Candidate, str]]:
+    """R6b.7: what run_policy's unlocked pass would decide per candidate, without applying anything."""
+    out = []
+    excluded = _statement_excluded(db, statement, policy)
+    for candidate in collect_candidates(db, statement, policy):
+        if policy.get("enabled") is not True or not _rule(policy, candidate.action).get("enabled"):
+            out.append((candidate, "disabled"))
+        elif excluded:
+            out.append((candidate, f"excluded:{excluded}"))
+        else:
+            decision, _, reason = _prefilter(db, candidate, policy)  # the real signature
+            out.append((candidate, decision if reason is None else f"{decision}:{reason}"))
     return out
 ```
 
-with `_bucket(amount)` (`"<1000" | "<5000" | ">=5000"`), `_count_hint` (open `line_unmatched` cases with that hint per account), and `_sweep_table(db, statements)`: for every pending `coverage_dirty` update event (`id > swept_through_event_id` per statement, `kind == "entry"`, `op == "update"`) whose row is held by active coverage of that statement, compare `new_row` (the trigger's JSON of the row) against the coverage snapshot with `coverage_service.STRUCTURAL_KEYS` — old rule counts every such event as a release, new rule counts only structural differences; `kept_by_key` counts the differing non-structural keys (`name`, `merchant`, `category_id`, `description`, …) over kept events. Read-only; compare JSON values as strings on both sides (money to 4 dp via `coverage_service._m`).
+(verify `_prefilter`'s exact return shape at `policy_service.py:311-329` and `_statement_excluded`'s signature; adapt the unpacking rather than the semantics.)
 
-`r6_dryrun.py`: `policy_summary(after: dict, accounts: dict[str, int]) -> str` (statement id → account id map passed from the dump: add `"accounts": {"<statement_id>": account_id}` to the dump) producing the markdown table `| account | action | lines |`, the anchor-blocker line, the needs_peer total, the owner-deleted total, the sweep line; `main()` with `--policy` prints it and writes `policy-summary.md` (mode 600), exit 0.
+`coverage_service.sweep_preview(db, statement) -> dict`: replicate the sweep's selection of pending entry `update` events over the statement's active rows and apply `_structural_update` logic per line **with the current entry row** (same `db.get` as the sweep) — old rule: every such line counts; new rule: only lines where `structurally_changed` is non-empty; `released_by_key`/`kept_by_key` count the differing keys (structural vs cosmetic: compare `snapshot_entry(entry)` plus `name`/`merchant` against the stored snapshot); each line counted once however many events touch it. Read-only.
+
+`stand_ins.retirement_preview(db, statement) -> dict[str, int]`: applied creation actions of the statement's cases (`RETIRABLE_ACTIONS`) whose `created_entry_ids` name an entry that no longer exists, counted by action name.
+
+`r6_case_dump.py --policy`, after the statements loop:
+
+```python
+def _policy_section(db, statements) -> dict:
+    from app.services import coverage_service, policy_service, settings_service, stand_ins
+    from app.services.reconciliation_actions import structural_actions as sa
+    policy = settings_service.reconciliation_policy(db)
+    out = {"policy": {}, "anchor_blockers": [], "needs_peer": _count_hint(db, statements, "needs_peer"), "owner_deleted": {},
+           "retirements": {}, "sweep": {"would_release_old": 0, "would_release_new": 0, "kept_by_key": {}, "released_by_key": {}},
+           "structural_keys": sorted(coverage_service.STRUCTURAL_KEYS), "accounts": {str(s.id): s.account_id for s in statements}}
+    seen = set()
+    for stmt in statements:
+        out["policy"][str(stmt.id)] = [{"action": c.action, "kind": c.params.get("kind"), "amount_bucket": _bucket(c.amount), "decision": d}
+                                       for c, d in policy_service.preview(db, stmt, policy)]
+        out["owner_deleted"][str(stmt.id)] = len(stand_ins.owner_deleted_events(db, stmt))
+        out["retirements"][str(stmt.id)] = stand_ins.retirement_preview(db, stmt)
+        sw = coverage_service.sweep_preview(db, stmt)
+        for k in ("would_release_old", "would_release_new"):
+            out["sweep"][k] += sw[k]
+        for bucket in ("kept_by_key", "released_by_key"):
+            for key, n in sw[bucket].items():
+                out["sweep"][bucket][key] = out["sweep"][bucket].get(key, 0) + n
+        if stmt.kind == "bank" and stmt.account_id not in seen:
+            seen.add(stmt.account_id)
+            found = sa.anchor_delta(db, stmt.account_id)
+            if found is not None and db.scalar(select(func.count(LedgerEntry.id)).where(
+                    LedgerEntry.account_id == stmt.account_id, LedgerEntry.kind == "balance_adjustment",
+                    LedgerEntry.posted_date >= found[0])):
+                out["anchor_blockers"].append(stmt.account_id)
+    return out
+```
+
+with `_bucket(amount)` (`"<1000" | "<5000" | ">=5000"`) and `_count_hint` (open `line_unmatched` cases with that hint per account). All inside the existing READ ONLY transaction.
+
+`r6_dryrun.py`: `policy_summary(after: dict) -> str` producing the markdown table `| account | action | decision | lines |`, the anchor-blocker line, the needs_peer total, the owner-deleted total, the retirements line (by action type), the sweep line with both key breakdowns, the structural key set and both SHAs; `main()` with `--policy` prints it and writes `policy-summary.md` (mode 600), exit 0.
 
 README: a "Policy mode" section with the two commands and what each line means; the sweep table is the R6b.0 regression gate evidence (no automatic failure; the release record keeps the table).
 
-- [ ] **Step 4: Run the unit file and a candidate-tree smoke against the test database**
+- [ ] **Step 4: Run the unit and integration tests (no live-database smoke in this task)**
 
-Run: `.venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_r6_dryrun.py`; then, from this worktree only, `PYTHONPATH=$PWD .venv/bin/python scripts/r6_case_dump.py --policy --out /tmp/claude-1000/-home-opc/e725ec3e-bc74-45aa-a474-cf3d3532997f/scratchpad/r6b-dump.json` once (READ ONLY transaction; report only the "dumped N …" line).
-Expected: PASS; the smoke prints the line and `git status` shows no tracked change.
+Run: `.venv/bin/python -m pytest -q -p no:cacheprovider tests/unit/test_r6_dryrun.py tests/integration/test_stand_ins.py -k "policy_summary or preview or retirement_preview"`
+Expected: PASS. The three integration tests ARE the collection-path evidence against a throw-away database; the dump script itself is exercised against the live database only by the controller at release time (README procedure), never by an implementer.
 
 - [ ] **Step 5: Commit**
 
@@ -1826,7 +2188,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Owner-deleted marker: `stand_ins.owner_deleted_events` re-derived in `_desired_cases` → `context.owner_deleted = True` (+ `hint = stand_in_deleted` when the line has no other hint); both automatic builders skip it; owner `backfill_entry`/`create_system_entry` stay available.
 - Actions: `backfill_entry` (kind map `BACKFILL_KINDS`, category `對帳待分類`), `anchor_opening` (slot `anchor`, account+barrier+all live bank statements locked, `targets_changed` on apply and revert, `needs_recheck` on each), `replace_stand_in` (slot `replace`, no params, evidence re-proven under the locks, not revertable; the engine sets the retired action's `reverted_by_action_id`).
 - Policy: `collect_candidates` kinds `line_unmatched, amount_delta, balance_gap, entry_unmatched`; one anchor per account per run; `replace_stand_in` amount 0 (deliberate budget exemption, counts toward `per_statement_count`); `policy_version` `r6b-<n>`.
-- Known: `needs_peer` lines (payment/transfer) stay open until R6c; anchored accounts keep a `balance_gap` equal to their `needs_peer` sum.
+- Known: `needs_peer` lines (payment/transfer) stay open until R6c; an anchored account's remaining `balance_gap` is an explained residual — its `needs_peer` lines plus any cap-refused, near/drift or other open owner cases (spec §3.5).
 ```
 
 - [ ] **Step 2: README updates**
@@ -1855,4 +2217,5 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - **Survey flags folded:** F1/F2 (create_entry condition, needs_peer) → Task 3; F3 (single-valued hint) → `owner_deleted` key + hint only when free, Tasks 4/6; F4 (`current_line` needs `line_id`) → shadow/orphan cases carry `line_id` and the action resolves by event (`_line_for_event`), Task 8; F7 (revert path) → anchor overrides `revert_lock_targets`, re-checks dirty and targets in `invert`, Task 7; F8/F9 (`_unchanged`, `collect_candidates`) → Tasks 5/7/8; F10 (needs_recheck exclusion) → Task 7 test; F11/F12 → Tasks 6/2; F14 (stand-in coverage is agent/manual) → noted in Task 8; F15/F16 → Tasks 1/5/7/8; F19 → Task 1; F23 → Task 7.
 - **Placeholders:** none; the `STRUCTURAL_KEYS` literal is spelled out in Global Constraints (the odd expression in Task 2 is explicitly marked "do not copy"); Task 8's `rec.entry_view` and `_line_for_event` are defined in the same task.
 - **Type consistency:** `stand_ins.stand_in_entry_ids(db, account_ids)`, `creation_for_entry(db, entry_id)`, `owner_deleted_events(db, statement)`, `shadows(db, statement, lines, owners, rules)`, `orphans(db, statement, entries)` used identically in Tasks 4, 6, 8, 9; `backfill_kind(statement_kind, line_kind)` in Tasks 5 and 9; `live_bank_statement_ids`, `anchor_target`, `anchor_applied` in Tasks 7 and 9; audit event names in Tasks 1, 6, 7, 8.
+- **Plan rev 2 (AGENT-132, dev-astra):** M1 — shadow/orphan discovery now queries current-revision held lines and the full eligible owner population itself (reciprocal uniqueness), fixture dates fixed; M2 — replacement evidence frozen in `Prepared.data`, re-derived and compared under the locks, creating action read FOR UPDATE with event/statement identity, claimant account/currency/claimability gate, "no coverage anywhere" for orphans; M3 — `Context.budget_amount`, anchor refuses `amount_changed` after the barrier, `anchor_delta` shared, drifting-balance regression; M4 — service-side `policy_service.preview`, `coverage_service.sweep_preview`, `stand_ins.retirement_preview` with collection-path integration tests, dump uses them, no implementer smoke on the live DB; M5 — two-order sweep-vs-revert race, orphan success, claimant-changed-between-discovery-and-lock, concurrent stand-in delete, fault injection after delete; Shoulds — red-run selectors, literal pre-R6b snapshot fixture + link cases, identical-reparse marker test, real release/self-heal path, eligibility matrix through `allowed`, anchor revert dirty-off/targets tests with the recorded ∪ current rule, policy ordering by case id, §3.5 wording.
 - **Review Focus:** 1 → Task 6 (`test_policy_skips_an_owner_deleted_fee_line_but_the_owner_may_rebook_it`), 2 → Task 4 (`test_stand_in_alone_self_heals_after_release`) + Task 5 (family-check test), 3 → Task 7 (`test_policy_skips_statements_flagged_by_the_anchor_until_reconciled`), 4 → Task 2 (cosmetic vs structural) + Task 8 (categorised replaced; amount-edited refused), 5 → Task 8 (`test_shadow_requires_a_unique_line_and_a_conserving_owner_entry`).
