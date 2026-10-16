@@ -15,6 +15,7 @@ from sqlalchemy.orm import sessionmaker
 from app.models import (
     AccountStatement, Category, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase,
 )
+from app.services import coverage_service
 from app.services import entry_write_service as ews
 from app.services import policy_service
 from app.services import reconciliation_actions as registry
@@ -682,9 +683,22 @@ def test_second_backfill_of_the_same_event_is_refused_while_the_first_is_applied
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
     (case,) = _cases(db_session, stmt.id, "open")
-    row = _apply(db_session, case, "backfill_entry", {"kind": "expense"})
+    _apply(db_session, case, "backfill_entry", {"kind": "expense"})
+    coverage_service.release_statement(db_session, stmt, reason="test")  # what the sweep does before it reopens a case
+    db_session.commit()
     reopened = _hand_case(db_session, stmt, line, "line_unmatched")  # a sweep-reopened case for the same event
-    assert _code(_refuse(db_session, lambda: _apply(db_session, reopened, "backfill_entry", {"kind": "expense"}))) == "line_claimed"  # the claim check runs before the engine's creation-family guard (concern in the Task 5 report)
+    assert _code(_refuse(db_session, lambda: _apply(db_session, reopened, "backfill_entry", {"kind": "expense"}))) == "duplicate_effect"
+
+
+def test_backfill_may_run_again_after_an_engine_revert(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    row = _apply(db_session, case, "backfill_entry", {"kind": "expense"})
     _revert(db_session, row.id)
-    _apply(db_session, reopened, "backfill_entry", {"kind": "expense"})
+    case = _reload(db_session, ReconciliationCase, case.id)
+    assert case.status == "open"
+    second = _apply(db_session, case, "backfill_entry", {"kind": "expense"})
     assert len(_booked(db_session)) == 1
+    assert _reload(db_session, ReconciliationAction, second.id).status == "applied"
+    assert _reload(db_session, ReconciliationAction, row.id).status == "reverted"
