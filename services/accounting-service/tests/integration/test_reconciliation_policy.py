@@ -880,25 +880,25 @@ def _adjustments(db):
 
 
 def test_policy_skips_statements_flagged_by_the_anchor_until_reconciled(seed, db_session, run, dirty_on):
-    # run 1: one fee line case (id lower) then the balance_gap case → fee booked, then the anchor, which flags the
-    # statement needs_recheck. Run 2 is skipped (statement_excluded: needs_recheck) until a reconcile clears the flag.
+    # run 1 (anchor only): the anchor applies and flags the statement needs_recheck. Run 2 (system entries now on)
+    # is skipped (statement_excluded: needs_recheck) until a reconcile clears the flag; run 3 books the fee.
     bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
     db_session.commit()
     stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "年費", -50, "fee")], kind="bank", opening=Decimal("1600"))
-    _set_policy(db_session, {**ANCHOR_ON, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
+    _set_policy(db_session, ANCHOR_ON)
     first = policy_service.run_policy(db_session, stmt.id)
-    assert [a.action for a in _actions(db_session)] == ["create_system_entry", "anchor_opening"] and len(first.applied) == 2
+    assert [a.action for a in _actions(db_session)] == ["anchor_opening"] and len(first.applied) == 1
     db_session.expire_all()
     assert db_session.get(AccountStatement, stmt.id).needs_recheck is True
+    _set_policy(db_session, {**ANCHOR_ON, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
     # S1: while flagged, run_policy returns an EMPTY result (policy_service.py:457-458), and nothing changes
     second = policy_service.run_policy(db_session, stmt.id)
     assert (second.applied, second.proposed, second.skipped) == ([], [], {})
-    assert len(_actions(db_session)) == 2 and len(_booked(db_session)) == 2 and len(_adjustments(db_session)) == 1  # _booked counts every statement-source row: the fee AND the anchor adjustment
-    # A second revision cannot be used to clear the flag here: both cases are resolved, so the statement is
-    # `reconciled` and a new revision only opens a statement_conflict. Only a completed reconcile discharges it.
-    rec.reconcile(db_session, stmt.id)
+    assert len(_actions(db_session)) == 1 and len(_booked(db_session)) == 1 and len(_adjustments(db_session)) == 1
+    rec.reconcile(db_session, stmt.id)  # only a completed reconcile discharges the flag
     db_session.commit()
     db_session.expire_all()
     assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
     third = policy_service.run_policy(db_session, stmt.id)
-    assert third.applied == [] and len(_actions(db_session)) == 2 and len(_adjustments(db_session)) == 1
+    assert len(third.applied) == 1 and _actions(db_session)[-1].action == "create_system_entry"
+    assert len(_booked(db_session)) == 2 and len(_adjustments(db_session)) == 1

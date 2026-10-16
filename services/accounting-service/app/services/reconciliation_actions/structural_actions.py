@@ -531,6 +531,11 @@ class AnchorOpeningAction(ActionBase):
         entry_id = action.inverse["created_entry_id"]
         if ctx.db.get(LedgerEntry, entry_id) is None:
             raise NotRevertable(f"entry {entry_id} is gone")
+        as_of = date.fromisoformat(action.inverse["as_of"])
+        if ctx.db.scalar(select(exists().where(
+                LedgerEntry.account_id == ctx.statement.account_id, LedgerEntry.kind == "balance_adjustment",
+                LedgerEntry.posted_date >= as_of, LedgerEntry.id != entry_id))):
+            raise _refuse("action", "closing_adjustments_present", "revert or delete the account's closing adjustments first")
         ews.delete_entries_cascade(ctx.db, [entry_id])
         for sid in locked:
             ctx.db.get(AccountStatement, sid).needs_recheck = True

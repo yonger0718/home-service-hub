@@ -671,7 +671,7 @@ def test_anchor_revert_refuses_with_dirty_off_or_a_changed_statement_set(anchore
     monkeypatch.setattr(sa, "live_bank_statement_ids", grown)
     assert _code(_refuse(db_session, lambda: _revert(db_session, row.id))) == "targets_changed"
     monkeypatch.undo()
-    oct_, _, _ = _submit(db_session, run, a.bank, [_line(1, date(2026, 10, 5), "存入", 100, "deposit")], kind="bank",
+    _, _, _ = _submit(db_session, run, a.bank, [_line(1, date(2026, 10, 5), "存入", 100, "deposit")], kind="bank",
                          period=(date(2026, 10, 1), date(2026, 10, 31)), opening=Decimal("1700"))
     _revert(db_session, row.id)  # a statement added BEFORE the revert's discovery is in recorded ∪ current on both reads: not a change
     assert _adjustments(db_session) == []
@@ -704,6 +704,19 @@ def test_later_closing_adjustment_books_only_the_residual_after_the_anchor(ancho
     rec.reconcile(db_session, a.sep.id)
     db_session.commit()
     gaps = [c for c in _cases(db_session, a.sep.id, "open") if c.kind == "balance_gap"]
-    if gaps:
-        _apply(db_session, gaps[0], "balance_adjustment_asof", {})
-        assert sum(x.amount for x in _adjustments(db_session)) == Decimal("500") + Decimal(gaps[0].context["gap"])
+    assert gaps
+    _apply(db_session, gaps[0], "balance_adjustment_asof", {})
+    assert sum(x.amount for x in _adjustments(db_session)) == Decimal("500") + Decimal(gaps[0].context["gap"])
+
+
+def test_anchor_revert_refuses_while_a_later_closing_adjustment_exists(anchored_bank, db_session, run):
+    a = anchored_bank
+    anchor, _ = _apply(db_session, a.cases[a.sep.id], "anchor_opening", {})
+    rec.reconcile(db_session, a.sep.id)
+    db_session.commit()
+    (gap_case,) = [c for c in _cases(db_session, a.sep.id, "open") if c.kind == "balance_gap"]
+    closing, _ = _apply(db_session, gap_case, "balance_adjustment_asof", {})
+    assert _code(_refuse(db_session, lambda: _revert(db_session, anchor.id))) == "closing_adjustments_present"
+    _revert(db_session, closing.id)
+    _revert(db_session, anchor.id)
+    assert _adjustments(db_session) == []
