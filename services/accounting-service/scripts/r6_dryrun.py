@@ -100,18 +100,65 @@ def _counts(dump: dict) -> Counter:
     return c
 
 
+def policy_summary(after: dict) -> str:
+    """Markdown for the R6b.7 policy section of a `r6_case_dump.py --policy` dump (aggregate counts only)."""
+    accounts = after.get("accounts", {})
+    table: Counter = Counter()
+    for sid, rows in after.get("policy", {}).items():
+        for row in rows:
+            table[(accounts.get(sid, "?"), row["action"], row["decision"])] += 1
+    lines = [f"# R6b policy preview — candidate {after.get('sha')}", "", "| account | action | decision | lines |", "|---|---|---|---|"]
+    lines += [f"| {a} | {act} | {dec} | {n} |" for (a, act, dec), n in sorted(table.items(), key=lambda kv: tuple(map(str, kv[0])))]
+    blockers = len(after.get("anchor_blockers", []))
+    above = len(after.get("anchor_above_earlier_statement", []))
+    peers = after.get("needs_peer", {})
+    by_account = ", ".join(f"{a}={n}" for a, n in sorted(peers.items(), key=lambda kv: int(kv[0]))) or "none"
+    lines += ["", f"anchor blocked by closing adjustments: {blockers} account{'' if blockers == 1 else 's'}",
+              f"anchor above an earlier statement: {above} account{'' if above == 1 else 's'}",
+              f"needs_peer lines: {sum(peers.values())} (by account: {by_account})",
+              f"owner-deleted events: {sum(after.get('owner_deleted', {}).values())}"]
+    retire: Counter = Counter()
+    for by_action in after.get("retirements", {}).values():
+        retire.update(by_action)
+    lines.append("retirements pending: " + (", ".join(f"{k} {v}" for k, v in sorted(retire.items())) or "none"))
+    sw = after.get("sweep", {})
+
+    def _keys(d: dict) -> str:
+        return ", ".join(f"{k} {v}" for k, v in d.items()) or "none"
+    lines.append(f"sweep: old rule would release {sw.get('would_release_old', 0)} lines, new rule {sw.get('would_release_new', 0)} "
+                 f"(kept by key: {_keys(sw.get('kept_by_key', {}))}; released by key: {_keys(sw.get('released_by_key', {}))})")
+    lines.append("structural keys: " + ", ".join(after.get("structural_keys", [])))
+    return "\n".join(lines) + "\n"
+
+
+def _write_private(path: str, payload: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(payload)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--baseline", required=True)
     ap.add_argument("--candidate", required=True)
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--policy", action="store_true",
+                    help="print the R6b policy preview (decisions, retirements, sweep regression table) and write policy-summary.md; exit 0")
     ap.add_argument("--allow-moved-claims", action="store_true",
                     help="waive both moved-claim shapes (reported, not failed): a claim whose line is now claimed_by_earlier_line, "
                          "and a claim whose entry set changed")
     args = ap.parse_args()
     with open(args.baseline) as fb, open(args.candidate) as fa:
         before, after = json.load(fb), json.load(fa)
+    if args.policy and "policy" not in after:
+        print(f"{args.candidate}: no policy section; dump it with r6_case_dump.py --policy", file=sys.stderr)
+        return 2
     os.makedirs(args.out_dir, mode=0o700, exist_ok=True)
+    if args.policy:
+        text = f"baseline {before['sha']}\n" + policy_summary(after)
+        _write_private(os.path.join(args.out_dir, "policy-summary.md"), text)
+        print(text)
+        return 0
     changes = diff_dumps(before, after)
     rules = Counter(attribute(c) for c in changes)
     failures = gate_failures(changes, after, before)

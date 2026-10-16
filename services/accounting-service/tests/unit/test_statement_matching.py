@@ -2,6 +2,8 @@ import dataclasses
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.services.statements import matching as m
 
 D = Decimal
@@ -22,7 +24,7 @@ def E(i, posted, flow, kind="expense", merchant="全聯", **kw):
                    is_settlement=kw.get("is_settlement", False), refunds_entry_id=kw.get("refunds_entry_id"),
                    transfer_group_id=kw.get("transfer_group_id"), transfer_peer_is_card=kw.get("peer_is_card"),
                    children=tuple(kw.get("children", ())), instance=kw.get("instance"), in_reverse=kw.get("in_reverse", True),
-                   claimable=kw.get("claimable", True))
+                   claimable=kw.get("claimable", True), stand_in=kw.get("stand_in", False))
 
 
 def run(lines, entries, groups=None, plan_map=None, fee=lambda e: None, kind="card"):
@@ -608,3 +610,39 @@ def test_drift_respects_the_gate_and_peer_rule():
     card_peer = E(11, date(2026, 9, 10), "20000", kind="transfer_in", peer_is_card=True)
     res = run([L(1, date(2026, 9, 3), "20000", kind="payment", merchant="")], [card_peer])
     assert res.cases[0].kind == "line_unmatched"
+
+
+def test_owner_representation_drops_stand_in_representations():
+    # R6b.0: a stand-in (backfilled entry) never competes with the owner's entry for the same line
+    entries = [E(10, date(2026, 9, 3), "-580", merchant="", stand_in=True), E(11, date(2026, 9, 3), "-580", merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries)
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [11]
+    assert 10 in res.unmatched_entry_ids
+
+
+def test_stand_ins_compete_only_among_themselves():
+    entries = [E(10, date(2026, 9, 3), "-580", merchant="", stand_in=True), E(11, date(2026, 9, 3), "-580", merchant="", stand_in=True)]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries)
+    assert res.claims == [] and res.cases[0].kind == "ambiguous"
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries[:1])
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+
+
+def test_stand_in_drop_applies_to_group_and_child_representations_too():
+    g = m.Group(id=5, kind="split", member_ids=(21, 22))
+    entries = [E(10, date(2026, 9, 3), "-580", merchant="", stand_in=True),
+               E(21, date(2026, 9, 3), "-300", group_id=5, merchant=""), E(22, date(2026, 9, 3), "-280", group_id=5, merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries, groups={5: g})
+    assert res.claims and res.claims[0].representation.rule == "group"
+
+
+@pytest.mark.parametrize("kind, stmt", [("payment", "card"), ("transfer_in", "bank"), ("transfer_out", "bank"), ("payment", "bank")])
+def test_payment_and_transfer_lines_without_a_match_get_needs_peer(kind, stmt):
+    res = run([L(1, date(2026, 9, 3), "-20000" if kind != "transfer_in" else "20000", kind=kind, merchant="")], [], kind=stmt)
+    assert res.cases[0].kind == "line_unmatched" and res.cases[0].context == {"hint": "needs_peer"}
+
+
+def test_needs_peer_is_not_set_when_a_near_or_drift_case_exists():
+    ok = E(10, date(2026, 9, 3), "20200", kind="transfer_in", peer_is_card=False)
+    res = run([L(1, date(2026, 9, 3), "20000", kind="payment", merchant="")], [ok])
+    assert res.cases[0].kind == "amount_delta"

@@ -1,6 +1,7 @@
 """Reconciliation orchestration (spec v3 §6.1 populations, §6.3 R9/R10, §6.4 bank gap, §7.4 lock order, §5.8 modes):
 reconcile = sweep → (re)claim → cases → deferrals → balance gap → counts, run by the revision hook and the batch."""
 import threading
+import uuid
 from dataclasses import replace as dc_replace
 from datetime import date
 from decimal import Decimal
@@ -14,6 +15,7 @@ from app.models import (
 )
 from app.schemas.statements import RevisionIn
 from app.schemas.writes import EntryUpdateIn
+from app.services import coverage_service
 from app.services import entry_write_service as ews
 from app.services import reconciliation_service as rec
 from app.services import settings_service
@@ -724,7 +726,7 @@ def test_reconcile_yields_to_a_delete_of_a_claimed_entry(seed, db_session, run, 
     stmt_id = stmt.id
     assert len(_active(db_session, stmt_id)) == 1
     set_dirty(db_session, True)
-    db_session.get(LedgerEntry, buy_id).name = "renamed"
+    db_session.get(LedgerEntry, buy_id).amount = Decimal("-590")
     db_session.commit()
     swept, go = _pause_after_the_sweep(monkeypatch)
 
@@ -1073,3 +1075,128 @@ def test_date_drift_case_is_written_and_resolves_with_match(seed, db_session, ru
                         actor="owner", label="owner")
     db_session.commit()
     assert db_session.get(ReconciliationCase, case.id).status == "resolved" and len(_active(db_session, stmt.id)) == 1
+
+
+def test_r6b_policy_defaults_and_validation(db_session):
+    settings = settings_service.get_reconciliation_settings(db_session)
+    policy = settings["policy"]
+    assert policy["backfill_grace_days"] == 14 and policy["backfill_accounts"] == []
+    assert policy["actions"]["backfill_entry"] == {"enabled": False, "max_amount": "5000"}
+    assert policy["actions"]["anchor_opening"] == {"enabled": False, "max_amount": "200000"}
+    assert policy["actions"]["replace_stand_in"] == {"enabled": True, "max_amount": "0"}
+    assert settings["policy_version"] == "r6b-1"  # no stored row: the default label
+    out = settings_service.update_reconciliation_settings(
+        db_session, {"dirty_enabled": False, "policy": {"backfill_grace_days": 7, "backfill_accounts": [3, 5]}})
+    assert out["policy_version"] == f"r6b-{out['version']}" and out["policy"]["backfill_grace_days"] == 7
+    for bad in ({"backfill_grace_days": 400}, {"backfill_grace_days": "7"}, {"backfill_accounts": ["3"]},
+                {"backfill_accounts": 3}, {"actions": {"backfill_entry": {"grace": 1}}}):
+        with pytest.raises(settings_service.ValidationError):
+            settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "policy": bad})
+
+
+# --- R6b.0 structural-only sweep release ----------------------------------------------------------------------------
+
+def _dirty(db):
+    set_dirty(db, True)
+    db.commit()
+
+
+def _claimed_line(seed, db, run, merchant="全聯", **entry_fields):
+    card = _card(seed, db, f"卡{merchant}")  # one card per claim: account names are unique
+    entry = seed.entry(card, "-580", day=date(2026, 9, 3), merchant=merchant, **entry_fields)
+    stmt, (line,), _ = _submit(db, run, card, [_line(1, date(2026, 9, 3), merchant, 580)])
+    assert len(_active(db, stmt.id)) == 1
+    return card, entry, stmt, line
+
+
+def _sweep(db, stmt):
+    db.expire_all()
+    with db.begin_nested():
+        locked = rec._lock_statement(db, stmt.id)
+        coverage_service.sweep(db, locked, run_id=None, barrier_wait=False)
+    db.commit()
+    return stmt
+
+
+@pytest.mark.parametrize("field, value", [("category_id", None), ("name", "改名"), ("merchant", "改商家"),
+                                          ("description", "備註"), ("needs_review", True)])
+def test_cosmetic_edit_keeps_the_match(seed, db_session, run, field, value):
+    _dirty(db_session)
+    card, entry, stmt, line = _claimed_line(seed, db_session, run)
+    if field == "category_id":
+        value = seed.category("其他").id
+    setattr(entry, field, value)
+    db_session.commit()
+    _sweep(db_session, stmt)
+    assert len(_active(db_session, stmt.id)) == 1 and not [c for c in _cases(db_session, stmt.id, "open")]
+
+
+@pytest.mark.parametrize("field, value", [("amount", "-581"), ("posted_date", date(2026, 9, 4)),
+                                          ("entry_date", date(2026, 9, 4)), ("currency", "USD")])
+def test_structural_edit_releases_the_match(seed, db_session, run, field, value):
+    _dirty(db_session)
+    card, entry, stmt, line = _claimed_line(seed, db_session, run)
+    setattr(entry, field, Decimal(value) if field == "amount" else value)
+    db_session.commit()
+    _sweep(db_session, stmt)
+    assert _active(db_session, stmt.id) == []
+
+
+def test_refund_link_change_releases(seed, db_session, run):
+    _dirty(db_session)
+    card, entry, stmt, line = _claimed_line(seed, db_session, run)
+    other = seed.entry(card, "-100", day=date(2026, 9, 5))
+    db_session.commit()
+    entry.refunds_entry_id = other.id
+    db_session.commit()
+    _sweep(db_session, stmt)
+    assert _active(db_session, stmt.id) == []
+
+
+PRE_R6B_SNAPSHOT_KEYS = {"id", "amount", "flow", "currency", "original_amount", "original_currency", "entry_date",
+                        "posted_date", "account_id", "kind", "group_id", "parent_entry_id", "transfer_group_id",
+                        "refunds_entry_id", "settles_entry_id", "is_settlement", "name", "merchant"}  # R1 write_claim shape
+
+
+def test_pre_r6b_snapshot_shape_is_compared_the_same_way(seed, db_session, run):
+    # a coverage row written before R6b has exactly these keys (pinned literally): the projection applies to it as is
+    _dirty(db_session)
+    card, entry, stmt, line = _claimed_line(seed, db_session, run)
+    (row,) = _active(db_session, stmt.id)
+    assert set(row.snapshot) == PRE_R6B_SNAPSHOT_KEYS
+    assert coverage_service.STRUCTURAL_KEYS == PRE_R6B_SNAPSHOT_KEYS - {"id", "name", "merchant"}
+    old_shape = {k: row.snapshot[k] for k in PRE_R6B_SNAPSHOT_KEYS}  # an R1-era row, re-created literally
+    assert coverage_service.structurally_changed(old_shape, entry) == []
+    entry.name = "x"
+    assert coverage_service.structurally_changed(old_shape, entry) == []
+    entry.amount = Decimal("-1")
+    assert coverage_service.structurally_changed(old_shape, entry) == ["amount", "flow"]
+
+
+def test_transfer_group_parent_and_settlement_link_changes_release(seed, db_session, run):
+    _dirty(db_session)
+    card, entry, stmt, line = _claimed_line(seed, db_session, run)
+    entry.transfer_group_id = uuid.uuid4()
+    db_session.commit()
+    _sweep(db_session, stmt)
+    assert _active(db_session, stmt.id) == []
+    card2, entry2, stmt2, line2 = _claimed_line(seed, db_session, run, merchant="家樂福")
+    other = seed.entry(card2, "100", day=date(2026, 9, 5), kind="receivable", is_settlement=True)
+    db_session.commit()
+    entry2.settles_entry_id = other.id
+    db_session.commit()
+    _sweep(db_session, stmt2)
+    assert _active(db_session, stmt2.id) == []
+    card3, entry3, stmt3, line3 = _claimed_line(seed, db_session, run, merchant="7-11")
+    g = seed.group("split")
+    entry3.group_id = g.id
+    db_session.commit()
+    _sweep(db_session, stmt3)
+    assert _active(db_session, stmt3.id) == []
+    card4, entry4, stmt4, line4 = _claimed_line(seed, db_session, run, merchant="momo")
+    parent = seed.entry(card4, "-900", day=date(2026, 9, 2), merchant="momo")
+    db_session.commit()
+    entry4.parent_entry_id = parent.id  # parent link: the entry becomes a child -> structural -> release
+    db_session.commit()
+    _sweep(db_session, stmt4)
+    assert _active(db_session, stmt4.id) == []

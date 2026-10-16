@@ -53,6 +53,34 @@ def snapshot_entry(entry: LedgerEntry) -> dict:
     }
 
 
+STRUCTURAL_KEYS = frozenset({
+    "amount", "flow", "currency", "original_amount", "original_currency", "entry_date", "posted_date",
+    "account_id", "kind", "group_id", "parent_entry_id", "transfer_group_id", "refunds_entry_id",
+    "settles_entry_id", "is_settlement"})  # R6b.0: every snapshot key except id, name, merchant
+
+
+def structurally_changed(snapshot: dict, entry: LedgerEntry) -> list[str]:
+    """R6b.0: the structural keys on which the entry now differs from the coverage snapshot (cosmetic edits —
+    name, merchant, category, description, needs_review — never count). Compared as the snapshot stores them."""
+    now = snapshot_entry(entry)
+    return sorted(k for k in STRUCTURAL_KEYS if (snapshot or {}).get(k) != now.get(k))
+
+
+def _structural_update(db: Session, active: dict[int, list[StatementCoverage]], line_ids: set[int],
+                       entry_id: int) -> bool:
+    """R6b.0: an update event releases only when a structural key differs from the stored snapshot of any active
+    row holding the entry; a vanished row counts as changed."""
+    entry = db.get(LedgerEntry, entry_id, populate_existing=True)  # never a stale identity-map copy
+    if entry is None:
+        return True
+    for line_id in line_ids:
+        for row in active.get(line_id, ()):
+            if row.entry_id == entry_id or (row.snapshot or {}).get("id") == entry_id:
+                if structurally_changed(row.snapshot, entry):
+                    return True
+    return False
+
+
 def write_claim(db: Session, statement: AccountStatement, line: StatementLine, rows: list[matching.Row], *,
                 entries_by_id: dict[int, LedgerEntry], match_kind: str, match_rule: str,
                 run_id: int | None) -> list[StatementCoverage]:
@@ -185,11 +213,14 @@ def _case_for_released_line(db: Session, statement: AccountStatement, line_id: i
                             result: SweepResult) -> None:
     """Live mode, by the event's newest case: open/proposed → bump `version` (proposals go stale) and note the event,
     no second case; resolved → reopen with its resolution moved into `context.previous_resolution`; none, dismissed
-    or superseded → a new `recheck` case. No row lock: the caller's statement lock serialises case writers."""
+    or superseded → a new `recheck` case. No row lock: the caller's statement lock serialises case writers. Only the
+    line's own cases count: an R6b.5 stand-in hint (`entry_unmatched` naming the event) is an entry's case, re-derived
+    by the next reconcile and re-proven by `replace_stand_in` itself."""
     line = db.get(StatementLine, line_id)
     newest = db.execute(
         select(ReconciliationCase)
-        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.event_id == line.event_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.event_id == line.event_id,
+               ReconciliationCase.kind != "entry_unmatched")
         .order_by(ReconciliationCase.id.desc()).limit(1)
     ).scalar_one_or_none()
     note = {"reopened_by_event": event.id, "op": event.op, "row_id": event.row_id}
@@ -336,6 +367,7 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
             for group_id in {r.group_id, (r.snapshot or {}).get("group_id")} - {None}:
                 lines_by_group[group_id].add(line_id)
     skipped_actions = _applied_action_ids(db, statement)
+    _retire_stranded_creations(db, statement, run_id)
     start, end = statement.period_start, statement.period_end
     result = SweepResult(swept_through=statement.swept_through_event_id)
     released: set[int] = set()
@@ -369,9 +401,13 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
             if ev.action_id is not None and ev.action_id in skipped_actions:
                 continue
             if ev.kind == "entry":
+                if ev.op == "delete":
+                    _retire_creations(db, statement, ev, run_id)
                 if ev.row_id in lines_by_entry:
-                    if ev.op in ("update", "delete"):
-                        release(lines_by_entry[ev.row_id], ev, f"dirty:{ev.op}:{ev.id}")
+                    if ev.op == "delete":
+                        release(lines_by_entry[ev.row_id], ev, f"dirty:delete:{ev.id}")
+                    elif ev.op == "update" and _structural_update(db, active, lines_by_entry[ev.row_id], ev.row_id):
+                        release(lines_by_entry[ev.row_id], ev, f"dirty:update:{ev.id}")
                 elif in_population(ev.new_account_id, ev.new_date) or in_population(ev.old_account_id, ev.old_date):
                     result.recheck = result.recheck or live
             elif ev.kind == "group":
@@ -390,6 +426,52 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
     _recount(db, statement)
     db.flush()
     return result
+
+
+def sweep_preview(db: Session, statement: AccountStatement) -> dict:
+    """R6b.7, read only: what the next sweep would do with the statement's pending entry `update` events over its
+    active coverage rows, computed as the sweep does (current entry row, snapshot compare), each line counted once
+    however many events touch it. `would_release_old`: every touched line (the pre-R6b rule); `would_release_new`:
+    the lines with a structural difference; `released_by_key` counts the structural keys of those lines and
+    `kept_by_key` the cosmetic keys (name, merchant) of the lines the new rule keeps."""
+    active = active_rows(db, statement.id)
+    lines_by_entry: dict[int, set[int]] = defaultdict(set)
+    for line_id, rows in active.items():
+        for r in rows:
+            for entry_id in {r.entry_id, (r.snapshot or {}).get("id")} - {None}:
+                lines_by_entry[entry_id].add(line_id)
+    skipped = _applied_action_ids(db, statement)
+    events = db.execute(
+        select(CoverageDirty.id, CoverageDirty.row_id, CoverageDirty.action_id)
+        .where(CoverageDirty.id > statement.swept_through_event_id, CoverageDirty.kind == "entry",
+               CoverageDirty.op == "update").order_by(CoverageDirty.id)).all()
+    structural: dict[int, set[str]] = defaultdict(set)
+    cosmetic: dict[int, set[str]] = defaultdict(set)
+    touched: set[int] = set()
+    for ev in events:
+        if (ev.action_id is not None and ev.action_id in skipped) or ev.row_id not in lines_by_entry:
+            continue
+        entry = db.get(LedgerEntry, ev.row_id, populate_existing=True)
+        for line_id in lines_by_entry[ev.row_id]:
+            touched.add(line_id)
+            for row in active.get(line_id, ()):
+                if row.entry_id != ev.row_id and (row.snapshot or {}).get("id") != ev.row_id:
+                    continue
+                if entry is None:
+                    structural[line_id].add("entry_missing")
+                    continue
+                structural[line_id].update(structurally_changed(row.snapshot, entry))
+                now = snapshot_entry(entry)
+                cosmetic[line_id].update(k for k in ("name", "merchant") if (row.snapshot or {}).get(k) != now.get(k))
+    released = {line_id for line_id in touched if structural[line_id]}
+    out = {"would_release_old": len(touched), "would_release_new": len(released), "kept_by_key": {}, "released_by_key": {}}
+    for line_id in released:
+        for key in structural[line_id]:
+            out["released_by_key"][key] = out["released_by_key"].get(key, 0) + 1
+    for line_id in touched - released:
+        for key in cosmetic[line_id]:
+            out["kept_by_key"][key] = out["kept_by_key"].get(key, 0) + 1
+    return out
 
 
 def _touches(s):
@@ -420,13 +502,81 @@ def _touches(s):
 
 
 def sweep_pending(db: Session) -> list[int]:
-    """Statements (any mode) with an event past their watermark that may touch them (`_touches`). Read without the
-    writer barrier: an uncommitted event only shows up on a later call."""
+    """Statements (any mode) with an event past their watermark that may touch them (`_touches`), or with a stranded
+    creation (`_stranded`: the sweep's catch-up pass retires it — PR #76 review S1, so a pre-R6b deletion already
+    behind the watermark of a clean statement is retired by the first daily run). Read without the writer barrier: an
+    uncommitted event only shows up on a later call."""
     s = AccountStatement
-    return list(db.execute(select(s.id).where(_touches(s)).order_by(s.id)).scalars())
+    return list(db.execute(select(s.id).where(or_(_touches(s), _stranded(s))).order_by(s.id)).scalars())
+
+
+def _stranded(s):
+    """EXISTS: an applied creation (RETIRABLE_ACTIONS) of the statement `s`'s cases whose created entries are ALL
+    gone — what `_retire_stranded_creations` retires, without its pending-delete-event exclusion (such a statement is
+    pending anyway, and its sweep retires the creation through the event). Retirement leaves the row `reverted`, so
+    the selection drains after one sweep."""
+    alive = exists().where(LedgerEntry.id == func.any(ReconciliationAction.created_entry_ids))
+    return exists().where(
+        ReconciliationCase.statement_id == s.id, ReconciliationAction.case_id == ReconciliationCase.id,
+        ReconciliationAction.status == "applied", ReconciliationAction.action.in_(RETIRABLE_ACTIONS),
+        func.cardinality(ReconciliationAction.created_entry_ids) > 0, ~alive)
 
 
 def has_pending_events(db: Session, statement: AccountStatement) -> bool:
     """The same relevance as `sweep_pending`, for one statement (the read model's `stale_events_pending`)."""
     s = AccountStatement
     return db.execute(select(exists().where(s.id == statement.id, _touches(s)))).scalar_one()
+
+
+RETIRABLE_ACTIONS = ("backfill_entry", "create_entry", "create_system_entry", "create_refund")
+
+
+def _retire_creations(db: Session, statement: AccountStatement, ev, run_id) -> None:
+    """R6b.0: the owner deleted a created entry in the ledger -> its applied creation is retired (status reverted,
+    inverse.deleted_by_event) so the family check and the policy see the event as owner-deleted. Scoped to this
+    statement's cases (the statement lock serialises it with reverts and replacements); idempotent; never
+    overwrites an existing reverted_by_action_id."""
+    from app.services.reconciliation_actions import audit  # local: reconciliation_actions imports coverage_service
+    rows = db.execute(
+        select(ReconciliationAction)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
+               ReconciliationAction.action.in_(RETIRABLE_ACTIONS),
+               ReconciliationAction.created_entry_ids.contains([ev.row_id]))
+        .with_for_update(of=ReconciliationAction)).scalars().all()
+    if not rows or db.get(LedgerEntry, ev.row_id, populate_existing=True) is not None:  # a live row = a stale event
+        return
+    for row in rows:
+        row.status = "reverted"
+        row.inverse = {**(row.inverse or {}), "deleted_by_event": ev.id}
+        audit.record(db, event="stand_in_retired", actor="sweep", statement_id=statement.id, case_id=row.case_id,
+                     action_id=row.id, run_id=run_id, request_id=None,
+                     detail={"entry_id": ev.row_id, "dirty_event_id": ev.id, "action": row.action})
+
+
+def _retire_stranded_creations(db: Session, statement: AccountStatement, run_id) -> None:
+    """R6b.0 catch-up (final review I2), before the event loop under the same statement lock: an applied creation
+    (RETIRABLE_ACTIONS) of this statement's cases whose created entries are ALL gone and whose delete is not still
+    pending (no entry `delete` event past the watermark: that one retires through `_retire_creations` with its event
+    id) was deleted before the watermark — e.g. before R6b, whose sweep released the line without retiring it.
+    Retired like `_retire_creations`, with `inverse.deleted_before_watermark` (no event id to name); idempotent
+    (applied rows only); never overwrites an existing reverted_by_action_id. One query."""
+    from app.services.reconciliation_actions import audit  # local: reconciliation_actions imports coverage_service
+    alive = exists().where(LedgerEntry.id == func.any(ReconciliationAction.created_entry_ids))
+    pending = exists().where(CoverageDirty.kind == "entry", CoverageDirty.op == "delete",
+                             CoverageDirty.id > statement.swept_through_event_id,
+                             CoverageDirty.row_id == func.any(ReconciliationAction.created_entry_ids))
+    rows = db.execute(
+        select(ReconciliationAction)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
+               ReconciliationAction.action.in_(RETIRABLE_ACTIONS),
+               func.cardinality(ReconciliationAction.created_entry_ids) > 0, ~alive, ~pending)
+        .order_by(ReconciliationAction.id)
+        .with_for_update(of=ReconciliationAction)).scalars().all()  # statement-scoped: this statement's cases only
+    for row in rows:
+        row.status = "reverted"
+        row.inverse = {**(row.inverse or {}), "deleted_before_watermark": True}
+        audit.record(db, event="stand_in_retired", actor="sweep", statement_id=statement.id, case_id=row.case_id,
+                     action_id=row.id, run_id=run_id, request_id=None,
+                     detail={"catch_up": True, "entry_ids": list(row.created_entry_ids), "action": row.action})

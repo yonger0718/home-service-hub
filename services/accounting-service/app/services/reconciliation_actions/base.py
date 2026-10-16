@@ -41,6 +41,8 @@ class Context:
     rules: matching.Rules
     proposal_id: int | None = None  # the agent proposal being applied (ruling 31: policy + proposal = `agent` coverage)
     lock_set: "LockSet | None" = None  # what the engine locked for this attempt (set after the locks; R1d)
+    budget_amount: Decimal | None = None  # R6b.2: the amount a policy apply reserved and charged (None for the owner)
+    _replace_discovery: dict | None = None  # R6b.5: replace_stand_in's one unlocked discovery (lock_targets → prepare)
 
 
 @dataclass
@@ -199,6 +201,11 @@ def current_line(db: Session, case: ReconciliationCase, statement: AccountStatem
     line = db.get(StatementLine, case.line_id)
     if line is not None and line.revision_id == statement.current_revision_id:
         return line
+    return line_for_event(db, case, statement)
+
+
+def line_for_event(db: Session, case: ReconciliationCase, statement: AccountStatement) -> StatementLine | None:
+    """The case event's line on the statement's current revision (by `event_id` only), or None."""
     if case.event_id is None:
         return None
     return db.execute(select(StatementLine).where(StatementLine.revision_id == statement.current_revision_id,

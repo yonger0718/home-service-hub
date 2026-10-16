@@ -11,7 +11,7 @@ is deleted."""
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -30,11 +30,12 @@ from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, CodedValidationError, ValidationError
 from app.services.split_protection import protected_reason
 
-from . import register
+from . import audit, register
 from .base import (
     ActionBase, ActionParams, Context, Effect, LockSet, NotRevertable, Prepared, lockset_for, schedule_rows,
 )
 from .coverage_actions import _line_claimed as line_claimed
+from .base import OWNER, POLICY
 from .ledger_actions import STATEMENT_SOURCE, _claim, _gate, _release
 
 MOVE, SPLIT, BALANCE = "move", "split", "balance"
@@ -420,6 +421,142 @@ class BalanceAdjustmentAsOfAction(ActionBase):
         return Effect(deleted_entry_ids=[entry_id])
 
 
+
+# --- anchor_opening (R6b.2) ---
+
+ANCHOR = "anchor"
+
+
+def live_bank_statement_ids(db: Session, account_id: int) -> tuple[int, ...]:
+    return tuple(db.execute(select(AccountStatement.id).where(
+        AccountStatement.account_id == account_id, AccountStatement.kind == "bank", AccountStatement.mode == "live")
+        .order_by(AccountStatement.id)).scalars())
+
+
+def anchor_target(db: Session, account_id: int) -> AccountStatement | None:
+    return db.execute(select(AccountStatement).where(
+        AccountStatement.account_id == account_id, AccountStatement.kind == "bank", AccountStatement.mode == "live",
+        AccountStatement.opening_balance.is_not(None)).order_by(AccountStatement.period_start, AccountStatement.id)).scalars().first()
+
+
+def anchor_applied(db: Session, account_id: int, *, exclude_case_id: int | None = None) -> bool:
+    """An applied anchor exists on the account. `apply` runs after the engine inserted its own row, so it passes its
+    case id to leave that row out."""
+    return db.scalar(select(exists().where(
+        ReconciliationAction.action == "anchor_opening", ReconciliationAction.status == "applied",
+        ReconciliationAction.case_id != exclude_case_id if exclude_case_id is not None else True,
+        ReconciliationAction.case_id == ReconciliationCase.id, ReconciliationCase.statement_id == AccountStatement.id,
+        AccountStatement.account_id == account_id)))
+
+
+def anchor_as_of(db: Session, account_id: int) -> date | None:
+    """The `as_of` of the account's applied anchor (its inverse), or None. Every missing entry dated on or before
+    it is already inside the anchor's amount (final review C1): the automatic builders must not book such a line."""
+    found = db.execute(
+        select(ReconciliationAction.inverse)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .join(AccountStatement, AccountStatement.id == ReconciliationCase.statement_id)
+        .where(ReconciliationAction.action == "anchor_opening", ReconciliationAction.status == "applied",
+               AccountStatement.account_id == account_id)
+        .order_by(ReconciliationAction.id.desc()).limit(1)).scalar_one_or_none()
+    as_of = (found or {}).get("as_of")
+    return date.fromisoformat(as_of) if as_of else None
+
+
+def anchor_delta(db: Session, account_id: int) -> tuple[date, Decimal] | None:
+    """R6b.2: (as_of, target.opening_balance − balance(as_of)) at the account's anchor target, or None. Module
+    level, defined BEFORE the action class (one arithmetic for the action, the policy builder and the dry-run)."""
+    target = anchor_target(db, account_id)
+    if target is None:
+        return None
+    as_of = target.period_start - timedelta(days=1)
+    delta = (Decimal(target.opening_balance) - ledger_service.account_balance(db, account_id, as_of=as_of)).quantize(Decimal("0.0001"))
+    return as_of, delta
+
+
+class AnchorOpeningParams(ActionParams):
+    pass
+
+
+class AnchorOpeningAction(ActionBase):
+    """R6b.2: books `target.opening_balance − balance(period_start − 1)` as a balance_adjustment dated the day before
+    the account's earliest live statement, once per account, and flags every live bank statement of the account
+    for recheck. Same barrier discipline as balance_adjustment_asof."""
+    name = "anchor_opening"
+    Params = AnchorOpeningParams
+    case_kinds = frozenset({"balance_gap"})
+    actors = frozenset({OWNER, POLICY})
+    slot = ANCHOR
+
+    def lock_targets(self, ctx: Context, params: AnchorOpeningParams) -> LockSet:
+        return LockSet(account_lock=True, barrier=True, statement_ids=live_bank_statement_ids(ctx.db, ctx.statement.account_id))
+
+    def check_before_locks(self, ctx: Context, params: AnchorOpeningParams) -> None:
+        if not settings_service.read_reconciliation_settings(ctx.db)["dirty_enabled"]:
+            raise _refuse("action", "dirty_disabled", "the writer barrier needs the dirty triggers")
+
+    def _verify_targets(self, ctx: Context, locked: tuple[int, ...], recorded: tuple[int, ...] = ()) -> None:
+        """Apply: the locked set must equal the current live set. Revert: it must equal recorded ∪ current (a
+        statement that left the live set since the anchor is still re-flagged; one that joined is locked too)."""
+        required = set(live_bank_statement_ids(ctx.db, ctx.statement.account_id)) | set(recorded)
+        if required != set(locked):
+            raise _refuse("action", "targets_changed", "the account's live statements changed; retry")
+
+    def apply(self, ctx: Context, params: AnchorOpeningParams, prepared: Prepared, effect: Effect) -> None:
+        self.check_before_locks(ctx, params)
+        db, account_id = ctx.db, ctx.statement.account_id
+        locked = tuple(i for i in ctx.lock_set.statement_ids) if ctx.lock_set else ()
+        self._verify_targets(ctx, locked)
+        if anchor_applied(db, account_id, exclude_case_id=ctx.case.id):  # the engine's own row is already inserted
+            raise _refuse("action", "already_anchored", f"account {account_id} is anchored")
+        found = anchor_delta(db, account_id)  # under the account lock and the barrier: the balance is complete
+        if found is None:
+            raise _refuse("action", "no_opening_balance", "no live statement carries an opening balance")
+        as_of, delta = found
+        if db.scalar(select(exists().where(LedgerEntry.account_id == account_id, LedgerEntry.kind == "balance_adjustment",
+                                            LedgerEntry.posted_date >= as_of))):
+            raise _refuse("action", "closing_adjustments_present", "revert or delete the account's closing adjustments first")
+        if delta == 0:
+            raise _refuse("action", "zero_delta", f"account {account_id} balances at {as_of.isoformat()}")
+        if ctx.budget_amount is not None and abs(delta) != ctx.budget_amount:  # M3: a writer committed between the policy's charge and the barrier
+            raise _refuse("action", "amount_changed", f"anchor delta moved since the policy reserved {ctx.budget_amount}")
+        entry = LedgerEntry(account_id=account_id, currency=ctx.statement.currency, kind="balance_adjustment", amount=delta,
+                            entry_date=as_of, posted_date=as_of, category_id=ews.system_category_id(db, "balance_adjustment"),
+                            description=f"期初對齊 {as_of.isoformat()}", source=STATEMENT_SOURCE, needs_review=True)
+        db.add(entry)
+        db.flush()
+        for sid in locked:
+            db.get(AccountStatement, sid).needs_recheck = True
+        effect.created_entry_ids = [entry.id]
+        effect.inverse = {"created_entry_id": entry.id, "statement_ids": list(locked), "as_of": as_of.isoformat()}
+        audit.record(db, event="anchor_applied", actor=ctx.actor, statement_id=ctx.statement.id, case_id=ctx.case.id,
+                     action_id=None, run_id=ctx.run_id, request_id=ctx.request_id,
+                     detail={"account_id": account_id, "as_of": as_of.isoformat(), "statements": list(locked)})
+
+    def revert_lock_targets(self, ctx: Context, action: ReconciliationAction) -> LockSet:
+        recorded = tuple(action.inverse.get("statement_ids") or ())
+        return LockSet(account_lock=True, barrier=True,
+                       statement_ids=tuple(sorted(set(recorded) | set(live_bank_statement_ids(ctx.db, ctx.statement.account_id)))))
+
+    def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
+        self.check_before_locks(ctx, None)
+        locked = tuple(ctx.lock_set.statement_ids) if ctx.lock_set else ()
+        self._verify_targets(ctx, locked, recorded=tuple(action.inverse.get("statement_ids") or ()))
+        entry_id = action.inverse["created_entry_id"]
+        if ctx.db.get(LedgerEntry, entry_id) is None:
+            raise NotRevertable(f"entry {entry_id} is gone")
+        as_of = date.fromisoformat(action.inverse["as_of"])
+        if ctx.db.scalar(select(exists().where(
+                LedgerEntry.account_id == ctx.statement.account_id, LedgerEntry.kind == "balance_adjustment",
+                LedgerEntry.posted_date >= as_of, LedgerEntry.id != entry_id))):
+            raise _refuse("action", "closing_adjustments_present", "revert or delete the account's closing adjustments first")
+        ews.delete_entries_cascade(ctx.db, [entry_id])
+        for sid in locked:
+            ctx.db.get(AccountStatement, sid).needs_recheck = True
+        return Effect(deleted_entry_ids=[entry_id])
+
+
 register(MoveAccountAction())
 register(SplitEntryAction())
 register(BalanceAdjustmentAsOfAction())
+register(AnchorOpeningAction())

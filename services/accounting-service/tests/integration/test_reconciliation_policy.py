@@ -6,6 +6,7 @@ reconcile / revision / sweep routes running it after their commit. Synthetic dat
 import queue
 import threading
 from datetime import date
+from functools import partial
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -21,8 +22,9 @@ from app.models import (
 from app.schemas.reconciliation import ProposalIn
 from app.services import entry_write_service as ews
 from app.services.errors import CodedConflictError
-from app.services import policy_service, proposal_service, settings_service
+from app.services import coverage_service, policy_service, proposal_service, settings_service
 from app.services import reconciliation_service as rec
+from app.services import reconciliation_actions as registry
 from app.services.policy_service import PolicyResult
 from app.services.reconciliation_actions import audit, engine
 from tests.helpers import race, wait_until_blocked
@@ -39,6 +41,7 @@ DAY = date(2026, 9, 3)
 TODAY = date(2026, 10, 12)
 MONTH = date(2026, 10, 1)
 SYSTEM_ON = {"enabled": True, "actions": {"create_system_entry": {"enabled": True}}}
+ANCHOR_ON = {"enabled": True, "actions": {"anchor_opening": {"enabled": True, "max_amount": "200000"}}}
 POLICY_EVENTS = ("policy_applied", "policy_proposed", "policy_skipped")
 
 
@@ -526,6 +529,20 @@ def test_two_admissible_representations_skip_the_agent_match(ambiguous, db_sessi
     assert _budget(db_session) is None or _budget(db_session).used_count == 0
 
 
+def test_preview_labels_an_agent_proposal_over_its_cap_as_a_skip(ambiguous, db_session):
+    # R6b.7: the skip:<code> label through a real preview, and run_policy agrees (the agent's proposal stays pending)
+    s = ambiguous
+    _set_policy(db_session, {**MATCH_ON, "actions": {"match": {"enabled": True, "max_amount": "100"}}})
+    s.second.amount = Decimal("-581")
+    db_session.commit()
+    statement = db_session.get(AccountStatement, s.stmt.id)
+    decisions = policy_service.preview(db_session, statement, settings_service.reconciliation_policy(db_session))
+    assert [(c.action, c.proposal_id, d) for c, d in decisions] == [("match", s.proposal.id, "skip:cap_exceeded")]
+    result = policy_service.run_policy(db_session, s.stmt.id)
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"cap_exceeded": 1})
+    assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "pending"
+
+
 # --- routes -------------------------------------------------------------------------------------------------------
 
 def test_reconcile_route_reports_policy_counts(client, seed, db_session, run):
@@ -612,6 +629,45 @@ def test_sweep_route_runs_policy_per_statement(client, seed, db_session, run):
     assert response.status_code == 200, response.text
     (row,) = _actions(db_session)
     assert (row.actor, row.run_id) == ("policy", worker_run.id)
+
+
+def test_sweep_route_picks_up_a_clean_statement_with_a_creation_deleted_before_the_watermark(
+        client, seed, db_session, run, dirty_on, monkeypatch):
+    # PR #76 review S1: a pre-R6b deletion already swept (watermark past the delete event) and reconciled
+    # (needs_recheck cleared) has no pending event; the pending selection must still list the statement so the first
+    # daily sweep runs the catch-up retirement (spec §6 I2 / R6b.0)
+    s = _fee_statement(seed, db_session, run)
+    row, _ = engine.apply_action(db_session, case_id=s.cases[0].id, action="create_system_entry", params={"kind": "fee"},
+                                 actor="owner", label="t")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    assert rec.pending_statement_ids(db_session) == []  # an applied creation whose entry exists is not stranded
+    (entry_id,) = row.created_entry_ids
+    db_session.delete(db_session.get(LedgerEntry, entry_id))
+    db_session.commit()
+    with monkeypatch.context() as m:  # the pre-R6b sweep: the line is released, nothing is retired
+        m.setattr(coverage_service, "_retire_creations", lambda *args: None)
+        m.setattr(coverage_service, "_retire_stranded_creations", lambda *args: None)
+        rec.reconcile(db_session, s.stmt.id)
+        db_session.commit()
+    db_session.expire_all()
+    statement = db_session.get(AccountStatement, s.stmt.id)
+    last_event = db_session.execute(text("SELECT max(id) FROM coverage_dirty")).scalar_one()
+    assert statement.needs_recheck is False and statement.swept_through_event_id == last_event
+    assert db_session.get(ReconciliationAction, row.id).status == "applied"
+    assert coverage_service.sweep_pending(db_session) == [s.stmt.id]
+    assert rec.pending_statement_ids(db_session) == [s.stmt.id]
+    worker_run, token = run
+
+    response = client.post("/reconciliation/sweep", headers=W, json={"run_id": worker_run.id, "lease_token": token})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["statements"] == 1 and response.json()["errors"] == []
+    db_session.expire_all()
+    retired = db_session.get(ReconciliationAction, row.id)
+    assert retired.status == "reverted" and retired.inverse["deleted_before_watermark"] is True
+    assert coverage_service.sweep_pending(db_session) == [] and rec.pending_statement_ids(db_session) == []
 
 
 def test_attach_fee_candidate_is_recomputed_under_the_lock(seed, db_session, run):
@@ -739,3 +795,457 @@ def test_a_superseded_agent_proposal_is_marked_and_skipped_once(ambiguous, db_se
     assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "superseded"
     (skipped,) = _audit(db_session, "policy_skipped")
     assert skipped.detail["code"] == "proposal_superseded"
+
+
+# --- R6b.1 backfill_entry ---------------------------------------------------------------------------------------
+
+BACKFILL_ON = {"enabled": True, "actions": {"backfill_entry": {"enabled": True, "max_amount": "5000"}}}
+
+
+def _purchase_statement(seed, db, run, name="卡", **card):
+    account = _card(seed, db, name, **card)
+    stmt, (line,), _ = _submit(db, run, account, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db, stmt.id, "open")
+    return SimpleNamespace(card=account, stmt=stmt, line=line, case=case)
+
+
+def test_policy_backfills_after_the_grace_and_not_before(seed, db_session, run, today):
+    s = _purchase_statement(seed, db_session, run)
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 14})
+    assert policy_service.run_policy(db_session, s.stmt.id).applied == [] and _booked(db_session) == []
+    before_grace = policy_service.run_policy(db_session, s.stmt.id)  # inside the grace the line is not a candidate
+    assert (before_grace.applied, before_grace.proposed, before_grace.skipped) == ([], [], {})
+    assert _booked(db_session) == [] and _actions(db_session) == [] and _proposals(db_session) == []
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 10})
+    result = policy_service.run_policy(db_session, s.stmt.id)
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and row.action == "backfill_entry" and row.params == {"kind": "expense"}
+    (entry,) = _booked(db_session)
+    assert entry.kind == "expense" and entry.needs_review is True
+
+
+def test_policy_backfill_respects_the_account_list_and_caps(seed, db_session, run):
+    s = _purchase_statement(seed, db_session, run)
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0, "backfill_accounts": [s.card.id + 1000]})
+    assert policy_service.run_policy(db_session, s.stmt.id).applied == []
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0, "backfill_accounts": [s.card.id],
+                             "actions": {"backfill_entry": {"enabled": True, "max_amount": "100"}}})
+    result = policy_service.run_policy(db_session, s.stmt.id)
+    (p,) = _proposals(db_session, status="pending")
+    assert result.proposed == [p.id] and p.action == "backfill_entry" and p.params == {"kind": "expense"}
+    row, _ = proposal_service.apply_proposal(db_session, proposal_id=p.id, label="owner-test", request_id=None)
+    db_session.commit()
+    assert row.status == "applied" and len(_booked(db_session)) == 1
+
+
+def _sweep(db, stmt):
+    db.expire_all()
+    stmt = db.get(AccountStatement, stmt.id)
+    with db.begin_nested():
+        rec._lock_statement(db, stmt.id)
+        coverage_service.sweep(db, stmt, run_id=None, barrier_wait=False)
+    db.commit()
+
+
+def test_policy_never_backfills_unknown_needs_peer_or_owner_deleted_lines(seed, db_session, run, dirty_on):
+    account = _card(seed, db_session)
+    stmt, lines, _ = _submit(db_session, run, account, [_line(1, DAY, "??", 10, "unknown"), _line(2, DAY, "繳款", -20000, "payment"),
+                                                        _line(3, DAY, "全聯", 580)])
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0})
+    result = policy_service.run_policy(db_session, stmt.id)
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and row.event_id == lines[2].event_id
+    (case,) = [c for c in _cases(db_session, stmt.id, "resolved")]
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    db_session.commit()
+    _sweep(db_session, stmt)
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert policy_service.run_policy(db_session, stmt.id).applied == []
+
+
+def test_policy_skips_an_owner_deleted_fee_line_but_the_owner_may_rebook_it(seed, db_session, run, dirty_on):
+    s = _fee_statement(seed, db_session, run)
+    _set_policy(db_session, SYSTEM_ON)
+    (row_id,) = policy_service.run_policy(db_session, s.stmt.id).applied
+    row = db_session.get(ReconciliationAction, row_id)
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    db_session.commit()
+    _sweep(db_session, s.stmt)
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = _cases(db_session, s.stmt.id, "open")
+    assert case.context["hint"] == "bank_only" and case.context["owner_deleted"] is True
+    for _ in range(2):
+        assert policy_service.run_policy(db_session, s.stmt.id).applied == []
+        rec.reconcile(db_session, s.stmt.id)
+        db_session.commit()
+    (case,) = _cases(db_session, s.stmt.id, "open")
+    assert "create_system_entry" in registry.allowed(case)
+    engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"}, actor="owner", label="t")
+    db_session.commit()
+    assert len(_booked(db_session)) == 1
+
+
+def test_policy_refuses_a_candidate_whose_creation_the_owner_made_and_deleted_since_the_collect(seed, db_session, run, dirty_on):
+    s = _fee_statement(seed, db_session, run)
+    _set_policy(db_session, SYSTEM_ON)
+    (case,) = _cases(db_session, s.stmt.id, "open")
+    cand = policy_service._system_entry_candidate(db_session, case, s.stmt)
+    assert cand is not None
+    engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params=cand.params, actor="owner", label="t")
+    db_session.commit()
+    (row,) = _actions(db_session)
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    db_session.commit()
+    _sweep(db_session, s.stmt)  # not reconcile: the reopened case keeps its old context
+    (reopened,) = _cases(db_session, s.stmt.id, "open")
+    assert "owner_deleted" not in (reopened.context or {})
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=reopened.id, action="create_system_entry", params=cand.params, actor="policy",
+                            label="policy", budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert _booked(db_session) == []
+
+
+@pytest.mark.parametrize("action, lines, params", [
+    ("create_system_entry", [_line(1, DAY, "年費", 1200, "fee")], {"kind": "fee"}),
+    ("backfill_entry", [_line(1, DAY, "全聯", 580)], {"kind": "expense"})])
+def test_policy_never_proposes_rebooking_an_owner_deleted_line(seed, db_session, run, dirty_on, action, lines, params):
+    # final review I3: the sweep reopened the case with its old context (no owner_deleted key yet); over max_amount
+    # the candidate would have become a policy proposal. collect_candidates drops it: no apply, no proposal, no preview.
+    card = _card(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, card, lines)
+    (case,) = _cases(db_session, stmt.id, "open")
+    row, _ = engine.apply_action(db_session, case_id=case.id, action=action, params=params, actor="owner", label="t")
+    db_session.commit()
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    db_session.commit()
+    _sweep(db_session, stmt)
+    (reopened,) = _cases(db_session, stmt.id, "open")
+    assert "owner_deleted" not in (reopened.context or {})
+    _set_policy(db_session, {"enabled": True, "backfill_grace_days": 0,
+                             "actions": {action: {"enabled": True, "max_amount": "100"}}})
+    live = settings_service.reconciliation_policy(db_session)
+    statement = db_session.get(AccountStatement, stmt.id)
+    assert policy_service.collect_candidates(db_session, statement, live) == []
+    assert policy_service.preview(db_session, statement, live) == []
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], []) and _proposals(db_session) == []
+    assert _booked(db_session) == []
+
+
+# --- anchor_opening (R6b.2) ---------------------------------------------------------------------------------------
+
+def test_policy_anchors_once_per_account_and_proposes_over_the_cap(seed, db_session, run, dirty_on):
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, ANCHOR_ON)
+    result = policy_service.run_policy(db_session, stmt.id)
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and row.action == "anchor_opening" and row.after["policy_budget"]["amount"] == "600"
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert policy_service.run_policy(db_session, stmt.id).applied == []  # already anchored → not a candidate
+    bank2 = seed.account("銀行2", opening="0", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    stmt2, _, _ = _submit(db_session, run, bank2, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("300000"))
+    result = policy_service.run_policy(db_session, stmt2.id)
+    (p,) = _proposals(db_session, status="pending")
+    assert result.proposed == [p.id] and p.action == "anchor_opening"
+
+
+def _adjustments(db):
+    return [e for e in _booked(db) if e.kind == "balance_adjustment"]
+
+
+AUG = (date(2026, 8, 1), date(2026, 8, 31))
+
+
+def _case_dump():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("r6_case_dump", Path(__file__).parents[2] / "scripts" / "r6_case_dump.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_anchor_is_idempotent_on_rerun_and_after_an_earlier_statement_is_added(seed, db_session, run, dirty_on):
+    # spec R6b.8 / final review C1: September arrives first and is anchored by the policy (it starts within the
+    # account's first live month: live from 8/15); August arrives later with a deposit and a fee the ledger lacks.
+    # The anchor (dated 8/31) already absorbed both, so the policy neither re-anchors nor books the August lines.
+    from app.services.reconciliation_actions import structural_actions as sa
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 8, 15))
+    db_session.commit()
+    sep, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1590"))
+    _set_policy(db_session, {"enabled": True, "backfill_grace_days": 0,
+                             "actions": {"anchor_opening": {"enabled": True, "max_amount": "200000"},
+                                         "backfill_entry": {"enabled": True, "max_amount": "5000"},
+                                         "create_system_entry": {"enabled": True}}})
+    for _ in range(2):  # run 1 anchors (and flags the statement), run 2 backfills the September deposit
+        policy_service.run_policy(db_session, sep.id)
+        rec.reconcile(db_session, sep.id)
+        db_session.commit()
+    (anchor,) = [a for a in _actions(db_session) if a.action == "anchor_opening"]
+    assert anchor.inverse["as_of"] == "2026-08-31" and anchor.after["policy_budget"]["amount"] == "590"
+    assert sa.anchor_as_of(db_session, bank.id) == date(2026, 8, 31)
+    assert sorted(a.action for a in _actions(db_session)) == ["anchor_opening", "backfill_entry"]
+    assert [c for c in _cases(db_session, sep.id, "open") if c.kind == "balance_gap"] == []
+    assert policy_service.run_policy(db_session, sep.id).applied == []  # rerun: idempotent
+    booked = [e.id for e in _booked(db_session)]
+    assert _case_dump()._policy_section(db_session, [db_session.get(AccountStatement, sep.id)])["anchor_above_earlier_statement"] == []
+
+    aug, (deposit, fee), _ = _submit(db_session, run, bank, [_line(1, date(2026, 8, 5), "存入", 100, "deposit"),
+                                                             _line(2, date(2026, 8, 20), "手續費", -10, "fee")],
+                                     kind="bank", period=AUG, opening=Decimal("1500"))
+    assert sa.anchor_target(db_session, bank.id).id == aug.id  # August is now the earliest opening balance
+    aug_cases = {c.line_id: c for c in _cases(db_session, aug.id, "open") if c.kind == "line_unmatched"}
+    assert set(aug_cases) == {deposit.id, fee.id} and aug_cases[fee.id].context["hint"] == "bank_only"
+    statement = db_session.get(AccountStatement, aug.id)
+    assert policy_service.collect_candidates(db_session, statement, settings_service.reconciliation_policy(db_session)) == []
+    result = policy_service.run_policy(db_session, aug.id)
+    assert (result.applied, result.proposed) == ([], [])
+    for sid in (aug.id, sep.id):
+        rec.reconcile(db_session, sid)
+        db_session.commit()
+    assert [e.id for e in _booked(db_session)] == booked  # no re-anchor, no backfill, no system entry below as_of
+    assert len([a for a in _actions(db_session) if a.action == "anchor_opening"]) == 1
+    assert {c.line_id for c in _cases(db_session, aug.id, "open") if c.kind == "line_unmatched"} == {deposit.id, fee.id}
+    # the anchor dated 8/31 carries August's own movement: both months balance at their end, so no gap is opened
+    assert [c for c in _cases(db_session, aug.id, "open") if c.kind == "balance_gap"] == []
+    assert [c for c in _cases(db_session, sep.id, "open") if c.kind == "balance_gap"] == []
+    statements = [db_session.get(AccountStatement, sid) for sid in (aug.id, sep.id)]
+    section = _case_dump()._policy_section(db_session, statements)
+    assert section["anchor_above_earlier_statement"] == [bank.id]
+    # the owner may still book the absorbed deposit; the absorbed amount then shows as the August gap
+    engine.apply_action(db_session, case_id=aug_cases[deposit.id].id, action="backfill_entry", params={"kind": "income"},
+                        actor="owner", label="t")
+    db_session.commit()
+    rec.reconcile(db_session, aug.id)
+    db_session.commit()
+    (gap,) = [c for c in _cases(db_session, aug.id, "open") if c.kind == "balance_gap"]
+    assert Decimal(gap.context["gap"]) == Decimal("-100")
+
+
+def test_a_backfill_collected_before_an_anchor_is_refused_under_the_lock(seed, db_session, run, dirty_on):
+    # August has no opening balance, so September is the anchor target (as_of 8/31); the policy collected August's
+    # deposit before the owner anchored: under the lock the candidate is now absorbed by the anchor (C1)
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 8, 1))
+    db_session.commit()
+    aug, (deposit,), _ = _submit(db_session, run, bank, [_line(1, date(2026, 8, 5), "存入", 100, "deposit")], kind="bank",
+                                 period=AUG, opening=Decimal("1500"))
+    db_session.get(AccountStatement, aug.id).opening_balance = None
+    db_session.commit()
+    sep, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0})
+    (case,) = [c for c in _cases(db_session, aug.id, "open") if c.line_id == deposit.id]
+    cand = policy_service._backfill_candidate(db_session, case, db_session.get(AccountStatement, aug.id))
+    assert cand is not None and cand.action == "backfill_entry"
+    (gap,) = [c for c in _cases(db_session, sep.id, "open") if c.kind == "balance_gap"]
+    engine.apply_action(db_session, case_id=gap.id, action="anchor_opening", params={}, actor="owner", label="t")
+    db_session.commit()
+    rec.reconcile(db_session, aug.id)  # discharges the anchor's needs_recheck flag; the line case is kept as is
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, aug.id, "open") if c.line_id == deposit.id]
+    assert case.id == cand.case_id
+    assert policy_service._backfill_candidate(db_session, case, db_session.get(AccountStatement, aug.id)) is None
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params=cand.params, actor="policy",
+                            label="policy", budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert [e.kind for e in _booked(db_session)] == ["balance_adjustment"]
+
+
+@pytest.mark.parametrize("live_from", [date(2026, 8, 1), date(2026, 7, 1)])
+def test_the_policy_anchors_only_the_first_live_month_but_the_owner_may_anchor_later_ones(seed, db_session, run, dirty_on, live_from):
+    # the September statement is not the first live month (live from 8/1: August is; 9/1 is a calendar month later)
+    bank = seed.account("銀行", opening="1000", statement_live_from=live_from)
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, ANCHOR_ON)
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    statement = db_session.get(AccountStatement, stmt.id)
+    assert policy_service._anchor_candidate(db_session, case, statement) is None
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], []) and _actions(db_session) == []
+    assert "anchor_opening" in registry.allowed(case)
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="anchor_opening", params={}, actor="owner", label="t")
+    db_session.commit()
+    assert row.status == "applied" and len(_adjustments(db_session)) == 1
+
+
+def test_the_policy_does_not_anchor_past_an_earlier_live_statement_without_an_opening_balance(seed, db_session, run, dirty_on):
+    # M1 (final re-review): live from 8/15 → August is live but carries no opening balance, so September is the
+    # anchor target; the calendar bound alone admits it, the earlier-statement bound refuses it (the owner may)
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 8, 15))
+    db_session.commit()
+    aug, _, _ = _submit(db_session, run, bank, [_line(1, date(2026, 8, 20), "存入", 100, "deposit")], kind="bank",
+                        period=(date(2026, 8, 1), date(2026, 8, 31)), opening=Decimal("1000"))
+    db_session.get(AccountStatement, aug.id).opening_balance = None
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    from app.services.reconciliation_actions import structural_actions as sa
+    assert sa.anchor_target(db_session, bank.id).id == stmt.id
+    assert policy_service._anchor_gate(db_session, bank.id) is False
+    _set_policy(db_session, ANCHOR_ON)
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], []) and _actions(db_session) == []
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    assert "anchor_opening" in registry.allowed(case)
+
+
+@pytest.mark.parametrize("live_from", [None, date(2026, 9, 1), date(2026, 9, 20), date(2026, 8, 2)])
+def test_the_policy_anchors_a_target_in_the_first_live_month(live_from):
+    target = SimpleNamespace(period_start=date(2026, 9, 1))
+    assert policy_service._first_live_month(target, SimpleNamespace(statement_live_from=live_from)) is True
+
+
+@pytest.mark.parametrize("live_from", [date(2026, 8, 1), date(2026, 7, 31), date(2026, 6, 1)])
+def test_the_policy_does_not_anchor_a_target_after_the_first_live_month(live_from):
+    target = SimpleNamespace(period_start=date(2026, 9, 1))
+    assert policy_service._first_live_month(target, SimpleNamespace(statement_live_from=live_from)) is False
+
+
+def test_policy_skips_statements_flagged_by_the_anchor_until_reconciled(seed, db_session, run, dirty_on):
+    # run 1 (anchor only): the anchor applies and flags the statement needs_recheck. Run 2 (system entries now on)
+    # is skipped (statement_excluded: needs_recheck) until a reconcile clears the flag; run 3 books the fee.
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "年費", -50, "fee")], kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, ANCHOR_ON)
+    first = policy_service.run_policy(db_session, stmt.id)
+    assert [a.action for a in _actions(db_session)] == ["anchor_opening"] and len(first.applied) == 1
+    db_session.expire_all()
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is True
+    _set_policy(db_session, {**ANCHOR_ON, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
+    # S1: while flagged, run_policy returns an EMPTY result (policy_service.py:457-458), and nothing changes
+    second = policy_service.run_policy(db_session, stmt.id)
+    assert (second.applied, second.proposed, second.skipped) == ([], [], {})
+    assert len(_actions(db_session)) == 1 and len(_booked(db_session)) == 1 and len(_adjustments(db_session)) == 1
+    rec.reconcile(db_session, stmt.id)  # only a completed reconcile discharges the flag
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
+    third = policy_service.run_policy(db_session, stmt.id)
+    assert len(third.applied) == 1 and _actions(db_session)[-1].action == "create_system_entry"
+    assert len(_booked(db_session)) == 2 and len(_adjustments(db_session)) == 1
+
+
+# --- R6b.5 replace_stand_in ---------------------------------------------------------------------------------------
+
+def test_policy_replaces_a_stand_in_with_zero_budget_and_counts_toward_the_statement_cap(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    # two lines from the start, so the cap half has a second line/stand-in/owner triple on the same statement
+    stmt, (line, second), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "家樂福", 320)])
+    for case in _cases(db_session, stmt.id, "open"):
+        engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+        db_session.commit()
+    owner = seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    _set_policy(db_session, {"enabled": True})  # replace_stand_in is enabled by default
+    result = policy_service.run_policy(db_session, stmt.id)
+    (row,) = [a for a in _actions(db_session) if a.action == "replace_stand_in"]
+    assert result.applied == [row.id] and row.after["policy_budget"]["amount"] == "0.0000"
+    assert _budget(db_session).used_amount == Decimal("0") and _budget(db_session).used_count == 1
+    assert [c.entry_id for c in _active(db_session, stmt.id) if c.line_id == line.id] == [owner.id]
+    _set_policy(db_session, {"enabled": True, "per_statement_count": 1})
+    # a second replacement on the same statement would exceed the count cap → proposal
+    owner2 = seed.entry(card, "-320", day=DAY, merchant="家樂福")
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    result = policy_service.run_policy(db_session, stmt.id)
+    (p,) = _proposals(db_session, status="pending")
+    assert result.applied == [] and result.proposed == [p.id] and p.action == "replace_stand_in" and p.params == {}
+    applied, _ = proposal_service.apply_proposal(db_session, proposal_id=p.id, label="owner-test", request_id=None)
+    db_session.commit()
+    assert applied.status == "applied" and applied.actor == "owner"
+    assert len([a for a in _actions(db_session) if a.action == "replace_stand_in"]) == 2
+    assert [c.line_id for c in _active(db_session, stmt.id) if c.entry_id in {e.id for e in _booked(db_session)}] == []
+    assert [c.entry_id for c in _active(db_session, stmt.id) if c.line_id == second.id] == [owner2.id]
+    assert sorted(c.entry_id for c in _active(db_session, stmt.id)) == sorted([owner.id, owner2.id])
+
+
+@pytest.mark.parametrize("owner_day, outcome", [(date(2026, 11, 1), "applied"), (date(2026, 11, 2), "proposed"),
+                                                (date(2026, 11, 5), "proposed")])
+def test_the_policy_applies_only_exact_window_shadows_and_proposes_the_drifted_ones(seed, db_session, run, dirty_on, today,
+                                                                                   owner_day, outcome):
+    # final review C2: October's 2000 ATM line was backfilled after the grace; the owner then records an equal ATM
+    # withdrawal in November. Within exact_window_days (3) of the line the policy replaces the stand-in; farther (up
+    # to the drift window) it only proposes (date_drift) and the owner decides from the case.
+    today(date(2026, 11, 20))
+    bank = seed.account("銀行", opening="10000", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    oct_, (atm,), _ = _submit(db_session, run, bank, [_line(1, date(2026, 10, 29), "ATM", -2000, "withdrawal")], kind="bank",
+                              period=(date(2026, 10, 1), date(2026, 10, 31)), opening=Decimal("10000"))
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 14})
+    (backfill_id,) = policy_service.run_policy(db_session, oct_.id).applied
+    rec.reconcile(db_session, oct_.id)
+    db_session.commit()
+    stand_in_id = db_session.get(ReconciliationAction, backfill_id).created_entry_ids[0]
+    assert [c for c in _cases(db_session, oct_.id, "open") if c.kind == "balance_gap"] == []
+    owner = seed.entry(bank, "-2000", day=owner_day, merchant="ATM")
+    db_session.commit()
+    rec.reconcile(db_session, oct_.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, oct_.id, "open") if c.kind == "entry_unmatched"]
+    drift = (owner_day - atm.posted_date).days
+    assert case.entry_id == owner.id and case.context["hint"] == "shadowed_by_stand_in" and case.context["drift_days"] == drift
+    statement = db_session.get(AccountStatement, oct_.id)
+    (decision,) = [d for c, d in policy_service.preview(db_session, statement, settings_service.reconciliation_policy(db_session))
+                   if c.action == "replace_stand_in"]
+    result = policy_service.run_policy(db_session, oct_.id)
+    if outcome == "applied":
+        assert decision == "apply"
+        (row,) = [a for a in _actions(db_session) if a.action == "replace_stand_in"]
+        assert result.applied == [row.id] and result.proposed == []
+        assert db_session.get(LedgerEntry, stand_in_id) is None
+        assert [c.entry_id for c in _active(db_session, oct_.id)] == [owner.id]
+        return
+    assert decision == "propose:date_drift"
+    (p,) = _proposals(db_session, status="pending")
+    assert result.applied == [] and result.proposed == [p.id] and p.action == "replace_stand_in"
+    assert p.rationale == "policy: date_drift"
+    assert db_session.get(LedgerEntry, stand_in_id) is not None and db_session.get(LedgerEntry, owner.id) is not None
+    assert [c.entry_id for c in _active(db_session, oct_.id)] == [stand_in_id]
+    rec.reconcile(db_session, oct_.id)
+    db_session.commit()
+    assert [c for c in _cases(db_session, oct_.id, "open") if c.kind == "balance_gap"] == []  # October unchanged
+    assert policy_service.run_policy(db_session, oct_.id).applied == []  # the proposed case is not re-collected
+    (case,) = [c for c in _cases(db_session, oct_.id, "open", "proposed") if c.kind == "entry_unmatched"]
+    assert "replace_stand_in" in registry.allowed(case)
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+    db_session.commit()
+    assert row.status == "applied" and db_session.get(LedgerEntry, stand_in_id) is None
+    assert [c.entry_id for c in _active(db_session, oct_.id)] == [owner.id]
+
+
+def test_a_shadow_that_drifted_since_the_collect_is_refused_under_the_lock(seed, db_session, run, dirty_on):
+    # the owner entry sits after the period (10/1, 2 days from the 9/29 line): moving it to 10/10 stays outside the
+    # period, so no recheck is raised and the case keeps its collected drift_days; the lock re-measures the distance
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 29), "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+    db_session.commit()
+    owner = seed.entry(card, "-580", day=date(2026, 10, 1), merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    _set_policy(db_session, {"enabled": True})
+    statement, cand = _only_candidate(db_session, stmt.id)
+    assert cand.action == "replace_stand_in" and cand.evidence["drift_days"] == 2
+    owner.posted_date = owner.entry_date = date(2026, 10, 10)  # 11 days from the line now, still outside the period
+    db_session.commit()
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=cand.case_id, action="replace_stand_in", params={}, actor="policy", label="policy",
+                            budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert [a.action for a in _actions(db_session)] == ["backfill_entry"]

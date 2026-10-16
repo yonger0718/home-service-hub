@@ -13,17 +13,19 @@ from sqlalchemy import select, text, update
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
-    DIRTY_BARRIER_KEY, CoverageDirty, EntryGroup, EntryRewardRule, LedgerEntry, ReconciliationAction,
+    DIRTY_BARRIER_KEY, AccountStatement, CoverageDirty, EntryGroup, EntryRewardRule, LedgerEntry, ReconciliationAction,
     ReconciliationCase,
 )
 from app.services import coverage_service as cov
 from app.services import entry_write_service as ews
-from app.services import ledger_service
+from app.services import ledger_service, policy_service
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ValidationError
+from app.services import reconciliation_actions as registry
 from app.services.reconciliation_actions import engine, snapshots
 from app.services.reconciliation_actions import structural_actions as structural
-from tests.helpers import wait_until_blocked
+from tests.helpers import set_dirty, wait_until_blocked
+from tests.integration.test_reconciliation_policy import ANCHOR_ON, _budget, _set_policy
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _line, _submit, run,
 )
@@ -575,3 +577,146 @@ def test_the_action_barrier_waits_for_a_writer_that_started_after_its_sweep(dirt
     assert "row" in out, out
     (adj,) = _adjustments(db_session)
     assert adj.amount == Decimal("60")  # 100 printed − W's committed 40, not the 10 it replaced
+
+
+# --- anchor_opening (R6b.2) ---------------------------------------------------------------------------------------
+
+@pytest.fixture
+def anchored_bank(seed, db_session, run, dirty_on):
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 8, 1))
+    db_session.commit()
+    aug, _, _ = _submit(db_session, run, bank, [_line(1, date(2026, 8, 5), "存入", 100, "deposit")], kind="bank",
+                        period=(date(2026, 8, 1), date(2026, 8, 31)), opening=Decimal("1500"))
+    sep, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    cases = {c.statement_id: c for c in db_session.execute(select(ReconciliationCase).where(
+        ReconciliationCase.kind == "balance_gap", ReconciliationCase.status == "open")).scalars()}
+    return SimpleNamespace(bank=bank, aug=aug, sep=sep, cases=cases)
+
+
+def test_anchor_books_the_opening_delta_before_the_first_live_period_and_flags_every_statement(anchored_bank, db_session, monkeypatch):
+    a = anchored_bank
+    row, _ = _apply(db_session, a.cases[a.sep.id], "anchor_opening", {})  # any balance_gap case of the account
+    (adj,) = _adjustments(db_session)
+    assert adj.posted_date == date(2026, 7, 31) and adj.entry_date == date(2026, 7, 31)
+    assert adj.amount == Decimal("500") and adj.description == "期初對齊 2026-07-31" and adj.needs_review is True
+    assert ledger_service.account_balance(db_session, a.bank.id, as_of=date(2026, 7, 31)) == Decimal("1500")
+    db_session.expire_all()
+    assert all(db_session.get(AccountStatement, sid).needs_recheck for sid in (a.aug.id, a.sep.id))
+    assert sorted(row.inverse["statement_ids"]) == sorted([a.aug.id, a.sep.id])
+    # the action table hides the anchor on an anchored account (CONDITIONS); with the condition lifted the action's own guard refuses
+    exc = _refuse(db_session, lambda: _apply(db_session, a.cases[a.aug.id], "anchor_opening", {}))
+    assert isinstance(exc, ValidationError) and _code(exc) is None and str(exc) == "action: not allowed for this case"
+    monkeypatch.delitem(registry.CONDITIONS, ("balance_gap", "anchor_opening"))
+    assert _code(_refuse(db_session, lambda: _apply(db_session, a.cases[a.aug.id], "anchor_opening", {}))) == "already_anchored"
+
+
+def test_anchor_refuses_zero_delta_dirty_off_and_closing_adjustments(seed, db_session, run, dirty_on, anchored_bank):
+    a = anchored_bank
+    db_session.add(_income(a.bank, "500", day=date(2026, 7, 1)))
+    db_session.commit()
+    assert _code(_refuse(db_session, lambda: _apply(db_session, a.cases[a.sep.id], "anchor_opening", {}))) == "zero_delta"
+    db_session.add(LedgerEntry(account_id=a.bank.id, kind="balance_adjustment", amount=Decimal("1"), currency="TWD",
+                               entry_date=date(2026, 8, 31), posted_date=date(2026, 8, 31), source="statement",
+                               category_id=ews.system_category_id(db_session, "balance_adjustment")))
+    db_session.commit()
+    assert _code(_refuse(db_session, lambda: _apply(db_session, a.cases[a.sep.id], "anchor_opening", {}))) == "closing_adjustments_present"
+    set_dirty(db_session, False)
+    db_session.commit()
+    assert _code(_refuse(db_session, lambda: _apply(db_session, a.cases[a.sep.id], "anchor_opening", {}))) == "dirty_disabled"
+
+
+def test_anchor_revert_relocks_every_statement_and_flags_them_again(anchored_bank, db_session, run):
+    a = anchored_bank
+    row, _ = _apply(db_session, a.cases[a.sep.id], "anchor_opening", {})
+    for sid in (a.aug.id, a.sep.id):
+        rec.reconcile(db_session, sid)
+    db_session.commit()
+    _revert(db_session, row.id)
+    assert _adjustments(db_session) == []
+    db_session.expire_all()
+    assert all(db_session.get(AccountStatement, sid).needs_recheck for sid in (a.aug.id, a.sep.id))
+    _apply(db_session, [c for c in _cases(db_session, a.sep.id, "open") if c.kind == "balance_gap"][0], "anchor_opening", {})
+
+
+def test_anchor_refuses_when_the_statement_set_changed_between_discovery_and_lock(anchored_bank, db_session, run, monkeypatch):
+    a = anchored_bank
+    from app.services.reconciliation_actions import structural_actions as sa
+    real = sa.live_bank_statement_ids
+    calls = []
+
+    def grown(db, account_id):
+        calls.append(1)
+        ids = real(db, account_id)
+        return ids if len(calls) > 1 else ids[:-1]  # discovery saw one statement fewer than the locked read
+    monkeypatch.setattr(sa, "live_bank_statement_ids", grown)
+    assert _code(_refuse(db_session, lambda: _apply(db_session, a.cases[a.sep.id], "anchor_opening", {}))) == "targets_changed"
+
+
+def test_anchor_revert_refuses_with_dirty_off_or_a_changed_statement_set(anchored_bank, db_session, run, monkeypatch):
+    a = anchored_bank
+    row, _ = _apply(db_session, a.cases[a.sep.id], "anchor_opening", {})
+    set_dirty(db_session, False)
+    db_session.commit()
+    assert _code(_refuse(db_session, lambda: _revert(db_session, row.id))) == "dirty_disabled"
+    set_dirty(db_session, True)
+    db_session.commit()
+    from app.services.reconciliation_actions import structural_actions as sa
+    real = sa.live_bank_statement_ids
+    calls = []
+
+    def grown(db, account_id):  # the locked re-read sees a statement id the discovery did not (a new live statement)
+        calls.append(1)
+        ids = real(db, account_id)
+        return ids if len(calls) == 1 else ids + (ids[-1] + 1000,)
+    monkeypatch.setattr(sa, "live_bank_statement_ids", grown)
+    assert _code(_refuse(db_session, lambda: _revert(db_session, row.id))) == "targets_changed"
+    monkeypatch.undo()
+    _, _, _ = _submit(db_session, run, a.bank, [_line(1, date(2026, 10, 5), "存入", 100, "deposit")], kind="bank",
+                         period=(date(2026, 10, 1), date(2026, 10, 31)), opening=Decimal("1700"))
+    _revert(db_session, row.id)  # a statement added BEFORE the revert's discovery is in recorded ∪ current on both reads: not a change
+    assert _adjustments(db_session) == []
+
+
+def test_anchor_refuses_when_a_writer_changed_the_balance_between_precheck_and_barrier(seed, db_session, run, dirty_on, monkeypatch):
+    # M3: the policy reserves and charges |delta| before the account/barrier locks; a ledger write committed in
+    # between must not be booked under the charged amount. Simulated by a balance that differs on the second read.
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    from app.services import ledger_service as ls
+    real = ls.account_balance
+    reads = []
+
+    def drifting(db, account_id, as_of=None):
+        reads.append(as_of)
+        value = real(db, account_id, as_of=as_of)
+        return value + Decimal("50") if len(reads) >= 3 else value  # candidate read, precheck read, then the post-barrier read
+    monkeypatch.setattr(ls, "account_balance", drifting)
+    _set_policy(db_session, ANCHOR_ON)
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert result.applied == [] and result.skipped.get("amount_changed", 0) == 1
+    assert _adjustments(db_session) == [] and (_budget(db_session) is None or _budget(db_session).used_count == 0)
+
+
+def test_later_closing_adjustment_books_only_the_residual_after_the_anchor(anchored_bank, db_session, run):
+    a = anchored_bank
+    _apply(db_session, a.cases[a.sep.id], "anchor_opening", {})
+    rec.reconcile(db_session, a.sep.id)
+    db_session.commit()
+    gaps = [c for c in _cases(db_session, a.sep.id, "open") if c.kind == "balance_gap"]
+    assert gaps
+    _apply(db_session, gaps[0], "balance_adjustment_asof", {})
+    assert sum(x.amount for x in _adjustments(db_session)) == Decimal("500") + Decimal(gaps[0].context["gap"])
+
+
+def test_anchor_revert_refuses_while_a_later_closing_adjustment_exists(anchored_bank, db_session, run):
+    a = anchored_bank
+    anchor, _ = _apply(db_session, a.cases[a.sep.id], "anchor_opening", {})
+    rec.reconcile(db_session, a.sep.id)
+    db_session.commit()
+    (gap_case,) = [c for c in _cases(db_session, a.sep.id, "open") if c.kind == "balance_gap"]
+    closing, _ = _apply(db_session, gap_case, "balance_adjustment_asof", {})
+    assert _code(_refuse(db_session, lambda: _revert(db_session, anchor.id))) == "closing_adjustments_present"
+    _revert(db_session, closing.id)
+    _revert(db_session, anchor.id)
+    assert _adjustments(db_session) == []

@@ -9,7 +9,7 @@ from typing import Callable
 
 from sqlalchemy.orm import object_session
 
-from app.models import ReconciliationCase, StatementLine
+from app.models import AccountStatement, ReconciliationCase, StatementLine
 
 from .base import Action
 
@@ -20,12 +20,12 @@ COVERAGE_ACTIONS = frozenset({"match", "unmatch"})  # allowed on historical stat
 
 # The order is the order `allowed` lists them in.
 KIND_ACTIONS: dict[str, tuple[str, ...]] = {
-    "line_unmatched": ("match", "create_entry", "create_system_entry", "create_refund", "link_installment_plan",
+    "line_unmatched": ("match", "create_entry", "create_system_entry", "backfill_entry", "create_refund", "link_installment_plan",
                        "split_entry", "dismiss"),
     "ambiguous": ("match", "dismiss"),
     "amount_delta": ("match", "adjust_amount", "attach_fee", "split_entry", "dismiss"),
-    "entry_unmatched": ("defer_next_period", "move_account", "dismiss"),
-    "balance_gap": ("balance_adjustment_asof", "dismiss"),
+    "entry_unmatched": ("defer_next_period", "move_account", "replace_stand_in", "dismiss"),
+    "balance_gap": ("balance_adjustment_asof", "anchor_opening", "dismiss"),
     "duplicate_claim": ("unmatch", "dismiss"),
     "recheck": ("match", "unmatch", "dismiss"),
     "parse_review": ("dismiss",),  # resolved by a new revision; the owner may only dismiss it
@@ -60,12 +60,52 @@ def _names_an_entry(case: ReconciliationCase) -> bool:  # ruling 19: split on li
     return bool(case.candidates) or _context(case).get("entry_id") is not None
 
 
+PEER_HINT = "needs_peer"
+
+
+def _no_peer_hint(case: ReconciliationCase) -> bool:  # R6b: a transfer/payment line gets no single-leg entry
+    return _context(case).get("hint") != PEER_HINT
+
+
+STAND_IN_DELETED_HINT = "stand_in_deleted"
+
+
+def backfill_eligibility(case: ReconciliationCase) -> str | None:
+    """R6b.1 owner column: no hint (or the owner-deleted hint), no candidates, a line kind the map books."""
+    from app.services.reconciliation_actions.ledger_actions import backfill_kind  # local: ledger_actions imports this module
+    ctx = _context(case)
+    if ctx.get("hint") not in (None, STAND_IN_DELETED_HINT) or case.candidates:
+        return None
+    db = object_session(case)
+    statement = None if db is None else db.get(AccountStatement, case.statement_id)
+    kind = _line_kind(case)
+    return None if statement is None or kind is None else backfill_kind(statement.kind, kind)
+
+
+def _bank_statement(case: ReconciliationCase) -> bool:
+    db = object_session(case)
+    statement = None if db is None else db.get(AccountStatement, case.statement_id)
+    return statement is not None and statement.kind == "bank"
+
+
+def _anchored(case: ReconciliationCase) -> bool:
+    from app.services.reconciliation_actions import structural_actions  # local: it imports this package
+    db = object_session(case)
+    statement = None if db is None else db.get(AccountStatement, case.statement_id)
+    return statement is not None and structural_actions.anchor_applied(db, statement.account_id)
+
+
 CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
+    ("line_unmatched", "create_entry"): _no_peer_hint,
     ("line_unmatched", "create_system_entry"): _system_line,
+    ("line_unmatched", "backfill_entry"): lambda case: backfill_eligibility(case) is not None,
     ("line_unmatched", "create_refund"): _refund_line,
     ("line_unmatched", "link_installment_plan"): lambda case: _context(case).get("hint") == "installment_unmapped",
     ("line_unmatched", "split_entry"): _names_an_entry,
+    ("balance_gap", "anchor_opening"): lambda case: _bank_statement(case) and not _anchored(case),
     ("amount_delta", "attach_fee"): lambda case: _context(case).get("fee_matches") is True,
+    ("entry_unmatched", "replace_stand_in"):
+        lambda case: _context(case).get("hint") in ("shadowed_by_stand_in", "orphaned_stand_in"),
 }
 
 

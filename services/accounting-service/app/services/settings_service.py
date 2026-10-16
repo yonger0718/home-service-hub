@@ -112,13 +112,18 @@ def _warn_stale_rules(stored: dict, version: str, warned: list[str]) -> None:
                     key, stored[key], version)
 
 
-POLICY_VERSION_PREFIX = "r1c"
+POLICY_VERSION_PREFIX = "r6b"
 POLICY_DEFAULTS = {
     "enabled": False, "accept_agent_proposals": False, "per_statement_count": 5, "per_statement_total": "5000",
     "monthly_total": "20000",
+    "backfill_grace_days": 14,  # R6b.1: a line is backfilled only this many days after its statement's period end
+    "backfill_accounts": [],  # R6b.1: account ids the policy may backfill; empty = every account
     "actions": {"create_system_entry": {"enabled": False, "max_amount": "2000"},
                 "attach_fee": {"enabled": False, "max_amount": "500"},
-                "match": {"enabled": False, "max_amount": "0"}},
+                "match": {"enabled": False, "max_amount": "0"},
+                "backfill_entry": {"enabled": False, "max_amount": "5000"},
+                "anchor_opening": {"enabled": False, "max_amount": "200000"},
+                "replace_stand_in": {"enabled": True, "max_amount": "0"}},
     "per_currency_enabled": ["TWD"],
 }
 
@@ -211,7 +216,7 @@ def _check_amount(field: str, name: str, value) -> str:
 
 def _check_policy(policy) -> dict:
     """The agent-autonomy policy overrides, validated and returned as given (defaults are overlaid on read): unknown
-    keys are refused at every level, only the three action names are allowed."""
+    keys are refused at every level, only the action names in POLICY_DEFAULTS are allowed."""
     if not isinstance(policy, dict):
         raise ValidationError("policy", "must be an object")
     out = {}
@@ -226,6 +231,12 @@ def _check_policy(policy) -> dict:
                 raise ValidationError("policy", f"{key!r} must be an integer in 0..1000")
         elif key in ("per_statement_total", "monthly_total"):
             _check_amount("policy", key, value)
+        elif key == "backfill_grace_days":
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 365:
+                raise ValidationError("policy", f"{key!r} must be an integer in 0..365")
+        elif key == "backfill_accounts":
+            if not isinstance(value, list) or not all(isinstance(a, int) and not isinstance(a, bool) for a in value):
+                raise ValidationError("policy", f"{key!r} must be a list of account ids")
         elif key == "per_currency_enabled":
             if not isinstance(value, list) or not all(
                     isinstance(c, str) and len(c) == 3 and c.isascii() and c.isalpha() and c.isupper() for c in value):

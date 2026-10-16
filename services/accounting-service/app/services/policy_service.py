@@ -20,9 +20,10 @@ apply, proposal or skip audit, so a later failure never loses an earlier reserva
 called by routers after their own commit (`run_policy_safe` keeps a policy error from failing the caller)."""
 from __future__ import annotations
 
+import calendar
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import partial
 from typing import Iterable
@@ -32,11 +33,12 @@ from sqlalchemy.orm import Session
 
 from app import auth
 from app.models import (
-    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
+    Account, AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
     ReconciliationProposal, StatementLine,
 )
 from app.schemas.reconciliation import ProposalIn
-from app.services import coverage_service, ledger_service, proposal_service, settings_service
+from app.services import coverage_service, ledger_service, proposal_service, settings_service, stand_ins
+from app.services import reconciliation_actions as registry
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ConflictError, NotFoundError, ValidationError
 from app.services.reconciliation_actions import OPEN_STATUSES, audit, engine
@@ -76,6 +78,7 @@ class Candidate:
     amount: Decimal
     entry_id: int | None = None
     proposal_id: int | None = None
+    evidence: dict = field(default_factory=dict)  # R6b.5 replace_stand_in: the case evidence `_unchanged` re-checks
 
 
 @dataclass
@@ -109,13 +112,49 @@ def _fee_now(db: Session, case: ReconciliationCase, line: StatementLine | None) 
 
 # --- candidates ---------------------------------------------------------------------------------------------------
 
+def _absorbed_by_anchor(db: Session, statement: AccountStatement, line: StatementLine | None) -> bool:
+    """Final review C1: the account's applied anchor (`inverse.as_of`) already carries every missing entry dated on
+    or before its as_of, so an automatic builder must not book such a line again (the owner still may)."""
+    from app.services.reconciliation_actions import structural_actions as sa
+    if line is None:
+        return False
+    as_of = sa.anchor_as_of(db, statement.account_id)
+    return as_of is not None and line.posted_date <= as_of
+
+
+def _next_month(day: date) -> date:
+    year, month = (day.year + 1, 1) if day.month == 12 else (day.year, day.month + 1)
+    return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def _first_live_month(target, account) -> bool:
+    """Final review C1: the anchor target starts in the account's first live month — on or before
+    `statement_live_from`, or less than one calendar month after it (no live-from date: always)."""
+    live_from = account.statement_live_from
+    return live_from is None or target.period_start <= live_from or target.period_start < _next_month(live_from)
+
+
+def _anchor_gate(db: Session, account_id: int) -> bool:
+    """The POLICY anchors only a target in the first live month (`_first_live_month`) that no live bank statement of
+    the account precedes (an earlier live statement without an opening balance would be absorbed by the anchor);
+    an earlier live month still to be ingested is caught by the calendar bound. The owner may anchor any target."""
+    from app.services.reconciliation_actions import structural_actions as sa
+    target = sa.anchor_target(db, account_id)
+    if target is None or not _first_live_month(target, db.get(Account, account_id)):
+        return False
+    earlier = select(AccountStatement.id).where(
+        AccountStatement.account_id == account_id, AccountStatement.kind == "bank", AccountStatement.mode == "live",
+        AccountStatement.period_start < target.period_start)
+    return db.execute(earlier.limit(1)).first() is None
+
+
 def _system_entry_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
     """An open `line_unmatched` with the bank-only hint → book the line as its own fee/interest/reward entry."""
     context = case.context or {}
-    if case.kind != "line_unmatched" or context.get("hint") != "bank_only":
+    if case.kind != "line_unmatched" or context.get("hint") != "bank_only" or context.get("owner_deleted"):
         return None
     line = current_line(db, case, statement)
-    if line is None or line.line_kind not in SYSTEM_LINE_KINDS:
+    if line is None or line.line_kind not in SYSTEM_LINE_KINDS or _absorbed_by_anchor(db, statement, line):
         return None
     return Candidate(case.id, case.kind, case.status, "create_system_entry", {"kind": line.line_kind},
                      _money(line.flow_amount), entry_id=context.get("entry_id"))
@@ -134,7 +173,62 @@ def _attach_fee_candidate(db: Session, case: ReconciliationCase, statement: Acco
     return Candidate(case.id, case.kind, case.status, "attach_fee", {"entry_id": entry_id}, amount, entry_id=entry_id)
 
 
-POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate}
+def _backfill_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
+    """R6b.1 policy column: the owner eligibility plus live mode, the grace, the account list and no owner delete."""
+    if case.kind != "line_unmatched" or (case.context or {}).get("owner_deleted"):
+        return None
+    kind = registry.backfill_eligibility(case)
+    if kind is None or statement.mode != "live":
+        return None
+    policy = settings_service.reconciliation_policy(db)
+    if statement.period_end + timedelta(days=int(policy["backfill_grace_days"])) > ledger_service._today():
+        return None
+    accounts = policy.get("backfill_accounts") or []
+    if accounts and statement.account_id not in accounts:
+        return None
+    line = current_line(db, case, statement)
+    if line is None or _absorbed_by_anchor(db, statement, line):
+        return None
+    return Candidate(case.id, case.kind, case.status, "backfill_entry", {"kind": kind}, _money(line.flow_amount))
+
+
+def _anchor_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
+    """R6b.2: any open balance_gap of an un-anchored bank account whose target is its first live month (C1);
+    amount = |opening delta| at the target."""
+    from app.services.reconciliation_actions import structural_actions as sa
+    if case.kind != "balance_gap" or statement.kind != "bank" or sa.anchor_applied(db, statement.account_id) \
+            or not _anchor_gate(db, statement.account_id):
+        return None
+    found = sa.anchor_delta(db, statement.account_id)
+    if found is None or found[1] == 0:
+        return None
+    return Candidate(case.id, case.kind, case.status, "anchor_opening", {}, _money(abs(found[1])))
+
+
+REPLACE_HINTS = ("shadowed_by_stand_in", "orphaned_stand_in")
+REPLACE_AMOUNT = Decimal("0.0000")  # a replacement moves no money: charged as zero, counted toward the statement cap
+
+
+def _replace_evidence(case: ReconciliationCase) -> dict:
+    context = case.context or {}
+    return {"hint": context.get("hint"), "backfill_action_id": context.get("backfill_action_id"),
+            "entry_id": case.entry_id, "event_id": case.event_id, "drift_days": context.get("drift_days")}
+
+
+def _replace_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
+    """R6b.5: an open entry_unmatched case with a stand-in hint → replace the stand-in (amount 0). A shadow's
+    evidence carries its `drift_days`: farther than the exact window it is only proposed (C2, `_prefilter`)."""
+    if case.kind != "entry_unmatched" or (case.context or {}).get("hint") not in REPLACE_HINTS:
+        return None
+    return Candidate(case.id, case.kind, case.status, "replace_stand_in", {}, REPLACE_AMOUNT, entry_id=None,
+                     evidence=_replace_evidence(case))
+
+
+OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry"})  # R6b.0: never re-book an owner delete
+
+POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
+                  "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate,
+                  "replace_stand_in": _replace_candidate}
 
 
 def _agent_authors(authors: Iterable[str]) -> set[str]:
@@ -174,12 +268,16 @@ def _agent_candidates(db: Session, statement: AccountStatement) -> list[Candidat
 
 
 def collect_candidates(db: Session, statement: AccountStatement, policy: dict) -> list[Candidate]:
-    """Every candidate of the statement, by case id (read only; no flag, cap or exclusion is applied here)."""
+    """Every candidate of the statement, by case id (read only; no flag, cap or exclusion is applied here). A
+    creation (`create_system_entry`, `backfill_entry`) on an owner-deleted event is never a candidate, so it is
+    neither applied nor proposed even when the sweep reopened its case with the old context (final review I3)."""
     cases = db.execute(select(ReconciliationCase).where(
         ReconciliationCase.statement_id == statement.id, ReconciliationCase.status == "open",
-        ReconciliationCase.kind.in_(("line_unmatched", "amount_delta")))
+        ReconciliationCase.kind.in_(("line_unmatched", "amount_delta", "balance_gap", "entry_unmatched")))
         .order_by(ReconciliationCase.id)).scalars().all()
-    out = [c for case in cases for make in POLICY_ACTIONS.values() if (c := make(db, case, statement)) is not None]
+    deleted = stand_ins.owner_deleted_events(db, statement)
+    out = [c for case in cases for make in POLICY_ACTIONS.values() if (c := make(db, case, statement)) is not None
+           and not (c.action in OWNER_DELETED_GUARDED and case.event_id in deleted)]
     if policy.get("accept_agent_proposals") is True:
         out += _agent_candidates(db, statement)
     return sorted(out, key=lambda c: (c.case_id, c.proposal_id or 0))
@@ -208,6 +306,31 @@ def _statement_excluded(db: Session, statement: AccountStatement, policy: dict) 
     return None
 
 
+def preview(db: Session, statement: AccountStatement, policy: dict, today: date | None = None) -> list[tuple[Candidate, str]]:
+    """R6b.7: what run_policy's unlocked pass would decide per candidate, without applying anything."""
+    out = []
+    excluded = _statement_excluded(db, statement, policy)
+    for candidate in collect_candidates(db, statement, policy):
+        if policy.get("enabled") is not True or not _rule(policy, candidate.action).get("enabled"):
+            out.append((candidate, "disabled"))
+        elif excluded:
+            out.append((candidate, f"excluded:{excluded}"))
+        else:
+            out.append((candidate, _decision_label(_prefilter(db, candidate, policy))))
+    return out
+
+
+def _decision_label(result: tuple) -> str:
+    """_prefilter always returns (verb, code, reason): ("try", None, None) -> "apply"; ("propose", None, <cap reason>)
+    -> "propose:<reason>"; ("skip", <code>, None) -> "skip:<code>" (exact tuples pinned by the unit test)."""
+    verb, code, reason = result
+    if verb == "try":
+        return "apply"
+    if verb == "propose":
+        return f"propose:{reason}" if reason else "propose"
+    return f"skip:{code}" if code else "skip"
+
+
 def _applied_totals(db: Session, statement_id: int) -> tuple[int, Decimal]:
     """(count, total amount) of the applied `actor='policy'` rows on the statement's cases; the amount is what each
     row charged to the budget (`after.policy_budget.amount`)."""
@@ -233,8 +356,14 @@ def _cap_reason(db: Session, statement_id: int, candidate: Candidate, policy: di
 
 
 def _amount_now(ctx: Context, candidate: Candidate) -> Decimal | None:
+    if candidate.action == "replace_stand_in":
+        return REPLACE_AMOUNT
     if candidate.action == "attach_fee":
         return _fee_now(ctx.db, ctx.case, ctx.line)  # R1d item 4: recomputed under the lock, not context.residual
+    if candidate.action == "anchor_opening":  # before the barrier: the action's own post-barrier check is the second line
+        from app.services.reconciliation_actions import structural_actions as sa
+        found = sa.anchor_delta(ctx.db, ctx.statement.account_id)
+        return None if found is None else _money(abs(found[1]))
     return None if ctx.line is None else _money(ctx.line.flow_amount)
 
 
@@ -246,9 +375,42 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
         return False
     if _amount_now(ctx, candidate) != candidate.amount:
         return False
+    if candidate.action in OWNER_DELETED_GUARDED and (
+            context.get("owner_deleted") or case.event_id in stand_ins.owner_deleted_events(ctx.db, ctx.statement)):
+        return False  # re-derived from the action table under the lock: the sweep may have retired it since the collect
+    if candidate.action in ("create_system_entry", "backfill_entry") and _absorbed_by_anchor(ctx.db, ctx.statement, ctx.line):
+        return False  # C1: an anchor applied since the collect already carries this line
+    if candidate.action == "anchor_opening":
+        from app.services.reconciliation_actions import structural_actions as sa
+        return not sa.anchor_applied(ctx.db, ctx.statement.account_id) and _anchor_gate(ctx.db, ctx.statement.account_id)
+    if candidate.action == "replace_stand_in":  # the hint, the backfill action, the entry and the event as collected
+        return _replace_evidence(case) == candidate.evidence and _shadow_in_exact_window(ctx)
     if candidate.action == "create_system_entry":
         return context.get("hint") == "bank_only" and ctx.line.line_kind == candidate.params.get("kind")
+    if candidate.action == "backfill_entry":
+        return not context.get("owner_deleted") and not case.candidates \
+            and registry.backfill_eligibility(case) == candidate.params.get("kind")
     return True
+
+
+def _shadow_in_exact_window(ctx: Context) -> bool:
+    """C2, under the locks: a shadow's owner entry is still within the exact window of the line (the case context
+    is the last reconcile's; the entry may have moved since without a recheck). Orphans: always true."""
+    if (ctx.case.context or {}).get("hint") != "shadowed_by_stand_in":
+        return True
+    entry = ctx.db.get(LedgerEntry, ctx.case.entry_id) if ctx.case.entry_id is not None else None
+    return entry is not None and ctx.line is not None \
+        and stand_ins.drift_days(ctx.line, entry) <= ctx.rules.exact_window_days
+
+
+def _drifted(db: Session, case: ReconciliationCase, candidate: Candidate) -> bool:
+    """C2: a shadow whose owner entry lies farther than `exact_window_days` from the line (up to the 15-day drift
+    window discovery allows) is proposed, never applied, by the policy (spec decision 1's tiering)."""
+    drift = candidate.evidence.get("drift_days") if candidate.action == "replace_stand_in" else None
+    if drift is None:
+        return False
+    statement = db.get(AccountStatement, case.statement_id)
+    return drift > rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end).exact_window_days
 
 
 def _is_proposed(rep: matching.Representation, params: dict) -> bool:
@@ -309,8 +471,8 @@ def _policy_precheck(candidate: Candidate, ctx: Context) -> None:
 
 
 def _prefilter(db: Session, candidate: Candidate, policy: dict) -> tuple[str, str | None, str | None]:
-    """Unlocked: ("try", None, None), ("propose", None, cap reason) or ("skip", code, reason) — an agent's proposal
-    over a cap is skipped (it stays pending for the owner)."""
+    """Unlocked: ("try", None, None), ("propose", None, cap reason | "date_drift") or ("skip", code, reason) — an
+    agent's proposal over a cap is skipped (it stays pending for the owner)."""
     case = db.execute(select(ReconciliationCase).where(ReconciliationCase.id == candidate.case_id)
                       .execution_options(populate_existing=True)).scalar_one_or_none()
     if case is None or (case.status, case.kind) != (candidate.status, candidate.kind):
@@ -321,6 +483,8 @@ def _prefilter(db: Session, candidate: Candidate, policy: dict) -> tuple[str, st
             return "skip", "proposal_not_pending", None
     if _rule(policy, candidate.action).get("enabled") is not True:
         return "skip", ACTION_DISABLED, None
+    if _drifted(db, case, candidate):
+        return "propose", None, "date_drift"
     reason = _cap_reason(db, case.statement_id, candidate, policy)
     if reason is not None:
         return ("skip", "cap_exceeded", reason) if candidate.proposal_id is not None else ("propose", None, reason)
@@ -457,7 +621,13 @@ def run_policy(db: Session, statement_id: int, *, run_id: int | None = None,
     if excluded is not None:
         return result
     month = (today or ledger_service._today()).replace(day=1)
+    anchored: set[int] = set()  # one anchor per account per run
     for candidate in collect_candidates(db, statement, policy):
+        if candidate.action == "anchor_opening":
+            if statement.account_id in anchored:
+                _skip(db, statement_id, candidate, "anchored_this_run", result, run_id=run_id)
+                continue
+            anchored.add(statement.account_id)
         _run_candidate(db, statement_id, candidate, result, month=month, run_id=run_id)
     return result
 

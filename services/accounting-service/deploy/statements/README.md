@@ -231,6 +231,38 @@ Matcher evidence without pytest (the deploy venv has no test runner): run the R6
 worktree as described in `services/accounting-service/scripts/README-r6-dryrun.md` with `BASE` = this checkout
 before it is moved, and keep `summary.md` in the release record. `gate.sh` stays the parser/OCR evidence.
 
+## R6b rollout (statement as truth)
+
+Order (each step is a settings PUT with the full body). Production already runs with `policy.enabled: true` and
+`create_system_entry` on (settings v8, 2026-10-16), so the new policy actions take effect as soon as each is enabled.
+
+1. Deploy R6b with all three new actions as defaulted (`backfill_entry` and `anchor_opening` off, `replace_stand_in` on, `backfill_grace_days` 14, `backfill_accounts` `[]`). On deploy day, whatever the new flags say, these change:
+   - the sweep releases a covered line only on a structural difference (`STRUCTURAL_KEYS`); cosmetic edits (e.g. name, merchant) keep the claim;
+   - sweep retirement: an applied creation whose entry the owner deleted in the ledger is retired (`stand_in_retired`), including the catch-up pass for deletions from before R6b: pre-R6b deletions are retired by the first daily run (the pending selection includes statements with stranded creations, clean statements too), and its line is marked owner-deleted, so the policy no longer re-books it (no proposal either);
+   - `needs_peer`: `create_entry` is no longer offered on payment/transfer lines; their open cases are superseded and re-created on the first reconcile (the context key changes), which makes any proposal on them stale;
+   - new owner actions on cases: `backfill_entry`, `anchor_opening`, `replace_stand_in`;
+   - `replace_stand_in` is on but inert until stand-ins exist (`backfill_entry` off);
+   - the `policy_version` label stays as stored (e.g. `r1c-8`) until the next settings PUT, although the effective policy gained an enabled action.
+2. Dry-run in policy mode (`--policy` on `r6_case_dump.py` and `r6_dryrun.py`, see "Policy mode (R6b)" in `services/accounting-service/scripts/README-r6-dryrun.md`); keep `policy-summary.md` (mode 600, aggregate only) in the release record, with the sweep regression table from the same run.
+3. Back up first (spec §3.1, as on 2026-10-15; nothing prints credentials):
+
+       TS=$(date -u +%Y%m%dT%H%M%SZ); mkdir -p ~/backups/home-hub-r6b
+       docker exec stonk-postgres-1 sh -c 'pg_dump -U "$POSTGRES_USER" -Fc accounting_db' \
+         > ~/backups/home-hub-r6b/accounting_db-pre-r6b-$TS.dump
+
+   Then enable `backfill_entry` for bank accounts (set `backfill_accounts` to the bank account ids first) and keep the caps (`max_amount`, `per_statement_count`, `per_statement_total`, `monthly_total`) low; `policy.enabled` is already true, so the PUT takes effect at once. Run; watch `policy_applied`, `policy_proposed`, `policy_skipped` and `stand_in_retired` in the audit.
+4. Read the `balance_gap` residual against the `needs_peer` lines (payment/transfer lines stay open until R6c).
+5. Enable `anchor_opening` (cap `max_amount`, default "200000"); run; the anchor locks the account and its live bank statements and sets `needs_recheck` on each, so reconcile them before confirming.
+6. Cards last.
+
+Caps: `replace_stand_in` has amount 0 (no budget use) but counts toward `per_statement_count`. `per_statement_count`
+(default 5) bounds every applied policy row per statement for good (system entries, backfills and replacements all count);
+the rest become proposals. With the default `per_statement_total` "5000" and `monthly_total` "20000", a real anchor
+(often far above those, under its own `max_amount` "200000") becomes a proposal the owner confirms. The policy anchors
+only a target that starts less than one calendar month after `statement_live_from` and that no live bank statement of the account precedes; a target after it, or an earlier month that arrives later, is left
+to the owner (the dry-run line `anchor above an earlier statement` lists the accounts). A shadow farther than
+`exact_window_days` from its line is proposed (`date_drift`), not applied. Revert a wrong `anchor_opening` before any `balance_adjustment_asof` on that account (`closing_adjustments_present`).
+
 ## Operator gate (`gate.sh`)
 
 Run it after any change to the CLI, model, sandbox flags or login directory, and to clear a latch
