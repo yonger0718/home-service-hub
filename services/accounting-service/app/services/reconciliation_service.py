@@ -48,7 +48,7 @@ from app.models import (
     Account, AccountStatement, EntryGroup, InstallmentPlanMap, LedgerEntry, ReconciliationCase, ScheduleDefinition,
     ScheduleInstance, StatementCoverage, StatementLine, StatementRevision,
 )
-from app.services import coverage_service, settings_service
+from app.services import coverage_service, settings_service, stand_ins
 from app.services.entry_write_service import lock_group, proposed_fx_fee
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.ledger_service import account_balance
@@ -228,6 +228,7 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             members[group_id].append(member_id)
         for g in db.execute(select(EntryGroup).where(EntryGroup.id.in_(group_ids))).scalars():
             groups[g.id] = matching.Group(g.id, g.kind, tuple(members[g.id]))
+    stand_in_ids = stand_ins.stand_in_entry_ids(db, accounts)
     entries = []
     for e in parents:
         posted = e.posted_date or e.entry_date
@@ -238,7 +239,8 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
             parent_entry_id=None, is_settlement=bool(e.is_settlement), refunds_entry_id=e.refunds_entry_id,
             transfer_group_id=None if e.transfer_group_id is None else str(e.transfer_group_id),
             transfer_peer_is_card=peer_is_card.get(e.id), children=tuple(children.get(e.id, ())),
-            instance=instances.get(e.id), in_reverse=statement.period_start <= posted <= statement.period_end))
+            instance=instances.get(e.id), in_reverse=statement.period_start <= posted <= statement.period_end,
+            stand_in=e.id in stand_in_ids))
     entries.extend(_drifted_instances(db, statement, accounts, set(ids) | claimed))
     return entries, groups
 
@@ -430,6 +432,7 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
     siblings = settings_service.account_siblings(db, statement.account_id)
     claimed = coverage_service.claimed_entry_ids(db) if siblings else set()
     owner_deferred = _owner_deferred_entries(db, statement)
+    deleted = stand_ins.owner_deleted_events(db, statement)
     out = []
     for c in result.cases:
         context = c.context
@@ -437,7 +440,11 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
             found = _sibling_candidates(db, statement, siblings, lines[c.line_id], rules.exact_window_days, claimed)
             if found:
                 context = {**(context or {}), "sibling_candidates": found}
-        out.append(_case(c.kind, event_id=lines[c.line_id].event_id, line_id=c.line_id, entry_id=c.entry_id,
+        event_id = lines[c.line_id].event_id
+        if c.kind == "line_unmatched" and event_id in deleted:  # R6b.0: derived every reconcile, never carried
+            context = {**(context or {}), "owner_deleted": True}
+            context.setdefault("hint", "stand_in_deleted")
+        out.append(_case(c.kind, event_id=event_id, line_id=c.line_id, entry_id=c.entry_id,
                          candidates=c.candidates, context=context))
     for entry_id in result.unmatched_entry_ids:
         why = result.explained.get(entry_id)
