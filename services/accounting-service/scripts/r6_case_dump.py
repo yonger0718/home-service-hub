@@ -25,7 +25,9 @@ def _sha() -> str:
     """HEAD of the tree that actually supplied the imported `app` package (not whatever PYTHONPATH says)."""
     import app
     tree = str(Path(app.__file__).resolve().parents[1])
-    return subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    sha = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    dirty = subprocess.run(["git", "-C", tree, "status", "--porcelain"], capture_output=True, text=True, check=True).stdout.strip()
+    return f"{sha}-dirty" if dirty else sha
 
 
 def _watermark(db) -> list[int]:

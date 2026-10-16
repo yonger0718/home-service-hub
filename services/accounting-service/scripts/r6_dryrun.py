@@ -1,6 +1,6 @@
 """Diff two r6_case_dump.py files and write the R6a merge-gate evidence (summary.md + delta.jsonl, mode 600).
 Usage: python scripts/r6_dryrun.py --baseline before.json --candidate after.json --out-dir ~/reports/home-hub-r6a-dryrun-<ts>
-Exit 1 when the gate fails: an exact claim lost, an ambiguous case with fewer than two candidates after, an unattributed
+Exit 1 when the gate fails: a claim lost, an ambiguous case with fewer than two candidates after, an unattributed
 change, or a database change between the two dumps (watermarks differ)."""
 import argparse
 import json
@@ -57,7 +57,7 @@ def attribute(change: dict) -> str:
 
 def _claim_changed(c: dict) -> bool:
     b, a = c["before"], c["after"]
-    return bool(b and a and b[0] == "claim" and a[0] == "claim" and b[1] == "exact" and b[2] != a[2])
+    return bool(b and a and b[0] == "claim" and a[0] == "claim" and b[2] != a[2])
 
 
 def _claim_moved_events(changes: list[dict]) -> list[int]:
@@ -66,15 +66,15 @@ def _claim_moved_events(changes: list[dict]) -> list[int]:
 
 
 def waive_moved(failures: list[str], changes: list[dict]) -> list[str]:
-    """--allow-moved-claims: drop the lost/changed failures of exact claims that moved to an earlier line or another entry."""
-    waived = {f"event {e}: exact claim {w}" for e in _claim_moved_events(changes) for w in ("lost", "changed")}
+    """--allow-moved-claims: drop the lost/changed failures of claims that moved to an earlier line or another entry."""
+    waived = {f"event {e}: claim {w}" for e in _claim_moved_events(changes) for w in ("lost", "changed")}
     return [f for f in failures if f not in waived]
 
 
 def gate_failures(changes: list[dict], after: dict, before: dict | None = None) -> list[str]:
-    failures = [f"event {c['event_id']}: exact claim lost" for c in changes
-                if c["before"] and c["before"][0] == "claim" and c["before"][1] == "exact" and not (c["after"] and c["after"][0] == "claim")]
-    failures += [f"event {c['event_id']}: exact claim changed" for c in changes if _claim_changed(c)]
+    failures = [f"event {c['event_id']}: claim lost" for c in changes
+                if c["before"] and c["before"][0] == "claim" and not (c["after"] and c["after"][0] == "claim")]
+    failures += [f"event {c['event_id']}: claim changed" for c in changes if _claim_changed(c)]
     for st in after["statements"].values():
         for event_id, kind, _hint, cands, _entry in st["cases"]:
             if kind == "ambiguous" and len(cands) < 2:  # group candidates count ("g<id>")
@@ -103,7 +103,7 @@ def main() -> int:
     ap.add_argument("--candidate", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--allow-moved-claims", action="store_true",
-                    help="an exact claim lost by a line whose entry is now held by an earlier line is reported, not failed")
+                    help="a claim lost by a line whose entry is now held by an earlier line is reported, not failed")
     args = ap.parse_args()
     with open(args.baseline) as fb, open(args.candidate) as fa:
         before, after = json.load(fb), json.load(fa)
@@ -121,7 +121,7 @@ def main() -> int:
     lines += [f"| {k} | {cb.get(k, 0)} | {ca.get(k, 0)} |" for k in sorted(set(cb) | set(ca))]
     lines += ["", "| attributed rule | lines |", "|---|---|"] + [f"| {k} | {v} |" for k, v in rules.most_common()]
     if moved:
-        lines += ["", f"exact claims moved to an earlier line or another entry (the rescale, see README): {len(moved)} — events {', '.join(map(str, moved))}"
+        lines += ["", f"claims moved to an earlier line or another entry (the rescale, see README): {len(moved)} — events {', '.join(map(str, moved))}"
                   + ("" if args.allow_moved_claims else " (failing the gate until --allow-moved-claims after the owner has read them)")]
     lines += ["", "gate: " + ("PASS" if not failures else "FAIL\n- " + "\n- ".join(failures))]
     for name, payload in (("summary.md", "\n".join(lines) + "\n"), ("delta.jsonl", "".join(json.dumps({**c, "rule": attribute(c)}) + "\n" for c in changes))):

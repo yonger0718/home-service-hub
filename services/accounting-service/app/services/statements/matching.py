@@ -106,8 +106,10 @@ class Rules:
 
 def population_window_days(rules: Rules) -> int:
     """R6b.0 (shipped with R6a): the orchestrator loads entries this many days around the period so that every
-    rule's candidates are present; `candidate_window_days` keeps its installment meaning."""
-    return max(rules.candidate_window_days, rules.drift_window_days, rules.near_window_days, rules.foreign_window_days)
+    rule's candidates are present (exact, drift, near, foreign, installment); `candidate_window_days` keeps its
+    installment meaning."""
+    return max(rules.candidate_window_days, rules.exact_window_days, rules.drift_window_days, rules.near_window_days,
+               rules.foreign_window_days)
 
 
 @dataclass(frozen=True)

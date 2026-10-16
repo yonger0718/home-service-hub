@@ -1,5 +1,6 @@
 # tests/integration/test_statement_ingest_api.py
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
@@ -464,6 +465,25 @@ def test_settings_default_policy_and_siblings(client):
     got = client.get("/settings/reconciliation", headers=H).json()
     assert got["policy"] == settings_service.POLICY_DEFAULTS
     assert got["policy_version"] == "r1c-1" and got["account_siblings"] == {}
+
+
+def test_stale_r1b_row_round_trips_the_effective_rules(client, db_session):
+    # production-shaped row: every rule key stored, the R1b defaults among them, rules_version r1b-1
+    from datetime import date
+    from app.services import reconciliation_service as rec, settings_service
+    row = settings_service._reconciliation_row(db_session)
+    row.data = {**(row.data or {}), "rules": {**settings_service.RULE_DEFAULTS, "margin": "0.15", "near_tolerance_pct": "0.03"},
+                "rules_version": "r1b-1"}
+    db_session.commit()
+    got = client.get("/settings/reconciliation", headers=H).json()
+    assert (got["rules"]["margin"], got["rules"]["near_tolerance_pct"], got["rules_version"]) == ("0.05", "0.05", "r1b-1")
+    body = {k: got[k] for k in ("account_map", "dirty_enabled", "rules", "policy", "account_siblings")}
+    body["rules"] = {**got["rules"], "exact_window_days": 4}
+    put = _put(client, body)
+    assert put.status_code == 200, put.text
+    assert put.json()["rules_version"].startswith("r6a-")
+    effective = rec.rules_for(settings_service.reconciliation_rules(db_session), date(2026, 9, 30))
+    assert (effective.margin, effective.near_tolerance_pct, effective.exact_window_days) == (Decimal("0.05"), Decimal("0.05"), 4)
 
 
 def test_policy_put_validates(client):

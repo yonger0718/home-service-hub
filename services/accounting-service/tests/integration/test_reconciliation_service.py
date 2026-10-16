@@ -414,6 +414,7 @@ def test_population_window_is_the_max_of_the_rule_windows():
     assert m.population_window_days(small) == 15
     wide = dc_replace(rules, candidate_window_days=20)
     assert m.population_window_days(wide) == 20
+    assert m.population_window_days(dc_replace(rules, exact_window_days=40)) == 40
 
 
 def test_stored_overrides_without_a_version_read_as_r1b(db_session):

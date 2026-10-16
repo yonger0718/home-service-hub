@@ -81,30 +81,23 @@ class ReconcileResult:
 
 log = logging.getLogger(__name__)
 
-SCALE_KEYS = ("accept", "margin", "ambiguous_floor")  # meaningless across the R6a rescale (spec R6a.1)
-# the R1b defaults of the keys whose defaults changed in R6a: a stored copy of one is a merged default, not a choice
-R1B_RULE_DEFAULTS = {"margin": "0.15", "near_tolerance_pct": "0.03"}
-
 
 def rules_for(raw: dict, period_end: date) -> matching.Rules:
     """matching.Rules from the settings' JSON rules (unknown keys ignored, types from the dataclass defaults).
     Under an r1b-* rules_version: a value equal to the old R1b default is skipped silently (never an owner choice,
     the new default applies); any other score-scale override differing from the default is ignored with a warning
     (R6a.1); a scale value equal to the default applies silently (settings merge the defaults into `raw`)."""
-    stale = str(raw.get("rules_version") or "").startswith(settings_service.STALE_RULE_PREFIX)
+    version = raw.get("rules_version")
+    stored = {k: v for k, v in raw.items() if k != "rules_version"}
+    effective, warned = settings_service.normalise_stale_rules(stored, version)
+    for key in warned:
+        log.warning("ignored stale rule override %s=%r (rules_version %s predates the R6a score scale)",
+                    key, raw[key], version)
     kwargs = {}
     for f in fields(matching.Rules):
-        if f.name == "period_end" or f.name not in raw:
+        if f.name == "period_end" or f.name not in effective:
             continue
-        if stale and f.name in R1B_RULE_DEFAULTS and Decimal(str(raw[f.name])) == Decimal(R1B_RULE_DEFAULTS[f.name]):
-            continue
-        if stale and f.name in SCALE_KEYS:
-            if Decimal(str(raw[f.name])) == f.default:  # a merged default is not an override
-                continue
-            log.warning("ignored stale rule override %s=%r (rules_version %s predates the R6a score scale)",
-                        f.name, raw[f.name], raw.get("rules_version"))
-            continue
-        value, default = raw[f.name], f.default
+        value, default = effective[f.name], f.default
         if isinstance(default, bool):  # before int: bool is an int subclass
             value = value is True or str(value).lower() == "true"
         elif isinstance(default, Decimal):

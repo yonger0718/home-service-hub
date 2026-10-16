@@ -31,7 +31,7 @@ def test_gate_fails_on_lost_claim_single_candidate_ambiguous_unattributed_or_mov
     before = _dump({"1": {"claims": [[11, "exact", [5]]], "cases": [[12, "line_unmatched", None, [], None]]}}, sha="base")
     after = _dump({"1": {"claims": [], "cases": [[11, "ambiguous", None, [5], None], [12, "recheck", None, [], None]]}})
     changes = dr.diff_dumps(before, after)
-    assert dr.gate_failures(changes, after, before) == ["event 11: exact claim lost", "event 11: ambiguous with fewer than two candidates",
+    assert dr.gate_failures(changes, after, before) == ["event 11: claim lost", "event 11: ambiguous with fewer than two candidates",
                                                          "event 12: unattributed change"]
     # a group representation counts as a candidate: standalone + split group stays a legal two-candidate ambiguous case
     legal = _dump({"1": {"claims": [], "cases": [[11, "ambiguous", None, [5, "g7"], None]]}})
@@ -49,7 +49,7 @@ def test_exact_claim_moving_to_another_entry_fails_the_gate_but_rule_change_alon
     changes = dr.diff_dumps(before, after)
     by_event = {c["event_id"]: dr.attribute(c) for c in changes}
     assert by_event == {21: "R6a.1 claim moved to another entry", 22: "claim rule changed"}
-    assert dr.gate_failures(changes, after, before) == ["event 21: exact claim changed"]
+    assert dr.gate_failures(changes, after, before) == ["event 21: claim changed"]
 
 
 def test_waive_moved_drops_only_moved_claim_failures():
@@ -57,5 +57,22 @@ def test_waive_moved_drops_only_moved_claim_failures():
                {"statement_id": 1, "event_id": 23, "before": ("claim", "exact", (7,)),
                 "after": ("case", "line_unmatched", "claimed_by_earlier_line", (), None)},
                {"statement_id": 1, "event_id": 24, "before": ("claim", "exact", (9,)), "after": ("case", "recheck", None, (), None)}]
-    failures = ["event 21: exact claim changed", "event 23: exact claim lost", "event 24: exact claim lost", "event 25: unattributed change"]
-    assert dr.waive_moved(failures, changes) == ["event 24: exact claim lost", "event 25: unattributed change"]
+    failures = ["event 21: claim changed", "event 23: claim lost", "event 24: claim lost", "event 25: unattributed change"]
+    assert dr.waive_moved(failures, changes) == ["event 24: claim lost", "event 25: unattributed change"]
+
+
+def test_gate_covers_claims_of_every_rule_not_only_exact():
+    before = _dump({"1": {"claims": [[31, "group", [5, 6]], [32, "payment", [7]], [33, "transfer", [8]], [34, "refund", [9]]],
+                          "cases": []}}, sha="base")
+    after = _dump({"1": {"claims": [[33, "transfer", [10]]],
+                         "cases": [[31, "ambiguous", None, [5, "g2"], None],
+                                   [32, "line_unmatched", "claimed_by_earlier_line", [], None],
+                                   [34, "recheck", None, [], None]]}})
+    changes = dr.diff_dumps(before, after)
+    failures = dr.gate_failures(changes, after, before)
+    assert "event 31: claim lost" in failures and "event 32: claim lost" in failures
+    assert "event 33: claim changed" in failures and "event 34: claim lost" in failures
+    # waived only for the moved shapes: the transfer moved to another entry, the payment claimed by an earlier line
+    waived = dr.waive_moved(failures, changes)
+    assert "event 33: claim changed" not in waived and "event 32: claim lost" not in waived
+    assert "event 31: claim lost" in waived and "event 34: claim lost" in waived

@@ -78,6 +78,30 @@ def _rule_default(value):
 RULE_DEFAULTS = {f.name: _rule_default(f.default) for f in fields(matching.Rules) if f.name != "period_end"}
 
 
+SCALE_KEYS = ("accept", "margin", "ambiguous_floor")  # meaningless across the R6a rescale (spec R6a.1)
+# the R1b defaults of the keys whose defaults changed in R6a: a stored copy of one is a merged default, not a choice
+R1B_RULE_DEFAULTS = {"margin": "0.15", "near_tolerance_pct": "0.03"}
+
+
+def normalise_stale_rules(stored: dict, version: str) -> tuple[dict, list[str]]:
+    """The effective overrides of a stored rules dict. Under an r1b* `version`: a key equal to its R1b default is
+    dropped silently (never an owner choice); a score-scale key differing from the dataclass default is dropped and
+    returned in the warning list (R6a.1); a scale key equal to the default is dropped silently. Other versions and
+    other keys pass through. Returns (overrides, keys dropped with a warning)."""
+    if not str(version or "").startswith(STALE_RULE_PREFIX):
+        return dict(stored), []
+    out, warned = {}, []
+    for key, value in stored.items():
+        if key in R1B_RULE_DEFAULTS and Decimal(str(value)) == Decimal(R1B_RULE_DEFAULTS[key]):
+            continue
+        if key in SCALE_KEYS:
+            if Decimal(str(value)) != Decimal(str(RULE_DEFAULTS[key])):
+                warned.append(key)
+            continue
+        out[key] = value
+    return out, warned
+
+
 POLICY_VERSION_PREFIX = "r1c"
 POLICY_DEFAULTS = {
     "enabled": False, "accept_agent_proposals": False, "per_statement_count": 5, "per_statement_total": "5000",
@@ -106,9 +130,10 @@ def _reconciliation_dict(row: ReconciliationSettings) -> dict:
     """Stored data plus defaults: `rules` = the matching.Rules defaults overlaid with the stored keys, and
     `rules_version` (bumped whenever the defaults change meaning)."""
     data = dict(row.data or {})
-    rules = {**RULE_DEFAULTS, **(data.get("rules") or {})}
+    version = _stored_rules_version(data)
+    rules = {**RULE_DEFAULTS, **normalise_stale_rules(data.get("rules") or {}, version)[0]}
     return {**data, "account_map": data.get("account_map") or {}, "dirty_enabled": data.get("dirty_enabled") is True,
-            "rules": rules, "rules_version": _stored_rules_version(data), "version": row.version,
+            "rules": rules, "rules_version": version, "version": row.version,
             "policy": _effective_policy(data.get("policy")),
             "policy_version": data.get("policy_version") or f"{POLICY_VERSION_PREFIX}-1",
             "account_siblings": data.get("account_siblings") or {}}
@@ -262,7 +287,8 @@ def reconciliation_rules(db: Session) -> dict:
     reconcile transaction writes nothing outside its statement."""
     row = db.get(ReconciliationSettings, 1)
     data = (row.data or {}) if row is not None else {}
-    return {**RULE_DEFAULTS, **(data.get("rules") or {}), "rules_version": _stored_rules_version(data)}
+    version = _stored_rules_version(data)
+    return {**RULE_DEFAULTS, **normalise_stale_rules(data.get("rules") or {}, version)[0], "rules_version": version}
 
 
 def get_reconciliation_settings(db: Session) -> dict:
