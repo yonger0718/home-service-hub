@@ -154,8 +154,19 @@ def _backfill_candidate(db: Session, case: ReconciliationCase, statement: Accoun
     return Candidate(case.id, case.kind, case.status, "backfill_entry", {"kind": kind}, _money(line.flow_amount))
 
 
+def _anchor_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
+    """R6b.2: any open balance_gap of an un-anchored bank account; amount = |opening delta| at the target."""
+    from app.services.reconciliation_actions import structural_actions as sa
+    if case.kind != "balance_gap" or statement.kind != "bank" or sa.anchor_applied(db, statement.account_id):
+        return None
+    found = sa.anchor_delta(db, statement.account_id)
+    if found is None or found[1] == 0:
+        return None
+    return Candidate(case.id, case.kind, case.status, "anchor_opening", {}, _money(abs(found[1])))
+
+
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
-                  "backfill_entry": _backfill_candidate}
+                  "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate}
 
 
 def _agent_authors(authors: Iterable[str]) -> set[str]:
@@ -198,7 +209,7 @@ def collect_candidates(db: Session, statement: AccountStatement, policy: dict) -
     """Every candidate of the statement, by case id (read only; no flag, cap or exclusion is applied here)."""
     cases = db.execute(select(ReconciliationCase).where(
         ReconciliationCase.statement_id == statement.id, ReconciliationCase.status == "open",
-        ReconciliationCase.kind.in_(("line_unmatched", "amount_delta")))
+        ReconciliationCase.kind.in_(("line_unmatched", "amount_delta", "balance_gap", "entry_unmatched")))
         .order_by(ReconciliationCase.id)).scalars().all()
     out = [c for case in cases for make in POLICY_ACTIONS.values() if (c := make(db, case, statement)) is not None]
     if policy.get("accept_agent_proposals") is True:
@@ -256,6 +267,10 @@ def _cap_reason(db: Session, statement_id: int, candidate: Candidate, policy: di
 def _amount_now(ctx: Context, candidate: Candidate) -> Decimal | None:
     if candidate.action == "attach_fee":
         return _fee_now(ctx.db, ctx.case, ctx.line)  # R1d item 4: recomputed under the lock, not context.residual
+    if candidate.action == "anchor_opening":  # before the barrier: the action's own post-barrier check is the second line
+        from app.services.reconciliation_actions import structural_actions as sa
+        found = sa.anchor_delta(ctx.db, ctx.statement.account_id)
+        return None if found is None else _money(abs(found[1]))
     return None if ctx.line is None else _money(ctx.line.flow_amount)
 
 
@@ -270,6 +285,9 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
     if candidate.action in ("create_system_entry", "backfill_entry") and (
             context.get("owner_deleted") or case.event_id in stand_ins.owner_deleted_events(ctx.db, ctx.statement)):
         return False  # re-derived from the action table under the lock: the sweep may have retired it since the collect
+    if candidate.action == "anchor_opening":
+        from app.services.reconciliation_actions import structural_actions as sa
+        return not sa.anchor_applied(ctx.db, ctx.statement.account_id)
     if candidate.action == "create_system_entry":
         return context.get("hint") == "bank_only" and ctx.line.line_kind == candidate.params.get("kind")
     if candidate.action == "backfill_entry":
@@ -484,7 +502,13 @@ def run_policy(db: Session, statement_id: int, *, run_id: int | None = None,
     if excluded is not None:
         return result
     month = (today or ledger_service._today()).replace(day=1)
+    anchored: set[int] = set()  # one anchor per account per run
     for candidate in collect_candidates(db, statement, policy):
+        if candidate.action == "anchor_opening":
+            if statement.account_id in anchored:
+                _skip(db, statement_id, candidate, "anchored_this_run", result, run_id=run_id)
+                continue
+            anchored.add(statement.account_id)
         _run_candidate(db, statement_id, candidate, result, month=month, run_id=run_id)
     return result
 

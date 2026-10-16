@@ -244,6 +244,7 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         ctx = _context(db, case, statement, actor=actor, label=label, run_id=run_id, request_id=request_id,
                        proposal_id=proposal_id)
         ctx.lock_set = targets
+        ctx.budget_amount = budget[2] if budget is not None else None
         if case.status not in OPEN_STATUSES:
             raise CodedConflictError("case_closed", f"case {case.id} is {case.status}")
         if action not in allowed(case):

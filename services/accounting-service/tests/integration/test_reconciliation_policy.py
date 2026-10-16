@@ -41,6 +41,7 @@ DAY = date(2026, 9, 3)
 TODAY = date(2026, 10, 12)
 MONTH = date(2026, 10, 1)
 SYSTEM_ON = {"enabled": True, "actions": {"create_system_entry": {"enabled": True}}}
+ANCHOR_ON = {"enabled": True, "actions": {"anchor_opening": {"enabled": True, "max_amount": "200000"}}}
 POLICY_EVENTS = ("policy_applied", "policy_proposed", "policy_skipped")
 
 
@@ -851,3 +852,53 @@ def test_policy_refuses_a_candidate_whose_creation_the_owner_made_and_deleted_si
     db_session.rollback()
     assert info.value.code == "candidate_changed"
     assert _booked(db_session) == []
+
+
+# --- anchor_opening (R6b.2) ---------------------------------------------------------------------------------------
+
+def test_policy_anchors_once_per_account_and_proposes_over_the_cap(seed, db_session, run, dirty_on):
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, ANCHOR_ON)
+    result = policy_service.run_policy(db_session, stmt.id)
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and row.action == "anchor_opening" and row.after["policy_budget"]["amount"] == "600"
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert policy_service.run_policy(db_session, stmt.id).applied == []  # already anchored → not a candidate
+    bank2 = seed.account("銀行2", opening="0", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    stmt2, _, _ = _submit(db_session, run, bank2, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("300000"))
+    result = policy_service.run_policy(db_session, stmt2.id)
+    (p,) = _proposals(db_session, status="pending")
+    assert result.proposed == [p.id] and p.action == "anchor_opening"
+
+
+def _adjustments(db):
+    return [e for e in _booked(db) if e.kind == "balance_adjustment"]
+
+
+def test_policy_skips_statements_flagged_by_the_anchor_until_reconciled(seed, db_session, run, dirty_on):
+    # run 1: one fee line case (id lower) then the balance_gap case → fee booked, then the anchor, which flags the
+    # statement needs_recheck. Run 2 is skipped (statement_excluded: needs_recheck) until a reconcile clears the flag.
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "年費", -50, "fee")], kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, {**ANCHOR_ON, "actions": {**ANCHOR_ON["actions"], **SYSTEM_ON["actions"]}})
+    first = policy_service.run_policy(db_session, stmt.id)
+    assert [a.action for a in _actions(db_session)] == ["create_system_entry", "anchor_opening"] and len(first.applied) == 2
+    db_session.expire_all()
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is True
+    # S1: while flagged, run_policy returns an EMPTY result (policy_service.py:457-458), and nothing changes
+    second = policy_service.run_policy(db_session, stmt.id)
+    assert (second.applied, second.proposed, second.skipped) == ([], [], {})
+    assert len(_actions(db_session)) == 2 and len(_booked(db_session)) == 2 and len(_adjustments(db_session)) == 1  # _booked counts every statement-source row: the fee AND the anchor adjustment
+    # A second revision cannot be used to clear the flag here: both cases are resolved, so the statement is
+    # `reconciled` and a new revision only opens a statement_conflict. Only a completed reconcile discharges it.
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
+    third = policy_service.run_policy(db_session, stmt.id)
+    assert third.applied == [] and len(_actions(db_session)) == 2 and len(_adjustments(db_session)) == 1

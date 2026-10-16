@@ -41,6 +41,7 @@ class Context:
     rules: matching.Rules
     proposal_id: int | None = None  # the agent proposal being applied (ruling 31: policy + proposal = `agent` coverage)
     lock_set: "LockSet | None" = None  # what the engine locked for this attempt (set after the locks; R1d)
+    budget_amount: Decimal | None = None  # R6b.2: the amount a policy apply reserved and charged (None for the owner)
 
 
 @dataclass
