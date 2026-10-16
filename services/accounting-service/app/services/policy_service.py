@@ -20,6 +20,7 @@ apply, proposal or skip audit, so a later failure never loses an earlier reserva
 called by routers after their own commit (`run_policy_safe` keeps a policy error from failing the caller)."""
 from __future__ import annotations
 
+import calendar
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -32,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from app import auth
 from app.models import (
-    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
+    Account, AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
     ReconciliationProposal, StatementLine,
 )
 from app.schemas.reconciliation import ProposalIn
@@ -111,13 +112,43 @@ def _fee_now(db: Session, case: ReconciliationCase, line: StatementLine | None) 
 
 # --- candidates ---------------------------------------------------------------------------------------------------
 
+def _absorbed_by_anchor(db: Session, statement: AccountStatement, line: StatementLine | None) -> bool:
+    """Final review C1: the account's applied anchor (`inverse.as_of`) already carries every missing entry dated on
+    or before its as_of, so an automatic builder must not book such a line again (the owner still may)."""
+    from app.services.reconciliation_actions import structural_actions as sa
+    if line is None:
+        return False
+    as_of = sa.anchor_as_of(db, statement.account_id)
+    return as_of is not None and line.posted_date <= as_of
+
+
+def _next_month(day: date) -> date:
+    year, month = (day.year + 1, 1) if day.month == 12 else (day.year, day.month + 1)
+    return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def _first_live_month(target, account) -> bool:
+    """Final review C1: the anchor target starts in the account's first live month — on or before
+    `statement_live_from`, or less than one calendar month after it (no live-from date: always)."""
+    live_from = account.statement_live_from
+    return live_from is None or target.period_start <= live_from or target.period_start < _next_month(live_from)
+
+
+def _anchor_gate(db: Session, account_id: int) -> bool:
+    """The POLICY anchors only a target in the first live month: an earlier live month still to be ingested would
+    otherwise be absorbed by the anchor (the owner may anchor any target from the case)."""
+    from app.services.reconciliation_actions import structural_actions as sa
+    target = sa.anchor_target(db, account_id)
+    return target is not None and _first_live_month(target, db.get(Account, account_id))
+
+
 def _system_entry_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
     """An open `line_unmatched` with the bank-only hint → book the line as its own fee/interest/reward entry."""
     context = case.context or {}
     if case.kind != "line_unmatched" or context.get("hint") != "bank_only" or context.get("owner_deleted"):
         return None
     line = current_line(db, case, statement)
-    if line is None or line.line_kind not in SYSTEM_LINE_KINDS:
+    if line is None or line.line_kind not in SYSTEM_LINE_KINDS or _absorbed_by_anchor(db, statement, line):
         return None
     return Candidate(case.id, case.kind, case.status, "create_system_entry", {"kind": line.line_kind},
                      _money(line.flow_amount), entry_id=context.get("entry_id"))
@@ -150,15 +181,17 @@ def _backfill_candidate(db: Session, case: ReconciliationCase, statement: Accoun
     if accounts and statement.account_id not in accounts:
         return None
     line = current_line(db, case, statement)
-    if line is None:
+    if line is None or _absorbed_by_anchor(db, statement, line):
         return None
     return Candidate(case.id, case.kind, case.status, "backfill_entry", {"kind": kind}, _money(line.flow_amount))
 
 
 def _anchor_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
-    """R6b.2: any open balance_gap of an un-anchored bank account; amount = |opening delta| at the target."""
+    """R6b.2: any open balance_gap of an un-anchored bank account whose target is its first live month (C1);
+    amount = |opening delta| at the target."""
     from app.services.reconciliation_actions import structural_actions as sa
-    if case.kind != "balance_gap" or statement.kind != "bank" or sa.anchor_applied(db, statement.account_id):
+    if case.kind != "balance_gap" or statement.kind != "bank" or sa.anchor_applied(db, statement.account_id) \
+            or not _anchor_gate(db, statement.account_id):
         return None
     found = sa.anchor_delta(db, statement.account_id)
     if found is None or found[1] == 0:
@@ -332,9 +365,11 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
     if candidate.action in ("create_system_entry", "backfill_entry") and (
             context.get("owner_deleted") or case.event_id in stand_ins.owner_deleted_events(ctx.db, ctx.statement)):
         return False  # re-derived from the action table under the lock: the sweep may have retired it since the collect
+    if candidate.action in ("create_system_entry", "backfill_entry") and _absorbed_by_anchor(ctx.db, ctx.statement, ctx.line):
+        return False  # C1: an anchor applied since the collect already carries this line
     if candidate.action == "anchor_opening":
         from app.services.reconciliation_actions import structural_actions as sa
-        return not sa.anchor_applied(ctx.db, ctx.statement.account_id)
+        return not sa.anchor_applied(ctx.db, ctx.statement.account_id) and _anchor_gate(ctx.db, ctx.statement.account_id)
     if candidate.action == "replace_stand_in":  # the hint, the backfill action, the entry and the event as collected
         return _replace_evidence(case) == candidate.evidence
     if candidate.action == "create_system_entry":

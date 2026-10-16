@@ -93,7 +93,7 @@ def _policy_section(db, statements) -> dict:
     from app.services import coverage_service, policy_service, stand_ins
     from app.services.reconciliation_actions import structural_actions as sa
     policy = settings_service.reconciliation_policy(db)
-    out = {"policy": {}, "anchor_blockers": [], "needs_peer": _count_hint(db, statements, "needs_peer"), "owner_deleted": {},
+    out = {"policy": {}, "anchor_blockers": [], "anchor_above_earlier_statement": [], "needs_peer": _count_hint(db, statements, "needs_peer"), "owner_deleted": {},
            "retirements": {}, "sweep": {"would_release_old": 0, "would_release_new": 0, "kept_by_key": {}, "released_by_key": {}},
            "structural_keys": sorted(coverage_service.STRUCTURAL_KEYS), "accounts": {str(s.id): s.account_id for s in statements}}
     seen = set()
@@ -115,6 +115,11 @@ def _policy_section(db, statements) -> dict:
                     LedgerEntry.account_id == stmt.account_id, LedgerEntry.kind == "balance_adjustment",
                     LedgerEntry.posted_date >= found[0])):
                 out["anchor_blockers"].append(stmt.account_id)
+            as_of = sa.anchor_as_of(db, stmt.account_id)  # C1: the anchor absorbed an earlier live month
+            if as_of is not None and db.scalar(select(func.count(AccountStatement.id)).where(
+                    AccountStatement.account_id == stmt.account_id, AccountStatement.kind == "bank",
+                    AccountStatement.mode == "live", AccountStatement.period_start <= as_of)):
+                out["anchor_above_earlier_statement"].append(stmt.account_id)
     return out
 
 

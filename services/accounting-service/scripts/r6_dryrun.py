@@ -110,8 +110,12 @@ def policy_summary(after: dict) -> str:
     lines = [f"# R6b policy preview — candidate {after.get('sha')}", "", "| account | action | decision | lines |", "|---|---|---|---|"]
     lines += [f"| {a} | {act} | {dec} | {n} |" for (a, act, dec), n in sorted(table.items(), key=lambda kv: tuple(map(str, kv[0])))]
     blockers = len(after.get("anchor_blockers", []))
+    above = len(after.get("anchor_above_earlier_statement", []))
+    peers = after.get("needs_peer", {})
+    by_account = ", ".join(f"{a}={n}" for a, n in sorted(peers.items(), key=lambda kv: int(kv[0]))) or "none"
     lines += ["", f"anchor blocked by closing adjustments: {blockers} account{'' if blockers == 1 else 's'}",
-              f"needs_peer lines: {sum(after.get('needs_peer', {}).values())}",
+              f"anchor above an earlier statement: {above} account{'' if above == 1 else 's'}",
+              f"needs_peer lines: {sum(peers.values())} (by account: {by_account})",
               f"owner-deleted events: {sum(after.get('owner_deleted', {}).values())}"]
     retire: Counter = Counter()
     for by_action in after.get("retirements", {}).values():
@@ -146,6 +150,9 @@ def main() -> int:
     args = ap.parse_args()
     with open(args.baseline) as fb, open(args.candidate) as fa:
         before, after = json.load(fb), json.load(fa)
+    if args.policy and "policy" not in after:
+        print(f"{args.candidate}: no policy section; dump it with r6_case_dump.py --policy", file=sys.stderr)
+        return 2
     os.makedirs(args.out_dir, mode=0o700, exist_ok=True)
     if args.policy:
         text = f"baseline {before['sha']}\n" + policy_summary(after)

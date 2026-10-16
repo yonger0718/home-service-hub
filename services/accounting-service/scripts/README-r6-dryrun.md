@@ -44,14 +44,21 @@ Two commands, run by the controller at release time against the live database (r
 
 `--policy` on the dump adds aggregate sections (no amount, merchant or name; amounts appear only as `<1000` / `<5000` /
 `>=5000` buckets) computed by the service-side previews the integration tests share. `--policy` on the diff prints the
-summary and writes `policy-summary.md` (mode 600) next to the others, then exits 0; it is evidence, not a gate.
+summary and writes `policy-summary.md` (mode 600) next to the others, then exits 0; it is evidence, not a gate. A candidate dump without the
+`--policy` sections exits 2 with a message and writes nothing.
 
 - decision table (`| account | action | decision | lines |`): what `run_policy` would decide per candidate: `apply`,
   `propose:<cap>`, `skip:<code>`, `disabled` (policy or action off), `excluded:<reason>` (statement not live, conflict,
   recheck, blocking case, currency not enabled).
 - `anchor blocked by closing adjustments`: accounts whose opening anchor is refused because a `balance_adjustment` sits at or after the anchor date.
-- `needs_peer lines` / `owner-deleted events`: lines the policy never backfills (peer entry needed / the owner removed the created entry).
+- `anchor above an earlier statement`: accounts whose applied anchor is dated on or after the start of one of their live
+  bank statements, i.e. an earlier month arrived after the anchor; the anchor already carries that month's missing
+  lines, so the policy never books them (the owner reviews them and may revert the anchor).
+- `needs_peer lines` / `owner-deleted events`: lines the policy never backfills (peer entry needed / the owner removed the
+  created entry); `needs_peer` is also counted per account (`by account: <account id>=<lines>`).
 - `retirements pending`: applied creations (by action type) whose entry is already gone; the next sweep retires them.
+  Deletions from before R6b (their delete event already behind the statement's watermark) are retired too, by the
+  first sweep after the deploy (`stand_in_retired` audit with `catch_up: true`).
 - `sweep: old rule ... new rule ...`: lines with a pending entry update event the pre-R6b rule would release (every edit) vs the
   R6b.0 rule (structural keys only), with the key breakdown (cosmetic keys kept, structural keys released) and the structural key set.
   This table is the R6b.0 regression-gate evidence; nothing fails automatically, the release record keeps it with both SHAs.

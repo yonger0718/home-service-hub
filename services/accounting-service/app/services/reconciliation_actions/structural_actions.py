@@ -449,6 +449,20 @@ def anchor_applied(db: Session, account_id: int, *, exclude_case_id: int | None 
         AccountStatement.account_id == account_id)))
 
 
+def anchor_as_of(db: Session, account_id: int) -> date | None:
+    """The `as_of` of the account's applied anchor (its inverse), or None. Every missing entry dated on or before
+    it is already inside the anchor's amount (final review C1): the automatic builders must not book such a line."""
+    found = db.execute(
+        select(ReconciliationAction.inverse)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .join(AccountStatement, AccountStatement.id == ReconciliationCase.statement_id)
+        .where(ReconciliationAction.action == "anchor_opening", ReconciliationAction.status == "applied",
+               AccountStatement.account_id == account_id)
+        .order_by(ReconciliationAction.id.desc()).limit(1)).scalar_one_or_none()
+    as_of = (found or {}).get("as_of")
+    return date.fromisoformat(as_of) if as_of else None
+
+
 def anchor_delta(db: Session, account_id: int) -> tuple[date, Decimal] | None:
     """R6b.2: (as_of, target.opening_balance − balance(as_of)) at the account's anchor target, or None. Module
     level, defined BEFORE the action class (one arithmetic for the action, the policy builder and the dry-run)."""

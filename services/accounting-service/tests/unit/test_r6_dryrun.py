@@ -1,5 +1,8 @@
 import importlib.util
+import json
 from pathlib import Path
+
+import pytest
 
 spec = importlib.util.spec_from_file_location("r6_dryrun", Path(__file__).parents[2] / "scripts" / "r6_dryrun.py")
 dr = importlib.util.module_from_spec(spec)
@@ -87,14 +90,49 @@ def test_policy_summary_counts_by_account_action_and_decision():
     after["policy"] = {"1": [{"action": "backfill_entry", "kind": "expense", "amount_bucket": "<1000", "decision": "apply"},
                              {"action": "backfill_entry", "kind": "income", "amount_bucket": "<5000", "decision": "propose:max_amount"},
                              {"action": "anchor_opening", "kind": None, "amount_bucket": ">=5000", "decision": "disabled"}]}
-    after.update({"anchor_blockers": [7], "needs_peer": {"3": 2}, "owner_deleted": {"1": 1},
+    after.update({"anchor_blockers": [7], "anchor_above_earlier_statement": [3, 9], "needs_peer": {"3": 2, "12": 1}, "owner_deleted": {"1": 1},
                   "retirements": {"1": {"backfill_entry": 1, "create_system_entry": 2}},
                   "sweep": {"would_release_old": 5, "would_release_new": 2, "kept_by_key": {"name": 2, "merchant": 1}, "released_by_key": {"amount": 2}},
                   "structural_keys": ["amount", "flow"], "accounts": {"1": 3}})
     text = dr.policy_summary(after)
     assert "| 3 | backfill_entry | apply | 1 |" in text and "| 3 | backfill_entry | propose:max_amount | 1 |" in text
     assert "| 3 | anchor_opening | disabled | 1 |" in text
-    assert "anchor blocked by closing adjustments: 1 account" in text and "needs_peer lines: 2" in text
+    assert "anchor blocked by closing adjustments: 1 account\n" in text
+    assert "anchor above an earlier statement: 2 accounts\n" in text
+    assert "needs_peer lines: 3 (by account: 3=2, 12=1)\n" in text
     assert "retirements pending: backfill_entry 1, create_system_entry 2" in text
     assert "sweep: old rule would release 5 lines, new rule 2 (kept by key: name 2, merchant 1; released by key: amount 2)" in text
     assert "structural keys: amount, flow" in text
+
+
+def test_policy_summary_without_needs_peer_or_late_anchors_says_none():
+    after = _dump({"1": {"claims": [], "cases": []}})
+    after["policy"] = {}
+    text = dr.policy_summary(after)
+    assert "anchor above an earlier statement: 0 accounts\n" in text and "needs_peer lines: 0 (by account: none)\n" in text
+
+
+def _case_dump():
+    spec = importlib.util.spec_from_file_location("r6_case_dump", Path(__file__).parents[2] / "scripts" / "r6_case_dump.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("amount, bucket", [("0", "<1000"), ("999.99", "<1000"), ("1000", "<5000"), ("4999.99", "<5000"),
+                                            ("5000", ">=5000"), ("-999.99", "<1000"), ("-1000", "<5000"), ("-5000", ">=5000")])
+def test_bucket_boundaries(amount, bucket):
+    from decimal import Decimal
+    assert _case_dump()._bucket(Decimal(amount)) == bucket
+
+
+def test_main_policy_refuses_a_dump_without_a_policy_section(tmp_path, monkeypatch, capsys):
+    plain = _dump({"1": {"claims": [], "cases": []}})
+    for name in ("before.json", "after.json"):
+        (tmp_path / name).write_text(json.dumps(plain))
+    monkeypatch.setattr("sys.argv", ["r6_dryrun.py", "--policy", "--baseline", str(tmp_path / "before.json"),
+                                     "--candidate", str(tmp_path / "after.json"), "--out-dir", str(tmp_path / "out")])
+    assert dr.main() != 0
+    err = capsys.readouterr().err
+    assert "no policy section" in err and "r6_case_dump.py --policy" in err
+    assert not (tmp_path / "out").exists()

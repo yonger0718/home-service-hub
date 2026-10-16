@@ -879,6 +879,135 @@ def _adjustments(db):
     return [e for e in _booked(db) if e.kind == "balance_adjustment"]
 
 
+AUG = (date(2026, 8, 1), date(2026, 8, 31))
+
+
+def _case_dump():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("r6_case_dump", Path(__file__).parents[2] / "scripts" / "r6_case_dump.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_anchor_is_idempotent_on_rerun_and_after_an_earlier_statement_is_added(seed, db_session, run, dirty_on):
+    # spec R6b.8 / final review C1: September arrives first and is anchored by the policy (it starts within the
+    # account's first live month: live from 8/15); August arrives later with a deposit and a fee the ledger lacks.
+    # The anchor (dated 8/31) already absorbed both, so the policy neither re-anchors nor books the August lines.
+    from app.services.reconciliation_actions import structural_actions as sa
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 8, 15))
+    db_session.commit()
+    sep, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1590"))
+    _set_policy(db_session, {"enabled": True, "backfill_grace_days": 0,
+                             "actions": {"anchor_opening": {"enabled": True, "max_amount": "200000"},
+                                         "backfill_entry": {"enabled": True, "max_amount": "5000"},
+                                         "create_system_entry": {"enabled": True}}})
+    for _ in range(2):  # run 1 anchors (and flags the statement), run 2 backfills the September deposit
+        policy_service.run_policy(db_session, sep.id)
+        rec.reconcile(db_session, sep.id)
+        db_session.commit()
+    (anchor,) = [a for a in _actions(db_session) if a.action == "anchor_opening"]
+    assert anchor.inverse["as_of"] == "2026-08-31" and anchor.after["policy_budget"]["amount"] == "590"
+    assert sa.anchor_as_of(db_session, bank.id) == date(2026, 8, 31)
+    assert sorted(a.action for a in _actions(db_session)) == ["anchor_opening", "backfill_entry"]
+    assert [c for c in _cases(db_session, sep.id, "open") if c.kind == "balance_gap"] == []
+    assert policy_service.run_policy(db_session, sep.id).applied == []  # rerun: idempotent
+    booked = [e.id for e in _booked(db_session)]
+    assert _case_dump()._policy_section(db_session, [db_session.get(AccountStatement, sep.id)])["anchor_above_earlier_statement"] == []
+
+    aug, (deposit, fee), _ = _submit(db_session, run, bank, [_line(1, date(2026, 8, 5), "存入", 100, "deposit"),
+                                                             _line(2, date(2026, 8, 20), "手續費", -10, "fee")],
+                                     kind="bank", period=AUG, opening=Decimal("1500"))
+    assert sa.anchor_target(db_session, bank.id).id == aug.id  # August is now the earliest opening balance
+    aug_cases = {c.line_id: c for c in _cases(db_session, aug.id, "open") if c.kind == "line_unmatched"}
+    assert set(aug_cases) == {deposit.id, fee.id} and aug_cases[fee.id].context["hint"] == "bank_only"
+    statement = db_session.get(AccountStatement, aug.id)
+    assert policy_service.collect_candidates(db_session, statement, settings_service.reconciliation_policy(db_session)) == []
+    result = policy_service.run_policy(db_session, aug.id)
+    assert (result.applied, result.proposed) == ([], [])
+    for sid in (aug.id, sep.id):
+        rec.reconcile(db_session, sid)
+        db_session.commit()
+    assert [e.id for e in _booked(db_session)] == booked  # no re-anchor, no backfill, no system entry below as_of
+    assert len([a for a in _actions(db_session) if a.action == "anchor_opening"]) == 1
+    assert {c.line_id for c in _cases(db_session, aug.id, "open") if c.kind == "line_unmatched"} == {deposit.id, fee.id}
+    # the anchor dated 8/31 carries August's own movement: both months balance at their end, so no gap is opened
+    assert [c for c in _cases(db_session, aug.id, "open") if c.kind == "balance_gap"] == []
+    assert [c for c in _cases(db_session, sep.id, "open") if c.kind == "balance_gap"] == []
+    statements = [db_session.get(AccountStatement, sid) for sid in (aug.id, sep.id)]
+    section = _case_dump()._policy_section(db_session, statements)
+    assert section["anchor_above_earlier_statement"] == [bank.id]
+    # the owner may still book the absorbed deposit; the absorbed amount then shows as the August gap
+    engine.apply_action(db_session, case_id=aug_cases[deposit.id].id, action="backfill_entry", params={"kind": "income"},
+                        actor="owner", label="t")
+    db_session.commit()
+    rec.reconcile(db_session, aug.id)
+    db_session.commit()
+    (gap,) = [c for c in _cases(db_session, aug.id, "open") if c.kind == "balance_gap"]
+    assert Decimal(gap.context["gap"]) == Decimal("-100")
+
+
+def test_a_backfill_collected_before_an_anchor_is_refused_under_the_lock(seed, db_session, run, dirty_on):
+    # August has no opening balance, so September is the anchor target (as_of 8/31); the policy collected August's
+    # deposit before the owner anchored: under the lock the candidate is now absorbed by the anchor (C1)
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 8, 1))
+    db_session.commit()
+    aug, (deposit,), _ = _submit(db_session, run, bank, [_line(1, date(2026, 8, 5), "存入", 100, "deposit")], kind="bank",
+                                 period=AUG, opening=Decimal("1500"))
+    db_session.get(AccountStatement, aug.id).opening_balance = None
+    db_session.commit()
+    sep, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0})
+    (case,) = [c for c in _cases(db_session, aug.id, "open") if c.line_id == deposit.id]
+    cand = policy_service._backfill_candidate(db_session, case, db_session.get(AccountStatement, aug.id))
+    assert cand is not None and cand.action == "backfill_entry"
+    (gap,) = [c for c in _cases(db_session, sep.id, "open") if c.kind == "balance_gap"]
+    engine.apply_action(db_session, case_id=gap.id, action="anchor_opening", params={}, actor="owner", label="t")
+    db_session.commit()
+    rec.reconcile(db_session, aug.id)  # discharges the anchor's needs_recheck flag; the line case is kept as is
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, aug.id, "open") if c.line_id == deposit.id]
+    assert case.id == cand.case_id
+    assert policy_service._backfill_candidate(db_session, case, db_session.get(AccountStatement, aug.id)) is None
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params=cand.params, actor="policy",
+                            label="policy", budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert [e.kind for e in _booked(db_session)] == ["balance_adjustment"]
+
+
+@pytest.mark.parametrize("live_from", [date(2026, 8, 1), date(2026, 7, 1)])
+def test_the_policy_anchors_only_the_first_live_month_but_the_owner_may_anchor_later_ones(seed, db_session, run, dirty_on, live_from):
+    # the September statement is not the first live month (live from 8/1: August is; 9/1 is a calendar month later)
+    bank = seed.account("銀行", opening="1000", statement_live_from=live_from)
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, DAY, "存入", 100, "deposit")], kind="bank", opening=Decimal("1600"))
+    _set_policy(db_session, ANCHOR_ON)
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    statement = db_session.get(AccountStatement, stmt.id)
+    assert policy_service._anchor_candidate(db_session, case, statement) is None
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], []) and _actions(db_session) == []
+    assert "anchor_opening" in registry.allowed(case)
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="anchor_opening", params={}, actor="owner", label="t")
+    db_session.commit()
+    assert row.status == "applied" and len(_adjustments(db_session)) == 1
+
+
+@pytest.mark.parametrize("live_from", [None, date(2026, 9, 1), date(2026, 9, 20), date(2026, 8, 2)])
+def test_the_policy_anchors_a_target_in_the_first_live_month(live_from):
+    target = SimpleNamespace(period_start=date(2026, 9, 1))
+    assert policy_service._first_live_month(target, SimpleNamespace(statement_live_from=live_from)) is True
+
+
+@pytest.mark.parametrize("live_from", [date(2026, 8, 1), date(2026, 7, 31), date(2026, 6, 1)])
+def test_the_policy_does_not_anchor_a_target_after_the_first_live_month(live_from):
+    target = SimpleNamespace(period_start=date(2026, 9, 1))
+    assert policy_service._first_live_month(target, SimpleNamespace(statement_live_from=live_from)) is False
+
+
 def test_policy_skips_statements_flagged_by_the_anchor_until_reconciled(seed, db_session, run, dirty_on):
     # run 1 (anchor only): the anchor applies and flags the statement needs_recheck. Run 2 (system entries now on)
     # is skipped (statement_excluded: needs_recheck) until a reconcile clears the flag; run 3 books the fee.
