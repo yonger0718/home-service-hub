@@ -203,6 +203,9 @@ Actions (`params`; the kinds a case must have; `actions_allowed` lists what a ca
 | `link_installment_plan` | `definition_id` | `line_unmatched` (hint `installment_unmapped`) | no |
 | `create_entry` | `kind` (`expense`/`income`), `category_id`, `name?`, `project_id?` | `line_unmatched` | no |
 | `create_system_entry` | `kind` (`fee`/`interest`/`reward`) | `line_unmatched` (bank-only hint or fee/interest/reward line) | yes |
+| `backfill_entry` | `kind` (`expense`/`income`) | `line_unmatched` | yes |
+| `anchor_opening` | none | `balance_gap` (bank account; needs `dirty_enabled`) | yes |
+| `replace_stand_in` | none | `entry_unmatched` (stand-in hint) | yes |
 | `create_refund` | `original_entry_id` | `line_unmatched` (refund line) | no |
 | `attach_fee` | `entry_id` | `amount_delta` with `fee_matches` (bundled fee only) | yes |
 | `adjust_amount` | `entry_id`, `line_id` | `amount_delta` | no |
@@ -225,6 +228,7 @@ Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `d
   "match": {"enabled": false, "max_amount": "0"}}}`. Any subset may be sent (actions merge per action); unknown keys,
   non-boolean flags, a count outside 0..1000, non-amount strings and non-ISO currency codes are 422. `policy_version` is
   `r1c-<settings version>` and changes with the effective policy.
+- R6b policy keys: `backfill_grace_days` (default 14: a line is backfilled only that many days after its statement's period end), `backfill_accounts` (default `[]` = every account; otherwise the account ids the policy may backfill) and three more `actions`: `backfill_entry` (`enabled: false`, `max_amount` "5000"), `anchor_opening` (`enabled: false`, `max_amount` "200000") and `replace_stand_in` (`enabled: true`, `max_amount` "0"). `policy_version` is now `r6b-<settings version>`. `backfill_entry` books an unmatched bank line as a stand-in entry in the category `對帳待分類` (`needs_review`, description starting `對帳建立`); `anchor_opening` books the opening-balance anchor for an account's `balance_gap` (one per account per run; refused with `closing_adjustments_present` on apply and on revert while a later `balance_adjustment_asof` exists, revert that first); `replace_stand_in` removes a stand-in once an owner entry covers the same line (its policy amount is 0, a deliberate budget exemption, but it counts toward `per_statement_count`; replacements are never reverted). Owner-deleted rule: delete a backfilled entry in the ledger and the policy will not recreate it; dismiss the case or re-run the action from the case (`backfill_entry`/`create_system_entry` stay available to the owner). A second `replace_stand_in` on the same event is refused with `duplicate_effect` while the first replacement stays applied; delete the stand-in by hand in that case.
 - `account_siblings` (default `{}`): `{"<account id>": [account ids]}` for the 綜合月結單 case. Siblings must exist, not be
   archived, share the key account's currency, be distinct and not the key itself (422 otherwise). Unmatched lines of that
   account then list up to five `context.sibling_candidates` (`entry_id`, `account_id`, `flow`, `posted_date`); the owner

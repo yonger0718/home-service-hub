@@ -231,6 +231,19 @@ Matcher evidence without pytest (the deploy venv has no test runner): run the R6
 worktree as described in `services/accounting-service/scripts/README-r6-dryrun.md` with `BASE` = this checkout
 before it is moved, and keep `summary.md` in the release record. `gate.sh` stays the parser/OCR evidence.
 
+## R6b rollout (statement as truth)
+
+Order (each step is a settings PUT with the full body; the policy stays `enabled: false` until the dry-run is read):
+
+1. Deploy R6b with all three new actions as defaulted (`backfill_entry` and `anchor_opening` off, `replace_stand_in` on, `backfill_grace_days` 14, `backfill_accounts` `[]`). Nothing changes while `policy.enabled` is false.
+2. Dry-run in policy mode (`--policy` on `r6_case_dump.py` and `r6_dryrun.py`, see "Policy mode (R6b)" in `services/accounting-service/scripts/README-r6-dryrun.md`); keep `policy-summary.md` (mode 600, aggregate only) in the release record, with the sweep regression table from the same run.
+3. Enable `backfill_entry` for bank accounts (set `backfill_accounts` to the bank account ids first), keep the caps (`max_amount`, `per_statement_count`, `per_statement_total`, `monthly_total`) low, then `policy.enabled: true`. Run; watch `policy_applied`, `policy_proposed`, `policy_skipped` and `stand_in_retired` in the audit.
+4. Read the `balance_gap` residual against the `needs_peer` lines (payment/transfer lines stay open until R6c).
+5. Enable `anchor_opening` (cap `max_amount`, default "200000"); run; the anchor locks the account and its live bank statements and sets `needs_recheck` on each, so reconcile them before confirming.
+6. Cards last.
+
+Caps: `replace_stand_in` has amount 0 (no budget use) but counts toward `per_statement_count`. Revert a wrong `anchor_opening` before any `balance_adjustment_asof` on that account (`closing_adjustments_present`).
+
 ## Operator gate (`gate.sh`)
 
 Run it after any change to the CLI, model, sandbox flags or login directory, and to clear a latch
