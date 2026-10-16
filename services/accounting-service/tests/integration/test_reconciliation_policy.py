@@ -187,6 +187,18 @@ def test_policy_on_books_a_bank_only_fee_as_agent_and_charges_the_budget(seed, d
     assert again.applied == [] and _budget(db_session).used_count == 1
 
 
+def test_policy_books_an_interest_line_without_a_pattern(seed, db_session, run):
+    env = _fee_statement(seed, db_session, run, lines=[_line(1, DAY, "INTEREST CREDIT", 12, "interest")])
+    assert env.cases[0].context == {"hint": "bank_only", "pattern": None}
+    _set_policy(db_session, SYSTEM_ON)
+
+    result = policy_service.run_policy(db_session, env.stmt.id)
+
+    booked = _booked(db_session, env.card.id)
+    (row,) = _actions(db_session)
+    assert len(booked) == 1 and booked[0].kind == "interest" and result.applied == [row.id]
+
+
 def test_an_excluded_statement_is_left_alone(seed, db_session, run):
     s = _fee_statement(seed, db_session, run)
     _set_policy(db_session, SYSTEM_ON)

@@ -29,6 +29,7 @@ deferral explanations, are written in live mode only (§5.8)."""
 from __future__ import annotations
 
 import json
+import logging
 from calendar import monthrange
 from collections import defaultdict
 from dataclasses import dataclass, field, fields, replace
@@ -78,13 +79,25 @@ class ReconcileResult:
 
 # --- inputs ------------------------------------------------------------------------------------------------------
 
+log = logging.getLogger(__name__)
+
+
 def rules_for(raw: dict, period_end: date) -> matching.Rules:
-    """matching.Rules from the settings' JSON rules (unknown keys ignored, types from the dataclass defaults)."""
+    """matching.Rules from the settings' JSON rules (unknown keys ignored, types from the dataclass defaults).
+    Under an r1b-* rules_version: a value equal to the old R1b default is skipped silently (never an owner choice,
+    the new default applies); any other score-scale override differing from the default is ignored with a warning
+    (R6a.1); a scale value equal to the default applies silently (settings merge the defaults into `raw`)."""
+    version = raw.get("rules_version")
+    stored = {k: v for k, v in raw.items() if k != "rules_version"}
+    effective, warned = settings_service.normalise_stale_rules(stored, version)
+    for key in warned:
+        log.warning("ignored stale rule override %s=%r (rules_version %s predates the R6a score scale)",
+                    key, raw[key], version)
     kwargs = {}
     for f in fields(matching.Rules):
-        if f.name == "period_end" or f.name not in raw:
+        if f.name == "period_end" or f.name not in effective:
             continue
-        value, default = raw[f.name], f.default
+        value, default = effective[f.name], f.default
         if isinstance(default, bool):  # before int: bool is an int subclass
             value = value is True or str(value).lower() == "true"
         elif isinstance(default, Decimal):
@@ -668,13 +681,13 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     line_rows = [line for line in all_lines if line.id not in manual]
     owned = set().union(*manual.values()) if manual else set()
     # population before the locks, to know what to lock; re-read under the locks
-    entries, groups = load_candidates(db, statement, accounts, window_days=rules.candidate_window_days,
+    entries, groups = load_candidates(db, statement, accounts, window_days=matching.population_window_days(rules),
                                       include_reward=include_reward, exclude=owned)
     wanted = {e.id for e in entries if e.claimable} | {c.id for e in entries for c in e.children}
     transfers = {e.transfer_group_id for e in entries if e.transfer_group_id is not None}
     locked_rows = _lock_candidates(db, sorted(groups), wanted, {UUID(t) for t in transfers})
     first_groups = {e.id: e.group_id for e in entries}
-    entries, groups = load_candidates(db, statement, accounts, window_days=rules.candidate_window_days,
+    entries, groups = load_candidates(db, statement, accounts, window_days=matching.population_window_days(rules),
                                       include_reward=include_reward, exclude=owned)
     # rows that joined the population after the first read are not locked, and a row whose group changed in between
     # belongs to a group we did not lock: both are left to the next sweep/recheck

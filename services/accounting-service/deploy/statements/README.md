@@ -227,6 +227,10 @@ Rollout (owner go for each step): install both venvs with the constraints; the e
 exit 0); `coredumpctl list` shows nothing for the worker. R3b/R3c: an "OCR" chip on the statement detail when
 `revision.parser` ends with `+ocr`.
 
+Matcher evidence without pytest (the deploy venv has no test runner): run the R6a dry-run from the candidate
+worktree as described in `services/accounting-service/scripts/README-r6-dryrun.md` with `BASE` = this checkout
+before it is moved, and keep `summary.md` in the release record. `gate.sh` stays the parser/OCR evidence.
+
 ## Operator gate (`gate.sh`)
 
 Run it after any change to the CLI, model, sandbox flags or login directory, and to clear a latch

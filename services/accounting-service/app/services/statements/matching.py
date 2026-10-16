@@ -9,6 +9,7 @@ No DB, no I/O. Contract with callers (the orchestrator follows it):
   line are unavailable to later lines.
 - Known limit (deferred): the decision is greedy per line, so two equal-amount lines against two equal-amount
   entries a day apart can both end ambiguous where a global assignment would pair them.
+  Since R6a the exact window is real: distance alone never drops an in-window representation below accept.
 """
 from __future__ import annotations
 
@@ -93,13 +94,22 @@ class Rules:
     foreign_window_days: int = 5
     near_window_days: int = 5
     near_tolerance_abs: Decimal = Decimal("10")
-    near_tolerance_pct: Decimal = Decimal("0.03")
+    near_tolerance_pct: Decimal = Decimal("0.05")
+    drift_window_days: int = 15  # R6a.5: exact amount, farther than the exact window → a date_drift proposal
     accept: Decimal = Decimal("0.80")
-    margin: Decimal = Decimal("0.15")
+    margin: Decimal = Decimal("0.05")
     ambiguous_floor: Decimal = Decimal("0.50")
     candidate_window_days: int = 10
     deferral_days: int = 2
     bank_only_patterns: tuple[str, ...] = ("年費", "循環利息", "現金回饋", "跨行手續費", "轉帳手續費", "利息")
+
+
+def population_window_days(rules: Rules) -> int:
+    """R6b.0 (shipped with R6a): the orchestrator loads entries this many days around the period so that every
+    rule's candidates are present (exact, drift, near, foreign, installment); `candidate_window_days` keeps its
+    installment meaning."""
+    return max(rules.candidate_window_days, rules.exact_window_days, rules.drift_window_days, rules.near_window_days,
+               rules.foreign_window_days)
 
 
 @dataclass(frozen=True)
@@ -143,8 +153,8 @@ class MatchResult:
 
 
 CARD_GATES = {
-    "purchase": frozenset({"expense"}),
-    "installment": frozenset({"expense"}),
+    "purchase": frozenset({"expense", "receivable"}),      # R6a.3: a receivable I paid for someone looks like a purchase
+    "installment": frozenset({"expense", "receivable"}),
     "refund": frozenset({"refund"}),
     "payment": frozenset({"transfer_in"}),
     "fee": frozenset({"fee"}),
@@ -152,8 +162,8 @@ CARD_GATES = {
     "reward": frozenset({"reward"}),
 }
 BANK_GATES = {
-    "deposit": frozenset({"income", "transfer_in", "interest", "settlement_in"}),
-    "withdrawal": frozenset({"expense", "transfer_out", "fee", "settlement_out"}),
+    "deposit": frozenset({"income", "transfer_in", "interest", "settlement_in", "payable"}),      # R6a.3: a payable I received
+    "withdrawal": frozenset({"expense", "transfer_out", "fee", "settlement_out", "receivable"}),  # R6a.3: a receivable I paid
     "transfer_in": frozenset({"transfer_in"}),
     "transfer_out": frozenset({"transfer_out"}),
     "fee": frozenset({"fee"}),
@@ -208,12 +218,15 @@ def _text(line: Line, entries: tuple[Entry, ...]) -> Decimal:
 
 
 def _score(line: Line, entries: tuple[Entry, ...], window: int) -> tuple[Decimal, tuple[str, ...]]:
+    """R6a.1: any conserved exact-amount representation inside the window scores >= accept (0.80); the date term
+    (0.10, linear to the window edge) and the merchant-text term (0.10) only order candidates. A zero window keeps
+    same-day candidates only, with the full date term."""
     dist = min(_date_distance(line, e) for e in entries)
     if dist > window:
         return ZERO, ("date_out_of_window",)
-    date_term = (Decimal("0.30") * max(ZERO, Decimal(1) - Decimal(dist) / Decimal(4))).quantize(Q)
+    date_term = Decimal("0.10") if window == 0 else (Decimal("0.10") * (Decimal(1) - Decimal(dist) / Decimal(window))).quantize(Q)
     text = _text(line, entries)
-    return (Decimal("0.60") + date_term + text).quantize(Q), (f"date_distance={dist}", f"text={text}")
+    return (Decimal("0.80") + date_term + text).quantize(Q), (f"date_distance={dist}", f"text={text}")
 
 
 def _installment_score(line: Line, entry: Entry, rules: Rules) -> tuple[Decimal, tuple[str, ...]]:
@@ -380,6 +393,8 @@ def _foreign_case(kind: str, line: Line, entries: list[Entry], claimed: set[int]
 
 
 def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Case | None:
+    """R6a.4: same amount within max(abs, pct) and the near window. Merchant-token overlap (half of the union) is
+    required only for candidates on another day; on the same day amount proximity is enough. Never claims."""
     gate = eligible_kinds(kind, line.line_kind)
     mine = tokens(line.merchant_norm)
     tol = max(rules.near_tolerance_abs, (rules.near_tolerance_pct * abs(line.flow)).quantize(Q))
@@ -387,13 +402,14 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
     for e in entries:
         if e.id in claimed or _entry_class(e) not in gate or not _standalone(e) or not _peer_ok(kind, line, e):
             continue
-        theirs = tokens(normalise(e.merchant or "")) | tokens(normalise(e.name or ""))
-        if not mine or not theirs or 2 * len(mine & theirs) < len(mine | theirs):
-            continue
         delta = (line.flow - e.flow).quantize(Q)
         dist = _date_distance(line, e)
         if abs(delta) > tol or dist > rules.near_window_days:
             continue
+        if dist >= 1:
+            theirs = tokens(normalise(e.merchant or "")) | tokens(normalise(e.name or ""))
+            if not mine or not theirs or 2 * len(mine & theirs) < len(mine | theirs):
+                continue
         found.append((abs(delta), dist, e.id, delta))
     if not found:
         return None
@@ -403,13 +419,37 @@ def _near_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], r
     return Case(line.id, best_id, "amount_delta", cands, {"residual": str(best_delta), "fee_matches": False, "entry_id": best_id})
 
 
-def _bank_only(line: Line, rules: Rules) -> str | None:
-    if line.line_kind not in ("fee", "interest", "reward"):
+def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], rules: Rules) -> Case | None:
+    """R6a.5: a standalone, gated, unclaimed entry with the same amount and sign, farther than the exact window but
+    within the drift window → an amount_delta proposal (residual 0) the owner confirms with `match`. Never claims."""
+    gate = eligible_kinds(kind, line.line_kind)
+    found: list[tuple[int, int]] = []
+    for e in entries:
+        if e.id in claimed or _entry_class(e) not in gate or not _standalone(e) or not _peer_ok(kind, line, e):
+            continue
+        if not _same(e.flow, line.flow):
+            continue
+        dist = _date_distance(line, e)
+        if rules.exact_window_days < dist <= rules.drift_window_days:
+            found.append((dist, e.id))
+    if not found:
         return None
-    for pattern in rules.bank_only_patterns:
-        if pattern in line.merchant_norm:
-            return pattern
-    return None
+    found.sort()
+    best_dist, best_id = found[0]
+    cands = tuple({"entry_id": eid, "reason": "date_drift", "date_distance": dist} for dist, eid in found)
+    return Case(line.id, best_id, "amount_delta", cands,
+                {"hint": "date_drift", "date_distance": best_dist, "entry_id": best_id, "residual": "0", "fee_matches": False})
+
+
+BANK_ONLY_KINDS = frozenset({"fee", "interest", "reward"})
+
+
+def _bank_only(line: Line, rules: Rules) -> dict | None:
+    """R6a.6: every fee/interest/reward line is bank-side automatic; the matched pattern (if any) only annotates."""
+    if line.line_kind not in BANK_ONLY_KINDS:
+        return None
+    pattern = next((p for p in rules.bank_only_patterns if p in line.merchant_norm), None)
+    return {"hint": "bank_only", "pattern": pattern}
 
 
 def _claimed_by_earlier_line(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
@@ -436,7 +476,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
         if line.line_kind == "installment":  # gated by the plan map only: never a generic, foreign or near match
             result.cases.append(_installment_case(line, reps, entries + hint_only, plan_map, claimed, rules))
             continue
-        if reps and reps[0].score >= rules.ambiguous_floor:  # ambiguity stops the line
+        if len(reps) >= 2 and reps[0].score >= rules.ambiguous_floor:  # R6a.2: ambiguity needs two candidates
             result.cases.append(_ambiguous(line, reps))
             continue
         if not reps:
@@ -445,13 +485,14 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
         case = _foreign_case(statement_kind, line, entries, claimed, fee_expected, rules, account_currency) \
-            or _near_case(statement_kind, line, entries, claimed, rules)
+            or _near_case(statement_kind, line, entries, claimed, rules) \
+            or _drift_case(statement_kind, line, entries, claimed, rules)
         if case is not None:
             result.cases.append(case)
             continue
-        pattern = _bank_only(line, rules)
-        if pattern:
-            result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "bank_only", "pattern": pattern}))
+        bank_only = _bank_only(line, rules)
+        if bank_only:
+            result.cases.append(Case(line.id, None, "line_unmatched", (), bank_only))
             continue
         result.cases.append(Case(line.id, None, "line_unmatched", (), {}))
     unmatched: set[int] = set()

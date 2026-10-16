@@ -45,10 +45,10 @@ def test_merchant_signal_breaks_the_tie():
     assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
 
 
-def test_same_day_same_amount_different_merchants_is_ambiguous():
-    # text weighs at most 0.10, below the 0.15 margin: on equal dates ambiguity stops automation (§6.3)
+def test_same_day_same_amount_merchant_text_resolves_on_the_new_scale():
+    # R6a.1: text weighs 0.10, the margin is 0.05: on equal dates the better merchant match wins (global competition)
     res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], [E(10, date(2026, 9, 3), "-580", merchant="全聯 大安"), E(11, date(2026, 9, 3), "-580", merchant="家樂福")])
-    assert res.claims == [] and res.cases[0].kind == "ambiguous" and {c["entry_id"] for c in res.cases[0].candidates} == {10, 11}
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
 
 
 def test_group_claims_every_member_and_blocks_a_second_line():
@@ -137,6 +137,22 @@ def test_near_match_is_always_a_case():
 def test_bank_only_line_is_hinted():
     res = run([L(1, date(2026, 9, 30), "-5", kind="fee", merchant="跨行手續費")], [])
     assert res.cases[0].kind == "line_unmatched" and res.cases[0].context["hint"] == "bank_only"
+
+
+def test_bank_only_by_line_kind_without_any_pattern():
+    res = run([L(1, date(2026, 9, 30), "12", kind="interest", merchant="INTEREST CREDIT")], [], kind="bank")
+    assert res.cases[0].kind == "line_unmatched" and res.cases[0].context == {"hint": "bank_only", "pattern": None}
+
+
+def test_bank_only_keeps_the_matched_pattern_as_annotation():
+    res = run([L(1, date(2026, 9, 30), "-5", kind="fee", merchant="跨行手續費")], [])
+    assert res.cases[0].context == {"hint": "bank_only", "pattern": "跨行手續費"}
+
+
+def test_unknown_deposit_withdrawal_lines_are_never_bank_only():
+    for kind in ("unknown", "deposit", "withdrawal"):
+        res = run([L(1, date(2026, 9, 30), "12", kind=kind, merchant="利息")], [], kind="bank")
+        assert "hint" not in res.cases[0].context, kind
 
 
 def test_reverse_population_and_deferral():
@@ -363,3 +379,232 @@ def test_installment_group_sum_mismatch_is_not_admissible():
     entries, groups = _loan()
     res = run([L(1, SEP3, "-10000", kind="payment")], entries, groups=groups, kind="bank")
     assert not res.claims   # the group sums to -10500; a lone member is never admissible either
+
+
+def test_exact_amount_three_days_apart_claims_without_merchant_text():
+    # R6a.1: the configured 3-day window must work; under the old formula distance 3 scored 0.675 < accept
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 6), "-580", merchant="")])
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+    assert res.cases == []
+
+
+def test_exact_amount_two_days_apart_claims_without_merchant_text():
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 5), "-580", merchant="")])
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+
+
+def test_exact_amount_four_days_apart_is_not_a_representation():
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 7), "-580", merchant="")])
+    assert res.claims == [] and res.cases[0].line_id == 1 and res.cases[0].kind != "ambiguous"
+
+
+def test_score_orders_by_date_then_text_on_the_new_scale():
+    score0, _ = m._score(L(1, date(2026, 9, 3), "-580", merchant=""), (E(10, date(2026, 9, 3), "-580", merchant=""),), 3)
+    score3, _ = m._score(L(1, date(2026, 9, 3), "-580", merchant=""), (E(10, date(2026, 9, 6), "-580", merchant=""),), 3)
+    score_text, _ = m._score(L(1, date(2026, 9, 3), "-580", merchant="全聯 大安"), (E(10, date(2026, 9, 3), "-580", merchant="全聯 大安"),), 3)
+    assert (score0, score3, score_text) == (D("0.9000"), D("0.8000"), D("1.0000"))
+
+
+def test_closer_candidate_wins_when_two_days_apart_with_equal_text():
+    entries = [E(10, date(2026, 9, 5), "-580", merchant=""), E(11, date(2026, 9, 3), "-580", merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries)
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [11]
+
+
+def test_candidates_one_day_apart_with_equal_text_stay_ambiguous():
+    entries = [E(10, date(2026, 9, 4), "-580", merchant=""), E(11, date(2026, 9, 3), "-580", merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries)
+    assert res.claims == [] and res.cases[0].kind == "ambiguous" and {c["entry_id"] for c in res.cases[0].candidates} == {10, 11}
+
+
+def test_text_can_reverse_the_date_order():
+    # distance 0 / text 0 → 0.90; distance 2 / text 1 → 0.9333: inside the 0.05 margin → ambiguous, not the closer one
+    entries = [E(10, date(2026, 9, 3), "-580", merchant="家樂福"), E(11, date(2026, 9, 5), "-580", merchant="全聯 大安")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], entries)
+    assert res.claims == [] and res.cases[0].kind == "ambiguous"
+
+
+def test_exact_tie_stays_ambiguous():
+    entries = [E(10, date(2026, 9, 3), "-580", merchant=""), E(11, date(2026, 9, 3), "-580", merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries)
+    assert res.claims == [] and res.cases[0].kind == "ambiguous"
+
+
+def test_zero_window_scores_same_day_and_nothing_else():
+    rules = dataclasses.replace(R, exact_window_days=0)
+    same, _ = m._score(L(1, date(2026, 9, 3), "-580", merchant=""), (E(10, date(2026, 9, 3), "-580", merchant=""),), 0)
+    next_day, reasons = m._score(L(1, date(2026, 9, 3), "-580", merchant=""), (E(10, date(2026, 9, 4), "-580", merchant=""),), 0)
+    assert same == D("0.9000") and next_day == D("0") and reasons == ("date_out_of_window",)
+    res = m.match("card", [L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 3), "-580", merchant="")], {}, {}, lambda e: None, rules, "TWD")
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+
+
+def test_zero_window_uses_txn_date_distance_too():
+    # Review Focus 2: txn_date == entry_date counts as distance 0 even when posted dates differ
+    rules = dataclasses.replace(R, exact_window_days=0)
+    line = L(1, date(2026, 9, 5), "-580", merchant="", txn_date=date(2026, 9, 3))
+    res = m.match("card", [line], [E(10, date(2026, 9, 3), "-580", merchant="")], {}, {}, lambda e: None, rules, "TWD")
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+
+
+def test_margin_default_is_five_hundredths():
+    assert m.Rules(period_end=date(2026, 9, 30)).margin == D("0.05")
+
+
+def test_two_installment_representations_with_a_text_gap_now_resolve():
+    # the shared margin runs before _installment_case: two confirmed-plan reps whose text differs by >= 0.05 claim
+    # the better one (under margin 0.15 they stayed ambiguous because text <= 0.10)
+    entries = [E(40, date(2026, 9, 5), "-1000", merchant="APPLE STORE", instance=m.InstanceRef(definition_id=7, seq=2, times=12)),
+               E(41, date(2026, 9, 5), "-1000", merchant="家樂福", instance=m.InstanceRef(definition_id=7, seq=2, times=12))]
+    res = run([L(1, date(2026, 9, 5), "-1000", kind="installment", merchant="APPLE STORE", seq=2, total=12)], entries,
+              plan_map={"APPLE STORE|12|1000.0000": 7})
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [40]
+
+
+def test_claimed_by_earlier_line_hint_under_the_new_scale():
+    # lines run in id order. Line 1 is 3 days from the entry (old score 0.675: no claim, one-candidate ambiguous),
+    # line 2 is on the entry's day. Under R6a line 1 claims (0.80) and line 2 — which used to hold the exact claim —
+    # sees exactly one shadow representation whose row is claimed → the hint names it (parent §6.3, newly reachable)
+    lines = [L(1, date(2026, 9, 6), "-580", merchant=""), L(2, date(2026, 9, 3), "-580", merchant="")]
+    res = run(lines, [E(10, date(2026, 9, 3), "-580", merchant="")])
+    assert [c.line_id for c in res.claims] == [1]
+    assert res.cases[0].line_id == 2 and res.cases[0].context == {"hint": "claimed_by_earlier_line", "entry_id": 10}
+
+
+def test_single_representation_below_accept_is_never_ambiguous():
+    # R6a.2 contract: a lone candidate never stops a line as ambiguous; with accept raised to 0.95 a distance-0,
+    # text-0 representation (0.90) is below accept and must fall through to the fallback chain
+    rules = dataclasses.replace(R, accept=D("0.95"))
+    res = m.match("card", [L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 3), "-580", merchant="")], {}, {}, lambda e: None, rules, "TWD")
+    assert res.claims == [] and res.cases[0].kind != "ambiguous"
+
+
+def test_group_and_standalone_same_day_equal_text_stay_ambiguous():
+    # Review Focus 3: two representation shapes with equal scores compete globally; neither wins by position
+    g = m.Group(id=5, kind="split", member_ids=(21, 22))
+    entries = [E(10, date(2026, 9, 3), "-580", merchant=""), E(21, date(2026, 9, 3), "-300", group_id=5, merchant=""),
+               E(22, date(2026, 9, 3), "-280", group_id=5, merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], entries, groups={5: g})
+    assert res.claims == [] and res.cases[0].kind == "ambiguous"
+    assert {(c["entry_id"], c["group_id"]) for c in res.cases[0].candidates} == {(10, None), (None, 5)}
+
+
+def test_card_purchase_matches_a_receivable_i_paid_for_someone():
+    # R6a.3: a non-settlement receivable (amount < 0) conserves a purchase flow
+    res = run([L(1, date(2026, 9, 3), "-1200")], [E(10, date(2026, 9, 3), "-1200", kind="receivable")])
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+
+
+def test_card_purchase_never_matches_a_receivable_settlement():
+    # a collection (amount > 0, is_settlement) is class settlement_in: not in the purchase gate, and the sign differs anyway
+    res = run([L(1, date(2026, 9, 3), "-1200")], [E(10, date(2026, 9, 3), "1200", kind="receivable", is_settlement=True)])
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+
+
+def test_bank_withdrawal_matches_a_receivable_and_deposit_matches_a_payable():
+    entries = [E(10, date(2026, 9, 3), "-1200", kind="receivable"), E(11, date(2026, 9, 4), "5000", kind="payable")]
+    lines = [L(1, date(2026, 9, 3), "-1200", kind="withdrawal"), L(2, date(2026, 9, 4), "5000", kind="deposit")]
+    res = run(lines, entries, kind="bank")
+    assert sorted((c.line_id, c.representation.rows[0].entry_id) for c in res.claims) == [(1, 10), (2, 11)]
+
+
+def test_gates_list_receivable_and_payable():
+    assert m.eligible_kinds("card", "purchase") == frozenset({"expense", "receivable"})
+    assert m.eligible_kinds("card", "installment") == frozenset({"expense", "receivable"})
+    assert "receivable" in m.eligible_kinds("bank", "withdrawal") and "payable" in m.eligible_kinds("bank", "deposit")
+    assert "payable" not in m.eligible_kinds("bank", "withdrawal") and "receivable" not in m.eligible_kinds("bank", "deposit")
+
+
+def test_near_same_day_needs_no_merchant_overlap():
+    # R6a.4: a MOZE memo rarely repeats the statement merchant text; on the same day amount proximity is enough
+    res = run([L(1, date(2026, 9, 3), "-1030", merchant="AMAZON JP")], [E(10, date(2026, 9, 3), "-1000", merchant="日亞")])
+    case = res.cases[0]
+    assert case.kind == "amount_delta" and case.entry_id == 10 and case.context["fee_matches"] is False
+    assert case.context["residual"] == "-30.0000" and res.claims == []
+
+
+def test_near_one_day_apart_still_needs_merchant_overlap():
+    res = run([L(1, date(2026, 9, 4), "-1030", merchant="AMAZON JP")], [E(10, date(2026, 9, 3), "-1000", merchant="日亞")])
+    assert res.cases[0].kind == "line_unmatched"
+    res = run([L(1, date(2026, 9, 4), "-1030", merchant="AMAZON JP")], [E(10, date(2026, 9, 3), "-1000", merchant="AMAZON JP")])
+    assert res.cases[0].kind == "amount_delta"
+
+
+def test_near_tolerance_is_five_percent():
+    assert m.Rules(period_end=date(2026, 9, 30)).near_tolerance_pct == D("0.05")
+    res = run([L(1, date(2026, 9, 3), "-1049", merchant="")], [E(10, date(2026, 9, 3), "-1000", merchant="")])
+    assert res.cases[0].kind == "amount_delta"
+    # the tolerance base is the LINE amount (spec R6a.4 keeps `max(abs, pct·|line.flow|)`): 5 % of 1053 = 52.65 < 53
+    res = run([L(1, date(2026, 9, 3), "-1053", merchant="")], [E(10, date(2026, 9, 3), "-1000", merchant="")])
+    assert res.cases[0].kind == "line_unmatched"
+
+
+def test_near_small_amounts_use_the_absolute_tolerance_and_never_claim():
+    # Review Focus 4: 50 vs 58 is 16 % but within abs 10 — a proposal, never a claim
+    res = run([L(1, date(2026, 9, 3), "-58", merchant="")], [E(10, date(2026, 9, 3), "-50", merchant="")])
+    assert res.claims == [] and res.cases[0].kind == "amount_delta" and res.cases[0].context["fee_matches"] is False
+
+
+def test_near_applies_to_card_payment_lines_through_peer_ok():
+    # a payment line meets a transfer_in leg whose peer is known not to be a card; same day, 1 % off
+    ok = E(10, date(2026, 9, 3), "20200", kind="transfer_in", peer_is_card=False)
+    card_peer = E(11, date(2026, 9, 3), "20200", kind="transfer_in", peer_is_card=True)
+    res = run([L(1, date(2026, 9, 3), "20000", kind="payment", merchant="")], [ok, card_peer])
+    assert res.cases[0].kind == "amount_delta" and [c["entry_id"] for c in res.cases[0].candidates] == [10]
+
+
+def test_drift_window_default_and_settings_shape():
+    assert m.Rules(period_end=date(2026, 9, 30)).drift_window_days == 15
+
+
+def test_exact_amount_four_to_fifteen_days_apart_is_a_date_drift_proposal():
+    for days, expect in ((4, "amount_delta"), (15, "amount_delta"), (16, "line_unmatched")):
+        res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 3 + days), "-580", merchant="")])
+        case = res.cases[0]
+        assert case.kind == expect, days
+        if expect == "amount_delta":
+            assert res.claims == [] and case.entry_id == 10
+            assert case.context == {"hint": "date_drift", "date_distance": days, "entry_id": 10, "residual": "0", "fee_matches": False}
+            assert case.candidates == ({"entry_id": 10, "reason": "date_drift", "date_distance": days},)
+
+
+def test_drift_candidates_are_ordered_by_distance_then_id_and_skip_claimed_and_grouped():
+    # Review Focus 5: an entry claimed by an earlier line and a group member never appear. Line 2 sits 4 days from the
+    # claimed entry 10 (outside the exact window, so no claimed_by_earlier_line shadow) and 7 days from 11/12.
+    g = m.Group(id=5, kind="split", member_ids=(30, 31))
+    entries = [E(10, date(2026, 9, 3), "-580", merchant=""), E(12, date(2026, 9, 14), "-580", merchant=""),
+               E(11, date(2026, 9, 14), "-580", merchant=""), E(30, date(2026, 9, 14), "-580", group_id=5, merchant=""),
+               E(31, date(2026, 9, 14), "-1", group_id=5, merchant="")]
+    lines = [L(1, date(2026, 9, 3), "-580", merchant=""), L(2, date(2026, 9, 7), "-580", merchant="")]
+    res = run(lines, entries, groups={5: g})
+    assert [c.representation.rows[0].entry_id for c in res.claims] == [10]
+    drift = next(c for c in res.cases if c.line_id == 2)
+    assert drift.kind == "amount_delta" and drift.context["hint"] == "date_drift"
+    assert [c["entry_id"] for c in drift.candidates] == [11, 12]
+
+
+def test_drift_runs_after_near_and_before_bank_only():
+    # a near candidate on the same day wins over a drift candidate ten days away
+    entries = [E(10, date(2026, 9, 3), "-1000", merchant=""), E(11, date(2026, 9, 13), "-1030", merchant="")]
+    res = run([L(1, date(2026, 9, 3), "-1030", merchant="")], entries)
+    assert res.cases[0].context["entry_id"] == 10 and "hint" not in res.cases[0].context
+    # a fee line with a drift candidate is drift, not bank_only
+    res = run([L(1, date(2026, 9, 3), "-5", kind="fee", merchant="跨行手續費")], [E(10, date(2026, 9, 10), "-5", kind="fee", merchant="")])
+    assert res.cases[0].context["hint"] == "date_drift"
+
+
+def test_exact_amount_four_days_apart_with_merchant_overlap_is_near_not_drift():
+    # near runs first and accepts delta 0 inside its 5-day window when the merchant text overlaps; drift takes the
+    # same pair only without text overlap. Both outcomes are proposals, never claims.
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], [E(10, date(2026, 9, 7), "-580", merchant="全聯 大安")])
+    assert res.claims == [] and res.cases[0].kind == "amount_delta" and "hint" not in res.cases[0].context
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="全聯 大安")], [E(10, date(2026, 9, 7), "-580", merchant="家樂福")])
+    assert res.cases[0].context["hint"] == "date_drift"
+
+
+def test_drift_respects_the_gate_and_peer_rule():
+    res = run([L(1, date(2026, 9, 3), "-580", merchant="")], [E(10, date(2026, 9, 10), "-580", kind="refund", merchant="")])
+    assert res.cases[0].kind == "line_unmatched"
+    card_peer = E(11, date(2026, 9, 10), "20000", kind="transfer_in", peer_is_card=True)
+    res = run([L(1, date(2026, 9, 3), "20000", kind="payment", merchant="")], [card_peer])
+    assert res.cases[0].kind == "line_unmatched"

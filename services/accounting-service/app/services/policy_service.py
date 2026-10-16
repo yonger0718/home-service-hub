@@ -275,7 +275,7 @@ def _single_admissible(ctx: Context, candidate: Candidate) -> None:
         raise CodedConflictError("not_single_admissible", "the line is no longer printed")
     accounts = coverage_service.participating_accounts(db, statement.account_id)
     include_reward = any(row.line_kind == "reward" for row in rec._current_lines(db, statement))
-    entries, groups = rec.load_candidates(db, statement, accounts, window_days=ctx.rules.candidate_window_days,
+    entries, groups = rec.load_candidates(db, statement, accounts, window_days=matching.population_window_days(ctx.rules),
                                           include_reward=include_reward,
                                           exclude=coverage_service.claimed_entry_ids(db))
     reps = matching._representations(statement.kind, rec._as_line(line), [e for e in entries if e.claimable], groups,

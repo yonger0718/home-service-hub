@@ -105,6 +105,8 @@ def no_api_auth_from_env(monkeypatch):
     """Tokens in a production .env must never break the suite; auth tests set the variables themselves."""
     monkeypatch.delenv("ACCOUNTING_API_TOKENS", raising=False)
     monkeypatch.delenv("ACCOUNTING_DOCS_PUBLIC", raising=False)
+    monkeypatch.delenv("ACCOUNTING_TOKEN_SCOPES", raising=False)
+    monkeypatch.delenv("ACCOUNTING_SPA_TOKEN", raising=False)
 
 
 class FakeResponse:

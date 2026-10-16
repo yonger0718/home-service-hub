@@ -1,5 +1,6 @@
 # tests/integration/test_statement_ingest_api.py
 from datetime import date
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
@@ -327,7 +328,7 @@ def test_settings_expose_rules_and_validate_rule_keys(client, card):
     saved = client.put("/settings/reconciliation", headers=S, json={"rules": {"deferral_days": 3, "accept": "0.90"}})
     assert saved.status_code == 200, saved.text
     assert saved.json()["rules"]["deferral_days"] == 3 and saved.json()["rules"]["accept"] == "0.90"
-    assert saved.json()["rules_version"] == f"r1b-{current['version'] + 1}"
+    assert saved.json()["rules_version"] == f"r6a-{current['version'] + 1}"
     again = client.put("/settings/reconciliation", headers=S, json={"rules": {"deferral_days": 3, "accept": "0.90"}})
     assert again.json()["rules_version"] == saved.json()["rules_version"]  # unchanged rules keep the version
     edges = {"accept": "1", "margin": "0", "ambiguous_floor": "0.5", "near_tolerance_pct": "0", "near_tolerance_abs": "0"}
@@ -464,6 +465,45 @@ def test_settings_default_policy_and_siblings(client):
     got = client.get("/settings/reconciliation", headers=H).json()
     assert got["policy"] == settings_service.POLICY_DEFAULTS
     assert got["policy_version"] == "r1c-1" and got["account_siblings"] == {}
+
+
+def test_stale_r1b_row_round_trips_the_effective_rules(client, db_session):
+    # production-shaped row: every rule key stored, the R1b defaults among them, rules_version r1b-1
+    from datetime import date
+    from app.services import reconciliation_service as rec, settings_service
+    row = settings_service._reconciliation_row(db_session)
+    row.data = {**(row.data or {}), "rules": {**settings_service.RULE_DEFAULTS, "margin": "0.15", "near_tolerance_pct": "0.03"},
+                "rules_version": "r1b-1"}
+    db_session.commit()
+    got = client.get("/settings/reconciliation", headers=H).json()
+    assert (got["rules"]["margin"], got["rules"]["near_tolerance_pct"], got["rules_version"]) == ("0.05", "0.05", "r1b-1")
+    body = {k: got[k] for k in ("account_map", "dirty_enabled", "rules", "policy", "account_siblings")}
+    body["rules"] = {**got["rules"], "exact_window_days": 4}
+    put = _put(client, body)
+    assert put.status_code == 200, put.text
+    assert put.json()["rules_version"].startswith("r6a-")
+    effective = rec.rules_for(settings_service.reconciliation_rules(db_session), date(2026, 9, 30))
+    assert (effective.margin, effective.near_tolerance_pct, effective.exact_window_days) == (Decimal("0.05"), Decimal("0.05"), 4)
+
+
+def test_noop_get_put_of_a_stale_r1b_row_keeps_the_version_and_drops_old_defaults(client, db_session):
+    from datetime import date
+    from app.services import reconciliation_service as rec, settings_service
+    row = settings_service._reconciliation_row(db_session)
+    row.data = {**(row.data or {}), "rules": {**settings_service.RULE_DEFAULTS, "margin": "0.15", "near_tolerance_pct": "0.03"},
+                "rules_version": "r1b-1"}
+    db_session.commit()
+    got = client.get("/settings/reconciliation", headers=H).json()
+    body = {k: got[k] for k in ("account_map", "dirty_enabled", "rules", "policy", "account_siblings")}
+    for _ in range(2):  # the second identical PUT is idempotent
+        put = _put(client, body)
+        assert put.status_code == 200, put.text
+        assert put.json()["rules_version"] == "r1b-1"
+        db_session.expire_all()
+        effective = rec.rules_for(settings_service.reconciliation_rules(db_session), date(2026, 9, 30))
+        assert (effective.margin, effective.near_tolerance_pct) == (Decimal("0.05"), Decimal("0.05"))
+        stored = settings_service._reconciliation_row(db_session).data
+        assert stored["rules"]["margin"] == "0.05" and stored["rules_version"] == "r1b-1"
 
 
 def test_policy_put_validates(client):
