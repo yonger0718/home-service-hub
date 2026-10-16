@@ -844,7 +844,6 @@ def test_policy_refuses_a_candidate_whose_creation_the_owner_made_and_deleted_si
     db_session.commit()
     _sweep(db_session, s.stmt)  # not reconcile: the reopened case keeps its old context
     (reopened,) = _cases(db_session, s.stmt.id, "open")
-    print("reopened case id", reopened.id, "original", case.id)
     assert "owner_deleted" not in (reopened.context or {})
     with pytest.raises(CodedConflictError) as info:
         engine.apply_action(db_session, case_id=reopened.id, action="create_system_entry", params=cand.params, actor="policy",
