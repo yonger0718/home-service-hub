@@ -4,9 +4,10 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from app.models import AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationCase
+from app.models import AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase
 from app.services import coverage_service
 from app.services import reconciliation_service as rec
+from app.services import reconciliation_actions as registry
 from app.services import stand_ins
 from app.services.statements import matching
 from app.services.reconciliation_actions import engine
@@ -129,3 +130,117 @@ def test_owner_deleted_keeps_an_existing_hint(seed, db_session, run):
     db_session.commit()
     (case,) = _cases(db_session, stmt.id, "open")
     assert case.context["hint"] == "bank_only" and case.context["owner_deleted"] is True
+
+
+def _audit(db, *events):
+    db.expire_all()
+    return db.execute(select(ReconciliationAudit).where(ReconciliationAudit.event.in_(events))
+                      .order_by(ReconciliationAudit.id)).scalars().all()
+
+
+@pytest.mark.parametrize("action, line_kind, printed, params", [
+    ("backfill_entry", "purchase", 580, {"kind": "expense"}), ("create_entry", "purchase", 580, None),
+    ("create_system_entry", "fee", 50, {"kind": "fee"}), ("create_refund", "refund", -100, {})])
+def test_ledger_delete_retires_the_creation_and_marks_the_event(seed, db_session, run, dirty_on, action, line_kind, printed, params):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "x", printed, line_kind, txn_date=date(2026, 9, 2))])
+    (case,) = _cases(db_session, stmt.id, "open")
+    if action == "create_refund":  # a refund line needs the purchase it refunds
+        params = {"original_entry_id": seed.entry(card, "-500", day=date(2026, 8, 20), merchant="x").id}
+        db_session.commit()
+    if params is None:
+        params = {"kind": "expense", "category_id": seed.category("食").id}
+    row, _ = engine.apply_action(db_session, case_id=case.id, action=action, params=params, actor="owner", label="t")
+    db_session.commit()
+    (entry_id,) = row.created_entry_ids
+    db_session.delete(db_session.get(LedgerEntry, entry_id))
+    db_session.commit()
+    _sweep(db_session, stmt)
+    row = db_session.get(ReconciliationAction, row.id)
+    assert row.status == "reverted" and row.reverted_by_action_id is None and row.inverse["deleted_by_event"]
+    assert _active(db_session, stmt.id) == []
+    _sweep(db_session, stmt)  # idempotent
+    assert db_session.get(ReconciliationAction, row.id).inverse["deleted_by_event"] == row.inverse["deleted_by_event"]
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert case.context.get("owner_deleted") is True
+    assert "create_entry" in registry.allowed(case) or action == "create_refund"
+
+
+def test_retirement_never_overwrites_an_engine_revert_attribution(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+    db_session.commit()
+    rev = engine.revert_action(db_session, action_id=row.id, actor="owner", label="t")
+    db_session.commit()
+    _sweep(db_session, stmt)
+    row = db_session.get(ReconciliationAction, row.id)
+    assert row.status == "reverted" and row.reverted_by_action_id == rev.id and "deleted_by_event" not in (row.inverse or {})
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
+    assert "owner_deleted" not in (case.context or {})  # an engine revert is not an owner delete: the policy may backfill again
+
+
+@pytest.mark.parametrize("order", ["sweep_first", "revert_first"])
+def test_sweep_retirement_and_engine_revert_serialise_on_the_statement_lock(seed, db_session, run, dirty_on, pg_engine, order):
+    # both orders: whichever holds the statement lock first wins; the loser sees the committed state. Sweep-first:
+    # the revert then finds the entry gone -> NotRevertable, the action stays retired with deleted_by_event and a NULL
+    # attribution. Revert-first: the sweep then finds the action already reverted -> no retirement, attribution kept.
+    from tests.helpers import race
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+    db_session.commit()
+    entry_id = row.created_entry_ids[0]
+    if order == "sweep_first":
+        db_session.delete(db_session.get(LedgerEntry, entry_id))
+        db_session.commit()
+    outcome = {}
+
+    def sweep(session):
+        st = session.get(AccountStatement, stmt.id)
+        rec._lock_statement(session, st.id)
+        coverage_service.sweep(session, st, run_id=None, barrier_wait=False)
+
+    def revert(session):
+        try:
+            engine.revert_action(session, action_id=row.id, actor="owner", label="t")
+            outcome["revert"] = "ok"
+        except Exception as exc:  # NotRevertable / snapshot conflict are both acceptable losers
+            outcome["revert"] = type(exc).__name__
+            raise
+
+    first, second = (sweep, revert) if order == "sweep_first" else (revert, sweep)
+    result = race(pg_engine, first, second)
+    db_session.expire_all()
+    row = db_session.get(ReconciliationAction, row.id)
+    assert row.status == "reverted"
+    if order == "sweep_first":
+        assert result != "committed" and row.reverted_by_action_id is None and row.inverse.get("deleted_by_event")
+    else:
+        assert result == "committed" and row.reverted_by_action_id is not None and "deleted_by_event" not in (row.inverse or {})
+    assert len([a for a in _audit(db_session, "stand_in_retired")]) == (1 if order == "sweep_first" else 0)
+    _sweep(db_session, stmt)  # repeated sweep: no second audit row
+    assert len([a for a in _audit(db_session, "stand_in_retired")]) == (1 if order == "sweep_first" else 0)
+
+
+def test_edit_release_then_delete_still_retires(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+    db_session.commit()
+    entry = db_session.get(LedgerEntry, row.created_entry_ids[0])
+    entry.amount = Decimal("-1")
+    db_session.commit()
+    _sweep(db_session, stmt)
+    assert _active(db_session, stmt.id) == []
+    db_session.delete(db_session.get(LedgerEntry, entry.id))
+    db_session.commit()
+    _sweep(db_session, stmt)
+    assert db_session.get(ReconciliationAction, row.id).status == "reverted"

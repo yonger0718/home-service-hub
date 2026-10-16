@@ -113,7 +113,7 @@ def _fee_now(db: Session, case: ReconciliationCase, line: StatementLine | None) 
 def _system_entry_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
     """An open `line_unmatched` with the bank-only hint → book the line as its own fee/interest/reward entry."""
     context = case.context or {}
-    if case.kind != "line_unmatched" or context.get("hint") != "bank_only":
+    if case.kind != "line_unmatched" or context.get("hint") != "bank_only" or context.get("owner_deleted"):
         return None
     line = current_line(db, case, statement)
     if line is None or line.line_kind not in SYSTEM_LINE_KINDS:

@@ -397,6 +397,8 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
             if ev.action_id is not None and ev.action_id in skipped_actions:
                 continue
             if ev.kind == "entry":
+                if ev.op == "delete":
+                    _retire_creations(db, statement, ev, run_id)
                 if ev.row_id in lines_by_entry:
                     if ev.op == "delete":
                         release(lines_by_entry[ev.row_id], ev, f"dirty:delete:{ev.id}")
@@ -460,3 +462,29 @@ def has_pending_events(db: Session, statement: AccountStatement) -> bool:
     """The same relevance as `sweep_pending`, for one statement (the read model's `stale_events_pending`)."""
     s = AccountStatement
     return db.execute(select(exists().where(s.id == statement.id, _touches(s)))).scalar_one()
+
+
+RETIRABLE_ACTIONS = ("backfill_entry", "create_entry", "create_system_entry", "create_refund")
+
+
+def _retire_creations(db: Session, statement: AccountStatement, ev, run_id) -> None:
+    """R6b.0: the owner deleted a created entry in the ledger -> its applied creation is retired (status reverted,
+    inverse.deleted_by_event) so the family check and the policy see the event as owner-deleted. Scoped to this
+    statement's cases (the statement lock serialises it with reverts and replacements); idempotent; never
+    overwrites an existing reverted_by_action_id."""
+    from app.services.reconciliation_actions import audit  # local: reconciliation_actions imports coverage_service
+    rows = db.execute(
+        select(ReconciliationAction)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
+               ReconciliationAction.action.in_(RETIRABLE_ACTIONS),
+               ReconciliationAction.created_entry_ids.contains([ev.row_id]))
+        .with_for_update()).scalars().all()
+    for row in rows:
+        if db.get(LedgerEntry, ev.row_id) is not None:  # a live row means a stale event
+            continue
+        row.status = "reverted"
+        row.inverse = {**(row.inverse or {}), "deleted_by_event": ev.id}
+        audit.record(db, event="stand_in_retired", actor="sweep", statement_id=statement.id, case_id=row.case_id,
+                     action_id=row.id, run_id=run_id, request_id=None,
+                     detail={"entry_id": ev.row_id, "dirty_event_id": ev.id, "action": row.action})

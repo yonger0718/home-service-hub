@@ -21,8 +21,9 @@ from app.models import (
 from app.schemas.reconciliation import ProposalIn
 from app.services import entry_write_service as ews
 from app.services.errors import CodedConflictError
-from app.services import policy_service, proposal_service, settings_service
+from app.services import coverage_service, policy_service, proposal_service, settings_service
 from app.services import reconciliation_service as rec
+from app.services import reconciliation_actions as registry
 from app.services.policy_service import PolicyResult
 from app.services.reconciliation_actions import audit, engine
 from tests.helpers import race, wait_until_blocked
@@ -780,7 +781,16 @@ def test_policy_backfill_respects_the_account_list_and_caps(seed, db_session, ru
     assert row.status == "applied" and len(_booked(db_session)) == 1
 
 
-def test_policy_never_backfills_unknown_needs_peer_or_owner_deleted_lines(seed, db_session, run):
+def _sweep(db, stmt):
+    db.expire_all()
+    stmt = db.get(AccountStatement, stmt.id)
+    with db.begin_nested():
+        rec._lock_statement(db, stmt.id)
+        coverage_service.sweep(db, stmt, run_id=None, barrier_wait=False)
+    db.commit()
+
+
+def test_policy_never_backfills_unknown_needs_peer_or_owner_deleted_lines(seed, db_session, run, dirty_on):
     account = _card(seed, db_session)
     stmt, lines, _ = _submit(db_session, run, account, [_line(1, DAY, "??", 10, "unknown"), _line(2, DAY, "繳款", -20000, "payment"),
                                                         _line(3, DAY, "全聯", 580)])
@@ -789,10 +799,32 @@ def test_policy_never_backfills_unknown_needs_peer_or_owner_deleted_lines(seed, 
     (row,) = _actions(db_session)
     assert result.applied == [row.id] and row.event_id == lines[2].event_id
     (case,) = [c for c in _cases(db_session, stmt.id, "resolved")]
-    # Task 6 replaces with the real sweep
     db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
-    row.status, row.inverse = "reverted", {**(row.inverse or {}), "deleted_by_event": 1}
     db_session.commit()
+    _sweep(db_session, stmt)
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
     assert policy_service.run_policy(db_session, stmt.id).applied == []
+
+
+def test_policy_skips_an_owner_deleted_fee_line_but_the_owner_may_rebook_it(seed, db_session, run, dirty_on):
+    s = _fee_statement(seed, db_session, run)
+    _set_policy(db_session, SYSTEM_ON)
+    (row_id,) = policy_service.run_policy(db_session, s.stmt.id).applied
+    row = db_session.get(ReconciliationAction, row_id)
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    db_session.commit()
+    _sweep(db_session, s.stmt)
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = _cases(db_session, s.stmt.id, "open")
+    assert case.context["hint"] == "bank_only" and case.context["owner_deleted"] is True
+    for _ in range(2):
+        assert policy_service.run_policy(db_session, s.stmt.id).applied == []
+        rec.reconcile(db_session, s.stmt.id)
+        db_session.commit()
+    (case,) = _cases(db_session, s.stmt.id, "open")
+    assert "create_system_entry" in registry.allowed(case)
+    engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"}, actor="owner", label="t")
+    db_session.commit()
+    assert len(_booked(db_session)) == 1

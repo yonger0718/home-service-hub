@@ -23,7 +23,7 @@ from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ValidationError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.ledger_actions import AdjustAmountAction
-from tests.integration.test_reconciliation_policy import _reload, _set_policy
+from tests.integration.test_reconciliation_policy import _reload, _set_policy, _sweep
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _line, _reconcile, _submit, run,
 )
@@ -646,12 +646,11 @@ def test_backfill_eligibility_matrix_through_allowed_and_the_policy(seed, db_ses
     plain, other, unknown = by_line[lines[0].id], by_line[lines[1].id], by_line[lines[2].id]
     assert "backfill_entry" in registry.allowed(plain) and policy_service._backfill_candidate(db_session, plain, stmt) is not None
     assert "backfill_entry" not in registry.allowed(unknown) and policy_service._backfill_candidate(db_session, unknown, stmt) is None
-    # owner-deleted event: owner may, policy may not. Task 6 adds the sweep retirement; in Task 5 the retired
-    # state is staged by hand (the marker is derived from the action row, so this is the same input Task 6 produces)
+    # owner-deleted event: owner may, policy may not (the sweep retires the creation action)
     row = _apply(db_session, plain, "backfill_entry", {"kind": "expense"})
     db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
-    row.status, row.inverse = "reverted", {**(row.inverse or {}), "deleted_by_event": 1}  # Task 6 replaces with the real sweep
     db_session.commit()
+    _sweep(db_session, stmt)
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
     (plain,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == lines[0].id]
