@@ -479,10 +479,10 @@ def _retire_creations(db: Session, statement: AccountStatement, ev, run_id) -> N
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
                ReconciliationAction.action.in_(RETIRABLE_ACTIONS),
                ReconciliationAction.created_entry_ids.contains([ev.row_id]))
-        .with_for_update()).scalars().all()
+        .with_for_update(of=ReconciliationAction)).scalars().all()
+    if not rows or db.get(LedgerEntry, ev.row_id, populate_existing=True) is not None:  # a live row = a stale event
+        return
     for row in rows:
-        if db.get(LedgerEntry, ev.row_id) is not None:  # a live row means a stale event
-            continue
         row.status = "reverted"
         row.inverse = {**(row.inverse or {}), "deleted_by_event": ev.id}
         audit.record(db, event="stand_in_retired", actor="sweep", statement_id=statement.id, case_id=row.case_id,

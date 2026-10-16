@@ -6,6 +6,7 @@ reconcile / revision / sweep routes running it after their commit. Synthetic dat
 import queue
 import threading
 from datetime import date
+from functools import partial
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -828,3 +829,26 @@ def test_policy_skips_an_owner_deleted_fee_line_but_the_owner_may_rebook_it(seed
     engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"}, actor="owner", label="t")
     db_session.commit()
     assert len(_booked(db_session)) == 1
+
+
+def test_policy_refuses_a_candidate_whose_creation_the_owner_made_and_deleted_since_the_collect(seed, db_session, run, dirty_on):
+    s = _fee_statement(seed, db_session, run)
+    _set_policy(db_session, SYSTEM_ON)
+    (case,) = _cases(db_session, s.stmt.id, "open")
+    cand = policy_service._system_entry_candidate(db_session, case, s.stmt)
+    assert cand is not None
+    engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params=cand.params, actor="owner", label="t")
+    db_session.commit()
+    (row,) = _actions(db_session)
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    db_session.commit()
+    _sweep(db_session, s.stmt)  # not reconcile: the reopened case keeps its old context
+    (reopened,) = _cases(db_session, s.stmt.id, "open")
+    print("reopened case id", reopened.id, "original", case.id)
+    assert "owner_deleted" not in (reopened.context or {})
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=reopened.id, action="create_system_entry", params=cand.params, actor="policy",
+                            label="policy", budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert _booked(db_session) == []

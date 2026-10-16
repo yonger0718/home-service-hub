@@ -36,7 +36,7 @@ from app.models import (
     ReconciliationProposal, StatementLine,
 )
 from app.schemas.reconciliation import ProposalIn
-from app.services import coverage_service, ledger_service, proposal_service, settings_service
+from app.services import coverage_service, ledger_service, proposal_service, settings_service, stand_ins
 from app.services import reconciliation_actions as registry
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ConflictError, NotFoundError, ValidationError
@@ -267,6 +267,9 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
         return False
     if _amount_now(ctx, candidate) != candidate.amount:
         return False
+    if candidate.action in ("create_system_entry", "backfill_entry") and (
+            context.get("owner_deleted") or case.event_id in stand_ins.owner_deleted_events(ctx.db, ctx.statement)):
+        return False  # re-derived from the action table under the lock: the sweep may have retired it since the collect
     if candidate.action == "create_system_entry":
         return context.get("hint") == "bank_only" and ctx.line.line_kind == candidate.params.get("kind")
     if candidate.action == "backfill_entry":
