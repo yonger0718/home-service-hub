@@ -1073,3 +1073,20 @@ def test_date_drift_case_is_written_and_resolves_with_match(seed, db_session, ru
                         actor="owner", label="owner")
     db_session.commit()
     assert db_session.get(ReconciliationCase, case.id).status == "resolved" and len(_active(db_session, stmt.id)) == 1
+
+
+def test_r6b_policy_defaults_and_validation(db_session):
+    settings = settings_service.get_reconciliation_settings(db_session)
+    policy = settings["policy"]
+    assert policy["backfill_grace_days"] == 14 and policy["backfill_accounts"] == []
+    assert policy["actions"]["backfill_entry"] == {"enabled": False, "max_amount": "5000"}
+    assert policy["actions"]["anchor_opening"] == {"enabled": False, "max_amount": "200000"}
+    assert policy["actions"]["replace_stand_in"] == {"enabled": True, "max_amount": "0"}
+    assert settings["policy_version"].startswith("r6b-") or settings["policy_version"] == "r1c-1"
+    out = settings_service.update_reconciliation_settings(
+        db_session, {"dirty_enabled": False, "policy": {"backfill_grace_days": 7, "backfill_accounts": [3, 5]}})
+    assert out["policy_version"] == f"r6b-{out['version']}" and out["policy"]["backfill_grace_days"] == 7
+    for bad in ({"backfill_grace_days": 400}, {"backfill_grace_days": "7"}, {"backfill_accounts": ["3"]},
+                {"backfill_accounts": 3}, {"actions": {"backfill_entry": {"grace": 1}}}):
+        with pytest.raises(settings_service.ValidationError):
+            settings_service.update_reconciliation_settings(db_session, {"dirty_enabled": False, "policy": bad})

@@ -242,6 +242,25 @@ def system_category_id(db: Session, kind: str) -> int:
     return category_id
 
 
+BACKFILL_CATEGORY_NAME = "對帳待分類"
+BACKFILL_KINDS = ("expense", "income")
+
+
+def backfill_category_id(db: Session, kind: str) -> int:
+    """R6b.1: the fixed top-level category a backfilled stand-in is booked under, one per kind, created on demand."""
+    if kind not in BACKFILL_KINDS:
+        raise KeyError(kind)
+    category_id = db.scalar(
+        select(Category.id).where(Category.kind == kind, Category.parent_id.is_(None), Category.name == BACKFILL_CATEGORY_NAME)
+    )
+    if category_id is None:
+        category = Category(kind=kind, name=BACKFILL_CATEGORY_NAME)
+        db.add(category)
+        db.flush()
+        category_id = category.id
+    return category_id
+
+
 def write_children(
     db: Session, parent: LedgerEntry, fee: ChildIn | None, discount: ChildIn | None, *, source: str = "manual"
 ) -> None:

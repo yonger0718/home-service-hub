@@ -559,3 +559,19 @@ def test_adjust_amount_tags_its_dirty_event(near_pair, db_session, dirty_on):
     assert claim.entry_id == s.entry.id
     assert db_session.execute(select(func.count()).select_from(ReconciliationCase).where(
         ReconciliationCase.statement_id == s.stmt.id, ReconciliationCase.kind == "recheck")).scalar_one() == 0
+
+
+def test_backfill_category_is_created_once_per_kind(db_session):
+    a = ews.backfill_category_id(db_session, "expense")
+    b = ews.backfill_category_id(db_session, "expense")
+    c = ews.backfill_category_id(db_session, "income")
+    assert a == b and a != c
+    rows = db_session.execute(select(Category).where(Category.name == "對帳待分類").order_by(Category.id)).scalars().all()
+    assert [(r.kind, r.parent_id) for r in rows] == [("expense", None), ("income", None)]
+    with pytest.raises(KeyError):
+        ews.backfill_category_id(db_session, "fee")
+
+
+def test_audit_accepts_the_r6b_events(db_session):
+    from app.services.reconciliation_actions import audit
+    assert {"stand_in_retired", "anchor_applied", "stand_in_replaced"} <= audit.EVENTS
