@@ -53,6 +53,34 @@ def snapshot_entry(entry: LedgerEntry) -> dict:
     }
 
 
+STRUCTURAL_KEYS = frozenset({
+    "amount", "flow", "currency", "original_amount", "original_currency", "entry_date", "posted_date",
+    "account_id", "kind", "group_id", "parent_entry_id", "transfer_group_id", "refunds_entry_id",
+    "settles_entry_id", "is_settlement"})  # R6b.0: every snapshot key except id, name, merchant
+
+
+def structurally_changed(snapshot: dict, entry: LedgerEntry) -> list[str]:
+    """R6b.0: the structural keys on which the entry now differs from the coverage snapshot (cosmetic edits —
+    name, merchant, category, description, needs_review — never count). Compared as the snapshot stores them."""
+    now = snapshot_entry(entry)
+    return sorted(k for k in STRUCTURAL_KEYS if (snapshot or {}).get(k) != now.get(k))
+
+
+def _structural_update(db: Session, active: dict[int, list[StatementCoverage]], line_ids: set[int],
+                       entry_id: int) -> bool:
+    """R6b.0: an update event releases only when a structural key differs from the stored snapshot of any active
+    row holding the entry; a vanished row counts as changed."""
+    entry = db.get(LedgerEntry, entry_id, populate_existing=True)  # never a stale identity-map copy
+    if entry is None:
+        return True
+    for line_id in line_ids:
+        for row in active.get(line_id, ()):
+            if row.entry_id == entry_id or (row.snapshot or {}).get("id") == entry_id:
+                if structurally_changed(row.snapshot, entry):
+                    return True
+    return False
+
+
 def write_claim(db: Session, statement: AccountStatement, line: StatementLine, rows: list[matching.Row], *,
                 entries_by_id: dict[int, LedgerEntry], match_kind: str, match_rule: str,
                 run_id: int | None) -> list[StatementCoverage]:
@@ -370,8 +398,10 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
                 continue
             if ev.kind == "entry":
                 if ev.row_id in lines_by_entry:
-                    if ev.op in ("update", "delete"):
-                        release(lines_by_entry[ev.row_id], ev, f"dirty:{ev.op}:{ev.id}")
+                    if ev.op == "delete":
+                        release(lines_by_entry[ev.row_id], ev, f"dirty:delete:{ev.id}")
+                    elif ev.op == "update" and _structural_update(db, active, lines_by_entry[ev.row_id], ev.row_id):
+                        release(lines_by_entry[ev.row_id], ev, f"dirty:update:{ev.id}")
                 elif in_population(ev.new_account_id, ev.new_date) or in_population(ev.old_account_id, ev.old_date):
                     result.recheck = result.recheck or live
             elif ev.kind == "group":

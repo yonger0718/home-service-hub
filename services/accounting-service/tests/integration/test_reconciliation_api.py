@@ -1,6 +1,6 @@
 """Reconciliation routes (R1c Task 8): case detail, owner actions, dismiss, revert, action and audit listings.
 Synthetic data only."""
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import select, text
@@ -201,7 +201,7 @@ def test_a_match_on_the_replacement_case_after_a_dirty_edit_claims_again(client,
     assert first.status_code == 201, first.text
 
     db_session.expire_all()
-    db_session.get(LedgerEntry, theirs.id).merchant = "全聯福利中心"  # a dirty edit on the claimed entry
+    db_session.get(LedgerEntry, theirs.id).posted_date = DAY + timedelta(days=1)  # a structural (dirty) edit
     db_session.commit()
     _reconcile(db_session, stmt.id)
 
