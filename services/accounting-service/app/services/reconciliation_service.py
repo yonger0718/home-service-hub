@@ -752,8 +752,8 @@ def _with_children(entry: matching.Entry, locked: dict[int, LedgerEntry]) -> mat
 
 
 def pending_statement_ids(db: Session) -> list[int]:
-    """Statements (any mode) with a dirty event past their watermark that may touch them (`sweep_pending`) or with
-    `needs_recheck`, deduplicated, ascending."""
+    """Statements (any mode) with a dirty event past their watermark that may touch them or a stranded creation for
+    the catch-up retirement (`sweep_pending`), or with `needs_recheck`, deduplicated, ascending."""
     flagged = db.execute(select(AccountStatement.id).where(AccountStatement.needs_recheck.is_(True))).scalars()
     return sorted(set(coverage_service.sweep_pending(db)) | set(flagged))
 

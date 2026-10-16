@@ -631,6 +631,45 @@ def test_sweep_route_runs_policy_per_statement(client, seed, db_session, run):
     assert (row.actor, row.run_id) == ("policy", worker_run.id)
 
 
+def test_sweep_route_picks_up_a_clean_statement_with_a_creation_deleted_before_the_watermark(
+        client, seed, db_session, run, dirty_on, monkeypatch):
+    # PR #76 review S1: a pre-R6b deletion already swept (watermark past the delete event) and reconciled
+    # (needs_recheck cleared) has no pending event; the pending selection must still list the statement so the first
+    # daily sweep runs the catch-up retirement (spec §6 I2 / R6b.0)
+    s = _fee_statement(seed, db_session, run)
+    row, _ = engine.apply_action(db_session, case_id=s.cases[0].id, action="create_system_entry", params={"kind": "fee"},
+                                 actor="owner", label="t")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    assert rec.pending_statement_ids(db_session) == []  # an applied creation whose entry exists is not stranded
+    (entry_id,) = row.created_entry_ids
+    db_session.delete(db_session.get(LedgerEntry, entry_id))
+    db_session.commit()
+    with monkeypatch.context() as m:  # the pre-R6b sweep: the line is released, nothing is retired
+        m.setattr(coverage_service, "_retire_creations", lambda *args: None)
+        m.setattr(coverage_service, "_retire_stranded_creations", lambda *args: None)
+        rec.reconcile(db_session, s.stmt.id)
+        db_session.commit()
+    db_session.expire_all()
+    statement = db_session.get(AccountStatement, s.stmt.id)
+    last_event = db_session.execute(text("SELECT max(id) FROM coverage_dirty")).scalar_one()
+    assert statement.needs_recheck is False and statement.swept_through_event_id == last_event
+    assert db_session.get(ReconciliationAction, row.id).status == "applied"
+    assert coverage_service.sweep_pending(db_session) == [s.stmt.id]
+    assert rec.pending_statement_ids(db_session) == [s.stmt.id]
+    worker_run, token = run
+
+    response = client.post("/reconciliation/sweep", headers=W, json={"run_id": worker_run.id, "lease_token": token})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["statements"] == 1 and response.json()["errors"] == []
+    db_session.expire_all()
+    retired = db_session.get(ReconciliationAction, row.id)
+    assert retired.status == "reverted" and retired.inverse["deleted_before_watermark"] is True
+    assert coverage_service.sweep_pending(db_session) == [] and rec.pending_statement_ids(db_session) == []
+
+
 def test_attach_fee_candidate_is_recomputed_under_the_lock(seed, db_session, run):
     s = _fx_fee_statement(seed, db_session, run)
     _set_policy(db_session, {"enabled": True, "actions": {"attach_fee": {"enabled": True}}})

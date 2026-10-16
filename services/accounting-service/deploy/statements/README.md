@@ -238,7 +238,7 @@ Order (each step is a settings PUT with the full body). Production already runs 
 
 1. Deploy R6b with all three new actions as defaulted (`backfill_entry` and `anchor_opening` off, `replace_stand_in` on, `backfill_grace_days` 14, `backfill_accounts` `[]`). On deploy day, whatever the new flags say, these change:
    - the sweep releases a covered line only on a structural difference (`STRUCTURAL_KEYS`); cosmetic edits (e.g. name, merchant) keep the claim;
-   - sweep retirement: an applied creation whose entry the owner deleted in the ledger is retired (`stand_in_retired`), including the catch-up pass for deletions from before R6b (the first sweep of each statement after the deploy), and its line is marked owner-deleted, so the policy no longer re-books it (no proposal either);
+   - sweep retirement: an applied creation whose entry the owner deleted in the ledger is retired (`stand_in_retired`), including the catch-up pass for deletions from before R6b: pre-R6b deletions are retired by the first daily run (the pending selection includes statements with stranded creations, clean statements too), and its line is marked owner-deleted, so the policy no longer re-books it (no proposal either);
    - `needs_peer`: `create_entry` is no longer offered on payment/transfer lines; their open cases are superseded and re-created on the first reconcile (the context key changes), which makes any proposal on them stale;
    - new owner actions on cases: `backfill_entry`, `anchor_opening`, `replace_stand_in`;
    - `replace_stand_in` is on but inert until stand-ins exist (`backfill_entry` off);

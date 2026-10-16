@@ -58,7 +58,8 @@ summary and writes `policy-summary.md` (mode 600) next to the others, then exits
   created entry); `needs_peer` is also counted per account (`by account: <account id>=<lines>`).
 - `retirements pending`: applied creations (by action type) whose entry is already gone; the next sweep retires them.
   Deletions from before R6b (their delete event already behind the statement's watermark) are retired too, by the
-  first sweep after the deploy (`stand_in_retired` audit with `catch_up: true`).
+  first daily run after the deploy: the pending selection includes statements with stranded creations, so even an
+  otherwise clean statement (no pending event, no `needs_recheck`) is swept (`stand_in_retired` audit with `catch_up: true`).
 - `sweep: old rule ... new rule ...`: lines with a pending entry update event the pre-R6b rule would release (every edit) vs the
   R6b.0 rule (structural keys only), with the key breakdown (cosmetic keys kept, structural keys released) and the structural key set.
   This table is the R6b.0 regression-gate evidence; nothing fails automatically, the release record keeps it with both SHAs.

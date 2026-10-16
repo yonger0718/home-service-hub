@@ -502,10 +502,24 @@ def _touches(s):
 
 
 def sweep_pending(db: Session) -> list[int]:
-    """Statements (any mode) with an event past their watermark that may touch them (`_touches`). Read without the
-    writer barrier: an uncommitted event only shows up on a later call."""
+    """Statements (any mode) with an event past their watermark that may touch them (`_touches`), or with a stranded
+    creation (`_stranded`: the sweep's catch-up pass retires it — PR #76 review S1, so a pre-R6b deletion already
+    behind the watermark of a clean statement is retired by the first daily run). Read without the writer barrier: an
+    uncommitted event only shows up on a later call."""
     s = AccountStatement
-    return list(db.execute(select(s.id).where(_touches(s)).order_by(s.id)).scalars())
+    return list(db.execute(select(s.id).where(or_(_touches(s), _stranded(s))).order_by(s.id)).scalars())
+
+
+def _stranded(s):
+    """EXISTS: an applied creation (RETIRABLE_ACTIONS) of the statement `s`'s cases whose created entries are ALL
+    gone — what `_retire_stranded_creations` retires, without its pending-delete-event exclusion (such a statement is
+    pending anyway, and its sweep retires the creation through the event). Retirement leaves the row `reverted`, so
+    the selection drains after one sweep."""
+    alive = exists().where(LedgerEntry.id == func.any(ReconciliationAction.created_entry_ids))
+    return exists().where(
+        ReconciliationCase.statement_id == s.id, ReconciliationAction.case_id == ReconciliationCase.id,
+        ReconciliationAction.status == "applied", ReconciliationAction.action.in_(RETIRABLE_ACTIONS),
+        func.cardinality(ReconciliationAction.created_entry_ids) > 0, ~alive)
 
 
 def has_pending_events(db: Session, statement: AccountStatement) -> bool:
@@ -559,7 +573,7 @@ def _retire_stranded_creations(db: Session, statement: AccountStatement, run_id)
                ReconciliationAction.action.in_(RETIRABLE_ACTIONS),
                func.cardinality(ReconciliationAction.created_entry_ids) > 0, ~alive, ~pending)
         .order_by(ReconciliationAction.id)
-        .with_for_update(of=ReconciliationAction)).scalars().all()
+        .with_for_update(of=ReconciliationAction)).scalars().all()  # statement-scoped: this statement's cases only
     for row in rows:
         row.status = "reverted"
         row.inverse = {**(row.inverse or {}), "deleted_before_watermark": True}
