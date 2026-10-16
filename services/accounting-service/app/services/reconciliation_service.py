@@ -497,12 +497,15 @@ def _owner_deferred_entries(db: Session, statement: AccountStatement) -> set[int
 
 
 def _dismissed(dismissed: list[ReconciliationCase], want: dict) -> bool:
-    """A dismissed case of the same kind on the same event (line cases), entry (entry cases) or gap (balance_gap)."""
+    """A dismissed case of the same kind on the same event (line cases), entry (entry cases) or gap (balance_gap).
+    An `entry_unmatched` case with an event (the stand-in hints) matches on event AND entry: dismissing the shadow
+    case of entry X never hides the case of a later entry Y on the same line (final review I1)."""
     for case in dismissed:
         if case.kind != want["kind"]:
             continue
         if want["event_id"] is not None:
-            if case.event_id == want["event_id"]:
+            if case.event_id == want["event_id"] and (want["kind"] != "entry_unmatched"
+                                                      or case.entry_id == want["entry_id"]):
                 return True
         elif want["entry_id"] is not None:
             if case.entry_id == want["entry_id"]:

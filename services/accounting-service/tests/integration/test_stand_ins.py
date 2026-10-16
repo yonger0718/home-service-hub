@@ -289,6 +289,50 @@ def test_shadow_case_when_the_owner_entry_arrives_while_the_stand_in_holds_the_l
         engine.revert_action(db_session, action_id=row.id, actor="owner", label="t")
 
 
+def test_a_dismissed_shadow_case_does_not_hide_a_later_owner_entry_for_the_same_line(seed, db_session, run, dirty_on):
+    # final review I1: the owner dismisses the shadow case for X (next month's purchase); X leaves; the real late
+    # entry Y for the line arrives → Y gets its own shadow case and the policy replaces the stand-in with it
+    s = _backfilled(seed, db_session, run, day=date(2026, 9, 28))
+    x = seed.entry(s.card, "-580", day=date(2026, 10, 8), merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (shadow,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    assert shadow.entry_id == x.id and shadow.context["hint"] == "shadowed_by_stand_in"
+    engine.apply_action(db_session, case_id=shadow.id, action="dismiss", params={"note": "next month"}, actor="owner", label="t")
+    db_session.commit()
+    db_session.delete(db_session.get(LedgerEntry, x.id))
+    db_session.commit()
+    y = seed.entry(s.card, "-580", day=date(2026, 9, 28), merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.entry_id == y.id]
+    assert case.kind == "entry_unmatched" and case.event_id == s.line.event_id
+    assert case.context["hint"] == "shadowed_by_stand_in" and case.context["stand_in_entry_id"] == s.stand_in_id
+    assert [c.status for c in _cases(db_session, s.stmt.id) if c.id == shadow.id] == ["dismissed"]
+    _set_policy(db_session, {"enabled": True})
+    (row_id,) = policy_service.run_policy(db_session, s.stmt.id).applied
+    assert db_session.get(ReconciliationAction, row_id).action == "replace_stand_in"
+    assert [c.entry_id for c in _active(db_session, s.stmt.id)] == [y.id]
+    assert db_session.get(LedgerEntry, s.stand_in_id) is None
+
+
+def test_a_dismissed_shadow_case_stays_dismissed_for_the_same_owner_entry(seed, db_session, run, dirty_on):
+    s = _backfilled(seed, db_session, run, day=date(2026, 9, 28))
+    x = seed.entry(s.card, "-580", day=date(2026, 10, 8), merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (shadow,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    engine.apply_action(db_session, case_id=shadow.id, action="dismiss", params={"note": "next month"}, actor="owner", label="t")
+    db_session.commit()
+    for _ in range(2):
+        rec.reconcile(db_session, s.stmt.id)
+        db_session.commit()
+    assert [c for c in _cases(db_session, s.stmt.id, "open") if c.entry_id == x.id] == []
+
+
 def test_shadow_requires_a_unique_line_and_a_conserving_owner_entry(seed, db_session, run, dirty_on):
     s = _backfilled(seed, db_session, run)
     owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
