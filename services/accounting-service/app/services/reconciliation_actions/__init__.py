@@ -24,7 +24,7 @@ KIND_ACTIONS: dict[str, tuple[str, ...]] = {
                        "split_entry", "dismiss"),
     "ambiguous": ("match", "dismiss"),
     "amount_delta": ("match", "adjust_amount", "attach_fee", "split_entry", "dismiss"),
-    "entry_unmatched": ("defer_next_period", "move_account", "dismiss"),
+    "entry_unmatched": ("defer_next_period", "move_account", "replace_stand_in", "dismiss"),
     "balance_gap": ("balance_adjustment_asof", "anchor_opening", "dismiss"),
     "duplicate_claim": ("unmatch", "dismiss"),
     "recheck": ("match", "unmatch", "dismiss"),
@@ -104,6 +104,8 @@ CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("line_unmatched", "split_entry"): _names_an_entry,
     ("balance_gap", "anchor_opening"): lambda case: _bank_statement(case) and not _anchored(case),
     ("amount_delta", "attach_fee"): lambda case: _context(case).get("fee_matches") is True,
+    ("entry_unmatched", "replace_stand_in"):
+        lambda case: _context(case).get("hint") in ("shadowed_by_stand_in", "orphaned_stand_in"),
 }
 
 

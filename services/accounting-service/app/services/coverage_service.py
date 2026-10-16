@@ -213,11 +213,14 @@ def _case_for_released_line(db: Session, statement: AccountStatement, line_id: i
                             result: SweepResult) -> None:
     """Live mode, by the event's newest case: open/proposed → bump `version` (proposals go stale) and note the event,
     no second case; resolved → reopen with its resolution moved into `context.previous_resolution`; none, dismissed
-    or superseded → a new `recheck` case. No row lock: the caller's statement lock serialises case writers."""
+    or superseded → a new `recheck` case. No row lock: the caller's statement lock serialises case writers. Only the
+    line's own cases count: an R6b.5 stand-in hint (`entry_unmatched` naming the event) is an entry's case, re-derived
+    by the next reconcile and re-proven by `replace_stand_in` itself."""
     line = db.get(StatementLine, line_id)
     newest = db.execute(
         select(ReconciliationCase)
-        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.event_id == line.event_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.event_id == line.event_id,
+               ReconciliationCase.kind != "entry_unmatched")
         .order_by(ReconciliationCase.id.desc()).limit(1)
     ).scalar_one_or_none()
     note = {"reopened_by_event": event.id, "op": event.op, "row_id": event.row_id}

@@ -77,6 +77,7 @@ class Candidate:
     amount: Decimal
     entry_id: int | None = None
     proposal_id: int | None = None
+    evidence: dict = field(default_factory=dict)  # R6b.5 replace_stand_in: the case evidence `_unchanged` re-checks
 
 
 @dataclass
@@ -165,8 +166,27 @@ def _anchor_candidate(db: Session, case: ReconciliationCase, statement: AccountS
     return Candidate(case.id, case.kind, case.status, "anchor_opening", {}, _money(abs(found[1])))
 
 
+REPLACE_HINTS = ("shadowed_by_stand_in", "orphaned_stand_in")
+REPLACE_AMOUNT = Decimal("0.0000")  # a replacement moves no money: charged as zero, counted toward the statement cap
+
+
+def _replace_evidence(case: ReconciliationCase) -> dict:
+    context = case.context or {}
+    return {"hint": context.get("hint"), "backfill_action_id": context.get("backfill_action_id"),
+            "entry_id": case.entry_id, "event_id": case.event_id}
+
+
+def _replace_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
+    """R6b.5: an open entry_unmatched case with a stand-in hint → replace the stand-in (amount 0)."""
+    if case.kind != "entry_unmatched" or (case.context or {}).get("hint") not in REPLACE_HINTS:
+        return None
+    return Candidate(case.id, case.kind, case.status, "replace_stand_in", {}, REPLACE_AMOUNT, entry_id=None,
+                     evidence=_replace_evidence(case))
+
+
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
-                  "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate}
+                  "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate,
+                  "replace_stand_in": _replace_candidate}
 
 
 def _agent_authors(authors: Iterable[str]) -> set[str]:
@@ -265,6 +285,8 @@ def _cap_reason(db: Session, statement_id: int, candidate: Candidate, policy: di
 
 
 def _amount_now(ctx: Context, candidate: Candidate) -> Decimal | None:
+    if candidate.action == "replace_stand_in":
+        return REPLACE_AMOUNT
     if candidate.action == "attach_fee":
         return _fee_now(ctx.db, ctx.case, ctx.line)  # R1d item 4: recomputed under the lock, not context.residual
     if candidate.action == "anchor_opening":  # before the barrier: the action's own post-barrier check is the second line
@@ -288,6 +310,8 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
     if candidate.action == "anchor_opening":
         from app.services.reconciliation_actions import structural_actions as sa
         return not sa.anchor_applied(ctx.db, ctx.statement.account_id)
+    if candidate.action == "replace_stand_in":  # the hint, the backfill action, the entry and the event as collected
+        return _replace_evidence(case) == candidate.evidence
     if candidate.action == "create_system_entry":
         return context.get("hint") == "bank_only" and ctx.line.line_kind == candidate.params.get("kind")
     if candidate.action == "backfill_entry":

@@ -902,3 +902,38 @@ def test_policy_skips_statements_flagged_by_the_anchor_until_reconciled(seed, db
     third = policy_service.run_policy(db_session, stmt.id)
     assert len(third.applied) == 1 and _actions(db_session)[-1].action == "create_system_entry"
     assert len(_booked(db_session)) == 2 and len(_adjustments(db_session)) == 1
+
+
+# --- R6b.5 replace_stand_in ---------------------------------------------------------------------------------------
+
+def test_policy_replaces_a_stand_in_with_zero_budget_and_counts_toward_the_statement_cap(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    # two lines from the start, so the cap half has a second line/stand-in/owner triple on the same statement
+    stmt, (line, second), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "家樂福", 320)])
+    for case in _cases(db_session, stmt.id, "open"):
+        engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+        db_session.commit()
+    owner = seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    _set_policy(db_session, {"enabled": True})  # replace_stand_in is enabled by default
+    result = policy_service.run_policy(db_session, stmt.id)
+    (row,) = [a for a in _actions(db_session) if a.action == "replace_stand_in"]
+    assert result.applied == [row.id] and row.after["policy_budget"]["amount"] == "0.0000"
+    assert _budget(db_session).used_amount == Decimal("0") and _budget(db_session).used_count == 1
+    assert [c.entry_id for c in _active(db_session, stmt.id) if c.line_id == line.id] == [owner.id]
+    _set_policy(db_session, {"enabled": True, "per_statement_count": 1})
+    # a second replacement on the same statement would exceed the count cap → proposal
+    seed.entry(card, "-320", day=DAY, merchant="家樂福")
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    result = policy_service.run_policy(db_session, stmt.id)
+    (p,) = _proposals(db_session, status="pending")
+    assert result.applied == [] and result.proposed == [p.id] and p.action == "replace_stand_in" and p.params == {}
+    applied, _ = proposal_service.apply_proposal(db_session, proposal_id=p.id, label="owner-test", request_id=None)
+    db_session.commit()
+    assert applied.status == "applied" and applied.actor == "owner"
+    assert len([a for a in _actions(db_session) if a.action == "replace_stand_in"]) == 2
+    assert [c.line_id for c in _active(db_session, stmt.id) if c.entry_id in {e.id for e in _booked(db_session)}] == []

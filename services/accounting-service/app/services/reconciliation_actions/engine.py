@@ -273,6 +273,8 @@ def apply_action(db: Session, *, case_id: int, action: str, params: dict, actor:
         impl.apply(ctx, parsed, prepared, effect)
         _finish(db, statements)
         _record_effect(db, row, effect)
+        if action == "replace_stand_in" and effect.inverse.get("backfill_action_id"):  # R6b.5: attribute the retirement
+            db.get(ReconciliationAction, effect.inverse["backfill_action_id"]).reverted_by_action_id = row.id
         if budget is not None:  # what this row spent: the per-statement caps are recounted from it
             month, currency, amount = budget
             row.after = {**row.after, "policy_budget": {"month": month.isoformat(), "currency": currency,

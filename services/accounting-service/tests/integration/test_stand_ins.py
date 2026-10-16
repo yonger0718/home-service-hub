@@ -1,17 +1,22 @@
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
 from app.models import AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationAudit, ReconciliationCase
-from app.services import coverage_service
+from app.services import coverage_service, policy_service
 from app.services import reconciliation_service as rec
 from app.services import reconciliation_actions as registry
 from app.services import stand_ins
 from app.services.statements import matching
+from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.reconciliation_actions import engine
+from app.services.reconciliation_actions.base import NotRevertable
 from tests.integration.statement_fixtures import _active, _card, _cases, _line, _submit, run  # noqa: F401
+from tests.integration.test_reconciliation_actions_ledger import _apply, _code, _refuse
+from tests.integration.test_reconciliation_policy import _budget, _reload, _set_policy
 
 DAY = date(2026, 9, 3)
 
@@ -244,3 +249,293 @@ def test_edit_release_then_delete_still_retires(seed, db_session, run, dirty_on)
     db_session.commit()
     _sweep(db_session, stmt)
     assert db_session.get(ReconciliationAction, row.id).status == "reverted"
+
+
+# --- R6b.5 replace_stand_in ---------------------------------------------------------------------------------------
+
+def _backfilled(seed, db, run, merchant="全聯", day=DAY, printed=580):
+    card = _card(seed, db)
+    stmt, (line,), _ = _submit(db, run, card, [_line(1, day, merchant, printed)])
+    (case,) = _cases(db, stmt.id, "open")
+    row, _ = engine.apply_action(db, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
+    db.commit()
+    # stand_in_id: the id stays readable after the replacement deleted the row (the ORM object then raises on access)
+    return SimpleNamespace(card=card, stmt=stmt, line=line, action=row, stand_in=db.get(LedgerEntry, row.created_entry_ids[0]),
+                           stand_in_id=row.created_entry_ids[0])
+
+
+def test_shadow_case_when_the_owner_entry_arrives_while_the_stand_in_holds_the_line(seed, db_session, run, dirty_on):
+    s = _backfilled(seed, db_session, run, day=date(2026, 9, 28))
+    owner = seed.entry(s.card, "-580", day=date(2026, 10, 11), merchant="全聯")  # 13 days from the line, 11 days outside the period, inside drift 15
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    assert case.entry_id == owner.id and case.event_id == s.line.event_id and case.line_id == s.line.id
+    assert case.context == {"hint": "shadowed_by_stand_in", "stand_in_entry_id": s.stand_in_id, "backfill_action_id": s.action.id}
+    assert "replace_stand_in" in registry.allowed(case)
+    s.stand_in.category_id = seed.category("食").id  # cosmetic edit keeps the match and does not block replacement
+    db_session.commit()
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+    db_session.commit()
+    assert db_session.get(LedgerEntry, s.stand_in_id) is None
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == owner.id and cov.match_rule == "replace_stand_in" and cov.match_kind == "manual"
+    old = db_session.get(ReconciliationAction, s.action.id)
+    assert old.status == "reverted" and old.reverted_by_action_id == row.id
+    assert row.deleted_entry_ids == [s.stand_in_id] and row.before["stand_in_entry_id"] == s.stand_in_id
+    with pytest.raises(NotRevertable):
+        engine.revert_action(db_session, action_id=row.id, actor="owner", label="t")
+
+
+def test_shadow_requires_a_unique_line_and_a_conserving_owner_entry(seed, db_session, run, dirty_on):
+    s = _backfilled(seed, db_session, run)
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    other = seed.entry(s.card, "-580", day=DAY, merchant="全聯")  # Review Focus 5: two owner entries → no hint
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    cases = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    assert {c.entry_id for c in cases} == {owner.id, other.id} and all("hint" not in (c.context or {}) for c in cases)
+
+
+def test_orphan_replacement_succeeds_when_the_stand_in_is_untouched(seed, db_session, run, dirty_on):
+    s = _backfilled(seed, db_session, run)
+    # release the stand-in's coverage without editing it: an unmatch of the line through the engine's coverage path
+    coverage_service.release_line(db_session, s.stmt, s.line.id, reason="test")
+    db_session.commit()
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == owner.id
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    assert case.context["hint"] == "orphaned_stand_in"
+    row = _apply(db_session, case, "replace_stand_in", {})
+    assert db_session.get(LedgerEntry, s.stand_in_id) is None and row.deleted_entry_ids == [s.stand_in_id]
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == owner.id and cov.match_kind == "auto"  # the orphan shape keeps the matcher's claim as is
+    assert db_session.get(ReconciliationAction, s.action.id).reverted_by_action_id == row.id
+
+
+def test_replace_discovers_exactly_once_before_the_locks(seed, db_session, run, dirty_on, monkeypatch):
+    # R1: lock_targets is the single unlocked discovery; prepare reuses it; _prove re-derives once under the locks
+    s = _backfilled(seed, db_session, run)
+    seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    from app.services.reconciliation_actions import ledger_actions as la
+    real = la.ReplaceStandInAction._shape
+    calls = []
+
+    def counted(self, ctx, *, discovery):
+        calls.append(discovery)
+        return real(self, ctx, discovery=discovery)
+    monkeypatch.setattr(la.ReplaceStandInAction, "_shape", counted)
+    _apply(db_session, case, "replace_stand_in", {})
+    assert calls[0] is True and calls.count(True) == 1 and all(c is False for c in calls[1:])  # exactly one unlocked discovery; validate_before and apply each re-prove under the locks
+
+
+def test_replace_refuses_when_the_claimant_disappears_between_discovery_and_lock(seed, db_session, run, dirty_on, monkeypatch):
+    # R1: the discovery read (lock_targets) sees the claimant; the locked re-read sees none → claimant_changed, not no_claimant
+    s = _backfilled(seed, db_session, run)
+    coverage_service.release_line(db_session, s.stmt, s.line.id, reason="test")
+    db_session.commit()
+    seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    from app.services.reconciliation_actions import ledger_actions as la
+    real = la.ReplaceStandInAction._claimant
+    calls = []
+
+    def vanishing(self, ctx):
+        calls.append(1)
+        return real(self, ctx) if len(calls) == 1 else None
+    monkeypatch.setattr(la.ReplaceStandInAction, "_claimant", vanishing)
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "claimant_changed"
+    monkeypatch.undo()
+    coverage_service.release_line(db_session, s.stmt, s.line.id, reason="test2")  # now genuinely no claimant at discovery
+    db_session.commit()
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "no_claimant"
+
+
+def test_replace_refuses_when_the_claimant_changed_between_discovery_and_lock(seed, db_session, run, dirty_on, monkeypatch):
+    s = _backfilled(seed, db_session, run)
+    coverage_service.release_line(db_session, s.stmt, s.line.id, reason="test")
+    db_session.commit()
+    seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    from app.services.reconciliation_actions import ledger_actions as la
+    real = la.ReplaceStandInAction._claimant
+    calls = []
+
+    def moved(self, ctx):
+        calls.append(1)
+        value = real(self, ctx)
+        return value if len(calls) == 1 else (value or 0) + 999999  # discovery sees the owner; the locked re-derivation sees someone else
+    monkeypatch.setattr(la.ReplaceStandInAction, "_claimant", moved)
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "claimant_changed"
+    assert db_session.get(LedgerEntry, s.stand_in_id) is not None
+
+
+def test_replace_rolls_back_entirely_when_a_failure_hits_after_the_delete(seed, db_session, run, dirty_on, monkeypatch):
+    # R3: the injected failure fires AFTER the stand-in was deleted and the creating action marked reverted (the audit
+    # call is the last statement of apply), run as the POLICY so the budget charge is part of what must roll back
+    s = _backfilled(seed, db_session, run)
+    seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    from app.services.reconciliation_actions import audit
+    reached = {}
+    real_record = audit.record  # `la.audit` IS this module: keep the unpatched function for other events
+
+    def boom(db, *, event, **kw):
+        if event == "stand_in_replaced":
+            reached["deleted"] = db.get(LedgerEntry, s.stand_in_id) is None  # proves the failure point is past the delete
+            reached["reverted"] = db.get(ReconciliationAction, s.action.id).status == "reverted"
+            raise RuntimeError("boom")
+        return real_record(db, event=event, **kw)
+    monkeypatch.setattr(audit, "record", boom)
+    _set_policy(db_session, {"enabled": True})
+    with pytest.raises(RuntimeError, match="boom"):  # run_policy catches domain errors only; a RuntimeError propagates
+        policy_service.run_policy(db_session, s.stmt.id)
+    assert reached == {"deleted": True, "reverted": True}
+    db_session.rollback()  # release the outer transaction the exception left open; the engine's savepoint already rolled back
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, s.stand_in_id) is not None
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == s.stand_in_id
+    assert db_session.get(ReconciliationAction, s.action.id).status == "applied" and db_session.get(ReconciliationAction, s.action.id).reverted_by_action_id is None
+    assert [a.action for a in db_session.execute(select(ReconciliationAction)).scalars()] == ["backfill_entry"]
+    assert _reload(db_session, ReconciliationCase, case.id).status == "open"
+    assert _budget(db_session) is None or _budget(db_session).used_count == 0
+
+
+def test_concurrent_delete_of_the_stand_in_is_refused(seed, db_session, run, dirty_on, pg_engine):
+    # R3: the entry locks are NOWAIT, so a replacement that meets a held row lock fails at once (`action_busy`);
+    # `tests.helpers.race` expects the second side to BLOCK, so this test drives two sessions by hand instead
+    from sqlalchemy.orm import sessionmaker
+    s = _backfilled(seed, db_session, run)
+    seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    Session = sessionmaker(bind=pg_engine)
+    holder = Session()
+    holder.execute(select(LedgerEntry).where(LedgerEntry.id == s.stand_in_id).with_for_update())  # held, not committed
+    try:
+        with Session() as other, pytest.raises(CodedConflictError) as exc:
+            engine.apply_action(other, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+        assert exc.value.code == "action_busy"
+    finally:
+        holder.delete(holder.get(LedgerEntry, s.stand_in_id))
+        holder.commit()
+        holder.close()
+    with Session() as other:
+        with pytest.raises(CodedValidationError) as exc:
+            engine.apply_action(other, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+        assert exc.value.code == "stand_in_changed"
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, s.stand_in_id) is None and db_session.get(ReconciliationAction, s.action.id).status == "applied"
+
+
+@pytest.mark.parametrize("order", ["sweep_first", "replace_first"])
+def test_sweep_retirement_and_replacement_serialise_on_the_statement_lock(seed, db_session, run, dirty_on, pg_engine, order):
+    # R3: sweep-first — the owner deleted the stand-in and the sweep retired its action; the replacement then finds
+    # the stand-in gone → stand_in_changed, attribution stays NULL + deleted_by_event. Replace-first — the sweep then
+    # finds the action already reverted by the replacement → nothing to retire, attribution kept, no audit row.
+    from tests.helpers import race
+    s = _backfilled(seed, db_session, run)
+    seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    if order == "sweep_first":
+        db_session.delete(db_session.get(LedgerEntry, s.stand_in_id))
+        db_session.commit()
+
+    def sweep(session):
+        st = session.get(AccountStatement, s.stmt.id)
+        rec._lock_statement(session, st.id)
+        coverage_service.sweep(session, st, run_id=None, barrier_wait=False)
+
+    def replace(session):
+        engine.apply_action(session, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
+
+    first, second = (sweep, replace) if order == "sweep_first" else (replace, sweep)
+    outcome = race(pg_engine, first, second)
+    db_session.expire_all()
+    row = db_session.get(ReconciliationAction, s.action.id)
+    assert row.status == "reverted"
+    if order == "sweep_first":
+        assert outcome != "committed" and getattr(outcome, "code", None) == "stand_in_changed"
+        assert row.reverted_by_action_id is None and row.inverse.get("deleted_by_event")
+        assert len(_audit(db_session, "stand_in_retired")) == 1
+    else:
+        assert outcome == "committed" and row.reverted_by_action_id is not None and "deleted_by_event" not in (row.inverse or {})
+        assert _audit(db_session, "stand_in_retired") == []
+    _sweep(db_session, s.stmt)  # repeat: no double retirement
+    assert len(_audit(db_session, "stand_in_retired")) == (1 if order == "sweep_first" else 0)
+
+
+def test_orphan_case_after_the_sweep_released_the_stand_in(seed, db_session, run, dirty_on):
+    s = _backfilled(seed, db_session, run)
+    s.stand_in.posted_date = date(2026, 9, 4)  # structural edit → sweep releases the line
+    db_session.commit()
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == owner.id
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    assert case.entry_id == s.stand_in_id and case.context["hint"] == "orphaned_stand_in" and case.context["claimant_entry_id"] == owner.id
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "stand_in_changed"  # date edited
+
+
+def test_replace_refuses_when_the_claimant_or_stand_in_moved(seed, db_session, run, dirty_on):
+    s = _backfilled(seed, db_session, run)
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    owner.amount = Decimal("-581")
+    db_session.commit()
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "owner_entry_taken"
+    owner.amount = Decimal("-580")
+    s.stand_in.amount = Decimal("-1")
+    db_session.commit()
+    # deviation from the brief (reported): while the edit is unswept, the engine's own sweep releases the stand-in's
+    # coverage inside the attempt, after the unlocked prepare, so C6 refuses first (409 snapshot_conflict, nothing
+    # written); once a sweep has committed the release, the action's own proof answers stand_in_changed
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "snapshot_conflict"
+    _sweep(db_session, s.stmt)
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "stand_in_changed"
+    assert db_session.get(LedgerEntry, s.stand_in_id) is not None
+
+
+def test_system_entries_never_shadow(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
+    (case,) = _cases(db_session, stmt.id, "open")
+    engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"}, actor="owner", label="t")
+    db_session.commit()
+    seed.entry(card, "-1200", day=DAY, kind="fee", merchant="年費")
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    cases = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "entry_unmatched"]
+    assert cases and all("hint" not in (c.context or {}) for c in cases)

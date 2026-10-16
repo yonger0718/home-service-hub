@@ -172,6 +172,20 @@ def _instances(db: Session, ids: list[int]) -> dict[int, matching.InstanceRef]:
     return out
 
 
+def entry_view(e: LedgerEntry, **extra) -> matching.Entry:
+    """One top-level row as the matcher sees it, from its columns only: no children, no instance, no transfer peer
+    (`transfer_peer_is_card` None) and `stand_in` False unless the caller passes them in `extra` (`load_candidates`
+    does; R6b.5 `stand_ins` uses the bare view)."""
+    fields_ = dict(
+        id=e.id, kind=e.kind, flow=Decimal(e.amount), posted_date=e.posted_date or e.entry_date, entry_date=e.entry_date,
+        name=e.name, merchant=e.merchant, original_amount=None if e.original_amount is None else Decimal(e.original_amount),
+        original_currency=e.original_currency, account_id=e.account_id, group_id=e.group_id, parent_entry_id=None,
+        is_settlement=bool(e.is_settlement), refunds_entry_id=e.refunds_entry_id,
+        transfer_group_id=None if e.transfer_group_id is None else str(e.transfer_group_id),
+        transfer_peer_is_card=None, children=(), instance=None)
+    return matching.Entry(**{**fields_, **extra})
+
+
 def load_candidates(db: Session, statement: AccountStatement, accounts: list[int], *, window_days: int = 10,
                     include_reward: bool | None = None,
                     exclude: Iterable[int] = ()) -> tuple[list[matching.Entry], dict[int, matching.Group]]:
@@ -232,13 +246,8 @@ def load_candidates(db: Session, statement: AccountStatement, accounts: list[int
     entries = []
     for e in parents:
         posted = e.posted_date or e.entry_date
-        entries.append(matching.Entry(
-            id=e.id, kind=e.kind, flow=Decimal(e.amount), posted_date=posted, entry_date=e.entry_date, name=e.name,
-            merchant=e.merchant, original_amount=None if e.original_amount is None else Decimal(e.original_amount),
-            original_currency=e.original_currency, account_id=e.account_id, group_id=e.group_id,
-            parent_entry_id=None, is_settlement=bool(e.is_settlement), refunds_entry_id=e.refunds_entry_id,
-            transfer_group_id=None if e.transfer_group_id is None else str(e.transfer_group_id),
-            transfer_peer_is_card=peer_is_card.get(e.id), children=tuple(children.get(e.id, ())),
+        entries.append(entry_view(
+            e, transfer_peer_is_card=peer_is_card.get(e.id), children=tuple(children.get(e.id, ())),
             instance=instances.get(e.id), in_reverse=statement.period_start <= posted <= statement.period_end,
             stand_in=e.id in stand_in_ids))
     entries.extend(_drifted_instances(db, statement, accounts, set(ids) | claimed))
@@ -433,6 +442,9 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
     claimed = coverage_service.claimed_entry_ids(db) if siblings else set()
     owner_deferred = _owner_deferred_entries(db, statement)
     deleted = stand_ins.owner_deleted_events(db, statement)
+    # R6b.5: the stand-in hints, from their own queries (the stand-in's line is a keep_line, not in `result`)
+    shadow_by_entry = {s["entry_id"]: s for s in stand_ins.shadows(db, statement, accounts, rules)}
+    orphan_by_entry = {o["entry_id"]: o for o in stand_ins.orphans(db, statement, accounts)}
     out = []
     for c in result.cases:
         context = c.context
@@ -447,6 +459,8 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
         out.append(_case(c.kind, event_id=event_id, line_id=c.line_id, entry_id=c.entry_id,
                          candidates=c.candidates, context=context))
     for entry_id in result.unmatched_entry_ids:
+        if entry_id in shadow_by_entry or entry_id in orphan_by_entry:  # the hinted case below replaces the plain one
+            continue
         why = result.explained.get(entry_id)
         if why == DEFERRED or entry_id in owner_deferred:  # an owner deferral stands in for the automatic case
             continue
@@ -457,6 +471,14 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
         found = None if entry is None else _cross_account_line(db, statement, accounts, entry)
         context = {} if found is None else {"hint": "move_account", "statement_id": found[0], "line_id": found[1]}
         out.append(_case("entry_unmatched", entry_id=entry_id, context=context))
+    for s in shadow_by_entry.values():  # a shadow owner outside the period is not in unmatched_entry_ids at all
+        out.append(_case("entry_unmatched", event_id=s["event_id"], line_id=s["line_id"], entry_id=s["entry_id"],
+                         context={"hint": "shadowed_by_stand_in", "stand_in_entry_id": s["stand_in_entry_id"],
+                                  "backfill_action_id": s["backfill_action_id"]}))
+    for o in orphan_by_entry.values():
+        out.append(_case("entry_unmatched", event_id=o["event_id"], line_id=o["line_id"], entry_id=o["entry_id"],
+                         context={"hint": "orphaned_stand_in", "backfill_action_id": o["backfill_action_id"],
+                                  "claimant_entry_id": o["claimant_entry_id"]}))
     if statement.kind == "bank":
         gap = (Decimal(statement.statement_total)
                - account_balance(db, statement.account_id, as_of=statement.period_end)).quantize(_Q)

@@ -17,18 +17,18 @@ from typing import Literal
 
 from sqlalchemy import select
 
-from app.models import Account, LedgerEntry, ReconciliationAction, StatementLine
+from app.models import Account, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementLine
 from app.schemas.writes import ChildIn, Int32, RefundIn, ShortText
-from app.services import coverage_service, settlement_service
+from app.services import coverage_service, settlement_service, stand_ins
 from app.services import entry_write_service as ews
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.split_protection import protected_reason
 from app.services.statements import matching
 
-from . import register
+from . import audit, register, snapshots
 from .base import (
-    OWNER, POLICY, ActionBase, ActionParams, Context, Effect, LockSet, NotRevertable, Prepared, lockset_for,
-    schedule_rows,
+    OWNER, POLICY, ActionBase, ActionParams, Context, Effect, LockSet, NotRevertable, Prepared, line_for_event,
+    lockset_for, schedule_rows,
 )
 from .coverage_actions import _line_claimed as line_claimed
 from .coverage_actions import case_line
@@ -430,9 +430,167 @@ class BackfillEntryAction(_Creation):
                    needs_review=True)
 
 
+# --- replace_stand_in (R6b.5) ----------------------------------------------------------------------------------
+
+REPLACE = "replace"
+STAND_IN_FIELDS = ("account_id", "currency", "kind", "amount", "entry_date", "posted_date")
+REPLACE_HINTS = {"shadowed_by_stand_in": "shadow", "orphaned_stand_in": "orphan"}
+
+
+class ReplaceStandInParams(ActionParams):
+    pass
+
+
+class ReplaceStandInAction(ActionBase):
+    """R6b.5: the owner's entry takes the line its stand-in held (shadow) or has already taken it (orphan); the
+    stand-in is deleted and its backfill action reverted. Everything is derived from case.event_id/case.entry_id
+    and re-proven under the locks. Not revertable.
+
+    Safety: the creating action row is read FOR UPDATE inside `_prove` (after the entry locks; an action row, not an
+    entry or statement, so the engine's lock order is not involved) and its case's statement is proven to be
+    `ctx.statement`, which the engine already holds — so a concurrent sweep retirement or engine revert of that action
+    waits on this statement lock, and vice versa."""
+    name = "replace_stand_in"
+    Params = ReplaceStandInParams
+    case_kinds = frozenset({"entry_unmatched"})
+    actors = frozenset({OWNER, POLICY})
+    slot = REPLACE
+
+    def _shape(self, ctx: Context, *, discovery: bool) -> dict:
+        """The evidence {shape, stand_in_id, other_id, action_id, event_id}. `discovery=True` (unlocked, once): a
+        missing orphan claimant is `no_claimant`. `discovery=False` (under the locks): a missing claimant means the
+        targets moved since discovery → `claimant_changed` (R1)."""
+        context = ctx.case.context or {}
+        hint = context.get("hint")
+        if hint == "shadowed_by_stand_in":
+            stand_in, other = context.get("stand_in_entry_id"), ctx.case.entry_id
+        elif hint == "orphaned_stand_in":
+            stand_in, other = ctx.case.entry_id, self._claimant(ctx)
+            if other is None:
+                raise _refuse("action", "no_claimant" if discovery else "claimant_changed",
+                              "the orphan's line has no owner claim")
+        else:
+            raise _refuse("action", "not_a_stand_in_case")
+        action = stand_ins.creation_for_entry(ctx.db, stand_in) if stand_in else None
+        return {"shape": REPLACE_HINTS[hint], "stand_in_id": stand_in, "other_id": other,
+                "action_id": None if action is None else action.id, "event_id": ctx.case.event_id}
+
+    def _claimant(self, ctx: Context) -> int | None:
+        """The entry holding the case event's line on this statement now (active coverage), or None."""
+        for rows in coverage_service.active_rows(ctx.db, ctx.statement.id).values():
+            for r in rows:
+                if r.event_id == ctx.case.event_id and r.entry_id is not None:
+                    return r.entry_id
+        return None
+
+    @staticmethod
+    def _target_ids(found: dict) -> list[int]:
+        return sorted({i for i in (found["stand_in_id"], found["other_id"]) if i})
+
+    def lock_targets(self, ctx: Context, params: ReplaceStandInParams) -> LockSet:
+        found = self._shape(ctx, discovery=True)
+        ctx._replace_discovery = found  # the single unlocked discovery read; prepare freezes it (R1)
+        return LockSet(entry_ids=tuple(self._target_ids(found)))
+
+    def prepare(self, ctx: Context, params: ReplaceStandInParams) -> Prepared:
+        """Engine interface unchanged (`prepare(ctx, params)`). The engine calls lock_targets first (the ONE unlocked
+        discovery, stored on ctx._replace_discovery) and then prepare; prepare does NOT call the base implementation
+        (which would call lock_targets again and rediscover) — it builds the Prepared from the stored discovery's ids
+        directly (R1)."""
+        frozen = ctx._replace_discovery
+        if frozen is None:  # never: the engine always calls lock_targets first; guard against a direct caller
+            raise _refuse("action", "claimant_changed", "prepare called without a discovery")
+        ids = self._target_ids(frozen)
+        return Prepared(expected=snapshots.expected_set(ctx.db, tuple(ids), ()),
+                        data={**frozen, "locked_entry_ids": ids})
+
+    def validate_before(self, ctx: Context, params: ReplaceStandInParams, prepared: Prepared, before: dict) -> None:
+        self._prove(ctx, prepared)
+
+    def _prove(self, ctx: Context, prepared: Prepared):
+        """M2/R1: under the statement, case and entry locks — (1) the frozen discovery must name exactly the entry ids
+        the engine locked (`ctx.lock_set.entry_ids`) and snapshotted (`prepared.expected["entries"]`); (2) the
+        re-derived evidence must equal the frozen one; (3) then the structural allowlist, the provenance (creating
+        action read FOR UPDATE, this event, this statement), the claimant's gate and the coverage are proved. Error
+        precedence (S3): a stand-in that no longer exists → `stand_in_changed` first (the engine's `expected_set` omits
+        a missing row, so the set-equality check would otherwise report it as `claimant_changed`); then the lock-set
+        binding; then the re-derived evidence; then the structural/provenance/claimant/coverage proofs."""
+        db = ctx.db
+        frozen = {k: v for k, v in prepared.data.items() if k != "locked_entry_ids"}
+        if frozen["stand_in_id"] is None or db.get(LedgerEntry, frozen["stand_in_id"]) is None:  # S3: first
+            raise _refuse("action", "stand_in_changed", "the stand-in is gone")
+        locked_ids = sorted(ctx.lock_set.entry_ids) if ctx.lock_set else []
+        if prepared.data.get("locked_entry_ids") != locked_ids \
+                or set(map(str, locked_ids)) != set(prepared.expected.get("entries", {})):
+            raise _refuse("action", "claimant_changed", "the locked rows are not the discovered targets")
+        now = self._shape(ctx, discovery=False)  # re-derived under the locks (the orphan claimant from current coverage)
+        if now != frozen:
+            raise _refuse("action", "claimant_changed", "the replacement targets changed since discovery")
+        shape, stand_in_id, other_id, action_id = now["shape"], now["stand_in_id"], now["other_id"], now["action_id"]
+        stand_in = db.get(LedgerEntry, stand_in_id)
+        action = None if action_id is None else db.execute(
+            select(ReconciliationAction).where(ReconciliationAction.id == action_id).with_for_update()
+            .execution_options(populate_existing=True)).scalar_one_or_none()
+        if stand_in is None or stand_in.source != STATEMENT_SOURCE or action is None or action.status != "applied" \
+                or action.action not in stand_ins.BACKFILL_ACTIONS or action.event_id != ctx.case.event_id \
+                or db.get(ReconciliationCase, action.case_id).statement_id != ctx.statement.id:
+            raise _refuse("action", "stand_in_changed", "the stand-in is gone, not a backfilled entry, or not this event's")
+        created = ((action.after or {}).get("entries") or {}).get(str(stand_in_id)) or {}
+        current = snapshots.snapshot_set(db, [stand_in_id], [])["entries"][str(stand_in_id)]
+        if any(created.get(k) != current.get(k) for k in STAND_IN_FIELDS) or current.get("child_ids") \
+                or current.get("refund_ids") or current.get("settlement_ids") or current.get("reward_ids") \
+                or stand_in.transfer_group_id is not None:
+            raise _refuse("action", "stand_in_changed", "the stand-in was edited structurally")
+        line = line_for_event(db, ctx.case, ctx.statement)  # the event's line on the current revision
+        if line is None:
+            raise _refuse("case", "line_not_printed", f"case {ctx.case.id}")
+        held = list(coverage_service.active_rows(db, ctx.statement.id).get(line.id, ()))
+        other = db.get(LedgerEntry, other_id)
+        accounts = coverage_service.participating_accounts(db, ctx.statement.account_id)
+        bad = "claimant_changed" if shape == "orphan" else "owner_entry_taken"
+        if other is None or other.account_id not in accounts or other.currency != ctx.statement.currency \
+                or other.parent_entry_id is not None or other.id in stand_ins.stand_in_entry_ids(db, accounts):
+            raise _refuse("action", bad, "the claimant is not an eligible owner entry of this statement's accounts")
+        if not stand_ins._conserves(ctx.statement, line, other, ctx.rules):
+            raise _refuse("action", bad, "the claimant no longer conserves the line within the drift window")
+        anywhere = coverage_service.claimed_entry_ids(db)
+        if shape == "shadow":
+            if not held or any(r.entry_id != stand_in_id for r in held):
+                raise _refuse("action", "stand_in_coverage_gone")
+            if other_id in anywhere:
+                raise _refuse("action", "owner_entry_taken")
+        elif not held or any(r.entry_id != other_id for r in held) or stand_in_id in anywhere:
+            raise _refuse("action", "claimant_changed")  # the orphan: the owner holds the line, the stand-in nothing
+        return shape, stand_in, other, line, held, action
+
+    def apply(self, ctx: Context, params: ReplaceStandInParams, prepared: Prepared, effect: Effect) -> None:
+        shape, stand_in, other, line, held, action = self._prove(ctx, prepared)
+        db = ctx.db
+        stand_in_id, other_id, action_id = stand_in.id, other.id, action.id  # ids first: the delete expires the session
+        effect.before = {**effect.before, "stand_in_entry_id": stand_in_id, "backfill_action_id": action_id,
+                         "claimant_entry_id": other_id, "shape": shape}
+        if shape == "shadow":
+            coverage_service.release_rows(db, [r.id for r in held], reason="replaced")
+            effect.coverage_ids = _claim(ctx, line, [(other, "principal")], self.name)
+        effect.touched_entry_ids = [other_id]
+        ews.delete_entries_cascade(db, [stand_in_id])
+        action.status = "reverted"  # reverted_by_action_id is set by the engine once this action's row is recorded
+        effect.deleted_entry_ids = [stand_in_id]
+        effect.inverse = {"stand_in": prepared.expected["entries"].get(str(stand_in_id)), "backfill_action_id": action_id}
+        effect.case_context = {"replaced_stand_in": stand_in_id}
+        audit.record(db, event="stand_in_replaced", actor=ctx.actor, statement_id=ctx.statement.id, case_id=ctx.case.id,
+                     action_id=None, run_id=ctx.run_id, request_id=ctx.request_id,
+                     detail={"stand_in_entry_id": stand_in_id, "backfill_action_id": action_id,
+                             "claimant_entry_id": other_id, "shape": shape})
+
+    def invert(self, ctx: Context, action: ReconciliationAction) -> Effect:
+        raise NotRevertable("stand-in deleted")
+
+
 register(CreateEntryAction())
 register(CreateSystemEntryAction())
 register(CreateRefundAction())
 register(AttachFeeAction())
 register(AdjustAmountAction())
 register(BackfillEntryAction())
+register(ReplaceStandInAction())
