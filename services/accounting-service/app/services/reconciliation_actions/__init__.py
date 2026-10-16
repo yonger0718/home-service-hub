@@ -60,7 +60,15 @@ def _names_an_entry(case: ReconciliationCase) -> bool:  # ruling 19: split on li
     return bool(case.candidates) or _context(case).get("entry_id") is not None
 
 
+PEER_HINT = "needs_peer"
+
+
+def _no_peer_hint(case: ReconciliationCase) -> bool:  # R6b: a transfer/payment line gets no single-leg entry
+    return _context(case).get("hint") != PEER_HINT
+
+
 CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
+    ("line_unmatched", "create_entry"): _no_peer_hint,
     ("line_unmatched", "create_system_entry"): _system_line,
     ("line_unmatched", "create_refund"): _refund_line,
     ("line_unmatched", "link_installment_plan"): lambda case: _context(case).get("hint") == "installment_unmapped",

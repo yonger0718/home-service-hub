@@ -78,6 +78,7 @@ class Entry:
     # False: a mapped installment instance outside the candidate window, passed only so the plan gate can name it
     # (installment_date_drift); never represented, claimed, near/foreign-matched or reported
     claimable: bool = True
+    stand_in: bool = False  # R6b.0: a backfilled entry (statement source, applied backfill_entry); owner rows win over it
 
 
 @dataclass(frozen=True)
@@ -334,7 +335,18 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
                 score, reasons = _score(line, tuple(members), rules.exact_window_days)
                 if score > ZERO:
                     out.append(Representation("installment_group", rows, score, "installment_group", reasons))
-    return [r for r in out if conserved(r.rows, line.flow)]
+    reps = [r for r in out if conserved(r.rows, line.flow)]
+    by_id = {e.id: e for e in entries}
+    if any(not _is_stand_in_rep(r, by_id) for r in reps):  # R6b.0: an owner representation drops every stand-in one
+        reps = [r for r in reps if not _is_stand_in_rep(r, by_id)]
+    return reps
+
+
+def _is_stand_in_rep(rep: Representation, by_id: dict[int, Entry]) -> bool:
+    """A representation made only of stand-in rows (a child row counts as its parent's)."""
+    owners = {by_id[r.entry_id] for r in rep.rows if r.entry_id in by_id}
+    parents = [e for e in by_id.values() if any(r.entry_id in {c.id for c in e.children} for r in rep.rows)]
+    return bool(owners | set(parents)) and all(e.stand_in for e in owners | set(parents))
 
 
 def _quantum(currency: str) -> Decimal:
@@ -442,6 +454,7 @@ def _drift_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], 
 
 
 BANK_ONLY_KINDS = frozenset({"fee", "interest", "reward"})
+PEER_LINE_KINDS = frozenset({"payment", "transfer_in", "transfer_out"})
 
 
 def _bank_only(line: Line, rules: Rules) -> dict | None:
@@ -493,6 +506,9 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
         bank_only = _bank_only(line, rules)
         if bank_only:
             result.cases.append(Case(line.id, None, "line_unmatched", (), bank_only))
+            continue
+        if line.line_kind in PEER_LINE_KINDS:  # R6b.3/R6b.4: transfers wait for R6c; the owner matches or dismisses
+            result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "needs_peer"}))
             continue
         result.cases.append(Case(line.id, None, "line_unmatched", (), {}))
     unmatched: set[int] = set()

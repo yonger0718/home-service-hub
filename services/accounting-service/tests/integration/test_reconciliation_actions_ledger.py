@@ -575,3 +575,11 @@ def test_backfill_category_is_created_once_per_kind(db_session):
 def test_audit_accepts_the_r6b_events(db_session):
     from app.services.reconciliation_actions import audit
     assert {"stand_in_retired", "anchor_applied", "stand_in_replaced"} <= audit.EVENTS
+
+
+def test_create_entry_is_not_offered_on_a_needs_peer_case(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "繳款", -20000, "payment")])
+    (case,) = _cases(db_session, stmt.id, "open")
+    assert case.context == {"hint": "needs_peer"}
+    assert "create_entry" not in registry.allowed(case) and {"match", "dismiss"} <= set(registry.allowed(case))
