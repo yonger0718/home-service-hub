@@ -1412,15 +1412,16 @@ def test_policy_skips_statements_flagged_by_the_anchor_until_reconciled(seed, db
     assert [a.action for a in _actions(db_session)] == ["create_system_entry", "anchor_opening"] and len(first.applied) == 2
     db_session.expire_all()
     assert db_session.get(AccountStatement, stmt.id).needs_recheck is True
+    # S1: while flagged, run_policy returns an EMPTY result (policy_service.py:457-458), and nothing changes
+    second = policy_service.run_policy(db_session, stmt.id)
+    assert (second.applied, second.proposed, second.skipped) == ([], [], {})
+    assert len(_actions(db_session)) == 2 and len(_booked(db_session)) == 1 and len(_adjustments(db_session)) == 1
     _submit(db_session, run, bank, [_line(1, DAY, "年費", 50, "fee"), _line(2, date(2026, 9, 5), "利息", 3, "interest")],
-            kind="bank", opening=Decimal("1600"))  # revision 2 adds an interest line; the hook's reconcile clears needs_recheck
+            kind="bank", opening=Decimal("1600"))  # revision 2: the hook's reconcile clears needs_recheck and derives the interest case
     db_session.expire_all()
-    if db_session.get(AccountStatement, stmt.id).needs_recheck:  # the hook did not reconcile (parse_review etc.): the policy must skip
-        assert policy_service.run_policy(db_session, stmt.id).skipped == {"statement_excluded": 1}
-        rec.reconcile(db_session, stmt.id)
-        db_session.commit()
+    assert db_session.get(AccountStatement, stmt.id).needs_recheck is False
     third = policy_service.run_policy(db_session, stmt.id)
-    assert [a.action for a in _actions(db_session)][-1] == "create_system_entry" and len(third.applied) == 1
+    assert len(third.applied) == 1 and _actions(db_session)[-1].action == "create_system_entry" and len(_booked(db_session)) == 2
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -1663,6 +1664,26 @@ def test_orphan_replacement_succeeds_when_the_stand_in_is_untouched(seed, db_ses
     assert db_session.get(ReconciliationAction, s.action.id).reverted_by_action_id == row.id
 
 
+def test_replace_discovers_exactly_once_before_the_locks(seed, db_session, run, dirty_on, monkeypatch):
+    # R1: lock_targets is the single unlocked discovery; prepare reuses it; _prove re-derives once under the locks
+    s = _backfilled(seed, db_session, run)
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    from app.services.reconciliation_actions import ledger_actions as la
+    real = la.ReplaceStandInAction._shape
+    calls = []
+
+    def counted(self, ctx, *, discovery):
+        calls.append(discovery)
+        return real(self, ctx, discovery=discovery)
+    monkeypatch.setattr(la.ReplaceStandInAction, "_shape", counted)
+    _apply(db_session, case, "replace_stand_in", {})
+    assert calls == [True, False]  # one unlocked discovery, one locked re-proof
+
+
 def test_replace_refuses_when_the_claimant_disappears_between_discovery_and_lock(seed, db_session, run, dirty_on, monkeypatch):
     # R1: the discovery read (lock_targets) sees the claimant; the locked re-read sees none → claimant_changed, not no_claimant
     s = _backfilled(seed, db_session, run)
@@ -1721,18 +1742,20 @@ def test_replace_rolls_back_entirely_when_a_failure_hits_after_the_delete(seed, 
     (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
     from app.services.reconciliation_actions import audit, ledger_actions as la
     reached = {}
+    real_record = audit.record  # `la.audit` IS this module: keep the unpatched function for other events
 
     def boom(db, *, event, **kw):
         if event == "stand_in_replaced":
             reached["deleted"] = db.get(LedgerEntry, s.stand_in.id) is None  # proves the failure point is past the delete
             reached["reverted"] = db.get(ReconciliationAction, s.action.id).status == "reverted"
             raise RuntimeError("boom")
-        return audit.record(db, event=event, **kw)
-    monkeypatch.setattr(la.audit, "record", boom)
+        return real_record(db, event=event, **kw)
+    monkeypatch.setattr(audit, "record", boom)
     _set_policy(db_session, {"enabled": True})
-    result = policy_service.run_policy(db_session, s.stmt.id)
+    with pytest.raises(RuntimeError, match="boom"):  # run_policy catches domain errors only; a RuntimeError propagates
+        policy_service.run_policy(db_session, s.stmt.id)
     assert reached == {"deleted": True, "reverted": True}
-    assert result.applied == [] and result.skipped.get("error", 0) >= 1
+    db_session.rollback()  # release the outer transaction the exception left open; the engine's savepoint already rolled back
     db_session.expire_all()
     assert db_session.get(LedgerEntry, s.stand_in.id) is not None
     (cov,) = _active(db_session, s.stmt.id)
@@ -2044,14 +2067,16 @@ class ReplaceStandInAction(ActionBase):
                 "action_id": None if action is None else action.id, "event_id": ctx.case.event_id}
 
     def prepare(self, ctx: Context, params: ReplaceStandInParams) -> Prepared:
-        """Engine interface unchanged (`prepare(ctx, params)`, `base.py:157`). ONE discovery read is frozen here and
-        reused by lock_targets' caller order: the engine calls lock_targets first, then prepare; both must agree, so
-        lock_targets stores its discovery on ctx (`ctx.data`, a plain dict attribute the engine ignores) and prepare
-        freezes that same dict into Prepared.data together with the lock set it produced (R1)."""
-        prepared = super().prepare(ctx, params)
-        frozen = getattr(ctx, "_replace_discovery", None) or self._shape(ctx, discovery=True)
-        prepared.data = {**frozen, "locked_entry_ids": sorted({i for i in (frozen["stand_in_id"], frozen["other_id"]) if i})}
-        return prepared
+        """Engine interface unchanged (`prepare(ctx, params)`, `base.py:157`). The engine calls lock_targets first
+        (the ONE unlocked discovery, stored on ctx._replace_discovery) and then prepare; prepare does NOT call the base
+        implementation (which would call lock_targets again and rediscover) — it builds the Prepared from the stored
+        discovery's ids directly (R1)."""
+        frozen = ctx._replace_discovery
+        if frozen is None:  # never: the engine always calls lock_targets first; guard against a direct caller
+            raise _refuse("action", "claimant_changed", "prepare called without a discovery")
+        ids = sorted({i for i in (frozen["stand_in_id"], frozen["other_id"]) if i})
+        return Prepared(expected=snapshots.expected_set(ctx.db, tuple(ids), ()),
+                        data={**frozen, "locked_entry_ids": ids}, lock_set=None)
 
     def _claimant(self, ctx: Context) -> int | None:
         for rows in coverage_service.active_rows(ctx.db, ctx.statement.id).values():
@@ -2072,9 +2097,14 @@ class ReplaceStandInAction(ActionBase):
         """M2/R1: under the statement, case and entry locks — (1) the frozen discovery must name exactly the entry ids
         the engine locked (`ctx.lock_set.entry_ids`) and snapshotted (`prepared.expected["entries"]`); (2) the
         re-derived evidence must equal the frozen one; (3) then the structural allowlist, the provenance (creating
-        action read FOR UPDATE, this event, this statement), the claimant's gate and the coverage are proved."""
+        action read FOR UPDATE, this event, this statement), the claimant's gate and the coverage are proved. Error
+        precedence (S3): a stand-in that no longer exists → `stand_in_changed` first (the engine's `expected_set` omits
+        a missing row, so the set-equality check would otherwise report it as `claimant_changed`); then the lock-set
+        binding; then the re-derived evidence; then the structural/provenance/claimant/coverage proofs."""
         db = ctx.db
         frozen = {k: v for k, v in prepared.data.items() if k != "locked_entry_ids"}
+        if db.get(LedgerEntry, frozen["stand_in_id"]) is None:  # S3: a vanished stand-in is reported as such, before any other check
+            raise _refuse("action", "stand_in_changed", "the stand-in is gone")
         locked_ids = sorted(ctx.lock_set.entry_ids) if ctx.lock_set else []
         if prepared.data.get("locked_entry_ids") != locked_ids or set(map(str, locked_ids)) != set(prepared.expected.get("entries", {})):
             raise _refuse("action", "claimant_changed", "the locked rows are not the discovered targets")
@@ -2227,16 +2257,18 @@ def preview(db: Session, statement: AccountStatement, policy: dict, today: date 
     return out
 
 
-def _decision_label(result) -> str:
-    """_prefilter returns "try" for an eligible candidate, else a tuple (verb, proposal_or_None, code): map
-    "try" → "apply", ("propose", _, code) → "propose:<code>", ("skip", _, code) → "skip:<code>"."""
-    if result == "try":
+def _decision_label(result: tuple) -> str:
+    """_prefilter always returns (verb, code, reason): ("try", None, None) → "apply"; ("propose", None, <cap reason>)
+    → "propose:<reason>"; ("skip", <code>, None) → "skip:<code>" (S2 — exact tuples pinned by the unit test)."""
+    verb, code, reason = result
+    if verb == "try":
         return "apply"
-    verb, _, code = result
-    return f"{verb}:{code}" if code else verb
+    if verb == "propose":
+        return f"propose:{reason}" if reason else "propose"
+    return f"skip:{code}" if code else "skip"
 ```
 
-(verify `_prefilter`'s exact return shape at `policy_service.py:311-329` and `_statement_excluded`'s signature; adapt `_decision_label`, not the semantics. The integration test `test_policy_preview_matches_run_policy_decisions` must cover all five labels: `apply`, `propose:<code>`, `skip:<code>`, `disabled`, `excluded:<reason>`.)
+Unit rows for `_decision_label` (in `tests/unit/test_r6_dryrun.py` or a new `tests/unit/test_policy_labels.py` importing `policy_service` — the module imports SQLAlchemy only, no DB connection at import): `("try", None, None) → "apply"`, `("propose", None, "max_amount") → "propose:max_amount"`, `("skip", "candidate_changed", None) → "skip:candidate_changed"`. The integration test `test_policy_preview_matches_run_policy_decisions` covers all five labels: `apply`, `propose:<reason>`, `skip:<code>`, `disabled`, `excluded:<reason>` (verify `_prefilter`'s tuple order at `policy_service.py:311-329` once; if it differs from `(verb, code, reason)`, fix the unpacking and the pinned tuples together).
 
 `coverage_service.sweep_preview(db, statement) -> dict`: replicate the sweep's selection of pending entry `update` events over the statement's active rows and apply `_structural_update` logic per line **with the current entry row** (same `db.get` as the sweep) — old rule: every such line counts; new rule: only lines where `structurally_changed` is non-empty; `released_by_key`/`kept_by_key` count the differing keys (structural vs cosmetic: compare `snapshot_entry(entry)` plus `name`/`merchant` against the stored snapshot); each line counted once however many events touch it. Read-only.
 
@@ -2340,6 +2372,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - **Survey flags folded:** F1/F2 (create_entry condition, needs_peer) → Task 3; F3 (single-valued hint) → `owner_deleted` key + hint only when free, Tasks 4/6; F4 (`current_line` needs `line_id`) → shadow/orphan cases carry `line_id` and the action resolves by event (`_line_for_event`), Task 8; F7 (revert path) → anchor overrides `revert_lock_targets`, re-checks dirty and targets in `invert`, Task 7; F8/F9 (`_unchanged`, `collect_candidates`) → Tasks 5/7/8; F10 (needs_recheck exclusion) → Task 7 test; F11/F12 → Tasks 6/2; F14 (stand-in coverage is agent/manual) → noted in Task 8; F15/F16 → Tasks 1/5/7/8; F19 → Task 1; F23 → Task 7.
 - **Placeholders:** none; the `STRUCTURAL_KEYS` literal is spelled out in Global Constraints (the odd expression in Task 2 is explicitly marked "do not copy"); Task 8's `rec.entry_view` and `_line_for_event` are defined in the same task.
 - **Type consistency:** `stand_ins.stand_in_entry_ids(db, account_ids)`, `creation_for_entry(db, entry_id)`, `owner_deleted_events(db, statement)`, `shadows(db, statement, lines, owners, rules)`, `orphans(db, statement, entries)` used identically in Tasks 4, 6, 8, 9; `backfill_kind(statement_kind, line_kind)` in Tasks 5 and 9; `live_bank_statement_ids`, `anchor_target`, `anchor_applied` in Tasks 7 and 9; audit event names in Tasks 1, 6, 7, 8.
+- **Plan rev 4 (AGENT-132 third pass):** R1 — `prepare` builds `Prepared` from the stored discovery (no base call, no rediscovery), call-count test `[True, False]`; R3 — `real_record` saved before patching (no recursion), `pytest.raises(RuntimeError)` around `run_policy` (domain errors only are caught), outer rollback before assertions; S1 — unconditional policy call while flagged expects an empty result and unchanged counts, then revision 2 and the third run; S2 — `_decision_label` unpacks `(verb, code, reason)` with pinned tuples; S3 — vanished stand-in → `stand_in_changed` before the lock-set equality check (precedence documented).
 - **Plan rev 3 (AGENT-132 re-review):** R1 — `prepare(ctx, params)` keeps the engine interface; `lock_targets` makes the single discovery read and stores it on `ctx._replace_discovery`, `prepare` freezes it with the entry ids it produced, `_prove` checks those equal `ctx.lock_set.entry_ids` and the prepared snapshot ids before re-deriving; `_shape(discovery=False)` turns a vanished orphan claimant into `claimant_changed`, tests for both codes; R2 — `anchor_delta` is module level before the class, Task 7 files/commit include `base.py`/`engine.py`; R3 — fault injection after the delete and the status flip (audit hook) run as the policy with budget/case/attribution rollback asserted, NOWAIT concurrency driven by two sessions (`action_busy` then `stand_in_changed`), sweep-vs-replacement in both orders; S1 — revert `targets_changed` fixture introduces a new id, policy-order test rebuilt around a second revision; S2 — `_decision_label` maps `try → apply` and `(verb, _, code)`; Task 2 parent-link assertion; Task 5's owner-deleted row staged until Task 6's sweep; one `entry_view(entry)` signature; Task 9 files/commit include the service modules.
 - **Plan rev 2 (AGENT-132, dev-astra):** M1 — shadow/orphan discovery now queries current-revision held lines and the full eligible owner population itself (reciprocal uniqueness), fixture dates fixed; M2 — replacement evidence frozen in `Prepared.data`, re-derived and compared under the locks, creating action read FOR UPDATE with event/statement identity, claimant account/currency/claimability gate, "no coverage anywhere" for orphans; M3 — `Context.budget_amount`, anchor refuses `amount_changed` after the barrier, `anchor_delta` shared, drifting-balance regression; M4 — service-side `policy_service.preview`, `coverage_service.sweep_preview`, `stand_ins.retirement_preview` with collection-path integration tests, dump uses them, no implementer smoke on the live DB; M5 — two-order sweep-vs-revert race, orphan success, claimant-changed-between-discovery-and-lock, concurrent stand-in delete, fault injection after delete; Shoulds — red-run selectors, literal pre-R6b snapshot fixture + link cases, identical-reparse marker test, real release/self-heal path, eligibility matrix through `allowed`, anchor revert dirty-off/targets tests with the recorded ∪ current rule, policy ordering by case id, §3.5 wording.
 - **Review Focus:** 1 → Task 6 (`test_policy_skips_an_owner_deleted_fee_line_but_the_owner_may_rebook_it`), 2 → Task 4 (`test_stand_in_alone_self_heals_after_release`) + Task 5 (family-check test), 3 → Task 7 (`test_policy_skips_statements_flagged_by_the_anchor_until_reconciled`), 4 → Task 2 (cosmetic vs structural) + Task 8 (categorised replaced; amount-edited refused), 5 → Task 8 (`test_shadow_requires_a_unique_line_and_a_conserving_owner_entry`).
