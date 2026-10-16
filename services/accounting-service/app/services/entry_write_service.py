@@ -9,12 +9,12 @@ from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Collection, Iterable, get_args
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, inspect, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..models import Account, Category, Counterparty, EntryGroup, EntryRewardRule, LedgerEntry, Project, RewardRule
 from ..schemas.writes import MAX_ABS_AMOUNT, BalanceAdjustmentIn, ChildIn, EditableKind, EntryIn, EntryUpdateIn
-from . import fx_rate_service, ledger_service
+from . import coverage_service, fx_rate_service, ledger_service
 from . import schedule_entry_hooks
 from .edit_lock import assert_editable
 from .errors import RETRY, CodedConflictError, ConflictError, NotFoundError, ValidationError  # noqa: F401  (ValidationError re-exported)
@@ -242,6 +242,7 @@ def system_category_id(db: Session, kind: str) -> int:
     return category_id
 
 
+STATEMENT_SOURCE = "statement"  # entries booked by a reconciliation action (stand-ins, system entries)
 BACKFILL_CATEGORY_NAME = "對帳待分類"
 BACKFILL_KINDS = ("expense", "income")
 
@@ -338,13 +339,35 @@ def insert_prepared(
     return entry.id
 
 
+def _stored_snapshot(entry: LedgerEntry) -> dict:
+    """`coverage_service.snapshot_entry` of the row as loaded: a column the caller already changed in memory reads
+    its loaded value (convert_to_split sets the anchor's group_id before it rewrites the anchor here)."""
+    state = inspect(entry)
+    stored = LedgerEntry()
+    for attr in state.mapper.column_attrs:
+        history = state.attrs[attr.key].history
+        setattr(stored, attr.key, history.deleted[0] if history.deleted else getattr(entry, attr.key))
+    return coverage_service.snapshot_entry(stored)
+
+
 def apply_prepared_update(db: Session, entry: LedgerEntry, prepared: PreparedEntry) -> None:
     """Rewrite an editable entry the caller holds FOR UPDATE: columns, fee / discount children and rule links.
     Reward ledger rows point at the entry through reward_source_entry_id, not parent_entry_id, so they stay. A
-    posted period's entry stays a schedule row."""
+    posted period's entry stays a schedule row; any other edit makes the entry the owner's (`manual`), except a
+    cosmetic edit of a statement-booked entry (a stand-in, R6b.0/R6b.5, PR #76 review M1): when the stored row and
+    the update agree on every `coverage_service.STRUCTURAL_KEYS` key and the entry has no fee / discount child
+    before or after, it keeps `source='statement'`, so a categorised stand-in stays replaceable. A structural edit
+    still flips it to `manual` (the replacement then refuses `stand_in_changed`)."""
     payload = prepared.payload
+    statement_booked = entry.source == STATEMENT_SOURCE
+    before = _stored_snapshot(entry) if statement_booked else None
+    had_children = statement_booked and db.scalar(
+        select(LedgerEntry.id).where(LedgerEntry.parent_entry_id == entry.id).limit(1)) is not None
     source = "schedule" if entry.source == "schedule" else "manual"
     _apply(entry, prepared, source)
+    if statement_booked and not had_children and payload.fee is None and payload.discount is None \
+            and not coverage_service.structurally_changed(before, entry):
+        source = entry.source = STATEMENT_SOURCE
     db.execute(delete(LedgerEntry).where(LedgerEntry.parent_entry_id == entry.id))
     db.flush()
     write_children(db, entry, payload.fee, payload.discount, source=source)

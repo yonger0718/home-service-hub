@@ -14,7 +14,7 @@ export type EntryKind =
 
 /** Kinds created through `POST /entries`; the server applies the sign. */
 export type WritableEntryKind = 'expense' | 'income' | 'receivable' | 'payable';
-export type EntrySource = 'moze_import' | 'moze_backup' | 'manual' | 'hermes' | 'rule' | 'schedule';
+export type EntrySource = 'moze_import' | 'moze_backup' | 'manual' | 'hermes' | 'rule' | 'schedule' | 'statement';
 export type FxSource = 'fx_api' | 'moze_backup' | 'manual';
 export type DueRule = 'fixed_day' | 'days_after_closing';
 export type RoundingMode = 'keep' | 'round' | 'floor' | 'ceil';

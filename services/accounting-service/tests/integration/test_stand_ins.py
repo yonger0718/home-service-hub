@@ -309,7 +309,7 @@ def _backfilled(seed, db, run, merchant="全聯", day=DAY, printed=580):
                            stand_in_id=row.created_entry_ids[0])
 
 
-def test_shadow_case_when_the_owner_entry_arrives_while_the_stand_in_holds_the_line(seed, db_session, run, dirty_on):
+def test_shadow_case_when_the_owner_entry_arrives_while_the_stand_in_holds_the_line(seed, db_session, run, dirty_on, client):
     s = _backfilled(seed, db_session, run, day=date(2026, 9, 28))
     owner = seed.entry(s.card, "-580", day=date(2026, 10, 11), merchant="全聯")  # 13 days from the line, 11 days outside the period, inside drift 15
     db_session.commit()
@@ -320,8 +320,13 @@ def test_shadow_case_when_the_owner_entry_arrives_while_the_stand_in_holds_the_l
     assert case.context == {"hint": "shadowed_by_stand_in", "stand_in_entry_id": s.stand_in_id, "backfill_action_id": s.action.id,
                             "drift_days": 13}
     assert "replace_stand_in" in registry.allowed(case)
-    s.stand_in.category_id = seed.category("食").id  # cosmetic edit keeps the match and does not block replacement
+    # cosmetic edit through the real edit path (PUT /entries, PR review M1) keeps the match and does not block replacement
+    category_id = seed.category("食").id
     db_session.commit()
+    response = client.put(f"/entries/{s.stand_in_id}", json=_put_body(s.stand_in, category_id=category_id))
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, s.stand_in_id).source == "statement"
     row, _ = engine.apply_action(db_session, case_id=case.id, action="replace_stand_in", params={}, actor="owner", label="t")
     db_session.commit()
     assert db_session.get(LedgerEntry, s.stand_in_id) is None
@@ -332,6 +337,119 @@ def test_shadow_case_when_the_owner_entry_arrives_while_the_stand_in_holds_the_l
     assert row.deleted_entry_ids == [s.stand_in_id] and row.before["stand_in_entry_id"] == s.stand_in_id
     with pytest.raises(NotRevertable):
         engine.revert_action(db_session, action_id=row.id, actor="owner", label="t")
+
+
+def test_a_pending_in_memory_structural_change_still_flips_a_statement_entry_to_manual(seed, db_session, run):
+    # convert_to_split sets the anchor's group_id before apply_prepared_update rewrites it: the comparison is against
+    # the row as stored, so joining a group counts as structural even when the prepared columns are unchanged
+    from app.models import EntryGroup
+    from app.schemas.writes import EntryUpdateIn
+    from app.services import entry_write_service as ews
+    s = _backfilled(seed, db_session, run)
+    entry = ews.locked_entry(db_session, s.stand_in_id)
+    prepared = ews.prepare_entry(db_session, EntryUpdateIn(**_put_body(entry)))
+    group = EntryGroup(kind="split", name="x")
+    db_session.add(group)
+    db_session.flush()
+    entry.group_id = group.id
+    ews.apply_prepared_update(db_session, entry, prepared)
+    assert entry.source == "manual"
+    db_session.rollback()
+    entry = ews.locked_entry(db_session, s.stand_in_id)
+    ews.apply_prepared_update(db_session, entry, ews.prepare_entry(db_session, EntryUpdateIn(**_put_body(entry))))
+    assert entry.source == "statement"  # the same update without the pending group change is cosmetic
+    db_session.rollback()
+
+
+def test_statement_booked_entries_read_through_the_entries_api(seed, db_session, run, client):
+    # found while fixing M1: EntrySource lacked "statement", so every entries read (and the PUT response) that met a
+    # statement-booked entry failed response validation (500)
+    s = _backfilled(seed, db_session, run)
+    detail = client.get(f"/entries/{s.stand_in_id}")
+    assert detail.status_code == 200 and detail.json()["source"] == "statement"
+    page = client.get("/entries", params={"account_id": s.card.id})
+    assert page.status_code == 200 and [i["source"] for i in page.json()["items"]] == ["statement"]
+
+
+def _put_body(entry, **fields) -> dict:
+    """The full PUT /entries body the entry form sends for this entry as stored, with `fields` changed."""
+    body = {"account_id": entry.account_id, "kind": entry.kind, "amount": str(abs(entry.amount)),
+            "entry_date": entry.entry_date.isoformat(),
+            "posted_date": None if entry.posted_date in (None, entry.entry_date) else entry.posted_date.isoformat(),
+            "category_id": entry.category_id, "project_id": entry.project_id, "name": entry.name,
+            "merchant": entry.merchant, "description": entry.description, "tags": list(entry.tags or [])}
+    body.update(fields)
+    return body
+
+
+@pytest.mark.parametrize("by", ["owner", "policy"])
+@pytest.mark.parametrize("edit", ["category", "cosmetic"])
+def test_a_stand_in_categorised_through_the_api_is_still_replaced(seed, db_session, run, dirty_on, client, by, edit):
+    # PR review M1: PUT /entries (entry_write_service.update_entry) used to flip every edited entry to source=manual,
+    # so a categorised stand-in failed replace_stand_in with stand_in_changed and stayed double-booked with the
+    # owner's entry. A cosmetic-only edit keeps source=statement (spec R6b.0/R6b.5/§3.5).
+    s = _backfilled(seed, db_session, run)
+    assert s.stand_in.needs_review is True
+    fields = {"category_id": seed.category("食").id}
+    if edit == "cosmetic":
+        fields.update(name="週末採買", merchant="全聯福利中心", description="owner note", tags=["family"])
+    db_session.commit()
+    response = client.put(f"/entries/{s.stand_in_id}", json=_put_body(s.stand_in, **fields))
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+    stand_in = db_session.get(LedgerEntry, s.stand_in_id)
+    assert stand_in.source == "statement" and stand_in.category_id == fields["category_id"]
+    assert stand_in.needs_review is False and stand_in.amount == Decimal("-580")
+    if edit == "cosmetic":
+        assert (stand_in.name, stand_in.merchant, stand_in.description) == ("週末採買", "全聯福利中心", "owner note")
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == s.stand_in_id  # the cosmetic edit did not release the stand-in's line
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched"]
+    assert case.entry_id == owner.id and case.context["hint"] == "shadowed_by_stand_in"
+    if by == "owner":
+        row = _apply(db_session, case, "replace_stand_in", {})
+    else:
+        _set_policy(db_session, {"enabled": True})
+        (row_id,) = policy_service.run_policy(db_session, s.stmt.id).applied
+        db_session.commit()
+        row = db_session.get(ReconciliationAction, row_id)
+    assert row.action == "replace_stand_in" and row.deleted_entry_ids == [s.stand_in_id]
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, s.stand_in_id) is None
+    assert [c.entry_id for c in _active(db_session, s.stmt.id)] == [owner.id]
+    assert db_session.get(ReconciliationAction, s.action.id).reverted_by_action_id == row.id
+
+
+@pytest.mark.parametrize("change", ["amount", "posted_date"])
+def test_a_structural_api_edit_flips_the_stand_in_to_manual_and_replacement_refuses(seed, db_session, run, dirty_on, client, change):
+    # PR review M1, the other half: a structural PUT still makes the entry the owner's (source=manual, today's rule);
+    # the sweep releases the line and the replacement refuses on stand_in_changed (spec R6b.5: edited stand-in refused)
+    s = _backfilled(seed, db_session, run)
+    fields = {"category_id": seed.category("食").id}
+    fields.update({"amount": "581"} if change == "amount" else {"posted_date": "2026-09-04"})
+    db_session.commit()
+    response = client.put(f"/entries/{s.stand_in_id}", json=_put_body(s.stand_in, **fields))
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, s.stand_in_id).source == "manual"
+    owner = seed.entry(s.card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, s.stmt.id)
+    db_session.commit()
+    (cov,) = _active(db_session, s.stmt.id)
+    assert cov.entry_id == owner.id
+    (case,) = [c for c in _cases(db_session, s.stmt.id, "open") if c.kind == "entry_unmatched" and c.entry_id == s.stand_in_id]
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "replace_stand_in", {}))) == "stand_in_changed"
+    _set_policy(db_session, {"enabled": True})
+    assert policy_service.run_policy(db_session, s.stmt.id).applied == []
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(LedgerEntry, s.stand_in_id) is not None
+    assert db_session.get(ReconciliationAction, s.action.id).status == "applied"
 
 
 def test_a_dismissed_shadow_case_does_not_hide_a_later_owner_entry_for_the_same_line(seed, db_session, run, dirty_on):

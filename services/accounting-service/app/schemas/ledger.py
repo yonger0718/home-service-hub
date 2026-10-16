@@ -9,7 +9,7 @@ EntryKind = Literal[
     "expense", "income", "transfer_out", "transfer_in", "receivable", "payable",
     "balance_adjustment", "fee", "discount", "reward", "interest", "refund",
 ]
-EntrySource = Literal["moze_import", "moze_backup", "manual", "hermes", "rule", "schedule"]
+EntrySource = Literal["moze_import", "moze_backup", "manual", "hermes", "rule", "schedule", "statement"]
 FxSource = Literal["fx_api", "moze_backup", "manual"]
 RoundingMode = Literal["keep", "round", "floor", "ceil"]
 
