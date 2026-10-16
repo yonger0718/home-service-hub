@@ -367,6 +367,7 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
             for group_id in {r.group_id, (r.snapshot or {}).get("group_id")} - {None}:
                 lines_by_group[group_id].add(line_id)
     skipped_actions = _applied_action_ids(db, statement)
+    _retire_stranded_creations(db, statement, run_id)
     start, end = statement.period_start, statement.period_end
     result = SweepResult(swept_through=statement.swept_through_event_id)
     released: set[int] = set()
@@ -537,3 +538,31 @@ def _retire_creations(db: Session, statement: AccountStatement, ev, run_id) -> N
         audit.record(db, event="stand_in_retired", actor="sweep", statement_id=statement.id, case_id=row.case_id,
                      action_id=row.id, run_id=run_id, request_id=None,
                      detail={"entry_id": ev.row_id, "dirty_event_id": ev.id, "action": row.action})
+
+
+def _retire_stranded_creations(db: Session, statement: AccountStatement, run_id) -> None:
+    """R6b.0 catch-up (final review I2), before the event loop under the same statement lock: an applied creation
+    (RETIRABLE_ACTIONS) of this statement's cases whose created entries are ALL gone and whose delete is not still
+    pending (no entry `delete` event past the watermark: that one retires through `_retire_creations` with its event
+    id) was deleted before the watermark — e.g. before R6b, whose sweep released the line without retiring it.
+    Retired like `_retire_creations`, with `inverse.deleted_before_watermark` (no event id to name); idempotent
+    (applied rows only); never overwrites an existing reverted_by_action_id. One query."""
+    from app.services.reconciliation_actions import audit  # local: reconciliation_actions imports coverage_service
+    alive = exists().where(LedgerEntry.id == func.any(ReconciliationAction.created_entry_ids))
+    pending = exists().where(CoverageDirty.kind == "entry", CoverageDirty.op == "delete",
+                             CoverageDirty.id > statement.swept_through_event_id,
+                             CoverageDirty.row_id == func.any(ReconciliationAction.created_entry_ids))
+    rows = db.execute(
+        select(ReconciliationAction)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
+               ReconciliationAction.action.in_(RETIRABLE_ACTIONS),
+               func.cardinality(ReconciliationAction.created_entry_ids) > 0, ~alive, ~pending)
+        .order_by(ReconciliationAction.id)
+        .with_for_update(of=ReconciliationAction)).scalars().all()
+    for row in rows:
+        row.status = "reverted"
+        row.inverse = {**(row.inverse or {}), "deleted_before_watermark": True}
+        audit.record(db, event="stand_in_retired", actor="sweep", statement_id=statement.id, case_id=row.case_id,
+                     action_id=row.id, run_id=run_id, request_id=None,
+                     detail={"catch_up": True, "entry_ids": list(row.created_entry_ids), "action": row.action})

@@ -173,6 +173,49 @@ def test_ledger_delete_retires_the_creation_and_marks_the_event(seed, db_session
     assert "create_entry" in registry.allowed(case) or action == "create_refund"
 
 
+def test_a_creation_deleted_before_the_watermark_is_retired_by_the_catch_up_pass(seed, db_session, run, dirty_on, monkeypatch):
+    # final review I2: the owner deleted a policy-booked fee entry before R6b; the pre-R6b sweep released the line and
+    # moved the watermark past the delete event without retiring the creation. The next sweep's catch-up pass retires it.
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
+    (case,) = _cases(db_session, stmt.id, "open")
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"},
+                                 actor="owner", label="t")
+    db_session.commit()
+    (entry_id,) = row.created_entry_ids
+    db_session.delete(db_session.get(LedgerEntry, entry_id))
+    db_session.commit()
+    with monkeypatch.context() as m:  # the pre-R6b sweep: no retirement
+        m.setattr(coverage_service, "_retire_creations", lambda *args: None)
+        m.setattr(coverage_service, "_retire_stranded_creations", lambda *args: None, raising=False)
+        _sweep(db_session, stmt)
+    assert db_session.get(ReconciliationAction, row.id).status == "applied" and _active(db_session, stmt.id) == []
+    assert stand_ins.retirement_preview(db_session, db_session.get(AccountStatement, stmt.id)) == {"create_system_entry": 1}
+    _sweep(db_session, stmt)
+    row = db_session.get(ReconciliationAction, row.id)
+    assert row.status == "reverted" and row.reverted_by_action_id is None
+    assert row.inverse["deleted_before_watermark"] is True and "deleted_by_event" not in row.inverse
+    (retired,) = _audit(db_session, "stand_in_retired")
+    assert retired.action_id == row.id and retired.case_id == case.id and retired.actor == "sweep"
+    assert retired.detail == {"catch_up": True, "entry_ids": [entry_id], "action": "create_system_entry"}
+    assert stand_ins.retirement_preview(db_session, db_session.get(AccountStatement, stmt.id)) == {}
+    assert stand_ins.owner_deleted_events(db_session, db_session.get(AccountStatement, stmt.id)) == {line.event_id}
+    _sweep(db_session, stmt)  # idempotent: no second audit row
+    assert len(_audit(db_session, "stand_in_retired")) == 1
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    (case,) = _cases(db_session, stmt.id, "open")
+    assert case.context["owner_deleted"] is True and case.context["hint"] == "bank_only"
+    _set_policy(db_session, {"enabled": True, "actions": {"create_system_entry": {"enabled": True}}})
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], [])
+    assert "create_system_entry" in registry.allowed(case)
+    again, _ = engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"},
+                                   actor="owner", label="t")
+    db_session.commit()
+    assert again.status == "applied" and db_session.get(LedgerEntry, again.created_entry_ids[0]) is not None
+
+
 def test_retirement_never_overwrites_an_engine_revert_attribution(seed, db_session, run, dirty_on):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])

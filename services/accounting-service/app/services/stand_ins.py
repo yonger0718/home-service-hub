@@ -42,8 +42,9 @@ def creation_for_entry(db: Session, entry_id: int) -> ReconciliationAction | Non
 
 
 def owner_deleted_events(db: Session, statement: AccountStatement) -> set[int]:
-    """Events of this statement whose LATEST creation action is reverted with inverse.deleted_by_event set and no
-    later applied creation exists: the owner removed the created entry in the ledger on purpose (R6b.0)."""
+    """Events of this statement whose LATEST creation action is reverted with inverse.deleted_by_event (or, retired
+    by the sweep's catch-up pass, inverse.deleted_before_watermark) set and no later applied creation exists: the
+    owner removed the created entry in the ledger on purpose (R6b.0)."""
     rows = db.execute(
         select(ReconciliationAction.event_id, ReconciliationAction.status, ReconciliationAction.inverse)
         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
@@ -54,7 +55,8 @@ def owner_deleted_events(db: Session, statement: AccountStatement) -> set[int]:
     for event_id, status, inverse in rows:
         if status in ("applied", "reverted"):
             latest[event_id] = (status, inverse or {})
-    return {e for e, (status, inverse) in latest.items() if status == "reverted" and inverse.get("deleted_by_event")}
+    return {e for e, (status, inverse) in latest.items()
+            if status == "reverted" and (inverse.get("deleted_by_event") or inverse.get("deleted_before_watermark"))}
 
 
 def retirement_preview(db: Session, statement: AccountStatement) -> dict[str, int]:
