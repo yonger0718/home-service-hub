@@ -854,6 +854,33 @@ def test_policy_refuses_a_candidate_whose_creation_the_owner_made_and_deleted_si
     assert _booked(db_session) == []
 
 
+@pytest.mark.parametrize("action, lines, params", [
+    ("create_system_entry", [_line(1, DAY, "年費", 1200, "fee")], {"kind": "fee"}),
+    ("backfill_entry", [_line(1, DAY, "全聯", 580)], {"kind": "expense"})])
+def test_policy_never_proposes_rebooking_an_owner_deleted_line(seed, db_session, run, dirty_on, action, lines, params):
+    # final review I3: the sweep reopened the case with its old context (no owner_deleted key yet); over max_amount
+    # the candidate would have become a policy proposal. collect_candidates drops it: no apply, no proposal, no preview.
+    card = _card(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, card, lines)
+    (case,) = _cases(db_session, stmt.id, "open")
+    row, _ = engine.apply_action(db_session, case_id=case.id, action=action, params=params, actor="owner", label="t")
+    db_session.commit()
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    db_session.commit()
+    _sweep(db_session, stmt)
+    (reopened,) = _cases(db_session, stmt.id, "open")
+    assert "owner_deleted" not in (reopened.context or {})
+    _set_policy(db_session, {"enabled": True, "backfill_grace_days": 0,
+                             "actions": {action: {"enabled": True, "max_amount": "100"}}})
+    live = settings_service.reconciliation_policy(db_session)
+    statement = db_session.get(AccountStatement, stmt.id)
+    assert policy_service.collect_candidates(db_session, statement, live) == []
+    assert policy_service.preview(db_session, statement, live) == []
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], []) and _proposals(db_session) == []
+    assert _booked(db_session) == []
+
+
 # --- anchor_opening (R6b.2) ---------------------------------------------------------------------------------------
 
 def test_policy_anchors_once_per_account_and_proposes_over_the_cap(seed, db_session, run, dirty_on):

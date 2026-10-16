@@ -218,6 +218,8 @@ def _replace_candidate(db: Session, case: ReconciliationCase, statement: Account
                      evidence=_replace_evidence(case))
 
 
+OWNER_DELETED_GUARDED = frozenset({"create_system_entry", "backfill_entry"})  # R6b.0: never re-book an owner delete
+
 POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
                   "backfill_entry": _backfill_candidate, "anchor_opening": _anchor_candidate,
                   "replace_stand_in": _replace_candidate}
@@ -260,12 +262,16 @@ def _agent_candidates(db: Session, statement: AccountStatement) -> list[Candidat
 
 
 def collect_candidates(db: Session, statement: AccountStatement, policy: dict) -> list[Candidate]:
-    """Every candidate of the statement, by case id (read only; no flag, cap or exclusion is applied here)."""
+    """Every candidate of the statement, by case id (read only; no flag, cap or exclusion is applied here). A
+    creation (`create_system_entry`, `backfill_entry`) on an owner-deleted event is never a candidate, so it is
+    neither applied nor proposed even when the sweep reopened its case with the old context (final review I3)."""
     cases = db.execute(select(ReconciliationCase).where(
         ReconciliationCase.statement_id == statement.id, ReconciliationCase.status == "open",
         ReconciliationCase.kind.in_(("line_unmatched", "amount_delta", "balance_gap", "entry_unmatched")))
         .order_by(ReconciliationCase.id)).scalars().all()
-    out = [c for case in cases for make in POLICY_ACTIONS.values() if (c := make(db, case, statement)) is not None]
+    deleted = stand_ins.owner_deleted_events(db, statement)
+    out = [c for case in cases for make in POLICY_ACTIONS.values() if (c := make(db, case, statement)) is not None
+           and not (c.action in OWNER_DELETED_GUARDED and case.event_id in deleted)]
     if policy.get("accept_agent_proposals") is True:
         out += _agent_candidates(db, statement)
     return sorted(out, key=lambda c: (c.case_id, c.proposal_id or 0))
@@ -363,7 +369,7 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
         return False
     if _amount_now(ctx, candidate) != candidate.amount:
         return False
-    if candidate.action in ("create_system_entry", "backfill_entry") and (
+    if candidate.action in OWNER_DELETED_GUARDED and (
             context.get("owner_deleted") or case.event_id in stand_ins.owner_deleted_events(ctx.db, ctx.statement)):
         return False  # re-derived from the action table under the lock: the sweep may have retired it since the collect
     if candidate.action in ("create_system_entry", "backfill_entry") and _absorbed_by_anchor(ctx.db, ctx.statement, ctx.line):
