@@ -739,3 +739,60 @@ def test_a_superseded_agent_proposal_is_marked_and_skipped_once(ambiguous, db_se
     assert _reload(db_session, ReconciliationProposal, s.proposal.id).status == "superseded"
     (skipped,) = _audit(db_session, "policy_skipped")
     assert skipped.detail["code"] == "proposal_superseded"
+
+
+# --- R6b.1 backfill_entry ---------------------------------------------------------------------------------------
+
+BACKFILL_ON = {"enabled": True, "actions": {"backfill_entry": {"enabled": True, "max_amount": "5000"}}}
+
+
+def _purchase_statement(seed, db, run, name="卡", **card):
+    account = _card(seed, db, name, **card)
+    stmt, (line,), _ = _submit(db, run, account, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db, stmt.id, "open")
+    return SimpleNamespace(card=account, stmt=stmt, line=line, case=case)
+
+
+def test_policy_backfills_after_the_grace_and_not_before(seed, db_session, run, today):
+    s = _purchase_statement(seed, db_session, run)
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 14})
+    assert policy_service.run_policy(db_session, s.stmt.id).applied == [] and _booked(db_session) == []
+    assert policy_service.run_policy(db_session, s.stmt.id).skipped.get("not_eligible", 0) >= 0
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 10})
+    result = policy_service.run_policy(db_session, s.stmt.id)
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and row.action == "backfill_entry" and row.params == {"kind": "expense"}
+    (entry,) = _booked(db_session)
+    assert entry.kind == "expense" and entry.needs_review is True
+
+
+def test_policy_backfill_respects_the_account_list_and_caps(seed, db_session, run):
+    s = _purchase_statement(seed, db_session, run)
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0, "backfill_accounts": [s.card.id + 1000]})
+    assert policy_service.run_policy(db_session, s.stmt.id).applied == []
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0, "backfill_accounts": [s.card.id],
+                             "actions": {"backfill_entry": {"enabled": True, "max_amount": "100"}}})
+    result = policy_service.run_policy(db_session, s.stmt.id)
+    (p,) = _proposals(db_session, status="pending")
+    assert result.proposed == [p.id] and p.action == "backfill_entry" and p.params == {"kind": "expense"}
+    row, _ = proposal_service.apply_proposal(db_session, proposal_id=p.id, label="owner-test", request_id=None)
+    db_session.commit()
+    assert row.status == "applied" and len(_booked(db_session)) == 1
+
+
+def test_policy_never_backfills_unknown_needs_peer_or_owner_deleted_lines(seed, db_session, run):
+    account = _card(seed, db_session)
+    stmt, lines, _ = _submit(db_session, run, account, [_line(1, DAY, "??", 10, "unknown"), _line(2, DAY, "繳款", -20000, "payment"),
+                                                        _line(3, DAY, "全聯", 580)])
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0})
+    result = policy_service.run_policy(db_session, stmt.id)
+    (row,) = _actions(db_session)
+    assert result.applied == [row.id] and row.event_id == lines[2].event_id
+    (case,) = [c for c in _cases(db_session, stmt.id, "resolved")]
+    # Task 6 replaces with the real sweep
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    row.status, row.inverse = "reverted", {**(row.inverse or {}), "deleted_by_event": 1}
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    assert policy_service.run_policy(db_session, stmt.id).applied == []

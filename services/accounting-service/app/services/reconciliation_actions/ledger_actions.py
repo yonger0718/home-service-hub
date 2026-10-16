@@ -395,8 +395,44 @@ class AdjustAmountAction(ActionBase):
         return Effect(touched_entry_ids=[entry.id])
 
 
+BACKFILL_KINDS = {("card", "purchase"): "expense", ("bank", "withdrawal"): "expense", ("bank", "purchase"): "expense",
+                  ("bank", "deposit"): "income"}
+
+
+def backfill_kind(statement_kind: str, line_kind: str) -> str | None:
+    """R6b.1: the entry kind a statement line is backfilled as, or None when the line is never backfilled."""
+    return BACKFILL_KINDS.get((statement_kind, line_kind))
+
+
+class BackfillEntryParams(ActionParams):
+    kind: Literal["expense", "income"]
+
+
+class BackfillEntryAction(_Creation):
+    """R6b.1: books an unmatched purchase/withdrawal/deposit line as a stand-in (category 對帳待分類, needs_review)."""
+    name = "backfill_entry"
+    Params = BackfillEntryParams
+    case_kinds = frozenset({"line_unmatched"})
+    actors = frozenset({OWNER, POLICY})
+
+    def _check(self, ctx: Context, params: BackfillEntryParams) -> StatementLine:
+        line = _open_line(ctx)
+        if backfill_kind(ctx.statement.kind, line.line_kind) != params.kind:
+            raise _refuse("kind", "kind_sign", f"{line.line_kind} on a {ctx.statement.kind} statement is not backfilled as {params.kind}")
+        return line
+
+    def validate_before(self, ctx: Context, params: BackfillEntryParams, prepared: Prepared, before: dict) -> None:
+        self._check(ctx, params)
+
+    def apply(self, ctx: Context, params: BackfillEntryParams, prepared: Prepared, effect: Effect) -> None:
+        line = self._check(ctx, params)
+        self._book(ctx, line, effect, kind=params.kind, category_id=ews.backfill_category_id(ctx.db, params.kind),
+                   needs_review=True)
+
+
 register(CreateEntryAction())
 register(CreateSystemEntryAction())
 register(CreateRefundAction())
 register(AttachFeeAction())
 register(AdjustAmountAction())
+register(BackfillEntryAction())

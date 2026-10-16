@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import partial
 from typing import Iterable
@@ -37,6 +37,7 @@ from app.models import (
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import coverage_service, ledger_service, proposal_service, settings_service
+from app.services import reconciliation_actions as registry
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ConflictError, NotFoundError, ValidationError
 from app.services.reconciliation_actions import OPEN_STATUSES, audit, engine
@@ -134,7 +135,27 @@ def _attach_fee_candidate(db: Session, case: ReconciliationCase, statement: Acco
     return Candidate(case.id, case.kind, case.status, "attach_fee", {"entry_id": entry_id}, amount, entry_id=entry_id)
 
 
-POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate}
+def _backfill_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
+    """R6b.1 policy column: the owner eligibility plus live mode, the grace, the account list and no owner delete."""
+    if case.kind != "line_unmatched" or (case.context or {}).get("owner_deleted"):
+        return None
+    kind = registry.backfill_eligibility(case)
+    if kind is None or statement.mode != "live":
+        return None
+    policy = settings_service.reconciliation_policy(db)
+    if statement.period_end + timedelta(days=int(policy["backfill_grace_days"])) > ledger_service._today():
+        return None
+    accounts = policy.get("backfill_accounts") or []
+    if accounts and statement.account_id not in accounts:
+        return None
+    line = current_line(db, case, statement)
+    if line is None:
+        return None
+    return Candidate(case.id, case.kind, case.status, "backfill_entry", {"kind": kind}, _money(line.flow_amount))
+
+
+POLICY_ACTIONS = {"create_system_entry": _system_entry_candidate, "attach_fee": _attach_fee_candidate,
+                  "backfill_entry": _backfill_candidate}
 
 
 def _agent_authors(authors: Iterable[str]) -> set[str]:
@@ -248,6 +269,9 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
         return False
     if candidate.action == "create_system_entry":
         return context.get("hint") == "bank_only" and ctx.line.line_kind == candidate.params.get("kind")
+    if candidate.action == "backfill_entry":
+        return not context.get("owner_deleted") and not case.candidates \
+            and registry.backfill_eligibility(case) == candidate.params.get("kind")
     return True
 
 

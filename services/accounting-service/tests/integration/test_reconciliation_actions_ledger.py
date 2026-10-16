@@ -2,8 +2,10 @@
 `create_system_entry`, `create_refund`, `attach_fee` and `adjust_amount` through the action engine — their
 refusals (nothing written), the rows they book and claim, the dirty events they tag, the C6 race and each revert.
 Synthetic data only."""
+import dataclasses
 from datetime import date
 from decimal import Decimal
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
@@ -14,10 +16,13 @@ from app.models import (
     AccountStatement, Category, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase,
 )
 from app.services import entry_write_service as ews
+from app.services import policy_service
 from app.services import reconciliation_actions as registry
+from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, ValidationError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.ledger_actions import AdjustAmountAction
+from tests.integration.test_reconciliation_policy import _reload, _set_policy
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _line, _reconcile, _submit, run,
 )
@@ -583,3 +588,103 @@ def test_create_entry_is_not_offered_on_a_needs_peer_case(seed, db_session, run)
     (case,) = _cases(db_session, stmt.id, "open")
     assert case.context == {"hint": "needs_peer"}
     assert "create_entry" not in registry.allowed(case) and {"match", "dismiss"} <= set(registry.allowed(case))
+
+
+# --- R6b.1 backfill_entry ---------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("stmt_kind, line_kind, printed, expected", [
+    ("card", "purchase", 580, "expense"), ("bank", "withdrawal", 580, "expense"), ("bank", "purchase", 580, "expense"),
+    ("bank", "deposit", 3000, "income"), ("card", "fee", 50, None), ("bank", "unknown", 10, None),
+    ("bank", "transfer_out", 500, None), ("card", "payment", 20000, None), ("card", "refund", 100, None)])
+def test_backfill_kind_map(stmt_kind, line_kind, printed, expected):
+    from app.services.reconciliation_actions.ledger_actions import backfill_kind
+    assert backfill_kind(stmt_kind, line_kind) == expected
+
+
+def test_owner_backfill_books_a_stand_in_and_reverts(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    assert "backfill_entry" in registry.allowed(case)
+    row = _apply(db_session, case, "backfill_entry", {"kind": "expense"})
+    (entry,) = _booked(db_session)
+    assert entry.kind == "expense" and entry.amount == Decimal("-580") and entry.needs_review is True
+    assert entry.category_id == ews.backfill_category_id(db_session, "expense") and entry.source == "statement"
+    (cov,) = _active(db_session, stmt.id)
+    assert cov.entry_id == entry.id and cov.match_rule == "backfill_entry" and cov.match_kind == "manual"
+    assert _reload(db_session, ReconciliationCase, case.id).status == "resolved"
+    _revert(db_session, row.id)
+    assert _booked(db_session) == [] and _active(db_session, stmt.id) == []
+
+
+def test_backfill_refuses_a_kind_the_line_cannot_take(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    assert _code(_refuse(db_session, lambda: _apply(db_session, case, "backfill_entry", {"kind": "income"}))) == "kind_sign"
+
+
+def test_backfill_not_offered_on_needs_peer_fee_or_candidate_cases(seed, db_session, run):
+    card = _card(seed, db_session)
+    entry = seed.entry(card, "-580", day=date(2026, 9, 10), merchant="全聯")
+    stmt, lines, _ = _submit(db_session, run, card, [_line(1, DAY, "繳款", -20000, "payment"), _line(2, DAY, "年費", 1200, "fee"),
+                                                     _line(3, DAY, "全聯", 580)])
+    by_line = {c.line_id: c for c in _cases(db_session, stmt.id, "open")}
+    assert "backfill_entry" not in registry.allowed(by_line[lines[0].id])  # needs_peer
+    assert "backfill_entry" not in registry.allowed(by_line[lines[1].id])  # bank_only
+    assert by_line[lines[2].id].kind == "amount_delta"  # date drift proposal: not a backfill case
+
+
+def test_backfill_eligibility_matrix_through_allowed_and_the_policy(seed, db_session, run, dirty_on, today):
+    # one row per cell of spec R6b.1's table, exercised through registry.allowed (owner column) and the policy
+    # builder (policy column); the grace is 0 so only the hint/candidate/kind rules differ
+    _set_policy(db_session, {"enabled": True, "backfill_grace_days": 0, "actions": {"backfill_entry": {"enabled": True, "max_amount": "5000"}}})
+    card = _card(seed, db_session)
+    stmt, lines, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "家樂福", 300), _line(3, DAY, "?", 10, "unknown")])
+    by_line = {c.line_id: c for c in _cases(db_session, stmt.id, "open")}
+    plain, other, unknown = by_line[lines[0].id], by_line[lines[1].id], by_line[lines[2].id]
+    assert "backfill_entry" in registry.allowed(plain) and policy_service._backfill_candidate(db_session, plain, stmt) is not None
+    assert "backfill_entry" not in registry.allowed(unknown) and policy_service._backfill_candidate(db_session, unknown, stmt) is None
+    # owner-deleted event: owner may, policy may not. Task 6 adds the sweep retirement; in Task 5 the retired
+    # state is staged by hand (the marker is derived from the action row, so this is the same input Task 6 produces)
+    row = _apply(db_session, plain, "backfill_entry", {"kind": "expense"})
+    db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
+    row.status, row.inverse = "reverted", {**(row.inverse or {}), "deleted_by_event": 1}  # Task 6 replaces with the real sweep
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    (plain,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == lines[0].id]
+    assert plain.context["hint"] == "stand_in_deleted" and "backfill_entry" in registry.allowed(plain)
+    assert policy_service._backfill_candidate(db_session, plain, stmt) is None
+    # engine-revert reopened case: both may
+    row2 = _apply(db_session, other, "backfill_entry", {"kind": "expense"})
+    _revert(db_session, row2.id)
+    other = _reload(db_session, ReconciliationCase, other.id)
+    assert other.status == "open" and "reverted_action_id" in other.context
+    assert "backfill_entry" in registry.allowed(other) and policy_service._backfill_candidate(db_session, other, stmt) is not None
+    # candidates present (a drift case is amount_delta, not line_unmatched; a sibling-candidate case is line_unmatched with candidates)
+    other.candidates = [{"entry_id": 1}]
+    db_session.commit()
+    assert "backfill_entry" not in registry.allowed(other)
+    # changed amount under the lock → candidate_changed
+    other.candidates = []
+    db_session.commit()
+    cand = policy_service._backfill_candidate(db_session, other, stmt)
+    stale = dataclasses.replace(cand, amount=Decimal("1"))
+    with pytest.raises(Exception) as exc:
+        engine.apply_action(db_session, case_id=other.id, action="backfill_entry", params=stale.params, actor="policy", label="policy",
+                            budget=(date(2026, 10, 1), "TWD", stale.amount), precheck=partial(policy_service._policy_precheck, stale))
+    assert "candidate_changed" in str(exc.value)
+    db_session.rollback()
+
+
+def test_second_backfill_of_the_same_event_is_refused_while_the_first_is_applied(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = _cases(db_session, stmt.id, "open")
+    row = _apply(db_session, case, "backfill_entry", {"kind": "expense"})
+    reopened = _hand_case(db_session, stmt, line, "line_unmatched")  # a sweep-reopened case for the same event
+    assert _code(_refuse(db_session, lambda: _apply(db_session, reopened, "backfill_entry", {"kind": "expense"}))) == "line_claimed"  # the claim check runs before the engine's creation-family guard (concern in the Task 5 report)
+    _revert(db_session, row.id)
+    _apply(db_session, reopened, "backfill_entry", {"kind": "expense"})
+    assert len(_booked(db_session)) == 1
