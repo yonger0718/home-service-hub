@@ -65,8 +65,9 @@ INSTRUCTION = (
     "merchant_raw as printed (masked tokens such as [NUM…1234] stay as they are). For foreign-currency rows set "
     "foreign_amount and foreign_currency (ISO code). For installment rows set installment_seq and installment_total "
     "from the printed 分期 n/N. The input may begin with a [hint] line from the operator stating the account's closing "
-    "day; when it does, the header date whose day of month is that day (within 3 days) is closing_date and period_end, "
-    "and a later header date is the payment due date, whatever the layout suggests. Use line_kind unknown when a row "
+    "day; when it does, the printed header date whose day of month is that day (within 3 days) is closing_date and "
+    "period_end, and a later header date is the payment due date, whatever the layout suggests. If no printed date "
+    "falls within 3 days of that day, do not invent or shift one: report the dates as printed. Use line_kind unknown when a row "
     "cannot be classified. Every printed transaction row "
     "with a non-zero amount becomes a line, even when it has no description (header amounts such as 最低應繳金額 are "
     "not transaction rows). A transaction row holding only a transaction date, a posting date and a small positive "
@@ -83,12 +84,15 @@ INSTRUCTION = (
 def hint(closing_day: int | None) -> str:
     """The operator's per-file preamble for the parser (fix 2026-10-17: 2025 HSBC layouts print the due date above
     the closing date without labels and the parser kept picking the due date): the account's closing day, or the
-    empty string. Not part of the parser version — the instruction's reference to it is."""
+    empty string. Not part of the parser version — the instruction's reference to it is. The hint chooses among
+    PRINTED dates only; when the card's cycle moved and no printed date is near the configured day, the model
+    reports the printed dates and the closing-day guardrail refuses the revision (the owner sees the mismatch)."""
     if closing_day is None:
         return ""
-    return (f"[hint] This card statement closes on day {closing_day} of the month: the header date whose day of month "
-            f"is {closing_day} (within 3 days) is the closing date (結帳日) and period_end; a later header date is the "
-            "payment due date (繳款截止日).\n\n")
+    return (f"[hint] This card statement closes on day {closing_day} of the month: the printed header date whose day "
+            f"of month is {closing_day} (within 3 days) is the closing date (結帳日) and period_end; a later header date "
+            "is the payment due date (繳款截止日). If no printed date is within 3 days of that day, report the dates as "
+            "printed — never invent or shift one.\n\n")
 
 
 def json_schema() -> dict:

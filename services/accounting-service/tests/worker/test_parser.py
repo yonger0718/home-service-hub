@@ -534,6 +534,7 @@ def test_instruction_and_hint_state_the_closing_day_preamble():
     assert parse_schema.hint(None) == ""
     line = parse_schema.hint(6)
     assert line.startswith("[hint] ") and "day 6" in line and "結帳日" in line and "繳款截止日" in line and line.endswith("\n\n")
+    assert "never invent or shift one" in line  # a wrong or stale closing day must not manufacture a matching date
     text = parse_schema.INSTRUCTION
     assert "[hint] line from the operator stating the account's closing day" in text
-    assert "whatever the layout suggests" in text
+    assert "whatever the layout suggests" in text and "do not invent or shift one" in text
