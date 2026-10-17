@@ -1,5 +1,6 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,6 +10,7 @@ from app.models import (
     IngestRun,
     LineLineage,
     ReconciliationCase,
+    StatementCoverage,
     StatementEvent,
     StatementLine,
     StatementFile,
@@ -16,6 +18,7 @@ from app.models import (
 )
 from app.schemas.statements import FileRegisterIn, LineIn, RevisionIn, SourceRegisterIn
 from app.services import statement_ingest_service as svc
+from app.services import statement_revision_service as revs
 from app.services.errors import ConflictError, ValidationError
 
 # These tests isolate their service: submit_revision runs without the reconcile pass (conftest.matcher_off).
@@ -370,6 +373,292 @@ def test_same_file_correction_moves_a_failed_statement_to_the_parsed_period(db_s
     (event,) = db_session.query(StatementEvent).all()
     assert (event.status, event.current_line_id) == ("live", db_session.query(StatementLine).filter_by(
         revision_id=fixed.revision.id).one().id)
+
+
+def _stale_then_fixed(db, run, account, *, closing_day, wrong_end, fixed_end):
+    """A statement parsed before the account had a closing day (the misread period passed every check of its day),
+    then the closing day set and the same file re-parsed with the corrected period."""
+    r, token = run
+    f = _filed(db, r, token)
+    amap = {FOLDER: account.id}
+    lines = [_line(1, date(2026, 9, 3), "580")]
+    wrong = svc.submit_revision(db, r, _rev(r, token, account, lines, total="580", file_id=f.id,
+                                            period_start=date(2026, 9, 1), period_end=wrong_end), account_map=amap)
+    db.commit()
+    assert wrong.revision.guardrail_ok is True and wrong.statement.period_end == wrong_end
+    account.closing_day = closing_day
+    db.commit()
+    fixed = svc.submit_revision(db, r, _rev(r, token, account, lines, total="580", file_id=f.id,
+                                            period_start=date(2026, 9, 1), period_end=fixed_end), account_map=amap)
+    db.commit()
+    return wrong, fixed, db.get(AccountStatement, wrong.statement.id)
+
+
+def test_a_current_revision_failing_todays_closing_day_check_is_replaced_by_the_corrected_period(db_session, seed, run):
+    """Fix 2026-10-17 (stale current): the historical 2025 HSBC statements were parsed with the payment due date as
+    the closing date before the closing-day check existed; the hint now parses them right, but a header change on
+    a historical statement opens nothing and the old revision passed its guardrails. A current revision that fails
+    today's closing-day check is treated as failed, so the passing revision is a correction."""
+    old_card = seed.account("舊卡", is_credit=True)  # no statement_live_from: historical
+    db_session.commit()
+    wrong, fixed, stmt = _stale_then_fixed(db_session, run, old_card, closing_day=6, wrong_end=date(2026, 9, 24),
+                                           fixed_end=date(2026, 9, 6))
+    assert stmt.mode == "historical"
+    assert (fixed.statement.id, stmt.current_revision_id, stmt.period_end) == (stmt.id, fixed.revision.id, date(2026, 9, 6))
+    assert fixed.revision.guardrail["header_changes"]["period_end"] == ["2026-09-24", "2026-09-06"]
+    assert fixed.revision.guardrail["stale_current"] is True
+    assert db_session.query(ReconciliationCase).count() == 0  # historical: still no case, and none needed
+
+
+def test_stale_neighbours_do_not_block_each_others_corrected_periods(db_session, seed, run):
+    """Two adjacent months both read with the due date as the closing date overlap each other; once the closing
+    day is set, correcting either one must not be blocked by the other's stale period (review AGENT-145 focus 3),
+    or the chain never resolves. The identity clause (same period_end) still blocks."""
+    r, token = run
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    fa, fb, la, lb, a, b = _two_misread_months(db_session, seed, run, old_card, b_period=(date(2026, 9, 5), date(2026, 10, 24)))
+    fixed_a = _correct_a(db_session, run, old_card, fa, la)
+    sa = db_session.get(AccountStatement, a.statement.id)
+    assert (sa.current_revision_id, sa.period_start, sa.period_end) == (fixed_a.revision.id, date(2026, 8, 7), date(2026, 9, 6))
+    assert "period_blocked_by" not in fixed_a.revision.guardrail and fixed_a.revision.guardrail["stale_current"] is True
+    fixed_b = svc.submit_revision(db_session, r, _rev(r, token, old_card, lb, total="50", file_id=fb.id,
+                                                      period_start=date(2026, 9, 7), period_end=date(2026, 10, 6)), account_map={FOLDER: old_card.id})
+    db_session.commit()
+    sb = db_session.get(AccountStatement, b.statement.id)
+    assert (sb.current_revision_id, sb.period_end) == (fixed_b.revision.id, date(2026, 10, 6))
+    # the identity clause is never bypassed: a period_end another statement holds still blocks
+    assert revs.period_blocker(db_session, sa, date(2026, 9, 7), date(2026, 10, 6), account=old_card) == sb.id
+
+
+def _two_misread_months(db, seed, run, account, *, b_period, b_closing_date=None, b_line_day=date(2026, 9, 20)):
+    """A (08-19..09-24) and B (`b_period`, its line on `b_line_day`) on two files, parsed before the closing day (6)
+    was set; both pass the guardrails of their day."""
+    r, token = run
+    amap = {FOLDER: account.id}
+    fa, fb = _filed(db, r, token), _filed(db, r, token, sha="bb" * 32, md5="bb" * 16)
+    la, lb = [_line(1, date(2026, 8, 20), "580")], [_line(1, b_line_day, "50")]
+    a = svc.submit_revision(db, r, _rev(r, token, account, la, total="580", file_id=fa.id,
+                                        period_start=date(2026, 8, 19), period_end=date(2026, 9, 24)), account_map=amap)
+    b = svc.submit_revision(db, r, _rev(r, token, account, lb, total="50", file_id=fb.id, period_start=b_period[0],
+                                        period_end=b_period[1], closing_date=b_closing_date), account_map=amap)
+    db.commit()
+    account.closing_day = 6
+    db.commit()
+    return fa, fb, la, lb, a, b
+
+
+def _correct_a(db, run, account, fa, la):
+    r, token = run
+    fixed = svc.submit_revision(db, r, _rev(r, token, account, la, total="580", file_id=fa.id,
+                                            period_start=date(2026, 8, 7), period_end=date(2026, 9, 6)), account_map={FOLDER: account.id})
+    db.commit()
+    return fixed
+
+
+def test_a_neighbour_stale_only_by_its_closing_date_still_blocks(db_session, seed, run):
+    """Review AGENT-145 M2: B's period 08-10..09-09 passes today's check (+3); only its closing_date is off. B's
+    period will not move, so A's corrected period (overlapping 08-10..09-06) must stay blocked."""
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    fa, fb, la, lb, a, b = _two_misread_months(db_session, seed, run, old_card, b_period=(date(2026, 8, 10), date(2026, 9, 9)),
+                                               b_closing_date=date(2026, 9, 24), b_line_day=date(2026, 9, 1))
+    assert b.revision.guardrail_ok is True  # B passed its day's checks; only its closing_date is off today
+    fixed = _correct_a(db_session, run, old_card, fa, la)
+    sa = db_session.get(AccountStatement, a.statement.id)
+    assert fixed.revision.guardrail_ok is True and fixed.revision.guardrail["period_blocked_by"] == b.statement.id
+    assert (sa.current_revision_id, sa.period_end) == (a.revision.id, date(2026, 9, 24))
+
+
+def test_a_reconciled_stale_neighbour_still_blocks(db_session, seed, run):
+    """A reconciled neighbour's revisions go through the conflict gate and never move on their own."""
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    fa, fb, la, lb, a, b = _two_misread_months(db_session, seed, run, old_card, b_period=(date(2026, 9, 5), date(2026, 10, 24)))
+    db_session.get(AccountStatement, b.statement.id).status = "reconciled"
+    db_session.commit()
+    fixed = _correct_a(db_session, run, old_card, fa, la)
+    sa = db_session.get(AccountStatement, a.statement.id)
+    assert fixed.revision.guardrail["period_blocked_by"] == b.statement.id
+    assert (sa.current_revision_id, sa.period_end) == (a.revision.id, date(2026, 9, 24))
+
+
+def test_a_stale_neighbour_still_blocks_the_same_period_end(db_session, seed, run):
+    """Identity is never bypassed: a stale neighbour holding the corrected period_end blocks (DB regression)."""
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    # B is stale (period_end 10-24 is 18 days off the 6th); A's "correction" lands exactly on B's period_end
+    fa, fb, la, lb, a, b = _two_misread_months(db_session, seed, run, old_card, b_period=(date(2026, 9, 5), date(2026, 10, 24)))
+    assert b.statement.id != a.statement.id
+    r, token = run
+    fixed = svc.submit_revision(db_session, r, _rev(r, token, old_card, [_line(1, date(2026, 10, 10), "580")], total="580", file_id=fa.id,
+                                                    period_start=date(2026, 9, 25), period_end=date(2026, 10, 24)), account_map={FOLDER: old_card.id})
+    db_session.commit()
+    assert fixed.revision.guardrail["period_blocked_by"] == b.statement.id
+    assert db_session.get(AccountStatement, a.statement.id).current_revision_id == a.revision.id
+
+
+def test_skipping_a_stale_neighbour_still_hits_a_non_stale_one(db_session, seed, run):
+    """The scan continues past a stale neighbour: a second, non-stale overlapping neighbour blocks (DB regression)."""
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    fa, fb, la, lb, a, b = _two_misread_months(db_session, seed, run, old_card, b_period=(date(2026, 9, 5), date(2026, 10, 24)))
+    r, token = run
+    fc = _filed(db_session, r, token, sha="cc" * 32, md5="cc" * 16)
+    c = svc.submit_revision(db_session, r, _rev(r, token, old_card, [_line(1, date(2026, 8, 20), "70")], total="70", file_id=fc.id,
+                                                period_start=date(2026, 7, 7), period_end=date(2026, 8, 8)), account_map={FOLDER: old_card.id})
+    db_session.commit()  # C ends 08-08: +2 off the 6th, not stale; it overlaps A's corrected 08-07..09-06 on 08-07/08
+    fixed = _correct_a(db_session, run, old_card, fa, la)
+    assert fixed.revision.guardrail["period_blocked_by"] == c.statement.id  # B (stale) skipped, C blocks
+    assert db_session.get(AccountStatement, a.statement.id).current_revision_id == a.revision.id
+
+
+def test_stale_neighbours_resolve_on_a_live_card_too(db_session, card, run):
+    fa, fb, la, lb, a, b = _two_misread_months(db_session, None, run, card, b_period=(date(2026, 9, 5), date(2026, 10, 24)))
+    assert db_session.get(AccountStatement, a.statement.id).mode == "live"
+    fixed = _correct_a(db_session, run, card, fa, la)
+    sa = db_session.get(AccountStatement, a.statement.id)
+    assert (sa.current_revision_id, sa.period_end) == (fixed.revision.id, date(2026, 9, 6))
+    assert _parse_reviews(db_session, sa.id) == []  # a correction, not a header-change review
+
+
+@pytest.mark.parametrize("kind, closing_day, period_end, closing_date, stale", [
+    ("card", 6, date(2026, 9, 9), None, False),          # +3: within tolerance
+    ("card", 6, date(2026, 9, 3), None, False),          # -3
+    ("card", 6, date(2026, 9, 10), None, True),          # +4
+    ("card", 6, date(2026, 9, 2), None, True),           # -4
+    ("card", 6, date(2026, 9, 6), date(2026, 9, 12), True),   # closing_date alone is off
+    ("card", 31, date(2026, 9, 30), None, False),        # day 31 clamps to the month's last day
+    ("bank", 6, date(2026, 9, 24), None, False),         # banks never
+    ("card", None, date(2026, 9, 24), None, False),      # no closing day: never
+])
+def test_stale_revision_boundaries(kind, closing_day, period_end, closing_date, stale):
+    account = SimpleNamespace(closing_day=closing_day)
+    revision = SimpleNamespace(period_end=period_end, closing_date=closing_date)
+    db = SimpleNamespace(get=lambda model, pk: revision)
+    assert revs._stale_revision(db, kind, account, 1) is stale
+    assert revs._stale_revision(db, kind, account, None) is False
+
+
+@pytest.mark.parametrize("period_end, closing_date, status, stale", [
+    (date(2026, 9, 24), None, "open", True),             # period itself off: will move
+    (date(2026, 9, 9), date(2026, 9, 24), "open", False),  # closing_date alone off: period stays (M2)
+    (date(2026, 9, 24), None, "reconciled", False),      # reconciled: never moves on its own
+])
+def test_stale_period_boundaries(period_end, closing_date, status, stale):
+    account = SimpleNamespace(closing_day=6)
+    revision = SimpleNamespace(period_end=period_end, closing_date=closing_date)
+    db = SimpleNamespace(get=lambda model, pk: revision)
+    assert revs._stale_period(db, "card", account, 1, status) is stale
+
+
+STALE_FIRST = (date(2026, 9, 1), date(2026, 9, 30))   # parsed before the closing day (6) was set: 6 days off
+CORRECTED = (date(2026, 8, 7), date(2026, 9, 6))       # the 09-03 line stays inside
+
+
+def _stale_claimed(db, seed, run, card):
+    """A live card statement (file-backed) whose one 580 line is claimed by an owner entry, parsed before the card's
+    closing day was set; then closing_day = 6 makes the current revision stale. Returns (file, first, line, entry)."""
+    from app.services import coverage_service as cov
+    from app.services.statements import matching
+    r, token = run
+    f = _filed(db, r, token)
+    first = svc.submit_revision(db, r, _rev(r, token, card, [_line(1, date(2026, 9, 3), "580")], total="580", file_id=f.id,
+                                            period_start=STALE_FIRST[0], period_end=STALE_FIRST[1]), account_map={FOLDER: card.id})
+    line = db.query(StatementLine).filter_by(revision_id=first.revision.id).one()
+    entry = seed.entry(card, "-580", day=date(2026, 9, 3))
+    db.flush()
+    db.refresh(entry)
+    cov.write_claim(db, first.statement, line, [matching.Row(entry.id, "principal", Decimal("-580"), None)],
+                    entries_by_id={entry.id: entry}, match_kind="auto", match_rule="exact", run_id=r.id)
+    db.commit()
+    card.closing_day = 6
+    db.commit()
+    return f, first, line, entry
+
+
+def _active_rows(db, statement_id):
+    return db.query(StatementCoverage).filter_by(statement_id=statement_id).order_by(StatementCoverage.id).all()
+
+
+def _parse_reviews(db, statement_id):
+    return db.query(ReconciliationCase).filter_by(statement_id=statement_id, kind="parse_review").order_by(ReconciliationCase.id).all()
+
+
+def test_stale_current_correction_transfers_coverage_on_an_identical_line(db_session, seed, card, run):
+    """Stale-current path with financial state (review AGENT-145 S2): the identical line keeps its claim on the
+    corrected revision; no parse_review."""
+    f, first, old_line, entry = _stale_claimed(db_session, seed, run, card)
+    r, token = run
+    second = svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 9, 3), "580")], total="580", file_id=f.id,
+                                                     period_start=CORRECTED[0], period_end=CORRECTED[1]), account_map={FOLDER: card.id})
+    db_session.commit()
+    stmt = db_session.get(AccountStatement, first.statement.id)
+    assert (stmt.current_revision_id, stmt.period_start, stmt.period_end) == (second.revision.id, *CORRECTED)
+    assert second.revision.guardrail["stale_current"] is True and second.lineage_counts["identical"] == 1
+    new_line = db_session.query(StatementLine).filter_by(revision_id=second.revision.id).one()
+    [row] = _active_rows(db_session, stmt.id)
+    assert (row.status, row.line_id, row.entry_id) == ("active", new_line.id, entry.id)
+    assert _parse_reviews(db_session, stmt.id) == []
+
+
+def test_stale_current_correction_quarantines_a_changed_claimed_line(db_session, seed, card, run):
+    from app.services import coverage_service as cov
+    f, first, old_line, entry = _stale_claimed(db_session, seed, run, card)
+    r, token = run
+    second = svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 9, 3), "580", merchant="PAYPAL *Netflix")],
+                                                     total="580", file_id=f.id, period_start=CORRECTED[0], period_end=CORRECTED[1]),
+                                 account_map={FOLDER: card.id})
+    db_session.commit()
+    stmt = db_session.get(AccountStatement, first.statement.id)
+    assert stmt.current_revision_id == second.revision.id and stmt.period_end == CORRECTED[1]
+    old_event = db_session.get(StatementEvent, old_line.event_id)
+    assert (old_event.status, old_event.current_line_id) == ("quarantined", None)
+    [row] = _active_rows(db_session, stmt.id)
+    assert (row.status, row.stale_reason) == ("stale", "lineage:changed")
+    assert entry.id not in cov.claimed_entry_ids(db_session)
+    [case] = _parse_reviews(db_session, stmt.id)
+    assert (case.status, case.event_id) == ("open", old_event.id)
+
+
+def test_stale_current_keeps_the_twin_count_gate(db_session, seed, card, run):
+    """Review AGENT-145 M1: a stale-but-passing current may hold coverage; a corrected revision that changes the
+    twin count (1 → 2 identical lines) is not a correction: it stays non-current, the claim stays on the old line,
+    and the live statement gets a parse_review."""
+    f, first, old_line, entry = _stale_claimed(db_session, seed, run, card)
+    r, token = run
+    twins = [_line(1, date(2026, 9, 3), "580"), _line(2, date(2026, 9, 3), "580")]
+    second = svc.submit_revision(db_session, r, _rev(r, token, card, twins, total="1160", file_id=f.id,
+                                                     period_start=CORRECTED[0], period_end=CORRECTED[1]), account_map={FOLDER: card.id})
+    db_session.commit()
+    stmt = db_session.get(AccountStatement, first.statement.id)
+    assert second.revision.guardrail_ok is True and second.revision.guardrail["twins_changed"] is True
+    assert (stmt.current_revision_id, stmt.period_end) == (first.revision.id, STALE_FIRST[1])
+    [row] = _active_rows(db_session, stmt.id)
+    assert (row.status, row.line_id, row.entry_id) == ("active", old_line.id, entry.id)
+    [case] = _parse_reviews(db_session, stmt.id)
+    assert case.status == "open" and case.context["twins_changed"] is True
+
+
+def test_a_current_revision_within_the_closing_day_tolerance_keeps_a_period_change_parked(db_session, seed, run):
+    """The rule is narrow: a current revision that still passes today's checks is a trustworthy base, so a changed
+    period stays a header change (non-current on a historical statement, as before)."""
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    wrong, fixed, stmt = _stale_then_fixed(db_session, run, old_card, closing_day=6, wrong_end=date(2026, 9, 8),
+                                           fixed_end=date(2026, 9, 6))
+    assert fixed.revision.guardrail_ok is True
+    assert (stmt.current_revision_id, stmt.period_end) == (wrong.revision.id, date(2026, 9, 8))
+    assert "stale_current" not in fixed.revision.guardrail
+
+
+def test_a_stale_current_on_a_live_statement_is_corrected_without_a_parse_review(db_session, card, run):
+    wrong, fixed, stmt = _stale_then_fixed(db_session, run, card, closing_day=6, wrong_end=date(2026, 9, 24),
+                                           fixed_end=date(2026, 9, 6))
+    assert stmt.mode == "live"
+    assert (stmt.current_revision_id, stmt.period_end) == (fixed.revision.id, date(2026, 9, 6))
+    assert [(c.kind, c.status) for c in db_session.query(ReconciliationCase).filter_by(kind="parse_review").all()] == []
+    assert _event_ids(db_session, fixed.revision.id) == _event_ids(db_session, wrong.revision.id)
 
 
 @pytest.mark.parametrize("taken", [(date(2026, 9, 1), date(2026, 9, 30)), (date(2026, 9, 16), date(2026, 10, 15))],
