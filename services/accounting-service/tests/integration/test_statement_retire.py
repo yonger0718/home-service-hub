@@ -316,6 +316,33 @@ def test_read_model_flags_a_retired_statement_and_its_events_never_pend(seed, db
 from tests.integration.test_reconciliation_actions_structural import anchored_bank  # noqa: E402,F401  (fixture)
 
 
+def test_retire_succeeds_once_the_applied_action_is_reverted(seed, db_session, run):
+    """Fix 2026-10-17: the engine records each revert as an `applied` row of action `revert`; it carries no effect
+    and must not keep refusing the retire (prod: statements 204/126 after reverting their creations)."""
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1200.0000")
+    row, _ = engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"},
+                                 actor="owner", label="owner-test")
+    db_session.commit()
+    revert = engine.revert_action(db_session, action_id=row.id, actor="owner", label="owner-test")
+    db_session.commit()
+    assert (revert.action, revert.status) == ("revert", "applied")
+    assert db_session.get(ReconciliationAction, row.id).status == "reverted"
+
+    result = _retire(db_session, stmt)
+
+    assert result.already_retired is False
+    stmt = db_session.get(AccountStatement, stmt.id)
+    assert stmt.mode == "historical"
+    assert _events(db_session, stmt) == ["retired"]
+    assert _active(db_session, stmt.id) == []
+    assert [c.status for c in _cases(db_session, stmt.id)] == ["superseded"] * len(_cases(db_session, stmt.id))
+    [audit_row] = _retired_audit(db_session, stmt)
+    assert audit_row.detail["previous_mode"] == "live"
+    assert db_session.get(ReconciliationAction, revert.id).status == "applied"  # the revert row is left as recorded
+
+
 def test_retire_refuses_the_target_of_another_statements_anchor_until_it_is_reverted(anchored_bank, db_session):
     a = anchored_bank  # August (the opening target, opening 1500) and September, both live bank statements
     row, _ = engine.apply_action(db_session, case_id=a.cases[a.sep.id].id, action="anchor_opening", params={},

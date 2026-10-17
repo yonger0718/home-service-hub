@@ -292,7 +292,7 @@ statement. Duplicates made before the fix are retired with `POST /accounts/{id}/
 under the statement lock it refuses 409 `anchor_depends` while an applied `anchor_opening` of the account (on any of its
 statements' cases) rests on this statement (recorded in the anchor's `statement_ids`, or this is the account's opening
 target; the anchor's statements are locked with it in ascending id order), and 409 `actions_applied` while any action on
-the statement's cases is applied, else releases its coverage (`retired`), retires its events, supersedes its open cases and their pending
+the statement's cases is applied (the `revert` rows excepted: `applied` but without an effect of their own), else releases its coverage (`retired`), retires its events, supersedes its open cases and their pending
 proposals and its resolved `deferred_next_period` deferrals, unlinks other statements' deferrals pointing at it, sets
 `mode = historical` with the note and audits `statement_retired` (that row marks it retired). A retired statement
 leaves the pending selection, `stale_events_pending`, `reconcile` (`skipped: "retired"`), the deferral linkers (neither
