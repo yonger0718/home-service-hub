@@ -522,5 +522,7 @@ def test_instruction_states_the_foreign_fee_row_rule():
     """Fix 2026-10-17: 匯豐旅人 prints each foreign purchase's 國外交易服務費 as a separate row holding only two dates
     and a small amount (no description); the parser dropped them and the statements failed the equation guardrail."""
     text = parse_schema.INSTRUCTION
-    assert "Every printed row that carries an amount becomes a line" in text
-    assert "國外交易服務費" in text and "emit it as a fee line" in text and "never drop such rows" in text
+    assert "Every printed transaction row with a non-zero amount becomes a line" in text
+    assert "國外交易服務費" in text and "emit it as a fee line" in text and "sharing the dates of one of them" in text
+    assert "keep the row as line_kind unknown" in text and "Never drop such a row" in text
+    assert "never add or change a row to make the amounts balance" in text and "add up" not in text
