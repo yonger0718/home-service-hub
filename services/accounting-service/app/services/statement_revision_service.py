@@ -214,11 +214,14 @@ def _new_lines(derived: list[derive.DerivedLine]) -> list[lineage.New]:
 
 
 def _events_with_applied_effects(db: Session, event_ids: list[int]) -> set[int]:
+    """Events an applied action rests on. A `revert` row is `applied` too but carries no effect (the engine's own
+    overlap check skips it the same way): a reverted-then-changed line retires like an untouched one."""
     if not event_ids:
         return set()
     return set(db.execute(
         select(ReconciliationAction.event_id)
-        .where(ReconciliationAction.event_id.in_(event_ids), ReconciliationAction.status == "applied")
+        .where(ReconciliationAction.event_id.in_(event_ids), ReconciliationAction.status == "applied",
+               ReconciliationAction.action != "revert")
     ).scalars())
 
 

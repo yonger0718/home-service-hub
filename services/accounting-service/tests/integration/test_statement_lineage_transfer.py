@@ -222,6 +222,33 @@ def test_changed_with_an_applied_action_quarantines_without_coverage(db_session,
     assert review.context["quarantined_event_id"] == old_line.event_id
 
 
+def test_changed_with_only_a_reverted_action_retires_without_quarantine(db_session, card, run):
+    """Fix 2026-10-17: the revert row is `applied` but carries no effect; the changed line retires like an untouched
+    one instead of opening a parse_review."""
+    first = _submit(db_session, run, card, merchant="PAYPAL *Spotify")
+    old_line = _line_of(db_session, first)
+    case = ReconciliationCase(statement_id=first.statement.id, revision_id=first.revision.id, kind="line_unmatched",
+                              event_id=old_line.event_id, line_id=old_line.id, status="open")
+    db_session.add(case)
+    db_session.flush()
+    original = ReconciliationAction(idempotency_key="k1", event_id=old_line.event_id, effect_slot="create",
+                                    case_id=case.id, action="create_entry", params={}, actor="owner",
+                                    status="reverted")
+    db_session.add(original)
+    db_session.flush()
+    revert = ReconciliationAction(idempotency_key=f"revert:{original.id}", event_id=old_line.event_id,
+                                  effect_slot=f"r{original.id}", case_id=case.id, action="revert",
+                                  params={"action_id": original.id}, actor="owner", status="applied")
+    db_session.add(revert)
+    db_session.flush()
+    original.reverted_by_action_id = revert.id
+    db_session.flush()
+    _submit(db_session, run, card, merchant="PAYPAL *Netflix")
+    db_session.expire_all()
+    assert db_session.get(StatementEvent, old_line.event_id).status == "retired"
+    assert _parse_reviews(db_session, first.statement.id) == []
+
+
 def test_unpaired_old_with_coverage_is_quarantined(db_session, seed, card, run):
     first, old_line, _ = _claimed(db_session, seed, run, card)
     second = _submit(db_session, run, card, posted=date(2026, 9, 4))

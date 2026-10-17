@@ -6,7 +6,7 @@ the shared import key → the statement FOR UPDATE and swept (`engine_locks.lock
 applied actions a ledger delete left fully stranded; a busy writer barrier is 409 `sweep_barrier_busy`, retry), the
 statements holding an applied `anchor_opening` that rests on it locked with it in ascending id order → refused with 409
 `anchor_depends` while such an anchor stays applied, and with 409 `actions_applied` while any action on its cases is
-`applied` (the owner reverts what the engine can revert; a statement with an irreversible — `replace_stand_in` —,
+`applied` — the `revert` rows themselves excepted: they are `applied` but carry no effect (the owner reverts what the engine can revert; a statement with an irreversible — `replace_stand_in` —,
 snapshot-refused or partially stranded applied action has no supported retire path and goes to the owner / Lead; no
 shortcut edits the applied marker) → its active coverage released (`retired`) → every
 non-retired event `retired` → every open/proposed case and every resolved `deferred_next_period` deferral of it
@@ -89,9 +89,10 @@ def retire_statement(db: Session, *, account_id: int, statement_id: int, note: s
         raise CodedConflictError("anchor_depends", "anchor_opening actions {} on statements {} rest on statement {}"
                                  .format([a for a, _ in depends], sorted({h for _, h in depends}),
                                                             statement.id))
-    applied = db.execute(
+    applied = db.execute(  # a `revert` row is itself `applied` but has no effect of its own (engine._refuse_later)
         select(ReconciliationAction.id).join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
-        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied")
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
+               ReconciliationAction.action != "revert")
         .order_by(ReconciliationAction.id)).scalars().all()
     if applied:
         raise CodedConflictError("actions_applied", f"actions {applied} are applied")
