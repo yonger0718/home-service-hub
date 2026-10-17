@@ -17,6 +17,7 @@ with `keep=new`, ruling 28) runs `_activate` alone on a revision stored earlier.
 
 from collections import Counter
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 from psycopg2.errors import DeadlockDetected
@@ -177,13 +178,13 @@ def period_blocker(db: Session, statement: AccountStatement, period_start, perio
 
 def _stale_period(db: Session, kind: str, account: Account, revision_id: int | None, status: str) -> bool:
     """The neighbour's PERIOD itself is stale and will move once the neighbour is corrected: a card revision whose
-    `period_end` is more than CLOSING_TOLERANCE_DAYS off the account's closing day, on a statement that is not
-    reconciled (a reconciled statement's revisions go through the conflict gate and never move on their own). A
-    neighbour stale only by its `closing_date` keeps its period and still blocks (review AGENT-145 M2)."""
+    period bounds are off the cycle (`_stale_period_bounds`: `period_end`, or the day before `period_start`, more
+    than CLOSING_TOLERANCE_DAYS off a scheduled closing date), on a statement that is not reconciled (a reconciled
+    statement's revisions go through the conflict gate and never move on their own). A neighbour stale only by its
+    `closing_date` keeps its period and still blocks (review AGENT-145 M2)."""
     if kind != "card" or account.closing_day is None or revision_id is None or status == "reconciled":
         return False
-    revision = db.get(StatementRevision, revision_id)
-    return abs(derive.closing_offset(revision.period_end, account.closing_day)) > derive.CLOSING_TOLERANCE_DAYS
+    return _stale_period_bounds(db.get(StatementRevision, revision_id), account.closing_day)
 
 
 def _lock_statement(db: Session, run: IngestRun, payload: RevisionIn, mode: str,
@@ -472,14 +473,27 @@ def _activate(db: Session, statement: AccountStatement, revision: StatementRevis
     return case_ids
 
 
+def _off_cycle(day, closing_day: int) -> bool:
+    return abs(derive.closing_offset(day, closing_day)) > derive.CLOSING_TOLERANCE_DAYS
+
+
+def _stale_period_bounds(revision: StatementRevision, closing_day: int) -> bool:
+    """The revision's period does not sit on the card's cycle: `period_end` more than CLOSING_TOLERANCE_DAYS off a
+    scheduled closing date, or `period_start` whose previous day is (the period runs from the day after the previous
+    closing date; fix 2026-10-17 after corrections with the right period_end but a period_start a week early stayed
+    parked and blocked their neighbours)."""
+    return _off_cycle(revision.period_end, closing_day) \
+        or _off_cycle(revision.period_start - timedelta(days=1), closing_day)
+
+
 def _stale_revision(db: Session, kind: str, account: Account, revision_id: int | None) -> bool:
-    """A card revision whose `period_end` or `closing_date` is more than CLOSING_TOLERANCE_DAYS off the account's
-    closing day: it passed the guardrails of its day, but fails today's closing-day check."""
+    """A card revision whose period bounds (`_stale_period_bounds`) or `closing_date` are more than
+    CLOSING_TOLERANCE_DAYS off the account's cycle: it passed the guardrails of its day, but not today's check."""
     if kind != "card" or account.closing_day is None or revision_id is None:
         return False
     revision = db.get(StatementRevision, revision_id)
-    return any(abs(derive.closing_offset(day, account.closing_day)) > derive.CLOSING_TOLERANCE_DAYS
-               for day in (revision.period_end, revision.closing_date) if day is not None)
+    return _stale_period_bounds(revision, account.closing_day) or (
+        revision.closing_date is not None and _off_cycle(revision.closing_date, account.closing_day))
 
 
 def _stale_current(db: Session, statement: AccountStatement, account: Account) -> bool:

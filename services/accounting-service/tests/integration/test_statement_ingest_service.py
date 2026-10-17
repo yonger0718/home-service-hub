@@ -382,14 +382,15 @@ def _stale_then_fixed(db, run, account, *, closing_day, wrong_end, fixed_end):
     f = _filed(db, r, token)
     amap = {FOLDER: account.id}
     lines = [_line(1, date(2026, 9, 3), "580")]
+    start = date(2026, 8, 7)  # on the cycle (the day after the 6th): only `wrong_end` decides staleness here
     wrong = svc.submit_revision(db, r, _rev(r, token, account, lines, total="580", file_id=f.id,
-                                            period_start=date(2026, 9, 1), period_end=wrong_end), account_map=amap)
+                                            period_start=start, period_end=wrong_end), account_map=amap)
     db.commit()
     assert wrong.revision.guardrail_ok is True and wrong.statement.period_end == wrong_end
     account.closing_day = closing_day
     db.commit()
     fixed = svc.submit_revision(db, r, _rev(r, token, account, lines, total="580", file_id=f.id,
-                                            period_start=date(2026, 9, 1), period_end=fixed_end), account_map=amap)
+                                            period_start=start, period_end=fixed_end), account_map=amap)
     db.commit()
     return wrong, fixed, db.get(AccountStatement, wrong.statement.id)
 
@@ -534,7 +535,8 @@ def test_stale_neighbours_resolve_on_a_live_card_too(db_session, card, run):
 ])
 def test_stale_revision_boundaries(kind, closing_day, period_end, closing_date, stale):
     account = SimpleNamespace(closing_day=closing_day)
-    revision = SimpleNamespace(period_end=period_end, closing_date=closing_date)
+    start = date(2026, 8, 7) if closing_day == 6 else date(2026, 9, 1)  # on the cycle: the day after a closing date
+    revision = SimpleNamespace(period_start=start, period_end=period_end, closing_date=closing_date)
     db = SimpleNamespace(get=lambda model, pk: revision)
     assert revs._stale_revision(db, kind, account, 1) is stale
     assert revs._stale_revision(db, kind, account, None) is False
@@ -547,9 +549,26 @@ def test_stale_revision_boundaries(kind, closing_day, period_end, closing_date, 
 ])
 def test_stale_period_boundaries(period_end, closing_date, status, stale):
     account = SimpleNamespace(closing_day=6)
-    revision = SimpleNamespace(period_end=period_end, closing_date=closing_date)
+    revision = SimpleNamespace(period_start=date(2026, 8, 7), period_end=period_end, closing_date=closing_date)
     db = SimpleNamespace(get=lambda model, pk: revision)
     assert revs._stale_period(db, "card", account, 1, status) is stale
+
+
+@pytest.mark.parametrize("period_start, stale", [
+    (date(2026, 8, 7), False),    # the day after the 6th: on the cycle
+    (date(2026, 8, 10), False),   # +3
+    (date(2026, 8, 4), False),    # -3
+    (date(2026, 8, 11), True),    # +4
+    (date(2026, 8, 1), True),     # a week early (production: 07-01 for a 07-07 start)
+])
+def test_stale_period_start_boundaries(period_start, stale):
+    """Fix 2026-10-17: a period_start whose previous day is off the cycle makes the period stale too — both for the
+    current revision (correction) and for a neighbour (bypass)."""
+    account = SimpleNamespace(closing_day=6)
+    revision = SimpleNamespace(period_start=period_start, period_end=date(2026, 9, 6), closing_date=None)
+    db = SimpleNamespace(get=lambda model, pk: revision)
+    assert revs._stale_revision(db, "card", account, 1) is stale
+    assert revs._stale_period(db, "card", account, 1, "open") is stale
 
 
 STALE_FIRST = (date(2026, 9, 1), date(2026, 9, 30))   # parsed before the closing day (6) was set: 6 days off
@@ -638,6 +657,37 @@ def test_stale_current_keeps_the_twin_count_gate(db_session, seed, card, run):
     assert (row.status, row.line_id, row.entry_id) == ("active", old_line.id, entry.id)
     [case] = _parse_reviews(db_session, stmt.id)
     assert case.status == "open" and case.context["twins_changed"] is True
+
+
+def test_a_period_start_a_week_early_is_corrected_and_no_longer_blocks_its_neighbour(db_session, seed, run):
+    """Production shape after #84: B = 07-01..08-06 (end right, start a week early) blocked A's correction to
+    06-07..07-06 and B's own start-only correction stayed parked. Now B is stale by period_start: its correction
+    lands, and A's correction is not blocked by B's stale period either."""
+    r, token = run
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    amap = {FOLDER: old_card.id}
+    fa, fb = _filed(db_session, r, token), _filed(db_session, r, token, sha="bb" * 32, md5="bb" * 16)
+    la, lb = [_line(1, date(2026, 6, 20), "580")], [_line(1, date(2026, 7, 20), "50")]
+    a = svc.submit_revision(db_session, r, _rev(r, token, old_card, la, total="580", file_id=fa.id,
+                                                period_start=date(2026, 6, 11), period_end=date(2026, 7, 24)), account_map=amap)
+    b = svc.submit_revision(db_session, r, _rev(r, token, old_card, lb, total="50", file_id=fb.id,
+                                                period_start=date(2026, 7, 1), period_end=date(2026, 8, 6)), account_map=amap)
+    db_session.commit()
+    old_card.closing_day = 6
+    db_session.commit()
+    fixed_a = svc.submit_revision(db_session, r, _rev(r, token, old_card, la, total="580", file_id=fa.id,
+                                                      period_start=date(2026, 6, 7), period_end=date(2026, 7, 6)), account_map=amap)
+    db_session.commit()
+    sa = db_session.get(AccountStatement, a.statement.id)
+    assert "period_blocked_by" not in fixed_a.revision.guardrail  # B's start-only stale period does not block
+    assert (sa.current_revision_id, sa.period_end) == (fixed_a.revision.id, date(2026, 7, 6))
+    fixed_b = svc.submit_revision(db_session, r, _rev(r, token, old_card, lb, total="50", file_id=fb.id,
+                                                      period_start=date(2026, 7, 7), period_end=date(2026, 8, 6)), account_map=amap)
+    db_session.commit()
+    sb = db_session.get(AccountStatement, b.statement.id)
+    assert fixed_b.revision.guardrail["stale_current"] is True
+    assert (sb.current_revision_id, sb.period_start) == (fixed_b.revision.id, date(2026, 7, 7))
 
 
 def test_a_current_revision_within_the_closing_day_tolerance_keeps_a_period_change_parked(db_session, seed, run):
