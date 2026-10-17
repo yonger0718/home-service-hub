@@ -554,21 +554,28 @@ def test_stale_period_boundaries(period_end, closing_date, status, stale):
     assert revs._stale_period(db, "card", account, 1, status) is stale
 
 
-@pytest.mark.parametrize("period_start, stale", [
-    (date(2026, 8, 7), False),    # the day after the 6th: on the cycle
-    (date(2026, 8, 10), False),   # +3
-    (date(2026, 8, 4), False),    # -3
-    (date(2026, 8, 11), True),    # +4
-    (date(2026, 8, 1), True),     # a week early (production: 07-01 for a 07-07 start)
+@pytest.mark.parametrize("closing_day, period_start, period_end, stale", [
+    (6, date(2026, 8, 7), date(2026, 9, 6), False),    # the day after the 6th: on the cycle
+    (6, date(2026, 8, 10), date(2026, 9, 6), False),   # +3
+    (6, date(2026, 8, 4), date(2026, 9, 6), False),    # -3
+    (6, date(2026, 8, 11), date(2026, 9, 6), True),    # +4
+    (6, date(2026, 8, 3), date(2026, 9, 6), True),     # -4
+    (6, date(2026, 8, 1), date(2026, 9, 6), True),     # a week early (production: 07-01 for a 07-07 start)
+    (31, date(2026, 3, 1), date(2026, 3, 31), False),  # previous day 02-28: day 31 clamps to February's end
+    (31, date(2028, 3, 1), date(2028, 3, 31), False),  # leap year: 02-29
+    (31, date(2026, 5, 1), date(2026, 5, 31), False),  # 04-30
+    (31, date(2026, 1, 1), date(2026, 1, 31), False),  # 12-31 of the previous year
+    (31, date(2026, 3, 5), date(2026, 3, 31), True),   # 03-04 is +4 from 02-28
 ])
-def test_stale_period_start_boundaries(period_start, stale):
+def test_stale_period_start_boundaries(closing_day, period_start, period_end, stale):
     """Fix 2026-10-17: a period_start whose previous day is off the cycle makes the period stale too — both for the
-    current revision (correction) and for a neighbour (bypass)."""
-    account = SimpleNamespace(closing_day=6)
-    revision = SimpleNamespace(period_start=period_start, period_end=date(2026, 9, 6), closing_date=None)
+    current revision (correction) and for a neighbour (bypass); month ends and year ends clamp like `closing_offset`."""
+    account = SimpleNamespace(closing_day=closing_day)
+    revision = SimpleNamespace(period_start=period_start, period_end=period_end, closing_date=None)
     db = SimpleNamespace(get=lambda model, pk: revision)
     assert revs._stale_revision(db, "card", account, 1) is stale
     assert revs._stale_period(db, "card", account, 1, "open") is stale
+    assert revs._stale_period(db, "card", account, 1, "reconciled") is False  # reconciled: never a bypass
 
 
 STALE_FIRST = (date(2026, 9, 1), date(2026, 9, 30))   # parsed before the closing day (6) was set: 6 days off

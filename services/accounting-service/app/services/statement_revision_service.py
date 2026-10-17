@@ -157,8 +157,8 @@ def period_blocker(db: Session, statement: AccountStatement, period_start, perio
     """The id of a statement the account and currency already hold for the period `statement` would move to: any one
     with that period_end (the identity, retired ones included), or a non-retired one whose period overlaps it (a
     shared boundary day is no overlap). None when the move is safe. With `account`, an overlapping neighbour whose
-    own period is stale (`_stale_period`: its `period_end` fails today's closing-day check and the statement is not
-    reconciled) does not block — misread neighbours overlap each other in chains and would otherwise block each
+    own period is stale (`_stale_period`: its `period_end`, or the day before its `period_start`, is off the card's
+    cycle and the statement is not reconciled) does not block — misread neighbours overlap each other in chains and would otherwise block each
     other's corrections for good; the chain is resolved by re-queueing every member. The identity clause (same
     period_end) is never bypassed."""
     s = AccountStatement
@@ -487,8 +487,10 @@ def _stale_period_bounds(revision: StatementRevision, closing_day: int) -> bool:
 
 
 def _stale_revision(db: Session, kind: str, account: Account, revision_id: int | None) -> bool:
-    """A card revision whose period bounds (`_stale_period_bounds`) or `closing_date` are more than
-    CLOSING_TOLERANCE_DAYS off the account's cycle: it passed the guardrails of its day, but not today's check."""
+    """A card revision whose period bounds (`_stale_period_bounds`: `period_end`, or the day before `period_start`)
+    or `closing_date` are more than CLOSING_TOLERANCE_DAYS off the account's cycle. This predicate is wider than the
+    ingest guardrail, which checks `period_end` and `closing_date` only (the start is not refused at ingest; a stale
+    start only makes the current revision replaceable by a passing re-parse)."""
     if kind != "card" or account.closing_day is None or revision_id is None:
         return False
     revision = db.get(StatementRevision, revision_id)
