@@ -427,6 +427,20 @@ def test_account_map_route_is_ingest_scoped(client):
     got = client.get("/statements/account-map", headers=W)
     assert got.status_code == 200
     assert got.json()["account_map"] == {"mail/信用卡/國泰世華": 1} and len(got.json()["mapping_version"]) == 16
+    assert got.json()["closing_days"] == {}
+
+
+def test_account_map_carries_the_cards_closing_days(client, seed, db_session):
+    """Fix 2026-10-17: the worker passes a card's closing day to the parser as a hint; the map lists the cards that
+    have one (ids as JSON keys), banks and cards without a closing day are absent."""
+    card = seed.account("卡", is_credit=True, closing_day=6)
+    other = seed.account("另一張", is_credit=True)
+    bank = seed.account("銀行")
+    db_session.commit()
+    got = client.get("/statements/account-map", headers=W)
+    assert got.status_code == 200
+    assert got.json()["closing_days"] == {str(card.id): 6}
+    assert str(other.id) not in got.json()["closing_days"] and str(bank.id) not in got.json()["closing_days"]
 
 
 def test_settings_put_accepts_manual_and_mail_key_shapes_only(client, card):
