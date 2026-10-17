@@ -16,8 +16,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app import auth
 from app.models import (
-    AccountStatement, LedgerEntry, PolicyBudget, ReconciliationAction, ReconciliationAudit, ReconciliationCase,
-    ReconciliationProposal,
+    DIRTY_BARRIER_KEY, AccountStatement, EntryGroup, LedgerEntry, PolicyBudget, ReconciliationAction, ReconciliationAudit,
+    ReconciliationCase, ReconciliationProposal,
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import entry_write_service as ews
@@ -27,7 +27,7 @@ from app.services import reconciliation_service as rec
 from app.services import reconciliation_actions as registry
 from app.services.policy_service import PolicyResult
 from app.services.reconciliation_actions import audit, engine
-from tests.helpers import race, wait_until_blocked
+from tests.helpers import make_entry, race, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
     _active, _card, _cases, _line, _submit, run,
 )
@@ -142,7 +142,7 @@ def test_policy_off_does_nothing_and_audits_nothing(seed, db_session, run):
     assert _reload(db_session, ReconciliationCase, s.cases[0].id).status == "open"
 
 
-def test_policy_coverage_survives_a_reconcile_and_reverts(seed, db_session, run):
+def test_policy_coverage_survives_a_reconcile_and_reverts(seed, db_session, run, dirty_on):
     s = _fee_statement(seed, db_session, run)
     _set_policy(db_session, SYSTEM_ON)
     policy_service.run_policy(db_session, s.stmt.id)
@@ -163,7 +163,7 @@ def test_policy_coverage_survives_a_reconcile_and_reverts(seed, db_session, run)
     assert _reload(db_session, ReconciliationCase, s.cases[0].id).status == "open"
 
 
-def test_policy_on_books_a_bank_only_fee_as_agent_and_charges_the_budget(seed, db_session, run):
+def test_policy_on_books_a_bank_only_fee_as_agent_and_charges_the_budget(seed, db_session, run, dirty_on):
     s = _fee_statement(seed, db_session, run)
     _set_policy(db_session, SYSTEM_ON)
 
@@ -190,7 +190,7 @@ def test_policy_on_books_a_bank_only_fee_as_agent_and_charges_the_budget(seed, d
     assert again.applied == [] and _budget(db_session).used_count == 1
 
 
-def test_policy_books_an_interest_line_without_a_pattern(seed, db_session, run):
+def test_policy_books_an_interest_line_without_a_pattern(seed, db_session, run, dirty_on):
     env = _fee_statement(seed, db_session, run, lines=[_line(1, DAY, "INTEREST CREDIT", 12, "interest")])
     assert env.cases[0].context == {"hint": "bank_only", "pattern": None}
     _set_policy(db_session, SYSTEM_ON)
@@ -245,7 +245,7 @@ def test_over_max_amount_becomes_a_policy_proposal(seed, db_session, run):
     assert policy_service.run_policy(db_session, s.stmt.id).proposed == []  # a proposed case is not retried
 
 
-def test_per_statement_count_cap_turns_the_second_candidate_into_a_proposal(seed, db_session, run):
+def test_per_statement_count_cap_turns_the_second_candidate_into_a_proposal(seed, db_session, run, dirty_on):
     s = _fee_statement(seed, db_session, run, [_line(1, DAY, "年費", 1200, "fee"),
                                                _line(2, DAY, "循環利息", 300, "interest")])
     _set_policy(db_session, {**SYSTEM_ON, "per_statement_count": 1})
@@ -262,7 +262,7 @@ def test_per_statement_count_cap_turns_the_second_candidate_into_a_proposal(seed
 
 
 @pytest.mark.parametrize("row_exists", [False, True], ids=["new_month", "existing_row"])
-def test_monthly_cap_race_applies_one_and_proposes_the_other(seed, db_session, run, pg_engine, row_exists):
+def test_monthly_cap_race_applies_one_and_proposes_the_other(seed, db_session, run, pg_engine, row_exists, dirty_on):
     """Review Focus 4: two statements at a 20,000 monthly cap, 15,000 each, in parallel: the second waits on the
     budget row the first reserved (on its insert for a new month, on its FOR UPDATE otherwise), then sees it charged
     and proposes."""
@@ -294,7 +294,8 @@ def test_monthly_cap_race_applies_one_and_proposes_the_other(seed, db_session, r
     assert (budget.used_amount, budget.used_count) == (Decimal("15000"), 1)
 
 
-def test_a_reservation_holds_the_budget_row_while_its_run_waits_for_the_statement(seed, db_session, run, pg_engine):
+def test_a_reservation_holds_the_budget_row_while_its_run_waits_for_the_statement(seed, db_session, run, pg_engine,
+                                                                                   dirty_on):
     """The window between reservation and charge: run A has reserved the budget row and waits for its statement
     (held by an owner transaction); run B on another statement must wait for A's budget row, not read the stale
     total — else both would spend 15,000 of a 20,000 month."""
@@ -339,7 +340,7 @@ def test_a_reservation_holds_the_budget_row_while_its_run_waits_for_the_statemen
     assert (budget.used_amount, budget.used_count) == (Decimal("15000"), 1)
 
 
-def test_same_statement_cap_race_is_caught_by_the_precheck_under_the_lock(seed, db_session, run, pg_engine):
+def test_same_statement_cap_race_is_caught_by_the_precheck_under_the_lock(seed, db_session, run, pg_engine, dirty_on):
     """Two policy runs on two cases of one statement at per_statement_count=1: the second run's pre-filter passes
     (nothing committed yet), then the recount under the statement lock refuses it → a proposal."""
     s = _fee_statement(seed, db_session, run, [_line(1, DAY, "年費", 1200, "fee"),
@@ -367,7 +368,7 @@ def test_same_statement_cap_race_is_caught_by_the_precheck_under_the_lock(seed, 
 
 # --- failures -----------------------------------------------------------------------------------------------------
 
-def test_a_failing_apply_is_skipped_and_the_loop_goes_on(seed, db_session, run):
+def test_a_failing_apply_is_skipped_and_the_loop_goes_on(seed, db_session, run, dirty_on):
     """attach_fee meets an existing FX fee child (`fee_exists`): rolled back with its reservation, audited, no
     `failed` row; the next candidate still applies and alone charges the budget."""
     card = _card(seed, db_session, fx_fee_pct=Decimal("1.5"))
@@ -545,7 +546,7 @@ def test_preview_labels_an_agent_proposal_over_its_cap_as_a_skip(ambiguous, db_s
 
 # --- routes -------------------------------------------------------------------------------------------------------
 
-def test_reconcile_route_reports_policy_counts(client, seed, db_session, run):
+def test_reconcile_route_reports_policy_counts(client, seed, db_session, run, dirty_on):
     s = _fee_statement(seed, db_session, run, [_line(1, DAY, "年費", 1200, "fee"),
                                                _line(2, DAY, "循環利息", 300, "interest")])
     _set_policy(db_session, {**SYSTEM_ON, "per_statement_count": 1})
@@ -589,7 +590,7 @@ FEE_LINE = {"seq": 1, "posted_date": "2026-09-03", "merchant_raw": "年費", "pr
             "line_kind": "fee"}
 
 
-def test_revision_route_runs_policy_for_a_live_statement(client, seed, db_session):
+def test_revision_route_runs_policy_for_a_live_statement(client, seed, db_session, dirty_on):
     card = _card(seed, db_session)
     _set_policy(db_session, SYSTEM_ON)
     lease = _claim(client)
@@ -617,7 +618,7 @@ def test_revision_route_skips_policy_for_a_historical_statement(client, seed, db
     assert calls == [] and _actions(db_session) == []
 
 
-def test_sweep_route_runs_policy_per_statement(client, seed, db_session, run):
+def test_sweep_route_runs_policy_per_statement(client, seed, db_session, run, dirty_on):
     s = _fee_statement(seed, db_session, run)
     _set_policy(db_session, SYSTEM_ON)
     s.stmt.needs_recheck = True  # pending for the sweep; the reconcile clears it before policy runs
@@ -809,7 +810,7 @@ def _purchase_statement(seed, db, run, name="卡", **card):
     return SimpleNamespace(card=account, stmt=stmt, line=line, case=case)
 
 
-def test_policy_backfills_after_the_grace_and_not_before(seed, db_session, run, today):
+def test_policy_backfills_after_the_grace_and_not_before(seed, db_session, run, today, dirty_on):
     s = _purchase_statement(seed, db_session, run)
     _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 14})
     assert policy_service.run_policy(db_session, s.stmt.id).applied == [] and _booked(db_session) == []
@@ -824,7 +825,7 @@ def test_policy_backfills_after_the_grace_and_not_before(seed, db_session, run, 
     assert entry.kind == "expense" and entry.needs_review is True
 
 
-def test_policy_backfill_respects_the_account_list_and_caps(seed, db_session, run):
+def test_policy_backfill_respects_the_account_list_and_caps(seed, db_session, run, dirty_on):
     s = _purchase_statement(seed, db_session, run)
     _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0, "backfill_accounts": [s.card.id + 1000]})
     assert policy_service.run_policy(db_session, s.stmt.id).applied == []
@@ -1253,12 +1254,12 @@ def test_a_shadow_that_drifted_since_the_collect_is_refused_under_the_lock(seed,
 
 # --- owner twins (final production finding 2026-10-17) ------------------------------------------------------------
 
-def _split_owner(seed, db, card, wallet, *, other, amount="-580", day=DAY):
-    """A MOZE `split` group whose expense member of `amount` on the card records the 580 line; its second member is a
-    different amount on the card (`other="card"`: the group does not conserve) or an income on a non-participating
-    account (`other="wallet"`: the group is partial). Returns the card member."""
+def _split_owner(seed, db, card, wallet, *, other, amount="-580", day=DAY, kind="expense"):
+    """A MOZE `split` group whose `kind` member of `amount` on the card records the line (default: the 580 purchase);
+    its second member is a different amount on the card (`other="card"`: the group does not conserve) or an income
+    on a non-participating account (`other="wallet"`: the group is partial). Returns the card member."""
     group = seed.group("split")
-    member = seed.entry(card, amount, day=day, merchant="全聯", group_id=group.id)
+    member = seed.entry(card, amount, kind=kind, day=day, merchant="全聯", group_id=group.id)
     if other == "card":
         seed.entry(card, "-120", day=day, merchant="全聯", group_id=group.id)
     else:
@@ -1365,25 +1366,52 @@ def test_an_owner_twin_recorded_since_the_collect_refuses_the_backfill_under_the
     assert _backfills(db_session) == [] and _booked(db_session) == []
 
 
-def _over_cap_backfill_proposal(seed, db, run):
-    """A 580 card line the policy (backfill max_amount 100) proposes rather than applies: (card, wallet, stmt, line,
-    pending policy proposal)."""
+# the two automatic creations an owner twin guards: (printed line, params, the twin's amount and kind)
+CREATIONS = {
+    "backfill_entry": (_line(1, DAY, "全聯", 580), {"kind": "expense"}, "-580", "expense"),
+    "create_system_entry": (_line(1, DAY, "年費", 1200, "fee"), {"kind": "fee"}, "-1200", "fee"),
+}
+
+
+def _creation_policy(action, max_amount="5000"):
+    return {"enabled": True, "backfill_grace_days": 0, "actions": {action: {"enabled": True, "max_amount": max_amount}}}
+
+
+def _creation_statement(seed, db, run, action):
+    """A live card statement printing the action's line, nothing covering it: (card, wallet, stmt, line)."""
     card = _card(seed, db)
     wallet = seed.account("錢包")
     db.commit()
-    stmt, (line,), _ = _submit(db, run, card, [_line(1, DAY, "全聯", 580)])
-    _set_policy(db, {**BACKFILL_ON, "backfill_grace_days": 0,
-                     "actions": {"backfill_entry": {"enabled": True, "max_amount": "100"}}})
+    stmt, (line,), _ = _submit(db, run, card, [CREATIONS[action][0]])
+    return card, wallet, stmt, line
+
+
+def _twin(seed, db, card, wallet, action, *, other):
+    _, _, amount, kind = CREATIONS[action]
+    return _split_owner(seed, db, card, wallet, other=other, amount=amount, kind=kind)
+
+
+def _over_cap_proposal(seed, db, run, action="backfill_entry"):
+    """The action's card line the policy (max_amount 100) proposes rather than applies: (card, wallet, stmt, line,
+    pending policy proposal)."""
+    card, wallet, stmt, line = _creation_statement(seed, db, run, action)
+    _set_policy(db, _creation_policy(action, "100"))
     (pid,) = policy_service.run_policy(db, stmt.id).proposed
     proposal = _reload(db, ReconciliationProposal, pid)
-    assert (proposal.author, proposal.action, proposal.status) == ("policy", "backfill_entry", "pending")
+    assert (proposal.author, proposal.action, proposal.status) == ("policy", action, "pending")
     return card, wallet, stmt, line, proposal
 
 
-def test_the_policy_supersedes_its_pending_backfill_proposal_once_an_owner_twin_arrives(seed, db_session, run, dirty_on):
+def _created(db, action):
+    return [a for a in _actions(db) if a.action == action]
+
+
+@pytest.mark.parametrize("action", sorted(CREATIONS))
+def test_the_policy_supersedes_its_pending_creation_proposal_once_an_owner_twin_arrives(seed, db_session, run, dirty_on,
+                                                                                         action):
     # review of aa8aaa1: the case keeps its version through reconcile, so supersede_stale never fires; the run does
-    card, wallet, stmt, line, proposal = _over_cap_backfill_proposal(seed, db_session, run)
-    _split_owner(seed, db_session, card, wallet, other="card")  # the MOZE import arrives later
+    card, wallet, stmt, line, proposal = _over_cap_proposal(seed, db_session, run, action)
+    _twin(seed, db_session, card, wallet, action, other="card")  # the MOZE import arrives later
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
     result = policy_service.run_policy(db_session, stmt.id)
@@ -1399,19 +1427,21 @@ def test_the_policy_supersedes_its_pending_backfill_proposal_once_an_owner_twin_
         proposal_service.apply_proposal(db_session, proposal_id=proposal.id, label="owner-test", request_id=None)
     db_session.rollback()
     assert info.value.code == "proposal_not_pending"
-    assert _backfills(db_session) == [] and _booked(db_session) == []
+    assert _created(db_session, action) == [] and _booked(db_session) == []
 
 
-def test_applying_a_policy_backfill_proposal_an_owner_entry_may_record_is_refused(client, seed, db_session, run):
-    # defence in depth: the twin arrived and no policy run happened since (dirty off: the case keeps its version)
-    card, wallet, stmt, line, proposal = _over_cap_backfill_proposal(seed, db_session, run)
-    _split_owner(seed, db_session, card, wallet, other="wallet")
+@pytest.mark.parametrize("action", sorted(CREATIONS))
+def test_applying_a_policy_creation_proposal_an_owner_entry_may_record_is_refused(client, seed, db_session, run, dirty_on,
+                                                                                   action):
+    # defence in depth: the twin arrived and no reconcile or policy run happened since (the case keeps its version)
+    card, wallet, stmt, line, proposal = _over_cap_proposal(seed, db_session, run, action)
+    _twin(seed, db_session, card, wallet, action, other="wallet")
     response = client.post(f"/reconciliation/proposals/{proposal.id}/apply", headers=S)
     assert response.status_code == 409 and response.json()["message"].startswith("owner_may_record")
     assert _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
-    assert _backfills(db_session) == [] and _booked(db_session) == []
+    assert _created(db_session, action) == [] and _booked(db_session) == []
     # the owner's own action from the case stays unrestricted
-    row, _ = engine.apply_action(db_session, case_id=proposal.case_id, action="backfill_entry", params={"kind": "expense"},
+    row, _ = engine.apply_action(db_session, case_id=proposal.case_id, action=action, params=CREATIONS[action][1],
                                  actor="owner", label="t")
     db_session.commit()
     assert row.status == "applied" and len(_booked(db_session)) == 1
@@ -1445,3 +1475,127 @@ def test_a_replacement_applied_since_the_collect_refuses_the_backfill_under_the_
     db_session.rollback()
     assert info.value.code == "candidate_changed"
     assert _booked(db_session) == []
+
+
+# --- PR #77 review M1/S1: the twin re-check under the writer barrier; system entries guarded too ---------------------
+
+@pytest.mark.parametrize("other", ["card", "wallet"])
+def test_policy_never_books_a_system_entry_a_split_member_records(seed, db_session, run, other):
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    _twin(seed, db_session, card, wallet, "create_system_entry", other=other)
+    stmt, (line,), _ = _submit(db_session, run, card, [CREATIONS["create_system_entry"][0]])
+    case = _open_line_case(db_session, stmt.id, line.id)
+    assert (case.context or {}).get("hint") == "bank_only" and not case.candidates
+    assert "create_system_entry" in registry.allowed(case)  # the owner still decides
+    statement = db_session.get(AccountStatement, stmt.id)
+    for max_amount in ("5000", "100"):  # neither applied nor, over max_amount, proposed
+        _set_policy(db_session, _creation_policy("create_system_entry", max_amount))
+        live = settings_service.reconciliation_policy(db_session)
+        assert policy_service.collect_candidates(db_session, statement, live) == []
+        result = policy_service.run_policy(db_session, stmt.id)
+        assert (result.applied, result.proposed) == ([], [])
+    assert _created(db_session, "create_system_entry") == [] and _proposals(db_session) == [] and _booked(db_session) == []
+
+
+def _commit_twin_elsewhere(pg_engine, card_id: int, action: str) -> None:
+    """An ordinary ledger writer on its own connection: a split group whose member records the action's line plus
+    a −120 member on the same card, committed at once."""
+    _, _, amount, kind = CREATIONS[action]
+    writer = sessionmaker(bind=pg_engine, autoflush=False)()
+    try:
+        account = SimpleNamespace(id=card_id, currency="TWD")
+        group = EntryGroup(kind="split")
+        writer.add(group)
+        writer.flush()
+        make_entry(writer, account, amount, kind=kind, entry_date=DAY, posted_date=DAY, group_id=group.id)
+        make_entry(writer, account, "-120", entry_date=DAY, posted_date=DAY, group_id=group.id)
+        writer.commit()
+    finally:
+        writer.close()
+
+
+@pytest.mark.parametrize("action", sorted(CREATIONS))
+def test_an_owner_twin_committed_after_the_policy_precheck_is_caught_under_the_writer_barrier(
+        seed, db_session, run, dirty_on, pg_engine, monkeypatch, action):
+    card, _, stmt, _ = _creation_statement(seed, db_session, run, action)
+    card_id = card.id
+    _set_policy(db_session, _creation_policy(action))
+    original = policy_service._policy_precheck
+    fired = []
+
+    def racing(candidate, ctx):
+        original(candidate, ctx)  # no twin yet: the precheck passes
+        _commit_twin_elsewhere(pg_engine, card_id, action)
+        fired.append(candidate.action)
+
+    monkeypatch.setattr(policy_service, "_policy_precheck", racing)
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert fired == [action]
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"candidate_changed": 1})
+    assert _created(db_session, action) == [] and _booked(db_session) == []
+
+
+@pytest.mark.parametrize("action", sorted(CREATIONS))
+def test_an_owner_twin_committed_while_a_policy_proposal_is_applied_is_caught_under_the_writer_barrier(
+        client, seed, db_session, run, dirty_on, pg_engine, monkeypatch, action):
+    card, _, stmt, _, proposal = _over_cap_proposal(seed, db_session, run, action)
+    card_id = card.id
+    original = policy_service.refuse_owner_recorded
+    fired = []
+
+    def racing(ctx):
+        original(ctx)  # no twin yet: the apply-time check passes
+        _commit_twin_elsewhere(pg_engine, card_id, action)
+        fired.append(ctx.case.id)
+
+    monkeypatch.setattr(policy_service, "refuse_owner_recorded", racing)
+    response = client.post(f"/reconciliation/proposals/{proposal.id}/apply", headers=S)
+    assert fired == [proposal.case_id]
+    assert response.status_code == 409 and response.json()["message"].startswith("owner_may_record")
+    assert _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
+    assert _created(db_session, action) == [] and _booked(db_session) == []
+
+
+@pytest.mark.parametrize("action", sorted(CREATIONS))
+def test_a_writer_holding_the_barrier_makes_the_policy_creation_yield(seed, db_session, run, dirty_on, pg_engine,
+                                                                     monkeypatch, action):
+    """A writer takes the shared barrier after the action's sweep and keeps it past the (shortened) lock timeout: the
+    policy's creation is skipped `sweep_barrier_busy`, nothing booked (it retries on the next run)."""
+    _, _, stmt, _ = _creation_statement(seed, db_session, run, action)
+    _set_policy(db_session, _creation_policy(action))
+    monkeypatch.setattr(coverage_service, "BARRIER_LOCK_TIMEOUT", "200ms")
+    original = coverage_service.take_barrier_xact
+    holder = pg_engine.connect()
+    squeezed_at = []
+
+    def squeezed(db):
+        holder.execute(text("SELECT pg_advisory_xact_lock_shared(:k)"), {"k": DIRTY_BARRIER_KEY})
+        squeezed_at.append(True)
+        return original(db)
+
+    monkeypatch.setattr(coverage_service, "take_barrier_xact", squeezed)
+    try:
+        result = policy_service.run_policy(db_session, stmt.id)
+    finally:
+        holder.rollback()
+        holder.close()
+    assert squeezed_at == [True]
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"sweep_barrier_busy": 1})
+    assert _created(db_session, action) == [] and _booked(db_session) == []
+
+
+@pytest.mark.parametrize("action", sorted(CREATIONS))
+def test_without_the_dirty_triggers_the_policy_creation_is_refused_but_the_owner_may_book(seed, db_session, run, action):
+    # the writer barrier holds back ledger writers only while the dirty triggers take it: the policy (and a policy
+    # proposal) is refused dirty_disabled before any lock; the owner's own action from the case stays available
+    _, _, stmt, _ = _creation_statement(seed, db_session, run, action)
+    _set_policy(db_session, _creation_policy(action))
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed, result.skipped) == ([], [], {"dirty_disabled": 1})
+    assert _created(db_session, action) == [] and _booked(db_session) == []
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched"]
+    row, _ = engine.apply_action(db_session, case_id=case.id, action=action, params=CREATIONS[action][1], actor="owner",
+                                 label="t")
+    db_session.commit()
+    assert row.status == "applied" and len(_booked(db_session)) == 1

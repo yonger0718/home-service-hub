@@ -796,7 +796,7 @@ def test_system_entries_never_shadow(seed, db_session, run, dirty_on):
 
 # --- R6b.7 dry-run previews --------------------------------------------------------------------------------------
 
-def test_policy_preview_matches_run_policy_decisions(seed, db_session, run, today):
+def test_policy_preview_matches_run_policy_decisions(seed, db_session, run, today, dirty_on):
     today(date(2026, 10, 3))
     card = _card(seed, db_session)
     stmt, (small, big), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "家樂福", 6000)])

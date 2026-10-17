@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AccountStatement, ReconciliationCase, ReconciliationProposal
 from app.services import reconciliation_service as rec
+from app.services import stand_ins
 from app.services.errors import CodedConflictError, CodedValidationError, NotFoundError, ValidationError
 from app.services.reconciliation_actions import ACTIONS, OPEN_STATUSES, allowed, audit, engine
 from app.services.reconciliation_actions.base import POLICY, ActionParams
@@ -210,8 +211,9 @@ def _get(db: Session, proposal_id: int) -> ReconciliationProposal:
 
 def apply_proposal(db: Session, *, proposal_id: int, label: str, request_id: str | None):
     """Unlocked pre-check, then the engine (which locks and re-validates the proposal row). Returns (action, replayed).
-    A policy-authored `backfill_entry` proposal is refused under the locks (409 `owner_may_record`) when an owner
-    entry may already record its line (`policy_service.refuse_owner_recorded`)."""
+    A policy-authored `backfill_entry` / `create_system_entry` proposal is refused under the locks (409
+    `owner_may_record`) when an owner entry may already record its line (`policy_service.refuse_owner_recorded`; the
+    action re-checks under the writer barrier)."""
     proposal = _get(db, proposal_id)
     if proposal.status != "pending":
         raise CodedConflictError("proposal_not_pending", f"proposal {proposal.id} is {proposal.status}")
@@ -220,7 +222,7 @@ def apply_proposal(db: Session, *, proposal_id: int, label: str, request_id: str
         raise CodedConflictError("proposal_superseded", f"proposal {proposal.id} was made at version "
                                                        f"{proposal.case_version}, the case is at {case.version}")
     precheck = None
-    if proposal.author == POLICY and proposal.action == "backfill_entry":
+    if proposal.author == POLICY and proposal.action in stand_ins.OWNER_TWIN_GUARDED:
         from app.services import policy_service  # local: policy_service imports this module
         precheck = policy_service.refuse_owner_recorded  # 409 owner_may_record (an owner twin or a replaced event)
     return engine.apply_action(db, case_id=case.id, action=proposal.action, params=proposal.params, actor="owner",

@@ -200,7 +200,7 @@ def test_create_system_entry_is_refused_on_an_ordinary_line(lone_line, db_sessio
     assert _booked(db_session) == [] and _actions(db_session) == []
 
 
-def test_create_system_entry_books_a_bank_only_fee_for_policy_and_reverts(seed, db_session, run):
+def test_create_system_entry_books_a_bank_only_fee_for_policy_and_reverts(seed, db_session, run, dirty_on):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
     (case,) = _cases(db_session, stmt.id, "open")

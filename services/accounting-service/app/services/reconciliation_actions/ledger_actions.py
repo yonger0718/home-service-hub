@@ -17,9 +17,11 @@ from typing import Literal
 
 from sqlalchemy import select
 
-from app.models import Account, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementLine
+from app.models import (
+    Account, LedgerEntry, ReconciliationAction, ReconciliationCase, ReconciliationProposal, StatementLine,
+)
 from app.schemas.writes import ChildIn, Int32, RefundIn, ShortText
-from app.services import coverage_service, settlement_service, stand_ins
+from app.services import coverage_service, settings_service, settlement_service, stand_ins
 from app.services import entry_write_service as ews
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.split_protection import protected_reason
@@ -125,6 +127,46 @@ class _Creation(ActionBase):
         return Effect(deleted_entry_ids=[entry_id], touched_entry_ids=others)
 
 
+class _TwinGuarded(_Creation):
+    """PR #77 review M1/S1: the automatic creations (`stand_ins.OWNER_TWIN_GUARDED`) must not book a line an owner
+    entry may already record (`stand_ins.owner_may_record`: an owner twin — a split member included — or a replaced
+    event). The policy's precheck and `refuse_owner_recorded` run under the statement and case locks only, which do
+    not stop an ordinary ledger writer; so, like `balance_adjustment_asof` / `anchor_opening`, the action takes the
+    account row and the exclusive writer barrier (after the statements and the case: the engine's order) and
+    re-checks INSIDE the action, in `validate_before`: from there to the commit no writer can commit a twin. The
+    re-check binds the policy (`candidate_changed`) and the owner applying a policy-authored proposal
+    (`owner_may_record`), both refused `dirty_disabled` while the dirty triggers (which take the barrier) are off; a
+    plain owner action from the case takes the barrier but stays unrestricted (owner override)."""
+
+    def lock_targets(self, ctx: Context, params) -> LockSet:
+        return LockSet(account_lock=True, barrier=True)
+
+    @staticmethod
+    def _guard_code(ctx: Context) -> str | None:
+        """`candidate_changed` for the policy, `owner_may_record` for the owner applying a policy-authored proposal,
+        None for a plain owner action."""
+        if ctx.actor == POLICY:
+            return "candidate_changed"
+        proposal = ctx.db.get(ReconciliationProposal, ctx.proposal_id) if ctx.proposal_id is not None else None
+        return "owner_may_record" if proposal is not None and proposal.author == POLICY else None
+
+    def check_before_locks(self, ctx: Context, params) -> None:
+        """Before the account row and the barrier (the triggers take the barrier only while on)."""
+        if self._guard_code(ctx) is not None \
+                and not settings_service.read_reconciliation_settings(ctx.db)["dirty_enabled"]:
+            raise _refuse("action", "dirty_disabled", "the owner-twin re-check needs the writer barrier")
+
+    def _twin_check(self, ctx: Context, line: StatementLine) -> None:
+        """Under the writer barrier: refuse when an owner entry may record the line (guarded callers only). The dirty
+        flag is read again, as `balance_adjustment_asof` / `anchor_opening` do in `apply`."""
+        code = self._guard_code(ctx)
+        if code is None:
+            return
+        self.check_before_locks(ctx, None)
+        if stand_ins.owner_may_record(ctx.db, ctx.statement, ctx.case.event_id, line, ctx.rules):
+            raise CodedConflictError(code, f"an owner entry may already record line {line.id}")
+
+
 class CreateEntryParams(ActionParams):
     kind: Literal["expense", "income"]
     category_id: Int32
@@ -159,7 +201,7 @@ class CreateSystemEntryParams(ActionParams):
     kind: Literal["fee", "interest", "reward"]
 
 
-class CreateSystemEntryAction(_Creation):
+class CreateSystemEntryAction(_TwinGuarded):
     name = "create_system_entry"
     Params = CreateSystemEntryParams
     case_kinds = frozenset({"line_unmatched"})
@@ -167,7 +209,7 @@ class CreateSystemEntryAction(_Creation):
 
     def validate_before(self, ctx: Context, params: CreateSystemEntryParams, prepared: Prepared,
                         before: dict) -> None:
-        _open_line(ctx)
+        self._twin_check(ctx, _open_line(ctx))
 
     def apply(self, ctx: Context, params: CreateSystemEntryParams, prepared: Prepared, effect: Effect) -> None:
         line = _open_line(ctx)
@@ -408,7 +450,7 @@ class BackfillEntryParams(ActionParams):
     kind: Literal["expense", "income"]
 
 
-class BackfillEntryAction(_Creation):
+class BackfillEntryAction(_TwinGuarded):
     """R6b.1: books an unmatched purchase/withdrawal/deposit line as a stand-in (category 對帳待分類, needs_review)."""
     name = "backfill_entry"
     Params = BackfillEntryParams
@@ -422,7 +464,7 @@ class BackfillEntryAction(_Creation):
         return line
 
     def validate_before(self, ctx: Context, params: BackfillEntryParams, prepared: Prepared, before: dict) -> None:
-        self._check(ctx, params)
+        self._twin_check(ctx, self._check(ctx, params))
 
     def apply(self, ctx: Context, params: BackfillEntryParams, prepared: Prepared, effect: Effect) -> None:
         line = self._check(ctx, params)

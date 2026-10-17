@@ -156,6 +156,8 @@ def _system_entry_candidate(db: Session, case: ReconciliationCase, statement: Ac
     line = current_line(db, case, statement)
     if line is None or line.line_kind not in SYSTEM_LINE_KINDS or _absorbed_by_anchor(db, statement, line):
         return None
+    if _owner_may_record(db, statement, case, line, rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)):
+        return None  # PR #77 S1: e.g. an owner fee entry that is a split member
     return Candidate(case.id, case.kind, case.status, "create_system_entry", {"kind": line.line_kind},
                      _money(line.flow_amount), entry_id=context.get("entry_id"))
 
@@ -200,21 +202,20 @@ def _owner_may_record(db: Session, statement: AccountStatement, case: Reconcilia
     """Final production finding 2026-10-17: an owner entry may already record the line — the event has an applied
     `replace_stand_in` (the owner's entry won it once), or an owner twin (`stand_ins.owner_twins`, split members
     included) takes it alone. The automatic backfill would duplicate it; the owner's own backfill stays available."""
-    accounts = coverage_service.participating_accounts(db, statement.account_id)
-    return stand_ins.replaced_event(db, statement, case.event_id) \
-        or bool(stand_ins.owner_twins(db, statement, line, accounts, rules))
+    return stand_ins.owner_may_record(db, statement, case.event_id, line, rules)
 
 
 def refuse_owner_recorded(ctx: Context) -> None:
-    """Engine precheck for the owner applying a policy-authored `backfill_entry` proposal (`proposal_service`), under
-    the statement and case locks: 409 `owner_may_record` when an owner entry may already record the line — a proposal
-    made before the twin or the replacement arrived, applied before the next policy run supersedes it."""
+    """Engine precheck for the owner applying a policy-authored `backfill_entry` / `create_system_entry` proposal
+    (`proposal_service`), under the statement and case locks: 409 `owner_may_record` when an owner entry may already
+    record the line — a proposal made before the twin or the replacement arrived, applied before the next policy run
+    supersedes it. The action re-checks under the writer barrier (`ledger_actions._TwinGuarded`)."""
     if ctx.line is not None and _owner_may_record(ctx.db, ctx.statement, ctx.case, ctx.line, ctx.rules):
         raise CodedConflictError("owner_may_record", f"case {ctx.case.id}")
 
 
 def _supersede_owner_recorded(db: Session, statement_id: int, *, run_id: int | None) -> int:
-    """Pending policy-authored `backfill_entry` proposals of the statement whose line an owner entry may now record
+    """Pending policy-authored `backfill_entry` / `create_system_entry` proposals of the statement whose line an owner entry may now record
     (`_owner_may_record`) → superseded, audited `proposal_superseded` (`by: owner_may_record`), and a `proposed` case
     left without a live proposal reopens. The case keeps its version through reconcile, so `supersede_stale` never
     sees them. Locks statement → cases (ascending) → proposals (the `supersede_stale` order); commits. Returns how
@@ -223,7 +224,8 @@ def _supersede_owner_recorded(db: Session, statement_id: int, *, run_id: int | N
         select(ReconciliationProposal.case_id)
         .join(ReconciliationCase, ReconciliationCase.id == ReconciliationProposal.case_id)
         .where(ReconciliationCase.statement_id == statement_id, ReconciliationProposal.status == "pending",
-               ReconciliationProposal.author == POLICY, ReconciliationProposal.action == "backfill_entry")).scalars()))
+               ReconciliationProposal.author == POLICY,
+               ReconciliationProposal.action.in_(stand_ins.OWNER_TWIN_GUARDED))).scalars()))
     if not case_ids:
         return 0
     statement = rec._lock_statement(db, statement_id)
@@ -236,7 +238,7 @@ def _supersede_owner_recorded(db: Session, statement_id: int, *, run_id: int | N
         if line is None or not _owner_may_record(db, statement, case, line, rules):
             continue
         for proposal in proposal_service._pending(db, case.id, author=POLICY):
-            if proposal.action != "backfill_entry":
+            if proposal.action not in stand_ins.OWNER_TWIN_GUARDED:
                 continue
             proposal.status, proposal.decided_at = "superseded", func.now()
             audit.record(db, event="proposal_superseded", actor=POLICY, statement_id=statement_id, case_id=case.id,
@@ -442,7 +444,8 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
     if candidate.action == "replace_stand_in":  # the hint, the backfill action, the entry and the event as collected
         return _replace_evidence(case) == candidate.evidence and _shadow_in_exact_window(ctx)
     if candidate.action == "create_system_entry":
-        return context.get("hint") == "bank_only" and ctx.line.line_kind == candidate.params.get("kind")
+        return context.get("hint") == "bank_only" and ctx.line.line_kind == candidate.params.get("kind") \
+            and not _owner_may_record(ctx.db, ctx.statement, case, ctx.line, ctx.rules)
     if candidate.action == "backfill_entry":
         return not context.get("owner_deleted") and not case.candidates \
             and registry.backfill_eligibility(case) == candidate.params.get("kind") \
@@ -661,8 +664,8 @@ def run_policy(db: Session, statement_id: int, *, run_id: int | None = None,
                today: date | None = None) -> PolicyResult:
     """Apply the policy to one statement (module docstring). Empty at once when the policy is off, the statement is
     not live, has `conflict_open`/`needs_recheck` or an open `parse_review`/`statement_conflict`; a currency outside
-    `per_currency_enabled` is skipped with audit `policy_skipped currency`. First, its own pending `backfill_entry`
-    proposals an owner entry may now record are superseded (`_supersede_owner_recorded`). The budget month is the application
+    `per_currency_enabled` is skipped with audit `policy_skipped currency`. First, its own pending creation proposals
+    (`stand_ins.OWNER_TWIN_GUARDED`) an owner entry may now record are superseded (`_supersede_owner_recorded`). The budget month is the application
     day's (`ledger_service._today()` unless `today`, ruling 10). Commits per candidate."""
     result = PolicyResult()
     policy = settings_service.reconciliation_policy(db)

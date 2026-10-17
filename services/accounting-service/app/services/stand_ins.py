@@ -15,6 +15,8 @@ from app.services import coverage_service
 from app.services.statements import matching
 
 BACKFILL_ACTIONS = frozenset({"backfill_entry"})  # R6c adds its transfer actions
+# the automatic creations an owner twin or a replaced event stops (final production finding 2026-10-17, PR #77 S1)
+OWNER_TWIN_GUARDED = frozenset({"backfill_entry", "create_system_entry"})
 CREATION_SLOT = "create"
 
 
@@ -148,6 +150,15 @@ def replaced_event(db: Session, statement: AccountStatement, event_id: int | Non
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.event_id == event_id,
                ReconciliationAction.action == "replace_stand_in", ReconciliationAction.status == "applied")
         .limit(1)).first() is not None
+
+
+def owner_may_record(db: Session, statement: AccountStatement, event_id: int | None, line: StatementLine, rules) -> bool:
+    """An owner entry may already record the line: the event has an applied replacement (`replaced_event`) or an
+    owner twin takes it alone (`owner_twins`). The policy and the policy's own proposals never book such a line;
+    under the writer barrier (`BackfillEntryAction` / `CreateSystemEntryAction`) the answer cannot change before the
+    booking commits."""
+    accounts = coverage_service.participating_accounts(db, statement.account_id)
+    return replaced_event(db, statement, event_id) or bool(owner_twins(db, statement, line, accounts, rules))
 
 
 def shadows(db: Session, statement: AccountStatement, accounts: list[int], rules) -> list[dict]:
