@@ -521,6 +521,40 @@ def test_out_of_order_reconcile_the_next_statement_claimed_the_late_entry_first(
     assert _cases(db_session, sep.id, "open") == []
 
 
+@pytest.mark.parametrize("posted, oct_line, gap_after", [
+    (date(2026, 9, 29), date(2026, 10, 1), "-200.0000"),  # late: deferred here again once October lets go
+    (date(2026, 9, 27), date(2026, 9, 30), "-110.0000"),  # not late: an unprinted ledger row, a real gap
+])
+def test_held_balance_after_a_later_statement_that_claimed_an_entry_is_retired(seed, db_session, run, dirty_on,
+                                                                               posted, oct_line, gap_after):
+    """October claims a September-dated coffee first (out of order), so September's held balance leaves it out; the
+    retire releases October's coverage, and September's next reconcile and the adjustment use the fresh value."""
+    from app.services import statement_retire_service as retire_svc
+    from app.services.reconciliation_actions import engine
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    coffee = seed.entry(card, "-90", day=posted, merchant="咖啡")
+    db_session.commit()
+    octo, _, _ = _submit(db_session, run, card, [_line(1, oct_line, "咖啡", 90)],
+                         period=(date(2026, 10, 1), date(2026, 10, 30)), opening="780")
+    assert [r.entry_id for r in _active(db_session, octo.id)] == [coffee.id]
+    sep, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580),
+                                                _line(2, date(2026, 9, 8), "神秘", 200)])
+    assert _gap_of(db_session, sep.id) == ["-200.0000"]  # only the missing 200: the coffee is October's
+    retire_svc.retire_statement(db_session, account_id=card.id, statement_id=octo.id, note="重複", label="t",
+                                request_id=None)
+    db_session.commit()
+    assert _active(db_session, octo.id) == []
+    _reconcile(db_session, sep.id)
+    (gap,) = [c for c in _cases(db_session, sep.id, "open") if c.kind == "balance_gap"]
+    assert gap.context == {"gap": gap_after, "card": True}
+    row, _ = engine.apply_action(db_session, case_id=gap.id, action="balance_adjustment_asof", params={},
+                                 actor="owner", label="t")
+    db_session.commit()
+    (adj,) = db_session.execute(select(LedgerEntry).where(LedgerEntry.kind == "balance_adjustment")).scalars().all()
+    assert adj.amount == Decimal(gap_after) and row.created_entry_ids == [adj.id]
+
+
 def test_a_coverage_row_whose_entry_is_gone_does_not_undo_deferrals(seed, db_session, run):
     """An active claim keeps entry_id NULL after its entry is deleted until the sweep releases it (ON DELETE SET NULL;
     a MOZE re-import leaves many): it must not turn the deferral term off on any other statement."""
