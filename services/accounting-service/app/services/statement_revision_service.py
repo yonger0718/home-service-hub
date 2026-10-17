@@ -365,6 +365,10 @@ def _activate(db: Session, statement: AccountStatement, revision: StatementRevis
     outcome; a pairing without one gets a new row (none for a first revision). Raises `CodedConflictError`
     (`conflict_stale`) when a stored line's event no longer fits the re-pairing (the current revision moved since the
     revision was stored). Returns the ids of the quarantine cases opened or reused."""
+    if (revision.period_start, revision.period_end) != (statement.period_start, statement.period_end):
+        blocker = period_blocker(db, statement, revision.period_start, revision.period_end)
+        if blocker is not None:  # before anything moves; submit_revision never gets here (it checks first)
+            raise CodedConflictError("period_conflict", f"statement {blocker} holds that period")
     record_lineage = statement.current_revision_id is not None
     rows = _revision_lines(db, revision)
     pairings = lineage.pair(old_lines, _stored_new_lines(rows))
@@ -434,10 +438,6 @@ def _activate(db: Session, statement: AccountStatement, revision: StatementRevis
             db.add(LineLineage(event_id=pairing.old.event_id if pairing.old is not None else new_line.event_id,
                                old_line_id=key[0], new_line_id=key[1], equivalence=pairing.equivalence,
                                transferred=transferred))
-    if (revision.period_start, revision.period_end) != (statement.period_start, statement.period_end):
-        blocker = period_blocker(db, statement, revision.period_start, revision.period_end)
-        if blocker is not None:  # submit_revision never gets here (it checks first); promote_revision may
-            raise CodedConflictError("period_conflict", f"statement {blocker} holds that period")
     statement.current_revision_id = revision.id
     for column in HEADER_COLUMNS:
         setattr(statement, column, getattr(revision, column))

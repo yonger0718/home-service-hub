@@ -4,8 +4,10 @@ Before the file guard (`statement_revision_service._file_statement_id`) one PDF 
 second live statement holding the same lines. Retiring such a duplicate, in one transaction (never committed here):
 the shared import key → the statement FOR UPDATE (`reconciliation_service._lock_statement`) → refused with 409
 `actions_applied` while any action on its cases is `applied` (its effects belong to the owner: revert them first) →
-its active coverage released (`retired`) → every non-retired event `retired` → every open/proposed case superseded
-(version bumped) and their pending proposals superseded → `mode = historical`, the note recorded, `needs_recheck` and
+its active coverage released (`retired`) → every non-retired event `retired` → every open/proposed case and every
+resolved `deferred_next_period` deferral of it superseded (version bumped) and their pending proposals superseded →
+the deferrals of other statements linked to it unlinked (`deferred_to_statement_id` NULL; the linkers never pick a
+retired statement as source or target, so none is linked or reopened through it again) → `mode = historical`, the note recorded, `needs_recheck` and
 `conflict_open` cleared, counts recomputed → audit `statement_retired`, which is the retired marker
 (`app.services.statements.retired`). A retired statement leaves the pending selection, the reconcile pass, the policy
 (not live) and the dry-run dump (live only), and no revision lands on it again. Retiring it again is a 200 no-op
@@ -14,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -62,9 +64,10 @@ def retire_statement(db: Session, *, account_id: int, statement_id: int, note: s
         update(StatementEvent).where(StatementEvent.statement_id == statement.id, StatementEvent.status != "retired")
         .values(status="retired").returning(StatementEvent.id).execution_options(synchronize_session="fetch")
     ).scalars().all()
+    deferral = and_(ReconciliationCase.status == "resolved", ReconciliationCase.explanation == rec.DEFERRED)
     cases = db.execute(
         select(ReconciliationCase).where(ReconciliationCase.statement_id == statement.id,
-                                         ReconciliationCase.status.in_(OPEN))
+                                         or_(ReconciliationCase.status.in_(OPEN), deferral))
         .order_by(ReconciliationCase.id).with_for_update().execution_options(populate_existing=True)).scalars().all()
     for case in cases:
         case.status, case.version = "superseded", case.version + 1
@@ -78,6 +81,12 @@ def retire_statement(db: Session, *, account_id: int, statement_id: int, note: s
     for proposal_id, case_id in sorted(proposals):
         audit.record(db, event="proposal_superseded", actor="system", statement_id=statement.id, case_id=case_id,
                      request_id=request_id, detail={"proposal_id": proposal_id, "by": "retire"})
+    unlinked = db.execute(
+        update(ReconciliationCase)
+        .where(ReconciliationCase.deferred_to_statement_id == statement.id,
+               ReconciliationCase.statement_id != statement.id)
+        .values(deferred_to_statement_id=None).returning(ReconciliationCase.id)
+        .execution_options(synchronize_session="fetch")).scalars().all()
     statement.mode = "historical"
     statement.note = note if not statement.note else f"{statement.note}\n{note}"
     statement.needs_recheck = False
@@ -85,7 +94,8 @@ def retire_statement(db: Session, *, account_id: int, statement_id: int, note: s
     rec._recount(db, statement)
     audit.record(db, event=retired.EVENT, actor=label, statement_id=statement.id, request_id=request_id, detail={
         "note": note, "previous_mode": previous_mode, "released_coverage": released, "retired_events": sorted(events),
-        "superseded_cases": [c.id for c in cases], "superseded_proposals": sorted(p for p, _ in proposals)})
+        "superseded_cases": [c.id for c in cases], "superseded_proposals": sorted(p for p, _ in proposals),
+        "unlinked_deferrals": sorted(unlinked)})
     db.flush()
     return RetireResult(statement, already_retired=False, released_coverage=released, retired_events=len(events),
                         superseded_cases=len(cases))

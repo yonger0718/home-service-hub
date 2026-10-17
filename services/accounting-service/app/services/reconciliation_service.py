@@ -603,10 +603,13 @@ def _link_earlier_deferrals(db: Session, statement: AccountStatement) -> int:
     """Point earlier statements' unlinked deferrals to this period at this statement: one UPDATE of case rows only
     (no statement row of theirs is locked; the foreign key's KEY SHARE lands on this statement, which we hold).
     No SKIP LOCKED: an earlier statement's reconcile writes its deferral cases only after taking all its entry locks
-    and then waits on nothing of ours, so waiting for its commit here cannot close a cycle."""
+    and then waits on nothing of ours, so waiting for its commit here cannot close a cycle. A retired statement is
+    neither a source nor a target."""
+    if retired.is_retired(db, statement.id):
+        return 0
     earlier = select(AccountStatement.id).where(
         AccountStatement.account_id == statement.account_id, AccountStatement.currency == statement.currency,
-        AccountStatement.id != statement.id)
+        AccountStatement.id != statement.id, ~retired.clause(AccountStatement.id))
     count = db.execute(
         update(ReconciliationCase)
         .where(ReconciliationCase.statement_id.in_(earlier),
@@ -625,15 +628,17 @@ def fill_deferral_links(db: Session) -> int:
     cases are linked under that lock with the deferral conditions re-checked. The savepoint only scopes a failure:
     every target row lock taken stays held until the CALLER commits, which is safe because the targets are taken in
     ascending id order, the order confirm and the engine lock statements in. A `reconciled` target is linked too: the
-    link shows as `incoming_deferrals_pending` until its next confirm processes it; no flag is set. Call it in its own
-    transaction (e.g. after the batch) and commit right after."""
+    link shows as `incoming_deferrals_pending` until its next confirm processes it; no flag is set. A retired
+    statement is neither a source nor a target. Call it in its own transaction (e.g. after the batch) and commit
+    right after."""
     own, target = aliased(AccountStatement), aliased(AccountStatement)
     candidates = db.execute(
         select(ReconciliationCase.id, target.id)
         .join(own, own.id == ReconciliationCase.statement_id)
         .join(target, and_(target.account_id == own.account_id, target.currency == own.currency,
                            target.period_end == ReconciliationCase.deferred_to_period_end))
-        .where(*_deferral_conditions(), ReconciliationCase.deferred_to_period_end.is_not(None))
+        .where(*_deferral_conditions(), ReconciliationCase.deferred_to_period_end.is_not(None),
+               ~retired.clause(own.id), ~retired.clause(target.id))
         .order_by(target.id, ReconciliationCase.id)).all()
     by_target: dict[int, list[int]] = defaultdict(list)
     for case_id, target_id in candidates:
@@ -642,8 +647,11 @@ def fill_deferral_links(db: Session) -> int:
     for target_id in sorted(by_target):
         with db.begin_nested():
             statement = _lock_statement(db, target_id)  # FOR UPDATE, re-read (populate_existing)
+            if retired.is_retired(db, statement.id):  # retired between the read and the lock
+                continue
             same_cycle = select(AccountStatement.id).where(AccountStatement.account_id == statement.account_id,
-                                                           AccountStatement.currency == statement.currency)
+                                                           AccountStatement.currency == statement.currency,
+                                                           ~retired.clause(AccountStatement.id))
             count += db.execute(
                 update(ReconciliationCase)
                 .where(ReconciliationCase.id.in_(by_target[target_id]), *_deferral_conditions(),

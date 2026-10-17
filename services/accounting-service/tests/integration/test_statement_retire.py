@@ -15,7 +15,7 @@ from app.models import (
     ReconciliationProposal, StatementCoverage, StatementEvent, StatementRevision,
 )
 from app.schemas.statements import FileRegisterIn, RevisionIn, SourceRegisterIn
-from app.services import policy_service, settings_service
+from app.services import confirm_service, policy_service, settings_service
 from app.services import reconciliation_service as rec
 from app.services import statement_ingest_service as ing
 from app.services import statement_retire_service as retire_svc
@@ -212,3 +212,96 @@ def test_retire_route(recon_env, client, seed, db_session, run):
     again = client.post(url, headers=ADMIN, json={"note": NOTE})
     assert again.status_code == 200 and again.json()["already_retired"] is True
     assert len(_retired_audit(db_session, stmt)) == 1
+    reader = {"Authorization": "Bearer spa-token"}
+    assert client.get(f"/accounts/{card.id}/statements/{stmt.id}", headers=reader).json()["retired"] is True
+    assert [s["retired"] for s in client.get(f"/accounts/{card.id}/statements", headers=reader).json()] == [True]
+
+
+# --- follow-ups (review of 02d216b): deferrals, confirm, pending events, read model ----------------------------------
+OCT30 = (date(2026, 10, 1), date(2026, 10, 30))  # the card's next period after September (closing day 30)
+
+
+def _deferring_september(seed, db, run, card):
+    """September claims its one line and defers an entry posted on the 29th to the period ending on October 30."""
+    seed.entry(card, "-580", day=DAY, merchant="全聯")
+    seed.entry(card, "-77", day=date(2026, 9, 29), merchant="早餐")
+    seed.entry(card, "-120", day=date(2026, 10, 5), merchant="超商")
+    db.commit()
+    sep, _, _ = _submit(db, run, card, [_line(1, DAY, "全聯", 580)])
+    (case,) = [c for c in _cases(db, sep.id) if c.kind == "entry_unmatched"]
+    assert (case.status, case.explanation, case.deferred_to_period_end) == (
+        "resolved", "deferred_next_period", OCT30[1])
+    return sep, case
+
+
+def _confirm(db, stmt):
+    result = confirm_service.confirm_statement(db, account_id=stmt.account_id, statement_id=stmt.id, force=False,
+                                               note=None, label="owner-test", request_id=None)
+    db.commit()
+    return result
+
+
+def _fresh(db, model, pk):
+    db.expire_all()
+    return db.get(model, pk)
+
+
+def test_retire_supersedes_its_deferrals_so_no_later_confirm_reopens_them(seed, db_session, run):
+    card = _card(seed, db_session)
+    sep, case = _deferring_september(seed, db_session, run, card)
+    assert _confirm(db_session, sep).status == "reconciled"
+    version = _fresh(db_session, ReconciliationCase, case.id).version
+
+    result = _retire(db_session, sep)
+
+    assert result.superseded_cases == 1
+    fresh = _fresh(db_session, ReconciliationCase, case.id)
+    assert (fresh.status, fresh.version) == ("superseded", version + 1)
+    octo, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 5), "超商", 120)], period=OCT30)
+    assert _fresh(db_session, ReconciliationCase, case.id).deferred_to_statement_id is None
+    assert rec.fill_deferral_links(db_session) == 0
+    db_session.commit()
+    assert _confirm(db_session, octo).reopened_cases == []
+    assert _fresh(db_session, ReconciliationCase, case.id).status == "superseded"
+    assert _fresh(db_session, AccountStatement, sep.id).open_case_count == 0
+
+
+def test_a_deferral_pointing_at_a_retired_statement_is_unlinked(seed, db_session, run):
+    card = _card(seed, db_session)
+    sep, case = _deferring_september(seed, db_session, run, card)
+    octo, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 5), "超商", 120)], period=OCT30)
+    assert _fresh(db_session, ReconciliationCase, case.id).deferred_to_statement_id == octo.id
+
+    _retire(db_session, octo)
+
+    case = _fresh(db_session, ReconciliationCase, case.id)
+    assert (case.status, case.deferred_to_statement_id) == ("resolved", None)
+    assert rec.fill_deferral_links(db_session) == 0  # a retired statement is no link target
+    db_session.commit()
+    assert _fresh(db_session, ReconciliationCase, case.id).deferred_to_statement_id is None
+
+
+def test_confirm_refuses_a_retired_statement(seed, db_session, run):
+    card, stmt, _ = _duplicate(seed, db_session, run)
+    _retire(db_session, stmt)
+    with pytest.raises(CodedConflictError) as exc:
+        confirm_service.confirm_statement(db_session, account_id=card.id, statement_id=stmt.id, force=True,
+                                          note="forced", label="owner-test", request_id=None)
+    db_session.rollback()
+    assert exc.value.code == "statement_retired"
+    assert _fresh(db_session, AccountStatement, stmt.id).status == "open"
+    assert db_session.scalar(select(func.count(ReconciliationAudit.id)).where(
+        ReconciliationAudit.event.in_(("statement_confirmed", "statement_confirmed_forced")))) == 0
+
+
+def test_read_model_flags_a_retired_statement_and_its_events_never_pend(seed, db_session, run):
+    card, stmt, _ = _duplicate(seed, db_session, run)
+    kept, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)], period=SEP)
+    _retire(db_session, stmt)
+    db_session.add(CoverageDirty(kind="entry", row_id=1, op="insert", new_account_id=card.id))
+    db_session.commit()
+    assert {s["id"]: s["retired"] for s in ing.list_statements(db_session, card.id)} == {stmt.id: True, kept.id: False}
+    detail = ing.get_statement(db_session, stmt.id)
+    assert (detail["retired"], detail["stale_events_pending"]) == (True, False)
+    assert (ing.get_statement(db_session, kept.id)["retired"], ing.get_statement(db_session, kept.id)["stale_events_pending"]) == (
+        False, True)

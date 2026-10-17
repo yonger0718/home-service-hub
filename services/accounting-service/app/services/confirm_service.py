@@ -32,6 +32,7 @@ from app.services.errors import CodedConflictError, CodedValidationError, Confli
 from app.services.reconciliation_actions import audit
 from app.services.reconciliation_actions import engine_locks as locks
 from app.services.schedule_locks import take_import_key_shared
+from app.services.statements import retired
 
 RESOLVED_IN = "resolved_in_statement_id"
 REOPENED_BY = "reopened_by_confirm_of"
@@ -136,7 +137,7 @@ def confirm_statement(db: Session, *, account_id: int, statement_id: int, force:
     non-blank `note` (422 `note_required`) and confirms anyway (`forced` when a check failed). Confirming a
     reconciled statement again is allowed (it processes links that arrived since). Raises NotFoundError (the
     statement is not the account's), ImportRunningError, CodedConflictError (`confirm_retry`, `confirm_refused`,
-    `sweep_barrier_busy`). Never commits."""
+    `sweep_barrier_busy`, `statement_retired`). Never commits."""
     if force and not (note and note.strip()):
         raise CodedValidationError("note", "note_required")
     statement = db.get(AccountStatement, statement_id)
@@ -148,6 +149,8 @@ def confirm_statement(db: Session, *, account_id: int, statement_id: int, force:
     statement = locked[statement_id]
     if statement.account_id != account_id:  # re-read under the lock
         raise NotFoundError(f"statement {statement_id} not found")
+    if retired.is_retired(db, statement.id):  # a retired duplicate is never confirmed (the caller rolls back)
+        raise CodedConflictError("statement_retired", f"statement {statement.id}")
     cases = _incoming(db, statement_id)
     unlocked = sorted({c.statement_id for c in cases} - set(locked))
     if unlocked:

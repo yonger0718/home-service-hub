@@ -388,6 +388,7 @@ class StatementOut(BaseModel):
     explained_count: int
     open_case_count: int
     incoming_deferrals_pending: int
+    retired: bool  # retired as a duplicate (statement_retire_service); such a statement is also historical
 
 
 class StatementDetailOut(StatementOut):

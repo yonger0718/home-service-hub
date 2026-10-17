@@ -434,6 +434,10 @@ def test_same_file_on_a_reconciled_statement_is_a_conflict_whose_promotion_keeps
     assert (again.statement.id, again.revision.conflict) == (first.statement.id, True)
     case = db_session.get(ReconciliationCase, again.case_ids[0])
     assert (case.kind, case.context["period_blocked_by"]) == ("statement_conflict", other.statement.id)
+    events = {e.id: (e.status, e.current_line_id) for e in db_session.query(StatementEvent).all()}
     with pytest.raises(CodedConflictError) as exc:  # keep=new cannot move the period onto the other statement
         revs.promote_revision(db_session, again.statement, again.revision)
     assert exc.value.code == "period_conflict"
+    # refused before anything moved: no event pointer or status was flipped in the session
+    assert {e.id: (e.status, e.current_line_id) for e in db_session.query(StatementEvent).all()} == events
+    assert again.statement.current_revision_id == first.revision.id

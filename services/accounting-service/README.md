@@ -268,9 +268,12 @@ a `statement_conflict` revision is 409 `period_conflict`. A different account (t
 statement. Duplicates made before the fix are retired with `POST /accounts/{id}/statements/{sid}/retire` (`admin`):
 under the statement lock it refuses 409 `actions_applied` while any action on the statement's cases is applied (revert
 them first), else releases its coverage (`retired`), retires its events, supersedes its open cases and their pending
-proposals, sets `mode = historical` with the note and audits `statement_retired` (that row marks it retired). A retired
-statement leaves the pending selection, `reconcile` (`skipped: "retired"`), the policy and the dry-run dump; a revision
-for its identity is 422 `statement_retired`; retiring it again is a 200 no-op (`already_retired: true`).
+proposals and its resolved `deferred_next_period` deferrals, unlinks other statements' deferrals pointing at it, sets
+`mode = historical` with the note and audits `statement_retired` (that row marks it retired). A retired statement
+leaves the pending selection, `stale_events_pending`, `reconcile` (`skipped: "retired"`), the deferral linkers (neither
+source nor target), the policy and the dry-run dump; confirm refuses it (409 `statement_retired`); a revision for its
+identity is 422 `statement_retired`; the statement list and detail carry `retired: true`; retiring it again is a 200
+no-op (`already_retired: true`).
 
 Action error codes (422 unless noted):
 

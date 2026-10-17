@@ -524,9 +524,10 @@ def _stranded(s):
 
 
 def has_pending_events(db: Session, statement: AccountStatement) -> bool:
-    """The same relevance as `sweep_pending`, for one statement (the read model's `stale_events_pending`)."""
+    """The same relevance as `sweep_pending`, for one statement (the read model's `stale_events_pending`); never for
+    a retired one."""
     s = AccountStatement
-    return db.execute(select(exists().where(s.id == statement.id, _touches(s)))).scalar_one()
+    return db.execute(select(exists().where(s.id == statement.id, _touches(s), ~retired.clause(s.id)))).scalar_one()
 
 
 RETIRABLE_ACTIONS = ("backfill_entry", "create_entry", "create_system_entry", "create_refund")
