@@ -448,13 +448,27 @@ def get_case(db: Session, case_id: int) -> dict:
     if item is None:
         raise NotFoundError(f"case {case_id} not found")
     line = None
+    twins: list[int] = []
     if item.line_id is not None:
         row = db.get(StatementLine, item.line_id)
         coverage = coverage_service.active_rows(db, item.statement_id).get(row.id, [])
         line = _line_out(row, coverage, _event_fields(db, [row.event_id]))
+        if item.kind == "line_unmatched" and item.status == "open":
+            twins = _owner_twins(db, item, row)
     return {**_row(item, CASE_DETAIL_FIELDS), "actions_allowed": reconciliation_actions.allowed(item),
             "pending_proposals": [_row(p, PROPOSAL_FIELDS) for p in proposal_service.pending_for_case(db, item.id)],
-            "line": line}
+            "line": line, "owner_twins": twins}
+
+
+def _owner_twins(db: Session, item: ReconciliationCase, row: StatementLine) -> list[int]:
+    """Read model (2026-10-17): the owner entries `stand_ins.owner_twins` finds for the case's line — the reason the
+    policy left it open (exact, near, child or split twins) and the counterpart to look at; computed on read."""
+    from app.services import reconciliation_service as rec
+    from app.services import stand_ins
+    statement = db.get(AccountStatement, item.statement_id)
+    rules = rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)
+    accounts = coverage_service.participating_accounts(db, statement.account_id)
+    return stand_ins.owner_twins(db, statement, row, accounts, rules)
 
 
 def list_actions(db: Session, *, statement_id: int | None = None, case_id: int | None = None,

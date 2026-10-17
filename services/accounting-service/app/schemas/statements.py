@@ -363,6 +363,7 @@ class CaseDetailOut(CaseOut):
     actions_allowed: list[str]
     pending_proposals: list[ProposalOut] = []
     line: LineOut | None
+    owner_twins: list[int] = []  # open line_unmatched: owner entries that may record the line (the policy never books it)
 
 
 class StatementOut(BaseModel):

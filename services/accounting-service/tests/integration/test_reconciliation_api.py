@@ -60,6 +60,25 @@ def test_case_detail_line_unmatched(client, unmatched):
     assert set(body["actions_allowed"]) >= {"dismiss", "create_entry"}
 
 
+def test_case_detail_names_the_owner_twins_the_policy_left_the_line_for(client, seed, db_session, run):
+    """Widened twin guard (2026-10-17): the detail of an open line_unmatched lists the owner entries that may record
+    the line (here a near-amount one the matcher opened no case for), so the owner sees why the policy skipped it
+    and which entry to look at. Nothing is stored."""
+    card = _card(seed, db_session)
+    near = seed.entry(card, "-197.9931", day=DAY - timedelta(days=1))
+    far = seed.entry(card, "-150", day=DAY)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "JPN", 199)])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched"]
+    body = client.get(f"/reconciliation/cases/{case.id}", headers=H).json()
+    assert body["owner_twins"] == [near.id] and far.id not in body["owner_twins"]
+
+
+def test_case_detail_owner_twins_is_empty_without_a_twin(client, unmatched):
+    _, _, _, case = unmatched
+    assert client.get(f"/reconciliation/cases/{case.id}", headers=H).json()["owner_twins"] == []
+
+
 def test_case_detail_entry_unmatched_has_no_line_and_other_actions(client, stray):
     _, _, entry, case = stray
     body = client.get(f"/reconciliation/cases/{case.id}", headers=S).json()

@@ -5,7 +5,7 @@ into policy proposals, agent `match` proposals accepted only with a single admis
 reconcile / revision / sweep routes running it after their commit. Synthetic data only."""
 import queue
 import threading
-from datetime import date
+from datetime import date, timedelta
 from functools import partial
 from decimal import Decimal
 from types import SimpleNamespace
@@ -1316,6 +1316,75 @@ def test_policy_never_backfills_a_line_a_split_member_records(seed, db_session, 
     assert _backfills(db_session) == [] and _proposals(db_session) == [] and _booked(db_session) == []
     assert _open_line_case(db_session, stmt.id, line.id).id == case.id
     assert db_session.get(LedgerEntry, member.id) is not None
+
+
+def _never_books(db, stmt, line, case, action):
+    """Neither applied nor, over max_amount, proposed; the line case stays open for the owner."""
+    statement = db.get(AccountStatement, stmt.id)
+    for max_amount in ("5000", "100"):
+        _set_policy(db, _creation_policy(action, max_amount))
+        live = settings_service.reconciliation_policy(db)
+        assert [c for c in policy_service.collect_candidates(db, statement, live) if c.action == action] == []
+        result = policy_service.run_policy(db, stmt.id)
+        assert (result.applied, result.proposed) == ([], [])
+    assert _created(db, action) == [] and _proposals(db) == [] and _booked(db) == []
+    assert _open_line_case(db, stmt.id, line.id).id == case.id
+
+
+def test_policy_never_backfills_a_line_a_near_owner_entry_records(seed, db_session, run):
+    """Widened twin guard (2026-10-17): the owner recorded a foreign purchase at an estimated rate, a few dollars
+    off the billed amount and one day earlier; the matcher opens no near case (no merchant text) and the policy
+    must not backfill a second entry beside it."""
+    card = _card(seed, db_session)
+    near = seed.entry(card, "-197.9931", day=DAY - timedelta(days=1))  # billed 199
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "JPN", 199)])
+    case = _open_line_case(db_session, stmt.id, line.id)
+    assert _active(db_session, stmt.id) == []
+    _never_books(db_session, stmt, line, case, "backfill_entry")
+    assert db_session.get(LedgerEntry, near.id) is not None
+
+
+def test_policy_still_backfills_when_the_owner_entry_is_outside_the_near_tolerance(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    seed.entry(card, "-150", day=DAY)  # 49 off the billed 199: not a twin
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "JPN", 199)])
+    _set_policy(db_session, _creation_policy("backfill_entry"))
+    (action_id,) = policy_service.run_policy(db_session, stmt.id).applied
+    assert _reload(db_session, ReconciliationAction, action_id).action == "backfill_entry"
+    assert len(_booked(db_session)) == 1
+
+
+def test_policy_never_books_a_system_fee_beside_an_owner_child_fee(seed, db_session, run):
+    """The owner's purchase carries a child fee at an estimated rate (4.74 for a printed 5); the purchase line is
+    claimed by the parent, the fee line is bank-only — the child is its near twin."""
+    card = _card(seed, db_session)
+    parent = seed.entry(card, "-310", day=DAY, merchant="USA")
+    db_session.flush()
+    child = seed.entry(card, "-4.7401", kind="fee", day=DAY, parent_entry_id=parent.id)
+    db_session.commit()
+    stmt, (purchase, fee), _ = _submit(db_session, run, card, [_line(1, DAY, "USA", 310), _line(2, DAY, "國外交易服務費", 5, "fee")])
+    assert [c.entry_id for c in _active(db_session, stmt.id)] == [parent.id]
+    case = _open_line_case(db_session, stmt.id, fee.id)
+    assert case.context.get("hint") == "bank_only"
+    _never_books(db_session, stmt, fee, case, "create_system_entry")
+    assert db_session.get(LedgerEntry, child.id) is not None
+
+
+def test_policy_never_backfills_a_line_two_split_members_record_together(seed, db_session, run):
+    """A MOZE group {expense, receivable, fee} whose expense + receivable equal the printed purchase; the fee is the
+    statement's own fee line. The matcher claims no member alone and the group as a whole does not conserve."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    seed.entry(card, "-986", day=DAY, group_id=group.id)
+    seed.entry(card, "-2958", kind="receivable", day=DAY, group_id=group.id)
+    seed.entry(card, "-59", kind="fee", day=DAY, group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "MYS", 3944)])
+    case = _open_line_case(db_session, stmt.id, line.id)
+    assert not case.candidates and _active(db_session, stmt.id) == []
+    _never_books(db_session, stmt, line, case, "backfill_entry")
 
 
 @pytest.mark.parametrize("owner_kind", ["plain", "split", "deleted"])
