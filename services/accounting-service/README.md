@@ -273,7 +273,12 @@ proposals and its resolved `deferred_next_period` deferrals, unlinks other state
 leaves the pending selection, `stale_events_pending`, `reconcile` (`skipped: "retired"`), the deferral linkers (neither
 source nor target), the policy and the dry-run dump; confirm refuses it (409 `statement_retired`); a revision for its
 identity is 422 `statement_retired`; the statement list and detail carry `retired: true`; retiring it again is a 200
-no-op (`already_retired: true`).
+no-op (`already_retired: true`). Retire sweeps the statement first, and the sweep retires applied actions a ledger delete
+made unrevertable (e.g. a MOZE re-import re-creating every entry): `match` whose entry or group is gone, and
+`adjust_amount`, `attach_fee`, `move_account`, `split_entry` whose entry, fee child, member or split group is gone —
+`status = reverted`, `inverse.deleted_by_event` (`deleted_before_watermark` in the catch-up), audit `action_retired`;
+unlike a retired creation (`stand_in_retired`) this never marks the line owner-deleted, so the owner, the matcher and the
+policy may claim it again.
 
 Action error codes (422 unless noted):
 

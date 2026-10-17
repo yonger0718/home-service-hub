@@ -12,6 +12,7 @@ EVENTS = frozenset({
     "statement_confirmed", "statement_confirmed_forced", "deferral_reopened", "manual_statement_created",
     "conflict_superseded", "stand_in_retired", "anchor_applied", "stand_in_replaced",
     "statement_retired",  # also the retired-statement marker (app.services.statements.retired)
+    "action_retired",  # the sweep retired an applied non-creation action a ledger delete made unrevertable
 })
 
 

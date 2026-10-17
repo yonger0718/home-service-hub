@@ -23,8 +23,8 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, aliased
 
 from app.models import (
-    DIRTY_BARRIER_KEY, Account, AccountStatement, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
-    StatementLine,
+    DIRTY_BARRIER_KEY, Account, AccountStatement, CoverageDirty, EntryGroup, LedgerEntry, ReconciliationAction,
+    ReconciliationCase, StatementCoverage, StatementLine,
 )
 from app.services.errors import CodedConflictError, ConflictError
 from app.services.statements import matching, retired
@@ -368,6 +368,7 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
                 lines_by_group[group_id].add(line_id)
     skipped_actions = _applied_action_ids(db, statement)
     _retire_stranded_creations(db, statement, run_id)
+    _retire_stranded_unrevertable(db, statement, run_id)
     start, end = statement.period_start, statement.period_end
     result = SweepResult(swept_through=statement.swept_through_event_id)
     released: set[int] = set()
@@ -400,6 +401,8 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
         for ev in batch:
             if ev.action_id is not None and ev.action_id in skipped_actions:
                 continue
+            if ev.kind in ("entry", "group") and ev.op == "delete":
+                _retire_unrevertable(db, statement, ev, run_id)
             if ev.kind == "entry":
                 if ev.op == "delete":
                     _retire_creations(db, statement, ev, run_id)
@@ -503,9 +506,9 @@ def _touches(s):
 
 def sweep_pending(db: Session) -> list[int]:
     """Statements (any mode, never a retired one) with an event past their watermark that may touch them
-    (`_touches`), or with a stranded creation (`_stranded`: the sweep's catch-up pass retires it — PR #76 review S1, so
-    a pre-R6b deletion already behind the watermark of a clean statement is retired by the first daily run). Read
-    without the writer barrier: an uncommitted event only shows up on a later call."""
+    (`_touches`), or with a stranded creation or unrevertable action (`_stranded`: the sweep's catch-up passes retire
+    them — PR #76 review S1, so a deletion already behind the watermark of a clean statement is retired by the first
+    daily run). Read without the writer barrier: an uncommitted event only shows up on a later call."""
     s = AccountStatement
     return list(db.execute(select(s.id).where(or_(_touches(s), _stranded(s)), ~retired.clause(s.id))
                            .order_by(s.id)).scalars())
@@ -517,10 +520,14 @@ def _stranded(s):
     pending anyway, and its sweep retires the creation through the event). Retirement leaves the row `reverted`, so
     the selection drains after one sweep."""
     alive = exists().where(LedgerEntry.id == func.any(ReconciliationAction.created_entry_ids))
-    return exists().where(
+    creation = exists().where(
         ReconciliationCase.statement_id == s.id, ReconciliationAction.case_id == ReconciliationCase.id,
         ReconciliationAction.status == "applied", ReconciliationAction.action.in_(RETIRABLE_ACTIONS),
         func.cardinality(ReconciliationAction.created_entry_ids) > 0, ~alive)
+    unrevertable = exists().where(
+        ReconciliationCase.statement_id == s.id, ReconciliationAction.case_id == ReconciliationCase.id,
+        ReconciliationAction.status == "applied", ReconciliationAction.action.in_(TARGET_ACTIONS), _unrevertable())
+    return or_(creation, unrevertable)
 
 
 def has_pending_events(db: Session, statement: AccountStatement) -> bool:
@@ -582,3 +589,93 @@ def _retire_stranded_creations(db: Session, statement: AccountStatement, run_id)
         audit.record(db, event="stand_in_retired", actor="sweep", statement_id=statement.id, case_id=row.case_id,
                      action_id=row.id, run_id=run_id, request_id=None,
                      detail={"catch_up": True, "entry_ids": list(row.created_entry_ids), "action": row.action})
+
+
+# --- applied actions a delete made unrevertable (fix 2026-10-17: a MOZE re-import re-creates every entry) -----------
+# Each acts on ledger rows its revert needs: `match` its params entry or group; `adjust_amount`, `move_account` the
+# entry; `attach_fee` the entry and its fee child; `split_entry` every member and the split group. Once one of them is
+# gone the action can never be reverted, yet as `applied` it blocks a statement retire (`actions_applied`) and holds
+# its effect slot. The sweep retires it like a creation, under the statement lock, scoped to this statement's cases:
+# `status = reverted`, `inverse.deleted_by_event` (`deleted_before_watermark` in the catch-up), audit `action_retired`
+# (`stand_in_retired` stays the creations'), never touching `reverted_by_action_id`. Not a creation (effect slot
+# `create`), so `stand_ins.owner_deleted_events` never counts it: a re-import is no owner delete.
+TARGET_ACTIONS = ("match", "adjust_amount", "attach_fee", "move_account", "split_entry")
+
+
+def _target_ids(row: ReconciliationAction) -> tuple[list[int], list[int]]:
+    """(entry ids, group ids) the action's revert needs (the comment above); `_unrevertable` in SQL."""
+    if row.action == "match":
+        params = row.params or {}
+        return ([params["entry_id"]] if params.get("entry_id") is not None else [],
+                [params["group_id"]] if params.get("group_id") is not None else [])
+    groups = list(row.touched_group_ids or ()) if row.action == "split_entry" else []
+    return list(dict.fromkeys([*(row.touched_entry_ids or ()), *(row.created_entry_ids or ())])), groups
+
+
+def _unrevertable():
+    """SQL, correlated to ReconciliationAction: a target of `_target_ids` is gone."""
+    a = ReconciliationAction
+    entry_param = a.params["entry_id"].astext.cast(Integer)
+    group_param = a.params["group_id"].astext.cast(Integer)
+    # "an id of the array has no row" (the arrays may repeat an id: attach_fee touches its child too)
+    entry_ids = func.unnest(func.array_cat(a.touched_entry_ids, a.created_entry_ids)) \
+        .table_valued("value").render_derived()
+    group_ids = func.unnest(a.touched_group_ids).table_valued("value").render_derived()
+    entry_gone = exists().select_from(entry_ids).where(~exists().where(LedgerEntry.id == entry_ids.c.value))
+    group_gone = exists().select_from(group_ids).where(~exists().where(EntryGroup.id == group_ids.c.value))
+    return or_(
+        and_(a.action == "match", or_(and_(entry_param.is_not(None), ~exists().where(LedgerEntry.id == entry_param)),
+                                      and_(group_param.is_not(None), ~exists().where(EntryGroup.id == group_param)))),
+        and_(a.action.in_(("adjust_amount", "attach_fee", "move_account", "split_entry")), entry_gone),
+        and_(a.action == "split_entry", group_gone))
+
+
+def _unrevertable_rows(db: Session, statement: AccountStatement) -> list[ReconciliationAction]:
+    return list(db.execute(
+        select(ReconciliationAction)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
+               ReconciliationAction.action.in_(TARGET_ACTIONS), _unrevertable())
+        .order_by(ReconciliationAction.id)
+        .with_for_update(of=ReconciliationAction)).scalars())
+
+
+def _retire_action(db: Session, statement: AccountStatement, row: ReconciliationAction, run_id, *, mark: dict,
+                   detail: dict) -> None:
+    from app.services.reconciliation_actions import audit  # local: reconciliation_actions imports coverage_service
+    row.status = "reverted"
+    row.inverse = {**(row.inverse or {}), **mark}
+    audit.record(db, event="action_retired", actor="sweep", statement_id=statement.id, case_id=row.case_id,
+                 action_id=row.id, run_id=run_id, request_id=None, detail=detail)
+
+
+def _retire_unrevertable(db: Session, statement: AccountStatement, ev, run_id) -> None:
+    """An entry or group `delete` event: the applied actions of this statement's cases it made unrevertable (one of
+    whose targets it deleted, and a target is gone now) are retired with `inverse.deleted_by_event`. Idempotent
+    (applied rows only)."""
+    for row in _unrevertable_rows(db, statement):
+        entries, groups = _target_ids(row)
+        if ev.row_id not in (entries if ev.kind == "entry" else groups):
+            continue
+        detail = {"entry_ids": entries, "dirty_event_id": ev.id, "action": row.action}
+        _retire_action(db, statement, row, run_id, mark={"deleted_by_event": ev.id},
+                       detail=detail | ({"group_ids": groups} if groups else {}))
+
+
+def _retire_stranded_unrevertable(db: Session, statement: AccountStatement, run_id) -> None:
+    """Catch-up, before the event loop (as `_retire_stranded_creations`): an unrevertable applied action whose delete
+    is not still pending (no entry/group `delete` event of a target past the watermark: that one retires through
+    `_retire_unrevertable` with its event id) is retired with `inverse.deleted_before_watermark`."""
+    for row in _unrevertable_rows(db, statement):
+        entries, groups = _target_ids(row)
+        targets = [and_(CoverageDirty.kind == "entry", CoverageDirty.row_id.in_(entries))] if entries else []
+        if groups:
+            targets.append(and_(CoverageDirty.kind == "group", CoverageDirty.row_id.in_(groups)))
+        pending = targets and db.execute(select(exists().where(
+            CoverageDirty.op == "delete", CoverageDirty.id > statement.swept_through_event_id, or_(*targets)))
+        ).scalar_one()
+        if pending:
+            continue
+        detail = {"catch_up": True, "entry_ids": entries, "action": row.action}
+        _retire_action(db, statement, row, run_id, mark={"deleted_before_watermark": True},
+                       detail=detail | ({"group_ids": groups} if groups else {}))

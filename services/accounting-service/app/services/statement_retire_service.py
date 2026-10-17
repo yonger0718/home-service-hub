@@ -2,13 +2,14 @@
 
 Before the file guard (`statement_revision_service._file_statement_id`) one PDF re-parsed with another period made a
 second live statement holding the same lines. Retiring such a duplicate, in one transaction (never committed here):
-the shared import key → the statement FOR UPDATE (`reconciliation_service._lock_statement`) → refused with 409
-`actions_applied` while any action on its cases is `applied` (its effects belong to the owner: revert them first) →
-its active coverage released (`retired`) → every non-retired event `retired` → every open/proposed case and every
-resolved `deferred_next_period` deferral of it superseded (version bumped) and their pending proposals superseded →
-the deferrals of other statements linked to it unlinked (`deferred_to_statement_id` NULL; the linkers never pick a
-retired statement as source or target, so none is linked or reopened through it again) → `mode = historical`, the note recorded, `needs_recheck` and
-`conflict_open` cleared, counts recomputed → audit `statement_retired`, which is the retired marker
+the shared import key → the statement FOR UPDATE and swept (`engine_locks.lock_statements`: the sweep first retires
+applied actions a ledger delete made unrevertable) → refused with 409 `actions_applied` while any action on its cases
+is `applied` (its effects belong to the owner: revert them first) → its active coverage released (`retired`) → every
+non-retired event `retired` → every open/proposed case and every resolved `deferred_next_period` deferral of it
+superseded (version bumped) and their pending proposals superseded → the deferrals of other statements linked to it
+unlinked (`deferred_to_statement_id` NULL; the linkers never pick a retired statement as source or target, so none is
+linked or reopened through it again) → `mode = historical`, the note recorded, `needs_recheck` and `conflict_open`
+cleared, counts recomputed → audit `statement_retired`, which is the retired marker
 (`app.services.statements.retired`). A retired statement leaves the pending selection, the reconcile pass, the policy
 (not live) and the dry-run dump (live only), and no revision lands on it again. Retiring it again is a 200 no-op
 (`already_retired`)."""
@@ -26,6 +27,7 @@ from app.services import coverage_service
 from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.reconciliation_actions import audit
+from app.services.reconciliation_actions import engine_locks as locks
 from app.services.schedule_locks import take_import_key_shared
 from app.services.statements import retired
 
@@ -48,8 +50,12 @@ def retire_statement(db: Session, *, account_id: int, statement_id: int, note: s
     statement = db.get(AccountStatement, statement_id)
     if statement is None or statement.account_id != account_id:
         raise NotFoundError(f"statement {statement_id} not found")
+    if retired.is_retired(db, statement.id):  # final once written: no lock, no sweep, no write
+        return RetireResult(statement, already_retired=True)
     take_import_key_shared(db)
-    statement = rec._lock_statement(db, statement_id)
+    # locked and swept: the sweep retires applied actions a ledger delete made unrevertable (e.g. a MOZE re-import),
+    # which would otherwise refuse the retire as `actions_applied` for good
+    statement = locks.lock_statements(db, [statement_id], run_id=None)[statement_id]
     if retired.is_retired(db, statement.id):
         return RetireResult(statement, already_retired=True)
     applied = db.execute(
