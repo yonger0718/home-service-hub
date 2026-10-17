@@ -151,16 +151,27 @@ def _file_statement_id(db: Session, payload: RevisionIn) -> int | None:
     return (same_identity or [sid for sid, _ in rows] or [None])[0]
 
 
-def period_blocker(db: Session, statement: AccountStatement, period_start, period_end) -> int | None:
+def period_blocker(db: Session, statement: AccountStatement, period_start, period_end, *,
+                   account: Account | None = None) -> int | None:
     """The id of a statement the account and currency already hold for the period `statement` would move to: any one
     with that period_end (the identity, retired ones included), or a non-retired one whose period overlaps it (a
-    shared boundary day is no overlap). None when the move is safe."""
+    shared boundary day is no overlap). None when the move is safe. With `account`, an overlapping neighbour whose
+    own current revision is stale (`_stale_revision`: its period fails today's closing-day check) does not block —
+    misread neighbours overlap each other in chains and would otherwise block each other's corrections for good;
+    the identity clause (same period_end) is never bypassed."""
     s = AccountStatement
-    return db.execute(select(s.id).where(
+    rows = db.execute(select(s.id, s.period_end, s.current_revision_id).where(
         s.account_id == statement.account_id, s.currency == statement.currency, s.id != statement.id,
         or_(s.period_end == period_end,
             and_(s.period_start < period_end, s.period_end > period_start, ~retired.clause(s.id))))
-        .order_by(s.id).limit(1)).scalar_one_or_none()
+        .order_by(s.id)).all()
+    for other_id, other_end, other_revision_id in rows:
+        if other_end == period_end:
+            return other_id
+        if account is not None and _stale_revision(db, statement.kind, account, other_revision_id):
+            continue
+        return other_id
+    return None
 
 
 def _lock_statement(db: Session, run: IngestRun, payload: RevisionIn, mode: str,
@@ -350,7 +361,7 @@ def _lineage_rows(db: Session, new_line_ids: list[int], unpaired_old_ids: list[i
 
 
 def _activate(db: Session, statement: AccountStatement, revision: StatementRevision,
-              old_lines: list[lineage.Old]) -> list[int]:
+              old_lines: list[lineage.Old], *, account: Account | None = None) -> list[int]:
     """Make a persisted revision current, from its stored rows only (no statement_line is written): re-pair the
     current revision's lines (`old_lines`) with the revision's lines through `lineage.pair`, then apply the transfer
     rules (§5.7), flip the event pointers, settle the lineage rows, copy the revision's header onto the statement and
@@ -369,7 +380,8 @@ def _activate(db: Session, statement: AccountStatement, revision: StatementRevis
     (`conflict_stale`) when a stored line's event no longer fits the re-pairing (the current revision moved since the
     revision was stored). Returns the ids of the quarantine cases opened or reused."""
     if (revision.period_start, revision.period_end) != (statement.period_start, statement.period_end):
-        blocker = period_blocker(db, statement, revision.period_start, revision.period_end)
+        blocker = period_blocker(db, statement, revision.period_start, revision.period_end,
+                                 account=account if account is not None else db.get(Account, statement.account_id))
         if blocker is not None:  # before anything moves; submit_revision never gets here (it checks first)
             raise CodedConflictError("period_conflict", f"statement {blocker} holds that period")
     record_lineage = statement.current_revision_id is not None
@@ -448,17 +460,22 @@ def _activate(db: Session, statement: AccountStatement, revision: StatementRevis
     return case_ids
 
 
-def _stale_current(db: Session, statement: AccountStatement, account: Account) -> bool:
-    """Fix 2026-10-17: the current revision passed the guardrails of its day but fails today's closing-day check —
-    a card `period_end` or `closing_date` more than CLOSING_TOLERANCE_DAYS off the account's closing day (the check
-    landed after the revision did; historical statements never re-parse on their own and a header change on them
-    opens nothing). Such a current revision is no trustworthy comparison base: a passing revision replaces it as a
-    correction, whatever its header changes."""
-    if statement.kind != "card" or account.closing_day is None:
+def _stale_revision(db: Session, kind: str, account: Account, revision_id: int | None) -> bool:
+    """A card revision whose `period_end` or `closing_date` is more than CLOSING_TOLERANCE_DAYS off the account's
+    closing day: it passed the guardrails of its day, but fails today's closing-day check."""
+    if kind != "card" or account.closing_day is None or revision_id is None:
         return False
-    current = db.get(StatementRevision, statement.current_revision_id)
+    revision = db.get(StatementRevision, revision_id)
     return any(abs(derive.closing_offset(day, account.closing_day)) > derive.CLOSING_TOLERANCE_DAYS
-               for day in (current.period_end, current.closing_date) if day is not None)
+               for day in (revision.period_end, revision.closing_date) if day is not None)
+
+
+def _stale_current(db: Session, statement: AccountStatement, account: Account) -> bool:
+    """Fix 2026-10-17: the current revision passed the guardrails of its day but fails today's closing-day check
+    (`_stale_revision`; the check landed after the revision did; historical statements never re-parse on their own
+    and a header change on them opens nothing). Such a current revision is no trustworthy comparison base: a
+    passing revision replaces it as a correction, whatever its header changes."""
+    return _stale_revision(db, statement.kind, account, statement.current_revision_id)
 
 
 def promote_revision(db: Session, statement: AccountStatement, revision: StatementRevision) -> list[int]:
@@ -550,12 +567,16 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     # A period the statement cannot move to (another statement holds it) keeps the revision out of the current one.
     period_blocked_by = None if created or (payload.period_start, payload.period_end) == (
         statement.period_start, statement.period_end) else period_blocker(db, statement, payload.period_start,
-                                                                          payload.period_end)
+                                                                          payload.period_end, account=account)
     # A passing revision replaces a failed current one: the failed header is no trustworthy comparison base. A current
     # revision that fails today's closing-day check counts as failed too (stale current, fix 2026-10-17).
     stale_current = not created and _stale_current(db, statement, account)
-    current_failed = not created and (stale_current or not db.get(StatementRevision, statement.current_revision_id).guardrail_ok)
-    correction = current_failed and check.ok and not conflict and period_blocked_by is None
+    guardrail_failed = not created and not db.get(StatementRevision, statement.current_revision_id).guardrail_ok
+    current_failed = stale_current or guardrail_failed
+    # A stale-but-passing current may hold coverage and applied effects: the twin-count gate (design §5.7) stays for
+    # it — only a current that failed its own guardrails is replaced regardless of twins (review AGENT-145 M1).
+    correction = current_failed and check.ok and not conflict and period_blocked_by is None \
+        and not (stale_current and not guardrail_failed and twins_changed)
     blocked = {} if period_blocked_by is None else {"period_blocked_by": period_blocked_by}
     if stale_current:
         blocked = {**blocked, "stale_current": True}
@@ -573,7 +594,7 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     # 6. lines, events, lineage (stored as not current)
     counts = _insert_lines(db, statement, revision, derived, pairings)
     # 7. current revision (transfers, quarantines, event pointers, header) / conflict
-    quarantine_case_ids = _activate(db, statement, revision, old) if becomes_current else []
+    quarantine_case_ids = _activate(db, statement, revision, old, account=account) if becomes_current else []
     if conflict:
         statement.conflict_open = True
     if correction:
