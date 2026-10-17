@@ -654,6 +654,31 @@ def test_parser_input_starts_with_the_closing_day_hint_when_the_card_has_one(wor
         assert masked.startswith(parse_schema.hint(closing_day)) and f"day {closing_day}" in masked.split("\n", 1)[0]
 
 
+def test_ocr_path_parser_input_starts_with_the_closing_day_hint(world, tmp_path, db_session, card):
+    """The hint is prepended on the OCR path too (same `_parse_submit`), ahead of the masked OCR text."""
+    db_session.execute(text("update account set closing_day = 30 where id = :i"), {"i": card.id})
+    db_session.commit()
+    services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT, boxes=42))
+    seen = _record_parser(services)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and services.ocr.starts == 1
+    (masked,) = seen
+    assert masked.startswith(parse_schema.hint(30)) and "COFFEE" in masked
+
+
+def test_stdin_cap_is_checked_after_the_hint_is_added(world, db_session, card, monkeypatch):
+    """A statement under the cap on its own but over it with the preamble goes to review as too_large: the cap
+    applies to the final parser input, and the parser is never called."""
+    db_session.execute(text("update account set closing_day = 30 where id = :i"), {"i": card.id})
+    db_session.commit()
+    services, _, _ = world
+    monkeypatch.setattr(parse_schema, "hint", lambda day: "[hint] " + "x" * pipeline.parser_mod.STDIN_CAP + "\n\n")
+    seen = _record_parser(services)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["needs_review"] == 1 and summary["parsed"] == 0 and seen == []
+    assert db_session.execute(text("select status, failure from statement_file")).one() == ("needs_review", "too_large")
+
+
 def test_ocr_path_parses_and_records_provenance(world, tmp_path, db_session):
     services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT, boxes=42))
     summary = pipeline.run(services, trigger="owner_cli")

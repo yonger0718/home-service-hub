@@ -54,6 +54,12 @@ def test_account_map(worker_api, client):
     assert mapping == {"manual/國泰世華": 3} and len(version) == 16 and closing_days == {}
 
 
+def test_account_map_tolerates_an_api_without_closing_days(worker_api, monkeypatch):
+    """Deploy order API-then-worker: a new worker against the old response (no `closing_days`) gets an empty map."""
+    monkeypatch.setattr(worker_api, "_call", lambda *a, **k: {"account_map": {"manual/國泰世華": 3}, "mapping_version": "0" * 16})
+    assert worker_api.account_map() == ({"manual/國泰世華": 3}, "0" * 16, {})
+
+
 def test_guard_blocks_lease_routes_before_sending(client):
     lost = {"v": False}
     guarded = api.ApiClient(client, W_TOKEN, guard=lambda: lost["v"])
