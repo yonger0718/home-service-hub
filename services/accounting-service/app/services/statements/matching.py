@@ -473,6 +473,23 @@ def _claimed_by_earlier_line(kind: str, line: Line, entries: list[Entry], groups
     return None
 
 
+def _named_by_cases(cases: list[Case]) -> tuple[set[int], set[int]]:
+    """Entry and group ids this statement's line cases name (`entry_id`, `context.entry_id`, candidates): such an entry
+    is a candidate for a printed line, never deferred to the next statement."""
+    entries: set[int] = set()
+    groups: set[int] = set()
+    for case in cases:
+        for value in (case.entry_id, (case.context or {}).get("entry_id")):
+            if value is not None:
+                entries.add(value)
+        for candidate in case.candidates:
+            if candidate.get("entry_id") is not None:
+                entries.add(candidate["entry_id"])
+            if candidate.get("group_id") is not None:
+                groups.add(candidate["group_id"])
+    return entries, groups
+
+
 def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
           fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str) -> MatchResult:
     result = MatchResult()
@@ -512,6 +529,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             continue
         result.cases.append(Case(line.id, None, "line_unmatched", (), {}))
     unmatched: set[int] = set()
+    named, named_groups = _named_by_cases(result.cases)
     for e in entries:
         if not e.in_reverse:
             continue
@@ -522,7 +540,9 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             continue
         if e.id not in claimed:  # an unclaimed parent represents its children
             unmatched.add(e.id)
-            if e.posted_date > rules.period_end - timedelta(days=rules.deferral_days):
+            # a late entry is the next statement's, unless a case of this statement names it (printed here)
+            if e.posted_date > rules.period_end - timedelta(days=rules.deferral_days) \
+                    and e.id not in named and (e.group_id is None or e.group_id not in named_groups):
                 result.explained[e.id] = "deferred_next_period"
             continue
         for c in e.children:

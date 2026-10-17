@@ -233,7 +233,8 @@ def test_a_defer_is_not_revertable_after_a_later_action_on_its_case(seed, db_ses
     deferred, _ = _apply(db_session, case, "defer_next_period", {"entry_id": entry.id})
     seed.entry(card, "-120", day=date(2026, 10, 5), merchant="超商")
     db_session.commit()
-    # October prints what it carries over (card balance check): September's 580 and the deferred 77 it never prints
+    # October's printed opening is September's 580 owed; the deferred 77 is printed by no statement, a REAL +77 card
+    # gap on October, folded into the opening (657) on purpose so the confirm under test is not blocked by it
     later, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 5), "超商", 120)],
                           period=(date(2026, 10, 1), date(2026, 10, 30)), opening=Decimal("657"))
     assert later.open_case_count == 0

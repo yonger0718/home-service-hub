@@ -495,15 +495,20 @@ def balance_gap(db: Session, statement: AccountStatement, accounts: list[int]) -
     co-branded card billed on the same statement counts) in the statement's currency. Reads the persisted deferral
     cases, so `reconcile` writes them before its cases."""
     end = statement.period_end
-    if statement.kind == "bank":
-        held_accounts = [statement.account_id]
-    else:
-        held_accounts = list(db.execute(select(Account.id).where(
-            Account.id.in_(accounts), Account.currency == statement.currency)).scalars())
+    held_accounts = gap_accounts(db, statement, accounts)
     held = sum((account_balance(db, account_id, as_of=end) for account_id in held_accounts), Decimal(0))
     held -= deferred_out(db, statement, held_accounts)
     total = Decimal(statement.statement_total)
     return ((total if statement.kind == "bank" else -total) - held).quantize(_Q)
+
+
+def gap_accounts(db: Session, statement: AccountStatement, accounts: list[int]) -> list[int]:
+    """The accounts whose balance the statement's gap holds: a bank statement's own account; on a card statement the
+    participating `accounts` in the statement's currency (ascending)."""
+    if statement.kind == "bank":
+        return [statement.account_id]
+    return list(db.execute(select(Account.id).where(Account.id.in_(accounts), Account.currency == statement.currency)
+                           .order_by(Account.id)).scalars())
 
 
 def deferred_out(db: Session, statement: AccountStatement, accounts: list[int]) -> Decimal:

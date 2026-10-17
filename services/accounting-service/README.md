@@ -220,22 +220,24 @@ starting `對帳建立`. `revert` works while the touched rows still equal what 
 reverted (submit the statement again).
 
 Statement checks (2026-10-17). Every revision runs the guardrails `equation`, `currency`, `period_length` (at most 62
-days), `dates_in_window`, `installments`, `line_count`, `opening_present` (bank) and `closing_day`: when the account has
-a `closing_day`, the closing date (`closing_date`, else `period_end`) must lie within 3 days of that day of the month (a
-day past the month's end means its last day; month ends are compared across). A misread period (the due date read as the
-closing date, a calendar month on a card that closes mid-month, or a holiday shift beyond 3 days) fails it; the
-revision gets `guardrail_ok = false` and a `parse_review` case, matches nothing and does not replace a passing current
-revision. `revision.guardrail.detail.closing_day` holds `expected_day`, `closing_date` and the signed `days_off`.
-Accounts without `closing_day` skip the check. Balance check: every reconcile computes the statement's gap at
+days), `dates_in_window`, `installments`, `line_count`, `opening_present` (bank) and, on card statements only,
+`closing_day`: when the card has a `closing_day`, `period_end` and, when printed, `closing_date` must each lie within 3
+days of that day of the month (a day past the month's end means its last day; month ends are compared across). A
+misread period (the due date read as the closing date, a calendar month on a card that closes mid-month, or a holiday
+shift beyond 3 days) fails it; the revision gets `guardrail_ok = false` and a `parse_review` case, matches nothing and
+does not replace a passing current revision. `revision.guardrail.detail.closing_day` holds `expected_day`, `period_end`,
+`period_end_days_off`, `closing_date` and `closing_date_days_off` (signed; null without a closing date). Cards without
+`closing_day` and all bank statements skip the check. Balance check: every reconcile computes the statement's gap at
 `period_end` against the held balance — the ledger balance at `period_end` minus the entries this statement defers to
 the next one (its resolved `deferred_next_period` cases, the matcher's late entries within `deferral_days` and the
-owner's `defer_next_period`, with their children, unless this statement claims them): bank `statement_total − held`,
+owner's `defer_next_period`, with their children, unless this statement claims them; the matcher never defers an
+entry one of the statement's own cases names — an `amount_delta`, `ambiguous` or drift candidate is printed here): bank `statement_total − held`,
 card `−statement_total − Σ held(participating accounts in the statement's currency)` (the amount owed is positive on the
 statement, card balances are negative; a co-branded card billed on the same statement counts). A deferral the next
 statement's confirm reopens counts again. A non-zero gap opens a `balance_gap` case (`context.gap`; card cases also carry
 `card: true`); a negative gap means the ledger lacks an outflow on either kind. On a card `anchor_opening` is never
-offered and the policy never acts; `balance_adjustment_asof` books the gap on a single-account card (a combined card
-is refused `combined_card`: the residual may sit on either account).
+offered and the policy never acts; `balance_adjustment_asof` books the gap on a single-account card (a card with a co-branded account in the statement's
+currency is refused `combined_card`: the residual may sit on either account).
 
 Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `dirty_enabled`, `rules`, `policy` and
 `account_siblings` wholesale, so send the current values of the ones you keep; `admin` scope):

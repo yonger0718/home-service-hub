@@ -123,8 +123,9 @@ def closing_offset(closing: date, closing_day: int) -> int:
 
 def guardrails(kind: str, header: Header, account_currency: str, lines: list[DerivedLine], *,
                closing_day: int | None) -> GuardrailResult:
-    """`closing_day`: the account's closing day; when set, the closing date (`closing_date`, else `period_end`) must
-    lie within CLOSING_TOLERANCE_DAYS of it (check `closing_day`); None (no cycle configured) skips the check."""
+    """`closing_day`: the account's closing day. On a card statement with it set, `period_end` and, when present,
+    `closing_date` must each lie within CLOSING_TOLERANCE_DAYS of it (check `closing_day`; matching windows, deferral
+    targets and the statement identity use `period_end`). Bank statements and accounts without a cycle skip it."""
     result = GuardrailResult(ok=True)
     total = _q(header.statement_total)
     sum_flow = _q(sum((l.flow_amount for l in lines), Decimal(0)))
@@ -151,11 +152,14 @@ def guardrails(kind: str, header: Header, account_currency: str, lines: list[Der
         l.line.installment_seq is None or (l.line.installment_total is not None and 1 <= l.line.installment_seq <= l.line.installment_total)
         for l in lines)
     result.checks["line_count"] = len(lines) <= 2000
-    if closing_day is not None:
-        closing = header.closing_date or header.period_end
-        offset = closing_offset(closing, closing_day)
-        result.checks["closing_day"] = abs(offset) <= CLOSING_TOLERANCE_DAYS
-        result.detail["closing_day"] = {"expected_day": closing_day, "closing_date": closing.isoformat(),
-                                        "days_off": offset}
+    if kind == "card" and closing_day is not None:
+        end_off = closing_offset(header.period_end, closing_day)
+        closing_off = None if header.closing_date is None else closing_offset(header.closing_date, closing_day)
+        result.checks["closing_day"] = all(abs(off) <= CLOSING_TOLERANCE_DAYS
+                                           for off in (end_off, closing_off) if off is not None)
+        result.detail["closing_day"] = {
+            "expected_day": closing_day, "period_end": header.period_end.isoformat(), "period_end_days_off": end_off,
+            "closing_date": header.closing_date.isoformat() if header.closing_date else None,
+            "closing_date_days_off": closing_off}
     result.ok = result.ok and all(result.checks.values())
     return result

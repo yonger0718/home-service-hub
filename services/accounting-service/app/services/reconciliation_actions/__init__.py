@@ -10,6 +10,7 @@ from typing import Callable
 from sqlalchemy.orm import object_session
 
 from app.models import AccountStatement, ReconciliationCase, StatementLine
+from app.services import reconciliation_service as rec
 from app.services.coverage_service import participating_accounts
 
 from .base import Action
@@ -90,12 +91,12 @@ def _bank_statement(case: ReconciliationCase) -> bool:
 
 
 def _single_account_gap(case: ReconciliationCase) -> bool:
-    """`balance_adjustment_asof` books on the statement's account: a bank gap, or a card gap with no co-branded
-    account billed on the same statement (its residual may sit on either account)."""
+    """`balance_adjustment_asof` books on the statement's account: only when the gap holds that account alone (a bank
+    gap, or a card with no co-branded account in the statement's currency; otherwise the residual may sit on either)."""
     db = object_session(case)
     statement = None if db is None else db.get(AccountStatement, case.statement_id)
-    return statement is not None and (statement.kind == "bank"
-                                      or participating_accounts(db, statement.account_id) == [statement.account_id])
+    return statement is not None and rec.gap_accounts(
+        db, statement, participating_accounts(db, statement.account_id)) == [statement.account_id]
 
 
 def _anchored(case: ReconciliationCase) -> bool:

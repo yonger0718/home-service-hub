@@ -471,8 +471,9 @@ def test_misread_closing_date_goes_to_parse_review_and_matches_nothing(seed, db_
     stmt, _, res = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)], period=DUE_AS_CLOSING,
                            closing_date=DUE_AS_CLOSING[1])
     assert res.revision.guardrail_ok is False and res.revision.guardrail["checks"]["closing_day"] is False
-    assert res.revision.guardrail["detail"]["closing_day"] == {"expected_day": 6, "closing_date": "2026-09-24",
-                                                               "days_off": -12}
+    assert res.revision.guardrail["detail"]["closing_day"] == {
+        "expected_day": 6, "period_end": "2026-09-24", "period_end_days_off": -12, "closing_date": "2026-09-24",
+        "closing_date_days_off": -12}
     assert [c.kind for c in _cases(db_session, stmt.id)] == ["parse_review"]
     assert _active(db_session, stmt.id) == [] and stmt.matched_count == 0
 
@@ -499,6 +500,17 @@ def test_reparse_with_misread_closing_date_is_not_made_current(seed, db_session,
     assert bad.revision.guardrail_ok is False and stmt.current_revision_id == good.revision.id
     assert [c.kind for c in _cases(db_session, stmt.id, "open")] == ["parse_review"]
     assert [r.id for r in _active(db_session, stmt.id)] == rows
+
+
+def test_bank_statement_on_an_account_with_a_closing_day_is_not_checked(seed, db_session, run):
+    """Review I3: MOZE import sets closing_day on any account whose startDay is not 1; a bank's calendar month passes."""
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1), closing_day=23)
+    seed.entry(bank, "500", kind="income", day=date(2026, 9, 5), merchant="薪資")
+    db_session.commit()
+    stmt, _, res = _submit(db_session, run, bank, [_line(1, date(2026, 9, 5), "薪資", 500, "deposit")], kind="bank",
+                           opening="1000")
+    assert res.revision.guardrail_ok is True and "closing_day" not in res.revision.guardrail["checks"]
+    assert _cases(db_session, stmt.id) == [] and stmt.matched_count == 1
 
 
 def test_account_without_closing_day_has_no_closing_check(seed, db_session, run):

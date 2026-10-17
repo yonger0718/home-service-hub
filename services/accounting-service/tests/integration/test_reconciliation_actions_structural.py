@@ -446,6 +446,41 @@ def test_balance_adjustment_never_books_a_deferred_late_purchase(dirty_on, seed,
     assert db_session.get(LedgerEntry, late.id) is not None
 
 
+@pytest.mark.parametrize("kind", ["card", "bank"])
+def test_an_amount_delta_on_the_closing_day_is_no_deferral_and_books_only_the_residual(dirty_on, seed, db_session, run,
+                                                                                         kind):
+    """Review I1: the 1000 entry on 09-30 is the near candidate of the printed 1005 line (an amount_delta case), so it
+    is this statement's, not deferred: the gap is the 5 residual and the adjustment books 5, never 1005."""
+    account = _card(seed, db_session) if kind == "card" else seed.account("銀行", statement_live_from=date(2026, 9, 1))
+    entry = seed.entry(account, "-1000" if kind == "card" else "1000", kind="expense" if kind == "card" else "income",
+                       day=PERIOD_END, merchant="全聯")
+    db_session.commit()
+    line = _line(1, PERIOD_END, "全聯", 1005 if kind == "card" else 1005, "purchase" if kind == "card" else "deposit")
+    stmt, _, _ = _submit(db_session, run, account, [line], kind=kind)
+    cases = _cases(db_session, stmt.id)
+    assert [c.entry_id for c in cases if c.kind == "amount_delta"] == [entry.id]
+    assert not [c for c in cases if c.explanation == "deferred_next_period"]
+    (gap,) = [c for c in cases if c.kind == "balance_gap"]
+    residual = "-5.0000" if kind == "card" else "5.0000"
+    assert gap.context == ({"gap": residual, "card": True} if kind == "card" else {"gap": residual})
+    _apply(db_session, gap, "balance_adjustment_asof")
+    (adj,) = _adjustments(db_session)
+    assert adj.amount == Decimal(residual)
+
+
+def test_balance_adjustment_ignores_a_co_branded_account_in_another_currency(dirty_on, seed, db_session, run):
+    """Review M3: the combined-card refusal counts the accounts the gap counts (the statement's currency only)."""
+    card = _card(seed, db_session)
+    seed.account("美金卡", currency="USD", is_credit=True, combined_account_id=card.id)
+    seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "神秘", 200)])
+    (gap,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    assert "balance_adjustment_asof" in registry.allowed(gap)
+    _apply(db_session, gap, "balance_adjustment_asof")
+    assert [a.amount for a in _adjustments(db_session)] == [Decimal("-200")]
+
+
 def test_balance_adjustment_refuses_a_combined_card_gap(dirty_on, seed, db_session, run, monkeypatch):
     g = _card_gap(seed, db_session, run, co_branded=True)
     assert "balance_adjustment_asof" not in registry.allowed(g.case)

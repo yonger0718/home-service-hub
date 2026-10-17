@@ -223,8 +223,9 @@ def _october(db, run, card, *, claimed: bool):
     lines = [_line(1, date(2026, 10, 5), "超商", 120)]
     if claimed:
         lines.append(_line(2, date(2026, 10, 1), "早餐", 77))
-    # October prints what it carries over (card balance check): September's 580 owed and, unclaimed, the 77 the
-    # ledger booked on 9-29 that no statement prints, so October itself balances and only the deferral is tested
+    # October's printed opening is September's 580 owed. Unclaimed, the 77 booked on 9-29 is printed by no statement:
+    # a REAL card balance gap of +77 on October. It is folded into the opening (657) on purpose, so October has no
+    # open case and the confirm under test is not blocked by it; the gap itself is covered in test_reconciliation_service
     octo, _, _ = _submit(db, run, card, lines, period=OCT30, opening=Decimal("580") if claimed else Decimal("657"))
     assert octo.open_case_count == 0
     return octo

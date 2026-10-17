@@ -95,13 +95,15 @@ def test_amounts_round_half_up_like_the_ledger():
     assert line.logical_key == "2026-09-03|-1.0001|0"
 
 
-# --- closing-day guardrail: the closing date (closing_date, else period_end) within ±3 days of the account's day ---
+# --- closing-day guardrail (cards only): period_end and closing_date each within ±3 days of the account's day ---
 
-def _closing(closing_day, end, *, start=None, closing_date=None):
+def _closing(closing_day, end, *, start=None, closing_date=None, kind="card"):
     hdr = Header(period_start=start or end.replace(day=1), period_end=end, closing_date=closing_date, due_date=None,
-                 opening_balance=None, statement_total=Decimal("580"), minimum_payment=None, currency="TWD")
-    lines = derive.derive_lines("card", [L(1, hdr.period_start, "580")])
-    return derive.guardrails("card", hdr, "TWD", lines, closing_day=closing_day)
+                 opening_balance=Decimal("0") if kind == "bank" else None, statement_total=Decimal("580"),
+                 minimum_payment=None, currency="TWD")
+    line = L(1, hdr.period_start, "580" if kind == "card" else "580", kind="purchase" if kind == "card" else "deposit")
+    lines = derive.derive_lines(kind, [line])
+    return derive.guardrails(kind, hdr, "TWD", lines, closing_day=closing_day)
 
 
 @pytest.mark.parametrize("closing_day,start,end", [
@@ -126,15 +128,35 @@ def test_closing_day_within_three_days_passes(closing_day, start, end):
 def test_closing_day_off_by_more_than_three_days_fails(closing_day, start, end, days_off):
     res = _closing(closing_day, end, start=start)
     assert not res.ok and res.checks["closing_day"] is False
-    assert res.detail["closing_day"] == {"expected_day": closing_day, "closing_date": end.isoformat(),
-                                         "days_off": days_off}
+    assert res.detail["closing_day"] == {"expected_day": closing_day, "period_end": end.isoformat(),
+                                         "period_end_days_off": days_off, "closing_date": None,
+                                         "closing_date_days_off": None}
 
 
-def test_closing_day_checks_the_closing_date_before_the_period_end():
+def test_closing_day_checks_the_closing_date_too():
     res = _closing(6, date(2026, 9, 6), start=date(2026, 8, 7), closing_date=date(2026, 9, 24))
-    assert not res.ok and res.detail["closing_day"]["closing_date"] == "2026-09-24"
+    assert not res.ok and res.detail["closing_day"]["closing_date_days_off"] == -12
+    assert res.detail["closing_day"]["period_end_days_off"] == 0
+
+
+def test_closing_day_checks_period_end_even_with_a_correct_closing_date():
+    # the closing date read right, the period as a calendar month: matching windows and identity use period_end
+    res = _closing(23, date(2026, 9, 30), start=date(2026, 9, 1), closing_date=date(2026, 9, 23))
+    assert not res.ok and res.detail["closing_day"] == {
+        "expected_day": 23, "period_end": "2026-09-30", "period_end_days_off": 7, "closing_date": "2026-09-23",
+        "closing_date_days_off": 0}
+
+
+def test_closing_day_passes_when_both_dates_are_right():
+    res = _closing(23, date(2026, 9, 24), start=date(2026, 8, 24), closing_date=date(2026, 9, 24))
+    assert res.ok and res.checks["closing_day"] is True
 
 
 def test_no_closing_day_no_check():
     res = _closing(None, date(2026, 9, 30), start=date(2026, 9, 1))
+    assert res.ok and "closing_day" not in res.checks and "closing_day" not in res.detail
+
+
+def test_bank_statements_skip_the_closing_day_check():
+    res = _closing(23, date(2026, 9, 30), start=date(2026, 9, 1), kind="bank")
     assert res.ok and "closing_day" not in res.checks and "closing_day" not in res.detail

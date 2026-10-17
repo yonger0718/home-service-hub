@@ -646,3 +646,15 @@ def test_needs_peer_is_not_set_when_a_near_or_drift_case_exists():
     ok = E(10, date(2026, 9, 3), "20200", kind="transfer_in", peer_is_card=False)
     res = run([L(1, date(2026, 9, 3), "20000", kind="payment", merchant="")], [ok])
     assert res.cases[0].kind == "amount_delta"
+
+
+def test_an_entry_a_line_case_names_is_never_deferred():
+    """The deferral explains entries the NEXT statement prints; an entry this statement's own amount_delta, ambiguous
+    or drift case names is printed here (a case, not a claim), so it stays unexplained (an entry_unmatched case)."""
+    late = date(2026, 9, 30)
+    near = run([L(1, late, "-1005", merchant="全聯")], [E(10, late, "-1000", merchant="全聯")])
+    assert near.cases[0].kind == "amount_delta" and near.unmatched_entry_ids == [10] and near.explained == {}
+    amb = run([L(1, late, "-580", merchant="")], [E(10, late, "-580", merchant="A"), E(11, late, "-580", merchant="B")])
+    assert amb.cases[0].kind == "ambiguous" and amb.explained == {}
+    other = run([L(1, late, "-1005", merchant="全聯")], [E(10, late, "-1000", merchant="全聯"), E(12, late, "-77", merchant="早餐")])
+    assert other.explained == {12: "deferred_next_period"}  # an unnamed late entry is still deferred

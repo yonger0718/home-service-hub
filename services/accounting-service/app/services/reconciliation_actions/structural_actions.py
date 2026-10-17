@@ -381,7 +381,7 @@ class BalanceAdjustmentAsOfAction(ActionBase):
     """Books the statement's balance gap (`reconciliation_service.balance_gap`: bank `statement_total − held`, card
     `−statement_total − held`, held excluding entries deferred to the next statement) as a `balance_adjustment` dated
     the period end, on the statement's account —
-    refused for a card statement with a co-branded account billed on it (`combined_card`). The engine
+    refused when the gap also holds a co-branded account (`combined_card`). The engine
     holds the import key and the statement lock, the account row FOR UPDATE and the exclusive transaction-scoped
     writer barrier (`coverage_service.take_barrier_xact`): no ledger writer is between its dirty insert and its
     commit, and none can commit until this transaction ends, so the balance read is complete. Nothing to release:
@@ -405,7 +405,7 @@ class BalanceAdjustmentAsOfAction(ActionBase):
         db, statement = ctx.db, ctx.statement
         end = statement.period_end
         accounts = coverage_service.participating_accounts(db, statement.account_id)
-        if statement.kind == "card" and accounts != [statement.account_id]:
+        if rec.gap_accounts(db, statement, accounts) != [statement.account_id]:
             raise _refuse("action", "combined_card", "the gap of a combined card statement may sit on any of its accounts")
         delta = rec.balance_gap(db, statement, accounts)
         if delta == 0:
