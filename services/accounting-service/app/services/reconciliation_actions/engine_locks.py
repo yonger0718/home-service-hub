@@ -3,8 +3,9 @@ sweeps, then the action row (revert) and the case row, then — after the case c
 writer barrier when asked, then schedule rows, groups and entries NOWAIT. Ledger writers lock an entry first and
 then need coverage/case rows the action already holds (ON DELETE SET NULL), so the schedule, group and entry locks
 are NOWAIT: a held row raises 409 `action_busy` instead of closing a cycle. The case, action and account locks
-wait by design: no ledger writer locks a case or action row, and `balance_adjustment_asof` (the only account
-locker) takes no entry or group lock, so those waits cannot close a cycle. The barrier waits at most
+wait by design: no ledger writer locks a case or action row, and the account lockers (`balance_adjustment_asof`,
+`anchor_opening`, `backfill_entry`, `create_system_entry`) take no entry or group lock, so those waits cannot close a
+cycle. The barrier waits at most
 BARRIER_LOCK_TIMEOUT (409 `sweep_barrier_busy`)."""
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ def lock_action(db: Session, action_id: int) -> ReconciliationAction:
 
 
 def lock_account_and_barrier(db: Session, targets: LockSet, statement: AccountStatement) -> None:
-    """`balance_adjustment_asof` only (that action locks no entry or group): the statement's account row FOR
+    """The account lockers (they lock no entry or group; engine docstring): the statement's account row FOR
     UPDATE, then the exclusive writer barrier until the transaction ends (409 `sweep_barrier_busy` on timeout)."""
     if targets.account_lock:
         db.execute(select(Account).where(Account.id == statement.account_id).with_for_update()
