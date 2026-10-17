@@ -74,6 +74,23 @@ def test_case_detail_names_the_owner_twins_the_policy_left_the_line_for(client, 
     assert body["owner_twins"] == [near.id] and far.id not in body["owner_twins"]
 
 
+def test_case_detail_lists_child_and_split_twins_too(client, seed, db_session, run):
+    card = _card(seed, db_session)
+    parent = seed.entry(card, "-310", day=DAY, merchant="USA")
+    group = seed.group("split")
+    a = seed.entry(card, "-986", day=DAY, group_id=group.id)
+    b = seed.entry(card, "-2958", kind="receivable", day=DAY, group_id=group.id)
+    seed.entry(card, "-59", kind="fee", day=DAY, group_id=group.id)  # the group as a whole does not conserve
+    db_session.flush()
+    child = seed.entry(card, "-4.7401", kind="fee", day=DAY, parent_entry_id=parent.id)
+    db_session.commit()
+    stmt, (purchase, fee, mys), _ = _submit(db_session, run, card, [
+        _line(1, DAY, "USA", 310), _line(2, DAY, "國外交易服務費", 5, "fee"), _line(3, DAY, "MYS", 3944)])
+    cases = {c.line_id: c for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched"}
+    assert client.get(f"/reconciliation/cases/{cases[fee.id].id}", headers=H).json()["owner_twins"] == [child.id]
+    assert client.get(f"/reconciliation/cases/{cases[mys.id].id}", headers=H).json()["owner_twins"] == sorted([a.id, b.id])
+
+
 def test_case_detail_owner_twins_is_empty_without_a_twin(client, unmatched):
     _, _, _, case = unmatched
     assert client.get(f"/reconciliation/cases/{case.id}", headers=H).json()["owner_twins"] == []

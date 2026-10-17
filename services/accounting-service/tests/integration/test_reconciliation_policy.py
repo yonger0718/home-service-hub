@@ -17,12 +17,12 @@ from sqlalchemy.orm import sessionmaker
 from app import auth
 from app.models import (
     DIRTY_BARRIER_KEY, AccountStatement, EntryGroup, LedgerEntry, PolicyBudget, ReconciliationAction, ReconciliationAudit,
-    ReconciliationCase, ReconciliationProposal,
+    ReconciliationCase, ReconciliationProposal, StatementLine,
 )
 from app.schemas.reconciliation import ProposalIn
 from app.services import entry_write_service as ews
 from app.services.errors import CodedConflictError
-from app.services import coverage_service, policy_service, proposal_service, settings_service
+from app.services import coverage_service, policy_service, proposal_service, settings_service, stand_ins
 from app.services import reconciliation_service as rec
 from app.services import reconciliation_actions as registry
 from app.services.policy_service import PolicyResult
@@ -1385,6 +1385,105 @@ def test_policy_never_backfills_a_line_two_split_members_record_together(seed, d
     case = _open_line_case(db_session, stmt.id, line.id)
     assert not case.candidates and _active(db_session, stmt.id) == []
     _never_books(db_session, stmt, line, case, "backfill_entry")
+
+
+def _books_one(db, stmt, action):
+    _set_policy(db, _creation_policy(action))
+    (action_id,) = policy_service.run_policy(db, stmt.id).applied
+    assert _reload(db, ReconciliationAction, action_id).action == action
+    return action_id
+
+
+@pytest.mark.parametrize("days, blocked", [(5, True), (6, False)])
+def test_near_twin_window_boundary_is_the_matchers_near_window(seed, db_session, run, dirty_on, days, blocked):
+    """5 days (near_window_days) blocks; 6 days does not, although the exact drift window (15) would still reach."""
+    card = _card(seed, db_session)
+    seed.entry(card, "-197.9931", day=DAY - timedelta(days=days))
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "JPN", 199)])
+    case = _open_line_case(db_session, stmt.id, line.id)
+    if blocked:
+        _never_books(db_session, stmt, line, case, "backfill_entry")
+    else:
+        _books_one(db_session, stmt, "backfill_entry")
+
+
+def test_a_claimed_child_is_no_twin_but_a_child_of_an_unclaimed_parent_is(seed, db_session, run, dirty_on):
+    """The exact child under the claimed purchase is itself claimed by the 5 fee line: it is nobody's twin. The
+    near child under an UNCLAIMED purchase is the 64 fee line's twin and keeps the policy off it."""
+    card = _card(seed, db_session)
+    claimed_parent = seed.entry(card, "-310", day=DAY, merchant="USA")
+    unclaimed_parent = seed.entry(card, "-900", day=DAY, merchant="GBR")  # nothing printed at 900
+    db_session.flush()
+    exact_child = seed.entry(card, "-5", kind="fee", day=DAY, parent_entry_id=claimed_parent.id)
+    near_child = seed.entry(card, "-63.7", kind="fee", day=DAY, parent_entry_id=unclaimed_parent.id)
+    db_session.commit()
+    stmt, (purchase, fee5, fee64), _ = _submit(db_session, run, card, [
+        _line(1, DAY, "USA", 310), _line(2, DAY, "國外交易服務費", 5, "fee"), _line(3, DAY, "國外交易服務費", 64, "fee")])
+    assert {c.entry_id for c in _active(db_session, stmt.id)} == {claimed_parent.id, exact_child.id}
+    statement = db_session.get(AccountStatement, stmt.id)
+    rules = rec.rules_for(settings_service.reconciliation_rules(db_session), statement.period_end)
+    twins = lambda line: stand_ins.owner_twins(db_session, statement, db_session.get(StatementLine, line.id), [card.id], rules)
+    assert twins(fee5) == []  # the claimed child guards nothing
+    assert twins(fee64) == [near_child.id]
+    case = _open_line_case(db_session, stmt.id, fee64.id)
+    _never_books(db_session, stmt, fee64, case, "create_system_entry")
+
+
+def test_only_split_groups_with_line_eligible_members_are_split_twins(seed, db_session, run, dirty_on):
+    """Review M1: an installment group summing to the line is no twin; two expense members summing to a fee line
+    are no twin either (kinds not eligible for a fee line)."""
+    card = _card(seed, db_session)
+    plan = seed.group("installment")
+    seed.entry(card, "-986", day=DAY, group_id=plan.id)
+    seed.entry(card, "-2958", kind="receivable", day=DAY, group_id=plan.id)
+    fees = seed.group("split")
+    seed.entry(card, "-40", day=DAY, group_id=fees.id)
+    seed.entry(card, "-60", day=DAY, group_id=fees.id)
+    db_session.commit()
+    stmt, (purchase, fee), _ = _submit(db_session, run, card, [_line(1, DAY, "MYS", 3944), _line(2, DAY, "年費", 100, "fee")])
+    assert _active(db_session, stmt.id) == []
+    _set_policy(db_session, {"enabled": True, "backfill_grace_days": 0, "actions": {
+        "backfill_entry": {"enabled": True, "max_amount": "5000"}, "create_system_entry": {"enabled": True, "max_amount": "5000"}}})
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert sorted(_reload(db_session, ReconciliationAction, a).action for a in result.applied) == ["backfill_entry", "create_system_entry"]
+
+
+@pytest.mark.parametrize("whole_sum", [True, False])
+def test_split_groups_above_the_subset_cap_are_checked_as_a_whole(seed, db_session, run, dirty_on, whole_sum):
+    """Nine eligible card members plus a wallet member (a partial group the matcher never claims): the nine
+    conserving as a whole block the backfill; a conserving subset of eight alone does not (the cap)."""
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    group = seed.group("split")
+    amounts = ["-100"] * 8 + (["-200"] if whole_sum else ["-250"])  # nine members: 1000, or 1050 with an 800 subset
+    for a in amounts:
+        seed.entry(card, a, day=DAY, group_id=group.id)
+    seed.entry(wallet, "50", kind="income", day=DAY, group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 1000 if whole_sum else 800)])
+    assert _active(db_session, stmt.id) == []
+    case = _open_line_case(db_session, stmt.id, line.id)
+    if whole_sum:
+        _never_books(db_session, stmt, line, case, "backfill_entry")
+    else:
+        _books_one(db_session, stmt, "backfill_entry")  # eight 100s would conserve 800, but only the whole is checked
+
+
+def test_a_near_twin_recorded_since_the_collect_refuses_the_backfill_under_the_lock(seed, db_session, run):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "JPN", 199)])
+    _set_policy(db_session, _creation_policy("backfill_entry"))
+    statement, cand = _only_candidate(db_session, stmt.id)
+    assert cand.action == "backfill_entry"
+    seed.entry(card, "-197.9931", day=DAY - timedelta(days=1))  # arrives after the collect; dirty off: no recheck
+    db_session.commit()
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=cand.case_id, action="backfill_entry", params=cand.params, actor="policy",
+                            label="policy", budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert _backfills(db_session) == [] and _booked(db_session) == []
 
 
 @pytest.mark.parametrize("owner_kind", ["plain", "split", "deleted"])
