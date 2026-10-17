@@ -521,6 +521,25 @@ def test_out_of_order_reconcile_the_next_statement_claimed_the_late_entry_first(
     assert _cases(db_session, sep.id, "open") == []
 
 
+def test_a_coverage_row_whose_entry_is_gone_does_not_undo_deferrals(seed, db_session, run):
+    """An active claim keeps entry_id NULL after its entry is deleted until the sweep releases it (ON DELETE SET NULL;
+    a MOZE re-import leaves many): it must not turn the deferral term off on any other statement."""
+    other = _card(seed, db_session, "乙卡")
+    gone = seed.entry(other, "-50", day=date(2026, 9, 5), merchant="超商")
+    db_session.commit()
+    o_stmt, _, _ = _submit(db_session, run, other, [_line(1, date(2026, 9, 5), "超商", 50)])
+    db_session.delete(db_session.get(LedgerEntry, gone.id))
+    db_session.commit()
+    assert [r.entry_id for r in _active(db_session, o_stmt.id)] == [None]
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    late = seed.entry(card, "-90", day=date(2026, 9, 29), merchant="咖啡")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    assert [c.entry_id for c in _cases(db_session, stmt.id, "resolved")] == [late.id]
+    assert _cases(db_session, stmt.id, "open") == []
+
+
 # --- closing-day guardrail at ingest -------------------------------------------------------------------------------
 
 HSBC_LIKE = (date(2026, 8, 7), date(2026, 9, 6))  # closing day 6

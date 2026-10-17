@@ -522,10 +522,14 @@ def held_balance(db: Session, statement: AccountStatement, accounts: list[int]) 
     later = (select(StatementCoverage.entry_id)
              .join(AccountStatement, AccountStatement.id == StatementCoverage.statement_id)
              .where(StatementCoverage.status == "active", AccountStatement.account_id.in_(accounts),
-                    AccountStatement.period_end > end, ~retired.clause(AccountStatement.id)))
+                    AccountStatement.currency == statement.currency, AccountStatement.period_end > end,
+                    ~retired.clause(AccountStatement.id)))
     here = select(StatementCoverage.entry_id).where(StatementCoverage.statement_id == statement.id,
                                                     StatementCoverage.status == "active")
-    covered = select(StatementCoverage.entry_id).where(StatementCoverage.status == "active")
+    # entry_id is NOT NULL-filtered: a claim whose entry was deleted keeps NULL until the sweep releases it, and one
+    # NULL in a NOT IN list makes it never true (as in coverage_service.claimed_entry_ids)
+    covered = select(StatementCoverage.entry_id).where(StatementCoverage.status == "active",
+                                                       StatementCoverage.entry_id.is_not(None))
     deferred = select(ReconciliationCase.entry_id).where(
         ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "entry_unmatched",
         ReconciliationCase.status == "resolved", ReconciliationCase.explanation == DEFERRED,
