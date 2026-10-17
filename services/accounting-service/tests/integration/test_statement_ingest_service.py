@@ -298,3 +298,146 @@ def test_claim_does_not_expire_a_live_lease(db_session, run):
     db_session.expire_all()
     row = db_session.get(IngestRun, r.id)
     assert (row.status, row.attempt, row.lease_token) == ("claimed", 1, token)
+
+
+# --- same file -> same statement (fix 2026-10-17: a re-parse with another period must not create a second statement) ---
+FOLDER = "mail/信用卡/國泰世華"
+OCT = (date(2026, 10, 1), date(2026, 10, 31))
+
+
+def _filed(db_session, r, token, sha=SHA, md5=MD5):
+    f = _file(db_session, r, token, sha=sha)
+    _source(db_session, r, token, f.id, md5=md5)
+    return f
+
+
+def _statements(db_session, account):
+    db_session.expire_all()
+    return db_session.query(AccountStatement).filter_by(account_id=account.id).order_by(AccountStatement.id).all()
+
+
+def _event_ids(db_session, revision_id):
+    return [l.event_id for l in db_session.query(StatementLine).filter_by(revision_id=revision_id).order_by(StatementLine.seq)]
+
+
+def test_same_file_with_another_period_is_a_revision_of_its_statement(db_session, card, run):
+    r, token = run
+    f = _filed(db_session, r, token)
+    amap = {FOLDER: card.id}
+    lines = [_line(1, date(2026, 9, 3), "580"), _line(2, date(2026, 9, 9), "120")]
+    first = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="700", file_id=f.id), account_map=amap)
+    # the same file parsed again, its due date read as the closing date: another period, the same lines
+    second = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="700", file_id=f.id,
+                                                     period_start=OCT[0], period_end=OCT[1]), account_map=amap)
+    assert [s.id for s in _statements(db_session, card)] == [first.statement.id]
+    stmt = _statements(db_session, card)[0]
+    assert (second.statement.id, second.revision.revision) == (stmt.id, 2)
+    # the header change is surfaced the existing way: not current, one parse_review naming the changed fields
+    assert (stmt.current_revision_id, stmt.period_start, stmt.period_end) == (first.revision.id, date(2026, 9, 1), date(2026, 9, 30))
+    changes = {"period_start": ["2026-09-01", "2026-10-01"], "period_end": ["2026-09-30", "2026-10-31"]}
+    assert second.revision.guardrail["header_changes"] == changes
+    (case,) = db_session.query(ReconciliationCase).filter_by(statement_id=stmt.id).all()
+    assert (case.kind, case.status, case.revision_id, case.context["header_changes"]) == (
+        "parse_review", "open", second.revision.id, changes)
+    assert second.case_ids == [case.id]
+    # the lines ride their events: no event was created for the second revision
+    assert _event_ids(db_session, second.revision.id) == _event_ids(db_session, first.revision.id)
+    assert second.lineage_counts == {"identical": 2, "normalised": 0, "changed": 0, "unpaired_old": 0, "new": 0}
+    assert db_session.query(StatementEvent).filter_by(statement_id=stmt.id).count() == 2
+    # another file for that period is another statement (no regression)
+    other = _filed(db_session, r, token, sha="ef" * 32, md5="01" * 16)
+    third = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="700", file_id=other.id,
+                                                    period_start=OCT[0], period_end=OCT[1]), account_map=amap)
+    assert [s.id for s in _statements(db_session, card)] == [stmt.id, third.statement.id]
+    assert (third.revision.revision, third.statement.period_end) == (1, OCT[1])
+
+
+def test_same_file_correction_moves_a_failed_statement_to_the_parsed_period(db_session, card, run):
+    r, token = run
+    f = _filed(db_session, r, token)
+    amap = {FOLDER: card.id}
+    lines = [_line(1, date(2026, 9, 3), "580")]
+    wrong = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="999", file_id=f.id,
+                                                    period_start=OCT[0], period_end=OCT[1]), account_map=amap)
+    assert wrong.revision.guardrail_ok is False and wrong.statement.period_end == OCT[1]
+    fixed = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="580", file_id=f.id), account_map=amap)
+    (stmt,) = _statements(db_session, card)
+    assert (fixed.statement.id, fixed.revision.revision, stmt.current_revision_id) == (stmt.id, 2, fixed.revision.id)
+    assert (stmt.period_start, stmt.period_end, stmt.statement_total) == (date(2026, 9, 1), date(2026, 9, 30), Decimal("580"))
+    assert fixed.revision.guardrail["header_changes"]["period_end"] == ["2026-10-31", "2026-09-30"]
+    assert [(c.kind, c.status) for c in db_session.query(ReconciliationCase).all()] == [("parse_review", "superseded")]
+    assert _event_ids(db_session, fixed.revision.id) == _event_ids(db_session, wrong.revision.id)
+    (event,) = db_session.query(StatementEvent).all()
+    assert (event.status, event.current_line_id) == ("live", db_session.query(StatementLine).filter_by(
+        revision_id=fixed.revision.id).one().id)
+
+
+@pytest.mark.parametrize("taken", [(date(2026, 9, 1), date(2026, 9, 30)), (date(2026, 9, 16), date(2026, 10, 15))],
+                         ids=["same_period_end", "overlapping"])
+def test_same_file_period_change_onto_another_statement_goes_to_review(db_session, card, run, taken):
+    r, token = run
+    f = _filed(db_session, r, token)
+    amap = {FOLDER: card.id}
+    lines = [_line(1, date(2026, 9, 3), "580")]
+    wrong = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="999", file_id=f.id,
+                                                    period_start=date(2026, 9, 1), period_end=date(2026, 10, 5)),
+                                account_map=amap)
+    other = svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 9, 20), "50")], total="50",
+                                                    period_start=taken[0], period_end=taken[1]), account_map=amap)
+    fixed = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="580", file_id=f.id), account_map=amap)
+    assert [s.id for s in _statements(db_session, card)] == [wrong.statement.id, other.statement.id]
+    stmt = db_session.get(AccountStatement, wrong.statement.id)
+    assert fixed.statement.id == stmt.id and fixed.revision.guardrail_ok is True
+    # the period cannot move onto another statement: the revision stays non-current and the owner reviews it
+    assert (stmt.current_revision_id, stmt.period_end) == (wrong.revision.id, date(2026, 10, 5))
+    cases = db_session.query(ReconciliationCase).filter_by(statement_id=stmt.id).order_by(ReconciliationCase.id).all()
+    assert [(c.kind, c.status) for c in cases] == [("parse_review", "open"), ("parse_review", "open")]
+    assert cases[1].revision_id == fixed.revision.id
+    assert cases[1].context["header_changes"]["period_end"] == ["2026-10-05", "2026-09-30"]
+    assert cases[1].context["period_blocked_by"] == other.statement.id
+    assert fixed.case_ids == [cases[1].id]
+
+
+def test_same_file_for_another_account_follows_the_folder_map(db_session, seed, card, run):
+    r, token = run
+    f = _filed(db_session, r, token)
+    lines = [_line(1, date(2026, 9, 3), "580")]
+    first = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="580", file_id=f.id),
+                                account_map={FOLDER: card.id})
+    other = seed.account("卡二", is_credit=True, statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    with pytest.raises(ValidationError) as exc:  # the folder still maps to the first card
+        svc.submit_revision(db_session, r, _rev(r, token, other, lines, total="580", file_id=f.id, period_end=date(2026, 10, 5)),
+                            account_map={FOLDER: card.id})
+    assert (exc.value.field, exc.value.message) == ("account_id", "folder maps elsewhere")
+    # the owner remapped the folder: the file is now the other account's, a statement of its own
+    moved = svc.submit_revision(db_session, r, _rev(r, token, other, lines, total="580", file_id=f.id, period_end=date(2026, 10, 5)),
+                                account_map={FOLDER: other.id})
+    assert moved.statement.id != first.statement.id and moved.statement.account_id == other.id
+    assert [s.current_revision_id for s in _statements(db_session, card)] == [first.revision.id]
+
+
+def test_same_file_on_a_reconciled_statement_is_a_conflict_whose_promotion_keeps_the_period_safe(db_session, card, run):
+    from app.services import statement_revision_service as revs
+    from app.services.errors import CodedConflictError
+
+    r, token = run
+    f = _filed(db_session, r, token)
+    amap = {FOLDER: card.id}
+    lines = [_line(1, date(2026, 9, 3), "580")]
+    first = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="580", file_id=f.id), account_map=amap)
+    first.statement.status = "reconciled"
+    other = svc.submit_revision(db_session, r, _rev(r, token, card, [_line(1, date(2026, 10, 3), "50")], total="50",
+                                                    period_start=OCT[0], period_end=OCT[1]), account_map=amap)
+    again = svc.submit_revision(db_session, r, _rev(r, token, card, lines, total="580", file_id=f.id,
+                                                    period_start=OCT[0], period_end=OCT[1]), account_map=amap)
+    assert (again.statement.id, again.revision.conflict) == (first.statement.id, True)
+    case = db_session.get(ReconciliationCase, again.case_ids[0])
+    assert (case.kind, case.context["period_blocked_by"]) == ("statement_conflict", other.statement.id)
+    events = {e.id: (e.status, e.current_line_id) for e in db_session.query(StatementEvent).all()}
+    with pytest.raises(CodedConflictError) as exc:  # keep=new cannot move the period onto the other statement
+        revs.promote_revision(db_session, again.statement, again.revision)
+    assert exc.value.code == "period_conflict"
+    # refused before anything moved: no event pointer or status was flipped in the session
+    assert {e.id: (e.status, e.current_line_id) for e in db_session.query(StatementEvent).all()} == events
+    assert again.statement.current_revision_id == first.revision.id

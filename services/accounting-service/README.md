@@ -187,6 +187,7 @@ otherwise). Amounts are strings; a 422 message starts with a stable code (`code`
 | `POST /reconciliation/proposals/{id}/reject` | `write` | optional `{note}` → `ProposalOut`; reopens the case when it was the only live proposal |
 | `POST /accounts/{id}/statements` | `write` | `ManualStatementIn` (the import header and up to 2000 `lines`, no run/lease/file fields) → `RevisionOut` (201); `origin='manual'`, audited, policy runs after the commit when live |
 | `POST /accounts/{id}/statements/{sid}/confirm` | `write` | `{force=false, note?}` → `{status, checks, reopened_cases, forced}` |
+| `POST /accounts/{id}/statements/{sid}/retire` | `admin` | `{note}` (1..1000, not blank) → `{statement_id, mode, already_retired, released_coverage, retired_events, superseded_cases}`; 409 `actions_applied` |
 
 Changed R1b routes: `POST /accounts/{id}/statements/{sid}/reconcile` also returns `policy: {applied, proposed}`;
 statement list and detail carry `incoming_deferrals_pending`; `PUT /settings/reconciliation` accepts `policy` and
@@ -280,6 +281,44 @@ audited `deferral_reopened`), then runs the checks `current_revision`, `guardrai
 `confirm_refused` with the checks as JSON; `force: true` needs a non-blank `note` (422 `note_required`) and confirms anyway
 (audited `statement_confirmed_forced`). Incoming deferrals are never a reason to refuse; a set `needs_recheck` is. 409
 `confirm_retry`: a deferral link appeared while the locks were taken; repeat the call. Confirming again is allowed.
+
+One file, one statement (fix 2026-10-17): a revision whose `file_id` already backs a non-retired statement of the same
+account and currency becomes a revision of that statement whatever period it parsed (the statement identity is
+otherwise `(account, currency, period_end)`); a changed period is a header change (`header_changes.period_end`, an open
+`parse_review`) unless it corrects a failed current revision, and never moves onto a period another statement holds
+(same `period_end`, or an overlap): that revision stays non-current with `context.period_blocked_by`, and promoting such
+a `statement_conflict` revision is 409 `period_conflict`. A different account (the folder remapped) still gets its own
+statement. Duplicates made before the fix are retired with `POST /accounts/{id}/statements/{sid}/retire` (`admin`):
+under the statement lock it refuses 409 `anchor_depends` while an applied `anchor_opening` of the account (on any of its
+statements' cases) rests on this statement (recorded in the anchor's `statement_ids`, or this is the account's opening
+target; the anchor's statements are locked with it in ascending id order), and 409 `actions_applied` while any action on
+the statement's cases is applied, else releases its coverage (`retired`), retires its events, supersedes its open cases and their pending
+proposals and its resolved `deferred_next_period` deferrals, unlinks other statements' deferrals pointing at it, sets
+`mode = historical` with the note and audits `statement_retired` (that row marks it retired). A retired statement
+leaves the pending selection, `stale_events_pending`, `reconcile` (`skipped: "retired"`), the deferral linkers (neither
+source nor target), the policy and the dry-run dump; confirm refuses it (409 `statement_retired`); a revision for its
+identity is 422 `statement_retired`; the statement list and detail carry `retired: true`; retiring it again is a 200
+no-op (`already_retired: true`). Retire sweeps the statement first (409 `sweep_barrier_busy` when the writer barrier
+is busy: retry), and the sweep retires applied actions a ledger delete made unrevertable (e.g. a MOZE re-import
+re-creating every entry): `match`, `adjust_amount`, `attach_fee`, `move_account`, `split_entry` once EVERY entry they
+touched or created (a match's principal, children or group members; a fee child; a split member) and every group they
+touched is gone — `status = reverted`, `inverse.deleted_by_event` (`deleted_before_watermark` in the catch-up, which
+also releases coverage such an action still holds, e.g. after a delete made with dirty tracking off, and reopens the
+line's case in live mode), audit `action_retired`; unlike a retired creation (`stand_in_retired`) this never marks the
+line owner-deleted, so the owner, the matcher and the policy may claim it again. An action with SOME targets gone and
+some surviving (a split whose original was re-imported away while its members and group stay; a `with_children` match
+whose child is gone; an `attach_fee` whose fee child is gone) keeps a financial effect: it stays `applied`, is counted
+(the sweep's `partially_stranded`, the dry-run's `action_partially_stranded`, no audit row) and keeps refusing a retire.
+
+Owner recovery: a 409 `anchor_depends` or `actions_applied` is cleared by reverting those actions where the engine
+allows it (`POST /reconciliation/actions/{id}/revert`). Not every action can be: `replace_stand_in` is never
+revertable, and a revert can be refused by its snapshot check (`snapshot_conflict`) or as `not_revertable`. A statement
+holding an irreversible or snapshot-refused applied action, or a partially stranded one, has no supported retire path:
+it stays as it is and goes to the owner / Lead. There is no shortcut that edits an action's `applied` marker.
+
+Maintenance contract (statements): the `statement_retired` audit row is the retired marker
+(`app.services.statements.retired`) — never delete or rewrite it, in any audit cleanup, export/re-import or manual
+repair; without it a retired statement is live again (pending selection, reconcile, confirm, deferral links).
 
 Action error codes (422 unless noted):
 

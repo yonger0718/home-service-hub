@@ -3,8 +3,8 @@
 Every route sits behind `require_feature()` (404 while ACCOUNTING_RECONCILIATION_ENABLED is off) and names its own
 scope: `enqueue` to queue a run, `ingest` for the worker's run/file/source/revision calls (each fenced by the run's
 lease, checked against the caller's label), `read` for statement reads and cases, `write` to reconcile one statement,
-`admin` to change the settings. `write` also covers the owner's manual statement and the statement confirm (R1c
-Task 11).
+`admin` to change the settings and to retire a duplicate statement. `write` also covers the owner's manual statement
+and the statement confirm (R1c Task 11).
 
 The reconcile, revision and manual-statement (live statements) and sweep routes run the policy
 (`policy_service.run_policy_safe`, R1c Task 10) after their own commit; it commits per candidate and a policy error
@@ -34,6 +34,8 @@ from ..schemas.statements import (
     ReconcileOut,
     ReconciliationSettingsIn,
     ReconciliationSettingsOut,
+    RetireIn,
+    RetireOut,
     RevisionIn,
     RevisionOut,
     RunClaimOut,
@@ -51,7 +53,7 @@ from ..schemas.statements import (
     StatementOut,
     SweepOut,
 )
-from ..services import confirm_service, policy_service
+from ..services import confirm_service, policy_service, statement_retire_service
 from ..services import reconciliation_service as recon
 from ..services import settings_service
 from ..services import statement_ingest_service as ingest
@@ -229,6 +231,24 @@ def confirm_statement(account_id: int, statement_id: int, body: ConfirmIn, reque
             label=_label(request) or "owner", request_id=request.headers.get("x-request-id"))
         out = {"status": result.status, "checks": result.checks, "reopened_cases": result.reopened_cases,
                "forced": result.forced}
+    db.commit()
+    return out
+
+
+@router.post("/accounts/{account_id}/statements/{statement_id}/retire", response_model=RetireOut, dependencies=ADMIN)
+def retire_statement(account_id: int, statement_id: int, body: RetireIn, request: Request,
+                     db: Session = Depends(get_db)):
+    """Retire a duplicate statement (statement_retire_service): 409 `anchor_depends` while an applied anchor_opening
+    rests on it, 409 `actions_applied` while an action on its cases is applied, 409 `sweep_barrier_busy` when the
+    sweep it runs under the lock meets a busy writer barrier (retry); a
+    retired statement answers 200 with `already_retired` and writes nothing."""
+    with service_errors():
+        result = statement_retire_service.retire_statement(
+            db, account_id=account_id, statement_id=statement_id, note=body.note, label=_label(request) or "admin",
+            request_id=request.headers.get("x-request-id"))
+        out = {"statement_id": result.statement.id, "mode": result.statement.mode,
+               "already_retired": result.already_retired, "released_coverage": result.released_coverage,
+               "retired_events": result.retired_events, "superseded_cases": result.superseded_cases}
     db.commit()
     return out
 
