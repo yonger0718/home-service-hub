@@ -187,6 +187,7 @@ otherwise). Amounts are strings; a 422 message starts with a stable code (`code`
 | `POST /reconciliation/proposals/{id}/reject` | `write` | optional `{note}` → `ProposalOut`; reopens the case when it was the only live proposal |
 | `POST /accounts/{id}/statements` | `write` | `ManualStatementIn` (the import header and up to 2000 `lines`, no run/lease/file fields) → `RevisionOut` (201); `origin='manual'`, audited, policy runs after the commit when live |
 | `POST /accounts/{id}/statements/{sid}/confirm` | `write` | `{force=false, note?}` → `{status, checks, reopened_cases, forced}` |
+| `POST /accounts/{id}/statements/{sid}/retire` | `admin` | `{note}` (1..1000, not blank) → `{statement_id, mode, already_retired, released_coverage, retired_events, superseded_cases}`; 409 `actions_applied` |
 
 Changed R1b routes: `POST /accounts/{id}/statements/{sid}/reconcile` also returns `policy: {applied, proposed}`;
 statement list and detail carry `incoming_deferrals_pending`; `PUT /settings/reconciliation` accepts `policy` and
@@ -257,6 +258,19 @@ audited `deferral_reopened`), then runs the checks `current_revision`, `guardrai
 `confirm_refused` with the checks as JSON; `force: true` needs a non-blank `note` (422 `note_required`) and confirms anyway
 (audited `statement_confirmed_forced`). Incoming deferrals are never a reason to refuse; a set `needs_recheck` is. 409
 `confirm_retry`: a deferral link appeared while the locks were taken; repeat the call. Confirming again is allowed.
+
+One file, one statement (fix 2026-10-17): a revision whose `file_id` already backs a non-retired statement of the same
+account and currency becomes a revision of that statement whatever period it parsed (the statement identity is
+otherwise `(account, currency, period_end)`); a changed period is a header change (`header_changes.period_end`, an open
+`parse_review`) unless it corrects a failed current revision, and never moves onto a period another statement holds
+(same `period_end`, or an overlap): that revision stays non-current with `context.period_blocked_by`, and promoting such
+a `statement_conflict` revision is 409 `period_conflict`. A different account (the folder remapped) still gets its own
+statement. Duplicates made before the fix are retired with `POST /accounts/{id}/statements/{sid}/retire` (`admin`):
+under the statement lock it refuses 409 `actions_applied` while any action on the statement's cases is applied (revert
+them first), else releases its coverage (`retired`), retires its events, supersedes its open cases and their pending
+proposals, sets `mode = historical` with the note and audits `statement_retired` (that row marks it retired). A retired
+statement leaves the pending selection, `reconcile` (`skipped: "retired"`), the policy and the dry-run dump; a revision
+for its identity is 422 `statement_retired`; retiring it again is a 200 no-op (`already_retired: true`).
 
 Action error codes (422 unless noted):
 
