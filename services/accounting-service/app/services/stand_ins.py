@@ -3,13 +3,16 @@ Read only; the engine and the sweep write the action rows."""
 from __future__ import annotations
 
 import collections
+import itertools
 from datetime import timedelta
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
-    AccountStatement, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage, StatementLine,
+    AccountStatement, EntryGroup, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementCoverage,
+    StatementLine,
 )
 from app.services import coverage_service
 from app.services.statements import matching
@@ -101,13 +104,15 @@ def held_by_stand_ins(db: Session, statement: AccountStatement,
     return out
 
 
-def owner_population(db: Session, statement: AccountStatement, accounts: list[int], rules) -> list[LedgerEntry]:
+def owner_population(db: Session, statement: AccountStatement, accounts: list[int], rules, *,
+                     claimed: set[int] | None = None) -> list[LedgerEntry]:
     """Claimable, non-stand-in, top-level, unclaimed entries of the participating accounts in the statement's
-    currency, posted within period ± drift_window_days — inside or outside the period alike (M1)."""
+    currency, posted within period ± drift_window_days — inside or outside the period alike (M1). `claimed`: the
+    active claimed-entry snapshot a caller already holds (`owner_twins` takes it once for both populations)."""
     lo = statement.period_start - timedelta(days=rules.drift_window_days)
     hi = statement.period_end + timedelta(days=rules.drift_window_days)
     day = func.coalesce(LedgerEntry.posted_date, LedgerEntry.entry_date)
-    claimed = coverage_service.claimed_entry_ids(db) | stand_in_entry_ids(db, accounts)
+    claimed = (coverage_service.claimed_entry_ids(db) if claimed is None else claimed) | stand_in_entry_ids(db, accounts)
     rows = db.execute(select(LedgerEntry).where(
         LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == statement.currency,
         LedgerEntry.parent_entry_id.is_(None), LedgerEntry.kind != "balance_adjustment", day >= lo, day <= hi)
@@ -131,11 +136,87 @@ def _conserves(statement: AccountStatement, line: StatementLine, entry: LedgerEn
             and matching._same(me.flow, ml.flow) and drift_days(line, entry) <= rules.drift_window_days)
 
 
+SPLIT_SUBSET_MAX = 8  # members of one group enumerated for a conserving subset; larger groups: the whole group only
+
+
+def owner_children(db: Session, statement: AccountStatement, accounts: list[int], rules, *,
+                   claimed: set[int] | None = None) -> list[LedgerEntry]:
+    """Unclaimed child entries (a MOZE fee under a purchase, its parent claimed or not) of the participating
+    accounts in the statement's currency, posted within period ± drift_window_days. The matcher claims a child alone
+    for a fee line, so a child is a twin of such a line too (fix 2026-10-17: a system fee was booked beside an
+    owner's child fee). `claimed` as in `owner_population`."""
+    lo = statement.period_start - timedelta(days=rules.drift_window_days)
+    hi = statement.period_end + timedelta(days=rules.drift_window_days)
+    day = func.coalesce(LedgerEntry.posted_date, LedgerEntry.entry_date)
+    claimed = coverage_service.claimed_entry_ids(db) if claimed is None else claimed
+    rows = db.execute(select(LedgerEntry).where(
+        LedgerEntry.account_id.in_(accounts), LedgerEntry.currency == statement.currency,
+        LedgerEntry.parent_entry_id.is_not(None), LedgerEntry.kind != "balance_adjustment", day >= lo, day <= hi)
+        .order_by(LedgerEntry.id)).scalars().all()
+    return [e for e in rows if e.id not in claimed]
+
+
+def _near(statement: AccountStatement, line: StatementLine, entry: LedgerEntry, rules) -> bool:
+    """The entry may record the line at a rounded amount (an FX conversion the owner estimated): an eligible kind,
+    the flow within the matcher's near tolerance (max of `near_tolerance_abs` and `near_tolerance_pct`), within
+    the near window. Unlike `matching._near_case` no merchant overlap is asked: the guard errs towards not booking."""
+    from app.services import reconciliation_service  # local: reconciliation_service imports this module
+    ml = reconciliation_service._as_line(line)
+    me = reconciliation_service.entry_view(entry)
+    if matching._entry_class(me) not in matching.eligible_kinds(statement.kind, line.line_kind):
+        return False
+    tol = max(rules.near_tolerance_abs, (rules.near_tolerance_pct * abs(ml.flow)).quantize(matching.Q))
+    return abs((ml.flow - me.flow).quantize(matching.Q)) <= tol and drift_days(line, entry) <= rules.near_window_days
+
+
+def _split_twins(db: Session, statement: AccountStatement, line: StatementLine, population: list[LedgerEntry],
+                 rules) -> list[int]:
+    """Ids of `split` group members that together take the line: among the unclaimed, in-window, top-level members
+    of one MOZE `split` group (never a reward_claim or installment group) whose kinds are each eligible for the
+    line (`matching.eligible_kinds`), a subset of two or more whose flows sum to the line's flow exactly — a
+    purchase the owner split into an expense and a receivable, with or without a fee member the statement prints as
+    its own line. Groups whose eligible population exceeds SPLIT_SUBSET_MAX are checked as a whole only."""
+    from app.services import reconciliation_service  # local: reconciliation_service imports this module
+    ml = reconciliation_service._as_line(line)
+    flow = ml.flow.quantize(matching.Q)
+    gate = matching.eligible_kinds(statement.kind, line.line_kind)
+    by_group: dict[int, list[LedgerEntry]] = collections.defaultdict(list)
+    for e in population:
+        if e.group_id is not None and e.parent_entry_id is None and drift_days(line, e) <= rules.drift_window_days \
+                and matching._entry_class(reconciliation_service.entry_view(e)) in gate:
+            by_group[e.group_id].append(e)
+    if not by_group:
+        return []
+    split_ids = set(db.execute(select(EntryGroup.id).where(EntryGroup.id.in_(sorted(by_group)),
+                                                            EntryGroup.kind == "split")).scalars())
+    out: list[int] = []
+    for group_id, members in by_group.items():
+        if group_id not in split_ids:
+            continue
+        if len(members) < 2:
+            continue
+        if len(members) > SPLIT_SUBSET_MAX:
+            if sum((Decimal(e.amount) for e in members), Decimal(0)).quantize(matching.Q) == flow:
+                out.extend(e.id for e in members)
+            continue
+        for size in range(2, len(members) + 1):
+            for subset in itertools.combinations(members, size):
+                if sum((Decimal(e.amount) for e in subset), Decimal(0)).quantize(matching.Q) == flow:
+                    out.extend(e.id for e in subset)
+    return sorted(set(out))
+
+
 def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, accounts: list[int], rules) -> list[int]:
-    """Ids of the owner entries (`owner_population`: split members included — the matcher never claims one alone)
-    that each alone take the line (`_conserves`): the policy must not backfill a line one of them may record
-    (final production finding 2026-10-17)."""
-    return [e.id for e in owner_population(db, statement, accounts, rules) if _conserves(statement, line, e, rules)]
+    """Ids of the owner entries that may record the line, so the policy must not book it (final production finding
+    2026-10-17, widened 2026-10-17 after three double bookings on one card): an entry of `owner_population` (split
+    members included — the matcher never claims one alone) or an unclaimed child (`owner_children`) that alone takes
+    the line exactly (`_conserves`) or at a near amount (`_near`), and the members of a group subset that together
+    take it (`_split_twins`)."""
+    claimed = coverage_service.claimed_entry_ids(db)  # one snapshot for both populations (review S2)
+    population = owner_population(db, statement, accounts, rules, claimed=claimed)
+    candidates = population + owner_children(db, statement, accounts, rules, claimed=claimed)
+    alone = [e.id for e in candidates if _conserves(statement, line, e, rules) or _near(statement, line, e, rules)]
+    return sorted(set(alone) | set(_split_twins(db, statement, line, population, rules)))
 
 
 def replaced_event(db: Session, statement: AccountStatement, event_id: int | None) -> bool:
