@@ -214,9 +214,8 @@ def test_an_owner_deferral_survives_a_reconcile_and_the_later_statement_links_it
     cases = [c for c in _cases(db_session, stmt.id) if c.kind == "entry_unmatched"]
     assert [(c.id, c.status, c.explanation, c.resolved_by) for c in cases] == [
         (case.id, "resolved", "deferred_next_period", "owner")]
-    # the deferred entry is still in September's ledger balance: the card balance_gap stays open
-    assert _fresh(db_session, AccountStatement, stmt.id).open_case_count == 1
-    assert _open_beside_gap(db_session, stmt.id, "77.0000") == []
+    # the owner's deferral is excluded from September's balance: no balance_gap either
+    assert _fresh(db_session, AccountStatement, stmt.id).open_case_count == 0
     later, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 12), "早餐", 77)],
                           period=(date(2026, 10, 1), date(2026, 10, 30)))
     case = _fresh(db_session, ReconciliationCase, case.id)  # the later statement's reconcile linked it (R1b)

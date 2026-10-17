@@ -258,11 +258,9 @@ def test_confirm_reopens_an_unclaimed_deferral_on_the_earlier_statement(db_sessi
         "open", None, 2, None, None)
     assert case.context["reopened_by_confirm_of"] == octo.id
     sep = _fresh(db_session, AccountStatement, sep.id)
-    # the reopened deferral and September's card balance_gap: the 9-29 entry is in the ledger before September's
-    # close but on no statement
-    assert (sep.open_case_count, sep.status) == (2, "open")
-    assert [c.context for c in _cases(db_session, sep.id, "open") if c.kind == "balance_gap"] == [
-        {"gap": "77.0000", "card": True}]
+    assert (sep.open_case_count, sep.status) == (1, "open")
+    # September's balance excluded the deferred 9-29 entry: no balance_gap
+    assert [c.kind for c in _cases(db_session, sep.id, "open")] == ["entry_unmatched"]
     (row,) = _audit(db_session, "deferral_reopened")
     assert (row.statement_id, row.case_id, row.actor) == (sep.id, case.id, "owner-test")
     assert _pending(db_session, octo.id) == 0

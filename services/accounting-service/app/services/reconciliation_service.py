@@ -488,17 +488,42 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
 
 def balance_gap(db: Session, statement: AccountStatement, accounts: list[int]) -> Decimal:
     """What the statement says the ledger holds at the period end minus what it holds (negative: the ledger lacks an
-    outflow, on either kind). Bank: `statement_total − balance(account)`. Card: the statement prints the amount owed
-    (positive) while card balances are negative, so `−statement_total − Σ balance(accounts)` over the participating
-    accounts (`coverage_service.participating_accounts`: a co-branded card billed on the same statement counts) in
-    the statement's currency."""
+    outflow, on either kind). Held = the balance at `period_end` minus the entries this statement defers to the next
+    one (`deferred_out`: they are in the ledger by then but printed later). Bank: `statement_total − held(account)`.
+    Card: the statement prints the amount owed (positive) while card balances are negative, so
+    `−statement_total − held(accounts)` over the participating accounts (`coverage_service.participating_accounts`: a
+    co-branded card billed on the same statement counts) in the statement's currency. Reads the persisted deferral
+    cases, so `reconcile` writes them before its cases."""
     end = statement.period_end
     if statement.kind == "bank":
-        return (Decimal(statement.statement_total) - account_balance(db, statement.account_id, as_of=end)).quantize(_Q)
-    same_currency = db.execute(select(Account.id).where(Account.id.in_(accounts),
-                                                        Account.currency == statement.currency)).scalars().all()
-    held = sum((account_balance(db, account_id, as_of=end) for account_id in same_currency), Decimal(0))
-    return (-Decimal(statement.statement_total) - held).quantize(_Q)
+        held_accounts = [statement.account_id]
+    else:
+        held_accounts = list(db.execute(select(Account.id).where(
+            Account.id.in_(accounts), Account.currency == statement.currency)).scalars())
+    held = sum((account_balance(db, account_id, as_of=end) for account_id in held_accounts), Decimal(0))
+    held -= deferred_out(db, statement, held_accounts)
+    total = Decimal(statement.statement_total)
+    return ((total if statement.kind == "bank" else -total) - held).quantize(_Q)
+
+
+def deferred_out(db: Session, statement: AccountStatement, accounts: list[int]) -> Decimal:
+    """Σ amount of the ledger rows (a deferred parent with its children) on `accounts` posted on or before the period
+    end that this statement explains as deferred to the next statement — its resolved `entry_unmatched` cases with
+    explanation `deferred_next_period`, the matcher's (`deferral_days` before the close) and the owner's
+    (`defer_next_period`) alike — and does not claim itself. A deferral the next statement's confirm reopened is open
+    again, so it counts toward the gap from then on."""
+    roots = (select(ReconciliationCase.entry_id)
+             .where(ReconciliationCase.statement_id == statement.id, ReconciliationCase.kind == "entry_unmatched",
+                    ReconciliationCase.status == "resolved", ReconciliationCase.explanation == DEFERRED,
+                    ReconciliationCase.entry_id.is_not(None))
+             .except_(select(StatementCoverage.entry_id).where(StatementCoverage.statement_id == statement.id,
+                                                               StatementCoverage.status == "active")))
+    if not accounts:
+        return Decimal(0)
+    return Decimal(db.scalar(
+        select(func.coalesce(func.sum(LedgerEntry.amount), 0))
+        .where(LedgerEntry.account_id.in_(accounts), LedgerEntry.posted_date <= statement.period_end,
+               or_(LedgerEntry.id.in_(roots), LedgerEntry.parent_entry_id.in_(roots)))))
 
 
 def _owner_deferred_entries(db: Session, statement: AccountStatement) -> set[int]:
@@ -748,9 +773,10 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     created: list[int] = []
     if live:
         by_id = {e.id: e for e in entries if e.claimable}
-        created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id, rules))
         evaluated = set(by_id) | {c.id for e in entries for c in e.children}
+        # deferrals first: the balance gap of `_desired_cases` subtracts them (`deferred_out`)
         _write_deferrals(db, statement, accounts_by_id[statement.account_id], deferred, evaluated)
+        created = _write_cases(db, statement, _desired_cases(db, statement, accounts, result, lines, by_id, rules))
     _link_earlier_deferrals(db, statement)
     coverage_service.assert_conserved(db, statement)
     _recount(db, statement)

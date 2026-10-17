@@ -81,8 +81,9 @@ def test_card_statement_end_to_end(card_month, db_session):
         ("entry_unmatched", None, e["lone"].id),
         ("balance_gap", None, None),
     ])
-    # the card balance check: owed −2948, ledger 2700 → 248 = −77 (line 6) + 250 (lone) − 15 (fee) + 90 (deferred)
-    assert next(c for c in open_cases if c.kind == "balance_gap").context == {"gap": "248.0000", "card": True}
+    # the card balance check: owed −2948, ledger 2700 less the deferred late −90 → 158 = −77 (line 6) + 250 (lone)
+    # − 15 (fee); the late entry belongs to October and is no gap
+    assert next(c for c in open_cases if c.kind == "balance_gap").context == {"gap": "158.0000", "card": True}
     delta = next(c for c in open_cases if c.kind == "amount_delta")
     assert delta.context["fee_matches"] is True and delta.context["fee_expected"] == "15"
     assert delta.event_id == ls[4].event_id and delta.revision_id == stmt.current_revision_id
@@ -121,9 +122,9 @@ def test_changed_outcome_supersedes_the_stale_case_and_keeps_dismissed(card_mont
     assert db_session.get(ReconciliationCase, lone.id).status == "dismissed"
     assert not [c for c in _cases(db_session, stmt.id, "open") if c.entry_id == e["lone"].id]  # not reopened
     assert ls[5].id in {r.line_id for r in _active(db_session, stmt.id)}
-    # the card gap moved with the new entry (248 + 77: line 6 is booked now): the old gap case is superseded
+    # the card gap moved with the new entry (158 + 77: line 6 is booked now): the old gap case is superseded
     assert [c.context for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"] == [
-        {"gap": "325.0000", "card": True}]
+        {"gap": "235.0000", "card": True}]
     stmt = db_session.get(AccountStatement, stmt.id)
     assert (stmt.matched_count, stmt.open_case_count) == (5, 3)
     assert stmt.explained_count == 2  # the deferral + the dismissed entry case
@@ -420,6 +421,41 @@ def test_card_gap_counts_a_co_branded_account_billed_on_the_same_statement(seed,
     assert gap.context == {"gap": "50.0000", "card": True}
     # the residual may sit on either account: no adjustment booked on the statement's account alone
     assert registry.allowed(gap) == ["dismiss"]
+
+
+@pytest.mark.parametrize("kind", ["card", "bank"])
+def test_entries_deferred_to_the_next_statement_are_no_gap(seed, db_session, run, kind):
+    """A late entry (09-29, within deferral_days of the close) the bank prints next month is in the ledger balance at
+    period_end but belongs to the next statement: the matcher's deferral explains it, so no balance_gap."""
+    account = _card(seed, db_session) if kind == "card" else seed.account("銀行", statement_live_from=date(2026, 9, 1))
+    sign = -1 if kind == "card" else 1
+    seed.entry(account, str(sign * 580), kind="expense" if kind == "card" else "income", day=date(2026, 9, 3),
+               merchant="全聯")
+    late = seed.entry(account, "-90", day=date(2026, 9, 29), merchant="咖啡")
+    seed.entry(account, "-50", day=date(2026, 10, 1), merchant="超商")  # after period_end: outside the balance
+    db_session.commit()
+    line = _line(1, date(2026, 9, 3), "全聯", 580, "purchase" if kind == "card" else "deposit")
+    stmt, _, _ = _submit(db_session, run, account, [line], kind=kind)
+    deferred = [c for c in _cases(db_session, stmt.id, "resolved") if c.explanation == "deferred_next_period"]
+    assert [c.entry_id for c in deferred] == [late.id]
+    assert _cases(db_session, stmt.id, "open") == []
+
+
+def test_owner_deferral_is_no_gap_and_a_missing_line_still_is(seed, db_session, run):
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    entry = seed.entry(card, "-77", day=date(2026, 9, 10), merchant="早餐")  # far from the close: no matcher deferral
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580),
+                                                 _line(2, date(2026, 9, 8), "神秘", 200)])
+    assert sorted(c.context.get("gap") for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap") == [
+        "-123.0000"]  # 77 too much in the ledger, 200 missing
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.entry_id == entry.id]
+    case.status, case.explanation, case.resolved_by = "resolved", "deferred_next_period", "owner"  # an owner deferral
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    assert [c.context for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"] == [
+        {"gap": "-200.0000", "card": True}]  # only the missing purchase
 
 
 # --- closing-day guardrail at ingest -------------------------------------------------------------------------------

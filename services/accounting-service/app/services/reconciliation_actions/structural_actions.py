@@ -378,8 +378,9 @@ class BalanceAdjustmentParams(ActionParams):
 
 
 class BalanceAdjustmentAsOfAction(ActionBase):
-    """Books the statement's balance gap (`reconciliation_service.balance_gap`: bank `statement_total − balance`,
-    card `−statement_total − balance`) as a `balance_adjustment` dated the period end, on the statement's account —
+    """Books the statement's balance gap (`reconciliation_service.balance_gap`: bank `statement_total − held`, card
+    `−statement_total − held`, held excluding entries deferred to the next statement) as a `balance_adjustment` dated
+    the period end, on the statement's account —
     refused for a card statement with a co-branded account billed on it (`combined_card`). The engine
     holds the import key and the statement lock, the account row FOR UPDATE and the exclusive transaction-scoped
     writer barrier (`coverage_service.take_barrier_xact`): no ledger writer is between its dirty insert and its

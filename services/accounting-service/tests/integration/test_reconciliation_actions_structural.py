@@ -431,6 +431,21 @@ def test_balance_adjustment_books_a_card_gap_with_the_card_sign(dirty_on, seed, 
     assert _adjustments(db_session) == []
 
 
+def test_balance_adjustment_never_books_a_deferred_late_purchase(dirty_on, seed, db_session, run):
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=DAY, merchant="全聯")
+    late = seed.entry(card, "-90", day=date(2026, 9, 29), merchant="咖啡")  # printed on October's statement
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "神秘", 200)])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    assert case.context == {"gap": "-200.0000", "card": True}  # not −110: the 90 belongs to October
+    _apply(db_session, case, "balance_adjustment_asof")
+    (adj,) = _adjustments(db_session)
+    assert adj.amount == Decimal("-200")
+    assert ledger_service.account_balance(db_session, card.id, as_of=PERIOD_END) == Decimal("-870")  # owed 780 + late 90
+    assert db_session.get(LedgerEntry, late.id) is not None
+
+
 def test_balance_adjustment_refuses_a_combined_card_gap(dirty_on, seed, db_session, run, monkeypatch):
     g = _card_gap(seed, db_session, run, co_branded=True)
     assert "balance_adjustment_asof" not in registry.allowed(g.case)

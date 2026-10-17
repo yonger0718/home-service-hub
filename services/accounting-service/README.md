@@ -227,13 +227,15 @@ closing date, a calendar month on a card that closes mid-month, or a holiday shi
 revision gets `guardrail_ok = false` and a `parse_review` case, matches nothing and does not replace a passing current
 revision. `revision.guardrail.detail.closing_day` holds `expected_day`, `closing_date` and the signed `days_off`.
 Accounts without `closing_day` skip the check. Balance check: every reconcile computes the statement's gap at
-`period_end` — bank `statement_total − balance(account)`, card `−statement_total − Σ balance(participating accounts in
-the statement's currency)` (the amount owed is positive on the statement, card balances are negative; a co-branded card
-billed on the same statement counts). A non-zero gap opens a `balance_gap` case (`context.gap`; card cases also carry
+`period_end` against the held balance — the ledger balance at `period_end` minus the entries this statement defers to
+the next one (its resolved `deferred_next_period` cases, the matcher's late entries within `deferral_days` and the
+owner's `defer_next_period`, with their children, unless this statement claims them): bank `statement_total − held`,
+card `−statement_total − Σ held(participating accounts in the statement's currency)` (the amount owed is positive on the
+statement, card balances are negative; a co-branded card billed on the same statement counts). A deferral the next
+statement's confirm reopens counts again. A non-zero gap opens a `balance_gap` case (`context.gap`; card cases also carry
 `card: true`); a negative gap means the ledger lacks an outflow on either kind. On a card `anchor_opening` is never
 offered and the policy never acts; `balance_adjustment_asof` books the gap on a single-account card (a combined card
-is refused `combined_card`: the residual may sit on either account). The balance includes entries the matcher defers to
-the next statement (`deferred_next_period`), so such a timing difference shows as a gap until that entry's month.
+is refused `combined_card`: the residual may sit on either account).
 
 Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `dirty_enabled`, `rules`, `policy` and
 `account_siblings` wholesale, so send the current values of the ones you keep; `admin` scope):
