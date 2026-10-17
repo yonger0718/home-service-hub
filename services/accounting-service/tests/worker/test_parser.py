@@ -516,3 +516,11 @@ def test_instruction_and_schema_state_the_closing_date_rule():
     assert "結帳日" in props["closing_date"]["description"] and "繳款截止日" in props["due_date"]["description"]
     assert "closing_date" in props["period_end"]["description"]
     assert "day after the previous closing date" in props["period_start"]["description"]
+
+
+def test_instruction_states_the_foreign_fee_row_rule():
+    """Fix 2026-10-17: 匯豐旅人 prints each foreign purchase's 國外交易服務費 as a separate row holding only two dates
+    and a small amount (no description); the parser dropped them and the statements failed the equation guardrail."""
+    text = parse_schema.INSTRUCTION
+    assert "Every printed row that carries an amount becomes a line" in text
+    assert "國外交易服務費" in text and "emit it as a fee line" in text and "never drop such rows" in text
