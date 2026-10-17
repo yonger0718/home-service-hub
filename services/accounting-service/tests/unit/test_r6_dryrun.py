@@ -136,3 +136,12 @@ def test_main_policy_refuses_a_dump_without_a_policy_section(tmp_path, monkeypat
     err = capsys.readouterr().err
     assert "no policy section" in err and "r6_case_dump.py --policy" in err
     assert not (tmp_path / "out").exists()
+
+
+def test_policy_summary_counts_partially_stranded_actions():
+    after = _dump({"1": {"claims": [], "cases": []}})
+    after["policy"] = {}
+    after["action_partially_stranded"] = {"1": 2, "4": 1}
+    assert "action_partially_stranded: 3 (by statement: 1=2, 4=1)" in dr.policy_summary(after)
+    del after["action_partially_stranded"]
+    assert "action_partially_stranded: 0 (by statement: none)" in dr.policy_summary(after)

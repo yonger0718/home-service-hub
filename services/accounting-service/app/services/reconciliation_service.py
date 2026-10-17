@@ -53,7 +53,7 @@ from app.services.entry_write_service import lock_group, proposed_fx_fee
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.ledger_service import account_balance
 from app.services.schedule_locks import take_import_key_shared
-from app.services.statements import matching
+from app.services.statements import matching, retired
 
 participating_accounts = coverage_service.participating_accounts
 
@@ -74,7 +74,7 @@ class ReconcileResult:
     cases_opened: list[int] = field(default_factory=list)  # open cases created by this run
     explained: int = 0  # entries explained as deferred_next_period by this run
     unmatched_entries: int = 0  # reverse-population entries left unmatched and not deferred
-    skipped: str | None = None  # "no_current_revision" | "parse_review"
+    skipped: str | None = None  # "no_current_revision" | "parse_review" | "retired"
 
 
 # --- inputs ------------------------------------------------------------------------------------------------------
@@ -603,10 +603,13 @@ def _link_earlier_deferrals(db: Session, statement: AccountStatement) -> int:
     """Point earlier statements' unlinked deferrals to this period at this statement: one UPDATE of case rows only
     (no statement row of theirs is locked; the foreign key's KEY SHARE lands on this statement, which we hold).
     No SKIP LOCKED: an earlier statement's reconcile writes its deferral cases only after taking all its entry locks
-    and then waits on nothing of ours, so waiting for its commit here cannot close a cycle."""
+    and then waits on nothing of ours, so waiting for its commit here cannot close a cycle. A retired statement is
+    neither a source nor a target."""
+    if retired.is_retired(db, statement.id):
+        return 0
     earlier = select(AccountStatement.id).where(
         AccountStatement.account_id == statement.account_id, AccountStatement.currency == statement.currency,
-        AccountStatement.id != statement.id)
+        AccountStatement.id != statement.id, ~retired.clause(AccountStatement.id))
     count = db.execute(
         update(ReconciliationCase)
         .where(ReconciliationCase.statement_id.in_(earlier),
@@ -625,15 +628,17 @@ def fill_deferral_links(db: Session) -> int:
     cases are linked under that lock with the deferral conditions re-checked. The savepoint only scopes a failure:
     every target row lock taken stays held until the CALLER commits, which is safe because the targets are taken in
     ascending id order, the order confirm and the engine lock statements in. A `reconciled` target is linked too: the
-    link shows as `incoming_deferrals_pending` until its next confirm processes it; no flag is set. Call it in its own
-    transaction (e.g. after the batch) and commit right after."""
+    link shows as `incoming_deferrals_pending` until its next confirm processes it; no flag is set. A retired
+    statement is neither a source nor a target. Call it in its own transaction (e.g. after the batch) and commit
+    right after."""
     own, target = aliased(AccountStatement), aliased(AccountStatement)
     candidates = db.execute(
         select(ReconciliationCase.id, target.id)
         .join(own, own.id == ReconciliationCase.statement_id)
         .join(target, and_(target.account_id == own.account_id, target.currency == own.currency,
                            target.period_end == ReconciliationCase.deferred_to_period_end))
-        .where(*_deferral_conditions(), ReconciliationCase.deferred_to_period_end.is_not(None))
+        .where(*_deferral_conditions(), ReconciliationCase.deferred_to_period_end.is_not(None),
+               ~retired.clause(own.id), ~retired.clause(target.id))
         .order_by(target.id, ReconciliationCase.id)).all()
     by_target: dict[int, list[int]] = defaultdict(list)
     for case_id, target_id in candidates:
@@ -642,8 +647,11 @@ def fill_deferral_links(db: Session) -> int:
     for target_id in sorted(by_target):
         with db.begin_nested():
             statement = _lock_statement(db, target_id)  # FOR UPDATE, re-read (populate_existing)
+            if retired.is_retired(db, statement.id):  # retired between the read and the lock
+                continue
             same_cycle = select(AccountStatement.id).where(AccountStatement.account_id == statement.account_id,
-                                                           AccountStatement.currency == statement.currency)
+                                                           AccountStatement.currency == statement.currency,
+                                                           ~retired.clause(AccountStatement.id))
             count += db.execute(
                 update(ReconciliationCase)
                 .where(ReconciliationCase.id.in_(by_target[target_id]), *_deferral_conditions(),
@@ -688,7 +696,8 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     """Sweep, match and record one statement (module docstring for the lock order). `locked=True`: the caller
     already holds the statement row FOR UPDATE (the revision hook); the import key is then attempted AFTER that
     statement lock, which is safe only because the attempt never waits (pg_try_advisory_xact_lock_shared raises
-    ImportRunningError at once while an import holds the key exclusively). Skips (after the sweep): no current revision or a failed
+    ImportRunningError at once while an import holds the key exclusively). A retired statement is skipped at once
+    (`retired`, no sweep). Skips (after the sweep): no current revision or a failed
     current one → `no_current_revision`; an open/proposed parse_review → `parse_review`. Raises
     `CodedConflictError`: `reconcile_busy` (a candidate group/entry row is locked) or `sweep_barrier_busy` (the
     sweep's barrier wait timed out, or with `barrier_wait=False` the barrier was busy at all: the revision hook passes
@@ -698,6 +707,8 @@ def reconcile(db: Session, statement_id: int, *, run_id: int | None = None, lock
     statement = db.get(AccountStatement, statement_id) if locked else _lock_statement(db, statement_id)
     if statement is None:
         raise NotFoundError(f"statement {statement_id} not found")
+    if retired.is_retired(db, statement.id):  # a retired duplicate is never swept or matched again
+        return ReconcileResult(skipped="retired")
     db.flush()  # the sweep runs on a clean session
     coverage_service.sweep(db, statement, run_id=run_id, barrier_wait=barrier_wait)
     skipped = _skip_reason(db, statement)
@@ -752,9 +763,11 @@ def _with_children(entry: matching.Entry, locked: dict[int, LedgerEntry]) -> mat
 
 
 def pending_statement_ids(db: Session) -> list[int]:
-    """Statements (any mode) with a dirty event past their watermark that may touch them or a stranded creation for
-    the catch-up retirement (`sweep_pending`), or with `needs_recheck`, deduplicated, ascending."""
-    flagged = db.execute(select(AccountStatement.id).where(AccountStatement.needs_recheck.is_(True))).scalars()
+    """Statements (any mode, never a retired one) with a dirty event past their watermark that may touch them or a
+    stranded creation for the catch-up retirement (`sweep_pending`), or with `needs_recheck`, deduplicated,
+    ascending."""
+    flagged = db.execute(select(AccountStatement.id).where(AccountStatement.needs_recheck.is_(True),
+                                                           ~retired.clause(AccountStatement.id))).scalars()
     return sorted(set(coverage_service.sweep_pending(db)) | set(flagged))
 
 

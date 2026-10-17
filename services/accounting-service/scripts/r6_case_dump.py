@@ -94,7 +94,7 @@ def _policy_section(db, statements) -> dict:
     from app.services.reconciliation_actions import structural_actions as sa
     policy = settings_service.reconciliation_policy(db)
     out = {"policy": {}, "anchor_blockers": [], "anchor_above_earlier_statement": [], "needs_peer": _count_hint(db, statements, "needs_peer"), "owner_deleted": {},
-           "retirements": {}, "sweep": {"would_release_old": 0, "would_release_new": 0, "kept_by_key": {}, "released_by_key": {}},
+           "retirements": {}, "action_partially_stranded": {}, "sweep": {"would_release_old": 0, "would_release_new": 0, "kept_by_key": {}, "released_by_key": {}},
            "structural_keys": sorted(coverage_service.STRUCTURAL_KEYS), "accounts": {str(s.id): s.account_id for s in statements}}
     seen = set()
     for stmt in statements:
@@ -102,6 +102,9 @@ def _policy_section(db, statements) -> dict:
                                        for c, d in policy_service.preview(db, stmt, policy)]
         out["owner_deleted"][str(stmt.id)] = len(stand_ins.owner_deleted_events(db, stmt))
         out["retirements"][str(stmt.id)] = stand_ins.retirement_preview(db, stmt)
+        partial = len(coverage_service.partially_stranded_ids(db, stmt))  # applied, some targets gone: the owner's
+        if partial:
+            out["action_partially_stranded"][str(stmt.id)] = partial
         sw = coverage_service.sweep_preview(db, stmt)
         for k in ("would_release_old", "would_release_new"):
             out["sweep"][k] += sw[k]

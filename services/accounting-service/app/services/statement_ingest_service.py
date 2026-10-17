@@ -31,6 +31,7 @@ from app.services import coverage_service, proposal_service, settings_service
 from app.services.errors import ConflictError, NotFoundError
 from app.services.reconciliation_actions import audit
 from app.services.statement_revision_service import SubmitResult, submit_revision
+from app.services.statements import retired
 
 __all__ = [
     "LEASE", "TERMINAL", "SubmitResult", "enqueue_run", "create_worker_run", "list_runs", "claim_run", "renew_lease",
@@ -356,6 +357,14 @@ def _incoming_deferrals(db: Session, statement_ids: list[int]) -> dict[int, int]
     return {sid: n for sid, n in rows}
 
 
+def _retired_ids(db: Session, statement_ids: list[int]) -> set[int]:
+    """The retired ones among `statement_ids` (one query)."""
+    if not statement_ids:
+        return set()
+    return set(db.execute(select(ReconciliationAudit.statement_id).where(
+        ReconciliationAudit.statement_id.in_(statement_ids), ReconciliationAudit.event == retired.EVENT)).scalars())
+
+
 def list_statements(db: Session, account_id: int) -> list[dict]:
     if db.get(Account, account_id) is None:
         raise NotFoundError(f"account {account_id} not found")
@@ -364,7 +373,9 @@ def list_statements(db: Session, account_id: int) -> list[dict]:
         .order_by(AccountStatement.period_end.desc(), AccountStatement.id.desc())
     ).scalars())
     pending = _incoming_deferrals(db, [s.id for s in statements])
-    return [{**_row(s, HEADER_FIELDS), "incoming_deferrals_pending": pending.get(s.id, 0)} for s in statements]
+    gone = _retired_ids(db, [s.id for s in statements])
+    return [{**_row(s, HEADER_FIELDS), "incoming_deferrals_pending": pending.get(s.id, 0), "retired": s.id in gone}
+            for s in statements]
 
 
 def get_statement(db: Session, statement_id: int) -> dict:
@@ -395,6 +406,7 @@ def get_statement(db: Session, statement_id: int) -> dict:
     return {
         **_row(statement, HEADER_FIELDS),
         "incoming_deferrals_pending": _incoming_deferrals(db, [statement.id]).get(statement.id, 0),
+        "retired": retired.is_retired(db, statement.id),
         "lines": [_line_out(line, coverage.get(line.id, []), events) for line in lines],
         "cases": [_row(item, CASE_FIELDS) for item in cases],
         "revisions": [_row(item, REVISION_FIELDS) for item in revisions],

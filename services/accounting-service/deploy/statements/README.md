@@ -263,6 +263,8 @@ only a target that starts less than one calendar month after `statement_live_fro
 to the owner (the dry-run line `anchor above an earlier statement` lists the accounts). A shadow farther than
 `exact_window_days` from its line is proposed (`date_drift`), not applied. Revert a wrong `anchor_opening` before any `balance_adjustment_asof` on that account (`closing_adjustments_present`).
 
+Duplicate statements (one PDF parsed twice with different periods, before the 2026-10-17 file guard): retire the copy with `POST /accounts/{id}/statements/{sid}/retire` and an `admin` token, body `{"note": "..."}` (service README "One file, one statement"). A 409 `anchor_depends` / `actions_applied` names the actions to revert first where they can be reverted; a statement with an irreversible, snapshot-refused or partially stranded applied action has no supported retire path (owner / Lead; never edit the applied marker). Never delete or rewrite a `statement_retired` audit row: it is the retired marker.
+
 ## Operator gate (`gate.sh`)
 
 Run it after any change to the CLI, model, sandbox flags or login directory, and to clear a latch

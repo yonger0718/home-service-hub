@@ -121,6 +121,9 @@ def policy_summary(after: dict) -> str:
     for by_action in after.get("retirements", {}).values():
         retire.update(by_action)
     lines.append("retirements pending: " + (", ".join(f"{k} {v}" for k, v in sorted(retire.items())) or "none"))
+    partial = after.get("action_partially_stranded", {})
+    by_statement = ", ".join(f"{k}={v}" for k, v in sorted(partial.items(), key=lambda kv: int(kv[0]))) or "none"
+    lines.append(f"action_partially_stranded: {sum(partial.values())} (by statement: {by_statement})")
     sw = after.get("sweep", {})
 
     def _keys(d: dict) -> str:
