@@ -11,6 +11,7 @@ EVENTS = frozenset({
     "proposal_rejected", "proposal_superseded", "policy_applied", "policy_proposed", "policy_skipped",
     "statement_confirmed", "statement_confirmed_forced", "deferral_reopened", "manual_statement_created",
     "conflict_superseded", "stand_in_retired", "anchor_applied", "stand_in_replaced",
+    "statement_retired",  # also the retired-statement marker (app.services.statements.retired)
 })
 
 

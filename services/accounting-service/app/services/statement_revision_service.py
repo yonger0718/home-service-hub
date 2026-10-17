@@ -1,7 +1,9 @@
 """Statement revisions, events and lineage (design §4.3–4.5, §5.6–5.8).
 
 `submit_revision` derives flow amounts and guardrails server-side, upserts the statement identity
-(account, currency, period_end), stores an immutable revision, pairs its lines to the statement's events and
+(account, currency, period_end) — or, for a file that already backs a statement of the account and currency, takes
+that statement whatever the period parsed this time (`_file_statement_id`: one file never backs two statements) —
+stores an immutable revision, pairs its lines to the statement's events and
 opens cases in live mode. Event state (current line, retirement) follows the CURRENT revision only: a revision that
 does not become current (guardrail failure, twin/header change, conflict) records its lineage but moves nothing
 (§5.7 "no transfers"). When it does become current, `identical`/`normalised` pairs carry the event's active coverage
@@ -41,13 +43,17 @@ from app.models import (
 from app.schemas.statements import RevisionIn
 from app.services import coverage_service
 from app.services.reconciliation_actions import audit
-from app.services.errors import CodedConflictError, ConflictError, NotFoundError, ValidationError
-from app.services.statements import derive, lineage
+from app.services.errors import (
+    CodedConflictError, CodedValidationError, ConflictError, NotFoundError, ValidationError,
+)
+from app.services.statements import derive, lineage, retired
 
 HEADER_COLUMNS = ("period_start", "period_end", "closing_date", "due_date", "opening_balance", "statement_total",
                   "minimum_payment")
-# Header fields compared between revisions; period_end and currency are the identity.
-COMPARED_HEADER = ("period_start", "closing_date", "due_date", "opening_balance", "statement_total", "minimum_payment")
+# Header fields compared between revisions. period_end is the identity, so it differs only when the file guard
+# (`_file_statement_id`) routed a re-parse of the same file to its statement.
+COMPARED_HEADER = ("period_start", "period_end", "closing_date", "due_date", "opening_balance", "statement_total",
+                   "minimum_payment")
 OPEN_CASE_STATUSES = ("open", "proposed")
 TEXT_CHANGED = "text_changed"  # statement_event.flag after a normalised re-parse (UI: 文字已變更)
 
@@ -127,11 +133,46 @@ def _assert_folder_maps(db: Session, file_id: int, account_id: int, account_map:
         raise ValidationError("account_id", "folder maps elsewhere")
 
 
+def _file_statement_id(db: Session, payload: RevisionIn) -> int | None:
+    """Same file, same statement (fix 2026-10-17): the statement of the payload's account and currency that already
+    holds a revision (current or not) from the payload's file — the identity statement when it is one of them, else
+    the oldest; None without a file or when no such statement exists. Retired statements are skipped. Takes the file
+    row FOR UPDATE first, so two submissions of one file serialise here and the second sees the first's statement."""
+    if payload.file_id is None:
+        return None
+    db.execute(select(StatementFile.id).where(StatementFile.id == payload.file_id).with_for_update())
+    s = AccountStatement
+    rows = db.execute(
+        select(s.id, s.period_end).join(StatementRevision, StatementRevision.statement_id == s.id)
+        .where(StatementRevision.file_id == payload.file_id, s.account_id == payload.account_id,
+               s.currency == payload.currency, ~retired.clause(s.id))
+        .distinct().order_by(s.id)).all()
+    same_identity = [sid for sid, period_end in rows if period_end == payload.period_end]
+    return (same_identity or [sid for sid, _ in rows] or [None])[0]
+
+
+def period_blocker(db: Session, statement: AccountStatement, period_start, period_end) -> int | None:
+    """The id of a statement the account and currency already hold for the period `statement` would move to: any one
+    with that period_end (the identity, retired ones included), or a non-retired one whose period overlaps it (a
+    shared boundary day is no overlap). None when the move is safe."""
+    s = AccountStatement
+    return db.execute(select(s.id).where(
+        s.account_id == statement.account_id, s.currency == statement.currency, s.id != statement.id,
+        or_(s.period_end == period_end,
+            and_(s.period_start < period_end, s.period_end > period_start, ~retired.clause(s.id))))
+        .order_by(s.id).limit(1)).scalar_one_or_none()
+
+
 def _lock_statement(db: Session, run: IngestRun, payload: RevisionIn, mode: str,
-                    origin: str) -> tuple[AccountStatement, bool]:
+                    origin: str, statement_id: int | None = None) -> tuple[AccountStatement, bool]:
     """Fetch the statement identity FOR UPDATE, creating it first when absent (concurrent creators do not raise);
-    `origin` and `mode` apply only to a statement created here."""
+    `origin` and `mode` apply only to a statement created here. With `statement_id` (the file guard's statement),
+    that statement FOR UPDATE instead, never created."""
     db.flush()  # populate_existing below must not discard pending changes
+    if statement_id is not None:
+        statement = db.execute(select(AccountStatement).where(AccountStatement.id == statement_id).with_for_update()
+                               .execution_options(populate_existing=True)).scalar_one()
+        return statement, False
     created_id = db.execute(
         pg_insert(AccountStatement)
         .values(account_id=payload.account_id, kind=payload.kind, currency=payload.currency, mode=mode,
@@ -310,8 +351,10 @@ def _activate(db: Session, statement: AccountStatement, revision: StatementRevis
     """Make a persisted revision current, from its stored rows only (no statement_line is written): re-pair the
     current revision's lines (`old_lines`) with the revision's lines through `lineage.pair`, then apply the transfer
     rules (§5.7), flip the event pointers, settle the lineage rows, copy the revision's header onto the statement and
-    point `current_revision_id` at it. `submit_revision` calls it right after `_insert_lines` (when the revision
-    becomes current), `promote_revision` on a revision stored earlier as non-current (ruling 28).
+    point `current_revision_id` at it. A header with another period moves the statement's period: refused (409
+    `period_conflict`) when `period_blocker` names a statement holding it. `submit_revision` calls it right after
+    `_insert_lines` (when the revision becomes current), `promote_revision` on a revision stored earlier as
+    non-current (ruling 28).
 
     Transfer rules: `identical` → the old event's active coverage moves to the new line (lineage `transferred`);
     `normalised` → the same, plus the event is flagged `text_changed` and its pending proposals are superseded;
@@ -391,6 +434,10 @@ def _activate(db: Session, statement: AccountStatement, revision: StatementRevis
             db.add(LineLineage(event_id=pairing.old.event_id if pairing.old is not None else new_line.event_id,
                                old_line_id=key[0], new_line_id=key[1], equivalence=pairing.equivalence,
                                transferred=transferred))
+    if (revision.period_start, revision.period_end) != (statement.period_start, statement.period_end):
+        blocker = period_blocker(db, statement, revision.period_start, revision.period_end)
+        if blocker is not None:  # submit_revision never gets here (it checks first); promote_revision may
+            raise CodedConflictError("period_conflict", f"statement {blocker} holds that period")
     statement.current_revision_id = revision.id
     for column in HEADER_COLUMNS:
         setattr(statement, column, getattr(revision, column))
@@ -471,9 +518,12 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     check = derive.guardrails(payload.kind, header, account.currency, derived)
     # 3. mode (only used when the statement is created; an existing statement keeps its mode)
     live = account.statement_live_from is not None and payload.period_end >= account.statement_live_from
-    # 4. statement identity, locked
+    # 4. statement identity (or the file's statement), locked; never a retired one
     origin = origin or ("import" if payload.file_id is not None else "manual")
-    statement, created = _lock_statement(db, run, payload, "live" if live else "historical", origin)
+    statement, created = _lock_statement(db, run, payload, "live" if live else "historical", origin,
+                                         statement_id=_file_statement_id(db, payload))
+    if not created and retired.is_retired(db, statement.id):  # 422: the worker fails the file, a 409 ends its run
+        raise CodedValidationError("period_end", "statement_retired", f"statement {statement.id}")
     # 5. revision
     old, new = _old_lines(db, statement), _new_lines(derived)
     pairings = lineage.pair(old, new)
@@ -481,9 +531,14 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     header_changes = {} if created else _header_changes(statement, payload)
     header_changed = bool(header_changes)
     conflict = statement.status == "reconciled"
+    # A period the statement cannot move to (another statement holds it) keeps the revision out of the current one.
+    period_blocked_by = None if created or (payload.period_start, payload.period_end) == (
+        statement.period_start, statement.period_end) else period_blocker(db, statement, payload.period_start,
+                                                                          payload.period_end)
     # A passing revision replaces a failed current one: the failed header is no trustworthy comparison base.
     current_failed = not created and not db.get(StatementRevision, statement.current_revision_id).guardrail_ok
-    correction = current_failed and check.ok and not conflict
+    correction = current_failed and check.ok and not conflict and period_blocked_by is None
+    blocked = {} if period_blocked_by is None else {"period_blocked_by": period_blocked_by}
     becomes_current = created or correction or (check.ok and not conflict and not twins_changed and not header_changed)
     number = (db.execute(select(func.max(StatementRevision.revision))
                          .where(StatementRevision.statement_id == statement.id)).scalar() or 0) + 1
@@ -492,7 +547,7 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
         parser_version=payload.parser_version, raw=payload.raw, guardrail_ok=check.ok, conflict=conflict,
         run_id=run.id, **_header_columns(payload),
         guardrail={"checks": check.checks, "detail": check.detail, "twins_changed": twins_changed,
-                   "header_changes": header_changes})
+                   "header_changes": header_changes, **blocked})
     db.add(revision)
     db.flush()
     # 6. lines, events, lineage (stored as not current)
@@ -512,11 +567,11 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
         if conflict:
             case_ids.append(_open_case(db, statement, revision, "statement_conflict", context={
                 "revision": number, "guardrail_ok": check.ok, "twins_changed": twins_changed,
-                "header_changes": header_changes}))
+                "header_changes": header_changes, **blocked}))
         elif not correction and (not check.ok or twins_changed or header_changed):
             case_ids.append(_open_case(db, statement, revision, "parse_review", context={
                 "checks": check.checks, "detail": check.detail, "twins_changed": twins_changed,
-                "header_changes": header_changes}))
+                "header_changes": header_changes, **blocked}))
     _recount(db, statement)
     db.flush()
     # 9. lineage counts

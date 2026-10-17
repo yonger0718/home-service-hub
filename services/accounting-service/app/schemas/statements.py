@@ -240,6 +240,29 @@ class ConfirmIn(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
+class RetireIn(BaseModel):
+    """Why the statement is retired (recorded on it and in the audit row); a blank note is refused."""
+    model_config = Strict
+    note: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("note must not be blank")
+        return value
+
+
+class RetireOut(BaseModel):
+    model_config = Strict
+    statement_id: int
+    mode: str
+    already_retired: bool
+    released_coverage: int
+    retired_events: int
+    superseded_cases: int
+
+
 class ConfirmOut(BaseModel):
     model_config = Strict
     status: str

@@ -27,7 +27,7 @@ from app.models import (
     StatementLine,
 )
 from app.services.errors import CodedConflictError, ConflictError
-from app.services.statements import matching
+from app.services.statements import matching, retired
 
 _Q = Decimal("0.0001")
 
@@ -502,12 +502,13 @@ def _touches(s):
 
 
 def sweep_pending(db: Session) -> list[int]:
-    """Statements (any mode) with an event past their watermark that may touch them (`_touches`), or with a stranded
-    creation (`_stranded`: the sweep's catch-up pass retires it — PR #76 review S1, so a pre-R6b deletion already
-    behind the watermark of a clean statement is retired by the first daily run). Read without the writer barrier: an
-    uncommitted event only shows up on a later call."""
+    """Statements (any mode, never a retired one) with an event past their watermark that may touch them
+    (`_touches`), or with a stranded creation (`_stranded`: the sweep's catch-up pass retires it — PR #76 review S1, so
+    a pre-R6b deletion already behind the watermark of a clean statement is retired by the first daily run). Read
+    without the writer barrier: an uncommitted event only shows up on a later call."""
     s = AccountStatement
-    return list(db.execute(select(s.id).where(or_(_touches(s), _stranded(s))).order_by(s.id)).scalars())
+    return list(db.execute(select(s.id).where(or_(_touches(s), _stranded(s)), ~retired.clause(s.id))
+                           .order_by(s.id)).scalars())
 
 
 def _stranded(s):
