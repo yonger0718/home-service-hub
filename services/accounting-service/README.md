@@ -211,13 +211,29 @@ Actions (`params`; the kinds a case must have; `actions_allowed` lists what a ca
 | `adjust_amount` | `entry_id`, `line_id` | `amount_delta` | no |
 | `move_account` | `entry_id`, `account_id` | `entry_unmatched` | no |
 | `split_entry` | `entry_id`, `parts[{amount, category_id, name?}]` (2 or more) | `amount_delta`, `line_unmatched` naming the entry | no |
-| `balance_adjustment_asof` | none | `balance_gap` (needs `dirty_enabled`) | no |
+| `balance_adjustment_asof` | none | `balance_gap` of a bank or single-account card statement (needs `dirty_enabled`) | no |
 | `resolve_conflict` | `keep` (`current`/`new`) | `statement_conflict` | no |
 
 Actions on historical statements: only `match` and `unmatch` (coverage); cases exist on live statements only, so there is
 no line route yet. Created rows carry `source='statement'`, `needs_review` (except `create_entry`) and a description
 starting `對帳建立`. `revert` works while the touched rows still equal what the action left; `resolve_conflict` cannot be
 reverted (submit the statement again).
+
+Statement checks (2026-10-17). Every revision runs the guardrails `equation`, `currency`, `period_length` (at most 62
+days), `dates_in_window`, `installments`, `line_count`, `opening_present` (bank) and `closing_day`: when the account has
+a `closing_day`, the closing date (`closing_date`, else `period_end`) must lie within 3 days of that day of the month (a
+day past the month's end means its last day; month ends are compared across). A misread period (the due date read as the
+closing date, a calendar month on a card that closes mid-month, or a holiday shift beyond 3 days) fails it; the
+revision gets `guardrail_ok = false` and a `parse_review` case, matches nothing and does not replace a passing current
+revision. `revision.guardrail.detail.closing_day` holds `expected_day`, `closing_date` and the signed `days_off`.
+Accounts without `closing_day` skip the check. Balance check: every reconcile computes the statement's gap at
+`period_end` — bank `statement_total − balance(account)`, card `−statement_total − Σ balance(participating accounts in
+the statement's currency)` (the amount owed is positive on the statement, card balances are negative; a co-branded card
+billed on the same statement counts). A non-zero gap opens a `balance_gap` case (`context.gap`; card cases also carry
+`card: true`); a negative gap means the ledger lacks an outflow on either kind. On a card `anchor_opening` is never
+offered and the policy never acts; `balance_adjustment_asof` books the gap on a single-account card (a combined card
+is refused `combined_card`: the residual may sit on either account). The balance includes entries the matcher defers to
+the next statement (`deferred_next_period`), so such a timing difference shows as a gap until that entry's month.
 
 Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `dirty_enabled`, `rules`, `policy` and
 `account_siblings` wholesale, so send the current values of the ones you keep; `admin` scope):

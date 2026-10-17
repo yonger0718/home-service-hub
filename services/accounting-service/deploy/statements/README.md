@@ -255,6 +255,10 @@ Order (each step is a settings PUT with the full body). Production already runs 
 5. Enable `anchor_opening` (cap `max_amount`, default "200000"); run; the anchor locks the account and its live bank statements and sets `needs_recheck` on each, so reconcile them before confirming.
 6. Cards last.
 
+Card closing days (2026-10-17): set each card's `closing_day` correctly before its statements are parsed. A revision whose
+closing date lies more than 3 days from the account's `closing_day` fails the `closing_day` guardrail, so a wrong
+`closing_day` sends every statement of that card to `parse_review`; an account without one skips the check.
+
 Caps: `replace_stand_in` has amount 0 (no budget use) but counts toward `per_statement_count`. `per_statement_count`
 (default 5) bounds every applied policy row per statement for good (system entries, backfills and replacements all count);
 the rest become proposals. With the default `per_statement_total` "5000" and `monthly_total` "20000", a real anchor
