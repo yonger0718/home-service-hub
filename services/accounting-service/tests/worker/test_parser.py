@@ -506,3 +506,13 @@ def test_sampler_waits_for_an_inflight_ps(monkeypatch):
     _t.sleep(0.1)  # second sample now sleeping inside ps
     ok = sampler.finish()
     assert ok is True and not sampler.failed and not sampler._thread.is_alive()
+
+
+def test_instruction_and_schema_state_the_closing_date_rule():
+    text = parse_schema.INSTRUCTION
+    assert "結帳日" in text and "繳款截止日" in text and "period_end equals closing_date" in text
+    assert "never use the due date as the closing date" in text and "not a calendar month" in text
+    props = parse_schema.json_schema()["properties"]
+    assert "結帳日" in props["closing_date"]["description"] and "繳款截止日" in props["due_date"]["description"]
+    assert "closing_date" in props["period_end"]["description"]
+    assert "day after the previous closing date" in props["period_start"]["description"]

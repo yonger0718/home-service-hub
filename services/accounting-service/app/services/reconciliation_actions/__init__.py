@@ -10,6 +10,8 @@ from typing import Callable
 from sqlalchemy.orm import object_session
 
 from app.models import AccountStatement, ReconciliationCase, StatementLine
+from app.services import reconciliation_service as rec
+from app.services.coverage_service import participating_accounts
 
 from .base import Action
 
@@ -88,6 +90,15 @@ def _bank_statement(case: ReconciliationCase) -> bool:
     return statement is not None and statement.kind == "bank"
 
 
+def _single_account_gap(case: ReconciliationCase) -> bool:
+    """`balance_adjustment_asof` books on the statement's account: only when the gap holds that account alone (a bank
+    gap, or a card with no co-branded account in the statement's currency; otherwise the residual may sit on either)."""
+    db = object_session(case)
+    statement = None if db is None else db.get(AccountStatement, case.statement_id)
+    return statement is not None and rec.gap_accounts(
+        db, statement, participating_accounts(db, statement.account_id)) == [statement.account_id]
+
+
 def _anchored(case: ReconciliationCase) -> bool:
     from app.services.reconciliation_actions import structural_actions  # local: it imports this package
     db = object_session(case)
@@ -102,6 +113,7 @@ CONDITIONS: dict[tuple[str, str], Callable[[ReconciliationCase], bool]] = {
     ("line_unmatched", "create_refund"): _refund_line,
     ("line_unmatched", "link_installment_plan"): lambda case: _context(case).get("hint") == "installment_unmapped",
     ("line_unmatched", "split_entry"): _names_an_entry,
+    ("balance_gap", "balance_adjustment_asof"): _single_account_gap,
     ("balance_gap", "anchor_opening"): lambda case: _bank_statement(case) and not _anchored(case),
     ("amount_delta", "attach_fee"): lambda case: _context(case).get("fee_matches") is True,
     ("entry_unmatched", "replace_stand_in"):

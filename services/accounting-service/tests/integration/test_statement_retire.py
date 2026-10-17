@@ -23,7 +23,7 @@ from app.services import statement_revision_service as revs
 from app.services.errors import CodedConflictError, ValidationError
 from app.services.reconciliation_actions import engine
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    SEP, _active, _card, _cases, _line, _submit, run,
+    SEP, _active, _card, _cases, _line, _open_beside_gap, _submit, run,
 )
 
 DAY = date(2026, 9, 3)
@@ -116,16 +116,16 @@ def test_retire_releases_the_statement_claims(seed, db_session, run):
     stmt, (claimed, unmatched), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "家樂福", 120)])
     (claim,) = _active(db_session, stmt.id)
     assert claim.line_id == claimed.id
-    assert [c.kind for c in _cases(db_session, stmt.id, "open")] == ["line_unmatched"]
+    assert [c.kind for c in _open_beside_gap(db_session, stmt.id, "-120.0000")] == ["line_unmatched"]
 
     result = _retire(db_session, stmt)
 
-    assert (result.released_coverage, result.superseded_cases) == (1, 1)
+    assert (result.released_coverage, result.superseded_cases) == (1, 2)  # the line case and the card balance_gap
     assert _active(db_session, stmt.id) == []
     released = db_session.get(StatementCoverage, claim.id)
     assert (released.status, released.stale_reason) == ("stale", "retired")
     assert _events(db_session, stmt) == ["retired", "retired"]
-    assert [c.status for c in _cases(db_session, stmt.id)] == ["superseded"]
+    assert [c.status for c in _cases(db_session, stmt.id)] == ["superseded", "superseded"]
     stmt = db_session.get(AccountStatement, stmt.id)
     assert (stmt.matched_count, stmt.open_case_count, stmt.mode) == (0, 0, "historical")
 
@@ -133,7 +133,7 @@ def test_retire_releases_the_statement_claims(seed, db_session, run):
 def test_retire_refuses_a_statement_with_an_applied_action(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1200.0000")
     engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"},
                         actor="owner", label="owner-test")
     db_session.commit()
@@ -150,7 +150,9 @@ def test_retire_refuses_a_statement_with_an_applied_action(seed, db_session, run
     assert _events(db_session, stmt) == ["live"]
     assert [c.id for c in _active(db_session, stmt.id)] == [claim.id]
     assert db_session.execute(select(ReconciliationAction.status)).scalars().all() == ["applied"]
-    assert [c.status for c in _cases(db_session, stmt.id)] == ["resolved"]
+    # unchanged: the resolved line case and the card balance_gap of the reconcile before the fee was booked
+    assert [(c.kind, c.status) for c in _cases(db_session, stmt.id)] == [("line_unmatched", "resolved"),
+                                                                         ("balance_gap", "open")]
     assert _retired_audit(db_session, stmt) == []
 
 
@@ -257,7 +259,10 @@ def test_retire_supersedes_its_deferrals_so_no_later_confirm_reopens_them(seed, 
     assert result.superseded_cases == 1
     fresh = _fresh(db_session, ReconciliationCase, case.id)
     assert (fresh.status, fresh.version) == ("superseded", version + 1)
-    octo, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 5), "超商", 120)], period=OCT30)
+    # October's printed opening is September's 580 owed; the 77 booked on 9-29 is printed by no statement, a REAL +77
+    # card gap on October, folded into the opening (657) on purpose so the confirm under test is not blocked by it
+    octo, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 5), "超商", 120)], period=OCT30,
+                         opening="657")
     assert _fresh(db_session, ReconciliationCase, case.id).deferred_to_statement_id is None
     assert rec.fill_deferral_links(db_session) == 0
     db_session.commit()

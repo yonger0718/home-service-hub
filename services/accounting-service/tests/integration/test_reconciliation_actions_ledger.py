@@ -25,7 +25,7 @@ from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.ledger_actions import AdjustAmountAction
 from tests.integration.test_reconciliation_policy import _reload, _set_policy, _sweep
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    _active, _card, _cases, _line, _reconcile, _submit, run,
+    _active, _card, _cases, _open_beside_gap, _line, _reconcile, _submit, run,
 )
 
 DAY = date(2026, 9, 3)
@@ -103,7 +103,7 @@ def lone_line(seed, db_session, run):
     """A live September card statement with one 580 purchase line (txn 09-02, posted 09-03) nothing covers."""
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "神秘商店", 580, txn_date=TXN)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     assert case.kind == "line_unmatched"
     return SimpleNamespace(card=card, stmt=stmt, line=line, case=case)
 
@@ -203,7 +203,7 @@ def test_create_system_entry_is_refused_on_an_ordinary_line(lone_line, db_sessio
 def test_create_system_entry_books_a_bank_only_fee_for_policy_and_reverts(seed, db_session, run, dirty_on):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1200.0000")
     assert case.context.get("hint") == "bank_only"
 
     row = _apply(db_session, case, "create_system_entry", {"kind": "fee"}, actor="policy", label="policy",
@@ -228,7 +228,7 @@ def test_line_kind_and_refund_conditions(seed, db_session, run):
     None when no pattern matched); create_refund serves refund lines of card and bank statements alike."""
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "點數折抵", -50, "reward")])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "50.0000")
     assert case.context == {"hint": "bank_only", "pattern": None}
     assert "create_system_entry" in registry.allowed(case) and "create_refund" not in registry.allowed(case)
 
@@ -247,7 +247,7 @@ def refund_line(seed, db_session, run):
     """A card statement whose 300 refund line (txn 09-02) nothing covers, and the 500 August purchase it refunds."""
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "家電行", -300, "refund", txn_date=TXN)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "300.0000")
     assert case.kind == "line_unmatched" and "create_refund" in registry.allowed(case)
     original = seed.entry(card, "-500", day=date(2026, 8, 20), merchant="家電行", name="吹風機")
     db_session.commit()
@@ -586,7 +586,7 @@ def test_audit_accepts_the_r6b_events(db_session):
 def test_create_entry_is_not_offered_on_a_needs_peer_case(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "繳款", -20000, "payment")])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "20000.0000")
     assert case.context == {"hint": "needs_peer"}
     assert "create_entry" not in registry.allowed(case) and {"match", "dismiss"} <= set(registry.allowed(case))
 
@@ -605,7 +605,7 @@ def test_backfill_kind_map(stmt_kind, line_kind, printed, expected):
 def test_owner_backfill_books_a_stand_in_and_reverts(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     assert "backfill_entry" in registry.allowed(case)
     row = _apply(db_session, case, "backfill_entry", {"kind": "expense"})
     (entry,) = _booked(db_session)
@@ -621,7 +621,7 @@ def test_owner_backfill_books_a_stand_in_and_reverts(seed, db_session, run):
 def test_backfill_refuses_a_kind_the_line_cannot_take(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     assert _code(_refuse(db_session, lambda: _apply(db_session, case, "backfill_entry", {"kind": "income"}))) == "kind_sign"
 
 
@@ -681,7 +681,7 @@ def test_backfill_eligibility_matrix_through_allowed_and_the_policy(seed, db_ses
 def test_second_backfill_of_the_same_event_is_refused_while_the_first_is_applied(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     _apply(db_session, case, "backfill_entry", {"kind": "expense"})
     coverage_service.release_statement(db_session, stmt, reason="test")  # what the sweep does before it reopens a case
     db_session.commit()
@@ -692,7 +692,7 @@ def test_second_backfill_of_the_same_event_is_refused_while_the_first_is_applied
 def test_backfill_may_run_again_after_an_engine_revert(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     row = _apply(db_session, case, "backfill_entry", {"kind": "expense"})
     _revert(db_session, row.id)
     case = _reload(db_session, ReconciliationCase, case.id)

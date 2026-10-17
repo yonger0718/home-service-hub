@@ -23,7 +23,7 @@ from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.coverage_actions import MatchAction
 from tests.helpers import race, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    _active, _card, _cases, _code, _line, _reconcile, _submit, run,
+    _active, _card, _cases, _open_beside_gap, _code, _line, _reconcile, _submit, run,
 )
 
 TOKENS = "spa:spa-token,hermes:hermes-token,hermes2:hermes2-token"
@@ -47,7 +47,7 @@ def unmatched(seed, db_session, run):
     booked afterwards and listed by hand)."""
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     seed.entry(card, "-1", day=DAY, merchant="墊高編號")  # keeps entry ids apart from the line id
     entry = seed.entry(card, "-580", day=DAY, merchant="全聯")
     stray = seed.entry(card, "-999", day=DAY, merchant="別的")

@@ -473,6 +473,20 @@ def _claimed_by_earlier_line(kind: str, line: Line, entries: list[Entry], groups
     return None
 
 
+def _designated_by_cases(cases: list[Case]) -> set[int]:
+    """The one entry each `amount_delta` case (near, foreign, drift) pairs with its line (`entry_id`, also in
+    `context.entry_id`): taken as printed here, so never deferred to the next statement. Ambiguous alternatives and
+    secondary candidates are not designated (at most one of them is the line) and defer as usual."""
+    out: set[int] = set()
+    for case in cases:
+        if case.kind != "amount_delta":
+            continue
+        for value in (case.entry_id, (case.context or {}).get("entry_id")):
+            if value is not None:
+                out.add(value)
+    return out
+
+
 def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
           fee_expected: Callable[[Entry], Decimal | None], rules: Rules, account_currency: str) -> MatchResult:
     result = MatchResult()
@@ -512,6 +526,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             continue
         result.cases.append(Case(line.id, None, "line_unmatched", (), {}))
     unmatched: set[int] = set()
+    designated = _designated_by_cases(result.cases)
     for e in entries:
         if not e.in_reverse:
             continue
@@ -522,7 +537,8 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             continue
         if e.id not in claimed:  # an unclaimed parent represents its children
             unmatched.add(e.id)
-            if e.posted_date > rules.period_end - timedelta(days=rules.deferral_days):
+            # a late entry is the next statement's, unless an amount_delta of this statement designates it
+            if e.posted_date > rules.period_end - timedelta(days=rules.deferral_days) and e.id not in designated:
                 result.explained[e.id] = "deferred_next_period"
             continue
         for c in e.children:

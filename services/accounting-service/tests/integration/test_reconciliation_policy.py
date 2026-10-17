@@ -29,7 +29,7 @@ from app.services.policy_service import PolicyResult
 from app.services.reconciliation_actions import audit, engine
 from tests.helpers import make_entry, race, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    _active, _card, _cases, _line, _submit, run,
+    _active, _card, _cases, _open_beside_gap, _line, _submit, run,
 )
 
 TOKENS = "spa:spa-token,worker:worker-token,hermes:hermes-token"
@@ -806,7 +806,7 @@ BACKFILL_ON = {"enabled": True, "actions": {"backfill_entry": {"enabled": True, 
 def _purchase_statement(seed, db, run, name="卡", **card):
     account = _card(seed, db, name, **card)
     stmt, (line,), _ = _submit(db, run, account, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db, stmt.id, "open")
+    (case,) = _open_beside_gap(db, stmt.id, "-580.0000")
     return SimpleNamespace(card=account, stmt=stmt, line=line, case=case)
 
 
@@ -875,13 +875,13 @@ def test_policy_skips_an_owner_deleted_fee_line_but_the_owner_may_rebook_it(seed
     _sweep(db_session, s.stmt)
     rec.reconcile(db_session, s.stmt.id)
     db_session.commit()
-    (case,) = _cases(db_session, s.stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, s.stmt.id, "-1200.0000")
     assert case.context["hint"] == "bank_only" and case.context["owner_deleted"] is True
     for _ in range(2):
         assert policy_service.run_policy(db_session, s.stmt.id).applied == []
         rec.reconcile(db_session, s.stmt.id)
         db_session.commit()
-    (case,) = _cases(db_session, s.stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, s.stmt.id, "-1200.0000")
     assert "create_system_entry" in registry.allowed(case)
     engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"}, actor="owner", label="t")
     db_session.commit()
@@ -891,7 +891,7 @@ def test_policy_skips_an_owner_deleted_fee_line_but_the_owner_may_rebook_it(seed
 def test_policy_refuses_a_candidate_whose_creation_the_owner_made_and_deleted_since_the_collect(seed, db_session, run, dirty_on):
     s = _fee_statement(seed, db_session, run)
     _set_policy(db_session, SYSTEM_ON)
-    (case,) = _cases(db_session, s.stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, s.stmt.id, "-1200.0000")
     cand = policy_service._system_entry_candidate(db_session, case, s.stmt)
     assert cand is not None
     engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params=cand.params, actor="owner", label="t")
@@ -900,7 +900,7 @@ def test_policy_refuses_a_candidate_whose_creation_the_owner_made_and_deleted_si
     db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
     db_session.commit()
     _sweep(db_session, s.stmt)  # not reconcile: the reopened case keeps its old context
-    (reopened,) = _cases(db_session, s.stmt.id, "open")
+    (reopened,) = _open_beside_gap(db_session, s.stmt.id, "-1200.0000")
     assert "owner_deleted" not in (reopened.context or {})
     with pytest.raises(CodedConflictError) as info:
         engine.apply_action(db_session, case_id=reopened.id, action="create_system_entry", params=cand.params, actor="policy",
@@ -918,13 +918,13 @@ def test_policy_never_proposes_rebooking_an_owner_deleted_line(seed, db_session,
     # the candidate would have become a policy proposal. collect_candidates drops it: no apply, no proposal, no preview.
     card = _card(seed, db_session)
     stmt, _, _ = _submit(db_session, run, card, lines)
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, f"{-sum(l.printed_amount for l in lines):.4f}")
     row, _ = engine.apply_action(db_session, case_id=case.id, action=action, params=params, actor="owner", label="t")
     db_session.commit()
     db_session.delete(db_session.get(LedgerEntry, row.created_entry_ids[0]))
     db_session.commit()
     _sweep(db_session, stmt)
-    (reopened,) = _cases(db_session, stmt.id, "open")
+    (reopened,) = _open_beside_gap(db_session, stmt.id, f"{-sum(l.printed_amount for l in lines):.4f}")
     assert "owner_deleted" not in (reopened.context or {})
     _set_policy(db_session, {"enabled": True, "backfill_grace_days": 0,
                              "actions": {action: {"enabled": True, "max_amount": "100"}}})
@@ -1061,6 +1061,24 @@ def test_a_backfill_collected_before_an_anchor_is_refused_under_the_lock(seed, d
     assert [e.kind for e in _booked(db_session)] == ["balance_adjustment"]
 
 
+def test_the_policy_never_acts_on_a_card_balance_gap(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "神秘", 200)])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    assert case.context == {"gap": "-200.0000", "card": True}
+    _set_policy(db_session, {"enabled": True, "actions": {name: {"enabled": True, "max_amount": "200000"}
+                                                          for name in policy_service.POLICY_ACTIONS}})
+    statement = db_session.get(AccountStatement, stmt.id)
+    assert policy_service._anchor_candidate(db_session, case, statement) is None
+    assert [c for c in policy_service.collect_candidates(db_session, statement, {}) if c.case_id == case.id] == []
+    policy_service.run_policy(db_session, stmt.id)
+    db_session.commit()
+    assert [a for a in _actions(db_session) if a.case_id == case.id] == [] and _adjustments(db_session) == []
+    assert case.id in [c.id for c in _cases(db_session, stmt.id, "open")]
+
+
 @pytest.mark.parametrize("live_from", [date(2026, 8, 1), date(2026, 7, 1)])
 def test_the_policy_anchors_only_the_first_live_month_but_the_owner_may_anchor_later_ones(seed, db_session, run, dirty_on, live_from):
     # the September statement is not the first live month (live from 8/1: August is; 9/1 is a calendar month later)
@@ -1142,7 +1160,7 @@ def test_policy_replaces_a_stand_in_with_zero_budget_and_counts_toward_the_state
     card = _card(seed, db_session)
     # two lines from the start, so the cap half has a second line/stand-in/owner triple on the same statement
     stmt, (line, second), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "家樂福", 320)])
-    for case in _cases(db_session, stmt.id, "open"):
+    for case in _open_beside_gap(db_session, stmt.id, "-900.0000"):
         engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
         db_session.commit()
     owner = seed.entry(card, "-580", day=DAY, merchant="全聯")
@@ -1232,7 +1250,7 @@ def test_a_shadow_that_drifted_since_the_collect_is_refused_under_the_lock(seed,
     # period, so no recheck is raised and the case keeps its collected drift_days; the lock re-measures the distance
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 29), "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
     db_session.commit()
     owner = seed.entry(card, "-580", day=date(2026, 10, 1), merchant="全聯")

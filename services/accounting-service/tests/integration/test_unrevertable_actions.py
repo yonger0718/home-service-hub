@@ -17,7 +17,7 @@ from app.services import reconciliation_service as rec
 from app.services import statement_retire_service as retire_svc
 from app.services.errors import CodedConflictError
 from app.services.reconciliation_actions import engine
-from tests.integration.statement_fixtures import _active, _card, _cases, _line, _submit, run  # noqa: F401
+from tests.integration.statement_fixtures import _active, _card, _cases, _line, _open_beside_gap, _submit, run  # noqa: F401
 from tests.integration.test_reconciliation_actions_ledger import fx_pair, near_pair  # noqa: F401  (fixtures)
 from tests.integration.test_reconciliation_actions_structural import _hand_case
 
@@ -69,7 +69,7 @@ def _matched(seed, db, run):
     """A live card statement whose 580 line the owner matched to an entry booked after the reconcile."""
     card = _card(seed, db)
     stmt, (line,), _ = _submit(db, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db, stmt.id, "open")
+    (case,) = _open_beside_gap(db, stmt.id, "-580.0000")
     entry = seed.entry(card, "-580", day=DAY, merchant="全聯")
     db.commit()
     row, _ = engine.apply_action(db, case_id=case.id, action="match", actor="owner", label="t",
@@ -211,7 +211,7 @@ def test_each_action_shape_is_retired_only_when_every_target_is_gone(seed, db_se
     every target alive → untouched; creations are not this pass's."""
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     alive, gone, gone2 = (seed.entry(card, "-1", day=DAY, merchant=m) for m in ("a", "b", "c"))
     group_alive, group_gone = seed.group(), seed.group()
     db_session.commit()
@@ -330,7 +330,7 @@ def test_a_group_match_and_its_split_are_retired_once_every_member_and_the_group
 def _children_match(seed, db, run):
     card = _card(seed, db)
     stmt, (line,), _ = _submit(db, run, card, [_line(1, DAY, "全聯", 600)])
-    (case,) = _cases(db, stmt.id, "open")
+    (case,) = _open_beside_gap(db, stmt.id, "-600.0000")
     parent = seed.entry(card, "-580", day=DAY, merchant="全聯")
     child = seed.entry(card, "-20", kind="fee", day=DAY, parent_entry_id=parent.id)
     db.commit()
@@ -439,7 +439,7 @@ def test_a_batch_of_deletes_retires_each_row_once_with_one_lookup_per_sweep(seed
 def test_the_catch_up_releases_coverage_a_delete_without_dirty_tracking_left_active(seed, db_session, run):
     """dirty off: the delete leaves no event, and the claim row survives with entry_id NULL (ON DELETE SET NULL)."""
     card, stmt, line, entry, row = _matched(seed, db_session, run)
-    (case,) = _cases(db_session, stmt.id)
+    (case,) = [c for c in _cases(db_session, stmt.id) if c.kind != "balance_gap"]  # the gap: _matched
     version = case.version
     db_session.delete(db_session.get(LedgerEntry, entry.id))
     db_session.commit()

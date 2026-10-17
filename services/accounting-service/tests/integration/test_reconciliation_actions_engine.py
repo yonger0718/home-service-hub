@@ -27,7 +27,7 @@ from app.services.reconciliation_actions import base, engine
 from app.services.reconciliation_actions.coverage_actions import MatchAction
 from tests.helpers import race, set_dirty, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    _active, _card, _cases, _code, _interleave, _line, _reconcile, _submit, run,
+    _active, _card, _cases, _open_beside_gap, _code, _interleave, _line, _reconcile, _submit, run,
 )
 
 DAY = date(2026, 9, 3)
@@ -97,7 +97,7 @@ def unmatched(seed, db_session, run):
     def build(amount="-580", **entry_fields):
         card = _card(seed, db_session)
         stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-        (case,) = _cases(db_session, stmt.id, "open")
+        (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
         assert case.kind == "line_unmatched"
         entry = seed.entry(card, amount, day=DAY, merchant="全聯", **entry_fields)
         db_session.commit()
@@ -227,7 +227,10 @@ def test_match_claims_resolves_recounts_and_audits(unmatched, db_session):
         "resolved", "owner", row.id, version)
     assert case.resolved_at is not None
     stmt = db_session.get(AccountStatement, s.stmt.id)
-    assert (stmt.matched_count, stmt.open_case_count, stmt.needs_recheck) == (1, 0, False)
+    # left open: the card balance_gap of the reconcile that ran before the entry was booked (the next reconcile
+    # re-derives it)
+    assert (stmt.matched_count, stmt.open_case_count, stmt.needs_recheck) == (1, 1, False)
+    assert _open_beside_gap(db_session, s.stmt.id, "-580.0000") == []
     (audit,) = _audit(db_session)
     assert (audit.event, audit.action_id, audit.case_id, audit.statement_id, audit.actor) == (
         "action_applied", row.id, s.case.id, s.stmt.id, "owner-test")
@@ -578,7 +581,7 @@ def scheduled(seed, db_session, run, today):
     today(date(2026, 10, 22))
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "影音", 390)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-390.0000")
     definition = seed.definition([seed.line("expense", card, "390")], name="影音", anchor=DAY, auto_post_from=DAY)
     instance = seed.instance(definition, 1, DAY)
     (entry_id,) = posting.post_instance(db_session, instance.id, actor="auto").entry_ids
@@ -769,7 +772,7 @@ def test_revert_of_a_match_releases_and_reopens(unmatched, db_session):
     assert revert.before["entries"] == original.after["entries"]
     assert revert.after["entries"][str(s.entry.id)]["coverage_ids"] == []
     stmt = db_session.get(AccountStatement, s.stmt.id)
-    assert (stmt.matched_count, stmt.open_case_count) == (0, 1)
+    assert (stmt.matched_count, stmt.open_case_count) == (0, 2)  # the case and the card balance_gap
     assert [a.event for a in _audit(db_session)] == ["action_applied", "action_reverted"]
 
     for action_id in (row.id, revert.id):
@@ -912,7 +915,7 @@ def test_a_dirty_edit_releases_a_manual_claim_through_the_sweep(unmatched, db_se
 def test_policy_actor_without_budget_is_refused(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1200.0000")
 
     exc = _refuse(db_session, lambda: _apply(db_session, case, "create_system_entry", {"kind": "fee"},
                                              actor="policy", label="policy"))

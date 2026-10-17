@@ -32,10 +32,13 @@ class StatementParse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["card", "bank"]
     currency: str = Field(pattern=r"^[A-Z]{3}$")
-    period_start: date
-    period_end: date
-    closing_date: date | None = None
-    due_date: date | None = None
+    period_start: date = Field(description=(
+        "First day of the statement period. Card: the day after the previous closing date (not the 1st of a calendar "
+        "month unless the statement says so)."))
+    period_end: date = Field(description="Last day of the statement period; on a card statement it equals closing_date.")
+    closing_date: date | None = Field(default=None, description=(
+        "The statement/closing date (結帳日 / 帳單結帳日); never the payment due date."))
+    due_date: date | None = Field(default=None, description="The payment due date (繳款截止日); never the closing date.")
     opening_balance: str | None = Field(default=None, pattern=MONEY)
     statement_total: str = Field(pattern=MONEY)
     minimum_payment: str | None = Field(default=None, pattern=MONEY)
@@ -54,7 +57,10 @@ INSTRUCTION = (
     "line_kind unknown (never purchase/fee/etc.). For a bank statement opening_balance is REQUIRED: the balance before "
     "the first transaction (上期餘額 / 期初餘額); statement_total is the closing balance (本期餘額 / 期末餘額). For a "
     "card statement statement_total is 本期應繳總額 and opening_balance is the previous statement's amount due (上期應繳總額) "
-    "when printed, and a payment received (本期已繳金額/繳款) is a payment line. One line per printed "
+    "when printed, and a payment received (本期已繳金額/繳款) is a payment line. Header dates: closing_date is the "
+    "statement/closing date (結帳日 / 帳單結帳日) and period_end equals closing_date; due_date is the payment due date "
+    "(繳款截止日); never use the due date as the closing date. A card statement's period runs from the day after the "
+    "previous closing date to the closing date, not a calendar month unless the statement says so. One line per printed "
     "transaction row in print order with seq starting at 1; mark subtotal or total rows with is_subtotal true. Keep "
     "merchant_raw as printed (masked tokens such as [NUM…1234] stay as they are). For foreign-currency rows set "
     "foreign_amount and foreign_currency (ISO code). For installment rows set installment_seq and installment_total "

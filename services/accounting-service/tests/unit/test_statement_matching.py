@@ -646,3 +646,20 @@ def test_needs_peer_is_not_set_when_a_near_or_drift_case_exists():
     ok = E(10, date(2026, 9, 3), "20200", kind="transfer_in", peer_is_card=False)
     res = run([L(1, date(2026, 9, 3), "20000", kind="payment", merchant="")], [ok])
     assert res.cases[0].kind == "amount_delta"
+
+
+def test_only_the_designated_entry_of_an_amount_delta_is_never_deferred():
+    """The deferral explains entries the NEXT statement prints. The one entry an amount_delta (near, foreign, drift)
+    pairs with its line is printed here, so it stays unexplained (an entry_unmatched case); alternatives of an
+    ambiguous case and secondary candidates defer as before (at most one of them is this line)."""
+    late = date(2026, 9, 30)
+    near = run([L(1, late, "-1005", merchant="全聯")], [E(10, late, "-1000", merchant="全聯")])
+    assert near.cases[0].kind == "amount_delta" and near.unmatched_entry_ids == [10] and near.explained == {}
+    amb = run([L(1, late, "-580", merchant="")], [E(10, late, "-580", merchant="A"), E(11, late, "-580", merchant="B")])
+    assert amb.cases[0].kind == "ambiguous"
+    assert amb.explained == {10: "deferred_next_period", 11: "deferred_next_period"}
+    two = run([L(1, late, "-1005", merchant="全聯")], [E(10, late, "-1000", merchant="全聯"), E(13, late, "-1008", merchant="全聯")])
+    assert two.cases[0].entry_id == 13 and {c["entry_id"] for c in two.cases[0].candidates} == {10, 13}
+    assert two.explained == {10: "deferred_next_period"}  # the secondary candidate defers
+    other = run([L(1, late, "-1005", merchant="全聯")], [E(10, late, "-1000", merchant="全聯"), E(12, late, "-77", merchant="早餐")])
+    assert other.explained == {12: "deferred_next_period"}  # an unnamed late entry is still deferred

@@ -1,3 +1,4 @@
+from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -13,6 +14,9 @@ BANK_CREDIT = {"deposit", "interest", "transfer_in", "refund", "reward"}
 BANK_DEBIT = {"withdrawal", "fee", "transfer_out", "purchase", "payment"}
 WINDOW = timedelta(days=5)
 MAX_PERIOD = timedelta(days=62)
+# The closing date may move off the account's closing day by a weekend/holiday shift; a misread period (the due
+# date taken for the closing date, a calendar month on a mid-month card) lands farther away and goes to review.
+CLOSING_TOLERANCE_DAYS = 3
 
 
 class SignError(ValueError):
@@ -106,7 +110,22 @@ def derive_lines(kind: str, lines: list[LineIn]) -> list[DerivedLine]:
     return out
 
 
-def guardrails(kind: str, header: Header, account_currency: str, lines: list[DerivedLine]) -> GuardrailResult:
+def closing_offset(closing: date, closing_day: int) -> int:
+    """Signed days from the nearest scheduled closing date — `closing_day` in the previous, same or next month,
+    clamped to that month's length (day 31 closes on the 30th of a 30-day month) — to `closing`."""
+    offsets = []
+    for shift in (-1, 0, 1):
+        year, month0 = divmod(closing.year * 12 + closing.month - 1 + shift, 12)
+        scheduled = date(year, month0 + 1, min(closing_day, monthrange(year, month0 + 1)[1]))
+        offsets.append((closing - scheduled).days)
+    return min(offsets, key=abs)
+
+
+def guardrails(kind: str, header: Header, account_currency: str, lines: list[DerivedLine], *,
+               closing_day: int | None) -> GuardrailResult:
+    """`closing_day`: the account's closing day. On a card statement with it set, `period_end` and, when present,
+    `closing_date` must each lie within CLOSING_TOLERANCE_DAYS of it (check `closing_day`; matching windows, deferral
+    targets and the statement identity use `period_end`). Bank statements and accounts without a cycle skip it."""
     result = GuardrailResult(ok=True)
     total = _q(header.statement_total)
     sum_flow = _q(sum((l.flow_amount for l in lines), Decimal(0)))
@@ -133,5 +152,14 @@ def guardrails(kind: str, header: Header, account_currency: str, lines: list[Der
         l.line.installment_seq is None or (l.line.installment_total is not None and 1 <= l.line.installment_seq <= l.line.installment_total)
         for l in lines)
     result.checks["line_count"] = len(lines) <= 2000
+    if kind == "card" and closing_day is not None:
+        end_off = closing_offset(header.period_end, closing_day)
+        closing_off = None if header.closing_date is None else closing_offset(header.closing_date, closing_day)
+        result.checks["closing_day"] = all(abs(off) <= CLOSING_TOLERANCE_DAYS
+                                           for off in (end_off, closing_off) if off is not None)
+        result.detail["closing_day"] = {
+            "expected_day": closing_day, "period_end": header.period_end.isoformat(), "period_end_days_off": end_off,
+            "closing_date": header.closing_date.isoformat() if header.closing_date else None,
+            "closing_date_days_off": closing_off}
     result.ok = result.ok and all(result.checks.values())
     return result

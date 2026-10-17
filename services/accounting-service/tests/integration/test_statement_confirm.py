@@ -223,7 +223,10 @@ def _october(db, run, card, *, claimed: bool):
     lines = [_line(1, date(2026, 10, 5), "超商", 120)]
     if claimed:
         lines.append(_line(2, date(2026, 10, 1), "早餐", 77))
-    octo, _, _ = _submit(db, run, card, lines, period=OCT30)
+    # October's printed opening is September's 580 owed. Unclaimed, the 77 booked on 9-29 is printed by no statement:
+    # a REAL card balance gap of +77 on October. It is folded into the opening (657) on purpose, so October has no
+    # open case and the confirm under test is not blocked by it; the gap itself is covered in test_reconciliation_service
+    octo, _, _ = _submit(db, run, card, lines, period=OCT30, opening=Decimal("580") if claimed else Decimal("657"))
     assert octo.open_case_count == 0
     return octo
 
@@ -257,6 +260,8 @@ def test_confirm_reopens_an_unclaimed_deferral_on_the_earlier_statement(db_sessi
     assert case.context["reopened_by_confirm_of"] == octo.id
     sep = _fresh(db_session, AccountStatement, sep.id)
     assert (sep.open_case_count, sep.status) == (1, "open")
+    # September's balance excluded the deferred 9-29 entry: no balance_gap
+    assert [c.kind for c in _cases(db_session, sep.id, "open")] == ["entry_unmatched"]
     (row,) = _audit(db_session, "deferral_reopened")
     assert (row.statement_id, row.case_id, row.actor) == (sep.id, case.id, "owner-test")
     assert _pending(db_session, octo.id) == 0
