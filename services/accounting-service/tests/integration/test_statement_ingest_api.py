@@ -298,7 +298,7 @@ def test_sweep_skips_guardrail_failures_and_lists_errors(client, card, seed, db_
 
 
 def test_cases_listing_needs_read_and_validates_status(client, card, seed, db_session):
-    statement_id, _ = _submit(client, card)  # an unmatched line opens a case
+    statement_id, _ = _submit(client, card)  # an unmatched line opens a case (and the card's balance_gap)
     assert client.get("/reconciliation/cases", headers=W).status_code == 403
     assert client.get("/reconciliation/cases?status=bogus", headers=H).status_code == 422
     listing = client.get("/reconciliation/cases", headers=H)
@@ -307,7 +307,10 @@ def test_cases_listing_needs_read_and_validates_status(client, card, seed, db_se
     assert cases and cases[0]["status"] == "open" and "candidates" in cases[0]
     assert [c["id"] for c in cases] == sorted((c["id"] for c in cases), reverse=True)
     assert client.get(f"/reconciliation/cases?status=resolved", headers=H).json() == []
-    assert client.get(f"/reconciliation/cases?account_id={card.id}&kind=line_unmatched", headers=H).json() == cases
+    assert [(c["kind"], c["context"]) for c in cases if c["kind"] == "balance_gap"] == [
+        ("balance_gap", {"gap": "-580.0000", "card": True})]
+    assert client.get(f"/reconciliation/cases?account_id={card.id}&kind=line_unmatched", headers=H).json() == [
+        c for c in cases if c["kind"] == "line_unmatched"]
     assert client.get(f"/reconciliation/cases?account_id={card.id + 99}", headers=H).json() == []
     assert client.get("/reconciliation/cases?kind=bogus", headers=H).status_code == 422
 
@@ -336,8 +339,8 @@ def test_settings_expose_rules_and_validate_rule_keys(client, card):
 
 
 def test_cases_listing_limit_defaults_to_200_and_caps_at_1000(client, card, seed, db_session):
-    _submit(client, card, [{**LINE, "seq": n} for n in (1, 2, 3)], "1740")  # three unmatched lines: three cases
-    assert len(client.get("/reconciliation/cases", headers=H).json()) == 3
+    _submit(client, card, [{**LINE, "seq": n} for n in (1, 2, 3)], "1740")  # three unmatched lines + the card gap
+    assert len(client.get("/reconciliation/cases", headers=H).json()) == 4
     assert len(client.get("/reconciliation/cases?limit=2", headers=H).json()) == 2
     newest = client.get("/reconciliation/cases?limit=1", headers=H).json()
     assert newest[0]["id"] == max(c["id"] for c in client.get("/reconciliation/cases", headers=H).json())
@@ -570,6 +573,7 @@ def test_detail_lines_carry_their_event_flag_and_status(client, card, seed, db_s
     db_session.commit()
     (line,) = client.get(f"/accounts/{card.id}/statements/{statement_id}", headers=H).json()["lines"]
     assert (line["event_flag"], line["event_status"]) == ("text_changed", "live")
-    (case,) = detail["cases"]
+    (case,) = [c for c in detail["cases"] if c["kind"] != "balance_gap"]
+    assert [c["context"] for c in detail["cases"] if c["kind"] == "balance_gap"] == [{"gap": "-580.0000", "card": True}]
     case_line = client.get(f"/reconciliation/cases/{case['id']}", headers=H).json()["line"]
     assert (case_line["event_flag"], case_line["event_status"]) == ("text_changed", "live")

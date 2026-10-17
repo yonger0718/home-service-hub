@@ -186,7 +186,7 @@ def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementPa
                            Decimal(parsed.opening_balance) if parsed.opening_balance else None,
                            Decimal(parsed.statement_total),
                            Decimal(parsed.minimum_payment) if parsed.minimum_payment else None, parsed.currency)
-    guard = derive.guardrails(parsed.kind, header, account.currency, derived)
+    guard = derive.guardrails(parsed.kind, header, account.currency, derived, closing_day=account.closing_day)
     existing = db.execute(select(AccountStatement.id).where(
         AccountStatement.account_id == account_id, AccountStatement.currency == parsed.currency,
         AccountStatement.period_end == parsed.period_end)).scalar_one_or_none()

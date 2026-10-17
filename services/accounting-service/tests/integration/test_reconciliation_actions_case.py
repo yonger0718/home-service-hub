@@ -4,6 +4,7 @@ import json
 import queue
 import threading
 from datetime import date
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -22,7 +23,7 @@ from app.services.reconciliation_actions.case_actions import LinkInstallmentPlan
 from tests.conftest import Seed
 from tests.helpers import wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    OCT, _active, _card, _cases, _code, _line, _reconcile, _submit, run,
+    OCT, _active, _card, _cases, _open_beside_gap, _code, _line, _reconcile, _submit, run,
 )
 
 DAY = date(2026, 9, 3)
@@ -61,7 +62,7 @@ def unmatched(seed, db_session, run):
     """A live September card statement with one line nothing covers (an open line_unmatched case)."""
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "神秘", 77)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-77.0000")
     assert case.kind == "line_unmatched"
     return card, stmt, line, case
 
@@ -75,7 +76,7 @@ def stray(seed, db_session, run):
     entry = seed.entry(card, "-77", day=date(2026, 9, 10), merchant="早餐")
     db_session.commit()
     stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "77.0000")
     assert (case.kind, case.entry_id) == ("entry_unmatched", entry.id)
     return card, stmt, entry, case
 
@@ -107,7 +108,8 @@ def test_dismiss_resolves_with_the_note_and_counts_as_explained(db_session, unma
     assert (case.status, case.explanation, case.note, case.resolved_by, case.resolved_action_id) == (
         "dismissed", "accepted_exception", "銀行誤植", "owner", row.id)
     stmt = _fresh(db_session, AccountStatement, stmt.id)
-    assert (stmt.explained_count, stmt.open_case_count) == (1, 0)
+    assert (stmt.explained_count, stmt.open_case_count) == (1, 1)  # the card balance_gap of the 77 stays open
+    assert _open_beside_gap(db_session, stmt.id, "-77.0000") == []
     events = [a.event for a in db_session.execute(select(ReconciliationAudit)).scalars()]
     assert "action_applied" in events
 
@@ -123,8 +125,8 @@ def test_a_dismissed_case_is_not_recreated_by_the_next_reconcile(db_session, unm
     _, stmt, _, case = unmatched
     _apply(db_session, case, "dismiss", {"note": "略過"})
     _reconcile(db_session, stmt.id)
-    assert _cases(db_session, stmt.id, "open") == []
-    assert [(c.id, c.status) for c in _cases(db_session, stmt.id)] == [(case.id, "dismissed")]
+    assert _open_beside_gap(db_session, stmt.id, "-77.0000") == []
+    assert [(c.id, c.status) for c in _cases(db_session, stmt.id) if c.kind != "balance_gap"] == [(case.id, "dismissed")]
     assert _fresh(db_session, AccountStatement, stmt.id).explained_count == 1
 
 
@@ -136,7 +138,7 @@ def test_reverting_a_dismiss_reopens_the_case_and_keeps_the_note_in_context(db_s
     assert (case.status, case.explanation, case.note, case.resolved_by) == ("open", None, None, None)
     assert case.context["dismiss_note"] == "略過" and case.context["reverted_action_id"] == row.id
     stmt = _fresh(db_session, AccountStatement, stmt.id)
-    assert (stmt.explained_count, stmt.open_case_count) == (0, 1)
+    assert (stmt.explained_count, stmt.open_case_count) == (0, 2)  # the case and the card balance_gap
     again, _ = _apply(db_session, case, "dismiss", {"note": "再略過"})  # a new case version: acted on again
     assert again.id != row.id and again.effect_slot == f"c{case.id}v{case.version}"
 
@@ -174,7 +176,7 @@ def test_defer_on_a_card_without_a_closing_day_uses_the_matcher_period_end(seed,
     entry = seed.entry(card, "-77", day=date(2026, 9, 10), merchant="早餐")
     db_session.commit()
     stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "77.0000")
     _apply(db_session, case, "defer_next_period", {"entry_id": entry.id})
     statement, account = _fresh(db_session, AccountStatement, stmt.id), card
     assert _fresh(db_session, ReconciliationCase, case.id).deferred_to_period_end == date(2026, 10, 30)
@@ -212,7 +214,9 @@ def test_an_owner_deferral_survives_a_reconcile_and_the_later_statement_links_it
     cases = [c for c in _cases(db_session, stmt.id) if c.kind == "entry_unmatched"]
     assert [(c.id, c.status, c.explanation, c.resolved_by) for c in cases] == [
         (case.id, "resolved", "deferred_next_period", "owner")]
-    assert _fresh(db_session, AccountStatement, stmt.id).open_case_count == 0
+    # the deferred entry is still in September's ledger balance: the card balance_gap stays open
+    assert _fresh(db_session, AccountStatement, stmt.id).open_case_count == 1
+    assert _open_beside_gap(db_session, stmt.id, "77.0000") == []
     later, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 12), "早餐", 77)],
                           period=(date(2026, 10, 1), date(2026, 10, 30)))
     case = _fresh(db_session, ReconciliationCase, case.id)  # the later statement's reconcile linked it (R1b)
@@ -230,8 +234,9 @@ def test_a_defer_is_not_revertable_after_a_later_action_on_its_case(seed, db_ses
     deferred, _ = _apply(db_session, case, "defer_next_period", {"entry_id": entry.id})
     seed.entry(card, "-120", day=date(2026, 10, 5), merchant="超商")
     db_session.commit()
+    # October prints what it carries over (card balance check): September's 580 and the deferred 77 it never prints
     later, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 5), "超商", 120)],
-                          period=(date(2026, 10, 1), date(2026, 10, 30)))
+                          period=(date(2026, 10, 1), date(2026, 10, 30)), opening=Decimal("657"))
     assert later.open_case_count == 0
     result = confirm_service.confirm_statement(db_session, account_id=card.id, statement_id=later.id, force=False,
                                                note=None, label="owner-test", request_id=None)
@@ -441,8 +446,10 @@ def unmapped_twice(seed, db_session, run):
     db_session.commit()
     sep, (sep_line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 6), "手機", 1000, "installment",
                                                               installment_seq=2, installment_total=12)])
+    # October prints September's unpaid 1000 as its opening (card balance check: the ledger holds both instalments)
     oct, (oct_line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 6), "手機", 1000, "installment",
-                                                              installment_seq=3, installment_total=12)], period=OCT)
+                                                              installment_seq=3, installment_total=12)], period=OCT,
+                                  opening="1000")
     (sep_case,) = [c for c in _cases(db_session, sep.id, "open") if c.kind == "line_unmatched"]
     (oct_case,) = [c for c in _cases(db_session, oct.id, "open") if c.kind == "line_unmatched"]
     assert sep_case.context["hint"] == oct_case.context["hint"] == "installment_unmapped"

@@ -479,12 +479,26 @@ def _desired_cases(db: Session, statement: AccountStatement, accounts: list[int]
         out.append(_case("entry_unmatched", event_id=o["event_id"], line_id=o["line_id"], entry_id=o["entry_id"],
                          context={"hint": "orphaned_stand_in", "backfill_action_id": o["backfill_action_id"],
                                   "claimant_entry_id": o["claimant_entry_id"]}))
-    if statement.kind == "bank":
-        gap = (Decimal(statement.statement_total)
-               - account_balance(db, statement.account_id, as_of=statement.period_end)).quantize(_Q)
-        if gap != 0:
-            out.append(_case("balance_gap", context={"gap": str(gap)}))
+    gap = balance_gap(db, statement, accounts)
+    if gap != 0:
+        out.append(_case("balance_gap", context={"gap": str(gap)} if statement.kind == "bank"
+                         else {"gap": str(gap), "card": True}))
     return out
+
+
+def balance_gap(db: Session, statement: AccountStatement, accounts: list[int]) -> Decimal:
+    """What the statement says the ledger holds at the period end minus what it holds (negative: the ledger lacks an
+    outflow, on either kind). Bank: `statement_total − balance(account)`. Card: the statement prints the amount owed
+    (positive) while card balances are negative, so `−statement_total − Σ balance(accounts)` over the participating
+    accounts (`coverage_service.participating_accounts`: a co-branded card billed on the same statement counts) in
+    the statement's currency."""
+    end = statement.period_end
+    if statement.kind == "bank":
+        return (Decimal(statement.statement_total) - account_balance(db, statement.account_id, as_of=end)).quantize(_Q)
+    same_currency = db.execute(select(Account.id).where(Account.id.in_(accounts),
+                                                        Account.currency == statement.currency)).scalars().all()
+    held = sum((account_balance(db, account_id, as_of=end) for account_id in same_currency), Decimal(0))
+    return (-Decimal(statement.statement_total) - held).quantize(_Q)
 
 
 def _owner_deferred_entries(db: Session, statement: AccountStatement) -> set[int]:

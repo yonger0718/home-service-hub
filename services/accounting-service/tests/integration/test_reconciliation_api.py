@@ -11,7 +11,7 @@ from app.services import coverage_service, settings_service
 from app.services import reconciliation_service as rec
 from tests.helpers import set_dirty
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    OCT, _card, _cases, _line, _reconcile, _submit, run,
+    OCT, _card, _cases, _open_beside_gap, _line, _reconcile, _submit, run,
 )
 
 TOKENS = "spa:spa-token,hermes:hermes-token,worker:worker-token"
@@ -33,7 +33,7 @@ def recon_env(monkeypatch):
 def unmatched(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "神秘", 77)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-77.0000")
     return card, stmt, line, case
 
 
@@ -44,7 +44,7 @@ def stray(seed, db_session, run):
     entry = seed.entry(card, "-77", day=date(2026, 9, 10), merchant="早餐")
     db_session.commit()
     stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "77.0000")
     return card, stmt, entry, case
 
 
@@ -149,7 +149,7 @@ def _two_statements(seed, db_session, run):
 
 
 def _defer(db_session, sep, octo, *, processed):
-    (case,) = _cases(db_session, sep.id, "open")
+    (case,) = _open_beside_gap(db_session, sep.id, "-10.0000")
     ctx = '{"resolved_in_statement_id": 1}' if processed else "{}"
     db_session.execute(text(
         "UPDATE reconciliation_case SET status='resolved', explanation='deferred_next_period', "
@@ -184,7 +184,7 @@ def test_a_match_on_the_replacement_case_after_a_dirty_edit_claims_again(client,
     second match with other params on the same case version still is."""
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (old,) = _cases(db_session, stmt.id, "open")
+    (old,) = _open_beside_gap(db_session, stmt.id, "-580.0000")  # a sibling's entry never fills the card balance
     sibling = seed.account("姊妹")
     theirs = seed.entry(sibling, "-580", day=DAY, merchant="全聯")
     other = seed.entry(sibling, "-580", day=DAY, merchant="全聯")

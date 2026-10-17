@@ -27,7 +27,7 @@ from app.services.reconciliation_actions import structural_actions as structural
 from tests.helpers import set_dirty, wait_until_blocked
 from tests.integration.test_reconciliation_policy import ANCHOR_ON, _budget, _set_policy
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    _active, _card, _cases, _line, _submit, run,
+    _active, _card, _cases, _line, _open_beside_gap, _submit, run,
 )
 
 DAY = date(2026, 9, 5)
@@ -157,7 +157,9 @@ def test_move_account_re_reconciles_both_statements_and_reverts(dirty_on, move, 
     (moved,) = db_session.execute(select(CoverageDirty).where(
         CoverageDirty.kind == "entry", CoverageDirty.row_id == s.entry.id, CoverageDirty.op == "update")).scalars()
     assert (moved.old_account_id, moved.new_account_id, moved.action_id) == (s.a.id, s.b.id, row.id)
-    assert [c.kind for c in _cases(db_session, s.stmt_a.id, "open")] == ["line_unmatched"]  # no twin, no new case
+    # no twin, no new entry case; 甲's card gap is now its unbooked 120 line alone (and 乙 balances)
+    assert [c.kind for c in _open_beside_gap(db_session, s.stmt_a.id, "-120.0000")] == ["line_unmatched"]
+    assert [c for c in _cases(db_session, s.stmt_b.id, "open") if c.kind == "balance_gap"] == []
 
     revert = _revert(db_session, row.id)
     assert _fresh(db_session, LedgerEntry, s.entry.id).account_id == s.a.id
@@ -403,6 +405,42 @@ def test_balance_adjustment_double_submit_replays(dirty_on, gap, db_session):
     assert len(_adjustments(db_session)) == 1
 
 
+def _card_gap(seed, db_session, run, *, co_branded=False):
+    """A live card statement printing a 200 purchase the ledger lacks: a card balance_gap of −200 at 09-30."""
+    card = _card(seed, db_session)
+    if co_branded:
+        seed.account("聯名卡", is_credit=True, combined_account_id=card.id)
+    seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, DAY, "神秘", 200)])
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    assert case.context == {"gap": "-200.0000", "card": True}
+    return SimpleNamespace(card=card, stmt=stmt, case=case)
+
+
+def test_balance_adjustment_books_a_card_gap_with_the_card_sign(dirty_on, seed, db_session, run):
+    g = _card_gap(seed, db_session, run)
+    row, _ = _apply(db_session, g.case, "balance_adjustment_asof")
+    (adj,) = _adjustments(db_session)
+    assert (adj.account_id, adj.amount, adj.posted_date) == (g.card.id, Decimal("-200"), PERIOD_END)
+    assert ledger_service.account_balance(db_session, g.card.id, as_of=PERIOD_END) == Decimal("-780")
+    rec.reconcile(db_session, g.stmt.id)
+    db_session.commit()
+    assert [c for c in _cases(db_session, g.stmt.id, "open") if c.kind == "balance_gap"] == []
+    _revert(db_session, row.id)
+    assert _adjustments(db_session) == []
+
+
+def test_balance_adjustment_refuses_a_combined_card_gap(dirty_on, seed, db_session, run, monkeypatch):
+    g = _card_gap(seed, db_session, run, co_branded=True)
+    assert "balance_adjustment_asof" not in registry.allowed(g.case)
+    exc = _refuse(db_session, lambda: _apply(db_session, g.case, "balance_adjustment_asof"))
+    assert isinstance(exc, ValidationError) and str(exc) == "action: not allowed for this case"
+    monkeypatch.delitem(registry.CONDITIONS, ("balance_gap", "balance_adjustment_asof"))
+    assert _code(_refuse(db_session, lambda: _apply(db_session, g.case, "balance_adjustment_asof"))) == "combined_card"
+    assert _actions(db_session) == [] and _adjustments(db_session) == []
+
+
 def test_balance_adjustment_end_to_end_c4_counts_an_inflight_writer(dirty_on, gap, db_session, pg_engine):
     """C4 end to end (AGENT-101 M3, out-of-order commit): writer A inserted an entry on the account and holds the
     shared barrier, uncommitted; the action waits for A (at its sweep's barrier, and at the account row A's insert
@@ -492,7 +530,7 @@ def test_a_failing_apply_after_the_barrier_rolls_back_and_leaves_no_holder(dirty
         seen.append(_barrier_holders(pg_engine))
         raise RuntimeError("forced failure after the barrier")
 
-    monkeypatch.setattr(structural.ledger_service, "account_balance", boom)
+    monkeypatch.setattr(structural.rec, "balance_gap", boom)  # the gap read under the barrier
     with pytest.raises(RuntimeError):
         _apply(db_session, gap.case, "balance_adjustment_asof")
     db_session.rollback()

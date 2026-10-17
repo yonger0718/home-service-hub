@@ -14,7 +14,7 @@ from app.services.statements import matching
 from app.services.errors import CodedConflictError, CodedValidationError
 from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.base import NotRevertable
-from tests.integration.statement_fixtures import _active, _card, _cases, _line, _submit, run  # noqa: F401
+from tests.integration.statement_fixtures import _active, _card, _cases, _line, _open_beside_gap, _submit, run  # noqa: F401
 from tests.integration.test_reconciliation_actions_ledger import _apply, _code, _refuse
 from tests.integration.test_reconciliation_policy import BACKFILL_ON, _actions, _budget, _proposals, _reload, _set_policy
 
@@ -124,7 +124,7 @@ def test_owner_deleted_events_are_derived_from_the_action_table(seed, db_session
 def test_owner_deleted_keeps_an_existing_hint(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1200.0000")
     assert case.context["hint"] == "bank_only"
     row = ReconciliationAction(idempotency_key="t-fee", event_id=line.event_id, effect_slot="create", case_id=case.id,
                                action="create_system_entry", params={"kind": "fee"}, actor="policy", status="reverted",
@@ -133,7 +133,7 @@ def test_owner_deleted_keeps_an_existing_hint(seed, db_session, run):
     db_session.commit()
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1200.0000")
     assert case.context["hint"] == "bank_only" and case.context["owner_deleted"] is True
 
 
@@ -149,7 +149,7 @@ def _audit(db, *events):
 def test_ledger_delete_retires_the_creation_and_marks_the_event(seed, db_session, run, dirty_on, action, line_kind, printed, params):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "x", printed, line_kind, txn_date=date(2026, 9, 2))])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, f"{-Decimal(str(printed)):.4f}")
     if action == "create_refund":  # a refund line needs the purchase it refunds
         params = {"original_entry_id": seed.entry(card, "-500", day=date(2026, 8, 20), merchant="x").id}
         db_session.commit()
@@ -180,7 +180,7 @@ def test_a_creation_deleted_before_the_watermark_is_retired_by_the_catch_up_pass
     # moved the watermark past the delete event without retiring the creation. The next sweep's catch-up pass retires it.
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1200.0000")
     row, _ = engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"},
                                  actor="owner", label="t")
     db_session.commit()
@@ -206,7 +206,7 @@ def test_a_creation_deleted_before_the_watermark_is_retired_by_the_catch_up_pass
     assert len(_audit(db_session, "stand_in_retired")) == 1
     rec.reconcile(db_session, stmt.id)
     db_session.commit()
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1200.0000")
     assert case.context["owner_deleted"] is True and case.context["hint"] == "bank_only"
     _set_policy(db_session, {"enabled": True, "actions": {"create_system_entry": {"enabled": True}}})
     result = policy_service.run_policy(db_session, stmt.id)
@@ -221,7 +221,7 @@ def test_a_creation_deleted_before_the_watermark_is_retired_by_the_catch_up_pass
 def test_retirement_never_overwrites_an_engine_revert_attribution(seed, db_session, run, dirty_on):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     row, _ = engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
     db_session.commit()
     rev = engine.revert_action(db_session, action_id=row.id, actor="owner", label="t")
@@ -243,7 +243,7 @@ def test_sweep_retirement_and_engine_revert_serialise_on_the_statement_lock(seed
     from tests.helpers import race
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     row, _ = engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
     db_session.commit()
     entry_id = row.created_entry_ids[0]
@@ -282,7 +282,7 @@ def test_sweep_retirement_and_engine_revert_serialise_on_the_statement_lock(seed
 def test_edit_release_then_delete_still_retires(seed, db_session, run, dirty_on):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-580.0000")
     row, _ = engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
     db_session.commit()
     entry = db_session.get(LedgerEntry, row.created_entry_ids[0])
@@ -301,7 +301,7 @@ def test_edit_release_then_delete_still_retires(seed, db_session, run, dirty_on)
 def _backfilled(seed, db, run, merchant="全聯", day=DAY, printed=580):
     card = _card(seed, db)
     stmt, (line,), _ = _submit(db, run, card, [_line(1, day, merchant, printed)])
-    (case,) = _cases(db, stmt.id, "open")
+    (case,) = _open_beside_gap(db, stmt.id, f"{-Decimal(str(printed)):.4f}")
     row, _ = engine.apply_action(db, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
     db.commit()
     # stand_in_id: the id stays readable after the replacement deleted the row (the ORM object then raises on access)
@@ -525,7 +525,7 @@ def test_no_shadow_hint_when_one_owner_entry_conserves_two_held_lines(seed, db_s
     # spec R6b.5 uniqueness (by_owner == 2): one owner entry could take either of two stand-in-held lines → no hint
     card = _card(seed, db_session)
     stmt, (first, second), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580), _line(2, date(2026, 9, 5), "全聯", 580)])
-    for case in _cases(db_session, stmt.id, "open"):
+    for case in _open_beside_gap(db_session, stmt.id, "-1160.0000"):
         engine.apply_action(db_session, case_id=case.id, action="backfill_entry", params={"kind": "expense"}, actor="owner", label="t")
         db_session.commit()
     owner = seed.entry(card, "-580", day=date(2026, 9, 4), merchant="全聯")
@@ -783,7 +783,7 @@ def test_replace_refuses_when_the_claimant_or_stand_in_moved(seed, db_session, r
 def test_system_entries_never_shadow(seed, db_session, run, dirty_on):
     card = _card(seed, db_session)
     stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "年費", 1200, "fee")])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1200.0000")
     engine.apply_action(db_session, case_id=case.id, action="create_system_entry", params={"kind": "fee"}, actor="owner", label="t")
     db_session.commit()
     seed.entry(card, "-1200", day=DAY, kind="fee", merchant="年費")

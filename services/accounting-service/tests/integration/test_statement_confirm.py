@@ -223,7 +223,9 @@ def _october(db, run, card, *, claimed: bool):
     lines = [_line(1, date(2026, 10, 5), "超商", 120)]
     if claimed:
         lines.append(_line(2, date(2026, 10, 1), "早餐", 77))
-    octo, _, _ = _submit(db, run, card, lines, period=OCT30)
+    # October prints what it carries over (card balance check): September's 580 owed and, unclaimed, the 77 the
+    # ledger booked on 9-29 that no statement prints, so October itself balances and only the deferral is tested
+    octo, _, _ = _submit(db, run, card, lines, period=OCT30, opening=Decimal("580") if claimed else Decimal("657"))
     assert octo.open_case_count == 0
     return octo
 
@@ -256,7 +258,11 @@ def test_confirm_reopens_an_unclaimed_deferral_on_the_earlier_statement(db_sessi
         "open", None, 2, None, None)
     assert case.context["reopened_by_confirm_of"] == octo.id
     sep = _fresh(db_session, AccountStatement, sep.id)
-    assert (sep.open_case_count, sep.status) == (1, "open")
+    # the reopened deferral and September's card balance_gap: the 9-29 entry is in the ledger before September's
+    # close but on no statement
+    assert (sep.open_case_count, sep.status) == (2, "open")
+    assert [c.context for c in _cases(db_session, sep.id, "open") if c.kind == "balance_gap"] == [
+        {"gap": "77.0000", "card": True}]
     (row,) = _audit(db_session, "deferral_reopened")
     assert (row.statement_id, row.case_id, row.actor) == (sep.id, case.id, "owner-test")
     assert _pending(db_session, octo.id) == 0

@@ -73,6 +73,14 @@ def _cases(db, statement_id, *statuses):
     return db.execute(q.order_by(ReconciliationCase.id)).scalars().all()
 
 
+def _open_beside_gap(db, statement_id, gap: str):
+    """The open cases of a card statement whose ledger is out of balance by `gap` (e.g. a printed line nothing books
+    yet): asserts its one card `balance_gap` case and returns the other open cases."""
+    cases = _cases(db, statement_id, "open")
+    assert [c.context for c in cases if c.kind == "balance_gap"] == [{"gap": gap, "card": True}]
+    return [c for c in cases if c.kind != "balance_gap"]
+
+
 def _card(seed, db, name="卡", *, live=True, **extra):
     extra.setdefault("closing_day", 30)
     card = seed.account(name, is_credit=True, statement_live_from=date(2026, 9, 1) if live else None, **extra)

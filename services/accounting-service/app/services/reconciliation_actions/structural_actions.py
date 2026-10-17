@@ -1,7 +1,8 @@
 """Structural reconciliation actions (R1c; spec §4.9 action table, C4; rulings 7, 12, 14, 15, 19, 26):
 `move_account` re-homes an unmatched entry on the account whose statement printed it (slot `move`),
 `split_entry` converts a near entry into a split and claims the line on the member that equals it (slot `split`),
-`balance_adjustment_asof` books a bank statement's balance gap as of the period end (slot `balance`).
+`balance_adjustment_asof` books a bank or single-account card statement's balance gap as of the period end (slot
+`balance`).
 
 Validation runs under the engine's locks (`validate_before`) and again in `apply`, which re-derives everything from
 the locked rows; a refusal writes nothing. Each revert runs only while the action's rows equal its `after` (the
@@ -377,7 +378,9 @@ class BalanceAdjustmentParams(ActionParams):
 
 
 class BalanceAdjustmentAsOfAction(ActionBase):
-    """Books `statement_total − balance(period end)` as a `balance_adjustment` dated the period end. The engine
+    """Books the statement's balance gap (`reconciliation_service.balance_gap`: bank `statement_total − balance`,
+    card `−statement_total − balance`) as a `balance_adjustment` dated the period end, on the statement's account —
+    refused for a card statement with a co-branded account billed on it (`combined_card`). The engine
     holds the import key and the statement lock, the account row FOR UPDATE and the exclusive transaction-scoped
     writer barrier (`coverage_service.take_barrier_xact`): no ledger writer is between its dirty insert and its
     commit, and none can commit until this transaction ends, so the balance read is complete. Nothing to release:
@@ -400,8 +403,10 @@ class BalanceAdjustmentAsOfAction(ActionBase):
         self.check_before_locks(ctx, params)
         db, statement = ctx.db, ctx.statement
         end = statement.period_end
-        delta = Decimal(statement.statement_total) - ledger_service.account_balance(db, statement.account_id,
-                                                                                    as_of=end)
+        accounts = coverage_service.participating_accounts(db, statement.account_id)
+        if statement.kind == "card" and accounts != [statement.account_id]:
+            raise _refuse("action", "combined_card", "the gap of a combined card statement may sit on any of its accounts")
+        delta = rec.balance_gap(db, statement, accounts)
         if delta == 0:
             raise _refuse("action", "zero_delta", f"statement {statement.id} balances at {end.isoformat()}")
         entry = LedgerEntry(account_id=statement.account_id, currency=statement.currency, kind="balance_adjustment",

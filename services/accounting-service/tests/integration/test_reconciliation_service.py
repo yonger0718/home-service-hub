@@ -18,12 +18,13 @@ from app.schemas.writes import EntryUpdateIn
 from app.services import coverage_service
 from app.services import entry_write_service as ews
 from app.services import reconciliation_service as rec
+from app.services import reconciliation_actions as registry
 from app.services import settings_service
 from app.services import statement_revision_service as revs
 from app.services.errors import CodedConflictError, ConflictError
 from tests.helpers import race, set_dirty, wait_until_blocked
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    OCT, SEP, _active, _batch, _card, _cases, _code, _interleave, _line, _reconcile, _submit, _transfer, run,
+    OCT, SEP, _active, _batch, _card, _cases, _open_beside_gap, _code, _interleave, _line, _reconcile, _submit, _transfer, run,
 )
 
 
@@ -78,7 +79,10 @@ def test_card_statement_end_to_end(card_month, db_session):
         ("line_unmatched", ls[5].id, None),
         ("entry_unmatched", None, e["foreign"].id),
         ("entry_unmatched", None, e["lone"].id),
+        ("balance_gap", None, None),
     ])
+    # the card balance check: owed −2948, ledger 2700 → 248 = −77 (line 6) + 250 (lone) − 15 (fee) + 90 (deferred)
+    assert next(c for c in open_cases if c.kind == "balance_gap").context == {"gap": "248.0000", "card": True}
     delta = next(c for c in open_cases if c.kind == "amount_delta")
     assert delta.context["fee_matches"] is True and delta.context["fee_expected"] == "15"
     assert delta.event_id == ls[4].event_id and delta.revision_id == stmt.current_revision_id
@@ -87,7 +91,7 @@ def test_card_statement_end_to_end(card_month, db_session):
     deferred = _cases(db_session, stmt.id, "resolved")
     assert [(c.kind, c.entry_id, c.explanation, c.resolved_by, c.deferred_to_period_end, c.deferred_to_statement_id)
             for c in deferred] == [("entry_unmatched", e["late"].id, "deferred_next_period", None, date(2026, 10, 30), None)]
-    assert (stmt.matched_count, stmt.explained_count, stmt.open_case_count, stmt.needs_recheck) == (4, 1, 4, False)
+    assert (stmt.matched_count, stmt.explained_count, stmt.open_case_count, stmt.needs_recheck) == (4, 1, 5, False)
     assert sorted(res.case_ids) == sorted(c.id for c in open_cases)
 
 
@@ -101,7 +105,7 @@ def test_re_reconcile_is_idempotent(card_month, db_session):
     assert [(r.id, r.line_id, r.entry_id, r.role) for r in _active(db_session, stmt.id)] == before_rows
     assert [(c.id, c.kind, c.status) for c in _cases(db_session, stmt.id)] == before_cases
     stmt = db_session.get(AccountStatement, stmt.id)
-    assert (stmt.matched_count, stmt.explained_count, stmt.open_case_count) == (4, 1, 4)
+    assert (stmt.matched_count, stmt.explained_count, stmt.open_case_count) == (4, 1, 5)  # 4 + the card gap
 
 
 def test_changed_outcome_supersedes_the_stale_case_and_keeps_dismissed(card_month, seed, db_session):
@@ -117,8 +121,11 @@ def test_changed_outcome_supersedes_the_stale_case_and_keeps_dismissed(card_mont
     assert db_session.get(ReconciliationCase, lone.id).status == "dismissed"
     assert not [c for c in _cases(db_session, stmt.id, "open") if c.entry_id == e["lone"].id]  # not reopened
     assert ls[5].id in {r.line_id for r in _active(db_session, stmt.id)}
+    # the card gap moved with the new entry (248 + 77: line 6 is booked now): the old gap case is superseded
+    assert [c.context for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"] == [
+        {"gap": "325.0000", "card": True}]
     stmt = db_session.get(AccountStatement, stmt.id)
-    assert (stmt.matched_count, stmt.open_case_count) == (5, 2)
+    assert (stmt.matched_count, stmt.open_case_count) == (5, 3)
     assert stmt.explained_count == 2  # the deferral + the dismissed entry case
 
 
@@ -180,7 +187,8 @@ def test_uncovered_child_is_an_entry_case(seed, db_session, run):
     stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 5), "超商", 100)])
     assert [r.entry_id for r in _active(db_session, stmt.id)] == [parent.id]
     assert [(c.kind, c.entry_id, c.context) for c in _cases(db_session, stmt.id, "open")] == [
-        ("entry_unmatched", fee.id, {"hint": "uncovered_child"})]
+        ("entry_unmatched", fee.id, {"hint": "uncovered_child"}),
+        ("balance_gap", None, {"gap": "2.0000", "card": True})]  # the ledger's uncovered fee
 
 
 def test_installment_matches_through_the_confirmed_plan(seed, db_session, run):
@@ -207,11 +215,11 @@ def test_identical_reparse_keeps_coverage_and_cases(seed, db_session, run):
     lines = [_line(1, date(2026, 9, 3), "全聯", 580), _line(2, date(2026, 9, 5), "神秘", 77)]
     stmt, first_lines, _ = _submit(db_session, run, card, lines)
     rows = [(r.id, r.entry_id) for r in _active(db_session, stmt.id)]
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-77.0000")
     stmt, new_lines, res = _submit(db_session, run, card, lines)
     assert [(r.id, r.entry_id) for r in _active(db_session, stmt.id)] == rows
     assert _active(db_session, stmt.id)[0].line_id == new_lines[0].id
-    (again,) = _cases(db_session, stmt.id, "open")
+    (again,) = _open_beside_gap(db_session, stmt.id, "-77.0000")
     assert (again.id, again.line_id, again.event_id) == (case.id, new_lines[1].id, first_lines[1].event_id)
     assert again.revision_id == stmt.current_revision_id and res.case_ids == []
 
@@ -324,7 +332,7 @@ def test_cross_account_hint_names_the_other_statement_line(seed, db_session, run
     db_session.commit()
     other_stmt, other_lines, _ = _submit(db_session, run, other, [_line(1, date(2026, 9, 10), "誤記", 444)])
     stmt, _, _ = _submit(db_session, run, card, [])
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "444.0000")
     assert (case.kind, case.entry_id, case.context) == ("entry_unmatched", wrong.id, {
         "hint": "move_account", "statement_id": other_stmt.id, "line_id": other_lines[0].id})
 
@@ -354,6 +362,116 @@ def test_bank_without_gap_has_no_gap_case(seed, db_session, run):
                          kind="bank", opening="1000")
     assert _cases(db_session, stmt.id) == []
     assert stmt.matched_count == 1
+
+
+# --- card balance gap: −statement_total − Σ balance(participating accounts, period end) ---------------------------
+
+def test_card_whose_ledger_matches_has_no_gap_case(seed, db_session, run):
+    card = _card(seed, db_session, opening="-1000")  # the previous statement's 1000 still owed
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    seed.entry(card, "-70", day=date(2026, 10, 2), merchant="後來")  # after period_end: outside the balance
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)], opening="1000")
+    assert stmt.statement_total == Decimal("1580")
+    assert _cases(db_session, stmt.id) == [] and stmt.matched_count == 1
+
+
+def test_card_missing_purchase_opens_a_signed_card_gap(seed, db_session, run):
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580),
+                                                 _line(2, date(2026, 9, 8), "神秘", 200)])
+    # owed 780, ledger −580: the ledger lacks an outflow of 200 — negative like a bank missing a withdrawal
+    gaps = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    assert [(c.context, c.line_id, c.entry_id) for c in gaps] == [({"gap": "-200.0000", "card": True}, None, None)]
+    assert {c.kind for c in _cases(db_session, stmt.id, "open")} == {"balance_gap", "line_unmatched"}
+    assert registry.allowed(gaps[0]) == ["balance_adjustment_asof", "dismiss"]  # anchor_opening stays bank-only
+    _reconcile(db_session, stmt.id)  # idempotent: the same gap keeps its case
+    assert [c.id for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"] == [gaps[0].id]
+    seed.entry(card, "-200", day=date(2026, 9, 8), merchant="神秘")
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    assert [c.kind for c in _cases(db_session, stmt.id, "open")] == []
+
+
+def test_bank_missing_withdrawal_gap_is_negative_like_the_card_gap(seed, db_session, run):
+    bank = seed.account("銀行", opening="1000", statement_live_from=date(2026, 9, 1))
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, bank, [_line(1, date(2026, 9, 8), "神秘", -200, "withdrawal")],
+                         kind="bank", opening="1000")
+    (gap,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    assert gap.context == {"gap": "-200.0000"}
+
+
+def test_card_gap_counts_a_co_branded_account_billed_on_the_same_statement(seed, db_session, run):
+    card = _card(seed, db_session)
+    co = seed.account("聯名卡", is_credit=True, combined_account_id=card.id)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    seed.entry(co, "-300", day=date(2026, 9, 9), merchant="加油")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580),
+                                                 _line(2, date(2026, 9, 9), "加油", 300)])
+    assert [c.kind for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"] == []
+    seed.entry(co, "-50", day=date(2026, 9, 12), merchant="多記")  # the co-branded ledger now owes 50 too much
+    db_session.commit()
+    _reconcile(db_session, stmt.id)
+    (gap,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "balance_gap"]
+    assert gap.context == {"gap": "50.0000", "card": True}
+    # the residual may sit on either account: no adjustment booked on the statement's account alone
+    assert registry.allowed(gap) == ["dismiss"]
+
+
+# --- closing-day guardrail at ingest -------------------------------------------------------------------------------
+
+HSBC_LIKE = (date(2026, 8, 7), date(2026, 9, 6))  # closing day 6
+DUE_AS_CLOSING = (date(2026, 8, 25), date(2026, 9, 24))  # the payment due date (24th) read as the closing date
+
+
+def test_misread_closing_date_goes_to_parse_review_and_matches_nothing(seed, db_session, run):
+    card = _card(seed, db_session, closing_day=6)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    stmt, _, res = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)], period=DUE_AS_CLOSING,
+                           closing_date=DUE_AS_CLOSING[1])
+    assert res.revision.guardrail_ok is False and res.revision.guardrail["checks"]["closing_day"] is False
+    assert res.revision.guardrail["detail"]["closing_day"] == {"expected_day": 6, "closing_date": "2026-09-24",
+                                                               "days_off": -12}
+    assert [c.kind for c in _cases(db_session, stmt.id)] == ["parse_review"]
+    assert _active(db_session, stmt.id) == [] and stmt.matched_count == 0
+
+
+def test_correct_closing_date_goes_live_and_reconciles(seed, db_session, run):
+    card = _card(seed, db_session, closing_day=6)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    stmt, _, res = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)], period=HSBC_LIKE,
+                           closing_date=date(2026, 9, 8))  # a +2 weekend shift of the 6th
+    assert res.revision.guardrail_ok is True and res.revision.guardrail["checks"]["closing_day"] is True
+    assert stmt.current_revision_id == res.revision.id and stmt.mode == "live"
+    assert _cases(db_session, stmt.id) == [] and stmt.matched_count == 1
+
+
+def test_reparse_with_misread_closing_date_is_not_made_current(seed, db_session, run):
+    card = _card(seed, db_session, closing_day=6)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    lines = [_line(1, date(2026, 9, 3), "全聯", 580)]
+    stmt, _, good = _submit(db_session, run, card, lines, period=HSBC_LIKE, closing_date=HSBC_LIKE[1])
+    rows = [r.id for r in _active(db_session, stmt.id)]
+    stmt, _, bad = _submit(db_session, run, card, lines, period=HSBC_LIKE, closing_date=date(2026, 9, 24))
+    assert bad.revision.guardrail_ok is False and stmt.current_revision_id == good.revision.id
+    assert [c.kind for c in _cases(db_session, stmt.id, "open")] == ["parse_review"]
+    assert [r.id for r in _active(db_session, stmt.id)] == rows
+
+
+def test_account_without_closing_day_has_no_closing_check(seed, db_session, run):
+    card = _card(seed, db_session, closing_day=None)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    db_session.commit()
+    stmt, _, res = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)], period=DUE_AS_CLOSING)
+    assert res.revision.guardrail_ok is True and "closing_day" not in res.revision.guardrail["checks"]
+    assert _cases(db_session, stmt.id) == [] and stmt.matched_count == 1
 
 
 # --- skips, recheck, batch ---------------------------------------------------------------------------------------
@@ -550,7 +668,7 @@ def test_batch_records_a_failure_and_goes_on(seed, db_session, run, monkeypatch)
 def test_batch_picks_up_dirty_statements(seed, db_session, run):
     card = _card(seed, db_session)
     stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
-    assert stmt.open_case_count == 1
+    assert stmt.open_case_count == 2 and len(_open_beside_gap(db_session, stmt.id, "-580.0000")) == 1
     set_dirty(db_session, True)
     buy = seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
     db_session.commit()
@@ -583,7 +701,7 @@ def test_edit_waits_for_reconcile_and_the_next_sweep_releases(seed, db_session, 
     old = db_session.get(StatementCoverage, claim.id)
     assert old.status == "stale" and old.stale_reason.startswith("dirty:update:")
     assert _active(db_session, stmt.id) == []
-    assert {c.kind for c in _cases(db_session, stmt.id, "open")} == {"amount_delta", "entry_unmatched"}
+    assert {c.kind for c in _open_beside_gap(db_session, stmt.id, "10.0000")} == {"amount_delta", "entry_unmatched"}
 
 
 def test_rederived_case_carries_the_sweep_event(seed, db_session, run):
@@ -692,7 +810,7 @@ def test_reconcile_waits_at_the_sweep_barrier_for_a_writer(seed, db_session, run
     old = db_session.get(StatementCoverage, claim.id)
     assert old.status == "stale" and old.stale_reason.startswith("dirty:update:")  # the sweep saw the writer's event
     assert _active(db_session, stmt.id) == []
-    assert {c.kind for c in _cases(db_session, stmt.id, "open")} == {"amount_delta", "entry_unmatched"}
+    assert {c.kind for c in _open_beside_gap(db_session, stmt.id, "10.0000")} == {"amount_delta", "entry_unmatched"}
 
 
 # --- lock conflicts: reconcile yields (NOWAIT on group/entry locks, bounded barrier wait) -----------------------
@@ -936,7 +1054,9 @@ def test_entry_in_another_currency_is_never_claimed(seed, db_session, run):
     db_session.commit()
     stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
     assert _active(db_session, stmt.id) == []
-    assert [(c.kind, c.line_id) for c in _cases(db_session, stmt.id, "open")] == [("line_unmatched", ls[0].id)]
+    # the USD child is not in the TWD statement's balance either: the whole 580 is missing
+    assert [(c.kind, c.line_id) for c in _open_beside_gap(db_session, stmt.id, "-580.0000")] == [
+        ("line_unmatched", ls[0].id)]
 
 
 def test_group_with_a_member_in_another_currency_is_not_claimed(seed, db_session, run):
@@ -974,7 +1094,7 @@ def test_mapped_instance_beyond_the_window_gets_the_drift_hint(seed, db_session,
     stmt, ls, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 6), "手機", 1000, "installment",
                                                         installment_seq=2, installment_total=12)])
     assert _active(db_session, stmt.id) == []
-    (case,) = _cases(db_session, stmt.id, "open")
+    (case,) = _open_beside_gap(db_session, stmt.id, "-1000.0000")
     assert (case.kind, case.line_id) == ("line_unmatched", ls[0].id)
     assert case.context == {"hint": "installment_date_drift", "entry_id": late.id, "definition_id": definition.id}
 

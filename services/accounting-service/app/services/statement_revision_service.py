@@ -468,7 +468,7 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     except derive.SignError as exc:
         raise ValidationError("lines", str(exc)) from exc
     header = derive.Header(**_header_columns(payload), currency=payload.currency)
-    check = derive.guardrails(payload.kind, header, account.currency, derived)
+    check = derive.guardrails(payload.kind, header, account.currency, derived, closing_day=account.closing_day)
     # 3. mode (only used when the statement is created; an existing statement keeps its mode)
     live = account.statement_live_from is not None and payload.period_end >= account.statement_live_from
     # 4. statement identity, locked

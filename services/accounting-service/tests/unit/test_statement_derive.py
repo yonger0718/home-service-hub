@@ -60,22 +60,22 @@ def _hdr(total, opening=None, currency="TWD", start=date(2026, 9, 1), end=date(2
 
 def test_card_equation_total_equals_opening_minus_flow():
     lines = derive.derive_lines("card", [L(1, date(2026, 9, 3), "580"), L(2, date(2026, 9, 10), "-500", kind="payment")])
-    ok = derive.guardrails("card", _hdr("1080", opening="1000"), "TWD", lines)
+    ok = derive.guardrails("card", _hdr("1080", opening="1000"), "TWD", lines, closing_day=None)
     assert ok.ok and ok.checks["equation"] and ok.detail["sum_flow"] == "-80.0000"
-    bad = derive.guardrails("card", _hdr("1081", opening="1000"), "TWD", lines)
+    bad = derive.guardrails("card", _hdr("1081", opening="1000"), "TWD", lines, closing_day=None)
     assert not bad.ok and not bad.checks["equation"]
 
 
 def test_card_missing_opening_assumes_zero_and_flags_it():
     lines = derive.derive_lines("card", [L(1, date(2026, 9, 3), "580")])
-    res = derive.guardrails("card", _hdr("580"), "TWD", lines)
+    res = derive.guardrails("card", _hdr("580"), "TWD", lines, closing_day=None)
     assert res.ok and res.detail["opening_assumed_zero"] is True
 
 
 def test_bank_equation_requires_opening():
     lines = derive.derive_lines("bank", [L(1, date(2026, 9, 3), "30000", kind="deposit")])
-    assert not derive.guardrails("bank", _hdr("30000"), "TWD", lines).ok
-    assert derive.guardrails("bank", _hdr("31000", opening="1000"), "TWD", lines).ok
+    assert not derive.guardrails("bank", _hdr("30000"), "TWD", lines, closing_day=None).ok
+    assert derive.guardrails("bank", _hdr("31000", opening="1000"), "TWD", lines, closing_day=None).ok
 
 
 @pytest.mark.parametrize("bad", [
@@ -86,10 +86,55 @@ def test_bank_equation_requires_opening():
 ])
 def test_other_guardrails(bad):
     lines = derive.derive_lines("card", bad.get("lines", [L(1, date(2026, 9, 3), "580")]))
-    assert not derive.guardrails("card", bad.get("hdr", _hdr("580")), "TWD", lines).ok
+    assert not derive.guardrails("card", bad.get("hdr", _hdr("580")), "TWD", lines, closing_day=None).ok
 
 
 def test_amounts_round_half_up_like_the_ledger():
     assert derive.flow_amount("card", "purchase", Decimal("1.00005")) == Decimal("-1.0001")
     line = derive.derive_lines("card", [L(1, date(2026, 9, 3), "1.00005")])[0]
     assert line.logical_key == "2026-09-03|-1.0001|0"
+
+
+# --- closing-day guardrail: the closing date (closing_date, else period_end) within ±3 days of the account's day ---
+
+def _closing(closing_day, end, *, start=None, closing_date=None):
+    hdr = Header(period_start=start or end.replace(day=1), period_end=end, closing_date=closing_date, due_date=None,
+                 opening_balance=None, statement_total=Decimal("580"), minimum_payment=None, currency="TWD")
+    lines = derive.derive_lines("card", [L(1, hdr.period_start, "580")])
+    return derive.guardrails("card", hdr, "TWD", lines, closing_day=closing_day)
+
+
+@pytest.mark.parametrize("closing_day,start,end", [
+    (6, date(2026, 8, 7), date(2026, 9, 6)),     # on the day
+    (6, date(2026, 8, 7), date(2026, 9, 9)),     # +3: a holiday shift
+    (6, date(2026, 8, 7), date(2026, 9, 3)),     # −3
+    (31, date(2026, 9, 1), date(2026, 9, 30)),   # day 31 in a 30-day month closes on the 30th
+    (30, date(2026, 2, 1), date(2026, 3, 2)),    # day 30 in February closes on the 28th: +2 across the month end
+    (1, date(2026, 8, 2), date(2026, 8, 30)),    # −2 to the next month's 1st across the month end
+])
+def test_closing_day_within_three_days_passes(closing_day, start, end):
+    res = _closing(closing_day, end, start=start)
+    assert res.ok and res.checks["closing_day"] is True
+
+
+@pytest.mark.parametrize("closing_day,start,end,days_off", [
+    (6, date(2026, 8, 25), date(2026, 9, 24), -12),  # the payment due date read as the closing date
+    (23, date(2026, 9, 1), date(2026, 9, 30), 7),    # a calendar month for a card that closes on the 23rd
+    (23, date(2026, 10, 1), date(2026, 10, 31), 8),
+    (23, date(2026, 1, 1), date(2026, 1, 30), 7),    # a Lunar New Year shift of +7 goes to review
+])
+def test_closing_day_off_by_more_than_three_days_fails(closing_day, start, end, days_off):
+    res = _closing(closing_day, end, start=start)
+    assert not res.ok and res.checks["closing_day"] is False
+    assert res.detail["closing_day"] == {"expected_day": closing_day, "closing_date": end.isoformat(),
+                                         "days_off": days_off}
+
+
+def test_closing_day_checks_the_closing_date_before_the_period_end():
+    res = _closing(6, date(2026, 9, 6), start=date(2026, 8, 7), closing_date=date(2026, 9, 24))
+    assert not res.ok and res.detail["closing_day"]["closing_date"] == "2026-09-24"
+
+
+def test_no_closing_day_no_check():
+    res = _closing(None, date(2026, 9, 30), start=date(2026, 9, 1))
+    assert res.ok and "closing_day" not in res.checks and "closing_day" not in res.detail
