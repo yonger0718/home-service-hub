@@ -1249,3 +1249,117 @@ def test_a_shadow_that_drifted_since_the_collect_is_refused_under_the_lock(seed,
     db_session.rollback()
     assert info.value.code == "candidate_changed"
     assert [a.action for a in _actions(db_session)] == ["backfill_entry"]
+
+
+# --- owner twins (final production finding 2026-10-17) ------------------------------------------------------------
+
+def _split_owner(seed, db, card, wallet, *, other, amount="-580", day=DAY):
+    """A MOZE `split` group whose expense member of `amount` on the card records the 580 line; its second member is a
+    different amount on the card (`other="card"`: the group does not conserve) or an income on a non-participating
+    account (`other="wallet"`: the group is partial). Returns the card member."""
+    group = seed.group("split")
+    member = seed.entry(card, amount, day=day, merchant="全聯", group_id=group.id)
+    if other == "card":
+        seed.entry(card, "-120", day=day, merchant="全聯", group_id=group.id)
+    else:
+        seed.entry(wallet, "200", kind="income", day=day, group_id=group.id)
+    db.commit()
+    return member
+
+
+def _open_line_case(db, stmt_id, line_id):
+    (case,) = [c for c in _cases(db, stmt_id, "open") if c.kind == "line_unmatched" and c.line_id == line_id]
+    return case
+
+
+def _backfills(db):
+    return [a for a in _actions(db) if a.action == "backfill_entry"]
+
+
+@pytest.mark.parametrize("other", ["card", "wallet"])
+def test_policy_never_backfills_a_line_a_split_member_records(seed, db_session, run, other):
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    member = _split_owner(seed, db_session, card, wallet, other=other)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    case = _open_line_case(db_session, stmt.id, line.id)
+    assert not case.candidates and _active(db_session, stmt.id) == []  # the matcher never claims a split member alone
+    assert "backfill_entry" in registry.allowed(case)  # the owner still decides
+    statement = db_session.get(AccountStatement, stmt.id)
+    for max_amount in ("5000", "100"):  # neither applied nor, over max_amount, proposed
+        _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0,
+                                 "actions": {"backfill_entry": {"enabled": True, "max_amount": max_amount}}})
+        live = settings_service.reconciliation_policy(db_session)
+        assert [c for c in policy_service.collect_candidates(db_session, statement, live) if c.action == "backfill_entry"] == []
+        assert [c for c, _ in policy_service.preview(db_session, statement, live) if c.action == "backfill_entry"] == []
+        result = policy_service.run_policy(db_session, stmt.id)
+        assert (result.applied, result.proposed) == ([], [])
+    assert _backfills(db_session) == [] and _proposals(db_session) == [] and _booked(db_session) == []
+    assert _open_line_case(db_session, stmt.id, line.id).id == case.id
+    assert db_session.get(LedgerEntry, member.id) is not None
+
+
+@pytest.mark.parametrize("owner_kind", ["plain", "split", "deleted"])
+def test_policy_never_rebackfills_an_event_whose_stand_in_was_replaced(seed, db_session, run, dirty_on, owner_kind):
+    # the policy backfilled the line; the owner's entry arrived and replace_stand_in removed the stand-in; a MOZE
+    # re-import then deletes the owner entry and re-creates it with a new id ("deleted": the owner removed it).
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0})
+    (backfill_id,) = policy_service.run_policy(db_session, stmt.id).applied
+    stand_in_id = db_session.get(ReconciliationAction, backfill_id).created_entry_ids[0]
+
+    def owner_entry():
+        if owner_kind == "split":
+            return _split_owner(seed, db_session, card, wallet, other="wallet")
+        entry = seed.entry(card, "-580", day=DAY, merchant="全聯")
+        db_session.commit()
+        return entry
+
+    owner = owner_entry()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    result = policy_service.run_policy(db_session, stmt.id)
+    (replaced,) = [a for a in _actions(db_session) if a.action == "replace_stand_in"]
+    assert result.applied == [replaced.id] and replaced.event_id == line.event_id
+    assert db_session.get(LedgerEntry, stand_in_id) is None and _booked(db_session) == []
+    assert [c.entry_id for c in _active(db_session, stmt.id) if c.line_id == line.id] == [owner.id]
+    # the re-import: every entry of the owner's record deleted, an identical one inserted with a new id
+    gone = [owner] if owner.group_id is None else db_session.execute(
+        select(LedgerEntry).where(LedgerEntry.group_id == owner.group_id)).scalars().all()
+    for entry in gone:
+        db_session.delete(entry)
+    db_session.commit()
+    new = None if owner_kind == "deleted" else owner_entry()
+    _sweep(db_session, stmt)
+    for _ in range(2):
+        rec.reconcile(db_session, stmt.id)
+        db_session.commit()
+        result = policy_service.run_policy(db_session, stmt.id)
+        assert (result.applied, result.proposed) == ([], [])
+    assert [a.id for a in _backfills(db_session)] == [backfill_id] and _proposals(db_session) == []
+    assert _booked(db_session) == []
+    if owner_kind == "plain":  # the matcher re-claims the re-created plain entry
+        assert [c.entry_id for c in _active(db_session, stmt.id) if c.line_id == line.id] == [new.id]
+    else:  # a split member is never claimed alone; a deleted record leaves the line to the owner
+        assert not _open_line_case(db_session, stmt.id, line.id).candidates
+        assert [c for c in _active(db_session, stmt.id) if c.line_id == line.id] == []
+
+
+def test_an_owner_twin_recorded_since_the_collect_refuses_the_backfill_under_the_lock(seed, db_session, run):
+    card = _card(seed, db_session)
+    wallet = seed.account("錢包")
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0})
+    statement, cand = _only_candidate(db_session, stmt.id)
+    assert cand.action == "backfill_entry"
+    _split_owner(seed, db_session, card, wallet, other="card")  # dirty off: no recheck, the case is kept as collected
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=cand.case_id, action="backfill_entry", params=cand.params, actor="policy",
+                            label="policy", budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert _backfills(db_session) == [] and _booked(db_session) == []

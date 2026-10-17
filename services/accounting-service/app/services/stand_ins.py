@@ -129,6 +129,27 @@ def _conserves(statement: AccountStatement, line: StatementLine, entry: LedgerEn
             and matching._same(me.flow, ml.flow) and drift_days(line, entry) <= rules.drift_window_days)
 
 
+def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, accounts: list[int], rules) -> list[int]:
+    """Ids of the owner entries (`owner_population`: split members included — the matcher never claims one alone)
+    that each alone take the line (`_conserves`): the policy must not backfill a line one of them may record
+    (final production finding 2026-10-17)."""
+    return [e.id for e in owner_population(db, statement, accounts, rules) if _conserves(statement, line, e, rules)]
+
+
+def replaced_event(db: Session, statement: AccountStatement, event_id: int | None) -> bool:
+    """The event has an applied `replace_stand_in` on this statement: the owner's entry already won it over a
+    stand-in, so the policy never backfills it again (the owner decides; a re-created plain entry is re-claimed by
+    the matcher)."""
+    if event_id is None:
+        return False
+    return db.execute(
+        select(ReconciliationAction.id)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.event_id == event_id,
+               ReconciliationAction.action == "replace_stand_in", ReconciliationAction.status == "applied")
+        .limit(1)).first() is not None
+
+
 def shadows(db: Session, statement: AccountStatement, accounts: list[int], rules) -> list[dict]:
     """R6b.5 shadowed_by_stand_in: reciprocally unique owner-entry ↔ stand-in-held line pairs, with the pair's
     `drift_days` (the policy applies only exact-window shadows, C2)."""

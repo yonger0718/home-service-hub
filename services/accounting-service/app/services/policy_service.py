@@ -189,7 +189,20 @@ def _backfill_candidate(db: Session, case: ReconciliationCase, statement: Accoun
     line = current_line(db, case, statement)
     if line is None or _absorbed_by_anchor(db, statement, line):
         return None
+    rules = rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)
+    if _owner_may_record(db, statement, case, line, rules):
+        return None
     return Candidate(case.id, case.kind, case.status, "backfill_entry", {"kind": kind}, _money(line.flow_amount))
+
+
+def _owner_may_record(db: Session, statement: AccountStatement, case: ReconciliationCase, line: StatementLine,
+                      rules: matching.Rules) -> bool:
+    """Final production finding 2026-10-17: an owner entry may already record the line — the event has an applied
+    `replace_stand_in` (the owner's entry won it once), or an owner twin (`stand_ins.owner_twins`, split members
+    included) takes it alone. The automatic backfill would duplicate it; the owner's own backfill stays available."""
+    accounts = coverage_service.participating_accounts(db, statement.account_id)
+    return stand_ins.replaced_event(db, statement, case.event_id) \
+        or bool(stand_ins.owner_twins(db, statement, line, accounts, rules))
 
 
 def _anchor_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
@@ -369,7 +382,7 @@ def _amount_now(ctx: Context, candidate: Candidate) -> Decimal | None:
 
 def _unchanged(ctx: Context, candidate: Candidate) -> bool:
     """The locked case is still the candidate: same status, kind, `context.entry_id`, amount and (for a system
-    entry) the bank-only hint on a line of the proposed kind."""
+    entry) the bank-only hint on a line of the proposed kind, (for a backfill) still no owner twin or replacement."""
     case, context = ctx.case, ctx.case.context or {}
     if (case.status, case.kind, context.get("entry_id")) != (candidate.status, candidate.kind, candidate.entry_id):
         return False
@@ -389,7 +402,8 @@ def _unchanged(ctx: Context, candidate: Candidate) -> bool:
         return context.get("hint") == "bank_only" and ctx.line.line_kind == candidate.params.get("kind")
     if candidate.action == "backfill_entry":
         return not context.get("owner_deleted") and not case.candidates \
-            and registry.backfill_eligibility(case) == candidate.params.get("kind")
+            and registry.backfill_eligibility(case) == candidate.params.get("kind") \
+            and not _owner_may_record(ctx.db, ctx.statement, case, ctx.line, ctx.rules)
     return True
 
 
