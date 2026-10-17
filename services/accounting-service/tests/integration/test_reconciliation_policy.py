@@ -1684,26 +1684,48 @@ def test_policy_never_books_a_system_entry_a_split_member_records(seed, db_sessi
     assert _created(db_session, "create_system_entry") == [] and _proposals(db_session) == [] and _booked(db_session) == []
 
 
-def _commit_twin_elsewhere(pg_engine, card_id: int, action: str) -> None:
-    """An ordinary ledger writer on its own connection: a split group whose member records the action's line plus
-    a −120 member on the same card, committed at once."""
+TWIN_KINDS = ("split", "near", "child", "subset")  # the twin shapes `stand_ins.owner_twins` recognises
+
+
+def _commit_twin_elsewhere(pg_engine, card_id: int, action: str, twin: str = "split") -> None:
+    """An ordinary ledger writer on its own connection, committed at once: `split` — a split group whose member
+    records the action's line plus a −120 member on the same card; `near` — a plain entry one dollar off the line;
+    `child` — an unrelated purchase carrying a child of the line's kind thirty cents off; `subset` — a split group
+    of two members of the line's kind summing to the line plus a −120 member (the group as a whole does not
+    conserve)."""
     _, _, amount, kind = CREATIONS[action]
     writer = sessionmaker(bind=pg_engine, autoflush=False)()
     try:
         account = SimpleNamespace(id=card_id, currency="TWD")
-        group = EntryGroup(kind="split")
-        writer.add(group)
-        writer.flush()
-        make_entry(writer, account, amount, kind=kind, entry_date=DAY, posted_date=DAY, group_id=group.id)
-        make_entry(writer, account, "-120", entry_date=DAY, posted_date=DAY, group_id=group.id)
+        if twin == "near":
+            make_entry(writer, account, str(Decimal(amount) + Decimal("1.0069")), kind=kind, entry_date=DAY, posted_date=DAY)
+        elif twin == "child":
+            parent = make_entry(writer, account, "-3000", entry_date=DAY, posted_date=DAY)
+            writer.flush()
+            make_entry(writer, account, str(Decimal(amount) + Decimal("0.3")), kind=kind, entry_date=DAY, posted_date=DAY,
+                       parent_entry_id=parent.id)
+        else:
+            group = EntryGroup(kind="split")
+            writer.add(group)
+            writer.flush()
+            if twin == "split":
+                make_entry(writer, account, amount, kind=kind, entry_date=DAY, posted_date=DAY, group_id=group.id)
+            else:  # subset: two members of the line's kind that sum to it
+                half = (Decimal(amount) / 2).quantize(Decimal("1"))
+                make_entry(writer, account, str(half), kind=kind, entry_date=DAY, posted_date=DAY, group_id=group.id)
+                make_entry(writer, account, str(Decimal(amount) - half), kind=kind, entry_date=DAY, posted_date=DAY, group_id=group.id)
+            make_entry(writer, account, "-120", entry_date=DAY, posted_date=DAY, group_id=group.id)
         writer.commit()
     finally:
         writer.close()
 
 
+@pytest.mark.parametrize("twin", TWIN_KINDS)
 @pytest.mark.parametrize("action", sorted(CREATIONS))
 def test_an_owner_twin_committed_after_the_policy_precheck_is_caught_under_the_writer_barrier(
-        seed, db_session, run, dirty_on, pg_engine, monkeypatch, action):
+        seed, db_session, run, dirty_on, pg_engine, monkeypatch, action, twin):
+    """Every twin shape (review AGENT-141 S1): the twin lands after the precheck passed and is caught by the
+    re-check under the account lock and writer barrier."""
     card, _, stmt, _ = _creation_statement(seed, db_session, run, action)
     card_id = card.id
     _set_policy(db_session, _creation_policy(action))
@@ -1712,7 +1734,7 @@ def test_an_owner_twin_committed_after_the_policy_precheck_is_caught_under_the_w
 
     def racing(candidate, ctx):
         original(candidate, ctx)  # no twin yet: the precheck passes
-        _commit_twin_elsewhere(pg_engine, card_id, action)
+        _commit_twin_elsewhere(pg_engine, card_id, action, twin)
         fired.append(candidate.action)
 
     monkeypatch.setattr(policy_service, "_policy_precheck", racing)
@@ -1722,9 +1744,10 @@ def test_an_owner_twin_committed_after_the_policy_precheck_is_caught_under_the_w
     assert _created(db_session, action) == [] and _booked(db_session) == []
 
 
+@pytest.mark.parametrize("twin", TWIN_KINDS)
 @pytest.mark.parametrize("action", sorted(CREATIONS))
 def test_an_owner_twin_committed_while_a_policy_proposal_is_applied_is_caught_under_the_writer_barrier(
-        client, seed, db_session, run, dirty_on, pg_engine, monkeypatch, action):
+        client, seed, db_session, run, dirty_on, pg_engine, monkeypatch, action, twin):
     card, _, stmt, _, proposal = _over_cap_proposal(seed, db_session, run, action)
     card_id = card.id
     original = policy_service.refuse_owner_recorded
@@ -1732,7 +1755,7 @@ def test_an_owner_twin_committed_while_a_policy_proposal_is_applied_is_caught_un
 
     def racing(ctx):
         original(ctx)  # no twin yet: the apply-time check passes
-        _commit_twin_elsewhere(pg_engine, card_id, action)
+        _commit_twin_elsewhere(pg_engine, card_id, action, twin)
         fired.append(ctx.case.id)
 
     monkeypatch.setattr(policy_service, "refuse_owner_recorded", racing)
