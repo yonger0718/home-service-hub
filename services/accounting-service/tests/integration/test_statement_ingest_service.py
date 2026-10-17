@@ -431,12 +431,13 @@ def test_stale_neighbours_do_not_block_each_others_corrected_periods(db_session,
     assert revs.period_blocker(db_session, sa, date(2026, 9, 7), date(2026, 10, 6), account=old_card) == sb.id
 
 
-def _two_misread_months(db, seed, run, account, *, b_period, b_closing_date=None):
-    """A (08-19..09-24) and B (`b_period`) on two files, parsed before the closing day (6) was set."""
+def _two_misread_months(db, seed, run, account, *, b_period, b_closing_date=None, b_line_day=date(2026, 9, 20)):
+    """A (08-19..09-24) and B (`b_period`, its line on `b_line_day`) on two files, parsed before the closing day (6)
+    was set; both pass the guardrails of their day."""
     r, token = run
     amap = {FOLDER: account.id}
     fa, fb = _filed(db, r, token), _filed(db, r, token, sha="bb" * 32, md5="bb" * 16)
-    la, lb = [_line(1, date(2026, 8, 20), "580")], [_line(1, date(2026, 9, 20), "50")]
+    la, lb = [_line(1, date(2026, 8, 20), "580")], [_line(1, b_line_day, "50")]
     a = svc.submit_revision(db, r, _rev(r, token, account, la, total="580", file_id=fa.id,
                                         period_start=date(2026, 8, 19), period_end=date(2026, 9, 24)), account_map=amap)
     b = svc.submit_revision(db, r, _rev(r, token, account, lb, total="50", file_id=fb.id, period_start=b_period[0],
@@ -461,7 +462,8 @@ def test_a_neighbour_stale_only_by_its_closing_date_still_blocks(db_session, see
     old_card = seed.account("舊卡", is_credit=True)
     db_session.commit()
     fa, fb, la, lb, a, b = _two_misread_months(db_session, seed, run, old_card, b_period=(date(2026, 8, 10), date(2026, 9, 9)),
-                                               b_closing_date=date(2026, 9, 24))
+                                               b_closing_date=date(2026, 9, 24), b_line_day=date(2026, 9, 1))
+    assert b.revision.guardrail_ok is True  # B passed its day's checks; only its closing_date is off today
     fixed = _correct_a(db_session, run, old_card, fa, la)
     sa = db_session.get(AccountStatement, a.statement.id)
     assert fixed.revision.guardrail_ok is True and fixed.revision.guardrail["period_blocked_by"] == b.statement.id
@@ -479,6 +481,36 @@ def test_a_reconciled_stale_neighbour_still_blocks(db_session, seed, run):
     sa = db_session.get(AccountStatement, a.statement.id)
     assert fixed.revision.guardrail["period_blocked_by"] == b.statement.id
     assert (sa.current_revision_id, sa.period_end) == (a.revision.id, date(2026, 9, 24))
+
+
+def test_a_stale_neighbour_still_blocks_the_same_period_end(db_session, seed, run):
+    """Identity is never bypassed: a stale neighbour holding the corrected period_end blocks (DB regression)."""
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    # B is stale (period_end 10-24 is 18 days off the 6th); A's "correction" lands exactly on B's period_end
+    fa, fb, la, lb, a, b = _two_misread_months(db_session, seed, run, old_card, b_period=(date(2026, 9, 5), date(2026, 10, 24)))
+    assert b.statement.id != a.statement.id
+    r, token = run
+    fixed = svc.submit_revision(db_session, r, _rev(r, token, old_card, [_line(1, date(2026, 10, 10), "580")], total="580", file_id=fa.id,
+                                                    period_start=date(2026, 9, 25), period_end=date(2026, 10, 24)), account_map={FOLDER: old_card.id})
+    db_session.commit()
+    assert fixed.revision.guardrail["period_blocked_by"] == b.statement.id
+    assert db_session.get(AccountStatement, a.statement.id).current_revision_id == a.revision.id
+
+
+def test_skipping_a_stale_neighbour_still_hits_a_non_stale_one(db_session, seed, run):
+    """The scan continues past a stale neighbour: a second, non-stale overlapping neighbour blocks (DB regression)."""
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    fa, fb, la, lb, a, b = _two_misread_months(db_session, seed, run, old_card, b_period=(date(2026, 9, 5), date(2026, 10, 24)))
+    r, token = run
+    fc = _filed(db_session, r, token, sha="cc" * 32, md5="cc" * 16)
+    c = svc.submit_revision(db_session, r, _rev(r, token, old_card, [_line(1, date(2026, 8, 20), "70")], total="70", file_id=fc.id,
+                                                period_start=date(2026, 7, 7), period_end=date(2026, 8, 8)), account_map={FOLDER: old_card.id})
+    db_session.commit()  # C ends 08-08: +2 off the 6th, not stale; it overlaps A's corrected 08-07..09-06 on 08-07/08
+    fixed = _correct_a(db_session, run, old_card, fa, la)
+    assert fixed.revision.guardrail["period_blocked_by"] == c.statement.id  # B (stale) skipped, C blocks
+    assert db_session.get(AccountStatement, a.statement.id).current_revision_id == a.revision.id
 
 
 def test_stale_neighbours_resolve_on_a_live_card_too(db_session, card, run):
