@@ -228,13 +228,16 @@ shift beyond 3 days) fails it; the revision gets `guardrail_ok = false` and a `p
 does not replace a passing current revision. `revision.guardrail.detail.closing_day` holds `expected_day`, `period_end`,
 `period_end_days_off`, `closing_date` and `closing_date_days_off` (signed; null without a closing date). Cards without
 `closing_day` and all bank statements skip the check. Balance check: every reconcile computes the statement's gap at
-`period_end` against the held balance — the ledger balance at `period_end` minus the entries this statement defers to
-the next one (its resolved `deferred_next_period` cases, the matcher's late entries within `deferral_days` and the
-owner's `defer_next_period`, with their children, unless this statement claims them; the matcher never defers an
-entry one of the statement's own cases names — an `amount_delta`, `ambiguous` or drift candidate is printed here): bank `statement_total − held`,
-card `−statement_total − Σ held(participating accounts in the statement's currency)` (the amount owed is positive on the
+`period_end` against the held balance (`held_balance`, coverage-based): the ledger balance at `period_end`, minus rows
+posted by then that a later statement of the same accounts claims or that this statement defers to the next one and
+no statement claims yet (its resolved `deferred_next_period` cases: the matcher's late entries within `deferral_days`
+and the owner's `defer_next_period`, with their children), plus rows posted after `period_end` that this statement
+claims. The matcher never defers the one entry an `amount_delta` case (near, foreign, drift) designates for its line;
+ambiguous alternatives and secondary candidates defer as usual. Bank: `statement_total − held`; card:
+`−statement_total − held(participating accounts in the statement's currency)` (the amount owed is positive on the
 statement, card balances are negative; a co-branded card billed on the same statement counts). A deferral the next
-statement's confirm reopens counts again. A non-zero gap opens a `balance_gap` case (`context.gap`; card cases also carry
+statement's confirm reopens counts again. While an open line case designates a late entry, the gap assumes that entry
+is printed here: resolve the case before booking the gap. A non-zero gap opens a `balance_gap` case (`context.gap`; card cases also carry
 `card: true`); a negative gap means the ledger lacks an outflow on either kind. On a card `anchor_opening` is never
 offered and the policy never acts; `balance_adjustment_asof` books the gap on a single-account card (a card with a co-branded account in the statement's
 currency is refused `combined_card`: the residual may sit on either account).

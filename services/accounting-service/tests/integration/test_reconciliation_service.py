@@ -458,6 +458,69 @@ def test_owner_deferral_is_no_gap_and_a_missing_line_still_is(seed, db_session, 
         {"gap": "-200.0000", "card": True}]  # only the missing purchase
 
 
+# --- held balance: what other statements claim (review N1) ----------------------------------------------------------
+
+def _gap_of(db, statement_id):
+    return [c.context["gap"] for c in _cases(db, statement_id, "open") if c.kind == "balance_gap"]
+
+
+def test_an_ambiguous_late_alternative_still_defers_and_stays_out_after_the_next_statement_claims_it(seed, db_session, run):
+    card = _card(seed, db_session)
+    a = seed.entry(card, "-120", day=date(2026, 9, 28), merchant="咖啡")
+    b = seed.entry(card, "-120", day=date(2026, 9, 29), merchant="咖啡")  # late: a second coffee printed in October
+    db_session.commit()
+    sep, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 28), "咖啡", 120)])
+    (amb,) = [c for c in _cases(db_session, sep.id, "open") if c.kind == "ambiguous"]
+    assert {c["entry_id"] for c in amb.candidates} == {a.id, b.id}
+    assert _gap_of(db_session, sep.id) == []  # b deferred: the line is one coffee, the other is October's
+    from app.services.reconciliation_actions import engine
+    engine.apply_action(db_session, case_id=amb.id, action="match", params={"line_id": line.id, "entry_id": a.id},
+                        actor="owner", label="t")  # the owner picks a, so October's line has one candidate
+    db_session.commit()
+    octo, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 1), "咖啡", 120)],
+                         period=(date(2026, 10, 1), date(2026, 10, 30)), opening="120")
+    assert [r.entry_id for r in _active(db_session, octo.id)] == [b.id] and _gap_of(db_session, octo.id) == []
+    _reconcile(db_session, sep.id)
+    assert _gap_of(db_session, sep.id) == []  # b is October's claim now: still out of September's balance
+
+
+def test_a_designated_entry_the_next_statement_claims_leaves_no_permanent_residual(seed, db_session, run):
+    card = _card(seed, db_session)
+    entry = seed.entry(card, "-1000", day=date(2026, 9, 30), merchant="全聯")
+    db_session.commit()
+    sep, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 30), "全聯", 1005)])
+    assert _gap_of(db_session, sep.id) == ["-5.0000"]  # the designated near entry is taken as printed here
+    _submit(db_session, run, card, [_line(1, date(2026, 10, 1), "全聯", 1000)],
+            period=(date(2026, 10, 1), date(2026, 10, 30)), opening="1005")
+    _reconcile(db_session, sep.id)
+    # October claims the 1000: September's 1005 line has no ledger row at all
+    assert _gap_of(db_session, sep.id) == ["-1005.0000"]
+    assert [c.kind for c in _cases(db_session, sep.id, "open") if c.kind != "balance_gap"] == ["line_unmatched"]
+    assert entry.id not in {c.entry_id for c in _cases(db_session, sep.id, "open")}
+
+
+def test_an_entry_this_statement_claims_after_its_period_end_is_held(seed, db_session, run):
+    card = _card(seed, db_session)
+    entry = seed.entry(card, "-580", day=date(2026, 10, 1), merchant="全聯")  # booked a day after the close
+    db_session.commit()
+    sep, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 29), "全聯", 580)])
+    assert [r.entry_id for r in _active(db_session, sep.id)] == [entry.id]
+    assert _cases(db_session, sep.id, "open") == []
+
+
+def test_out_of_order_reconcile_the_next_statement_claimed_the_late_entry_first(seed, db_session, run):
+    card = _card(seed, db_session)
+    seed.entry(card, "-580", day=date(2026, 9, 3), merchant="全聯")
+    late = seed.entry(card, "-90", day=date(2026, 9, 29), merchant="咖啡")
+    db_session.commit()
+    octo, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 10, 1), "咖啡", 90)],
+                         period=(date(2026, 10, 1), date(2026, 10, 30)), opening="580")
+    assert [r.entry_id for r in _active(db_session, octo.id)] == [late.id]
+    sep, _, _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 3), "全聯", 580)])
+    assert not [c for c in _cases(db_session, sep.id) if c.explanation == "deferred_next_period"]  # claimed already
+    assert _cases(db_session, sep.id, "open") == []
+
+
 # --- closing-day guardrail at ingest -------------------------------------------------------------------------------
 
 HSBC_LIKE = (date(2026, 8, 7), date(2026, 9, 6))  # closing day 6
