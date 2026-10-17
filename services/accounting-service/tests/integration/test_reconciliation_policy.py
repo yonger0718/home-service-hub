@@ -1363,3 +1363,85 @@ def test_an_owner_twin_recorded_since_the_collect_refuses_the_backfill_under_the
     db_session.rollback()
     assert info.value.code == "candidate_changed"
     assert _backfills(db_session) == [] and _booked(db_session) == []
+
+
+def _over_cap_backfill_proposal(seed, db, run):
+    """A 580 card line the policy (backfill max_amount 100) proposes rather than applies: (card, wallet, stmt, line,
+    pending policy proposal)."""
+    card = _card(seed, db)
+    wallet = seed.account("錢包")
+    db.commit()
+    stmt, (line,), _ = _submit(db, run, card, [_line(1, DAY, "全聯", 580)])
+    _set_policy(db, {**BACKFILL_ON, "backfill_grace_days": 0,
+                     "actions": {"backfill_entry": {"enabled": True, "max_amount": "100"}}})
+    (pid,) = policy_service.run_policy(db, stmt.id).proposed
+    proposal = _reload(db, ReconciliationProposal, pid)
+    assert (proposal.author, proposal.action, proposal.status) == ("policy", "backfill_entry", "pending")
+    return card, wallet, stmt, line, proposal
+
+
+def test_the_policy_supersedes_its_pending_backfill_proposal_once_an_owner_twin_arrives(seed, db_session, run, dirty_on):
+    # review of aa8aaa1: the case keeps its version through reconcile, so supersede_stale never fires; the run does
+    card, wallet, stmt, line, proposal = _over_cap_backfill_proposal(seed, db_session, run)
+    _split_owner(seed, db_session, card, wallet, other="card")  # the MOZE import arrives later
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], [])
+    assert _reload(db_session, ReconciliationProposal, proposal.id).status == "superseded"
+    (superseded,) = _audit(db_session, "proposal_superseded")
+    assert (superseded.actor, superseded.case_id, superseded.statement_id) == ("policy", proposal.case_id, stmt.id)
+    assert superseded.detail == {"proposal_id": proposal.id, "by": "owner_may_record"}
+    assert _reload(db_session, ReconciliationCase, proposal.case_id).status == "open"  # no live proposal left
+    policy_service.run_policy(db_session, stmt.id)  # nothing pending left: no second audit row
+    assert len(_audit(db_session, "proposal_superseded")) == 1
+    with pytest.raises(CodedConflictError) as info:
+        proposal_service.apply_proposal(db_session, proposal_id=proposal.id, label="owner-test", request_id=None)
+    db_session.rollback()
+    assert info.value.code == "proposal_not_pending"
+    assert _backfills(db_session) == [] and _booked(db_session) == []
+
+
+def test_applying_a_policy_backfill_proposal_an_owner_entry_may_record_is_refused(client, seed, db_session, run):
+    # defence in depth: the twin arrived and no policy run happened since (dirty off: the case keeps its version)
+    card, wallet, stmt, line, proposal = _over_cap_backfill_proposal(seed, db_session, run)
+    _split_owner(seed, db_session, card, wallet, other="wallet")
+    response = client.post(f"/reconciliation/proposals/{proposal.id}/apply", headers=S)
+    assert response.status_code == 409 and response.json()["message"].startswith("owner_may_record")
+    assert _reload(db_session, ReconciliationProposal, proposal.id).status == "pending"
+    assert _backfills(db_session) == [] and _booked(db_session) == []
+    # the owner's own action from the case stays unrestricted
+    row, _ = engine.apply_action(db_session, case_id=proposal.case_id, action="backfill_entry", params={"kind": "expense"},
+                                 actor="owner", label="t")
+    db_session.commit()
+    assert row.status == "applied" and len(_booked(db_session)) == 1
+
+
+def test_a_replacement_applied_since_the_collect_refuses_the_backfill_under_the_lock(seed, db_session, run, dirty_on):
+    card = _card(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])
+    _set_policy(db_session, {**BACKFILL_ON, "backfill_grace_days": 0})
+    statement, cand = _only_candidate(db_session, stmt.id)
+    assert cand.action == "backfill_entry"
+    # meanwhile: the owner backfills, the owner's entry arrives and replaces the stand-in, then the owner deletes it
+    engine.apply_action(db_session, case_id=cand.case_id, action="backfill_entry", params=cand.params, actor="owner", label="t")
+    db_session.commit()
+    owner = seed.entry(card, "-580", day=DAY, merchant="全聯")
+    db_session.commit()
+    rec.reconcile(db_session, stmt.id)
+    db_session.commit()
+    (shadow,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "entry_unmatched"]
+    engine.apply_action(db_session, case_id=shadow.id, action="replace_stand_in", params={}, actor="owner", label="t")
+    db_session.commit()
+    db_session.delete(db_session.get(LedgerEntry, owner.id))
+    db_session.commit()
+    _sweep(db_session, stmt)  # not reconcile: the reopened line case keeps its collected context
+    (reopened,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched"]
+    assert (reopened.id, reopened.status) == (cand.case_id, cand.status) and not reopened.candidates
+    assert policy_service._backfill_candidate(db_session, reopened, statement) is None
+    with pytest.raises(CodedConflictError) as info:
+        engine.apply_action(db_session, case_id=cand.case_id, action="backfill_entry", params=cand.params, actor="policy",
+                            label="policy", budget=(MONTH, "TWD", cand.amount), precheck=partial(policy_service._policy_precheck, cand))
+    db_session.rollback()
+    assert info.value.code == "candidate_changed"
+    assert _booked(db_session) == []

@@ -205,6 +205,49 @@ def _owner_may_record(db: Session, statement: AccountStatement, case: Reconcilia
         or bool(stand_ins.owner_twins(db, statement, line, accounts, rules))
 
 
+def refuse_owner_recorded(ctx: Context) -> None:
+    """Engine precheck for the owner applying a policy-authored `backfill_entry` proposal (`proposal_service`), under
+    the statement and case locks: 409 `owner_may_record` when an owner entry may already record the line — a proposal
+    made before the twin or the replacement arrived, applied before the next policy run supersedes it."""
+    if ctx.line is not None and _owner_may_record(ctx.db, ctx.statement, ctx.case, ctx.line, ctx.rules):
+        raise CodedConflictError("owner_may_record", f"case {ctx.case.id}")
+
+
+def _supersede_owner_recorded(db: Session, statement_id: int, *, run_id: int | None) -> int:
+    """Pending policy-authored `backfill_entry` proposals of the statement whose line an owner entry may now record
+    (`_owner_may_record`) → superseded, audited `proposal_superseded` (`by: owner_may_record`), and a `proposed` case
+    left without a live proposal reopens. The case keeps its version through reconcile, so `supersede_stale` never
+    sees them. Locks statement → cases (ascending) → proposals (the `supersede_stale` order); commits. Returns how
+    many."""
+    case_ids = sorted(set(db.execute(
+        select(ReconciliationProposal.case_id)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationProposal.case_id)
+        .where(ReconciliationCase.statement_id == statement_id, ReconciliationProposal.status == "pending",
+               ReconciliationProposal.author == POLICY, ReconciliationProposal.action == "backfill_entry")).scalars()))
+    if not case_ids:
+        return 0
+    statement = rec._lock_statement(db, statement_id)
+    rules = rec.rules_for(settings_service.reconciliation_rules(db), statement.period_end)
+    superseded: list[int] = []
+    for case_id in case_ids:
+        case = db.execute(select(ReconciliationCase).where(ReconciliationCase.id == case_id).with_for_update()
+                          .execution_options(populate_existing=True)).scalar_one()
+        line = current_line(db, case, statement)
+        if line is None or not _owner_may_record(db, statement, case, line, rules):
+            continue
+        for proposal in proposal_service._pending(db, case.id, author=POLICY):
+            if proposal.action != "backfill_entry":
+                continue
+            proposal.status, proposal.decided_at = "superseded", func.now()
+            audit.record(db, event="proposal_superseded", actor=POLICY, statement_id=statement_id, case_id=case.id,
+                         run_id=run_id, detail={"proposal_id": proposal.id, "by": "owner_may_record"})
+            superseded.append(case.id)
+    db.flush()
+    proposal_service.reopen_idle(db, superseded)
+    db.commit()
+    return len(superseded)
+
+
 def _anchor_candidate(db: Session, case: ReconciliationCase, statement: AccountStatement) -> Candidate | None:
     """R6b.2: any open balance_gap of an un-anchored bank account whose target is its first live month (C1);
     amount = |opening delta| at the target."""
@@ -618,7 +661,8 @@ def run_policy(db: Session, statement_id: int, *, run_id: int | None = None,
                today: date | None = None) -> PolicyResult:
     """Apply the policy to one statement (module docstring). Empty at once when the policy is off, the statement is
     not live, has `conflict_open`/`needs_recheck` or an open `parse_review`/`statement_conflict`; a currency outside
-    `per_currency_enabled` is skipped with audit `policy_skipped currency`. The budget month is the application
+    `per_currency_enabled` is skipped with audit `policy_skipped currency`. First, its own pending `backfill_entry`
+    proposals an owner entry may now record are superseded (`_supersede_owner_recorded`). The budget month is the application
     day's (`ledger_service._today()` unless `today`, ruling 10). Commits per candidate."""
     result = PolicyResult()
     policy = settings_service.reconciliation_policy(db)
@@ -634,6 +678,7 @@ def run_policy(db: Session, statement_id: int, *, run_id: int | None = None,
         return result
     if excluded is not None:
         return result
+    _supersede_owner_recorded(db, statement_id, run_id=run_id)
     month = (today or ledger_service._today()).replace(day=1)
     anchored: set[int] = set()  # one anchor per account per run
     for candidate in collect_candidates(db, statement, policy):
