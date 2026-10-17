@@ -156,22 +156,34 @@ def period_blocker(db: Session, statement: AccountStatement, period_start, perio
     """The id of a statement the account and currency already hold for the period `statement` would move to: any one
     with that period_end (the identity, retired ones included), or a non-retired one whose period overlaps it (a
     shared boundary day is no overlap). None when the move is safe. With `account`, an overlapping neighbour whose
-    own current revision is stale (`_stale_revision`: its period fails today's closing-day check) does not block —
-    misread neighbours overlap each other in chains and would otherwise block each other's corrections for good;
-    the identity clause (same period_end) is never bypassed."""
+    own period is stale (`_stale_period`: its `period_end` fails today's closing-day check and the statement is not
+    reconciled) does not block — misread neighbours overlap each other in chains and would otherwise block each
+    other's corrections for good; the chain is resolved by re-queueing every member. The identity clause (same
+    period_end) is never bypassed."""
     s = AccountStatement
-    rows = db.execute(select(s.id, s.period_end, s.current_revision_id).where(
+    rows = db.execute(select(s.id, s.period_end, s.current_revision_id, s.status).where(
         s.account_id == statement.account_id, s.currency == statement.currency, s.id != statement.id,
         or_(s.period_end == period_end,
             and_(s.period_start < period_end, s.period_end > period_start, ~retired.clause(s.id))))
         .order_by(s.id)).all()
-    for other_id, other_end, other_revision_id in rows:
+    for other_id, other_end, other_revision_id, other_status in rows:
         if other_end == period_end:
             return other_id
-        if account is not None and _stale_revision(db, statement.kind, account, other_revision_id):
+        if account is not None and _stale_period(db, statement.kind, account, other_revision_id, other_status):
             continue
         return other_id
     return None
+
+
+def _stale_period(db: Session, kind: str, account: Account, revision_id: int | None, status: str) -> bool:
+    """The neighbour's PERIOD itself is stale and will move once the neighbour is corrected: a card revision whose
+    `period_end` is more than CLOSING_TOLERANCE_DAYS off the account's closing day, on a statement that is not
+    reconciled (a reconciled statement's revisions go through the conflict gate and never move on their own). A
+    neighbour stale only by its `closing_date` keeps its period and still blocks (review AGENT-145 M2)."""
+    if kind != "card" or account.closing_day is None or revision_id is None or status == "reconciled":
+        return False
+    revision = db.get(StatementRevision, revision_id)
+    return abs(derive.closing_offset(revision.period_end, account.closing_day)) > derive.CLOSING_TOLERANCE_DAYS
 
 
 def _lock_statement(db: Session, run: IngestRun, payload: RevisionIn, mode: str,

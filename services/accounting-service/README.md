@@ -286,7 +286,7 @@ One file, one statement (fix 2026-10-17): a revision whose `file_id` already bac
 account and currency becomes a revision of that statement whatever period it parsed (the statement identity is
 otherwise `(account, currency, period_end)`); a changed period is a header change (`header_changes.period_end`, an open
 `parse_review`) unless it corrects a failed current revision — one that failed its guardrails, or a card revision whose `period_end`/`closing_date` fails today's closing-day check (`stale_current`: the check landed after the revision did) — and never moves onto a period another statement holds
-(same `period_end`, or an overlap): that revision stays non-current with `context.period_blocked_by`, and promoting such
+(same `period_end`, or an overlap — except an overlap with a non-reconciled card statement whose own `period_end` fails today's closing-day check: misread neighbours overlap each other in chains and are corrected together by re-queueing every member): that revision stays non-current with `context.period_blocked_by`, and promoting such
 a `statement_conflict` revision is 409 `period_conflict`. A different account (the folder remapped) still gets its own
 statement. Duplicates made before the fix are retired with `POST /accounts/{id}/statements/{sid}/retire` (`admin`):
 under the statement lock it refuses 409 `anchor_depends` while an applied `anchor_opening` of the account (on any of its
