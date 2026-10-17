@@ -182,6 +182,7 @@ class SweepResult:
     created_cases: list[int] = field(default_factory=list)
     recheck: bool = False
     swept_through: int = 0
+    partially_stranded: list[int] = field(default_factory=list)  # `action_partially_stranded`: applied, owner's
 
 
 def participating_accounts(db: Session, account_id: int) -> list[int]:
@@ -425,6 +426,7 @@ def sweep(db: Session, statement: AccountStatement, *, run_id: int | None = None
             break
     if last > statement.swept_through_event_id:
         statement.swept_through_event_id = last
+    result.partially_stranded = partially_stranded_ids(db, statement)
     if result.recheck:
         statement.needs_recheck = True
     result.swept_through = statement.swept_through_event_id
@@ -612,13 +614,17 @@ def _retire_stranded_creations(db: Session, statement: AccountStatement, run_id)
 # --- applied actions a delete made unrevertable (fix 2026-10-17: a MOZE re-import re-creates every entry) -----------
 # Each acts on ledger rows its revert needs: every entry it touched or created (a match's principal, children and group
 # members; the entry of adjust_amount / move_account; attach_fee's entry and fee child; every split member) and every
-# group it touched (a group match's group, the split group) — the revert's snapshot check needs all of them. Once one
-# is gone the action can never be reverted, yet as `applied` it blocks a statement retire (`actions_applied`) and holds
-# its effect slot. The sweep retires it like a creation, under the statement lock, scoped to this statement's cases:
-# `status = reverted`, `inverse.deleted_by_event` (`deleted_before_watermark` in the catch-up, which also releases
-# coverage the action still holds), audit `action_retired` (`stand_in_retired` stays the creations'), never touching
-# `reverted_by_action_id`. Not a creation (effect slot `create`), so `stand_ins.owner_deleted_events` never counts it:
-# a re-import is no owner delete.
+# group it touched (a group match's group, the split group) — the revert's snapshot check needs all of them. Lead
+# ruling (PR #78 review M3): only a FULLY stranded action — every one of its targets gone — is retired automatically:
+# it can never be reverted, yet as `applied` it blocks a statement retire (`actions_applied`) and holds its effect slot.
+# The sweep retires it like a creation, under the statement lock, scoped to this statement's cases: `status =
+# reverted`, `inverse.deleted_by_event` (`deleted_before_watermark` in the catch-up, which also releases coverage the
+# action still holds), audit `action_retired` (`stand_in_retired` stays the creations'), never touching
+# `reverted_by_action_id`. A PARTIALLY stranded one (some targets survive, e.g. a split's members and group after its
+# original was re-imported away) keeps a financial effect: it stays `applied`, is counted (`SweepResult.
+# partially_stranded`, the dry-run's `action_partially_stranded`; no audit row, so a daily sweep writes nothing for it)
+# and keeps refusing a retire, so it reaches the owner. Not a creation (effect slot `create`), so
+# `stand_ins.owner_deleted_events` never counts a retired one: a re-import is no owner delete.
 TARGET_ACTIONS = ("match", "adjust_amount", "attach_fee", "move_account", "split_entry")
 
 
@@ -628,16 +634,44 @@ def _target_ids(row: ReconciliationAction) -> tuple[list[int], list[int]]:
     return entries, list(dict.fromkeys(row.touched_group_ids or ()))
 
 
-def _unrevertable():
-    """SQL, correlated to ReconciliationAction: a target of `_target_ids` is gone."""
+def _stranded_parts():
+    """SQL parts, correlated to ReconciliationAction: (some target gone, some target alive, has a target) over the
+    targets of `_target_ids` (an id may repeat: attach_fee lists its child as touched and created)."""
     a = ReconciliationAction
-    # "an id of the array has no row" (an id may repeat: attach_fee lists its child as touched and created)
-    entry_ids = func.unnest(func.array_cat(a.touched_entry_ids, a.created_entry_ids)) \
-        .table_valued("value").render_derived()
+    all_entries = func.array_cat(a.touched_entry_ids, a.created_entry_ids)
+    entry_ids = func.unnest(all_entries).table_valued("value").render_derived()
     group_ids = func.unnest(a.touched_group_ids).table_valued("value").render_derived()
-    entry_gone = exists().select_from(entry_ids).where(~exists().where(LedgerEntry.id == entry_ids.c.value))
-    group_gone = exists().select_from(group_ids).where(~exists().where(EntryGroup.id == group_ids.c.value))
-    return and_(a.action.in_(TARGET_ACTIONS), or_(entry_gone, group_gone))
+    entry_row = exists().where(LedgerEntry.id == entry_ids.c.value)
+    group_row = exists().where(EntryGroup.id == group_ids.c.value)
+    some_gone = or_(exists().select_from(entry_ids).where(~entry_row),
+                    exists().select_from(group_ids).where(~group_row))
+    some_alive = or_(exists().select_from(entry_ids).where(entry_row), exists().select_from(group_ids).where(group_row))
+    has_target = or_(func.cardinality(all_entries) > 0, func.cardinality(a.touched_group_ids) > 0)
+    return some_gone, some_alive, has_target
+
+
+def _unrevertable():
+    """SQL, correlated to ReconciliationAction: the action is fully stranded — it has targets and EVERY one of them
+    is gone (Lead ruling, PR #78 review M3). Only those are retired automatically."""
+    some_gone, some_alive, has_target = _stranded_parts()
+    return and_(ReconciliationAction.action.in_(TARGET_ACTIONS), has_target, some_gone, ~some_alive)
+
+
+def _partially_stranded():
+    """SQL: some targets gone, some alive. Such an action keeps a financial effect on what survives: it stays
+    `applied` (never retired silently), is counted (`action_partially_stranded`) and keeps refusing a retire."""
+    some_gone, some_alive, _ = _stranded_parts()
+    return and_(ReconciliationAction.action.in_(TARGET_ACTIONS), some_gone, some_alive)
+
+
+def partially_stranded_ids(db: Session, statement: AccountStatement) -> list[int]:
+    """The applied actions of the statement's cases that are partially stranded (`_partially_stranded`)."""
+    return list(db.execute(
+        select(ReconciliationAction.id)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied",
+               _partially_stranded())
+        .order_by(ReconciliationAction.id)).scalars())
 
 
 def _unrevertable_rows(db: Session, statement: AccountStatement, *, lock: bool = True) -> list[ReconciliationAction]:

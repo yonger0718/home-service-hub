@@ -305,3 +305,33 @@ def test_read_model_flags_a_retired_statement_and_its_events_never_pend(seed, db
     assert (detail["retired"], detail["stale_events_pending"]) == (True, False)
     assert (ing.get_statement(db_session, kept.id)["retired"], ing.get_statement(db_session, kept.id)["stale_events_pending"]) == (
         False, True)
+
+
+# --- PR #78 external review M1: a later statement's anchor whose opening target is the statement to retire ---------
+from tests.integration.test_reconciliation_actions_structural import anchored_bank  # noqa: E402,F401  (fixture)
+
+
+def test_retire_refuses_the_target_of_another_statements_anchor_until_it_is_reverted(anchored_bank, db_session):
+    a = anchored_bank  # August (the opening target, opening 1500) and September, both live bank statements
+    row, _ = engine.apply_action(db_session, case_id=a.cases[a.sep.id].id, action="anchor_opening", params={},
+                                 actor="owner", label="owner-test")  # on SEPTEMBER's balance_gap case
+    db_session.commit()
+    assert a.aug.id in row.inverse["statement_ids"]
+    before = {s: (_fresh(db_session, AccountStatement, s).mode, _events(db_session, _fresh(db_session, AccountStatement, s)))
+              for s in (a.aug.id, a.sep.id)}
+
+    with pytest.raises(CodedConflictError) as exc:
+        retire_svc.retire_statement(db_session, account_id=a.bank.id, statement_id=a.aug.id, note=NOTE,
+                                    label="owner-test", request_id=None)
+    db_session.rollback()
+
+    assert exc.value.code == "anchor_depends" and str(row.id) in str(exc.value)
+    assert {s: (_fresh(db_session, AccountStatement, s).mode, _events(db_session, _fresh(db_session, AccountStatement, s)))
+            for s in (a.aug.id, a.sep.id)} == before
+    assert _fresh(db_session, ReconciliationAction, row.id).status == "applied"
+    assert _retired_audit(db_session, a.aug) == []
+
+    engine.revert_action(db_session, action_id=row.id, actor="owner", label="owner-test")
+    db_session.commit()
+    assert _retire(db_session, a.aug).already_retired is False
+    assert _fresh(db_session, AccountStatement, a.aug.id).mode == "historical"

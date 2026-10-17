@@ -3,9 +3,12 @@
 Before the file guard (`statement_revision_service._file_statement_id`) one PDF re-parsed with another period made a
 second live statement holding the same lines. Retiring such a duplicate, in one transaction (never committed here):
 the shared import key → the statement FOR UPDATE and swept (`engine_locks.lock_statements`: the sweep first retires
-applied actions a ledger delete made unrevertable; a busy writer barrier is 409 `sweep_barrier_busy`, retry) →
-refused with 409 `actions_applied` while any action on its cases
-is `applied` (its effects belong to the owner: revert them first) → its active coverage released (`retired`) → every
+applied actions a ledger delete left fully stranded; a busy writer barrier is 409 `sweep_barrier_busy`, retry), the
+statements holding an applied `anchor_opening` that rests on it locked with it in ascending id order → refused with 409
+`anchor_depends` while such an anchor stays applied, and with 409 `actions_applied` while any action on its cases is
+`applied` (the owner reverts what the engine can revert; a statement with an irreversible — `replace_stand_in` —,
+snapshot-refused or partially stranded applied action has no supported retire path and goes to the owner / Lead; no
+shortcut edits the applied marker) → its active coverage released (`retired`) → every
 non-retired event `retired` → every open/proposed case and every resolved `deferred_next_period` deferral of it
 superseded (version bumped) and their pending proposals superseded → the deferrals of other statements linked to it
 unlinked (`deferred_to_statement_id` NULL; the linkers never pick a retired statement as source or target, so none is
@@ -29,10 +32,28 @@ from app.services import reconciliation_service as rec
 from app.services.errors import CodedConflictError, NotFoundError
 from app.services.reconciliation_actions import audit
 from app.services.reconciliation_actions import engine_locks as locks
+from app.services.reconciliation_actions import structural_actions as sa
 from app.services.schedule_locks import take_import_key_shared
 from app.services.statements import retired
 
 OPEN = ("open", "proposed")
+
+
+def _anchor_dependents(db: Session, statement: AccountStatement) -> list[tuple[int, int]]:
+    """(action id, holding statement id) of the account's applied `anchor_opening` rows (on any statement's case)
+    that rest on `statement`: it is in the anchor's recorded `inverse.statement_ids`, or it is the account's current
+    opening target (`anchor_target`: the anchor's basis would move if it left the live set)."""
+    target = sa.anchor_target(db, statement.account_id)
+    is_target = target is not None and target.id == statement.id
+    rows = db.execute(
+        select(ReconciliationAction.id, ReconciliationCase.statement_id, ReconciliationAction.inverse)
+        .join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
+        .join(AccountStatement, AccountStatement.id == ReconciliationCase.statement_id)
+        .where(ReconciliationAction.action == "anchor_opening", ReconciliationAction.status == "applied",
+               AccountStatement.account_id == statement.account_id)
+        .order_by(ReconciliationAction.id)).all()
+    return [(action_id, holder) for action_id, holder, inverse in rows
+            if is_target or statement.id in ((inverse or {}).get("statement_ids") or ())]
 
 
 @dataclass
@@ -47,25 +68,33 @@ class RetireResult:
 def retire_statement(db: Session, *, account_id: int, statement_id: int, note: str, label: str,
                      request_id: str | None) -> RetireResult:
     """Retire the account's statement (module docstring). Raises NotFoundError (not the account's statement),
-    ImportRunningError, CodedConflictError `actions_applied` or `sweep_barrier_busy` (the sweep under the lock).
-    Never commits."""
+    ImportRunningError, CodedConflictError `anchor_depends`, `actions_applied` or `sweep_barrier_busy` (the sweep
+    under the lock). Never commits."""
     statement = db.get(AccountStatement, statement_id)
     if statement is None or statement.account_id != account_id:
         raise NotFoundError(f"statement {statement_id} not found")
     if retired.is_retired(db, statement.id):  # final once written: no lock, no sweep, no write
         return RetireResult(statement, already_retired=True)
     take_import_key_shared(db)
-    # locked and swept: the sweep retires applied actions a ledger delete made unrevertable (e.g. a MOZE re-import),
-    # which would otherwise refuse the retire as `actions_applied` for good
-    statement = locks.lock_statements(db, [statement_id], run_id=None)[statement_id]
+    # The statements holding an anchor that rests on this one, discovered without locks, are locked with it in
+    # ascending id order (engine_locks.lock_statements, as the engine does) and the dependency is re-read under the
+    # locks. Locked and swept: the sweep retires applied actions a ledger delete left fully stranded (e.g. a MOZE
+    # re-import), which would otherwise refuse the retire as `actions_applied` for good.
+    holders = {holder for _, holder in _anchor_dependents(db, statement)}
+    statement = locks.lock_statements(db, [statement_id, *holders], run_id=None)[statement_id]
     if retired.is_retired(db, statement.id):
         return RetireResult(statement, already_retired=True)
+    depends = _anchor_dependents(db, statement)
+    if depends:
+        raise CodedConflictError("anchor_depends", "anchor_opening actions {} on statements {} rest on statement {}"
+                                 .format([a for a, _ in depends], sorted({h for _, h in depends}),
+                                                            statement.id))
     applied = db.execute(
         select(ReconciliationAction.id).join(ReconciliationCase, ReconciliationCase.id == ReconciliationAction.case_id)
         .where(ReconciliationCase.statement_id == statement.id, ReconciliationAction.status == "applied")
         .order_by(ReconciliationAction.id)).scalars().all()
     if applied:
-        raise CodedConflictError("actions_applied", f"actions {applied} are applied: revert them first")
+        raise CodedConflictError("actions_applied", f"actions {applied} are applied")
     previous_mode = statement.mode
     released = coverage_service.release_statement(db, statement, reason="retired")
     events = db.execute(

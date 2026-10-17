@@ -238,8 +238,9 @@ def confirm_statement(account_id: int, statement_id: int, body: ConfirmIn, reque
 @router.post("/accounts/{account_id}/statements/{statement_id}/retire", response_model=RetireOut, dependencies=ADMIN)
 def retire_statement(account_id: int, statement_id: int, body: RetireIn, request: Request,
                      db: Session = Depends(get_db)):
-    """Retire a duplicate statement (statement_retire_service): 409 `actions_applied` while an action on its cases is
-    applied, 409 `sweep_barrier_busy` when the sweep it runs under the lock meets a busy writer barrier (retry); a
+    """Retire a duplicate statement (statement_retire_service): 409 `anchor_depends` while an applied anchor_opening
+    rests on it, 409 `actions_applied` while an action on its cases is applied, 409 `sweep_barrier_busy` when the
+    sweep it runs under the lock meets a busy writer barrier (retry); a
     retired statement answers 200 with `already_retired` and writes nothing."""
     with service_errors():
         result = statement_retire_service.retire_statement(
