@@ -526,3 +526,14 @@ def test_instruction_states_the_foreign_fee_row_rule():
     assert "國外交易服務費" in text and "emit it as a fee line" in text and "sharing the dates of one of them" in text
     assert "keep the row as line_kind unknown" in text and "Never drop such a row" in text
     assert "never add or change a row to make the amounts balance" in text and "add up" not in text
+
+
+def test_instruction_and_hint_state_the_closing_day_preamble():
+    """Fix 2026-10-17: the operator's [hint] line carries the account's closing day; the instruction tells the
+    model to trust it over the layout. The hint itself is not part of the parser version."""
+    assert parse_schema.hint(None) == ""
+    line = parse_schema.hint(6)
+    assert line.startswith("[hint] ") and "day 6" in line and "結帳日" in line and "繳款截止日" in line and line.endswith("\n\n")
+    text = parse_schema.INSTRUCTION
+    assert "[hint] line from the operator stating the account's closing day" in text
+    assert "whatever the layout suggests" in text

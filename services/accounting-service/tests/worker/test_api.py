@@ -50,8 +50,8 @@ def test_lease_lost_on_submission_with_a_stale_token(worker_api):
 def test_account_map(worker_api, client):
     client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
                json={"account_map": {"manual/國泰世華": 3}, "dirty_enabled": False, "rules": {}})
-    mapping, version = worker_api.account_map()
-    assert mapping == {"manual/國泰世華": 3} and len(version) == 16
+    mapping, version, closing_days = worker_api.account_map()
+    assert mapping == {"manual/國泰世華": 3} and len(version) == 16 and closing_days == {}
 
 
 def test_guard_blocks_lease_routes_before_sending(client):

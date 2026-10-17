@@ -64,7 +64,10 @@ INSTRUCTION = (
     "transaction row in print order with seq starting at 1; mark subtotal or total rows with is_subtotal true. Keep "
     "merchant_raw as printed (masked tokens such as [NUM…1234] stay as they are). For foreign-currency rows set "
     "foreign_amount and foreign_currency (ISO code). For installment rows set installment_seq and installment_total "
-    "from the printed 分期 n/N. Use line_kind unknown when a row cannot be classified. Every printed transaction row "
+    "from the printed 分期 n/N. The input may begin with a [hint] line from the operator stating the account's closing "
+    "day; when it does, the header date whose day of month is that day (within 3 days) is closing_date and period_end, "
+    "and a later header date is the payment due date, whatever the layout suggests. Use line_kind unknown when a row "
+    "cannot be classified. Every printed transaction row "
     "with a non-zero amount becomes a line, even when it has no description (header amounts such as 最低應繳金額 are "
     "not transaction rows). A transaction row holding only a transaction date, a posting date and a small positive "
     "amount, printed in a separate block beside the foreign-currency rows and sharing the dates of one of them, is "
@@ -75,6 +78,17 @@ INSTRUCTION = (
     "credit: a payment received is payment, a cash-back or points credit is reward, and any other reversal (退款, 取消, "
     "分期調整 / 轉分期 reversing a purchase) is refund; never label a negative card row balance_adjustment."
 )
+
+
+def hint(closing_day: int | None) -> str:
+    """The operator's per-file preamble for the parser (fix 2026-10-17: 2025 HSBC layouts print the due date above
+    the closing date without labels and the parser kept picking the due date): the account's closing day, or the
+    empty string. Not part of the parser version — the instruction's reference to it is."""
+    if closing_day is None:
+        return ""
+    return (f"[hint] This card statement closes on day {closing_day} of the month: the header date whose day of month "
+            f"is {closing_day} (within 3 days) is the closing date (結帳日) and period_end; a later header date is the "
+            "payment due date (繳款截止日).\n\n")
 
 
 def json_schema() -> dict:

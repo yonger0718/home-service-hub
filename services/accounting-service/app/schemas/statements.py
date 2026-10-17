@@ -132,6 +132,7 @@ class AccountMapOut(BaseModel):
     model_config = Strict
     account_map: dict[str, int]
     mapping_version: str
+    closing_days: dict[str, int] = {}  # account id -> closing day of the cards that have one (the parser's hint)
 
 
 # ---- sources ----

@@ -233,8 +233,10 @@ def _review(services: Services, lease: Lease, file_row: dict, failure: str, summ
 
 
 def process_file(services: Services, lease: Lease, file_row: dict, listed: drive_mod.Listed, data: bytes,
-                 account_map: dict[str, int], mapping_version: str, summary: Summary) -> str:
+                 account_map: dict[str, int], mapping_version: str, summary: Summary,
+                 closing_days: dict[int, int] | None = None) -> str:
     account_id = account_map.get(_folder_key(listed))
+    closing_day = (closing_days or {}).get(account_id)
     if account_id is None:
         services.api.update_file(lease, file_row["id"], status="ignored", failure="mapping",
                                  mapping_version=mapping_version)
@@ -273,7 +275,8 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
                              credential_version=services.credential_version)
     # the first parser call is never `final`: on the trigger path a parser timeout or exit after a successful OCR read
     # is transient (backoff, retry), exactly as on the text-layer path; only the fallback's second call is final
-    status = _parse_submit(services, lease, file_row, account_id, extracted, candidates, ocr_note, summary)
+    status = _parse_submit(services, lease, file_row, account_id, extracted, candidates, ocr_note, summary,
+                           closing_day=closing_day)
     if status is not PARSE_FAILED:
         return status
     # R5.3 fallback (AGENT-118 ruling 2026-10-14): the text-layer parse failed with parse/schema/422. Some issuers
@@ -303,7 +306,8 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
     # the second parser call: the text attempt's exception is long gone (its handler returned); `final` makes a
     # timeout or exit end as failed/parse at this version, while a sandbox/auth/CLI-version failure keeps its
     # failed/sandbox semantics (host fault: latch, operator gate, then the file is processed again)
-    status = _parse_submit(services, lease, file_row, account_id, result.extracted, candidates, note, summary, final=True)
+    status = _parse_submit(services, lease, file_row, account_id, result.extracted, candidates, note, summary, final=True,
+                           closing_day=closing_day)
     if status is PARSE_FAILED:
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
     return status
@@ -313,7 +317,8 @@ PARSE_FAILED = "parse_failed"  # _parse_submit sentinel: the parser or the API r
 
 
 def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: int, extracted: pdf.Extracted,
-                  candidates: list[str], ocr_note: str | None, summary: Summary, *, final: bool = False) -> str:
+                  candidates: list[str], ocr_note: str | None, summary: Summary, *, final: bool = False,
+                  closing_day: int | None = None) -> str:
     """Mask → STDIN_CAP → parser → submit → guardrail/parsed. Returns the file's terminal status, or PARSE_FAILED
     when the parser (parse/schema) or the API (422) rejected the text, so the caller can decide on the R5.3
     fallback; every other outcome (sandbox latch, transient, too_large, guardrail) is terminal here. `final` (the
@@ -322,6 +327,7 @@ def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: 
     failure is a host fault and keeps its first-attempt semantics: the latch is set and the row is failed/sandbox,
     so it is processed again (and may fall back again) once the operator has repaired the host."""
     masked = services.masker.mask_ocr(extracted.text, candidates) if ocr_note else services.masker.render(extracted, candidates)
+    masked = parse_schema.hint(closing_day) + masked  # the operator's closing-day preamble (never masked: no owner data)
     if len(masked.encode("utf-8")) > parser_mod.STDIN_CAP:
         return _review(services, lease, file_row, "too_large", summary)
     try:
@@ -631,7 +637,7 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
             except parser_mod.GateUnavailable:  # transient canary failure: skip parsing, nothing latched, run done
                 services.parser_disabled = True
                 summary.errors.append("gate_unavailable")
-            account_map, mapping_version = services.api.account_map()
+            account_map, mapping_version, closing_days = services.api.account_map()
             summary.versions["mapping_version"] = mapping_version
             try:
                 listing = services.drive.list_pdfs()
@@ -662,7 +668,8 @@ def _execute(services: Services, summary: Summary, lease: Lease, trigger: str, m
                         continue
                     if data is None:
                         data = (services.cfg.inbox_dir / f"{file_row['sha256']}.pdf").read_bytes()
-                    process_file(services, lease, file_row, listed, data, account_map, mapping_version, summary)
+                    process_file(services, lease, file_row, listed, data, account_map, mapping_version, summary,
+                                 closing_days=closing_days)
                 except (LeaseLost, RunAborted, httpx.TransportError, drive_mod.ListingError):
                     raise
                 except Exception as exc:  # noqa: BLE001 — one bad file must not stop the run

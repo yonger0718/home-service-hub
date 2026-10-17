@@ -13,11 +13,12 @@ never fails the route.
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import require, require_feature
 from ..database import get_db
-from ..models import AccountStatement
+from ..models import Account, AccountStatement
 from ..schemas.statements import (
     AccountMapOut,
     FileOut,
@@ -319,7 +320,10 @@ def read_account_map(db: Session = Depends(get_db)):
     data = settings_service.read_reconciliation_settings(db)
     db.commit()
     account_map = data.get("account_map") or {}
-    return AccountMapOut(account_map=account_map, mapping_version=settings_service.mapping_version(account_map))
+    closing_days = {str(account_id): day for account_id, day in db.execute(
+        select(Account.id, Account.closing_day).where(Account.closing_day.is_not(None))).all()}
+    return AccountMapOut(account_map=account_map, mapping_version=settings_service.mapping_version(account_map),
+                         closing_days=closing_days)
 
 
 @router.get("/reconciliation/cases", response_model=list[CaseOut], dependencies=READ)

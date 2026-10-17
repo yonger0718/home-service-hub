@@ -637,6 +637,23 @@ def _record_parser(services):
     return seen
 
 
+@pytest.mark.parametrize("closing_day", [30, None])  # 30: the fake parser's period_end day, so the guardrail passes
+def test_parser_input_starts_with_the_closing_day_hint_when_the_card_has_one(world, db_session, card, closing_day):
+    """Fix 2026-10-17: the account map carries the cards' closing days and the pipeline prefixes the masked text
+    with the [hint] preamble; no closing day, no preamble (the masked statement is unchanged)."""
+    services, _, _ = world
+    db_session.execute(text("update account set closing_day = :d where id = :i"), {"d": closing_day, "i": card.id})
+    db_session.commit()
+    seen = _record_parser(services)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["parsed"] == 1 and summary["errors"] == []
+    (masked,) = seen
+    if closing_day is None:
+        assert not masked.startswith("[hint]")
+    else:
+        assert masked.startswith(parse_schema.hint(closing_day)) and f"day {closing_day}" in masked.split("\n", 1)[0]
+
+
 def test_ocr_path_parses_and_records_provenance(world, tmp_path, db_session):
     services, _, _ = _ocr_world(world, tmp_path, fake_ocr_child.ok(text=RAW_OCR_TEXT, boxes=42))
     summary = pipeline.run(services, trigger="owner_cli")
