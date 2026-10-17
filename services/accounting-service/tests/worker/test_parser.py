@@ -538,3 +538,15 @@ def test_instruction_and_hint_state_the_closing_day_preamble():
     text = parse_schema.INSTRUCTION
     assert "[hint] line from the operator stating the account's closing day" in text
     assert "whatever the layout suggests" in text and "do not invent or shift one" in text
+
+
+def test_instruction_states_the_trailing_card_token_rule():
+    """Fix 2026-10-17: 國泰 (Cube) rows end with `末四碼 授權碼 國別 幣別`; the parser zeroed or dropped such rows (their
+    amounts summed exactly to the equation delta on twelve historical statements)."""
+    text = parse_schema.INSTRUCTION
+    assert "the amount is the first amount after the whole merchant description" in text
+    assert "such as 7-11, stay in merchant_raw" in text and "last four digits" in text
+    assert "never the amount" in text and "never a reason to output 0" in text and "never a reason to drop the row" in text
+    # the fee rule's "Never drop such a row" still follows the fee sentence, before the trailing-token sentence
+    fee, keep, tail = text.index("foreign transaction service fee"), text.index("Never drop such a row"), text.index("last four digits")
+    assert fee < keep < tail
