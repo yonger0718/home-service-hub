@@ -3,7 +3,8 @@
 Before the file guard (`statement_revision_service._file_statement_id`) one PDF re-parsed with another period made a
 second live statement holding the same lines. Retiring such a duplicate, in one transaction (never committed here):
 the shared import key → the statement FOR UPDATE and swept (`engine_locks.lock_statements`: the sweep first retires
-applied actions a ledger delete made unrevertable) → refused with 409 `actions_applied` while any action on its cases
+applied actions a ledger delete made unrevertable; a busy writer barrier is 409 `sweep_barrier_busy`, retry) →
+refused with 409 `actions_applied` while any action on its cases
 is `applied` (its effects belong to the owner: revert them first) → its active coverage released (`retired`) → every
 non-retired event `retired` → every open/proposed case and every resolved `deferred_next_period` deferral of it
 superseded (version bumped) and their pending proposals superseded → the deferrals of other statements linked to it
@@ -46,7 +47,8 @@ class RetireResult:
 def retire_statement(db: Session, *, account_id: int, statement_id: int, note: str, label: str,
                      request_id: str | None) -> RetireResult:
     """Retire the account's statement (module docstring). Raises NotFoundError (not the account's statement),
-    ImportRunningError, CodedConflictError `actions_applied`. Never commits."""
+    ImportRunningError, CodedConflictError `actions_applied` or `sweep_barrier_busy` (the sweep under the lock).
+    Never commits."""
     statement = db.get(AccountStatement, statement_id)
     if statement is None or statement.account_id != account_id:
         raise NotFoundError(f"statement {statement_id} not found")
