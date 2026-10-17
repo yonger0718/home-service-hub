@@ -448,6 +448,19 @@ def _activate(db: Session, statement: AccountStatement, revision: StatementRevis
     return case_ids
 
 
+def _stale_current(db: Session, statement: AccountStatement, account: Account) -> bool:
+    """Fix 2026-10-17: the current revision passed the guardrails of its day but fails today's closing-day check —
+    a card `period_end` or `closing_date` more than CLOSING_TOLERANCE_DAYS off the account's closing day (the check
+    landed after the revision did; historical statements never re-parse on their own and a header change on them
+    opens nothing). Such a current revision is no trustworthy comparison base: a passing revision replaces it as a
+    correction, whatever its header changes."""
+    if statement.kind != "card" or account.closing_day is None:
+        return False
+    current = db.get(StatementRevision, statement.current_revision_id)
+    return any(abs(derive.closing_offset(day, account.closing_day)) > derive.CLOSING_TOLERANCE_DAYS
+               for day in (current.period_end, current.closing_date) if day is not None)
+
+
 def promote_revision(db: Session, statement: AccountStatement, revision: StatementRevision) -> list[int]:
     """Ruling 28: make a revision stored as non-current (a `statement_conflict` submission) the current one, from the
     persisted rows only — `_activate` against the current revision's lines (it inserts no `statement_line`), then
@@ -538,10 +551,14 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     period_blocked_by = None if created or (payload.period_start, payload.period_end) == (
         statement.period_start, statement.period_end) else period_blocker(db, statement, payload.period_start,
                                                                           payload.period_end)
-    # A passing revision replaces a failed current one: the failed header is no trustworthy comparison base.
-    current_failed = not created and not db.get(StatementRevision, statement.current_revision_id).guardrail_ok
+    # A passing revision replaces a failed current one: the failed header is no trustworthy comparison base. A current
+    # revision that fails today's closing-day check counts as failed too (stale current, fix 2026-10-17).
+    stale_current = not created and _stale_current(db, statement, account)
+    current_failed = not created and (stale_current or not db.get(StatementRevision, statement.current_revision_id).guardrail_ok)
     correction = current_failed and check.ok and not conflict and period_blocked_by is None
     blocked = {} if period_blocked_by is None else {"period_blocked_by": period_blocked_by}
+    if stale_current:
+        blocked = {**blocked, "stale_current": True}
     becomes_current = created or correction or (check.ok and not conflict and not twins_changed and not header_changed)
     number = (db.execute(select(func.max(StatementRevision.revision))
                          .where(StatementRevision.statement_id == statement.id)).scalar() or 0) + 1

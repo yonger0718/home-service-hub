@@ -372,6 +372,62 @@ def test_same_file_correction_moves_a_failed_statement_to_the_parsed_period(db_s
         revision_id=fixed.revision.id).one().id)
 
 
+def _stale_then_fixed(db, run, account, *, closing_day, wrong_end, fixed_end):
+    """A statement parsed before the account had a closing day (the misread period passed every check of its day),
+    then the closing day set and the same file re-parsed with the corrected period."""
+    r, token = run
+    f = _filed(db, r, token)
+    amap = {FOLDER: account.id}
+    lines = [_line(1, date(2026, 9, 3), "580")]
+    wrong = svc.submit_revision(db, r, _rev(r, token, account, lines, total="580", file_id=f.id,
+                                            period_start=date(2026, 9, 1), period_end=wrong_end), account_map=amap)
+    db.commit()
+    assert wrong.revision.guardrail_ok is True and wrong.statement.period_end == wrong_end
+    account.closing_day = closing_day
+    db.commit()
+    fixed = svc.submit_revision(db, r, _rev(r, token, account, lines, total="580", file_id=f.id,
+                                            period_start=date(2026, 9, 1), period_end=fixed_end), account_map=amap)
+    db.commit()
+    return wrong, fixed, db.get(AccountStatement, wrong.statement.id)
+
+
+def test_a_current_revision_failing_todays_closing_day_check_is_replaced_by_the_corrected_period(db_session, seed, run):
+    """Fix 2026-10-17 (stale current): the historical 2025 HSBC statements were parsed with the payment due date as
+    the closing date before the closing-day check existed; the hint now parses them right, but a header change on
+    a historical statement opens nothing and the old revision passed its guardrails. A current revision that fails
+    today's closing-day check is treated as failed, so the passing revision is a correction."""
+    old_card = seed.account("舊卡", is_credit=True)  # no statement_live_from: historical
+    db_session.commit()
+    wrong, fixed, stmt = _stale_then_fixed(db_session, run, old_card, closing_day=6, wrong_end=date(2026, 9, 24),
+                                           fixed_end=date(2026, 9, 6))
+    assert stmt.mode == "historical"
+    assert (fixed.statement.id, stmt.current_revision_id, stmt.period_end) == (stmt.id, fixed.revision.id, date(2026, 9, 6))
+    assert fixed.revision.guardrail["header_changes"]["period_end"] == ["2026-09-24", "2026-09-06"]
+    assert fixed.revision.guardrail["stale_current"] is True
+    assert db_session.query(ReconciliationCase).count() == 0  # historical: still no case, and none needed
+
+
+def test_a_current_revision_within_the_closing_day_tolerance_keeps_a_period_change_parked(db_session, seed, run):
+    """The rule is narrow: a current revision that still passes today's checks is a trustworthy base, so a changed
+    period stays a header change (non-current on a historical statement, as before)."""
+    old_card = seed.account("舊卡", is_credit=True)
+    db_session.commit()
+    wrong, fixed, stmt = _stale_then_fixed(db_session, run, old_card, closing_day=6, wrong_end=date(2026, 9, 8),
+                                           fixed_end=date(2026, 9, 6))
+    assert fixed.revision.guardrail_ok is True
+    assert (stmt.current_revision_id, stmt.period_end) == (wrong.revision.id, date(2026, 9, 8))
+    assert "stale_current" not in fixed.revision.guardrail
+
+
+def test_a_stale_current_on_a_live_statement_is_corrected_without_a_parse_review(db_session, card, run):
+    wrong, fixed, stmt = _stale_then_fixed(db_session, run, card, closing_day=6, wrong_end=date(2026, 9, 24),
+                                           fixed_end=date(2026, 9, 6))
+    assert stmt.mode == "live"
+    assert (stmt.current_revision_id, stmt.period_end) == (fixed.revision.id, date(2026, 9, 6))
+    assert [(c.kind, c.status) for c in db_session.query(ReconciliationCase).filter_by(kind="parse_review").all()] == []
+    assert _event_ids(db_session, fixed.revision.id) == _event_ids(db_session, wrong.revision.id)
+
+
 @pytest.mark.parametrize("taken", [(date(2026, 9, 1), date(2026, 9, 30)), (date(2026, 9, 16), date(2026, 10, 15))],
                          ids=["same_period_end", "overlapping"])
 def test_same_file_period_change_onto_another_statement_goes_to_review(db_session, card, run, taken):
