@@ -52,7 +52,7 @@ def test_report_and_errors_carry_keys_and_counts_only():
 
 @pytest.mark.parametrize("mutate, message", [
     (lambda lines: [l for l in lines if "綜合月對帳單" not in l.text], "period"),
-    (lambda lines: lines + [lines[4]], "duplicate holdings"),
+    (lambda lines: lines[:5] + [lines[4]] + lines[5:], "duplicate holdings"),
 ])
 def test_period_and_duplicate_holdings_fail(mutate, message):
     with pytest.raises(SplitError, match=message):

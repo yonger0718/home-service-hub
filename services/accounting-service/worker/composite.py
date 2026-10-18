@@ -144,16 +144,14 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
         if text == "交易明細":
             in_holdings, in_area = False, True
             continue
-        match = HOLDING.match(text)
-        if match:  # the pattern is strict enough to be recognised anywhere, so a repeated row is never ignored
-            key = f"{_suffix(match.group(2))}/{match.group(4) or 'TWD'}"
-            if key in holdings:
-                raise SplitError(f"duplicate holdings row for {key}")
-            holdings[key] = _amount(match.group(5), key, 0) if not match.group(5).startswith("-") else Decimal(
-                match.group(5).replace(",", ""))
-            open_suffix = None
-            continue
         if in_holdings:
+            match = HOLDING.match(text)
+            if match:
+                key = f"{_suffix(match.group(2))}/{match.group(4) or 'TWD'}"
+                if key in holdings:
+                    raise SplitError(f"duplicate holdings row for {key}")
+                holdings[key] = _amount(match.group(5), key, 0) if not match.group(5).startswith("-") else Decimal(
+                    match.group(5).replace(",", ""))
             continue
         if not in_area:
             continue
