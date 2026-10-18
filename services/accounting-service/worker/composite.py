@@ -150,6 +150,8 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
         words = _words(line)
         if not words:
             continue
+        if len(words) == 1 and PAGE_NO.match(words[0].text):
+            continue  # a standalone page number (page bottom): neither closes a section nor adds a row
         text = " ".join(w.text for w in words)
         if period is None:
             match = PERIOD.search(text)

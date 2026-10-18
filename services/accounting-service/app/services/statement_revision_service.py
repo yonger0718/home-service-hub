@@ -102,16 +102,17 @@ LINE_COLUMNS = ("seq", "txn_date", "posted_date", "merchant_raw", "printed_amoun
                 "flow_amount", "line_kind", "installment_seq", "installment_total")
 
 
-def _replayed(db: Session, statement: AccountStatement, payload: RevisionIn,
-              derived: list[derive.DerivedLine]) -> StatementRevision | None:
+def _replayed(db: Session, statement: AccountStatement, payload: RevisionIn, derived: list[derive.DerivedLine],
+              guardrail_ok: bool) -> StatementRevision | None:
     """The current revision when the payload is persisted-equal to it (spec §5): same file, parser and version,
-    statement kind and currency, every header column, and every stored line column position by position."""
+    statement kind and currency, every header column, every stored line column position by position, and today's
+    guardrail verdict equal to the stored one (a changed verdict takes the normal path)."""
     if statement.current_revision_id is None:
         return None
     current = db.get(StatementRevision, statement.current_revision_id)
     if (current.file_id, current.parser_version, current.parser) != (payload.file_id, payload.parser_version, payload.parser):
         return None
-    if (statement.kind, statement.currency) != (payload.kind, payload.currency):
+    if (statement.kind, statement.currency) != (payload.kind, payload.currency) or current.guardrail_ok != guardrail_ok:
         return None
     if any(getattr(current, column) != getattr(payload, column) for column in HEADER_COLUMNS):
         return None
@@ -629,7 +630,7 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     if not created and retired.is_retired(db, statement.id):  # 422: the worker fails the file, a 409 ends its run
         raise CodedValidationError("period_end", "statement_retired", f"statement {statement.id}")
     if not created:
-        replay = _replayed(db, statement, payload, derived)
+        replay = _replayed(db, statement, payload, derived, check.ok)
         if replay is not None:
             return SubmitResult(statement, replay, {}, [], replayed=True)
     # 5. revision

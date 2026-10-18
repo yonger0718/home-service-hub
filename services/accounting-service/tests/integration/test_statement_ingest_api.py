@@ -696,7 +696,7 @@ def test_composite_folder_accepts_each_declared_section_and_refuses_the_rest(cli
                  _bank_revision(lease, a, "91/TWD", raw={"section": 91}),  # non-string section
                  _bank_revision(lease, jpy, "50/JPY", currency="TWD")):  # currency mismatch with the key
         response = client.post("/statements/revisions", headers=W, json=body | {"file_id": file["id"]})
-        assert response.status_code == 422 and response.json()["detail"][0]["loc"][-1] in ("account_id", "kind"), response.text
+        assert response.status_code == 422 and response.json()["detail"][0]["loc"][-1] == "account_id", response.text
     row = db_session.execute(text("select account_id from statement_file where id = :id"), {"id": file["id"]}).scalar_one()
     assert row is None
 

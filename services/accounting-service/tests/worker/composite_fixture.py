@@ -71,12 +71,21 @@ HOLDINGS = {"91/TWD": "34,431", "59/TWD": "52,752", "68/TWD": "0", "50/JPY": "15
 DECLARED = {"91/TWD": False, "59/TWD": False, "68/TWD": True, "50/JPY": True}
 
 
-def statement(rows_91=ROWS_91, rows_59=ROWS_59, holdings=HOLDINGS, *, split_at=10) -> list[Line]:
+def page_number_line(page: int, top: float, n: int) -> Line:
+    return L(page, top, W(str(n), 300, 306))
+
+
+def statement(rows_91=ROWS_91, rows_59=ROWS_59, holdings=HOLDINGS, *, split_at=10,
+              standalone_page_numbers: bool = False) -> list[Line]:
     """Pages: 1 title; 2 holdings (page-number word before 持有明細); 3 交易明細, header, 91 rows up to `split_at`;
-    4 page number, repeated header, the rest of 91, 59 header, header, 59 rows, a trailing note line."""
+    4 page number, repeated header, the rest of 91, 59 header, header, 59 rows, a trailing note line.
+    With `standalone_page_numbers` the page numbers are their own lines at the page bottom (top 818) and page 4 has
+    no repeated header: the layout of the real file."""
+    glued = not standalone_page_numbers
     lines = [L(1, 50, W("國泰世華銀行綜合月對帳單", 40), W("2026/09/01", 300), W("~", 370), W("2026/09/30", 380)),
              L(1, 70, W("親愛的客戶您好", 40)),
-             L(2, 50, page_no(1, 50, 2), W("持有明細", 40)),
+             *([page_number_line(1, 818, 1)] if not glued else []),
+             L(2, 50, *([page_no(1, 50, 2)] if glued else []), W("持有明細", 40)),
              L(2, 70, W("台幣存款", 40), W("餘額", 100), W("87,183", 140), W("相較上月", 200), W("+1.00%", 260)),
              holding(2, 90, "活期存款", "123456****91", "屏東分行", holdings["91/TWD"]),
              holding(2, 100, "子帳戶", "123456****68", "屏東分行", holdings["68/TWD"]),
@@ -84,6 +93,7 @@ def statement(rows_91=ROWS_91, rows_59=ROWS_59, holdings=HOLDINGS, *, split_at=1
              L(2, 130, W("外幣存款", 40), W("餘額折合台幣", 100), W("30,000", 180), W("相較上月", 240), W("+0.10%", 300)),
              holding(2, 150, "外匯綜合活期存款", "123456****50", "屏東分行", holdings["50/JPY"], "JPY"),
              holding(2, 160, "外匯綜合活期存款", "123456****50", "屏東分行", holdings["50/USD"], "USD"),
+             *([page_number_line(2, 818, 2)] if not glued else []),
              L(3, 50, W("交易明細", 40)),
              section_header(3, 70, "123456****91"), header(3, 90)]
     top = 110
@@ -91,7 +101,10 @@ def statement(rows_91=ROWS_91, rows_59=ROWS_59, holdings=HOLDINGS, *, split_at=1
         lines.append(row(3, top, *r))
         top += 12
     lines.append(L(3, top, W("註：上述帳戶如已動用透支額度", 40)))
-    lines.append(L(4, 50, page_no(2, 50, 4), header(4, 50).words[0], *header(4, 50).words[1:]))
+    if glued:
+        lines.append(L(4, 50, page_no(2, 50, 4), header(4, 50).words[0], *header(4, 50).words[1:]))
+    else:
+        lines.append(page_number_line(3, 818, 3))
     top = 70
     for r in rows_91[split_at:]:
         lines.append(row(4, top, *r))
@@ -104,4 +117,6 @@ def statement(rows_91=ROWS_91, rows_59=ROWS_59, holdings=HOLDINGS, *, split_at=1
         top += 12
     lines.append(L(4, top, W("國泰綜合證券股份有限公司下單之相關交易", 40)))
     lines.append(L(4, top + 12, W("本行重要訊息", 40)))
+    if not glued:
+        lines.append(page_number_line(4, 818, 4))
     return lines

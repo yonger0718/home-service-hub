@@ -885,3 +885,24 @@ def test_replay_compares_the_current_revision_not_the_newest(seed, db_session, r
     assert db_session.query(ReconciliationCase).count() == cases
     assert db_session.query(ReconciliationCase).filter_by(kind="statement_conflict", status="open").count() == conflicts
     assert first.statement.current_revision_id == first.revision.id
+
+
+def test_replay_yields_when_todays_guardrail_verdict_changed_to_failing(seed, db_session, run):
+    account = _card(seed, db_session, live=True)  # closing_day 30
+    lines = [_fline(1, SEP[0], "A", 100)]
+    first = _submit(db_session, run, account, lines)[2]
+    assert first.revision.guardrail_ok
+    account.closing_day = 15  # identical content now fails the closing-day check
+    db_session.commit()
+    res = _again(db_session, run, account, lines)
+    assert not res.replayed and res.revision.id != first.revision.id and not res.revision.guardrail_ok
+
+
+def test_replay_yields_when_a_failed_current_revision_now_passes(seed, db_session, run):
+    account = _card(seed, db_session, live=True)
+    lines = [_fline(1, SEP[0], "A", 100)]
+    first = _submit(db_session, run, account, lines, total="999")[2]  # equation fails
+    assert not first.revision.guardrail_ok
+    res = _again(db_session, run, account, lines)
+    assert not res.replayed and res.revision.guardrail_ok and res.revision.id != first.revision.id
+    assert res.statement.current_revision_id == res.revision.id

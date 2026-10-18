@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from tests.worker.composite_fixture import (DECLARED, HOLDINGS, ROWS_91, L, W, X_BAL, X_OUT, amount, row,
+from tests.worker.composite_fixture import (DECLARED, HOLDINGS, ROWS_91, L, W, X_BAL, X_OUT, amount, page_number_line, row,
                                section_header, statement)
 from worker import composite
 from worker.composite import SplitError
@@ -273,3 +273,25 @@ def test_bodies_zero_row_is_unknown_and_cancelling_rows_stay():
     lines = dict(bodies(sections, file_id=5, targets=targets, parser_version="v1", masker=_masker(), candidates=[]))["91/TWD"]["lines"]
     assert lines[0]["printed_amount"] == "0" and lines[0]["line_kind"] == "unknown"
     assert [l["printed_amount"] for l in lines[1:]] == ["-10", "10"]
+
+
+def test_standalone_page_numbers_and_no_repeated_header_split_like_the_glued_layout():
+    sections, report = _split(statement(standalone_page_numbers=True))
+    assert [len(s.rows) for s in sections] == [16, 12, 0, 0] and report.anchor == 2
+
+
+def test_standalone_page_number_between_sections_is_ignored():
+    lines = statement(standalone_page_numbers=True)
+    index = next(i for i, l in enumerate(lines) if l.text.startswith("活期存款 帳號") and l.page == 4)
+    lines.insert(index, page_number_line(4, 400, 3))
+    sections, _ = _split(lines)
+    assert [len(s.rows) for s in sections] == [16, 12, 0, 0]
+
+
+@pytest.mark.parametrize("n", [3, 12])
+def test_standalone_page_number_never_counts_as_a_row(n):
+    lines = statement(standalone_page_numbers=True)
+    index = next(i for i, l in enumerate(lines) if l.page == 4 and l.top == 70)
+    lines.insert(index, page_number_line(3, 818, n))
+    sections, _ = _split(lines)
+    assert len(sections[0].rows) == 16

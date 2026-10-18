@@ -325,7 +325,9 @@ else: existing single-statement path, unchanged
   re-run after a partial failure cannot open `statement_conflict` on a statement the owner already reconciled, and
   a replay on a statement with a pending conflict changes nothing — no case, no `conflict_open` change, no current
   pointer change. Any difference — a seq swap, a foreign amount, raw merchant text, one header field, another file
-  or parser version — takes the existing path unchanged (conflict, twins, header gates). `RevisionOut` gains
+  or parser version — takes the existing path unchanged (conflict, twins, header gates). A replay also requires
+  today's guardrail verdict to equal the stored revision's `guardrail_ok`; a changed verdict takes the normal path.
+  `RevisionOut` gains
   `replayed: bool` (default false); the worker counts it. The replay rule applies to every revision submission,
   not only composite ones (it is a property of the route).
 - `RevisionIn.parser` accepts `"composite-rows"` and `"composite-anchor"` beside the existing values;

@@ -185,7 +185,7 @@ otherwise). Amounts are strings; a 422 message starts with a stable code (`code`
 | `GET /reconciliation/proposals` | `read` | query `status` (`pending`, `applied`, `rejected`, `superseded`), `case_id`, `limit` → `ProposalOut[]`; stale pending rows are superseded first; one that could not be (its statement or case is locked by another transaction) is hidden from the listing until it is |
 | `POST /reconciliation/proposals/{id}/apply` | `write` | → `ActionOut` (the stored action applied as `owner`; 201, 200 on replay) |
 | `POST /reconciliation/proposals/{id}/reject` | `write` | optional `{note}` → `ProposalOut`; reopens the case when it was the only live proposal |
-| `POST /accounts/{id}/statements` | `write` | `ManualStatementIn` (the import header and up to 2000 `lines`, no run/lease/file fields) → `RevisionOut` (201); `origin='manual'`, audited, policy runs after the commit when live; an equal-to-persisted resubmission answers 200 `replayed: true` and skips the policy |
+| `POST /accounts/{id}/statements` | `write` | `ManualStatementIn` (the import header and up to 2000 `lines`, no run/lease/file fields) → `RevisionOut` (201); `origin='manual'`, audited, policy runs after the commit when live; an equal-to-persisted resubmission answers 201 `replayed: true` and skips the policy |
 | `POST /accounts/{id}/statements/{sid}/confirm` | `write` | `{force=false, note?}` → `{status, checks, reopened_cases, forced}` |
 | `POST /accounts/{id}/statements/{sid}/retire` | `admin` | `{note}` (1..1000, not blank) → `{statement_id, mode, already_retired, released_coverage, retired_events, superseded_cases}`; 409 `actions_applied` |
 
