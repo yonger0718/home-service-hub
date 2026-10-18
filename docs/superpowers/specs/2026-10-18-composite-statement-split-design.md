@@ -147,9 +147,13 @@ only on the composite path, after the existing `extract` (which still decides `h
 
 ### Page and header handling (AGENT-153 #1)
 
-Lines carry their page, so `\f` no longer matters. A page number is a leading word matching `^\d{1,2}$` whose next
-word opens a known shape (`持有明細`, `交易明細`, `活期存款`/`外匯綜合活期存款` followed by `帳號`, or a `YYYY/MM/DD` date);
-it is dropped. The column header is the line whose words are exactly `日期 交易說明 幣別 提出 存入 餘額`: it is never a
+Lines carry their page, so `\f` no longer matters. A page number is either a leading word matching `^\d{1,2}$` whose
+next word opens a known shape (`持有明細`, `交易明細`, `日期`, `活期存款`/`外匯綜合活期存款` followed by `帳號`, or a
+`YYYY/MM/DD` date), or — what the real file actually prints in the word geometry (host dry run 2026-10-18) — a line
+consisting of that single word alone at the page foot. Either form is dropped wherever it occurs in the transaction
+area, inside or outside a section, and never closes a section. After a page break the real file prints neither a
+repeated column header nor a footer: the section simply continues with its next dated row on the new page (the
+repeated-header rule below stays for layouts that do print one). The column header is the line whose words are exactly `日期 交易說明 幣別 提出 存入 餘額`: it is never a
 row, and every occurrence (the bank repeats it after a page break) **records the column geometry** — the `x0`/`x1` of
 提出, 存入 and 餘額 — that the following rows use until the next header. The page footer / header lines the fixture
 shows (the bank's note lines, `台幣存款 餘額 … 相較上月 …`, `外幣存款 餘額折合台幣 …`) are recognised by shape and
