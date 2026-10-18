@@ -1,6 +1,6 @@
 # Composite bank statement split (國泰世華 綜合月對帳單) — design
 
-Status: rev 5 for Multica review, 2026-10-18. Rev 1 `d1de321` CHANGES-REQUESTED (AGENT-153), rev 2 `0680f1d`
+Status: rev 6 (accepted under the owner ruling of 2026-10-18: rev 5 `5d5282c` came back with one P2 only, folded in here), 2026-10-18. Rev 1 `d1de321` CHANGES-REQUESTED (AGENT-153), rev 2 `0680f1d`
 CHANGES-REQUESTED (AGENT-154), rev 3 `82a44d4` CHANGES-REQUESTED (AGENT-155) and superseded by the owner's decision
 to drop the model call for composite sections, rev 4 `5e0aef0` CHANGES-REQUESTED (AGENT-156, four regressions of
 the model-free body); §10 maps every finding to its change. Base: main `5636f5a` (R6b + R3a deployed). Follows the statement
@@ -181,9 +181,14 @@ For every declared section the worker builds the `POST /statements/revisions` bo
     raised as `SplitError`. Cancelling rows (+10 then −10) are two persisted lines, never collapsed;
   - **`line_kind` (AGENT-156 F2):** direction first, classification second, and the classification never changes
     the direction. Default: `deposit` for a 存入 row, `withdrawal` for a 提出 row. A finer kind is assigned only when
-    the whole description (after whitespace normalisation) **equals** an entry of a fixed table in
-    `composite.py` — `{"存款利息": "interest", "利息": "interest"}` for 存入 rows, `{"手續費": "fee", "轉帳手續費": "fee"}`
-    for 提出 rows — exact string equality, no substring match, direction-specific. `轉帳備註含利息` stays
+    the classification view of the description **equals** an entry of a fixed table in `composite.py` —
+    `{"存款利息": "interest", "利息": "interest"}` for 存入 rows, `{"手續費": "fee", "轉帳手續費": "fee"}` for 提出 rows —
+    exact string equality, no substring match, direction-specific. The classification view is
+    `" ".join(unicodedata.normalize("NFKC", row.description).split())` (NFKC folds full-width characters and spaces,
+    `split()`/`join` trims and collapses every whitespace run to one ASCII space, internal spaces survive), computed
+    on the **original, unmasked** description — classification runs before and independently of masking, so a
+    configured holder name that happens to equal a table key cannot change the kind. A zero-amount row is
+    `unknown` regardless of the table (the zero rule wins). `轉帳備註含利息` stays
     `deposit`/`withdrawal` by its cell, `手續費退回` on a 存入 row stays `deposit`, `利息` on a 提出 row stays
     `withdrawal`. The table is a code constant and grows only by a reviewed change (`matching.py` restricts which
     ledger kinds a `fee`/`interest` line may match and routes them to bank-only hints, so a wrong kind is not
@@ -341,7 +346,10 @@ is — it still helps statements whose counterpart account has no statement feed
     `0` / `unknown`, cancelling +10 / −10 rows → two persisted lines, a negative printed cell → `SplitError`, the
     per-line `printed_amount == deposit - withdrawal` and sum == closing − opening assertions); the `line_kind`
     table by exact description and direction (`存款利息` on 存入 → `interest`; `手續費` on 提出 → `fee`;
-    `轉帳備註含利息` → direction kind; `手續費退回` on 存入 → `deposit`; `利息` on 提出 → `withdrawal`);
+    `轉帳備註含利息` → direction kind; `手續費退回` on 存入 → `deposit`; `利息` on 提出 → `withdrawal`; ` 利息 ` with
+    leading/trailing spaces and `存款　利息` with a full-width space → `interest`; a configured holder name equal to
+    `利息` still classifies as `interest` and is masked in `merchant_raw`; a zero-amount `利息` row → `unknown`;
+    a row with neither 提出 nor 存入 → `SplitError`);
     `merchant_raw` via the run masker with the file's candidates (a planted candidate password and a configured
     holder name in a description are masked; a ≥6-digit run is masked by the generic rule); header fields,
     `parser` values, `raw` fields; the anchor body;
@@ -415,3 +423,4 @@ is — it still helps statements whose counterpart account has no statement feed
 | 156-F2 | substring keyword table can flip direction / misclassify memos | rev 5 §4: direction first; finer kind only on exact, direction-specific description equality from a code constant; three counter-examples in tests |
 | 156-F3 | `Masker.text` without the run instance and the file's `candidates` | rev 5 §4: `services.masker.text(description, extra_literals=candidates)`; name protection scoped to configured holder names; tests plant a candidate and a configured name |
 | 156-F4 | dropping parser failures read as dropping PDF failures | rev 5 §4: PDF-level password / malformed / TooLarge / extraction-timeout outcomes and their recovery kept verbatim; only parser-origin outcomes removed; synthetic tests |
+| 157-F2 (P2, only open item of rev 5) | "whitespace normalisation" undefined; masking-before-classification ambiguity | rev 6 §4: classification view = NFKC + split/join on the original description, before and independent of masking; zero rule wins; tests for whitespace variants, a configured-name collision and a neither-filled row. Accepted by the owner's ruling (PASS-or-minor → plan) without a further Codex round |
