@@ -787,3 +787,27 @@ def test_same_file_on_a_reconciled_statement_is_a_conflict_whose_promotion_keeps
     # refused before anything moved: no event pointer or status was flipped in the session
     assert {e.id: (e.status, e.current_line_id) for e in db_session.query(StatementEvent).all()} == events
     assert again.statement.current_revision_id == first.revision.id
+
+
+def test_two_sections_of_one_composite_file_become_two_independent_statements(db_session, seed, run):
+    r, token = run
+    live = seed.account("91 帳戶", is_credit=False, statement_live_from=date(2026, 9, 1))
+    hist = seed.account("59 帳戶", is_credit=False)
+    db_session.commit()
+    f = _file(db_session, r, token, sha="c" * 64)
+    svc.register_source(db_session, r, SourceRegisterIn(run_id=r.id, lease_token=token, file_id=f.id, root="manual",
+                                                        drive_file_id="m1", drive_path="國泰世華/2609.pdf", drive_md5=MD5, drive_size=10))
+    cmap = {"manual/國泰世華": {"91/TWD": {"account_id": live.id, "anchor_only": False},
+                               "59/TWD": {"account_id": hist.id, "anchor_only": False}}}
+
+    def body(account, section, **kw):
+        return _rev(r, token, account, [], total="0", opening="0", kind="bank", file_id=f.id,
+                    raw={"section": section, "anchor": True, "rows": 0}, **kw)
+
+    a = svc.submit_revision(db_session, r, body(live, "91/TWD"), account_map={}, composite_map=cmap)
+    b = svc.submit_revision(db_session, r, body(hist, "59/TWD", period_start=date(2026, 8, 1), period_end=date(2026, 8, 31)),
+                            account_map={}, composite_map=cmap)
+    assert a.statement.id != b.statement.id
+    assert (a.statement.mode, b.statement.mode) == ("live", "historical")
+    assert (a.statement.period_end, b.statement.period_end) == (date(2026, 9, 30), date(2026, 8, 31))
+    assert db_session.get(StatementFile, f.id).account_id is None

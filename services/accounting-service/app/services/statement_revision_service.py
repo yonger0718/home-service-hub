@@ -118,8 +118,11 @@ def _header_changes(statement: AccountStatement, payload: RevisionIn) -> dict[st
     return changes
 
 
-def _assert_folder_maps(db: Session, file_id: int, account_id: int, account_map: dict[str, int]) -> None:
-    """The file's newest source (non-removed preferred) folder `root/<first two folders>` must map to the account."""
+def _assert_folder_maps(db: Session, file_id: int, account_id: int, account_map: dict[str, int],
+                        composite_map: dict | None = None, *, section=None, currency: str | None = None) -> bool:
+    """The file's newest source (non-removed preferred) folder `root/<first two folders>` must map to the account:
+    through `account_map`, or — a composite folder — through the submitted `raw.section` key, whose target must be
+    this account in this currency (spec §5). Returns True for a composite folder."""
     if db.get(StatementFile, file_id) is None:
         raise NotFoundError(f"statement file {file_id} not found")
     source = db.execute(
@@ -130,8 +133,15 @@ def _assert_folder_maps(db: Session, file_id: int, account_id: int, account_map:
         raise ValidationError("file_id", "file has no source")
     folders = [part for part in source.drive_path.strip("/").split("/") if part][:-1]
     folder = "/".join([source.root, *folders[:2]])
+    targets = (composite_map or {}).get(folder)
+    if targets is not None:
+        target = targets.get(section) if isinstance(section, str) else None
+        if target is None or target.get("account_id") != account_id or section.split("/")[-1] != currency:
+            raise ValidationError("account_id", "folder maps elsewhere")
+        return True
     if account_map.get(folder) != account_id:
         raise ValidationError("account_id", "folder maps elsewhere")
+    return False
 
 
 def _file_statement_id(db: Session, payload: RevisionIn) -> int | None:
@@ -556,7 +566,7 @@ def _recount(db: Session, statement: AccountStatement) -> None:
 
 
 def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account_map: dict[str, int],
-                    origin: str | None = None) -> SubmitResult:
+                    composite_map: dict | None = None, origin: str | None = None) -> SubmitResult:
     """Store one revision (module docstring). `origin` names a statement created here: default `import` with a file,
     `manual` without one (R1a); the manual-statement route passes `manual`."""
     # 1. account, kind, folder mapping
@@ -568,8 +578,10 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     if payload.period_start > payload.period_end:
         raise ValidationError("period_start", "period_start is after period_end")
     if payload.file_id is not None:
-        _assert_folder_maps(db, payload.file_id, payload.account_id, account_map)
-        db.get(StatementFile, payload.file_id).account_id = payload.account_id
+        section = payload.raw.get("section") if isinstance(payload.raw, dict) else None
+        composite = _assert_folder_maps(db, payload.file_id, payload.account_id, account_map, composite_map,
+                                        section=section, currency=payload.currency)
+        db.get(StatementFile, payload.file_id).account_id = None if composite else payload.account_id
     # 2. server-side derivation and guardrails
     try:
         derived = derive.derive_lines(payload.kind, [derive.LineIn(**line.model_dump()) for line in payload.lines])

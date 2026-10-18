@@ -196,8 +196,9 @@ def _revision_out(result) -> dict:
 def submit_revision(body: RevisionIn, request: Request, db: Session = Depends(get_db)):
     with service_errors():
         run = ingest.require_lease(db, body.run_id, body.lease_token, label=_label(request))
-        account_map = settings_service.get_reconciliation_settings(db).get("account_map", {})
-        result = ingest.submit_revision(db, run, body, account_map=account_map)
+        settings = settings_service.get_reconciliation_settings(db)
+        result = ingest.submit_revision(db, run, body, account_map=settings.get("account_map", {}),
+                                        composite_map=settings.get("composite_map", {}))
         out = _revision_out(result)
     db.commit()
     if out["mode"] == "live":

@@ -645,3 +645,54 @@ def test_account_map_route_carries_the_composite_map_and_versions_it(client, car
     assert after["composite_map"] == {COMPOSITE: {"91/TWD": {"account_id": a.id, "anchor_only": False}}}
     assert after["mapping_version"] != before["mapping_version"] and len(after["mapping_version"]) == 16
     assert after["account_map"] == {"mail/信用卡/國泰世華": card.id}
+
+
+def _composite_file(client, lease, sha, path="國泰世華/2609.pdf"):
+    ids = {"run_id": lease["run_id"], "lease_token": lease["lease_token"]}
+    file = client.post("/statements/files", headers=W, json=ids | {"sha256": sha * 64, "size": 10, "kind": "bank", "object_key": sha * 64}).json()
+    source = client.post("/statements/sources", headers=W, json=ids | {"file_id": file["id"], "root": "manual", "drive_file_id": "m" + sha,
+                                                                     "drive_path": path, "drive_md5": "b" * 32, "drive_size": 10})
+    assert source.status_code == 201, source.text
+    return file
+
+
+def _bank_revision(lease, account, section, **override):
+    body = _revision(lease, account, [], "0") | {"kind": "bank", "opening_balance": "0", "currency": account.currency,
+                                                 "raw": {"section": section, "anchor": True, "rows": 0}}
+    return body | override
+
+
+def test_composite_folder_accepts_each_declared_section_and_refuses_the_rest(client, seed, db_session):
+    a, b, jpy = _bank(seed, db_session, "國泰"), _bank(seed, db_session, "薪轉"), _bank(seed, db_session, "日幣", "JPY")
+    other = _bank(seed, db_session, "別家")
+    assert _put(client, {"composite_map": {COMPOSITE: {"91/TWD": {"account_id": a.id}, "59/TWD": {"account_id": b.id},
+                                                       "50/JPY": {"account_id": jpy.id, "anchor_only": True}}}}).status_code == 200
+    lease = _claim(client)
+    file = _composite_file(client, lease, "e")
+    ok = client.post("/statements/revisions", headers=W, json=_bank_revision(lease, a, "91/TWD") | {"file_id": file["id"]})
+    assert ok.status_code == 201, ok.text
+    ok2 = client.post("/statements/revisions", headers=W, json=_bank_revision(lease, b, "59/TWD") | {"file_id": file["id"]})
+    assert ok2.status_code == 201 and ok2.json()["statement_id"] != ok.json()["statement_id"]
+    ok3 = client.post("/statements/revisions", headers=W, json=_bank_revision(lease, jpy, "50/JPY") | {"file_id": file["id"]})
+    assert ok3.status_code == 201
+    for body in (_bank_revision(lease, other, "91/TWD"),            # wrong account for the key
+                 _bank_revision(lease, a, "59/TWD"),                # key points elsewhere
+                 _bank_revision(lease, a, "77/TWD"),                # unmapped key
+                 _bank_revision(lease, a, "91/TWD", raw={}),        # no section
+                 _bank_revision(lease, a, "91/TWD", raw={"section": 91}),  # non-string section
+                 _bank_revision(lease, jpy, "50/JPY", currency="TWD")):  # currency mismatch with the key
+        response = client.post("/statements/revisions", headers=W, json=body | {"file_id": file["id"]})
+        assert response.status_code == 422 and response.json()["detail"][0]["loc"][-1] in ("account_id", "kind"), response.text
+    row = db_session.execute(text("select account_id from statement_file where id = :id"), {"id": file["id"]}).scalar_one()
+    assert row is None
+
+
+def test_composite_submission_clears_a_stale_file_account_id(client, seed, db_session):
+    a = _bank(seed, db_session, "國泰")
+    assert _put(client, {"composite_map": {COMPOSITE: {"91/TWD": {"account_id": a.id}}}}).status_code == 200
+    lease = _claim(client)
+    file = _composite_file(client, lease, "f")
+    db_session.execute(text("update statement_file set account_id = :a where id = :id"), {"a": a.id, "id": file["id"]})
+    db_session.commit()
+    assert client.post("/statements/revisions", headers=W, json=_bank_revision(lease, a, "91/TWD") | {"file_id": file["id"]}).status_code == 201
+    assert db_session.execute(text("select account_id from statement_file where id = :id"), {"id": file["id"]}).scalar_one() is None
