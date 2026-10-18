@@ -19,12 +19,17 @@ _PHONE = re.compile(
 )
 # a run is >= 6 contiguous digits, or >= 2 groups of >= 3 digits joined by one space or dash
 _DIGIT_RUN = re.compile(r"(?<!\d)(?:\d{6,}|\d{3,}(?:[ \-]\d{3,})+)(?!\d)")
-# A card transaction row's trailing columns (國泰 CUBE): the amount, the card's last four digits, optionally a four-digit
-# authorisation code, then a two-letter country code and a three-letter currency code. Without this pass `_DIGIT_RUN`
-# joins the amount with the codes (174 9538 1814 → [NUM…1814]) and the parser never sees the amount. Only this exact
-# shape is rewritten — the amount stays printed and the code groups become one masked token — every other digit run
-# keeps the generic rule, so no identifier printed as a short group followed by longer groups is exposed.
-_TXN_CODES = re.compile(r"(?<![\d,.])(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?) (\d{4})(?: (\d{4}))? ([A-Z]{2}) ([A-Z]{3})(?![A-Za-z0-9])")
+# A card transaction row (國泰 CUBE): two MM/DD dates, the merchant, then the amount, the card's last four digits,
+# optionally a four-digit authorisation code, a two-letter country code and a three-letter currency code. Without this
+# pass `_DIGIT_RUN` joins the amount with the codes (174 9538 1814 → [NUM…1814]) and the parser never sees the amount.
+# Only a whole row of this shape is rewritten — the amount stays printed and the code groups become one masked token.
+# The row must start with the two dates (an identifier printed with country and currency codes but no transaction
+# dates keeps the generic rule) and the amount must not follow a three-digit group (the pass never starts inside a
+# longer identifier such as 0800 123 4567, which the generic rule then masks whole). Every other digit run keeps the
+# generic rule, so no identifier printed as a short group followed by longer groups is exposed (AGENT-148).
+_TXN_ROW = re.compile(
+    r"^(\d{2}/\d{2} \d{2}/\d{2} [^\n]*?)(?<!\d{3}) (-?\d{1,3}(?:,\d{3})*(?:\.\d+)?) (\d{4})(?: (\d{4}))? ([A-Z]{2}) ([A-Z]{3})"
+    r"(?![A-Za-z0-9])", re.MULTILINE)
 # Folded into the parser version (parse_schema.version): bump when a masking rule changes what the parser receives,
 # so files that failed under the old rule are re-parsed.
 FINGERPRINT = "mask2-amount-before-codes"
@@ -171,9 +176,9 @@ class Masker:
         return f"[NUM…{digits[-4:]}]"
 
     @staticmethod
-    def _txn_codes(match: re.Match) -> str:
-        amount, card, auth, country, currency = match.groups()
-        return f"{amount} [NUM…{(auth or card)[-4:]}] {country} {currency}"
+    def _txn_row(match: re.Match) -> str:
+        head, amount, card, auth, country, currency = match.groups()
+        return f"{head} {amount} [NUM…{(auth or card)[-4:]}] {country} {currency}"
 
     def text(self, s: str, extra_literals=()) -> str:
         for literal in sorted((x for x in extra_literals if len(x) >= 4), key=len, reverse=True):
@@ -192,7 +197,7 @@ class Masker:
         for literal in self.literals:
             s = s.replace(literal, "[BIRTH]")
         s = _PHONE.sub("[PHONE]", s)
-        s = _TXN_CODES.sub(self._txn_codes, s)  # before the generic rule, which would swallow the amount
+        s = _TXN_ROW.sub(self._txn_row, s)  # before the generic rule, which would swallow the amount
         s = _DIGIT_RUN.sub(self._digits, s)
         return s
 
