@@ -78,7 +78,8 @@ INSTRUCTION = (
     "the card's last four digits, a four-digit authorisation code, a country code and a currency code (and, for a "
     "foreign row, the foreign amount and its date): the amount is the first amount after the whole merchant description "
     "(digits inside the merchant, such as 7-11, stay in merchant_raw; a thousands separator stays inside the amount) — "
-    "those trailing digit groups are never the amount, never a reason to output 0 and never a reason to drop the row. "
+    "those trailing digit groups are never the amount, never a reason to output 0 and never a reason to drop the row; "
+    "the card and authorisation digits may appear as one masked token such as [NUM…1814]. "
     "Do not invent rows; if the "
     "text is not a statement, return zero lines and explain in notes. On a card statement every negative row is a "
     "credit: a payment received is payment, a cash-back or points credit is reward, and any other reversal (退款, 取消, "
@@ -107,12 +108,13 @@ def json_schema() -> dict:
 VERSION_MAX = 64  # RevisionIn.parser_version / statement_file.parser_version are String(64)
 
 
-def version(cli_version: str, model: str, ocr_fingerprint: str) -> str:
-    """One bounded version for every file (R5.4): the full CLI version, model id, instruction, schema and OCR
-    fingerprint fold into a 12-hex digest behind a display prefix cut to 12+24 characters (max 61 in all), so no
-    configuration can exceed the 64-character bound and truncated prefixes cannot collide."""
+def version(cli_version: str, model: str, ocr_fingerprint: str, mask_fingerprint: str) -> str:
+    """One bounded version for every file (R5.4): the full CLI version, model id, instruction, schema, OCR fingerprint
+    and mask fingerprint (mask.FINGERPRINT: the rules deciding what the parser receives) fold into a 12-hex digest
+    behind a display prefix cut to 12+24 characters (max 61 in all), so no configuration can exceed the 64-character
+    bound and truncated prefixes cannot collide."""
     digest = hashlib.sha256("\n".join([cli_version, model, INSTRUCTION, json.dumps(json_schema(), sort_keys=True),
-                                       ocr_fingerprint]).encode()).hexdigest()[:12]
+                                       ocr_fingerprint, mask_fingerprint]).encode()).hexdigest()[:12]
     out = f"claude-cli-{cli_version[:12]}-{model[:24]}-{digest}"
     assert len(out) <= VERSION_MAX
     return out

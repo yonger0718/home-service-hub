@@ -117,3 +117,26 @@ def test_password_literals_respect_token_boundaries():
     assert "[PW]" in masker.render(ex("pin 0115 end"), ["0115"])
     assert "Secret991" in masker.render(ex("a Secret991 b"), ["Secret99"])
     assert "[PW]" in masker.render(ex("a Secret99 b"), ["Secret99"])
+
+
+@pytest.mark.parametrize("s,expected", [
+    ("12/22 12/26 優步－大慶大車隊 174 9538 1814 TW TWD", "12/22 12/26 優步－大慶大車隊 174 [NUM…1814] TW TWD"),
+    ("高鐵智慧型手機ＩＰｈｏ 1,480 9538 1814 TW TWD", "高鐵智慧型手機ＩＰｈｏ 1,480 [NUM…1814] TW TWD"),
+    ("SUICA MOBILE PAYMENT 2,025 9538 5897 JP JPY 10,000.00 12/23", "SUICA MOBILE PAYMENT 2,025 [NUM…5897] JP JPY 10,000.00 12/23"),
+    ("國外交易手續費 -SUICA 30 9538", "國外交易手續費 -SUICA 30 9538"),
+    ("全聯福利中心 85 1234 3799", "全聯福利中心 85 [NUM…3799]"),  # two equal groups: masked together, amount untouched
+])
+def test_amount_before_card_and_authorisation_codes_survives(s, expected):
+    """Cube rows end with the card's last four digits and an authorisation code: the amount column before them is a
+    shorter digit group and stays printed; only the codes are masked (AGENT-147 follow-up: 12 Cube statements lost
+    every amount to the mask and failed the equation)."""
+    assert mask.Masker(IDENT).text(s) == expected
+
+
+def test_leading_shorter_group_of_a_long_identifier_still_masks_the_rest():
+    assert mask.Masker(IDENT).text("帳號 013 21705159") == "帳號 013 [NUM…5159]"
+    assert mask.Masker(IDENT).text("013-21705159") == "[NUM…5159]"  # dashed identifiers are masked whole
+
+
+def test_mask_fingerprint_pins_the_amount_rule():
+    assert mask.FINGERPRINT == "mask2-amount-before-codes"

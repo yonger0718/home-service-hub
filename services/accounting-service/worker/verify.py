@@ -230,7 +230,7 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
         gate.ensure(prs)  # raises ParserDisabled (ruling 9)
     except parser_mod.GateUnavailable:  # transient canary failure: no latch, nothing parsed
         return {"errors": ["gate_unavailable"], "statements": 0}
-    version = parse_schema.version(prs.cli_version() or "unknown", cfg.parser_model, ocr_mod.FINGERPRINT)
+    version = parse_schema.version(prs.cli_version() or "unknown", cfg.parser_model, ocr_mod.FINGERPRINT, mask.FINGERPRINT)
     vtag = hashlib.sha256(version.encode("utf-8")).hexdigest()[:16]
     masked_dir, parsed_dir = cfg.verify_dir / "masked", inbox_mod.private_dir(cfg.verify_dir / "parsed")
     reports = inbox_mod.private_dir(cfg.verify_dir / "reports")

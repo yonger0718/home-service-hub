@@ -19,6 +19,9 @@ _PHONE = re.compile(
 )
 # a run is >= 6 contiguous digits, or >= 2 groups of >= 3 digits joined by one space or dash
 _DIGIT_RUN = re.compile(r"(?<!\d)(?:\d{6,}|\d{3,}(?:[ \-]\d{3,})+)(?!\d)")
+# Folded into the parser version (parse_schema.version): bump when a masking rule changes what the parser receives,
+# so files that failed under the old rule are re-parsed.
+FINGERPRINT = "mask2-amount-before-codes"
 
 
 # R5b (OCR path only): OCR splits identifiers across boxes and pads columns with wide or full-width spaces, so the
@@ -159,6 +162,16 @@ class Masker:
             return raw  # dates and short references such as "000 2026" are not account numbers
         if _compact_date(raw):
             return raw  # printed compact dates such as 20260930 are not account numbers
+        if " " in raw and "-" not in raw:
+            # Table columns: a transaction amount (174, or the 480 of 1,480) printed right before the card's last four
+            # digits and an authorisation code (174 9538 1814). A leading group shorter than the next one is such a
+            # column and stays printed; the remaining groups are masked on their own when they still qualify. An
+            # identifier printed with a short leading group (013 21705159) keeps that prefix and masks the rest.
+            groups = raw.split(" ")
+            if len(groups[0]) < len(groups[1]):
+                rest = "".join(groups[1:])
+                tail = " ".join(groups[1:]) if len(rest) < 8 else f"[NUM…{rest[-4:]}]"
+                return f"{groups[0]} {tail}"
         return f"[NUM…{digits[-4:]}]"
 
     def text(self, s: str, extra_literals=()) -> str:
