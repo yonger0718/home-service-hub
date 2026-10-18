@@ -216,7 +216,7 @@ def create_manual_statement(account_id: int, body: ManualStatementIn, request: R
         out = _revision_out(result)
         run_id = result.revision.run_id
     db.commit()
-    if out["mode"] == "live":
+    if out["mode"] == "live" and not out["replayed"]:
         policy_service.run_policy_safe(db, out["statement_id"], run_id=run_id)
     return out
 

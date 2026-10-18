@@ -843,11 +843,13 @@ def test_replay_needs_persisted_equality(seed, db_session, run, variant):
     account = _card(seed, db_session, live=True)
     r = run
     base = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
+    if variant == "foreign":
+        base[0] = _fline(1, SEP[0], "A", 100, foreign_amount=Decimal("3"), foreign_currency="USD")
     first = _submit(db_session, r, account, base)[2]
     if variant == "seq":
-        lines, kw = [_fline(2, SEP[0], "A", 100), _fline(1, SEP[0], "B", 50)], {}
+        lines, kw = [_fline(1, SEP[0], "A", 100), _fline(3, SEP[0], "B", 50)], {}
     elif variant == "foreign":
-        lines, kw = [_fline(1, SEP[0], "A", 100, foreign_amount=Decimal("3"), foreign_currency="USD"), base[1]], {}
+        lines, kw = [_fline(1, SEP[0], "A", 100, foreign_amount=Decimal("4"), foreign_currency="USD"), base[1]], {}
     elif variant == "merchant":
         lines, kw = [_fline(1, SEP[0], "A ", 100), base[1]], {}
     elif variant == "header":
@@ -875,6 +877,11 @@ def test_replay_compares_the_current_revision_not_the_newest(seed, db_session, r
     assert newer.revision.conflict and first.statement.current_revision_id == first.revision.id
     same_as_newer = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 60)])
     assert not same_as_newer.replayed  # equal to the newest, not to the current
+    cases = db_session.query(ReconciliationCase).count()
+    conflicts = db_session.query(ReconciliationCase).filter_by(kind="statement_conflict", status="open").count()
     same_as_current = _again(db_session, r, account, base)
     assert same_as_current.replayed and same_as_current.revision.id == first.revision.id
     assert first.statement.conflict_open  # the pending conflict is untouched
+    assert db_session.query(ReconciliationCase).count() == cases
+    assert db_session.query(ReconciliationCase).filter_by(kind="statement_conflict", status="open").count() == conflicts
+    assert first.statement.current_revision_id == first.revision.id

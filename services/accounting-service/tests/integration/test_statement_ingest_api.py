@@ -67,6 +67,20 @@ def test_worker_submits_revision_and_owner_reads_it(client, card):
     assert detail.json()["stale_events_pending"] is False
 
 
+def test_identical_revision_body_replays_and_skips_the_policy(client, card, monkeypatch):
+    from app.services import policy_service
+    calls = []
+    monkeypatch.setattr(policy_service, "run_policy_safe", lambda *a, **k: calls.append(a))
+    lease = _claim(client)
+    body = _revision(lease, card, [{"seq": 1, "posted_date": "2026-09-03", "merchant_raw": "全聯", "printed_amount": "580", "line_kind": "purchase"}], "580")
+    first = client.post("/statements/revisions", headers=W, json=body)
+    second = client.post("/statements/revisions", headers=W, json=body)
+    assert first.status_code == second.status_code == 201
+    assert (first.json()["replayed"], second.json()["replayed"]) == (False, True)
+    assert second.json()["revision_id"] == first.json()["revision_id"]
+    assert len(calls) == 1
+
+
 def test_hermes_cannot_submit_revisions(client, card):
     lease = _claim(client)
     assert client.post("/statements/revisions", headers=H, json=_revision(lease, card, [], "0")).status_code == 403
