@@ -1,7 +1,8 @@
 import pytest
 
-from tests.worker.pdfgen import encrypt, make_pdf, make_pdf_cid, make_pdf_glyphs, statement_lines
+from tests.worker.pdfgen import encrypt, make_pdf, make_pdf_cid, make_pdf_glyphs, make_pdf_words, statement_lines
 from worker import pdf
+from worker.pdf import extract_lines
 
 
 def test_unlock_tries_candidates_in_order_and_records_index():
@@ -178,3 +179,44 @@ def test_garbage_rule_looks_at_page_one_only():
     assert page2 >= pdf.GARBAGE_GLYPH_SHARE  # a rule over all pages would fire here …
     out = pdf.extract(data, None)             # … the page-1 rule does not: the text layer is used as today
     assert out.pages == 2 and "MERCHANT 003" in out.text and "(cid:" in out.text
+
+
+def test_extract_lines_groups_words_by_top_and_sorts_by_x():
+    page1 = [(40, 780, "2026/09/01"), (229, 780, "TWD"), (330, 780, "1,000"), (530, 780, "9,000"),
+             (40, 760, "2026/09/02"), (229, 760, "TWD"), (420, 760, "500"), (530, 760, "9,500")]
+    page2 = [(40, 780, "3"), (60, 780, "2026/09/03")]
+    data = make_pdf_words([page1, page2])
+    lines = extract_lines(data, None)
+    assert [line.page for line in lines] == [1, 1, 2]
+    first = lines[0]
+    assert [w.text for w in first.words] == ["2026/09/01", "TWD", "1,000", "9,000"]
+    assert first.text == "2026/09/01 TWD 1,000 9,000"
+    assert first.words[2].x0 < first.words[3].x0 and first.words[2].x1 < first.words[3].x1
+    assert lines[1].top > first.top and [w.text for w in lines[2].words] == ["3", "2026/09/03"]
+
+
+def test_extract_lines_keeps_the_extract_bounds():
+    data = make_pdf_words([[(40, 780, "x")]])
+    with pytest.raises(pdf.TooLarge):
+        extract_lines(data, None, max_bytes=10)
+    with pytest.raises(pdf.TooLarge):
+        extract_lines(make_pdf_words([[(40, 780, "a")], [(40, 780, "b")]]), None, max_pages=1)
+    with pytest.raises(pdf.Malformed):
+        extract_lines(b"%PDF-1.4 not a pdf", None)
+    locked = encrypt(make_pdf([statement_lines()]), "pw")
+    with pytest.raises(pdf.PasswordError):
+        extract_lines(locked, "wrong")
+    assert extract_lines(locked, "pw")[0].words[0].text.startswith("2026/09/")
+
+
+def test_extract_lines_timeout(monkeypatch):
+    import time
+    import pdfplumber
+
+    def slow(self, *a, **k):
+        time.sleep(3)
+        return []
+
+    monkeypatch.setattr(pdfplumber.page.Page, "extract_words", slow)
+    with pytest.raises(pdf.ExtractTimeout):
+        extract_lines(make_pdf_words([[(40, 780, "x")]]), None, timeout_s=1)

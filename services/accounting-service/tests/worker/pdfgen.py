@@ -13,7 +13,7 @@ def _page_stream(lines: list[str]) -> bytes:
     return "\n".join(body).encode("latin-1")
 
 
-def make_pdf(pages: list[list[str]]) -> bytes:
+def _build(pages: list, stream) -> bytes:
     objects: list[bytes] = []
     page_ids = []
     font_id = 3
@@ -21,8 +21,8 @@ def make_pdf(pages: list[list[str]]) -> bytes:
     objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
     objects.append(b"")  # pages, filled below
     objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-    for i, lines in enumerate(pages):
-        content = _page_stream(lines)
+    for i, page in enumerate(pages):
+        content = stream(page)
         page_num = kids_start + 2 * i
         page_ids.append(page_num)
         objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 {font_id} 0 R >> >> /Contents {page_num + 1} 0 R >>".encode())
@@ -41,6 +41,24 @@ def make_pdf(pages: list[list[str]]) -> bytes:
         out.write(f"{off:010d} 00000 n \n".encode())
     out.write(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
     return out.getvalue()
+
+
+def make_pdf(pages: list[list[str]]) -> bytes:
+    return _build(pages, _page_stream)
+
+
+def _words_stream(words: list[tuple[float, float, str]]) -> bytes:
+    body = ["BT", "/F1 11 Tf"]
+    for x, y, text in words:
+        safe = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        body.append(f"1 0 0 1 {x} {y} Tm ({safe}) Tj")
+    body.append("ET")
+    return "\n".join(body).encode("latin-1")
+
+
+def make_pdf_words(pages: list[list[tuple[float, float, str]]]) -> bytes:
+    """One page per list; each word is placed at (x, y) in PDF points (y grows upwards). ASCII only (Helvetica)."""
+    return _build(pages, _words_stream)
 
 
 def encrypt(data: bytes, password: str) -> bytes:
