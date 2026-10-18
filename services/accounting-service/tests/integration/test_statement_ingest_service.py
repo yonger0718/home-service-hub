@@ -7,6 +7,7 @@ import pytest
 from app.models import (
     AccountStatement,
     CoverageDirty,
+    StatementRevision,
     IngestRun,
     LineLineage,
     ReconciliationCase,
@@ -20,6 +21,8 @@ from app.schemas.statements import FileRegisterIn, LineIn, RevisionIn, SourceReg
 from app.services import statement_ingest_service as svc
 from app.services import statement_revision_service as revs
 from app.services.errors import ConflictError, ValidationError
+from tests.integration.statement_fixtures import SEP, _card, _submit
+from tests.integration.statement_fixtures import _line as _fline
 
 # These tests isolate their service: submit_revision runs without the reconcile pass (conftest.matcher_off).
 pytestmark = pytest.mark.usefixtures("matcher_off")
@@ -811,3 +814,67 @@ def test_two_sections_of_one_composite_file_become_two_independent_statements(db
     assert (a.statement.mode, b.statement.mode) == ("live", "historical")
     assert (a.statement.period_end, b.statement.period_end) == (date(2026, 9, 30), date(2026, 8, 31))
     assert db_session.get(StatementFile, f.id).account_id is None
+
+
+def _again(db, run, account, lines, **kw):
+    return _submit(db, run, account, lines, **kw)[2]
+
+
+def test_identical_resubmission_is_replayed_without_a_revision_or_a_case(seed, db_session, run):
+    account = _card(seed, db_session, live=True)
+    r = run
+    lines = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
+    first = _submit(db_session, r, account, lines)[2]
+    replay = _again(db_session, r, account, lines)
+    assert replay.replayed and replay.revision.id == first.revision.id and replay.case_ids == [] and replay.lineage_counts == {}
+    assert db_session.query(StatementRevision).filter_by(statement_id=first.statement.id).count() == 1
+    before = db_session.query(ReconciliationCase).count()
+    first.statement.status = "reconciled"
+    db_session.commit()
+    replay2 = _again(db_session, r, account, lines)
+    assert replay2.replayed and db_session.query(ReconciliationCase).count() == before
+    assert not first.statement.conflict_open and first.statement.current_revision_id == first.revision.id
+    changed = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 51)])
+    assert not changed.replayed and changed.revision.conflict and changed.statement.conflict_open
+
+
+@pytest.mark.parametrize("variant", ["seq", "foreign", "merchant", "header", "parser"])
+def test_replay_needs_persisted_equality(seed, db_session, run, variant):
+    account = _card(seed, db_session, live=True)
+    r = run
+    base = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
+    first = _submit(db_session, r, account, base)[2]
+    if variant == "seq":
+        lines, kw = [_fline(2, SEP[0], "A", 100), _fline(1, SEP[0], "B", 50)], {}
+    elif variant == "foreign":
+        lines, kw = [_fline(1, SEP[0], "A", 100, foreign_amount=Decimal("3"), foreign_currency="USD"), base[1]], {}
+    elif variant == "merchant":
+        lines, kw = [_fline(1, SEP[0], "A ", 100), base[1]], {}
+    elif variant == "header":
+        lines, kw = base, {"closing_date": SEP[1]}
+    else:
+        lines, kw = base, {}
+    if variant == "parser":
+        rev = RevisionIn(run_id=r[0].id, lease_token=r[1], file_id=None, account_id=account.id, kind="card", parser="other",
+                         parser_version="1", currency=account.currency, period_start=SEP[0], period_end=SEP[1],
+                         opening_balance=None, statement_total=first.revision.statement_total, lines=base, raw={})
+        res = revs.submit_revision(db_session, r[0], rev, account_map={})
+    else:
+        res = _again(db_session, r, account, lines, **kw)
+    assert not res.replayed and res.revision.id != first.revision.id
+
+
+def test_replay_compares_the_current_revision_not_the_newest(seed, db_session, run):
+    account = _card(seed, db_session, live=True)
+    r = run
+    base = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
+    first = _submit(db_session, r, account, base)[2]
+    first.statement.status = "reconciled"
+    db_session.commit()
+    newer = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 60)])  # conflict, not current
+    assert newer.revision.conflict and first.statement.current_revision_id == first.revision.id
+    same_as_newer = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 60)])
+    assert not same_as_newer.replayed  # equal to the newest, not to the current
+    same_as_current = _again(db_session, r, account, base)
+    assert same_as_current.replayed and same_as_current.revision.id == first.revision.id
+    assert first.statement.conflict_open  # the pending conflict is untouched

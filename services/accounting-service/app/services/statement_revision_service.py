@@ -95,6 +95,37 @@ class SubmitResult:
     revision: StatementRevision
     lineage_counts: dict[str, int]
     case_ids: list[int]
+    replayed: bool = False
+
+
+LINE_COLUMNS = ("seq", "txn_date", "posted_date", "merchant_raw", "printed_amount", "foreign_amount", "foreign_currency",
+                "flow_amount", "line_kind", "installment_seq", "installment_total")
+
+
+def _replayed(db: Session, statement: AccountStatement, payload: RevisionIn,
+              derived: list[derive.DerivedLine]) -> StatementRevision | None:
+    """The current revision when the payload is persisted-equal to it (spec §5): same file, parser and version,
+    statement kind and currency, every header column, and every stored line column position by position."""
+    if statement.current_revision_id is None:
+        return None
+    current = db.get(StatementRevision, statement.current_revision_id)
+    if (current.file_id, current.parser_version, current.parser) != (payload.file_id, payload.parser_version, payload.parser):
+        return None
+    if (statement.kind, statement.currency) != (payload.kind, payload.currency):
+        return None
+    if any(getattr(current, column) != getattr(payload, column) for column in HEADER_COLUMNS):
+        return None
+    stored = db.execute(select(StatementLine).where(StatementLine.revision_id == current.id)
+                        .order_by(StatementLine.seq)).scalars().all()
+    if len(stored) != len(derived):
+        return None
+    for line, d in zip(stored, derived):
+        sent = (d.line.seq, d.line.txn_date, d.line.posted_date, d.line.merchant_raw, _q(d.line.printed_amount),
+                _q(d.line.foreign_amount), d.line.foreign_currency, d.flow_amount, d.line.line_kind,
+                d.line.installment_seq, d.line.installment_total)
+        if tuple(getattr(line, column) for column in LINE_COLUMNS) != sent:
+            return None
+    return current
 
 
 def _q(value: Decimal | None) -> Decimal | None:
@@ -597,6 +628,10 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
                                          statement_id=_file_statement_id(db, payload))
     if not created and retired.is_retired(db, statement.id):  # 422: the worker fails the file, a 409 ends its run
         raise CodedValidationError("period_end", "statement_retired", f"statement {statement.id}")
+    if not created:
+        replay = _replayed(db, statement, payload, derived)
+        if replay is not None:
+            return SubmitResult(statement, replay, {}, [], replayed=True)
     # 5. revision
     old, new = _old_lines(db, statement), _new_lines(derived)
     pairings = lineage.pair(old, new)

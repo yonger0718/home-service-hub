@@ -291,6 +291,7 @@ class RevisionOut(BaseModel):
     conflict: bool
     lineage: dict[str, int]
     case_ids: list[int]
+    replayed: bool = False
 
 
 # ---- statements ----

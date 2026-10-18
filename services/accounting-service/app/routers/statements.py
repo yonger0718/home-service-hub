@@ -188,7 +188,7 @@ def _revision_out(result) -> dict:
         "statement_id": result.statement.id, "revision_id": result.revision.id,
         "revision": result.revision.revision, "guardrail_ok": result.revision.guardrail_ok,
         "mode": result.statement.mode, "conflict": result.revision.conflict,
-        "lineage": result.lineage_counts, "case_ids": result.case_ids,
+        "lineage": result.lineage_counts, "case_ids": result.case_ids, "replayed": result.replayed,
     }
 
 
@@ -201,7 +201,7 @@ def submit_revision(body: RevisionIn, request: Request, db: Session = Depends(ge
                                         composite_map=settings.get("composite_map", {}))
         out = _revision_out(result)
     db.commit()
-    if out["mode"] == "live":
+    if out["mode"] == "live" and not out["replayed"]:
         policy_service.run_policy_safe(db, out["statement_id"], run_id=body.run_id)
     return out
 

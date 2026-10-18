@@ -123,7 +123,7 @@ def test_create_manual_statement_service_returns_the_submit_result(seed, db_sess
     assert (result.statement.origin, result.revision.revision, result.lineage_counts["new"]) == ("manual", 1, 1)
     second = ing.create_manual_statement(db_session, account_id=card.id, payload=payload, label="owner-test")
     db_session.commit()
-    assert (second.statement.id, second.revision.revision) == (result.statement.id, 2)  # a revision of the same one
+    assert (second.statement.id, second.revision.revision, second.replayed) == (result.statement.id, 1, True)  # identical content replays (spec §5)
 
 
 def test_submit_revision_origin_overrides_the_file_rule(seed, db_session, run):
