@@ -1635,7 +1635,7 @@ git commit -m "worker: composite folders post one revision per section, file sta
 
 Also: `GET /statements/account-map` → add `composite_map`; the revision route → `replayed`; the summary paragraph → the new counters.
 
-- [ ] **Step 2: Operator note** in `deploy/statements/README.md`: the re-queue SQL above and the rollout order from the spec §6 (API, worker, `statement_live_from`, `composite_map`).
+- [ ] **Step 2: Operator note** in `deploy/statements/README.md`: the re-queue SQL above, the rollout order from the spec §6 (API, worker, `statement_live_from`, `composite_map`), and a "watching composite files" paragraph: a composite failure is deliberate and silent by design (no automatic retry without a parser-version change), so after each monthly 國泰 file check the run summary — it is logged as one JSON line and shipped to Loki by Alloy; the Grafana Explore query `{job="homehub-statements"} |= "composite" | json | sections_failed > 0` (adjust the label to the dashboard's) lists runs with a failed section, and the `composite[].sections[]` entries carry the key, outcome and reason (`split_error`, `422`). A `split_error` after a bank layout change needs a rule change in `worker/composite.py`, not a re-queue.
 
 - [ ] **Step 3: Commit**
 
