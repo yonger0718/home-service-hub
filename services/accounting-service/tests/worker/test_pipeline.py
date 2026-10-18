@@ -9,8 +9,11 @@ from sqlalchemy import text
 from app import auth
 from tests.integration.test_statement_ingest_api import SCOPES, TOKENS
 from tests.worker import fake_claude, fake_ocr_child
+from tests.worker.composite_fixture import DECLARED, HOLDINGS, statement as composite_statement
 from tests.worker.pdfgen import encrypt, make_pdf, statement_lines
-from worker import config, parse_schema, pipeline
+from worker import config, parse_schema, pdf, pipeline
+from worker import parser as parser_mod
+from worker.api import ApiError
 from worker.runner import FakeRunner, Result, SubprocessRunner
 
 PW_FILE = "STATEMENT_ID_NUMBER=A123456789\nSTATEMENT_BIRTH_DATE=19900101\nSTATEMENT_HOLDER_NAMES=王小明,WANG XIAO MING\n信用卡/國泰世華=$ID\n"
@@ -38,11 +41,13 @@ def world(tmp_path, client, card):
 
     def rclone(args, stdin):
         if args[1] == "lsjson":
-            if not args[-1].endswith("/銀行"):
+            # the two roots partition drive_files (AGENT-159 Must 2): mail holds 信用卡/ and 銀行帳戶/, manual the rest
+            mail = args[-1].endswith("/" + cfg.mail_root.rsplit("/", 1)[-1])
+            if not mail and not args[-1].endswith("/" + cfg.manual_root.rsplit("/", 1)[-1]):
                 return Result(0, b"[]", b"")
             rows = [{"Path": p, "Name": p.split("/")[-1], "Size": len(b), "ModTime": "2026-10-01T00:00:00Z",
                      "Hashes": {"md5": hashlib.md5(b).hexdigest()}, "ID": fid, "MimeType": "application/pdf"}
-                    for fid, (p, b) in drive_files.items()]
+                    for fid, (p, b) in drive_files.items() if p.startswith(("信用卡/", "銀行帳戶/")) == mail]
             return Result(0, json.dumps(rows).encode(), b"")
         if args[1:3] == ["backend", "copyid"]:
             from pathlib import Path
@@ -1363,3 +1368,175 @@ def test_thread_error_from_the_caller_carries_no_extraction_exception(world, tmp
     assert "file_error" in summary["errors"] and _file_rows(db_session) == [("failed", "transient")]  # contained per file
     assert len(seen) == 1
     _assert_canary_free(seen[0], worker_log)
+
+
+# --- composite statements (spec §4): one revision per declared section, no parser call ---------------------------------
+
+
+@pytest.fixture
+def composite_world(world, client, seed, db_session, card, monkeypatch):
+    """The `world` drive plus one composite PDF under the manual root; `pdf.extract_lines` returns the synthetic
+    statement (the ASCII PDF only has to pass unlock/extract); the parser raises if ever called."""
+    services, drive_files, cfg = world
+    accounts = {k: seed.account(k.replace("/", "_"), is_credit=False, currency=k.split("/")[1],
+                                statement_live_from=date(2026, 9, 1) if k == "59/TWD" else None) for k in DECLARED}
+    db_session.commit()
+    drive_files["id-c"] = ("國泰世華/2609.pdf", make_pdf([statement_lines()]))
+    composite_map = {"manual/國泰世華": {k: {"account_id": a.id, "anchor_only": DECLARED[k]} for k, a in accounts.items()}}
+    response = client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
+                          json={"account_map": {"mail/信用卡/國泰世華": card.id}, "composite_map": composite_map,
+                                "dirty_enabled": False, "rules": {}})
+    assert response.status_code == 200, response.text
+    monkeypatch.setattr(pdf, "extract_lines", lambda data, password, **kw: composite_statement())
+    monkeypatch.setattr(services.parser, "parse", lambda *a, **k: (_ for _ in ()).throw(AssertionError("parser called")))
+    return services, drive_files, cfg, accounts
+
+
+def _statements(db_session, account_id):
+    return db_session.execute(text("select id, mode, current_revision_id, opening_balance, statement_total from account_statement "
+                                   "where account_id = :a order by id"), {"a": account_id}).all()
+
+
+def _bank_row(db_session):
+    return db_session.execute(text("select status, failure from statement_file where kind = 'bank'")).one()
+
+
+def test_composite_file_posts_one_statement_per_declared_section_without_the_parser(composite_world, db_session):
+    services, drive_files, cfg, accounts = composite_world
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["composite_files"] == 1 and summary["sections_parsed"] == 2 and summary["sections_anchor"] == 2
+    assert summary["sections_skipped"] == 1 and summary["sections_failed"] == 0 and summary["sections_replayed"] == 0
+    sections = summary["composite"][0]["sections"]
+    # the row sections in document order, then the anchors (in the stored map's key order), then the skipped keys
+    assert sections[:2] == [{"key": "91/TWD", "outcome": "parsed", "reason": None},
+                            {"key": "59/TWD", "outcome": "parsed", "reason": None}]
+    assert sorted(sections[2:4], key=lambda s: s["key"]) == [{"key": "50/JPY", "outcome": "anchor", "reason": None},
+                                                             {"key": "68/TWD", "outcome": "anchor", "reason": None}]
+    assert sections[4:] == [{"key": "50/USD", "outcome": "skipped", "reason": "unmapped"}]
+    assert summary["live_revisions"] == 1  # the live 59/TWD section (the card file hits the raising parser stub)
+    rows = {r.key: r for r in db_session.execute(text(
+        "select r.raw->>'section' as key, r.parser, r.guardrail_ok, s.mode, s.account_id, f.account_id as file_account "
+        "from statement_revision r join account_statement s on s.id = r.statement_id join statement_file f on f.id = r.file_id "
+        "where r.raw ? 'section'")).all()}
+    assert set(rows) == {"91/TWD", "59/TWD", "68/TWD", "50/JPY"} and all(r.guardrail_ok for r in rows.values())
+    assert rows["91/TWD"].parser == "composite-rows" and rows["68/TWD"].parser == "composite-anchor"
+    assert rows["59/TWD"].mode == "live" and rows["91/TWD"].mode == "historical"
+    assert all(r.file_account is None for r in rows.values())
+    assert _bank_row(db_session) == ("parsed", None)
+    # registered once, from the manual root (AGENT-159 Must 2: the listings partition the drive)
+    sources = db_session.execute(text("select src.root from statement_source src join statement_file f on f.id = src.file_id "
+                                      "where f.kind = 'bank'")).scalars().all()
+    assert sources == ["manual"]
+    # second run: a parsed file is not due, so the composite path does not run
+    again = pipeline.run(services, trigger="owner_cli")
+    assert again["unchanged"] >= 1 and again.get("composite_files", 0) == 0
+
+
+def test_composite_partial_failure_keeps_earlier_sections_and_requeue_replays_them(composite_world, db_session, monkeypatch):
+    services, drive_files, cfg, accounts = composite_world
+    real = services.api.submit_revision
+    calls = []
+
+    def flaky(lease, body):
+        calls.append(body["raw"]["section"])
+        if body["raw"]["section"] == "59/TWD" and calls.count("59/TWD") == 1:
+            raise ApiError(422, {"detail": "lines"})
+        return real(lease, body)
+
+    monkeypatch.setattr(services.api, "submit_revision", flaky)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["sections_failed"] == 1 and summary["sections_parsed"] == 1 and summary["sections_anchor"] == 2
+    assert [s for s in summary["composite"][0]["sections"] if s["key"] == "59/TWD"][0] == {"key": "59/TWD", "outcome": "parse", "reason": "422"}
+    assert _bank_row(db_session) == ("failed", "parse")
+    assert len(_statements(db_session, accounts["91/TWD"].id)) == 1 and _statements(db_session, accounts["59/TWD"].id) == []
+    revisions = db_session.execute(text("select count(*) from statement_revision")).scalar_one()
+    db_session.execute(text("update statement_file set status = 'new', failure = null where failure = 'parse'"))
+    db_session.commit()
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["sections_replayed"] == 3 and summary["sections_parsed"] == 1 and summary["sections_failed"] == 0
+    assert summary["live_revisions"] == 1  # the 59/TWD revision only: replays are not revisions
+    assert len(_statements(db_session, accounts["91/TWD"].id)) == 1 and len(_statements(db_session, accounts["59/TWD"].id)) == 1
+    assert db_session.execute(text("select count(*) from statement_revision")).scalar_one() == revisions + 1
+    assert _bank_row(db_session) == ("parsed", None)
+
+
+def test_composite_split_error_fails_the_file_as_parse(composite_world, db_session, monkeypatch):
+    services, *_ = composite_world
+    monkeypatch.setattr(pdf, "extract_lines", lambda data, password, **kw: composite_statement(holdings={**HOLDINGS, "91/TWD": "1"}))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["failed"] >= 1 and summary["composite"][0]["sections"] == [{"key": None, "outcome": "parse", "reason": "split_error"}]
+    assert summary["sections_failed"] == 1 and _bank_row(db_session) == ("failed", "parse")
+    assert db_session.execute(text("select count(*) from statement_revision where raw ? 'section'")).scalar_one() == 0
+
+
+def test_composite_guardrail_failure_is_needs_review(composite_world, db_session, monkeypatch):
+    services, *_ = composite_world
+    real = services.api.submit_revision
+
+    def off_by_one(lease, body):
+        if body["raw"]["section"] == "91/TWD":
+            body = {**body, "statement_total": "34432"}
+        return real(lease, body)
+
+    monkeypatch.setattr(services.api, "submit_revision", off_by_one)
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["needs_review"] == 1 and _bank_row(db_session) == ("needs_review", "guardrail")
+    assert [s for s in summary["composite"][0]["sections"] if s["key"] == "91/TWD"][0]["outcome"] == "guardrail"
+    assert summary["sections_failed"] == 1 and summary["sections_parsed"] == 1
+    # re-queued unchanged: the 91/TWD resubmission replays its failed current revision and still ranks `guardrail`
+    db_session.execute(text("update statement_file set status = 'new', failure = null where kind = 'bank'"))
+    db_session.commit()
+    summary = pipeline.run(services, trigger="owner_cli")
+    outcomes = {s["key"]: s["outcome"] for s in summary["composite"][0]["sections"]}
+    assert outcomes == {"91/TWD": "guardrail", "59/TWD": "replayed", "68/TWD": "replayed", "50/JPY": "replayed",
+                        "50/USD": "skipped"}
+    assert summary["live_revisions"] == 0 and _bank_row(db_session) == ("needs_review", "guardrail")
+
+
+def test_composite_runs_while_the_parser_is_latched_and_skips_ocr(composite_world, db_session, monkeypatch):
+    services, *_ = composite_world
+    # the run resets parser_disabled at its start; the gate sets it for the run, before any file is processed
+    monkeypatch.setattr(services.gate, "ensure", lambda parser: (_ for _ in ()).throw(parser_mod.ParserDisabled("latched")))
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert "parser_disabled" in summary["errors"] and summary["skipped"] == 1  # the card file waits for the parser
+    assert summary["composite_files"] == 1 and summary["sections_parsed"] == 2  # composite needs no parser
+    assert _bank_row(db_session) == ("parsed", None)
+    monkeypatch.setattr(pdf, "extract", lambda data, password, **kw: (_ for _ in ()).throw(pdf.NoTextLayer("none")))
+    db_session.execute(text("update statement_file set status = 'new', failure = null where kind = 'bank'"))
+    db_session.commit()
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert _bank_row(db_session) == ("needs_review", "no_text_layer") and summary["ocr_trigger"] == 0
+    assert summary.get("composite_files", 0) == 0
+
+
+@pytest.mark.parametrize("target", ["extract", "extract_lines"])
+def test_composite_pdf_failures_keep_their_classes(composite_world, db_session, monkeypatch, target):
+    services, *_ = composite_world
+    for exc, expected in ((pdf.PasswordError("password"), ("failed", "password")), (pdf.Malformed("m"), ("failed", "parse")),
+                          (pdf.TooLarge("t"), ("needs_review", "too_large")), (pdf.ExtractTimeout("t"), ("failed", "transient"))):
+        monkeypatch.setattr(pdf, target, lambda data, password, _e=exc, **kw: (_ for _ in ()).throw(_e))
+        db_session.execute(text("update statement_file set status = 'new', failure = null, attempts = 0"))
+        db_session.commit()
+        summary = pipeline.run(services, trigger="owner_cli")
+        assert _bank_row(db_session) == expected, (target, expected)
+        if target == "extract_lines":
+            assert summary["composite"][0]["sections"] == []  # no section ran
+        db_session.expire_all()
+
+
+def test_composite_map_change_requeues_only_mapping_failures(composite_world, client, db_session, card):
+    services, drive_files, cfg, accounts = composite_world
+    client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
+               json={"account_map": {"mail/信用卡/國泰世華": card.id}, "composite_map": {}, "dirty_enabled": False, "rules": {}})
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["ignored"] == 1 and _bank_row(db_session) == ("ignored", "mapping")
+    # a parse failure at the current parser version (not due again); the stub parser never parsed the card file
+    db_session.execute(text("update statement_file set status = 'failed', failure = 'parse', parser_version = :v "
+                            "where kind = 'card'"), {"v": services.parser_version})
+    db_session.commit()
+    composite_map = {"manual/國泰世華": {k: {"account_id": a.id, "anchor_only": DECLARED[k]} for k, a in accounts.items()}}
+    client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
+               json={"account_map": {"mail/信用卡/國泰世華": card.id}, "composite_map": composite_map, "dirty_enabled": False, "rules": {}})
+    summary = pipeline.run(services, trigger="owner_cli")
+    assert summary["composite_files"] == 1 and _bank_row(db_session) == ("parsed", None)
+    assert db_session.execute(text("select status, failure from statement_file where kind = 'card'")).one() == ("failed", "parse")

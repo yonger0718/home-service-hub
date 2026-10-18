@@ -50,14 +50,24 @@ def test_lease_lost_on_submission_with_a_stale_token(worker_api):
 def test_account_map(worker_api, client):
     client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
                json={"account_map": {"manual/國泰世華": 3}, "dirty_enabled": False, "rules": {}})
-    mapping, version, closing_days = worker_api.account_map()
-    assert mapping == {"manual/國泰世華": 3} and len(version) == 16 and closing_days == {}
+    mapping, version, closing_days, composite_map = worker_api.account_map()
+    assert mapping == {"manual/國泰世華": 3} and len(version) == 16 and closing_days == {} and composite_map == {}
+
+
+def test_account_map_carries_the_composite_map(worker_api, client, seed, db_session):
+    account = seed.account("活存91", is_credit=False, currency="TWD")
+    db_session.commit()
+    client.put("/settings/reconciliation", headers={"Authorization": "Bearer spa-token"},
+               json={"account_map": {}, "composite_map": {"manual/國泰世華": {"91/TWD": {"account_id": account.id,
+                                                                                    "anchor_only": False}}},
+                     "dirty_enabled": False, "rules": {}})
+    assert worker_api.account_map()[3] == {"manual/國泰世華": {"91/TWD": {"account_id": account.id, "anchor_only": False}}}
 
 
 def test_account_map_tolerates_an_api_without_closing_days(worker_api, monkeypatch):
     """Deploy order API-then-worker: a new worker against the old response (no `closing_days`) gets an empty map."""
     monkeypatch.setattr(worker_api, "_call", lambda *a, **k: {"account_map": {"manual/國泰世華": 3}, "mapping_version": "0" * 16})
-    assert worker_api.account_map() == ({"manual/國泰世華": 3}, "0" * 16, {})
+    assert worker_api.account_map() == ({"manual/國泰世華": 3}, "0" * 16, {}, {})
 
 
 def test_guard_blocks_lease_routes_before_sending(client):
