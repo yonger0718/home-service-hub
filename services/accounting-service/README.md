@@ -453,7 +453,9 @@ break the day the updater moves it. Copy the pinned binary and point the worker 
 
 Bumping the pin: copy the new binary, set `STATEMENT_PARSER_CLI` and `STATEMENT_PARSER_CLI_VERSION`, run `gate`. The
 parser version changes, so every `parse`, `guardrail`, `no_text_layer` and `too_large` file is re-parsed once (a model
-call per file); budget for that before bumping.
+call per file); budget for that before bumping. The version also folds in the parser instruction, the OCR fingerprint
+and `worker.mask.FINGERPRINT` (bumped whenever a masking rule changes what the parser receives), so a code change to
+any of them re-parses the failed files the same way.
 
 Parser logins. The parser runs in a sandbox that sees only its own login directory. Create separate logins, never a
 copy of `~/.claude/.credentials.json`: a copied refresh token rotates on use and can log out the owner's interactive CLI

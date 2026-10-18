@@ -109,7 +109,7 @@ def build(cfg: WorkerConfig, client: httpx.Client, runner: Runner) -> Services:
     services.api = ApiClient(client, token, guard=lambda: services.keeper is not None and services.keeper.lost)
     services.ocr = ocr_mod.Engine(cfg) if cfg.ocr_enabled else None
     services.cli_version = services.parser.cli_version() or "unknown"
-    services.parser_version = parse_schema.version(services.cli_version, cfg.parser_model, ocr_mod.FINGERPRINT)
+    services.parser_version = parse_schema.version(services.cli_version, cfg.parser_model, ocr_mod.FINGERPRINT, mask.FINGERPRINT)
     return services
 
 

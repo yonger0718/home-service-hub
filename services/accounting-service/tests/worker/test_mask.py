@@ -1,3 +1,5 @@
+import unicodedata
+
 import pytest
 
 from worker import mask, passwords, pdf
@@ -117,3 +119,65 @@ def test_password_literals_respect_token_boundaries():
     assert "[PW]" in masker.render(ex("pin 0115 end"), ["0115"])
     assert "Secret991" in masker.render(ex("a Secret991 b"), ["Secret99"])
     assert "[PW]" in masker.render(ex("a Secret99 b"), ["Secret99"])
+
+
+@pytest.mark.parametrize("s,expected", [
+    ("12/22 12/26 優步－大慶大車隊 174 9538 1814 TW TWD", "12/22 12/26 優步－大慶大車隊 174 [NUM…1814] TW TWD"),
+    ("12/22 12/29 高鐵智慧型手機ＩＰｈｏ 1,480 9538 1814 TW TWD", "12/22 12/29 高鐵智慧型手機ＩＰｈｏ 1,480 [NUM…1814] TW TWD"),
+    ("12/24 12/29 SUICA MOBILE PAYMENT 2,025 9538 5897 JP JPY 10,000.00 12/23",
+     "12/24 12/29 SUICA MOBILE PAYMENT 2,025 [NUM…5897] JP JPY 10,000.00 12/23"),
+    ("11/07 12/23 富邦ＭＯＭＯ－ＥＣ 02/12 1,224 9538 TW TWD", "11/07 12/23 富邦ＭＯＭＯ－ＥＣ 02/12 1,224 [NUM…9538] TW TWD"),  # card last four only
+    ("12/22 12/26 連加＊7-11 174 9538 1814 TW TWD", "12/22 12/26 連加＊7-11 174 [NUM…1814] TW TWD"),  # merchant ending in a short number (text path; the OCR span rule joins 7-11 with the codes, as before)
+    ("12/24 01/23 國外交易手續費 -SUICA 30 9538", "12/24 01/23 國外交易手續費 -SUICA 30 9538"),
+    ("12/22 12/26 全聯福利中心 85 1234 3799", "12/22 12/26 全聯福利中心 85 [NUM…3799]"),  # no country/currency: generic rule, amount untouched anyway
+])
+def test_amount_in_a_card_transaction_row_survives(s, expected):
+    """Cube rows end with the card's last four digits, an optional authorisation code, a country code and a currency
+    code: the amount column before them stays printed and the code groups become one masked token (AGENT-147
+    follow-up: 12 Cube statements lost every amount to the generic rule and failed the equation)."""
+    assert mask.Masker(IDENT).text(s) == expected
+    if "7-11" not in s:
+        assert mask.Masker(IDENT).mask_ocr_line(s) == _nfkc(expected)
+
+
+def _nfkc(expected: str) -> str:
+    """What the OCR path prints for `expected`: it normalises the line first, which also folds the ellipsis."""
+    return unicodedata.normalize("NFKC", expected).replace("[NUM...", "[NUM…")
+
+
+def test_dated_identifier_line_with_the_row_shape_is_the_accepted_limitation():
+    """AGENT-148 Should: a dated line whose merchant text is an identifier label followed by exactly the transaction
+    column shape is indistinguishable from a purchase and prints the amount-shaped prefix (base masked it whole)."""
+    s = "12/22 12/26 帳號 123 4567 8901 TW TWD"
+    assert mask.Masker(IDENT).text(s) == "12/22 12/26 帳號 123 [NUM…8901] TW TWD"
+    assert mask.Masker(IDENT).mask_ocr_line(s) == "12/22 12/26 帳號 123 [NUM…8901] TW TWD"
+
+
+def test_only_whole_rows_are_rewritten_inside_a_page():
+    page = "卡號 123 4567 8901 2345\n12/22 12/26 優步 174 9538 1814 TW TWD\n本期應繳總額 6,382"
+    assert mask.Masker(IDENT).text(page) == "卡號 [NUM…2345]\n12/22 12/26 優步 174 [NUM…1814] TW TWD\n本期應繳總額 6,382"
+
+
+@pytest.mark.parametrize("s,expected", [
+    ("帳號 0123 4567890", "帳號 [NUM…7890]"),
+    ("保單 123 45678", "保單 [NUM…5678]"),
+    ("電話 0800 123456", "電話 [NUM…3456]"),
+    ("卡號 123 4567 8901 2345", "卡號 [NUM…2345]"),
+    ("帳號 013 21705159", "帳號 [NUM…5159]"),
+    ("帳號 123 4567 8901 TW TWD", "帳號 [NUM…8901] TW TWD"),  # AGENT-148 round 2: the tail without the transaction dates
+    ("電話 0800 123 4567 TW TWD", "電話 [NUM…4567] TW TWD"),  # AGENT-148 round 2: the tail inside a longer identifier
+    ("12/22 12/26 電話 0800 123 4567 TW TWD", "12/22 12/26 電話 [NUM…4567] TW TWD"),  # same, on a dated row
+    ("12/22 12/26 帳號 123 4567 8901 2345", "12/22 12/26 帳號 [NUM…2345]"),  # a dated row without the codes' anchor
+    ("1480 9538 1814 TW TWD", "[NUM…1814] TW TWD"),  # a four-digit amount without a thousands separator: known limitation
+    ("12/22 12/26 商店 1480 9538 1814 TW TWD", "12/22 12/26 商店 [NUM…1814] TW TWD"),  # the same on a dated row
+    ("AMEX 3714 496353 98431", "AMEX [NUM…8431]"),  # 4-6-5 grouping
+])
+def test_identifiers_with_a_short_leading_group_stay_masked(s, expected):
+    """AGENT-148 Must (rounds 1 and 2): only a whole transaction row is rewritten and never from inside a longer
+    digit run; every other shape keeps the generic rule — on the text path and on the OCR path alike."""
+    assert mask.Masker(IDENT).text(s) == expected
+    assert mask.Masker(IDENT).mask_ocr_line(s) == _nfkc(expected)
+
+
+def test_mask_fingerprint_pins_the_amount_rule():
+    assert mask.FINGERPRINT == "mask2-amount-before-codes"
