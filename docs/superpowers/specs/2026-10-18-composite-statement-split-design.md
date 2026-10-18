@@ -1,6 +1,6 @@
 # Composite bank statement split (國泰世華 綜合月對帳單) — design
 
-Status: rev 7 (rev 6 `f685ef4` was accepted under the owner ruling of 2026-10-18 after rev 5 `5d5282c` came back
+Status: rev 8 (rev 7 added word geometry; rev 8 after the host dry run: standalone page numbers, the `外匯活期存款` section word, optional sections for `anchor_only` keys, the replay guardrail guard; rev 6 `f685ef4` was accepted under the owner ruling of 2026-10-18 after rev 5 `5d5282c` came back
 with one P2 only; rev 7 replaces the table-based row source with word geometry after the author's pre-plan check of
 the real file — §1, §4, §10 — and is covered by the plan review), 2026-10-18. Rev 1 `d1de321` CHANGES-REQUESTED (AGENT-153), rev 2 `0680f1d`
 CHANGES-REQUESTED (AGENT-154), rev 3 `82a44d4` CHANGES-REQUESTED (AGENT-155) and superseded by the owner's decision
@@ -74,9 +74,11 @@ New top-level key in `reconciliation_settings.data`, beside `account_map` (which
   every currency).
 - Value: `{"account_id": int, "anchor_only": bool (default false)}`. The account must exist, be non-archived, have
   `is_credit = false` and a `currency` equal to the key's currency (422 `composite_map` naming the key otherwise).
-  `anchor_only: true` declares that this account never prints a transaction section in this statement (子帳戶, FX
-  accounts); `false` declares that it always does. The worker fails closed on either mismatch (§4). Changing the flag
-  is an operator decision, not an inference from one file.
+  `anchor_only: true` declares that a transaction section for this account is **optional** (子帳戶, the FX account —
+  the host dry run of 2026-10-18 showed the foreign-currency account prints a `外匯活期存款 帳號 …` section only in
+  months with activity): when the bank prints one its rows are processed like any other section, otherwise the key
+  is a balance anchor. `false` declares that a section is required; its absence fails the file (§4). Changing the
+  flag is an operator decision, not an inference from one file.
 - **Target uniqueness (AGENT-153 #5):** within one folder every `account_id` appears at most once (422 `composite_map`
   naming both keys). Two sections for one account would otherwise land as two revisions of one statement, because
   the file-backed identity is (file, account, currency) and knows nothing of section keys.
@@ -170,7 +172,8 @@ different key closes the current section.
   optional code, else `TWD`. Key = `suffix/currency`. Duplicate key → `SplitError`. A declared key with no holdings
   row, or a holdings key with rows and no declaration, → `SplitError` (undeclared keys without rows are skipped and
   counted, e.g. `50/USD`).
-- Transaction area: from `交易明細` to the end of the document. A line `^(?:活期存款|外匯綜合活期存款) 帳號 (\S+)$`
+- Transaction area: from `交易明細` to the end of the document. A line `^(?:外匯)?(?:綜合)?活期存款 帳號 (\S+)$`
+  (the real file prints `活期存款` for TWD accounts and `外匯活期存款` for the foreign-currency account's section)
   opens a section (or continues the open one when the key repeats). While a section is open, every line is one
   of: a dated row (first word `\d{4}/\d{2}/\d{2}`), the column header, a page number, or a continuation footer
   (`^註：`, `^台幣存款 餘額`, `^外幣存款 餘額折合台幣`); **any other line closes the section**. After a section closed,
@@ -187,8 +190,9 @@ different key closes the current section.
   row index). A section's currency is the one its rows carry; rows of mixed currency → `SplitError`; the key's
   currency must match. The geometry rule is itself cross-checked by the balance chain below: for every row after
   the first, the chain confirms the column the geometry chose.
-- Declaration check: a section with rows whose key is declared `anchor_only` → `SplitError`; a declared
-  `anchor_only: false` key without a section → `SplitError`. Declared `anchor_only: true` keys become anchor sections.
+- Declaration check: a declared `anchor_only: false` key without a section → `SplitError`; a declared
+  `anchor_only: true` key becomes an anchor section when the bank prints no section for it, and an ordinary row
+  section when it does (rev 8: sections are optional, never forbidden, for `anchor_only` keys).
 - Balance chain (AGENT-153 #2): for a section with rows, in document order,
   `balance[i] == balance[i-1] - withdrawal[i] + deposit[i]` for every i ≥ 1 (Decimal, exact),
   `opening = balance[0] + withdrawal[0] - deposit[0]`, and `balance[-1] == holdings closing`. Any violation →
