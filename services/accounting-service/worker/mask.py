@@ -19,6 +19,12 @@ _PHONE = re.compile(
 )
 # a run is >= 6 contiguous digits, or >= 2 groups of >= 3 digits joined by one space or dash
 _DIGIT_RUN = re.compile(r"(?<!\d)(?:\d{6,}|\d{3,}(?:[ \-]\d{3,})+)(?!\d)")
+# A card transaction row's trailing columns (國泰 CUBE): the amount, the card's last four digits, optionally a four-digit
+# authorisation code, then a two-letter country code and a three-letter currency code. Without this pass `_DIGIT_RUN`
+# joins the amount with the codes (174 9538 1814 → [NUM…1814]) and the parser never sees the amount. Only this exact
+# shape is rewritten — the amount stays printed and the code groups become one masked token — every other digit run
+# keeps the generic rule, so no identifier printed as a short group followed by longer groups is exposed.
+_TXN_CODES = re.compile(r"(?<![\d,.])(-?\d{1,3}(?:,\d{3})*(?:\.\d+)?) (\d{4})(?: (\d{4}))? ([A-Z]{2}) ([A-Z]{3})(?![A-Za-z0-9])")
 # Folded into the parser version (parse_schema.version): bump when a masking rule changes what the parser receives,
 # so files that failed under the old rule are re-parsed.
 FINGERPRINT = "mask2-amount-before-codes"
@@ -162,17 +168,12 @@ class Masker:
             return raw  # dates and short references such as "000 2026" are not account numbers
         if _compact_date(raw):
             return raw  # printed compact dates such as 20260930 are not account numbers
-        if " " in raw and "-" not in raw:
-            # Table columns: a transaction amount (174, or the 480 of 1,480) printed right before the card's last four
-            # digits and an authorisation code (174 9538 1814). A leading group shorter than the next one is such a
-            # column and stays printed; the remaining groups are masked on their own when they still qualify. An
-            # identifier printed with a short leading group (013 21705159) keeps that prefix and masks the rest.
-            groups = raw.split(" ")
-            if len(groups[0]) < len(groups[1]):
-                rest = "".join(groups[1:])
-                tail = " ".join(groups[1:]) if len(rest) < 8 else f"[NUM…{rest[-4:]}]"
-                return f"{groups[0]} {tail}"
         return f"[NUM…{digits[-4:]}]"
+
+    @staticmethod
+    def _txn_codes(match: re.Match) -> str:
+        amount, card, auth, country, currency = match.groups()
+        return f"{amount} [NUM…{(auth or card)[-4:]}] {country} {currency}"
 
     def text(self, s: str, extra_literals=()) -> str:
         for literal in sorted((x for x in extra_literals if len(x) >= 4), key=len, reverse=True):
@@ -191,6 +192,7 @@ class Masker:
         for literal in self.literals:
             s = s.replace(literal, "[BIRTH]")
         s = _PHONE.sub("[PHONE]", s)
+        s = _TXN_CODES.sub(self._txn_codes, s)  # before the generic rule, which would swallow the amount
         s = _DIGIT_RUN.sub(self._digits, s)
         return s
 
