@@ -6,10 +6,10 @@ Every SplitError names a section key and a row index at most; never amounts, des
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
+from typing import NoReturn
 
 from worker.pdf import Line, Word
 
@@ -22,7 +22,8 @@ AMOUNT = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$")
 PAGE_NO = re.compile(r"^\d{1,2}$")
 HEADER = ("日期", "交易說明", "幣別", "提出", "存入", "餘額")
 FOOTER = re.compile(r"^(註：|台幣存款 餘額|外幣存款 餘額折合台幣)")
-AFTER_PAGE_NO = ("持有明細", "交易明細", "活期存款", "外匯綜合活期存款", "日期")
+AFTER_PAGE_NO = ("持有明細", "交易明細", "日期")
+SECTION_KINDS = ("活期存款", "外匯綜合活期存款")
 
 
 class SplitError(RuntimeError):
@@ -67,14 +68,18 @@ class Geometry:
 def _words(line: Line) -> tuple[Word, ...]:
     words = line.words
     if len(words) >= 2 and PAGE_NO.match(words[0].text) and (
-            words[1].text in AFTER_PAGE_NO or DATE.match(words[1].text) or "綜合月對帳單" in words[1].text):
+            words[1].text in AFTER_PAGE_NO or DATE.match(words[1].text)
+            or (words[1].text in SECTION_KINDS and len(words) > 2 and words[2].text == "帳號")):
         return words[1:]
     return words
 
 
-def _date(text: str) -> date:
-    y, m, d = (int(p) for p in text.split("/"))
-    return date(y, m, d)
+def _date(text: str, where: str) -> date:
+    try:
+        y, m, d = (int(p) for p in text.split("/"))
+        return date(y, m, d)
+    except ValueError:
+        raise SplitError(f"{where} has an impossible date") from None
 
 
 def _amount(text: str, key: str, index: int) -> Decimal:
@@ -84,6 +89,12 @@ def _amount(text: str, key: str, index: int) -> Decimal:
     if value < 0:
         raise SplitError(f"{key}: row {index} prints a negative amount")
     return value
+
+
+def _holding_amount(text: str, key: str) -> Decimal:
+    if not AMOUNT.match(text):
+        raise SplitError(f"{key}: unreadable holdings amount")
+    return Decimal(text.replace(",", ""))
 
 
 def _suffix(number: str) -> str:
@@ -107,17 +118,23 @@ def _row(words: tuple[Word, ...], geometry: Geometry, suffix: str, index: int, h
     for w in words[cur + 1:]:
         value = _amount(w.text, key, index)
         if w.x1 <= geometry.x_in:
-            out = value if out is None else _dup(key, index)
+            if out is not None:
+                _dup(key, index)
+            out = value
         elif w.x1 <= geometry.x_bal:
-            inn = value if inn is None else _dup(key, index)
+            if inn is not None:
+                _dup(key, index)
+            inn = value
         else:
-            bal = value if bal is None else _dup(key, index)
+            if bal is not None:
+                _dup(key, index)
+            bal = value
     if bal is None or (out is None) == (inn is None):
         raise SplitError(f"{key}: row {index} does not have one amount column and one balance")
-    return Row(_date(words[0].text), description, words[cur].text, out, inn, bal)
+    return Row(_date(words[0].text, f"{key}: row {index}"), description, words[cur].text, out, inn, bal)
 
 
-def _dup(key: str, index: int):
+def _dup(key: str, index: int) -> NoReturn:
     raise SplitError(f"{key}: row {index} fills a column twice")
 
 
@@ -136,9 +153,11 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
         if period is None:
             match = PERIOD.search(text)
             if match:
-                period = (_date(match.group(1)), _date(match.group(2)))
+                period = (_date(match.group(1), "statement period"), _date(match.group(2), "statement period"))
             continue
         if text == "持有明細":
+            if in_area:
+                raise SplitError("holdings block inside the transaction area")
             in_holdings = True
             continue
         if text == "交易明細":
@@ -150,8 +169,7 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
                 key = f"{_suffix(match.group(2))}/{match.group(4) or 'TWD'}"
                 if key in holdings:
                     raise SplitError(f"duplicate holdings row for {key}")
-                holdings[key] = _amount(match.group(5), key, 0) if not match.group(5).startswith("-") else Decimal(
-                    match.group(5).replace(",", ""))
+                holdings[key] = _holding_amount(match.group(5), key)
             continue
         if not in_area:
             continue
@@ -198,7 +216,7 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
         if key not in holdings:
             raise SplitError(f"{key}: declared key has no holdings row")
         if not anchor_only and key not in report.rows_per_key:
-            raise SplitError(f"{key}: declared section has no section")
+            raise SplitError(f"{key}: declared key has no section")
         if anchor_only:
             sections.append(Section(key, key.split("/")[1], period[0], period[1], holdings[key], holdings[key], ()))
             report.anchor += 1

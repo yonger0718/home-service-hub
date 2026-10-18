@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from tests.worker.composite_fixture import (DECLARED, HOLDINGS, ROWS_59, ROWS_91, L, W, X_BAL, X_IN, X_OUT, amount, header, row,
+from tests.worker.composite_fixture import (DECLARED, HOLDINGS, ROWS_91, L, W, X_BAL, X_OUT, amount, row,
                                section_header, statement)
 from worker import composite
 from worker.composite import SplitError
@@ -74,15 +74,17 @@ def test_row_shape_violations_fail_closed():
     no_currency = L(3, 110, W("2026/09/01", 38), W("交割股款", 90), amount("2,000", X_OUT), amount("28,000", X_BAL))
     trailing_word = row(3, 110, "2026/09/01", "交割股款", "2,000", None, "28,000", extra=(W("x", 600),))
     negative = row(3, 110, "2026/09/01", "交割股款", "-2,000", None, "28,000")
-    for bad in (both, neither, two_balances, no_currency, trailing_word, negative):
+    cases = [(both, "one amount column"), (neither, "one amount column"), (two_balances, "twice"),
+             (no_currency, "no currency"), (trailing_word, "non-numeric"), (negative, "negative")]
+    for bad, reason in cases:
         lines = statement()
         index = next(i for i, l in enumerate(lines) if l.page == 3 and l.top == 110)
         lines[index] = bad
-        with pytest.raises(SplitError, match="91/TWD"):
+        with pytest.raises(SplitError, match=rf"91/TWD: row 0 .*{reason}"):
             _split(lines)
 
 
-def test_mixed_currency_and_unknown_currency_fail():
+def test_mixed_currency_in_a_section_fails():
     lines = statement()
     index = next(i for i, l in enumerate(lines) if l.page == 3 and l.top == 122)
     lines[index] = row(3, 122, *ROWS_91[1][:4], ROWS_91[1][4], cur="JPY")
@@ -141,4 +143,50 @@ def test_section_with_rows_of_several_currencies_in_one_suffix_fails():
     index = next(i for i, l in enumerate(lines) if l.page == 4 and l.top == 70)
     lines[index] = row(4, 70, *ROWS_91[10][:4], ROWS_91[10][4], cur="USD")
     with pytest.raises(SplitError, match="currency"):
+        _split(lines)
+
+
+def test_holdings_marker_inside_the_transaction_area_fails():
+    lines = statement()
+    index = next(i for i, l in enumerate(lines) if l.page == 4 and l.top == 190)
+    lines.insert(index, L(4, 189, W("持有明細", 40)))
+    with pytest.raises(SplitError, match="holdings block"):
+        _split(lines)
+
+
+def test_repeated_header_geometry_is_re_recorded_per_page():
+    lines = [_shift(l) if l.page == 4 else l for l in statement()]
+    sections, _ = _split(lines)
+    assert len(sections[0].rows) == 16 and len(sections[1].rows) == 12
+
+
+def _shift(line, dx=50):
+    words = tuple(type(w)(w.text, w.x0 + dx, w.x1 + dx) for w in line.words)
+    return L(line.page, line.top, *words)
+
+
+def test_unreadable_holdings_amount_and_impossible_date_are_split_errors():
+    lines = statement()
+    lines.insert(10, holding_line("-,"))
+    with pytest.raises(SplitError, match="holdings amount"):
+        _split(lines)
+    lines = statement()
+    index = next(i for i, l in enumerate(lines) if l.page == 3 and l.top == 110)
+    lines[index] = row(3, 110, "2026/02/30", "交割股款", "2,000", None, "28,000")
+    with pytest.raises(SplitError, match="91/TWD: row 0 .*date"):
+        _split(lines)
+
+
+def holding_line(amount_text):
+    from tests.worker.composite_fixture import holding
+    return holding(2, 170, "活期存款", "123456****77", "屏東分行", amount_text)
+
+
+def test_section_without_holdings_or_without_rows_fails():
+    lines = statement()
+    lines += [section_header(4, 300, "123456****77"), row(4, 312, "2026/09/01", "交割股款", "1", None, "1")]
+    with pytest.raises(SplitError, match="77/TWD: no holdings row"):
+        _split(lines)
+    lines = statement() + [section_header(4, 300, "123456****77")]
+    with pytest.raises(SplitError, match="without rows"):
         _split(lines)
