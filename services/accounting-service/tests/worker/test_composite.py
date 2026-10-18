@@ -118,8 +118,6 @@ def test_unknown_line_closes_the_section_and_a_later_row_fails():
 
 
 def test_declaration_mismatches_fail_and_undeclared_without_rows_is_skipped():
-    with pytest.raises(SplitError, match="anchor_only"):
-        _split(declared={**DECLARED, "91/TWD": True})
     with pytest.raises(SplitError, match="no section"):
         _split(declared={**DECLARED, "68/TWD": False})
     with pytest.raises(SplitError, match="undeclared"):
@@ -295,3 +293,45 @@ def test_standalone_page_number_never_counts_as_a_row(n):
     lines.insert(index, page_number_line(3, 818, n))
     sections, _ = _split(lines)
     assert len(sections[0].rows) == 16
+
+
+FX_ROWS = [("2026/09/03", "外幣提領", "10,000", None, "140,000"), ("2026/09/20", "外幣存入", None, "10,000", "150,000")]
+
+
+@pytest.mark.parametrize("standalone", [False, True])
+def test_optional_fx_section_is_processed_and_otherwise_an_anchor(standalone):
+    sections, report = _split(statement(fx_rows=FX_ROWS, standalone_page_numbers=standalone))
+    by_key = {s.key: s for s in sections}
+    assert len(by_key["50/JPY"].rows) == 2 and by_key["50/JPY"].opening_balance == Decimal("150000")
+    assert by_key["50/JPY"].rows[0].currency == "JPY"
+    assert report.anchor == 1 and len(by_key["68/TWD"].rows) == 0 and report.sections == 4
+    sections, report = _split(statement(standalone_page_numbers=standalone))
+    assert report.anchor == 2 and {s.key: s for s in sections}["50/JPY"].rows == ()
+
+
+def test_fx_section_with_the_wrong_currency_fails():
+    lines = statement(fx_rows=FX_ROWS)
+    for i, l in enumerate(lines):
+        if l.page == 4 and l.words and l.words[-1].text in ("140,000", "150,000"):
+            lines[i] = L(l.page, l.top, *(W("USD", w.x0, w.x1) if w.text == "JPY" else w for w in l.words))
+    with pytest.raises(SplitError, match="currency"):
+        _split(lines)
+
+
+def test_repr_never_prints_statement_content():
+    sections, _ = _split()
+    text = repr(sections[0]) + repr(sections[0].rows[0])
+    for secret in ("28,000", "28000", "2000", "34431", "2026-09-01", "交割股款", "30000"):
+        assert secret not in text
+
+
+def test_unmasked_account_number_is_redacted_from_messages_and_report():
+    lines = statement()
+    lines.insert(10, L(2, 170, W("活期存款", 40), W("9988776655", 120), W("屏東分行", 240), W("5", 400)))
+    _, report = _split(lines)
+    assert "?/TWD" in report.skipped_keys
+    assert "9988776655" not in repr(report)
+    lines.insert(10, L(2, 171, W("活期存款", 40), W("9988776655", 120), W("屏東分行", 240), W("5", 400)))
+    with pytest.raises(SplitError) as info:
+        _split(lines)
+    assert "9988776655" not in str(info.value)

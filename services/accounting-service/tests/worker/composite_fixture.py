@@ -76,7 +76,7 @@ def page_number_line(page: int, top: float, n: int) -> Line:
 
 
 def statement(rows_91=ROWS_91, rows_59=ROWS_59, holdings=HOLDINGS, *, split_at=10,
-              standalone_page_numbers: bool = False) -> list[Line]:
+              standalone_page_numbers: bool = False, fx_rows: list | None = None) -> list[Line]:
     """Pages: 1 title; 2 holdings (page-number word before 持有明細); 3 交易明細, header, 91 rows up to `split_at`;
     4 page number, repeated header, the rest of 91, 59 header, header, 59 rows, a trailing note line.
     With `standalone_page_numbers` the page numbers are their own lines at the page bottom (top 818) and page 4 has
@@ -115,6 +115,13 @@ def statement(rows_91=ROWS_91, rows_59=ROWS_59, holdings=HOLDINGS, *, split_at=1
     for r in rows_59:
         lines.append(row(4, top, *r))
         top += 12
+    if fx_rows is not None:
+        lines.append(L(4, top, W("外匯活期存款", 40), W("帳號", 100), W("123456****50", 130)))
+        lines.append(header(4, top + 12))
+        top += 24
+        for r in fx_rows:
+            lines.append(row(4, top, *r, cur="JPY"))
+            top += 12
     lines.append(L(4, top, W("國泰綜合證券股份有限公司下單之相關交易", 40)))
     lines.append(L(4, top + 12, W("本行重要訊息", 40)))
     if not glued:

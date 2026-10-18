@@ -16,7 +16,7 @@ from worker.pdf import Line, Word
 
 PERIOD = re.compile(r"綜合月對帳單 (\d{4}/\d{2}/\d{2}) ~ (\d{4}/\d{2}/\d{2})")
 HOLDING = re.compile(r"^(活期存款|子帳戶|外匯綜合活期存款) (\S+) (\S+分行) (?:([A-Z]{3}) )?(-?[\d,]+(?:\.\d+)?)$")
-SECTION = re.compile(r"^(?:活期存款|外匯綜合活期存款) 帳號 (\S+)$")
+SECTION = re.compile(r"^(?:外匯)?(?:綜合)?活期存款 帳號 (\S+)$")
 DATE = re.compile(r"^\d{4}/\d{2}/\d{2}$")
 CURRENCY = re.compile(r"^[A-Z]{3}$")
 AMOUNT = re.compile(r"^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$")
@@ -24,7 +24,7 @@ PAGE_NO = re.compile(r"^\d{1,2}$")
 HEADER = ("日期", "交易說明", "幣別", "提出", "存入", "餘額")
 FOOTER = re.compile(r"^(註：|台幣存款 餘額|外幣存款 餘額折合台幣)")
 AFTER_PAGE_NO = ("持有明細", "交易明細", "日期")
-SECTION_KINDS = ("活期存款", "外匯綜合活期存款")
+SECTION_KINDS = ("活期存款", "外匯活期存款", "外匯綜合活期存款")
 
 
 class SplitError(RuntimeError):
@@ -33,12 +33,12 @@ class SplitError(RuntimeError):
 
 @dataclass(frozen=True)
 class Row:
-    txn_date: date
-    description: str
+    txn_date: date = field(repr=False)
+    description: str = field(repr=False)
     currency: str
-    withdrawal: Decimal | None
-    deposit: Decimal | None
-    balance: Decimal
+    withdrawal: Decimal | None = field(repr=False)
+    deposit: Decimal | None = field(repr=False)
+    balance: Decimal = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -47,9 +47,9 @@ class Section:
     currency: str
     period_start: date
     period_end: date
-    closing_balance: Decimal
-    opening_balance: Decimal
-    rows: tuple[Row, ...]
+    closing_balance: Decimal = field(repr=False)
+    opening_balance: Decimal = field(repr=False)
+    rows: tuple[Row, ...] = field(repr=False)
 
 
 @dataclass
@@ -100,7 +100,7 @@ def _holding_amount(text: str, key: str) -> Decimal:
 
 def _suffix(number: str) -> str:
     tail = number.rsplit("*", 1)[-1]
-    return tail if tail else number
+    return tail if "*" in number and re.fullmatch(r"\d{2,4}", tail) else "?"  # never echo an unmasked number
 
 
 def _geometry(words: tuple[Word, ...]) -> Geometry:
@@ -210,9 +210,9 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
         if key not in holdings:
             raise SplitError(f"{key}: no holdings row")
         if key not in declared:
+            if any(k.startswith(f"{suffix}/") for k in declared):
+                raise SplitError(f"{key}: section currency differs from the declared key")
             raise SplitError(f"{key}: undeclared section with rows")
-        if declared[key]:
-            raise SplitError(f"{key}: rows under an anchor_only key")
         sections.append(_section(key, section_rows, holdings[key], period))
         report.rows_per_key[key] = len(section_rows)
     for key, anchor_only in declared.items():
@@ -220,7 +220,7 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
             raise SplitError(f"{key}: declared key has no holdings row")
         if not anchor_only and key not in report.rows_per_key:
             raise SplitError(f"{key}: declared key has no section")
-        if anchor_only:
+        if anchor_only and key not in report.rows_per_key:  # anchor_only: a section is optional
             sections.append(Section(key, key.split("/")[1], period[0], period[1], holdings[key], holdings[key], ()))
             report.anchor += 1
     report.skipped_keys = [key for key in holdings if key not in declared]
