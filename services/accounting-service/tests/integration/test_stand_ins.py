@@ -110,7 +110,7 @@ def test_owner_deleted_events_are_derived_from_the_action_table(seed, db_session
     db_session.commit()
     (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.line_id == line.id]
     assert case.context.get("owner_deleted") is True
-    _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)])  # identical reparse: same statement identity, revision 2, same event, new line id
+    _submit(db_session, run, card, [_line(1, DAY, "全聯", 580)], parser_version="2")  # re-parse at a new parser version: same statement identity, revision 2, same event, new line id (an identical resubmission would replay — spec 2026-10-18 §5)
     db_session.commit()
     (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.event_id == line.event_id]
     assert case.context.get("owner_deleted") is True and case.line_id != line.id

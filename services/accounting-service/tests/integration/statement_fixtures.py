@@ -38,7 +38,7 @@ def _flow(kind: str, line: LineIn) -> Decimal:
     return flow_amount(kind, line.line_kind, line.printed_amount)
 
 
-def _submit(db, run, account, lines, *, kind="card", period=SEP, opening=None, total=None, **header):
+def _submit(db, run, account, lines, *, kind="card", period=SEP, opening=None, total=None, parser_version="1", **header):
     """Submit a revision whose header passes the guardrails (unless `total` overrides it); the hook reconciles.
     `header`: further RevisionIn header fields (closing_date, due_date, minimum_payment)."""
     r, token = run
@@ -49,7 +49,7 @@ def _submit(db, run, account, lines, *, kind="card", period=SEP, opening=None, t
         opening = Decimal(opening if opening is not None else 0)
         expected = opening + flows
     rev = RevisionIn(run_id=r.id, lease_token=token, file_id=None, account_id=account.id, kind=kind, parser="t",
-                     parser_version="1", currency=account.currency, period_start=period[0], period_end=period[1],
+                     parser_version=parser_version, currency=account.currency, period_start=period[0], period_end=period[1],
                      opening_balance=opening, statement_total=expected if total is None else Decimal(total),
                      lines=lines, raw={}, **header)
     res = revs.submit_revision(db, r, rev, account_map={})
