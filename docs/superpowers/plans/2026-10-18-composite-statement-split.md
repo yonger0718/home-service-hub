@@ -69,6 +69,8 @@ def test_extract_lines_keeps_the_extract_bounds():
     data = make_pdf_words([[(40, 780, "x")]])
     with pytest.raises(pdf.TooLarge):
         extract_lines(data, None, max_bytes=10)
+    with pytest.raises(pdf.TooLarge):
+        extract_lines(make_pdf_words([[(40, 780, "a")], [(40, 780, "b")]]), None, max_pages=1)
     with pytest.raises(pdf.Malformed):
         extract_lines(b"%PDF-1.4 not a pdf", None)
     locked = encrypt(make_pdf([statement_lines()]), "pw")
@@ -123,7 +125,7 @@ Add after the `Extracted` dataclass:
 ```python
 @dataclass(frozen=True)
 class Word:
-    text: str
+    text: str = field(repr=False)  # statement content never prints through a repr (R5a); no default — positional args stay (text, x0, x1)
     x0: float
     x1: float
 
@@ -132,7 +134,7 @@ class Word:
 class Line:
     page: int
     top: float
-    words: tuple[Word, ...]  # sorted by x0
+    words: tuple[Word, ...] = field(repr=False)  # sorted by x0
 
     @property
     def text(self) -> str:
@@ -739,7 +741,7 @@ def test_line_kind_is_direction_first_and_exact_match_only():
     assert line_kind(_row("薪資獎金", inn="10")) == "deposit"
     assert line_kind(_row("存款利息", inn="10")) == "interest"
     assert line_kind(_row(" 利息 ", inn="10")) == "interest"
-    assert line_kind(_row("存款　利息", inn="10")) == "interest"
+    assert line_kind(_row("存款　利息", inn="10")) == "deposit"  # NFKC turns U+3000 into a space; internal spaces survive, so no table hit
     assert line_kind(_row("手續費", out="10")) == "fee"
     assert line_kind(_row("轉帳備註含利息", inn="10")) == "deposit"
     assert line_kind(_row("手續費退回", inn="10")) == "deposit"
@@ -784,6 +786,17 @@ def test_bodies_mask_candidates_and_configured_names_in_descriptions():
                       candidates=["1234"]))
     merchant = out["91/TWD"]["lines"][0]["merchant_raw"]
     assert "王小明" not in merchant and "1234" not in merchant and "轉帳" in merchant
+
+
+def test_bodies_classify_before_masking_and_mask_long_digit_runs():
+    rows = [("2026/09/01", "利息", None, "1,000", "31,000"), ("2026/09/02", "轉帳 1234567890", "1,000", None, "30,000")]
+    sections, _ = _split(statement(rows_91=rows, holdings={**HOLDINGS, "91/TWD": "30,000"}, split_at=2))
+    targets = {"91/TWD": {"account_id": 67, "anchor_only": False}, "59/TWD": {"account_id": 76, "anchor_only": False},
+               "68/TWD": {"account_id": 68, "anchor_only": True}, "50/JPY": {"account_id": 81, "anchor_only": True}}
+    lines = dict(bodies(sections, file_id=5, targets=targets, parser_version="v1", masker=_masker(["利息"]),
+                        candidates=[]))["91/TWD"]["lines"]
+    assert lines[0]["line_kind"] == "interest" and lines[0]["merchant_raw"] == "[NAME]"  # classified on the original, then masked
+    assert "1234567890" not in lines[1]["merchant_raw"] and "[NUM…7890]" in lines[1]["merchant_raw"]
 
 
 def test_bodies_zero_row_is_unknown_and_cancelling_rows_stay():
@@ -924,7 +937,7 @@ def test_settings_put_validates_composite_map(client, card, seed, db_session):
         ({COMPOSITE: {"91/JPY": {"account_id": a.id}}}, "composite_map"),             # currency mismatch
         ({COMPOSITE: {"91/TWD": {"account_id": 999999}}}, "composite_map"),           # missing account
         ({COMPOSITE: {"91/TWD": {"account_id": a.id}, "59/TWD": {"account_id": a.id}}}, "composite_map"),  # duplicate target
-        ({COMPOSITE: {"91/TWD": {"account_id": a.id, "anchor_only": "yes"}}}, "composite_map"),
+        ({COMPOSITE: {"91/TWD": {"account_id": a.id, "anchor_only": "yes"}}}, "anchor_only"),  # pydantic refuses it before the service
         ({COMPOSITE: {}}, "composite_map"),
     ]
     for composite_map, loc in bad:
@@ -1197,7 +1210,7 @@ def _again(db, run, account, lines, **kw):
 def test_identical_resubmission_is_replayed_without_a_revision_or_a_case(seed, db_session):
     account = _card(seed, db_session, live=True)
     r = run(db_session)
-    lines = [_line(1, SEP[0], "A", 100), _line(2, SEP[0], "B", 50)]
+    lines = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
     first = _submit(db_session, r, account, lines)[2]
     replay = _again(db_session, r, account, lines)
     assert replay.replayed and replay.revision.id == first.revision.id and replay.case_ids == [] and replay.lineage_counts == {}
@@ -1208,7 +1221,7 @@ def test_identical_resubmission_is_replayed_without_a_revision_or_a_case(seed, d
     replay2 = _again(db_session, r, account, lines)
     assert replay2.replayed and db_session.query(ReconciliationCase).count() == before
     assert not first.statement.conflict_open and first.statement.current_revision_id == first.revision.id
-    changed = _again(db_session, r, account, [_line(1, SEP[0], "A", 100), _line(2, SEP[0], "B", 51)])
+    changed = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 51)])
     assert not changed.replayed and changed.revision.conflict and changed.statement.conflict_open
 
 
@@ -1216,14 +1229,14 @@ def test_identical_resubmission_is_replayed_without_a_revision_or_a_case(seed, d
 def test_replay_needs_persisted_equality(seed, db_session, variant):
     account = _card(seed, db_session, live=True)
     r = run(db_session)
-    base = [_line(1, SEP[0], "A", 100), _line(2, SEP[0], "B", 50)]
+    base = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
     first = _submit(db_session, r, account, base)[2]
     if variant == "seq":
         lines, kw = [_line(2, SEP[0], "A", 100), _line(1, SEP[0], "B", 50)], {}
     elif variant == "foreign":
-        lines, kw = [_line(1, SEP[0], "A", 100, foreign_amount=Decimal("3"), foreign_currency="USD"), base[1]], {}
+        lines, kw = [_fline(1, SEP[0], "A", 100, foreign_amount=Decimal("3"), foreign_currency="USD"), base[1]], {}
     elif variant == "merchant":
-        lines, kw = [_line(1, SEP[0], "A ", 100), base[1]], {}
+        lines, kw = [_fline(1, SEP[0], "A ", 100), base[1]], {}
     elif variant == "header":
         lines, kw = base, {"closing_date": SEP[1]}
     else:
@@ -1241,20 +1254,20 @@ def test_replay_needs_persisted_equality(seed, db_session, variant):
 def test_replay_compares_the_current_revision_not_the_newest(seed, db_session):
     account = _card(seed, db_session, live=True)
     r = run(db_session)
-    base = [_line(1, SEP[0], "A", 100), _line(2, SEP[0], "B", 50)]
+    base = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
     first = _submit(db_session, r, account, base)[2]
     first.statement.status = "reconciled"
     db_session.commit()
-    newer = _again(db_session, r, account, [_line(1, SEP[0], "A", 100), _line(2, SEP[0], "B", 60)])  # conflict, not current
+    newer = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 60)])  # conflict, not current
     assert newer.revision.conflict and first.statement.current_revision_id == first.revision.id
-    same_as_newer = _again(db_session, r, account, [_line(1, SEP[0], "A", 100), _line(2, SEP[0], "B", 60)])
+    same_as_newer = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 60)])
     assert not same_as_newer.replayed  # equal to the newest, not to the current
     same_as_current = _again(db_session, r, account, base)
     assert same_as_current.replayed and same_as_current.revision.id == first.revision.id
     assert first.statement.conflict_open  # the pending conflict is untouched
 ```
 
-(`StatementRevision`, `ReconciliationCase`, `RevisionIn`, `revs`, `SEP`, `Decimal` — import what the module does not already have; `_line(..., **extra)` forwards `foreign_amount`/`foreign_currency` to `LineIn`.)
+(`StatementRevision`, `ReconciliationCase`, `RevisionIn`, `revs`, `SEP`, `Decimal` — import what the module does not already have. **The module's own `_line(seq, posted, printed, kind, merchant)` at :31 has a different signature from `statement_fixtures._line(seq, day, merchant, printed, kind, **extra)`** (AGENT-159): import the fixtures helper under an alias, `from statement_fixtures import _line as _fline`, and use `_fline` in these three tests; `_fline(..., **extra)` forwards `foreign_amount`/`foreign_currency` to `LineIn`.)
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -1360,7 +1373,7 @@ def composite_world(world, client, seed, db_session, monkeypatch):
     return services, drive_files, cfg, accounts
 ```
 
-The `world` fixture's fake `rclone` answers `[]` for the manual root (`if not args[-1].endswith("/銀行")`); change it to serve the manual root from the same `drive_files` dict for paths that do not start with `信用卡/` or `銀行帳戶/` (the manual root is `cfg.manual_root`; check `worker/config.py:61` for its suffix and match on it). `card_id(services)` — replace with the `card` fixture's id (add `card` to the fixture parameters). Then the tests:
+The `world` fixture's fake `rclone` answers `[]` for the manual root (`if not args[-1].endswith("/銀行")`). `list_pdfs` lists the mail root first and then the manual root (`worker/drive.py:72-73`); files register by content hash, so a path that both listings return would be registered from the mail root first, fail `mapping` there and never reach the composite path (AGENT-159 Must 2). Change the fake so the two listings partition `drive_files`: the mail listing (the path ending with `cfg.mail_root`'s last segment `/銀行`) returns only entries whose path starts with `信用卡/` or `銀行帳戶/`; the manual listing (the path ending with `cfg.manual_root`'s last segment — read it at `worker/config.py:61`) returns only the other entries; any other root returns `[]`. Add a test assertion that the composite file was registered exactly once (`select count(*) from statement_source` for its sha is 1 and its `root` is `manual`). `card_id(services)` — replace with the `card` fixture's id (add `card` to the fixture parameters). Then the tests:
 
 ```python
 def _statements(db_session, account_id):
@@ -1570,12 +1583,12 @@ def _process_composite(services: Services, lease: Lease, file_row: dict, data: b
             outcome, reason = "parse", "422"
         else:
             summary.cases_opened += len(out.get("case_ids") or [])
-            summary.live_revisions += 1 if out.get("mode") == "live" else 0
-            if out.get("replayed"):
+            if not out.get("guardrail_ok"):
+                outcome = "guardrail"  # a replay of a failed current revision keeps the file in review (AGENT-159)
+            elif out.get("replayed"):
                 outcome = "replayed"
-            elif not out.get("guardrail_ok"):
-                outcome = "guardrail"
             else:
+                summary.live_revisions += 1 if out.get("mode") == "live" else 0  # a real revision, as on the single path
                 outcome = "anchor" if body["raw"]["anchor"] else "parsed"
         report["sections"].append({"key": key, "outcome": outcome, "reason": reason})
         log.info("composite section %s: %s", key, outcome)

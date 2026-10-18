@@ -256,8 +256,10 @@ failure of one section does not stop the others — every section gets an outcom
 
 File status = the worst class present: `parse` > `guardrail` > `parsed`. `SplitError` and a missing text layer are
 file-level `parse` / `no_text_layer` before any section runs (no OCR fallback: OCR output has no reliable section
-structure). A file whose folder is in `composite_map` but matched no declared key is `ignored / mapping`. API
-transport errors (`ApiError` other than 422, `LeaseLost`) propagate exactly as on the single path.
+structure). Once a folder has targets in `composite_map` the file never returns to `ignored / mapping`: a declared
+key without a holdings row, a non-anchor key without a section or an undeclared key with rows are `SplitError` →
+`failed / parse` (the fail-closed bullets above win; AGENT-159), recovered by the operator re-queue below, not by a
+map change. API transport errors (`ApiError` other than 422, `LeaseLost`) propagate exactly as on the single path.
 
 **PDF-level failures stay (AGENT-156 F4).** The composite path reuses the single path's acquire / unlock / extract
 steps unchanged, so their outcomes keep their classes and recovery: no password matched → `failed / password`
@@ -387,7 +389,8 @@ is — it still helps statements whose counterpart account has no statement feed
     per-line `printed_amount == deposit - withdrawal` and sum == closing − opening assertions); the `line_kind`
     table by exact description and direction (`存款利息` on 存入 → `interest`; `手續費` on 提出 → `fee`;
     `轉帳備註含利息` → direction kind; `手續費退回` on 存入 → `deposit`; `利息` on 提出 → `withdrawal`; ` 利息 ` with
-    leading/trailing spaces and `存款　利息` with a full-width space → `interest`; a configured holder name equal to
+    leading/trailing spaces → `interest`; `存款　利息` with a full-width space → `deposit` (NFKC turns U+3000 into a
+    space and internal spaces survive, so the view is not a table key — AGENT-159 Must 1); a configured holder name equal to
     `利息` still classifies as `interest` and is masked in `merchant_raw`; a zero-amount `利息` row → `unknown`;
     a row with neither 提出 nor 存入 → `SplitError`);
     `merchant_raw` via the run masker with the file's candidates (a planted candidate password and a configured
@@ -398,7 +401,7 @@ is — it still helps statements whose counterpart account has no statement feed
   `account_id`, `raw.section`, `raw.anchor`, `raw.rows`; **the parser is never called** (a parser stub that raises
   on use); the outcome table (all parsed → `parsed`; one guardrail → `needs_review`; one 422 → `failed/parse` with
   the other sections still posted; `SplitError` → `failed/parse`; no text layer → `failed/no_text_layer` without
-  OCR; nothing declared matched → `ignored/mapping`; PDF-level: no password → `failed/password`, malformed →
+  OCR; a folder with targets never returns to `ignored/mapping` (declaration mismatches are `SplitError`); PDF-level: no password → `failed/password`, malformed →
   `failed/parse`, `pdf.TooLarge` → `needs_review/too_large`, extraction timeout → `failed/transient` with the
   retry ladder, each with synthetic inputs); a composite file is processed while the parser is latched;
   file status written once after the loop; `replayed` counted; the summary's `composite` list; the
@@ -466,3 +469,4 @@ is — it still helps statements whose counterpart account has no statement feed
 | 156-F4 | dropping parser failures read as dropping PDF failures | rev 5 §4: PDF-level password / malformed / TooLarge / extraction-timeout outcomes and their recovery kept verbatim; only parser-origin outcomes removed; synthetic tests |
 | 157-F2 (P2, only open item of rev 5) | "whitespace normalisation" undefined; masking-before-classification ambiguity | rev 6 §4: classification view = NFKC + split/join on the original description, before and independent of masking; zero rule wins; tests for whitespace variants, a configured-name collision and a neither-filled row. Accepted by the owner's ruling (PASS-or-minor → plan) without a further Codex round |
 | author, pre-plan check 2026-10-18 | `extract_tables` on the real file is fragmentary (no date / balance cells, truncated descriptions, half the rows): "rows from the tables" cannot work | rev 7 §1/§4: rows from the dated text lines with the column geometry of `extract_words` (new `pdf.extract_lines`); 提出/存入 by the token's right edge against the header's x-ranges, cross-checked by the balance chain; attribution rules removed; fixture synthetic (owner data rule). Folded into the plan under the owner ruling; the plan review covers it |
+| AGENT-159 (plan review, dev-grok) | Must 1: §8 full-width-space case contradicted the §4 view rule; Must 2: the pipeline test fixture would register the composite file from the mail root first; Shoulds: a replay of a guardrail-failed current revision must rank `guardrail`, `live_revisions` must not count replays, two §8 masking pins were untested, the `ignored/mapping` sentence contradicted the fail-closed bullets, two test-helper mistakes | folded into the plan and this spec without a second plan round (owner ruling): §8 full-width case → `deposit`; fixture listings partitioned by root; outcome order guardrail > replayed; `live_revisions` only for real revisions; masking tests added; §4 states the fail-closed bullets win |
