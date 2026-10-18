@@ -12,7 +12,8 @@ reconciliation design (`2026-10-08-statement-reconciliation-design.md`) and R6 (
 
 The manual Drive folder `手動下載/國泰世華/` holds twelve 國泰世華 綜合月對帳單 (`YYMM.pdf`, 2025-10 … 2026-09). Each
 PDF covers several deposit accounts of one customer: two TWD 活期存款 with transaction sections, one TWD 子帳戶 and two
-外匯綜合活期存款 (JPY, USD) without sections, plus a 持有明細 table with every account's closing balance. The pipeline
+外匯綜合活期存款 (JPY, USD) that print a section only in months with activity (host dry run 2026-10-18: `68/TWD` and
+`50/JPY` have row sections in some of the twelve files), plus a 持有明細 table with every account's closing balance. The pipeline
 assumes one folder → one HomeHub account → one statement per file, so all twelve files sit at `ignored / mapping` and the
 owner's 國泰 accounts have no statement side to reconcile against.
 
@@ -150,8 +151,8 @@ only on the composite path, after the existing `extract` (which still decides `h
 ### Page and header handling (AGENT-153 #1)
 
 Lines carry their page, so `\f` no longer matters. A page number is either a leading word matching `^\d{1,2}$` whose
-next word opens a known shape (`持有明細`, `交易明細`, `日期`, `活期存款`/`外匯綜合活期存款` followed by `帳號`, or a
-`YYYY/MM/DD` date), or — what the real file actually prints in the word geometry (host dry run 2026-10-18) — a line
+next word opens a known shape (`持有明細`, `交易明細`, `日期`, `活期存款`/`外匯活期存款`/`外匯綜合活期存款` followed by
+`帳號`, or a `YYYY/MM/DD` date), or — what the real file actually prints in the word geometry (host dry run 2026-10-18) — a line
 consisting of that single word alone at the page foot. Either form is dropped wherever it occurs in the transaction
 area, inside or outside a section, and never closes a section. After a page break the real file prints neither a
 repeated column header nor a footer: the section simply continues with its next dated row on the new page (the
@@ -365,7 +366,9 @@ else: existing single-statement path, unchanged
 
 ## 7. Out of scope
 
-USD section (no account); 國泰高雄 / portfolio market value; other composite layouts (`銀行帳戶/臺灣銀行一般`, 21 files
+USD section (no account — and a month with FX activity in two currencies, or in USD only, fails the file closed:
+rows are grouped by the printed suffix, so per-currency section grouping would be a later change); 國泰高雄 /
+portfolio market value; other composite layouts (`銀行帳戶/臺灣銀行一般`, 21 files
 ignored for a different reason — the owner's 臺灣銀行 split); OCR composites; model-based reading of composite
 sections (a later change may add a merchant-normalising model pass if it ever earns its cost); any change to card
 parsing, the period derivation backlog, or the sibling-candidate mechanism (ruling 4 of the base design stays as
@@ -393,8 +396,9 @@ is — it still helps statements whose counterpart account has no statement feed
     closes it and the next dated row is a `SplitError`;
   - balance chain: a doctored running balance, a doctored holdings balance, both 提出 and 存入 filled, mixed
     currency within a section (each `SplitError` naming the key and row index, message free of amounts);
-  - declaration: rows under an `anchor_only` key, a declared non-anchor key without a section, an undeclared key
-    with rows (each `SplitError`); an undeclared key without rows is skipped;
+  - declaration: a declared non-anchor key without a section, an undeclared key with rows (each `SplitError`); an
+    `anchor_only` key with a printed section is processed as rows (rev 8) and without one becomes an anchor; an
+    undeclared key without rows is skipped;
   - revision bodies: `seq` order, `txn_date == posted_date`, signed `printed_amount` chosen by the present cell
     (a normal withdrawal → negative, a deposit → positive, a fee row → negative `fee`, a zero-amount row →
     `0` / `unknown`, cancelling +10 / −10 rows → two persisted lines, a negative printed cell → `SplitError`, the
