@@ -145,6 +145,14 @@ def _nfkc(expected: str) -> str:
     return unicodedata.normalize("NFKC", expected).replace("[NUM...", "[NUM…")
 
 
+def test_dated_identifier_line_with_the_row_shape_is_the_accepted_limitation():
+    """AGENT-148 Should: a dated line whose merchant text is an identifier label followed by exactly the transaction
+    column shape is indistinguishable from a purchase and prints the amount-shaped prefix (base masked it whole)."""
+    s = "12/22 12/26 帳號 123 4567 8901 TW TWD"
+    assert mask.Masker(IDENT).text(s) == "12/22 12/26 帳號 123 [NUM…8901] TW TWD"
+    assert mask.Masker(IDENT).mask_ocr_line(s) == "12/22 12/26 帳號 123 [NUM…8901] TW TWD"
+
+
 def test_only_whole_rows_are_rewritten_inside_a_page():
     page = "卡號 123 4567 8901 2345\n12/22 12/26 優步 174 9538 1814 TW TWD\n本期應繳總額 6,382"
     assert mask.Masker(IDENT).text(page) == "卡號 [NUM…2345]\n12/22 12/26 優步 174 [NUM…1814] TW TWD\n本期應繳總額 6,382"
@@ -161,11 +169,12 @@ def test_only_whole_rows_are_rewritten_inside_a_page():
     ("12/22 12/26 電話 0800 123 4567 TW TWD", "12/22 12/26 電話 [NUM…4567] TW TWD"),  # same, on a dated row
     ("12/22 12/26 帳號 123 4567 8901 2345", "12/22 12/26 帳號 [NUM…2345]"),  # a dated row without the codes' anchor
     ("1480 9538 1814 TW TWD", "[NUM…1814] TW TWD"),  # a four-digit amount without a thousands separator: known limitation
+    ("12/22 12/26 商店 1480 9538 1814 TW TWD", "12/22 12/26 商店 [NUM…1814] TW TWD"),  # the same on a dated row
+    ("AMEX 3714 496353 98431", "AMEX [NUM…8431]"),  # 4-6-5 grouping
 ])
 def test_identifiers_with_a_short_leading_group_stay_masked(s, expected):
     """AGENT-148 Must (rounds 1 and 2): only a whole transaction row is rewritten and never from inside a longer
-    digit run; every other shape keeps the generic rule, so no identifier prefix is exposed — on the text path and
-    on the OCR path alike."""
+    digit run; every other shape keeps the generic rule — on the text path and on the OCR path alike."""
     assert mask.Masker(IDENT).text(s) == expected
     assert mask.Masker(IDENT).mask_ocr_line(s) == _nfkc(expected)
 

@@ -26,7 +26,10 @@ _DIGIT_RUN = re.compile(r"(?<!\d)(?:\d{6,}|\d{3,}(?:[ \-]\d{3,})+)(?!\d)")
 # The row must start with the two dates (an identifier printed with country and currency codes but no transaction
 # dates keeps the generic rule) and the amount must not follow a three-digit group (the pass never starts inside a
 # longer identifier such as 0800 123 4567, which the generic rule then masks whole). Every other digit run keeps the
-# generic rule, so no identifier printed as a short group followed by longer groups is exposed (AGENT-148).
+# generic rule. What this guarantees (AGENT-148): the only digits printed that the generic rule would have hidden are
+# the amount of a line with this whole shape — a dated line whose merchant text is an identifier label followed by the
+# same column shape (12/22 12/26 帳號 123 4567 8901 TW TWD) prints that amount-shaped prefix too; shape alone cannot
+# tell it from a purchase, and it is accepted as a known limitation.
 _TXN_ROW = re.compile(
     r"^(\d{2}/\d{2} \d{2}/\d{2} [^\n]*?)(?<!\d{3}) (-?\d{1,3}(?:,\d{3})*(?:\.\d+)?) (\d{4})(?: (\d{4}))? ([A-Z]{2}) ([A-Z]{3})"
     r"(?![A-Za-z0-9])", re.MULTILINE)
