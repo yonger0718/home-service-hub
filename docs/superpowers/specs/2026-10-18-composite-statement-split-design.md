@@ -1,7 +1,7 @@
 # Composite bank statement split (國泰世華 綜合月對帳單) — design
 
-Status: rev 2 for Multica re-review, 2026-10-18 (rev 1 `d1de321` got CHANGES-REQUESTED in AGENT-153; §10 maps every
-finding to its change). Base: main `5636f5a` (R6b + R3a deployed). Follows the statement reconciliation design
+Status: rev 3 for Multica re-review, 2026-10-18 (rev 1 `d1de321` CHANGES-REQUESTED in AGENT-153, rev 2 `0680f1d`
+CHANGES-REQUESTED in AGENT-154; §10 maps every finding to its change). Base: main `5636f5a` (R6b + R3a deployed). Follows the statement reconciliation design
 (`2026-10-08-statement-reconciliation-design.md`) and R6 (`2026-10-15-reconciliation-r6-design.md`).
 
 ## 1. Problem
@@ -177,8 +177,18 @@ reliable section structure).
 `currency == section.currency`, `period_start/period_end` equal the header period, `opening_balance ==
 section.opening_balance`, `statement_total == section.closing_balance` and `len(lines) == len(section.rows)`.
 Otherwise the section fails with reason `header_mismatch` (a parse failure, §4 file status) — the worker never
-patches the model's header to the derived values, so a disagreement is visible, not hidden. With the header pinned,
-the server's `equation` guardrail now proves the lines: a dropped, duplicated or sign-flipped line cannot balance.
+patches the model's header to the derived values, so a disagreement is visible, not hidden.
+
+**Row-by-row enforcement (AGENT-154 R1):** a matching header and total do not prove the lines (two deposits of 10
+and 20 reported as 15 and 15 balance; a dropped 10 plus a duplicated 10 on another date balance). So, before
+posting, the worker compares the model's lines with `section.rows` **in order**: for every index i, the line's
+`txn_date` must equal `rows[i].txn_date` and its signed amount (`printed_amount` with the sign the line's `line_kind`
+implies under the bank sign rule: deposit / transfer_in / interest / refund / reward positive, withdrawal /
+transfer_out / fee / purchase / payment negative) must equal `+deposit` or `-withdrawal` of `rows[i]`; the line's
+`seq` must be `i + 1`. Sequence equality keeps duplicates (two identical rows need two identical lines in the same
+positions). Any difference fails the section with reason `line_mismatch` (a parse failure). Merchant text is not
+compared (it is the model's reading of the masked description). The server-side `equation` guardrail stays as the
+second, independent check; it is no longer the only one.
 
 Anchor sections skip the model: the worker posts `lines = []`, `opening_balance = statement_total = closing_balance`,
 period from the header, `parser = "composite-anchor"`, the current `parser_version`, `raw = {"section": key,
@@ -197,15 +207,28 @@ Section outcome and its failure class (the existing classes keep their meaning):
 |---|---|---|
 | posted, `guardrail_ok` | `parsed` | — |
 | posted, `guardrail_ok = false` | `guardrail` | `needs_review / guardrail` |
-| API 422 (`kind`, `lines`, `statement_retired`, …) or `header_mismatch` | `parse` | `failed / parse` |
+| API 422 (`kind`, `lines`, `statement_retired`, …), `header_mismatch`, `line_mismatch`, parser `schema`, parser `output_too_large` | `parse` | `failed / parse` |
+| masked section over `STDIN_CAP` (parser `stdin_too_large`, or the pre-check) | `too_large` | `needs_review / too_large` (as the single path) |
 | parser `timeout` / `exit` | `transient` | `failed / transient` (retry ladder, `attempts` as today) |
 | parser `sandbox` / `auth` / `cli_version` | `sandbox` | `failed / sandbox`, parser latched (as today) |
+| model section not attempted because the parser is latched (this file or earlier) | `deferred` (reason `parser_disabled`) | see below |
 | posted and the API answered `replayed: true` (§5) | `replayed` | — |
 | key not in the map (`50/USD`) | `skipped` | — |
 
-File status = the worst class present: `sandbox` > `transient` > `parse` > `guardrail` > `parsed`. `SplitError`
-and a missing text layer are file-level `parse` / `no_text_layer` before any section runs. A file whose folder is in
-`composite_map` but matched no declared key is `ignored / mapping`.
+File status = the worst class present: `sandbox` > `transient` > `parse` > `too_large` > `guardrail` > `parsed`.
+`SplitError` and a missing text layer are file-level `parse` / `no_text_layer` before any section runs. A file whose
+folder is in `composite_map` but matched no declared key is `ignored / mapping`.
+
+**Parser latch inside the loop (AGENT-154 R2).** The single path never calls the parser once
+`services.parser_disabled` is set (`pipeline.py` defers the file). The composite loop keeps that contract: a
+`sandbox` / `auth` / `cli_version` error in section k latches the parser exactly as today (gate latch,
+`parser_disabled` in the run errors) and the remaining model sections k+1… are not attempted — each gets outcome
+`deferred` with reason `parser_disabled` and no parser call (tests assert zero calls after the latch). Anchor
+sections need no parser and still post. The file ends `failed / sandbox` (the worst class), written once after the
+loop; its already-posted sections are idempotent on the re-run. A composite file that starts while the parser is
+already latched is deferred as a whole, like a single-account file (no status write, `summary.deferred += 1`).
+Every `ParseError` reason the parser can raise is in the table above; an unlisted reason is a programming error and
+is treated as `parse`.
 
 Run summary gains `composite_files`, `sections_parsed`, `sections_anchor`, `sections_replayed`,
 `sections_skipped`, `sections_failed`, and a per-file list `composite: [{file_id, sections: [{key, outcome,
@@ -240,14 +263,21 @@ else: existing single-statement path, unchanged
   `register_file` reuses the row by sha256, so a stale singular value could survive); on the single-account path the
   assignment stays as today. No reader depends on the column (model nullable, serializer `int | None`, `list_files`
   filters by status, identity uses `AccountStatement.account_id`).
-- **Idempotent replay (AGENT-153 #4):** before step 5 of `submit_revision`, when the statement exists and its current
-  revision has the same `file_id`, `parser_version`, header (`_header_changes` empty) and line set (`lineage.pair`
-  finds every line twinned with identical `txn_date`, `posted_date`, `merchant_raw`, `printed_amount`, `flow_amount`,
-  `line_kind`, installment fields, and no extra line on either side), the call returns the existing revision with
-  `replayed: true` and creates no revision, no case and no lineage. This runs before the `conflict` test, so a
-  re-run after a partial failure cannot open `statement_conflict` on a statement the owner already reconciled. Any
-  difference — one line, one header field, another file or parser version — takes the existing path unchanged
-  (conflict, twins, header gates). `RevisionOut` gains `replayed: bool` (default false); the worker counts it.
+- **Idempotent replay (AGENT-153 #4, AGENT-154 R3):** before step 5 of `submit_revision`, when the statement exists
+  and the revision referenced by `statement.current_revision_id` (never the highest revision number — a newer
+  non-current revision may exist) is **persisted-equal** to the payload, the call returns that revision with
+  `replayed: true` and creates no revision, no case and no lineage. Persisted-equal means: same `file_id`,
+  `parser_version`, `parser` and `kind`; every header column `_header_columns` writes (`currency`, `period_start`,
+  `period_end`, `closing_date`, `due_date`, `opening_balance`, `statement_total`, `minimum_payment`) equal; and the
+  ordered list of the payload's derived lines equals the stored lines ordered by `seq`, comparing every persisted
+  line column — `seq`, `txn_date`, `posted_date`, `merchant_raw` (raw text, not `merchant_norm`), `printed_amount`,
+  `foreign_amount`, `foreign_currency`, `flow_amount`, `line_kind`, `installment_seq`, `installment_total`,
+  `is_subtotal` — position by position. This is a direct tuple comparison, not `lineage.pair` twinning (twinning
+  keys omit `seq` and the raw text, so a seq swap or a merchant-text correction would otherwise be swallowed). It
+  runs before the `conflict` test, so a re-run after a partial failure cannot open `statement_conflict` on a
+  statement the owner already reconciled. Any difference — a seq swap, a foreign amount, raw merchant text, one
+  header field, another file or parser version — takes the existing path unchanged (conflict, twins, header
+  gates, pending conflicts untouched). `RevisionOut` gains `replayed: bool` (default false); the worker counts it.
 - `RevisionIn.parser` accepts `"composite-anchor"` beside the existing values; `RevisionIn.raw.section` and
   `raw.anchor` are carried through to `statement_revision.raw` (already free-form JSON).
 - Everything downstream — identity per (account, currency, period_end), `period_blocker`, guardrails, live/historical
@@ -296,10 +326,15 @@ statements whose counterpart account has no statement feed).
 - `tests/worker/test_pipeline.py`: composite folder → one `submit_revision` per declared section with the right
   `account_id`, `raw.section`, `raw.anchor`; anchor sections skip the parser; the `[hint]` line carries period,
   currency, suffix, opening, closing and row count; header enforcement (`header_mismatch` on a wrong opening, a
-  wrong period, a wrong line count); the outcome table (all parsed → `parsed`; one guardrail → `needs_review`; one
-  422 → `failed/parse` with the other sections still posted; one timeout → `failed/transient`; `SplitError` →
-  `failed/parse`; no text layer → `failed/no_text_layer` without OCR; nothing declared matched → `ignored/mapping`);
-  file status written once after the loop; `replayed` counted; the summary's `composite` list; the
+  wrong period, a wrong line count); row-by-row enforcement (`line_mismatch` on two deposits of 10 and 20 reported
+  as 15 and 15, on a dropped 10 plus a duplicated 10 on another date, on a sign flip, on two rows swapped in
+  order — all with a matching header and total); the outcome table (all parsed → `parsed`; one guardrail →
+  `needs_review`; one 422 → `failed/parse` with the other sections still posted; one `schema` error →
+  `failed/parse`; one section over `STDIN_CAP` → `needs_review/too_large`; one timeout → `failed/transient`;
+  `SplitError` → `failed/parse`; no text layer → `failed/no_text_layer` without OCR; nothing declared matched →
+  `ignored/mapping`); latch: an `auth` error in the first model section leaves zero further parser calls, the
+  remaining model sections `deferred`, anchors still posted, file `failed/sandbox` written once; a file started
+  while latched is deferred with no status write; `replayed` counted; the summary's `composite` list; the
   `mapping_version` change re-queues an ignored composite file and nothing with another failure class.
 - `tests/integration/test_statement_ingest_api.py`: `composite_map` validation (grammar, currency, credit account,
   archived, missing account, overlap with `account_map`, duplicate target account naming both keys, bad
@@ -312,7 +347,10 @@ statements whose counterpart account has no statement feed).
   value before; two sections of one file become two statements with independent periods, guardrails and modes;
   anchor-only revision passes guardrails; idempotent replay: identical resubmission returns `replayed: true` with no
   new revision or case, including on a `reconciled` live statement (no `statement_conflict`), while a one-line
-  difference on a reconciled statement still opens the conflict; the "A reconciled, B failed, re-run" scenario.
+  difference on a reconciled statement still opens the conflict; a seq-only swap, a `foreign_amount`-only change
+  and a `merchant_raw`-only change are each **not** replayed; replay compares `current_revision_id` even when a
+  newer non-current revision exists (the newer one being equal to the payload must not trigger replay); the
+  "A reconciled, B failed, re-run" scenario.
 - README (`services/accounting-service/README.md`): a "Composite statements" section (settings key with
   `anchor_only`, section keys, the split's fail-closed rules, header enforcement, the outcome/file-status table, the
   operator re-queue statement, the one-time `mapping_version` fan-out) and the `account-map` route's new field;
@@ -322,14 +360,16 @@ statements whose counterpart account has no statement feed).
 
 1. Page normalisation: every shape the fixture shows (page digit glued to a row, repeated column header, note lines
    inside the transaction area) must be covered; any unknown line inside a section is a `SplitError`, not skipped.
-2. Attribution and the balance chain together must make a dropped, duplicated, misplaced or sign-flipped row
-   impossible to post silently — the tests enumerate each.
+2. Attribution, the balance chain and the row-by-row comparison together must make a dropped, duplicated,
+   misplaced, redistributed or sign-flipped row impossible to post silently — the tests enumerate each.
 3. The `[hint]` line must never leak into `parser_version` and must not change the single-statement path; header
-   enforcement must refuse, never correct.
+   and row enforcement must refuse, never correct.
 4. Partial failure: a later section's failure must not roll back earlier sections, the file status must reflect the
-   worst class, and the documented re-queue must be the only recovery path (no version bump).
-5. Idempotent replay must be exact-match only; `composite_map` validation must refuse duplicate targets and
-   cross-map overlap; the one-time `mapping_version` fan-out must touch `mapping` failures only.
+   worst class and be written once, the latch must stop every further parser call, and the documented re-queue must
+   be the only recovery path (no version bump).
+5. Idempotent replay must be persisted-equal against `current_revision_id` only; `composite_map` validation must
+   refuse duplicate targets and cross-map overlap; the one-time `mapping_version` fan-out must touch `mapping`
+   failures only.
 
 ## 10. AGENT-153 findings → rev 2 changes
 
@@ -342,3 +382,6 @@ statements whose counterpart account has no statement feed).
 | 5 | same target account under two keys | §3 uniqueness 422; §5 folder check by (section, account, currency) |
 | 6 | envelope hash fans out once | §3 accepted and documented, tests for key order, empty-map upgrade and class isolation |
 | Q4 | NULL `statement_file.account_id` must be explicit | §5 explicit NULL on the composite path |
+| R1 (AGENT-154) | header + total + count do not prove the lines | §4 row-by-row enforcement: ordered (date, signed amount, seq) comparison against `Section.rows`, `line_mismatch` fails closed; equation demoted to the second check |
+| R2 (AGENT-154) | loop vs parser latch; `ParseError` classes incomplete | §4 outcome table covers `schema`, `output_too_large`, `stdin_too_large`/cap, `deferred`; latch stops further parser calls, anchors continue, file `failed / sandbox` once; latched-at-start files deferred |
+| R3 (AGENT-154) | line-set equality via twinning swallows seq / raw-text changes | §5 persisted-equal against `current_revision_id`: every header column and every line column incl. `seq`, `merchant_raw`, `foreign_*`, position by position; tests for seq-only, foreign-only, merchant-only and newer-non-current |
