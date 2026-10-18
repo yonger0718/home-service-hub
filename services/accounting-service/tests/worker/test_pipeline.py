@@ -1370,6 +1370,16 @@ def test_thread_error_from_the_caller_carries_no_extraction_exception(world, tmp
     _assert_canary_free(seen[0], worker_log)
 
 
+def test_requeued_identical_card_file_replays_and_counts_no_live_revision(world, db_session):
+    services, *_ = world
+    assert pipeline.run(services, trigger="owner_cli")["live_revisions"] == 1
+    db_session.execute(text("update statement_file set status = 'new', failure = null"))
+    db_session.commit()
+    again = pipeline.run(services, trigger="owner_cli")
+    assert again["parsed"] == 1 and again["live_revisions"] == 0  # the identical resubmission replayed (spec §5)
+    assert _counts(db_session)["statement_revision"] == 1
+
+
 # --- composite statements (spec §4): one revision per declared section, no parser call ---------------------------------
 
 
@@ -1423,6 +1433,8 @@ def test_composite_file_posts_one_statement_per_declared_section_without_the_par
     assert rows["59/TWD"].mode == "live" and rows["91/TWD"].mode == "historical"
     assert all(r.file_account is None for r in rows.values())
     assert _bank_row(db_session) == ("parsed", None)
+    # the card file hit the raising parser stub: contained, failed/transient
+    assert db_session.execute(text("select status, failure from statement_file where kind = 'card'")).one() == ("failed", "transient")
     # registered once, from the manual root (AGENT-159 Must 2: the listings partition the drive)
     sources = db_session.execute(text("select src.root from statement_source src join statement_file f on f.id = src.file_id "
                                       "where f.kind = 'bank'")).scalars().all()
@@ -1464,7 +1476,7 @@ def test_composite_split_error_fails_the_file_as_parse(composite_world, db_sessi
     services, *_ = composite_world
     monkeypatch.setattr(pdf, "extract_lines", lambda data, password, **kw: composite_statement(holdings={**HOLDINGS, "91/TWD": "1"}))
     summary = pipeline.run(services, trigger="owner_cli")
-    assert summary["failed"] >= 1 and summary["composite"][0]["sections"] == [{"key": None, "outcome": "parse", "reason": "split_error"}]
+    assert summary["failed"] == 1 and summary["composite"][0]["sections"] == [{"key": None, "outcome": "parse", "reason": "split_error"}]
     assert summary["sections_failed"] == 1 and _bank_row(db_session) == ("failed", "parse")
     assert db_session.execute(text("select count(*) from statement_revision where raw ? 'section'")).scalar_one() == 0
 
@@ -1474,21 +1486,22 @@ def test_composite_guardrail_failure_is_needs_review(composite_world, db_session
     real = services.api.submit_revision
 
     def off_by_one(lease, body):
-        if body["raw"]["section"] == "91/TWD":
-            body = {**body, "statement_total": "34432"}
+        if body["raw"]["section"] == "59/TWD":  # the live section
+            body = {**body, "statement_total": "52753"}
         return real(lease, body)
 
     monkeypatch.setattr(services.api, "submit_revision", off_by_one)
     summary = pipeline.run(services, trigger="owner_cli")
     assert summary["needs_review"] == 1 and _bank_row(db_session) == ("needs_review", "guardrail")
-    assert [s for s in summary["composite"][0]["sections"] if s["key"] == "91/TWD"][0]["outcome"] == "guardrail"
+    assert [s for s in summary["composite"][0]["sections"] if s["key"] == "59/TWD"][0]["outcome"] == "guardrail"
     assert summary["sections_failed"] == 1 and summary["sections_parsed"] == 1
-    # re-queued unchanged: the 91/TWD resubmission replays its failed current revision and still ranks `guardrail`
+    assert summary["live_revisions"] == 1  # a new live revision counts even when it fails the guardrail
+    # re-queued unchanged: the 59/TWD resubmission replays its failed current revision and still ranks `guardrail`
     db_session.execute(text("update statement_file set status = 'new', failure = null where kind = 'bank'"))
     db_session.commit()
     summary = pipeline.run(services, trigger="owner_cli")
     outcomes = {s["key"]: s["outcome"] for s in summary["composite"][0]["sections"]}
-    assert outcomes == {"91/TWD": "guardrail", "59/TWD": "replayed", "68/TWD": "replayed", "50/JPY": "replayed",
+    assert outcomes == {"91/TWD": "replayed", "59/TWD": "guardrail", "68/TWD": "replayed", "50/JPY": "replayed",
                         "50/USD": "skipped"}
     assert summary["live_revisions"] == 0 and _bank_row(db_session) == ("needs_review", "guardrail")
 
@@ -1520,7 +1533,7 @@ def test_composite_pdf_failures_keep_their_classes(composite_world, db_session, 
         summary = pipeline.run(services, trigger="owner_cli")
         assert _bank_row(db_session) == expected, (target, expected)
         if target == "extract_lines":
-            assert summary["composite"][0]["sections"] == []  # no section ran
+            assert summary["composite_files"] == 0 and summary["composite"] == []  # the file never reached the split
         db_session.expire_all()
 
 

@@ -239,6 +239,22 @@ def _review(services: Services, lease: Lease, file_row: dict, failure: str, summ
     return "needs_review"
 
 
+PDF_FAILURES = (pdf.PasswordError, pdf.Malformed, pdf.TooLarge, pdf.ExtractTimeout)
+
+
+def _pdf_failure(services: Services, lease: Lease, file_row: dict, exc: Exception, summary: Summary) -> str:
+    """The PDF-level failure classes, shared by `extract` and `extract_lines` (spec §4, AGENT-156 F4): no password
+    matched → failed/password, too large → needs_review/too_large, extraction timeout → failed/transient, malformed
+    → failed/parse."""
+    if isinstance(exc, pdf.PasswordError):
+        return _fail(services, lease, file_row, "password", summary, credential_version=services.credential_version)
+    if isinstance(exc, pdf.TooLarge):
+        return _review(services, lease, file_row, "too_large", summary)
+    if isinstance(exc, pdf.ExtractTimeout):
+        return _fail(services, lease, file_row, "transient", summary)
+    return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
+
+
 def process_file(services: Services, lease: Lease, file_row: dict, listed: drive_mod.Listed, data: bytes,
                  account_map: dict[str, int], mapping_version: str, summary: Summary,
                  closing_days: dict[int, int] | None = None, composite_map: dict | None = None) -> str:
@@ -262,16 +278,10 @@ def process_file(services: Services, lease: Lease, file_row: dict, listed: drive
         unlocked = pdf.unlock(data, candidates)
         password = candidates[unlocked.password_index] if unlocked.password_index is not None else None
         extracted = pdf.extract(data, password)
-    except pdf.PasswordError:
-        return _fail(services, lease, file_row, "password", summary, credential_version=services.credential_version)
-    except pdf.Malformed:
-        return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
+    except PDF_FAILURES as exc:
+        return _pdf_failure(services, lease, file_row, exc, summary)
     except pdf.NoTextLayer:
         no_text_layer = True  # the OCR child is started below, outside the handler: no exception is active then
-    except pdf.TooLarge:
-        return _review(services, lease, file_row, "too_large", summary)
-    except pdf.ExtractTimeout:
-        return _fail(services, lease, file_row, "transient", summary)
     if no_text_layer:
         if targets is not None:  # composite: no OCR, the split needs the text layer's geometry (spec §4)
             return _review(services, lease, file_row, "no_text_layer", summary, has_text_layer=False)
@@ -335,12 +345,15 @@ def _process_composite(services: Services, lease: Lease, file_row: dict, data: b
                        targets: dict, candidates: list[str], summary: Summary) -> str:
     """Spec §4: split, one revision per declared section, the file status once after the loop. Never calls the
     parser. The summary and the log carry keys, outcomes and reason labels only, never amounts or descriptions."""
-    summary.composite_files += 1
+    try:
+        lines = pdf.extract_lines(data, password)
+    except PDF_FAILURES as exc:
+        return _pdf_failure(services, lease, file_row, exc, summary)
+    summary.composite_files += 1  # the file reached the section split
     report = {"file_id": file_row["id"], "sections": []}
     summary.composite.append(report)
     declared = {key: bool(target.get("anchor_only")) for key, target in targets.items()}
     try:
-        lines = pdf.extract_lines(data, password)
         sections, split_report = composite.split(lines, declared)
         bodies = composite.bodies(sections, file_id=file_row["id"], targets=targets,
                                   parser_version=services.parser_version, masker=services.masker, candidates=candidates)
@@ -349,14 +362,6 @@ def _process_composite(services: Services, lease: Lease, file_row: dict, data: b
         report["sections"].append({"key": None, "outcome": "parse", "reason": "split_error"})
         summary.sections_failed += 1
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
-    except pdf.PasswordError:
-        return _fail(services, lease, file_row, "password", summary, credential_version=services.credential_version)
-    except pdf.Malformed:
-        return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
-    except pdf.TooLarge:
-        return _review(services, lease, file_row, "too_large", summary)
-    except pdf.ExtractTimeout:
-        return _fail(services, lease, file_row, "transient", summary)
     worst = "parsed"
     for key, body in bodies:  # document order: the row sections, then the anchors
         reason = None
@@ -370,22 +375,23 @@ def _process_composite(services: Services, lease: Lease, file_row: dict, data: b
             outcome, reason = "parse", "422"
         else:
             summary.cases_opened += len(out.get("case_ids") or [])
+            if not out.get("replayed") and out.get("mode") == "live":
+                summary.live_revisions += 1  # every new live revision, a guardrail failure included; never a replay
             if not out.get("guardrail_ok"):
                 outcome = "guardrail"  # a replay of a failed current revision keeps the file in review (AGENT-159)
             elif out.get("replayed"):
                 outcome = "replayed"
             else:
-                summary.live_revisions += 1 if out.get("mode") == "live" else 0  # a real revision, as on the single path
                 outcome = "anchor" if body["raw"]["anchor"] else "parsed"
         report["sections"].append({"key": key, "outcome": outcome, "reason": reason})
-        log.info("composite section %s: %s", key, outcome)
+        log.info("composite section: file_id=%s key=%s outcome=%s reason=%s", file_row["id"], key, outcome, reason)
         counter = SECTION_COUNTER[outcome]
         setattr(summary, counter, getattr(summary, counter) + 1)
         if OUTCOME_RANK[outcome] > OUTCOME_RANK[worst]:
             worst = outcome
     for key in split_report.skipped_keys:  # holdings keys outside the map (`50/USD`): no statement
         report["sections"].append({"key": key, "outcome": "skipped", "reason": "unmapped"})
-        log.info("composite section %s: skipped", key)
+        log.info("composite section: file_id=%s key=%s outcome=skipped reason=unmapped", file_row["id"], key)
         summary.sections_skipped += 1
     if worst == "parse":
         return _fail(services, lease, file_row, "parse", summary, parser_version=services.parser_version)
@@ -437,7 +443,8 @@ def _parse_submit(services: Services, lease: Lease, file_row: dict, account_id: 
             return PARSE_FAILED
         raise
     summary.cases_opened += len(out.get("case_ids") or [])
-    summary.live_revisions += 1 if out.get("mode") == "live" else 0
+    if not out.get("replayed") and out.get("mode") == "live":
+        summary.live_revisions += 1  # an identical resubmission replays (spec §5): not a revision
     if not out.get("guardrail_ok"):
         return _review(services, lease, file_row, "guardrail", summary)
     services.retries.set(file_row["sha256"], transient_attempts=0)
