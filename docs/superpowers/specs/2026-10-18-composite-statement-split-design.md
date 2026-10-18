@@ -1,6 +1,8 @@
 # Composite bank statement split (國泰世華 綜合月對帳單) — design
 
-Status: rev 6 (accepted under the owner ruling of 2026-10-18: rev 5 `5d5282c` came back with one P2 only, folded in here), 2026-10-18. Rev 1 `d1de321` CHANGES-REQUESTED (AGENT-153), rev 2 `0680f1d`
+Status: rev 7 (rev 6 `f685ef4` was accepted under the owner ruling of 2026-10-18 after rev 5 `5d5282c` came back
+with one P2 only; rev 7 replaces the table-based row source with word geometry after the author's pre-plan check of
+the real file — §1, §4, §10 — and is covered by the plan review), 2026-10-18. Rev 1 `d1de321` CHANGES-REQUESTED (AGENT-153), rev 2 `0680f1d`
 CHANGES-REQUESTED (AGENT-154), rev 3 `82a44d4` CHANGES-REQUESTED (AGENT-155) and superseded by the owner's decision
 to drop the model call for composite sections, rev 4 `5e0aef0` CHANGES-REQUESTED (AGENT-156, four regressions of
 the model-free body); §10 maps every finding to its change. Base: main `5636f5a` (R6b + R3a deployed). Follows the statement
@@ -20,7 +22,14 @@ and `活期存款 帳號 ……59` (四維分行, ~12 rows/month); row shape `YY
 `外匯綜合活期存款 ……50 屏東分行 JPY <balance>` / `… USD <balance>`. Page breaks (`\f`, kept by `pdf.extract`) fall inside
 the holdings table and inside transaction sections; the page number is glued to the first token of the next page
 (`1持有明細`, `2活期存款 帳號 …`, `32026/09/08 …` — a page digit in front of a dated row), the column header
-`日期 交易說明 幣別 提出 存入 餘額` repeats after a break, and pdfplumber returns a section's table as two tables.
+`日期 交易說明 幣別 提出 存入 餘額` repeats after a break. **pdfplumber's `extract_tables` is unusable for the rows** (checked
+on `2609.pdf` before the plan, 2026-10-18): it returns one fragment per row with four cells (描述 truncated to its last
+three characters, currency, 提出, 存入), no date and no balance, and only about half of the rows. The complete row data is
+in the text layer, where every dated row prints `YYYY/MM/DD 說明 幣別 <amount> <balance>` — but `extract_text` drops the
+column position, so whether `<amount>` sits under 提出 or 存入 is only visible in the word geometry: `extract_words`
+gives each token its x-range, and on the real file withdrawal amounts end at x≈356 (under the 提出 header, x 304–319),
+deposits at x≈446 (存入 header 393–409) and balances at x≈555 (餘額 header 498–514), on every page and after every
+repeated header.
 
 Owner mapping (2026-10-18): `91/TWD` → 國泰 (67); `59/TWD` → 國泰薪轉戶 (76); `68/TWD` → 國泰子 (68); `50/JPY` →
 出國用日幣 (81); `50/USD` → no HomeHub account, skipped. 國泰高雄 (117) is the securities side and is out of scope (its
@@ -95,12 +104,24 @@ first-match.
 
 ```python
 @dataclass(frozen=True)
+class Word:                      # pdf.extract_lines output
+    text: str
+    x0: float
+    x1: float
+
+@dataclass(frozen=True)
+class Line:
+    page: int
+    top: float
+    words: tuple[Word, ...]      # sorted by x0; `text` = " ".join(w.text for w in words)
+
+@dataclass(frozen=True)
 class Row:
     txn_date: date
-    description: str             # the bank's 交易說明 cell, verbatim
+    description: str             # the 說明 words joined by one space, verbatim
     currency: str
-    withdrawal: Decimal | None   # 提出
-    deposit: Decimal | None      # 存入
+    withdrawal: Decimal | None   # 提出 (by column geometry)
+    deposit: Decimal | None      # 存入 (by column geometry)
     balance: Decimal             # 餘額
 
 @dataclass(frozen=True)
@@ -113,21 +134,30 @@ class Section:
     opening_balance: Decimal     # rows[0].balance + withdrawal - deposit, or closing_balance for anchor sections
     rows: tuple[Row, ...]        # () for anchor sections
 
-def split(extracted: pdf.Extracted, declared: dict[str, bool]) -> tuple[list[Section], SplitReport]
+def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], SplitReport]
     # declared = {section key: anchor_only} from composite_map[folder]
 ```
 
-### Page normalisation (AGENT-153 #1)
+`pdf.extract_lines(data, password) -> list[Line]` is new in `worker/pdf.py`, beside `extract`: the same
+`max_bytes` / `max_pages` / alarm bounds and the same exception mapping (`PasswordError`, `TooLarge`,
+`ExtractTimeout`, `Malformed`), `page.extract_words()` per page, words grouped into lines by `top` (two words are on
+one line when their `top` differ by ≤ 2 pt), lines in reading order (page, top), words sorted by `x0`. It is called
+only on the composite path, after the existing `extract` (which still decides `has_text_layer`, `text_chars` and
+`NoTextLayer` exactly as today). Line text never enters logs.
 
-Before any recognition the text is normalised page by page: `\f` is removed; a leading page digit is stripped from a
-line when the remainder matches a known shape (`^\d(?=持有明細$)`, `^\d(?=交易明細$)`, `^\d(?=(?:活期存款|外匯綜合活期存款) 帳號 )`,
-`^\d(?=\d{4}/\d{2}/\d{2} )`); a repeated column header `日期 交易說明 幣別 提出 存入 餘額` is dropped; the page footer /
-header lines the fixture shows (the bank's note lines, `台幣存款 餘額 … 相較上月 …`, `外幣存款 餘額折合台幣 …`) are
-recognised by shape and dropped only inside the transaction area. A section that is cut by a page break therefore
-continues on the next page; a second header with the same key (the bank repeats it after a break) merges into the
-open section instead of opening a new one; a header with a different key closes the current section.
+### Page and header handling (AGENT-153 #1)
 
-### Recognition rules (whole-line regexes on the normalised text)
+Lines carry their page, so `\f` no longer matters. A page number is a leading word matching `^\d{1,2}$` whose next
+word opens a known shape (`持有明細`, `交易明細`, `活期存款`/`外匯綜合活期存款` followed by `帳號`, or a `YYYY/MM/DD` date);
+it is dropped. The column header is the line whose words are exactly `日期 交易說明 幣別 提出 存入 餘額`: it is never a
+row, and every occurrence (the bank repeats it after a page break) **records the column geometry** — the `x0`/`x1` of
+提出, 存入 and 餘額 — that the following rows use until the next header. The page footer / header lines the fixture
+shows (the bank's note lines, `台幣存款 餘額 … 相較上月 …`, `外幣存款 餘額折合台幣 …`) are recognised by shape and
+dropped only inside the transaction area. A section cut by a page break therefore continues on the next page; a
+second section header with the same key merges into the open section instead of opening a new one; a header with a
+different key closes the current section.
+
+### Recognition rules (on the lines' text, whole-line regexes)
 
 - Period: the first line matching `綜合月對帳單 (\d{4}/\d{2}/\d{2}) ~ (\d{4}/\d{2}/\d{2})`. Missing → `SplitError`.
 - Holdings: between `持有明細` and `交易明細`, every line matching
@@ -136,19 +166,21 @@ open section instead of opening a new one; a header with a different key closes 
   optional code, else `TWD`. Key = `suffix/currency`. Duplicate key → `SplitError`. A declared key with no holdings
   row, or a holdings key with rows and no declaration, → `SplitError` (undeclared keys without rows are skipped and
   counted, e.g. `50/USD`).
-- Transaction area: from `交易明細` to the end of the deposit part (the first line of the securities / card parts, by
-  their printed titles). A header `^(?:活期存款|外匯綜合活期存款) 帳號 (\S+)$` opens or continues a section. Every line
-  in the area that starts with `\d{4}/\d{2}/\d{2} ` is a dated row and **must** belong to the open section; a dated
-  row outside any section → `SplitError`. Any other line inside a section that is not a recognised footer / header
-  shape → `SplitError`.
-- Rows come from the tables, not from the text (currency and columns are explicit cells): a table whose header row
-  is `日期 | 交易說明 | 幣別 | 提出 | 存入 | 餘額` (cells, after whitespace normalisation) is a transaction table; each
-  data row gives a `Row` with the currency from its own cell, the description cell verbatim and the amounts from
-  their own cells (empty cell → None; exactly one of 提出/存入 must be set, else `SplitError`). Attribution of a
-  table row to a section: the section whose text rows contain a line with the same date, the same amount token and
-  the same balance token. Zero matches or more than one match → `SplitError` (no first-match). A text row with no
-  table row → `SplitError`. A section's currency is the one its rows carry; rows of mixed currency → `SplitError`;
-  the key's currency must match.
+- Transaction area: from `交易明細` to the end of the document. A line `^(?:活期存款|外匯綜合活期存款) 帳號 (\S+)$`
+  opens a section (or continues the open one when the key repeats). While a section is open, every line is one
+  of: a dated row (first word `\d{4}/\d{2}/\d{2}`), the column header, a page number, or a continuation footer
+  (`^註：`, `^台幣存款 餘額`, `^外幣存款 餘額折合台幣`); **any other line closes the section**. After a section closed,
+  lines are ignored until the next section header — except a dated row, which is a `SplitError` (a row outside any
+  section is never dropped). A dated row before the first column header → `SplitError` (no geometry).
+- Rows come from the dated lines and the column geometry (AGENT-153 #1 / rev 7; the tables are unusable, §1):
+  the first word is the date; the first word after it that matches `^[A-Z]{3}$` is the currency; the words between
+  them, joined by one space, are the description; every word after the currency must match
+  `^-?\d{1,3}(?:,\d{3})*(?:\.\d+)?$` and is assigned by its right edge against the current geometry: `x1 ≤ x0(存入)`
+  → 提出, `x1 ≤ x0(餘額)` → 存入, else 餘額. A row must yield exactly one 餘額 and exactly one of 提出/存入 (a row with
+  both, neither, two balances, a non-numeric trailing word or no currency word → `SplitError` naming the key and the
+  row index). A section's currency is the one its rows carry; rows of mixed currency → `SplitError`; the key's
+  currency must match. The geometry rule is itself cross-checked by the balance chain below: for every row after
+  the first, the chain confirms the column the geometry chose.
 - Declaration check: a section with rows whose key is declared `anchor_only` → `SplitError`; a declared
   `anchor_only: false` key without a section → `SplitError`. Declared `anchor_only: true` keys become anchor sections.
 - Balance chain (AGENT-153 #2): for a section with rows, in document order,
@@ -327,16 +359,24 @@ is — it still helps statements whose counterpart account has no statement feed
 
 ## 8. Tests
 
-- `tests/worker/test_composite.py` with fixtures under `tests/fixtures/composite/` built from the masked,
-  name-stripped text and tables of `2609.pdf` (de-identified: the owner's name removed, account numbers already
-  masked by the bank and the masker, amounts kept — they are the test subject) plus synthetic variants:
-  - period, holdings keys and currencies, two sections with the fixture's row counts, anchor sections for `68/TWD`
-    and `50/JPY`, `50/USD` skipped;
-  - page handling: a page digit glued to `持有明細`, to a section header and to a dated row; a repeated column header;
-    a section whose table is split across pages (two tables, one section);
-  - attribution: the same date in both sections with different balances (resolved), the same date, amount and
-    balance in both sections (`SplitError`), a dated row before any header (`SplitError`), an unrecognised line
-    inside a section (`SplitError`), a table row with no text row and a text row with no table row (`SplitError`);
+- `tests/worker/test_pdf.py`: `extract_lines` on a `pdfgen.make_pdf_words` document (ASCII words placed at given
+  x/y): words grouped into lines by `top`, sorted by `x0`, page numbers, the same password / TooLarge / Malformed /
+  timeout behaviour as `extract` (one test each, reusing the existing fixtures).
+- `tests/worker/test_composite.py` with a **synthetic** fixture builder `tests/worker/composite_fixture.py`
+  (owner rule: statement data never enters the repo — the fixture copies only the layout of `2609.pdf`: four pages,
+  the title line, `1 持有明細` with a page-number word, four holdings rows, `交易明細`, the column header with the real
+  geometry (日期 51–67, 交易說明 132–164, 幣別 229–245, 提出 304–319, 存入 393–409, 餘額 498–514; withdrawals ending at
+  x 356, deposits at 446, balances at 555), a `91` section of 16 rows that continues onto the next page under a
+  page number and a repeated header, a `59` section of 12 rows, FX holdings rows for JPY and USD; fictional dates,
+  descriptions and amounts whose balance chain closes):
+  - period, holdings keys and currencies, two sections with 16 and 12 rows, anchor sections for `68/TWD` and
+    `50/JPY`, `50/USD` skipped;
+  - page handling: a page-number word before `持有明細`, before a section header and before a dated row; a repeated
+    column header; a section continuing across the page break; a footer line (`註：…`) inside a section is skipped;
+  - geometry: a withdrawal, a deposit and a same-day pair in both sections (resolved by x); a row with two balances,
+    with both 提出 and 存入, with neither, with a non-numeric trailing word, with no currency word, a dated row before
+    any column header, a dated row after a section closed (each `SplitError`); an unknown line inside a section
+    closes it and the next dated row is a `SplitError`;
   - balance chain: a doctored running balance, a doctored holdings balance, both 提出 and 存入 filled, mixed
     currency within a section (each `SplitError` naming the key and row index, message free of amounts);
   - declaration: rows under an `anchor_only` key, a declared non-anchor key without a section, an undeclared key
@@ -390,9 +430,10 @@ is — it still helps statements whose counterpart account has no statement feed
 
 1. Page normalisation: every shape the fixture shows (page digit glued to a row, repeated column header, note lines
    inside the transaction area) must be covered; any unknown line inside a section is a `SplitError`, not skipped.
-2. Attribution and the balance chain together must make a dropped, duplicated, misplaced, redistributed or
-   sign-flipped row impossible to post silently — the tests enumerate each; with no model in the loop the rows the
-   API receives are exactly the rows the split produced.
+2. Column geometry and the balance chain together must make a dropped, duplicated, misplaced or sign-flipped row
+   impossible to post silently — the tests enumerate each; with no model in the loop the rows the API receives are
+   exactly the rows the split produced, and the first row's direction (the only one the chain cannot confirm) rests
+   on the geometry rule alone.
 3. The composite path must not touch the single-statement path: `INSTRUCTION`, `parser_version`, OCR and the parser
    latch stay as they are; the parser is provably never called for a composite folder.
 4. Partial failure: a later section's failure must not roll back earlier sections, the file status must reflect the
@@ -424,3 +465,4 @@ is — it still helps statements whose counterpart account has no statement feed
 | 156-F3 | `Masker.text` without the run instance and the file's `candidates` | rev 5 §4: `services.masker.text(description, extra_literals=candidates)`; name protection scoped to configured holder names; tests plant a candidate and a configured name |
 | 156-F4 | dropping parser failures read as dropping PDF failures | rev 5 §4: PDF-level password / malformed / TooLarge / extraction-timeout outcomes and their recovery kept verbatim; only parser-origin outcomes removed; synthetic tests |
 | 157-F2 (P2, only open item of rev 5) | "whitespace normalisation" undefined; masking-before-classification ambiguity | rev 6 §4: classification view = NFKC + split/join on the original description, before and independent of masking; zero rule wins; tests for whitespace variants, a configured-name collision and a neither-filled row. Accepted by the owner's ruling (PASS-or-minor → plan) without a further Codex round |
+| author, pre-plan check 2026-10-18 | `extract_tables` on the real file is fragmentary (no date / balance cells, truncated descriptions, half the rows): "rows from the tables" cannot work | rev 7 §1/§4: rows from the dated text lines with the column geometry of `extract_words` (new `pdf.extract_lines`); 提出/存入 by the token's right edge against the header's x-ranges, cross-checked by the balance chain; attribution rules removed; fixture synthetic (owner data rule). Folded into the plan under the owner ruling; the plan review covers it |
