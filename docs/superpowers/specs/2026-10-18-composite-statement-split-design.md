@@ -1,8 +1,9 @@
 # Composite bank statement split (國泰世華 綜合月對帳單) — design
 
-Status: rev 4 for Multica review, 2026-10-18. Rev 1 `d1de321` CHANGES-REQUESTED (AGENT-153), rev 2 `0680f1d`
-CHANGES-REQUESTED (AGENT-154), rev 3 `82a44d4` under review when the owner decided to drop the model call for
-composite sections entirely (§4, §10). Base: main `5636f5a` (R6b + R3a deployed). Follows the statement
+Status: rev 5 for Multica review, 2026-10-18. Rev 1 `d1de321` CHANGES-REQUESTED (AGENT-153), rev 2 `0680f1d`
+CHANGES-REQUESTED (AGENT-154), rev 3 `82a44d4` CHANGES-REQUESTED (AGENT-155) and superseded by the owner's decision
+to drop the model call for composite sections, rev 4 `5e0aef0` CHANGES-REQUESTED (AGENT-156, four regressions of
+the model-free body); §10 maps every finding to its change. Base: main `5636f5a` (R6b + R3a deployed). Follows the statement
 reconciliation design (`2026-10-08-statement-reconciliation-design.md`) and R6 (`2026-10-15-reconciliation-r6-design.md`).
 
 ## 1. Problem
@@ -168,11 +169,30 @@ For every declared section the worker builds the `POST /statements/revisions` bo
   `closing_date = period_end`, `due_date = None`, `opening_balance`, `statement_total = closing_balance`,
   `minimum_payment = None`;
 - lines, one per `Row` in document order: `seq = i + 1`, `txn_date = posted_date = row.txn_date`,
-  `merchant_raw = Masker.text(row.description)` (the description passes the same masker as everything else — the
-  bank prints no names there in the fixture, the rule costs nothing), `printed_amount = deposit or withdrawal`
-  (unsigned, as printed), `line_kind` by a fixed keyword table on the description — `利息` → `interest`, `手續費` →
-  `fee`, otherwise `deposit` when 存入 is set and `withdrawal` when 提出 is set — `foreign_amount/foreign_currency =
-  None`, `installment_* = None`, `is_subtotal = False`;
+  `foreign_amount/foreign_currency = None`, `installment_* = None`, `is_subtotal = False`, and:
+  - **signed amount (AGENT-156 F1):** the server's `flow_amount` does not add signs for bank debits — a positive
+    withdrawal or fee is a `SignError` (422). So `printed_amount` is signed by the worker from **which cell is
+    present**, never from truthiness: `+deposit` when the 存入 cell is set, `-withdrawal` when the 提出 cell is set
+    (exactly one is set, §4 split). Amounts are non-negative decimals with at most two fraction digits as printed; a
+    negative printed cell is a `SplitError`. A row whose set cell is `0` (the bank prints zero-amount notices) gets
+    `printed_amount = 0` and `line_kind = "unknown"` — the only kind the server accepts for zero — and contributes
+    nothing to the chain. Before posting, the worker asserts for every line `printed_amount == deposit - withdrawal`
+    (None read as 0) and that the sum of the lines equals `closing - opening`; a violation is a programming error
+    raised as `SplitError`. Cancelling rows (+10 then −10) are two persisted lines, never collapsed;
+  - **`line_kind` (AGENT-156 F2):** direction first, classification second, and the classification never changes
+    the direction. Default: `deposit` for a 存入 row, `withdrawal` for a 提出 row. A finer kind is assigned only when
+    the whole description (after whitespace normalisation) **equals** an entry of a fixed table in
+    `composite.py` — `{"存款利息": "interest", "利息": "interest"}` for 存入 rows, `{"手續費": "fee", "轉帳手續費": "fee"}`
+    for 提出 rows — exact string equality, no substring match, direction-specific. `轉帳備註含利息` stays
+    `deposit`/`withdrawal` by its cell, `手續費退回` on a 存入 row stays `deposit`, `利息` on a 提出 row stays
+    `withdrawal`. The table is a code constant and grows only by a reviewed change (`matching.py` restricts which
+    ledger kinds a `fee`/`interest` line may match and routes them to bank-only hints, so a wrong kind is not
+    cosmetic);
+  - **`merchant_raw` (AGENT-156 F3):** `services.masker.text(row.description, extra_literals=candidates)` — the
+    run's `Masker` instance and the same password `candidates` the single path passes to `render`, so a candidate
+    secret or the configured holder names inside a description are masked exactly as on every other statement.
+    Name protection is the existing one (configured holder names, not arbitrary counterparty names); the test plants
+    a configured name and a candidate, not an unknown name;
 - `parser = "composite-rows"`, `parser_version` = the run's parser version (the file-level retry rules key on it
   and the composite path must not look like a different parser generation), `raw = {"section": key, "anchor":
   false, "rows": len(rows)}`; anchor sections post `lines = []`, `opening_balance = statement_total =
@@ -200,9 +220,15 @@ failure of one section does not stop the others — every section gets an outcom
 File status = the worst class present: `parse` > `guardrail` > `parsed`. `SplitError` and a missing text layer are
 file-level `parse` / `no_text_layer` before any section runs (no OCR fallback: OCR output has no reliable section
 structure). A file whose folder is in `composite_map` but matched no declared key is `ignored / mapping`. API
-transport errors (`ApiError` other than 422, `LeaseLost`) propagate exactly as on the single path. There is no
-parser call, so `transient`, `sandbox`, `too_large` and the parser latch do not apply; a composite file is
-processed even while the parser is latched for the run.
+transport errors (`ApiError` other than 422, `LeaseLost`) propagate exactly as on the single path.
+
+**PDF-level failures stay (AGENT-156 F4).** The composite path reuses the single path's acquire / unlock / extract
+steps unchanged, so their outcomes keep their classes and recovery: no password matched → `failed / password`
+(re-tried on a `credential_version` change), malformed PDF → `failed / parse`, `pdf.TooLarge` →
+`needs_review / too_large`, extraction timeout → `failed / transient` (retry ladder, `attempts`). Only the
+**parser-origin** outcomes do not apply — parser `timeout` / `exit`, `sandbox` / `auth` / `cli_version`,
+`stdin_too_large`, `schema`, `output_too_large` and the parser latch — because there is no parser call; a composite
+file is processed even while the parser is latched for the run.
 
 Run summary gains `composite_files`, `sections_parsed`, `sections_anchor`, `sections_replayed`,
 `sections_skipped`, `sections_failed`, and a per-file list `composite: [{file_id, sections: [{key, outcome,
@@ -310,15 +336,23 @@ is — it still helps statements whose counterpart account has no statement feed
     currency within a section (each `SplitError` naming the key and row index, message free of amounts);
   - declaration: rows under an `anchor_only` key, a declared non-anchor key without a section, an undeclared key
     with rows (each `SplitError`); an undeclared key without rows is skipped;
-  - revision bodies: `seq` order, `txn_date == posted_date`, unsigned `printed_amount`, `line_kind` keyword table
-    (`利息` → `interest`, `手續費` → `fee`, else deposit / withdrawal), `merchant_raw` passed through `Masker.text`
-    (a planted name in a description is masked), header fields, `parser` values, `raw` fields; the anchor body;
+  - revision bodies: `seq` order, `txn_date == posted_date`, signed `printed_amount` chosen by the present cell
+    (a normal withdrawal → negative, a deposit → positive, a fee row → negative `fee`, a zero-amount row →
+    `0` / `unknown`, cancelling +10 / −10 rows → two persisted lines, a negative printed cell → `SplitError`, the
+    per-line `printed_amount == deposit - withdrawal` and sum == closing − opening assertions); the `line_kind`
+    table by exact description and direction (`存款利息` on 存入 → `interest`; `手續費` on 提出 → `fee`;
+    `轉帳備註含利息` → direction kind; `手續費退回` on 存入 → `deposit`; `利息` on 提出 → `withdrawal`);
+    `merchant_raw` via the run masker with the file's candidates (a planted candidate password and a configured
+    holder name in a description are masked; a ≥6-digit run is masked by the generic rule); header fields,
+    `parser` values, `raw` fields; the anchor body;
   - `SplitReport` carries counts and keys only.
 - `tests/worker/test_pipeline.py`: composite folder → one `submit_revision` per declared section with the right
   `account_id`, `raw.section`, `raw.anchor`, `raw.rows`; **the parser is never called** (a parser stub that raises
   on use); the outcome table (all parsed → `parsed`; one guardrail → `needs_review`; one 422 → `failed/parse` with
   the other sections still posted; `SplitError` → `failed/parse`; no text layer → `failed/no_text_layer` without
-  OCR; nothing declared matched → `ignored/mapping`); a composite file is processed while the parser is latched;
+  OCR; nothing declared matched → `ignored/mapping`; PDF-level: no password → `failed/password`, malformed →
+  `failed/parse`, `pdf.TooLarge` → `needs_review/too_large`, extraction timeout → `failed/transient` with the
+  retry ladder, each with synthetic inputs); a composite file is processed while the parser is latched;
   file status written once after the loop; `replayed` counted; the summary's `composite` list; the
   `mapping_version` change re-queues an ignored composite file and nothing with another failure class;
   `ApiError` ≠ 422 and `LeaseLost` propagate as on the single path.
@@ -377,3 +411,7 @@ is — it still helps statements whose counterpart account has no statement feed
 | 155-R2 | — (resolved) | moot in rev 4: no parser call on the composite path |
 | 155-R3 | `is_subtotal` is not a stored column; derived `merchant_norm`/`canonical_key`/`logical_key` and generated ids unaddressed; `currency`/`kind` live on the statement | §5 persisted-equal rewritten over the real columns: statement-level `kind`/`currency`, revision header columns, stored line columns; derived keys implied, generated ids excluded; test for replay with a pending conflict |
 | owner 2026-10-18 | a model call per section adds cost and failure modes for a rewording of 交易說明 | rev 4 §4: deterministic revision bodies, `line_kind` keyword table, `parser = composite-rows`; model-based reading listed in §7 as a possible later change |
+| 156-F1 | unsigned `printed_amount` is a `SignError` for every debit; truthy cell choice; zero policy undefined | rev 5 §4: sign chosen by the present cell (`+deposit` / `-withdrawal`), zero rows → `0` / `unknown`, negative cells `SplitError`, per-line and per-section sum assertions, cancelling rows kept |
+| 156-F2 | substring keyword table can flip direction / misclassify memos | rev 5 §4: direction first; finer kind only on exact, direction-specific description equality from a code constant; three counter-examples in tests |
+| 156-F3 | `Masker.text` without the run instance and the file's `candidates` | rev 5 §4: `services.masker.text(description, extra_literals=candidates)`; name protection scoped to configured holder names; tests plant a candidate and a configured name |
+| 156-F4 | dropping parser failures read as dropping PDF failures | rev 5 §4: PDF-level password / malformed / TooLarge / extraction-timeout outcomes and their recovery kept verbatim; only parser-origin outcomes removed; synthetic tests |
