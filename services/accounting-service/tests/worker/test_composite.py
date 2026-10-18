@@ -190,3 +190,86 @@ def test_section_without_holdings_or_without_rows_fails():
     lines = statement() + [section_header(4, 300, "123456****77")]
     with pytest.raises(SplitError, match="without rows"):
         _split(lines)
+
+
+from worker import mask, passwords
+from worker.composite import PARSER_ANCHOR, PARSER_ROWS, Row, bodies, line_kind
+
+
+def _row(desc, out=None, inn=None, cur="TWD"):
+    from datetime import date as _d
+    return Row(_d(2026, 9, 1), desc, cur, Decimal(out) if out else None, Decimal(inn) if inn else None, Decimal(1))
+
+
+def test_line_kind_is_direction_first_and_exact_match_only():
+    assert line_kind(_row("交割股款", out="10")) == "withdrawal"
+    assert line_kind(_row("薪資獎金", inn="10")) == "deposit"
+    assert line_kind(_row("存款利息", inn="10")) == "interest"
+    assert line_kind(_row(" 利息 ", inn="10")) == "interest"
+    assert line_kind(_row("存款　利息", inn="10")) == "deposit"  # NFKC turns U+3000 into a space; internal spaces survive, so no table hit
+    assert line_kind(_row("手續費", out="10")) == "fee"
+    assert line_kind(_row("轉帳備註含利息", inn="10")) == "deposit"
+    assert line_kind(_row("手續費退回", inn="10")) == "deposit"
+    assert line_kind(_row("利息", out="10")) == "withdrawal"
+    assert line_kind(_row("利息", inn="0")) == "unknown"
+
+
+def _masker(names=()):
+    return mask.Masker(passwords.Identity(None, None, list(names)))
+
+
+def test_bodies_sign_amounts_by_the_present_cell_and_mask_descriptions():
+    sections, _ = _split()
+    targets = {"91/TWD": {"account_id": 67, "anchor_only": False}, "59/TWD": {"account_id": 76, "anchor_only": False},
+               "68/TWD": {"account_id": 68, "anchor_only": True}, "50/JPY": {"account_id": 81, "anchor_only": True}}
+    out = dict(bodies(sections, file_id=5, targets=targets, parser_version="v1", masker=_masker(), candidates=[]))
+    body = out["91/TWD"]
+    assert body["file_id"] == 5 and body["account_id"] == 67 and body["kind"] == "bank" and body["parser"] == PARSER_ROWS
+    assert body["parser_version"] == "v1" and body["currency"] == "TWD"
+    assert body["period_start"] == "2026-09-01" and body["period_end"] == "2026-09-30" == body["closing_date"]
+    assert body["opening_balance"] == "30000" and body["statement_total"] == "34431" and body["minimum_payment"] is None
+    assert body["raw"] == {"section": "91/TWD", "anchor": False, "rows": 16}
+    lines = body["lines"]
+    assert [l["seq"] for l in lines] == list(range(1, 17))
+    assert lines[0]["printed_amount"] == "-2000" and lines[0]["line_kind"] == "withdrawal"
+    assert lines[1]["printed_amount"] == "1500" and lines[1]["line_kind"] == "deposit"
+    assert lines[12]["line_kind"] == "interest" and lines[15]["line_kind"] == "fee" and lines[15]["printed_amount"] == "-200"
+    assert all(l["txn_date"] == l["posted_date"] and l["is_subtotal"] is False and l["foreign_amount"] is None for l in lines)
+    anchor = out["68/TWD"]
+    assert anchor["parser"] == PARSER_ANCHOR and anchor["lines"] == [] and anchor["opening_balance"] == anchor["statement_total"] == "0"
+    assert anchor["raw"] == {"section": "68/TWD", "anchor": True, "rows": 0}
+    assert out["50/JPY"]["currency"] == "JPY" and out["50/JPY"]["account_id"] == 81
+    assert "50/USD" not in out
+
+
+def test_bodies_mask_candidates_and_configured_names_in_descriptions():
+    rows = [("2026/09/01", "轉帳 王小明 1234", None, "1,000", "31,000"), ("2026/09/02", "交割股款", "1,000", None, "30,000")]
+    sections, _ = _split(statement(rows_91=rows, holdings={**HOLDINGS, "91/TWD": "30,000"}, split_at=2))
+    targets = {"91/TWD": {"account_id": 67, "anchor_only": False}, "59/TWD": {"account_id": 76, "anchor_only": False},
+               "68/TWD": {"account_id": 68, "anchor_only": True}, "50/JPY": {"account_id": 81, "anchor_only": True}}
+    out = dict(bodies(sections, file_id=5, targets=targets, parser_version="v1", masker=_masker(["王小明"]),
+                      candidates=["1234"]))
+    merchant = out["91/TWD"]["lines"][0]["merchant_raw"]
+    assert "王小明" not in merchant and "1234" not in merchant and "轉帳" in merchant
+
+
+def test_bodies_classify_before_masking_and_mask_long_digit_runs():
+    rows = [("2026/09/01", "利息", None, "1,000", "31,000"), ("2026/09/02", "轉帳 1234567890", "1,000", None, "30,000")]
+    sections, _ = _split(statement(rows_91=rows, holdings={**HOLDINGS, "91/TWD": "30,000"}, split_at=2))
+    targets = {"91/TWD": {"account_id": 67, "anchor_only": False}, "59/TWD": {"account_id": 76, "anchor_only": False},
+               "68/TWD": {"account_id": 68, "anchor_only": True}, "50/JPY": {"account_id": 81, "anchor_only": True}}
+    lines = dict(bodies(sections, file_id=5, targets=targets, parser_version="v1", masker=_masker(["利息"]),
+                        candidates=[]))["91/TWD"]["lines"]
+    assert lines[0]["line_kind"] == "interest" and lines[0]["merchant_raw"] == "[NAME]"  # classified on the original, then masked
+    assert "1234567890" not in lines[1]["merchant_raw"] and "[NUM…7890]" in lines[1]["merchant_raw"]
+
+
+def test_bodies_zero_row_is_unknown_and_cancelling_rows_stay():
+    rows = [("2026/09/01", "利息", None, "0", "30,000"), ("2026/09/02", "交割股款", "10", None, "29,990"),
+            ("2026/09/03", "交割股款", None, "10", "30,000")]
+    sections, _ = _split(statement(rows_91=rows, holdings={**HOLDINGS, "91/TWD": "30,000"}, split_at=3))
+    targets = {"91/TWD": {"account_id": 67, "anchor_only": False}, "59/TWD": {"account_id": 76, "anchor_only": False},
+               "68/TWD": {"account_id": 68, "anchor_only": True}, "50/JPY": {"account_id": 81, "anchor_only": True}}
+    lines = dict(bodies(sections, file_id=5, targets=targets, parser_version="v1", masker=_masker(), candidates=[]))["91/TWD"]["lines"]
+    assert lines[0]["printed_amount"] == "0" and lines[0]["line_kind"] == "unknown"
+    assert [l["printed_amount"] for l in lines[1:]] == ["-10", "10"]

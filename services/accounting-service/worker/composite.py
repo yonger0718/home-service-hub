@@ -6,6 +6,7 @@ Every SplitError names a section key and a row index at most; never amounts, des
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -237,3 +238,67 @@ def _section(key: str, rows: list[Row], closing: Decimal, period: tuple[date, da
     first = rows[0]
     opening = first.balance + (first.withdrawal or Decimal(0)) - (first.deposit or Decimal(0))
     return Section(key, first.currency, period[0], period[1], closing, opening, tuple(rows))
+
+
+PARSER_ROWS = "composite-rows"
+PARSER_ANCHOR = "composite-anchor"
+# direction-specific, exact match on the classification view (spec §4): never a substring, never a direction change
+KIND_TABLE = {"deposit": {"存款利息": "interest", "利息": "interest"}, "withdrawal": {"手續費": "fee", "轉帳手續費": "fee"}}
+
+
+def _view(description: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", description).split())
+
+
+def line_kind(row: Row) -> str:
+    direction = "deposit" if row.deposit is not None else "withdrawal"
+    amount = row.deposit if row.deposit is not None else row.withdrawal
+    if amount == 0:
+        return "unknown"
+    return KIND_TABLE[direction].get(_view(row.description), direction)
+
+
+def _money(value: Decimal) -> str:
+    return format(value.normalize(), "f") if value != 0 else "0"
+
+
+def _header(section: Section, *, file_id: int, account_id: int, parser: str, parser_version: str) -> dict:
+    return {"file_id": file_id, "account_id": account_id, "kind": "bank", "parser": parser,
+            "parser_version": parser_version, "currency": section.currency,
+            "period_start": section.period_start.isoformat(), "period_end": section.period_end.isoformat(),
+            "closing_date": section.period_end.isoformat(), "due_date": None,
+            "opening_balance": _money(section.opening_balance), "statement_total": _money(section.closing_balance),
+            "minimum_payment": None}
+
+
+def bodies(sections: list[Section], *, file_id: int, targets: dict[str, dict], parser_version: str, masker,
+           candidates: list[str]) -> list[tuple[str, dict]]:
+    out: list[tuple[str, dict]] = []
+    for section in sections:
+        target = targets.get(section.key)
+        if target is None:
+            continue
+        account_id = int(target["account_id"])
+        if not section.rows:
+            out.append((section.key, {**_header(section, file_id=file_id, account_id=account_id, parser=PARSER_ANCHOR,
+                                                parser_version=parser_version),
+                                      "lines": [], "raw": {"section": section.key, "anchor": True, "rows": 0}}))
+            continue
+        lines = []
+        total = Decimal(0)
+        for index, row in enumerate(section.rows):
+            printed = (row.deposit if row.deposit is not None else -row.withdrawal)
+            if printed != (row.deposit or Decimal(0)) - (row.withdrawal or Decimal(0)):
+                raise SplitError(f"{section.key}: row {index} sign assertion failed")
+            total += printed
+            lines.append({"seq": index + 1, "txn_date": row.txn_date.isoformat(), "posted_date": row.txn_date.isoformat(),
+                          "merchant_raw": masker.text(row.description, candidates)[:256],
+                          "printed_amount": _money(printed), "foreign_amount": None, "foreign_currency": None,
+                          "line_kind": line_kind(row), "installment_seq": None, "installment_total": None,
+                          "is_subtotal": False})
+        if total != section.closing_balance - section.opening_balance:
+            raise SplitError(f"{section.key}: section sum assertion failed")
+        out.append((section.key, {**_header(section, file_id=file_id, account_id=account_id, parser=PARSER_ROWS,
+                                            parser_version=parser_version),
+                                  "lines": lines, "raw": {"section": section.key, "anchor": False, "rows": len(lines)}}))
+    return out
