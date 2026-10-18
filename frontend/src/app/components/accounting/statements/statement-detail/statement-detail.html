@@ -41,9 +41,13 @@
           </div>
           <div>
             <small>差額</small>
-            <b class="delta" [class.warn]="deltaWarns()">{{
-              formatMoney(comparison.delta, statement.currency, { sign: true })
-            }}</b>
+            @if (statement.retired) {
+              <b class="delta" aria-label="不適用">—</b>
+            } @else {
+              <b class="delta" [class.warn]="deltaWarns()">{{
+                formatMoney(comparison.delta, statement.currency, { sign: true })
+              }}</b>
+            }
           </div>
         } @else if (summaryError()) {
           <p class="load-error">帳本讀取失敗</p>

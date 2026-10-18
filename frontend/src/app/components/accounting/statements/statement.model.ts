@@ -17,6 +17,11 @@ export interface StatementSummary {
   mode: string;
   /** `open` or `reconciled`. */
   status: string;
+  /**
+   * Discarded duplicate. Optional because payloads from before the retire field omit it.
+   * A retired period is not a consistent close.
+   */
+  retired?: boolean;
   conflict_open: boolean;
   needs_recheck: boolean;
   current_revision_id: number | null;

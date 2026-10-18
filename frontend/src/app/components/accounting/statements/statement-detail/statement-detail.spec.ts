@@ -288,6 +288,30 @@ describe('StatementDetailComponent', () => {
     expect(el.querySelector('.actions')).toBeNull();
   });
 
+  it('labels a retired statement 已作廢, marks the delta not applicable, and keeps actions off', () => {
+    const fixture = loaded(
+      statement({
+        mode: 'historical',
+        status: 'reconciled',
+        retired: true,
+        conflict_open: false,
+        needs_recheck: false,
+        open_case_count: 0,
+      }),
+      summary({ spend: '-80.0000' }),
+    );
+    const el = fixture.nativeElement as HTMLElement;
+    expect(Array.from(el.querySelectorAll('.mode')).map(text)).toEqual(['已作廢', '歷史']);
+    const delta = el.querySelector('.delta')!;
+    expect(text(delta)).toBe('—');
+    expect(delta.getAttribute('aria-label')).toBe('不適用');
+    expect(delta.classList.contains('warn')).toBe(false);
+    expect(el.querySelector('.actions')).toBeNull();
+    expect(el.querySelector('.confirm')).toBeNull();
+    expect(el.querySelector('.reconcile')).toBeNull();
+    expect(el.textContent).not.toContain('一致');
+  });
+
   it('splits the three segments and shows a matched row read-only', () => {
     const body = statement({
       lines: [

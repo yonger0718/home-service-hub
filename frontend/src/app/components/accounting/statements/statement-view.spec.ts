@@ -6,6 +6,8 @@ import { StatementDetail, StatementSummary } from './statement.model';
 import {
   actionsAvailable,
   buildSegments,
+  consistencyLabel,
+  consistencyMark,
   confirmBlockedReason,
   confirmRefusal,
   deltaWarns,
@@ -86,6 +88,14 @@ describe('statement chips and progress', () => {
     ).toEqual(['歷史', '已確認（有新版本）']);
   });
 
+  it('labels a retired statement 已作廢 beside 歷史', () => {
+    expect(
+      statementChips(summary({ mode: 'historical', retired: true, status: 'reconciled' })).map(
+        (chip) => chip.label,
+      ),
+    ).toEqual(['已作廢', '歷史']);
+  });
+
   it('counts 對帳 k/n as matched over matched plus open cases', () => {
     expect(reconProgress(summary({ matched_count: 37, open_case_count: 14 }))).toEqual({
       k: 37,
@@ -130,6 +140,7 @@ describe('actions and consistency', () => {
   it('hides actions on historical statements and blocks confirm while cases are open', () => {
     expect(actionsAvailable(summary())).toBe(true);
     expect(actionsAvailable(summary({ mode: 'historical' }))).toBe(false);
+    expect(actionsAvailable(summary({ retired: true }))).toBe(false);
     expect(confirmBlockedReason(summary({ open_case_count: 2 }))).toBe('仍有未處理項目');
     expect(confirmBlockedReason(summary({ open_case_count: 0 }))).toBeNull();
   });
@@ -138,6 +149,10 @@ describe('actions and consistency', () => {
     expect(periodConsistent(summary({ open_case_count: 0 }))).toBe(true);
     expect(periodConsistent(summary({ open_case_count: 0, needs_recheck: true }))).toBe(false);
     expect(periodConsistent(summary({ open_case_count: 0, conflict_open: true }))).toBe(false);
+    expect(periodConsistent(summary({ open_case_count: 0, retired: true }))).toBe(false);
+    expect(consistencyMark(summary({ open_case_count: 0, retired: true }))).toBe('—');
+    expect(consistencyLabel(summary({ open_case_count: 0, retired: true }))).toBe('不適用');
+    expect(consistencyMark(summary({ open_case_count: 0 }))).toBe('✓');
   });
 });
 

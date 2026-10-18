@@ -116,10 +116,16 @@ const RULE_LABELS: Record<string, string> = {
 
 /** Mode chip, then the conflict / recheck / stale chips the header stacks. */
 export function statementChips(
-  statement: Pick<StatementSummary, 'mode' | 'status' | 'conflict_open' | 'needs_recheck'>,
+  statement: Pick<
+    StatementSummary,
+    'mode' | 'status' | 'conflict_open' | 'needs_recheck' | 'retired'
+  >,
   stale = false,
 ): StatusChip[] {
   const chips: StatusChip[] = [];
+  if (statement.retired) {
+    chips.push({ label: '已作廢', tone: 'warn' });
+  }
   if (statement.mode === 'historical') {
     chips.push({ label: '歷史', tone: 'neutral' });
     if (statement.conflict_open) {
@@ -196,9 +202,11 @@ export function deltaWarns(delta: number, currency: string): boolean {
   return Math.round(Math.abs(delta) * factor) !== 0;
 }
 
-/** Historical periods are a summary table: no reconcile and no confirm. */
-export function actionsAvailable(statement: Pick<StatementSummary, 'mode'>): boolean {
-  return statement.mode !== 'historical';
+/** Historical periods are a summary table: no reconcile and no confirm. Retired copies stay closed too. */
+export function actionsAvailable(
+  statement: Pick<StatementSummary, 'mode' | 'retired'>,
+): boolean {
+  return statement.mode !== 'historical' && statement.retired !== true;
 }
 
 /** 全部確認 stays disabled while cases are open; 強制確認 is the separate keyboard path. */
@@ -208,11 +216,32 @@ export function confirmBlockedReason(
   return statement.open_case_count > 0 ? '仍有未處理項目' : null;
 }
 
+type ConsistencyInput = Pick<
+  StatementSummary,
+  'open_case_count' | 'conflict_open' | 'needs_recheck' | 'retired'
+>;
+
 /** Historical summary: ✓ when nothing is open, conflicting or waiting for a recheck. */
-export function periodConsistent(
-  statement: Pick<StatementSummary, 'open_case_count' | 'conflict_open' | 'needs_recheck'>,
-): boolean {
+export function periodConsistent(statement: ConsistencyInput): boolean {
+  if (statement.retired) {
+    return false;
+  }
   return statement.open_case_count === 0 && !statement.conflict_open && !statement.needs_recheck;
+}
+
+/** Retired periods are not a pass or a fail. The cell is an em dash, never ✓ or ✗. */
+export function consistencyMark(statement: ConsistencyInput): '✓' | '✗' | '—' {
+  if (statement.retired) {
+    return '—';
+  }
+  return periodConsistent(statement) ? '✓' : '✗';
+}
+
+export function consistencyLabel(statement: ConsistencyInput): '一致' | '不一致' | '不適用' {
+  if (statement.retired) {
+    return '不適用';
+  }
+  return periodConsistent(statement) ? '一致' : '不一致';
 }
 
 export function matchRuleLabel(rule: string): string {

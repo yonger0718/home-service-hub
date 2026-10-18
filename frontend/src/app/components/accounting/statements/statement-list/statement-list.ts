@@ -5,7 +5,13 @@ import { ActivatedRoute, RouterLink } from '@angular/router';
 import { LayoutModeService } from '../../../../services/layout-mode.service';
 import { SkeletonComponent } from '../../skeleton/skeleton';
 import { StatementSummary } from '../statement.model';
-import { periodConsistent, periodText, reconProgress, statementChips } from '../statement-view';
+import {
+  consistencyLabel,
+  consistencyMark,
+  periodText,
+  reconProgress,
+  statementChips,
+} from '../statement-view';
 import { StatementsService } from '../statements.service';
 
 /** `/accounting/accounts/:id/statements`: live rows, plus the historical periods summary table. */
@@ -38,7 +44,8 @@ export class StatementListComponent {
   readonly periodText = periodText;
   readonly statementChips = statementChips;
   readonly reconProgress = reconProgress;
-  readonly periodConsistent = periodConsistent;
+  readonly consistencyMark = consistencyMark;
+  readonly consistencyLabel = consistencyLabel;
 
   constructor() {
     this.route.paramMap.pipe(takeUntilDestroyed()).subscribe((params) => {

@@ -101,3 +101,14 @@
     font-weight: 700;
   }
 }
+
+.retired-label {
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-pill);
+  color: var(--tone-neg, var(--c-red));
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  margin-left: 6px;
+  padding: 0 6px;
+}

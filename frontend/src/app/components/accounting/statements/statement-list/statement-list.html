@@ -62,12 +62,15 @@
               <a [routerLink]="['/accounting/accounts', accountId(), 'statements', statement.id]">
                 {{ periodText(statement.period_start, statement.period_end) }}
               </a>
+              @if (statement.retired) {
+                <span class="retired-label">已作廢</span>
+              }
             </td>
             <td>{{ statement.matched_count }}</td>
             <td>{{ statement.explained_count }}</td>
             <td>{{ statement.open_case_count }}</td>
-            <td [attr.aria-label]="periodConsistent(statement) ? '一致' : '不一致'">
-              {{ periodConsistent(statement) ? '✓' : '✗' }}
+            <td [attr.aria-label]="consistencyLabel(statement)">
+              {{ consistencyMark(statement) }}
             </td>
           </tr>
         } @empty {

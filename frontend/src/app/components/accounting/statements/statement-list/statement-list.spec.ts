@@ -121,6 +121,35 @@ describe('StatementListComponent', () => {
     expect(rows[1].querySelectorAll('td')[4].getAttribute('aria-label')).toBe('不一致');
   });
 
+  it('labels a retired historical period 已作廢 and does not mark it consistent', () => {
+    const fixture = render();
+    http.expectOne('/api/accounting/accounts/6/statements').flush([
+      statement({
+        id: 9,
+        mode: 'historical',
+        status: 'reconciled',
+        retired: true,
+        period_start: '2026-05-21',
+        period_end: '2026-06-20',
+        matched_count: 12,
+        explained_count: 0,
+        open_case_count: 0,
+        conflict_open: false,
+        needs_recheck: false,
+      }),
+    ]);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    const row = el.querySelector('.history tbody tr')!;
+    expect(text(row.querySelector('.retired-label'))).toBe('已作廢');
+    const mark = row.querySelectorAll('td')[4];
+    expect(mark.textContent?.trim()).toBe('—');
+    expect(mark.getAttribute('aria-label')).toBe('不適用');
+    expect(mark.textContent).not.toContain('✓');
+    expect(mark.textContent).not.toContain('✗');
+    expect(row.textContent).not.toContain('一致');
+  });
+
   it('says when there is no live bill and no historical period', () => {
     const fixture = render();
     http.expectOne('/api/accounting/accounts/6/statements').flush([]);
