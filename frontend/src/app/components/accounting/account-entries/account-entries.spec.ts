@@ -236,6 +236,8 @@ describe('AccountingAccountEntriesComponent (passbook)', () => {
     expect(rows[1].querySelector('.kind-pill')?.textContent?.trim()).toBe('應收');
     expect(rows[2].querySelector('.kind-pill')?.textContent?.trim()).toBe('回饋');
     expect(rows[3].querySelector('.sub')?.textContent?.trim()).toBe('藏壽司 · #LinePay');
+    expect(el.querySelector('.statements-link')?.getAttribute('href')).toBe('/accounting/accounts/7/statements');
+    expect(el.querySelector('.statements-link')?.textContent?.trim()).toBe('對帳');
     expect(el.querySelector('.settings-link')?.getAttribute('href')).toBe('/accounting/accounts/7/settings');
   });
 

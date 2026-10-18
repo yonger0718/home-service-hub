@@ -9,7 +9,8 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService } from '../accounting-toast';
 import { makeAccount, makeDefinition, makeEntry, makeInstance } from '../testing/fixtures';
-import { AccountingRemindersComponent } from './reminders';
+import { StatementSummary } from '../statements/statement.model';
+import { AccountingRemindersComponent, withImportedStatement } from './reminders';
 
 const credit = (overrides: Partial<LedgerAccount>) => makeAccount({ is_credit: true, icon: '💳', ...overrides });
 
@@ -20,6 +21,33 @@ const LATE = credit({ id: 12, name: '台新 FlyGo', closing_day: 28, due_rule: '
 const TODAY = credit({ id: 13, name: '國泰 CUBE', closing_day: 2, due_rule: 'days_after_closing', due_value: 1 }); // 10/02 → 10/03
 const FAR = credit({ id: 14, name: '遠期卡', closing_day: 30, due_rule: 'days_after_closing', due_value: 60 }); // 09/30 → 11/29
 const WALLET = makeAccount({ id: 1, name: '錢包' });
+
+function importedStatement(overrides: Partial<StatementSummary> = {}): StatementSummary {
+  return {
+    id: 1,
+    account_id: 9,
+    kind: 'card',
+    currency: 'TWD',
+    period_start: '2026-08-16',
+    period_end: '2026-09-15',
+    closing_date: '2026-09-15',
+    due_date: '2026-10-05',
+    opening_balance: null,
+    statement_total: '100.0000',
+    minimum_payment: null,
+    origin: 'import',
+    mode: 'live',
+    status: 'open',
+    conflict_open: false,
+    needs_recheck: false,
+    current_revision_id: 1,
+    matched_count: 1,
+    explained_count: 0,
+    open_case_count: 0,
+    incoming_deferrals_pending: 0,
+    ...overrides,
+  };
+}
 
 const CLOSINGS: Record<number, { end: string; due: string }> = {
   9: { end: '2026-09-15', due: '2026-10-05' },
@@ -42,6 +70,31 @@ const OPEN_ENTRIES = [
 
 const ALAN_OPEN = OPEN_ENTRIES.filter(entry => entry.counterparty_id === 1);
 
+describe('withImportedStatement', () => {
+  const row = {
+    accountId: 9,
+    name: '玉山 UNI',
+    icon: '💳',
+    currency: 'TWD',
+    periodEnd: '2026-09-15',
+    due: '2026-10-05',
+    dueText: '10/05 截止',
+    figures: [
+      { label: '應繳', text: '$100' },
+      { label: '已繳', text: '$0' },
+      { label: '剩餘', text: '$100' },
+    ],
+    countdown: '還有 2 天',
+    overdue: false,
+    soon: false,
+    recon: null,
+  };
+
+  it('keeps the ledger figures when no statement closes on that day', () => {
+    expect(withImportedStatement(row, [importedStatement({ period_end: '2026-08-15' })])).toBe(row);
+  });
+});
+
 describe('AccountingRemindersComponent', () => {
   let http: HttpTestingController;
 
@@ -56,6 +109,10 @@ describe('AccountingRemindersComponent', () => {
   });
 
   afterEach(() => {
+    // The 對帳 chip reads statements for cards already in the due window. Tests that don't care flush nothing.
+    for (const request of http.match(r => /\/accounts\/\d+\/statements$/.test(r.url))) {
+      request.flush([]);
+    }
     http.verify();
     vi.useRealTimers();
   });
@@ -141,6 +198,34 @@ describe('AccountingRemindersComponent', () => {
     expect(rows[2].querySelector('.countdown')!.classList).not.toContain('soon');
     expect(Array.from(rows[2].querySelectorAll('.figs .fig')).map(text)).toEqual(['應繳 $12,345', '已繳 $5,000', '剩餘 $7,345']);
     expect(text(rows[2].querySelector('.due-date'))).toBe('10/05 截止');
+  });
+
+  it('places the imported statement beside the ledger bill and a sibling 對帳 chip', () => {
+    const { fixture, el } = render([SOON]);
+    flushBill(9, '-12345.0000', ['5000.0000']);
+    http.expectOne('/api/accounting/accounts/9/statements').flush([
+      importedStatement({ period_end: '2026-09-15', statement_total: '13000.0000', matched_count: 37, open_case_count: 14 }),
+    ]);
+    fixture.detectChanges();
+
+    const row = el.querySelector('.card-row')!;
+    const chip = el.querySelector('a.recon-chip')!;
+    expect(Array.from(row.querySelectorAll('.figs .fig')).map(text)).toEqual([
+      '帳單 $13,000', '帳本 $12,345', '已繳 $5,000', '剩餘 $7,345',
+    ]);
+    expect(text(chip)).toBe('對帳 37/51');
+    expect(chip.getAttribute('href')).toBe('/accounting/accounts/9/statements/1');
+    expect(row.contains(chip)).toBe(false);
+  });
+
+  it('leaves the ledger 應繳 when the imported statement is a different cycle', () => {
+    const { fixture, el } = render([SOON]);
+    flushBill(9, '-100.0000');
+    http.expectOne('/api/accounting/accounts/9/statements').flush([importedStatement({ period_end: '2026-08-15' })]);
+    fixture.detectChanges();
+
+    expect(text(el.querySelector('.card-row .fig'))).toBe('應繳 $100');
+    expect(el.querySelector('.recon-chip')).toBeNull();
   });
 
   it('clears an overdue bill paid late, before the next closing', () => {

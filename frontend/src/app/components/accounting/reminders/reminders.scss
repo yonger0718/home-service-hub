@@ -79,6 +79,37 @@
   color: var(--tone-pos, var(--c-green));
 }
 
+.card-item {
+  align-items: center;
+  border-top: 1px solid var(--app-border);
+  display: grid;
+}
+
+.card-item:has(.recon-chip) {
+  gap: 0 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.card-item > .card-row {
+  border-top: 0;
+}
+
+.recon-chip {
+  background: var(--app-primary-soft);
+  border-radius: var(--radius-pill);
+  color: var(--app-primary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 2px 8px;
+  text-decoration: none;
+  white-space: nowrap;
+
+  &:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 2px;
+  }
+}
+
 .card-row,
 .debt-row {
   align-items: center;

@@ -20,8 +20,11 @@ import { AccountingService } from '../../../services/accounting.service';
 import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService, scheduleActionError } from '../accounting-toast';
 import { isHandledKey } from '../accounting-ui';
-import { BillingEvent, dueCountdown, reminderDues } from '../billing/billing-math';
+import { BillingEvent, billingCards, dueCountdown, reminderDues } from '../billing/billing-math';
 import { BillState, BillingService } from '../billing/billing.service';
+import { StatementSummary } from '../statements/statement.model';
+import { reconProgress, statementForPeriod } from '../statements/statement-view';
+import { StatementsService } from '../statements/statements.service';
 import { daysBetween, shortDate, slashDate, todayIso } from '../dates';
 import { formatMoney, formatSigned } from '../format';
 import { TimelineRow, buildDays } from '../timeline/timeline';
@@ -47,10 +50,20 @@ export function isReminderTab(value: string | null): value is ReminderTab {
   return REMINDER_TABS.some(option => option.key === value);
 }
 
+/** 對帳 k/n for the imported statement of this billing cycle. The chip is a sibling of the row, not inside it. */
+export interface ReconChip {
+  statementId: number;
+  k: number;
+  n: number;
+}
+
 export interface CardReminder {
   accountId: number;
   name: string;
   icon: string;
+  currency: string;
+  /** Billing cycle end, matched to `account_statement.period_end`. */
+  periodEnd: string;
   due: string;
   dueText: string;
   figures: { label: string; text: string }[];
@@ -58,6 +71,7 @@ export interface CardReminder {
   /** Past the due date (negative tone) / due today or tomorrow (warning tone). */
   overdue: boolean;
   soon: boolean;
+  recon: ReconChip | null;
 }
 
 /** One side of a counterparty: what it owes the owner (應收) or what the owner owes it (應付). */
@@ -148,6 +162,8 @@ export function cardReminders(
         accountId: bill.accountId,
         name: bill.name,
         icon: icons.get(bill.accountId) ?? '💳',
+        currency: bill.currency,
+        periodEnd: bill.period.end,
         due: bill.due,
         dueText: `${shortDate(bill.due)} 截止`,
         figures: [
@@ -158,8 +174,24 @@ export function cardReminders(
         countdown: dueCountdown(bill.due, today),
         overdue: days < 0,
         soon: days === 0 || days === 1,
+        recon: null,
       };
     });
+}
+
+/**
+ * When an imported statement exists for the cycle, its 應繳 sits next to the ledger's, labelled 帳單 / 帳本,
+ * and the row gains a 對帳 k/n chip.
+ */
+export function withImportedStatement(row: CardReminder, statements: readonly StatementSummary[]): CardReminder {
+  const match = statementForPeriod(statements, row.periodEnd);
+  if (!match) {
+    return row;
+  }
+  const progress = reconProgress(match);
+  const figures = row.figures.map(figure => (figure.label === '應繳' ? { ...figure, label: '帳本' } : figure));
+  figures.unshift({ label: '帳單', text: formatMoney(match.statement_total, row.currency) });
+  return { ...row, figures, recon: { statementId: match.id, k: progress.k, n: progress.n } };
 }
 
 /**
@@ -212,6 +244,7 @@ export function debtReminders(counterparties: Counterparty[], openEntries: Ledge
 export class AccountingRemindersComponent {
   private readonly accounting = inject(AccountingService);
   private readonly bills = inject(BillingService);
+  private readonly statements = inject(StatementsService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly layoutMode = inject(LayoutModeService);
@@ -220,6 +253,9 @@ export class AccountingRemindersComponent {
   private readonly injector = inject(Injector);
   private requestId = 0;
   private expandRequestId = 0;
+  private statementRequestId = 0;
+  /** Imported statements for the cards this page is billing, keyed by account. */
+  private readonly statementsByAccount = signal<ReadonlyMap<number, readonly StatementSummary[]>>(new Map());
 
   readonly tabs = REMINDER_TABS;
   readonly tab = signal<ReminderTab>('all');
@@ -256,15 +292,16 @@ export class AccountingRemindersComponent {
 
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   private readonly dues = computed(() => reminderDues(this.accounts(), this.today()));
-  readonly cardRows = computed(() =>
-    cardReminders(
+  readonly cardRows = computed(() => {
+    const byAccount = this.statementsByAccount();
+    return cardReminders(
       this.dues()
         .map(event => this.bills.bill(event))
         .filter((bill): bill is BillState => bill !== null),
       this.accounts(),
       this.today(),
-    ),
-  );
+    ).map(row => withImportedStatement(row, byAccount.get(row.accountId) ?? []));
+  });
   /** Every 對象 with open rows, unfiltered: the 對象 select's options. */
   readonly debtCounterparties = computed(() => debtReminders(this.counterparties(), this.openEntries()));
   readonly showDebtFilters = computed(() => this.tab() === 'debts');
@@ -359,6 +396,33 @@ export class AccountingRemindersComponent {
       const dues = this.dues();
       this.bills.generation();
       untracked(() => this.bills.ensure(dues, this.today()));
+    });
+
+    // Only cards the centre is already billing. A card outside the due window (and a 副卡) is not asked.
+    effect(() => {
+      const billingIds = new Set(billingCards(this.accounts()).map(account => account.id));
+      const ids = [...new Set(this.dues().map(event => event.accountId))]
+        .filter(accountId => billingIds.has(accountId))
+        .sort((a, b) => a - b);
+      this.statements.changed();
+      untracked(() => this.loadStatements(ids));
+    });
+  }
+
+  /** Statement lists for the 對帳 chip. A stale round is dropped; one failed account leaves the others. */
+  private loadStatements(accountIds: readonly number[]): void {
+    const id = ++this.statementRequestId;
+    if (accountIds.length === 0) {
+      this.statementsByAccount.set(new Map());
+      return;
+    }
+    forkJoin(
+      accountIds.map(accountId => this.statements.list(accountId).pipe(catchError(() => of<StatementSummary[]>([])))),
+    ).subscribe(lists => {
+      if (id !== this.statementRequestId) {
+        return;
+      }
+      this.statementsByAccount.set(new Map(accountIds.map((accountId, index) => [accountId, lists[index]])));
     });
   }
 
