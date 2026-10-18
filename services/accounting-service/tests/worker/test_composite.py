@@ -361,3 +361,15 @@ def test_dated_row_outside_the_area_or_without_the_area_marker_fails():
     without_marker = [l for l in lines if l.text != "交易明細"]
     with pytest.raises(SplitError, match="outside"):
         _split(without_marker, {k: True for k in DECLARED})
+
+
+def test_dated_row_before_the_period_line_fails():
+    """A dated row ahead of the statement's period line is still a row outside any section (AGENT-162 M1)."""
+    lines = statement()
+    first = next(i for i, l in enumerate(lines) if l.page == 3 and l.top == 110)
+    lines.insert(0, lines.pop(first))
+    with pytest.raises(SplitError, match="outside"):
+        _split(lines)
+    without_period = [l for l in lines if "綜合月對帳單" not in l.text]
+    with pytest.raises(SplitError, match="period"):  # a missing period is still reported first
+        _split(without_period)

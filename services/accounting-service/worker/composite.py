@@ -148,6 +148,7 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
     geometry: Geometry | None = None
     open_suffix: str | None = None
     rows: dict[str, list[Row]] = {}  # suffix -> rows, in document order of first appearance
+    dated_before_period = False  # a dated row ahead of the period line is still a row outside any section
     for line in lines:
         words = _words(line)
         if not words:
@@ -159,6 +160,8 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
             match = PERIOD.search(text)
             if match:
                 period = (_date(match.group(1), "statement period"), _date(match.group(2), "statement period"))
+            elif DATE.match(words[0].text):
+                dated_before_period = True  # reported after the missing-period check below
             continue
         if open_suffix is None and DATE.match(words[0].text):
             raise SplitError("dated row outside any section")  # never dropped, whatever block we are in
@@ -200,6 +203,8 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
         open_suffix = None  # any other line closes the section
     if period is None:
         raise SplitError("no statement period line")
+    if dated_before_period:
+        raise SplitError("dated row outside any section")
     report = SplitReport()
     sections: list[Section] = []
     for suffix, section_rows in rows.items():
