@@ -45,8 +45,8 @@ class Row:
 class Section:
     key: str
     currency: str
-    period_start: date
-    period_end: date
+    period_start: date = field(repr=False)
+    period_end: date = field(repr=False)
     closing_balance: Decimal = field(repr=False)
     opening_balance: Decimal = field(repr=False)
     rows: tuple[Row, ...] = field(repr=False)
@@ -100,7 +100,9 @@ def _holding_amount(text: str, key: str) -> Decimal:
 
 def _suffix(number: str) -> str:
     tail = number.rsplit("*", 1)[-1]
-    return tail if "*" in number and re.fullmatch(r"\d{2,4}", tail) else "?"  # never echo an unmasked number
+    if "*" in number:
+        return tail if re.fullmatch(r"\d{2,4}", tail) else "?"
+    return number if re.fullmatch(r"\d{2,4}", number) else "?"  # a full unmasked number is never echoed
 
 
 def _geometry(words: tuple[Word, ...]) -> Geometry:
@@ -158,6 +160,8 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
             if match:
                 period = (_date(match.group(1), "statement period"), _date(match.group(2), "statement period"))
             continue
+        if open_suffix is None and DATE.match(words[0].text):
+            raise SplitError("dated row outside any section")  # never dropped, whatever block we are in
         if text == "持有明細":
             if in_area:
                 raise SplitError("holdings block inside the transaction area")
@@ -185,8 +189,6 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
             rows.setdefault(open_suffix, [])
             continue
         if DATE.match(words[0].text):
-            if open_suffix is None:
-                raise SplitError("dated row outside any section")
             if geometry is None:
                 raise SplitError(f"{open_suffix}/?: dated row before any column header (no geometry)")
             same = [k for k in holdings if k.startswith(f"{open_suffix}/")]

@@ -321,7 +321,8 @@ def test_fx_section_with_the_wrong_currency_fails():
 def test_repr_never_prints_statement_content():
     sections, _ = _split()
     text = repr(sections[0]) + repr(sections[0].rows[0])
-    for secret in ("28,000", "28000", "2000", "34431", "2026-09-01", "交割股款", "30000"):
+    assert "datetime.date" not in text
+    for secret in ("28,000", "28000", "2000", "34431", "2026-09-01", "2026, 9", "2026-09-30", "交割股款", "30000"):
         assert secret not in text
 
 
@@ -329,9 +330,34 @@ def test_unmasked_account_number_is_redacted_from_messages_and_report():
     lines = statement()
     lines.insert(10, L(2, 170, W("活期存款", 40), W("9988776655", 120), W("屏東分行", 240), W("5", 400)))
     _, report = _split(lines)
-    assert "?/TWD" in report.skipped_keys
+    assert "?/TWD" in report.skipped_keys and "9988776655" not in report.skipped_keys
     assert "9988776655" not in repr(report)
     lines.insert(10, L(2, 171, W("活期存款", 40), W("9988776655", 120), W("屏東分行", 240), W("5", 400)))
     with pytest.raises(SplitError) as info:
         _split(lines)
     assert "9988776655" not in str(info.value)
+
+
+def test_bare_suffix_holding_resolves_to_its_key():
+    holdings = {**HOLDINGS, "91/TWD": "34,431"}
+    lines = statement(holdings=holdings)
+    lines[4] = L(2, 90, W("活期存款", 40), W("91", 120), W("屏東分行", 240), W("34,431", 400))
+    sections, _ = _split(lines)
+    assert sections[0].key == "91/TWD" and len(sections[0].rows) == 16
+
+
+def test_dated_row_outside_the_area_or_without_the_area_marker_fails():
+    lines = statement()
+    first = next(l for l in lines if l.page == 3 and l.top == 110)
+    marker = next(i for i, l in enumerate(lines) if l.text == "交易明細")
+    before = [l for l in lines if l is not first]
+    before.insert(marker, first)
+    with pytest.raises(SplitError, match="outside"):
+        _split(before)
+    inside_holdings = [l for l in lines if l is not first]
+    inside_holdings.insert(5, first)
+    with pytest.raises(SplitError, match="outside"):
+        _split(inside_holdings)
+    without_marker = [l for l in lines if l.text != "交易明細"]
+    with pytest.raises(SplitError, match="outside"):
+        _split(without_marker, {k: True for k in DECLARED})
