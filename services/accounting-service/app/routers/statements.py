@@ -322,7 +322,9 @@ def read_account_map(db: Session = Depends(get_db)):
     account_map = data.get("account_map") or {}
     closing_days = {str(account_id): day for account_id, day in db.execute(
         select(Account.id, Account.closing_day).where(Account.closing_day.is_not(None))).all()}
-    return AccountMapOut(account_map=account_map, mapping_version=settings_service.mapping_version(account_map),
+    composite_map = data.get("composite_map") or {}
+    return AccountMapOut(account_map=account_map, composite_map=composite_map,
+                         mapping_version=settings_service.mapping_version(account_map, composite_map),
                          closing_days=closing_days)
 
 

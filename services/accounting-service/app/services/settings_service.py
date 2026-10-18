@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from dataclasses import fields
 from hashlib import sha256
 from decimal import Decimal
@@ -147,25 +148,70 @@ def _reconciliation_dict(row: ReconciliationSettings) -> dict:
     data = dict(row.data or {})
     version = _stored_rules_version(data)
     rules = {**RULE_DEFAULTS, **normalise_stale_rules(data.get("rules") or {}, version)[0]}
-    return {**data, "account_map": data.get("account_map") or {}, "dirty_enabled": data.get("dirty_enabled") is True,
+    return {**data, "account_map": data.get("account_map") or {},
+            "composite_map": data.get("composite_map") or {}, "dirty_enabled": data.get("dirty_enabled") is True,
             "rules": rules, "rules_version": version, "version": row.version,
             "policy": _effective_policy(data.get("policy")),
             "policy_version": data.get("policy_version") or f"{POLICY_VERSION_PREFIX}-1",
             "account_siblings": data.get("account_siblings") or {}}
 
 
+def _check_folder_key(field: str, key) -> None:
+    """Keys are `mail/<folder>/<subfolder>` or `manual/<folder>` (the shape the revision folder check builds)."""
+    parts = key.split("/") if isinstance(key, str) else []
+    shape_ok = (len(parts), parts[0] if parts else None) in ((3, "mail"), (2, "manual"))
+    if not shape_ok or any(not part or part != part.strip() for part in parts):
+        raise ValidationError(field, f"key {key!r} is not mail/<folder>/<subfolder> or manual/<folder>")
+
+
 def _check_account_map(account_map) -> None:
-    """Keys are `mail/<folder>/<subfolder>` or `manual/<folder>` (the shape the revision folder check builds); values
-    are account ids."""
+    """Keys are folder keys (see `_check_folder_key`); values are account ids."""
     if not isinstance(account_map, dict):
         raise ValidationError("account_map", "must be an object")
     for key, value in account_map.items():
-        parts = key.split("/") if isinstance(key, str) else []
-        shape_ok = (len(parts), parts[0] if parts else None) in ((3, "mail"), (2, "manual"))
-        if not shape_ok or any(not part or part != part.strip() for part in parts):
-            raise ValidationError("account_map", f"key {key!r} is not mail/<folder>/<subfolder> or manual/<folder>")
+        _check_folder_key("account_map", key)
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValidationError("account_map", f"value for {key!r} is not an account id")
+
+
+SECTION_KEY = re.compile(r"^[0-9]{2,4}/[A-Z]{3}$")
+
+
+def _check_composite_map(db: Session, composite_map, account_map: dict) -> dict:
+    """`{folder: {"<suffix>/<CUR>": {"account_id", "anchor_only"}}}`: folder keys as in account_map and never in
+    both maps; targets exist, are not archived, are deposit accounts in the key's currency; one account per folder."""
+    if not isinstance(composite_map, dict):
+        raise ValidationError("composite_map", "must be an object")
+    out: dict = {}
+    for folder, targets in composite_map.items():
+        _check_folder_key("composite_map", folder)
+        if folder in (account_map or {}):
+            raise ValidationError("composite_map", f"folder {folder!r} is also in account_map")
+        if not isinstance(targets, dict) or not targets:
+            raise ValidationError("composite_map", f"folder {folder!r} needs at least one section key")
+        seen: dict[int, str] = {}
+        for key, target in targets.items():
+            if not isinstance(key, str) or not SECTION_KEY.match(key):
+                raise ValidationError("composite_map", f"section key {key!r} is not <suffix>/<CUR>")
+            if not isinstance(target, dict):
+                raise ValidationError("composite_map", f"target for {key!r} is not an object")
+            account_id, anchor_only = target.get("account_id"), target.get("anchor_only", False)
+            if isinstance(account_id, bool) or not isinstance(account_id, int):
+                raise ValidationError("composite_map", f"{key!r}: account_id is not an account id")
+            if not isinstance(anchor_only, bool):
+                raise ValidationError("composite_map", f"{key!r}: anchor_only is not a boolean")
+            account = db.get(Account, account_id)
+            if account is None or account.is_archived:
+                raise ValidationError("composite_map", f"{key!r}: account {account_id} is missing or archived")
+            if account.is_credit:
+                raise ValidationError("composite_map", f"{key!r}: account {account_id} is a card")
+            if account.currency != key.split("/")[1]:
+                raise ValidationError("composite_map", f"{key!r}: account {account_id} is not a {key.split('/')[1]} account")
+            if account_id in seen:
+                raise ValidationError("composite_map", f"account {account_id} appears under {seen[account_id]!r} and {key!r}")
+            seen[account_id] = key
+            out.setdefault(folder, {})[key] = {"account_id": account_id, "anchor_only": anchor_only}
+    return out
 
 
 RULE_UNIT_INTERVAL = {"accept", "margin", "ambiguous_floor", "near_tolerance_pct"}  # scores / fractions: [0, 1]
@@ -334,9 +380,11 @@ def read_reconciliation_rules(db: Session) -> dict:
     return {**settings["rules"], "rules_version": settings["rules_version"]}
 
 
-def mapping_version(account_map: dict) -> str:
-    """Stable 16-hex digest of the account map (the worker's `mapping_version` retry trigger)."""
-    canonical = json.dumps(account_map or {}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+def mapping_version(account_map: dict, composite_map: dict | None = None) -> str:
+    """Stable 16-hex digest of both maps (the worker's `mapping_version` retry trigger). The envelope is hashed even
+    when `composite_map` is empty, so the first deploy of this change re-tries every `mapping` failure once (spec §3)."""
+    canonical = json.dumps({"account_map": account_map or {}, "composite_map": composite_map or {}}, sort_keys=True,
+                           ensure_ascii=False, separators=(",", ":"))
     return sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
@@ -344,6 +392,7 @@ def update_reconciliation_settings(db: Session, data: dict) -> dict:
     """Replace the settings data and bump `version`; the row is locked so concurrent saves bump it once each.
     `dirty_enabled` is the dirty-trigger kill switch the ledger triggers read (off unless true)."""
     _check_account_map(data.get("account_map", {}))
+    composite = _check_composite_map(db, data.get("composite_map", {}), data.get("account_map", {}))
     if not isinstance(data.get("dirty_enabled", False), bool):
         raise ValidationError("dirty_enabled", "must be a boolean")
     rules = _check_rules(data.get("rules", {}))
@@ -351,7 +400,7 @@ def update_reconciliation_settings(db: Session, data: dict) -> dict:
     siblings = _check_siblings(db, data.get("account_siblings", {}))
     row = _reconciliation_row(db, lock=True)
     before = _reconciliation_dict(row)
-    row.data = {**data, "rules": rules, "policy": policy, "account_siblings": siblings}
+    row.data = {**data, "composite_map": composite, "rules": rules, "policy": policy, "account_siblings": siblings}
     row.version = row.version + 1
     if _effective_policy(policy) != before["policy"]:
         row.data = {**row.data, "policy_version": f"{POLICY_VERSION_PREFIX}-{row.version}"}
