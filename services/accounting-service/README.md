@@ -243,7 +243,7 @@ is printed here: resolve the case before booking the gap. A non-zero gap opens a
 offered and the policy never acts; `balance_adjustment_asof` books the gap on a single-account card (a card with a co-branded account in the statement's
 currency is refused `combined_card`: the residual may sit on either account).
 
-Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `dirty_enabled`, `rules`, `policy` and
+Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `composite_map`, `dirty_enabled`, `rules`, `policy` and
 `account_siblings` wholesale, so send the current values of the ones you keep; `admin` scope):
 
 - `policy` (default, ships off): `{"enabled": false, "accept_agent_proposals": false, "per_statement_count": 5,
