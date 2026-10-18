@@ -171,7 +171,9 @@ different key closes the current section.
   of: a dated row (first word `\d{4}/\d{2}/\d{2}`), the column header, a page number, or a continuation footer
   (`^註：`, `^台幣存款 餘額`, `^外幣存款 餘額折合台幣`); **any other line closes the section**. After a section closed,
   lines are ignored until the next section header — except a dated row, which is a `SplitError` (a row outside any
-  section is never dropped). A dated row before the first column header → `SplitError` (no geometry).
+  section is never dropped). A dated row before the first column header → `SplitError` (no geometry). A section
+  header followed by no dated row at all, and a `持有明細` line inside the transaction area, are unknown layouts →
+  `SplitError` (implementation rulings 2026-10-18, fail closed).
 - Rows come from the dated lines and the column geometry (AGENT-153 #1 / rev 7; the tables are unusable, §1):
   the first word is the date; the first word after it that matches `^[A-Z]{3}$` is the currency; the words between
   them, joined by one space, are the description; every word after the currency must match
