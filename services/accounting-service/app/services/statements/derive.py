@@ -76,14 +76,16 @@ def _q(value: Decimal) -> Decimal:
 
 def flow_amount(kind: str, line_kind: str, printed: Decimal) -> Decimal:
     printed = _q(printed)
+    # messages name the kind and, from derive_lines, the row — never the amount (2026-10-19: the text reaches 422
+    # bodies and exception events, and a printed amount is the owner's financial data)
     if printed == 0 and line_kind != "unknown":
         raise SignError(f"{line_kind}: zero amount")
     if kind == "card":
         if (line_kind in CARD_DEBIT and printed < 0) or (line_kind in CARD_CREDIT and printed > 0):
-            raise SignError(f"card {line_kind}: sign {printed}")
+            raise SignError(f"card {line_kind}: wrong sign")
         return _q(-printed)
     if (line_kind in BANK_CREDIT and printed < 0) or (line_kind in BANK_DEBIT and printed > 0):
-        raise SignError(f"bank {line_kind}: sign {printed}")
+        raise SignError(f"bank {line_kind}: wrong sign")
     return printed
 
 
@@ -100,7 +102,10 @@ def derive_lines(kind: str, lines: list[LineIn]) -> list[DerivedLine]:
     for line in sorted(lines, key=lambda l: l.seq):
         if line.is_subtotal:
             continue
-        flow = flow_amount(kind, line.line_kind, line.printed_amount)
+        try:
+            flow = flow_amount(kind, line.line_kind, line.printed_amount)
+        except SignError as exc:
+            raise SignError(f"line {line.seq}: {exc}") from None  # the row, not the amount
         norm = normalise(line.merchant_raw)
         index = occurrences.get((line.posted_date, flow), 0)
         occurrences[(line.posted_date, flow)] = index + 1
