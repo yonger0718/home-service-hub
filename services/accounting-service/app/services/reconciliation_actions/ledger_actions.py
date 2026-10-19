@@ -394,11 +394,12 @@ class AdjustAmountAction(ActionBase):
 
     @staticmethod
     def _counted_members(ctx: Context, line: StatementLine, group_id: int) -> list[LedgerEntry]:
-        """The group's members the line is adjusted against, rebuilt under the locks as the matcher counts them
-        (`matching._group_variants`): the top-level members of a kind the line's gate allows that no line claims
-        yet. A member another line of the statement claimed (the fee member its 國外交易服務費 line took) or of a
-        kind the line never represents (a fee under a purchase) is left as it is — never rewritten, never claimed
-        here, never part of the residual."""
+        """The group's members the line is adjusted against, rebuilt under the locks: the top-level members of a
+        kind the line's gate allows that no line claims yet. `_plan` requires this set to equal the set the case
+        designated (`context.entry_ids`, what the matcher counted when it wrote the case) and refuses
+        `candidate_changed` otherwise — a member claimed since would move its share into the residual. A member
+        another line claimed (the fee member its 國外交易服務費 line took) or of a kind the line never represents is
+        left as it is — never rewritten, never claimed here, never part of the residual."""
         from app.services import reconciliation_service  # local: reconciliation_service imports this package
         db = ctx.db
         gate = matching.eligible_kinds(ctx.statement.kind, line.line_kind)
@@ -428,6 +429,11 @@ class AdjustAmountAction(ActionBase):
             if entry.group_id != params.group_id:
                 raise _refuse("entry_id", "not_member", f"entry {entry.id} is not in group {params.group_id}")
             members = self._counted_members(ctx, line, params.group_id)
+            designated = (ctx.case.context or {}).get("entry_ids")
+            if not isinstance(designated, list) or sorted(int(i) for i in designated) != sorted(m.id for m in members):
+                # a member claimed or added since the reconcile that wrote the case: the residual would land wrong
+                raise CodedConflictError("candidate_changed", f"group {params.group_id} counted {sorted(m.id for m in members)}, "
+                                                              f"case designated {designated}")
             if entry.id not in {m.id for m in members}:
                 raise _refuse("entry_id", "not_member", f"entry {entry.id} is not counted for line {line.id}")
             for member in members:

@@ -14,6 +14,7 @@ No DB, no I/O. Contract with callers (the orchestrator follows it):
 from __future__ import annotations
 
 import dataclasses
+import itertools
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -261,18 +262,19 @@ def _lone_member(entry: Entry, line_kind: str, groups: dict[int, Group]) -> bool
     return group is not None and group.kind == "split"
 
 
-def printed_alone(kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group]) -> frozenset[int]:
+def printed_alone(kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group], rules: Rules) -> frozenset[int]:
     """The split members this statement prints as their own line: a lone-member candidate (`_lone_member`) of a kind
-    the line's gate allows whose flow equals that line's. A group representation may leave such a member out
-    (`_group_variants`); any other member always counts, so a net reading ({expense, discount} for a discounted
-    purchase) is never lost."""
+    the line's gate allows whose flow equals that line's, inside the exact window of it (what an exact claim by that
+    line needs). A group reading may leave such members out (`_group_variants`); any other member always counts, so
+    a net reading ({expense, discount} for a discounted purchase) is never lost."""
     out: set[int] = set()
     for line in lines:
         if line.line_kind not in LONE_MEMBER_LINE_KINDS:
             continue
         gate = eligible_kinds(kind, line.line_kind)
         out.update(e.id for e in entries
-                   if _lone_member(e, line.line_kind, groups) and _entry_class(e) in gate and _same(e.flow, line.flow))
+                   if _lone_member(e, line.line_kind, groups) and _entry_class(e) in gate and _same(e.flow, line.flow)
+                   and _date_distance(line, e) <= rules.exact_window_days)
     return frozenset(out)
 
 
@@ -295,20 +297,42 @@ def _plan_entries(line: Line, entries: list[Entry], definition: int, claimed: se
     return sorted(found, key=lambda e: (_date_distance(line, e), e.id))
 
 
+ASIDE_COMBINATIONS_MAX = 4  # printed-alone members of one group enumerated in combinations; more: all-or-none
+
+
 def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside: frozenset[int]) -> list[list[Entry]]:
     """The member sets a `split` group may represent a line with: the whole group (the net reading, as before
-    2026-10-19) and, when the statement prints some member as its own line (`aside`, see `printed_alone`), the group
-    without those members. A group with a member outside the population or an installment member is never
-    admissible; a variant with a claimed member is dropped (a fee member its fee line claimed first leaves the
-    gross variant alone)."""
+    2026-10-19) and, for the members the statement prints as their own line (`aside`, see `printed_alone`), the
+    group without any combination of them — one printed fee line excuses one fee member, two excuse two. A group
+    with a member outside the population or an installment member is never admissible; a reading with a claimed
+    member is dropped (a fee member its fee line claimed first leaves the reduced reading alone). Readings of equal
+    sum keep the smaller one (zero-sum members printed alone — a fee and a reward — go to their own lines); readings
+    of equal sum and size (two identical fee members, one fee line) both stay and tie as ambiguous."""
     members = [by_id.get(i) for i in g.member_ids]
     if any(mem is None or mem.instance is not None for mem in members):
         return []
-    variants = [members]
-    without = [mem for mem in members if mem.id not in aside]
-    if without and len(without) != len(members):
-        variants.append(without)
-    return [v for v in variants if not any(mem.id in claimed for mem in v)]
+    removable = [mem for mem in members if mem.id in aside]
+    readings = [members]
+    if removable and len(removable) <= ASIDE_COMBINATIONS_MAX:
+        for size in range(1, len(removable) + 1):
+            for combo in itertools.combinations(removable, size):
+                dropped = {mem.id for mem in combo}
+                rest = [mem for mem in members if mem.id not in dropped]
+                if rest:
+                    readings.append(rest)
+    elif removable:
+        rest = [mem for mem in members if mem.id not in aside]
+        if rest:
+            readings.append(rest)
+    readings = [r for r in readings if not any(mem.id in claimed for mem in r)]
+    kept: list[list[Entry]] = []
+    for reading in readings:
+        total = sum((mem.flow for mem in reading), ZERO).quantize(Q)
+        same = [k for k in kept if sum((mem.flow for mem in k), ZERO).quantize(Q) == total]
+        if any(len(k) < len(reading) for k in same):
+            continue
+        kept = [k for k in kept if not (k in same and len(k) > len(reading))] + [reading]
+    return kept
 
 
 def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
@@ -586,7 +610,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
     claimed: set[int] = set()
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
-    aside = printed_alone(statement_kind, lines, entries, groups)
+    aside = printed_alone(statement_kind, lines, entries, groups, rules)
     for line in sorted(lines, key=lambda ln: ln.id):
         reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside), key=lambda r: r.score, reverse=True)
         if reps and reps[0].score >= rules.accept and (len(reps) == 1 or reps[0].score - reps[1].score >= rules.margin):

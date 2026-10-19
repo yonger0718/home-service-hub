@@ -338,6 +338,35 @@ def test_a_net_group_reading_is_kept_for_members_without_a_line_of_their_own(oth
     assert gross.claims == [] and gross.cases[0].kind == "line_unmatched"
 
 
+def test_a_member_is_printed_alone_only_by_a_fee_line_inside_the_exact_window():
+    g = m.Group(id=7, kind="split", member_ids=(31, 32))
+    members = [E(31, date(2026, 9, 3), "-100", group_id=7), E(32, date(2026, 9, 3), "-10", kind="fee", group_id=7)]
+    far = run([L(1, date(2026, 9, 3), "-100"), L(2, date(2026, 9, 20), "-10", kind="fee")], members, groups={7: g})
+    assert far.claims == [] and {c.kind for c in far.cases} == {"line_unmatched"}  # the Sep 20 fee line is not the member's
+    near = run([L(1, date(2026, 9, 3), "-100"), L(2, date(2026, 9, 5), "-10", kind="fee")], members, groups={7: g})
+    assert {c.line_id: sorted(r.entry_id for r in c.representation.rows) for c in near.claims} == {1: [31], 2: [32]}
+
+
+def test_one_printed_fee_line_excuses_one_fee_member():
+    g = m.Group(id=7, kind="split", member_ids=(31, 32, 33))
+    members = [E(31, date(2026, 9, 3), "-100", group_id=7), E(32, date(2026, 9, 3), "-10", kind="fee", group_id=7),
+               E(33, date(2026, 9, 3), "-10", kind="fee", group_id=7)]
+    res = run([L(1, date(2026, 9, 3), "-110"), L(2, date(2026, 9, 3), "-10", kind="fee")], members, groups={7: g})
+    # the −110 reading keeps one fee member; which one is unresolved, like the fee line's own choice: both ambiguous
+    assert res.claims == [] and [(c.line_id, c.kind) for c in res.cases] == [(1, "ambiguous"), (2, "ambiguous")]
+    assert sorted(c["group_id"] for c in res.cases[0].candidates) == [7, 7]
+
+
+def test_zero_sum_members_printed_alone_go_to_their_own_lines():
+    g = m.Group(id=7, kind="split", member_ids=(31, 32, 33))
+    members = [E(31, date(2026, 9, 3), "-100", group_id=7), E(32, date(2026, 9, 3), "-10", kind="fee", group_id=7),
+               E(33, date(2026, 9, 3), "10", kind="reward", group_id=7)]
+    lines = [L(1, date(2026, 9, 3), "-100"), L(2, date(2026, 9, 3), "-10", kind="fee"), L(3, date(2026, 9, 3), "10", kind="reward")]
+    res = run(lines, members, groups={7: g})
+    assert {c.line_id: sorted(r.entry_id for r in c.representation.rows) for c in res.claims} == {1: [31], 2: [32], 3: [33]}
+    assert res.cases == [] and res.unmatched_entry_ids == []
+
+
 def test_lone_member_is_split_only_and_only_for_fee_interest_reward_refund_lines():
     inst = m.Group(id=8, kind="installment", member_ids=(41,))
     res = run([L(1, date(2026, 9, 3), "-10", kind="fee")], [E(41, date(2026, 9, 3), "-10", kind="fee", group_id=8)], groups={8: inst})

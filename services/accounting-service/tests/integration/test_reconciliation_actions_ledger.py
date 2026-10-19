@@ -16,6 +16,7 @@ from app.models import (
     AccountStatement, Category, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementLine,
 )
 from app.services import coverage_service
+from app.services.statements import matching
 from app.services import entry_write_service as ews
 from app.services import policy_service
 from app.services import reconciliation_actions as registry
@@ -25,7 +26,7 @@ from app.services.reconciliation_actions import engine
 from app.services.reconciliation_actions.ledger_actions import AdjustAmountAction
 from tests.integration.test_reconciliation_policy import _reload, _set_policy, _sweep
 from tests.integration.statement_fixtures import (  # noqa: F401  (run is a fixture)
-    _active, _card, _cases, _open_beside_gap, _line, _reconcile, _submit, run,
+    OCT, _active, _card, _cases, _open_beside_gap, _line, _reconcile, _submit, run,
 )
 
 DAY = date(2026, 9, 3)
@@ -567,6 +568,21 @@ def test_adjust_amount_on_a_foreign_group_with_a_fee_member_the_fee_line_claimed
     assert _fresh(db_session, LedgerEntry, expense.id).amount == Decimal("-660")
     assert [(c.line_id, c.entry_id) for c in _active(db_session, stmt.id)] == [(fee_line.id, fee.id)]
     assert _fresh(db_session, ReconciliationCase, case.id).status == "open"
+
+
+def test_adjust_amount_on_a_group_refuses_a_counted_set_that_changed_since_the_case(jpy_group, db_session, run):
+    """Must 1 (AGENT-165): the receivable gains coverage after the reconcile that designated [expense, receivable];
+    adjusting the expense against the remaining member would write the whole line into it → candidate_changed."""
+    s = jpy_group()
+    stmt2, (other,), _ = _submit(db_session, run, s.card, [_line(1, date(2026, 10, 2), "OTHER", 1320)], period=OCT)
+    statement2 = db_session.get(AccountStatement, stmt2.id)
+    coverage_service.write_claim(db_session, statement2, other, [matching.Row(s.receivable.id, "member", Decimal("-1320"), s.group.id)],
+                                 entries_by_id={s.receivable.id: s.receivable}, match_kind="manual", match_rule="owner", run_id=None)
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount",
+                                             {"entry_id": s.expense.id, "line_id": s.line.id, "group_id": s.group.id}))
+    assert isinstance(exc, CodedConflictError) and exc.code == "candidate_changed", exc
+    assert _fresh(db_session, LedgerEntry, s.expense.id).amount == Decimal("-660")
 
 
 def test_adjust_amount_on_a_group_never_counts_a_member_the_line_does_not_represent(jpy_group, seed, db_session):
