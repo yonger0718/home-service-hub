@@ -301,6 +301,48 @@ def test_foreign_group_is_only_a_candidate_where_expense_is_eligible():
     assert res.cases[0].kind == "line_unmatched"
 
 
+def _fee_group(gid=6, *, day=date(2026, 9, 3)):
+    members = [E(21, day, "-300", group_id=gid), E(22, day, "-280", kind="receivable", group_id=gid),
+               E(23, day, "-10", kind="fee", group_id=gid)]
+    return m.Group(id=gid, kind="split", member_ids=(21, 22, 23)), members
+
+
+@pytest.mark.parametrize("fee_first", [False, True])
+def test_a_fee_member_printed_as_its_own_line_leaves_the_group_representation_and_is_claimed_alone(fee_first):
+    # a MOZE split {expense, receivable, fee}: the statement prints the purchase (expense + receivable) and the fee
+    g, members = _fee_group()
+    purchase, fee = L(1, date(2026, 9, 3), "-580"), L(2, date(2026, 9, 3), "-10", kind="fee")
+    res = run([fee, purchase] if fee_first else [purchase, fee], members, groups={6: g})
+    claims = {c.line_id: (c.representation.rule, sorted(r.entry_id for r in c.representation.rows)) for c in res.claims}
+    assert claims == {1: ("group", [21, 22]), 2: ("exact", [23])} and res.cases == [] and res.unmatched_entry_ids == []
+
+
+def test_a_split_member_never_stands_alone_for_a_purchase_line():
+    g, members = _fee_group()
+    res = run([L(1, date(2026, 9, 3), "-300")], members, groups={6: g})
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+    res2 = run([L(1, date(2026, 9, 3), "-10")], members, groups={6: g})  # the fee member, for a purchase line
+    assert res2.claims == [] and res2.cases[0].kind == "line_unmatched"
+
+
+def test_group_in_gate_members_must_all_be_present_and_unclaimed():
+    g, members = _fee_group()
+    res = run([L(1, date(2026, 9, 3), "-580")], [members[0], members[2]], groups={6: g})  # the receivable is missing
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+
+
+def test_foreign_group_leaves_a_fee_member_to_the_fee_line():
+    g, members = _jpy_group()
+    fee = E(72, date(2026, 9, 8), "-33", kind="fee", original_amount=D("-150"), original_currency="JPY", group_id=5)
+    g = m.Group(id=5, kind="split", member_ids=(70, 71, 72))
+    lines = [L(1, date(2026, 9, 8), "-2010", foreign_amount=D("-9000"), foreign_currency="JPY"),
+             L(2, date(2026, 9, 8), "-33", kind="fee", foreign_amount=D("-150"), foreign_currency="JPY")]
+    res = run(lines, members + [fee], groups={5: g})
+    assert [(c.line_id, c.representation.rule, [r.entry_id for r in c.representation.rows]) for c in res.claims] == [(2, "exact", [72])]
+    (case,) = res.cases
+    assert (case.line_id, case.kind, case.context["entry_ids"]) == (1, "amount_delta", [70, 71])
+
+
 def test_foreign_fee_is_quantised_and_compared_exactly():
     entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY")]
     res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("-3000"), foreign_currency="JPY")], entries, fee=lambda e: D("10.5"))

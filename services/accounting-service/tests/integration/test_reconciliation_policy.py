@@ -1374,17 +1374,23 @@ def test_policy_never_books_a_system_fee_beside_an_owner_child_fee(seed, db_sess
 
 def test_policy_never_backfills_a_line_two_split_members_record_together(seed, db_session, run):
     """A MOZE group {expense, receivable, fee} whose expense + receivable equal the printed purchase; the fee is the
-    statement's own fee line. The matcher claims no member alone and the group as a whole does not conserve."""
+    statement's own fee line. Until 2026-10-19 the matcher claimed no member alone and the group as a whole did not
+    conserve, so only the twins guard kept the policy off the line; now the purchase line claims the expense and
+    the receivable and the fee line the fee member, and there is no line case to backfill at all."""
     card = _card(seed, db_session)
     group = seed.group("split")
-    seed.entry(card, "-986", day=DAY, group_id=group.id)
-    seed.entry(card, "-2958", kind="receivable", day=DAY, group_id=group.id)
-    seed.entry(card, "-59", kind="fee", day=DAY, group_id=group.id)
+    expense = seed.entry(card, "-986", day=DAY, group_id=group.id)
+    receivable = seed.entry(card, "-2958", kind="receivable", day=DAY, group_id=group.id)
+    fee = seed.entry(card, "-59", kind="fee", day=DAY, group_id=group.id)
     db_session.commit()
-    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "MYS", 3944)])
-    case = _open_line_case(db_session, stmt.id, line.id)
-    assert not case.candidates and _active(db_session, stmt.id) == []
-    _never_books(db_session, stmt, line, case, "backfill_entry")
+    stmt, (purchase, fee_line), _ = _submit(db_session, run, card, [_line(1, DAY, "MYS", 3944), _line(2, DAY, "國外交易服務費", 59, "fee")])
+    claims = sorted((c.line_id, c.entry_id, c.role, c.match_rule) for c in _active(db_session, stmt.id))
+    assert claims == sorted([(purchase.id, expense.id, "member", "group"), (purchase.id, receivable.id, "member", "group"),
+                             (fee_line.id, fee.id, "principal", "exact")])
+    assert _cases(db_session, stmt.id) == []
+    _set_policy(db_session, _creation_policy("backfill_entry"))
+    result = policy_service.run_policy(db_session, stmt.id)
+    assert (result.applied, result.proposed) == ([], []) and _booked(db_session) == []
 
 
 @pytest.mark.parametrize("printed, blocked", [(3983, True), (4200, False)])  # +1 % (an FX fee) within the near tolerance; +6.5 % beyond
@@ -1589,7 +1595,9 @@ def test_an_owner_twin_recorded_since_the_collect_refuses_the_backfill_under_the
 # the two automatic creations an owner twin guards: (printed line, params, the twin's amount and kind)
 CREATIONS = {
     "backfill_entry": (_line(1, DAY, "全聯", 580), {"kind": "expense"}, "-580", "expense"),
-    "create_system_entry": (_line(1, DAY, "年費", 1200, "fee"), {"kind": "fee"}, "-1200", "fee"),
+    # the fee twin is a near one (2026-10-19: a split's fee member at the exact amount is now claimed by the fee line
+    # itself, so only a near member still leaves the line to the guard)
+    "create_system_entry": (_line(1, DAY, "年費", 1200, "fee"), {"kind": "fee"}, "-1190", "fee"),
 }
 
 

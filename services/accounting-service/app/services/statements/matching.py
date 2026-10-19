@@ -246,6 +246,13 @@ def _standalone(entry: Entry) -> bool:
         and (entry.instance is None or entry.instance.definition_kind != "installment")
 
 
+def _lone_member(entry: Entry, gate: frozenset[str]) -> bool:
+    """2026-10-19: a top-level `split` member stands alone for a line a split purchase never represents (the gate
+    has no `expense`: a fee / interest / reward / refund line) — the fee member of a purchase abroad the statement
+    prints as its own 國外交易服務費 line. For a purchase line a member is only ever claimed with its group."""
+    return entry.group_id is not None and entry.parent_entry_id is None and entry.instance is None and "expense" not in gate
+
+
 def _peer_ok(kind: str, line: Line, entry: Entry) -> bool:
     """A card `payment` line takes only a leg whose transfer peer is known not to be a card (every candidate path)."""
     return not (line.line_kind == "payment" and kind == "card" and entry.transfer_peer_is_card is not False)
@@ -265,6 +272,20 @@ def _plan_entries(line: Line, entries: list[Entry], definition: int, claimed: se
     return sorted(found, key=lambda e: (_date_distance(line, e), e.id))
 
 
+def _group_members(g: Group, by_id: dict[int, Entry], gate: frozenset[str], claimed: set[int]) -> list[Entry] | None:
+    """The members of a `split` group that represent a line of this gate, or None when the group is not admissible:
+    every member must be in the population (a gated-out member makes it partial) and none may be an installment
+    member; the members of a gated kind must be unclaimed and are the rows; a member of another kind (2026-10-19:
+    the fee member of a purchase abroad) is left to the line that prints it, claimed already or not."""
+    members = [by_id.get(i) for i in g.member_ids]
+    if any(mem is None or mem.instance is not None for mem in members):
+        return None
+    rows = [mem for mem in members if _entry_class(mem) in gate]
+    if not rows or any(mem.id in claimed for mem in rows):
+        return None
+    return rows
+
+
 def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
                      claimed: set[int], rules: Rules) -> list[Representation]:
     gate = eligible_kinds(kind, line.line_kind)
@@ -280,8 +301,9 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         return out
     rule = {"payment": "payment", "refund": "refund", "transfer_in": "transfer", "transfer_out": "transfer"}.get(line.line_kind, "exact")
     for e in entries:
-        # group members, installment instances and children never stand alone (children reach a line via the child path)
-        if e.id in claimed or not _standalone(e) or _entry_class(e) not in gate:
+        # group members (save a lone member for a non-purchase line), installment instances and children never stand
+        # alone (children reach a line via the child path)
+        if e.id in claimed or not (_standalone(e) or _lone_member(e, gate)) or _entry_class(e) not in gate:
             continue
         if not _peer_ok(kind, line, e):
             continue
@@ -309,8 +331,8 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         for g in groups.values():
             if g.kind != "split":
                 continue
-            members = [by_id.get(i) for i in g.member_ids]
-            if any(mem is None or mem.id in claimed or mem.instance is not None for mem in members):
+            members = _group_members(g, by_id, gate, claimed)
+            if members is None:
                 continue  # partial, reserved or installment-member groups are never admissible
             member_rows = tuple(Row(mem.id, "member", mem.flow, g.id) for mem in members)
             child_rows = tuple(Row(c.id, "child", c.flow, g.id) for mem in members for c in mem.children if c.id not in claimed)
@@ -387,8 +409,8 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
     """Admissible `split` groups whose members all carry the line's foreign currency and whose original amounts sum
     to the printed foreign amount, within the foreign window (2026-10-19: a purchase abroad the owner split into an
     expense and a receivable never foreign-matched, so the policy backfilled the line beside the owner's group).
-    Admissibility as in `_representations`: every member present and unclaimed, no installment member; each member's
-    class eligible for the line (fail closed on a fee member printed as its own line)."""
+    Admissibility and the members counted as in `_representations` (`_group_members`): a fee member printed as its
+    own line is left to that line."""
     gate = eligible_kinds(kind, line.line_kind)
     if "expense" not in gate:
         return []
@@ -397,9 +419,8 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
     for g in groups.values():
         if g.kind != "split":
             continue
-        members = [by_id.get(i) for i in g.member_ids]
-        if any(mem is None or mem.id in claimed or mem.instance is not None or _entry_class(mem) not in gate
-               or not _peer_ok(kind, line, mem) for mem in members):
+        members = _group_members(g, by_id, gate, claimed)
+        if members is None or any(not _peer_ok(kind, line, mem) for mem in members):
             continue
         if any(mem.original_amount is None or mem.original_currency != line.foreign_currency for mem in members):
             continue
