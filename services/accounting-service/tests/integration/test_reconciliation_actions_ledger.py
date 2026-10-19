@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.models import (
-    AccountStatement, Category, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase,
+    AccountStatement, Category, CoverageDirty, LedgerEntry, ReconciliationAction, ReconciliationCase, StatementLine,
 )
 from app.services import coverage_service
 from app.services import entry_write_service as ews
@@ -476,6 +476,87 @@ def test_adjust_amount_rewrites_the_pair_claims_and_reverts(near_pair, db_sessio
     exc = _refuse(db_session, lambda: _revert(db_session, again.id))
     assert isinstance(exc, CodedConflictError) and exc.code == "snapshot_conflict"
     assert _fresh(db_session, LedgerEntry, s.entry.id).amount == Decimal("-1015")
+
+
+@pytest.fixture
+def jpy_group(seed, db_session, run):
+    """build(**expense_fields): a card line of 2010 (JPY −9000) and the owner's split group {expense −660 (JPY −3000),
+    receivable −1320 (JPY −6000)} booked after the reconcile, with a hand-made group amount_delta case (what the
+    matcher writes for a foreign group, residual −30)."""
+    def build(**expense_fields):
+        card = _card(seed, db_session)
+        stmt, (line,), _ = _submit(db_session, run, card, [_line(1, date(2026, 9, 15), "TOKYO", 2010,
+                                                                 foreign_amount=Decimal("-9000"), foreign_currency="JPY")])
+        group = seed.group("split")
+        expense_fields.setdefault("description", "原說明")
+        fx = {"original_currency": "JPY", "fx_rate": Decimal("0.22"), "fx_source": "fx_api"}
+        expense = seed.entry(card, "-660", day=date(2026, 9, 14), merchant="TOKYO", group_id=group.id,
+                             original_amount=Decimal("-3000"), **fx, **expense_fields)
+        receivable = seed.entry(card, "-1320", kind="receivable", day=date(2026, 9, 14), merchant="TOKYO", group_id=group.id,
+                                original_amount=Decimal("-6000"), **fx)
+        db_session.commit()
+        case = _hand_case(db_session, stmt, line, "amount_delta", entry_id=None,
+                          candidates=[{"group_id": group.id, "reason": "foreign", "residual": "-30"}],
+                          context={"residual": "-30", "fee_matches": False, "group_id": group.id,
+                                   "entry_ids": [expense.id, receivable.id]})
+        return SimpleNamespace(card=card, stmt=stmt, line=line, group=group, expense=expense, receivable=receivable, case=case)
+    return build
+
+
+def test_adjust_amount_on_a_foreign_group_rewrites_the_named_member_claims_the_group_and_reverts(jpy_group, db_session):
+    s = jpy_group()
+    row = _apply(db_session, s.case, "adjust_amount", {"entry_id": s.expense.id, "line_id": s.line.id, "group_id": s.group.id})
+
+    expense = _fresh(db_session, LedgerEntry, s.expense.id)
+    assert (expense.amount, expense.original_amount, expense.original_currency) == (Decimal("-690"), Decimal("-3000"), "JPY")
+    assert expense.fx_rate == (Decimal("690") / Decimal("3000")).quantize(ews.RATE_QUANTUM) and expense.fx_source == "manual"
+    assert expense.description == "原說明\n對帳調整 原金額 -660"
+    receivable = _fresh(db_session, LedgerEntry, s.receivable.id)
+    assert (receivable.amount, receivable.fx_rate, receivable.description) == (Decimal("-1320"), Decimal("0.22"), None)
+    claims = _active(db_session, s.stmt.id)
+    assert sorted((c.entry_id, c.role, c.group_id, c.match_kind, c.match_rule) for c in claims) == sorted([
+        (s.expense.id, "member", s.group.id, "manual", "adjust_amount"),
+        (s.receivable.id, "member", s.group.id, "manual", "adjust_amount")])
+    # the claim touches every member (engine: coverage rows join the effect's own list); only the expense is rewritten
+    assert row.effect_slot == "amount" and sorted(row.touched_entry_ids) == sorted([s.expense.id, s.receivable.id])
+    assert row.touched_group_ids == [s.group.id]
+    assert row.inverse["restore"]["amount"] == "-660.0000" and row.inverse["restore"]["original_amount"] == "-3000.0000"
+    assert _fresh(db_session, ReconciliationCase, s.case.id).status == "resolved"
+
+    _revert(db_session, row.id)
+    expense = _fresh(db_session, LedgerEntry, s.expense.id)
+    assert (expense.amount, expense.original_amount, expense.fx_rate, expense.fx_source, expense.description) == (
+        Decimal("-660"), Decimal("-3000"), Decimal("0.22"), "fx_api", "原說明")
+    assert _active(db_session, s.stmt.id) == []
+    assert _fresh(db_session, ReconciliationCase, s.case.id).status == "open"
+
+
+@pytest.mark.parametrize("patch, code", [
+    ({"group_id": None}, "entry_out_of_scope"),  # a group case needs the group named (the member alone is out of scope)
+    ({"group_id": 999999}, "entry_out_of_scope"),  # a group the case does not name
+    ({"entry_id": "stranger"}, "not_member"),  # an entry outside the group
+])
+def test_adjust_amount_on_a_group_refuses_out_of_scope_params(jpy_group, seed, db_session, patch, code):
+    s = jpy_group()
+    stranger = seed.entry(s.card, "-690", day=date(2026, 9, 14), original_amount=Decimal("-3000"), original_currency="JPY")
+    db_session.commit()
+    params = {"entry_id": s.expense.id, "line_id": s.line.id, "group_id": s.group.id}
+    params |= {k: (stranger.id if v == "stranger" else v) for k, v in patch.items()}
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount", params))
+    assert isinstance(exc, ValidationError) and exc.code == code, exc
+    assert _fresh(db_session, LedgerEntry, s.expense.id).amount == Decimal("-660") and _active(db_session, s.stmt.id) == []
+
+
+def test_adjust_amount_on_a_group_refuses_a_residual_that_flips_the_member_sign(jpy_group, db_session):
+    s = jpy_group()
+    case = _fresh(db_session, ReconciliationCase, s.case.id)
+    case.candidates = [{"group_id": s.group.id, "reason": "foreign", "residual": "700"}]
+    line = _fresh(db_session, StatementLine, s.line.id)
+    line.flow_amount = Decimal("-1280")  # 700 less than the group: the −660 expense would turn positive
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount",
+                                             {"entry_id": s.expense.id, "line_id": s.line.id, "group_id": s.group.id}))
+    assert isinstance(exc, ValidationError) and exc.code == "kind_sign", exc
 
 
 def test_adjust_amount_of_an_fx_entry_needs_the_printed_pair(near_pair, db_session):

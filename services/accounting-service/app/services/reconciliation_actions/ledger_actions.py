@@ -82,8 +82,9 @@ def _gate(ctx: Context, entry: LedgerEntry | None, field: str, entry_id: int) ->
     return entry
 
 
-def _claim(ctx: Context, line: StatementLine, picked: list[tuple[LedgerEntry, str]], rule: str) -> list[int]:
-    rows = [matching.Row(entry.id, role, Decimal(entry.amount)) for entry, role in picked]
+def _claim(ctx: Context, line: StatementLine, picked: list[tuple[LedgerEntry, str]], rule: str,
+           group_id: int | None = None) -> list[int]:
+    rows = [matching.Row(entry.id, role, Decimal(entry.amount), group_id) for entry, role in picked]
     written = coverage_service.write_claim(ctx.db, ctx.statement, line, rows,
                                            entries_by_id={entry.id: entry for entry, _ in picked},
                                            match_kind=_match_kind(ctx), match_rule=rule, run_id=ctx.run_id)
@@ -357,6 +358,7 @@ class AttachFeeAction(ActionBase):
 class AdjustAmountParams(ActionParams):
     entry_id: Int32
     line_id: Int32
+    group_id: Int32 | None = None  # a foreign group case: the split group the case names; entry_id is the member rewritten
 
 
 RESTORED = ("amount", "original_amount", "original_currency", "fx_rate", "fx_source", "description")
@@ -365,7 +367,9 @@ _DECIMALS = ("amount", "original_amount", "fx_rate")
 
 class AdjustAmountAction(ActionBase):
     """Rewrites a standalone, unprotected candidate to the printed amount (and, when the line prints one, the
-    foreign pair and the rate it implies); the old amount is noted in the description."""
+    foreign pair and the rate it implies); the old amount is noted in the description. For a foreign group case
+    (`group_id`, 2026-10-19) the named member absorbs the residual instead — its foreign amount stays, the rate it
+    implies is rewritten — and the whole group is claimed."""
     name = "adjust_amount"
     Params = AdjustAmountParams
     case_kinds = frozenset({"amount_delta"})
@@ -373,15 +377,22 @@ class AdjustAmountAction(ActionBase):
 
     @staticmethod
     def _scoped(ctx: Context, params: AdjustAmountParams) -> bool:
-        return params.entry_id in {c.get("entry_id") for c in (ctx.case.candidates or [])}
+        candidates = ctx.case.candidates or []
+        if params.group_id is not None:
+            return params.group_id in {c.get("group_id") for c in candidates}
+        return params.entry_id in {c.get("entry_id") for c in candidates}
 
     def lock_targets(self, ctx: Context, params: AdjustAmountParams) -> LockSet:
-        return lockset_for(ctx.db, entry_ids=(params.entry_id,)) if self._scoped(ctx, params) else LockSet()
+        if not self._scoped(ctx, params):
+            return LockSet()
+        return lockset_for(ctx.db, entry_ids=(params.entry_id,),
+                           group_ids=() if params.group_id is None else (params.group_id,))
 
     def validate_before(self, ctx: Context, params: AdjustAmountParams, prepared: Prepared, before: dict) -> None:
         self._plan(ctx, params)
 
-    def _plan(self, ctx: Context, params: AdjustAmountParams) -> tuple[StatementLine, LedgerEntry, dict]:
+    def _plan(self, ctx: Context, params: AdjustAmountParams) -> tuple[StatementLine, LedgerEntry, dict, list[LedgerEntry]]:
+        """The line, the entry rewritten, its new fields and the group members claimed beside it ([] standalone)."""
         db = ctx.db
         if not self._scoped(ctx, params):
             raise _refuse("entry_id", "entry_out_of_scope", f"entry {params.entry_id}")
@@ -391,8 +402,20 @@ class AdjustAmountAction(ActionBase):
         reason = protected_reason(db, entry)
         if reason is not None:
             raise CodedConflictError("protected", f"entry {entry.id}: {reason}")
-        if entry.group_id is not None or entry.parent_entry_id is not None or any(schedule_rows(db, [entry.id])):
+        if entry.parent_entry_id is not None or any(schedule_rows(db, [entry.id])):
             raise _refuse("entry_id", "not_standalone", f"entry {entry.id}")
+        members: list[LedgerEntry] = []
+        if params.group_id is None:
+            if entry.group_id is not None:
+                raise _refuse("entry_id", "not_standalone", f"entry {entry.id}")
+        else:
+            if entry.group_id != params.group_id:
+                raise _refuse("entry_id", "not_member", f"entry {entry.id} is not in group {params.group_id}")
+            members = list(db.execute(select(LedgerEntry).where(LedgerEntry.group_id == params.group_id,
+                                                                LedgerEntry.parent_entry_id.is_(None))
+                                      .order_by(LedgerEntry.id)).scalars())
+            for member in members:
+                _gate(ctx, member, "group_id", member.id)
         if ews.has_settlements_or_refunds(db, entry.id):
             raise CodedConflictError("has_settlements", f"entry {entry.id}")
         if entry.original_currency is not None and line.foreign_amount is None:
@@ -400,6 +423,20 @@ class AdjustAmountAction(ActionBase):
         if (line.foreign_amount is None) != (line.foreign_currency is None):
             raise _refuse("line_id", "fx_pair_required", f"line {line.id} prints half a foreign pair")
         flow = Decimal(line.flow_amount)
+        if members:
+            # the named member takes the residual of the whole group; the other members are left as the owner wrote them
+            others = sum((Decimal(m.amount) for m in members if m.id != entry.id), Decimal(0))
+            amount = flow - others
+            expected = ews.signed(entry.kind, abs(amount)) if entry.kind in ews.SIGN_BY_KIND else amount
+            if amount == 0 or expected != amount:
+                raise _refuse("entry_id", "kind_sign", f"{entry.kind} cannot carry a flow of {amount}")
+            new = {"amount": amount}
+            if entry.original_amount is not None:
+                foreign = abs(Decimal(entry.original_amount))
+                if foreign == 0:
+                    raise _refuse("entry_id", "foreign_zero", f"entry {entry.id}")
+                new |= {"fx_rate": (abs(amount) / foreign).quantize(ews.RATE_QUANTUM), "fx_source": ADJUST_FX_SOURCE}
+            return line, entry, new, members
         amount = ews.signed(entry.kind, abs(flow)) if entry.kind in ews.SIGN_BY_KIND else flow
         if amount != flow:
             raise _refuse("entry_id", "kind_sign", f"{entry.kind} cannot carry a flow of {flow}")
@@ -411,17 +448,21 @@ class AdjustAmountAction(ActionBase):
             original = foreign if amount > 0 else -foreign
             new |= {"original_amount": original, "original_currency": line.foreign_currency,
                     "fx_rate": (abs(amount) / foreign).quantize(ews.RATE_QUANTUM), "fx_source": ADJUST_FX_SOURCE}
-        return line, entry, new
+        return line, entry, new, members
 
     def apply(self, ctx: Context, params: AdjustAmountParams, prepared: Prepared, effect: Effect) -> None:
-        line, entry, new = self._plan(ctx, params)
+        line, entry, new, members = self._plan(ctx, params)
         restore = {key: getattr(entry, key) for key in RESTORED}
         note = f"對帳調整 原金額 {ews._plain(entry.amount)}"
         for key, value in new.items():
             setattr(entry, key, value)
         entry.description = note if not entry.description else f"{entry.description}\n{note}"
         ctx.db.flush()
-        effect.coverage_ids = _claim(ctx, line, [(entry, "principal")], self.name)
+        if members:
+            effect.coverage_ids = _claim(ctx, line, [(m, "member") for m in members], self.name, group_id=params.group_id)
+            effect.touched_group_ids = [params.group_id]
+        else:
+            effect.coverage_ids = _claim(ctx, line, [(entry, "principal")], self.name)
         effect.touched_entry_ids = [entry.id]
         effect.inverse = {"restore": {k: (str(v) if k in _DECIMALS and v is not None else v)
                                       for k, v in restore.items()}}
