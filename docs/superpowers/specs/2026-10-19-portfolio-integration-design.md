@@ -1,6 +1,6 @@
 # Portfolio ↔ ledger integration (證券交割對帳、市值帳戶、海外券商) — design
 
-Status: rev 1 (2026-10-19), for the owner's review; Multica review after the owner's go. Post-cutover work (cutover 2026-10-24).
+Status: rev 1 (2026-10-19; §7 amended the same day: IB Flex only, Firstrade/Schwab manual), for the owner's review; Multica review after the owner's go. Post-cutover work (cutover 2026-10-24).
 
 ## 1. Goal
 
@@ -150,7 +150,11 @@ shape as §4.4.
   `/imports/csv` with the IB broker (idempotent by `import_fingerprint`). The token lives in the worker's env file
   (0600), never in the repo, logs or API bodies. Failures latch like the parser gate (`flex-disabled.json`) and
   surface in the run summary; the monthly PDFs on Drive stay as the owner's archive, unparsed.
-- Firstrade / Schwab: no automation this round (manual CSV as today).
+- Firstrade / Schwab: manual CSV as today, by owner decision (2026-10-19 research): Firstrade has no API and no
+  OFX — only the Tax Center CSV export (its `Action` column lumps reinvestments, transfers and corporate actions
+  as `Other`); Schwab has an official Trader API (Individual tier, OAuth, transactions endpoint) whose eligibility
+  for a Schwab One International account is unverified — parked, not attempted this round. Both brokers see a
+  handful of cash events a year, so the manual cadence (quarterly) costs less than a parser.
 
 ## 8. Settings and schema (summary)
 
@@ -193,8 +197,8 @@ shape as §4.4.
    67's live statements → the 12 pending settlement proposals are superseded by `settlement` cases → bookings;
    open cases on 67 drop to the non-settlement lines. Historical statements of 67 stay as they are.
 2. Phase 1b: create IB / FT / CS accounts, set `valuation_source`, `wire_accounts`; reconcile the wire months.
-3. Phase 2: Flex timer on the worker; first run against the last 30 days; compare with the owner's last manual
-   import (dry-run report).
+3. Phase 2: IB Flex timer on the worker; first run against the last 30 days; compare with the owner's last manual
+   import (dry-run report). Firstrade / Schwab stay manual.
 
 ## 12. Out of scope
 
