@@ -482,7 +482,7 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
                 continue
             if any(mem.original_amount is None or mem.original_currency != line.foreign_currency for mem in members):
                 continue
-            if not _same(sum((mem.original_amount for mem in members), ZERO), line.foreign_amount):
+            if not _same(abs(sum((mem.original_amount for mem in members), ZERO)), abs(line.foreign_amount)):
                 continue
             dist = min(_date_distance(line, mem) for mem in members)
             if dist <= rules.foreign_window_days:
@@ -493,13 +493,16 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
 
 def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], claimed: set[int], fee_expected,
                   rules: Rules, currency: str, aside: frozenset[int] = frozenset()) -> Case | None:
+    """The foreign amounts are compared by magnitude (2026-10-19): a line's `foreign_amount` is stored as the parser
+    printed it (positive on most debit lines, negative on some refunds) while an entry's `original_amount` carries
+    the entry's sign; the direction is the gate's and the flows' business. Until this no foreign case ever fired."""
     if line.foreign_amount is None:
         return None
     gate = eligible_kinds(kind, line.line_kind)
     found = sorted((e for e in entries
                     if e.id not in claimed and _standalone(e) and _entry_class(e) in gate and _peer_ok(kind, line, e)
                     and e.original_amount is not None and e.original_currency == line.foreign_currency
-                    and _same(e.original_amount, line.foreign_amount) and _date_distance(line, e) <= rules.foreign_window_days),
+                    and _same(abs(e.original_amount), abs(line.foreign_amount)) and _date_distance(line, e) <= rules.foreign_window_days),
                    key=lambda e: (_date_distance(line, e), e.id))
     found_groups = _foreign_groups(kind, line, entries, groups, claimed, rules, aside)
     if not found and not found_groups:

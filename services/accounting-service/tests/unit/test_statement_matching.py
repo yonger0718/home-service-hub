@@ -125,6 +125,19 @@ def test_foreign_residual_equal_to_fee_is_a_delta_case_not_a_claim():
     assert res.claims == [] and case.kind == "amount_delta" and case.context["fee_matches"] is True and case.context["residual"] == "-10.0000"
 
 
+@pytest.mark.parametrize("printed", ["-3000", "3000"])  # parsers print the foreign amount unsigned on most debit lines
+def test_foreign_amounts_are_compared_by_magnitude(printed):
+    entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY")]
+    res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D(printed), foreign_currency="JPY")], entries, fee=lambda e: D("10"))
+    assert res.cases[0].kind == "amount_delta" and res.cases[0].candidates[0]["reason"] == "foreign"
+
+
+def test_foreign_group_amounts_are_compared_by_magnitude():
+    g, members = _jpy_group()
+    res = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("9000"), foreign_currency="JPY")], members, groups={5: g})
+    assert res.cases[0].kind == "amount_delta" and res.cases[0].context["group_id"] == 5
+
+
 def test_foreign_residual_not_equal_to_fee():
     entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY")]
     res = run([L(1, date(2026, 9, 8), "-690", foreign_amount=D("-3000"), foreign_currency="JPY")], entries, fee=lambda e: D("10"))
