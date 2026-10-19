@@ -367,6 +367,30 @@ def test_zero_sum_members_printed_alone_go_to_their_own_lines():
     assert res.cases == [] and res.unmatched_entry_ids == []
 
 
+def test_non_nested_readings_of_equal_sum_compete_as_ambiguous():
+    # {expense −100, fee −10} and {expense, fee −6, fee −4} both read −110: neither contains the other → the owner decides
+    g = m.Group(id=7, kind="split", member_ids=(31, 32, 33, 34))
+    members = [E(31, date(2026, 9, 3), "-100", group_id=7), E(32, date(2026, 9, 3), "-10", kind="fee", group_id=7),
+               E(33, date(2026, 9, 3), "-6", kind="fee", group_id=7), E(34, date(2026, 9, 3), "-4", kind="fee", group_id=7)]
+    lines = [L(1, date(2026, 9, 3), "-110")] + [L(i, date(2026, 9, 3), f, kind="fee") for i, f in ((2, "-10"), (3, "-6"), (4, "-4"))]
+    res = run(lines, members, groups={7: g})
+    assert {c.line_id: sorted(r.entry_id for r in c.representation.rows) for c in res.claims} == {2: [32], 3: [33], 4: [34]}
+    (case,) = res.cases
+    assert (case.line_id, case.kind) == (1, "ambiguous") and len(case.candidates) == 2
+
+
+def test_a_group_with_more_printed_alone_members_than_enumerated_blocks_the_auto_claim():
+    fees = [E(40 + i, date(2026, 9, 3), f"-{i}", kind="fee", group_id=7) for i in range(1, 10)]  # 9 > ASIDE_COMBINATIONS_MAX
+    g = m.Group(id=7, kind="split", member_ids=(31, *[e.id for e in fees]))
+    members = [E(31, date(2026, 9, 3), "-100", group_id=7)] + fees
+    standalone = E(90, date(2026, 9, 3), "-110")
+    lines = [L(1, date(2026, 9, 3), "-110")] + [L(1 + i, date(2026, 9, 3), f"-{i}", kind="fee") for i in range(1, 10)]
+    res = run(lines, members + [standalone], groups={7: g})
+    case = next(c for c in res.cases if c.line_id == 1)
+    assert case.kind == "ambiguous" and case.context == {"hint": "group_readings_incomplete", "group_ids": [7]}
+    assert all(c.line_id != 1 for c in res.claims) and 90 in res.unmatched_entry_ids
+
+
 def test_lone_member_is_split_only_and_only_for_fee_interest_reward_refund_lines():
     inst = m.Group(id=8, kind="installment", member_ids=(41,))
     res = run([L(1, date(2026, 9, 3), "-10", kind="fee")], [E(41, date(2026, 9, 3), "-10", kind="fee", group_id=8)], groups={8: inst})

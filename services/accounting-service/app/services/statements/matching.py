@@ -297,42 +297,52 @@ def _plan_entries(line: Line, entries: list[Entry], definition: int, claimed: se
     return sorted(found, key=lambda e: (_date_distance(line, e), e.id))
 
 
-ASIDE_COMBINATIONS_MAX = 4  # printed-alone members of one group enumerated in combinations; more: all-or-none
+ASIDE_COMBINATIONS_MAX = 8  # printed-alone members of one group enumerated in combinations; more: readings incomplete
 
 
-def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside: frozenset[int]) -> list[list[Entry]]:
-    """The member sets a `split` group may represent a line with: the whole group (the net reading, as before
-    2026-10-19) and, for the members the statement prints as their own line (`aside`, see `printed_alone`), the
-    group without any combination of them — one printed fee line excuses one fee member, two excuse two. A group
-    with a member outside the population or an installment member is never admissible; a reading with a claimed
-    member is dropped (a fee member its fee line claimed first leaves the reduced reading alone). Readings of equal
-    sum keep the smaller one (zero-sum members printed alone — a fee and a reward — go to their own lines); readings
-    of equal sum and size (two identical fee members, one fee line) both stay and tie as ambiguous."""
+def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside: frozenset[int]) -> tuple[list[list[Entry]], bool]:
+    """The member sets a `split` group may represent a line with, and whether the list is complete: the whole group
+    (the net reading, as before 2026-10-19) and, for the members the statement prints as their own line (`aside`,
+    see `printed_alone`), the group without any combination of them — one printed fee line excuses one fee member,
+    two excuse two. A group with a member outside the population or an installment member is never admissible; a
+    reading with a claimed member is dropped (a fee member its fee line claimed first leaves the reduced reading
+    alone). A reading is dropped when a strict subset of it sums to the same amount (the members left out sum to
+    zero — a fee and a reward printed alone go to their own lines); readings that are not nested stay and compete
+    (two fees −6 and −4 against one fee −10 tie as ambiguous). Above ASIDE_COMBINATIONS_MAX printed-alone members
+    only the whole reading is listed and the result is marked incomplete: the caller never auto-claims such a
+    line (`match`), since an omitted reading could compete."""
     members = [by_id.get(i) for i in g.member_ids]
     if any(mem is None or mem.instance is not None for mem in members):
-        return []
+        return [], True
     removable = [mem for mem in members if mem.id in aside]
     readings = [members]
-    if removable and len(removable) <= ASIDE_COMBINATIONS_MAX:
+    complete = len(removable) <= ASIDE_COMBINATIONS_MAX
+    if removable and complete:
         for size in range(1, len(removable) + 1):
             for combo in itertools.combinations(removable, size):
                 dropped = {mem.id for mem in combo}
                 rest = [mem for mem in members if mem.id not in dropped]
                 if rest:
                     readings.append(rest)
-    elif removable:
-        rest = [mem for mem in members if mem.id not in aside]
-        if rest:
-            readings.append(rest)
     readings = [r for r in readings if not any(mem.id in claimed for mem in r)]
-    kept: list[list[Entry]] = []
-    for reading in readings:
-        total = sum((mem.flow for mem in reading), ZERO).quantize(Q)
-        same = [k for k in kept if sum((mem.flow for mem in k), ZERO).quantize(Q) == total]
-        if any(len(k) < len(reading) for k in same):
-            continue
-        kept = [k for k in kept if not (k in same and len(k) > len(reading))] + [reading]
-    return kept
+
+    def total(reading: list[Entry]) -> Decimal:
+        return sum((mem.flow for mem in reading), ZERO).quantize(Q)
+
+    kept = [r for r in readings
+            if not any(len(k) < len(r) and {mem.id for mem in k} < {mem.id for mem in r} and total(k) == total(r)
+                       for k in readings)]
+    return kept, complete
+
+
+def incomplete_groups(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], claimed: set[int],
+                      aside: frozenset[int]) -> list[int]:
+    """The split groups whose readings for this line are incomplete (`_group_variants`): such a line is never
+    auto-claimed, an omitted reading could compete with whatever conserves it."""
+    if "expense" not in eligible_kinds(kind, line.line_kind):
+        return []
+    by_id = {e.id: e for e in entries}
+    return sorted(g.id for g in groups.values() if g.kind == "split" and not _group_variants(g, by_id, claimed, aside)[1])
 
 
 def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
@@ -380,7 +390,7 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         for g in groups.values():
             if g.kind != "split":
                 continue
-            for members in _group_variants(g, by_id, claimed, aside):  # none: partial, reserved or installment-member group
+            for members in _group_variants(g, by_id, claimed, aside)[0]:  # none: partial, reserved or installment-member group
                 member_rows = tuple(Row(mem.id, "member", mem.flow, g.id) for mem in members)
                 child_rows = tuple(Row(c.id, "child", c.flow, g.id) for mem in members for c in mem.children if c.id not in claimed)
                 variants = [("group", member_rows)]
@@ -467,7 +477,7 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
     for g in groups.values():
         if g.kind != "split":
             continue
-        for members in _group_variants(g, by_id, claimed, aside):
+        for members in _group_variants(g, by_id, claimed, aside)[0]:
             if any(not _peer_ok(kind, line, mem) or _entry_class(mem) not in gate for mem in members):
                 continue
             if any(mem.original_amount is None or mem.original_currency != line.foreign_currency for mem in members):
@@ -613,6 +623,11 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
     aside = printed_alone(statement_kind, lines, entries, groups, rules)
     for line in sorted(lines, key=lambda ln: ln.id):
         reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside), key=lambda r: r.score, reverse=True)
+        truncated = incomplete_groups(statement_kind, line, entries, groups, claimed, aside) if reps else []
+        if truncated:  # a split group with more printed-alone members than are enumerated: the owner decides
+            result.cases.append(Case(line.id, None, "ambiguous", _ambiguous(line, reps).candidates,
+                                     {"hint": "group_readings_incomplete", "group_ids": truncated}))
+            continue
         if reps and reps[0].score >= rules.accept and (len(reps) == 1 or reps[0].score - reps[1].score >= rules.margin):
             best = reps[0]
             result.claims.append(Claim(line.id, best))

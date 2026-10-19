@@ -585,6 +585,24 @@ def test_adjust_amount_on_a_group_refuses_a_counted_set_that_changed_since_the_c
     assert _fresh(db_session, LedgerEntry, s.expense.id).amount == Decimal("-660")
 
 
+@pytest.mark.parametrize("change", ["claimed_elsewhere", "left_the_group"])
+def test_adjust_amount_on_a_group_reports_candidate_changed_before_the_named_members_own_gates(jpy_group, db_session, run, change):
+    """AGENT-166 item 1: the named member itself changed since the case — the answer is still candidate_changed,
+    not entry_claimed / not_member."""
+    s = jpy_group()
+    if change == "claimed_elsewhere":
+        stmt2, (other,), _ = _submit(db_session, run, s.card, [_line(1, date(2026, 10, 2), "OTHER", 660)], period=OCT)
+        coverage_service.write_claim(db_session, db_session.get(AccountStatement, stmt2.id), other,
+                                     [matching.Row(s.expense.id, "member", Decimal("-660"), s.group.id)],
+                                     entries_by_id={s.expense.id: s.expense}, match_kind="manual", match_rule="owner", run_id=None)
+    else:
+        _fresh(db_session, LedgerEntry, s.expense.id).group_id = None
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount",
+                                             {"entry_id": s.expense.id, "line_id": s.line.id, "group_id": s.group.id}))
+    assert isinstance(exc, CodedConflictError) and exc.code == "candidate_changed", exc
+
+
 def test_adjust_amount_on_a_group_never_counts_a_member_the_line_does_not_represent(jpy_group, seed, db_session):
     """An unclaimed fee member (no fee line printed) is neither rewritten, claimed nor part of the residual."""
     s = jpy_group()

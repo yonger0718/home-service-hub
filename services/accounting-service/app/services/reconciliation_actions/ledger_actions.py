@@ -414,6 +414,15 @@ class AdjustAmountAction(ActionBase):
         if not self._scoped(ctx, params):
             raise _refuse("entry_id", "entry_out_of_scope", f"entry {params.entry_id}")
         line = _open_line(ctx, case_line(ctx, params.line_id))
+        members: list[LedgerEntry] = []
+        if params.group_id is not None:
+            # first, before any check on the named member: the counted set must still be the one the case designated
+            # (a member claimed, moved or added since the reconcile that wrote the case would misplace the residual)
+            members = self._counted_members(ctx, line, params.group_id)
+            designated = (ctx.case.context or {}).get("entry_ids")
+            if not isinstance(designated, list) or sorted(int(i) for i in designated) != sorted(m.id for m in members):
+                raise CodedConflictError("candidate_changed", f"group {params.group_id} counted {sorted(m.id for m in members)}, "
+                                                              f"case designated {designated}")
         entry = _gate(ctx, db.get(LedgerEntry, params.entry_id), "entry_id", params.entry_id)
         ews.assert_entry_editable(db, entry)
         reason = protected_reason(db, entry)
@@ -421,21 +430,12 @@ class AdjustAmountAction(ActionBase):
             raise CodedConflictError("protected", f"entry {entry.id}: {reason}")
         if entry.parent_entry_id is not None or any(schedule_rows(db, [entry.id])):
             raise _refuse("entry_id", "not_standalone", f"entry {entry.id}")
-        members: list[LedgerEntry] = []
         if params.group_id is None:
             if entry.group_id is not None:
                 raise _refuse("entry_id", "not_standalone", f"entry {entry.id}")
         else:
-            if entry.group_id != params.group_id:
-                raise _refuse("entry_id", "not_member", f"entry {entry.id} is not in group {params.group_id}")
-            members = self._counted_members(ctx, line, params.group_id)
-            designated = (ctx.case.context or {}).get("entry_ids")
-            if not isinstance(designated, list) or sorted(int(i) for i in designated) != sorted(m.id for m in members):
-                # a member claimed or added since the reconcile that wrote the case: the residual would land wrong
-                raise CodedConflictError("candidate_changed", f"group {params.group_id} counted {sorted(m.id for m in members)}, "
-                                                              f"case designated {designated}")
-            if entry.id not in {m.id for m in members}:
-                raise _refuse("entry_id", "not_member", f"entry {entry.id} is not counted for line {line.id}")
+            if entry.group_id != params.group_id or entry.id not in {m.id for m in members}:
+                raise _refuse("entry_id", "not_member", f"entry {entry.id} is not counted for line {line.id} in group {params.group_id}")
             for member in members:
                 _gate(ctx, member, "group_id", member.id)
         if ews.has_settlements_or_refunds(db, entry.id):
