@@ -125,6 +125,55 @@ def test_foreign_residual_equal_to_fee_is_a_delta_case_not_a_claim():
     assert res.claims == [] and case.kind == "amount_delta" and case.context["fee_matches"] is True and case.context["residual"] == "-10.0000"
 
 
+@pytest.mark.parametrize("printed", ["-3000", "3000"])  # parsers print the foreign amount unsigned on most debit lines
+def test_foreign_amounts_are_compared_by_magnitude(printed):
+    entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY")]
+    res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D(printed), foreign_currency="JPY")], entries, fee=lambda e: D("10"))
+    assert res.cases[0].kind == "amount_delta" and res.cases[0].candidates[0]["reason"] == "foreign"
+
+
+def test_foreign_group_amounts_are_compared_by_magnitude():
+    g, members = _jpy_group()
+    res = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("9000"), foreign_currency="JPY")], members, groups={5: g})
+    assert res.cases[0].kind == "amount_delta" and res.cases[0].context["group_id"] == 5
+
+
+def test_foreign_refund_printed_negative_matches_a_refund_entry_with_a_positive_original():
+    refund = E(75, date(2026, 9, 8), "640", kind="refund", original_amount=D("3000"), original_currency="JPY")
+    res = run([L(1, date(2026, 9, 8), "660", kind="refund", foreign_amount=D("-3000"), foreign_currency="JPY")], [refund])
+    assert res.cases[0].kind == "amount_delta" and res.cases[0].candidates[0] == {"entry_id": 75, "reason": "foreign"}
+
+
+def test_foreign_magnitude_never_crosses_kinds():
+    # the gate keeps the direction: a purchase line never takes a refund entry of the same magnitude, nor the reverse
+    expense = E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY")
+    refund = E(75, date(2026, 9, 8), "640", kind="refund", original_amount=D("3000"), original_currency="JPY")
+    purchase = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("3000"), foreign_currency="JPY")], [refund])
+    assert purchase.cases[0].kind == "line_unmatched"
+    back = run([L(1, date(2026, 9, 8), "660", kind="refund", foreign_amount=D("3000"), foreign_currency="JPY")], [expense])
+    assert back.cases[0].kind == "line_unmatched"
+
+
+def test_a_zero_foreign_amount_is_never_a_foreign_candidate():
+    zero_entry = E(70, date(2026, 9, 8), "-400", original_amount=D("0"), original_currency="JPY")  # not a near amount either
+    res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("0"), foreign_currency="JPY")], [zero_entry])
+    assert res.cases[0].kind == "line_unmatched"
+    # each guard alone (AGENT-169): `_same` quantizes to four decimals, so a 0.00001 on the other side would compare
+    # equal to zero and only the guard under test stands between the pair and a foreign case
+    only_line_guard = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("0"), foreign_currency="JPY")],
+                          [E(70, date(2026, 9, 8), "-400", original_amount=D("-0.00001"), original_currency="JPY")])
+    assert only_line_guard.cases[0].kind == "line_unmatched"
+    only_single_guard = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("0.00001"), foreign_currency="JPY")], [zero_entry])
+    assert only_single_guard.cases[0].kind == "line_unmatched"
+    g, members = _jpy_group(originals=("0", "0"))
+    res2 = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("0"), foreign_currency="JPY")], members, groups={5: g})
+    assert res2.cases[0].kind == "line_unmatched"
+    # a zero-original member keeps its group out of the foreign reading even when the line prints an amount
+    g3, members3 = _jpy_group(originals=("-9000", "0"))
+    res3 = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("9000"), foreign_currency="JPY")], members3, groups={5: g3})
+    assert res3.cases[0].kind == "line_unmatched"
+
+
 def test_foreign_residual_not_equal_to_fee():
     entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY")]
     res = run([L(1, date(2026, 9, 8), "-690", foreign_amount=D("-3000"), foreign_currency="JPY")], entries, fee=lambda e: D("10"))

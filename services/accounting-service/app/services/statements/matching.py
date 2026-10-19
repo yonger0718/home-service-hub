@@ -480,9 +480,10 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
         for members in _group_variants(g, by_id, claimed, aside)[0]:
             if any(not _peer_ok(kind, line, mem) or _entry_class(mem) not in gate for mem in members):
                 continue
-            if any(mem.original_amount is None or mem.original_currency != line.foreign_currency for mem in members):
+            if any(mem.original_amount is None or mem.original_amount == 0 or mem.original_currency != line.foreign_currency
+                   for mem in members):
                 continue
-            if not _same(sum((mem.original_amount for mem in members), ZERO), line.foreign_amount):
+            if not _same(abs(sum((mem.original_amount for mem in members), ZERO)), abs(line.foreign_amount)):
                 continue
             dist = min(_date_distance(line, mem) for mem in members)
             if dist <= rules.foreign_window_days:
@@ -493,13 +494,18 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
 
 def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], claimed: set[int], fee_expected,
                   rules: Rules, currency: str, aside: frozenset[int] = frozenset()) -> Case | None:
-    if line.foreign_amount is None:
+    """The foreign amounts are compared by magnitude (2026-10-19): a line's `foreign_amount` is stored as the parser
+    printed it (positive on most debit lines, negative on some refunds) while an entry's `original_amount` carries
+    the entry's sign, so a signed comparison never held for a debit line printed unsigned (the production ledger
+    had no foreign case at all); the direction is the gate's and the flows' business. A zero foreign amount (a
+    line or an entry) is never a foreign candidate."""
+    if line.foreign_amount is None or line.foreign_amount == 0:
         return None
     gate = eligible_kinds(kind, line.line_kind)
     found = sorted((e for e in entries
                     if e.id not in claimed and _standalone(e) and _entry_class(e) in gate and _peer_ok(kind, line, e)
-                    and e.original_amount is not None and e.original_currency == line.foreign_currency
-                    and _same(e.original_amount, line.foreign_amount) and _date_distance(line, e) <= rules.foreign_window_days),
+                    and e.original_amount is not None and e.original_amount != 0 and e.original_currency == line.foreign_currency
+                    and _same(abs(e.original_amount), abs(line.foreign_amount)) and _date_distance(line, e) <= rules.foreign_window_days),
                    key=lambda e: (_date_distance(line, e), e.id))
     found_groups = _foreign_groups(kind, line, entries, groups, claimed, rules, aside)
     if not found and not found_groups:
