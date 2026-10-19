@@ -1301,6 +1301,14 @@ def test_book_settlement_books_two_legs_one_owner_and_reverts(seed, db_session, 
     assert _active(db_session, stmt.id) == []
 
 
+def test_book_settlement_and_its_revert_take_the_account_lock_and_barrier():
+    from app.services.reconciliation_actions.ledger_actions import BookSettlementAction
+    from app.services.reconciliation_actions.base import LockSet
+    action = BookSettlementAction()
+    assert action.lock_targets(None, None) == LockSet(account_lock=True, barrier=True)
+    assert action.revert_lock_targets(None, None) == LockSet(account_lock=True, barrier=True)
+
+
 @pytest.mark.parametrize("mutate", ["edit_67", "edit_117", "child_on_117", "refund_of_67"])
 def test_revert_is_refused_when_either_leg_was_edited_or_gained_a_dependant(seed, db_session, run, portfolio_stub, mutate):
     bank = _bank67(seed, db_session); pos = _target(seed, db_session, bank)
@@ -1506,6 +1514,11 @@ class BookSettlementAction(_PairCreation):
     def lock_targets(self, ctx, params):
         # the account row and the exclusive writer barrier (spec §4.4; `_TwinGuarded`'s shape): no ledger writer can
         # commit beside the booking; the unique constraints on the booking tables are the cross-reconcile backstop
+        return LockSet(account_lock=True, barrier=True)
+
+    def revert_lock_targets(self, ctx, action):
+        # the revert deletes two ledger rows: same account lock + barrier as the booking (precedent:
+        # `AnchorOpeningAction`, structural_actions.py:542-544; the base default takes neither, base.py:169)
         return LockSet(account_lock=True, barrier=True)
 
     def _plan(self, ctx: Context, params: BookSettlementParams):
@@ -1728,6 +1741,7 @@ git commit -m "accounting: read-through valuation for valuation_source accounts 
 - Spec coverage: §4.1 → Task 1–2; §4.2 → Task 3 (columns) + Task 10 (owner SQL); §4.3 → Task 5–6; §4.4 → Task 3 + 7; §4.5 → Task 9; §4.6 → Task 2 (dividends endpoint, folded) + 7; §5 → Task 2 + 8; §8 → Task 3 + 7 + 10; §9 → Task 5 (sum gate), 6 (unavailable, drift), 7 (race via unique constraint, revert); §10 → the tests named per task. §6 (wires) and §7 (Flex) are Phase 1b / Phase 2 plans.
 - AGENT-176 Shoulds: ledger primitive untouched (Task 8, Global Constraints); Flex fingerprint contract — Phase 2 plan; drift validation before the already-booked skip (Task 6 `_settlement_assignment` computes drift first, Task 7 test); sum matching disabled, line-date eligibility kept, sum-vs-single and sum-vs-sum contested (Task 5 `wanted` map); calendar envelope (`calendar_through`, null dates) in Task 1–2.
 - AGENT-178 (plan rev 2): Must 1 → candidates carry `items` with namespaced ids + amounts for `settlement` AND `ambiguous` cases, bookings store `(source, source_id, amount)` from the chosen candidate, drift compares ids AND amounts (offsetting-edit test), `reserved_ids` filter (Tasks 2, 4, 5, 6, 7 + three new Task 7 tests); Must 2 → neighbour lines over the fetch window ±window, edge test, retired-neighbour test, both statements reconciled in the cross-statement test (Task 6); Must 3 → no action-level snapshot (the engine's `after` set + `_check_snapshots` → `snapshot_conflict`), `delete_entries_cascade` is the deletion, `LockSet()` + the engine's `lock_account_and_barrier`, revert reopens with the kind unchanged and the next reconcile re-derives (Task 7 + `test_revert_is_refused_when_either_leg_was_edited_or_gained_a_dependant`); Must 4 → `AccountOut.balance` nullable, `stale`, `balance_main` by the same `_convert`, HTTP-level tests, `_converted_totals` untouched (Task 8); Must 5 → portfolio migration appends to `a5receipt` (Task 1); Must 6 → `complete` / `missing`, corporate actions ≤ `as_of`, two new tests (Task 2). Shoulds → calendar-derived trade bounds + long-closure test (Task 2), gap-safe `settlement_date` / `trading_days_before` (Task 1), constraint-specific `IntegrityError` codes + session-usable test (Task 7), dividend test (Task 7), `database_factory`/`alembic_config` fixture (Task 3), real `held_balance` call (Task 8). Nits → enum retention wording (Global Constraints, Task 3), sum assertions split (Task 5).
+- Lead diff-check of rev 3 (AGENT-177): `_PairCreation.revert_lock_targets` overrides the base default with `LockSet(account_lock=True, barrier=True)` plus a one-line test (Task 7).
 - AGENT-179 (plan rev 3): Must 2 → `posted_date` for both neighbour eligibility and matching + differing-txn-date test (Task 6); Must 3 → `LockSet(account_lock=True, barrier=True)`, revert sets `line_unmatched` + `settlement_pending` + `candidates []` (spec §9) with the tests updated, both-leg/dependant mutations parametrised (Task 7); Must 6 → `Valuation.complete/missing` through client, cache and read model, incomplete → `balance null`, HTTP tests on list and detail, fixture honours currency/complete (Tasks 4, 8). Shoulds → first booking test uses `items` and `(source, source_id, amount)` tuples; the forced-constraint test makes the case `settlement` so `allowed()` admits the action; booking `source` from `account.settlement_source`; test commands without a stray `-k`; the period read named by its real function.
 - Type consistency: `Settlement` dataclass fields (`settlement_date, trade_date, net_amount, currency, ids, fingerprint, components`) are used identically in Tasks 4–7; case context keys (`fingerprint`, `ids`, `facts`, `source`, `hint`) identical in Tasks 6–7.
 - Known plan gap for the implementer: the exact helper names for positions/prices in the portfolio service (Task 2 Step 3b) and the dirty-marking helper (Task 9) are to be found, not invented; the tests pin behaviour, not names.
