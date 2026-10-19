@@ -80,12 +80,14 @@ def test_case_detail_lists_child_and_split_twins_too(client, seed, db_session, r
     group = seed.group("split")
     a = seed.entry(card, "-986", day=DAY, group_id=group.id)
     b = seed.entry(card, "-2958", kind="receivable", day=DAY, group_id=group.id)
-    seed.entry(card, "-59", kind="fee", day=DAY, group_id=group.id)  # the group as a whole does not conserve
+    seed.entry(card, "-59", kind="fee", day=DAY, group_id=group.id)  # printed as its own fee line (not here)
     db_session.flush()
     child = seed.entry(card, "-4.7401", kind="fee", day=DAY, parent_entry_id=parent.id)
     db_session.commit()
+    # MYS prints 1 % over the owner's expense + receivable (an FX fee the TWD estimate missed): since 2026-10-19 an
+    # exact 3944 would be claimed by the group; the near one stays open and its members are the twins
     stmt, (purchase, fee, mys), _ = _submit(db_session, run, card, [
-        _line(1, DAY, "USA", 310), _line(2, DAY, "國外交易服務費", 5, "fee"), _line(3, DAY, "MYS", 3944)])
+        _line(1, DAY, "USA", 310), _line(2, DAY, "國外交易服務費", 5, "fee"), _line(3, DAY, "MYS", 3983)])
     cases = {c.line_id: c for c in _cases(db_session, stmt.id, "open") if c.kind == "line_unmatched"}
     assert client.get(f"/reconciliation/cases/{cases[fee.id].id}", headers=H).json()["owner_twins"] == [child.id]
     assert client.get(f"/reconciliation/cases/{cases[mys.id].id}", headers=H).json()["owner_twins"] == sorted([a.id, b.id])
