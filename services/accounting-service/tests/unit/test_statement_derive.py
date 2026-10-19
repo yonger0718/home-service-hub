@@ -34,6 +34,20 @@ def test_flow_amount_rejects_sign_inconsistent_lines(kind, line_kind, printed):
         derive.flow_amount(kind, line_kind, Decimal(printed))
 
 
+def test_sign_error_names_the_row_and_the_kind_but_never_the_amount():
+    with pytest.raises(derive.SignError) as info:
+        derive.derive_lines("card", [L(1, date(2026, 9, 3), "580"), L(3, date(2026, 9, 3), "-1234.56")])
+    text = str(info.value)
+    assert text == "line 3: card purchase: wrong sign"
+    assert "1234" not in text and "580" not in text
+    with pytest.raises(derive.SignError, match=r"^card purchase: wrong sign$"):
+        derive.flow_amount("card", "purchase", Decimal("-1234.56"))
+    with pytest.raises(derive.SignError, match=r"^bank deposit: wrong sign$"):
+        derive.flow_amount("bank", "deposit", Decimal("-99"))
+    with pytest.raises(derive.SignError, match=r"^line 2: fee: zero amount$"):
+        derive.derive_lines("card", [L(2, date(2026, 9, 3), "0", kind="fee")])
+
+
 def test_derive_lines_drops_subtotals_and_numbers_twins():
     lines = derive.derive_lines("card", [
         L(1, date(2026, 9, 3), "580"), L(2, date(2026, 9, 3), "580"), L(3, date(2026, 9, 3), "1000", is_subtotal=True),
