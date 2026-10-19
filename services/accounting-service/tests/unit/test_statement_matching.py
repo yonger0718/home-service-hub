@@ -158,6 +158,13 @@ def test_a_zero_foreign_amount_is_never_a_foreign_candidate():
     zero_entry = E(70, date(2026, 9, 8), "-400", original_amount=D("0"), original_currency="JPY")  # not a near amount either
     res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("0"), foreign_currency="JPY")], [zero_entry])
     assert res.cases[0].kind == "line_unmatched"
+    # each guard alone (AGENT-169): `_same` quantizes to four decimals, so a 0.00001 on the other side would compare
+    # equal to zero and only the guard under test stands between the pair and a foreign case
+    only_line_guard = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("0"), foreign_currency="JPY")],
+                          [E(70, date(2026, 9, 8), "-400", original_amount=D("-0.00001"), original_currency="JPY")])
+    assert only_line_guard.cases[0].kind == "line_unmatched"
+    only_single_guard = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("0.00001"), foreign_currency="JPY")], [zero_entry])
+    assert only_single_guard.cases[0].kind == "line_unmatched"
     g, members = _jpy_group(originals=("0", "0"))
     res2 = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("0"), foreign_currency="JPY")], members, groups={5: g})
     assert res2.cases[0].kind == "line_unmatched"
