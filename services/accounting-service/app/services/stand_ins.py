@@ -173,9 +173,11 @@ def _split_twins(db: Session, statement: AccountStatement, line: StatementLine, 
                  rules) -> list[int]:
     """Ids of `split` group members that together take the line: among the unclaimed, in-window, top-level members
     of one MOZE `split` group (never a reward_claim or installment group) whose kinds are each eligible for the
-    line (`matching.eligible_kinds`), a subset of two or more whose flows sum to the line's flow exactly — a
-    purchase the owner split into an expense and a receivable, with or without a fee member the statement prints as
-    its own line. Groups whose eligible population exceeds SPLIT_SUBSET_MAX are checked as a whole only."""
+    line (`matching.eligible_kinds`), a subset of two or more whose flows sum to the line's flow exactly (within the
+    drift window) or within the matcher's near tolerance (within the near window) — a purchase the owner split
+    into an expense and a receivable, with or without a fee member the statement prints as its own line, estimated
+    in TWD or converted exactly. Groups whose eligible population exceeds SPLIT_SUBSET_MAX are checked as a whole
+    only."""
     from app.services import reconciliation_service  # local: reconciliation_service imports this module
     ml = reconciliation_service._as_line(line)
     flow = ml.flow.quantize(matching.Q)
@@ -189,6 +191,16 @@ def _split_twins(db: Session, statement: AccountStatement, line: StatementLine, 
         return []
     split_ids = set(db.execute(select(EntryGroup.id).where(EntryGroup.id.in_(sorted(by_group)),
                                                             EntryGroup.kind == "split")).scalars())
+    tol = max(rules.near_tolerance_abs, (rules.near_tolerance_pct * abs(flow)).quantize(matching.Q))
+
+    def takes(subset) -> bool:
+        total = sum((Decimal(e.amount) for e in subset), Decimal(0)).quantize(matching.Q)
+        if total == flow:
+            return True
+        # 2026-10-19: a purchase abroad split into an expense and a receivable, estimated in TWD without the FX
+        # fee, is a twin at a near amount too — bound by the near window like `_near`
+        return abs(total - flow) <= tol and min(drift_days(line, e) for e in subset) <= rules.near_window_days
+
     out: list[int] = []
     for group_id, members in by_group.items():
         if group_id not in split_ids:
@@ -196,12 +208,12 @@ def _split_twins(db: Session, statement: AccountStatement, line: StatementLine, 
         if len(members) < 2:
             continue
         if len(members) > SPLIT_SUBSET_MAX:
-            if sum((Decimal(e.amount) for e in members), Decimal(0)).quantize(matching.Q) == flow:
+            if takes(members):
                 out.extend(e.id for e in members)
             continue
         for size in range(2, len(members) + 1):
             for subset in itertools.combinations(members, size):
-                if sum((Decimal(e.amount) for e in subset), Decimal(0)).quantize(matching.Q) == flow:
+                if takes(subset):
                     out.extend(e.id for e in subset)
     return sorted(set(out))
 
@@ -211,7 +223,7 @@ def owner_twins(db: Session, statement: AccountStatement, line: StatementLine, a
     2026-10-17, widened 2026-10-17 after three double bookings on one card): an entry of `owner_population` (split
     members included — the matcher never claims one alone) or an unclaimed child (`owner_children`) that alone takes
     the line exactly (`_conserves`) or at a near amount (`_near`), and the members of a group subset that together
-    take it (`_split_twins`)."""
+    take it, exactly or at a near amount (`_split_twins`)."""
     claimed = coverage_service.claimed_entry_ids(db)  # one snapshot for both populations (review S2)
     population = owner_population(db, statement, accounts, rules, claimed=claimed)
     candidates = population + owner_children(db, statement, accounts, rules, claimed=claimed)

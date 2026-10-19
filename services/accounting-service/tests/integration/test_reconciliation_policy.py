@@ -1387,6 +1387,40 @@ def test_policy_never_backfills_a_line_two_split_members_record_together(seed, d
     _never_books(db_session, stmt, line, case, "backfill_entry")
 
 
+@pytest.mark.parametrize("printed, blocked", [(3983, True), (4200, False)])  # +1 % (an FX fee) within the near tolerance; +6.5 % beyond
+def test_policy_never_backfills_a_line_split_members_record_near(seed, db_session, run, dirty_on, printed, blocked):
+    """A purchase abroad the owner split into an expense and a receivable: the TWD estimate misses the FX fee, so
+    the group conserves nothing exactly. Within the matcher's near tolerance the group is a twin (2026-10-19: 14
+    stand-ins were booked beside the owner's JPY groups); beyond it the line is backfilled as before."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    seed.entry(card, "-986", day=DAY, group_id=group.id)
+    seed.entry(card, "-2958", kind="receivable", day=DAY, group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "MYS", printed)])
+    case = _open_line_case(db_session, stmt.id, line.id)
+    if blocked:
+        _never_books(db_session, stmt, line, case, "backfill_entry")
+    else:
+        _books_one(db_session, stmt, "backfill_entry")
+
+
+@pytest.mark.parametrize("days, blocked", [(5, True), (6, False)])
+def test_near_split_twins_use_the_near_window(seed, db_session, run, dirty_on, days, blocked):
+    """A near group twin is bound by near_window_days like a near single twin (an exact group sum keeps the drift window)."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    seed.entry(card, "-986", day=DAY - timedelta(days=days), group_id=group.id)
+    seed.entry(card, "-2958", kind="receivable", day=DAY - timedelta(days=days), group_id=group.id)
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, card, [_line(1, DAY, "MYS", 3983)])
+    case = _open_line_case(db_session, stmt.id, line.id)
+    if blocked:
+        _never_books(db_session, stmt, line, case, "backfill_entry")
+    else:
+        _books_one(db_session, stmt, "backfill_entry")
+
+
 def _books_one(db, stmt, action):
     _set_policy(db, _creation_policy(action))
     (action_id,) = policy_service.run_policy(db, stmt.id).applied
