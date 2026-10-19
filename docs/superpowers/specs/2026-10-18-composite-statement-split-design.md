@@ -171,8 +171,8 @@ different key closes the current section.
   `^(活期存款|子帳戶|外匯綜合活期存款) (\S+) (\S+分行) (?:([A-Z]{3}) )?(-?[\d,]+(?:\.\d+)?)$`.
   Suffix = the digits after the last `*` of the printed number (the whole number when it has no `*`); currency = the
   optional code, else `TWD`. Key = `suffix/currency`. Duplicate key → `SplitError`. A declared key with no holdings
-  row, or a holdings key with rows and no declaration, → `SplitError` (undeclared keys without rows are skipped and
-  counted, e.g. `50/USD`).
+  row → `SplitError`. An undeclared key is skipped and counted, with or without rows, when another currency of its
+  account is declared (`50/USD` beside `50/JPY`, rev 9); rows under an account no key declares → `SplitError`.
 - Transaction area: from `交易明細` to the end of the document. A line `^(?:外匯)?(?:綜合)?活期存款 帳號 (\S+)$`
   (the real file prints `活期存款` for TWD accounts and `外匯活期存款` for the foreign-currency account's section)
   opens a section (or continues the open one when the key repeats). While a section is open, every line is one

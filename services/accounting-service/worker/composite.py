@@ -149,7 +149,6 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
     open_suffix: str | None = None
     rows: dict[str, list[Row]] = {}  # "suffix/CUR" -> rows, in document order of first appearance
     headers: list[str] = []  # suffixes whose section header was seen, in order
-    seen: dict[str, int] = {}  # suffix -> dated rows read under it (the row index in messages)
     dated_before_period = False  # a dated row ahead of the period line is still a row outside any section
     for line in lines:
         words = _words(line)
@@ -198,9 +197,12 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
             if geometry is None:
                 raise SplitError(f"{open_suffix}/?: dated row before any column header (no geometry)")
             same = [k for k in holdings if k.startswith(f"{open_suffix}/")]
-            r = _row(words, geometry, open_suffix, seen.get(open_suffix, 0), same[0] if len(same) == 1 else None)
-            seen[open_suffix] = seen.get(open_suffix, 0) + 1
-            rows.setdefault(f"{open_suffix}/{r.currency}", []).append(r)  # one key per currency (rev 9)
+            # one key per currency (rev 9): the row index in every message counts the rows of that currency only,
+            # the index `_section` reports a chain break at
+            cur = next((w.text for w in words[1:] if CURRENCY.match(w.text)), None)
+            index = len(rows.get(f"{open_suffix}/{cur}", ())) if cur is not None else 0
+            r = _row(words, geometry, open_suffix, index, same[0] if len(same) == 1 else None)
+            rows.setdefault(f"{open_suffix}/{r.currency}", []).append(r)
             continue
         if open_suffix is not None and FOOTER.match(text):
             continue

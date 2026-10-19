@@ -337,6 +337,21 @@ def test_a_usd_only_month_keeps_the_jpy_anchor_and_skips_usd():
     assert by_key["50/JPY"].rows == () and report.anchor == 2 and report.skipped_keys == ["50/USD"]
 
 
+def test_interleaved_currencies_keep_their_own_chains_and_row_indexes():
+    # JPY, USD, JPY, USD under one header: each key chains on its own rows; messages count rows per key
+    mixed = [FX_ROWS[0], USD_ROWS[0], FX_ROWS[1], USD_ROWS[1]]
+    sections, report = _split(statement(fx_rows=mixed), {**DECLARED, "50/USD": False})
+    by_key = {s.key: s for s in sections}
+    assert [r.currency for r in by_key["50/JPY"].rows] == ["JPY", "JPY"] and by_key["50/JPY"].closing_balance == Decimal("150000")
+    assert [r.currency for r in by_key["50/USD"].rows] == ["USD", "USD"] and by_key["50/USD"].closing_balance == Decimal("2.47")
+    bad_shape = [FX_ROWS[0], FX_ROWS[1], USD_ROWS[0], ("2026/09/12", "外幣提領", "-1.00", None, "2.47", "USD")]
+    with pytest.raises(SplitError, match=r"50/USD: row 1 prints a negative amount"):  # the 4th row under the header, 2nd USD row
+        _split(statement(fx_rows=bad_shape), {**DECLARED, "50/USD": False})
+    skipped_chain = [FX_ROWS[0], USD_ROWS[0], FX_ROWS[1], ("2026/09/12", "外幣提領", "1.00", None, "9.99", "USD")]
+    sections, report = _split(statement(fx_rows=skipped_chain))  # USD undeclared: its broken chain is never read
+    assert {s.key: s for s in sections}["50/JPY"].closing_balance == Decimal("150000") and report.skipped_keys == ["50/USD"]
+
+
 def test_a_broken_chain_in_one_currency_names_that_key():
     bad = [USD_ROWS[0], ("2026/09/12", "外幣提領", "1.00", None, "9.99", "USD")]
     with pytest.raises(SplitError, match=r"50/USD: running balance breaks"):
