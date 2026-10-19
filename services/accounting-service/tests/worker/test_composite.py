@@ -84,11 +84,12 @@ def test_row_shape_violations_fail_closed():
             _split(lines)
 
 
-def test_mixed_currency_in_a_section_fails():
+def test_a_foreign_row_in_a_twd_section_is_its_own_key_and_needs_a_holdings_row():
+    # rev 9: rows are keyed by suffix AND currency; a stray JPY row under the 91 account has no 91/JPY holdings → fail closed
     lines = statement()
     index = next(i for i, l in enumerate(lines) if l.page == 3 and l.top == 122)
     lines[index] = row(3, 122, *ROWS_91[1][:4], ROWS_91[1][4], cur="JPY")
-    with pytest.raises(SplitError, match="currency"):
+    with pytest.raises(SplitError, match=r"91/JPY: no holdings row"):
         _split(lines)
 
 
@@ -136,11 +137,12 @@ def test_same_suffix_header_repeated_merges_rows():
     assert len(sections[0].rows) == 16
 
 
-def test_section_with_rows_of_several_currencies_in_one_suffix_fails():
+def test_a_currency_without_a_holdings_row_fails_the_file():
+    # rev 9: a second currency under one account is its own key; without a holdings row for it the file fails closed
     lines = statement()
     index = next(i for i, l in enumerate(lines) if l.page == 4 and l.top == 70)
     lines[index] = row(4, 70, *ROWS_91[10][:4], ROWS_91[10][4], cur="USD")
-    with pytest.raises(SplitError, match="currency"):
+    with pytest.raises(SplitError, match=r"91/USD: no holdings row"):
         _split(lines)
 
 
@@ -309,13 +311,57 @@ def test_optional_fx_section_is_processed_and_otherwise_an_anchor(standalone):
     assert report.anchor == 2 and {s.key: s for s in sections}["50/JPY"].rows == ()
 
 
-def test_fx_section_with_the_wrong_currency_fails():
-    lines = statement(fx_rows=FX_ROWS)
-    for i, l in enumerate(lines):
-        if l.page == 4 and l.words and l.words[-1].text in ("140,000", "150,000"):
-            lines[i] = L(l.page, l.top, *(W("USD", w.x0, w.x1) if w.text == "JPY" else w for w in l.words))
-    with pytest.raises(SplitError, match="currency"):
-        _split(lines)
+USD_ROWS = [("2026/09/10", "外幣存入", None, "1.00", "3.47", "USD"), ("2026/09/12", "外幣提領", "1.00", None, "2.47", "USD")]
+
+
+def test_two_currencies_in_the_fx_section_are_two_keys():
+    # rev 9: the FX account prints JPY and USD rows under one header; each currency is its own section with its own
+    # balance chain against its own holdings row
+    sections, report = _split(statement(fx_rows=FX_ROWS + USD_ROWS), {**DECLARED, "50/USD": False})
+    by_key = {s.key: s for s in sections}
+    assert len(by_key["50/JPY"].rows) == 2 and len(by_key["50/USD"].rows) == 2
+    assert by_key["50/USD"].opening_balance == Decimal("2.47") and by_key["50/USD"].closing_balance == Decimal("2.47")
+    assert by_key["50/USD"].rows[0].currency == "USD" and report.skipped_keys == [] and report.sections == 5
+
+
+def test_an_undeclared_currency_of_a_declared_account_is_skipped_with_its_rows():
+    sections, report = _split(statement(fx_rows=FX_ROWS + USD_ROWS))  # 50/USD not in the map
+    by_key = {s.key: s for s in sections}
+    assert len(by_key["50/JPY"].rows) == 2 and "50/USD" not in by_key
+    assert report.skipped_keys == ["50/USD"] and "50/USD" not in report.rows_per_key
+
+
+def test_a_usd_only_month_keeps_the_jpy_anchor_and_skips_usd():
+    sections, report = _split(statement(fx_rows=USD_ROWS))
+    by_key = {s.key: s for s in sections}
+    assert by_key["50/JPY"].rows == () and report.anchor == 2 and report.skipped_keys == ["50/USD"]
+
+
+def test_interleaved_currencies_keep_their_own_chains_and_row_indexes():
+    # JPY, USD, JPY, USD under one header: each key chains on its own rows; messages count rows per key
+    mixed = [FX_ROWS[0], USD_ROWS[0], FX_ROWS[1], USD_ROWS[1]]
+    sections, report = _split(statement(fx_rows=mixed), {**DECLARED, "50/USD": False})
+    by_key = {s.key: s for s in sections}
+    assert [r.currency for r in by_key["50/JPY"].rows] == ["JPY", "JPY"] and by_key["50/JPY"].closing_balance == Decimal("150000")
+    assert [r.currency for r in by_key["50/USD"].rows] == ["USD", "USD"] and by_key["50/USD"].closing_balance == Decimal("2.47")
+    bad_shape = [FX_ROWS[0], FX_ROWS[1], USD_ROWS[0], ("2026/09/12", "外幣提領", "-1.00", None, "2.47", "USD")]
+    with pytest.raises(SplitError, match=r"50/USD: row 1 prints a negative amount"):  # the 4th row under the header, 2nd USD row
+        _split(statement(fx_rows=bad_shape), {**DECLARED, "50/USD": False})
+    skipped_chain = [FX_ROWS[0], USD_ROWS[0], FX_ROWS[1], ("2026/09/12", "外幣提領", "1.00", None, "9.99", "USD")]
+    sections, report = _split(statement(fx_rows=skipped_chain))  # USD undeclared: its broken chain is never read
+    assert {s.key: s for s in sections}["50/JPY"].closing_balance == Decimal("150000") and report.skipped_keys == ["50/USD"]
+
+
+def test_a_broken_chain_in_one_currency_names_that_key():
+    bad = [USD_ROWS[0], ("2026/09/12", "外幣提領", "1.00", None, "9.99", "USD")]
+    with pytest.raises(SplitError, match=r"50/USD: running balance breaks"):
+        _split(statement(fx_rows=FX_ROWS + bad), {**DECLARED, "50/USD": False})
+
+
+def test_rows_of_an_undeclared_account_still_fail_the_file():
+    declared = {k: v for k, v in DECLARED.items() if not k.startswith("59/")}
+    with pytest.raises(SplitError, match=r"59/TWD: undeclared section with rows"):
+        _split(statement(), declared)
 
 
 def test_repr_never_prints_statement_content():

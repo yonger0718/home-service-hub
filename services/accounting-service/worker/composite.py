@@ -147,7 +147,8 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
     in_holdings = in_area = False
     geometry: Geometry | None = None
     open_suffix: str | None = None
-    rows: dict[str, list[Row]] = {}  # suffix -> rows, in document order of first appearance
+    rows: dict[str, list[Row]] = {}  # "suffix/CUR" -> rows, in document order of first appearance
+    headers: list[str] = []  # suffixes whose section header was seen, in order
     dated_before_period = False  # a dated row ahead of the period line is still a row outside any section
     for line in lines:
         words = _words(line)
@@ -189,14 +190,19 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
         match = SECTION.match(text)
         if match:
             open_suffix = _suffix(match.group(1))
-            rows.setdefault(open_suffix, [])
+            if open_suffix not in headers:
+                headers.append(open_suffix)
             continue
         if DATE.match(words[0].text):
             if geometry is None:
                 raise SplitError(f"{open_suffix}/?: dated row before any column header (no geometry)")
             same = [k for k in holdings if k.startswith(f"{open_suffix}/")]
-            rows[open_suffix].append(
-                _row(words, geometry, open_suffix, len(rows[open_suffix]), same[0] if len(same) == 1 else None))
+            # one key per currency (rev 9): the row index in every message counts the rows of that currency only,
+            # the index `_section` reports a chain break at
+            cur = next((w.text for w in words[1:] if CURRENCY.match(w.text)), None)
+            index = len(rows.get(f"{open_suffix}/{cur}", ())) if cur is not None else 0
+            r = _row(words, geometry, open_suffix, index, same[0] if len(same) == 1 else None)
+            rows.setdefault(f"{open_suffix}/{r.currency}", []).append(r)
             continue
         if open_suffix is not None and FOOTER.match(text):
             continue
@@ -207,19 +213,24 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
         raise SplitError("dated row outside any section")
     report = SplitReport()
     sections: list[Section] = []
-    for suffix, section_rows in rows.items():
-        if not section_rows:
+    for suffix in headers:
+        if not any(k.startswith(f"{suffix}/") for k in rows):
             raise SplitError(f"{suffix}/?: section header without rows")
-        currencies = {r.currency for r in section_rows}
-        if len(currencies) != 1:
-            raise SplitError(f"{suffix}/?: rows of mixed currency")
-        key = f"{suffix}/{section_rows[0].currency}"
+    skipped: list[str] = []
+    for key in rows:  # every key is checked before any chain is read: the first error names the structural fault
+        suffix = key.split("/")[0]
         if key not in holdings:
             raise SplitError(f"{key}: no holdings row")
         if key not in declared:
             if any(k.startswith(f"{suffix}/") for k in declared):
-                raise SplitError(f"{key}: section currency differs from the declared key")
+                # rev 9: a currency of a declared account the map leaves out (`50/USD` beside `50/JPY`) is skipped
+                # with its rows, like its holdings row; an undeclared account's rows still fail the file
+                skipped.append(key)
+                continue
             raise SplitError(f"{key}: undeclared section with rows")
+    for key, section_rows in rows.items():
+        if key in skipped:
+            continue
         sections.append(_section(key, section_rows, holdings[key], period))
         report.rows_per_key[key] = len(section_rows)
     for key, anchor_only in declared.items():
@@ -230,7 +241,7 @@ def split(lines: list[Line], declared: dict[str, bool]) -> tuple[list[Section], 
         if anchor_only and key not in report.rows_per_key:  # anchor_only: a section is optional
             sections.append(Section(key, key.split("/")[1], period[0], period[1], holdings[key], holdings[key], ()))
             report.anchor += 1
-    report.skipped_keys = [key for key in holdings if key not in declared]
+    report.skipped_keys = list(dict.fromkeys(skipped + [key for key in holdings if key not in declared]))
     report.sections = len(sections)
     return sections, report
 
