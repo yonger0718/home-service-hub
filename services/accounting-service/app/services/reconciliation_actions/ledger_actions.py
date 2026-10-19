@@ -368,8 +368,9 @@ _DECIMALS = ("amount", "original_amount", "fx_rate")
 class AdjustAmountAction(ActionBase):
     """Rewrites a standalone, unprotected candidate to the printed amount (and, when the line prints one, the
     foreign pair and the rate it implies); the old amount is noted in the description. For a foreign group case
-    (`group_id`, 2026-10-19) the named member absorbs the residual instead — its foreign amount stays, the rate it
-    implies is rewritten — and the whole group is claimed."""
+    (`group_id`, 2026-10-19) the named member absorbs the residual of the members the line counts
+    (`_counted_members`) instead — its foreign amount stays, the rate it implies is rewritten — and those members
+    are claimed; a fee member the fee line claimed stays with its line."""
     name = "adjust_amount"
     Params = AdjustAmountParams
     case_kinds = frozenset({"amount_delta"})
@@ -391,6 +392,21 @@ class AdjustAmountAction(ActionBase):
     def validate_before(self, ctx: Context, params: AdjustAmountParams, prepared: Prepared, before: dict) -> None:
         self._plan(ctx, params)
 
+    @staticmethod
+    def _counted_members(ctx: Context, line: StatementLine, group_id: int) -> list[LedgerEntry]:
+        """The group's members the line is adjusted against, rebuilt under the locks as the matcher counts them
+        (`matching._group_variants`): the top-level members of a kind the line's gate allows that no line claims
+        yet. A member another line of the statement claimed (the fee member its 國外交易服務費 line took) or of a
+        kind the line never represents (a fee under a purchase) is left as it is — never rewritten, never claimed
+        here, never part of the residual."""
+        from app.services import reconciliation_service  # local: reconciliation_service imports this package
+        db = ctx.db
+        gate = matching.eligible_kinds(ctx.statement.kind, line.line_kind)
+        claimed = coverage_service.claimed_entry_ids(db)
+        rows = db.execute(select(LedgerEntry).where(LedgerEntry.group_id == group_id, LedgerEntry.parent_entry_id.is_(None))
+                          .order_by(LedgerEntry.id)).scalars().all()
+        return [m for m in rows if m.id not in claimed and matching._entry_class(reconciliation_service.entry_view(m)) in gate]
+
     def _plan(self, ctx: Context, params: AdjustAmountParams) -> tuple[StatementLine, LedgerEntry, dict, list[LedgerEntry]]:
         """The line, the entry rewritten, its new fields and the group members claimed beside it ([] standalone)."""
         db = ctx.db
@@ -411,9 +427,9 @@ class AdjustAmountAction(ActionBase):
         else:
             if entry.group_id != params.group_id:
                 raise _refuse("entry_id", "not_member", f"entry {entry.id} is not in group {params.group_id}")
-            members = list(db.execute(select(LedgerEntry).where(LedgerEntry.group_id == params.group_id,
-                                                                LedgerEntry.parent_entry_id.is_(None))
-                                      .order_by(LedgerEntry.id)).scalars())
+            members = self._counted_members(ctx, line, params.group_id)
+            if entry.id not in {m.id for m in members}:
+                raise _refuse("entry_id", "not_member", f"entry {entry.id} is not counted for line {line.id}")
             for member in members:
                 _gate(ctx, member, "group_id", member.id)
         if ews.has_settlements_or_refunds(db, entry.id):

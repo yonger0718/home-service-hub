@@ -531,6 +531,59 @@ def test_adjust_amount_on_a_foreign_group_rewrites_the_named_member_claims_the_g
     assert _fresh(db_session, ReconciliationCase, s.case.id).status == "open"
 
 
+def test_adjust_amount_on_a_foreign_group_with_a_fee_member_the_fee_line_claimed(seed, db_session, run):
+    """Must 1 (AGENT-164): the matcher counts the expense and the receivable for the purchase and lets the fee line
+    claim the fee member; the adjustment counts the same members, rewrites only the named one, leaves the fee claim
+    alone, survives a reconcile and reverts cleanly."""
+    card = _card(seed, db_session)
+    group = seed.group("split")
+    fx = {"original_currency": "JPY", "fx_rate": Decimal("0.22"), "fx_source": "fx_api"}
+    expense = seed.entry(card, "-660", day=date(2026, 9, 14), merchant="TOKYO", group_id=group.id, original_amount=Decimal("-3000"), **fx)
+    receivable = seed.entry(card, "-1320", kind="receivable", day=date(2026, 9, 14), merchant="TOKYO", group_id=group.id,
+                            original_amount=Decimal("-6000"), **fx)
+    fee = seed.entry(card, "-33", kind="fee", day=date(2026, 9, 14), merchant="TOKYO", group_id=group.id, original_amount=Decimal("-150"), **fx)
+    db_session.commit()
+    stmt, (purchase, fee_line), _ = _submit(db_session, run, card, [
+        _line(1, date(2026, 9, 15), "TOKYO", 2010, foreign_amount=Decimal("-9000"), foreign_currency="JPY"),
+        _line(2, date(2026, 9, 15), "國外交易服務費", 33, "fee", foreign_amount=Decimal("-150"), foreign_currency="JPY")])
+    assert [(c.line_id, c.entry_id, c.match_rule) for c in _active(db_session, stmt.id)] == [(fee_line.id, fee.id, "exact")]
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "amount_delta"]
+    assert case.line_id == purchase.id and case.entry_id is None and case.context["entry_ids"] == [expense.id, receivable.id]
+
+    row = _apply(db_session, case, "adjust_amount", {"entry_id": expense.id, "line_id": purchase.id, "group_id": group.id})
+    assert _fresh(db_session, LedgerEntry, expense.id).amount == Decimal("-690")
+    assert (_fresh(db_session, LedgerEntry, receivable.id).amount, _fresh(db_session, LedgerEntry, fee.id).amount) == (Decimal("-1320"), Decimal("-33"))
+    claims = sorted((c.line_id, c.entry_id, c.role, c.match_rule) for c in _active(db_session, stmt.id))
+    assert claims == sorted([(purchase.id, expense.id, "member", "adjust_amount"), (purchase.id, receivable.id, "member", "adjust_amount"),
+                             (fee_line.id, fee.id, "principal", "exact")])
+    assert sorted(row.touched_entry_ids) == sorted([expense.id, receivable.id]) and row.touched_group_ids == [group.id]
+
+    _reconcile(db_session, stmt.id)
+    assert sorted((c.line_id, c.entry_id, c.match_rule) for c in _active(db_session, stmt.id)) == sorted(
+        [(purchase.id, expense.id, "adjust_amount"), (purchase.id, receivable.id, "adjust_amount"), (fee_line.id, fee.id, "exact")])
+    assert _cases(db_session, stmt.id, "open") == []
+
+    _revert(db_session, row.id)
+    assert _fresh(db_session, LedgerEntry, expense.id).amount == Decimal("-660")
+    assert [(c.line_id, c.entry_id) for c in _active(db_session, stmt.id)] == [(fee_line.id, fee.id)]
+    assert _fresh(db_session, ReconciliationCase, case.id).status == "open"
+
+
+def test_adjust_amount_on_a_group_never_counts_a_member_the_line_does_not_represent(jpy_group, seed, db_session):
+    """An unclaimed fee member (no fee line printed) is neither rewritten, claimed nor part of the residual."""
+    s = jpy_group()
+    fee = seed.entry(s.card, "-33", kind="fee", day=date(2026, 9, 14), group_id=s.group.id, original_amount=Decimal("-150"),
+                     original_currency="JPY", fx_rate=Decimal("0.22"), fx_source="fx_api")
+    cashback = seed.entry(s.card, "50", kind="income", day=date(2026, 9, 14), group_id=s.group.id)  # a member of a kind no purchase line counts
+    db_session.commit()
+    exc = _refuse(db_session, lambda: _apply(db_session, s.case, "adjust_amount", {"entry_id": cashback.id, "line_id": s.line.id, "group_id": s.group.id}))
+    assert isinstance(exc, ValidationError) and exc.code == "not_member", exc
+    _apply(db_session, s.case, "adjust_amount", {"entry_id": s.expense.id, "line_id": s.line.id, "group_id": s.group.id})
+    assert (_fresh(db_session, LedgerEntry, s.expense.id).amount, _fresh(db_session, LedgerEntry, fee.id).amount,
+            _fresh(db_session, LedgerEntry, cashback.id).amount) == (Decimal("-690"), Decimal("-33"), Decimal("50"))
+    assert sorted(c.entry_id for c in _active(db_session, s.stmt.id)) == sorted([s.expense.id, s.receivable.id])
+
+
 @pytest.mark.parametrize("patch, code", [
     ({"group_id": None}, "entry_out_of_scope"),  # a group case needs the group named (the member alone is out of scope)
     ({"group_id": 999999}, "entry_out_of_scope"),  # a group the case does not name

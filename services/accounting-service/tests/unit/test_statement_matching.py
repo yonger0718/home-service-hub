@@ -309,12 +309,45 @@ def _fee_group(gid=6, *, day=date(2026, 9, 3)):
 
 @pytest.mark.parametrize("fee_first", [False, True])
 def test_a_fee_member_printed_as_its_own_line_leaves_the_group_representation_and_is_claimed_alone(fee_first):
-    # a MOZE split {expense, receivable, fee}: the statement prints the purchase (expense + receivable) and the fee
+    # a MOZE split {expense, receivable, fee}: the statement prints the purchase (expense + receivable) and the fee;
+    # `match` walks lines by id, so the fee line gets the lower id to be processed first
     g, members = _fee_group()
-    purchase, fee = L(1, date(2026, 9, 3), "-580"), L(2, date(2026, 9, 3), "-10", kind="fee")
-    res = run([fee, purchase] if fee_first else [purchase, fee], members, groups={6: g})
+    purchase_id, fee_id = (2, 1) if fee_first else (1, 2)
+    purchase, fee = L(purchase_id, date(2026, 9, 3), "-580"), L(fee_id, date(2026, 9, 3), "-10", kind="fee")
+    res = run([purchase, fee], members, groups={6: g})
     claims = {c.line_id: (c.representation.rule, sorted(r.entry_id for r in c.representation.rows)) for c in res.claims}
-    assert claims == {1: ("group", [21, 22]), 2: ("exact", [23])} and res.cases == [] and res.unmatched_entry_ids == []
+    assert claims == {purchase_id: ("group", [21, 22]), fee_id: ("exact", [23])} and res.cases == [] and res.unmatched_entry_ids == []
+
+
+def test_a_fee_member_the_statement_does_not_print_alone_stays_in_the_net_reading():
+    g, members = _fee_group()
+    res = run([L(1, date(2026, 9, 3), "-580")], members, groups={6: g})  # no fee line printed (or printed at another amount)
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+    res2 = run([L(1, date(2026, 9, 3), "-590")], members, groups={6: g})  # the net reading still conserves
+    assert [sorted(r.entry_id for r in c.representation.rows) for c in res2.claims] == [[21, 22, 23]]
+
+
+@pytest.mark.parametrize("other_kind, other_flow", [("discount", "10"), ("income", "10")])
+def test_a_net_group_reading_is_kept_for_members_without_a_line_of_their_own(other_kind, other_flow):
+    # {expense -100, discount +10}: the statement prints the net -90; a gross -100 line must not take the expense alone
+    g = m.Group(id=7, kind="split", member_ids=(31, 32))
+    members = [E(31, date(2026, 9, 3), "-100", group_id=7), E(32, date(2026, 9, 3), other_flow, kind=other_kind, group_id=7)]
+    net = run([L(1, date(2026, 9, 3), "-90")], members, groups={7: g})
+    assert [(c.representation.rule, sorted(r.entry_id for r in c.representation.rows)) for c in net.claims] == [("group", [31, 32])]
+    gross = run([L(1, date(2026, 9, 3), "-100")], members, groups={7: g})
+    assert gross.claims == [] and gross.cases[0].kind == "line_unmatched"
+
+
+def test_lone_member_is_split_only_and_only_for_fee_interest_reward_refund_lines():
+    inst = m.Group(id=8, kind="installment", member_ids=(41,))
+    res = run([L(1, date(2026, 9, 3), "-10", kind="fee")], [E(41, date(2026, 9, 3), "-10", kind="fee", group_id=8)], groups={8: inst})
+    assert res.claims == [] and res.cases[0].kind == "line_unmatched"
+    g = m.Group(id=9, kind="split", member_ids=(51, 52))
+    members = [E(51, date(2026, 9, 3), "500", kind="income", group_id=9), E(52, date(2026, 9, 3), "-20", kind="fee", group_id=9)]
+    deposit = run([L(1, date(2026, 9, 3), "500", kind="deposit")], members, groups={9: g}, kind="bank")
+    assert deposit.claims == [] and deposit.cases[0].kind == "line_unmatched"  # a deposit never takes a member alone
+    fee = run([L(1, date(2026, 9, 3), "-20", kind="fee")], members, groups={9: g}, kind="bank")
+    assert [sorted(r.entry_id for r in c.representation.rows) for c in fee.claims] == [[52]]
 
 
 def test_a_split_member_never_stands_alone_for_a_purchase_line():
@@ -341,6 +374,9 @@ def test_foreign_group_leaves_a_fee_member_to_the_fee_line():
     assert [(c.line_id, c.representation.rule, [r.entry_id for r in c.representation.rows]) for c in res.claims] == [(2, "exact", [72])]
     (case,) = res.cases
     assert (case.line_id, case.kind, case.context["entry_ids"]) == (1, "amount_delta", [70, 71])
+    # the fee printed at another amount is not the member's own line: the group counts whole and fails closed
+    res2 = run([lines[0], L(2, date(2026, 9, 8), "-35", kind="fee")], members + [fee], groups={5: g})
+    assert res2.claims == [] and {c.kind for c in res2.cases} == {"line_unmatched"}
 
 
 def test_foreign_fee_is_quantised_and_compared_exactly():

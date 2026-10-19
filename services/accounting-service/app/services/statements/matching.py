@@ -246,11 +246,34 @@ def _standalone(entry: Entry) -> bool:
         and (entry.instance is None or entry.instance.definition_kind != "installment")
 
 
-def _lone_member(entry: Entry, gate: frozenset[str]) -> bool:
-    """2026-10-19: a top-level `split` member stands alone for a line a split purchase never represents (the gate
-    has no `expense`: a fee / interest / reward / refund line) — the fee member of a purchase abroad the statement
-    prints as its own 國外交易服務費 line. For a purchase line a member is only ever claimed with its group."""
-    return entry.group_id is not None and entry.parent_entry_id is None and entry.instance is None and "expense" not in gate
+LONE_MEMBER_LINE_KINDS = frozenset({"fee", "interest", "reward", "refund"})
+
+
+def _lone_member(entry: Entry, line_kind: str, groups: dict[int, Group]) -> bool:
+    """2026-10-19: a top-level member of a `split` group stands alone for a fee, interest, reward or refund line
+    (LONE_MEMBER_LINE_KINDS: lines a split purchase never represents) — the fee member of a purchase abroad the
+    statement prints as its own 國外交易服務費 line. Never for a purchase, withdrawal, deposit, payment or transfer
+    line, never a member of another group kind (reward_claim, installment)."""
+    if line_kind not in LONE_MEMBER_LINE_KINDS or entry.group_id is None or entry.parent_entry_id is not None \
+            or entry.instance is not None:
+        return False
+    group = groups.get(entry.group_id)
+    return group is not None and group.kind == "split"
+
+
+def printed_alone(kind: str, lines: list[Line], entries: list[Entry], groups: dict[int, Group]) -> frozenset[int]:
+    """The split members this statement prints as their own line: a lone-member candidate (`_lone_member`) of a kind
+    the line's gate allows whose flow equals that line's. A group representation may leave such a member out
+    (`_group_variants`); any other member always counts, so a net reading ({expense, discount} for a discounted
+    purchase) is never lost."""
+    out: set[int] = set()
+    for line in lines:
+        if line.line_kind not in LONE_MEMBER_LINE_KINDS:
+            continue
+        gate = eligible_kinds(kind, line.line_kind)
+        out.update(e.id for e in entries
+                   if _lone_member(e, line.line_kind, groups) and _entry_class(e) in gate and _same(e.flow, line.flow))
+    return frozenset(out)
 
 
 def _peer_ok(kind: str, line: Line, entry: Entry) -> bool:
@@ -272,22 +295,24 @@ def _plan_entries(line: Line, entries: list[Entry], definition: int, claimed: se
     return sorted(found, key=lambda e: (_date_distance(line, e), e.id))
 
 
-def _group_members(g: Group, by_id: dict[int, Entry], gate: frozenset[str], claimed: set[int]) -> list[Entry] | None:
-    """The members of a `split` group that represent a line of this gate, or None when the group is not admissible:
-    every member must be in the population (a gated-out member makes it partial) and none may be an installment
-    member; the members of a gated kind must be unclaimed and are the rows; a member of another kind (2026-10-19:
-    the fee member of a purchase abroad) is left to the line that prints it, claimed already or not."""
+def _group_variants(g: Group, by_id: dict[int, Entry], claimed: set[int], aside: frozenset[int]) -> list[list[Entry]]:
+    """The member sets a `split` group may represent a line with: the whole group (the net reading, as before
+    2026-10-19) and, when the statement prints some member as its own line (`aside`, see `printed_alone`), the group
+    without those members. A group with a member outside the population or an installment member is never
+    admissible; a variant with a claimed member is dropped (a fee member its fee line claimed first leaves the
+    gross variant alone)."""
     members = [by_id.get(i) for i in g.member_ids]
     if any(mem is None or mem.instance is not None for mem in members):
-        return None
-    rows = [mem for mem in members if _entry_class(mem) in gate]
-    if not rows or any(mem.id in claimed for mem in rows):
-        return None
-    return rows
+        return []
+    variants = [members]
+    without = [mem for mem in members if mem.id not in aside]
+    if without and len(without) != len(members):
+        variants.append(without)
+    return [v for v in variants if not any(mem.id in claimed for mem in v)]
 
 
 def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
-                     claimed: set[int], rules: Rules) -> list[Representation]:
+                     claimed: set[int], rules: Rules, aside: frozenset[int] = frozenset()) -> list[Representation]:
     gate = eligible_kinds(kind, line.line_kind)
     out: list[Representation] = []
     if line.line_kind == "installment":
@@ -303,7 +328,7 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
     for e in entries:
         # group members (save a lone member for a non-purchase line), installment instances and children never stand
         # alone (children reach a line via the child path)
-        if e.id in claimed or not (_standalone(e) or _lone_member(e, gate)) or _entry_class(e) not in gate:
+        if e.id in claimed or not (_standalone(e) or _lone_member(e, line.line_kind, groups)) or _entry_class(e) not in gate:
             continue
         if not _peer_ok(kind, line, e):
             continue
@@ -331,19 +356,17 @@ def _representations(kind: str, line: Line, entries: list[Entry], groups: dict[i
         for g in groups.values():
             if g.kind != "split":
                 continue
-            members = _group_members(g, by_id, gate, claimed)
-            if members is None:
-                continue  # partial, reserved or installment-member groups are never admissible
-            member_rows = tuple(Row(mem.id, "member", mem.flow, g.id) for mem in members)
-            child_rows = tuple(Row(c.id, "child", c.flow, g.id) for mem in members for c in mem.children if c.id not in claimed)
-            variants = [("group", member_rows)]
-            if child_rows:
-                variants.append(("group_children", member_rows + child_rows))
-            for variant, rows in variants:
-                if rows and conserved(rows, line.flow):
-                    score, reasons = _score(line, tuple(members), rules.exact_window_days)
-                    if score > ZERO:
-                        out.append(Representation(variant, rows, score, variant, reasons))
+            for members in _group_variants(g, by_id, claimed, aside):  # none: partial, reserved or installment-member group
+                member_rows = tuple(Row(mem.id, "member", mem.flow, g.id) for mem in members)
+                child_rows = tuple(Row(c.id, "child", c.flow, g.id) for mem in members for c in mem.children if c.id not in claimed)
+                variants = [("group", member_rows)]
+                if child_rows:
+                    variants.append(("group_children", member_rows + child_rows))
+                for variant, rows in variants:
+                    if rows and conserved(rows, line.flow):
+                        score, reasons = _score(line, tuple(members), rules.exact_window_days)
+                        if score > ZERO:
+                            out.append(Representation(variant, rows, score, variant, reasons))
     if kind == "bank" and line.line_kind in ("payment", "withdrawal"):
         by_id = {e.id: e for e in entries}
         for g in groups.values():
@@ -405,12 +428,13 @@ def _installment_case(line: Line, reps: list[Representation], entries: list[Entr
 
 
 def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], claimed: set[int],
-                    rules: Rules) -> list[tuple[int, Group, list[Entry]]]:
+                    rules: Rules, aside: frozenset[int]) -> list[tuple[int, Group, list[Entry]]]:
     """Admissible `split` groups whose members all carry the line's foreign currency and whose original amounts sum
     to the printed foreign amount, within the foreign window (2026-10-19: a purchase abroad the owner split into an
     expense and a receivable never foreign-matched, so the policy backfilled the line beside the owner's group).
-    Admissibility and the members counted as in `_representations` (`_group_members`): a fee member printed as its
-    own line is left to that line."""
+    Admissibility and the member sets as in `_representations` (`_group_variants`): a fee member printed as its own
+    line is left to that line; a group with a member of another kind the statement does not print alone is counted
+    whole and fails closed (its original amounts do not sum to the purchase)."""
     gate = eligible_kinds(kind, line.line_kind)
     if "expense" not in gate:
         return []
@@ -419,21 +443,22 @@ def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[in
     for g in groups.values():
         if g.kind != "split":
             continue
-        members = _group_members(g, by_id, gate, claimed)
-        if members is None or any(not _peer_ok(kind, line, mem) for mem in members):
-            continue
-        if any(mem.original_amount is None or mem.original_currency != line.foreign_currency for mem in members):
-            continue
-        if not _same(sum((mem.original_amount for mem in members), ZERO), line.foreign_amount):
-            continue
-        dist = min(_date_distance(line, mem) for mem in members)
-        if dist <= rules.foreign_window_days:
-            out.append((dist, g, members))
+        for members in _group_variants(g, by_id, claimed, aside):
+            if any(not _peer_ok(kind, line, mem) or _entry_class(mem) not in gate for mem in members):
+                continue
+            if any(mem.original_amount is None or mem.original_currency != line.foreign_currency for mem in members):
+                continue
+            if not _same(sum((mem.original_amount for mem in members), ZERO), line.foreign_amount):
+                continue
+            dist = min(_date_distance(line, mem) for mem in members)
+            if dist <= rules.foreign_window_days:
+                out.append((dist, g, members))
+                break  # one reading per group
     return sorted(out, key=lambda t: (t[0], t[1].id))
 
 
 def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], claimed: set[int], fee_expected,
-                  rules: Rules, currency: str) -> Case | None:
+                  rules: Rules, currency: str, aside: frozenset[int] = frozenset()) -> Case | None:
     if line.foreign_amount is None:
         return None
     gate = eligible_kinds(kind, line.line_kind)
@@ -442,7 +467,7 @@ def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int,
                     and e.original_amount is not None and e.original_currency == line.foreign_currency
                     and _same(e.original_amount, line.foreign_amount) and _date_distance(line, e) <= rules.foreign_window_days),
                    key=lambda e: (_date_distance(line, e), e.id))
-    found_groups = _foreign_groups(kind, line, entries, groups, claimed, rules)
+    found_groups = _foreign_groups(kind, line, entries, groups, claimed, rules, aside)
     if not found and not found_groups:
         return None
     if len(found) + len(found_groups) > 1:
@@ -532,8 +557,8 @@ def _bank_only(line: Line, rules: Rules) -> dict | None:
 
 
 def _claimed_by_earlier_line(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], plan_map: dict[str, int],
-                             claimed: set[int], rules: Rules) -> int | None:
-    shadow = _representations(kind, line, entries, groups, plan_map, set(), rules)
+                             claimed: set[int], rules: Rules, aside: frozenset[int]) -> int | None:
+    shadow = _representations(kind, line, entries, groups, plan_map, set(), rules, aside)
     if len(shadow) == 1 and any(row.entry_id in claimed for row in shadow[0].rows):
         return shadow[0].rows[0].entry_id
     return None
@@ -561,8 +586,9 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
     claimed: set[int] = set()
     hint_only = [e for e in entries if not e.claimable]
     entries = [e for e in entries if e.claimable]
+    aside = printed_alone(statement_kind, lines, entries, groups)
     for line in sorted(lines, key=lambda ln: ln.id):
-        reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules), key=lambda r: r.score, reverse=True)
+        reps = sorted(_representations(statement_kind, line, entries, groups, plan_map, claimed, rules, aside), key=lambda r: r.score, reverse=True)
         if reps and reps[0].score >= rules.accept and (len(reps) == 1 or reps[0].score - reps[1].score >= rules.margin):
             best = reps[0]
             result.claims.append(Claim(line.id, best))
@@ -575,11 +601,11 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             result.cases.append(_ambiguous(line, reps))
             continue
         if not reps:
-            taken = _claimed_by_earlier_line(statement_kind, line, entries, groups, plan_map, claimed, rules)
+            taken = _claimed_by_earlier_line(statement_kind, line, entries, groups, plan_map, claimed, rules, aside)
             if taken is not None:
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
-        case = _foreign_case(statement_kind, line, entries, groups, claimed, fee_expected, rules, account_currency) \
+        case = _foreign_case(statement_kind, line, entries, groups, claimed, fee_expected, rules, account_currency, aside) \
             or _near_case(statement_kind, line, entries, claimed, rules) \
             or _drift_case(statement_kind, line, entries, claimed, rules)
         if case is not None:
