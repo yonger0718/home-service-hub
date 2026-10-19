@@ -119,8 +119,8 @@ def statement(rows_91=ROWS_91, rows_59=ROWS_59, holdings=HOLDINGS, *, split_at=1
         lines.append(L(4, top, W("外匯活期存款", 40), W("帳號", 100), W("123456****50", 130)))
         lines.append(header(4, top + 12))
         top += 24
-        for r in fx_rows:
-            lines.append(row(4, top, *r, cur="JPY"))
+        for r in fx_rows:  # (day, desc, out, in, bal[, currency]) — JPY unless the row says otherwise
+            lines.append(row(4, top, *r[:5], cur=r[5] if len(r) > 5 else "JPY"))
             top += 12
     lines.append(L(4, top, W("國泰綜合證券股份有限公司下單之相關交易", 40)))
     lines.append(L(4, top + 12, W("本行重要訊息", 40)))
