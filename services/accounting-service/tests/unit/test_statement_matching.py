@@ -234,6 +234,73 @@ def test_foreign_twins_are_ambiguous():
     assert sorted(c["entry_id"] for c in case.candidates) == [70, 72] and {c["reason"] for c in case.candidates} == {"foreign"}
 
 
+def _jpy_group(gid=5, *, flows=("-660", "-1320"), originals=("-3000", "-6000"), day=date(2026, 9, 8), kinds=("expense", "receivable")):
+    members = [E(70 + i, day, flow, kind=kind, original_amount=D(orig), original_currency="JPY", group_id=gid)
+               for i, (flow, orig, kind) in enumerate(zip(flows, originals, kinds))]
+    return m.Group(id=gid, kind="split", member_ids=tuple(e.id for e in members)), members
+
+
+def test_foreign_split_group_whose_originals_sum_to_the_line_is_a_delta_case():
+    # the owner split a 9000 JPY purchase into an expense and a receivable; the TWD estimate misses the FX fee
+    g, members = _jpy_group()
+    res = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("-9000"), foreign_currency="JPY")], members, groups={5: g},
+              fee=lambda e: D("30"))
+    (case,) = res.cases[:1]
+    assert res.claims == [] and case.kind == "amount_delta" and case.entry_id is None
+    assert case.candidates == ({"group_id": 5, "reason": "foreign", "residual": "-30.0000"},)
+    assert case.context == {"residual": "-30.0000", "fee_expected": "30", "fee_matches": True, "group_id": 5, "entry_ids": [70, 71]}
+    assert "entry_id" not in case.context
+
+
+def test_foreign_group_members_are_designated_and_never_deferred():
+    g, members = _jpy_group(day=date(2026, 9, 30))  # inside deferral_days of the period end
+    res = run([L(1, date(2026, 9, 30), "-2010", foreign_amount=D("-9000"), foreign_currency="JPY")], members, groups={5: g})
+    assert res.cases[0].kind == "amount_delta" and res.unmatched_entry_ids == [70, 71] and res.explained == {}
+
+
+def test_foreign_group_with_a_member_in_another_currency_is_not_a_candidate():
+    g, members = _jpy_group()
+    members[1] = dataclasses.replace(members[1], original_amount=None, original_currency=None)
+    res = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("-9000"), foreign_currency="JPY")], members, groups={5: g})
+    assert res.cases[0].kind == "line_unmatched"
+
+
+def test_foreign_group_with_a_claimed_or_missing_member_is_not_admissible():
+    g, members = _jpy_group()
+    # the group is claimed exactly by an earlier line (its TWD sum): the foreign line cannot name it again
+    lines = [L(1, date(2026, 9, 8), "-1980"), L(2, date(2026, 9, 8), "-2010", foreign_amount=D("-9000"), foreign_currency="JPY")]
+    res = run(lines, members, groups={5: g})
+    assert [(c.line_id, c.representation.rule) for c in res.claims] == [(1, "group")]
+    assert [(c.line_id, c.kind) for c in res.cases] == [(2, "line_unmatched")]
+    # a member outside the population makes the group partial
+    res2 = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("-9000"), foreign_currency="JPY")], members[:1], groups={5: g})
+    assert res2.cases[0].kind == "line_unmatched"
+
+
+def test_foreign_group_sum_mismatch_or_window_is_not_a_candidate():
+    g, members = _jpy_group(originals=("-3000", "-5000"))
+    res = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("-9000"), foreign_currency="JPY")], members, groups={5: g})
+    assert res.cases[0].kind == "line_unmatched"
+    g2, members2 = _jpy_group(day=date(2026, 9, 2))  # 6 days > foreign_window_days (5)
+    res2 = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("-9000"), foreign_currency="JPY")], members2, groups={5: g2})
+    assert res2.cases[0].kind == "line_unmatched"
+
+
+def test_foreign_group_and_single_twins_are_ambiguous():
+    g, members = _jpy_group()
+    single = E(80, date(2026, 9, 9), "-1980", original_amount=D("-9000"), original_currency="JPY")
+    res = run([L(1, date(2026, 9, 8), "-2010", foreign_amount=D("-9000"), foreign_currency="JPY")], members + [single], groups={5: g})
+    case = res.cases[0]
+    assert case.kind == "ambiguous" and case.entry_id is None
+    assert [(c.get("entry_id"), c.get("group_id"), c["reason"]) for c in case.candidates] == [(80, None, "foreign"), (None, 5, "foreign")]
+
+
+def test_foreign_group_is_only_a_candidate_where_expense_is_eligible():
+    g, members = _jpy_group()
+    res = run([L(1, date(2026, 9, 8), "-2010", kind="fee", foreign_amount=D("-9000"), foreign_currency="JPY")], members, groups={5: g})
+    assert res.cases[0].kind == "line_unmatched"
+
+
 def test_foreign_fee_is_quantised_and_compared_exactly():
     entries = [E(70, date(2026, 9, 8), "-660", original_amount=D("-3000"), original_currency="JPY")]
     res = run([L(1, date(2026, 9, 8), "-670", foreign_amount=D("-3000"), foreign_currency="JPY")], entries, fee=lambda e: D("10.5"))

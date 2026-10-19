@@ -13,6 +13,8 @@ No DB, no I/O. Contract with callers (the orchestrator follows it):
 """
 from __future__ import annotations
 
+import dataclasses
+
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -380,8 +382,37 @@ def _installment_case(line: Line, reps: list[Representation], entries: list[Entr
     return Case(line.id, None, "line_unmatched", (), {})
 
 
-def _foreign_case(kind: str, line: Line, entries: list[Entry], claimed: set[int], fee_expected, rules: Rules,
-                  currency: str) -> Case | None:
+def _foreign_groups(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], claimed: set[int],
+                    rules: Rules) -> list[tuple[int, Group, list[Entry]]]:
+    """Admissible `split` groups whose members all carry the line's foreign currency and whose original amounts sum
+    to the printed foreign amount, within the foreign window (2026-10-19: a purchase abroad the owner split into an
+    expense and a receivable never foreign-matched, so the policy backfilled the line beside the owner's group).
+    Admissibility as in `_representations`: every member present and unclaimed, no installment member; each member's
+    class eligible for the line (fail closed on a fee member printed as its own line)."""
+    gate = eligible_kinds(kind, line.line_kind)
+    if "expense" not in gate:
+        return []
+    by_id = {e.id: e for e in entries}
+    out: list[tuple[int, Group, list[Entry]]] = []
+    for g in groups.values():
+        if g.kind != "split":
+            continue
+        members = [by_id.get(i) for i in g.member_ids]
+        if any(mem is None or mem.id in claimed or mem.instance is not None or _entry_class(mem) not in gate
+               or not _peer_ok(kind, line, mem) for mem in members):
+            continue
+        if any(mem.original_amount is None or mem.original_currency != line.foreign_currency for mem in members):
+            continue
+        if not _same(sum((mem.original_amount for mem in members), ZERO), line.foreign_amount):
+            continue
+        dist = min(_date_distance(line, mem) for mem in members)
+        if dist <= rules.foreign_window_days:
+            out.append((dist, g, members))
+    return sorted(out, key=lambda t: (t[0], t[1].id))
+
+
+def _foreign_case(kind: str, line: Line, entries: list[Entry], groups: dict[int, Group], claimed: set[int], fee_expected,
+                  rules: Rules, currency: str) -> Case | None:
     if line.foreign_amount is None:
         return None
     gate = eligible_kinds(kind, line.line_kind)
@@ -390,11 +421,25 @@ def _foreign_case(kind: str, line: Line, entries: list[Entry], claimed: set[int]
                     and e.original_amount is not None and e.original_currency == line.foreign_currency
                     and _same(e.original_amount, line.foreign_amount) and _date_distance(line, e) <= rules.foreign_window_days),
                    key=lambda e: (_date_distance(line, e), e.id))
-    if not found:
+    found_groups = _foreign_groups(kind, line, entries, groups, claimed, rules)
+    if not found and not found_groups:
         return None
-    if len(found) > 1:
+    if len(found) + len(found_groups) > 1:
         return Case(line.id, None, "ambiguous",
-                    tuple({"entry_id": e.id, "reason": "foreign", "residual": str((line.flow - e.flow).quantize(Q))} for e in found), {})
+                    tuple({"entry_id": e.id, "reason": "foreign", "residual": str((line.flow - e.flow).quantize(Q))} for e in found)
+                    + tuple({"group_id": g.id, "reason": "foreign",
+                             "residual": str((line.flow - sum((mem.flow for mem in members), ZERO)).quantize(Q))}
+                            for _, g, members in found_groups), {})
+    if found_groups:
+        _, g, members = found_groups[0]
+        total = sum((mem.flow for mem in members), ZERO)
+        residual = (line.flow - total).quantize(Q)
+        fee = fee_expected(dataclasses.replace(members[0], flow=total))  # the account's fee on the whole purchase
+        fee_q = None if fee is None else Decimal(fee).quantize(_quantum(currency), rounding=ROUND_HALF_UP)
+        matches = fee_q is not None and residual + fee_q == 0
+        return Case(line.id, None, "amount_delta", ({"group_id": g.id, "reason": "foreign", "residual": str(residual)},),
+                    {"residual": str(residual), "fee_expected": None if fee_q is None else str(fee_q), "fee_matches": matches,
+                     "group_id": g.id, "entry_ids": [mem.id for mem in members]})
     e = found[0]
     residual = (line.flow - e.flow).quantize(Q)
     fee = fee_expected(e)
@@ -475,7 +520,8 @@ def _claimed_by_earlier_line(kind: str, line: Line, entries: list[Entry], groups
 
 def _designated_by_cases(cases: list[Case]) -> set[int]:
     """The one entry each `amount_delta` case (near, foreign, drift) pairs with its line (`entry_id`, also in
-    `context.entry_id`): taken as printed here, so never deferred to the next statement. Ambiguous alternatives and
+    `context.entry_id`), or the members of the split group a foreign case pairs (`context.entry_ids`): taken as
+    printed here, so never deferred to the next statement. Ambiguous alternatives and
     secondary candidates are not designated (at most one of them is the line) and defer as usual."""
     out: set[int] = set()
     for case in cases:
@@ -484,6 +530,7 @@ def _designated_by_cases(cases: list[Case]) -> set[int]:
         for value in (case.entry_id, (case.context or {}).get("entry_id")):
             if value is not None:
                 out.add(value)
+        out.update(int(v) for v in (case.context or {}).get("entry_ids") or ())  # a foreign group's members
     return out
 
 
@@ -511,7 +558,7 @@ def match(statement_kind: str, lines: list[Line], entries: list[Entry], groups: 
             if taken is not None:
                 result.cases.append(Case(line.id, None, "line_unmatched", (), {"hint": "claimed_by_earlier_line", "entry_id": taken}))
                 continue
-        case = _foreign_case(statement_kind, line, entries, claimed, fee_expected, rules, account_currency) \
+        case = _foreign_case(statement_kind, line, entries, groups, claimed, fee_expected, rules, account_currency) \
             or _near_case(statement_kind, line, entries, claimed, rules) \
             or _drift_case(statement_kind, line, entries, claimed, rules)
         if case is not None:
