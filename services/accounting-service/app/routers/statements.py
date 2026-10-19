@@ -188,7 +188,7 @@ def _revision_out(result) -> dict:
         "statement_id": result.statement.id, "revision_id": result.revision.id,
         "revision": result.revision.revision, "guardrail_ok": result.revision.guardrail_ok,
         "mode": result.statement.mode, "conflict": result.revision.conflict,
-        "lineage": result.lineage_counts, "case_ids": result.case_ids,
+        "lineage": result.lineage_counts, "case_ids": result.case_ids, "replayed": result.replayed,
     }
 
 
@@ -196,11 +196,12 @@ def _revision_out(result) -> dict:
 def submit_revision(body: RevisionIn, request: Request, db: Session = Depends(get_db)):
     with service_errors():
         run = ingest.require_lease(db, body.run_id, body.lease_token, label=_label(request))
-        account_map = settings_service.get_reconciliation_settings(db).get("account_map", {})
-        result = ingest.submit_revision(db, run, body, account_map=account_map)
+        settings = settings_service.get_reconciliation_settings(db)
+        result = ingest.submit_revision(db, run, body, account_map=settings.get("account_map", {}),
+                                        composite_map=settings.get("composite_map", {}))
         out = _revision_out(result)
     db.commit()
-    if out["mode"] == "live":
+    if out["mode"] == "live" and not out["replayed"]:
         policy_service.run_policy_safe(db, out["statement_id"], run_id=body.run_id)
     return out
 
@@ -215,7 +216,7 @@ def create_manual_statement(account_id: int, body: ManualStatementIn, request: R
         out = _revision_out(result)
         run_id = result.revision.run_id
     db.commit()
-    if out["mode"] == "live":
+    if out["mode"] == "live" and not out["replayed"]:
         policy_service.run_policy_safe(db, out["statement_id"], run_id=run_id)
     return out
 
@@ -322,7 +323,9 @@ def read_account_map(db: Session = Depends(get_db)):
     account_map = data.get("account_map") or {}
     closing_days = {str(account_id): day for account_id, day in db.execute(
         select(Account.id, Account.closing_day).where(Account.closing_day.is_not(None))).all()}
-    return AccountMapOut(account_map=account_map, mapping_version=settings_service.mapping_version(account_map),
+    composite_map = data.get("composite_map") or {}
+    return AccountMapOut(account_map=account_map, composite_map=composite_map,
+                         mapping_version=settings_service.mapping_version(account_map, composite_map),
                          closing_days=closing_days)
 
 

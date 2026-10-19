@@ -53,6 +53,62 @@ class Extracted:
     text_chars_page1: int
 
 
+@dataclass(frozen=True)
+class Word:
+    text: str = field(repr=False)  # statement content never prints through a repr (R5a); no default — positional args stay (text, x0, x1)
+    x0: float
+    x1: float
+
+
+@dataclass(frozen=True)
+class Line:
+    page: int
+    top: float
+    words: tuple[Word, ...] = field(repr=False)  # sorted by x0
+
+    @property
+    def text(self) -> str:
+        return " ".join(w.text for w in self.words)
+
+
+LINE_TOLERANCE = 2.0  # pt: words whose `top` differ by at most this much are one line
+
+
+def extract_lines(data: bytes, password: str | None, *, max_pages: int = 40, max_bytes: int = 20_000_000,
+                  timeout_s: int = 60) -> list[Line]:
+    """Words with their x-ranges, grouped into lines by `top`, in reading order. Same bounds and exception
+    mapping as `extract`; used by the composite split only. Line text never reaches logs."""
+    if len(data) > max_bytes:
+        raise TooLarge(f"{len(data)} bytes") from None
+    with _Alarm(timeout_s):
+        try:
+            doc = pdfplumber.open(BytesIO(data), password=password)
+            with doc:
+                if len(doc.pages) > max_pages:
+                    raise TooLarge(f"{len(doc.pages)} pages") from None
+                out: list[Line] = []
+                for number, page in enumerate(doc.pages, start=1):
+                    rows: list[tuple[float, list[dict]]] = []
+                    for word in sorted(page.extract_words() or [], key=lambda w: (w["top"], w["x0"])):
+                        if rows and abs(rows[-1][0] - word["top"]) <= LINE_TOLERANCE:
+                            rows[-1][1].append(word)
+                        else:
+                            rows.append((word["top"], [word]))
+                    for top, words in rows:
+                        ordered = sorted(words, key=lambda w: w["x0"])
+                        out.append(Line(number, float(top), tuple(Word(w["text"], float(w["x0"]), float(w["x1"]))
+                                                                  for w in ordered)))
+                return out
+        except (PasswordError, TooLarge, ExtractTimeout):
+            raise
+        except PdfminerException as exc:
+            if isinstance(exc.args[0] if exc.args else None, PDFPasswordIncorrect):
+                raise PasswordError("password") from None
+            raise Malformed("malformed") from None
+        except Exception:  # noqa: BLE001
+            raise Malformed("malformed") from None
+
+
 def unlock(data: bytes, candidates: list[str], *, max_bytes: int = 20_000_000) -> Unlocked:
     if len(data) > max_bytes:
         raise TooLarge(f"{len(data)} bytes") from None

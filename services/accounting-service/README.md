@@ -185,7 +185,7 @@ otherwise). Amounts are strings; a 422 message starts with a stable code (`code`
 | `GET /reconciliation/proposals` | `read` | query `status` (`pending`, `applied`, `rejected`, `superseded`), `case_id`, `limit` → `ProposalOut[]`; stale pending rows are superseded first; one that could not be (its statement or case is locked by another transaction) is hidden from the listing until it is |
 | `POST /reconciliation/proposals/{id}/apply` | `write` | → `ActionOut` (the stored action applied as `owner`; 201, 200 on replay) |
 | `POST /reconciliation/proposals/{id}/reject` | `write` | optional `{note}` → `ProposalOut`; reopens the case when it was the only live proposal |
-| `POST /accounts/{id}/statements` | `write` | `ManualStatementIn` (the import header and up to 2000 `lines`, no run/lease/file fields) → `RevisionOut` (201); `origin='manual'`, audited, policy runs after the commit when live |
+| `POST /accounts/{id}/statements` | `write` | `ManualStatementIn` (the import header and up to 2000 `lines`, no run/lease/file fields) → `RevisionOut` (201); `origin='manual'`, audited, policy runs after the commit when live; an equal-to-persisted resubmission answers 201 `replayed: true` and skips the policy |
 | `POST /accounts/{id}/statements/{sid}/confirm` | `write` | `{force=false, note?}` → `{status, checks, reopened_cases, forced}` |
 | `POST /accounts/{id}/statements/{sid}/retire` | `admin` | `{note}` (1..1000, not blank) → `{statement_id, mode, already_retired, released_coverage, retired_events, superseded_cases}`; 409 `actions_applied` |
 
@@ -243,7 +243,7 @@ is printed here: resolve the case before booking the gap. A non-zero gap opens a
 offered and the policy never acts; `balance_adjustment_asof` books the gap on a single-account card (a card with a co-branded account in the statement's
 currency is refused `combined_card`: the residual may sit on either account).
 
-Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `dirty_enabled`, `rules`, `policy` and
+Settings (`GET`/`PUT /settings/reconciliation`; a PUT replaces `account_map`, `composite_map`, `dirty_enabled`, `rules`, `policy` and
 `account_siblings` wholesale, so send the current values of the ones you keep; `admin` scope):
 
 - `policy` (default, ships off): `{"enabled": false, "accept_agent_proposals": false, "per_statement_count": 5,
@@ -309,6 +309,8 @@ line owner-deleted, so the owner, the matcher and the policy may claim it again.
 some surviving (a split whose original was re-imported away while its members and group stay; a `with_children` match
 whose child is gone; an `attach_fee` whose fee child is gone) keeps a financial effect: it stays `applied`, is counted
 (the sweep's `partially_stranded`, the dry-run's `action_partially_stranded`, no audit row) and keeps refusing a retire.
+
+Composite statements (2026-10-18): a manual folder listed in `composite_map` (`PUT /settings/reconciliation`, `{"manual/國泰世華": {"91/TWD": {"account_id": 67}, "50/JPY": {"account_id": 81, "anchor_only": true}}}`; section key = the digits the bank prints after the masked account number + the currency; targets are deposit accounts in that currency, one account per folder, never a folder that is also in `account_map`; a PUT replaces `composite_map` wholesale like `account_map`) is split by the worker without a model call: the statement period and the 持有明細 closing balances come from the text layer, every dated row from the word geometry of its page (`pdf.extract_lines`; direction 提出 / 存入 by the token's right edge against the column header), the running balance is verified row by row and against the 持有明細 balance, and every ambiguity fails the file (`failed / parse`), among them a `持有明細` line inside the transaction area and a section header without rows. One `POST /statements/revisions` per declared section (`parser` `composite-rows`, or `composite-anchor` with no lines when an `anchor_only` key — a section is optional for it, the FX account prints a `外匯活期存款` section only in months with activity — has no section; `raw.section`, `raw.anchor`, `raw.rows`); `_assert_folder_maps` accepts a composite file only for the submitted section's account and currency; `statement_file.account_id` stays NULL. `line_kind` is `deposit` / `withdrawal` by the filled cell, `interest` / `fee` only when the whole description, NFKC-normalised with whitespace collapsed, equals an entry of the worker's table. Outcomes are decided per section in the order guardrail → replayed → anchor / parsed; file status after all sections: any 422 or split error → `failed / parse`, any failed guardrail (replayed or not) → `needs_review / guardrail`, else `parsed`. The run summary carries `composite_files`, `sections_parsed`, `sections_anchor`, `sections_replayed`, `sections_skipped`, `sections_failed` and `composite[]` (per file: the sections with key, outcome and reason label). `GET /statements/account-map` (`ingest`) returns `account_map`, `composite_map`, `closing_days` and `mapping_version`; `mapping_version` now hashes `{"account_map", "composite_map"}`, so the first deploy re-tries every `mapping` failure once. Recovery after a split or 422 failure, or after adding a key for an already-parsed file, is the operator re-queue (`UPDATE statement_file SET status='new', failure=NULL WHERE id = …`); `retry_due` is unchanged. Replay: a resubmission equal to what is persisted (same file, parser, `parser_version`, header and stored line columns, compared with the CURRENT revision) answers `replayed: true` without a new revision or case, on `POST /statements/revisions` and on the owner's manual `POST /accounts/{id}/statements` alike, and the policy is not run on a replay.
 
 Owner recovery: a 409 `anchor_depends` or `actions_applied` is cleared by reverting those actions where the engine
 allows it (`POST /reconciliation/actions/{id}/revert`). Not every action can be: `replace_stand_in` is never
@@ -501,7 +503,7 @@ unmatched lines and entries, guardrail and parse failures, unmapped, cases by ki
 (encrypted) PDFs in `pdf-cache`; see `deploy/statements/README.md` for retention and purging.
 
 Run summary keys (JSON on stdout and `finish.summary`): `listed`, `new_files`, `parsed`, `needs_review`, `failed`,
-`ignored`, `skipped`, `unchanged`, `deferred`, `transient`, `too_large`, `cases_opened`, `live_revisions`, `resumed`,
+`ignored`, `skipped`, `unchanged`, `deferred`, `transient`, `too_large`, `cases_opened`, `live_revisions` (new, non-replayed live revisions only, on the composite and the single-account path), `resumed`, `composite_files`, `sections_parsed`, `sections_anchor`, `sections_replayed`, `sections_skipped`, `sections_failed`, `composite`,
 `errors` (bounded codes), `sweep`, and `versions` (`parser_version`, `credential_version`, `mapping_version`,
 `cli_version`, `model`). `poll` adds `claimed` and `bad_runs`.
 

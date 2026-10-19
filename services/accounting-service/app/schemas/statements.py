@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from app.models import STATEMENT_SOURCE_ROOTS
 from app.models.statements import (
@@ -128,9 +128,18 @@ class FileOut(BaseModel):
     parser_version: str | None = None
 
 
+class CompositeTarget(BaseModel):
+    """One section of a composite statement folder: the account it posts to, and whether the section never
+    prints transaction rows (子帳戶, foreign-currency accounts) — see the design spec §3."""
+    model_config = Strict
+    account_id: Int32
+    anchor_only: StrictBool = False
+
+
 class AccountMapOut(BaseModel):
     model_config = Strict
     account_map: dict[str, int]
+    composite_map: dict[str, dict[str, CompositeTarget]] = {}
     mapping_version: str
     closing_days: dict[str, int] = {}  # account id -> closing day of the cards that have one (the parser's hint)
 
@@ -282,6 +291,7 @@ class RevisionOut(BaseModel):
     conflict: bool
     lineage: dict[str, int]
     case_ids: list[int]
+    replayed: bool = False
 
 
 # ---- statements ----
@@ -404,9 +414,11 @@ class StatementDetailOut(StatementOut):
 class ReconciliationSettingsIn(BaseModel):
     """`account_map`: Drive folder `<root>/<folder>/<subfolder>` -> account id (the service checks the key shape).
     `dirty_enabled`: the ledger dirty triggers write coverage_dirty only while it is true (a PUT replaces it).
+    `composite_map`: manual folder → section key `<suffix>/<CUR>` → target; a PUT replaces it.
     A PUT replaces `rules`, `account_map` and `dirty_enabled` wholesale: an omitted field reverts to its default."""
     model_config = Strict
     account_map: dict[str, Int32] = {}
+    composite_map: dict[str, dict[str, CompositeTarget]] = {}
     dirty_enabled: bool = False
     rules: dict = {}  # matching.Rules overrides (settings_service validates keys and types); {} = the defaults
     policy: dict = {}  # agent-autonomy policy overrides (settings_service validates); {} = the defaults
@@ -416,6 +428,7 @@ class ReconciliationSettingsIn(BaseModel):
 class ReconciliationSettingsOut(BaseModel):
     model_config = Strict
     account_map: dict[str, int]
+    composite_map: dict[str, dict[str, CompositeTarget]]
     dirty_enabled: bool
     rules: dict
     rules_version: str

@@ -7,6 +7,7 @@ import pytest
 from app.models import (
     AccountStatement,
     CoverageDirty,
+    StatementRevision,
     IngestRun,
     LineLineage,
     ReconciliationCase,
@@ -20,6 +21,8 @@ from app.schemas.statements import FileRegisterIn, LineIn, RevisionIn, SourceReg
 from app.services import statement_ingest_service as svc
 from app.services import statement_revision_service as revs
 from app.services.errors import ConflictError, ValidationError
+from tests.integration.statement_fixtures import SEP, _card, _submit
+from tests.integration.statement_fixtures import _line as _fline
 
 # These tests isolate their service: submit_revision runs without the reconcile pass (conftest.matcher_off).
 pytestmark = pytest.mark.usefixtures("matcher_off")
@@ -787,3 +790,121 @@ def test_same_file_on_a_reconciled_statement_is_a_conflict_whose_promotion_keeps
     # refused before anything moved: no event pointer or status was flipped in the session
     assert {e.id: (e.status, e.current_line_id) for e in db_session.query(StatementEvent).all()} == events
     assert again.statement.current_revision_id == first.revision.id
+
+
+def test_two_sections_of_one_composite_file_become_two_independent_statements(db_session, seed, run):
+    r, token = run
+    live = seed.account("91 帳戶", is_credit=False, statement_live_from=date(2026, 9, 1))
+    hist = seed.account("59 帳戶", is_credit=False)
+    db_session.commit()
+    f = _file(db_session, r, token, sha="c" * 64)
+    svc.register_source(db_session, r, SourceRegisterIn(run_id=r.id, lease_token=token, file_id=f.id, root="manual",
+                                                        drive_file_id="m1", drive_path="國泰世華/2609.pdf", drive_md5=MD5, drive_size=10))
+    cmap = {"manual/國泰世華": {"91/TWD": {"account_id": live.id, "anchor_only": False},
+                               "59/TWD": {"account_id": hist.id, "anchor_only": False}}}
+
+    def body(account, section, **kw):
+        return _rev(r, token, account, [], total="0", opening="0", kind="bank", file_id=f.id,
+                    raw={"section": section, "anchor": True, "rows": 0}, **kw)
+
+    a = svc.submit_revision(db_session, r, body(live, "91/TWD"), account_map={}, composite_map=cmap)
+    b = svc.submit_revision(db_session, r, body(hist, "59/TWD", period_start=date(2026, 8, 1), period_end=date(2026, 8, 31)),
+                            account_map={}, composite_map=cmap)
+    assert a.statement.id != b.statement.id
+    assert (a.statement.mode, b.statement.mode) == ("live", "historical")
+    assert (a.statement.period_end, b.statement.period_end) == (date(2026, 9, 30), date(2026, 8, 31))
+    assert db_session.get(StatementFile, f.id).account_id is None
+
+
+def _again(db, run, account, lines, **kw):
+    return _submit(db, run, account, lines, **kw)[2]
+
+
+def test_identical_resubmission_is_replayed_without_a_revision_or_a_case(seed, db_session, run):
+    account = _card(seed, db_session, live=True)
+    r = run
+    lines = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
+    first = _submit(db_session, r, account, lines)[2]
+    replay = _again(db_session, r, account, lines)
+    assert replay.replayed and replay.revision.id == first.revision.id and replay.case_ids == [] and replay.lineage_counts == {}
+    assert db_session.query(StatementRevision).filter_by(statement_id=first.statement.id).count() == 1
+    before = db_session.query(ReconciliationCase).count()
+    first.statement.status = "reconciled"
+    db_session.commit()
+    replay2 = _again(db_session, r, account, lines)
+    assert replay2.replayed and db_session.query(ReconciliationCase).count() == before
+    assert not first.statement.conflict_open and first.statement.current_revision_id == first.revision.id
+    changed = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 51)])
+    assert not changed.replayed and changed.revision.conflict and changed.statement.conflict_open
+
+
+@pytest.mark.parametrize("variant", ["seq", "foreign", "merchant", "header", "parser"])
+def test_replay_needs_persisted_equality(seed, db_session, run, variant):
+    account = _card(seed, db_session, live=True)
+    r = run
+    base = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
+    if variant == "foreign":
+        base[0] = _fline(1, SEP[0], "A", 100, foreign_amount=Decimal("3"), foreign_currency="USD")
+    first = _submit(db_session, r, account, base)[2]
+    if variant == "seq":
+        lines, kw = [_fline(1, SEP[0], "A", 100), _fline(3, SEP[0], "B", 50)], {}
+    elif variant == "foreign":
+        lines, kw = [_fline(1, SEP[0], "A", 100, foreign_amount=Decimal("4"), foreign_currency="USD"), base[1]], {}
+    elif variant == "merchant":
+        lines, kw = [_fline(1, SEP[0], "A ", 100), base[1]], {}
+    elif variant == "header":
+        lines, kw = base, {"closing_date": SEP[1]}
+    else:
+        lines, kw = base, {}
+    if variant == "parser":
+        rev = RevisionIn(run_id=r[0].id, lease_token=r[1], file_id=None, account_id=account.id, kind="card", parser="other",
+                         parser_version="1", currency=account.currency, period_start=SEP[0], period_end=SEP[1],
+                         opening_balance=None, statement_total=first.revision.statement_total, lines=base, raw={})
+        res = revs.submit_revision(db_session, r[0], rev, account_map={})
+    else:
+        res = _again(db_session, r, account, lines, **kw)
+    assert not res.replayed and res.revision.id != first.revision.id
+
+
+def test_replay_compares_the_current_revision_not_the_newest(seed, db_session, run):
+    account = _card(seed, db_session, live=True)
+    r = run
+    base = [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 50)]
+    first = _submit(db_session, r, account, base)[2]
+    first.statement.status = "reconciled"
+    db_session.commit()
+    newer = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 60)])  # conflict, not current
+    assert newer.revision.conflict and first.statement.current_revision_id == first.revision.id
+    same_as_newer = _again(db_session, r, account, [_fline(1, SEP[0], "A", 100), _fline(2, SEP[0], "B", 60)])
+    assert not same_as_newer.replayed  # equal to the newest, not to the current
+    cases = db_session.query(ReconciliationCase).count()
+    conflicts = db_session.query(ReconciliationCase).filter_by(kind="statement_conflict", status="open").count()
+    same_as_current = _again(db_session, r, account, base)
+    assert same_as_current.replayed and same_as_current.revision.id == first.revision.id
+    assert first.statement.conflict_open  # the pending conflict is untouched
+    assert db_session.query(ReconciliationCase).count() == cases
+    assert db_session.query(ReconciliationCase).filter_by(kind="statement_conflict", status="open").count() == conflicts
+    assert first.statement.current_revision_id == first.revision.id
+
+
+def test_replay_yields_when_todays_guardrail_verdict_changed_to_failing(seed, db_session, run):
+    account = _card(seed, db_session, live=True)  # closing_day 30
+    lines = [_fline(1, SEP[0], "A", 100)]
+    first = _submit(db_session, run, account, lines)[2]
+    assert first.revision.guardrail_ok
+    account.closing_day = 15  # identical content now fails the closing-day check
+    db_session.commit()
+    res = _again(db_session, run, account, lines)
+    assert not res.replayed and res.revision.id != first.revision.id and not res.revision.guardrail_ok
+
+
+def test_replay_yields_when_a_failed_current_revision_now_passes_on_identical_content(seed, db_session, run):
+    account = _card(seed, db_session, live=True, closing_day=15)  # period end 30 Sep is off-cycle: the check fails
+    lines = [_fline(1, SEP[0], "A", 100)]
+    first = _submit(db_session, run, account, lines)[2]
+    assert not first.revision.guardrail_ok and first.statement.current_revision_id == first.revision.id
+    account.closing_day = 30  # the same content now passes
+    db_session.commit()
+    res = _again(db_session, run, account, lines)
+    assert not res.replayed and res.revision.id != first.revision.id and res.revision.revision == 2
+    assert res.revision.guardrail_ok and res.statement.current_revision_id == res.revision.id

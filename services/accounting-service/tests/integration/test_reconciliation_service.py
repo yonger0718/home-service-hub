@@ -1022,7 +1022,7 @@ def test_reconcile_yields_to_a_delete_of_a_claimed_entry(seed, db_session, run, 
 
 
 def test_reparse_hook_yields_to_a_delete_and_the_ingest_commits(seed, db_session, run, pg_engine, monkeypatch):
-    """An identical re-parse moves the event's coverage to the new line (row lock on the coverage row) before the
+    """A re-parse with the same lines at a new parser version moves the event's coverage to the new line (row lock on the coverage row) before the
     hook reconciles; a delete of the claimed entry waits on that row. The hook yields: the ingest commits with
     needs_recheck and the delete commits (before the fix: DeadlockDetected)."""
     card = _card(seed, db_session)
@@ -1037,7 +1037,7 @@ def test_reparse_hook_yields_to_a_delete_and_the_ingest_commits(seed, db_session
 
     def ingest(session):
         rev = RevisionIn(run_id=r.id, lease_token=token, file_id=None, account_id=card.id, kind="card", parser="t",
-                         parser_version="1", currency="TWD", period_start=SEP[0], period_end=SEP[1],
+                         parser_version="2", currency="TWD", period_start=SEP[0], period_end=SEP[1],
                          opening_balance=None, statement_total=Decimal("580"), lines=lines, raw={})
         submitted.append(revs.submit_revision(session, session.get(IngestRun, r.id), rev, account_map={}).revision.id)
 
@@ -1157,7 +1157,7 @@ def test_reparse_hook_never_waits_for_the_barrier(seed, db_session, run, pg_engi
 
     def ingest(session):
         rev = RevisionIn(run_id=r.id, lease_token=token, file_id=None, account_id=card.id, kind="card", parser="t",
-                         parser_version="1", currency="TWD", period_start=SEP[0], period_end=SEP[1],
+                         parser_version="2", currency="TWD", period_start=SEP[0], period_end=SEP[1],
                          opening_balance=None, statement_total=Decimal("580"), lines=lines, raw={})
         submitted.append(revs.submit_revision(session, session.get(IngestRun, r.id), rev, account_map={}).revision.id)
 

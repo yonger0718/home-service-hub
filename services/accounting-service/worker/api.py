@@ -91,11 +91,11 @@ class ApiClient:
         self._call("POST", f"/statements/ingest-runs/{lease.run_id}/finish",
                    json=lease.body(status=status, summary=summary), lease_route=True)
 
-    def account_map(self) -> tuple[dict[str, int], str, dict[int, int]]:
-        """(folder -> account id, mapping_version, account id -> closing day for the cards that have one)."""
+    def account_map(self) -> tuple[dict[str, int], str, dict[int, int], dict]:
+        """(folder -> account id, mapping_version, account id -> closing day, composite folder -> section targets)."""
         data = self._call("GET", "/statements/account-map")
         closing_days = {int(k): int(v) for k, v in (data.get("closing_days") or {}).items()}
-        return data["account_map"], data["mapping_version"], closing_days
+        return data["account_map"], data["mapping_version"], closing_days, data.get("composite_map") or {}
 
     def register_file(self, lease: Lease, sha256: str, size: int, kind: str, object_key: str) -> dict:
         return self._call("POST", "/statements/files", json=lease.body(sha256=sha256, size=size, kind=kind,

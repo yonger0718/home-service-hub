@@ -314,3 +314,11 @@ completing this list:
 4. Rotate every credential that `opc` ever held: the worker API token, the password file contents (bank passwords
    stay the owner's, rotate the Drive/rclone token and the parser login), the `accounting_ro` password.
 5. Only then enable `ACCOUNTING_RECONCILIATION_ENABLED`, then `dirty_enabled`, and allow the first real-data `run`.
+
+## Composite statements (國泰 split)
+
+Rollout order (design spec section 6): deploy the API, then the worker (the worker tolerates an API without `composite_map`, the API tolerates old workers); the changed `mapping_version` re-tries every `mapping` failure once, so the 臺灣銀行一般 files return to `ignored / mapping`. Then the owner sets `statement_live_from` on the mapped accounts (periods before it land historical), then PUTs `composite_map` (with the current `account_map`, `dirty_enabled`, `rules`, `policy` and `account_siblings`, since a PUT replaces them wholesale); the map change bumps `mapping_version` and the next poll re-queues the files. Verify that the files are `parsed`, every section in the run summary's `composite[]` is `parsed` or `anchor`, and each statement's closing balance equals the 持有明細 balance.
+
+Operator re-queue (after a split or 422 failure that a code or settings change has fixed, or after adding a key for an already-parsed file): `UPDATE statement_file SET status='new', failure=NULL WHERE id = <id>;`. There is no automatic retry without a `parser_version` change; `retry_due` is unchanged.
+
+Watching composite files: a composite failure is deliberate and silent by design, so after each monthly 國泰 file check the run summary. It is logged as one JSON line and shipped to Loki by Alloy; in Grafana Explore the query `{job="homehub-statements"} |= "composite" | json | sections_failed > 0` (adjust the label to the dashboard's) lists runs with a failed section, and the `composite[].sections[]` entries carry the key, outcome and reason (`split_error`, `422`). A `split_error` after a bank layout change needs a rule change in `worker/composite.py`, not a re-queue.

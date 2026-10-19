@@ -95,6 +95,38 @@ class SubmitResult:
     revision: StatementRevision
     lineage_counts: dict[str, int]
     case_ids: list[int]
+    replayed: bool = False
+
+
+LINE_COLUMNS = ("seq", "txn_date", "posted_date", "merchant_raw", "printed_amount", "foreign_amount", "foreign_currency",
+                "flow_amount", "line_kind", "installment_seq", "installment_total")
+
+
+def _replayed(db: Session, statement: AccountStatement, payload: RevisionIn, derived: list[derive.DerivedLine],
+              guardrail_ok: bool) -> StatementRevision | None:
+    """The current revision when the payload is persisted-equal to it (spec §5): same file, parser and version,
+    statement kind and currency, every header column, every stored line column position by position, and today's
+    guardrail verdict equal to the stored one (a changed verdict takes the normal path)."""
+    if statement.current_revision_id is None:
+        return None
+    current = db.get(StatementRevision, statement.current_revision_id)
+    if (current.file_id, current.parser_version, current.parser) != (payload.file_id, payload.parser_version, payload.parser):
+        return None
+    if (statement.kind, statement.currency) != (payload.kind, payload.currency) or current.guardrail_ok != guardrail_ok:
+        return None
+    if any(getattr(current, column) != getattr(payload, column) for column in HEADER_COLUMNS):
+        return None
+    stored = db.execute(select(StatementLine).where(StatementLine.revision_id == current.id)
+                        .order_by(StatementLine.seq)).scalars().all()
+    if len(stored) != len(derived):
+        return None
+    for line, d in zip(stored, derived):
+        sent = (d.line.seq, d.line.txn_date, d.line.posted_date, d.line.merchant_raw, _q(d.line.printed_amount),
+                _q(d.line.foreign_amount), d.line.foreign_currency, d.flow_amount, d.line.line_kind,
+                d.line.installment_seq, d.line.installment_total)
+        if tuple(getattr(line, column) for column in LINE_COLUMNS) != sent:
+            return None
+    return current
 
 
 def _q(value: Decimal | None) -> Decimal | None:
@@ -118,8 +150,11 @@ def _header_changes(statement: AccountStatement, payload: RevisionIn) -> dict[st
     return changes
 
 
-def _assert_folder_maps(db: Session, file_id: int, account_id: int, account_map: dict[str, int]) -> None:
-    """The file's newest source (non-removed preferred) folder `root/<first two folders>` must map to the account."""
+def _assert_folder_maps(db: Session, file_id: int, account_id: int, account_map: dict[str, int],
+                        composite_map: dict | None = None, *, section=None, currency: str | None = None) -> bool:
+    """The file's newest source (non-removed preferred) folder `root/<first two folders>` must map to the account:
+    through `account_map`, or — a composite folder — through the submitted `raw.section` key, whose target must be
+    this account in this currency (spec §5). Returns True for a composite folder."""
     if db.get(StatementFile, file_id) is None:
         raise NotFoundError(f"statement file {file_id} not found")
     source = db.execute(
@@ -130,8 +165,15 @@ def _assert_folder_maps(db: Session, file_id: int, account_id: int, account_map:
         raise ValidationError("file_id", "file has no source")
     folders = [part for part in source.drive_path.strip("/").split("/") if part][:-1]
     folder = "/".join([source.root, *folders[:2]])
+    targets = (composite_map or {}).get(folder)
+    if targets is not None:
+        target = targets.get(section) if isinstance(section, str) else None
+        if target is None or target.get("account_id") != account_id or section.split("/")[-1] != currency:
+            raise ValidationError("account_id", "folder maps elsewhere")
+        return True
     if account_map.get(folder) != account_id:
         raise ValidationError("account_id", "folder maps elsewhere")
+    return False
 
 
 def _file_statement_id(db: Session, payload: RevisionIn) -> int | None:
@@ -556,7 +598,7 @@ def _recount(db: Session, statement: AccountStatement) -> None:
 
 
 def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account_map: dict[str, int],
-                    origin: str | None = None) -> SubmitResult:
+                    composite_map: dict | None = None, origin: str | None = None) -> SubmitResult:
     """Store one revision (module docstring). `origin` names a statement created here: default `import` with a file,
     `manual` without one (R1a); the manual-statement route passes `manual`."""
     # 1. account, kind, folder mapping
@@ -568,8 +610,10 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
     if payload.period_start > payload.period_end:
         raise ValidationError("period_start", "period_start is after period_end")
     if payload.file_id is not None:
-        _assert_folder_maps(db, payload.file_id, payload.account_id, account_map)
-        db.get(StatementFile, payload.file_id).account_id = payload.account_id
+        section = payload.raw.get("section") if isinstance(payload.raw, dict) else None
+        composite = _assert_folder_maps(db, payload.file_id, payload.account_id, account_map, composite_map,
+                                        section=section, currency=payload.currency)
+        db.get(StatementFile, payload.file_id).account_id = None if composite else payload.account_id
     # 2. server-side derivation and guardrails
     try:
         derived = derive.derive_lines(payload.kind, [derive.LineIn(**line.model_dump()) for line in payload.lines])
@@ -585,6 +629,10 @@ def submit_revision(db: Session, run: IngestRun, payload: RevisionIn, *, account
                                          statement_id=_file_statement_id(db, payload))
     if not created and retired.is_retired(db, statement.id):  # 422: the worker fails the file, a 409 ends its run
         raise CodedValidationError("period_end", "statement_retired", f"statement {statement.id}")
+    if not created:
+        replay = _replayed(db, statement, payload, derived, check.ok)
+        if replay is not None:
+            return SubmitResult(statement, replay, {}, [], replayed=True)
     # 5. revision
     old, new = _old_lines(db, statement), _new_lines(derived)
     pairings = lineage.pair(old, new)

@@ -216,7 +216,8 @@ def create_manual_statement(db: Session, *, account_id: int, payload: ManualStat
                              origin="manual")
     finish_run(db, run.id, token, status="done", summary={"manual": True})
     audit.record(db, event="manual_statement_created", actor=label, statement_id=result.statement.id, run_id=run.id,
-                 detail={"revision_id": result.revision.id, "revision": result.revision.revision})
+                 detail={"revision_id": result.revision.id, "revision": result.revision.revision,
+                         "replayed": result.replayed})
     return result
 
 

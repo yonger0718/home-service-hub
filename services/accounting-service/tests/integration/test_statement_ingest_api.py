@@ -67,6 +67,20 @@ def test_worker_submits_revision_and_owner_reads_it(client, card):
     assert detail.json()["stale_events_pending"] is False
 
 
+def test_identical_revision_body_replays_and_skips_the_policy(client, card, monkeypatch):
+    from app.services import policy_service
+    calls = []
+    monkeypatch.setattr(policy_service, "run_policy_safe", lambda *a, **k: calls.append(a))
+    lease = _claim(client)
+    body = _revision(lease, card, [{"seq": 1, "posted_date": "2026-09-03", "merchant_raw": "全聯", "printed_amount": "580", "line_kind": "purchase"}], "580")
+    first = client.post("/statements/revisions", headers=W, json=body)
+    second = client.post("/statements/revisions", headers=W, json=body)
+    assert first.status_code == second.status_code == 201
+    assert (first.json()["replayed"], second.json()["replayed"]) == (False, True)
+    assert second.json()["revision_id"] == first.json()["revision_id"]
+    assert len(calls) == 1
+
+
 def test_hermes_cannot_submit_revisions(client, card):
     lease = _claim(client)
     assert client.post("/statements/revisions", headers=H, json=_revision(lease, card, [], "0")).status_code == 403
@@ -317,7 +331,7 @@ def test_cases_listing_needs_read_and_validates_status(client, card, seed, db_se
 
 def test_settings_expose_rules_and_validate_rule_keys(client, card):
     current = client.get("/settings/reconciliation", headers=H).json()
-    assert set(current) == {"account_map", "dirty_enabled", "rules", "rules_version", "version", "policy", "policy_version",
+    assert set(current) == {"account_map", "dirty_enabled", "rules", "rules_version", "version", "policy", "policy_version", "composite_map",
                             "account_siblings"}
     assert current["rules"]["accept"] == "0.80" and "period_end" not in current["rules"]
     for bad in ({"nope": 1}, {"period_end": "2026-09-30"}, {"deferral_days": "x"}, {"deferral_days": True},
@@ -591,3 +605,108 @@ def test_detail_lines_carry_their_event_flag_and_status(client, card, seed, db_s
     assert [c["context"] for c in detail["cases"] if c["kind"] == "balance_gap"] == [{"gap": "-580.0000", "card": True}]
     case_line = client.get(f"/reconciliation/cases/{case['id']}", headers=H).json()["line"]
     assert (case_line["event_flag"], case_line["event_status"]) == ("text_changed", "live")
+
+
+def _bank(seed, db_session, name, currency="TWD", **extra):
+    account = seed.account(name, is_credit=False, currency=currency, **extra)
+    db_session.commit()
+    return account
+
+
+COMPOSITE = "manual/國泰世華"
+
+
+def test_settings_put_validates_composite_map(client, card, seed, db_session):
+    a, b, jpy = _bank(seed, db_session, "國泰"), _bank(seed, db_session, "薪轉"), _bank(seed, db_session, "日幣", "JPY")
+    good = {COMPOSITE: {"91/TWD": {"account_id": a.id}, "59/TWD": {"account_id": b.id, "anchor_only": False},
+                        "50/JPY": {"account_id": jpy.id, "anchor_only": True}}}
+    ok = _put(client, {"composite_map": good})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["composite_map"][COMPOSITE]["91/TWD"] == {"account_id": a.id, "anchor_only": False}
+    assert client.get("/settings/reconciliation", headers=S).json()["composite_map"] == ok.json()["composite_map"]
+    bad = [
+        ({"bad key": {"91/TWD": {"account_id": a.id}}}, "composite_map"),
+        ({COMPOSITE: {"91": {"account_id": a.id}}}, "composite_map"),
+        ({COMPOSITE: {"91/TWD": {"account_id": card.id}}}, "composite_map"),          # a card
+        ({COMPOSITE: {"91/JPY": {"account_id": a.id}}}, "composite_map"),             # currency mismatch
+        ({COMPOSITE: {"91/TWD": {"account_id": 999999}}}, "composite_map"),           # missing account
+        ({COMPOSITE: {"91/TWD": {"account_id": a.id}, "59/TWD": {"account_id": a.id}}}, "composite_map"),  # duplicate target
+        ({COMPOSITE: {"91/TWD": {"account_id": a.id, "anchor_only": "yes"}}}, "anchor_only"),  # pydantic refuses it before the service
+        ({COMPOSITE: {}}, "composite_map"),
+    ]
+    for composite_map, loc in bad:
+        response = _put(client, {"composite_map": composite_map})
+        assert response.status_code == 422, (composite_map, response.text)
+        assert response.json()["detail"][0]["loc"][-1] == loc, response.text
+    overlap = _put(client, {"account_map": {COMPOSITE: card.id}, "composite_map": good})
+    assert overlap.status_code == 422 and overlap.json()["detail"][0]["loc"][-1] == "composite_map"
+    duplicate = _put(client, {"composite_map": {COMPOSITE: {"91/TWD": {"account_id": a.id}, "59/TWD": {"account_id": a.id}}}})
+    assert "91/TWD" in duplicate.json()["detail"][0]["msg"] and "59/TWD" in duplicate.json()["detail"][0]["msg"]
+    archived = _bank(seed, db_session, "舊", is_archived=True)
+    assert _put(client, {"composite_map": {COMPOSITE: {"91/TWD": {"account_id": archived.id}}}}).status_code == 422
+
+
+def test_account_map_route_carries_the_composite_map_and_versions_it(client, card, seed, db_session):
+    a = _bank(seed, db_session, "國泰")
+    from app.services import settings_service
+    assert settings_service.mapping_version({"mail/x/y": 1}) == settings_service.mapping_version({"mail/x/y": 1}, {})
+    assert settings_service.mapping_version({"b": 2, "a": 1}, {COMPOSITE: {"91/TWD": {"anchor_only": False, "account_id": 1}}}) == \
+        settings_service.mapping_version({"a": 1, "b": 2}, {COMPOSITE: {"91/TWD": {"account_id": 1, "anchor_only": False}}})
+    before = client.get("/statements/account-map", headers=W).json()
+    assert before["composite_map"] == {}
+    _put(client, {"account_map": {"mail/信用卡/國泰世華": card.id}, "composite_map": {COMPOSITE: {"91/TWD": {"account_id": a.id}}}})
+    after = client.get("/statements/account-map", headers=W).json()
+    assert after["composite_map"] == {COMPOSITE: {"91/TWD": {"account_id": a.id, "anchor_only": False}}}
+    assert after["mapping_version"] != before["mapping_version"] and len(after["mapping_version"]) == 16
+    assert after["account_map"] == {"mail/信用卡/國泰世華": card.id}
+
+
+def _composite_file(client, lease, sha, path="國泰世華/2609.pdf"):
+    ids = {"run_id": lease["run_id"], "lease_token": lease["lease_token"]}
+    file = client.post("/statements/files", headers=W, json=ids | {"sha256": sha * 64, "size": 10, "kind": "bank", "object_key": sha * 64}).json()
+    source = client.post("/statements/sources", headers=W, json=ids | {"file_id": file["id"], "root": "manual", "drive_file_id": "m" + sha,
+                                                                     "drive_path": path, "drive_md5": "b" * 32, "drive_size": 10})
+    assert source.status_code == 201, source.text
+    return file
+
+
+def _bank_revision(lease, account, section, **override):
+    body = _revision(lease, account, [], "0") | {"kind": "bank", "opening_balance": "0", "currency": account.currency,
+                                                 "raw": {"section": section, "anchor": True, "rows": 0}}
+    return body | override
+
+
+def test_composite_folder_accepts_each_declared_section_and_refuses_the_rest(client, seed, db_session):
+    a, b, jpy = _bank(seed, db_session, "國泰"), _bank(seed, db_session, "薪轉"), _bank(seed, db_session, "日幣", "JPY")
+    other = _bank(seed, db_session, "別家")
+    assert _put(client, {"composite_map": {COMPOSITE: {"91/TWD": {"account_id": a.id}, "59/TWD": {"account_id": b.id},
+                                                       "50/JPY": {"account_id": jpy.id, "anchor_only": True}}}}).status_code == 200
+    lease = _claim(client)
+    file = _composite_file(client, lease, "e")
+    ok = client.post("/statements/revisions", headers=W, json=_bank_revision(lease, a, "91/TWD") | {"file_id": file["id"]})
+    assert ok.status_code == 201, ok.text
+    ok2 = client.post("/statements/revisions", headers=W, json=_bank_revision(lease, b, "59/TWD") | {"file_id": file["id"]})
+    assert ok2.status_code == 201 and ok2.json()["statement_id"] != ok.json()["statement_id"]
+    ok3 = client.post("/statements/revisions", headers=W, json=_bank_revision(lease, jpy, "50/JPY") | {"file_id": file["id"]})
+    assert ok3.status_code == 201
+    for body in (_bank_revision(lease, other, "91/TWD"),            # wrong account for the key
+                 _bank_revision(lease, a, "59/TWD"),                # key points elsewhere
+                 _bank_revision(lease, a, "77/TWD"),                # unmapped key
+                 _bank_revision(lease, a, "91/TWD", raw={}),        # no section
+                 _bank_revision(lease, a, "91/TWD", raw={"section": 91}),  # non-string section
+                 _bank_revision(lease, jpy, "50/JPY", currency="TWD")):  # currency mismatch with the key
+        response = client.post("/statements/revisions", headers=W, json=body | {"file_id": file["id"]})
+        assert response.status_code == 422 and response.json()["detail"][0]["loc"][-1] == "account_id", response.text
+    row = db_session.execute(text("select account_id from statement_file where id = :id"), {"id": file["id"]}).scalar_one()
+    assert row is None
+
+
+def test_composite_submission_clears_a_stale_file_account_id(client, seed, db_session):
+    a = _bank(seed, db_session, "國泰")
+    assert _put(client, {"composite_map": {COMPOSITE: {"91/TWD": {"account_id": a.id}}}}).status_code == 200
+    lease = _claim(client)
+    file = _composite_file(client, lease, "f")
+    db_session.execute(text("update statement_file set account_id = :a where id = :id"), {"a": a.id, "id": file["id"]})
+    db_session.commit()
+    assert client.post("/statements/revisions", headers=W, json=_bank_revision(lease, a, "91/TWD") | {"file_id": file["id"]}).status_code == 201
+    assert db_session.execute(text("select account_id from statement_file where id = :id"), {"id": file["id"]}).scalar_one() is None
