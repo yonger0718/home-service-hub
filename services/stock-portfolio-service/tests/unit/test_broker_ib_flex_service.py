@@ -77,3 +77,61 @@ def test_parse_gbp_trade_maps_to_lse_like_the_csv_parser():
     raw = raw.replace(b'ibCommissionCurrency="USD" netCash="-326.83"', b'ibCommissionCurrency="GBP" netCash="-326.83"', 1)
     first = _transactions(broker_ib_flex_service.parse(raw))[0].payload
     assert (first["market"], first["currency"]) == ("LSE", "GBP")
+
+
+from datetime import date
+
+
+def _cash(parsed):
+    return [r.payload for r in parsed.rows if r.payload["_kind"] == "cash_flow"]
+
+
+def test_parse_cash_transactions_map_types_and_signs():
+    flows = _cash(broker_ib_flex_service.parse(FIXTURE.read_bytes()))
+    assert [(f["date"], f["cash_flow_type"], f["amount"]) for f in flows] == [
+        (date(2026, 6, 1), "deposit", Decimal("3000")),
+        (date(2026, 6, 20), "withdrawal", Decimal("-500")),
+        (date(2026, 6, 25), "dividend_cash", Decimal("6")),
+        (date(2026, 6, 25), "fee", Decimal("-0.9")),
+        (date(2026, 6, 3), "interest", Decimal("0.12")),
+        (date(2026, 6, 10), "fee", Decimal("-1.5")),
+        (date(2026, 6, 11), "fee", Decimal("1")),  # a positive adjustment under a fee type keeps its sign
+    ]
+    assert flows[0]["note"] == "CASH RECEIPTS / ELECTRONIC FUND TRANSFERS" and flows[0]["currency"] == "USD"
+    assert flows[2]["symbol"] == "AVGS" and flows[0]["symbol"] == ""
+    assert sum(f["amount"] for f in flows) == Decimal("2504.72")  # the balance a SUM(amount) reader would see
+
+
+def test_parse_cash_fingerprint_is_the_existing_cash_flow_fingerprint():
+    from app.services.cash_flow_service import cash_flow_fingerprint
+    row = [r for r in broker_ib_flex_service.parse(FIXTURE.read_bytes()).rows if r.payload["_kind"] == "cash_flow"][0]
+    assert row.fingerprint == cash_flow_fingerprint(broker="IB", date_=date(2026, 6, 1), type_="deposit", amount=Decimal("3000"), currency="USD", note="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS ib:800010")
+
+
+def test_parse_reports_an_unknown_cash_type_as_a_row_error():
+    raw = FIXTURE.read_bytes().replace(b'type="Commission Adjustments"', b'type="Bond Coupon"', 1)
+    parsed = broker_ib_flex_service.parse(raw)
+    assert any(e.message == "unsupported cash transaction type Bond Coupon" for e in parsed.errors)
+    assert len(_cash(parsed)) == 6
+
+
+def test_parse_reports_transfers_and_corporate_actions_as_row_errors_not_rows():
+    parsed = broker_ib_flex_service.parse(FIXTURE.read_bytes())
+    messages = sorted(e.message for e in parsed.errors)
+    assert "unsupported section Transfers" in messages and "unsupported section CorporateActions" in messages
+    assert len(parsed.rows) == 4 + 7  # positions and conversion rates are silently ignored
+
+
+@pytest.mark.parametrize("raw, message", [
+    (b"<!DOCTYPE x [<!ENTITY a 'b'>]><FlexQueryResponse/>", "flex: DTD refused"),
+    (b"<!--" + b" " * 6000 + b"--><!DOCTYPE x><FlexQueryResponse/>", "flex: DTD refused"),  # after a long leading comment
+    (b"<FlexQueryResponse><!ENTITY a 'b'></FlexQueryResponse>", "flex: DTD refused"),
+    ("<FlexQueryResponse/>".encode("utf-16"), "flex: not UTF-8"),
+    (b"<FlexStatementResponse><Status>Fail</Status><ErrorCode>1020</ErrorCode><ErrorMessage>x</ErrorMessage></FlexStatementResponse>", "flex: 1020"),
+    (b"<FlexStatementResponse><Status>Fail</Status><ErrorCode>DROP TABLE</ErrorCode></FlexStatementResponse>", "flex: error"),  # a code is 4 digits or it is not a code
+    (b"<Other/>", "flex: not a FlexQueryResponse"),
+    (b"<FlexQueryResponse", "flex: malformed XML"),
+])
+def test_parse_refuses_bad_documents_with_a_value_error(raw, message):
+    with pytest.raises(ValueError, match=message):
+        broker_ib_flex_service.parse(raw)
