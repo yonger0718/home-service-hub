@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: rev 1 (2026-10-20). Phase 2 touches only `services/stock-portfolio-service` and the statement worker
+Status: rev 2 (2026-10-20): market from Flex `listingExchange` (rev 1 reused the CSV parser's "guess US" rule and
+would have split each LSE ETF into an LSE position and a US position); the business-key pass compares every row,
+not only rows with an unknown fingerprint. Rev 1 (2026-10-20) was the first draft. Phase 2 touches only `services/stock-portfolio-service` and the statement worker
 (`services/accounting-service/worker`); it does not touch the ledger, so it may run before the 2026-10-24 cutover.
 
 **Goal:** A daily worker timer fetches the owner's IB Flex Query statement (XML, last 30 calendar days) and imports
@@ -43,10 +45,12 @@ Verified facts this plan rests on (2026-10-20, prod and the owner's live query):
   Received`, `Broker Interest Paid`, `Other Fees`, …), `amount` (signed), `currency`, `dateTime` (date or
   date;time), `settleDate`, `reportDate`, `description`, `symbol`, `levelOfDetail` (`DETAIL`), `transactionID`.
 - Fingerprint parity: recomputing `import_service._broker_transaction_fingerprint` from the Flex sample's
-  2026-06-02 trades with `market = broker_ib_service._market_for(symbol, currency)` (`US`) and
-  `note = description` reproduces the three fingerprints stored by the June CSV import exactly (3/3). The stored
-  rows carry `market = LSE` (corrected later) with the `US` fingerprint, and `symbol_map` has no row for the IB
-  symbols today — so a later `symbol_map` override would re-hash and miss them: hence the business-key pass.
+  2026-06-02 trades with `market = "US"` (the CSV parser's guess) and `note = description` reproduces the three
+  fingerprints stored by the June CSV import exactly (3/3) — so Flex `description` IS the CSV 說明 text. The
+  stored rows carry `market = LSE` (corrected by hand after the import) with the `US` fingerprint, and
+  `symbol_map` has no row for the IB symbols. The Flex row knows the venue (`listingExchange="LSEETF"`), so the
+  adapter sets `market` from it; the resulting fingerprint differs from the stored `US` one, and the business-key
+  pass (market-free key) is what keeps the overlap from duplicating.
 - The IB deposit imported from the CSV carries the CSV 說明 as `note`; the Flex row's `description` is a
   different (English) text, so the cash-flow fingerprints differ: hence the business-key pass covers cash flows.
 - `fx_rates` holds USD and GBP daily rows from yfinance through the previous business day; `_exact_fx_rate`
@@ -73,8 +77,10 @@ Verified facts this plan rests on (2026-10-20, prod and the owner's live query):
   refused before parsing. Upload limit 5 MiB (`_MAX_CSV_BYTES`). The route is unauthenticated like the other
   import routes (localhost only, behind the gateway).
 - Fingerprints are the existing ones: `import_service._broker_transaction_fingerprint` (note = Flex
-  `description`, market = `broker_ib_service._market_for`) and `cash_flow_service.cash_flow_fingerprint` (note =
-  Flex `description`). Never introduce a third fingerprint.
+  `description`; market `LSE` when `listingExchange` is `LSE`, `LSEETF` or `LSEIOB`, else
+  `broker_ib_service._market_for(symbol, currency)`) and `cash_flow_service.cash_flow_fingerprint` (note = Flex
+  `description`). Never introduce a third fingerprint. Idempotency against rows that exist under another
+  fingerprint (or none) is the business-key pass, which ignores `market` and `name`.
 - Fixtures are synthetic: the Flex sample in the repo mirrors the existing `tests/unit/fixtures/ib_sample.csv`
   rows (ACWD 1 @ 325.05, AVGS 30 @ 27.915, ACWD 6 @ 325.2, fee 1.78, 2026-06-02; deposit 3000 on 2026-06-01) with
   invented ids; real exports stay on the worker host.
@@ -146,7 +152,9 @@ Interfaces shared across tasks (exact names):
 - Produces: `parse(raw_bytes: bytes) -> ParseResult` where every transaction row's payload has exactly the keys
   the CSV parser emits (`broker_ib_service.py:88-104`): `_kind="transaction"`, `broker="IB"`, `symbol`, `market`,
   `name` (= Flex `description` or None), `type`, `position_side="LONG"`, `quantity` (abs), `price`, `currency`,
-  `trade_date` (UTC midnight datetime from `tradeDate`), `fee` (abs `ibCommission`), `tax` (abs `taxes`).
+  `trade_date` (UTC midnight datetime from `tradeDate`), `fee` (abs `ibCommission`), `tax` (abs `taxes`);
+  `market` = `"LSE"` when `listingExchange` ∈ `LSE_EXCHANGES = {"LSE", "LSEETF", "LSEIOB"}`, else
+  `broker_ib_service._market_for(symbol, currency)` (the CSV rule: `LSE` for GBP, `US` otherwise).
   Row index = the 1-based position of the row element in document order across all sections.
 
 - [ ] **Step 1: Write the fixture** `tests/unit/fixtures/ib_flex_sample.xml` (synthetic; ids invented):
@@ -210,17 +218,25 @@ def test_parse_trades_mirror_the_csv_parser_payload():
     parsed = broker_ib_flex_service.parse(FIXTURE.read_bytes())
     first = _transactions(parsed)[0].payload
     assert first == {
-        "_kind": "transaction", "broker": "IB", "symbol": "ACWD", "market": "US",
+        "_kind": "transaction", "broker": "IB", "symbol": "ACWD", "market": "LSE",
         "name": "SS SPD MS AL CO WO UC ET-USD", "type": "BUY", "position_side": "LONG",
         "quantity": Decimal("1"), "price": Decimal("325.05"), "currency": "USD",
         "trade_date": datetime(2026, 6, 2, tzinfo=timezone.utc), "fee": Decimal("1.78"), "tax": Decimal("0"),
     }
 
 
-def test_parse_trades_share_fingerprints_with_the_csv_import_of_the_same_trades():
-    flex = {r.fingerprint for r in _transactions(broker_ib_flex_service.parse(FIXTURE.read_bytes()))}
+def test_parse_trades_on_a_us_venue_share_fingerprints_with_the_csv_import_of_the_same_trades():
+    raw = FIXTURE.read_bytes().replace(b'listingExchange="LSEETF"', b'listingExchange="ARCA"')  # the CSV parser guesses US for USD
+    flex = {r.fingerprint for r in _transactions(broker_ib_flex_service.parse(raw))}
     csv = {r.fingerprint for r in broker_ib_service.parse(CSV_FIXTURE.read_bytes()).rows if r.payload["_kind"] == "transaction"}
     assert csv <= flex and len(csv) == 3
+
+
+def test_parse_trades_take_the_market_from_the_listing_exchange():
+    parsed = broker_ib_flex_service.parse(FIXTURE.read_bytes())
+    assert {r.payload["market"] for r in _transactions(parsed)} == {"LSE"}
+    us = broker_ib_flex_service.parse(FIXTURE.read_bytes().replace(b'listingExchange="LSEETF"', b'listingExchange="NASDAQ"'))
+    assert {r.payload["market"] for r in _transactions(us)} == {"US"}
 
 
 def test_parse_sell_uses_absolute_quantity_and_taxes():
@@ -274,14 +290,14 @@ silently (not a row, not an error); `assetCategory != "STK"` → `ParseError("un
 `ibCommissionCurrency` present and ≠ `currency` → `ParseError("ibCommissionCurrency <x> differs from currency <y>")`;
 `type_ = "BUY" if buySell == "BUY" else "SELL"`; `quantity = abs(_decimal(quantity))`; `price =
 _decimal(tradePrice)`; `fee = abs(_decimal(ibCommission))`; `tax = abs(_decimal(taxes))`; `currency =
-currency.upper()`; `market = broker_ib_service._market_for(symbol, currency)`; `note = description.strip() or
-None`; fingerprint via `_broker_transaction_fingerprint(broker="IB", symbol, market, type_, quantity, price,
+currency.upper()`; `market = "LSE" if listingExchange in LSE_EXCHANGES else broker_ib_service._market_for(symbol, currency)`;
+`note = description.strip() or None`; fingerprint via `_broker_transaction_fingerprint(broker="IB", symbol, market, type_, quantity, price,
 trade_date, fee, tax, currency, note)` — the same call as `broker_ib_service.py:74-86`. Sections other than
 `Trades` are ignored in this task. `ValueError`/`InvalidOperation` inside a row → `ParseError(row_index, str(exc))`.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: 7 passed.
+Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: 8 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -386,7 +402,7 @@ no ValueError).
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: 12 passed.
+Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: 13 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -409,13 +425,14 @@ git commit -m "feat(portfolio): map IB Flex cash transactions and refuse bad Fle
   `_read_upload`, `_touched_symbols_and_min_trade_date`, `_maybe_schedule_chain`, `_serialize_result`
   (`imports.py:36, 116, 150, 62`); `models.Transaction`, `models.BrokerCashFlow`.
 - Produces: `legacy_duplicates(db: Session, parsed: ParseResult) -> int` — removes from `parsed.rows` (in place)
-  every row whose fingerprint is NOT already stored (those stay and are counted by the commit as
-  `skipped_duplicates`) but whose business key is: for a transaction row `(symbol, type, quantity, price,
-  trade_date::date)` against existing `transactions` rows with `broker='IB'`; for a cash-flow row `(date, type,
-  amount, currency)` against existing `broker_cash_flows` rows with `broker='IB'`. Returns the count. So a second
-  upload of the same file reports `skipped_duplicates == parsed` and `legacy_duplicates == 0`; only rows imported
-  before fingerprints, or with a different note, count as legacy. Route response = `_serialize_result(...,
-  csv_format="ib-flex")` plus `"legacy_duplicates": <int>`.
+  every row whose business key already exists, whatever its fingerprint: for a transaction row `(symbol, type,
+  quantity, price, trade_date::date)` against existing `transactions` rows with `broker='IB'`; for a cash-flow row
+  `(date, type, amount, currency)` against existing `broker_cash_flows` rows with `broker='IB'`. The key carries
+  neither `market` nor `name`, so a row stored as `US` by the CSV import, corrected to `LSE` by hand, or imported
+  before fingerprints existed, is still the same trade. Returns the count. The commit's fingerprint check then
+  only catches in-batch twins, so a second upload of the same file reports `legacy_duplicates == parsed` and
+  `skipped_duplicates == 0`. Route response = `_serialize_result(..., csv_format="ib-flex")` plus
+  `"legacy_duplicates": <int>`.
 
 - [ ] **Step 1: Write the failing tests** `tests/integration/test_ib_flex_import.py`:
 
@@ -453,17 +470,19 @@ def test_ib_flex_import_creates_rows_once_and_dedupes_on_the_second_upload(clien
     assert db_session.query(models.Transaction).filter_by(broker="IB").count() == 4
     assert db_session.query(models.BrokerCashFlow).filter_by(broker="IB").count() == 7
     second = _post(client, raw).json()
-    assert (second["created"], second["skipped_duplicates"], second["recalc_scheduled"]) == (0, 11, False)
+    assert (second["created"], second["skipped_duplicates"], second["legacy_duplicates"], second["recalc_scheduled"]) == (0, 0, 11, False)
 
 
 def test_ib_flex_import_dedupes_against_an_earlier_csv_import_by_fingerprint_and_business_key(client, db_session):
     _seed_fx(db_session, *JUNE)
     csv = (FIXTURES / "ib_sample.csv").read_bytes()
     assert client.post("/api/portfolio/imports/csv", files={"file": ("ib.csv", BytesIO(csv), "text/csv")}).json()["created"] == 4
-    # the CSV deposit carries the 說明 text as its note; the Flex row's description differs → business key
+    # the CSV rows are stored as market US with the CSV fingerprint; the Flex rows say LSE → different fingerprints,
+    # same business key; the deposit's note differs too → all four are legacy duplicates
     body = _post(client, (FIXTURES / "ib_flex_sample.xml").read_bytes()).json()
-    assert (body["skipped_duplicates"], body["legacy_duplicates"], body["created"]) == (3, 1, 7)
+    assert (body["skipped_duplicates"], body["legacy_duplicates"], body["created"]) == (0, 4, 7)
     assert db_session.query(models.BrokerCashFlow).filter_by(broker="IB", type="deposit").count() == 1
+    assert db_session.query(models.Transaction).filter_by(broker="IB", symbol="ACWD").count() == 2  # 1 + 6 from the CSV, nothing new
 
 
 def test_ib_flex_import_dedupes_a_row_imported_before_fingerprints_existed(client, db_session):
@@ -487,7 +506,7 @@ def test_ib_flex_import_retries_a_row_once_its_fx_rate_exists(client, db_session
     assert any(e["reason"] == "missing FX rate for 2026-06-05 USD" for e in first["errors"]) and first["created"] == 10
     _seed_fx(db_session, date(2026, 6, 5))
     second = _post(client, (FIXTURES / "ib_flex_sample.xml").read_bytes()).json()
-    assert (second["created"], second["skipped_duplicates"]) == (1, 10)
+    assert (second["created"], second["legacy_duplicates"]) == (1, 10)
 
 
 def test_ib_flex_import_refuses_a_flex_error_document_and_oversize_uploads(client):
@@ -500,9 +519,7 @@ def test_ib_flex_import_refuses_a_flex_error_document_and_oversize_uploads(clien
 Run: `pytest tests/integration/test_ib_flex_import.py -v` — Expected: FAIL with 404 (no route).
 
 - [ ] **Step 3: Implement `legacy_duplicates`** in `broker_ib_flex_service.py`:
-  first the stored fingerprints: `db.query(Transaction.import_fingerprint).filter(Transaction.broker == "IB", Transaction.import_fingerprint.is_not(None))`
-  and the same on `BrokerCashFlow` into one set `known`; a row with `row.fingerprint in known` is kept untouched.
-  Then one query per kind: `db.query(Transaction.symbol, Transaction.type, Transaction.quantity, Transaction.price,
+  one query per kind: `db.query(Transaction.symbol, Transaction.type, Transaction.quantity, Transaction.price,
   Transaction.trade_date).filter(Transaction.broker == "IB")` into a set of
   `(symbol, type.value, f"{quantity:.4f}", f"{price:.4f}", trade_date.date().isoformat())`, and
   `db.query(BrokerCashFlow.date, BrokerCashFlow.type, BrokerCashFlow.amount, BrokerCashFlow.currency).filter(BrokerCashFlow.broker == "IB")`
@@ -1003,9 +1020,10 @@ sections ignored (OpenPositions, ConversionRates), and the summary keys.
   - §7 bullet 2: `stores the CSV` → `stores the XML`; endpoint `POST /api/portfolio/imports/ib-flex`; `Flex CSV is not
     the Activity Statement CSV` → `Flex XML is not the Transfer History CSV the IB importer reads today`; sections
     `(Trades, CashTransactions; Transfers and CorporateActions are reported, OpenPositions ignored)`; after the
-    fingerprint sentence add: `A pre-pass (legacy_duplicates) drops rows whose business key already exists —
-    rows imported before fingerprints, or whose CSV note differs from the Flex description — so a backfill over an
-    already-imported month creates nothing.`
+    fingerprint sentence add: `The market comes from the Flex listingExchange (LSE for LSE/LSEETF/LSEIOB), not from
+    the CSV parser's currency guess. A pre-pass (legacy_duplicates) drops rows whose business key (no market, no
+    note) already exists — rows imported before fingerprints, stored under another market, or whose CSV note
+    differs from the Flex description — so a backfill over an already-imported month creates nothing.`
   - §7 bullet 3: replace `request URL recorded by the test transport` with `every request other than the two Flex
     calls (the token is the t query parameter of SendRequest and GetStatement and nothing else: never a header,
     never the portfolio request)`; add `Recovery: python -m worker flex --unlatch; a one-off backfill query runs with
@@ -1034,8 +1052,9 @@ git commit -m "docs(portfolio): IB Flex timer units, README, spec §7 rev 3"
    `daemon-reload`; do NOT enable the timer yet.
 2. Owner-run dry-run of the backfill query as the worker user: `python -m worker flex --query-id 1678975 --dry-run`
    → read `created` / `skipped_duplicates` / `legacy_duplicates` / `error_reasons` from the JSON line (expected
-   from the 2026-10-20 sample: 3 trades + 2 cash flows new, 3 trades legacy/fingerprint duplicates, 1 deposit legacy
-   duplicate, `missing FX rate` only for dates past `fx_rates`); then the same without `--dry-run`.
+   from the 2026-10-20 sample: 3 trades + 2 cash flows new, 4 legacy duplicates — the three 2026-06-02 trades and
+   the 2026-06-01 deposit — `missing FX rate` only for dates past `fx_rates`); then the same without `--dry-run`.
+   New IB trades land with `market = LSE` straight from `listingExchange`, matching the hand-corrected rows.
 3. Daily query dry-run, then real: `python -m worker flex --dry-run`, `python -m worker flex`.
 4. `systemctl --user enable --now homehub-portfolio-flex.timer`; watch the first timer run in the journal
    (`journalctl --user -u homehub-portfolio-flex.service`).
