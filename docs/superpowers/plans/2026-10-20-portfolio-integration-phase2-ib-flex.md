@@ -859,7 +859,7 @@ git commit -m "feat(worker): Flex credentials file and STATEMENT_FLEX_* configur
     `httpx.HTTPError`, transient), `get:pending` (1019 past the poll budget, transient), `xml` (unparseable Flex
     response or an `ErrorCode` that is not four digits, not transient). An `ErrorCode` is accepted only when it
     matches `^[0-9]{4}$`; anything else is `xml`.
-    `IB_TRANSIENT_CODES = {"1003", "1004", "1005", "1006", "1007", "1008", "1009", "1018", "1019", "1021"}` (statement
+    `IB_TRANSIENT_CODES = {"1001", "1003", "1004", "1005", "1006", "1007", "1008", "1009", "1018", "1019", "1021"}` (statement
     not yet available / incomplete / settlement, P&L data not ready / server under heavy load / too many requests /
     in progress / could not be retrieved); every other code — `1010`–`1017` (inactive service account, invalid or
     expired token, IP restriction, invalid query, invalid account state, invalid reference code), `1020` (invalid
@@ -1070,7 +1070,8 @@ git commit -m "feat(worker): fetch the IB Flex statement; the token stays in the
        `unsupported_cash_type`, `^unsupported section` → `unsupported_section`, `^ibCommissionCurrency` →
        `commission_currency`, `^ambiguous legacy match` → `ambiguous_legacy`, `without (tradeID|transactionID)` →
        `missing_id`, anything else → `other` — and counts; the reason text itself is never stored or printed.
-    5. On `FlexError` not transient: write the latch with `reason = code`, `summary["codes"] = ["flex_disabled", code]`;
+    5. On `FlexError` not transient: only for a plain run (no `from_file`, no `query_id`, no `dry_run`) write the latch with
+       `reason = code` and `summary["codes"] = ["flex_disabled", code]`; otherwise `["failed", code]` and no latch;
        transient: `summary["codes"] = ["transient", code]`, no latch. The latch is removed only when `unlatch` was
        passed AND the run was a plain daily run (no `from_file`, no `query_id`, no `dry_run`) AND it succeeded —
        only that proves the daily credentials and query work again. `run` never raises `FlexError`; it returns the summary.
@@ -1136,8 +1137,8 @@ def test_run_fetches_saves_and_posts_the_statement(tmp_path, caplog):
 
 def test_run_dry_run_query_id_and_legacy_until_reach_both_services(tmp_path):
     from datetime import date
-    summary, svc, portfolio = _run(_cfg(tmp_path), dry_run=True, query_id="1678975", legacy_until=date(2026, 6, 30))
-    assert "q=1678975" in svc.urls[0] and summary["dry_run"] is True
+    summary, svc, portfolio = _run(_cfg(tmp_path), dry_run=True, query_id="<backfill-query-id>", legacy_until=date(2026, 6, 30))
+    assert "q=<backfill-query-id>" in svc.urls[0] and summary["dry_run"] is True
     assert portfolio.requests[0][0] == "http://portfolio.test/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30"
 
 
@@ -1156,7 +1157,7 @@ def test_run_latches_on_a_failed_send_request_and_only_a_plain_unlatch_run_clear
     with pytest.raises(flex.FlexDisabled):
         _run(cfg)
     saved = tmp_path / "old.xml"; saved.write_bytes(STATEMENT)
-    for kw in ({"from_file": saved}, {"dry_run": True}, {"query_id": "1678975"}):
+    for kw in ({"from_file": saved}, {"dry_run": True}, {"query_id": "<backfill-query-id>"}):
         summary, _, _ = _run(cfg, unlatch=True, **kw)   # these prove nothing about the daily credentials
         assert summary["codes"] == [] and (cfg.state_dir / flex.LATCH).exists()
     summary, _, _ = _run(cfg, unlatch=True)
@@ -1201,10 +1202,10 @@ def test_cli_flex_prints_one_json_line_and_exits_by_codes(tmp_path, monkeypatch,
     monkeypatch.setattr(config, "load", lambda env=None: cfg)
     calls = []
     monkeypatch.setattr(flex, "run", lambda c, **kw: calls.append(kw) or {"codes": [], "created": 0})
-    assert cli.main(["flex", "--dry-run", "--query-id", "1678975", "--legacy-until", "2026-06-30"]) == 0
+    assert cli.main(["flex", "--dry-run", "--query-id", "<backfill-query-id>", "--legacy-until", "2026-06-30"]) == 0
     out, err = capsys.readouterr()
     assert json.loads(out.strip()) == {"codes": [], "created": 0} and err == ""
-    assert calls[0]["dry_run"] is True and calls[0]["query_id"] == "1678975" and calls[0]["from_file"] is None and calls[0]["unlatch"] is False
+    assert calls[0]["dry_run"] is True and calls[0]["query_id"] == "<backfill-query-id>" and calls[0]["from_file"] is None and calls[0]["unlatch"] is False
     assert str(calls[0]["legacy_until"]) == "2026-06-30"
     monkeypatch.setattr(flex, "run", lambda c, **kw: {"codes": ["transient", "http:503"]})
     assert cli.main(["flex"]) == 1
@@ -1382,7 +1383,7 @@ git commit -m "docs(portfolio): IB Flex timer units, README, spec §7 rev 3"
 
 1. Deploy: worker checkout to the merged main; portfolio service restart (new route); `ln -sf` the two units,
    `daemon-reload`; do NOT enable the timer yet.
-2. Owner-run dry-run of the backfill query as the worker user: `python -m worker flex --query-id 1678975
+2. Owner-run dry-run of the backfill query as the worker user: `python -m worker flex --query-id <backfill-query-id>
    --legacy-until 2026-06-30 --dry-run` — `2026-06-30` covers the whole CSV-imported range (the last CSV row is
    2026-06-05) → read `candidates` / `legacy_duplicates` / `error_codes` from the JSON line (`created` is 0 on a dry
    run by design; expected from the 2026-10-20 sample: `candidates` 5 — 3 trades + 2 cash flows — `legacy_duplicates`
@@ -1392,7 +1393,10 @@ git commit -m "docs(portfolio): IB Flex timer units, README, spec §7 rev 3"
    as the worker user; then the same without `--dry-run` (the four rows adopt their Flex fingerprints). New IB
    trades land with `market = LSE` straight from `listingExchange`, matching the hand-corrected rows. From this
    point the IB CSV is never uploaded again.
-3. Daily query dry-run, then real: `python -m worker flex --dry-run`, `python -m worker flex`.
+3. Daily query dry-run, then real: `python -m worker flex --dry-run`, `python -m worker flex`. The backfill query must
+   select the same Trade and CashTransaction fields as the daily query; the dry run must show `candidates` 0 (or only
+   rows newer than the backfill) and `skipped_duplicates` equal to the overlap — stop otherwise.
 4. `systemctl --user enable --now homehub-portfolio-flex.timer`; watch the first timer run in the journal
    (`journalctl --user -u homehub-portfolio-flex.service`).
 5. Delete the backfill query in IB Account Management once step 2 has imported.
+6. Alloy matcher: add `_SYSTEMD_USER_UNIT=homehub-portfolio-flex.service` before enabling the timer.
