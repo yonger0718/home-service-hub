@@ -43,7 +43,7 @@ ticks never fail the unit (`gate`, `verify` and `export-masked` exit 3 instead).
 
 ## IB Flex statement timer (Phase 2, 2026-10-20)
 
-`homehub-portfolio-flex.service` / `.timer` run `python -m worker flex` daily at 15:00 Asia/Taipei (`Persistent=true`). The
+`homehub-portfolio-flex.service` / `.timer` run `python -m worker flex` daily at 15:30 Asia/Taipei (`Persistent=true`). The
 worker asks the IB Flex Web Service for the saved Flex Query (SendRequest, then GetStatement, polling while IB prepares it),
 keeps the XML, and POSTs it to the portfolio service (`POST /api/portfolio/imports/ib-flex`). Design: spec
 `docs/superpowers/specs/2026-10-19-portfolio-integration-design.md` section 7; command and summary keys: "IB Flex statements" in
