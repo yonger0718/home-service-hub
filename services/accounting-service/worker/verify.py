@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
+from worker import composite
 from worker import drive as drive_mod
 from worker import inbox as inbox_mod
 from worker import mask, ocr as ocr_mod, parse_schema, parser as parser_mod, passwords, pdf, pipeline
@@ -142,6 +143,10 @@ def _account_map(cfg: WorkerConfig, db: Session | None) -> dict[str, int]:
     raw = json.loads(cfg.account_map_file.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise Refused("account map file: not an object")
+    if "account_map" in raw or "composite_map" in raw:  # the envelope form: {"account_map": {...}, "composite_map": {...}}
+        raw = raw.get("account_map") or {}
+        if not isinstance(raw, dict):
+            raise Refused("account map file: account_map is not an object")
     for key, value in raw.items():
         parts = key.split("/") if isinstance(key, str) else []
         shape_ok = (len(parts), parts[0] if parts else None) in ((3, "mail"), (2, "manual"))
@@ -209,6 +214,54 @@ def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementPa
     return DryRun(result, guard, existing)
 
 
+def _composite_map(cfg: WorkerConfig, db: Session | None) -> dict[str, dict]:
+    """folder key → {"<suffix>/<CUR>": {"account_id", "anchor_only"}} (spec §3 of the composite split): from the
+    settings, or from the map file's `composite_map` key (a flat map file has none)."""
+    if cfg.account_map_file is None:
+        from app.services import settings_service
+
+        return settings_service.read_reconciliation_settings(db).get("composite_map") or {}
+    raw = json.loads(cfg.account_map_file.read_text(encoding="utf-8"))
+    found = raw.get("composite_map") if isinstance(raw, dict) else None
+    if found is None:
+        return {}
+    if not isinstance(found, dict):
+        raise Refused("account map file: composite_map is not an object")
+    for folder, targets in found.items():
+        parts = folder.split("/") if isinstance(folder, str) else []
+        if (len(parts), parts[0] if parts else None) != (2, "manual") or not isinstance(targets, dict):
+            raise Refused(f"account map file: composite folder {folder!r} invalid")
+        for key, target in targets.items():
+            if not isinstance(key, str) or key.count("/") != 1 or not isinstance(target, dict) \
+                    or isinstance(target.get("account_id"), bool) or not isinstance(target.get("account_id"), int):
+                raise Refused(f"account map file: composite key {key!r} invalid")
+    return found
+
+
+def _composite_parses(cfg: WorkerConfig, sha: str, meta: dict, targets: dict, candidates: dict,
+                      masker) -> list[tuple[str, int, parse_schema.StatementParse]]:
+    """Split a composite statement (spec §4) from the PDF the export published, one StatementParse per declared
+    section: the same `composite.split` / `composite.bodies` the pipeline runs, so verify sees what ingest would
+    submit. Raises composite.SplitError / pdf errors like the pipeline (the caller counts them)."""
+    verify_cfg = dataclasses.replace(cfg, state_dir=cfg.verify_dir / "pdf-cache")
+    data = (verify_cfg.inbox_dir / f"{sha}.pdf").read_bytes()
+    literals = candidates.get(passwords.password_key(meta["root"], meta["folder"]), [])
+    unlocked = pdf.unlock(data, literals)
+    password = literals[unlocked.password_index] if unlocked.password_index is not None else None
+    lines = pdf.extract_lines(data, password)
+    declared = {key: bool(target.get("anchor_only")) for key, target in targets.items()}
+    sections, _report = composite.split(lines, declared)
+    out = []
+    for key, body in composite.bodies(sections, file_id=0, targets=targets, parser_version="verify", masker=masker,
+                                      candidates=literals):
+        parsed = parse_schema.StatementParse(
+            kind=body["kind"], currency=body["currency"], period_start=body["period_start"], period_end=body["period_end"],
+            closing_date=body["closing_date"], due_date=None, opening_balance=body["opening_balance"],
+            statement_total=body["statement_total"], minimum_payment=None, lines=body["lines"])
+        out.append((f"{sha}#{key}", int(targets[key]["account_id"]), parsed))
+    return out
+
+
 def _key(meta: dict) -> str:
     return "/".join([meta["root"], *[p for p in meta["folder"].split("/") if p][:2]])
 
@@ -235,10 +288,19 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
     masked_dir, parsed_dir = cfg.verify_dir / "masked", inbox_mod.private_dir(cfg.verify_dir / "parsed")
     reports = inbox_mod.private_dir(cfg.verify_dir / "reports")
     file_map = _account_map(cfg, None) if cfg.account_map_file is not None else None
+    file_composite = _composite_map(cfg, None) if cfg.account_map_file is not None else None
+    secrets: dict = {}  # the password candidates and the masker, read only when a composite folder is met
+
+    def _secrets() -> tuple[dict, object]:
+        if not secrets:
+            secrets["candidates"], _ = passwords.load(cfg.password_file)
+            secrets["masker"] = mask.Masker(passwords.identity(cfg.password_file))
+        return secrets["candidates"], secrets["masker"]
+
     rows: list[dict] = []
     totals = {"statements": 0, "lines": 0, "claims": 0, "unmatched_lines": 0, "unmatched_entries": 0,
               "guardrail_failed": 0, "parse_failed": 0, "unmapped": 0, "existing": 0, "verify_errors": 0,
-              "cases": {}, "errors": []}
+              "composite_files": 0, "composite_sections": 0, "cases": {}, "errors": []}
     engine = create_engine(cfg.verify_db_url, hide_parameters=True)
     try:
         # Phase 1: parse (or load the cache) with no database connection open.
@@ -248,9 +310,10 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
             with Session(engine) as db:
                 _read_only_snapshot(db)
                 account_map = _account_map(cfg, db)
+                composite_map = _composite_map(cfg, db)
                 db.rollback()
         else:
-            account_map = file_map
+            account_map, composite_map = file_map, file_composite or {}
         for meta_path in sorted(masked_dir.glob("*.json")):
             if limit is not None and len(pending) + totals["parse_failed"] + totals["unmapped"] + totals["verify_errors"] >= limit:
                 break
@@ -258,6 +321,21 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
             account_id = None
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                targets = composite_map.get(_key(meta))
+                if targets:  # a composite folder (國泰世華 綜合月對帳單): split, never the parser
+                    totals["composite_files"] += 1
+                    try:
+                        candidates, masker = _secrets()
+                        sections = _composite_parses(cfg, sha, meta, targets, candidates, masker)
+                    except (composite.SplitError, pdf.PasswordError, pdf.NoTextLayer, pdf.TooLarge, pdf.Malformed,
+                            pdf.ExtractTimeout) as exc:
+                        totals["parse_failed"] += 1
+                        rows.append({"sha256": sha, "account_id": None, "error": "split_error" if isinstance(exc, composite.SplitError)
+                                     else type(exc).__name__})  # keys and counts only (SplitError's contract)
+                        continue
+                    totals["composite_sections"] += len(sections)
+                    pending.extend(sections)
+                    continue
                 account_id = account_map.get(_key(meta))
                 if account_id is None:
                     totals["unmapped"] += 1
