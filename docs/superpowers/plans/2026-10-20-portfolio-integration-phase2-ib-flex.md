@@ -2,9 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-Status: rev 2 (2026-10-20): market from Flex `listingExchange` (rev 1 reused the CSV parser's "guess US" rule and
-would have split each LSE ETF into an LSE position and a US position); the business-key pass compares every row,
-not only rows with an unknown fingerprint. Rev 1 (2026-10-20) was the first draft. Phase 2 touches only `services/stock-portfolio-service` and the statement worker
+Status: rev 3 (2026-10-20) after the AGENT-184 review of rev 2 `3eb4441` (CHANGES REQUIRED, 6 Musts): cash amounts
+keep the source sign (Must 1); the legacy pass runs only with an explicit `legacy_until`, pairs one-to-one on a key
+with currency / fee / tax (cash: symbol), reports ambiguity, and Flex fingerprints carry the Flex id (Must 2); the
+route reports the original `parsed` (Must 3); the summary carries an allowlist of error codes with counts, never
+reason text (Must 4); 429 / 408 are transient and IB status codes follow a table (Must 5); the empty-token test
+case is fixed (Must 6); Shoulds: whole-document DTD refusal + UTF-8 only, child-logger / traceback token tests and a
+redacting filter, a Flex lock + unique file names + a narrow unlatch rule, dry-run acceptance by `candidates`.
+Rev 2 (2026-10-20): market from Flex `listingExchange`. Rev 1 (2026-10-20): first draft. Phase 2 touches only `services/stock-portfolio-service` and the statement worker
 (`services/accounting-service/worker`); it does not touch the ledger, so it may run before the 2026-10-24 cutover.
 
 **Goal:** A daily worker timer fetches the owner's IB Flex Query statement (XML, last 30 calendar days) and imports
@@ -14,8 +19,9 @@ leaving the credentials file and the secret-free run summary on the journal.
 **Architecture:** (1) A new portfolio adapter `broker_ib_flex_service.parse(raw_bytes) -> ParseResult` maps the
 Flex XML sections onto the existing `ParsedRow` payload shapes of `broker_ib_service` (the CSV parser), so the
 existing `import_service.commit_transactions` → `_commit_broker_rows` / `cash_flow_service.write_cash_flows`
-path persists and de-duplicates by the existing fingerprints; a pre-pass `legacy_duplicates` drops rows whose
-business key already exists (rows imported before fingerprints, or with a different note). (2) A new route
+path persists and de-duplicates by the existing fingerprints; for the one-off backfill over the manual-import era
+a pre-pass `legacy_duplicates` (only when the caller passes `legacy_until`) pairs rows one-to-one with existing
+rows by business key and drops the matches. (2) A new route
 `POST /api/portfolio/imports/ib-flex` wraps it with the same dry-run and recalc-scheduling as `/imports/csv`.
 (3) A new worker module `worker/flex.py` + subcommand `python -m worker flex` does SendRequest → GetStatement,
 stores the XML under the worker's state dir, POSTs it to the portfolio, latches non-transient failures in
@@ -42,8 +48,11 @@ Verified facts this plan rests on (2026-10-20, prod and the owner's live query):
   `description` (the same 28-character instrument text IB prints as 說明 in the Activity CSV), `tradeDate`,
   `settleDateTarget`, `dateTime` (`yyyy-MM-dd;HH:mm:ss`), `levelOfDetail`.
 - A `CashTransaction` carries `type` (`Deposits/Withdrawals`, `Dividends`, `Withholding Tax`, `Broker Interest
-  Received`, `Broker Interest Paid`, `Other Fees`, …), `amount` (signed), `currency`, `dateTime` (date or
-  date;time), `settleDate`, `reportDate`, `description`, `symbol`, `levelOfDetail` (`DETAIL`), `transactionID`.
+  Received`, `Broker Interest Paid`, `Other Fees`, …), `amount` (signed: withdrawals, taxes and fees negative),
+  `currency`, `dateTime` (date or date;time), `settleDate`, `reportDate`, `description`, `symbol`, `levelOfDetail`
+  (`DETAIL`), `transactionID` (unique per event). `broker_cash_flows.amount` is stored SIGNED by the existing
+  parsers (`broker_schwab_service.py:96` writes a withdrawal as `-abs(amount)`) and `cash_flow_service.list_balances`
+  sums it (`:224-228`), so the adapter keeps the source sign; `type` only classifies.
 - Fingerprint parity: recomputing `import_service._broker_transaction_fingerprint` from the Flex sample's
   2026-06-02 trades with `market = "US"` (the CSV parser's guess) and `note = description` reproduces the three
   fingerprints stored by the June CSV import exactly (3/3) — so Flex `description` IS the CSV 說明 text. The
@@ -76,11 +85,16 @@ Verified facts this plan rests on (2026-10-20, prod and the owner's live query):
 - Portfolio: no new dependency; XML parsed with `xml.etree.ElementTree`; a document containing `<!DOCTYPE` is
   refused before parsing. Upload limit 5 MiB (`_MAX_CSV_BYTES`). The route is unauthenticated like the other
   import routes (localhost only, behind the gateway).
-- Fingerprints are the existing ones: `import_service._broker_transaction_fingerprint` (note = Flex
-  `description`; market `LSE` when `listingExchange` is `LSE`, `LSEETF` or `LSEIOB`, else
-  `broker_ib_service._market_for(symbol, currency)`) and `cash_flow_service.cash_flow_fingerprint` (note = Flex
-  `description`). Never introduce a third fingerprint. Idempotency against rows that exist under another
-  fingerprint (or none) is the business-key pass, which ignores `market` and `name`.
+- Fingerprints are the existing functions: `import_service._broker_transaction_fingerprint` and
+  `cash_flow_service.cash_flow_fingerprint`, called with `note = "<description> ib:<tradeID|transactionID>"` (so two
+  identical same-day fills stay two rows — the CSV import could not tell them apart, Flex can) and market `LSE` when
+  `listingExchange` is `LSE`, `LSEETF` or `LSEIOB`, else `broker_ib_service._market_for(symbol, currency)`. The
+  stored `name` is the plain `description`. Never introduce a third fingerprint function. Flex rows therefore never
+  share a fingerprint with CSV-imported rows; the overlap with the manual-import era is handled once, by the
+  `legacy_until` pass, and never by the daily run.
+- Cash amounts are signed as IB reports them; `cash_flow_type` classifies. No `abs()` on cash.
+- Summary and journal: codes from a fixed allowlist plus counts; a reason string from the API is mapped to a code,
+  never copied.
 - Fixtures are synthetic: the Flex sample in the repo mirrors the existing `tests/unit/fixtures/ib_sample.csv`
   rows (ACWD 1 @ 325.05, AVGS 30 @ 27.915, ACWD 6 @ 325.2, fee 1.78, 2026-06-02; deposit 3000 on 2026-06-01) with
   invented ids; real exports stay on the worker host.
@@ -99,7 +113,7 @@ Verified facts this plan rests on (2026-10-20, prod and the owner's live query):
    nothing posted), tomorrow retries — Task 5 `test_fetch_gives_up_after_the_poll_budget_without_latching`.
 4. **The token is rotated or revoked** (SendRequest `Fail` 1020): the latch `flex-disabled.json` is written with the
    code only, the summary says `flex_disabled`, every later run exits 1 without calling IB until
-   `python -m worker flex --unlatch` succeeds — Task 6 `test_run_latches_on_a_failed_send_request_and_unlatch_clears_it`.
+   `python -m worker flex --unlatch` succeeds — Task 6 `test_run_latches_on_a_failed_send_request_and_only_a_plain_unlatch_run_clears_it`.
 5. **The portfolio service is down when the XML is posted**: the XML is already saved under the state dir, the
    failure is transient (no latch), `--from-file <saved>` re-posts it later — Task 6
    `test_run_keeps_the_saved_xml_when_the_portfolio_post_fails`.
@@ -130,15 +144,15 @@ Worker (`services/accounting-service`):
 
 Interfaces shared across tasks (exact names):
 - `broker_ib_flex_service.parse(raw_bytes: bytes) -> import_service.ParseResult`
-- `broker_ib_flex_service.legacy_duplicates(db: Session, parsed: ParseResult) -> int`
+- `broker_ib_flex_service.legacy_duplicates(db: Session, parsed: ParseResult, *, until: date) -> tuple[ParseResult, int]`
 - `flex.Credentials(token: str, query_id: str)`; `flex.load_credentials(path: Path) -> Credentials`
 - `flex.FlexError(code: str, *, transient: bool)`; `flex.FlexDisabled(RuntimeError)`
 - `flex.fetch(http: httpx.Client, creds: Credentials, *, base_url: str, attempts: int, interval_s: float, sleep=time.sleep) -> bytes`
-- `flex.run(cfg: WorkerConfig, *, flex_http: httpx.Client, portfolio_http: httpx.Client, dry_run: bool = False, query_id: str | None = None, from_file: Path | None = None, unlatch: bool = False, sleep=time.sleep) -> dict`
+- `flex.run(cfg: WorkerConfig, *, flex_http: httpx.Client, portfolio_http: httpx.Client, dry_run: bool = False, query_id: str | None = None, from_file: Path | None = None, legacy_until: date | None = None, unlatch: bool = False, sleep=time.sleep) -> dict`
 
 ---
 
-### Task 1: Flex adapter — trades, with fingerprint parity to the CSV parser
+### Task 1: Flex adapter — trades, payload-compatible with the CSV parser
 
 **Files:**
 - Create: `services/stock-portfolio-service/app/services/broker_ib_flex_service.py`
@@ -154,7 +168,10 @@ Interfaces shared across tasks (exact names):
   `name` (= Flex `description` or None), `type`, `position_side="LONG"`, `quantity` (abs), `price`, `currency`,
   `trade_date` (UTC midnight datetime from `tradeDate`), `fee` (abs `ibCommission`), `tax` (abs `taxes`);
   `market` = `"LSE"` when `listingExchange` ∈ `LSE_EXCHANGES = {"LSE", "LSEETF", "LSEIOB"}`, else
-  `broker_ib_service._market_for(symbol, currency)` (the CSV rule: `LSE` for GBP, `US` otherwise).
+  `broker_ib_service._market_for(symbol, currency)` (the CSV rule: `LSE` for GBP, `US` otherwise); plus one extra
+  key `fingerprint_note = f"{description} ib:{tradeID}"` (what the fingerprint was computed with; Task 3 teaches
+  the commit's market-override re-hash to read it). A `Trade` with an empty `tradeID` at `EXECUTION` level →
+  `ParseError("trade without tradeID")`.
   Row index = the 1-based position of the row element in document order across all sections.
 
 - [ ] **Step 1: Write the fixture** `tests/unit/fixtures/ib_flex_sample.xml` (synthetic; ids invented):
@@ -222,14 +239,24 @@ def test_parse_trades_mirror_the_csv_parser_payload():
         "name": "SS SPD MS AL CO WO UC ET-USD", "type": "BUY", "position_side": "LONG",
         "quantity": Decimal("1"), "price": Decimal("325.05"), "currency": "USD",
         "trade_date": datetime(2026, 6, 2, tzinfo=timezone.utc), "fee": Decimal("1.78"), "tax": Decimal("0"),
+        "fingerprint_note": "SS SPD MS AL CO WO UC ET-USD ib:900001",
     }
 
 
-def test_parse_trades_on_a_us_venue_share_fingerprints_with_the_csv_import_of_the_same_trades():
-    raw = FIXTURE.read_bytes().replace(b'listingExchange="LSEETF"', b'listingExchange="ARCA"')  # the CSV parser guesses US for USD
-    flex = {r.fingerprint for r in _transactions(broker_ib_flex_service.parse(raw))}
-    csv = {r.fingerprint for r in broker_ib_service.parse(CSV_FIXTURE.read_bytes()).rows if r.payload["_kind"] == "transaction"}
-    assert csv <= flex and len(csv) == 3
+def test_parse_trade_fingerprint_is_the_broker_fingerprint_with_the_trade_id_in_the_note():
+    from app.services.import_service import _broker_transaction_fingerprint
+    first = _transactions(broker_ib_flex_service.parse(FIXTURE.read_bytes()))[0]
+    assert first.fingerprint == _broker_transaction_fingerprint(
+        broker="IB", symbol="ACWD", market="LSE", type_="BUY", quantity=Decimal("1"), price=Decimal("325.05"),
+        trade_date=datetime(2026, 6, 2, tzinfo=timezone.utc), fee=Decimal("1.78"), tax=Decimal("0"), currency="USD",
+        note="SS SPD MS AL CO WO UC ET-USD ib:900001")
+
+
+def test_parse_two_identical_same_day_fills_are_two_rows():
+    raw = FIXTURE.read_bytes().replace(b'tradeID="900001"', b'tradeID="900009"', 1)  # same trade, another execution id
+    raw = FIXTURE.read_bytes().replace(b"</Trades>", raw[raw.index(b"<Trade "):raw.index(b"/>") + 2] + b"</Trades>", 1)
+    rows = _transactions(broker_ib_flex_service.parse(raw))
+    assert len(rows) == 5 and len({r.fingerprint for r in rows}) == 5
 
 
 def test_parse_trades_take_the_market_from_the_listing_exchange():
@@ -291,13 +318,14 @@ silently (not a row, not an error); `assetCategory != "STK"` → `ParseError("un
 `type_ = "BUY" if buySell == "BUY" else "SELL"`; `quantity = abs(_decimal(quantity))`; `price =
 _decimal(tradePrice)`; `fee = abs(_decimal(ibCommission))`; `tax = abs(_decimal(taxes))`; `currency =
 currency.upper()`; `market = "LSE" if listingExchange in LSE_EXCHANGES else broker_ib_service._market_for(symbol, currency)`;
-`note = description.strip() or None`; fingerprint via `_broker_transaction_fingerprint(broker="IB", symbol, market, type_, quantity, price,
-trade_date, fee, tax, currency, note)` — the same call as `broker_ib_service.py:74-86`. Sections other than
+`name = description.strip() or None`; `fingerprint_note = f"{name or ''} ib:{tradeID}".strip()`; fingerprint via `_broker_transaction_fingerprint(broker="IB", symbol, market, type_, quantity, price,
+trade_date, fee, tax, currency, note=fingerprint_note)` — the same call as `broker_ib_service.py:74-86` with the
+id-bearing note. Sections other than
 `Trades` are ignored in this task. `ValueError`/`InvalidOperation` inside a row → `ParseError(row_index, str(exc))`.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: 8 passed.
+Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: 9 passed.
 
 - [ ] **Step 6: Commit**
 
@@ -318,8 +346,11 @@ git commit -m "feat(portfolio): parse IB Flex trades onto the broker import rows
 - Consumes: `cash_flow_service.cash_flow_fingerprint(broker, date_, type_, amount, currency, note)`
   (`cash_flow_service.py:34`), `models.BrokerCashFlowType` values `deposit|withdrawal|interest|dividend_cash|fee`.
 - Produces: cash-flow rows with the CSV parser's payload keys (`broker_ib_service.py:120-132`): `_kind="cash_flow"`,
-  `broker="IB"`, `date` (a `date` from the first 10 characters of `dateTime`), `cash_flow_type`, `amount` (abs),
-  `currency`, `note` (= `description` or None). Mapping table `CASH_TYPES`:
+  `broker="IB"`, `date` (a `date` from the first 10 characters of `dateTime`), `cash_flow_type`, `amount` (SIGNED, as
+  reported), `currency`, `note` (= `description` or None), plus `symbol` (may be empty) and
+  `fingerprint_note = f"{description} ib:{transactionID}"` (the note the fingerprint was computed with). Mapping
+  table `CASH_TYPES` (the sign decides only the `Deposits/Withdrawals` split; a refund under a fee type stays a
+  positive `fee`, a reversed dividend a negative `dividend_cash`):
 
 | Flex `type` | sign | `cash_flow_type` |
 |---|---|---|
@@ -344,20 +375,22 @@ def test_parse_cash_transactions_map_types_and_signs():
     flows = _cash(broker_ib_flex_service.parse(FIXTURE.read_bytes()))
     assert [(f["date"], f["cash_flow_type"], f["amount"]) for f in flows] == [
         (date(2026, 6, 1), "deposit", Decimal("3000")),
-        (date(2026, 6, 20), "withdrawal", Decimal("500")),
+        (date(2026, 6, 20), "withdrawal", Decimal("-500")),
         (date(2026, 6, 25), "dividend_cash", Decimal("6")),
-        (date(2026, 6, 25), "fee", Decimal("0.9")),
+        (date(2026, 6, 25), "fee", Decimal("-0.9")),
         (date(2026, 6, 3), "interest", Decimal("0.12")),
-        (date(2026, 6, 10), "fee", Decimal("1.5")),
-        (date(2026, 6, 11), "fee", Decimal("1")),
+        (date(2026, 6, 10), "fee", Decimal("-1.5")),
+        (date(2026, 6, 11), "fee", Decimal("1")),  # a positive adjustment under a fee type keeps its sign
     ]
     assert flows[0]["note"] == "CASH RECEIPTS / ELECTRONIC FUND TRANSFERS" and flows[0]["currency"] == "USD"
+    assert flows[2]["symbol"] == "AVGS" and flows[0]["symbol"] == ""
+    assert sum(f["amount"] for f in flows) == Decimal("2505.72")  # the balance a SUM(amount) reader would see
 
 
 def test_parse_cash_fingerprint_is_the_existing_cash_flow_fingerprint():
     from app.services.cash_flow_service import cash_flow_fingerprint
     row = [r for r in broker_ib_flex_service.parse(FIXTURE.read_bytes()).rows if r.payload["_kind"] == "cash_flow"][0]
-    assert row.fingerprint == cash_flow_fingerprint(broker="IB", date_=date(2026, 6, 1), type_="deposit", amount=Decimal("3000"), currency="USD", note="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS")
+    assert row.fingerprint == cash_flow_fingerprint(broker="IB", date_=date(2026, 6, 1), type_="deposit", amount=Decimal("3000"), currency="USD", note="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS ib:800010")
 
 
 def test_parse_reports_an_unknown_cash_type_as_a_row_error():
@@ -375,8 +408,12 @@ def test_parse_reports_transfers_and_corporate_actions_as_row_errors_not_rows():
 
 
 @pytest.mark.parametrize("raw, message", [
-    (b"<!DOCTYPE x [<!ENTITY a 'b'>]><FlexQueryResponse/>", "flex: DOCTYPE refused"),
+    (b"<!DOCTYPE x [<!ENTITY a 'b'>]><FlexQueryResponse/>", "flex: DTD refused"),
+    (b"<!--" + b" " * 6000 + b"--><!DOCTYPE x><FlexQueryResponse/>", "flex: DTD refused"),  # after a long leading comment
+    (b"<FlexQueryResponse><!ENTITY a 'b'></FlexQueryResponse>", "flex: DTD refused"),
+    ("<FlexQueryResponse/>".encode("utf-16"), "flex: not UTF-8"),
     (b"<FlexStatementResponse><Status>Fail</Status><ErrorCode>1020</ErrorCode><ErrorMessage>x</ErrorMessage></FlexStatementResponse>", "flex: 1020"),
+    (b"<FlexStatementResponse><Status>Fail</Status><ErrorCode>DROP TABLE</ErrorCode></FlexStatementResponse>", "flex: error"),  # a code is 4 digits or it is not a code
     (b"<Other/>", "flex: not a FlexQueryResponse"),
     (b"<FlexQueryResponse", "flex: malformed XML"),
 ])
@@ -387,22 +424,27 @@ def test_parse_refuses_bad_documents_with_a_value_error(raw, message):
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: the five new tests FAIL (cash rows absent;
-no ValueError).
+Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: the new tests FAIL (cash rows absent; no
+ValueError).
 
 - [ ] **Step 3: Implement** in `broker_ib_flex_service.py`:
-  - `_root`: `if b"<!DOCTYPE" in raw_bytes[:4096]: raise ValueError("flex: DOCTYPE refused")`; `ET.ParseError` →
-    `ValueError("flex: malformed XML")`; root tag `FlexStatementResponse` → `ValueError(f"flex: {ErrorCode or 'error'}")`
-    (the code only, never `ErrorMessage`); any other tag than `FlexQueryResponse` → `ValueError("flex: not a FlexQueryResponse")`.
+  - `_root`: `raw_bytes.decode("utf-8")` (UTF-8 BOM allowed via `utf-8-sig`; `UnicodeDecodeError` →
+    `ValueError("flex: not UTF-8")`); then over the WHOLE text `if "<!DOCTYPE" in text or "<!ENTITY" in text: raise
+    ValueError("flex: DTD refused")` (checked before any parsing; the upload guard caps the text at 5 MiB so the scan is
+    bounded); `ET.ParseError` → `ValueError("flex: malformed XML")`; root tag `FlexStatementResponse` →
+    `ValueError(f"flex: {code}")` where `code = ErrorCode` only if it matches `^[0-9]{4}$`, else the literal `error`
+    (never `ErrorMessage`); any other tag than `FlexQueryResponse` → `ValueError("flex: not a FlexQueryResponse")`.
   - `CASH_TYPES: dict[str, str | None]` per the table (`None` for `Deposits/Withdrawals`, resolved by sign);
-    `_cash(row_index, el) -> ParsedRow`; `amount = abs(_decimal(amount))`; `date_ = _utc_midnight(dateTime[:10]).date()`.
+    `_cash(row_index, el) -> ParsedRow`; `amount = _decimal(amount)` (signed); `date_ = _utc_midnight(dateTime[:10]).date()`;
+    `symbol = (symbol or "").strip().upper()`; `fingerprint_note = f"{description} ib:{transactionID}"`; an empty
+    `transactionID` → `ParseError("cash transaction without transactionID")`.
   - Section dispatch: `Trades` → `_trade`, `CashTransactions` → `_cash`, `Transfers` / `CorporateActions` → one
     `ParseError(row_index, f"unsupported section {tag}")` per row, `OpenPositions` / `ConversionRates` /
     `AccountInformation` and any other section → skipped (positions derive from transactions).
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: 13 passed.
+Run: `pytest tests/unit/test_broker_ib_flex_service.py -v` — Expected: 21 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -413,26 +455,35 @@ git commit -m "feat(portfolio): map IB Flex cash transactions and refuse bad Fle
 
 ---
 
-### Task 3: `legacy_duplicates` pass and `POST /api/portfolio/imports/ib-flex`
+### Task 3: the `legacy_until` pass and `POST /api/portfolio/imports/ib-flex`
 
 **Files:**
 - Modify: `services/stock-portfolio-service/app/services/broker_ib_flex_service.py`
 - Modify: `services/stock-portfolio-service/app/routers/imports.py` (after `import_csv`, `:241-259`)
+- Modify: `services/stock-portfolio-service/app/services/import_service.py:597-609` (the market-override re-hash reads `fingerprint_note`)
 - Test: `services/stock-portfolio-service/tests/integration/test_ib_flex_import.py`
 
 **Interfaces:**
 - Consumes: `parse` (Tasks 1–2); `import_service.commit_transactions(db, parsed, *, dry_run)` (`:710`);
   `_read_upload`, `_touched_symbols_and_min_trade_date`, `_maybe_schedule_chain`, `_serialize_result`
   (`imports.py:36, 116, 150, 62`); `models.Transaction`, `models.BrokerCashFlow`.
-- Produces: `legacy_duplicates(db: Session, parsed: ParseResult) -> int` — removes from `parsed.rows` (in place)
-  every row whose business key already exists, whatever its fingerprint: for a transaction row `(symbol, type,
-  quantity, price, trade_date::date)` against existing `transactions` rows with `broker='IB'`; for a cash-flow row
-  `(date, type, amount, currency)` against existing `broker_cash_flows` rows with `broker='IB'`. The key carries
-  neither `market` nor `name`, so a row stored as `US` by the CSV import, corrected to `LSE` by hand, or imported
-  before fingerprints existed, is still the same trade. Returns the count. The commit's fingerprint check then
-  only catches in-batch twins, so a second upload of the same file reports `legacy_duplicates == parsed` and
-  `skipped_duplicates == 0`. Route response = `_serialize_result(..., csv_format="ib-flex")` plus
-  `"legacy_duplicates": <int>`.
+- Produces: `legacy_duplicates(db: Session, parsed: ParseResult, *, until: date) -> tuple[ParseResult, int]` — a
+  NEW `ParseResult` (the input is never mutated) holding the rows to commit, and the number of rows dropped as
+  legacy matches. Scope: only parsed rows dated `<= until` and only existing rows with `broker='IB'` dated
+  `<= until`; everything later is untouched (the daily run never passes `until`, so it never runs the pass).
+  Keys: transaction `(symbol, type, f"{quantity:.4f}", f"{price:.4f}", trade_date::date, currency, f"{fee:.4f}",
+  f"{tax:.4f}")`; cash flow `(date, type, f"{amount:.4f}" signed, currency, symbol or "")`. The key carries neither
+  `market` nor `name`/`note`, so a row stored as `US` by the CSV import, corrected to `LSE` by hand, or imported
+  before fingerprints existed, is still the same event. Pairing is one-to-one: existing rows form a multiset; a
+  parsed row that finds one unconsumed existing row consumes it and is dropped; a parsed row that finds none is
+  kept; when the number of parsed rows with a key differs from the number of existing rows with that key and both
+  are non-zero (one old + two new, or two old + one new), every parsed row with that key is dropped and ONE
+  `ParseError(row_index, "ambiguous legacy match")` is appended per parsed row (the owner resolves by hand; nothing
+  is guessed). Route response = `_serialize_result(original_parsed, result, csv_format="ib-flex")` with `parsed`
+  overridden to `len(original_parsed.rows)`, plus `"legacy_duplicates": <int>` and
+  `"candidates": parsed - legacy_duplicates - skipped_duplicates - len(errors)` (what a dry run would create).
+- Modify `import_service._commit_broker_rows` re-hash (`:597-609`): `note=payload.get("fingerprint_note", payload.get("name"))`
+  — CSV rows have no `fingerprint_note`, so nothing changes for them.
 
 - [ ] **Step 1: Write the failing tests** `tests/integration/test_ib_flex_import.py`:
 
@@ -461,52 +512,96 @@ def _post(client, raw: bytes, **params):
     return client.post("/api/portfolio/imports/ib-flex", params=params, files={"file": ("flex.xml", BytesIO(raw), "application/xml")})
 
 
-def test_ib_flex_import_creates_rows_once_and_dedupes_on_the_second_upload(client, db_session):
+FLEX = (FIXTURES / "ib_flex_sample.xml").read_bytes()
+
+
+def _legacy_row(**over) -> models.Transaction:
+    base = dict(symbol="ACWD", market="LSE", name="x", type=models.TransactionType.BUY, quantity=Decimal("1"), price=Decimal("325.05"), currency="USD",
+                fx_rate_to_twd=Decimal("31.42"), trade_date=datetime(2026, 6, 2, tzinfo=timezone.utc), fee=Decimal("1.78"), tax=Decimal("0"), broker="IB", import_fingerprint=None)
+    return models.Transaction(**{**base, **over})
+
+
+def test_ib_flex_import_creates_rows_once_and_dedupes_by_fingerprint_on_the_second_upload(client, db_session):
     _seed_fx(db_session, *JUNE)
-    raw = (FIXTURES / "ib_flex_sample.xml").read_bytes()
-    first = _post(client, raw).json()
-    assert (first["created"], first["skipped_duplicates"], first["legacy_duplicates"], first["csv_format"]) == (11, 0, 0, "ib-flex")
+    first = _post(client, FLEX).json()
+    assert (first["parsed"], first["created"], first["skipped_duplicates"], first["legacy_duplicates"], first["candidates"], first["csv_format"]) == (11, 11, 0, 0, 8, "ib-flex")
     assert sorted(e["reason"] for e in first["errors"]) == ["unsupported assetCategory OPT", "unsupported section CorporateActions", "unsupported section Transfers"]
     assert db_session.query(models.Transaction).filter_by(broker="IB").count() == 4
     assert db_session.query(models.BrokerCashFlow).filter_by(broker="IB").count() == 7
-    second = _post(client, raw).json()
-    assert (second["created"], second["skipped_duplicates"], second["legacy_duplicates"], second["recalc_scheduled"]) == (0, 0, 11, False)
+    second = _post(client, FLEX).json()  # the daily case: no legacy_until, fingerprints alone
+    assert (second["parsed"], second["created"], second["skipped_duplicates"], second["legacy_duplicates"], second["recalc_scheduled"]) == (11, 0, 11, 0, False)
 
 
-def test_ib_flex_import_dedupes_against_an_earlier_csv_import_by_fingerprint_and_business_key(client, db_session):
+def test_ib_flex_import_with_legacy_until_pairs_the_manual_era_rows_once(client, db_session):
     _seed_fx(db_session, *JUNE)
     csv = (FIXTURES / "ib_sample.csv").read_bytes()
     assert client.post("/api/portfolio/imports/csv", files={"file": ("ib.csv", BytesIO(csv), "text/csv")}).json()["created"] == 4
-    # the CSV rows are stored as market US with the CSV fingerprint; the Flex rows say LSE → different fingerprints,
-    # same business key; the deposit's note differs too → all four are legacy duplicates
-    body = _post(client, (FIXTURES / "ib_flex_sample.xml").read_bytes()).json()
-    assert (body["skipped_duplicates"], body["legacy_duplicates"], body["created"]) == (0, 4, 7)
+    # CSV rows: market US, CSV fingerprint, deposit note = the CSV 說明; the Flex rows differ on all three → business key only
+    body = _post(client, FLEX, legacy_until="2026-06-30").json()
+    assert (body["parsed"], body["skipped_duplicates"], body["legacy_duplicates"], body["created"]) == (11, 0, 4, 7)
     assert db_session.query(models.BrokerCashFlow).filter_by(broker="IB", type="deposit").count() == 1
     assert db_session.query(models.Transaction).filter_by(broker="IB", symbol="ACWD").count() == 2  # 1 + 6 from the CSV, nothing new
+    again = _post(client, FLEX, legacy_until="2026-06-30").json()  # the pass is idempotent too
+    assert (again["legacy_duplicates"], again["skipped_duplicates"], again["created"]) == (4, 7, 0)
 
 
-def test_ib_flex_import_dedupes_a_row_imported_before_fingerprints_existed(client, db_session):
+def test_ib_flex_import_without_legacy_until_never_pairs(client, db_session):
     _seed_fx(db_session, *JUNE)
-    db_session.add(models.Transaction(symbol="ACWD", market="LSE", name="x", type=models.TransactionType.BUY, quantity=Decimal("1"), price=Decimal("325.05"), currency="USD", fx_rate_to_twd=Decimal("31.42"), trade_date=datetime(2026, 6, 2, tzinfo=timezone.utc), fee=Decimal("1.78"), tax=Decimal("0"), broker="IB", import_fingerprint=None))
+    db_session.add(_legacy_row()); db_session.commit()
+    body = _post(client, FLEX).json()
+    assert body["legacy_duplicates"] == 0 and db_session.query(models.Transaction).filter_by(broker="IB", symbol="ACWD", quantity=Decimal("1")).count() == 2
+
+
+def test_ib_flex_import_legacy_until_scopes_by_date_and_key_fields(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    db_session.add(_legacy_row())                                     # same event: paired
+    db_session.add(_legacy_row(trade_date=datetime(2026, 6, 5, tzinfo=timezone.utc), type=models.TransactionType.SELL, quantity=Decimal("10"), price=Decimal("28.1"), tax=Decimal("0.5"), symbol="AVGS", currency="GBP"))  # another currency: not the same event
     db_session.commit()
-    body = _post(client, (FIXTURES / "ib_flex_sample.xml").read_bytes()).json()
-    assert body["legacy_duplicates"] == 1 and db_session.query(models.Transaction).filter_by(broker="IB", symbol="ACWD", quantity=Decimal("1")).count() == 1
+    body = _post(client, FLEX, legacy_until="2026-06-03").json()       # the 06-05 sell is past `until` anyway
+    assert body["legacy_duplicates"] == 1
+    assert db_session.query(models.Transaction).filter_by(broker="IB", symbol="ACWD", quantity=Decimal("1")).count() == 1
+    assert db_session.query(models.Transaction).filter_by(broker="IB", symbol="AVGS", type=models.TransactionType.SELL).count() == 2
 
 
-def test_ib_flex_import_dry_run_writes_nothing(client, db_session):
+def test_ib_flex_import_reports_an_ambiguous_legacy_match_instead_of_guessing(client, db_session):
     _seed_fx(db_session, *JUNE)
-    body = _post(client, (FIXTURES / "ib_flex_sample.xml").read_bytes(), dry_run="true").json()
-    assert body["dry_run"] is True and body["created"] == 0 and body["recalc_scheduled"] is False
+    db_session.add(_legacy_row()); db_session.add(_legacy_row(name="y")); db_session.commit()  # two old rows, one Flex row
+    body = _post(client, FLEX, legacy_until="2026-06-30").json()
+    assert body["legacy_duplicates"] == 0 and sum(e["reason"] == "ambiguous legacy match" for e in body["errors"]) == 1
+    assert db_session.query(models.Transaction).filter_by(broker="IB", symbol="ACWD", quantity=Decimal("1")).count() == 2  # untouched
+    assert body["created"] == 10
+
+
+def test_ib_flex_import_one_old_row_and_two_new_fills_is_ambiguous_not_a_silent_merge(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    db_session.add(_legacy_row()); db_session.commit()
+    twin = FLEX.replace(b"</Trades>", FLEX[FLEX.index(b"<Trade "):FLEX.index(b"/>") + 2].replace(b'tradeID="900001"', b'tradeID="900009"') + b"</Trades>", 1)
+    body = _post(client, twin, legacy_until="2026-06-30").json()
+    assert sum(e["reason"] == "ambiguous legacy match" for e in body["errors"]) == 2 and body["legacy_duplicates"] == 0
+    assert db_session.query(models.Transaction).filter_by(broker="IB", symbol="ACWD", quantity=Decimal("1")).count() == 1
+
+
+def test_ib_flex_import_keeps_two_same_day_fills_apart_by_trade_id(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    twin = FLEX.replace(b"</Trades>", FLEX[FLEX.index(b"<Trade "):FLEX.index(b"/>") + 2].replace(b'tradeID="900001"', b'tradeID="900009"') + b"</Trades>", 1)
+    body = _post(client, twin).json()
+    assert body["created"] == 12 and db_session.query(models.Transaction).filter_by(broker="IB", symbol="ACWD", quantity=Decimal("1")).count() == 2
+
+
+def test_ib_flex_import_dry_run_writes_nothing_and_reports_candidates(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    body = _post(client, FLEX, dry_run="true").json()
+    assert body["dry_run"] is True and body["created"] == 0 and body["recalc_scheduled"] is False and body["candidates"] == 8  # 11 rows − 3 row errors
     assert db_session.query(models.Transaction).count() == 0 and db_session.query(models.BrokerCashFlow).count() == 0
 
 
 def test_ib_flex_import_retries_a_row_once_its_fx_rate_exists(client, db_session):
     _seed_fx(db_session, *[d for d in JUNE if d != date(2026, 6, 5)])  # the sell's date has no rate yet
-    first = _post(client, (FIXTURES / "ib_flex_sample.xml").read_bytes()).json()
+    first = _post(client, FLEX).json()
     assert any(e["reason"] == "missing FX rate for 2026-06-05 USD" for e in first["errors"]) and first["created"] == 10
     _seed_fx(db_session, date(2026, 6, 5))
-    second = _post(client, (FIXTURES / "ib_flex_sample.xml").read_bytes()).json()
-    assert (second["created"], second["legacy_duplicates"]) == (1, 10)
+    second = _post(client, FLEX).json()
+    assert (second["created"], second["skipped_duplicates"]) == (1, 10)
 
 
 def test_ib_flex_import_refuses_a_flex_error_document_and_oversize_uploads(client):
@@ -519,12 +614,16 @@ def test_ib_flex_import_refuses_a_flex_error_document_and_oversize_uploads(clien
 Run: `pytest tests/integration/test_ib_flex_import.py -v` — Expected: FAIL with 404 (no route).
 
 - [ ] **Step 3: Implement `legacy_duplicates`** in `broker_ib_flex_service.py`:
-  one query per kind: `db.query(Transaction.symbol, Transaction.type, Transaction.quantity, Transaction.price,
-  Transaction.trade_date).filter(Transaction.broker == "IB")` into a set of
-  `(symbol, type.value, f"{quantity:.4f}", f"{price:.4f}", trade_date.date().isoformat())`, and
-  `db.query(BrokerCashFlow.date, BrokerCashFlow.type, BrokerCashFlow.amount, BrokerCashFlow.currency).filter(BrokerCashFlow.broker == "IB")`
-  into `(date.isoformat(), type, f"{amount:.4f}", currency.upper())`; rebuild `parsed.rows` without the matches
-  (`parsed.rows[:] = kept`) and return the removed count. Only broker-`IB` rows are consulted.
+  one query per kind, both filtered `broker == "IB"` and dated `<= until`:
+  `db.query(Transaction.symbol, Transaction.type, Transaction.quantity, Transaction.price, Transaction.trade_date, Transaction.currency, Transaction.fee, Transaction.tax)`
+  → `collections.Counter` of `(symbol, type.value, f"{quantity:.4f}", f"{price:.4f}", trade_date.date().isoformat(), currency.upper(), f"{fee:.4f}", f"{tax:.4f}")`;
+  `db.query(BrokerCashFlow.date, BrokerCashFlow.type, BrokerCashFlow.amount, BrokerCashFlow.currency)` →
+  `Counter` of `(date.isoformat(), type, f"{amount:.4f}", currency.upper(), "")` — `broker_cash_flows` has no symbol
+  column, so the cash key's symbol slot is compared only when the parsed row's symbol is empty; a parsed cash row
+  with a symbol (a dividend) is keyed with `""` too (fee / dividend rows of the manual era carry no symbol either).
+  Group the in-scope parsed rows by key (`Counter` of parsed keys); for each key: `n_old == 0` → keep all;
+  `n_old == n_new` → drop all (`legacy += n_new`); otherwise → drop all and one `ParseError("ambiguous legacy match")`
+  per parsed row. Return `(ParseResult(rows=kept, errors=parsed.errors + ambiguities, unresolved_names=parsed.unresolved_names), legacy)`.
 
 - [ ] **Step 4: Implement the route** in `imports.py`:
 
@@ -534,25 +633,31 @@ def import_ib_flex(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     dry_run: bool = Query(default=False),
+    legacy_until: date | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> dict:
 ```
-Body: `raw = _read_upload(file)`; `parsed = broker_ib_flex_service.parse(raw)` and `legacy =
-broker_ib_flex_service.legacy_duplicates(db, parsed)` inside the same `try/except ValueError → HTTPException(400)`
-as `import_transactions`; `result = import_service.commit_transactions(db, parsed, dry_run=dry_run)`; recalc
-scheduling copied from `import_transactions` (`:233-237`); `body = _serialize_result(parsed, result,
-recalc_scheduled=..., csv_format="ib-flex")`; `body["legacy_duplicates"] = legacy`; return `body`.
+Body: `raw = _read_upload(file)`; `original = broker_ib_flex_service.parse(raw)` inside the same `try/except
+ValueError → HTTPException(400)` as `import_transactions`; `pending, legacy = (legacy_duplicates(db, original,
+until=legacy_until) if legacy_until else (original, 0))`; `result = import_service.commit_transactions(db, pending,
+dry_run=dry_run)`; recalc scheduling copied from `import_transactions` (`:233-237`); `body = _serialize_result(original,
+result, recalc_scheduled=..., csv_format="ib-flex")`; then `body["parsed"] = len(original.rows)`,
+`body["legacy_duplicates"] = legacy`, `body["candidates"] = body["parsed"] - legacy - result.skipped_duplicates -
+len(result.errors)`, `body["errors"]` from `result.errors` (which already include the parse errors and the
+ambiguities, since `commit` copies `parsed.errors`); return `body`. And the two-line change in
+`import_service._commit_broker_rows` (`note=payload.get("fingerprint_note", payload.get("name"))`).
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `pytest tests/integration/test_ib_flex_import.py tests/unit/test_broker_ib_flex_service.py tests/integration/test_broker_csv_import.py -v`
-Expected: all pass (the CSV import tests are unchanged).
+Run: `pytest tests/integration/test_ib_flex_import.py tests/unit/test_broker_ib_flex_service.py tests/integration/test_broker_csv_import.py tests/unit/test_broker_ib_service.py -v`
+Expected: all pass (the CSV import tests are unchanged; `test_ib_commit_uses_symbol_map_market_override` proves the
+re-hash change is a no-op for CSV rows).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add app/services/broker_ib_flex_service.py app/routers/imports.py tests/integration/test_ib_flex_import.py
-git commit -m "feat(portfolio): POST /imports/ib-flex with a legacy-duplicate pass"
+git add app/services/broker_ib_flex_service.py app/services/import_service.py app/routers/imports.py tests/integration/test_ib_flex_import.py
+git commit -m "feat(portfolio): POST /imports/ib-flex with an explicit legacy_until pairing pass"
 ```
 
 ---
@@ -618,12 +723,14 @@ def test_credentials_repr_hides_the_token(tmp_path):
 
 
 @pytest.mark.parametrize("token, query_id, key", [
-    ("", "1234567", "IB_FLEX_TOKEN"), ("short", "1234567", "IB_FLEX_TOKEN"), (TOKEN, "homehub-daily", "IB_FLEX_QUERY_ID"), (TOKEN, "", "IB_FLEX_QUERY_ID"),
+    ("", "1234567", "IB_FLEX_TOKEN"), ("short!", "1234567", "IB_FLEX_TOKEN"), (TOKEN, "homehub-daily", "IB_FLEX_QUERY_ID"), (TOKEN, "", "IB_FLEX_QUERY_ID"),
 ])
 def test_load_credentials_names_only_the_key_on_a_bad_value(tmp_path, token, query_id, key):
     with pytest.raises(ValueError) as exc:
         flex.load_credentials(_creds(tmp_path, token, query_id))
-    assert str(exc.value) == f"{key} missing or malformed" and token not in str(exc.value)
+    assert str(exc.value) == f"{key} missing or malformed"
+    for secret in (token, query_id):
+        assert not secret or secret not in str(exc.value)  # an empty value is a substring of anything: skip it
 ```
 
 ```python
@@ -668,18 +775,33 @@ git commit -m "feat(worker): Flex credentials file and STATEMENT_FLEX_* configur
 **Interfaces:**
 - Produces:
   - `class FlexError(RuntimeError)`: `__init__(self, code: str, *, transient: bool)`; `str(exc) == code`; codes
-    are `send:<ErrorCode>` / `get:<ErrorCode>` (IB status failures, not transient), `http:<status>` (≥ 400;
-    transient when ≥ 500 or 429), `http:<ExceptionClassName>` (any `httpx.HTTPError`, transient),
-    `get:pending` (1019 past the poll budget, transient), `xml` (unparseable Flex response, not transient).
-    Every `raise` of a wrapped httpx error uses `from None` so the original message (which carries the URL)
-    never rides in a traceback.
+    are `send:<ErrorCode>` / `get:<ErrorCode>` (IB status failures; `transient` per `IB_TRANSIENT_CODES`),
+    `http:<status>` (≥ 400; transient when ≥ 500 or in `{408, 429}`), `http:<ExceptionClassName>` (any
+    `httpx.HTTPError`, transient), `get:pending` (1019 past the poll budget, transient), `xml` (unparseable Flex
+    response or an `ErrorCode` that is not four digits, not transient). An `ErrorCode` is accepted only when it
+    matches `^[0-9]{4}$`; anything else is `xml`.
+    `IB_TRANSIENT_CODES = {"1003", "1004", "1005", "1006", "1007", "1008", "1009", "1018", "1019", "1021"}` (statement
+    not yet available / incomplete / settlement, P&L data not ready / server under heavy load / too many requests /
+    in progress / could not be retrieved); every other code — `1010`–`1017` (inactive service account, invalid or
+    expired token, IP restriction, invalid query, invalid account state, invalid reference code), `1020` (invalid
+    request) and any code not in the table — latches (fail closed: the operator looks).
+    Every `raise` of a wrapped httpx error uses `from None`, which suppresses the context in the standard traceback
+    but does not delete `__context__`; the redacting filter below is the boundary that holds for anything that
+    formats more than the standard traceback.
+  - `class _Redact(logging.Filter)`: `__init__(self, secret: str)`; `filter(record)` replaces the secret in
+    `record.msg` (after `record.getMessage()` is folded into `msg` with `args = ()`) and in `record.exc_text` with
+    `***`, and returns True. `fetch` installs one instance on the root logger and on every root handler for its
+    duration (`try/finally` removes them), and sets `httpx` / `httpcore` loggers to WARNING with `propagate = False`
+    (a child logger set to DEBUG by someone else still propagates to its parent; `propagate = False` on the parent
+    stops it reaching the root handlers).
   - `fetch(http: httpx.Client, creds: Credentials, *, base_url: str, attempts: int, interval_s: float, sleep=time.sleep) -> bytes`
     — GET `{base_url}/SendRequest` with `params={"t": creds.token, "q": creds.query_id, "v": "3"}`; on
     `Status == Success` loop up to `attempts` times GET `{base_url}/GetStatement` with `params={"q": referenceCode,
     "t": creds.token, "v": "3"}`: a `FlexQueryResponse` body returns the bytes; a `FlexStatementResponse` with
     `ErrorCode == 1019` sleeps `interval_s` and retries; any other error code raises `get:<code>`.
-  - `quiet_http_logging()` — sets the `httpx` and `httpcore` loggers to WARNING (httpx logs every request URL at
-    INFO); `fetch` calls it first; `cli.quiet_libraries` keeps doing the same.
+  - `quiet_http_logging()` — sets the `httpx` and `httpcore` loggers to WARNING and `propagate = False` (httpx logs
+    every request URL at INFO; httpcore's children log at DEBUG); `fetch` calls it first; `cli.quiet_libraries`
+    calls it too.
 
 - [ ] **Step 1: Write the failing tests** (append to `tests/worker/test_flex.py`):
 
@@ -692,13 +814,16 @@ STATEMENT = b'<FlexQueryResponse queryName="q" type="AF"><FlexStatements count="
 
 
 class _Flex:
-    """A scripted Flex Web Service: `script` is the list of (status, body) answers for GetStatement."""
-    def __init__(self, send=SEND_OK, script=((200, STATEMENT),), raise_on_send: Exception | None = None):
-        self.send, self.script, self.raise_on_send, self.urls = send, list(script), raise_on_send, []
+    """A scripted Flex Web Service: `script` is the list of (status, body) answers for GetStatement; `raise_on_send`
+    is an exception instance, `raise_factory` a callable taking the request (for exceptions that carry the URL)."""
+    def __init__(self, send=SEND_OK, script=((200, STATEMENT),), raise_on_send=None, raise_factory=None):
+        self.send, self.script, self.raise_on_send, self.raise_factory, self.urls = send, list(script), raise_on_send, raise_factory, []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.urls.append(str(request.url))
         if request.url.path.endswith("/SendRequest"):
+            if self.raise_factory:
+                raise self.raise_factory(request)
             if self.raise_on_send:
                 raise self.raise_on_send
             return httpx.Response(200, content=self.send)
@@ -729,40 +854,77 @@ def test_fetch_gives_up_after_the_poll_budget_without_latching(tmp_path):
     assert str(exc.value) == "get:pending" and exc.value.transient is True
 
 
+def _status(code: bytes) -> bytes:
+    return b"<FlexStatementResponse><Status>Fail</Status><ErrorCode>" + code + b"</ErrorCode><ErrorMessage>m</ErrorMessage></FlexStatementResponse>"
+
+
+def _request_url_error(request: httpx.Request) -> Exception:
+    return httpx.ReadTimeout("timed out", request=request)  # the exception that carries the URL (and the token)
+
+
 @pytest.mark.parametrize("svc, code, transient", [
     (lambda: _Flex(send=SEND_FAIL), "send:1020", False),
-    (lambda: _Flex(script=[(200, b"<FlexStatementResponse><Status>Fail</Status><ErrorCode>1003</ErrorCode></FlexStatementResponse>")]), "get:1003", False),
+    (lambda: _Flex(send=_status(b"1012")), "send:1012", False),      # token expired: latch
+    (lambda: _Flex(send=_status(b"1018")), "send:1018", True),       # too many requests: retry tomorrow
+    (lambda: _Flex(script=[(200, _status(b"1003"))]), "get:1003", True),
+    (lambda: _Flex(script=[(200, _status(b"1017"))]), "get:1017", False),
+    (lambda: _Flex(script=[(200, _status(b"9999"))]), "get:9999", False),  # unknown code: fail closed
+    (lambda: _Flex(send=_status(b"DROP TABLE")), "xml", False),
     (lambda: _Flex(script=[(403, b"forbidden")]), "http:403", False),
+    (lambda: _Flex(script=[(429, b"slow down")]), "http:429", True),
+    (lambda: _Flex(script=[(408, b"timeout")]), "http:408", True),
     (lambda: _Flex(script=[(503, b"later")]), "http:503", True),
     (lambda: _Flex(raise_on_send=httpx.ConnectError("boom")), "http:ConnectError", True),
-    (lambda: _Flex(raise_on_send=httpx.ReadTimeout("slow")), "http:ReadTimeout", True),
+    (lambda: _Flex(raise_factory=_request_url_error), "http:ReadTimeout", True),
     (lambda: _Flex(send=b"<nope"), "xml", False),
 ])
 def test_fetch_maps_failures_to_codes_without_the_token(tmp_path, caplog, svc, code, transient):
-    with caplog.at_level(logging.INFO), pytest.raises(flex.FlexError) as exc:
+    import traceback
+    with caplog.at_level(logging.DEBUG), pytest.raises(flex.FlexError) as exc:
         _fetch(svc(), flex.load_credentials(_creds(tmp_path)))
     assert (str(exc.value), exc.value.transient) == (code, transient)
     assert TOKEN not in str(exc.value) and TOKEN not in repr(exc.value) and exc.value.__cause__ is None
     assert exc.value.__context__ is None or exc.value.__suppress_context__  # a wrapped httpx error is raised `from None`
+    assert TOKEN not in "".join(traceback.format_exception(exc.value))  # the standard traceback, context suppressed
     assert TOKEN not in caplog.text
 
 
-def test_fetch_keeps_httpx_request_lines_out_of_the_log(tmp_path, caplog):
-    logging.getLogger("httpx").setLevel(logging.INFO)  # a stray INFO level must not leak the URL
-    with caplog.at_level(logging.INFO):
+def test_fetch_keeps_httpx_and_httpcore_debug_lines_out_of_the_log(tmp_path, caplog):
+    for name in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection"):
+        logging.getLogger(name).setLevel(logging.DEBUG)  # a stray DEBUG level on a child must not leak the URL
+    with caplog.at_level(logging.DEBUG):
         _fetch(_Flex(), flex.load_credentials(_creds(tmp_path)))
     assert TOKEN not in caplog.text
+
+
+def test_fetch_redacts_the_token_if_anything_logs_it_anyway(tmp_path, caplog):
+    class _Loud:
+        def __init__(self): self.urls = []
+        def __call__(self, request):
+            logging.getLogger("worker.someone").warning("url %s", request.url)  # a future bug that logs the request
+            raise httpx.ReadTimeout("x", request=request)
+    with caplog.at_level(logging.DEBUG), pytest.raises(flex.FlexError):
+        _fetch(_Loud(), flex.load_credentials(_creds(tmp_path)))
+    assert TOKEN not in caplog.text and "***" in caplog.text
+
+
+def test_fetch_a_timeout_that_carries_the_request_does_not_expose_it(tmp_path):
+    with pytest.raises(flex.FlexError) as exc:
+        _fetch(_Flex(raise_factory=_request_url_error), flex.load_credentials(_creds(tmp_path)))
+    assert not hasattr(exc.value, "request") and TOKEN not in repr(vars(exc.value))
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `pytest tests/worker/test_flex.py -v` — Expected: the new tests FAIL (`AttributeError: fetch`).
 
-- [ ] **Step 3: Implement `FlexError`, `quiet_http_logging`, `fetch`** in `worker/flex.py`.
-Parse the responses with `xml.etree.ElementTree.fromstring`, `ET.ParseError → FlexError("xml", transient=False)`;
-`response.status_code >= 400 → FlexError(f"http:{status}", transient=status >= 500 or status == 429)`;
-`except httpx.HTTPError as exc: raise FlexError(f"http:{type(exc).__name__}", transient=True) from None`. Never call
-`raise_for_status()` (its message carries the URL). Log at most `log.info("flex: %s", code)` on failure.
+- [ ] **Step 3: Implement `FlexError`, `IB_TRANSIENT_CODES`, `_Redact`, `quiet_http_logging`, `fetch`** in
+`worker/flex.py`. Parse the responses with `xml.etree.ElementTree.fromstring` (the Flex response bodies are IB's
+own; the DTD scan of Task 2 applies again here: `b"<!DOCTYPE" in body or b"<!ENTITY" in body → FlexError("xml")`),
+`ET.ParseError → FlexError("xml", transient=False)`; `response.status_code >= 400 → FlexError(f"http:{status}",
+transient=status >= 500 or status in (408, 429))`; `except httpx.HTTPError as exc: raise
+FlexError(f"http:{type(exc).__name__}", transient=True) from None` — the `FlexError` never stores the request or the
+response. Never call `raise_for_status()`. Log at most `log.info("flex: %s", code)` on failure.
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -772,7 +934,7 @@ Run: `pytest tests/worker/test_flex.py -v` — Expected: all pass.
 
 ```bash
 git add worker/flex.py tests/worker/test_flex.py
-git commit -m "feat(worker): fetch the IB Flex statement with the token kept to the t parameter"
+git commit -m "feat(worker): fetch the IB Flex statement; the token stays in the t parameter and out of every sink"
 ```
 
 ---
@@ -793,34 +955,51 @@ git commit -m "feat(worker): fetch the IB Flex statement with the token kept to 
   - `class FlexDisabled(RuntimeError)`.
   - `LATCH = "flex-disabled.json"`; latch body `{"reason": <code>, "at": <ISO UTC>}` written with
     `write_private_json(cfg.state_dir, cfg.state_dir / LATCH, ...)`.
-  - `run(cfg, *, flex_http, portfolio_http, dry_run=False, query_id=None, from_file=None, unlatch=False, sleep=time.sleep) -> dict`:
+  - `class AlreadyRunning(RuntimeError)` (flex's own; `pipeline.AlreadyRunning` is the statement runs' lock).
+  - `run(cfg, *, flex_http, portfolio_http, dry_run=False, query_id=None, from_file=None, legacy_until=None, unlatch=False, sleep=time.sleep) -> dict`:
+    0. Take `fcntl.flock(LOCK_EX | LOCK_NB)` on `cfg.state_dir / ".flex.lock"` (0600) for the whole run; busy →
+       `raise AlreadyRunning`.
     1. If the latch exists and not `unlatch` → `raise FlexDisabled("flex disabled until `python -m worker flex --unlatch` succeeds")`.
     2. `data = from_file.read_bytes()` when given; else `creds = load_credentials(cfg.flex_credentials_file)`
        (replace `query_id` when given), `data = fetch(flex_http, creds, base_url=cfg.flex_base_url,
        attempts=cfg.flex_poll_attempts, interval_s=cfg.flex_poll_interval_s, sleep=sleep)`, then save it as
-       `cfg.state_dir / "flex" / f"flex-{YYYYmmddTHHMMSSZ}.xml"` (dir 0700, file 0600 via
-       `os.open(..., O_WRONLY|O_CREAT|O_EXCL, 0o600)`); `summary["saved"] = <file name>` (a name only).
-    3. `resp = portfolio_http.post("/api/portfolio/imports/ib-flex", params={"dry_run": "true" if dry_run else "false"}, files={"file": ("flex.xml", data, "application/xml")}, timeout=cfg.flex_timeout_s)`;
-       `status >= 400 → FlexError(f"portfolio:{status}", transient=status >= 500)`; `httpx.HTTPError →
-       FlexError("portfolio:<ClassName>", transient=True) from None`.
+       `cfg.state_dir / "flex" / f"flex-{YYYYmmddTHHMMSSffffffZ}-{pid}.xml"` (microseconds + pid: unique even for two
+       runs in one second; dir 0700, file 0600 via `os.open(..., O_WRONLY|O_CREAT|O_EXCL, 0o600)`);
+       `summary["saved"] = <file name>` (a name only).
+    3. `resp = portfolio_http.post("/api/portfolio/imports/ib-flex", params={"dry_run": ..., **({"legacy_until": legacy_until.isoformat()} if legacy_until else {})}, files={"file": ("flex.xml", data, "application/xml")}, timeout=cfg.flex_timeout_s)`;
+       `status >= 400 → FlexError(f"portfolio:{status}", transient=status >= 500 or status in (408, 429))`;
+       `httpx.HTTPError → FlexError("portfolio:<ClassName>", transient=True) from None`.
     4. Summary (codes and counts only): `{"dry_run", "source": "fetch"|"file", "bytes", "saved", "parsed",
-       "created", "skipped_duplicates", "legacy_duplicates", "errors": <len(body["errors"])>, "error_reasons":
-       sorted(set(e["reason"] for e in body["errors"]))[:20], "recalc_scheduled", "codes": []}`.
+       "created", "skipped_duplicates", "legacy_duplicates", "candidates", "errors": <len(body["errors"])>,
+       "error_codes": {<code>: <count>}, "recalc_scheduled", "codes": []}` where `error_codes` maps each API
+       `errors[].reason` through `ERROR_CODES` — an ordered list of `(regex, code)`: `^missing FX rate` → `missing_fx`,
+       `^unsupported assetCategory` → `unsupported_asset_category`, `^unsupported cash transaction type` →
+       `unsupported_cash_type`, `^unsupported section` → `unsupported_section`, `^ibCommissionCurrency` →
+       `commission_currency`, `^ambiguous legacy match` → `ambiguous_legacy`, `without (tradeID|transactionID)` →
+       `missing_id`, anything else → `other` — and counts; the reason text itself is never stored or printed.
     5. On `FlexError` not transient: write the latch with `reason = code`, `summary["codes"] = ["flex_disabled", code]`;
-       transient: `summary["codes"] = [f"transient", code]`, no latch. On success with `unlatch`: remove the latch.
-       `run` never raises `FlexError`; it returns the summary.
+       transient: `summary["codes"] = ["transient", code]`, no latch. The latch is removed only when `unlatch` was
+       passed AND the run was a plain daily run (no `from_file`, no `query_id`, no `dry_run`) AND it succeeded —
+       only that proves the daily credentials and query work again. `run` never raises `FlexError`; it returns the summary.
   - CLI: `p_fx = sub.add_parser("flex")` with `--dry-run` (store_true), `--query-id` (str, default None),
-    `--from-file` (Path, default None), `--unlatch` (store_true). Branch: unless `--from-file`, the credentials
-    file must be a file (`"flex credentials file is missing or not a file"`, exit 2, like the token precheck);
+    `--from-file` (Path, default None), `--legacy-until` (`date.fromisoformat`, default None), `--unlatch`
+    (store_true). Branch: unless `--from-file`, the credentials file must be a file (`"flex credentials file is
+    missing or not a file"`, exit 2, like the token precheck);
     `with httpx.Client(timeout=cfg.flex_timeout_s) as flex_http, httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.flex_timeout_s) as portfolio_http:`
     `summary = flex.run(...)`; `print(json.dumps(summary, ensure_ascii=False))`; exit `1 if summary["codes"] else 0`;
-    `FlexDisabled` → stderr `flex disabled: …`, exit 1; `ValueError` from the credentials file → stderr the message,
-    exit 2. No `pipeline.singleton` (the flex run shares no state with the statement runs).
+    `FlexDisabled` → stderr `flex disabled: …`, exit 1; `flex.AlreadyRunning` → stdout `already running`, exit 3 (as
+    `gate` / `verify`); `ValueError` from the credentials file → stderr the message, exit 2. Any other exception
+    escaping `flex.run` is caught in the CLI branch, printed as `flex failed: <ClassName>` on stderr (class name only,
+    no traceback: the CLI is the output boundary), exit 1.
 
 - [ ] **Step 1: Write the failing tests** (append to `tests/worker/test_flex.py`):
 
 ```python
-PORTFOLIO_OK = {"parsed": 11, "created": 11, "skipped_duplicates": 0, "legacy_duplicates": 0, "errors": [{"row_index": 9, "message": "unsupported section Transfers", "reason": "unsupported section Transfers"}], "recalc_scheduled": True}
+PORTFOLIO_OK = {"parsed": 11, "created": 11, "skipped_duplicates": 0, "legacy_duplicates": 0, "candidates": 8,
+                "errors": [{"row_index": 9, "message": "unsupported section Transfers", "reason": "unsupported section Transfers"},
+                           {"row_index": 4, "message": "missing FX rate for 2026-06-05 USD", "reason": "missing FX rate for 2026-06-05 USD"},
+                           {"row_index": 5, "message": f"something odd {TOKEN}", "reason": f"something odd {TOKEN}"}],  # a reason must never be copied
+                "recalc_scheduled": True}
 
 
 class _Portfolio:
@@ -852,16 +1031,20 @@ def test_run_fetches_saves_and_posts_the_statement(tmp_path, caplog):
     saved = list((cfg.state_dir / "flex").glob("flex-*.xml"))
     assert len(saved) == 1 and saved[0].read_bytes() == STATEMENT and oct(saved[0].stat().st_mode)[-3:] == "600" and oct((cfg.state_dir / "flex").stat().st_mode)[-3:] == "700"
     assert summary == {"dry_run": False, "source": "fetch", "bytes": len(STATEMENT), "saved": saved[0].name, "parsed": 11, "created": 11,
-                       "skipped_duplicates": 0, "legacy_duplicates": 0, "errors": 1, "error_reasons": ["unsupported section Transfers"], "recalc_scheduled": True, "codes": []}
+                       "skipped_duplicates": 0, "legacy_duplicates": 0, "candidates": 8, "errors": 3,
+                       "error_codes": {"unsupported_section": 1, "missing_fx": 1, "other": 1}, "recalc_scheduled": True, "codes": []}
+    assert "2026-06-05" not in json.dumps(summary)  # a date from a reason is text, not a code
     url, headers, body = portfolio.requests[0]
     assert url == "http://portfolio.test/api/portfolio/imports/ib-flex?dry_run=false" and STATEMENT in body
     assert TOKEN not in url and TOKEN not in body.decode("latin-1") and TOKEN not in json.dumps(headers) and TOKEN not in json.dumps(summary) and TOKEN not in caplog.text
     assert not (cfg.state_dir / flex.LATCH).exists()
 
 
-def test_run_dry_run_and_query_id_override_reach_both_services(tmp_path):
-    summary, svc, portfolio = _run(_cfg(tmp_path), dry_run=True, query_id="1678975")
-    assert "q=1678975" in svc.urls[0] and portfolio.requests[0][0].endswith("?dry_run=true") and summary["dry_run"] is True
+def test_run_dry_run_query_id_and_legacy_until_reach_both_services(tmp_path):
+    from datetime import date
+    summary, svc, portfolio = _run(_cfg(tmp_path), dry_run=True, query_id="1678975", legacy_until=date(2026, 6, 30))
+    assert "q=1678975" in svc.urls[0] and summary["dry_run"] is True
+    assert portfolio.requests[0][0] == "http://portfolio.test/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30"
 
 
 def test_run_from_file_posts_without_calling_ib(tmp_path):
@@ -870,7 +1053,7 @@ def test_run_from_file_posts_without_calling_ib(tmp_path):
     assert svc.urls == [] and summary["source"] == "file" and summary["saved"] is None and len(portfolio.requests) == 1
 
 
-def test_run_latches_on_a_failed_send_request_and_unlatch_clears_it(tmp_path):
+def test_run_latches_on_a_failed_send_request_and_only_a_plain_unlatch_run_clears_it(tmp_path):
     cfg = _cfg(tmp_path)
     summary, _, portfolio = _run(cfg, svc=_Flex(send=SEND_FAIL))
     assert summary["codes"] == ["flex_disabled", "send:1020"] and portfolio.requests == []
@@ -878,8 +1061,27 @@ def test_run_latches_on_a_failed_send_request_and_unlatch_clears_it(tmp_path):
     assert latch["reason"] == "send:1020" and TOKEN not in json.dumps(latch) and oct((cfg.state_dir / flex.LATCH).stat().st_mode)[-3:] == "600"
     with pytest.raises(flex.FlexDisabled):
         _run(cfg)
+    saved = tmp_path / "old.xml"; saved.write_bytes(STATEMENT)
+    for kw in ({"from_file": saved}, {"dry_run": True}, {"query_id": "1678975"}):
+        summary, _, _ = _run(cfg, unlatch=True, **kw)   # these prove nothing about the daily credentials
+        assert summary["codes"] == [] and (cfg.state_dir / flex.LATCH).exists()
     summary, _, _ = _run(cfg, unlatch=True)
     assert summary["codes"] == [] and not (cfg.state_dir / flex.LATCH).exists()
+
+
+def test_run_refuses_to_overlap_itself(tmp_path):
+    import fcntl
+    cfg = _cfg(tmp_path); cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    with open(cfg.state_dir / ".flex.lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(flex.AlreadyRunning):
+            _run(cfg)
+
+
+def test_run_file_names_are_unique_across_two_runs_in_one_second(tmp_path):
+    cfg = _cfg(tmp_path)
+    _run(cfg); _run(cfg)
+    assert len(list((cfg.state_dir / "flex").glob("flex-*.xml"))) == 2
 
 
 def test_run_keeps_the_saved_xml_when_the_portfolio_post_fails(tmp_path):
@@ -887,6 +1089,8 @@ def test_run_keeps_the_saved_xml_when_the_portfolio_post_fails(tmp_path):
     summary, _, _ = _run(cfg, portfolio=_Portfolio(raise_exc=httpx.ConnectError("down")))
     assert summary["codes"] == ["transient", "portfolio:ConnectError"] and len(list((cfg.state_dir / "flex").glob("flex-*.xml"))) == 1
     assert not (cfg.state_dir / flex.LATCH).exists()
+    busy = _run(cfg, portfolio=_Portfolio(status=429, body={"detail": "slow down"}))[0]
+    assert busy["codes"] == ["transient", "portfolio:429"] and not (cfg.state_dir / flex.LATCH).exists()
     bad = _run(cfg, portfolio=_Portfolio(status=400, body={"detail": "flex: 1020"}))[0]
     assert bad["codes"] == ["flex_disabled", "portfolio:400"] and (cfg.state_dir / flex.LATCH).exists()
 
@@ -903,11 +1107,18 @@ def test_cli_flex_prints_one_json_line_and_exits_by_codes(tmp_path, monkeypatch,
     monkeypatch.setattr(config, "load", lambda env=None: cfg)
     calls = []
     monkeypatch.setattr(flex, "run", lambda c, **kw: calls.append(kw) or {"codes": [], "created": 0})
-    assert cli.main(["flex", "--dry-run", "--query-id", "1678975"]) == 0
+    assert cli.main(["flex", "--dry-run", "--query-id", "1678975", "--legacy-until", "2026-06-30"]) == 0
     assert json.loads(capsys.readouterr().out.strip()) == {"codes": [], "created": 0}
     assert calls[0]["dry_run"] is True and calls[0]["query_id"] == "1678975" and calls[0]["from_file"] is None and calls[0]["unlatch"] is False
+    assert str(calls[0]["legacy_until"]) == "2026-06-30"
     monkeypatch.setattr(flex, "run", lambda c, **kw: {"codes": ["transient", "http:503"]})
     assert cli.main(["flex"]) == 1
+    monkeypatch.setattr(flex, "run", lambda c, **kw: (_ for _ in ()).throw(flex.AlreadyRunning()))
+    assert cli.main(["flex"]) == 3 and capsys.readouterr().out.strip() == "already running"
+    monkeypatch.setattr(flex, "run", lambda c, **kw: (_ for _ in ()).throw(RuntimeError(f"boom {TOKEN}")))
+    assert cli.main(["flex"]) == 1
+    err = capsys.readouterr().err
+    assert "flex failed: RuntimeError" in err and TOKEN not in err and "Traceback" not in err
 
 
 def test_cli_flex_exit_codes_for_missing_credentials_and_latch(tmp_path, monkeypatch, capsys):
@@ -927,9 +1138,10 @@ def test_cli_flex_exit_codes_for_missing_credentials_and_latch(tmp_path, monkeyp
 Run: `pytest tests/worker/test_flex.py -v` — Expected: the new tests FAIL (`AttributeError: run` / argparse error
 `invalid choice: 'flex'`).
 
-- [ ] **Step 3: Implement `FlexDisabled`, `LATCH`, `run`** in `worker/flex.py` and the `flex` subcommand in
-`worker/cli.py` per the Interfaces block. Use `logging.getLogger("worker")`; log codes only. In `cli.py` import the
-module (`from worker import flex`) and call `flex.run(...)` by attribute, so tests can monkeypatch `flex.run`.
+- [ ] **Step 3: Implement `FlexDisabled`, `AlreadyRunning`, `LATCH`, `ERROR_CODES`, `run`** in `worker/flex.py` and
+the `flex` subcommand in `worker/cli.py` per the Interfaces block. Use `logging.getLogger("worker")`; log codes only.
+In `cli.py` import the module (`from worker import flex`) and call `flex.run(...)` by attribute, so tests can
+monkeypatch `flex.run`.
 
 - [ ] **Step 4: Run to verify they pass, then the whole worker suite**
 
@@ -997,19 +1209,26 @@ Expected: `exit 0` (warnings about `%h` paths not existing on the dev host are a
 `~/.config/homehub-portfolio-flex.env` (worker user, 0600, two `KEY=VALUE` lines `IB_FLEX_TOKEN`, `IB_FLEX_QUERY_ID`,
 written with `read -s`, never on a command line or in chat); `STATEMENT_FLEX_*` / `STATEMENT_PORTFOLIO_API_URL`
 overrides; what the timer does; the state files `<state_dir>/flex/flex-<ts>.xml` (0600) and
-`<state_dir>/flex-disabled.json`; the latch rule (any `send:*` / `get:*` status failure, `xml`, `portfolio:4xx`
-latches; HTTP 5xx / timeouts / connection errors / `get:pending` do not); recovery `python -m worker flex --unlatch`;
-the one-off backfill `python -m worker flex --query-id <id> --dry-run` then without `--dry-run`; re-posting a saved
-file `python -m worker flex --from-file <state_dir>/flex/flex-<ts>.xml`; enabling
+`<state_dir>/flex-disabled.json`; the latch rule (IB status codes outside `IB_TRANSIENT_CODES`, `xml`,
+`portfolio:4xx` other than 408/429 latch; IB transient codes, HTTP 5xx / 408 / 429, timeouts, connection errors and
+`get:pending` do not); a run that does not latch but fails still exits 1, so `systemctl --user list-units --failed`
+and the Loki query `{job="homehub-statements"} |= "flex" | json | codes != ""` show a query that is pending every
+day; recovery `python -m worker flex --unlatch` (a plain daily run: `--dry-run`, `--query-id`, `--from-file` never
+clear the latch); the one-off backfill `python -m worker flex --query-id <id> --legacy-until 2026-06-30 --dry-run`
+(read `candidates`, `legacy_duplicates`, `error_codes`) then the same without `--dry-run`; re-posting a saved file
+`python -m worker flex --from-file <state_dir>/flex/flex-<ts>.xml`; enabling
 `systemctl --user enable --now homehub-portfolio-flex.timer`.
 
-- [ ] **Step 4: Service README** — add `python -m worker flex [--dry-run] [--query-id ID] [--from-file XML] [--unlatch]`
-to the commands list; exit codes: "0 imported (errors in the body are counted, not fatal); 1 any code in `codes`
-(`flex_disabled`, `transient`) or the latch; 2 credentials file missing/malformed or config error"; six rows in
-the config table; one paragraph "IB Flex statements (2026-10-20)" naming the adapter
-`broker_ib_flex_service`, the route, the fingerprint parity with the CSV import, the `legacy_duplicates` pass,
-the sections imported (Trades EXECUTION/STK, CashTransactions) and reported (Transfers, CorporateActions), the
-sections ignored (OpenPositions, ConversionRates), and the summary keys.
+- [ ] **Step 4: Service README** — add `python -m worker flex [--dry-run] [--query-id ID] [--from-file XML]
+[--legacy-until DATE] [--unlatch]` to the commands list; exit codes: "0 imported (errors in the body are counted,
+not fatal); 1 any code in `codes` (`flex_disabled`, `transient`), the latch, or an unexpected exception (class name
+on stderr); 2 credentials file missing/malformed or config error; 3 already running"; six rows in the config
+table; one paragraph "IB Flex statements (2026-10-20)" naming the adapter `broker_ib_flex_service`, the route and
+its `dry_run` / `legacy_until` parameters, the fingerprint (existing functions, note carries the Flex id, market from
+`listingExchange`), signed cash amounts, the `legacy_until` pairing pass and its ambiguity error, the sections
+imported (Trades EXECUTION/STK, CashTransactions) and reported (Transfers, CorporateActions), the sections ignored
+(OpenPositions, ConversionRates — positions derive from transactions and corporate actions are reported, not
+applied), and the summary keys with the `error_codes` allowlist.
 
 - [ ] **Step 5: Spec rev 3** — edit `docs/superpowers/specs/2026-10-19-portfolio-integration-design.md`:
   - status line: prepend `Status: rev 3 (2026-10-20) §7 amended by the Phase 2 plan: XML instead of CSV; the token
@@ -1019,18 +1238,28 @@ sections ignored (OpenPositions, ConversionRates), and the summary keys.
     Positions; last 30 calendar days; yyyy-MM-dd; currency rates off)`.
   - §7 bullet 2: `stores the CSV` → `stores the XML`; endpoint `POST /api/portfolio/imports/ib-flex`; `Flex CSV is not
     the Activity Statement CSV` → `Flex XML is not the Transfer History CSV the IB importer reads today`; sections
-    `(Trades, CashTransactions; Transfers and CorporateActions are reported, OpenPositions ignored)`; after the
-    fingerprint sentence add: `The market comes from the Flex listingExchange (LSE for LSE/LSEETF/LSEIOB), not from
-    the CSV parser's currency guess. A pre-pass (legacy_duplicates) drops rows whose business key (no market, no
-    note) already exists — rows imported before fingerprints, stored under another market, or whose CSV note
-    differs from the Flex description — so a backfill over an already-imported month creates nothing.`
+    `(Trades, CashTransactions; Transfers and CorporateActions are reported, OpenPositions ignored)`; replace the
+    fingerprint sentence `so a Flex row and the same event … cash_flow_fingerprint)` with: `using the existing
+    fingerprint functions with the Flex tradeID / transactionID in the note, so two identical same-day fills stay two
+    rows; the market comes from the Flex listingExchange (LSE for LSE/LSEETF/LSEIOB); cash amounts keep IB's sign.
+    A Flex row never shares a fingerprint with a row from the manual Transfer-History CSV imports; the one-off
+    backfill over that era runs with legacy_until=<date>, which pairs rows one-to-one by business key (symbol,
+    type, quantity, price, date, currency, fee, tax; cash: date, type, signed amount, currency) with the rows dated
+    up to that day, drops the pairs, and reports any key with unequal counts as "ambiguous legacy match" for the
+    owner to resolve; the daily run never pairs.`
   - §7 bullet 3: replace `request URL recorded by the test transport` with `every request other than the two Flex
     calls (the token is the t query parameter of SendRequest and GetStatement and nothing else: never a header,
-    never the portfolio request)`; add `Recovery: python -m worker flex --unlatch; a one-off backfill query runs with
-    --query-id; a saved XML re-posts with --from-file.`
+    never the portfolio request); the CLI is the output boundary: codes and counts on stdout, class names on stderr,
+    no traceback, and a redacting filter on the root logger while the token is in use`; replace `Failures latch like
+    the parser gate (flex-disabled.json) and surface in the run summary` with `Non-transient failures (an IB status
+    code outside the transient table, an unparseable response, a portfolio 4xx other than 408/429) latch like the
+    parser gate (flex-disabled.json); transient ones (IB codes 1003–1009, 1018, 1019, 1021; HTTP 5xx / 408 / 429;
+    timeouts) exit 1 without latching and the unit shows failed`; add `Recovery: python -m worker flex --unlatch (a
+    plain daily run; --dry-run, --query-id and --from-file never clear the latch); a one-off backfill query runs with
+    --query-id and --legacy-until; a saved XML re-posts with --from-file.`
   - §10 "Worker" bullet: `fixture CSV` → `fixture XML`; "Portfolio" bullet: `Flex adapter dedupes against an
-    Activity-import fingerprint` → `Flex adapter dedupes against a Transfer-History-CSV fingerprint and, by business
-    key, against rows imported before fingerprints`.
+    Activity-import fingerprint` → `Flex adapter dedupes re-imports by fingerprint (Flex id in the note) and, with
+    legacy_until, pairs the manual-era rows one-to-one by business key, reporting ambiguity`.
 
 - [ ] **Step 6: Verify the docs mention every surface**
 
@@ -1050,11 +1279,12 @@ git commit -m "docs(portfolio): IB Flex timer units, README, spec §7 rev 3"
 
 1. Deploy: worker checkout to the merged main; portfolio service restart (new route); `ln -sf` the two units,
    `daemon-reload`; do NOT enable the timer yet.
-2. Owner-run dry-run of the backfill query as the worker user: `python -m worker flex --query-id 1678975 --dry-run`
-   → read `created` / `skipped_duplicates` / `legacy_duplicates` / `error_reasons` from the JSON line (expected
-   from the 2026-10-20 sample: 3 trades + 2 cash flows new, 4 legacy duplicates — the three 2026-06-02 trades and
-   the 2026-06-01 deposit — `missing FX rate` only for dates past `fx_rates`); then the same without `--dry-run`.
-   New IB trades land with `market = LSE` straight from `listingExchange`, matching the hand-corrected rows.
+2. Owner-run dry-run of the backfill query as the worker user: `python -m worker flex --query-id 1678975
+   --legacy-until 2026-06-30 --dry-run` → read `candidates` / `legacy_duplicates` / `error_codes` from the JSON
+   line (`created` is 0 on a dry run by design; expected from the 2026-10-20 sample: `candidates` 5 — 3 trades + 2
+   cash flows — `legacy_duplicates` 4 — the three 2026-06-02 trades and the 2026-06-01 deposit — `ambiguous_legacy`
+   0, `missing_fx` only for dates past `fx_rates`); then the same without `--dry-run`. New IB trades land with
+   `market = LSE` straight from `listingExchange`, matching the hand-corrected rows.
 3. Daily query dry-run, then real: `python -m worker flex --dry-run`, `python -m worker flex`.
 4. `systemctl --user enable --now homehub-portfolio-flex.timer`; watch the first timer run in the journal
    (`journalctl --user -u homehub-portfolio-flex.service`).
