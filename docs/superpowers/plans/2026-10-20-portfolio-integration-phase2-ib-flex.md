@@ -124,7 +124,8 @@ Verified facts this plan rests on (2026-10-20, prod and the owner's live query):
    nothing posted), tomorrow retries — Task 5 `test_fetch_gives_up_after_the_poll_budget_without_latching`.
 4. **The token is rotated or revoked** (SendRequest `Fail` 1020): the latch `flex-disabled.json` is written with the
    code only, the summary says `flex_disabled`, every later run exits 1 without calling IB until
-   `python -m worker flex --unlatch` succeeds — Task 6 `test_run_latches_on_a_failed_send_request_and_only_a_plain_unlatch_run_clears_it`.
+   a plain `python -m worker flex --unlatch` run ends with no codes — Task 6 `test_run_latches_on_a_failed_send_request_and_only_a_plain_unlatch_run_clears_it`,
+   `test_run_unlatch_keeps_the_latch_when_the_run_ends_with_a_code`.
 5. **The portfolio service is down when the XML is posted**: the XML is already saved under the state dir, the
    failure is transient (no latch), `--from-file <saved>` re-posts it later — Task 6
    `test_run_keeps_the_saved_xml_when_the_portfolio_post_fails`.
@@ -482,7 +483,9 @@ git commit -m "feat(portfolio): map IB Flex cash transactions and refuse bad Fle
   `LegacyPair(row_index: int, kind: str, existing_id: int)`, and
   `legacy_duplicates(db: Session, parsed: ParseResult, *, until: date, dry_run: bool) -> LegacyResult` — `pending` is
   a NEW `ParseResult` (the input is never mutated) holding the rows to commit; `pairs` lists every parsed row that
-  was paired with an existing row (ids only). The algorithm, in order:
+  was paired with an existing row (ids only). Provenance: an existing row is manual-era only if its fingerprint is
+  NULL or equals the CSV-style fingerprint recomputed from its stored fields (market ∈ {stored, US, LSE}; note = name /
+  note); any other fingerprint is Flex-origin and never pairs. The algorithm, in order:
   1. **Fingerprint first.** `known` = the stored `import_fingerprint`s of IB rows (both tables). A parsed row whose
      fingerprint is in `known` is already identified: it goes straight to `pending` (the commit counts it as
      `skipped_duplicates`) and takes no part in pairing. An existing row whose fingerprint equals ANY parsed row's
@@ -855,7 +858,7 @@ git commit -m "feat(worker): Flex credentials file and STATEMENT_FLEX_* configur
 - Produces:
   - `class FlexError(RuntimeError)`: `__init__(self, code: str, *, transient: bool)`; `str(exc) == code`; codes
     are `send:<ErrorCode>` / `get:<ErrorCode>` (IB status failures; `transient` per `IB_TRANSIENT_CODES`),
-    `http:<status>` (≥ 400; transient when ≥ 500 or in `{408, 429}`), `http:<ExceptionClassName>` (any
+    `http:<status>` (≥ 300, 3xx non-transient; transient when ≥ 500 or in `{408, 429}`), `http:<ExceptionClassName>` (any
     `httpx.HTTPError`, transient), `get:pending` (1019 past the poll budget, transient), `xml` (unparseable Flex
     response or an `ErrorCode` that is not four digits, not transient). An `ErrorCode` is accepted only when it
     matches `^[0-9]{4}$`; anything else is `xml`.
@@ -1013,8 +1016,8 @@ Run: `pytest tests/worker/test_flex.py -v` — Expected: the new tests FAIL (`At
 `worker/flex.py`. Parse every response body with the same guard as Task 2's `_root`: `text =
 body.decode("utf-8-sig")` (`UnicodeDecodeError → FlexError("xml")`), `"<!DOCTYPE" in text or "<!ENTITY" in text →
 FlexError("xml")` over the whole text, then `ET.fromstring(text)` (`ET.ParseError → FlexError("xml", transient=False)`);
-a `_parse_flex_xml(body: bytes) -> ET.Element` helper used for SendRequest and GetStatement alike; `response.status_code >= 400 → FlexError(f"http:{status}",
-transient=status >= 500 or status in (408, 429))`; `except httpx.HTTPError as exc: raise
+a `_parse_flex_xml(body: bytes) -> ET.Element` helper used for SendRequest and GetStatement alike; `response.status_code >= 300 → FlexError(f"http:{status}",
+transient=status >= 500 or status in (408, 429))` (3xx non-transient); `except httpx.HTTPError as exc: raise
 FlexError(f"http:{type(exc).__name__}", transient=True) from None` — the `FlexError` never stores the request or the
 response. Never call `raise_for_status()`. Log at most `log.info("flex: %s", code)` on failure.
 
@@ -1064,16 +1067,18 @@ git commit -m "feat(worker): fetch the IB Flex statement; the token stays in the
     4. Summary (codes and counts only): `{"dry_run", "source": "fetch"|"file", "bytes", "saved", "parsed",
        "created", "skipped_duplicates", "legacy_duplicates" (a count; `legacy_pairs` is NOT copied — ids stay in the
        API), "candidates", "errors": <len(body["errors"])>,
-       "error_codes": {<code>: <count>}, "recalc_scheduled", "codes": []}` where `error_codes` maps each API
+       "error_codes": {<code>: <count>}, "recalc_scheduled", "stale_fx", "codes": []}` where `error_codes` maps each API
        `errors[].reason` through `ERROR_CODES` — an ordered list of `(regex, code)`: `^missing FX rate` → `missing_fx`,
        `^unsupported assetCategory` → `unsupported_asset_category`, `^unsupported cash transaction type` →
        `unsupported_cash_type`, `^unsupported section` → `unsupported_section`, `^ibCommissionCurrency` →
        `commission_currency`, `^ambiguous legacy match` → `ambiguous_legacy`, `without (tradeID|transactionID)` →
-       `missing_id`, anything else → `other` — and counts; the reason text itself is never stored or printed.
+       `missing_id`, `^unsupported buySell` → `unsupported_buy_sell`, `^quantity sign disagrees` →
+       `quantity_sign`, anything else → `other` — and counts; the reason text itself is never stored or printed.
     5. On `FlexError` not transient: only for a plain run (no `from_file`, no `query_id`, no `dry_run`) write the latch with
        `reason = code` and `summary["codes"] = ["flex_disabled", code]`; otherwise `["failed", code]` and no latch;
        transient: `summary["codes"] = ["transient", code]`, no latch. The latch is removed only when `unlatch` was
-       passed AND the run was a plain daily run (no `from_file`, no `query_id`, no `dry_run`) AND it succeeded —
+       passed AND the run was a plain daily run (no `from_file`, no `query_id`, no `dry_run`) AND it ended with no
+       codes (a `stale_fx` day keeps the latch) —
        only that proves the daily credentials and query work again. `run` never raises `FlexError`; it returns the summary.
   - CLI: `p_fx = sub.add_parser("flex")` with `--dry-run` (store_true), `--query-id` (str, default None),
     `--from-file` (Path, default None), `--legacy-until` (`date.fromisoformat`, default None), `--unlatch`
@@ -1137,8 +1142,8 @@ def test_run_fetches_saves_and_posts_the_statement(tmp_path, caplog):
 
 def test_run_dry_run_query_id_and_legacy_until_reach_both_services(tmp_path):
     from datetime import date
-    summary, svc, portfolio = _run(_cfg(tmp_path), dry_run=True, query_id="<backfill-query-id>", legacy_until=date(2026, 6, 30))
-    assert "q=<backfill-query-id>" in svc.urls[0] and summary["dry_run"] is True
+    summary, svc, portfolio = _run(_cfg(tmp_path), dry_run=True, query_id="7654321", legacy_until=date(2026, 6, 30))
+    assert "q=7654321" in svc.urls[0] and summary["dry_run"] is True
     assert portfolio.requests[0][0] == "http://portfolio.test/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30"
 
 
@@ -1157,7 +1162,7 @@ def test_run_latches_on_a_failed_send_request_and_only_a_plain_unlatch_run_clear
     with pytest.raises(flex.FlexDisabled):
         _run(cfg)
     saved = tmp_path / "old.xml"; saved.write_bytes(STATEMENT)
-    for kw in ({"from_file": saved}, {"dry_run": True}, {"query_id": "<backfill-query-id>"}):
+    for kw in ({"from_file": saved}, {"dry_run": True}, {"query_id": "7654321"}):
         summary, _, _ = _run(cfg, unlatch=True, **kw)   # these prove nothing about the daily credentials
         assert summary["codes"] == [] and (cfg.state_dir / flex.LATCH).exists()
     summary, _, _ = _run(cfg, unlatch=True)
@@ -1202,10 +1207,10 @@ def test_cli_flex_prints_one_json_line_and_exits_by_codes(tmp_path, monkeypatch,
     monkeypatch.setattr(config, "load", lambda env=None: cfg)
     calls = []
     monkeypatch.setattr(flex, "run", lambda c, **kw: calls.append(kw) or {"codes": [], "created": 0})
-    assert cli.main(["flex", "--dry-run", "--query-id", "<backfill-query-id>", "--legacy-until", "2026-06-30"]) == 0
+    assert cli.main(["flex", "--dry-run", "--query-id", "7654321", "--legacy-until", "2026-06-30"]) == 0
     out, err = capsys.readouterr()
     assert json.loads(out.strip()) == {"codes": [], "created": 0} and err == ""
-    assert calls[0]["dry_run"] is True and calls[0]["query_id"] == "<backfill-query-id>" and calls[0]["from_file"] is None and calls[0]["unlatch"] is False
+    assert calls[0]["dry_run"] is True and calls[0]["query_id"] == "7654321" and calls[0]["from_file"] is None and calls[0]["unlatch"] is False
     assert str(calls[0]["legacy_until"]) == "2026-06-30"
     monkeypatch.setattr(flex, "run", lambda c, **kw: {"codes": ["transient", "http:503"]})
     assert cli.main(["flex"]) == 1
@@ -1396,7 +1401,7 @@ git commit -m "docs(portfolio): IB Flex timer units, README, spec §7 rev 3"
 3. Daily query dry-run, then real: `python -m worker flex --dry-run`, `python -m worker flex`. The backfill query must
    select the same Trade and CashTransaction fields as the daily query; the dry run must show `candidates` 0 (or only
    rows newer than the backfill) and `skipped_duplicates` equal to the overlap — stop otherwise.
-4. `systemctl --user enable --now homehub-portfolio-flex.timer`; watch the first timer run in the journal
+4. Alloy matcher: add `_SYSTEMD_USER_UNIT=homehub-portfolio-flex.service` (before the timer is enabled in step 5).
+5. `systemctl --user enable --now homehub-portfolio-flex.timer`; watch the first timer run in the journal
    (`journalctl --user -u homehub-portfolio-flex.service`).
-5. Delete the backfill query in IB Account Management once step 2 has imported.
-6. Alloy matcher: add `_SYSTEMD_USER_UNIT=homehub-portfolio-flex.service` before enabling the timer.
+6. Delete the backfill query in IB Account Management once step 2 has imported.

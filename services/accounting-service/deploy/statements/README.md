@@ -54,10 +54,9 @@ Credentials file `~/.config/homehub-portfolio-flex.env` (worker user, mode 0600)
 
     sudo -u homehub-worker -H bash -c 'umask 077; read -rs -p "token: " T; echo; read -rp "query id: " Q; printf "IB_FLEX_TOKEN=%s\nIB_FLEX_QUERY_ID=%s\n" "$T" "$Q" > ~/.config/homehub-portfolio-flex.env; chmod 600 ~/.config/homehub-portfolio-flex.env; unset T Q'
 
-Every manual `flex` command below is run as the worker user from the prefix
-`cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a &&`
-(a run without the env file may use another `STATEMENT_STATE_DIR`, hence another lock and latch) and uses
-`.venv/bin/python -m worker flex ...`.
+Every manual `flex` command below is written out in full: it runs as the worker user, from the service directory, with
+`~/.config/homehub-statements.env` loaded (a run without the env file may use another `STATEMENT_STATE_DIR`, hence another
+lock and latch).
 
 Overrides (all optional, in `~/.config/homehub-statements.env`): `STATEMENT_FLEX_CREDENTIALS_FILE`, `STATEMENT_FLEX_BASE_URL`,
 `STATEMENT_FLEX_TIMEOUT`, `STATEMENT_FLEX_POLL_ATTEMPTS`, `STATEMENT_FLEX_POLL_INTERVAL`, `STATEMENT_PORTFOLIO_API_URL`
@@ -77,26 +76,41 @@ itself, add it to `fx_rates`; exits 1 without latching). A run
 that fails without latching still exits 1, so the unit shows failed: `systemctl --user list-units --failed`, and in Loki
 `{job="homehub", unit="homehub-portfolio-flex.service"} |= "\"codes\": [\""` shows a query that is pending every day.
 
-Recovery after fixing the cause: `python -m worker flex --unlatch` (a plain daily run that clears the latch when it
-succeeds; `--dry-run`, `--query-id` and `--from-file` never clear it). A saved statement is re-posted with
-`python -m worker flex --from-file <state_dir>/flex/flex-<ts>-<pid>.xml`.
+Recovery after fixing the cause (a plain daily run; it clears the latch only when the run ends with no codes, so a
+`stale_fx` day keeps the latch; `--dry-run`, `--query-id` and `--from-file` never clear it):
 
-One-off backfill of the manual-import era (run as the worker user with the prefix above, before enabling the timer). The
-backfill query must select the same Trade and CashTransaction fields as the daily query:
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --unlatch'
 
-    ... .venv/bin/python -m worker flex --query-id <backfill-query-id> --legacy-until 2026-06-30 --dry-run
+A saved statement is re-posted with:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --from-file <state_dir>/flex/flex-<ts>-<pid>.xml'
+
+One-off backfill of the manual-import era (before enabling the timer). The backfill query must select the same Trade
+and CashTransaction fields as the daily query:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --query-id <backfill-query-id> --legacy-until 2026-06-30 --dry-run'
 
 Read `candidates`, `legacy_duplicates` and `error_codes` in the JSON line (`created` is 0 on a dry run by design). The
 pairing evidence (row ids that would adopt a Flex fingerprint) is in the API response, not in the summary:
 
-    curl -s -F file=@<saved xml> 'http://127.0.0.1:8001/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30' | jq .legacy_pairs
+    sudo -u homehub-worker -H curl -s -F file=@<state_dir>/flex/flex-<ts>-<pid>.xml 'http://127.0.0.1:8001/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30' | jq .legacy_pairs
 
-If the numbers are as expected run the same worker command without `--dry-run`: each paired old row adopts its Flex
-fingerprint, so no later import can re-create it. An `ambiguous_legacy` count above 0 needs the owner before the real run.
-From then on the IB Transfer-History CSV is never uploaded again. Then the daily dry run
-(`... .venv/bin/python -m worker flex --dry-run`): `candidates` must be 0 (or only rows newer than the backfill) and
-`skipped_duplicates` must equal the overlap with the backfill; stop and ask the owner otherwise. Then a real one
-(`... .venv/bin/python -m worker flex`). Before enabling the timer add `_SYSTEMD_USER_UNIT=homehub-portfolio-flex.service`
+If the numbers are as expected run the same worker command without `--dry-run`:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --query-id <backfill-query-id> --legacy-until 2026-06-30'
+
+Each paired old row adopts its Flex fingerprint, so no later import can re-create it; a row that already carries a Flex
+fingerprint is never paired again. An `ambiguous_legacy` count above 0 needs the owner before the real run.
+From then on the IB Transfer-History CSV is never uploaded again. Then the daily dry run:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --dry-run'
+
+`candidates` must be 0 (or only rows newer than the backfill) and `skipped_duplicates` must equal the overlap with the
+backfill; stop and ask the owner otherwise. Then a real one:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex'
+
+Before enabling the timer add `_SYSTEMD_USER_UNIT=homehub-portfolio-flex.service`
 to the Alloy journal matcher in `/home/opc/workspace/monitoring/alloy/config.alloy` (outside this repo), else the unit's
 lines never reach Loki. Then:
 
