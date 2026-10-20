@@ -317,6 +317,6 @@ def run(cfg: WorkerConfig, *, flex_http: httpx.Client, portfolio_http: httpx.Cli
                 parser.write_private_json(cfg.state_dir, latch, {"reason": code, "at": datetime.now(timezone.utc).isoformat()})
                 summary["codes"] = ["flex_disabled", code]
             return summary
-        if unlatch and not (from_file or query_id or dry_run):
-            latch.unlink(missing_ok=True)
+        if unlatch and not (from_file or query_id or dry_run) and not summary["codes"]:
+            latch.unlink(missing_ok=True)  # only a clean plain run clears it; a stale_fx day keeps the latch
         return summary

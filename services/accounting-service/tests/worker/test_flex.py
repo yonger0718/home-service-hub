@@ -246,6 +246,17 @@ def test_run_stale_fx_is_a_code_without_a_latch(tmp_path):
     assert summary["codes"] == ["stale_fx"] and summary["stale_fx"] == 1 and not (cfg.state_dir / flex.LATCH).exists()
 
 
+def test_run_unlatch_keeps_the_latch_when_the_run_ends_with_a_code(tmp_path):
+    cfg = _cfg(tmp_path)
+    _run(cfg, svc=_Flex(send=SEND_FAIL))
+    assert (cfg.state_dir / flex.LATCH).exists()
+    body = {**PORTFOLIO_OK, "error_counts": {**PORTFOLIO_OK["error_counts"], "stale_fx": 1}}
+    summary = _run(cfg, portfolio=_Portfolio(body=body), unlatch=True)[0]
+    assert summary["codes"] == ["stale_fx"] and (cfg.state_dir / flex.LATCH).exists()   # only a clean run clears it
+    summary = _run(cfg, unlatch=True)[0]
+    assert summary["codes"] == [] and not (cfg.state_dir / flex.LATCH).exists()
+
+
 def test_run_refuses_to_overlap_itself(tmp_path):
     import fcntl
     cfg = _cfg(tmp_path); cfg.state_dir.mkdir(parents=True, exist_ok=True)

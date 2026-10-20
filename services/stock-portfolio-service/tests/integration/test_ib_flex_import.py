@@ -9,6 +9,8 @@ from app.models import portfolio as models
 from app.models.fx_rate import FXRate
 from app.models.symbol_map import SymbolMap
 from app.services import broker_ib_flex_service
+from app.services.cash_flow_service import cash_flow_fingerprint
+from app.services.import_service import _broker_transaction_fingerprint
 
 FIXTURES = Path(__file__).parents[1] / "unit/fixtures"
 
@@ -233,3 +235,81 @@ def test_stale_fx_count_only_counts_missing_rates_older_than_three_days():
         ParseError(row_index=3, message="unsupported section Transfers"),
     ]
     assert _stale_fx_count(errors, date(2026, 6, 20)) == 1
+
+
+# Provenance: an existing row with a fingerprint is manual-era only if that fingerprint is the CSV-style one
+# recomputed from its stored fields; a Flex-origin row never pairs, even when a later file lacks its event.
+B_ONLY = FLEX.replace(b'tradeID="900001"', b'tradeID="900009"', 1)          # same key as A (900001), another execution
+B_ONLY_CASH = FLEX.replace(b'transactionID="800010"', b'transactionID="800019"', 1)
+TWIN_CASH = FLEX.replace(b"</CashTransactions>", FLEX[FLEX.index(b"<CashTransaction "):FLEX.index(b"/>", FLEX.index(b"<CashTransaction ")) + 2].replace(b'transactionID="800010"', b'transactionID="800019"') + b"</CashTransactions>", 1)
+
+
+def _deposits(db_session):
+    return db_session.query(models.BrokerCashFlow).filter_by(broker="IB", type="deposit").order_by(models.BrokerCashFlow.id)
+
+
+def test_ib_flex_import_a_flex_row_missing_from_a_subset_file_is_never_re_paired(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    assert _post(client, FLEX).json()["created"] == 11                                    # event A inserted with its Flex fingerprint
+    a_id, a_fp = _acwd_one(db_session).with_entities(models.Transaction.id, models.Transaction.import_fingerprint).one()
+    body = _post(client, B_ONLY, legacy_until="2026-06-30").json()                         # B only: A is absent from the file
+    assert (body["legacy_duplicates"], body["created"]) == (0, 1)
+    assert _acwd_one(db_session).count() == 2
+    assert db_session.query(models.Transaction).filter_by(id=a_id).one().import_fingerprint == a_fp
+    daily = _post(client, TWIN).json()                                                     # A + B: both identified
+    assert (daily["created"], daily["skipped_duplicates"]) == (0, 12)
+
+
+def test_ib_flex_import_a_flex_cash_flow_missing_from_a_subset_file_is_never_re_paired(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    assert _post(client, FLEX).json()["created"] == 11
+    a_id, a_fp = _deposits(db_session).with_entities(models.BrokerCashFlow.id, models.BrokerCashFlow.import_fingerprint).one()
+    body = _post(client, B_ONLY_CASH, legacy_until="2026-06-30").json()
+    assert (body["legacy_duplicates"], body["created"]) == (0, 1)
+    assert _deposits(db_session).count() == 2
+    assert db_session.query(models.BrokerCashFlow).filter_by(id=a_id).one().import_fingerprint == a_fp
+    daily = _post(client, TWIN_CASH).json()
+    assert (daily["created"], daily["skipped_duplicates"]) == (0, 12)
+
+
+def test_ib_flex_import_an_adopted_row_is_never_re_paired(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    csv = (FIXTURES / "ib_sample.csv").read_bytes()
+    assert client.post("/api/portfolio/imports/csv", files={"file": ("ib.csv", BytesIO(csv), "text/csv")}).json()["created"] == 4
+    assert _post(client, FLEX, legacy_until="2026-06-30").json()["legacy_duplicates"] == 4  # three trades + the deposit adopt
+    adopted_tx = _acwd_one(db_session).one().import_fingerprint
+    adopted_cf = _deposits(db_session).one().import_fingerprint
+    body = _post(client, B_ONLY, legacy_until="2026-06-30").json()
+    assert (body["legacy_duplicates"], body["created"]) == (0, 1)
+    assert _acwd_one(db_session).count() == 2
+    assert _acwd_one(db_session).order_by(models.Transaction.id).first().import_fingerprint == adopted_tx
+    cash = _post(client, B_ONLY_CASH, legacy_until="2026-06-30").json()
+    assert (cash["legacy_duplicates"], cash["created"]) == (0, 1)
+    assert _deposits(db_session).count() == 2 and _deposits(db_session).first().import_fingerprint == adopted_cf
+
+
+def test_ib_flex_import_a_manual_era_row_with_a_hand_corrected_market_still_pairs(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    csv_fp = _broker_transaction_fingerprint(
+        broker="IB", symbol="ACWD", market="US", type_="BUY", quantity=Decimal("1"), price=Decimal("325.05"),
+        trade_date=datetime(2026, 6, 2, tzinfo=timezone.utc), fee=Decimal("1.78"), tax=Decimal("0"), currency="USD", note="x",
+    )
+    db_session.add(_legacy_row(market="LSE", import_fingerprint=csv_fp)); db_session.commit()  # CSV guessed US, corrected to LSE since
+    body = _post(client, FLEX, legacy_until="2026-06-30").json()
+    assert body["legacy_duplicates"] == 1 and _acwd_one(db_session).count() == 1
+
+
+def test_ib_flex_import_a_manual_era_cash_flow_with_its_csv_fingerprint_still_pairs(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    csv_fp = cash_flow_fingerprint(broker="IB", date_=date(2026, 6, 1), type_="deposit", amount=Decimal("3000"), currency="USD", note="電子資金轉帳")
+    db_session.add(_legacy_deposit(note="電子資金轉帳", import_fingerprint=csv_fp)); db_session.commit()
+    body = _post(client, FLEX, legacy_until="2026-06-30").json()
+    assert body["legacy_duplicates"] == 1 and _deposits(db_session).count() == 1
+
+
+def test_ib_flex_import_a_row_with_an_unrecognised_fingerprint_never_pairs(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    db_session.add(_legacy_row(import_fingerprint="deadbeef" * 8))
+    db_session.add(_legacy_deposit(import_fingerprint="feedface" * 8)); db_session.commit()
+    body = _post(client, FLEX, legacy_until="2026-06-30").json()
+    assert body["legacy_duplicates"] == 0 and _acwd_one(db_session).count() == 2 and _deposits(db_session).count() == 2

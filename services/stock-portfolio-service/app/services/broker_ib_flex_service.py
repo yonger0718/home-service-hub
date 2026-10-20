@@ -246,8 +246,47 @@ def _enum_value(value) -> str:
     return getattr(value, "value", value)
 
 
+def _is_manual_era_transaction(r) -> bool:
+    """NULL, or the CSV-style fingerprint of the stored fields (market as stored or as the CSV guessed it)."""
+    if r.import_fingerprint is None:
+        return True
+    trade_date = r.trade_date if r.trade_date.tzinfo else r.trade_date.replace(tzinfo=timezone.utc)
+    return any(
+        r.import_fingerprint
+        == _broker_transaction_fingerprint(
+            broker=models.Broker.IB.value,
+            symbol=r.symbol,
+            market=market,
+            type_=_enum_value(r.type),
+            quantity=r.quantity,
+            price=r.price,
+            trade_date=trade_date,
+            fee=r.fee,
+            tax=r.tax,
+            currency=r.currency,
+            note=r.name,
+        )
+        for market in {r.market, "US", "LSE"}
+    )
+
+
+def _is_manual_era_cash_flow(r) -> bool:
+    if r.import_fingerprint is None:
+        return True
+    return r.import_fingerprint == cash_flow_fingerprint(
+        broker=models.Broker.IB.value, date_=r.date, type_=r.type, amount=r.amount, currency=r.currency, note=r.note
+    )
+
+
 def legacy_duplicates(db: Session, parsed: ParseResult, *, until: date, dry_run: bool) -> LegacyResult:
-    """Pair manual-era IB rows (no Flex fingerprint) with parsed Flex rows dated <= ``until``."""
+    """Pair manual-era IB rows (no Flex fingerprint) with parsed Flex rows dated <= ``until``.
+
+    Provenance is decided by recomputation, so it needs no schema column: an existing row is
+    manual-era (pairable) only if its fingerprint is NULL or equals the CSV-style fingerprint
+    recomputed from its own stored fields (``_is_manual_era_*``). Any other fingerprint is
+    Flex-origin (inserted or adopted by an earlier Flex import) and never pairs, even when the
+    current upload lacks that event.
+    """
     tx, cf, broker = models.Transaction, models.BrokerCashFlow, models.Broker.IB.value
     known = {
         fp
@@ -260,23 +299,23 @@ def legacy_duplicates(db: Session, parsed: ParseResult, *, until: date, dry_run:
 
     old: dict[tuple, list[int]] = {}
     for r in (
-        db.query(tx.id, tx.symbol, tx.type, tx.quantity, tx.price, tx.trade_date, tx.currency, tx.fee, tx.tax, tx.import_fingerprint)
+        db.query(tx.id, tx.symbol, tx.market, tx.name, tx.type, tx.quantity, tx.price, tx.trade_date, tx.currency, tx.fee, tx.tax, tx.import_fingerprint)
         .filter(tx.broker == broker)
         .order_by(tx.id)
         .all()
     ):
         trade_day = _utc_day(r.trade_date)
-        if trade_day > until or (r.import_fingerprint is not None and r.import_fingerprint in parsed_fps):
+        if trade_day > until or r.import_fingerprint in parsed_fps or not _is_manual_era_transaction(r):
             continue
         key = ("transaction", r.symbol, _enum_value(r.type), _num(r.quantity, 4), _num(r.price, 4), trade_day, r.currency, _num(r.fee, 2), _num(r.tax, 2))
         old.setdefault(key, []).append(r.id)
     for r in (
-        db.query(cf.id, cf.date, cf.type, cf.amount, cf.currency, cf.import_fingerprint)
+        db.query(cf.id, cf.date, cf.type, cf.amount, cf.currency, cf.note, cf.import_fingerprint)
         .filter(cf.broker == broker)
         .order_by(cf.id)
         .all()
     ):
-        if r.date > until or (r.import_fingerprint is not None and r.import_fingerprint in parsed_fps):
+        if r.date > until or r.import_fingerprint in parsed_fps or not _is_manual_era_cash_flow(r):
             continue
         old.setdefault(("cash_flow", r.date, r.type, _num(r.amount, 4), r.currency), []).append(r.id)
 
