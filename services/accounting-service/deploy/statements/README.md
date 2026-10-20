@@ -322,3 +322,17 @@ Rollout order (design spec section 6): deploy the API, then the worker (the work
 Operator re-queue (after a split or 422 failure that a code or settings change has fixed, or after adding a key for an already-parsed file): `UPDATE statement_file SET status='new', failure=NULL WHERE id = <id>;`. There is no automatic retry without a `parser_version` change; `retry_due` is unchanged.
 
 Watching composite files: a composite failure is deliberate and silent by design, so after each monthly 國泰 file check the run summary. It is logged as one JSON line and shipped to Loki by Alloy; in Grafana Explore the query `{job="homehub-statements"} |= "composite" | json | sections_failed > 0` (adjust the label to the dashboard's) lists runs with a failed section, and the `composite[].sections[]` entries carry the key, outcome and reason (`split_error`, `422`). A `split_error` after a bank layout change needs a rule change in `worker/composite.py`, not a re-queue.
+
+## verify user: parser credentials and the gate latch (2026-10-20)
+
+- `python -m worker verify` needs the statement password file for composite folders (`STATEMENT_PASSWORD_FILE`, default
+  `~/.config/homehub-statement-passwords.env`, 0600, owned by the verify user) — install it from the owner's copy with
+  `sudo install -m 600 -o homehub-verify -g homehub-verify <src> <dst>`; it is read only when a composite folder is met.
+- The verify parser config dir (`claude-verify`) is a copy of the worker's; the worker's refresh timer re-takes the worker's
+  copy only. Before a verify run, re-take the verify user's: move the old dir aside (`mv … claude-verify.stale-<ts>`), `cp -a`
+  the worker's `claude-verify`, `chown -R` to the verify user, files 0400, dirs 0500.
+- A stale copy fails the canary and latches `parser-disabled.json` in the VERIFY user's state dir. `python -m worker gate`
+  cannot clear that latch when run as the verify user (it canaries the worker's `claude` config dir, which the verify user
+  does not have). Clear it by moving the latch file aside after re-taking the copy; the next `verify` run re-canaries.
+- A one-off verify of a few files: set `STATEMENT_VERIFY_DIR` to a fresh directory holding `masked/<sha>.json` metas and
+  `pdf-cache/inbox/by-sha/<sha>.pdf`; the usual verify dir re-verifies every snapshot it holds (hundreds of parses).
