@@ -1,0 +1,156 @@
+from datetime import datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from app.services import broker_ib_flex_service, broker_ib_service
+
+FIXTURE = Path(__file__).parent / "fixtures/ib_flex_sample.xml"
+CSV_FIXTURE = Path(__file__).parent / "fixtures/ib_sample.csv"
+
+
+def _transactions(parsed):
+    return [r for r in parsed.rows if r.payload["_kind"] == "transaction"]
+
+
+def test_parse_trades_mirror_the_csv_parser_payload():
+    parsed = broker_ib_flex_service.parse(FIXTURE.read_bytes())
+    first = _transactions(parsed)[0].payload
+    assert first == {
+        "_kind": "transaction", "broker": "IB", "symbol": "ACWD", "market": "LSE",
+        "name": "SS SPD MS AL CO WO UC ET-USD", "type": "BUY", "position_side": "LONG",
+        "quantity": Decimal("1"), "price": Decimal("325.05"), "currency": "USD",
+        "trade_date": datetime(2026, 6, 2, tzinfo=timezone.utc), "fee": Decimal("1.78"), "tax": Decimal("0"),
+        "fingerprint_note": "SS SPD MS AL CO WO UC ET-USD ib:900001",
+    }
+
+
+def test_parse_trade_fingerprint_is_the_broker_fingerprint_with_the_trade_id_in_the_note():
+    from app.services.import_service import _broker_transaction_fingerprint
+    first = _transactions(broker_ib_flex_service.parse(FIXTURE.read_bytes()))[0]
+    assert first.fingerprint == _broker_transaction_fingerprint(
+        broker="IB", symbol="ACWD", market="LSE", type_="BUY", quantity=Decimal("1"), price=Decimal("325.05"),
+        trade_date=datetime(2026, 6, 2, tzinfo=timezone.utc), fee=Decimal("1.78"), tax=Decimal("0"), currency="USD",
+        note="SS SPD MS AL CO WO UC ET-USD ib:900001")
+
+
+def test_parse_two_identical_same_day_fills_are_two_rows():
+    raw = FIXTURE.read_bytes().replace(b'tradeID="900001"', b'tradeID="900009"', 1)  # same trade, another execution id
+    raw = FIXTURE.read_bytes().replace(b"</Trades>", raw[raw.index(b"<Trade "):raw.index(b"/>") + 2] + b"</Trades>", 1)
+    rows = _transactions(broker_ib_flex_service.parse(raw))
+    assert len(rows) == 5 and len({r.fingerprint for r in rows}) == 5
+
+
+def test_parse_trades_take_the_market_from_the_listing_exchange():
+    parsed = broker_ib_flex_service.parse(FIXTURE.read_bytes())
+    assert {r.payload["market"] for r in _transactions(parsed)} == {"LSE"}
+    us = broker_ib_flex_service.parse(FIXTURE.read_bytes().replace(b'listingExchange="LSEETF"', b'listingExchange="NASDAQ"'))
+    assert {r.payload["market"] for r in _transactions(us)} == {"US"}
+
+
+def test_parse_sell_uses_absolute_quantity_and_taxes():
+    sell = [r.payload for r in _transactions(broker_ib_flex_service.parse(FIXTURE.read_bytes())) if r.payload["type"] == "SELL"]
+    assert len(sell) == 1
+    assert (sell[0]["quantity"], sell[0]["price"], sell[0]["fee"], sell[0]["tax"]) == (Decimal("10"), Decimal("28.1"), Decimal("1.78"), Decimal("0.5"))
+
+
+def test_parse_trades_imports_execution_rows_only():
+    parsed = broker_ib_flex_service.parse(FIXTURE.read_bytes())
+    assert len(_transactions(parsed)) == 4  # three buys, one sell; the ORDER-level twin and the OPT row are not rows
+
+
+def test_parse_rejects_non_stock_trades_with_a_row_error_naming_the_category():
+    parsed = broker_ib_flex_service.parse(FIXTURE.read_bytes())
+    assert any(e.message == "unsupported assetCategory OPT" for e in parsed.errors)
+
+
+def test_parse_requires_buy_or_sell_with_a_matching_quantity_sign():
+    raw = FIXTURE.read_bytes()
+    for value in ("BUY (Ca.)", ""):
+        parsed = broker_ib_flex_service.parse(raw.replace(b'buySell="BUY"', f'buySell="{value}"'.encode(), 1))
+        assert any(e.message == f"unsupported buySell {value}" for e in parsed.errors)
+        assert len(_transactions(parsed)) == 3
+    parsed = broker_ib_flex_service.parse(raw.replace(b'quantity="1" tradePrice="325.05"', b'quantity="-1" tradePrice="325.05"', 1))
+    assert any(e.message == "quantity sign disagrees with buySell" for e in parsed.errors)
+    assert len(_transactions(parsed)) == 3
+
+
+def test_parse_rejects_a_commission_in_another_currency():
+    raw = FIXTURE.read_bytes().replace(b'ibCommissionCurrency="USD" netCash="-326.83"', b'ibCommissionCurrency="GBP" netCash="-326.83"', 1)
+    parsed = broker_ib_flex_service.parse(raw)
+    assert any(e.message == "ibCommissionCurrency GBP differs from currency USD" for e in parsed.errors)
+    assert len(_transactions(parsed)) == 3
+
+
+def test_parse_gbp_trade_maps_to_lse_like_the_csv_parser():
+    raw = FIXTURE.read_bytes().replace(b'currency="USD" fxRateToBase="1" assetCategory="STK" subCategory="ETF" symbol="ACWD"', b'currency="GBP" fxRateToBase="1.27" assetCategory="STK" subCategory="ETF" symbol="ACWD"', 1)
+    raw = raw.replace(b'ibCommissionCurrency="USD" netCash="-326.83"', b'ibCommissionCurrency="GBP" netCash="-326.83"', 1)
+    first = _transactions(broker_ib_flex_service.parse(raw))[0].payload
+    assert (first["market"], first["currency"]) == ("LSE", "GBP")
+
+
+from datetime import date
+
+
+def _cash(parsed):
+    return [r.payload for r in parsed.rows if r.payload["_kind"] == "cash_flow"]
+
+
+def test_parse_cash_transactions_map_types_and_signs():
+    flows = _cash(broker_ib_flex_service.parse(FIXTURE.read_bytes()))
+    assert [(f["date"], f["cash_flow_type"], f["amount"]) for f in flows] == [
+        (date(2026, 6, 1), "deposit", Decimal("3000")),
+        (date(2026, 6, 20), "withdrawal", Decimal("-500")),
+        (date(2026, 6, 25), "dividend_cash", Decimal("6")),
+        (date(2026, 6, 25), "fee", Decimal("-0.9")),
+        (date(2026, 6, 3), "interest", Decimal("0.12")),
+        (date(2026, 6, 10), "fee", Decimal("-1.5")),
+        (date(2026, 6, 11), "fee", Decimal("1")),  # a positive adjustment under a fee type keeps its sign
+    ]
+    assert flows[0]["note"] == "CASH RECEIPTS / ELECTRONIC FUND TRANSFERS" and flows[0]["currency"] == "USD"
+    assert flows[2]["symbol"] == "AVGS" and flows[0]["symbol"] == ""
+    assert sum(f["amount"] for f in flows) == Decimal("2504.72")  # the balance a SUM(amount) reader would see
+
+
+def test_parse_cash_fingerprint_is_the_existing_cash_flow_fingerprint():
+    from app.services.cash_flow_service import cash_flow_fingerprint
+    row = [r for r in broker_ib_flex_service.parse(FIXTURE.read_bytes()).rows if r.payload["_kind"] == "cash_flow"][0]
+    assert row.fingerprint == cash_flow_fingerprint(broker="IB", date_=date(2026, 6, 1), type_="deposit", amount=Decimal("3000"), currency="USD", note="CASH RECEIPTS / ELECTRONIC FUND TRANSFERS ib:800010")
+
+
+def test_parse_reports_an_unknown_cash_type_as_a_row_error():
+    raw = FIXTURE.read_bytes().replace(b'type="Commission Adjustments"', b'type="Bond Coupon"', 1)
+    parsed = broker_ib_flex_service.parse(raw)
+    assert any(e.message == "unsupported cash transaction type Bond Coupon" for e in parsed.errors)
+    assert len(_cash(parsed)) == 6
+
+
+def test_parse_reports_transfers_and_corporate_actions_as_row_errors_not_rows():
+    parsed = broker_ib_flex_service.parse(FIXTURE.read_bytes())
+    messages = sorted(e.message for e in parsed.errors)
+    assert "unsupported section Transfers" in messages and "unsupported section CorporateActions" in messages
+    assert len(parsed.rows) == 4 + 7  # positions and conversion rates are silently ignored
+
+
+@pytest.mark.parametrize("raw, message", [
+    (b"<!DOCTYPE x [<!ENTITY a 'b'>]><FlexQueryResponse/>", "flex: DTD refused"),
+    (b"<!--" + b" " * 6000 + b"--><!DOCTYPE x><FlexQueryResponse/>", "flex: DTD refused"),  # after a long leading comment
+    (b"<FlexQueryResponse><!ENTITY a 'b'></FlexQueryResponse>", "flex: DTD refused"),
+    ("<FlexQueryResponse/>".encode("utf-16"), "flex: not UTF-8"),
+    (b"<FlexStatementResponse><Status>Fail</Status><ErrorCode>1020</ErrorCode><ErrorMessage>x</ErrorMessage></FlexStatementResponse>", "flex: 1020"),
+    (b"<FlexStatementResponse><Status>Fail</Status><ErrorCode>DROP TABLE</ErrorCode></FlexStatementResponse>", "flex: error"),  # a code is 4 digits or it is not a code
+    (b"<Other/>", "flex: not a FlexQueryResponse"),
+    (b"<FlexQueryResponse", "flex: malformed XML"),
+])
+def test_parse_refuses_bad_documents_with_a_value_error(raw, message):
+    with pytest.raises(ValueError, match=message):
+        broker_ib_flex_service.parse(raw)
+
+
+def test_parse_skips_cash_rows_that_are_not_detail_level():
+    raw = FIXTURE.read_bytes().decode()
+    line = next(l for l in raw.splitlines() if l.startswith("<CashTransaction "))
+    dup = line.replace('levelOfDetail="DETAIL"', 'levelOfDetail="SUMMARY"')
+    parsed = broker_ib_flex_service.parse(raw.replace(line, line + "\n" + dup, 1).encode())
+    assert len(_cash(parsed)) == 7

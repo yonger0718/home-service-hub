@@ -447,6 +447,17 @@ def _dir_digest(directory: Path) -> str | None:
     return digest.hexdigest()
 
 
+def write_private_json(state_dir: Path, path: Path, data: dict) -> None:
+    """Atomically write `data` as JSON to `path` (0600, O_EXCL tmp sibling, os.replace); `state_dir` is created 0700."""
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, default=str)
+    os.replace(tmp, path)
+
+
 class Gate:
     """Ruling 9: mandatory, cached for 24 h per key, latched on any violation until an operator gate succeeds."""
 
@@ -466,13 +477,7 @@ class Gate:
                 "sandbox": self.cfg.parser_sandbox}
 
     def _write(self, path: Path, data: dict) -> None:
-        self.cfg.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.unlink(missing_ok=True)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, default=str)
-        os.replace(tmp, path)
+        write_private_json(self.cfg.state_dir, path, data)
 
     def latch(self, reason: str, key: dict) -> None:
         self._write(self.latch_path, {"reason": reason[:300], "at": datetime.now(timezone.utc).isoformat(), "key": key})

@@ -1,6 +1,7 @@
 # Portfolio ↔ ledger integration (證券交割對帳、市值帳戶、海外券商) — design
 
-Status: rev 2 (2026-10-19) after the AGENT-175 review of rev 1 `31ab6f4`: booking owner + constituent reservations
+Status: rev 3 (2026-10-20) §7 amended by the Phase 2 plan: XML instead of CSV; the token travels only in the Flex `t` query parameter (IB offers no other transport); section list; legacy-duplicate pass; `--unlatch` / `--dry-run` / `--query-id` / `--from-file`.
+Rev 2 (2026-10-19) after the AGENT-175 review of rev 1 `31ab6f4`: booking owner + constituent reservations
 (Must 1), global assignment before any booking (Must 2), foreign cash from `broker_cash_flows` and the trade-inclusive
 balance (Must 3); the Shoulds that are spec-level are folded in (settlement-date window + calendar, valuation contract,
 pair action, Flex adapter, token tests), the rest go to the plan. Rev 1 was §7-amended the same day (IB Flex only,
@@ -200,20 +201,18 @@ shape as §4.4.
 
 ## 7. IB statements by Flex Query (Phase 2)
 
-- The owner creates an IB Flex Query (Activity: trades, cash transactions, dividends, interest, transfers; CSV;
-  last 30 days, daily) and a Flex Web Service token (read-only).
+- The owner creates an IB Flex Query (XML: Trades at execution level, Cash Transactions, Transfers, Corporate Actions, Open
+  Positions; last 30 calendar days; yyyy-MM-dd; currency rates off; daily) and a Flex Web Service token (read-only).
 - A worker timer (`homehub-portfolio-flex.timer`, daily, as the worker user) calls the Flex Web Service
-  (SendRequest → GetStatement), stores the CSV under the worker's state dir and POSTs it to a NEW portfolio
-  endpoint `POST /imports/ib-flex` (multipart; the existing `/imports/csv` auto-detects and has no broker
-  argument, `routers/imports.py:241`). Flex CSV is not the Activity Statement CSV the IB importer reads today:
-  an adapter `broker_ib_flex_service.parse` maps the Flex sections (Trades, CashTransactions, Transfers,
-  Dividends, Interest) onto the same `ParsedRow` / cash-flow fingerprints, so a Flex row and the same event from
-  an earlier manual Activity import dedupe (fingerprint = broker + date + type + amount + symbol, the existing
-  `cash_flow_fingerprint`). The plan pins a fixture from a real Flex export with the amounts replaced.
+  (SendRequest → GetStatement), stores the XML under the worker's state dir and POSTs it to a NEW portfolio
+  endpoint `POST /api/portfolio/imports/ib-flex` (multipart; the existing `/imports/csv` auto-detects and has no broker
+  argument, `routers/imports.py:241`). Flex XML is not the Transfer History CSV the IB importer reads today:
+  an adapter `broker_ib_flex_service.parse` maps the Flex sections (Trades, CashTransactions; Transfers and CorporateActions are reported, OpenPositions ignored) onto the same `ParsedRow` / cash-flow rows, using the existing fingerprint functions with the Flex tradeID / transactionID in the note, so two identical same-day fills stay two rows; the market comes from the Flex listingExchange (LSE for LSE/LSEETF/LSEIOB); cash amounts keep IB's sign. A Flex row never shares a fingerprint with a row from the manual Transfer-History CSV imports; the one-off backfill over that era runs with legacy_until=<date>, which pairs rows one-to-one by business key (symbol, type, quantity, price, date, currency, fee, tax; cash: date, type, signed amount, currency) with the rows dated up to that day, drops the pairs, and reports any key with unequal counts as "ambiguous legacy match" for the owner to resolve; a paired row adopts the Flex fingerprint, so no later import re-creates it; the daily run never pairs. Provenance: an existing row is manual-era only if its fingerprint is NULL or equals the CSV-style fingerprint recomputed from its stored fields (market ∈ {stored, US, LSE}; note = name / note); any other fingerprint is Flex-origin and never pairs. Once Flex is live the IB Transfer-History CSV is never uploaded again: a CSV row and its Flex twin carry different fingerprints, so a re-upload would duplicate.
+  The plan pins a fixture from a real Flex export with the amounts replaced.
 - Token: `IB_FLEX_TOKEN` in the worker's env file (0600), never in the repo, logs, API bodies, latch files or
-  run summaries. Tests: the token is absent from every log line, exception text, request URL recorded by the
-  test transport, the latch file and the summary — on success AND on HTTP 4xx/5xx/timeout. Failures latch like
-  the parser gate (`flex-disabled.json`) and surface in the run summary; the monthly PDFs on Drive stay as the
+  run summaries. Tests: the token is absent from every log line, exception text, every request other than the two Flex
+  calls (the token is the t query parameter of SendRequest and GetStatement and nothing else: never a header, never the portfolio request); the CLI is the output boundary: codes and counts on stdout, class names on stderr, no traceback, and a redacting filter on the root logger while the token is in use, the latch file and the summary — on success AND on HTTP 4xx/5xx/timeout. Non-transient failures (an IB status code outside the transient table, an unparseable response, a portfolio 4xx other than 408/429) latch like the parser gate (`flex-disabled.json`); transient ones (IB codes 1003–1009, 1018, 1019, 1021; HTTP 5xx / 408 / 429; timeouts) exit 1 without latching and the unit shows failed. Recovery: `python -m worker flex --unlatch` (a plain daily run that ends with no codes — a `stale_fx` day keeps the latch; `--dry-run`, `--query-id` and `--from-file` never clear it); a one-off backfill query runs with `--query-id` and `--legacy-until`; a saved XML re-posts with `--from-file`.
+  the monthly PDFs on Drive stay as the
   owner's archive, unparsed.
 - Firstrade / Schwab: manual CSV as today, by owner decision (2026-10-19 research): Firstrade has no API and no
   OFX — only the Tax Center CSV export (its `Action` column lumps reinvestments, transfers and corporate actions
@@ -271,11 +270,11 @@ shape as §4.4.
   `book_wire` with the FX pair from `bcf:` sources; read-through balance for today and a historical `as_of`,
   cold cache with the portfolio down (`valuation: null, stale: true`), net worth conversion once;
   `POST /reconciliation/dirty` marks statements.
-- Worker: Flex fetch → `/imports/ib-flex` with a fixture CSV; latch on failure; the token absent from logs,
+- Worker: Flex fetch → `/imports/ib-flex` with a fixture XML; latch on failure; the token absent from logs,
   exception text, request URLs, latch file and summary on success, 4xx, 5xx and timeout.
 - Portfolio: `tw_trading_calendar` loader + settlement date derivation (weekend, holiday, past
   `calendar_through` → null); `GET /funding` reads `broker_cash_flows` for foreign brokers and `cash_transaction`
-  for cathay with namespaced ids; Flex adapter dedupes against an Activity-import fingerprint.
+  for cathay with namespaced ids; Flex adapter dedupes re-imports by fingerprint (Flex id in the note) and, with legacy_until, pairs the manual-era rows one-to-one by business key, reporting ambiguity.
 
 ## 11. Rollout
 

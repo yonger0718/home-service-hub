@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub portfolio: IB Flex statement daily at 15:00 Taipei (after the US close and IB's overnight statement run)
+
+[Timer]
+OnCalendar=*-*-* 15:00:00 Asia/Taipei
+Persistent=true
+Unit=homehub-portfolio-flex.service
+
+[Install]
+WantedBy=timers.target

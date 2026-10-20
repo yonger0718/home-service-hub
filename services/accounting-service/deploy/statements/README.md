@@ -15,7 +15,7 @@ in production and no real-data `run`/`backfill` happens until then; the first re
 | `homehub-statements.service` / `homehub-statements-daily.timer` | 03:30 Asia/Taipei, `Persistent=true`: `python -m worker run --trigger timer` (full run, ends with the sweep) |
 | `gate.sh` | operator evidence: `exec .venv/bin/python -m worker gate` (prints JSON, exit 0 only when every check passed) |
 
-Both services read `EnvironmentFile=-%h/.config/homehub-statements.env` (optional, mode 0600) for `STATEMENT_*`
+All three units read `EnvironmentFile=-%h/.config/homehub-statements.env` (optional, mode 0600) for `STATEMENT_*`
 overrides; every variable has a default (table in the service README).
 
 ## Install (timers stay disabled for now)
@@ -24,7 +24,7 @@ During the interim deviation (rulings 3/11: `opc`, scope `export-masked` and `ve
 installed but the timers are NOT enabled:
 
     mkdir -p ~/.config/systemd/user
-    ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-statements*.{service,timer} ~/.config/systemd/user/
+    ln -sf ~/workspace/home-hub/services/accounting-service/deploy/statements/homehub-{statements,portfolio-flex}*.{service,timer} ~/.config/systemd/user/
     systemctl --user daemon-reload
 
 Today's hard guard is the feature flag: with `ACCOUNTING_RECONCILIATION_ENABLED` off the statement routes answer 404, so a
@@ -35,11 +35,89 @@ Today's hard guard is the feature flag: with `ACCOUNTING_RECONCILIATION_ENABLED`
 Only once the dedicated users exist (checklist at the end of this file) and the feature is switched on:
 
     systemctl --user enable --now homehub-statements-poll.timer homehub-statements-daily.timer
-    systemctl --user list-timers 'homehub-statements*'
+    systemctl --user list-timers 'homehub-*'
 
 A second worker (overlapping tick, manual run during the timer) prints `already running` and exits 0, so overlapping
 ticks never fail the unit (`gate`, `verify` and `export-masked` exit 3 instead). For manual runs load the env file:
 `set -a; . ~/.config/homehub-statements.env; set +a`. Without the worker API token and the password file the run path exits 2.
+
+## IB Flex statement timer (Phase 2, 2026-10-20)
+
+`homehub-portfolio-flex.service` / `.timer` run `python -m worker flex` daily at 15:00 Asia/Taipei (`Persistent=true`). The
+worker asks the IB Flex Web Service for the saved Flex Query (SendRequest, then GetStatement, polling while IB prepares it),
+keeps the XML, and POSTs it to the portfolio service (`POST /api/portfolio/imports/ib-flex`). Design: spec
+`docs/superpowers/specs/2026-10-19-portfolio-integration-design.md` section 7; command and summary keys: "IB Flex statements" in
+the service README. The timer is installed with the glob above and NOT enabled until the backfill below is done.
+
+Credentials file `~/.config/homehub-portfolio-flex.env` (worker user, mode 0600), two lines, written by the owner with
+`read -s` (the token never on a command line, in shell history, in chat or in the repo):
+
+    sudo -u homehub-worker -H bash -c 'umask 077; read -rs -p "token: " T; echo; read -rp "query id: " Q; printf "IB_FLEX_TOKEN=%s\nIB_FLEX_QUERY_ID=%s\n" "$T" "$Q" > ~/.config/homehub-portfolio-flex.env; chmod 600 ~/.config/homehub-portfolio-flex.env; unset T Q'
+
+Every manual `flex` command below is written out in full: it runs as the worker user, from the service directory, with
+`~/.config/homehub-statements.env` loaded (a run without the env file may use another `STATEMENT_STATE_DIR`, hence another
+lock and latch).
+
+Overrides (all optional, in `~/.config/homehub-statements.env`): `STATEMENT_FLEX_CREDENTIALS_FILE`, `STATEMENT_FLEX_BASE_URL`,
+`STATEMENT_FLEX_TIMEOUT`, `STATEMENT_FLEX_POLL_ATTEMPTS`, `STATEMENT_FLEX_POLL_INTERVAL`, `STATEMENT_PORTFOLIO_API_URL`
+(defaults in the service README config table). `STATEMENT_STATE_DIR` is `<state_dir>` below.
+
+State files (0600, directory 0700): `<state_dir>/flex/flex-<ts>-<pid>.xml` (every fetched statement, kept for re-posting),
+`<state_dir>/flex-disabled.json` (the latch), `<state_dir>/.flex.lock` (a second run prints `already running`, exit 3).
+
+Latch rule. Only a plain daily run (no `--dry-run`, `--query-id` or `--from-file`) latches. A non-transient failure of
+a plain run writes the latch and every later run exits 1 (`flex disabled`) until it is cleared: an
+IB status code outside `IB_TRANSIENT_CODES` (1001, 1003-1009, 1018, 1019, 1021), an unparseable response (`xml`), an HTTP
+3xx / 4xx other than 408/429 (`http:3xx`), a portfolio 4xx other than 408/429. `--dry-run` / `--query-id` / `--from-file`
+runs report the same failures as `failed` codes without latching. These do NOT latch: the IB transient codes, HTTP 5xx / 408 / 429, timeouts, connection errors,
+`get:pending` (statement not ready after the poll attempts), a malformed portfolio response (`portfolio:body`) and
+`stale_fx` (a successful post that still has missing-FX rows dated more than 3 days ago: the rate will not appear by
+itself, add it to `fx_rates`; exits 1 without latching). A run
+that fails without latching still exits 1, so the unit shows failed: `systemctl --user list-units --failed`, and in Loki
+`{job="homehub", unit="homehub-portfolio-flex.service"} |= "\"codes\": [\""` shows a query that is pending every day.
+
+Recovery after fixing the cause (a plain daily run; it clears the latch only when the run ends with no codes, so a
+`stale_fx` day keeps the latch; `--dry-run`, `--query-id` and `--from-file` never clear it):
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --unlatch'
+
+A saved statement is re-posted with:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --from-file <state_dir>/flex/flex-<ts>-<pid>.xml'
+
+One-off backfill of the manual-import era (before enabling the timer). The backfill query must select the same Trade
+and CashTransaction fields as the daily query:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --query-id <backfill-query-id> --legacy-until 2026-06-30 --dry-run'
+
+Read `candidates`, `legacy_duplicates` and `error_codes` in the JSON line (`created` is 0 on a dry run by design). The
+pairing evidence (row ids that would adopt a Flex fingerprint) is in the API response, not in the summary:
+
+    sudo -u homehub-worker -H curl -s -F file=@<state_dir>/flex/flex-<ts>-<pid>.xml 'http://127.0.0.1:8001/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30' | jq .legacy_pairs
+
+If the numbers are as expected run the same worker command without `--dry-run`:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --query-id <backfill-query-id> --legacy-until 2026-06-30'
+
+Each paired old row adopts its Flex fingerprint, so no later import can re-create it; a row that already carries a Flex
+fingerprint is never paired again. An `ambiguous_legacy` count above 0 needs the owner before the real run.
+From then on the IB Transfer-History CSV is never uploaded again. Then the daily dry run:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex --dry-run'
+
+`candidates` must be 0 (or only rows newer than the backfill) and `skipped_duplicates` must equal the overlap with the
+backfill; stop and ask the owner otherwise. Then a real one:
+
+    sudo -u homehub-worker -H bash -c 'cd ~/workspace/home-hub/services/accounting-service && set -a && . ~/.config/homehub-statements.env && set +a && .venv/bin/python -m worker flex'
+
+Before enabling the timer add `_SYSTEMD_USER_UNIT=homehub-portfolio-flex.service`
+to the Alloy journal matcher in `/home/opc/workspace/monitoring/alloy/config.alloy` (outside this repo), else the unit's
+lines never reach Loki. Then:
+
+    systemctl --user enable --now homehub-portfolio-flex.timer
+    journalctl --user -u homehub-portfolio-flex.service
+
+Deleting the backfill query in IB Account Management after the import is mandatory.
 
 ## Read-only database role for `verify` (ruling 11)
 

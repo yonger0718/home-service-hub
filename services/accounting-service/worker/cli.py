@@ -1,4 +1,4 @@
-"""python -m worker <command>: run | poll | backfill | gate | export-masked | verify."""
+"""python -m worker <command>: run | poll | backfill | gate | export-masked | verify | flex."""
 from __future__ import annotations
 
 import argparse
@@ -7,10 +7,12 @@ import logging
 import os
 import sys
 import warnings
+from datetime import date
+from pathlib import Path
 
 import httpx
 
-from worker import config, pipeline
+from worker import config, flex, pipeline
 from worker.runner import SubprocessRunner
 
 
@@ -21,6 +23,7 @@ def quiet_libraries() -> None:
     warnings.filterwarnings("ignore", module=r"(pdfminer|pdfplumber|pypdf).*")
     for name in ("httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    flex.quiet_http_logging()
 
 
 DEGRADED_CODES = ("parser_disabled", "ocr_unavailable")
@@ -30,6 +33,32 @@ def _bad(summary: dict) -> bool:
     """Exit 1 for a failed or aborted run, a disabled parser, or an OCR child the host could not start (its files
     wait for the next run; the unit shows failed so the operator looks)."""
     return bool(summary.get("bad_runs", 0)) or any(code in summary.get("errors", []) for code in DEGRADED_CODES)
+
+
+def _flex(cfg: config.WorkerConfig, args: argparse.Namespace) -> int:
+    if not args.from_file and not cfg.flex_credentials_file.is_file():
+        print("flex credentials file is missing or not a file", file=sys.stderr)
+        return 2
+    try:
+        with (httpx.Client(timeout=cfg.flex_timeout_s) as flex_http,
+              httpx.Client(base_url=cfg.portfolio_api_url, timeout=cfg.flex_timeout_s) as portfolio_http):
+            summary = flex.run(cfg, flex_http=flex_http, portfolio_http=portfolio_http, dry_run=args.dry_run,
+                               query_id=args.query_id, from_file=args.from_file, legacy_until=args.legacy_until,
+                               unlatch=args.unlatch)
+    except flex.AlreadyRunning:
+        print("already running")
+        return 3
+    except flex.FlexDisabled as exc:
+        print(f"flex disabled: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:  # the credentials file; the message names the key only
+        print(str(exc), file=sys.stderr)
+        return 2
+    except Exception as exc:  # the CLI is the output boundary: a class name, never text or a traceback
+        print(f"flex failed: {type(exc).__name__}", file=sys.stderr)
+        return 1
+    print(json.dumps(summary, ensure_ascii=False))
+    return 1 if summary["codes"] else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
     p_em.add_argument("--limit", type=int, default=None)
     p_v = sub.add_parser("verify")
     p_v.add_argument("--limit", type=int, default=None)
+    p_fx = sub.add_parser("flex")
+    p_fx.add_argument("--dry-run", action="store_true")
+    p_fx.add_argument("--query-id", default=None)
+    p_fx.add_argument("--from-file", type=Path, default=None)
+    p_fx.add_argument("--legacy-until", type=date.fromisoformat, default=None)
+    p_fx.add_argument("--unlatch", action="store_true")
     args = ap.parse_args(argv)
     os.umask(0o077)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -59,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
     except config.ConfigError as exc:  # the message names the key and the rule, never the value
         print(f"config: {exc}", file=sys.stderr)
         return 2
+    if args.cmd == "flex":
+        return _flex(cfg, args)
     runner = SubprocessRunner()
     if args.cmd == "gate":
         from worker.parser import Gate, Parser

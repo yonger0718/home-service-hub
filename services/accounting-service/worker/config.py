@@ -52,6 +52,12 @@ class WorkerConfig:
     ocr_timeout_s: int = 120
     ocr_rlimit_mb: int = 2048
     ocr_child: str | None = None      # tests only: a command (shell words) replacing `python -B -m worker.ocr_child …`
+    flex_credentials_file: Path = Path("~/.config/homehub-portfolio-flex.env").expanduser()
+    flex_base_url: str = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
+    flex_timeout_s: int = 60
+    flex_poll_attempts: int = 12
+    flex_poll_interval_s: int = 10
+    portfolio_api_url: str = "http://127.0.0.1:8001"
 
     @property
     def mail_root(self) -> str:
@@ -118,4 +124,10 @@ def load(env: Mapping[str, str] = os.environ) -> WorkerConfig:
         ocr_timeout_s=int(_str(env, "STATEMENT_OCR_TIMEOUT", "120")),
         ocr_rlimit_mb=int(_str(env, "STATEMENT_OCR_RLIMIT_MB", "2048")),
         ocr_child=_opt(env, "STATEMENT_OCR_CHILD"),
+        flex_credentials_file=_path(env, "STATEMENT_FLEX_CREDENTIALS_FILE", "~/.config/homehub-portfolio-flex.env"),
+        flex_base_url=_str(env, "STATEMENT_FLEX_BASE_URL", "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService").rstrip("/"),
+        flex_timeout_s=int(_str(env, "STATEMENT_FLEX_TIMEOUT", "60")),
+        flex_poll_attempts=int(_str(env, "STATEMENT_FLEX_POLL_ATTEMPTS", "12")),
+        flex_poll_interval_s=int(_str(env, "STATEMENT_FLEX_POLL_INTERVAL", "10")),
+        portfolio_api_url=_str(env, "STATEMENT_PORTFOLIO_API_URL", "http://127.0.0.1:8001").rstrip("/"),
     )
