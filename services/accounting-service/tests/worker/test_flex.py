@@ -118,7 +118,9 @@ def test_fetch_maps_failures_to_codes_without_the_token(tmp_path, caplog, svc, c
         _fetch(svc(), flex.load_credentials(_creds(tmp_path)))
     assert (str(exc.value), exc.value.transient) == (code, transient)
     assert TOKEN not in str(exc.value) and TOKEN not in repr(exc.value) and exc.value.__cause__ is None
-    assert exc.value.__context__ is None or exc.value.__suppress_context__  # a wrapped httpx error is raised `from None`
+    assert exc.value.__context__ is None or exc.value.__suppress_context__
+    if code.startswith("http:") and not code[5:].isdigit():
+        assert exc.value.__context__ is None  # a wrapped httpx error is raised outside the except block
     assert TOKEN not in "".join(traceback.format_exception(exc.value))  # the standard traceback, context suppressed
     assert TOKEN not in caplog.text
 
@@ -247,6 +249,7 @@ def test_run_file_names_are_unique_across_two_runs_in_one_second(tmp_path):
 def test_run_keeps_the_saved_xml_when_the_portfolio_post_fails(tmp_path):
     cfg = _cfg(tmp_path)
     summary, _, _ = _run(cfg, portfolio=_Portfolio(raise_exc=httpx.ConnectError("down")))
+    assert summary["saved"] == next((cfg.state_dir / "flex").glob("flex-*.xml")).name and summary["bytes"] == len(STATEMENT)
     assert summary["codes"] == ["transient", "portfolio:ConnectError"] and len(list((cfg.state_dir / "flex").glob("flex-*.xml"))) == 1
     assert not (cfg.state_dir / flex.LATCH).exists()
     busy = _run(cfg, portfolio=_Portfolio(status=429, body={"detail": "slow down"}))[0]
@@ -296,3 +299,53 @@ def test_cli_flex_exit_codes_for_missing_credentials_and_latch(tmp_path, monkeyp
     monkeypatch.setattr(config, "load", lambda env=None: cfg2)
     monkeypatch.setattr(flex, "run", lambda c, **kw: (_ for _ in ()).throw(flex.FlexDisabled("x")))
     assert cli.main(["flex"]) == 1 and "flex disabled" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("reason, code", [
+    ("missing FX rate for 2026-06-05 USD", "missing_fx"), ("unsupported assetCategory FUT", "unsupported_asset_category"),
+    ("unsupported cash transaction type Foo", "unsupported_cash_type"), ("unsupported section Transfers", "unsupported_section"),
+    ("ibCommissionCurrency EUR differs", "commission_currency"), ("ambiguous legacy match for trade", "ambiguous_legacy"),
+    ("trade without tradeID", "missing_id"), ("something else", "other"),
+])
+def test_error_reasons_map_to_codes(reason, code):
+    assert flex._error_code(reason) == code
+
+
+@pytest.mark.parametrize("body", [
+    "not json", [1, 2], {**PORTFOLIO_OK, "errors": "oops"}, {**PORTFOLIO_OK, "created": "many"}, {k: v for k, v in PORTFOLIO_OK.items() if k != "parsed"},
+])
+def test_run_maps_a_malformed_portfolio_body_to_a_transient_code(tmp_path, body):
+    class _Raw(_Portfolio):
+        def __call__(self, request):
+            if isinstance(self.body, str):
+                return httpx.Response(200, content=self.body.encode())
+            return super().__call__(request)
+    cfg = _cfg(tmp_path)
+    summary = _run(cfg, portfolio=_Raw(body=body))[0]
+    assert summary["codes"] == ["transient", "portfolio:body"] and not (cfg.state_dir / flex.LATCH).exists()
+
+
+def test_run_rejects_a_malformed_query_id_override(tmp_path, monkeypatch, capsys):
+    from worker import cli
+    cfg = _cfg(tmp_path)
+    with pytest.raises(ValueError, match="IB_FLEX_QUERY_ID malformed"):
+        _run(cfg, query_id="homehub-daily")
+    monkeypatch.setattr(config, "load", lambda env=None: cfg)
+    assert cli.main(["flex", "--query-id", "x"]) == 2
+    assert "IB_FLEX_QUERY_ID malformed" in capsys.readouterr().err
+
+
+def test_fetch_rejects_a_non_numeric_reference_code(tmp_path):
+    send = b"<FlexStatementResponse><Status>Success</Status><ReferenceCode>5a5</ReferenceCode></FlexStatementResponse>"
+    with pytest.raises(flex.FlexError) as exc:
+        _fetch(_Flex(send=send), flex.load_credentials(_creds(tmp_path)))
+    assert str(exc.value) == "xml"
+
+
+def test_cli_flex_from_file_does_not_need_the_credentials_file(tmp_path, monkeypatch, capsys):
+    import dataclasses
+    from worker import cli
+    cfg = dataclasses.replace(_cfg(tmp_path), flex_credentials_file=tmp_path / "absent.env")
+    monkeypatch.setattr(config, "load", lambda env=None: cfg)
+    monkeypatch.setattr(flex, "run", lambda c, **kw: {"codes": []})
+    assert cli.main(["flex", "--from-file", str(tmp_path / "x.xml")]) == 0

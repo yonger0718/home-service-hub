@@ -151,12 +151,8 @@ def fetch(http: httpx.Client, creds: Credentials, *, base_url: str, attempts: in
           sleep: Callable[[float], None] = time.sleep) -> bytes:
     """SendRequest, then poll GetStatement. The token travels only as the `t` parameter; every other sink is token-free."""
     quiet_http_logging()
-    try:
-        with _redacting(creds.token):
-            return _fetch(http, creds, base_url, attempts, interval_s, sleep)
-    except FlexError as exc:
-        log.info("flex: %s", str(exc))
-        raise
+    with _redacting(creds.token):
+        return _fetch(http, creds, base_url, attempts, interval_s, sleep)
 
 
 def _fetch(http, creds, base_url, attempts, interval_s, sleep) -> bytes:
@@ -257,15 +253,23 @@ def _error_code(reason: object) -> str:
 
 
 def _summarise(body: dict, *, dry_run: bool, source: str, size: int, saved: str | None) -> dict:
-    errors = body.get("errors") or []
+    errors = body.get("errors")
+    if not isinstance(errors, list):
+        raise FlexError("portfolio:body", transient=True)
+    counts = {}
+    for key in ("parsed", "created", "skipped_duplicates", "legacy_duplicates", "candidates"):
+        try:
+            counts[key] = int(body[key])
+        except (KeyError, TypeError, ValueError):
+            raise FlexError("portfolio:body", transient=True) from None
     error_codes: dict[str, int] = {}
     for item in errors:
         code = _error_code(item.get("reason") if isinstance(item, dict) else None)
         error_codes[code] = error_codes.get(code, 0) + 1
-    return {"dry_run": dry_run, "source": source, "bytes": size, "saved": saved, "parsed": body.get("parsed"),
-            "created": body.get("created"), "skipped_duplicates": body.get("skipped_duplicates"),
-            "legacy_duplicates": body.get("legacy_duplicates"), "candidates": body.get("candidates"),
-            "errors": len(errors), "error_codes": error_codes, "recalc_scheduled": body.get("recalc_scheduled"),
+    return {"dry_run": dry_run, "source": source, "bytes": size, "saved": saved, "parsed": counts["parsed"],
+            "created": counts["created"], "skipped_duplicates": counts["skipped_duplicates"],
+            "legacy_duplicates": counts["legacy_duplicates"], "candidates": counts["candidates"],
+            "errors": len(errors), "error_codes": error_codes, "recalc_scheduled": bool(body.get("recalc_scheduled")),
             "codes": []}
 
 
@@ -281,13 +285,17 @@ def run(cfg: WorkerConfig, *, flex_http: httpx.Client, portfolio_http: httpx.Cli
         try:
             if from_file:
                 data, saved = from_file.read_bytes(), None
+                summary["bytes"] = len(data)
             else:
                 creds = load_credentials(cfg.flex_credentials_file)
                 if query_id:
+                    if not QUERY_RE.match(query_id):
+                        raise ValueError("IB_FLEX_QUERY_ID malformed")
                     creds = Credentials(token=creds.token, query_id=query_id)
                 data = fetch(flex_http, creds, base_url=cfg.flex_base_url, attempts=cfg.flex_poll_attempts,
                              interval_s=cfg.flex_poll_interval_s, sleep=sleep)
-                saved = _save(cfg, data)
+                saved = summary["saved"] = _save(cfg, data)
+                summary["bytes"] = len(data)
             body = _post(cfg, portfolio_http, data, dry_run, legacy_until)
             summary = _summarise(body, dry_run=dry_run, source=summary["source"], size=len(data), saved=saved)
         except FlexError as exc:
