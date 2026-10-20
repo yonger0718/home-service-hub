@@ -129,6 +129,7 @@ def test_fetch_keeps_httpx_and_httpcore_debug_lines_out_of_the_log(tmp_path, cap
     with caplog.at_level(logging.DEBUG):
         _fetch(_Flex(), flex.load_credentials(_creds(tmp_path)))
     assert TOKEN not in caplog.text
+    assert "HTTP Request" not in caplog.text
 
 
 def test_fetch_redacts_the_token_if_anything_logs_it_anyway(tmp_path, caplog):
@@ -151,3 +152,147 @@ def test_fetch_a_timeout_that_carries_the_request_does_not_expose_it(tmp_path):
     with pytest.raises(flex.FlexError) as exc:
         _fetch(_Flex(raise_factory=_request_url_error), flex.load_credentials(_creds(tmp_path)))
     assert not hasattr(exc.value, "request") and TOKEN not in repr(vars(exc.value))
+
+
+PORTFOLIO_OK = {"parsed": 11, "created": 11, "skipped_duplicates": 0, "legacy_duplicates": 0, "candidates": 11,
+                "legacy_pairs": [], "error_counts": {"parse": 2, "ambiguous": 0, "commit": 1},
+                "errors": [{"row_index": 9, "message": "unsupported section Transfers", "reason": "unsupported section Transfers"},
+                           {"row_index": 4, "message": "missing FX rate for 2026-06-05 USD", "reason": "missing FX rate for 2026-06-05 USD"},
+                           {"row_index": 5, "message": f"something odd {TOKEN}", "reason": f"something odd {TOKEN}"}],  # a reason must never be copied
+                "recalc_scheduled": True}
+
+
+class _Portfolio:
+    def __init__(self, status=200, body=PORTFOLIO_OK, raise_exc: Exception | None = None):
+        self.status, self.body, self.raise_exc, self.requests = status, body, raise_exc, []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append((str(request.url), dict(request.headers), request.read()))
+        if self.raise_exc:
+            raise self.raise_exc
+        return httpx.Response(self.status, json=self.body)
+
+
+def _cfg(tmp_path) -> config.WorkerConfig:
+    return config.load({"STATEMENT_STATE_DIR": str(tmp_path / "state"), "STATEMENT_FLEX_CREDENTIALS_FILE": str(_creds(tmp_path)),
+                        "STATEMENT_FLEX_BASE_URL": FLEX, "STATEMENT_FLEX_POLL_INTERVAL": "0", "STATEMENT_PORTFOLIO_API_URL": "http://portfolio.test"})
+
+
+def _run(cfg, svc=None, portfolio=None, **kw):
+    svc, portfolio = svc or _Flex(), portfolio or _Portfolio()
+    with _client(svc) as fh, httpx.Client(base_url="http://portfolio.test", transport=httpx.MockTransport(portfolio)) as ph:
+        return flex.run(cfg, flex_http=fh, portfolio_http=ph, sleep=lambda s: None, **kw), svc, portfolio
+
+
+def test_run_fetches_saves_and_posts_the_statement(tmp_path, caplog):
+    cfg = _cfg(tmp_path)
+    with caplog.at_level(logging.INFO):
+        summary, svc, portfolio = _run(cfg)
+    saved = list((cfg.state_dir / "flex").glob("flex-*.xml"))
+    assert len(saved) == 1 and saved[0].read_bytes() == STATEMENT and oct(saved[0].stat().st_mode)[-3:] == "600" and oct((cfg.state_dir / "flex").stat().st_mode)[-3:] == "700"
+    assert summary == {"dry_run": False, "source": "fetch", "bytes": len(STATEMENT), "saved": saved[0].name, "parsed": 11, "created": 11,
+                       "skipped_duplicates": 0, "legacy_duplicates": 0, "candidates": 11, "errors": 3,
+                       "error_codes": {"unsupported_section": 1, "missing_fx": 1, "other": 1}, "recalc_scheduled": True, "codes": []}
+    assert "2026-06-05" not in json.dumps(summary)  # a date from a reason is text, not a code
+    url, headers, body = portfolio.requests[0]
+    assert url == "http://portfolio.test/api/portfolio/imports/ib-flex?dry_run=false" and STATEMENT in body
+    assert TOKEN not in url and TOKEN not in body.decode("latin-1") and TOKEN not in json.dumps(headers) and TOKEN not in json.dumps(summary) and TOKEN not in caplog.text
+    assert not (cfg.state_dir / flex.LATCH).exists()
+
+
+def test_run_dry_run_query_id_and_legacy_until_reach_both_services(tmp_path):
+    from datetime import date
+    summary, svc, portfolio = _run(_cfg(tmp_path), dry_run=True, query_id="1678975", legacy_until=date(2026, 6, 30))
+    assert "q=1678975" in svc.urls[0] and summary["dry_run"] is True
+    assert portfolio.requests[0][0] == "http://portfolio.test/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30"
+
+
+def test_run_from_file_posts_without_calling_ib(tmp_path):
+    saved = tmp_path / "old.xml"; saved.write_bytes(STATEMENT)
+    summary, svc, portfolio = _run(_cfg(tmp_path), from_file=saved)
+    assert svc.urls == [] and summary["source"] == "file" and summary["saved"] is None and len(portfolio.requests) == 1
+
+
+def test_run_latches_on_a_failed_send_request_and_only_a_plain_unlatch_run_clears_it(tmp_path):
+    cfg = _cfg(tmp_path)
+    summary, _, portfolio = _run(cfg, svc=_Flex(send=SEND_FAIL))
+    assert summary["codes"] == ["flex_disabled", "send:1020"] and portfolio.requests == []
+    latch = json.loads((cfg.state_dir / flex.LATCH).read_text(encoding="utf-8"))
+    assert latch["reason"] == "send:1020" and TOKEN not in json.dumps(latch) and oct((cfg.state_dir / flex.LATCH).stat().st_mode)[-3:] == "600"
+    with pytest.raises(flex.FlexDisabled):
+        _run(cfg)
+    saved = tmp_path / "old.xml"; saved.write_bytes(STATEMENT)
+    for kw in ({"from_file": saved}, {"dry_run": True}, {"query_id": "1678975"}):
+        summary, _, _ = _run(cfg, unlatch=True, **kw)   # these prove nothing about the daily credentials
+        assert summary["codes"] == [] and (cfg.state_dir / flex.LATCH).exists()
+    summary, _, _ = _run(cfg, unlatch=True)
+    assert summary["codes"] == [] and not (cfg.state_dir / flex.LATCH).exists()
+
+
+def test_run_refuses_to_overlap_itself(tmp_path):
+    import fcntl
+    cfg = _cfg(tmp_path); cfg.state_dir.mkdir(parents=True, exist_ok=True)
+    with open(cfg.state_dir / ".flex.lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(flex.AlreadyRunning):
+            _run(cfg)
+
+
+def test_run_file_names_are_unique_across_two_runs_in_one_second(tmp_path):
+    cfg = _cfg(tmp_path)
+    _run(cfg); _run(cfg)
+    assert len(list((cfg.state_dir / "flex").glob("flex-*.xml"))) == 2
+
+
+def test_run_keeps_the_saved_xml_when_the_portfolio_post_fails(tmp_path):
+    cfg = _cfg(tmp_path)
+    summary, _, _ = _run(cfg, portfolio=_Portfolio(raise_exc=httpx.ConnectError("down")))
+    assert summary["codes"] == ["transient", "portfolio:ConnectError"] and len(list((cfg.state_dir / "flex").glob("flex-*.xml"))) == 1
+    assert not (cfg.state_dir / flex.LATCH).exists()
+    busy = _run(cfg, portfolio=_Portfolio(status=429, body={"detail": "slow down"}))[0]
+    assert busy["codes"] == ["transient", "portfolio:429"] and not (cfg.state_dir / flex.LATCH).exists()
+    bad = _run(cfg, portfolio=_Portfolio(status=400, body={"detail": "flex: 1020"}))[0]
+    assert bad["codes"] == ["flex_disabled", "portfolio:400"] and (cfg.state_dir / flex.LATCH).exists()
+
+
+def test_run_transient_fetch_failure_does_not_latch_or_save(tmp_path):
+    cfg = _cfg(tmp_path)
+    summary, _, portfolio = _run(cfg, svc=_Flex(script=[(503, b"x")]))
+    assert summary["codes"] == ["transient", "http:503"] and portfolio.requests == [] and not (cfg.state_dir / "flex").exists()
+
+
+def test_cli_flex_prints_one_json_line_and_exits_by_codes(tmp_path, monkeypatch, capsys):
+    from worker import cli
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(config, "load", lambda env=None: cfg)
+    calls = []
+    monkeypatch.setattr(flex, "run", lambda c, **kw: calls.append(kw) or {"codes": [], "created": 0})
+    assert cli.main(["flex", "--dry-run", "--query-id", "1678975", "--legacy-until", "2026-06-30"]) == 0
+    out, err = capsys.readouterr()
+    assert json.loads(out.strip()) == {"codes": [], "created": 0} and err == ""
+    assert calls[0]["dry_run"] is True and calls[0]["query_id"] == "1678975" and calls[0]["from_file"] is None and calls[0]["unlatch"] is False
+    assert str(calls[0]["legacy_until"]) == "2026-06-30"
+    monkeypatch.setattr(flex, "run", lambda c, **kw: {"codes": ["transient", "http:503"]})
+    assert cli.main(["flex"]) == 1
+    out, err = capsys.readouterr()                                        # drain: one JSON line, nothing on stderr
+    assert json.loads(out.strip())["codes"] == ["transient", "http:503"] and err == ""
+    monkeypatch.setattr(flex, "run", lambda c, **kw: (_ for _ in ()).throw(flex.AlreadyRunning()))
+    assert cli.main(["flex"]) == 3
+    out, err = capsys.readouterr()
+    assert out.strip() == "already running" and err == ""
+    monkeypatch.setattr(flex, "run", lambda c, **kw: (_ for _ in ()).throw(RuntimeError(f"boom {TOKEN}")))
+    assert cli.main(["flex"]) == 1
+    out, err = capsys.readouterr()
+    assert out == "" and "flex failed: RuntimeError" in err and TOKEN not in err and "Traceback" not in err
+
+
+def test_cli_flex_exit_codes_for_missing_credentials_and_latch(tmp_path, monkeypatch, capsys):
+    from worker import cli
+    import dataclasses
+    cfg = dataclasses.replace(_cfg(tmp_path), flex_credentials_file=tmp_path / "absent.env")
+    monkeypatch.setattr(config, "load", lambda env=None: cfg)
+    assert cli.main(["flex"]) == 2 and "flex credentials file is missing" in capsys.readouterr().err
+    cfg2 = dataclasses.replace(cfg, flex_credentials_file=_creds(tmp_path))  # config.load is patched: _cfg() would return cfg
+    monkeypatch.setattr(config, "load", lambda env=None: cfg2)
+    monkeypatch.setattr(flex, "run", lambda c, **kw: (_ for _ in ()).throw(flex.FlexDisabled("x")))
+    assert cli.main(["flex"]) == 1 and "flex disabled" in capsys.readouterr().err
