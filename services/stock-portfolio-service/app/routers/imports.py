@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from ..database import SessionLocal, get_db
 from ..models import portfolio as portfolio_models
-from ..services import broker_cathay_service, import_service, per_date_verify, post_import_orchestrator
+from ..services import broker_cathay_service, broker_ib_flex_service, import_service, per_date_verify, post_import_orchestrator
 
 router = APIRouter(prefix="/api/portfolio/imports", tags=["Portfolio Imports"])
 
@@ -411,3 +411,45 @@ def refresh_quotes(
 @router.get("/recalc/status")
 def recalc_status() -> dict:
     return post_import_orchestrator.latest_status()
+
+
+@router.post("/ib-flex")
+def import_ib_flex(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    dry_run: bool = Query(default=False),
+    legacy_until: dt_date | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    raw = _read_upload(file)
+    try:
+        original = broker_ib_flex_service.parse(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    legacy = (
+        broker_ib_flex_service.legacy_duplicates(db, original, until=legacy_until, dry_run=dry_run)
+        if legacy_until
+        else broker_ib_flex_service.LegacyResult(pending=original, pairs=[])
+    )
+    try:
+        result = import_service.commit_transactions(db, legacy.pending, dry_run=dry_run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    recalc_scheduled = False
+    if not result.dry_run and result.created > 0:
+        symbols, min_trade = _touched_symbols_and_min_trade_date(db, result.created_ids)
+        recalc_scheduled = _maybe_schedule_chain(
+            background_tasks, touched_symbols=symbols, recalc_from=min_trade
+        )
+    body = _serialize_result(original, result, recalc_scheduled=recalc_scheduled, csv_format="ib-flex")
+    commit_errors = len(result.errors) - len(legacy.pending.errors)
+    body["parsed"] = len(original.rows)
+    body["legacy_duplicates"] = len(legacy.pairs)
+    body["legacy_pairs"] = [asdict(p) for p in legacy.pairs]
+    body["error_counts"] = {
+        "parse": len(original.errors),
+        "ambiguous": len(legacy.pending.errors) - len(original.errors),
+        "commit": commit_errors,
+    }
+    body["candidates"] = len(legacy.pending.rows) - result.skipped_duplicates - commit_errors
+    return body

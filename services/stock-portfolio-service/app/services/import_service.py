@@ -605,7 +605,7 @@ def _commit_broker_rows(
                     fee=payload["fee"],
                     tax=payload["tax"],
                     currency=payload["currency"],
-                    note=payload.get("name"),
+                    note=payload.get("fingerprint_note", payload.get("name")),
                 )
     seen_transactions: set[str] = set()
     created_ids: list[int] = []

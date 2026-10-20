@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 import structlog
+from sqlalchemy.orm import Session
 
 from ..models import portfolio as models
 from . import broker_ib_service
@@ -191,3 +193,118 @@ def parse(raw_bytes: bytes) -> ParseResult:
                     errors.append(ParseError(row_index=row_index, message=str(exc)))
                     log.debug("broker.ib_flex.row_error", row_index=row_index, reason=str(exc))
     return ParseResult(rows=rows, errors=errors)
+
+
+@dataclass
+class LegacyPair:
+    row_index: int
+    kind: str
+    existing_id: int
+
+
+@dataclass
+class LegacyResult:
+    pending: ParseResult
+    pairs: list[LegacyPair]
+
+
+def _money(value: Decimal) -> str:
+    return f"{Decimal(value):.4f}"
+
+
+def _parsed_key(row: ParsedRow) -> tuple:
+    p = row.payload
+    if p.get("_kind") == "cash_flow":
+        return ("cash_flow", p["date"], p["cash_flow_type"], _money(p["amount"]), p["currency"])
+    return (
+        "transaction", p["symbol"], p["type"], _money(p["quantity"]), _money(p["price"]),
+        p["trade_date"].date(), p["currency"], _money(p["fee"]), _money(p["tax"]),
+    )
+
+
+def _parsed_date(row: ParsedRow) -> date:
+    p = row.payload
+    return p["date"] if p.get("_kind") == "cash_flow" else p["trade_date"].date()
+
+
+def _enum_value(value) -> str:
+    return getattr(value, "value", value)
+
+
+def legacy_duplicates(db: Session, parsed: ParseResult, *, until: date, dry_run: bool) -> LegacyResult:
+    """Pair manual-era IB rows (no Flex fingerprint) with parsed Flex rows dated <= ``until``."""
+    tx, cf, broker = models.Transaction, models.BrokerCashFlow, models.Broker.IB.value
+    known = {
+        fp
+        for model in (tx, cf)
+        for (fp,) in db.query(model.import_fingerprint)
+        .filter(model.broker == broker, model.import_fingerprint.is_not(None))
+        .all()
+    }
+    parsed_fps = {row.fingerprint for row in parsed.rows}
+
+    old: dict[tuple, list[int]] = {}
+    for r in (
+        db.query(tx.id, tx.symbol, tx.type, tx.quantity, tx.price, tx.trade_date, tx.currency, tx.fee, tx.tax, tx.import_fingerprint)
+        .filter(tx.broker == broker)
+        .order_by(tx.id)
+        .all()
+    ):
+        trade_day = r.trade_date.date() if isinstance(r.trade_date, datetime) else r.trade_date
+        if trade_day > until or (r.import_fingerprint is not None and r.import_fingerprint in parsed_fps):
+            continue
+        key = ("transaction", r.symbol, _enum_value(r.type), _money(r.quantity), _money(r.price), trade_day, r.currency, _money(r.fee), _money(r.tax))
+        old.setdefault(key, []).append(r.id)
+    for r in (
+        db.query(cf.id, cf.date, cf.type, cf.amount, cf.currency, cf.import_fingerprint)
+        .filter(cf.broker == broker)
+        .order_by(cf.id)
+        .all()
+    ):
+        if r.date > until or (r.import_fingerprint is not None and r.import_fingerprint in parsed_fps):
+            continue
+        old.setdefault(("cash_flow", r.date, r.type, _money(r.amount), r.currency), []).append(r.id)
+
+    new: dict[tuple, list[ParsedRow]] = {}
+    for row in parsed.rows:
+        if row.fingerprint in known or _parsed_date(row) > until:
+            continue
+        new.setdefault(_parsed_key(row), []).append(row)
+
+    dropped: set[int] = set()
+    pairs: list[LegacyPair] = []
+    adoptions: list[tuple[str, int, str]] = []
+    ambiguities: list[ParseError] = []
+    for key, rows in new.items():
+        existing_ids = old.get(key, [])
+        if not existing_ids:
+            continue
+        if len(existing_ids) == len(rows):
+            for row, existing_id in zip(rows, existing_ids):
+                dropped.add(row.row_index)
+                pairs.append(LegacyPair(row.row_index, key[0], existing_id))
+                adoptions.append((key[0], existing_id, row.fingerprint))
+        else:
+            for row in rows:
+                dropped.add(row.row_index)
+                ambiguities.append(ParseError(row_index=row.row_index, message="ambiguous legacy match"))
+
+    if adoptions and not dry_run:
+        for kind, existing_id, fingerprint in adoptions:
+            model = cf if kind == "cash_flow" else tx
+            db.query(model).filter(model.id == existing_id).update({"import_fingerprint": fingerprint})
+        # Committed before commit_transactions runs; a failure after adoption is safe because a
+        # rerun dedupes the adopted rows by their new fingerprint.
+        db.commit()
+
+    kept = [row for row in parsed.rows if row.row_index not in dropped]
+    pairs.sort(key=lambda p: p.row_index)
+    ambiguities.sort(key=lambda e: e.row_index)
+    return LegacyResult(
+        pending=ParseResult(
+            rows=kept,
+            errors=list(parsed.errors) + ambiguities,
+            unresolved_names=list(parsed.unresolved_names),
+        ),
+        pairs=pairs,
+    )
