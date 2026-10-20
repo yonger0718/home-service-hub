@@ -578,9 +578,10 @@ def test_ib_flex_import_with_legacy_until_pairs_the_manual_era_rows_and_they_ado
     assert sorted(p["kind"] for p in body["legacy_pairs"]) == ["cash_flow", "transaction", "transaction", "transaction"]
     assert db_session.query(models.BrokerCashFlow).filter_by(broker="IB", type="deposit").count() == 1
     assert db_session.query(models.Transaction).filter_by(broker="IB", symbol="ACWD").count() == 2  # 1 + 6 from the CSV, nothing new
-    after = {t.id: t.import_fingerprint for t in db_session.query(models.Transaction).filter_by(broker="IB")}
-    assert set(after) == set(before) and all(after[i] != before[i] for i in before)  # the same rows, Flex fingerprints now
-    assert {t.market for t in db_session.query(models.Transaction).filter_by(broker="IB")} == {"US"}  # adoption changes identity only
+    after = {t.id: (t.import_fingerprint, t.market) for t in db_session.query(models.Transaction).filter_by(broker="IB")}
+    assert set(before) <= set(after) and len(after) == len(before) + 1          # the three CSV rows kept their ids; one new row (the 06-05 sell)
+    assert all(after[i][0] != before[i] and after[i][1] == "US" for i in before)  # adoption changes identity only, never market
+    assert [after[i][1] for i in after if i not in before] == ["LSE"]              # the new Flex row takes its market from listingExchange
     again = _post(client, FLEX, legacy_until="2026-06-30").json()  # adopted rows are plain fingerprint duplicates now
     assert (again["legacy_duplicates"], again["skipped_duplicates"], again["created"], again["candidates"]) == (0, 11, 0, 0)
     daily = _post(client, FLEX).json()                                # and so is a later run without legacy_until
