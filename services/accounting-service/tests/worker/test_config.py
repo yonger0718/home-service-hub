@@ -70,3 +70,10 @@ def test_version_inputs_are_charset_checked(key, bad):
 def test_version_inputs_accept_the_identifier_charset():
     cfg = config.load({"STATEMENT_PARSER_CLI_VERSION": "2.1.296-rc.1", "STATEMENT_PARSER_MODEL": "claude-sonnet-5-5_x"})
     assert (cfg.parser_cli_version, cfg.parser_model) == ("2.1.296-rc.1", "claude-sonnet-5-5_x")
+
+
+def test_flex_defaults():
+    cfg = config.load({})
+    assert cfg.flex_base_url == "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
+    assert cfg.portfolio_api_url == "http://127.0.0.1:8001" and cfg.flex_poll_attempts == 12 and cfg.flex_poll_interval_s == 10
+    assert cfg.flex_credentials_file == Path("~/.config/homehub-portfolio-flex.env").expanduser() and cfg.flex_timeout_s == 60
