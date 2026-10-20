@@ -1,0 +1,10 @@
+[Unit]
+Description=HomeHub portfolio: fetch the IB Flex statement and import it
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/workspace/home-hub/services/accounting-service
+EnvironmentFile=-%h/.config/homehub-statements.env
+UMask=0077
+ExecStart=%h/workspace/home-hub/services/accounting-service/.venv/bin/python -m worker flex
+Nice=10
