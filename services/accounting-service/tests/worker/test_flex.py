@@ -96,6 +96,7 @@ def _request_url_error(request: httpx.Request) -> Exception:
 @pytest.mark.parametrize("svc, code, transient", [
     (lambda: _Flex(send=SEND_FAIL), "send:1020", False),
     (lambda: _Flex(send=_status(b"1012")), "send:1012", False),      # token expired: latch
+    (lambda: _Flex(send=_status(b"1001")), "send:1001", True),
     (lambda: _Flex(send=_status(b"1018")), "send:1018", True),       # too many requests: retry tomorrow
     (lambda: _Flex(script=[(200, _status(b"1003"))]), "get:1003", True),
     (lambda: _Flex(script=[(200, _status(b"1017"))]), "get:1017", False),
@@ -104,6 +105,7 @@ def _request_url_error(request: httpx.Request) -> Exception:
     (lambda: _Flex(send="<FlexStatementResponse/>".encode("utf-16")), "xml", False),   # not UTF-8
     (lambda: _Flex(send=b"<!DOCTYPE x><FlexStatementResponse><Status>Success</Status></FlexStatementResponse>"), "xml", False),
     (lambda: _Flex(script=[(200, b"<FlexQueryResponse><!ENTITY a 'b'></FlexQueryResponse>")]), "xml", False),
+    (lambda: _Flex(script=[(302, b"")]), "http:302", False),
     (lambda: _Flex(script=[(403, b"forbidden")]), "http:403", False),
     (lambda: _Flex(script=[(429, b"slow down")]), "http:429", True),
     (lambda: _Flex(script=[(408, b"timeout")]), "http:408", True),
@@ -157,7 +159,7 @@ def test_fetch_a_timeout_that_carries_the_request_does_not_expose_it(tmp_path):
 
 
 PORTFOLIO_OK = {"parsed": 11, "created": 11, "skipped_duplicates": 0, "legacy_duplicates": 0, "candidates": 11,
-                "legacy_pairs": [], "error_counts": {"parse": 2, "ambiguous": 0, "commit": 1},
+                "legacy_pairs": [], "error_counts": {"parse": 2, "ambiguous": 0, "commit": 1, "stale_fx": 0},
                 "errors": [{"row_index": 9, "message": "unsupported section Transfers", "reason": "unsupported section Transfers"},
                            {"row_index": 4, "message": "missing FX rate for 2026-06-05 USD", "reason": "missing FX rate for 2026-06-05 USD"},
                            {"row_index": 5, "message": f"something odd {TOKEN}", "reason": f"something odd {TOKEN}"}],  # a reason must never be copied
@@ -194,7 +196,7 @@ def test_run_fetches_saves_and_posts_the_statement(tmp_path, caplog):
     assert len(saved) == 1 and saved[0].read_bytes() == STATEMENT and oct(saved[0].stat().st_mode)[-3:] == "600" and oct((cfg.state_dir / "flex").stat().st_mode)[-3:] == "700"
     assert summary == {"dry_run": False, "source": "fetch", "bytes": len(STATEMENT), "saved": saved[0].name, "parsed": 11, "created": 11,
                        "skipped_duplicates": 0, "legacy_duplicates": 0, "candidates": 11, "errors": 3,
-                       "error_codes": {"unsupported_section": 1, "missing_fx": 1, "other": 1}, "recalc_scheduled": True, "codes": []}
+                       "error_codes": {"unsupported_section": 1, "missing_fx": 1, "other": 1}, "recalc_scheduled": True, "stale_fx": 0, "codes": []}
     assert "2026-06-05" not in json.dumps(summary)  # a date from a reason is text, not a code
     url, headers, body = portfolio.requests[0]
     assert url == "http://portfolio.test/api/portfolio/imports/ib-flex?dry_run=false" and STATEMENT in body
@@ -204,8 +206,8 @@ def test_run_fetches_saves_and_posts_the_statement(tmp_path, caplog):
 
 def test_run_dry_run_query_id_and_legacy_until_reach_both_services(tmp_path):
     from datetime import date
-    summary, svc, portfolio = _run(_cfg(tmp_path), dry_run=True, query_id="1678975", legacy_until=date(2026, 6, 30))
-    assert "q=1678975" in svc.urls[0] and summary["dry_run"] is True
+    summary, svc, portfolio = _run(_cfg(tmp_path), dry_run=True, query_id="7654321", legacy_until=date(2026, 6, 30))
+    assert "q=7654321" in svc.urls[0] and summary["dry_run"] is True
     assert portfolio.requests[0][0] == "http://portfolio.test/api/portfolio/imports/ib-flex?dry_run=true&legacy_until=2026-06-30"
 
 
@@ -224,11 +226,24 @@ def test_run_latches_on_a_failed_send_request_and_only_a_plain_unlatch_run_clear
     with pytest.raises(flex.FlexDisabled):
         _run(cfg)
     saved = tmp_path / "old.xml"; saved.write_bytes(STATEMENT)
-    for kw in ({"from_file": saved}, {"dry_run": True}, {"query_id": "1678975"}):
+    for kw in ({"from_file": saved}, {"dry_run": True}, {"query_id": "7654321"}):
         summary, _, _ = _run(cfg, unlatch=True, **kw)   # these prove nothing about the daily credentials
         assert summary["codes"] == [] and (cfg.state_dir / flex.LATCH).exists()
     summary, _, _ = _run(cfg, unlatch=True)
     assert summary["codes"] == [] and not (cfg.state_dir / flex.LATCH).exists()
+
+
+def test_run_non_plain_failures_report_failed_without_latching(tmp_path):
+    cfg = _cfg(tmp_path)
+    summary, _, _ = _run(cfg, svc=_Flex(send=SEND_FAIL), query_id="7654321")
+    assert summary["codes"] == ["failed", "send:1020"] and not (cfg.state_dir / flex.LATCH).exists()
+
+
+def test_run_stale_fx_is_a_code_without_a_latch(tmp_path):
+    cfg = _cfg(tmp_path)
+    body = {**PORTFOLIO_OK, "error_counts": {**PORTFOLIO_OK["error_counts"], "stale_fx": 1}}
+    summary = _run(cfg, portfolio=_Portfolio(body=body))[0]
+    assert summary["codes"] == ["stale_fx"] and summary["stale_fx"] == 1 and not (cfg.state_dir / flex.LATCH).exists()
 
 
 def test_run_refuses_to_overlap_itself(tmp_path):
@@ -270,10 +285,10 @@ def test_cli_flex_prints_one_json_line_and_exits_by_codes(tmp_path, monkeypatch,
     monkeypatch.setattr(config, "load", lambda env=None: cfg)
     calls = []
     monkeypatch.setattr(flex, "run", lambda c, **kw: calls.append(kw) or {"codes": [], "created": 0})
-    assert cli.main(["flex", "--dry-run", "--query-id", "1678975", "--legacy-until", "2026-06-30"]) == 0
+    assert cli.main(["flex", "--dry-run", "--query-id", "7654321", "--legacy-until", "2026-06-30"]) == 0
     out, err = capsys.readouterr()
     assert json.loads(out.strip()) == {"codes": [], "created": 0} and err == ""
-    assert calls[0]["dry_run"] is True and calls[0]["query_id"] == "1678975" and calls[0]["from_file"] is None and calls[0]["unlatch"] is False
+    assert calls[0]["dry_run"] is True and calls[0]["query_id"] == "7654321" and calls[0]["from_file"] is None and calls[0]["unlatch"] is False
     assert str(calls[0]["legacy_until"]) == "2026-06-30"
     monkeypatch.setattr(flex, "run", lambda c, **kw: {"codes": ["transient", "http:503"]})
     assert cli.main(["flex"]) == 1
@@ -305,7 +320,8 @@ def test_cli_flex_exit_codes_for_missing_credentials_and_latch(tmp_path, monkeyp
     ("missing FX rate for 2026-06-05 USD", "missing_fx"), ("unsupported assetCategory FUT", "unsupported_asset_category"),
     ("unsupported cash transaction type Foo", "unsupported_cash_type"), ("unsupported section Transfers", "unsupported_section"),
     ("ibCommissionCurrency EUR differs", "commission_currency"), ("ambiguous legacy match for trade", "ambiguous_legacy"),
-    ("trade without tradeID", "missing_id"), ("something else", "other"),
+    ("trade without tradeID", "missing_id"), ("unsupported buySell BUY (Ca.)", "unsupported_buy_sell"),
+    ("quantity sign disagrees with buySell", "quantity_sign"), ("something else", "other"),
 ])
 def test_error_reasons_map_to_codes(reason, code):
     assert flex._error_code(reason) == code

@@ -413,6 +413,22 @@ def recalc_status() -> dict:
     return post_import_orchestrator.latest_status()
 
 
+def _stale_fx_count(errors, today: dt_date) -> int:
+    """Missing-FX rows dated more than 3 days ago: the rate will not appear on its own, so a rerun will not help."""
+    prefix = "missing FX rate for "
+    count = 0
+    for e in errors:
+        if not e.message.startswith(prefix):
+            continue
+        try:
+            day = dt_date.fromisoformat(e.message[len(prefix):len(prefix) + 10])
+        except ValueError:
+            continue
+        if (today - day).days > 3:
+            count += 1
+    return count
+
+
 @router.post("/ib-flex")
 def import_ib_flex(
     background_tasks: BackgroundTasks,
@@ -452,6 +468,7 @@ def import_ib_flex(
         "parse": len(original.errors),
         "ambiguous": len(legacy.pending.errors) - len(original.errors),
         "commit": commit_errors,
+        "stale_fx": _stale_fx_count(result.errors, post_import_orchestrator.today_tw()),
     }
     body["candidates"] = len(legacy.pending.rows) - result.skipped_duplicates - commit_errors
     return body

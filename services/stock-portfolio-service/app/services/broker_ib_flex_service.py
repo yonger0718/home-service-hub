@@ -128,8 +128,13 @@ def _trade(row_index: int, el: ET.Element) -> ParsedRow:
         if el.get("listingExchange") in LSE_EXCHANGES
         else broker_ib_service._market_for(symbol, currency)
     )
-    type_ = "BUY" if el.get("buySell") == "BUY" else "SELL"
-    quantity = abs(_decimal(el.get("quantity")))
+    type_ = el.get("buySell") or ""
+    if type_ not in ("BUY", "SELL"):
+        raise ValueError(f"unsupported buySell {type_}")
+    signed_quantity = _decimal(el.get("quantity"))
+    if (type_ == "BUY" and signed_quantity <= 0) or (type_ == "SELL" and signed_quantity >= 0):
+        raise ValueError("quantity sign disagrees with buySell")
+    quantity = abs(signed_quantity)
     price = _decimal(el.get("tradePrice"))
     fee = abs(_decimal(el.get("ibCommission")))
     tax = abs(_decimal(el.get("taxes")))
@@ -188,6 +193,8 @@ def parse(raw_bytes: bytes) -> ParseResult:
                             continue
                         rows.append(_trade(row_index, el))
                     elif section.tag == "CashTransactions" and el.tag == "CashTransaction":
+                        if el.get("levelOfDetail") != "DETAIL":
+                            continue
                         rows.append(_cash(row_index, el))
                 except (ValueError, InvalidOperation) as exc:
                     errors.append(ParseError(row_index=row_index, message=str(exc)))

@@ -65,6 +65,17 @@ def test_parse_rejects_non_stock_trades_with_a_row_error_naming_the_category():
     assert any(e.message == "unsupported assetCategory OPT" for e in parsed.errors)
 
 
+def test_parse_requires_buy_or_sell_with_a_matching_quantity_sign():
+    raw = FIXTURE.read_bytes()
+    for value in ("BUY (Ca.)", ""):
+        parsed = broker_ib_flex_service.parse(raw.replace(b'buySell="BUY"', f'buySell="{value}"'.encode(), 1))
+        assert any(e.message == f"unsupported buySell {value}" for e in parsed.errors)
+        assert len(_transactions(parsed)) == 3
+    parsed = broker_ib_flex_service.parse(raw.replace(b'quantity="1" tradePrice="325.05"', b'quantity="-1" tradePrice="325.05"', 1))
+    assert any(e.message == "quantity sign disagrees with buySell" for e in parsed.errors)
+    assert len(_transactions(parsed)) == 3
+
+
 def test_parse_rejects_a_commission_in_another_currency():
     raw = FIXTURE.read_bytes().replace(b'ibCommissionCurrency="USD" netCash="-326.83"', b'ibCommissionCurrency="GBP" netCash="-326.83"', 1)
     parsed = broker_ib_flex_service.parse(raw)
@@ -135,3 +146,11 @@ def test_parse_reports_transfers_and_corporate_actions_as_row_errors_not_rows():
 def test_parse_refuses_bad_documents_with_a_value_error(raw, message):
     with pytest.raises(ValueError, match=message):
         broker_ib_flex_service.parse(raw)
+
+
+def test_parse_skips_cash_rows_that_are_not_detail_level():
+    raw = FIXTURE.read_bytes().decode()
+    line = next(l for l in raw.splitlines() if l.startswith("<CashTransaction "))
+    dup = line.replace('levelOfDetail="DETAIL"', 'levelOfDetail="SUMMARY"')
+    parsed = broker_ib_flex_service.parse(raw.replace(line, line + "\n" + dup, 1).encode())
+    assert len(_cash(parsed)) == 7

@@ -44,7 +44,7 @@ def test_ib_flex_import_creates_rows_once_and_dedupes_by_fingerprint_on_the_seco
     _seed_fx(db_session, *JUNE)
     first = _post(client, FLEX).json()
     assert (first["parsed"], first["created"], first["skipped_duplicates"], first["legacy_duplicates"], first["candidates"], first["csv_format"]) == (11, 11, 0, 0, 11, "ib-flex")
-    assert first["error_counts"] == {"parse": 3, "ambiguous": 0, "commit": 0}
+    assert first["error_counts"] == {"parse": 3, "ambiguous": 0, "commit": 0, "stale_fx": 0}
     assert sorted(e["reason"] for e in first["errors"]) == ["unsupported assetCategory OPT", "unsupported section CorporateActions", "unsupported section Transfers"]
     assert db_session.query(models.Transaction).filter_by(broker="IB").count() == 4
     assert db_session.query(models.BrokerCashFlow).filter_by(broker="IB").count() == 7
@@ -117,7 +117,7 @@ def test_ib_flex_import_reports_an_ambiguous_legacy_match_instead_of_guessing(cl
     _seed_fx(db_session, *JUNE)
     db_session.add(_legacy_row()); db_session.add(_legacy_row(name="y")); db_session.commit()  # two old rows, one Flex row
     body = _post(client, FLEX, legacy_until="2026-06-30").json()
-    assert body["legacy_duplicates"] == 0 and body["error_counts"] == {"parse": 3, "ambiguous": 1, "commit": 0} and body["candidates"] == 10
+    assert body["legacy_duplicates"] == 0 and body["error_counts"] == {"parse": 3, "ambiguous": 1, "commit": 0, "stale_fx": 0} and body["candidates"] == 10
     assert sum(e["reason"] == "ambiguous legacy match" for e in body["errors"]) == 1
     assert _acwd_one(db_session).count() == 2 and all(t.import_fingerprint is None for t in _acwd_one(db_session))  # untouched
     assert body["created"] == 10
@@ -159,7 +159,7 @@ def test_ib_flex_import_retries_a_row_once_its_fx_rate_exists(client, db_session
     _seed_fx(db_session, *[d for d in JUNE if d != date(2026, 6, 5)])  # the sell's date has no rate yet
     first = _post(client, FLEX).json()
     assert any(e["reason"] == "missing FX rate for 2026-06-05 USD" for e in first["errors"]) and first["created"] == 10
-    assert first["error_counts"] == {"parse": 3, "ambiguous": 0, "commit": 1} and first["candidates"] == 10
+    assert first["error_counts"] == {"parse": 3, "ambiguous": 0, "commit": 1, "stale_fx": 1} and first["candidates"] == 10
     _seed_fx(db_session, date(2026, 6, 5))
     second = _post(client, FLEX).json()
     assert (second["created"], second["skipped_duplicates"], second["candidates"]) == (1, 10, 1)
@@ -222,3 +222,14 @@ def test_ib_flex_import_two_old_deposits_and_one_flex_deposit_is_ambiguous(clien
     assert body["legacy_duplicates"] == 0 and body["error_counts"]["ambiguous"] == 1
     assert db_session.query(models.BrokerCashFlow).filter_by(broker="IB", type="deposit").count() == 2
     assert all(c.import_fingerprint is None for c in db_session.query(models.BrokerCashFlow).filter_by(broker="IB", type="deposit"))
+
+
+def test_stale_fx_count_only_counts_missing_rates_older_than_three_days():
+    from app.routers.imports import _stale_fx_count
+    from app.services.import_service import ParseError
+    errors = [
+        ParseError(row_index=1, message="missing FX rate for 2026-06-16 USD"),
+        ParseError(row_index=2, message="missing FX rate for 2026-06-18 USD"),
+        ParseError(row_index=3, message="unsupported section Transfers"),
+    ]
+    assert _stale_fx_count(errors, date(2026, 6, 20)) == 1
