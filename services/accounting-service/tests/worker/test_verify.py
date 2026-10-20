@@ -639,6 +639,7 @@ def _composite_world(tmp_path, seed, db_session, monkeypatch, lines):
     (tmp_path / "map.json").write_text(json.dumps({"account_map": {}, "composite_map": {"manual/國泰世華": targets}}), encoding="utf-8")
     (tmp_path / "pw.env").write_text("STATEMENT_ID_NUMBER=A123456789\n手動下載/國泰世華=$ID\n", encoding="utf-8")
     monkeypatch.setattr(pdf_mod, "unlock", lambda data, literals: pdf_mod.Unlocked(reader=None, password_index=None))
+    monkeypatch.setattr(pdf_mod, "extract", lambda data, password: None)  # the text-layer check passes
     monkeypatch.setattr(pdf_mod, "extract_lines", lambda data, password: lines)
     return accounts, sha
 
@@ -682,10 +683,36 @@ def test_verify_counts_a_composite_split_failure_as_parse_failed(tmp_path, db_se
     assert report["rows"][0]["error"] == "split_error" and "stray" not in json.dumps(report, ensure_ascii=False)
 
 
+def test_verify_classifies_a_composite_without_a_text_layer_as_review_not_split_error(tmp_path, db_session, seed, ro_url, monkeypatch):
+    from tests.worker import composite_fixture
+    from worker import pdf as pdf_mod
+    _composite_world(tmp_path, seed, db_session, monkeypatch, composite_fixture.statement())
+    def no_text(data, password):
+        raise pdf_mod.NoTextLayer("page 1 has 12 characters")
+    monkeypatch.setattr(pdf_mod, "extract", no_text)
+    cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    totals = verify.run(_composite_cfg(tmp_path, cli, ro_url), SubprocessRunner(), limit=None)
+    assert (totals["no_text_layer"], totals["parse_failed"], totals["pdf_failed"], totals["statements"]) == (1, 0, 0, 0)
+    report = json.loads(next((tmp_path / "v" / "reports").glob("*.json")).read_text(encoding="utf-8"))
+    assert report["rows"][0]["error"] == "no_text_layer"
+
+
+def test_verify_limit_counts_files_not_sections(tmp_path, db_session, seed, ro_url, monkeypatch):
+    from tests.worker import composite_fixture
+    _composite_world(tmp_path, seed, db_session, monkeypatch, composite_fixture.statement())
+    cli = fake_claude.write(tmp_path / "claude", fake_claude.transcript())
+    totals = verify.run(_composite_cfg(tmp_path, cli, ro_url), SubprocessRunner(), limit=1)
+    assert (totals["composite_files"], totals["composite_sections"], totals["statements"]) == (1, 4, 4)
+
+
 @pytest.mark.parametrize("content, bad", [
     ({"account_map": {}, "composite_map": {"mail/x/y": {"91/TWD": {"account_id": 1}}}}, True),   # not a manual folder
     ({"account_map": {}, "composite_map": {"manual/國泰世華": {"91": {"account_id": 1}}}}, True),   # key without a currency
     ({"account_map": {}, "composite_map": {"manual/國泰世華": {"91/TWD": {"account_id": True}}}}, True),
+    ({"account_map": {}, "composite_map": {"manual/國泰世華": {"50/JPY": {"account_id": 1, "anchor_only": "false"}}}}, True),  # not a bool
+    ({"account_map": {}, "composite_map": {"manual/國泰世華": {"abc/nope": {"account_id": 1}}}}, True),  # not <digits>/<CUR>
+    ({"account_map": {}, "composite_map": {"manual/ 國泰世華": {"91/TWD": {"account_id": 1}}}}, True),  # whitespace in the folder
+    ({"account_map": None, "composite_map": {}}, True),  # account_map must be an object when present
     ({"account_map": {"mail/信用卡/國泰世華": 1}, "composite_map": {"manual/國泰世華": {"91/TWD": {"account_id": 1, "anchor_only": True}}}}, False),
     ({"mail/信用卡/國泰世華": 1}, False),  # the flat form still works and has no composite map
 ])
@@ -693,8 +720,9 @@ def test_composite_map_in_the_map_file_is_validated(tmp_path, content, bad):
     (tmp_path / "map.json").write_text(json.dumps(content), encoding="utf-8")
     cfg = config.load({"STATEMENT_ACCOUNT_MAP_FILE": str(tmp_path / "map.json"), "STATEMENT_STATE_DIR": str(tmp_path / "s")})
     if bad:
-        with pytest.raises(verify.Refused):
+        with pytest.raises(verify.Refused):  # one reader or the other refuses the file; neither accepts it
             verify._composite_map(cfg, None)
+            verify._account_map(cfg, None)
     else:
         found = verify._composite_map(cfg, None)
         assert isinstance(found, dict) and verify._account_map(cfg, None).get("mail/信用卡/國泰世華") == 1

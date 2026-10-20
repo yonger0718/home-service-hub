@@ -328,11 +328,12 @@ Watching composite files: a composite failure is deliberate and silent by design
 - `python -m worker verify` needs the statement password file for composite folders (`STATEMENT_PASSWORD_FILE`, default
   `~/.config/homehub-statement-passwords.env`, 0600, owned by the verify user) — install it from the owner's copy with
   `sudo install -m 600 -o homehub-verify -g homehub-verify <src> <dst>`; it is read only when a composite folder is met.
-- The verify parser config dir (`claude-verify`) is a copy of the worker's; the worker's refresh timer re-takes the worker's
-  copy only. Before a verify run, re-take the verify user's: move the old dir aside (`mv … claude-verify.stale-<ts>`), `cp -a`
-  the worker's `claude-verify`, `chown -R` to the verify user, files 0400, dirs 0500.
-- A stale copy fails the canary and latches `parser-disabled.json` in the VERIFY user's state dir. `python -m worker gate`
+- The verify user's parser login (`STATEMENT_VERIFY_PARSER_CONFIG_DIR`, default `~/.local/state/home-hub-parser/claude-verify`)
+  is its OWN login, made with `CLAUDE_CONFIG_DIR="$dst" claude /login` as the verify user (the "Verify parser login copy"
+  section above) — never a copy of the worker's or the owner's login: a copied refresh token rotates on use and logs the
+  other holder out. Nothing refreshes it automatically; re-login when `verify` reports `auth`.
+- An expired login fails the canary and latches `parser-disabled.json` in the VERIFY user's state dir. `python -m worker gate`
   cannot clear that latch when run as the verify user (it canaries the worker's `claude` config dir, which the verify user
-  does not have). Clear it by moving the latch file aside after re-taking the copy; the next `verify` run re-canaries.
+  does not have). Clear it by moving the latch file aside after the re-login; the next `verify` run re-canaries.
 - A one-off verify of a few files: set `STATEMENT_VERIFY_DIR` to a fresh directory holding `masked/<sha>.json` metas and
   `pdf-cache/inbox/by-sha/<sha>.pdf`; the usual verify dir re-verifies every snapshot it holds (hundreds of parses).

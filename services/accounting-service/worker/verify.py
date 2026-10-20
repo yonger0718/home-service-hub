@@ -5,6 +5,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -144,7 +145,7 @@ def _account_map(cfg: WorkerConfig, db: Session | None) -> dict[str, int]:
     if not isinstance(raw, dict):
         raise Refused("account map file: not an object")
     if "account_map" in raw or "composite_map" in raw:  # the envelope form: {"account_map": {...}, "composite_map": {...}}
-        raw = raw.get("account_map") or {}
+        raw = raw.get("account_map", {})
         if not isinstance(raw, dict):
             raise Refused("account map file: account_map is not an object")
     for key, value in raw.items():
@@ -214,6 +215,9 @@ def dry_run_match(db: Session, account_id: int, parsed: parse_schema.StatementPa
     return DryRun(result, guard, existing)
 
 
+SECTION_KEY = re.compile(r"^[0-9]{2,4}/[A-Z]{3}$")  # as settings_service validates composite_map keys
+
+
 def _composite_map(cfg: WorkerConfig, db: Session | None) -> dict[str, dict]:
     """folder key → {"<suffix>/<CUR>": {"account_id", "anchor_only"}} (spec §3 of the composite split): from the
     settings, or from the map file's `composite_map` key (a flat map file has none)."""
@@ -227,13 +231,15 @@ def _composite_map(cfg: WorkerConfig, db: Session | None) -> dict[str, dict]:
         return {}
     if not isinstance(found, dict):
         raise Refused("account map file: composite_map is not an object")
-    for folder, targets in found.items():
+    for folder, targets in found.items():  # the same rules settings_service enforces on PUT (review AGENT-182 S1)
         parts = folder.split("/") if isinstance(folder, str) else []
-        if (len(parts), parts[0] if parts else None) != (2, "manual") or not isinstance(targets, dict):
+        if (len(parts), parts[0] if parts else None) != (2, "manual") or not isinstance(targets, dict) \
+                or any(not part or part != part.strip() for part in parts):
             raise Refused(f"account map file: composite folder {folder!r} invalid")
         for key, target in targets.items():
-            if not isinstance(key, str) or key.count("/") != 1 or not isinstance(target, dict) \
-                    or isinstance(target.get("account_id"), bool) or not isinstance(target.get("account_id"), int):
+            if not isinstance(key, str) or not SECTION_KEY.fullmatch(key) or not isinstance(target, dict) \
+                    or isinstance(target.get("account_id"), bool) or not isinstance(target.get("account_id"), int) \
+                    or not isinstance(target.get("anchor_only", False), bool):
                 raise Refused(f"account map file: composite key {key!r} invalid")
     return found
 
@@ -248,6 +254,7 @@ def _composite_parses(cfg: WorkerConfig, sha: str, meta: dict, targets: dict, ca
     literals = candidates.get(passwords.password_key(meta["root"], meta["folder"]), [])
     unlocked = pdf.unlock(data, literals)
     password = literals[unlocked.password_index] if unlocked.password_index is not None else None
+    pdf.extract(data, password)  # the pipeline's text-layer check first: NoTextLayer is a review, never a split error
     lines = pdf.extract_lines(data, password)
     declared = {key: bool(target.get("anchor_only")) for key, target in targets.items()}
     sections, _report = composite.split(lines, declared)
@@ -292,15 +299,16 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
     secrets: dict = {}  # the password candidates and the masker, read only when a composite folder is met
 
     def _secrets() -> tuple[dict, object]:
-        if not secrets:
-            secrets["candidates"], _ = passwords.load(cfg.password_file)
-            secrets["masker"] = mask.Masker(passwords.identity(cfg.password_file))
+        if "masker" not in secrets:  # both or neither: a Masker failure leaves the cache empty for the next folder
+            loaded, _ = passwords.load(cfg.password_file)
+            masker = mask.Masker(passwords.identity(cfg.password_file))
+            secrets["candidates"], secrets["masker"] = loaded, masker
         return secrets["candidates"], secrets["masker"]
 
     rows: list[dict] = []
     totals = {"statements": 0, "lines": 0, "claims": 0, "unmatched_lines": 0, "unmatched_entries": 0,
               "guardrail_failed": 0, "parse_failed": 0, "unmapped": 0, "existing": 0, "verify_errors": 0,
-              "composite_files": 0, "composite_sections": 0, "cases": {}, "errors": []}
+              "composite_files": 0, "composite_sections": 0, "no_text_layer": 0, "pdf_failed": 0, "cases": {}, "errors": []}
     engine = create_engine(cfg.verify_db_url, hide_parameters=True)
     try:
         # Phase 1: parse (or load the cache) with no database connection open.
@@ -314,9 +322,11 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
                 db.rollback()
         else:
             account_map, composite_map = file_map, file_composite or {}
+        files = 0  # `--limit` counts files; a composite file contributes several pending sections
         for meta_path in sorted(masked_dir.glob("*.json")):
-            if limit is not None and len(pending) + totals["parse_failed"] + totals["unmapped"] + totals["verify_errors"] >= limit:
+            if limit is not None and files >= limit:
                 break
+            files += 1
             sha = meta_path.stem
             account_id = None
             try:
@@ -327,11 +337,17 @@ def run(cfg: WorkerConfig, runner: Runner, *, limit: int | None) -> dict:
                     try:
                         candidates, masker = _secrets()
                         sections = _composite_parses(cfg, sha, meta, targets, candidates, masker)
-                    except (composite.SplitError, pdf.PasswordError, pdf.NoTextLayer, pdf.TooLarge, pdf.Malformed,
-                            pdf.ExtractTimeout) as exc:
+                    except composite.SplitError:  # a layout the splitter does not read: keys and counts only
                         totals["parse_failed"] += 1
-                        rows.append({"sha256": sha, "account_id": None, "error": "split_error" if isinstance(exc, composite.SplitError)
-                                     else type(exc).__name__})  # keys and counts only (SplitError's contract)
+                        rows.append({"sha256": sha, "account_id": None, "error": "split_error"})
+                        continue
+                    except pdf.NoTextLayer:  # the pipeline's needs_review / no_text_layer, never a split error
+                        totals["no_text_layer"] += 1
+                        rows.append({"sha256": sha, "account_id": None, "error": "no_text_layer"})
+                        continue
+                    except (pdf.PasswordError, pdf.TooLarge, pdf.Malformed, pdf.ExtractTimeout) as exc:
+                        totals["pdf_failed"] += 1
+                        rows.append({"sha256": sha, "account_id": None, "error": type(exc).__name__})
                         continue
                     totals["composite_sections"] += len(sections)
                     pending.extend(sections)
