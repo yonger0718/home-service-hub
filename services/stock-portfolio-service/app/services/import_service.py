@@ -564,15 +564,7 @@ def _resolve_symbol_market(db: Session, symbol: str) -> str | None:
     return markets.pop() if len(markets) == 1 else None
 
 
-def _commit_broker_rows(
-    db: Session, parsed: ParseResult, *, dry_run: bool
-) -> ImportResult:
-    existing_transactions: set[str] = {
-        fingerprint
-        for (fingerprint,) in db.query(models.Transaction.import_fingerprint)
-        .filter(models.Transaction.import_fingerprint.is_not(None))
-        .all()
-    }
+def apply_market_overrides(db: Session, parsed: ParseResult) -> None:
     # Override each transaction row's market via symbol_map when the symbol has
     # a single mapped market. Parsers that strip exchange suffixes (IB) misroute
     # otherwise. Done once per upload, then fingerprint is regenerated below.
@@ -607,6 +599,18 @@ def _commit_broker_rows(
                     currency=payload["currency"],
                     note=payload.get("fingerprint_note", payload.get("name")),
                 )
+
+
+def _commit_broker_rows(
+    db: Session, parsed: ParseResult, *, dry_run: bool
+) -> ImportResult:
+    existing_transactions: set[str] = {
+        fingerprint
+        for (fingerprint,) in db.query(models.Transaction.import_fingerprint)
+        .filter(models.Transaction.import_fingerprint.is_not(None))
+        .all()
+    }
+    apply_market_overrides(db, parsed)
     seen_transactions: set[str] = set()
     created_ids: list[int] = []
     errors = list(parsed.errors)

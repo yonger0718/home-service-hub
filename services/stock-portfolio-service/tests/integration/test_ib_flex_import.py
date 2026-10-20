@@ -7,6 +7,8 @@ import pytest
 
 from app.models import portfolio as models
 from app.models.fx_rate import FXRate
+from app.models.symbol_map import SymbolMap
+from app.services import broker_ib_flex_service
 
 FIXTURES = Path(__file__).parents[1] / "unit/fixtures"
 
@@ -166,3 +168,57 @@ def test_ib_flex_import_retries_a_row_once_its_fx_rate_exists(client, db_session
 def test_ib_flex_import_refuses_a_flex_error_document_and_oversize_uploads(client):
     assert _post(client, b"<FlexStatementResponse><Status>Fail</Status><ErrorCode>1020</ErrorCode></FlexStatementResponse>").status_code == 400
     assert _post(client, b"<FlexQueryResponse>" + b" " * (5 * 1024 * 1024) + b"</FlexQueryResponse>").status_code == 413
+
+
+def _legacy_deposit(**over) -> models.BrokerCashFlow:
+    base = dict(broker="IB", date=date(2026, 6, 1), type="deposit", amount=Decimal("3000"), currency="USD", fx_rate_to_twd=Decimal("31.42"), import_fingerprint=None)
+    return models.BrokerCashFlow(**{**base, **over})
+
+
+def test_ib_flex_import_legacy_pass_sees_the_symbol_map_market_override(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    db_session.add(SymbolMap(name="ACWD UCITS", symbol="ACWD", market="US")); db_session.commit()  # disagrees with listingExchange LSE
+    assert _post(client, FLEX).json()["created"] == 11
+    again = _post(client, FLEX, legacy_until="2026-06-30").json()
+    assert (again["legacy_duplicates"], again["skipped_duplicates"], again["created"]) == (0, 11, 0)
+    daily = _post(client, FLEX).json()
+    assert (daily["legacy_duplicates"], daily["skipped_duplicates"], daily["created"]) == (0, 11, 0)
+    assert db_session.query(models.Transaction).filter_by(broker="IB").count() == 4
+
+
+def test_ib_flex_import_pairs_a_four_decimal_commission_with_the_two_decimal_stored_fee(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    db_session.add(_legacy_row()); db_session.commit()  # fee stored 1.78
+    raw = FLEX.replace(b'ibCommission="-1.78"', b'ibCommission="-1.7834"', 1)
+    body = _post(client, raw, legacy_until="2026-06-30").json()
+    assert body["legacy_duplicates"] == 1 and _acwd_one(db_session).count() == 1
+
+
+def test_ib_flex_import_duplicate_trade_in_one_file_pairs_once_and_does_not_500(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    db_session.add(_legacy_row()); db_session.commit()
+    first_trade = FLEX[FLEX.index(b"<Trade "):FLEX.index(b"/>") + 2]
+    dup = FLEX.replace(b"</Trades>", first_trade + b"</Trades>", 1)
+    resp = _post(client, dup, legacy_until="2026-06-30")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert (body["legacy_duplicates"], body["created"], body["skipped_duplicates"]) == (1, 10, 1)
+    assert _acwd_one(db_session).count() == 1
+
+
+def test_ib_flex_import_cash_flow_pairing_adopts_the_parsed_fingerprint(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    db_session.add(_legacy_deposit()); db_session.commit()
+    body = _post(client, FLEX, legacy_until="2026-06-30").json()
+    assert body["legacy_duplicates"] == 1 and body["legacy_pairs"][0]["kind"] == "cash_flow"
+    expected = next(r.fingerprint for r in broker_ib_flex_service.parse(FLEX).rows if r.payload.get("_kind") == "cash_flow" and r.payload["cash_flow_type"] == "deposit")
+    assert db_session.query(models.BrokerCashFlow).filter_by(broker="IB", type="deposit").one().import_fingerprint == expected
+
+
+def test_ib_flex_import_two_old_deposits_and_one_flex_deposit_is_ambiguous(client, db_session):
+    _seed_fx(db_session, *JUNE)
+    db_session.add(_legacy_deposit()); db_session.add(_legacy_deposit()); db_session.commit()
+    body = _post(client, FLEX, legacy_until="2026-06-30").json()
+    assert body["legacy_duplicates"] == 0 and body["error_counts"]["ambiguous"] == 1
+    assert db_session.query(models.BrokerCashFlow).filter_by(broker="IB", type="deposit").count() == 2
+    assert all(c.import_fingerprint is None for c in db_session.query(models.BrokerCashFlow).filter_by(broker="IB", type="deposit"))

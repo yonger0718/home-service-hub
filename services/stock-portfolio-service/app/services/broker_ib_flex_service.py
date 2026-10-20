@@ -4,7 +4,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import structlog
 from sqlalchemy.orm import Session
@@ -208,23 +208,31 @@ class LegacyResult:
     pairs: list[LegacyPair]
 
 
-def _money(value: Decimal) -> str:
-    return f"{Decimal(value):.4f}"
+def _num(value: Decimal, places: int) -> str:
+    """Format at the stored column scale (parsed side is rounded half-up first)."""
+    exp = Decimal(1).scaleb(-places)
+    return f"{Decimal(value).quantize(exp, rounding=ROUND_HALF_UP):.{places}f}"
+
+
+def _utc_day(value: datetime | date) -> date:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).date() if value.tzinfo else value.date()
+    return value
 
 
 def _parsed_key(row: ParsedRow) -> tuple:
     p = row.payload
     if p.get("_kind") == "cash_flow":
-        return ("cash_flow", p["date"], p["cash_flow_type"], _money(p["amount"]), p["currency"])
+        return ("cash_flow", p["date"], p["cash_flow_type"], _num(p["amount"], 4), p["currency"])
     return (
-        "transaction", p["symbol"], p["type"], _money(p["quantity"]), _money(p["price"]),
-        p["trade_date"].date(), p["currency"], _money(p["fee"]), _money(p["tax"]),
+        "transaction", p["symbol"], p["type"], _num(p["quantity"], 4), _num(p["price"], 4),
+        _utc_day(p["trade_date"]), p["currency"], _num(p["fee"], 2), _num(p["tax"], 2),
     )
 
 
 def _parsed_date(row: ParsedRow) -> date:
     p = row.payload
-    return p["date"] if p.get("_kind") == "cash_flow" else p["trade_date"].date()
+    return p["date"] if p.get("_kind") == "cash_flow" else _utc_day(p["trade_date"])
 
 
 def _enum_value(value) -> str:
@@ -250,10 +258,10 @@ def legacy_duplicates(db: Session, parsed: ParseResult, *, until: date, dry_run:
         .order_by(tx.id)
         .all()
     ):
-        trade_day = r.trade_date.date() if isinstance(r.trade_date, datetime) else r.trade_date
+        trade_day = _utc_day(r.trade_date)
         if trade_day > until or (r.import_fingerprint is not None and r.import_fingerprint in parsed_fps):
             continue
-        key = ("transaction", r.symbol, _enum_value(r.type), _money(r.quantity), _money(r.price), trade_day, r.currency, _money(r.fee), _money(r.tax))
+        key = ("transaction", r.symbol, _enum_value(r.type), _num(r.quantity, 4), _num(r.price, 4), trade_day, r.currency, _num(r.fee, 2), _num(r.tax, 2))
         old.setdefault(key, []).append(r.id)
     for r in (
         db.query(cf.id, cf.date, cf.type, cf.amount, cf.currency, cf.import_fingerprint)
@@ -263,12 +271,15 @@ def legacy_duplicates(db: Session, parsed: ParseResult, *, until: date, dry_run:
     ):
         if r.date > until or (r.import_fingerprint is not None and r.import_fingerprint in parsed_fps):
             continue
-        old.setdefault(("cash_flow", r.date, r.type, _money(r.amount), r.currency), []).append(r.id)
+        old.setdefault(("cash_flow", r.date, r.type, _num(r.amount, 4), r.currency), []).append(r.id)
 
     new: dict[tuple, list[ParsedRow]] = {}
+    seen_fps: set[str] = set()
     for row in parsed.rows:
-        if row.fingerprint in known or _parsed_date(row) > until:
+        # Later copies of one execution stay in pending; the commit skips them as duplicates.
+        if row.fingerprint in known or row.fingerprint in seen_fps or _parsed_date(row) > until:
             continue
+        seen_fps.add(row.fingerprint)
         new.setdefault(_parsed_key(row), []).append(row)
 
     dropped: set[int] = set()

@@ -426,6 +426,8 @@ def import_ib_flex(
         original = broker_ib_flex_service.parse(raw)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Same market override + re-hash the commit applies, so the legacy pass and the commit see one fingerprint.
+    import_service.apply_market_overrides(db, original)
     legacy = (
         broker_ib_flex_service.legacy_duplicates(db, original, until=legacy_until, dry_run=dry_run)
         if legacy_until
