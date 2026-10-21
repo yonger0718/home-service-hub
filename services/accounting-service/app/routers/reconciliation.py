@@ -7,6 +7,7 @@ never commits and these handlers do; policy does not run after owner actions.
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy.orm import Session
 
 from ..auth import require, require_feature
@@ -14,14 +15,16 @@ from ..database import get_db
 from ..schemas.reconciliation import (
     ActionIn, ActionOut, AuditOut, DismissIn, ProposalIn, ProposalOut, ProposalRejectIn,
 )
+from ..schemas.inbox import InboxCandidate, InboxOut
 from ..schemas.statements import CaseDetailOut
-from ..services import proposal_service
+from ..services import inbox_service, proposal_service
 from ..services import statement_ingest_service as ingest
 from ..services.reconciliation_actions import engine
 from .errors import service_errors
 from .statements import READ, WRITE, _label
 
 PROPOSE = [Depends(require("propose"))]
+INBOX_STATUSES = ("open", "proposed")
 
 router = APIRouter(tags=["Reconciliation"], dependencies=[Depends(require_feature())])
 
@@ -48,6 +51,30 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
         out = ingest.get_case(db, case_id)
     db.commit()  # stale proposals superseded on read stay superseded
     return out
+
+
+# --- inbox (spec 2026-10-21 §4) -------------------------------------------------------------------------------------
+
+def _inbox_statuses(raw: str) -> tuple[str, ...]:
+    statuses = tuple(dict.fromkeys(part.strip() for part in raw.split(",") if part.strip()))
+    if not statuses or any(s not in INBOX_STATUSES for s in statuses):
+        raise RequestValidationError([{"loc": ["query", "status"], "type": "value_error",
+                                       "msg": f"status must be a comma list of {', '.join(INBOX_STATUSES)}"}])
+    return statuses
+
+
+@router.get("/reconciliation/inbox", response_model=InboxOut, dependencies=READ)
+def get_inbox(status: str = "open,proposed", account_id: int | None = None,
+              limit: int = Query(500, ge=1, le=1000), db: Session = Depends(get_db)):
+    out = inbox_service.build_inbox(db, statuses=_inbox_statuses(status), account_id=account_id, limit=limit)
+    db.commit()  # stale proposals superseded on read stay superseded
+    return out
+
+
+@router.get("/reconciliation/inbox/cases/{case_id}/search", response_model=list[InboxCandidate], dependencies=READ)
+def search_inbox_candidates(case_id: int, days: int = Query(14, ge=1, le=60), db: Session = Depends(get_db)):
+    with service_errors():
+        return inbox_service.search_candidates(db, case_id, days=days)
 
 
 @router.post("/reconciliation/cases/{case_id}/actions", response_model=ActionOut, status_code=201,
