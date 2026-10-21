@@ -1590,6 +1590,11 @@ git commit -m "feat(spa): 對帳規則 block in 記帳設定"
 
 ## Rollout notes (not tasks)
 
-Backend deploy (API only; no worker change) → `alembic upgrade head` (one new table) → `GET /reconciliation/inbox`
-on prod and compare `counts` with spec §10 → SPA release (retire the oldest release or raise `max_releases` first;
-store is 7/7). Rules start empty.
+**Cutover freeze (decided 2026-10-21):** this branch touches a migration and the four reconcile entry points, both
+inside the 24-hour freeze before the 2026-10-24 final MOZE import. The work therefore runs to a merged-ready PR only;
+merge + deploy happen AFTER the cutover runbook completes (final import → dirty check → re-reconcile → LOCK). No
+deploy on 10-23/10-24 regardless of readiness.
+
+After cutover: backend deploy (API only; no worker change) → `alembic upgrade head` (one new table) →
+`GET /reconciliation/inbox` on prod and compare `counts` with spec §10 → SPA release (retire the oldest release or
+raise `max_releases` first; store is 7/7). Rules start empty.
