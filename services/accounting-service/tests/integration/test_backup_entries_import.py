@@ -62,6 +62,36 @@ def test_record_fields_map_to_entry_columns(db_session, backup):
 
 
 @pytest.mark.parametrize(
+    ("charge", "expected_posted"),
+    [
+        ("2026-09-03T00:00:00", date(2026, 9, 3)),   # the usual card lag: charged after the purchase
+        ("2026-08-26T00:00:00", date(2026, 8, 26)),  # 6 days before the record: kept
+        ("2026-08-25T00:00:00", date(2026, 8, 25)),  # exactly 7 days before: still kept (the boundary)
+        ("2026-08-24T00:00:00", date(2026, 9, 1)),   # 8 days before: a recurring/installment template date, not a posting
+        ("2024-11-25T00:00:00", date(2026, 9, 1)),   # MOZE recurring instances carry the template's first chargeDate
+    ],
+)
+def test_charge_date_far_before_the_record_falls_back_to_the_record_date(db_session, backup, charge, expected_posted):
+    """MOZE stamps every instance of a recurring or installment record with the template's chargeDate, years before the
+    instance; the ledger's posted_date is what reconciliation matches against the bank line, so it must stay on the
+    instance (the 25th of the month), not on the template."""
+    data = backup.data(accounts=[_wallet(backup)],
+                       records=[backup.record("R-1", price=-120, date="2026-09-01T12:30:00", chargeDate=charge)])
+    _import_backup(db_session, data)
+    entry = _by_moze_id(db_session, "R-1")
+    assert (entry.entry_date, entry.posted_date) == (date(2026, 9, 1), expected_posted)
+
+
+def test_fee_child_inherits_the_fallback_posting_date(db_session, backup):
+    data = backup.data(accounts=[_wallet(backup)],
+                       records=[backup.record("R-1", price=-120, fee=-5, date="2026-09-01T12:30:00", chargeDate="2024-11-25T00:00:00")])
+    _import_backup(db_session, data)
+    parent = _by_moze_id(db_session, "R-1")
+    child = db_session.scalars(select(LedgerEntry).where(LedgerEntry.parent_entry_id == parent.id, LedgerEntry.kind == "fee")).one()
+    assert (parent.posted_date, child.posted_date) == (date(2026, 9, 1), date(2026, 9, 1))
+
+
+@pytest.mark.parametrize(
     ("record_type", "price", "fields", "kind"),
     [
         (1, 500, {}, "income"), (3, -420, {}, "receivable"), (5, 200, {}, "receivable"), (4, 1000, {}, "payable"),

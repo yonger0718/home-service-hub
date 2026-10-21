@@ -102,7 +102,7 @@ Writes (every new row gets `source = 'manual'`, and an edit of a schedule-posted
 - `POST /counterparties`, `PUT /counterparties/{id}` (rename), `DELETE /counterparties/{id}`
 - `PUT /preference`
 - `POST /imports/moze` (multipart `file`, optional `renames` JSON object, `?dry_run=true`)
-- `POST /imports/moze-backup` (multipart `file` <= 200 MB, optional `renames` JSON object, `?dry_run=&strict=&allow_fx_outliers=`)
+- `POST /imports/moze-backup` (multipart `file` <= 200 MB, optional `renames` JSON object, `?dry_run=&strict=&allow_fx_outliers=`) Posting dates: `posted_date` is MOZE's `chargeDate`, except that a charge more than 7 days BEFORE the record (MOZE stamps every instance of a recurring or installment record with the template's first `chargeDate`) falls back to the record date, so reconciliation sees the instance on its own month (2026-10-20).
 
 API access for agents
 ---------------------

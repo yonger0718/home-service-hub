@@ -648,6 +648,23 @@ def _record_amount(record) -> Decimal:
     return record["total"] if record["type"] == BALANCE_ADJUSTMENT_TYPE else record["price"]
 
 
+CHARGE_BEFORE_RECORD_MAX_DAYS = 7  # compatibility heuristic: a charge this close before the record is kept as given (the 2026-10-20
+                                   # prod counts: 26 rows 1–7 days early, mostly 台新; 2,000 rows months or years early = template dates)
+
+
+def _posted_date(record) -> date:
+    """The ledger's posted_date is what reconciliation matches against the bank line, so it must be the instance's own
+    posting. MOZE stamps every instance of a recurring or installment record with the TEMPLATE's `chargeDate` (the first
+    occurrence, months or years earlier), which is not a posting at all: a charge that precedes its record by more than
+    CHARGE_BEFORE_RECORD_MAX_DAYS falls back to the record date (2026-10-20, found on the 樂天 / 將來 / 薪轉 loan cycles).
+    The cutoff is a heuristic, not a domain invariant: shorter leads are kept because nothing proves them wrong."""
+    recorded = record["date"].date()
+    charged = record["chargeDate"].date()
+    if (recorded - charged).days > CHARGE_BEFORE_RECORD_MAX_DAYS:
+        return recorded
+    return charged
+
+
 def _entry_for(record, kind, account, fx, settings, session, import_run_id) -> LedgerEntry:
     if kind in SYSTEM_CATEGORY_NAMES:
         category_id = _system_category(session, settings, kind)
@@ -660,7 +677,7 @@ def _entry_for(record, kind, account, fx, settings, session, import_run_id) -> L
         **_money_columns(_record_amount(record), fx),
         entry_date=record["date"].date(),
         entry_time=record["date"].time(),
-        posted_date=record["chargeDate"].date(),
+        posted_date=_posted_date(record),
         category_id=category_id,
         project_id=settings.projects.get(record["project"]),
         counterparty_id=settings.counterparties.get(record["target"]),
