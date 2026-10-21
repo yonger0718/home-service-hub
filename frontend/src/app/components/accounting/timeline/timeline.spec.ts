@@ -615,6 +615,133 @@ describe('LedgerTimelineComponent', () => {
       expect(text(el.querySelector('.match-count'))).toBe('符合條件 — 筆');
     });
 
+    it('sends the category, project, tag, merchant and amount filters and clears them from 清除篩選', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+
+      const timeline = fixture.componentInstance;
+      timeline.setCategory('5');
+      timeline.setProject('2');
+      timeline.setTag('#公司、午餐 ,#午餐');  // the entry form's rule: # stripped, 、/,/space split, duplicates dropped
+      timeline.setMerchant('鼎泰');
+      timeline.setAmountMin('-500');
+      timeline.setAmountMax('abc');
+      fixture.detectChanges();
+      const req = flushEntries([], 0);
+      expect(req.request.params.getAll('category_id')).toEqual(['5']);
+      expect(req.request.params.get('project_id')).toBe('2');
+      expect(req.request.params.getAll('tag')).toEqual(['公司', '午餐']);
+      expect(req.request.params.get('merchant')).toBe('鼎泰');
+      expect(req.request.params.get('amount_min')).toBe('-500');
+      expect(req.request.params.has('amount_max')).toBe(false);
+      fixture.detectChanges();
+      expect(timeline.filtersActive()).toBe(true);
+
+      (el.querySelector('.clear-filters') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const cleared = flushEntries([]);
+      for (const key of ['category_id', 'project_id', 'tag', 'merchant', 'amount_min', 'amount_max']) {
+        expect(cleared.request.params.has(key)).toBe(false);
+      }
+      fixture.detectChanges();
+      expect(timeline.filtersActive()).toBe(false);
+    });
+
+    it('fetches the category and project choices once, when a filter select is first focused', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      httpMock!.expectNone(r => r.url === '/api/accounting/categories');
+
+      el.querySelector<HTMLSelectElement>('.filter-category')!.dispatchEvent(new Event('focus'));
+      // The real response: roots with nested children (settings_service.list_categories), never a flat list.
+      httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'expense').flush([
+        { id: 1, kind: 'expense', parent_id: null, name: '餐飲', children: [{ id: 2, kind: 'expense', parent_id: 1, name: '午餐', children: [] }] },
+      ]);
+      httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'income').flush([]);
+      httpMock!.expectOne('/api/accounting/projects').flush([
+        { id: 9, name: '日本', is_archived: false, sort_order: 0 },
+        { id: 10, name: '舊案', is_archived: true, sort_order: 1 },
+      ]);
+      fixture.detectChanges();
+
+      const categories = Array.from(el.querySelectorAll<HTMLOptionElement>('.filter-category option')).map(o => o.textContent?.trim());
+      expect(categories).toEqual(['全部類別', '餐飲', '餐飲 › 午餐']);
+      const projects = Array.from(el.querySelectorAll<HTMLOptionElement>('.filter-project option')).map(o => o.textContent?.trim());
+      expect(projects).toEqual(['全部專案', '日本']);
+
+      el.querySelector<HTMLSelectElement>('.filter-project')!.dispatchEvent(new Event('focus'));
+      httpMock!.expectNone(r => r.url === '/api/accounting/categories');
+
+      // A nested child is selectable and reaches the request as category_id.
+      const select = el.querySelector<HTMLSelectElement>('.filter-category')!;
+      select.value = '2';
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+      expect(flushEntries([], 0).request.params.getAll('category_id')).toEqual(['2']);
+    });
+
+    it('does not fetch the choices twice while the first fetch is pending, and retries after a failure', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      const category = el.querySelector<HTMLSelectElement>('.filter-category')!;
+
+      category.dispatchEvent(new Event('focus'));
+      el.querySelector<HTMLSelectElement>('.filter-project')!.dispatchEvent(new Event('focus'));  // pending: no second set
+      const expense = httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'expense');
+      httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'income').flush([]);
+      httpMock!.expectOne('/api/accounting/projects').flush([]);
+      expense.flush('boom', { status: 500, statusText: 'Server Error' });
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.filter-category option').length).toBe(1);
+
+      category.dispatchEvent(new Event('focus'));  // after a failure the next focus tries again
+      httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'expense').flush([]);
+      httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'income').flush([]);
+      httpMock!.expectOne('/api/accounting/projects').flush([{ id: 9, name: '日本', is_archived: false, sort_order: 0 }]);
+      fixture.detectChanges();
+      expect(el.querySelectorAll('.filter-project option').length).toBe(2);
+    });
+
+    it('keeps the typed merchant and bounds on a phone when the filter row is closed and reopened, and 清除篩選 empties them', () => {
+      const { fixture, el } = render('phone');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+
+      (el.querySelector('.search-toggle') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const merchant = el.querySelector<HTMLInputElement>('.filter-merchant')!;
+      merchant.value = '鼎泰';
+      merchant.dispatchEvent(new Event('change'));
+      const min = el.querySelector<HTMLInputElement>('.filter-amount-min')!;
+      min.value = '-500';
+      min.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+      flushEntries([], 0);
+      fixture.detectChanges();
+
+      (el.querySelector('.search-toggle') as HTMLButtonElement).click();  // close
+      fixture.detectChanges();
+      expect(el.querySelector('.filter-merchant')).toBeNull();
+      (el.querySelector('.search-toggle') as HTMLButtonElement).click();  // reopen: the recreated inputs show the live filters
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLInputElement>('.filter-merchant')!.value).toBe('鼎泰');
+      expect(el.querySelector<HTMLInputElement>('.filter-amount-min')!.value).toBe('-500');
+
+      (el.querySelector('.clear-filters') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      flushEntries([]);
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLInputElement>('.filter-merchant')!.value).toBe('');
+      expect(el.querySelector<HTMLInputElement>('.filter-amount-min')!.value).toBe('');
+    });
+
     it('clears the account, kind and query filters from 清除篩選', () => {
       const { fixture, el } = render('sheet');
       flushSummary('2026-10');

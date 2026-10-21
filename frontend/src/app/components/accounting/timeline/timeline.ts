@@ -17,15 +17,18 @@ import { Router } from '@angular/router';
 import { filter, forkJoin, fromEvent } from 'rxjs';
 
 import {
+  AllEntriesQuery,
+  CategoryNode,
   Counterparty,
-  DailySummary,
   DEFAULT_PREFERENCE,
+  DailySummary,
   ENTRY_KIND_LABELS,
   EntryKind,
   LedgerAccount,
   LedgerEntry,
   MonthSummary,
   Preference,
+  Project,
   ScheduleInstance,
   defaultCategoryIcon,
 } from '../../../models/accounting.model';
@@ -38,6 +41,7 @@ import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { parseTags } from '../entry-form/entry-draft';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
@@ -49,6 +53,27 @@ export const CALENDAR_DAY_LIMIT = 500;
 export const TIMELINE_VIEW_KEY = 'hh.accounting.timelineView';
 /** The search field commits this long after the last keystroke (Enter commits at once). */
 export const QUERY_DEBOUNCE_MS = 300;
+
+/** '' for an empty or non-numeric bound, else the trimmed decimal text as typed (the API takes a decimal string). */
+export function normalizeAmountBound(value: string): string {
+  const text = value.trim();
+  return text !== '' && /^-?\d+(\.\d+)?$/.test(text) ? text : '';
+}
+
+/** `GET /categories` returns roots with nested `children`; one flat list in tree order for a <select>: each root
+ *  followed by its children, labelled `root › child` (any depth, labels joined the same way). */
+export function flattenCategories(roots: CategoryNode[]): CategoryNode[] {
+  const out: CategoryNode[] = [];
+  const walk = (nodes: CategoryNode[], prefix: string) => {
+    for (const node of nodes) {
+      const name = prefix ? `${prefix} › ${node.name}` : node.name;
+      out.push({ ...node, name });
+      walk(node.children ?? [], name);
+    }
+  };
+  walk(roots, '');
+  return out;
+}
 
 
 export type TimelineView = 'list' | 'calendar';
@@ -372,6 +397,18 @@ export class LedgerTimelineComponent implements OnInit {
   readonly accountFilter = signal<number | null>(null);
   readonly kindFilter = signal<EntryKind | null>(null);
   readonly query = signal('');
+  /** Attribute filters (2026-10-21): category (sub-categories included server-side), project, tags (comma-separated),
+   *  merchant substring and a signed amount range; all ANDed with the filters above. */
+  readonly categoryFilter = signal<number | null>(null);
+  readonly projectFilter = signal<number | null>(null);
+  readonly tagFilter = signal('');
+  readonly merchantFilter = signal('');
+  readonly amountMin = signal('');
+  readonly amountMax = signal('');
+  /** Category / project choices, fetched the first time a filter select is focused (not on init). */
+  readonly categoryOptions = signal<CategoryNode[]>([]);
+  readonly projectOptions = signal<Project[]>([]);
+  private optionsRequested = false;
   readonly filtersOpen = signal(false);
   readonly view = signal<TimelineView>(initialView(untracked(this.layoutMode.mode) === 'panes'));
   readonly daily = signal<DailySummary | null>(null);
@@ -385,8 +422,15 @@ export class LedgerTimelineComponent implements OnInit {
   readonly sentinel = viewChild<ElementRef<HTMLElement>>('sentinel');
 
   /** Any list filter set: the month totals are then labelled as unfiltered (spec §1.1). */
+  readonly extraKey = computed(() =>
+    [this.categoryFilter(), this.projectFilter(), this.tagFilter(), this.merchantFilter(), this.amountMin(), this.amountMax()].join('|'),
+  );
   readonly filtersActive = computed(
-    () => this.accountFilter() !== null || this.kindFilter() !== null || this.query() !== '',
+    () =>
+      this.accountFilter() !== null ||
+      this.kindFilter() !== null ||
+      this.query() !== '' ||
+      this.extraKey() !== '|||||',
   );
   readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
   readonly mainCurrency = computed(() => this.preference()?.main_currency ?? DEFAULT_PREFERENCE.main_currency);
@@ -498,6 +542,7 @@ export class LedgerTimelineComponent implements OnInit {
       this.accountFilter();
       this.kindFilter();
       this.query();
+      this.extraKey();
       this.accounting.entriesChanged();
       if (this.view() === 'calendar') {
         // The list page is not shown: skip it, and switching back starts again from page 1.
@@ -528,6 +573,7 @@ export class LedgerTimelineComponent implements OnInit {
       this.accountFilter();
       this.kindFilter();
       this.query();
+      this.extraKey();
       this.accounting.entriesChanged();
       untracked(() => (view === 'calendar' && day ? this.loadDay(day) : this.clearDay()));
     });
@@ -620,7 +666,22 @@ export class LedgerTimelineComponent implements OnInit {
   }
 
   private filterKey(scope: string): string {
-    return [scope, this.accountFilter(), this.kindFilter(), this.query(), this.hideRewards()].join('|');
+    return [scope, this.accountFilter(), this.kindFilter(), this.query(), this.hideRewards(), this.extraKey()].join('|');
+  }
+
+  /** The attribute filters as `/entries` query fields; absent fields are left out by `toParams`. */
+  private extraQuery(): Pick<AllEntriesQuery, 'tag' | 'category_id' | 'project_id' | 'merchant' | 'amount_min' | 'amount_max'> {
+    const tags = parseTags(this.tagFilter()); // the entry form's rule: `#` stripped, split on space / , / ， / 、
+    const category = this.categoryFilter();
+    const project = this.projectFilter();
+    return {
+      tag: tags.length ? tags : undefined,
+      category_id: category === null ? undefined : [category],
+      project_id: project === null ? undefined : project,
+      merchant: this.merchantFilter() || null,
+      amount_min: this.amountMin() || null,
+      amount_max: this.amountMax() || null,
+    };
   }
 
   load(reset: boolean): void {
@@ -650,6 +711,7 @@ export class LedgerTimelineComponent implements OnInit {
         q: this.query() || null,
         account_id: account === null ? undefined : [account],
         hide_rewards: this.hideRewards(),
+        ...this.extraQuery(),
       })
       .subscribe({
         next: page => {
@@ -771,6 +833,7 @@ export class LedgerTimelineComponent implements OnInit {
         q: this.query() || null,
         account_id: account === null ? undefined : [account],
         hide_rewards: this.hideRewards(),
+        ...this.extraQuery(),
       })
       .subscribe({
         next: page => {
@@ -876,6 +939,49 @@ export class LedgerTimelineComponent implements OnInit {
     this.kindFilter.set(value ? (value as EntryKind) : null);
   }
 
+  setCategory(value: string): void {
+    this.categoryFilter.set(value ? Number(value) : null);
+  }
+
+  setProject(value: string): void {
+    this.projectFilter.set(value ? Number(value) : null);
+  }
+
+  setTag(value: string): void {
+    this.tagFilter.set(value.trim());
+  }
+
+  setMerchant(value: string): void {
+    this.merchantFilter.set(value.trim());
+  }
+
+  /** A bound is kept only when it is a number; a half-typed value never reaches the request. The inputs are bound to
+   *  these signals, so a filter row that is closed and reopened on a phone shows what is still filtering. */
+  setAmountMin(value: string): void {
+    this.amountMin.set(normalizeAmountBound(value));
+  }
+
+  setAmountMax(value: string): void {
+    this.amountMax.set(normalizeAmountBound(value));
+  }
+
+  /** Category and project choices are fetched once, when the owner first reaches for them. */
+  ensureOptions(): void {
+    if (this.optionsRequested) {
+      return;
+    }
+    this.optionsRequested = true;
+    forkJoin([this.accounting.getCategories('expense'), this.accounting.getCategories('income'), this.accounting.getProjects()]).subscribe({
+      next: ([expense, income, projects]) => {
+        this.categoryOptions.set(flattenCategories([...expense, ...income]));
+        this.projectOptions.set(projects.filter(project => !project.is_archived));
+      },
+      error: () => {
+        this.optionsRequested = false;
+      },
+    });
+  }
+
   setQuery(value: string): void {
     this.query.set(value.trim());
   }
@@ -931,6 +1037,12 @@ export class LedgerTimelineComponent implements OnInit {
     this.accountFilter.set(null);
     this.kindFilter.set(null);
     this.query.set('');
+    this.categoryFilter.set(null);
+    this.projectFilter.set(null);
+    this.tagFilter.set('');
+    this.merchantFilter.set('');
+    this.amountMin.set('');
+    this.amountMax.set('');
   }
 
 

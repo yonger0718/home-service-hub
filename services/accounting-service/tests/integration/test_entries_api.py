@@ -73,6 +73,93 @@ def test_listing_filters_by_counterparty(client, db_session):
     assert len(alan_ids) == 6 and meal.id in alan_ids and bea_loan.id not in alan_ids
 
 
+def _filter_world(db_session, seed):
+    """Two accounts, a category tree (餐飲 → 午餐 / 晚餐), two projects, two counterparties, tagged rows."""
+    wallet, card = make_account(db_session, "錢包"), make_account(db_session, "玉山 UNI")
+    food = seed.category("餐飲")
+    lunch, dinner = seed.category("午餐", parent=food), seed.category("晚餐", parent=food)
+    travel = seed.category("旅行")
+    trip, home = seed.project("日本"), seed.project("居家")
+    alan, bea = seed.counterparty("Alan"), seed.counterparty("Bea")
+    rows = {
+        "lunch": seed.entry(wallet, "-120", category_id=lunch.id, project_id=trip.id, merchant="麥當勞", tags=["公司", "午餐"], day=date(2026, 9, 1)),
+        "dinner": seed.entry(card, "-450", category_id=dinner.id, project_id=home.id, merchant="鼎泰豐", tags=["家人"], counterparty_id=alan.id, day=date(2026, 9, 2)),
+        "flight": seed.entry(card, "-9800", category_id=travel.id, project_id=trip.id, merchant="長榮航空", tags=["旅行", "公司"], counterparty_id=bea.id, day=date(2026, 9, 3)),
+        "salary": seed.entry(wallet, "52000", kind="income", day=date(2026, 9, 5)),
+    }
+    db_session.commit()
+    return rows, {"food": food, "lunch": lunch, "dinner": dinner, "travel": travel, "trip": trip, "home": home, "alan": alan, "bea": bea}
+
+
+def _ids(client, **params):
+    return sorted(e["id"] for e in client.get("/entries", params=params).json()["items"])
+
+
+def test_listing_filters_by_tag_any_of_several(client, db_session, seed):
+    rows, _ = _filter_world(db_session, seed)
+    assert _ids(client, tag="公司") == sorted([rows["lunch"].id, rows["flight"].id])
+    assert _ids(client, tag=["家人", "旅行"]) == sorted([rows["dinner"].id, rows["flight"].id])  # any of the given tags
+    assert _ids(client, tag="沒有這個標籤") == []
+
+
+def test_listing_filters_by_category_including_its_subcategories(client, db_session, seed):
+    rows, ref = _filter_world(db_session, seed)
+    assert _ids(client, category_id=ref["lunch"].id) == [rows["lunch"].id]
+    assert _ids(client, category_id=ref["food"].id) == sorted([rows["lunch"].id, rows["dinner"].id])  # the parent expands
+    assert _ids(client, category_id=[ref["travel"].id, ref["lunch"].id]) == sorted([rows["lunch"].id, rows["flight"].id])
+
+
+def test_listing_filters_by_project_merchant_and_amount_range(client, db_session, seed):
+    rows, ref = _filter_world(db_session, seed)
+    assert _ids(client, project_id=ref["trip"].id) == sorted([rows["lunch"].id, rows["flight"].id])
+    assert _ids(client, merchant="鼎泰") == [rows["dinner"].id]                      # substring, case-insensitive
+    assert _ids(client, merchant="%") == []                                          # a literal %, not a wildcard
+    assert _ids(client, amount_min="-500", amount_max="-100") == sorted([rows["lunch"].id, rows["dinner"].id])  # signed amounts
+    assert _ids(client, amount_min="0") == [rows["salary"].id]
+
+
+def test_listing_filters_compose_with_each_other_and_the_old_ones(client, db_session, seed):
+    rows, ref = _filter_world(db_session, seed)
+    assert _ids(client, tag="公司", project_id=ref["trip"].id, category_id=ref["food"].id) == [rows["lunch"].id]
+    assert _ids(client, tag="公司", kind="expense", date_from="2026-09-02", q="航空") == [rows["flight"].id]
+    assert _ids(client, counterparty_id=ref["bea"].id, amount_max="-100") == [rows["flight"].id]
+    assert client.get("/entries", params={"tag": "公司", "limit": 1}).json()["total"] == 2
+
+
+def test_merchant_filter_is_case_insensitive_literal_and_reaches_the_group_merchant(client, db_session, seed):
+    wallet = make_account(db_session, "錢包")
+    upper = seed.entry(wallet, "-50", merchant="FamilyMart", day=date(2026, 9, 1))
+    underscore = seed.entry(wallet, "-60", merchant="A_B Store", day=date(2026, 9, 2))
+    backslash = seed.entry(wallet, "-70", merchant="C\\D", day=date(2026, 9, 3))
+    plain = seed.entry(wallet, "-80", merchant="AXB Store", day=date(2026, 9, 4))
+    group = EntryGroup(kind="split", name="晚餐", merchant="鼎泰豐")
+    db_session.add(group); db_session.flush()
+    member = seed.entry(wallet, "-90", merchant=None, group_id=group.id, day=date(2026, 9, 5))
+    db_session.commit()
+    assert _ids(client, merchant="familymart") == [upper.id]                      # ASCII case folds
+    assert _ids(client, merchant="a_b") == [underscore.id]                        # `_` is literal: AXB does not match
+    assert _ids(client, merchant="c\\d") == [backslash.id]                        # a backslash is literal
+    assert _ids(client, merchant="鼎泰") == [member.id]                            # the group's merchant counts for its rows
+    assert plain.id not in _ids(client, merchant="a_b")
+
+
+def test_amount_bounds_are_inclusive_and_compare_each_account_currency_as_is(client, db_session, seed):
+    twd = make_account(db_session, "錢包")
+    jpy = make_account(db_session, "去日本的錢", currency="JPY")
+    exact = seed.entry(twd, "-500", day=date(2026, 9, 1))
+    yen_small = seed.entry(jpy, "-400", day=date(2026, 9, 2))     # ¥400 (worth less than NT$100)
+    yen_big = seed.entry(jpy, "-1800", day=date(2026, 9, 3))      # ¥1800 (worth about NT$400)
+    db_session.commit()
+    assert _ids(client, amount_min="-500", amount_max="-500") == [exact.id]                      # inclusive at both ends
+    assert _ids(client, amount_min="-500") == sorted([exact.id, yen_small.id])                   # raw yen compared, no conversion
+    assert _ids(client, amount_max="-1000") == [yen_big.id]
+
+
+def test_listing_rejects_a_bad_amount_bound(client, db_session):
+    assert client.get("/entries", params={"amount_min": "abc"}).status_code == 422
+    assert client.get("/entries", params={"amount_min": "10", "amount_max": "5"}).status_code == 422
+
+
 def test_listing_open_keeps_unsettled_receivables_and_payables_only(client, db_session):
     alan, bea, lent, borrowed, meal, bea_loan = _debts(db_session)
 
