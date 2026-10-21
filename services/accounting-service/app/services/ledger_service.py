@@ -327,6 +327,44 @@ def _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterpart
     return filters
 
 
+def _like_pattern(text: str) -> str:
+    """A case-insensitive substring pattern with the user's `%`, `_` and `\\` taken literally."""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _category_closure(db: Session, category_ids: list[int]) -> set[int]:
+    """The given categories plus every sub-category under them (the tree is two levels deep today, but the walk does
+    not assume it)."""
+    found, frontier = set(category_ids), set(category_ids)
+    while frontier:
+        children = set(db.scalars(select(Category.id).where(Category.parent_id.in_(frontier))))
+        frontier = children - found
+        found |= children
+    return found
+
+
+def _attribute_filters(db: Session, *, tags=None, category_ids=None, project_id=None, merchant=None,
+                       amount_min=None, amount_max=None) -> list:
+    """The attribute filters of GET /entries (2026-10-21): ANDed with the older ones; `tags` matches rows carrying ANY of
+    the given tags, `category_ids` expands to sub-categories, `merchant` is a literal substring, the amount bounds are
+    signed and inclusive."""
+    filters = []
+    if tags:
+        filters.append(LedgerEntry.tags.overlap(tags))
+    if category_ids:
+        filters.append(LedgerEntry.category_id.in_(_category_closure(db, category_ids)))
+    if project_id is not None:
+        filters.append(LedgerEntry.project_id == project_id)
+    if merchant:
+        filters.append(LedgerEntry.merchant.ilike(_like_pattern(merchant), escape="\\"))
+    if amount_min is not None:
+        filters.append(LedgerEntry.amount >= amount_min)
+    if amount_max is not None:
+        filters.append(LedgerEntry.amount <= amount_max)
+    return filters
+
+
 def is_locked(source: str, moze_id: str | None) -> bool:
     """Imported rows are read-only until cutover (D19)."""
     return not import_locked() and (source in MOZE_SOURCES or moze_id is not None)
@@ -498,8 +536,16 @@ def list_all_entries(
     hide_rewards: bool = False,
     counterparty_id: int | None = None,
     open_only: bool = False,
+    tags: list[str] | None = None,
+    category_ids: list[int] | None = None,
+    project_id: int | None = None,
+    merchant: str | None = None,
+    amount_min: Decimal | None = None,
+    amount_max: Decimal | None = None,
 ) -> tuple[int, list[dict]]:
     filters = _filters(kind, date_from, date_to, q, account_ids, hide_rewards, counterparty_id, open_only)
+    filters += _attribute_filters(db, tags=tags, category_ids=category_ids, project_id=project_id, merchant=merchant,
+                                  amount_min=amount_min, amount_max=amount_max)
     total = db.scalar(select(func.count()).select_from(LedgerEntry).where(*filters))
     return total, _entry_rows(db, filters, running_accounts=account_ids, limit=limit, offset=offset)
 

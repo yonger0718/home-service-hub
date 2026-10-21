@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
@@ -25,12 +26,22 @@ def list_entries(
     hide_rewards: bool = False,
     counterparty_id: int | None = None,
     open: bool = Query(default=False, description="Only unsettled receivables/payables (settlements excluded)"),
+    tag: list[str] | None = Query(default=None, description="Rows carrying ANY of these tags"),
+    category_id: list[int] | None = Query(default=None, description="Rows in any of these categories or their sub-categories"),
+    project_id: int | None = None,
+    merchant: str | None = Query(default=None, max_length=100, description="Case-insensitive substring of the merchant"),
+    amount_min: Decimal | None = Query(default=None, description="Signed amount lower bound (inclusive)"),
+    amount_max: Decimal | None = Query(default=None, description="Signed amount upper bound (inclusive)"),
     db: Session = Depends(get_db),
 ):
+    if amount_min is not None and amount_max is not None and amount_min > amount_max:
+        raise HTTPException(status_code=422, detail="amount_min must not exceed amount_max")
     total, items = ledger_service.list_all_entries(
         db, limit=limit, offset=offset, kind=kind, date_from=date_from, date_to=date_to, q=q,
         account_ids=account_id or None, hide_rewards=hide_rewards,
         counterparty_id=counterparty_id, open_only=open,
+        tags=tag or None, category_ids=category_id or None, project_id=project_id, merchant=merchant,
+        amount_min=amount_min, amount_max=amount_max,
     )
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
