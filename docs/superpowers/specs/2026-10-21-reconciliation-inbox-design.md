@@ -212,9 +212,11 @@ A rule is one account, one bank-line pattern, one answer. Rules are learned only
 `bank_only` → `record` / `dismiss`; `amount_differs` → `accept_bank_amount` (no tolerance column: an `amount_delta`
 case already sits inside the matcher's near bounds, which is the tolerance). `ledger_only` answers (`defer`, `dismiss`)
 and `match_candidate` are never learned — an entry has no bank text to match on, and a recurring ledger-only entry is a
-template to fix, not a rule. `amount` defaults to the line's amount (`learn.amount_exact` true, the sheet's default;
-pre-ticked and locked on a merged card, whose members share it); unticking stores null (「金額不同也算」) — the narrow
-default is what keeps a generic description like 「轉帳支取」 from booking unrelated lines.
+template to fix, not a rule. `amount` defaults by answer *[call, after a reviewer note]*: for `record` / `dismiss`
+it is the line's amount (`learn.amount_exact` true, the sheet's default; pre-ticked and locked on a merged card, whose
+members share it; unticking stores null, 「金額不同也算」) — the narrow default keeps a generic description like
+「轉帳支取」 from booking unrelated lines; for `accept_bank_amount` it is null (`amount_exact` false and not offered —
+a card-fee offset differs every month, and the matcher's near bound already limits what the rule can touch).
 
 ### 6.2 Creating a rule
 `learn` on `/inbox/apply`: the server derives `merchant_pattern` (digit runs removed from `merchant_norm`; shown on the
