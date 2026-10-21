@@ -90,10 +90,10 @@
           <option [value]="option.id" [selected]="projectFilter() === option.id">{{ option.name }}</option>
         }
       </select>
-      <input #filterInput class="chip tag filter-tag" type="search" placeholder="# 標籤" aria-label="標籤（逗號分隔，任一符合）" (change)="setTag($any($event.target).value)" />
-      <input #filterInput class="chip tag filter-merchant" type="search" placeholder="商家" aria-label="商家" (change)="setMerchant($any($event.target).value)" />
-      <input #filterInput class="chip tag filter-amount-min" type="text" inputmode="decimal" placeholder="金額 ≥（原幣）" aria-label="金額下限，以帳戶幣別計，含正負號" (change)="setAmountMin($any($event.target).value)" />
-      <input #filterInput class="chip tag filter-amount-max" type="text" inputmode="decimal" placeholder="金額 ≤（原幣）" aria-label="金額上限，以帳戶幣別計，含正負號" (change)="setAmountMax($any($event.target).value)" />
+      <input class="chip tag filter-tag" type="search" placeholder="# 標籤" aria-label="標籤（空格、逗號或頓號分隔，任一符合）" [value]="tagFilter()" (change)="setTag($any($event.target).value)" />
+      <input class="chip tag filter-merchant" type="search" placeholder="商家" aria-label="商家" [value]="merchantFilter()" (change)="setMerchant($any($event.target).value)" />
+      <input class="chip tag filter-amount-min" type="text" inputmode="decimal" placeholder="金額 ≥（原幣）" aria-label="金額下限，以帳戶幣別計，含正負號" [value]="amountMin()" (change)="setAmountMin($any($event.target).value)" />
+      <input class="chip tag filter-amount-max" type="text" inputmode="decimal" placeholder="金額 ≤（原幣）" aria-label="金額上限，以帳戶幣別計，含正負號" [value]="amountMax()" (change)="setAmountMax($any($event.target).value)" />
     </div>
   }
 

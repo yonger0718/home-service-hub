@@ -126,6 +126,35 @@ def test_listing_filters_compose_with_each_other_and_the_old_ones(client, db_ses
     assert client.get("/entries", params={"tag": "公司", "limit": 1}).json()["total"] == 2
 
 
+def test_merchant_filter_is_case_insensitive_literal_and_reaches_the_group_merchant(client, db_session, seed):
+    wallet = make_account(db_session, "錢包")
+    upper = seed.entry(wallet, "-50", merchant="FamilyMart", day=date(2026, 9, 1))
+    underscore = seed.entry(wallet, "-60", merchant="A_B Store", day=date(2026, 9, 2))
+    backslash = seed.entry(wallet, "-70", merchant="C\\D", day=date(2026, 9, 3))
+    plain = seed.entry(wallet, "-80", merchant="AXB Store", day=date(2026, 9, 4))
+    group = EntryGroup(kind="split", name="晚餐", merchant="鼎泰豐")
+    db_session.add(group); db_session.flush()
+    member = seed.entry(wallet, "-90", merchant=None, group_id=group.id, day=date(2026, 9, 5))
+    db_session.commit()
+    assert _ids(client, merchant="familymart") == [upper.id]                      # ASCII case folds
+    assert _ids(client, merchant="a_b") == [underscore.id]                        # `_` is literal: AXB does not match
+    assert _ids(client, merchant="c\\d") == [backslash.id]                        # a backslash is literal
+    assert _ids(client, merchant="鼎泰") == [member.id]                            # the group's merchant counts for its rows
+    assert plain.id not in _ids(client, merchant="a_b")
+
+
+def test_amount_bounds_are_inclusive_and_compare_each_account_currency_as_is(client, db_session, seed):
+    twd = make_account(db_session, "錢包")
+    jpy = make_account(db_session, "去日本的錢", currency="JPY")
+    exact = seed.entry(twd, "-500", day=date(2026, 9, 1))
+    yen_small = seed.entry(jpy, "-400", day=date(2026, 9, 2))     # ¥400 (worth less than NT$100)
+    yen_big = seed.entry(jpy, "-1800", day=date(2026, 9, 3))      # ¥1800 (worth about NT$400)
+    db_session.commit()
+    assert _ids(client, amount_min="-500", amount_max="-500") == [exact.id]                      # inclusive at both ends
+    assert _ids(client, amount_min="-500") == sorted([exact.id, yen_small.id])                   # raw yen compared, no conversion
+    assert _ids(client, amount_max="-1000") == [yen_big.id]
+
+
 def test_listing_rejects_a_bad_amount_bound(client, db_session):
     assert client.get("/entries", params={"amount_min": "abc"}).status_code == 422
     assert client.get("/entries", params={"amount_min": "10", "amount_max": "5"}).status_code == 422

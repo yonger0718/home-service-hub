@@ -358,7 +358,15 @@ def _attribute_filters(db: Session, *, tags=None, category_ids=None, project_id=
     if project_id is not None:
         filters.append(LedgerEntry.project_id == project_id)
     if merchant:
-        filters.append(LedgerEntry.merchant.ilike(_like_pattern(merchant), escape="\\"))
+        pattern = _like_pattern(merchant)
+        group_merchant = (
+            select(EntryGroup.id)
+            .where(EntryGroup.id == LedgerEntry.group_id, EntryGroup.merchant.ilike(pattern, escape="\\"))
+            .correlate(LedgerEntry)
+            .exists()
+        )
+        # rows of a split group are titled by the group, whose merchant may be the only one set (as in `_text_filter`)
+        filters.append(or_(LedgerEntry.merchant.ilike(pattern, escape="\\"), group_merchant))
     if amount_min is not None:
         filters.append(LedgerEntry.amount >= amount_min)
     if amount_max is not None:

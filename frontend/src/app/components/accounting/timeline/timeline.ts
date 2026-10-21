@@ -10,7 +10,6 @@ import {
   signal,
   untracked,
   viewChild,
-  viewChildren,
 } from '@angular/core';
 import { DOCUMENT, NgTemplateOutlet } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -42,6 +41,7 @@ import { SkeletonComponent } from '../skeleton/skeleton';
 import { FolderIcon, SplitFolderComponent } from '../split-folder/split-folder';
 import { groupCommands, listOpenState } from '../split-group/group-nav';
 import { CalendarMonthComponent } from '../calendar-month/calendar-month';
+import { parseTags } from '../entry-form/entry-draft';
 import { todayIso } from '../dates';
 import { schedulePill } from '../schedule-math';
 import { KIND_PILLS, KindPill, colorOf, fxLine, iconOf, isHandledKey, pad, shiftMonth as shiftYearMonth } from '../accounting-ui';
@@ -60,20 +60,18 @@ export function normalizeAmountBound(value: string): string {
   return text !== '' && /^-?\d+(\.\d+)?$/.test(text) ? text : '';
 }
 
-/** Categories as one flat list in tree order: parents, each followed by its children, labelled `parent › child`. */
-export function flattenCategories(nodes: CategoryNode[]): CategoryNode[] {
-  const byParent = new Map<number | null, CategoryNode[]>();
-  for (const node of nodes) {
-    const key = node.parent_id ?? null;
-    byParent.set(key, [...(byParent.get(key) ?? []), node]);
-  }
+/** `GET /categories` returns roots with nested `children`; one flat list in tree order for a <select>: each root
+ *  followed by its children, labelled `root › child` (any depth, labels joined the same way). */
+export function flattenCategories(roots: CategoryNode[]): CategoryNode[] {
   const out: CategoryNode[] = [];
-  for (const parent of byParent.get(null) ?? []) {
-    out.push(parent);
-    for (const child of byParent.get(parent.id) ?? []) {
-      out.push({ ...child, name: `${parent.name} › ${child.name}` });
+  const walk = (nodes: CategoryNode[], prefix: string) => {
+    for (const node of nodes) {
+      const name = prefix ? `${prefix} › ${node.name}` : node.name;
+      out.push({ ...node, name });
+      walk(node.children ?? [], name);
     }
-  }
+  };
+  walk(roots, '');
   return out;
 }
 
@@ -375,7 +373,6 @@ export class LedgerTimelineComponent implements OnInit {
 
   private queryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly queryInput = viewChild<ElementRef<HTMLInputElement>>('queryInput');
-  private readonly filterInputs = viewChildren<ElementRef<HTMLInputElement>>('filterInput');
 
   private readonly bills = inject(BillingService);
 
@@ -674,7 +671,7 @@ export class LedgerTimelineComponent implements OnInit {
 
   /** The attribute filters as `/entries` query fields; absent fields are left out by `toParams`. */
   private extraQuery(): Pick<AllEntriesQuery, 'tag' | 'category_id' | 'project_id' | 'merchant' | 'amount_min' | 'amount_max'> {
-    const tags = this.tagFilter().split(/[,，\s]+/).map(tag => tag.trim()).filter(tag => tag !== '');
+    const tags = parseTags(this.tagFilter()); // the entry form's rule: `#` stripped, split on space / , / ， / 、
     const category = this.categoryFilter();
     const project = this.projectFilter();
     return {
@@ -958,7 +955,8 @@ export class LedgerTimelineComponent implements OnInit {
     this.merchantFilter.set(value.trim());
   }
 
-  /** A bound is kept only when it is a number; a half-typed value never reaches the request. */
+  /** A bound is kept only when it is a number; a half-typed value never reaches the request. The inputs are bound to
+   *  these signals, so a filter row that is closed and reopened on a phone shows what is still filtering. */
   setAmountMin(value: string): void {
     this.amountMin.set(normalizeAmountBound(value));
   }
@@ -1045,9 +1043,6 @@ export class LedgerTimelineComponent implements OnInit {
     this.merchantFilter.set('');
     this.amountMin.set('');
     this.amountMax.set('');
-    for (const input of this.filterInputs()) {
-      input.nativeElement.value = '';
-    }
   }
 
 

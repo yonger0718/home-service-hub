@@ -79,7 +79,7 @@ Reads
   income, rewards, net and count over entries posted in the range, plus the balance as of `date_to`),
   `GET /accounts/{id}/reward-rules`
 - `GET /accounts/{id}/entries?limit=50&offset=0&kind=&date_from=&date_to=&q=`
-- `GET /entries?limit&offset&kind&date_from&date_to&q&account_id=(repeatable)&hide_rewards&counterparty_id&open&tag=(repeatable, any of)&category_id=(repeatable, sub-categories included)&project_id&merchant=(substring)&amount_min&amount_max=(signed, inclusive, in the entry's ACCOUNT currency — no conversion; 422 when min > max)` (2026-10-21: the attribute filters AND with the older ones), `GET /entries/summary?month=YYYY-MM`,
+- `GET /entries?limit&offset&kind&date_from&date_to&q&account_id=(repeatable)&hide_rewards&counterparty_id&open&tag=(repeatable, any of)&category_id=(repeatable, sub-categories included)&project_id&merchant=(case-insensitive literal substring of the row's or its group's merchant)&amount_min&amount_max=(signed, inclusive, in the entry's ACCOUNT currency — no conversion; 422 when min > max)` (2026-10-21: the attribute filters AND with the older ones), `GET /entries/summary?month=YYYY-MM`,
   `GET /entries/summary/daily?month=YYYY-MM` (calendar view: the month summary's expense/income rules per `entry_date`,
   with a `count` of counted rows; days without entries omitted; rewards left out when the preference hides them on
   the timeline; `missing_rates` as in the month summary), `GET /entries/{id}`
