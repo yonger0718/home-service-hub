@@ -44,3 +44,20 @@ def test_rule_key_treats_null_amounts_as_equal(seed, db_session):
 
 def test_new_audit_events_are_known():
     assert {"rule_applied", "rule_skipped", "inbox_answer"} <= audit.EVENTS
+
+
+def test_rule_routes_list_patch_delete(client, seed, db_session, monkeypatch):
+    from app import auth
+    monkeypatch.setenv(auth.TOKENS_ENV, "spa:spa-token,hermes:hermes-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "spa=legacy; hermes=read")
+    monkeypatch.setenv(auth.FEATURE_ENV, "true")
+    S, H = {"Authorization": "Bearer spa-token"}, {"Authorization": "Bearer hermes-token"}
+    account = seed.account("樂天")
+    row = _rule(seed, db_session, account)
+    listed = client.get("/reconciliation/owner-rules", headers=H).json()
+    assert [r["id"] for r in listed] == [row.id] and listed[0]["amount"] == "3865.0000"
+    assert client.patch(f"/reconciliation/owner-rules/{row.id}", headers=H, json={"enabled": False}).status_code == 403
+    assert client.patch(f"/reconciliation/owner-rules/{row.id}", headers=S, json={"enabled": False}).json()["enabled"] is False
+    assert client.delete(f"/reconciliation/owner-rules/{row.id}", headers=S).status_code == 204
+    assert client.delete(f"/reconciliation/owner-rules/{row.id}", headers=S).status_code == 404
+    assert client.get("/reconciliation/owner-rules", headers=S).json() == []

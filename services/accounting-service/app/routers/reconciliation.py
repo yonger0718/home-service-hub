@@ -15,9 +15,9 @@ from ..database import get_db
 from ..schemas.reconciliation import (
     ActionIn, ActionOut, AuditOut, DismissIn, ProposalIn, ProposalOut, ProposalRejectIn,
 )
-from ..schemas.inbox import InboxApplyIn, InboxApplyOut, InboxCandidate, InboxOut
+from ..schemas.inbox import InboxApplyIn, InboxApplyOut, InboxCandidate, InboxOut, OwnerRuleOut, OwnerRulePatchIn
 from ..schemas.statements import CaseDetailOut
-from ..services import inbox_service, proposal_service
+from ..services import inbox_service, owner_rule_service, proposal_service
 from ..services import statement_ingest_service as ingest
 from ..services.reconciliation_actions import engine
 from .errors import service_errors
@@ -79,10 +79,35 @@ def search_inbox_candidates(case_id: int, days: int = Query(14, ge=1, le=60), db
 
 @router.post("/reconciliation/inbox/apply", response_model=InboxApplyOut, dependencies=WRITE)
 def apply_inbox(body: InboxApplyIn, request: Request, db: Session = Depends(get_db)):
-    """Each member commits on its own (spec §5); only the structural checks fail the whole batch."""
+    """Each member commits on its own (spec §5); only the structural checks (and, with `learn`, the rule key) fail
+    the whole batch. An unexpected error mid-batch returns 500 without `results`: the client retries the whole batch
+    and the members already committed replay."""
     with service_errors():
         return inbox_service.apply_batch(db, body=body, label=_label(request) or "owner",
                                          request_id=request.headers.get("x-request-id"))
+
+
+# --- owner-taught rules (spec 2026-10-21 §6.4) ----------------------------------------------------------------------
+
+@router.get("/reconciliation/owner-rules", response_model=list[OwnerRuleOut], dependencies=READ)
+def list_owner_rules(db: Session = Depends(get_db)):
+    return owner_rule_service.list_rules(db)
+
+
+@router.patch("/reconciliation/owner-rules/{rule_id}", response_model=OwnerRuleOut, dependencies=WRITE)
+def patch_owner_rule(rule_id: int, body: OwnerRulePatchIn, db: Session = Depends(get_db)):
+    with service_errors():
+        out = OwnerRuleOut.model_validate(owner_rule_service.set_enabled(db, rule_id, body.enabled))
+    db.commit()
+    return out
+
+
+@router.delete("/reconciliation/owner-rules/{rule_id}", status_code=204, dependencies=WRITE)
+def delete_owner_rule(rule_id: int, db: Session = Depends(get_db)):
+    with service_errors():
+        owner_rule_service.delete_rule(db, rule_id)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/reconciliation/cases/{case_id}/actions", response_model=ActionOut, status_code=201,

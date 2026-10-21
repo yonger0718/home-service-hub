@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Callable
 
 from sqlalchemy import and_, false, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -18,7 +19,9 @@ from app.schemas.inbox import InboxApplyIn, InboxCaseRef
 from app.services import coverage_service, proposal_service, reconciliation_actions, split_protection
 from app.services import entry_write_service as ews
 from app.services.edit_lock import EditLockedError
-from app.services.errors import CodedConflictError, ConflictError, NotFoundError, ValidationError
+from app.services.errors import (
+    CodedConflictError, CodedValidationError, ConflictError, NotFoundError, ValidationError,
+)
 from app.services.reconciliation_actions import OPEN_STATUSES, audit, base, engine
 from app.services.reconciliation_actions.base import Context
 from app.services.statements import matching
@@ -423,29 +426,84 @@ def _result(case_id: int, status: str, action_id: int | None = None, code: str |
     return {"case_id": case_id, "status": status, "action_id": action_id, "code": code}
 
 
-def _check_batch(db: Session, body: InboxApplyIn) -> None:
-    """Structural checks before anything applies: no duplicate member, every case exists, and the members still
-    open share one question that offers the button (closed members are judged per member)."""
+def _refusal_code(exc: Exception) -> str:
+    """The per-member refusal code: a coded error's own code, else a stable name for its class."""
+    if getattr(exc, "code", None):
+        return exc.code
+    if isinstance(exc, EditLockedError):
+        return "locked_until_cutover"
+    if isinstance(exc, NotFoundError):
+        return "not_found"
+    if isinstance(exc, ConflictError):
+        return "conflict"
+    return exc.field  # a plain ValidationError names its field
+
+
+def _check_params(body: InboxApplyIn) -> None:
+    """The params the button cannot do without (422, nothing applied): `record` needs `category_id`;
+    `match_candidate` needs `entry_id` for one member or `entry_ids` naming every member's case."""
+    params = body.params
+    if body.action == "record" and params.get("category_id") is None:
+        raise ValidationError("params", "category_id required")
+    if body.action == "match_candidate":
+        per_case = params.get("entry_ids")
+        covered = isinstance(per_case, dict) and all(per_case.get(str(ref.case_id)) is not None for ref in body.cases)
+        if not covered and not (len(body.cases) == 1 and params.get("entry_id") is not None):
+            raise ValidationError("params", "entry_id required" if len(body.cases) == 1
+                                  else "entry_ids required for every case")
+
+
+def _asked_question(case: ReconciliationCase, statement: AccountStatement, line: StatementLine | None) -> str:
+    """The question the case's card asked: as it stands while open, else as if still open with the whole registry
+    (a replayed member is closed now; `allowed` only narrows `create_entry`, which `needs_peer` already decides)."""
+    if case.status in OPEN_STATUSES:
+        return _question(case, statement, line, reconciliation_actions.allowed(case))
+    return classify(kind=case.kind, status="open", statement_kind=statement.kind,
+                    hint=(case.context or {}).get("hint"), merchant_norm=line.merchant_norm if line else None,
+                    allowed=list(reconciliation_actions.ACTIONS))
+
+
+def _check_batch(db: Session, body: InboxApplyIn) -> tuple[list[ReconciliationCase], list[StatementLine | None]]:
+    """Structural checks before anything applies: no duplicate member, every case exists, the params the button
+    needs, and the members still open at the card's version share one question that offers the button (closed or
+    newer members are judged per member). Returns the cases and their current lines in request order."""
     ids = [ref.case_id for ref in body.cases]
     if len(set(ids)) != len(ids):
         raise ValidationError("cases", "duplicate case")
-    cases = _by_id(db, ReconciliationCase, ids)
-    missing = [case_id for case_id in ids if case_id not in cases]
+    by_id = _by_id(db, ReconciliationCase, ids)
+    missing = [case_id for case_id in ids if case_id not in by_id]
     if missing:
         raise NotFoundError(f"case {missing[0]} not found")
-    statements = _by_id(db, AccountStatement, (case.statement_id for case in cases.values()))
+    _check_params(body)
+    statements = _by_id(db, AccountStatement, (case.statement_id for case in by_id.values()))
+    cases = [by_id[case_id] for case_id in ids]
+    lines = [base.current_line(db, case, statements[case.statement_id]) for case in cases]
     questions = set()
-    for case in cases.values():
-        if case.status in OPEN_STATUSES:
-            statement = statements[case.statement_id]
-            questions.add(_question(case, statement, base.current_line(db, case, statement),
-                                    reconciliation_actions.allowed(case)))
+    for ref, case, line in zip(body.cases, cases, lines):
+        if case.status in OPEN_STATUSES and case.version == ref.case_version:
+            questions.add(_question(case, statements[case.statement_id], line, reconciliation_actions.allowed(case)))
     if len(questions) > 1:
         raise ValidationError("cases", "mixed questions")
     if questions:
         (question,) = questions
         if body.action not in buttons(question, list(reconciliation_actions.ACTIONS), adjustable=True):
             raise ValidationError("action", f"not offered for {question}")
+    return cases, lines
+
+
+def _rule_key(db: Session, body: InboxApplyIn, cases: list[ReconciliationCase],
+              lines: list[StatementLine | None]):
+    """Step 2 (spec §6.2), before any member applies: the answer must be learnable for every member's question and
+    every member must give the same rule key (422 otherwise). Returns (question, key)."""
+    from app.services import owner_rule_service  # local: owner_rule_service imports this module
+
+    questions = [_asked_question(case, db.get(AccountStatement, case.statement_id), line)
+                 for case, line in zip(cases, lines)]
+    refused = next((q for q in questions if not learnable(q, body.action)), None)
+    if refused is not None:
+        raise CodedValidationError("learn", "not_learnable", f"{body.action} on {refused}")
+    key = owner_rule_service.rule_key_for(db, cases, lines, amount_exact=body.learn.amount_exact, button=body.action)
+    return questions[0], key
 
 
 def _apply_member(db: Session, ref: InboxCaseRef, body: InboxApplyIn, *, label: str,
@@ -458,17 +516,24 @@ def _apply_member(db: Session, ref: InboxCaseRef, body: InboxApplyIn, *, label: 
             raise NotFoundError(f"case {ref.case_id} not found")
         statement = db.get(AccountStatement, case.statement_id)
         line = base.current_line(db, case, statement)
-        action, params = translate(body.action, body.params, case, line, body.answer)
-        found = engine.find_by_key(db, engine.key_for(case.id, ref.case_version, action, params))
-        if found is not None and found.status == "applied":  # a retried tap: no re-apply
-            audit.record(db, event="action_replayed", actor=label, statement_id=case.statement_id, case_id=case.id,
-                         action_id=found.id, request_id=request_id, detail={"action": found.action})
-            db.commit()
-            return _result(case.id, "replayed", found.id)
+        try:
+            action, params = translate(body.action, body.params, case, line, body.answer)
+        except ValidationError:  # no line / candidate / entry for the button now: refused below, after step 3b
+            action = params = None
+        if action is not None:
+            found = engine.find_by_key(db, engine.key_for(case.id, ref.case_version, action, params))
+            if found is not None and found.status == "applied":  # a retried tap: no re-apply
+                audit.record(db, event="action_replayed", actor=label, statement_id=case.statement_id,
+                             case_id=case.id, action_id=found.id, request_id=request_id,
+                             detail={"action": found.action})
+                db.commit()
+                return _result(case.id, "replayed", found.id)
         if case.status not in OPEN_STATUSES:
             return _result(case.id, "refused", code="case_closed")
+        if case.version != ref.case_version:
+            return _result(case.id, "refused", code="stale_case")
         allowed = reconciliation_actions.allowed(case)
-        if body.action not in _buttons(db, case, _question(case, statement, line, allowed), allowed):
+        if action is None or body.action not in _buttons(db, case, _question(case, statement, line, allowed), allowed):
             return _result(case.id, "refused", code="not_offered")
         row, replayed = engine.apply_action(db, case_id=case.id, action=action, params=params, actor="owner",
                                             label=label, request_id=request_id,
@@ -481,13 +546,26 @@ def _apply_member(db: Session, ref: InboxCaseRef, body: InboxApplyIn, *, label: 
         return _result(case.id, "replayed" if replayed else "applied", row.id)
     except REFUSALS as exc:
         db.rollback()
-        return _result(ref.case_id, "refused", code=getattr(exc, "code", None) or str(exc).split(":")[0])
+        return _result(ref.case_id, "refused", code=_refusal_code(exc))
 
 
 def apply_batch(db: Session, *, body: InboxApplyIn, label: str, request_id: str | None) -> dict:
-    """`POST /reconciliation/inbox/apply` (spec §5): the structural checks (422/404, nothing applied), then every
-    member in request order, each committed or refused on its own. `learn` is accepted; rule creation (§6.2) is not
-    wired here yet, so `rule_id` and `rule_error` are None."""
-    _check_batch(db, body)
+    """`POST /reconciliation/inbox/apply` (spec §5, §6.2): (1) the structural checks and (2) with `learn`, the rule
+    key — a 422/404 there applies nothing; (3) every member in request order, each committed or refused on its own;
+    (4) with `learn` and no member refused, the rule is learned and committed. A failure at step 4 leaves the
+    committed actions standing: `rule_id` None and `rule_error` the code (HTTP 200)."""
+    from app.services import owner_rule_service  # local: owner_rule_service imports this module
+
+    cases, lines = _check_batch(db, body)
+    question, key = _rule_key(db, body, cases, lines) if body.learn is not None else (None, None)
     results = [_apply_member(db, ref, body, label=label, request_id=request_id) for ref in body.cases]
-    return {"results": results, "rule_id": None, "rule_error": None}
+    rule_id = rule_error = None
+    if key is not None and all(r["status"] in ("applied", "replayed") for r in results):
+        try:
+            rule_id = owner_rule_service.learn(db, question=question, button=body.action, key=key,
+                                               params=body.params, created_from_case_id=cases[0].id).id
+            db.commit()
+        except (ValidationError, IntegrityError) as exc:
+            db.rollback()
+            rule_id, rule_error = None, getattr(exc, "code", None) or type(exc).__name__
+    return {"results": results, "rule_id": rule_id, "rule_error": rule_error}

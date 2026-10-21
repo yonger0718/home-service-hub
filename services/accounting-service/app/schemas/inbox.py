@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .statements import Strict
 from .writes import Int32
@@ -142,3 +142,28 @@ class InboxApplyOut(BaseModel):
     results: list[InboxApplyResult]
     rule_id: int | None
     rule_error: str | None
+
+
+# --- owner-taught rules (spec §6.4) ---------------------------------------------------------------------------------
+
+class OwnerRuleOut(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+    id: int
+    account_id: int
+    enabled: bool
+    line_kind: str
+    merchant_pattern: str
+    flow_sign: str
+    amount: Decimal | None
+    action: str
+    params: dict
+    created_from_case_id: int | None
+    created_at: datetime
+    last_applied_at: datetime | None
+    applied_count: int
+    note: str | None
+
+
+class OwnerRulePatchIn(BaseModel):
+    model_config = Strict
+    enabled: bool

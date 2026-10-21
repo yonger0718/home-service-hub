@@ -262,7 +262,7 @@ def test_apply_rejects_mixed_questions_and_unoffered_buttons(client, seed, db_se
 
 def test_apply_resend_replays_every_member(client, seed, db_session, run):
     from sqlalchemy import func, select
-    from app.models import LedgerEntry, ReconciliationOwnerRule
+    from app.models import LedgerEntry, ReconciliationAudit, ReconciliationOwnerRule
     account = _bank(seed, db_session)
     food = seed.category("飲食")
     db_session.commit()
@@ -276,8 +276,13 @@ def test_apply_resend_replays_every_member(client, seed, db_session, run):
     assert [r["action_id"] for r in again.json()["results"]] == [r["action_id"] for r in first.json()["results"]]
     assert again.json()["rule_id"] == first.json()["rule_id"] and again.json()["rule_error"] is None
     assert db_session.execute(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)).scalar_one() == 2
-    # learning is not wired yet (owner_rule_service lands next): no rule row; with it this count becomes 1
-    assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 0
+    assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 1
+
+    def events(name):
+        return db_session.execute(select(func.count()).select_from(ReconciliationAudit)
+                                  .where(ReconciliationAudit.event == name)).scalar_one()
+
+    assert events("inbox_answer") == 2 and events("action_replayed") == 2
 
 
 def test_apply_closed_member_is_refused_while_the_open_one_applies(client, seed, db_session, run):
@@ -299,3 +304,213 @@ def test_apply_needs_write_scope(client, seed, db_session, run):
     stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -20, "withdrawal")], kind="bank")
     (case,) = _open_lines(db_session, stmt.id)
     assert _apply(client, [case], "dismiss", headers=H).status_code == 403
+
+
+# --- learning rules (spec §6.2) -------------------------------------------------------------------------------------
+
+def test_learn_creates_a_rule_with_the_exact_amount(client, seed, db_session, run):
+    from app.models import ReconciliationOwnerRule
+    from sqlalchemy import select
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "放款還款 0903", -3865, "withdrawal"),
+                                                    _line(2, date(2026, 9, 25), "放款還款 0925", -3865, "withdrawal")], kind="bank")
+    cases = _open_lines(db_session, stmt.id)
+    res = _apply(client, cases, "record", {"category_id": food.id, "name": "信貸"}, learn={"amount_exact": True})
+    assert res.status_code == 200, res.text
+    rule = db_session.get(ReconciliationOwnerRule, res.json()["rule_id"])
+    assert (rule.account_id, rule.line_kind, rule.merchant_pattern, rule.flow_sign) == (account.id, "withdrawal", "放款還款", "-")
+    assert rule.amount == Decimal("-3865.0000") and rule.action == "record"
+    assert rule.params == {"category_id": food.id, "name": "信貸"} and rule.enabled is True
+    assert [r["status"] for r in res.json()["results"]] == ["applied", "applied"]
+    assert client.get("/reconciliation/owner-rules", headers=S).json()[0]["id"] == rule.id
+
+
+def test_learn_without_exact_amount_and_duplicate_updates(client, seed, db_session, run):
+    from app.models import ReconciliationOwnerRule
+    from sqlalchemy import func, select
+    account = _bank(seed, db_session)
+    a = seed.category("甲")
+    b = seed.category("乙")
+    db_session.commit()
+    s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -10, "withdrawal")], kind="bank")
+    (c1,) = _open_lines(db_session, s1.id)
+    r1 = _apply(client, [c1], "record", {"category_id": a.id}, learn={"amount_exact": False}).json()["rule_id"]
+    from tests.integration.statement_fixtures import OCT
+    s2, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", -99, "withdrawal")], kind="bank", period=OCT)
+    (c2,) = _open_lines(db_session, s2.id)
+    r2 = _apply(client, [c2], "record", {"category_id": b.id}, learn={"amount_exact": False}).json()["rule_id"]
+    assert r1 == r2
+    assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 1
+    db_session.expire_all()
+    assert db_session.get(ReconciliationOwnerRule, r1).params == {"category_id": b.id}
+    assert db_session.get(ReconciliationOwnerRule, r1).amount is None
+
+
+def test_learn_refuses_mismatched_members_before_applying(client, seed, db_session, run):
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "甲", -10, "withdrawal"),
+                                                    _line(2, DAY, "乙", -10, "withdrawal")], kind="bank")
+    cases = _open_lines(db_session, stmt.id)
+    res = _apply(client, cases, "dismiss", learn={"amount_exact": True})
+    assert res.status_code == 422 and "rule_pattern_mismatch" in res.text
+    db_session.expire_all()
+    assert all(db_session.get(ReconciliationCase, c.id).status == "open" for c in cases)
+
+
+def test_learn_refuses_cross_account_and_cross_amount_members(client, seed, db_session, run):
+    other = _bank(seed, db_session, "別戶")
+    account = _bank(seed, db_session)
+    s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -10, "withdrawal")], kind="bank")
+    s2, _, _ = _submit(db_session, run, other, [_line(1, DAY, "店", -10, "withdrawal")], kind="bank")
+    from tests.integration.statement_fixtures import OCT
+    (a,) = _open_lines(db_session, s1.id)
+    (b,) = _open_lines(db_session, s2.id)
+
+    def still_open(*cases):
+        db_session.expire_all()
+        return all(db_session.get(ReconciliationCase, c.id).status == "open" for c in cases)
+
+    res = _apply(client, [a, b], "dismiss", learn={"amount_exact": True})
+    assert res.status_code == 422 and "rule_pattern_mismatch" in res.text and still_open(a, b)
+    s3, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", -99, "withdrawal")], kind="bank", period=OCT)
+    (c,) = _open_lines(db_session, s3.id)
+    res = _apply(client, [a, c], "dismiss", learn={"amount_exact": True})
+    assert res.status_code == 422 and "rule_pattern_mismatch" in res.text and still_open(a, c)
+    assert _apply(client, [a, c], "dismiss", learn={"amount_exact": False}).status_code == 200  # same pattern, amounts may differ
+    assert still_open(b)
+
+
+def test_reteaching_replaces_the_action(client, seed, db_session, run):
+    """Same key, new answer → the same row with the new action/params (both directions). Task 6 adds the test
+    that the replacement rule actually books/dismisses the next line."""
+    from app.models import ReconciliationOwnerRule
+    from tests.integration.statement_fixtures import OCT
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    db_session.commit()
+    s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -10, "withdrawal")], kind="bank")
+    (c1,) = _open_lines(db_session, s1.id)
+    rid = _apply(client, [c1], "dismiss", learn={"amount_exact": False}).json()["rule_id"]
+    s2, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", -10, "withdrawal")], kind="bank", period=OCT)
+    (c2,) = _open_lines(db_session, s2.id)
+    rid2 = _apply(client, [c2], "record", {"category_id": food.id}, learn={"amount_exact": False}).json()["rule_id"]
+    assert rid2 == rid
+    db_session.expire_all()
+    rule = db_session.get(ReconciliationOwnerRule, rid)
+    assert rule.action == "record" and rule.params == {"category_id": food.id}
+    s3, _, _ = _submit(db_session, run, account, [_line(2, date(2026, 11, 4), "店", -10, "withdrawal")], kind="bank",
+                       period=(date(2026, 11, 1), date(2026, 11, 30)))
+    (c3,) = _open_lines(db_session, s3.id)
+    assert _apply(client, [c3], "dismiss", learn={"amount_exact": False}).json()["rule_id"] == rid
+    db_session.expire_all()
+    assert db_session.get(ReconciliationOwnerRule, rid).action == "dismiss" and db_session.get(ReconciliationOwnerRule, rid).params == {}
+
+
+def test_learn_null_amount_key_is_unique(client, seed, db_session, run, pg_engine):
+    """Review Must 2: two sessions learning the same NULL-amount key end with one row. s2's insert waits on s1's
+    uncommitted row (ON CONFLICT), so it runs on a thread while the main thread commits s1."""
+    import threading
+    from sqlalchemy import func, select
+    from sqlalchemy.orm import Session
+    from app.models import ReconciliationOwnerRule
+    from app.services import owner_rule_service as ors
+    account = _bank(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, account, [_line(1, DAY, "店", -10, "withdrawal")], kind="bank")
+    (case,) = _open_lines(db_session, stmt.id)
+    key = ors.rule_key_for(db_session, [case], [line], amount_exact=False)
+    assert key.amount is None
+    db_session.commit()  # end the read transaction before the two writers start
+    learned: dict = {}
+
+    def second():
+        try:
+            learned["s2"] = ors.learn(s2, question="bank_only", button="dismiss", key=key, params={},
+                                      created_from_case_id=case.id).id
+        except Exception as exc:  # surfaced by the assertion below
+            learned["error"] = exc
+
+    with Session(pg_engine) as s1, Session(pg_engine) as s2:
+        learned["s1"] = ors.learn(s1, question="bank_only", button="dismiss", key=key, params={},
+                                  created_from_case_id=case.id).id
+        worker = threading.Thread(target=second)
+        worker.start()
+        worker.join(0.5)
+        assert worker.is_alive()  # ON CONFLICT: s2 waits for s1's uncommitted row
+        s1.commit()
+        worker.join(10)
+        assert not worker.is_alive() and "error" not in learned, learned.get("error")
+        s2.commit()  # then updates the same row
+    assert learned["s1"] == learned["s2"]
+    assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 1
+
+
+def test_learn_refuses_empty_pattern(client, seed, db_session, run):
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "20260903", -10, "withdrawal")], kind="bank")
+    (case,) = _open_lines(db_session, stmt.id)
+    res = _apply(client, [case], "dismiss", learn={"amount_exact": True})
+    assert res.status_code == 422 and "rule_pattern_empty" in res.text
+
+
+def test_learn_is_skipped_when_a_member_is_refused(client, seed, db_session, run):
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -10, "withdrawal"),
+                                                    _line(2, DAY, "店", -10, "withdrawal")], kind="bank")
+    a, b = _open_lines(db_session, stmt.id)
+    stale = type("Ref", (), {"id": a.id, "version": a.version + 5})
+    res = _apply(client, [stale, b], "dismiss", learn={"amount_exact": True})
+    assert res.status_code == 200 and res.json()["rule_id"] is None
+
+
+def test_accept_bank_amount_rule_has_no_amount(client, seed, db_session, run):
+    from app.models import ReconciliationOwnerRule
+    account = _bank(seed, db_session)
+    seed.entry(account, "-879", day=DAY, merchant="卡費")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "卡費", -888, "withdrawal")], kind="bank")
+    (case,) = [c for c in _cases(db_session, stmt.id, "open") if c.kind == "amount_delta"]
+    res = _apply(client, [case], "accept_bank_amount", learn={"amount_exact": True})
+    assert res.status_code == 200, res.text
+    rule = db_session.get(ReconciliationOwnerRule, res.json()["rule_id"])
+    assert rule.action == "accept_bank_amount" and rule.amount is None and rule.params == {}
+
+
+def test_apply_checks_params_up_front_and_judges_newer_members_alone(client, seed, db_session, run):
+    """Task 4 review carry-overs: a missing param is a 422 before anything applies; a member at a newer version is
+    left out of the mixed-question check and refused on its own as stale_case."""
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "他行轉入", 500, "transfer_in"),
+                                                    _line(2, DAY, "店", -20, "withdrawal")], kind="bank")
+    cases = _open_lines(db_session, stmt.id)
+    transfer = next(c for c in cases if (c.context or {}).get("hint") == "needs_peer")
+    shop = next(c for c in cases if c.id != transfer.id)
+    res = _apply(client, [shop], "record", {})
+    assert res.status_code == 422 and "category_id required" in res.text
+    res = _apply(client, [shop], "match_candidate", {"entry_ids": {}})
+    assert res.status_code == 422 and "entry_id required" in res.text
+    newer = type("Ref", (), {"id": transfer.id, "version": transfer.version + 1})
+    res = _apply(client, [newer, shop], "dismiss")
+    assert res.status_code == 200, res.text
+    assert {r["case_id"]: (r["status"], r["code"]) for r in res.json()["results"]} == {
+        transfer.id: ("refused", "stale_case"), shop.id: ("applied", None)}
+
+
+def test_learn_failure_after_the_members_applied_is_a_rule_error(client, seed, db_session, run, monkeypatch):
+    from app.services import owner_rule_service
+    from app.services.errors import CodedValidationError
+
+    def broken(*args, **kwargs):
+        raise CodedValidationError("learn", "not_learnable")
+
+    monkeypatch.setattr(owner_rule_service, "learn", broken)
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -10, "withdrawal")], kind="bank")
+    (case,) = _open_lines(db_session, stmt.id)
+    res = _apply(client, [case], "dismiss", learn={"amount_exact": True})
+    assert res.status_code == 200, res.text
+    assert res.json()["rule_id"] is None and res.json()["rule_error"] == "not_learnable"
+    assert [r["status"] for r in res.json()["results"]] == ["applied"]
+    db_session.expire_all()
+    assert db_session.get(ReconciliationCase, case.id).status == "dismissed"
