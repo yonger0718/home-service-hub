@@ -14,8 +14,9 @@ the tab/bell wiring, the 已處理 list and the settings block.
 
 **Tech Stack:** Python 3.13 / FastAPI / SQLAlchemy / Alembic / pytest (Postgres); Angular 21 signals / Vitest.
 
-**Spec:** `docs/superpowers/specs/2026-10-21-reconciliation-inbox-design.md` (rev 2 + the accept-rule amendment,
-commit 66bb115). The plan argues from the spec; conflicts resolve against it.
+**Spec:** `docs/superpowers/specs/2026-10-21-reconciliation-inbox-design.md` (rev 2 + 66bb115 + 2a5c062). The plan
+argues from the spec; conflicts resolve against it. Plan rev 2 (2026-10-21) folds in the AGENT-196 review (dev-astra):
+Musts 1–6, Shoulds 1–4, the Nit.
 
 ## Global Constraints
 
@@ -34,6 +35,10 @@ commit 66bb115). The plan argues from the spec; conflicts resolve against it.
   `move_account`, `create_refund`, `attach_fee`, `link_installment_plan`, `replace_stand_in`,
   `balance_adjustment_asof`, `unmatch`, `resolve_conflict`).
 - The engine never commits; routes and the rule runner commit per case (spec §5, §6.3).
+- Refusals the batch and the rule runner catch per case: `ValidationError` (incl. `CodedValidationError`),
+  `ConflictError` (incl. `CodedConflictError`), `NotFoundError`, and `edit_lock.EditLockedError` (code
+  `locked_until_cutover` — it is NOT a subclass of the others; `routers/errors.py:18` maps it separately).
+- Postgres is 16 and SQLAlchemy 2.0.49: the owner-rule unique index uses `postgresql_nulls_not_distinct=True`.
 - Audit event names: `rule_applied`, `rule_skipped`, `inbox_answer` (added to `audit.EVENTS`; `record()` refuses
   unknown names).
 - Actor for rules and inbox applies is `owner`; the audit/engine label is the token label for inbox applies and
@@ -53,6 +58,9 @@ commit 66bb115). The plan argues from the spec; conflicts resolve against it.
    (`test_inbox_counts_ignore_limit`).
 5. A proposed case whose proposal was superseded between render and tap: the SPA's "全部套用" loop reports the 409 and
    continues with the remaining proposals → Task 9 (`applies proposals one by one and keeps going after a 409`).
+6. The same apply request sent twice (a retried tap): every member replays (HTTP 200, `replayed`), no second entry,
+   no second rule → Task 4 (`test_apply_resend_replays_every_member`).
+7. Two sessions teaching the same NULL-amount key at once: one row → Task 5 (`test_learn_null_amount_key_is_unique`).
 
 ---
 
@@ -97,8 +105,9 @@ Frontend (`frontend/src/app/components/accounting/`):
   `amount` (MONEY, nullable), `action` (String(32), not null), `params` (JSONB, not null, server_default `'{}'`),
   `created_from_case_id` (FK `reconciliation_case.id`, SET NULL, nullable), `created_at` (tz, server_default NOW),
   `last_applied_at` (tz, nullable), `applied_count` (Integer, not null, server_default 0), `note` (Text, nullable);
-  `UniqueConstraint("account_id", "line_kind", "merchant_pattern", "flow_sign", "amount",
-  name="uq_reconciliation_owner_rule_key")`; `Index("ix_reconciliation_owner_rule_account", "account_id")`.
+  `Index("uq_reconciliation_owner_rule_key", "account_id", "line_kind", "merchant_pattern", "flow_sign", "amount",
+  unique=True, postgresql_nulls_not_distinct=True)` (two NULL amounts collide — the upsert in Task 5 relies on it);
+  `Index("ix_reconciliation_owner_rule_account", "account_id")`.
 - Produces: `audit.EVENTS` ∪ {`"rule_applied"`, `"rule_skipped"`, `"inbox_answer"`}.
 
 - [ ] **Step 1: Write the failing tests**
@@ -141,6 +150,14 @@ def test_rule_key_is_unique_per_account(seed, db_session):
     db_session.rollback()
 
 
+def test_rule_key_treats_null_amounts_as_equal(seed, db_session):
+    account = seed.account("樂天")
+    _rule(seed, db_session, account, amount=None)
+    with pytest.raises(IntegrityError):
+        _rule(seed, db_session, account, amount=None)
+    db_session.rollback()
+
+
 def test_new_audit_events_are_known():
     assert {"rule_applied", "rule_skipped", "inbox_answer"} <= audit.EVENTS
 ```
@@ -152,9 +169,9 @@ Expected: FAIL — `ImportError: cannot import name 'ReconciliationOwnerRule'`.
 
 - [ ] **Step 3: Add the migration**
 
-`a7c3e1d9b2f4_owner_rules.py`: `revision = "a7c3e1d9b2f4"`, `down_revision = "f3b1d2c4a9e7"`; `upgrade()` creates the
-table exactly as the Interfaces block lists it (MONEY = `sa.Numeric(20, 4)`; use `postgresql.JSONB` for `params`);
-`downgrade()` drops it. Copy the docstring header style of `f3b1d2c4a9e7_statement_event_flag.py`.
+`a7c3e1d9b2f4_owner_rules.py`: `revision = "a7c3e1d9b2f4"`, `down_revision = "f3b1d2c4a9e7"` (the only head);
+`upgrade()` creates the table exactly as the Interfaces block lists it (MONEY = `sa.Numeric(20, 4)`; `postgresql.JSONB`
+for `params`; `op.create_index(..., unique=True, postgresql_nulls_not_distinct=True)`); `downgrade()` drops it. Copy the docstring header style of `f3b1d2c4a9e7_statement_event_flag.py`.
 
 - [ ] **Step 4: Add the model and export it; add the three audit events**
 
@@ -165,7 +182,7 @@ comment `# inbox (spec 2026-10-21 §5, §6.3)`.
 - [ ] **Step 5: Run the tests**
 
 Run: `PYTHONPATH=../shared-python-lib .venv/bin/python -m pytest tests/integration/test_owner_rules.py -q`
-Expected: 3 passed. Then run `alembic` consistency: `PYTHONPATH=../shared-python-lib .venv/bin/python -m pytest tests/integration/test_reconciliation_api.py -q` → 12 passed (the test DB upgrades through the new revision).
+Expected: 4 passed. Then run `alembic` consistency: `PYTHONPATH=../shared-python-lib .venv/bin/python -m pytest tests/integration/test_reconciliation_api.py -q` → 12 passed (the test DB upgrades through the new revision).
 
 - [ ] **Step 6: Commit**
 
@@ -325,8 +342,20 @@ git commit -m "feat(reconciliation): inbox question, group-key and button classi
   `coverage_service.claimed_entry_ids(db)` is NOT needed here.
 - Produces:
   - `adjustable(db, case: ReconciliationCase) -> bool` — the case's single candidate entry (`case.entry_id`, else the
-    only `entry_id` in `case.candidates`) exists, has `parent_entry_id is None`, no schedule rows, and
+    only `entry_id` in `case.candidates`) exists, `entry.parent_entry_id is None`, `entry.group_id is None`,
+    `not any(schedule_rows(db, [entry.id]))` (exactly the check `ledger_actions.py:431-435` makes), and
     `protected_reason(db, entry) is None`; False when the candidate is a group or absent.
+  - `default_category_id(db, *, account_id: int, line_kind: str, merchant_pattern: str, flow_sign: str) -> int | None`
+    — the newest `ReconciliationOwnerRule` of the account with the same (line_kind, merchant_pattern, flow_sign),
+    enabled or not, `action == "record"` → `params["category_id"]`; else the newest `LedgerEntry` of the account whose
+    `merchant` or `name` contains `merchant_pattern` (ILIKE) and has a `category_id`; else None. (Spec §4.3/§7.2: the
+    record sheet's default category.)
+  - `search_candidates(db, case_id: int, *, days: int = 14, limit: int = 50) -> list[dict]` — for a case with a line:
+    `LedgerEntry` rows of the statement's account with `posted_date` within ±`days` of the line's `posted_date`, the
+    same flow sign as the line, `kind` in `matching.eligible_kinds(statement.kind, line.line_kind)`,
+    `parent_entry_id is None`, id NOT in `coverage_service.claimed_entry_ids(db)` and not among the case's listed
+    candidates; newest first; shaped like `InboxCandidate` with `reason="search"`, `residual=None`,
+    `date_distance=|entry.posted_date − line.posted_date|`. A case without a line → `[]`.
   - `build_inbox(db, *, statuses: tuple[str, ...] = ("open", "proposed"), account_id: int | None = None, limit: int = 500) -> dict`
     returning the spec §4 `InboxOut` shape. Only `AccountStatement.mode == "live"`. Items sorted by account name, then
     statement `period_end` desc, then a date key (line `posted_date`, else entry `posted_date`, else `date.max`), then case id.
@@ -340,7 +369,8 @@ git commit -m "feat(reconciliation): inbox question, group-key and button classi
     resolved to `{entry_id, date, title, amount, reason, residual (str|None), date_distance (int|None)}` in the
     stored order; `proposal` = first `pending_for_case` row as `{id, action, params, author, rationale}` or None;
     `actions` = `buttons(question, allowed, adjustable=adjustable(db, case))`; `rule_hint` = `{merchant_pattern,
-    line_kind, flow_sign, amount: str}` when the line exists and any `learnable(question, b)` for `b in actions`, else None;
+    line_kind, flow_sign, amount: str, default_category_id: int | None}` when the line exists and any
+    `learnable(question, b)` for `b in actions`, else None;
     `statement` = `{id, period_end}`; `case_version` = `case.version`.
   - Schemas in `app/schemas/inbox.py` (all `model_config = Strict` from `schemas.statements`): `InboxLine`,
     `InboxEntry`, `InboxCandidate`, `InboxProposal`, `InboxRuleHint`, `InboxStatementRef`, `InboxItem`,
@@ -349,6 +379,8 @@ git commit -m "feat(reconciliation): inbox question, group-key and button classi
   - Route: `GET /reconciliation/inbox` (READ), query `status: str = "open,proposed"` (comma list, each ∈
     {open, proposed}, else 422), `account_id: int | None`, `limit: int = Query(500, ge=1, le=1000)`;
     `response_model=InboxOut`; commits after (proposal supersede on read, like `get_case`).
+  - Route: `GET /reconciliation/inbox/cases/{case_id}/search` (READ), query `days: int = Query(14, ge=1, le=60)`;
+    `response_model=list[InboxCandidate]`; 404 for an unknown case.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -412,7 +444,8 @@ def test_bank_only_card_with_buttons_and_rule_hint(client, seed, db_session, run
     assert item["actions"] == ["record", "match_candidate", "dismiss"]
     assert item["line"] == {"id": line.id, "date": "2026-09-03", "merchant": line.merchant_norm,
                             "amount": "-3865.0000", "line_kind": "withdrawal"}
-    assert item["rule_hint"] == {"merchant_pattern": "放款還款", "line_kind": "withdrawal", "flow_sign": "-", "amount": "-3865.0000"}
+    assert item["rule_hint"] == {"merchant_pattern": "放款還款", "line_kind": "withdrawal", "flow_sign": "-",
+                                 "amount": "-3865.0000", "default_category_id": None}
     assert item["group_key"] == f"{account.id}|withdrawal|放款還款|-3865.0000"
     assert item["statement"] == {"id": stmt.id, "period_end": "2026-09-30"}
     assert body["counts"]["ask"] == 1 and body["counts"]["ask_items"] == 1
@@ -468,6 +501,61 @@ def test_inbox_counts_ignore_limit(client, seed, db_session, run):
     assert len(_items(body)) == 2 and body["counts"]["ask_items"] == 4
 
 
+def test_amount_differs_hides_accept_on_a_group_member_and_a_scheduled_entry(client, seed, db_session, run):
+    """Review Should 2: `adjustable` mirrors ledger_actions — a split member (group_id) or a scheduled entry gets no button."""
+    from app.models import EntryGroup
+    account = _bank(seed, db_session)
+    group = EntryGroup(account_id=account.id)  # adapt to the group model's required columns (see tests/helpers or test_reconciliation_actions_ledger._fee_children)
+    db_session.add(group)
+    db_session.flush()
+    seed.entry(account, "-879", day=DAY, merchant="卡費", group_id=group.id)
+    db_session.commit()
+    _submit(db_session, run, account, [_line(1, DAY, "卡費", 888, "withdrawal")], kind="bank")
+    items = [i for i in _items(_inbox(client)) if i["question"] == "amount_differs"]
+    assert items and "accept_bank_amount" not in items[0]["actions"]
+
+
+def test_default_category_comes_from_a_rule_or_a_past_entry(client, seed, db_session, run):
+    from app.models import ReconciliationOwnerRule
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    seed.entry(account, "-100", day=date(2026, 8, 1), merchant="放款還款", category_id=food.id)
+    db_session.commit()
+    _submit(db_session, run, account, [_line(1, DAY, "放款還款 0903", 3865, "withdrawal")], kind="bank")
+    (item,) = _items(_inbox(client), "bank_only")
+    assert item["rule_hint"]["default_category_id"] == food.id
+    loan = seed.category("信貸")
+    db_session.add(ReconciliationOwnerRule(account_id=account.id, line_kind="withdrawal", merchant_pattern="放款還款",
+                                           flow_sign="-", amount=None, action="record", params={"category_id": loan.id},
+                                           enabled=False))
+    db_session.commit()
+    (item,) = _items(_inbox(client), "bank_only")
+    assert item["rule_hint"]["default_category_id"] == loan.id  # a rule (even disabled) beats a past entry
+
+
+def test_search_candidates_excludes_claimed_and_listed_entries(client, seed, db_session, run):
+    from app.models import StatementCoverage
+    account = _bank(seed, db_session)
+    near = seed.entry(account, "-3000", day=date(2026, 9, 10), merchant="近")
+    far = seed.entry(account, "-3000", day=date(2026, 10, 30), merchant="遠")
+    plus = seed.entry(account, "3000", day=DAY, merchant="收入")
+    claimed = seed.entry(account, "-3000", day=DAY, merchant="已對")
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, account, [_line(1, DAY, "店", 3865, "withdrawal")], kind="bank")
+    (case,) = _open_lines(db_session, stmt.id)
+    other, _, _ = _submit(db_session, run, seed.account("別戶", statement_live_from=date(2026, 9, 1)),
+                          [_line(1, DAY, "已對", 3000, "withdrawal")], kind="bank")  # claims `claimed` if the matcher pairs it
+    db_session.commit()
+    if claimed.id not in {r.entry_id for r in db_session.query(StatementCoverage).filter_by(status="active")}:
+        pytest.skip("fixture did not claim the entry; mark coverage by hand (see coverage_service tests) and re-run")
+    res = client.get(f"/reconciliation/inbox/cases/{case.id}/search", headers=S)
+    assert res.status_code == 200
+    ids = [c["entry_id"] for c in res.json()]
+    assert near.id in ids and far.id not in ids and plus.id not in ids and claimed.id not in ids
+    assert all(c["reason"] == "search" for c in res.json())
+    assert client.get("/reconciliation/inbox/cases/999999/search", headers=S).status_code == 404
+
+
 def test_status_filter_and_scope(client, seed, db_session, run):
     assert client.get("/reconciliation/inbox", headers={"Authorization": "Bearer nope"}).status_code == 401
     assert client.get("/reconciliation/inbox", headers=S, params={"status": "weird"}).status_code == 422
@@ -485,7 +573,7 @@ statement whose ledger is empty may also open a `balance_gap` case — tests fil
 Run: `PYTHONPATH=../shared-python-lib .venv/bin/python -m pytest tests/integration/test_inbox_api.py -q`
 Expected: FAIL — 404 on `/reconciliation/inbox`.
 
-- [ ] **Step 3: Implement `adjustable`, `build_inbox`, the schemas and the route**
+- [ ] **Step 3: Implement `adjustable`, `default_category_id`, `search_candidates`, `build_inbox`, the schemas and the two routes**
 
 Query shape: one `select(ReconciliationCase, AccountStatement, Account)` joined and filtered, lines by
 `StatementLine.id.in_`, entries by id (case entries + candidate entries) with categories in one `select(Category)`;
@@ -494,7 +582,8 @@ pending proposals via `proposal_service.pending_for_case` only for `status == "p
 
 - [ ] **Step 4: Run to verify pass**
 
-Expected: 7 passed. Also run `tests/unit/test_inbox_service.py` (unchanged, passes).
+Expected: 10 passed (the two fixture-sensitive tests may need the noted adjustments; never weaken the assertion).
+Also run `tests/unit/test_inbox_service.py` (unchanged, passes).
 
 - [ ] **Step 5: Commit**
 
@@ -509,6 +598,9 @@ git commit -m "feat(reconciliation): GET /reconciliation/inbox read model"
 
 **Files:**
 - Modify: `services/accounting-service/app/services/inbox_service.py` (`translate`, `expect_version`, `apply_batch`)
+- Modify: `services/accounting-service/app/services/reconciliation_actions/engine.py` (two public wrappers:
+  `key_for(case_id: int, version: int, action: str, params: dict) -> str` = `idempotency_key(case_id, version, action, canonical_params(_parse(_lookup(action), params)))`,
+  `find_by_key(db, key: str) -> ReconciliationAction | None` = `_by_key`)
 - Modify: `services/accounting-service/app/schemas/inbox.py` (apply schemas)
 - Modify: `services/accounting-service/app/routers/reconciliation.py` (route)
 - Test: `services/accounting-service/tests/integration/test_inbox_api.py` (append)
@@ -520,7 +612,7 @@ git commit -m "feat(reconciliation): GET /reconciliation/inbox read model"
   - Schemas: `InboxCaseRef {case_id: Int32, case_version: Int32}`; `InboxLearnIn {amount_exact: bool = True}`;
     `InboxApplyIn {cases: list[InboxCaseRef] (min 1, max 50), action: Literal["record","match_candidate","accept_bank_amount","defer","dismiss","anchor"], params: dict = {}, answer: str (min 1, max 80), learn: InboxLearnIn | None = None}`;
     `InboxApplyResult {case_id: int, status: Literal["applied","replayed","refused"], action_id: int | None, code: str | None}`;
-    `InboxApplyOut {results: list[InboxApplyResult], rule_id: int | None}`.
+    `InboxApplyOut {results: list[InboxApplyResult], rule_id: int | None, rule_error: str | None}`.
   - `translate(button: str, params: dict, case: ReconciliationCase, line: StatementLine | None, answer: str) -> tuple[str, dict]`:
     `record` → `("create_entry", {"kind": "expense" if line.flow_amount < 0 else "income", "category_id": params["category_id"], "name": params.get("name"), "project_id": params.get("project_id")})` (None values dropped);
     `match_candidate` → `("match", {"line_id": case.line_id, "entry_id": params["entry_ids"][str(case.id)] if "entry_ids" in params else params["entry_id"]})`;
@@ -528,16 +620,35 @@ git commit -m "feat(reconciliation): GET /reconciliation/inbox read model"
     `defer` → `("defer_next_period", {"entry_id": case.entry_id})`; `dismiss` → `("dismiss", {"note": f"inbox: {answer}"})`;
     `anchor` → `("anchor_opening", {})`. Missing params → `ValidationError("params", "<name> required")`.
   - `expect_version(expected: int) -> Callable[[Context], None]` — raises `CodedConflictError("stale_case", f"case {ctx.case.id} is at version {ctx.case.version}")` when `ctx.case.version != expected`.
-  - `apply_batch(db, *, body: InboxApplyIn, label: str, request_id: str | None) -> dict`:
-    1. Load the cases (404 `NotFoundError` if any is missing); compute each case's `question` with `classify`; all
-       must be equal, else `ValidationError("cases", "mixed questions")`; `body.action` must be in
-       `buttons(question, allowed(case), adjustable=…)` for every case, else `ValidationError("action", "not offered")`.
-    2. If `body.learn`: validate the rule key up front via `owner_rule_service.rule_key_for(lines, account_id)`
-       (Task 5; raises `rule_pattern_mismatch` / `rule_pattern_empty` / `not_learnable`) — BEFORE any apply.
-       (Until Task 5 lands, `learn` is accepted and `rule_id` is None; Task 5 wires it.)
-    3. For each case in request order: `with db.begin_nested()`-free pattern — call `engine.apply_action(..., precheck=expect_version(ref.case_version))`
-       inside `try`; on success `audit.record(db, event="inbox_answer", actor=label, statement_id=case.statement_id, case_id=case.id, action_id=row.id, request_id=request_id, detail={"answer": body.answer, "button": body.action})` then `db.commit()` → result `applied`/`replayed`; on `(ValidationError, ConflictError, NotFoundError)` → `db.rollback()`, result `refused` with `code = getattr(exc, "code", None) or (exc.message.split(":")[0] if isinstance(exc, ValidationError) else str(exc).split(":")[0])`.
-    4. `rule_id` = Task 5's `learn(...)` id when `body.learn` and every result is `applied`/`replayed`, else None.
+  - `apply_batch(db, *, body: InboxApplyIn, label: str, request_id: str | None) -> dict` (review Must 4: the
+    engine's replay and per-member isolation stay intact — nothing about a single member fails the batch):
+    1. Load the cases (404 `NotFoundError` if any is missing; duplicates in `cases` → 422). Structural checks only:
+       the `question` (via `classify`) of every case that is still `open`/`proposed` must be the same, else
+       `ValidationError("cases", "mixed questions")` (closed cases are judged per member in step 3).
+    2. If `body.learn`: `owner_rule_service.rule_key_for(db, cases, lines, amount_exact=body.learn.amount_exact)`
+       (Task 5) BEFORE any apply — it raises `rule_pattern_mismatch` (members differ in account, line_kind, pattern,
+       sign, or amount when `amount_exact`), `rule_pattern_empty`, `not_learnable`; a 422 here applies nothing.
+    3. For each case in request order, inside `try`:
+       a. `key = engine.idempotency_key(case.id, ref.case_version, action, engine.canonical_params(parsed))` where
+          `(action, params)` come from `translate(...)` and `parsed = engine._parse(engine._lookup(action), params)`
+          (expose a small public `engine.key_for(case_id, version, action, params) -> str` wrapper instead of calling
+          the underscore helpers); if `engine._by_key(db, key)` (likewise wrapped as `engine.find_by_key`) returns an
+          `applied` row → result `replayed` with that `action_id`, continue (no audit, no re-apply: a retried tap).
+       b. `body.action in buttons(question_now, allowed(case), adjustable=…)` else refused `not_offered`
+          (a closed case yields `allowed == []` → the engine's own `case_closed` would follow; report `case_closed`
+          when `case.status not in OPEN_STATUSES`, `not_offered` otherwise).
+       c. `engine.apply_action(db, case_id=case.id, action=action, params=params, actor="owner", label=label,
+          request_id=request_id, precheck=expect_version(ref.case_version))`; on success
+          `audit.record(db, event="inbox_answer", actor=label, statement_id=case.statement_id, case_id=case.id,
+          action_id=row.id, request_id=request_id, detail={"answer": body.answer, "button": body.action})`,
+          `db.commit()`, result `applied` (or `replayed` when the engine replayed).
+       d. `except (ValidationError, ConflictError, NotFoundError, EditLockedError)`: `db.rollback()`, result
+          `refused` with `code = getattr(exc, "code", None) or str(exc).split(":")[0]` (`locked_until_cutover` for
+          the lock error).
+    4. When `body.learn` and every result is `applied` or `replayed`: `rule_id = owner_rule_service.learn(...).id`
+       and `db.commit()`; if `learn` raises (`IntegrityError` race, `ValidationError`) → `db.rollback()`, `rule_id`
+       None and `rule_error = <code or exception class name>` — the already committed actions stand and the HTTP
+       status stays 200. Otherwise `rule_id` None, `rule_error` None.
   - Route `POST /reconciliation/inbox/apply` (WRITE), `response_model=InboxApplyOut`, status 200, label `_label(request) or "owner"`.
 
 - [ ] **Step 1: Write the failing tests (append to `test_inbox_api.py`)**
@@ -606,6 +717,39 @@ def test_apply_rejects_mixed_questions_and_unoffered_buttons(client, seed, db_se
     assert _apply(client, [transfer], "record", {"category_id": 1}).status_code == 422
 
 
+def test_apply_resend_replays_every_member(client, seed, db_session, run):
+    from sqlalchemy import func, select
+    from app.models import LedgerEntry, ReconciliationOwnerRule
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", 10, "withdrawal"),
+                                                    _line(2, DAY, "店", 10, "withdrawal")], kind="bank")
+    cases = _open_lines(db_session, stmt.id)
+    first = _apply(client, cases, "record", {"category_id": food.id}, answer="記為支出 飲食", learn={"amount_exact": True})
+    again = _apply(client, cases, "record", {"category_id": food.id}, answer="記為支出 飲食", learn={"amount_exact": True})
+    assert first.status_code == again.status_code == 200
+    assert [r["status"] for r in again.json()["results"]] == ["replayed", "replayed"]
+    assert [r["action_id"] for r in again.json()["results"]] == [r["action_id"] for r in first.json()["results"]]
+    assert again.json()["rule_id"] == first.json()["rule_id"] and again.json()["rule_error"] is None
+    assert db_session.execute(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)).scalar_one() == 2
+    assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 1
+
+
+def test_apply_closed_member_is_refused_while_the_open_one_applies(client, seed, db_session, run):
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "甲", 10, "withdrawal"),
+                                                    _line(2, DAY, "乙", 20, "withdrawal")], kind="bank")
+    a, b = sorted(_open_lines(db_session, stmt.id), key=lambda c: c.line_id)
+    closed = client.post(f"/reconciliation/cases/{a.id}/dismiss", headers=S, json={"note": "elsewhere"})
+    assert closed.status_code == 201
+    res = _apply(client, [a, b], "dismiss", answer="忽略")  # a's version as rendered before the other session closed it
+    assert res.status_code == 200
+    results = {r["case_id"]: r for r in res.json()["results"]}
+    assert results[a.id]["status"] == "refused" and results[a.id]["code"] in ("case_closed", "stale_case")
+    assert results[b.id]["status"] == "applied"
+
+
 def test_apply_needs_write_scope(client, seed, db_session, run):
     account = _bank(seed, db_session)
     stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", 20, "withdrawal")], kind="bank")
@@ -622,7 +766,7 @@ Expected: FAIL — 404.
 
 - [ ] **Step 4: Run the whole file**
 
-Expected: 12 passed.
+Expected: 17 passed.
 
 - [ ] **Step 5: Commit**
 
@@ -645,21 +789,25 @@ git commit -m "feat(reconciliation): POST /reconciliation/inbox/apply batch with
 **Interfaces:**
 - Consumes: Task 1 model; Task 2 `pattern`, `flow_sign`, `learnable`; Task 4 `apply_batch`.
 - Produces:
-  - `RuleKey = tuple[str, str, str]` (line_kind, merchant_pattern, flow_sign).
-  - `rule_key_for(lines: list[StatementLine]) -> RuleKey` — every line must give the same key else
-    `CodedValidationError("learn", "rule_pattern_mismatch")`; empty pattern → `CodedValidationError("learn", "rule_pattern_empty")`.
-  - `learn(db, *, question: str, button: str, account_id: int, lines: list[StatementLine], params: dict, amount_exact: bool, created_from_case_id: int, label: str) -> ReconciliationOwnerRule`:
-    `learnable(question, button)` else `CodedValidationError("learn", "not_learnable")`; `action = button`;
-    `amount = lines[0].flow_amount if (amount_exact and button != "accept_bank_amount") else None`; stored `params`
-    = `{category_id, name?, project_id?}` for `record`, `{}` otherwise; upsert on the unique key using
-    `amount IS NOT DISTINCT FROM` (an existing row gets `params`, `enabled=True`, `created_from_case_id` updated);
-    audit none (the rule row is its own record). Flushes, does not commit.
+  - `@dataclass(frozen=True) RuleKey: account_id: int; line_kind: str; merchant_pattern: str; flow_sign: str; amount: Decimal | None`.
+  - `rule_key_for(db, cases: list[ReconciliationCase], lines: list[StatementLine], *, amount_exact: bool, button: str = "record") -> RuleKey`
+    — `account_id` comes from EACH case's `AccountStatement.account_id` (never from the caller); every member must
+    give the same (account_id, line_kind, pattern, flow_sign) and, when `amount_exact and button != "accept_bank_amount"`,
+    the same `flow_amount`, else `CodedValidationError("learn", "rule_pattern_mismatch")`; empty pattern →
+    `CodedValidationError("learn", "rule_pattern_empty")`; `amount` = that shared amount or None.
+  - `learn(db, *, question: str, button: str, key: RuleKey, params: dict, created_from_case_id: int) -> ReconciliationOwnerRule`:
+    `learnable(question, button)` else `CodedValidationError("learn", "not_learnable")`; stored `params` =
+    `{category_id, name?, project_id?}` for `record`, `{}` otherwise; ONE statement:
+    `postgresql.insert(ReconciliationOwnerRule).values(...).on_conflict_do_update(index_elements=[account_id, line_kind, merchant_pattern, flow_sign, amount], set_={"action": button, "params": params, "enabled": True, "created_from_case_id": ...}).returning(id)`
+    — the NULLS-NOT-DISTINCT unique index (Task 1) makes two concurrent NULL-amount inserts resolve to one row, and
+    re-teaching the same key with another answer REPLACES `action` and `params` (review Must 3). Flushes, no commit.
   - `list_rules(db) -> list[ReconciliationOwnerRule]` (by account_id, id); `delete_rule(db, rule_id)` (404);
     `set_enabled(db, rule_id, enabled: bool) -> ReconciliationOwnerRule` (404).
   - Schemas: `OwnerRuleOut {id, account_id, enabled, line_kind, merchant_pattern, flow_sign, amount: Decimal | None, action, params, created_from_case_id, created_at, last_applied_at, applied_count, note}` (`from_attributes=True`, extra forbid); `OwnerRulePatchIn {enabled: bool}` (Strict).
   - Routes: `GET /reconciliation/owner-rules` (READ) → `list[OwnerRuleOut]`; `PATCH /reconciliation/owner-rules/{rule_id}` (WRITE) body `OwnerRulePatchIn` → `OwnerRuleOut`; `DELETE /reconciliation/owner-rules/{rule_id}` (WRITE) → 204.
-  - `apply_batch` change: step 2 calls `rule_key_for` + checks `learnable`; step 4 calls `learn` with
-    `amount_exact=body.learn.amount_exact` and commits; the returned `rule_id` is the row id.
+  - `apply_batch` change: step 2 calls `rule_key_for(db, cases, lines, amount_exact=body.learn.amount_exact, button=body.action)`
+    and checks `learnable`; step 4 calls `learn(db, question=…, button=body.action, key=key, params=body.params, created_from_case_id=cases[0].id)`
+    and commits; `rule_id` is the row id; a failure there → `rule_error` (Task 4 step 4).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -715,6 +863,65 @@ def test_learn_refuses_mismatched_members_before_applying(client, seed, db_sessi
     assert res.status_code == 422 and "rule_pattern_mismatch" in res.text
     db_session.expire_all()
     assert all(db_session.get(ReconciliationCase, c.id).status == "open" for c in cases)
+
+
+def test_learn_refuses_cross_account_and_cross_amount_members(client, seed, db_session, run):
+    other = _bank(seed, db_session, "別戶")
+    account = _bank(seed, db_session)
+    s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
+    s2, _, _ = _submit(db_session, run, other, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
+    (a,) = _open_lines(db_session, s1.id)
+    (b,) = _open_lines(db_session, s2.id)
+    res = _apply(client, [a, b], "dismiss", learn={"amount_exact": True})
+    assert res.status_code == 422 and "rule_pattern_mismatch" in res.text
+    s3, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", 99, "withdrawal")], kind="bank",
+                       period=__import__("tests.integration.statement_fixtures", fromlist=["OCT"]).OCT)
+    (c,) = _open_lines(db_session, s3.id)
+    res = _apply(client, [a, c], "dismiss", learn={"amount_exact": True})
+    assert res.status_code == 422 and "rule_pattern_mismatch" in res.text
+    assert _apply(client, [a, c], "dismiss", learn={"amount_exact": False}).status_code == 200  # same pattern, amounts may differ
+    db_session.expire_all()
+    assert db_session.get(ReconciliationCase, b.id).status == "open"
+
+
+def test_reteaching_replaces_the_action(client, seed, db_session, run):
+    from app.models import ReconciliationOwnerRule
+    from app.services import owner_rule_service as ors
+    from tests.integration.statement_fixtures import OCT
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    db_session.commit()
+    s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
+    (c1,) = _open_lines(db_session, s1.id)
+    rid = _apply(client, [c1], "dismiss", learn={"amount_exact": False}).json()["rule_id"]
+    s2, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", 10, "withdrawal")], kind="bank", period=OCT)
+    ors.run_rules_safe(db_session, s2.id)  # Task 6; until it lands, dismiss c2 by hand through the route instead
+    (c2,) = _cases(db_session, s2.id, "dismissed")
+    c2.status, c2.version = "open", c2.version + 1  # reopen by hand to re-teach
+    db_session.commit()
+    rid2 = _apply(client, [c2], "record", {"category_id": food.id}, learn={"amount_exact": False}).json()["rule_id"]
+    assert rid2 == rid
+    db_session.expire_all()
+    rule = db_session.get(ReconciliationOwnerRule, rid)
+    assert rule.action == "record" and rule.params == {"category_id": food.id}
+
+
+def test_learn_null_amount_key_is_unique(client, seed, db_session, run, pg_engine):
+    """Review Must 2: two sessions learning the same NULL-amount key end with one row."""
+    from sqlalchemy import func, select
+    from sqlalchemy.orm import Session
+    from app.models import ReconciliationOwnerRule
+    from app.services import owner_rule_service as ors
+    account = _bank(seed, db_session)
+    stmt, (line,), _ = _submit(db_session, run, account, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
+    (case,) = _open_lines(db_session, stmt.id)
+    key = ors.rule_key_for(db_session, [case], [line], amount_exact=False)
+    with Session(pg_engine) as s1, Session(pg_engine) as s2:
+        ors.learn(s1, question="bank_only", button="dismiss", key=key, params={}, created_from_case_id=case.id)
+        ors.learn(s2, question="bank_only", button="dismiss", key=key, params={}, created_from_case_id=case.id)
+        s1.commit()
+        s2.commit()  # ON CONFLICT: waits for s1, then updates the same row
+    assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 1
 
 
 def test_learn_refuses_empty_pattern(client, seed, db_session, run):
@@ -776,7 +983,9 @@ Run both files. Expected: the new tests fail (no module / 404).
 
 - [ ] **Step 4: Run both files**
 
-Expected: all passed (`test_inbox_api.py` 18, `test_owner_rules.py` 4).
+Expected: all passed (`test_inbox_api.py` 26 — `test_reteaching_replaces_the_action` uses Task 6's runner; until
+Task 6 lands, dismiss the second case through `/reconciliation/cases/{id}/dismiss` instead and note it;
+`test_owner_rules.py` 5).
 
 - [ ] **Step 5: Commit**
 
@@ -815,8 +1024,9 @@ git commit -m "feat(reconciliation): learn owner rules from inbox answers; rule 
     rule never redoes what 撤銷 undid; any other rule may); translate with
     `inbox_service.translate(rule.action, rule.params, case, line, answer=f"rule:{rule.id}")` and apply; on success
     `rule.applied_count += 1`, `rule.last_applied_at = now`, audit `rule_applied {rule_id, case_id, action}` with
-    `actor=f"rule:{rule.id}"`, `db.commit()`; on `(ValidationError, ConflictError, NotFoundError)`: `db.rollback()`,
-    audit `rule_skipped {rule_id, case_id, code}` and `db.commit()`; continue.
+    `actor=f"rule:{rule.id}"`, `db.commit()`; on `(ValidationError, ConflictError, NotFoundError, EditLockedError)`:
+    `db.rollback()`, audit `rule_skipped {rule_id, case_id, code}` (`locked_until_cutover` for the lock) and
+    `db.commit()`; continue.
   - `run_rules_safe(db, statement_id: int, *, run_id: int | None = None) -> RuleRunResult` — mirrors
     `policy_service.run_policy_safe`: any other exception → log, rollback, audit `rule_skipped {code: <class name>}`
     with `rule_id: None`, never raises.
@@ -974,6 +1184,65 @@ def test_rule_accept_bank_amount_rewrites_within_near(seed, db_session, run):
     assert db_session.get(LedgerEntry, entry.id).amount == Decimal("-888.0000")
 
 
+def test_rules_skip_settlement_proposed_and_other_accounts(seed, db_session, run):
+    from app.models import ReconciliationProposal
+    account = _bank(seed, db_session)
+    other = _bank(seed, db_session, "別戶")
+    food = seed.category("飲食")
+    db_session.commit()
+    _rule(seed, db_session, account, line_kind="withdrawal", merchant_pattern="交割股款", amount=None, params={"category_id": food.id})
+    _rule(seed, db_session, account, line_kind="withdrawal", merchant_pattern="店", amount=None, params={"category_id": food.id})
+    stmt, lines, _ = _submit(db_session, run, account, [_line(1, DAY, "交割股款 1234", 9000, "withdrawal"),
+                                                        _line(2, DAY, "店", 10, "withdrawal")], kind="bank")
+    shop = next(c for c in _open_lines(db_session, stmt.id) if c.line_id == lines[1].id)
+    db_session.add(ReconciliationProposal(case_id=shop.id, case_version=shop.version, event_id=shop.event_id,
+                                          action="dismiss", params={"note": "x"}, rationale="r", confidence=Decimal("0.5"),
+                                          author="hermes"))
+    shop.status = "proposed"
+    db_session.commit()
+    assert ors.run_rules_safe(db_session, stmt.id).applied == []  # settlement line + proposed case: untouched
+    o, _, _ = _submit(db_session, run, other, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
+    assert ors.run_rules_safe(db_session, o.id).applied == []  # the rule belongs to another account
+
+
+def test_rule_accept_respects_the_cutover_lock(seed, db_session, run):
+    account = _bank(seed, db_session)
+    seed.entry(account, "-879", day=DAY, merchant="卡費", source="moze")  # ACCOUNTING_IMPORT_LOCKED unset (conftest)
+    db_session.commit()
+    _rule(seed, db_session, account, line_kind="withdrawal", merchant_pattern="卡費", amount=None, action="accept_bank_amount", params={})
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "卡費", 888, "withdrawal")], kind="bank")
+    result = ors.run_rules_safe(db_session, stmt.id)
+    assert result.applied == [] and [code for _, code in result.skipped] == ["locked_until_cutover"]
+
+
+def test_rules_run_before_the_policy_at_every_hook_site(client, seed, db_session, run, monkeypatch):
+    """Review Should 1: the order `run_rules_safe` → `run_policy_safe` at the submit, manual, reconcile and sweep routes."""
+    from app import auth
+    from app.services import policy_service
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(ors, "run_rules_safe", lambda db, sid, run_id=None: calls.append(("rules", sid)) or ors.RuleRunResult())
+    monkeypatch.setattr(policy_service, "run_policy_safe", lambda db, sid, run_id=None: calls.append(("policy", sid)) or policy_service.PolicyResult())
+    monkeypatch.setenv(auth.TOKENS_ENV, "spa:spa-token,worker:worker-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "spa=legacy; worker=ingest")
+    monkeypatch.setenv(auth.FEATURE_ENV, "true")
+    S, W = {"Authorization": "Bearer spa-token"}, {"Authorization": "Bearer worker-token"}
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
+    # reconcile route
+    assert client.post(f"/accounts/{account.id}/statements/{stmt.id}/reconcile", headers=S).status_code == 200
+    assert calls[-2:] == [("rules", stmt.id), ("policy", stmt.id)]
+    # sweep route (the worker lease): build the body the way test_reconciliation_policy.py / test_reconciliation_api.py do
+    r, token = run
+    from tests.helpers import set_dirty
+    set_dirty(db_session, stmt.id)
+    res = client.post("/reconciliation/sweep", headers=W, json={"run_id": r.id, "lease_token": token})
+    assert res.status_code == 200, res.text
+    assert ("rules", stmt.id) in calls and calls.index(("rules", stmt.id), 2) < calls.index(("policy", stmt.id), 2)
+    # manual statement route: the first ManualStatementIn body found in tests/integration (grep "statements\"" json=) — rules before policy for the new statement id
+    # submit route (`POST /statements/revisions`, worker token): same assertion on the new statement id
+    # (both bodies exist in the suite; copy them, do not invent fields)
+
+
 def test_rules_run_before_the_policy_at_the_reconcile_route(client, seed, db_session, run, monkeypatch):
     from app import auth
     monkeypatch.setenv(auth.TOKENS_ENV, "spa:spa-token")
@@ -999,7 +1268,8 @@ Run both files. Expected: unit FAIL (no `match_rule`), integration FAIL (no `run
 
 - [ ] **Step 5: Run**
 
-Run `tests/unit/test_owner_rule_service.py`, `tests/integration/test_owner_rules.py`, then
+Run `tests/unit/test_owner_rule_service.py`, `tests/integration/test_owner_rules.py` (the hook-site test must cover
+all four routes — finish the manual and submit sections with real request bodies copied from the suite), then
 `tests/integration/test_reconciliation_policy.py` (unchanged behaviour: all pass; the hook runs with zero rules).
 
 - [ ] **Step 6: Commit**
@@ -1025,7 +1295,8 @@ git commit -m "feat(reconciliation): apply owner rules before the policy at ever
   `ReconciliationAudit` where `action_id IN ids` and `event IN ("action_applied", "action_replayed", "inbox_answer")`:
   label = the `actor` of the `action_applied` row (fallback `action_replayed`), answer = `detail["answer"]` of the
   `inbox_answer` row. `list_actions` route fills both; the single-action responses (`apply_action`, `revert`,
-  `apply_proposal`) leave them None.
+  `apply_proposal`) leave them None. `_action_out` (`routers/reconciliation.py:29-31`) reads every `ActionOut`
+  field off the ORM row — exclude `label`, `answer` and `replayed` from that getattr loop.
 
 - [ ] **Step 1: Write the failing test (append to `test_inbox_api.py`)**
 
@@ -1084,13 +1355,15 @@ Expected: 0 failed. Record the counts in the task report.
   `InboxQuestion` union, `InboxButton = 'record' | 'match_candidate' | 'accept_bank_amount' | 'defer' | 'dismiss' | 'anchor' | 'apply_proposal' | 'reject_proposal'`,
   `InboxLine {id, date, merchant, amount, line_kind}`, `InboxEntry {id, date, title, amount, account_id}`,
   `InboxCandidate {entry_id, date, title, amount, reason, residual: string | null, date_distance: number | null}`,
-  `InboxProposal {id, action, params, author, rationale}`, `InboxRuleHint {merchant_pattern, line_kind, flow_sign, amount}`,
+  `InboxProposal {id, action, params, author, rationale}`, `InboxRuleHint {merchant_pattern, line_kind, flow_sign, amount, default_category_id: number | null}`,
   `InboxItem {case_id, case_version, kind, status, question, folded, group_key: string | null, statement: {id, period_end}, line, entry, candidates, proposal, actions: InboxButton[], rule_hint}`,
   `InboxAccount {id, name, currency, is_credit, items}`, `InboxCounts`, `InboxOut`,
   `InboxApplyBody {cases: {case_id, case_version}[], action, params, answer, learn?: {amount_exact: boolean}}`,
-  `InboxApplyResult`, `InboxApplyOut`, `OwnerRule`, `ReconciliationAction {id, case_id, action, actor, status, label: string | null, answer: string | null, created_at, reverted_by_action_id: number | null}`.
+  `InboxApplyResult`, `InboxApplyOut {results, rule_id, rule_error}`, `OwnerRule`, `ReconciliationAction {id, case_id, action, actor, status, label: string | null, answer: string | null, created_at, reverted_by_action_id: number | null}`,
+  `InboxLearn = { amount_exact: boolean } | null`.
 - Produces (`inbox.service.ts`, `@Injectable({ providedIn: 'root' })`, base `/api/accounting`):
-  `get(opts?: { accountId?: number; limit?: number }): Observable<InboxOut>`; `apply(body: InboxApplyBody): Observable<InboxApplyOut>`;
+  `get(opts?: { accountId?: number; limit?: number }): Observable<InboxOut>`; `search(caseId: number, days = 14): Observable<InboxCandidate[]>`
+  (`GET …/reconciliation/inbox/cases/{id}/search?days=`); `apply(body: InboxApplyBody): Observable<InboxApplyOut>`;
   `applyProposal(id: number)`, `rejectProposal(id: number)`; `actions(limit = 50): Observable<ReconciliationAction[]>`;
   `revert(actionId: number)`; `rules(): Observable<OwnerRule[]>`; `patchRule(id: number, enabled: boolean)`;
   `deleteRule(id: number)`; `readonly changed` signal bumped (`tap`) after every write, like `StatementsService.changed`.
@@ -1105,14 +1378,23 @@ Expected: 0 failed. Record the counts in the task report.
     other `需要在 API 處理（案件 #${case_id}）`; balance_gap `期初差額`; settlement `交割款，等證券連動`; proposed `系統有提議：${proposal.action}`.
   - `cardTitle(card: InboxCard, currency: string): string` — `${slashDate(line.date)} ${line.merchant} ${formatMoney(line.amount, currency, {sign: true})}` for line cards, `${slashDate(entry.date)} ${entry.title} ${formatMoney(entry.amount, …)}` for entry cards; merged cards append ` ×${n} 筆`.
   - `buttonLabel(button: InboxButton, item: InboxItem, currency: string): string` — `record` → `記為支出…`/`記為收入…` by line sign; `match_candidate` → `對到 ${M/D} 那行` when `question === 'date_differs'` else `已記在別處，對到…`; `accept_bank_amount` → `改成銀行的 ${formatMoney(line.amount, currency, {sign: true})}`; `defer` → `等下期`; `dismiss` → `不是同一筆` for amount_differs/date_differs/ambiguous else `忽略`; `anchor` → `對齊銀行期初`; `apply_proposal` → `套用`; `reject_proposal` → `退回`.
-  - `learnLabel(hint: InboxRuleHint, button: InboxButton): string` — `以後「${merchant_pattern}」都這樣`.
-  - `inboxErrorMessage(code: string | null): string` — `stale_case`/`candidate_changed` → `對象已變，重新整理`; `not_conserved` → `金額對不上，不能直接對`; `protected` → `這筆是轉帳／交割，不能改金額`; `owner_may_record` → `你已經記過了`; `historical_statement` → `舊對帳單不能改`; else `沒成功：${code ?? '未知錯誤'}`.
-  - `errorCode(err: unknown): string | null` — the `<code>` prefix of an `HttpErrorResponse.error.detail` string (409) or `error.detail[0].msg` (422).
+  - `learnLabel(hint: InboxRuleHint, button: InboxButton): string` — `以後「${merchant_pattern}」都這樣`;
+    `AMOUNT_ANY_LABEL = '金額不同也算'` (the sub-option of a single-item record/dismiss learn, spec §6.1).
+  - `recordAnswer(kind: 'expense' | 'income', categoryName: string): string` — `記為支出 ${name}` / `記為收入 ${name}`;
+    `matchAnswer(title: string): string` — `對到 ${title}`; `lineKind(item): 'expense' | 'income'` by the line sign.
+  - `INBOX_ERRORS: Record<string, string>` — `stale_case`/`candidate_changed` → `對象已變，重新整理`; `case_closed` → `已經處理過了`;
+    `not_offered` → `這個答案已不適用`; `not_conserved` → `金額對不上，不能直接對`; `protected` → `這筆是轉帳／交割，不能改金額`;
+    `owner_may_record` → `你已經記過了`; `historical_statement` → `舊對帳單不能改`; `locked_until_cutover` → `cutover 後才能改`;
+    `rule_pattern_mismatch` → `這幾筆描述不同，不能一起學`; `rule_pattern_empty` → `描述只有數字，不能學`; `not_learnable` → `這種答案不能學`.
+  - `inboxErrorMessage(codeOrErr: string | null | unknown): string` — a string code → `INBOX_ERRORS[code] ?? '沒成功：' + code`;
+    an `HttpErrorResponse` → `apiErrorText` + `splitApiCode` from `statements/statement-view.ts:270-292` (reuse, do not
+    copy), then the same map, falling back to `actionErrorMessage(err)` (review Should 4).
 
 - [ ] **Step 1: Write the failing tests** (`inbox-view.spec.ts`: one `it` per helper with the exact strings above using a
 `makeItem()` local factory; `inbox.service.spec.ts`: `HttpTestingController` asserting URLs
 `/api/accounting/reconciliation/inbox?limit=1`, `POST …/inbox/apply`, `POST …/proposals/5/apply`, `GET …/actions?limit=50`,
-`POST …/actions/7/revert`, `GET …/owner-rules`, `PATCH …/owner-rules/3`, `DELETE …/owner-rules/3`, and that `changed()` increments after `apply`.)
+`POST …/actions/7/revert`, `GET …/owner-rules`, `PATCH …/owner-rules/3`, `DELETE …/owner-rules/3`, `GET …/inbox/cases/9/search?days=14`, and that `changed()` increments after `apply`.
+`inbox-view.spec.ts` also covers `inboxErrorMessage` with a string code, a 409 `HttpErrorResponse` (`detail: 'stale_case: case 1 is at version 3'`) and a 422 (`detail: [{msg: 'rule_pattern_mismatch'}]`).)
 
 - [ ] **Step 2: Run** `npx ng test --include='src/app/components/accounting/inbox/**/*.spec.ts'` — FAIL (modules missing).
 
@@ -1149,14 +1431,19 @@ git commit -m "feat(spa): inbox model, service and view helpers"
   Folded `<details>` sections under the cards: `系統有提議 ${n}（全部套用）` with a `全部套用` button and per-card 套用/退回;
   `期初差額 ${n}` with 對齊銀行期初/忽略; `國泰交割款 ${n} — 等證券連動` (no buttons); `其他 ${n}` with 忽略.
   One-tap buttons (`dismiss`, `accept_bank_amount`, `defer`, `anchor`) call `inbox.apply` with
-  `cases = card.items.map(i => ({case_id, case_version}))`, `answer = buttonLabel(...)`, `learn` when the card's learn
-  checkbox (`☐ 以後「…」都這樣`, rendered when `card.learnable`, pre-ticked and disabled when `items.length > 1`
-  for record/dismiss; never shown with an amount option) is ticked: `{ amount_exact: true }` for record/dismiss and
-  `{ amount_exact: false }` for accept_bank_amount. Dismiss on a merged card first toggles a `確定` state on the same button.
+  `cases = card.items.map(i => ({case_id, case_version}))`, `answer = buttonLabel(...)`,
+  `learn` from the card's learn controls (spec §6.1/§7.2; review Must 5): the checkbox `☐ 以後「…」都這樣` is rendered
+  when `card.learnable`; it is UNTICKED by default on a single-item card and TICKED by default on a merged card, and
+  always editable. For record/dismiss on a single-item card a sub-checkbox `金額不同也算` (unticked) appears under it;
+  on a merged card the amount is locked exact (no sub-option, caption `同金額 ×N`). The request carries
+  `learn = ticked ? { amount_exact: button === 'accept_bank_amount' ? false : !amountAny } : null`.
+  Dismiss on a merged card first toggles a `確定` state on the same button.
   `record` / `match_candidate` emit `openRecord` / `openMatch` (Task 10). `apply_proposal` loops `applyProposal` per
   item with a progress text `套用中 k/n`, continuing after an error and listing failures; `reject_proposal` likewise.
-  After a successful apply: remove the card's applied items locally, keep refused ones with `.refused` text
-  `沒成功：${inboxErrorMessage(code)}`, emit `changed`.
+  After an apply: remove the card's `applied`/`replayed` items locally; refused ones stay with `.refused` text
+  `沒成功：${inboxErrorMessage(code)}`; the refused map is keyed by `case_id` in a component signal and SURVIVES a
+  new `data` input (the parent reloads after `changed`), clearing only when that case later applies or disappears
+  from `data`; `rule_error` (if any) shows once as `規則沒存：${inboxErrorMessage(rule_error)}`; emit `changed`.
 - Reminders: `ReminderTab` gains `'todo'`; `REMINDER_TABS` = 全部, **待處理** (`todo`), 信用卡帳單, 借還款追蹤, 待完成交易;
   `inbox = signal<InboxOut | null>(null)`; `load()` adds `inbox: this.inboxService.get().pipe(catchError(() => of(null)))`;
   `showInbox = computed(() => tab() === 'all' || tab() === 'todo')`; the panel is rendered with `mode` `preview` on 全部
@@ -1168,7 +1455,9 @@ git commit -m "feat(spa): inbox model, service and view helpers"
 
 `inbox-panel.spec.ts` (TestBed + `provideHttpClientTesting`): `renders one card per group_key with ×N and the question text`;
 `one-tap dismiss posts the apply body with every member and the answer`; `learn checkbox adds learn with amount_exact true for record and false for accept`;
-`a refused member stays with 沒成功 text and the others leave`; `preview mode shows three cards and the 還有 N 張 link`;
+`a refused member stays with 沒成功 text and the others leave`; `the refused text survives a data reload`;
+`single card: learn unticked, 金額不同也算 sends amount_exact false; merged card: learn ticked, no amount option`;
+`preview mode shows three cards and the 還有 N 張 link`;
 `applies proposals one by one and keeps going after a 409` (two proposals, the first request flushed with status 409, the second still sent, failure listed).
 `reminders.spec.ts`: `the 待處理 tab is second and deep-links with ?tab=todo` and `load() requests the inbox and renders the panel on 全部`.
 
@@ -1201,19 +1490,22 @@ git commit -m "feat(spa): 待處理 inbox panel and reminders tab"
 - Consumes: `CategoryPicker` (`app-category-picker`, `kind = input.required<string>()`, `selected = model<CategoryNode | null>`), `AccountingService.getCategories(kind)`, `AccountingService.getAllEntries(query)` with `AllEntriesQuery` (`models/accounting.model.ts:225-245`: `account_id` is `number[]`; use its date-range keys for the ±14-day window and `limit: 50`), `sheet.scss` + `data-overlay` + `focusSheetField` as `schedule-sheet.ts` does.
 - Produces:
   - `AppInboxRecordSheetComponent` (`app-inbox-record-sheet`): `card = input.required<InboxCard>()`, `currency = input.required<string>()`,
-    `confirmed = output<{ category_id: number; name: string | null; project_id: number | null; learn: boolean }>()`, `closed = output<void>()`.
-    Title `記為${支出|收入}`, inline category picker for the line's kind, optional name input (placeholder = the line merchant),
-    project select from `AccountingService.getProjects()` (optional, default none), the learn checkbox when `card.learnable`
-    (pre-ticked + disabled on merged cards), buttons 取消 / 確定 (確定 disabled until a category is picked).
+    `confirmed = output<{ category_id: number; category_name: string; name: string | null; project_id: number | null; learn: InboxLearn }>()`, `closed = output<void>()`.
+    Title `記為${支出|收入}` by `lineKind(item)`; inline `app-category-picker` with `[kind]` = that kind and `selected`
+    preset from `rule_hint.default_category_id` (looked up in the loaded `CategoryNode[]`); optional name input
+    (placeholder = the line merchant); project select from `AccountingService.getProjects()` (optional, default none);
+    the same learn controls as the card (Task 9: unticked on single, ticked on merged, `金額不同也算` only on single);
+    buttons 取消 / 確定 (確定 disabled until a category is picked). `confirmed.learn` follows the Task 9 formula.
   - `AppInboxMatchSheetComponent` (`app-inbox-match-sheet`): `card = input.required<InboxCard>()`, `account = input.required<InboxAccount>()`,
-    `confirmed = output<{ entry_ids: Record<string, number> }>()`, `closed = output<void>()`.
-    Lists `candidates` (`${slashDate(date)} ${title} ${formatMoney(amount)}`) as radio rows; a `搜尋這個帳戶的記錄` button loads
-    entries of the account within ±14 days of the line date with the same sign, excluding ids already listed; on a merged
-    card the sheet steps through members (`第 k/n 筆`) collecting one entry per case; 確定 emits the map.
-  - Panel wiring: `openRecord` → sheet → `inbox.apply({ action: 'record', params: {category_id, name, project_id}, answer: '記為支出 ' + categoryName, learn })`;
-    `openMatch` → sheet → `inbox.apply({ action: 'match_candidate', params: { entry_ids }, answer: '對到 ' + title })`.
+    `confirmed = output<{ entry_ids: Record<string, number>; titles: Record<string, string> }>()`, `closed = output<void>()`.
+    Lists `candidates` (`${slashDate(date)} ${title} ${formatMoney(amount)}`) as radio rows; a `搜尋這個帳戶的記錄`
+    button calls `InboxService.search(case_id)` (server-side: unclaimed, ±14 days, same sign — review Must 6) and
+    appends the rows under `其他記錄`; on a merged card the sheet steps through members (`第 k/n 筆`) collecting one
+    entry per case; 確定 emits the map plus each picked row's title.
+  - Panel wiring: `openRecord` → sheet → `inbox.apply({ action: 'record', params: {category_id, name, project_id}, answer: recordAnswer(lineKind(item), category_name), learn })`;
+    `openMatch` → sheet → `inbox.apply({ action: 'match_candidate', params: { entry_ids }, answer: matchAnswer(titles[firstCaseId]) })`.
 
-- [ ] **Step 1: Write the failing tests** — record sheet: `emits category, name and learn on 確定`, `確定 disabled without a category`, `merged card locks the learn tick`; match sheet: `lists candidates and emits the picked entry per case`, `search loads the account's entries in the window and excludes listed ids`; panel: `record flow posts create params and the answer text`.
+- [ ] **Step 1: Write the failing tests** — record sheet: `emits category, name and learn on 確定`, `確定 disabled without a category`, `presets the category from default_category_id`, `merged card: learn ticked and no 金額不同也算; single card: unticked with the sub-option`; match sheet: `lists candidates and emits the picked entry and title per case`, `search calls the search route and appends its rows`; panel: `record flow posts create params and 記為收入 for a positive line`, `match flow posts entry_ids and 對到 <title>`.
 
 - [ ] **Step 2: Run** — FAIL.
 
@@ -1274,7 +1566,8 @@ git commit -m "feat(spa): 已處理 list with revert; bell counts inbox cards"
 **Interfaces:**
 - Consumes: `InboxService.rules/patchRule/deleteRule`; the page's `confirming` signal and `confirmTap(key)` two-tap pattern (`accounting-settings.html:17-19`).
 - Produces: a `<details class="data-section rules-section">` titled `對帳規則 (${n})` listing each rule as
-  `${accountName} · 「${merchant_pattern}」 ${flow_sign}${amount ?? ''} · ${answerText} · 用過 ${applied_count} 次${last_applied_at ? ' · ' + slashDate(last_applied_at) : ''}`
+  `${accountName} · 「${merchant_pattern}」 ${amount === null ? '任何金額' : formatMoney(amount, currency, { sign: true })} · ${answerText} · 用過 ${applied_count} 次${last_applied_at ? ' · ' + slashDate(last_applied_at) : ''}`
+  (the amount is already signed — never prefix `flow_sign`; `currency` from the account)
   where answerText = `record` → `記為 ${category name or '#' + category_id}`, `dismiss` → `忽略`, `accept_bank_amount` → `用銀行的數`;
   a toggle `停用`/`啟用` (`patchRule`) and the two-tap 🗑 (`confirmTap('rule:' + id) && deleteRule(id)`); account names from the page's accounts.
 
