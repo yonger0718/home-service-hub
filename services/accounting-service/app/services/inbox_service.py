@@ -1,11 +1,12 @@
 """Reconciliation inbox: question classifier, group key and button rules.
 
-See docs/superpowers/specs/2026-10-21-reconciliation-inbox-design.md (sections 4.1-4.3).
-The functions here are pure; the DB read model lives further down this module.
+See docs/superpowers/specs/2026-10-21-reconciliation-inbox-design.md (sections 4.1-4.3, 5).
+The functions here are pure; the DB read model and the batch apply live further down this module.
 """
 import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Callable
 
 from sqlalchemy import and_, false, or_, select
 from sqlalchemy.orm import Session
@@ -13,9 +14,13 @@ from sqlalchemy.orm import Session
 from app.models import (
     Account, AccountStatement, Category, LedgerEntry, ReconciliationCase, ReconciliationOwnerRule, StatementLine,
 )
+from app.schemas.inbox import InboxApplyIn, InboxCaseRef
 from app.services import coverage_service, proposal_service, reconciliation_actions, split_protection
-from app.services.errors import NotFoundError
-from app.services.reconciliation_actions import base
+from app.services import entry_write_service as ews
+from app.services.edit_lock import EditLockedError
+from app.services.errors import CodedConflictError, ConflictError, NotFoundError, ValidationError
+from app.services.reconciliation_actions import OPEN_STATUSES, audit, base, engine
+from app.services.reconciliation_actions.base import Context
 from app.services.statements import matching
 
 SETTLEMENT_LABELS: tuple[str, ...] = ("交割股款", "申購股款")
@@ -144,6 +149,10 @@ def adjustable(db: Session, case: ReconciliationCase) -> bool:
         return False
     if any(base.schedule_rows(db, [entry.id])):
         return False
+    try:
+        ews.assert_entry_editable(db, entry)
+    except EditLockedError:
+        return False
     return split_protection.protected_reason(db, entry) is None
 
 
@@ -214,7 +223,8 @@ def search_candidates(db: Session, case_id: int, *, days: int = 14, limit: int =
     listed = {c.get("entry_id") for c in case.candidates or []} | {case.entry_id}
     excluded = (listed - {None}) | coverage_service.claimed_entry_ids(db)
     q = (select(LedgerEntry)
-         .where(LedgerEntry.account_id == statement.account_id, LedgerEntry.parent_entry_id.is_(None),
+         .where(LedgerEntry.account_id == statement.account_id, LedgerEntry.currency == statement.currency,
+                LedgerEntry.parent_entry_id.is_(None),
                 LedgerEntry.posted_date.between(line.posted_date - timedelta(days=days),
                                                 line.posted_date + timedelta(days=days)),
                 LedgerEntry.amount < 0 if sign == "-" else LedgerEntry.amount >= 0,
@@ -279,15 +289,25 @@ def _rule_hint(db: Session, statement: AccountStatement, line: StatementLine, ca
             "amount": f"{line.flow_amount:.4f}", "default_category_id": cache[key]}
 
 
+def _question(case: ReconciliationCase, statement: AccountStatement, line: StatementLine | None,
+              allowed: list[str]) -> str:
+    return classify(kind=case.kind, status=case.status, statement_kind=statement.kind,
+                    hint=(case.context or {}).get("hint"),
+                    merchant_norm=line.merchant_norm if line else None, allowed=allowed)
+
+
+def _buttons(db: Session, case: ReconciliationCase, question: str, allowed: list[str]) -> list[str]:
+    # `adjustable` only matters for amount_differs (the one question offering accept_bank_amount)
+    return buttons(question, allowed, adjustable=question == "amount_differs" and adjustable(db, case))
+
+
 def _item(db: Session, case: ReconciliationCase, statement: AccountStatement, line: StatementLine | None,
           entries: dict[int, LedgerEntry], categories: dict[int, Category], hint_cache: dict) -> dict:
     allowed = reconciliation_actions.allowed(case)
-    question = classify(kind=case.kind, status=case.status, statement_kind=statement.kind,
-                        hint=(case.context or {}).get("hint"),
-                        merchant_norm=line.merchant_norm if line else None, allowed=allowed)
-    # `adjustable` only matters for amount_differs (the one question offering accept_bank_amount)
-    actions = buttons(question, allowed, adjustable=question == "amount_differs" and adjustable(db, case))
-    learn = line is not None and any(learnable(question, b) for b in actions)
+    question = _question(case, statement, line, allowed)
+    actions = _buttons(db, case, question, allowed)
+    learn = (line is not None and bool(pattern(line.merchant_norm or ""))  # an empty pattern can never be a rule
+             and any(learnable(question, b) for b in actions))
     return {
         "case_id": case.id, "case_version": case.version, "kind": case.kind, "status": case.status,
         "question": question, "folded": question in FOLDED,
@@ -348,3 +368,126 @@ def build_inbox(db: Session, *, statuses: tuple[str, ...] = ("open", "proposed")
                              "is_credit": bool(account.is_credit), "items": []})
         accounts[-1]["items"].append(item)
     return {"generated_at": datetime.now(timezone.utc), "counts": counts, "accounts": accounts}
+
+
+# --- batch apply (spec §5) --------------------------------------------------------------------------------------
+
+REFUSALS = (ValidationError, ConflictError, NotFoundError, EditLockedError)
+
+
+def translate(button: str, params: dict, case: ReconciliationCase, line: StatementLine | None,
+              answer: str) -> tuple[str, dict]:
+    """The registry action and params behind an inbox button (spec §4.3); a missing param is a 422."""
+    def need(name: str):
+        if params.get(name) is None:
+            raise ValidationError("params", f"{name} required")
+        return params[name]
+
+    action = BUTTONS_TO_ACTIONS[button]
+    if button == "record":
+        if line is None:
+            raise ValidationError("params", "line required")
+        out = {"kind": "expense" if line.flow_amount < 0 else "income", "category_id": need("category_id"),
+               "name": params.get("name"), "project_id": params.get("project_id")}
+        return action, {k: v for k, v in out.items() if v is not None}
+    if button == "match_candidate":
+        if "entry_ids" not in params:
+            return action, {"line_id": case.line_id, "entry_id": need("entry_id")}
+        per_case = params["entry_ids"] if isinstance(params["entry_ids"], dict) else {}
+        if per_case.get(str(case.id)) is None:
+            raise ValidationError("params", f"entry_ids.{case.id} required")
+        return action, {"line_id": case.line_id, "entry_id": per_case[str(case.id)]}
+    if button == "accept_bank_amount":
+        entry_id = _single_candidate(case)
+        if entry_id is None:
+            raise ValidationError("params", "entry_id required")
+        return action, {"entry_id": entry_id, "line_id": case.line_id}
+    if button == "defer":
+        if case.entry_id is None:
+            raise ValidationError("params", "entry_id required")
+        return action, {"entry_id": case.entry_id}
+    if button == "dismiss":
+        return action, {"note": f"inbox: {answer}"}
+    return action, {}  # anchor
+
+
+def expect_version(expected: int) -> Callable[[Context], None]:
+    """An engine precheck refusing `stale_case` when the locked case is no longer at the version the card showed."""
+    def check(ctx: Context) -> None:
+        if ctx.case.version != expected:
+            raise CodedConflictError("stale_case", f"case {ctx.case.id} is at version {ctx.case.version}")
+    return check
+
+
+def _result(case_id: int, status: str, action_id: int | None = None, code: str | None = None) -> dict:
+    return {"case_id": case_id, "status": status, "action_id": action_id, "code": code}
+
+
+def _check_batch(db: Session, body: InboxApplyIn) -> None:
+    """Structural checks before anything applies: no duplicate member, every case exists, and the members still
+    open share one question that offers the button (closed members are judged per member)."""
+    ids = [ref.case_id for ref in body.cases]
+    if len(set(ids)) != len(ids):
+        raise ValidationError("cases", "duplicate case")
+    cases = _by_id(db, ReconciliationCase, ids)
+    missing = [case_id for case_id in ids if case_id not in cases]
+    if missing:
+        raise NotFoundError(f"case {missing[0]} not found")
+    statements = _by_id(db, AccountStatement, (case.statement_id for case in cases.values()))
+    questions = set()
+    for case in cases.values():
+        if case.status in OPEN_STATUSES:
+            statement = statements[case.statement_id]
+            questions.add(_question(case, statement, base.current_line(db, case, statement),
+                                    reconciliation_actions.allowed(case)))
+    if len(questions) > 1:
+        raise ValidationError("cases", "mixed questions")
+    if questions:
+        (question,) = questions
+        if body.action not in buttons(question, list(reconciliation_actions.ACTIONS), adjustable=True):
+            raise ValidationError("action", f"not offered for {question}")
+
+
+def _apply_member(db: Session, ref: InboxCaseRef, body: InboxApplyIn, *, label: str,
+                  request_id: str | None) -> dict:
+    """One member in its own transaction: a replay of the same tap, else the button as the case offers it now,
+    applied through the engine at the card's version; any refusal rolls back this member only."""
+    try:
+        case = db.get(ReconciliationCase, ref.case_id, populate_existing=True)
+        if case is None:
+            raise NotFoundError(f"case {ref.case_id} not found")
+        statement = db.get(AccountStatement, case.statement_id)
+        line = base.current_line(db, case, statement)
+        action, params = translate(body.action, body.params, case, line, body.answer)
+        found = engine.find_by_key(db, engine.key_for(case.id, ref.case_version, action, params))
+        if found is not None and found.status == "applied":  # a retried tap: no re-apply
+            audit.record(db, event="action_replayed", actor=label, statement_id=case.statement_id, case_id=case.id,
+                         action_id=found.id, request_id=request_id, detail={"action": found.action})
+            db.commit()
+            return _result(case.id, "replayed", found.id)
+        if case.status not in OPEN_STATUSES:
+            return _result(case.id, "refused", code="case_closed")
+        allowed = reconciliation_actions.allowed(case)
+        if body.action not in _buttons(db, case, _question(case, statement, line, allowed), allowed):
+            return _result(case.id, "refused", code="not_offered")
+        row, replayed = engine.apply_action(db, case_id=case.id, action=action, params=params, actor="owner",
+                                            label=label, request_id=request_id,
+                                            precheck=expect_version(ref.case_version))
+        if not replayed:  # a concurrent identical tap wrote its own answer
+            audit.record(db, event="inbox_answer", actor=label, statement_id=case.statement_id, case_id=case.id,
+                         action_id=row.id, request_id=request_id,
+                         detail={"answer": body.answer, "button": body.action})
+        db.commit()
+        return _result(case.id, "replayed" if replayed else "applied", row.id)
+    except REFUSALS as exc:
+        db.rollback()
+        return _result(ref.case_id, "refused", code=getattr(exc, "code", None) or str(exc).split(":")[0])
+
+
+def apply_batch(db: Session, *, body: InboxApplyIn, label: str, request_id: str | None) -> dict:
+    """`POST /reconciliation/inbox/apply` (spec §5): the structural checks (422/404, nothing applied), then every
+    member in request order, each committed or refused on its own. `learn` is accepted; rule creation (§6.2) is not
+    wired here yet, so `rule_id` and `rule_error` are None."""
+    _check_batch(db, body)
+    results = [_apply_member(db, ref, body, label=label, request_id=request_id) for ref in body.cases]
+    return {"results": results, "rule_id": None, "rule_error": None}

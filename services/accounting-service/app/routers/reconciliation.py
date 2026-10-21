@@ -15,7 +15,7 @@ from ..database import get_db
 from ..schemas.reconciliation import (
     ActionIn, ActionOut, AuditOut, DismissIn, ProposalIn, ProposalOut, ProposalRejectIn,
 )
-from ..schemas.inbox import InboxCandidate, InboxOut
+from ..schemas.inbox import InboxApplyIn, InboxApplyOut, InboxCandidate, InboxOut
 from ..schemas.statements import CaseDetailOut
 from ..services import inbox_service, proposal_service
 from ..services import statement_ingest_service as ingest
@@ -75,6 +75,14 @@ def get_inbox(status: str = "open,proposed", account_id: int | None = None,
 def search_inbox_candidates(case_id: int, days: int = Query(14, ge=1, le=60), db: Session = Depends(get_db)):
     with service_errors():
         return inbox_service.search_candidates(db, case_id, days=days)
+
+
+@router.post("/reconciliation/inbox/apply", response_model=InboxApplyOut, dependencies=WRITE)
+def apply_inbox(body: InboxApplyIn, request: Request, db: Session = Depends(get_db)):
+    """Each member commits on its own (spec §5); only the structural checks fail the whole batch."""
+    with service_errors():
+        return inbox_service.apply_batch(db, body=body, label=_label(request) or "owner",
+                                         request_id=request.headers.get("x-request-id"))
 
 
 @router.post("/reconciliation/cases/{case_id}/actions", response_model=ActionOut, status_code=201,

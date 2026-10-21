@@ -1,9 +1,11 @@
 """Inbox read model and batch apply (spec 2026-10-21 §4–§5). Synthetic data only."""
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
 from app import auth
+from app.models import ReconciliationCase
 from tests.integration.statement_fixtures import (  # noqa: F401
     _card, _cases, _line, _submit, run,
 )
@@ -189,3 +191,111 @@ def test_status_filter_and_scope(client, seed, db_session, run):
     assert client.get("/reconciliation/inbox", headers={"Authorization": "Bearer nope"}).status_code == 401
     assert client.get("/reconciliation/inbox", headers=S, params={"status": "weird"}).status_code == 422
     assert client.get("/reconciliation/inbox", headers=H).status_code == 200
+
+
+# --- POST /reconciliation/inbox/apply (spec §5) ---------------------------------------------------------------------
+
+def _apply(client, cases, action, params=None, answer="答", learn=None, headers=S):
+    body = {"cases": [{"case_id": c.id, "case_version": c.version} for c in cases], "action": action,
+            "params": params or {}, "answer": answer}
+    if learn is not None:
+        body["learn"] = learn
+    return client.post("/reconciliation/inbox/apply", headers=headers, json=body)
+
+
+def test_apply_record_books_and_audits_the_answer(client, seed, db_session, run):
+    from app.models import LedgerEntry, ReconciliationAudit
+    from sqlalchemy import select
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    db_session.commit()
+    stmt, (line,), _ = _submit(db_session, run, account, [_line(1, DAY, "放款還款", -3865, "withdrawal")], kind="bank")
+    (case,) = _open_lines(db_session, stmt.id)
+    res = _apply(client, [case], "record", {"category_id": food.id}, answer="記為支出 飲食")
+    assert res.status_code == 200, res.text
+    (result,) = res.json()["results"]
+    assert result["status"] == "applied" and result["action_id"] and res.json()["rule_id"] is None
+    booked = db_session.execute(select(LedgerEntry).where(LedgerEntry.account_id == account.id)).scalars().all()
+    assert [(e.kind, e.amount, e.category_id) for e in booked] == [("expense", Decimal("-3865.0000"), food.id)]
+    note = db_session.execute(select(ReconciliationAudit).where(ReconciliationAudit.event == "inbox_answer")).scalar_one()
+    assert note.case_id == case.id and note.action_id == result["action_id"] and note.actor == "spa"
+    assert note.detail == {"answer": "記為支出 飲食", "button": "record"}
+
+
+def test_apply_refuses_a_stale_version_and_keeps_the_others(client, seed, db_session, run):
+    account = _bank(seed, db_session)
+    stmt, lines, _ = _submit(db_session, run, account, [_line(1, DAY, "甲", -10, "withdrawal"),
+                                                        _line(2, DAY, "乙", -20, "withdrawal")], kind="bank")
+    a, b = sorted(_open_lines(db_session, stmt.id), key=lambda c: c.line_id)
+    stale = type("Ref", (), {"id": a.id, "version": a.version + 1})
+    res = _apply(client, [stale, b], "dismiss", answer="忽略")
+    assert res.status_code == 200
+    results = {r["case_id"]: r for r in res.json()["results"]}
+    assert results[a.id]["status"] == "refused" and results[a.id]["code"] == "stale_case"
+    assert results[b.id]["status"] == "applied"
+    db_session.expire_all()
+    assert db_session.get(ReconciliationCase, a.id).status == "open"
+    assert db_session.get(ReconciliationCase, b.id).status == "dismissed"
+
+
+def test_apply_batch_two_statements(client, seed, db_session, run):
+    from tests.integration.statement_fixtures import OCT
+    account = _bank(seed, db_session)
+    s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "放款還款", -3865, "withdrawal")], kind="bank")
+    s2, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "放款還款", -3865, "withdrawal")], kind="bank", period=OCT)
+    cases = _open_lines(db_session, s1.id) + _open_lines(db_session, s2.id)
+    res = _apply(client, cases, "dismiss", answer="忽略")
+    assert [r["status"] for r in res.json()["results"]] == ["applied", "applied"]
+
+
+def test_apply_rejects_mixed_questions_and_unoffered_buttons(client, seed, db_session, run):
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "他行轉入", 500, "transfer_in"),
+                                                    _line(2, DAY, "店", -20, "withdrawal")], kind="bank")
+    cases = _open_lines(db_session, stmt.id)
+    mixed = _apply(client, cases, "dismiss")
+    assert mixed.status_code == 422 and "mixed questions" in mixed.text
+    transfer = next(c for c in cases if (c.context or {}).get("hint") == "needs_peer")
+    unoffered = _apply(client, [transfer], "record", {"category_id": 1})
+    assert unoffered.status_code == 422 and "not offered for transfer" in unoffered.text
+
+
+def test_apply_resend_replays_every_member(client, seed, db_session, run):
+    from sqlalchemy import func, select
+    from app.models import LedgerEntry, ReconciliationOwnerRule
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    db_session.commit()
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -10, "withdrawal"),
+                                                    _line(2, DAY, "店", -10, "withdrawal")], kind="bank")
+    cases = _open_lines(db_session, stmt.id)
+    first = _apply(client, cases, "record", {"category_id": food.id}, answer="記為支出 飲食", learn={"amount_exact": True})
+    again = _apply(client, cases, "record", {"category_id": food.id}, answer="記為支出 飲食", learn={"amount_exact": True})
+    assert first.status_code == again.status_code == 200
+    assert [r["status"] for r in again.json()["results"]] == ["replayed", "replayed"]
+    assert [r["action_id"] for r in again.json()["results"]] == [r["action_id"] for r in first.json()["results"]]
+    assert again.json()["rule_id"] == first.json()["rule_id"] and again.json()["rule_error"] is None
+    assert db_session.execute(select(func.count()).select_from(LedgerEntry).where(LedgerEntry.account_id == account.id)).scalar_one() == 2
+    # learning is not wired yet (owner_rule_service lands next): no rule row; with it this count becomes 1
+    assert db_session.execute(select(func.count()).select_from(ReconciliationOwnerRule)).scalar_one() == 0
+
+
+def test_apply_closed_member_is_refused_while_the_open_one_applies(client, seed, db_session, run):
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "甲", -10, "withdrawal"),
+                                                    _line(2, DAY, "乙", -20, "withdrawal")], kind="bank")
+    a, b = sorted(_open_lines(db_session, stmt.id), key=lambda c: c.line_id)
+    closed = client.post(f"/reconciliation/cases/{a.id}/dismiss", headers=S, json={"note": "elsewhere"})
+    assert closed.status_code == 201
+    res = _apply(client, [a, b], "dismiss", answer="忽略")  # a's version as rendered before the other session closed it
+    assert res.status_code == 200
+    results = {r["case_id"]: r for r in res.json()["results"]}
+    assert results[a.id]["status"] == "refused" and results[a.id]["code"] == "case_closed"  # step 3b, before the engine
+    assert results[b.id]["status"] == "applied"
+
+
+def test_apply_needs_write_scope(client, seed, db_session, run):
+    account = _bank(seed, db_session)
+    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", -20, "withdrawal")], kind="bank")
+    (case,) = _open_lines(db_session, stmt.id)
+    assert _apply(client, [case], "dismiss", headers=H).status_code == 403

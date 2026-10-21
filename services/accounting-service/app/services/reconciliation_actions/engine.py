@@ -48,7 +48,8 @@ from .base import (
     POLICY, Action, ActionParams, Context, Effect, LockSet, NotRevertable, check_effect_slot, current_line,
 )
 
-__all__ = ["BudgetExceeded", "NotRevertable", "apply_action", "canonical_params", "idempotency_key", "revert_action"]
+__all__ = ["BudgetExceeded", "NotRevertable", "apply_action", "canonical_params", "find_by_key", "idempotency_key",
+           "key_for", "revert_action"]
 
 EFFECT_INDEX = "ux_reconciliation_action_effect"
 KEY_INDEX = "uq_reconciliation_action_idempotency"
@@ -102,6 +103,16 @@ def _context(db: Session, case: ReconciliationCase, statement: AccountStatement,
 def _by_key(db: Session, key: str) -> ReconciliationAction | None:
     return db.execute(select(ReconciliationAction).where(ReconciliationAction.idempotency_key == key)
                       .execution_options(populate_existing=True)).scalar_one_or_none()
+
+
+def key_for(case_id: int, version: int, action: str, params: dict) -> str:
+    """The idempotency key `apply_action` computes for these params at `version` (raises the same 422s)."""
+    return idempotency_key(case_id, version, action, canonical_params(_parse(_lookup(action), params)))
+
+
+def find_by_key(db: Session, key: str) -> ReconciliationAction | None:
+    """The action row stored under an idempotency key, re-read from the database."""
+    return _by_key(db, key)
 
 
 def _replay(db: Session, row: ReconciliationAction, statement_id: int, *, label: str, run_id, request_id):

@@ -21,6 +21,7 @@ def test_pattern_only_digits_is_empty():
     ("line_unmatched", "open", "bank", "needs_peer", "放款還款", ["match", "dismiss"], "transfer"),
     ("line_unmatched", "open", "card", None, "全聯", ["match", "create_entry", "dismiss"], "bank_only"),
     ("line_unmatched", "open", "card", "installment_unmapped", "分期", ["match", "link_installment_plan", "dismiss"], "other"),
+    ("line_unmatched", "open", "card", "installment_unmapped", "分期", ["match", "create_entry", "link_installment_plan", "dismiss"], "other"),
     ("entry_unmatched", "open", "card", None, None, ["defer_next_period", "dismiss"], "ledger_only"),
     ("amount_delta", "open", "card", "date_drift", "自動扣繳", ["match", "dismiss"], "date_differs"),
     ("amount_delta", "open", "bank", None, "卡費", ["match", "adjust_amount", "dismiss"], "amount_differs"),
