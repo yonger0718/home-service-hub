@@ -30,8 +30,8 @@ def list_entries(
     category_id: list[int] | None = Query(default=None, description="Rows in any of these categories or their sub-categories"),
     project_id: int | None = None,
     merchant: str | None = Query(default=None, max_length=100, description="Case-insensitive substring of the merchant"),
-    amount_min: Decimal | None = Query(default=None, description="Signed amount lower bound (inclusive)"),
-    amount_max: Decimal | None = Query(default=None, description="Signed amount upper bound (inclusive)"),
+    amount_min: Decimal | None = Query(default=None, description="Signed lower bound (inclusive) on the entry's amount in its ACCOUNT's currency; no conversion"),
+    amount_max: Decimal | None = Query(default=None, description="Signed upper bound (inclusive) on the entry's amount in its ACCOUNT's currency; no conversion"),
     db: Session = Depends(get_db),
 ):
     if amount_min is not None and amount_max is not None and amount_min > amount_max:

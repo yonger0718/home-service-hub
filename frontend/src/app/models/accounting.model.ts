@@ -236,7 +236,7 @@ export interface AllEntriesQuery extends EntryQuery {
   project_id?: number;
   /** Case-insensitive substring of the merchant (`%` and `_` are literal). */
   merchant?: string | null;
-  /** Signed, inclusive amount bounds as decimal strings. */
+  /** Signed, inclusive bounds on the entry's amount in its account's currency (no conversion), as decimal strings. */
   amount_min?: string | null;
   amount_max?: string | null;
 }

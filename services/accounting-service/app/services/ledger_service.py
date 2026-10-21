@@ -348,7 +348,8 @@ def _attribute_filters(db: Session, *, tags=None, category_ids=None, project_id=
                        amount_min=None, amount_max=None) -> list:
     """The attribute filters of GET /entries (2026-10-21): ANDed with the older ones; `tags` matches rows carrying ANY of
     the given tags, `category_ids` expands to sub-categories, `merchant` is a literal substring, the amount bounds are
-    signed and inclusive."""
+    signed, inclusive and compared in each entry's ACCOUNT currency (`LedgerEntry.amount`; no conversion — owner's
+    choice 2026-10-21, conversion comes with the reports work)."""
     filters = []
     if tags:
         filters.append(LedgerEntry.tags.overlap(tags))
