@@ -78,6 +78,22 @@
         (input)="onQueryInput($event)"
         (keydown)="onQueryKeydown($event)"
       />
+      <select class="chip tag filter-category" aria-label="類別" (focus)="ensureOptions()" (change)="setCategory($any($event.target).value)">
+        <option value="" [selected]="categoryFilter() === null">全部類別</option>
+        @for (option of categoryOptions(); track option.id) {
+          <option [value]="option.id" [selected]="categoryFilter() === option.id">{{ option.name }}</option>
+        }
+      </select>
+      <select class="chip tag filter-project" aria-label="專案" (focus)="ensureOptions()" (change)="setProject($any($event.target).value)">
+        <option value="" [selected]="projectFilter() === null">全部專案</option>
+        @for (option of projectOptions(); track option.id) {
+          <option [value]="option.id" [selected]="projectFilter() === option.id">{{ option.name }}</option>
+        }
+      </select>
+      <input #filterInput class="chip tag filter-tag" type="search" placeholder="# 標籤" aria-label="標籤（逗號分隔，任一符合）" (change)="setTag($any($event.target).value)" />
+      <input #filterInput class="chip tag filter-merchant" type="search" placeholder="商家" aria-label="商家" (change)="setMerchant($any($event.target).value)" />
+      <input #filterInput class="chip tag filter-amount-min" type="text" inputmode="decimal" placeholder="金額 ≥" aria-label="金額下限（含正負號）" (change)="setAmountMin($any($event.target).value)" />
+      <input #filterInput class="chip tag filter-amount-max" type="text" inputmode="decimal" placeholder="金額 ≤" aria-label="金額上限（含正負號）" (change)="setAmountMax($any($event.target).value)" />
     </div>
   }
 

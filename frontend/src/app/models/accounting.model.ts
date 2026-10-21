@@ -229,6 +229,16 @@ export interface AllEntriesQuery extends EntryQuery {
   counterparty_id?: number;
   /** Only unsettled receivable / payable originals (settlements excluded). */
   open?: boolean;
+  /** Rows carrying ANY of these tags. */
+  tag?: string[];
+  /** Rows in any of these categories or their sub-categories. */
+  category_id?: number[];
+  project_id?: number;
+  /** Case-insensitive substring of the merchant (`%` and `_` are literal). */
+  merchant?: string | null;
+  /** Signed, inclusive amount bounds as decimal strings. */
+  amount_min?: string | null;
+  amount_max?: string | null;
 }
 
 export interface MonthSummary {

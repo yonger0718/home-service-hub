@@ -615,6 +615,68 @@ describe('LedgerTimelineComponent', () => {
       expect(text(el.querySelector('.match-count'))).toBe('符合條件 — 筆');
     });
 
+    it('sends the category, project, tag, merchant and amount filters and clears them from 清除篩選', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+
+      const timeline = fixture.componentInstance;
+      timeline.setCategory('5');
+      timeline.setProject('2');
+      timeline.setTag('公司, 午餐');
+      timeline.setMerchant('鼎泰');
+      timeline.setAmountMin('-500');
+      timeline.setAmountMax('abc');
+      fixture.detectChanges();
+      const req = flushEntries([], 0);
+      expect(req.request.params.getAll('category_id')).toEqual(['5']);
+      expect(req.request.params.get('project_id')).toBe('2');
+      expect(req.request.params.getAll('tag')).toEqual(['公司', '午餐']);
+      expect(req.request.params.get('merchant')).toBe('鼎泰');
+      expect(req.request.params.get('amount_min')).toBe('-500');
+      expect(req.request.params.has('amount_max')).toBe(false);
+      fixture.detectChanges();
+      expect(timeline.filtersActive()).toBe(true);
+
+      (el.querySelector('.clear-filters') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      const cleared = flushEntries([]);
+      for (const key of ['category_id', 'project_id', 'tag', 'merchant', 'amount_min', 'amount_max']) {
+        expect(cleared.request.params.has(key)).toBe(false);
+      }
+      fixture.detectChanges();
+      expect(timeline.filtersActive()).toBe(false);
+    });
+
+    it('fetches the category and project choices once, when a filter select is first focused', () => {
+      const { fixture, el } = render('sheet');
+      flushSummary('2026-10');
+      flushEntries([]);
+      fixture.detectChanges();
+      httpMock!.expectNone(r => r.url === '/api/accounting/categories');
+
+      el.querySelector<HTMLSelectElement>('.filter-category')!.dispatchEvent(new Event('focus'));
+      httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'expense').flush([
+        { id: 1, kind: 'expense', parent_id: null, name: '餐飲' },
+        { id: 2, kind: 'expense', parent_id: 1, name: '午餐' },
+      ]);
+      httpMock!.expectOne(r => r.url === '/api/accounting/categories' && r.params.get('kind') === 'income').flush([]);
+      httpMock!.expectOne('/api/accounting/projects').flush([
+        { id: 9, name: '日本', is_archived: false, sort_order: 0 },
+        { id: 10, name: '舊案', is_archived: true, sort_order: 1 },
+      ]);
+      fixture.detectChanges();
+
+      const categories = Array.from(el.querySelectorAll<HTMLOptionElement>('.filter-category option')).map(o => o.textContent?.trim());
+      expect(categories).toEqual(['全部類別', '餐飲', '餐飲 › 午餐']);
+      const projects = Array.from(el.querySelectorAll<HTMLOptionElement>('.filter-project option')).map(o => o.textContent?.trim());
+      expect(projects).toEqual(['全部專案', '日本']);
+
+      el.querySelector<HTMLSelectElement>('.filter-project')!.dispatchEvent(new Event('focus'));
+      httpMock!.expectNone(r => r.url === '/api/accounting/categories');
+    });
+
     it('clears the account, kind and query filters from 清除篩選', () => {
       const { fixture, el } = render('sheet');
       flushSummary('2026-10');
