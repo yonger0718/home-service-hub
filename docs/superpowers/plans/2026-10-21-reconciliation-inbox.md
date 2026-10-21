@@ -16,7 +16,7 @@ the tab/bell wiring, the 已處理 list and the settings block.
 
 **Spec:** `docs/superpowers/specs/2026-10-21-reconciliation-inbox-design.md` (rev 2 + 66bb115 + 2a5c062). The plan
 argues from the spec; conflicts resolve against it. Plan rev 2 (2026-10-21) folds in the AGENT-196 review (dev-astra):
-Musts 1–6, Shoulds 1–4, the Nit.
+Musts 1–6, Shoulds 1–4, the Nit. Rev 3 folds the AGENT-198 re-check (dev-grok, PASS with Should) Shoulds/Nits.
 
 ## Global Constraints
 
@@ -534,24 +534,30 @@ def test_default_category_comes_from_a_rule_or_a_past_entry(client, seed, db_ses
 
 
 def test_search_candidates_excludes_claimed_and_listed_entries(client, seed, db_session, run):
+    """Claimed = an active StatementCoverage row (written by hand, like test_reconciliation_actions_case does for
+    coverage fixtures); listed = the case's own near candidate; both must be absent from the search."""
     from app.models import StatementCoverage
     account = _bank(seed, db_session)
     near = seed.entry(account, "-3000", day=date(2026, 9, 10), merchant="近")
     far = seed.entry(account, "-3000", day=date(2026, 10, 30), merchant="遠")
     plus = seed.entry(account, "3000", day=DAY, merchant="收入")
-    claimed = seed.entry(account, "-3000", day=DAY, merchant="已對")
+    claimed = seed.entry(account, "-3000", day=date(2026, 9, 5), merchant="已對")
+    listed = seed.entry(account, "-3860", day=DAY, merchant="近似")  # delta 5 → the case's near candidate
     db_session.commit()
     stmt, (line,), _ = _submit(db_session, run, account, [_line(1, DAY, "店", 3865, "withdrawal")], kind="bank")
     (case,) = _open_lines(db_session, stmt.id)
-    other, _, _ = _submit(db_session, run, seed.account("別戶", statement_live_from=date(2026, 9, 1)),
-                          [_line(1, DAY, "已對", 3000, "withdrawal")], kind="bank")  # claims `claimed` if the matcher pairs it
+    assert case.kind == "amount_delta" and [c["entry_id"] for c in case.candidates] == [listed.id]
+    other, (other_line,), _ = _submit(db_session, run, _bank(seed, db_session, "別戶"),
+                                      [_line(1, date(2026, 9, 5), "已對", 3000, "withdrawal")], kind="bank")
+    db_session.add(StatementCoverage(statement_id=other.id, line_id=other_line.id, event_id=other_line.event_id,
+                                     entry_id=claimed.id, role="principal", match_rule="owner", match_kind="exact",
+                                     status="active", snapshot={"flow": "-3000.0000"}))  # adapt required columns to the model
     db_session.commit()
-    if claimed.id not in {r.entry_id for r in db_session.query(StatementCoverage).filter_by(status="active")}:
-        pytest.skip("fixture did not claim the entry; mark coverage by hand (see coverage_service tests) and re-run")
     res = client.get(f"/reconciliation/inbox/cases/{case.id}/search", headers=S)
-    assert res.status_code == 200
+    assert res.status_code == 200, res.text
     ids = [c["entry_id"] for c in res.json()]
-    assert near.id in ids and far.id not in ids and plus.id not in ids and claimed.id not in ids
+    assert near.id in ids
+    assert far.id not in ids and plus.id not in ids and claimed.id not in ids and listed.id not in ids
     assert all(c["reason"] == "search" for c in res.json())
     assert client.get("/reconciliation/inbox/cases/999999/search", headers=S).status_code == 404
 
@@ -633,7 +639,9 @@ git commit -m "feat(reconciliation): GET /reconciliation/inbox read model"
           `(action, params)` come from `translate(...)` and `parsed = engine._parse(engine._lookup(action), params)`
           (expose a small public `engine.key_for(case_id, version, action, params) -> str` wrapper instead of calling
           the underscore helpers); if `engine._by_key(db, key)` (likewise wrapped as `engine.find_by_key`) returns an
-          `applied` row → result `replayed` with that `action_id`, continue (no audit, no re-apply: a retried tap).
+          `applied` row → result `replayed` with that `action_id`, audit `action_replayed` (actor=label, case_id, action_id,
+          statement_id, request_id — the same event the engine's `_replay` writes, `engine.py:114-116`) + `db.commit()`,
+          continue (no re-apply: a retried tap).
        b. `body.action in buttons(question_now, allowed(case), adjustable=…)` else refused `not_offered`
           (a closed case yields `allowed == []` → the engine's own `case_closed` would follow; report `case_closed`
           when `case.status not in OPEN_STATUSES`, `not_offered` otherwise).
@@ -746,7 +754,7 @@ def test_apply_closed_member_is_refused_while_the_open_one_applies(client, seed,
     res = _apply(client, [a, b], "dismiss", answer="忽略")  # a's version as rendered before the other session closed it
     assert res.status_code == 200
     results = {r["case_id"]: r for r in res.json()["results"]}
-    assert results[a.id]["status"] == "refused" and results[a.id]["code"] in ("case_closed", "stale_case")
+    assert results[a.id]["status"] == "refused" and results[a.id]["code"] == "case_closed"  # step 3b, before the engine
     assert results[b.id]["status"] == "applied"
 
 
@@ -771,7 +779,7 @@ Expected: 17 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/services/inbox_service.py app/schemas/inbox.py app/routers/reconciliation.py tests/integration/test_inbox_api.py
+git add app/services/inbox_service.py app/services/reconciliation_actions/engine.py app/schemas/inbox.py app/routers/reconciliation.py tests/integration/test_inbox_api.py
 git commit -m "feat(reconciliation): POST /reconciliation/inbox/apply batch with stale-case precheck"
 ```
 
@@ -870,23 +878,28 @@ def test_learn_refuses_cross_account_and_cross_amount_members(client, seed, db_s
     account = _bank(seed, db_session)
     s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
     s2, _, _ = _submit(db_session, run, other, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
+    from tests.integration.statement_fixtures import OCT
     (a,) = _open_lines(db_session, s1.id)
     (b,) = _open_lines(db_session, s2.id)
+
+    def still_open(*cases):
+        db_session.expire_all()
+        return all(db_session.get(ReconciliationCase, c.id).status == "open" for c in cases)
+
     res = _apply(client, [a, b], "dismiss", learn={"amount_exact": True})
-    assert res.status_code == 422 and "rule_pattern_mismatch" in res.text
-    s3, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", 99, "withdrawal")], kind="bank",
-                       period=__import__("tests.integration.statement_fixtures", fromlist=["OCT"]).OCT)
+    assert res.status_code == 422 and "rule_pattern_mismatch" in res.text and still_open(a, b)
+    s3, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", 99, "withdrawal")], kind="bank", period=OCT)
     (c,) = _open_lines(db_session, s3.id)
     res = _apply(client, [a, c], "dismiss", learn={"amount_exact": True})
-    assert res.status_code == 422 and "rule_pattern_mismatch" in res.text
+    assert res.status_code == 422 and "rule_pattern_mismatch" in res.text and still_open(a, c)
     assert _apply(client, [a, c], "dismiss", learn={"amount_exact": False}).status_code == 200  # same pattern, amounts may differ
-    db_session.expire_all()
-    assert db_session.get(ReconciliationCase, b.id).status == "open"
+    assert still_open(b)
 
 
 def test_reteaching_replaces_the_action(client, seed, db_session, run):
+    """Same key, new answer → the same row with the new action/params (both directions). Task 6 adds the test
+    that the replacement rule actually books/dismisses the next line."""
     from app.models import ReconciliationOwnerRule
-    from app.services import owner_rule_service as ors
     from tests.integration.statement_fixtures import OCT
     account = _bank(seed, db_session)
     food = seed.category("飲食")
@@ -895,15 +908,18 @@ def test_reteaching_replaces_the_action(client, seed, db_session, run):
     (c1,) = _open_lines(db_session, s1.id)
     rid = _apply(client, [c1], "dismiss", learn={"amount_exact": False}).json()["rule_id"]
     s2, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", 10, "withdrawal")], kind="bank", period=OCT)
-    ors.run_rules_safe(db_session, s2.id)  # Task 6; until it lands, dismiss c2 by hand through the route instead
-    (c2,) = _cases(db_session, s2.id, "dismissed")
-    c2.status, c2.version = "open", c2.version + 1  # reopen by hand to re-teach
-    db_session.commit()
+    (c2,) = _open_lines(db_session, s2.id)
     rid2 = _apply(client, [c2], "record", {"category_id": food.id}, learn={"amount_exact": False}).json()["rule_id"]
     assert rid2 == rid
     db_session.expire_all()
     rule = db_session.get(ReconciliationOwnerRule, rid)
     assert rule.action == "record" and rule.params == {"category_id": food.id}
+    s3, _, _ = _submit(db_session, run, account, [_line(2, date(2026, 10, 4), "店", 10, "withdrawal")], kind="bank",
+                       period=(date(2026, 11, 1), date(2026, 11, 30)))
+    (c3,) = _open_lines(db_session, s3.id)
+    assert _apply(client, [c3], "dismiss", learn={"amount_exact": False}).json()["rule_id"] == rid
+    db_session.expire_all()
+    assert db_session.get(ReconciliationOwnerRule, rid).action == "dismiss" and db_session.get(ReconciliationOwnerRule, rid).params == {}
 
 
 def test_learn_null_amount_key_is_unique(client, seed, db_session, run, pg_engine):
@@ -983,9 +999,7 @@ Run both files. Expected: the new tests fail (no module / 404).
 
 - [ ] **Step 4: Run both files**
 
-Expected: all passed (`test_inbox_api.py` 26 — `test_reteaching_replaces_the_action` uses Task 6's runner; until
-Task 6 lands, dismiss the second case through `/reconciliation/cases/{id}/dismiss` instead and note it;
-`test_owner_rules.py` 5).
+Expected: all passed (`test_inbox_api.py` 26, `test_owner_rules.py` 5).
 
 - [ ] **Step 5: Commit**
 
@@ -1215,35 +1229,75 @@ def test_rule_accept_respects_the_cutover_lock(seed, db_session, run):
     assert result.applied == [] and [code for _, code in result.skipped] == ["locked_until_cutover"]
 
 
-def test_rules_run_before_the_policy_at_every_hook_site(client, seed, db_session, run, monkeypatch):
-    """Review Should 1: the order `run_rules_safe` → `run_policy_safe` at the submit, manual, reconcile and sweep routes."""
+def test_rules_run_before_the_policy_at_every_hook_site(client, seed, db_session, run, dirty_on, monkeypatch):
+    """Review Should 1: `run_rules_safe` runs right before `run_policy_safe` at the submit, manual, reconcile and
+    sweep routes, for the same statement id and run id. Both services are replaced by recorders."""
     from app import auth
     from app.services import policy_service
-    calls: list[tuple[str, int]] = []
-    monkeypatch.setattr(ors, "run_rules_safe", lambda db, sid, run_id=None: calls.append(("rules", sid)) or ors.RuleRunResult())
-    monkeypatch.setattr(policy_service, "run_policy_safe", lambda db, sid, run_id=None: calls.append(("policy", sid)) or policy_service.PolicyResult())
-    monkeypatch.setenv(auth.TOKENS_ENV, "spa:spa-token,worker:worker-token")
-    monkeypatch.setenv(auth.SCOPES_ENV, "spa=legacy; worker=ingest")
+    from tests.integration.test_reconciliation_policy import FEE_LINE, _claim, _revision
+    calls: list[tuple[str, int, int | None]] = []
+    monkeypatch.setattr(ors, "run_rules_safe", lambda db, sid, run_id=None: calls.append(("rules", sid, run_id)) or ors.RuleRunResult())
+    monkeypatch.setattr(policy_service, "run_policy_safe", lambda db, sid, run_id=None: calls.append(("policy", sid, run_id)) or policy_service.PolicyResult())
+    monkeypatch.setenv(auth.TOKENS_ENV, "spa:spa-token,worker:worker-token,hermes:hermes-token")
+    monkeypatch.setenv(auth.SCOPES_ENV, "spa=legacy; worker=ingest; hermes=read,propose,enqueue")
     monkeypatch.setenv(auth.FEATURE_ENV, "true")
     S, W = {"Authorization": "Bearer spa-token"}, {"Authorization": "Bearer worker-token"}
+
+    def last_pair():
+        assert len(calls) >= 2 and calls[-2][0] == "rules" and calls[-1][0] == "policy", calls[-2:]
+        assert calls[-2][1:] == calls[-1][1:]  # same statement id and run id
+        return calls[-1][1]
+
+    # 1. submit route (worker lease; a live card statement → mode live, hooks run)
+    card = _card(seed, db_session)
+    lease = _claim(client)
+    res = client.post("/statements/revisions", headers=W, json=_revision(lease, card, [FEE_LINE], "1200"))
+    assert res.status_code == 201, res.text
+    assert last_pair() == res.json()["statement_id"] and calls[-1][2] == lease["run_id"]
+    # 2. manual statement route (owner): same fields as ManualStatementIn (`schemas/statements.py:227-241`)
     account = _bank(seed, db_session)
-    stmt, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
-    # reconcile route
-    assert client.post(f"/accounts/{account.id}/statements/{stmt.id}/reconcile", headers=S).status_code == 200
-    assert calls[-2:] == [("rules", stmt.id), ("policy", stmt.id)]
-    # sweep route (the worker lease): build the body the way test_reconciliation_policy.py / test_reconciliation_api.py do
-    r, token = run
-    from tests.helpers import set_dirty
-    set_dirty(db_session, stmt.id)
-    res = client.post("/reconciliation/sweep", headers=W, json={"run_id": r.id, "lease_token": token})
+    body = {"kind": "bank", "currency": "TWD", "period_start": "2026-09-01", "period_end": "2026-09-30",
+            "opening_balance": "0", "statement_total": "-10.0000",
+            "lines": [{"seq": 1, "posted_date": "2026-09-03", "merchant_raw": "店", "printed_amount": "10", "line_kind": "withdrawal"}]}
+    res = client.post(f"/accounts/{account.id}/statements", headers=S, json=body)
+    assert res.status_code == 201, res.text
+    manual_id = res.json()["statement_id"]
+    assert last_pair() == manual_id
+    # 3. reconcile route
+    assert client.post(f"/accounts/{account.id}/statements/{manual_id}/reconcile", headers=S).status_code == 200
+    assert last_pair() == manual_id
+    # 4. sweep route: mark the statement pending the way test_sweep_route_runs_policy_per_statement does
+    stmt = db_session.get(AccountStatement, manual_id)
+    stmt.needs_recheck = True
+    db_session.commit()
+    worker_run, token = run
+    res = client.post("/reconciliation/sweep", headers=W, json={"run_id": worker_run.id, "lease_token": token})
     assert res.status_code == 200, res.text
-    assert ("rules", stmt.id) in calls and calls.index(("rules", stmt.id), 2) < calls.index(("policy", stmt.id), 2)
-    # manual statement route: the first ManualStatementIn body found in tests/integration (grep "statements\"" json=) — rules before policy for the new statement id
-    # submit route (`POST /statements/revisions`, worker token): same assertion on the new statement id
-    # (both bodies exist in the suite; copy them, do not invent fields)
+    assert last_pair() == manual_id and calls[-1][2] == worker_run.id
 
 
-def test_rules_run_before_the_policy_at_the_reconcile_route(client, seed, db_session, run, monkeypatch):
+def test_reteach_then_the_replacement_rule_answers_the_next_line(seed, db_session, run):
+    """Re-check Should: after dismiss → record re-teach the next matching line is booked, and after record → dismiss it is dismissed."""
+    from tests.integration.statement_fixtures import OCT
+    account = _bank(seed, db_session)
+    food = seed.category("飲食")
+    db_session.commit()
+    rule = _rule(seed, db_session, account, line_kind="withdrawal", merchant_pattern="店", amount=None, action="dismiss", params={})
+    rule.action, rule.params = "record", {"category_id": food.id}  # what Task 5's upsert does on re-teach
+    db_session.commit()
+    s1, _, _ = _submit(db_session, run, account, [_line(1, DAY, "店", 10, "withdrawal")], kind="bank")
+    ors.run_rules_safe(db_session, s1.id)
+    (c1,) = _cases(db_session, s1.id, "resolved")
+    assert c1.kind == "line_unmatched" and db_session.get(ReconciliationAction, c1.resolved_action_id).action == "create_entry"
+    rule.action, rule.params = "dismiss", {}
+    db_session.commit()
+    s2, _, _ = _submit(db_session, run, account, [_line(1, date(2026, 10, 3), "店", 10, "withdrawal")], kind="bank", period=OCT)
+    ors.run_rules_safe(db_session, s2.id)
+    assert len(_cases(db_session, s2.id, "dismissed")) == 1
+
+
+def test_rules_really_book_at_the_reconcile_route(client, seed, db_session, run, monkeypatch):
+    """No recorders: the real runner + real policy (off) through the route."""
     from app import auth
     monkeypatch.setenv(auth.TOKENS_ENV, "spa:spa-token")
     monkeypatch.setenv(auth.SCOPES_ENV, "spa=legacy")
@@ -1268,9 +1322,9 @@ Run both files. Expected: unit FAIL (no `match_rule`), integration FAIL (no `run
 
 - [ ] **Step 5: Run**
 
-Run `tests/unit/test_owner_rule_service.py`, `tests/integration/test_owner_rules.py` (the hook-site test must cover
-all four routes — finish the manual and submit sections with real request bodies copied from the suite), then
-`tests/integration/test_reconciliation_policy.py` (unchanged behaviour: all pass; the hook runs with zero rules).
+Run `tests/unit/test_owner_rule_service.py`, `tests/integration/test_owner_rules.py` (the hook-site test covers all
+four routes), then `tests/integration/test_reconciliation_policy.py` (unchanged behaviour: all pass; the hook runs
+with zero rules).
 
 - [ ] **Step 6: Commit**
 

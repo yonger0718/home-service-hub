@@ -179,9 +179,10 @@ One WRITE call per tap, also for merged cards:
   "action": "record" | "match_candidate" | "accept_bank_amount" | "defer" | "dismiss" | "anchor",
   "params": {…},                        // per the table in §4.3; for match_candidate on a merged card: {"entry_ids": {case_id: entry_id}}
   "answer": "記為支出 餐飲",             // the button text the owner saw, ≤ 80 chars, for the audit (§7.3)
-  "learn": false | {"amount_exact": bool}   // §6: create a rule from this answer
+  "learn": null | {"amount_exact": bool}    // §6: create a rule from this answer (null = do not learn)
 }
-→ { "results": [{"case_id", "status": "applied"|"replayed"|"refused", "action_id"?, "code"?}], "rule_id": int|null }
+→ { "results": [{"case_id", "status": "applied"|"replayed"|"refused", "action_id"?, "code"?}], "rule_id": int|null,
+    "rule_error": str|null }               // learn failed after the members applied: the actions stand, HTTP 200
 ```
 Each case is applied in its own transaction through `engine.apply_action(actor="owner", label=<token label>)` — exactly
 what the single-case route does — with a `precheck` that refuses `stale_case` when `case.version != case_version`
