@@ -1292,10 +1292,10 @@ Nice=10
 `homehub-portfolio-flex.timer`:
 ```ini
 [Unit]
-Description=HomeHub portfolio: IB Flex statement daily at 15:00 Taipei (after the US close and IB's overnight statement run)
+Description=HomeHub portfolio: IB Flex statement daily at 15:30 Taipei (after the US close and IB's overnight statement run)
 
 [Timer]
-OnCalendar=*-*-* 15:00:00 Asia/Taipei
+OnCalendar=*-*-* 15:30:00 Asia/Taipei
 Persistent=true
 Unit=homehub-portfolio-flex.service
 
