@@ -235,8 +235,10 @@ accept_bank_amount): the first enabled rule of the statement's account whose `li
 owner-twin guard the policy's creations use, so a rule never double-books a line the owner already recorded — with an
 audit event `rule_applied {rule_id, case_id, action}`; a refusal is audited `rule_skipped {rule_id, case_id, code}` and
 never retried in the same run. Rules never touch cases on historical statements, settlement lines, cases with a pending
-proposal, or a case whose `context.reverted_action_id` is set *[call: a case the owner reverted is the owner's; without
-this the next sweep would redo what 撤銷 undid]*. `actor="owner"`: a rule is the owner's standing instruction, so the
+proposal, or — for rule R only — a case whose `context.reverted_action_id` names an action R itself applied (audit label
+`rule:<R.id>`) *[call, narrowed after a reviewer note: without this the next sweep would redo what 撤銷 undid; a different
+rule, or R re-created under a new id after the owner fixed it, may still answer the case, and an owner's reverted manual
+action never blocks a rule]*. `actor="owner"`: a rule is the owner's standing instruction, so the
 policy caps and budgets do not apply and `resolved_by` stays `owner`; the audit label distinguishes it. Rules run before
 the policy, so a line with a rule is booked with the owner's category rather than the policy's generic backfill.
 
@@ -287,8 +289,8 @@ rows); the SPA shows `rule:<id>` → 「規則 #id」, `policy` → 「系統」
 - Case changed under the card (`case_version` moved): the apply is refused `stale_case` by the precheck; the SPA
   reloads the inbox and keeps the card with the message. No silent re-targeting.
 - A rule matches the wrong line: every rule application is one audit row and one revertable action; the 已處理 list
-  shows it with 撤銷 (+ disable the rule); a reverted case is never re-answered by a rule. A rule never matches across
-  accounts, and by default only an exact amount.
+  shows it with 撤銷 (+ disable the rule); the same rule never re-answers a case it was reverted on. A rule never matches
+  across accounts, and by default only an exact amount.
 - A generic description merged with unrelated lines: the amount in the group key keeps 「轉帳支取 −N」 and 「轉帳支取 −M」
   apart; transfer-kind lines never get a 記為 button at all.
 - MOZE rows before cutover: `adjust_amount` (accept_bank_amount) is refused `locked_until_cutover`; the card shows
@@ -307,7 +309,7 @@ rows); the SPA shows `rule:<id>` → 「規則 #id」, `policy` → 「系統」
   null amount when `amount_exact` false, updates a duplicate, refuses a pattern mismatch, and is skipped when a member
   was refused; `owner_rule_service.apply` books a matching `line_unmatched` at ingest and on the next sweep as
   `actor=owner` with label `rule:<id>` and audit `rule_applied`, skips historical statements / settlement lines /
-  proposed cases / reverted cases / lines an owner entry may record (`rule_skipped owner_may_record`) / amount
+  proposed cases / cases the same rule was reverted on (another rule still applies) / lines an owner entry may record (`rule_skipped owner_may_record`) / amount
   mismatch when `amount` set, longest pattern wins, runs before the policy; rule routes list/delete/patch;
   `ActionOut.label`/`answer`; `adjust_amount` via a rule respects the cutover lock.
 - SPA (Vitest): the tab renders accounts and cards from an inbox fixture; merged card shows ×N; folded sections; record

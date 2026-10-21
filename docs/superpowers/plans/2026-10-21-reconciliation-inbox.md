@@ -799,6 +799,7 @@ git commit -m "feat(reconciliation): learn owner rules from inbox answers; rule 
   `reconciliation_actions.allowed`; `inbox_service.classify/adjustable/pattern/flow_sign/BUTTONS_TO_ACTIONS`;
   `proposal_service.pending_for_case`; `audit.record`.
 - Produces:
+  - `reverted_rule_id(db, case: ReconciliationCase) -> int | None`
   - `match_rule(rules: Iterable[ReconciliationOwnerRule], *, line_kind: str, merchant_norm: str, flow_amount: Decimal) -> ReconciliationOwnerRule | None`
     — enabled rules whose `line_kind` and `flow_sign` match, whose `merchant_pattern` is a substring of
     `pattern(merchant_norm)`, and whose `amount` is None or equals `flow_amount`; longest `merchant_pattern` wins,
@@ -806,10 +807,12 @@ git commit -m "feat(reconciliation): learn owner rules from inbox answers; rule 
   - `@dataclass RuleRunResult: applied: list[int] = [], skipped: list[tuple[int, str]] = []` (action ids; (case_id, code)).
   - `apply_rules(db, statement_id: int, *, run_id: int | None = None) -> RuleRunResult` — returns empty when the
     statement is not `live`. Loads the account's enabled rules; returns empty when none. For each `open` case of the
-    statement with a line (`current_line`), in id order: skip when `context.reverted_action_id` is set, when the line is
-    a settlement line (`classify(...) == "settlement"`), when `pending_for_case` is non-empty; question via `classify`;
+    statement with a line (`current_line`), in id order: skip when the line is a settlement line
+    (`classify(...) == "settlement"`), when `pending_for_case` is non-empty; question via `classify`;
     eligible = (`bank_only` → rules with action `record`/`dismiss`) or (`amount_differs` with `adjustable` → rules
-    with action `accept_bank_amount`); `match_rule` over the eligible rules; translate with
+    with action `accept_bank_amount`); `match_rule` over the eligible rules minus `reverted_rule_id(db, case)` (the rule id parsed from the `rule:<id>` audit
+    actor of the `action_applied` row whose `action_id == context.reverted_action_id`, else None — spec §6.3: the same
+    rule never redoes what 撤銷 undid; any other rule may); translate with
     `inbox_service.translate(rule.action, rule.params, case, line, answer=f"rule:{rule.id}")` and apply; on success
     `rule.applied_count += 1`, `rule.last_applied_at = now`, audit `rule_applied {rule_id, case_id, action}` with
     `actor=f"rule:{rule.id}"`, `db.commit()`; on `(ValidationError, ConflictError, NotFoundError)`: `db.rollback()`,
@@ -913,7 +916,11 @@ def test_rule_amount_mismatch_and_historical_and_reverted_are_skipped(seed, db_s
     assert len(result.applied) == 1
     engine.revert_action(db_session, action_id=result.applied[0], actor="owner", label="spa")
     db_session.commit()
-    assert ors.run_rules_safe(db_session, stmt.id).applied == []  # reverted case: the owner's now
+    assert ors.run_rules_safe(db_session, stmt.id).applied == []  # the same rule never redoes what 撤銷 undid
+    other = _rule(seed, db_session, account, line_kind="withdrawal", merchant_pattern="款還款", amount=None,
+                  params={"category_id": food.id})  # a different rule (shorter pattern, higher id) still may
+    assert len(ors.run_rules_safe(db_session, stmt.id).applied) == 1
+    (ev,) = [e for e in _audits(db_session, "rule_applied") if e.detail["rule_id"] == other.id]
     hist = seed.account("舊戶")
     db_session.commit()
     _rule(seed, db_session, hist, line_kind="withdrawal", merchant_pattern="店", amount=None, params={"category_id": food.id})
