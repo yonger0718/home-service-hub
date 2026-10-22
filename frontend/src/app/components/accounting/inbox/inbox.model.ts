@@ -157,6 +157,7 @@ export interface ReconciliationAction {
   deleted_entry_ids: number[];
   touched_entry_ids: number[];
   touched_group_ids: number[];
+  replayed: boolean;
   label: string | null;
   answer: string | null;
   created_at: string;

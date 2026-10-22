@@ -62,6 +62,12 @@ describe('buildCards', () => {
     expect(cards.other.map((card) => card.key)).toEqual(['case:8']);
   });
 
+  it('is learnable for accept_bank_amount on amount_differs, not without a hint', () => {
+    const base = { question: 'amount_differs' as const, entry: ENTRY, actions: ['accept_bank_amount' as const, 'dismiss' as const] };
+    expect(buildCards([makeAccount([makeItem({ ...base, actions: ['accept_bank_amount'] })])]).ask[0].learnable).toBe(true);
+    expect(buildCards([makeAccount([makeItem({ ...base, actions: ['accept_bank_amount'], rule_hint: null })])]).ask[0].learnable).toBe(false);
+  });
+
   it('is not learnable without a rule hint', () => {
     expect(buildCards([makeAccount([makeItem({ rule_hint: null })])]).ask[0].learnable).toBe(false);
   });

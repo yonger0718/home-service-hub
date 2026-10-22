@@ -13,7 +13,7 @@ export interface InboxCard {
   items: InboxItem[];
   actions: InboxButton[];
   rule_hint: InboxRuleHint | null;
-  /** True when "以後都這樣" can be offered: a rule hint exists and the card can be recorded or dismissed. */
+  /** True when "以後都這樣" can be offered: a rule hint exists and the card can be recorded, dismissed or accept the bank amount (spec §6.1). */
   learnable: boolean;
 }
 
@@ -43,6 +43,8 @@ export const INBOX_ERRORS: Record<string, string> = {
 };
 
 function makeCard(account: InboxAccount, key: string, first: InboxItem): InboxCard {
+  // A merged card takes actions and rule_hint from its first member: the server groups only same-question items
+  // that share a group_key.
   return {
     key,
     question: first.question,
@@ -50,7 +52,9 @@ function makeCard(account: InboxAccount, key: string, first: InboxItem): InboxCa
     items: [first],
     actions: first.actions,
     rule_hint: first.rule_hint,
-    learnable: first.rule_hint !== null && (first.actions.includes('record') || first.actions.includes('dismiss')),
+    learnable:
+      first.rule_hint !== null &&
+      (['record', 'dismiss', 'accept_bank_amount'] as InboxButton[]).some((a) => first.actions.includes(a)),
   };
 }
 
