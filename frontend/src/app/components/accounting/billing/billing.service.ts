@@ -105,6 +105,18 @@ export class BillingService {
     this.start(event, today, untracked(this.generation));
   }
 
+  /**
+   * Reads every statement of `dues` again in a new round, even one already read in the current change round: payments
+   * made on another device, or a failed read, show up without a local write. As with any round, the previous figures
+   * stay shown until the new answers have fully landed, and an older round's answers are dropped.
+   */
+  refresh(dues: readonly BillingEvent[], today: string): void {
+    const generation = untracked(this.generation);
+    for (const event of dues) {
+      this.start(event, today, generation);
+    }
+  }
+
   private start(event: BillingEvent, today: string, generation: number): void {
     const key = billKey(event);
     const round: Pending = { generation, fingerprint: fingerprint(event), id: ++this.requestId, spends: new Map() };

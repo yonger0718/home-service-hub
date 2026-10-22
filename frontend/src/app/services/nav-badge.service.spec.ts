@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reminderDues } from '../components/accounting/billing/billing-math';
 import { BillingService } from '../components/accounting/billing/billing.service';
 import { countReminders } from '../components/accounting/billing/reminder-count';
-import { makeAccount, makeInstance } from '../components/accounting/testing/fixtures';
+import { makeAccount, makeEntry, makeInstance } from '../components/accounting/testing/fixtures';
 import { Counterparty, ImportRun, LedgerAccount, ScheduleInstance } from '../models/accounting.model';
 import { RecalcStatus } from '../models/portfolio.model';
 import { AccountingService } from './accounting.service';
@@ -343,8 +343,10 @@ describe('NavBadgeService', () => {
     expect(svc.badges()).toEqual({ accounting: { count: 1, label: '1 筆待確認' } });
   });
 
-  it('stale accounts snapshot never calls ensure', () => {
-    const ensure = vi.spyOn(TestBed.inject(BillingService), 'ensure');
+  it('stale accounts snapshot never reaches the statements (ensure or refresh)', () => {
+    const bills = TestBed.inject(BillingService);
+    const ensure = vi.spyOn(bills, 'ensure');
+    const reread = vi.spyOn(bills, 'refresh');
     const svc = service();
     svc.refresh();
     vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
@@ -353,8 +355,8 @@ describe('NavBadgeService', () => {
     answer(1, { accounts: [card(9)] });
     answer(0, { accounts: [card(7)] });
 
-    expect(ensure).toHaveBeenCalled();
-    const ids = ensure.mock.calls.flatMap(([dues]) => dues.map(event => event.accountId));
+    expect(reread).toHaveBeenCalled();
+    const ids = [...ensure.mock.calls, ...reread.mock.calls].flatMap(([dues]) => dues.map(event => event.accountId));
     expect(ids).toContain(9);
     expect(ids).not.toContain(7);
   });
@@ -376,5 +378,69 @@ describe('NavBadgeService', () => {
     });
     expect(expected).toBe(2);
     expect(svc.badges()['accounting-timeline']).toEqual({ count: expected, label: `提醒中心 ${expected} 項` });
+  });
+  describe('card statements on a refresh (payments made elsewhere, no local write)', () => {
+    function paidInFull(): void {
+      (accountingStub['getEntries'] as ReturnType<typeof vi.fn>).mockImplementation(() =>
+        of({ items: [makeEntry({ id: 70, kind: 'transfer_in', amount: '1000' })], total: 1, limit: 100, offset: 0 }),
+      );
+    }
+
+    it('a focus refresh after 30 s re-reads the cached statement and updates the count', () => {
+      const svc = service();
+      svc.start();
+      answer(0, { accounts: [card(9)] });
+      expect(svc.badges()['accounting-timeline']).toEqual({ count: 1, label: '提醒中心 1 項' });
+      const reads = (accountingStub['getEntries'] as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      paidInFull();
+      vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+      window.dispatchEvent(new Event('focus'));
+      answer(1, { accounts: [card(9)] });
+
+      expect((accountingStub['getEntries'] as ReturnType<typeof vi.fn>).mock.calls.length).toBe(reads + 1);
+      expect('accounting-timeline' in svc.badges()).toBe(false);
+    });
+
+    it('a focus within 30 s does not re-read the statement', () => {
+      const svc = service();
+      svc.start();
+      answer(0, { accounts: [card(9)] });
+      const reads = (accountingStub['getEntries'] as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      paidInFull();
+      vi.advanceTimersByTime(10_000);
+      window.dispatchEvent(new Event('focus'));
+      TestBed.tick();
+
+      expect(accounts.subjects).toHaveLength(1);
+      expect((accountingStub['getEntries'] as ReturnType<typeof vi.fn>).mock.calls.length).toBe(reads);
+      expect(svc.badges()['accounting-timeline']).toEqual({ count: 1, label: '提醒中心 1 項' });
+    });
+
+    it('re-reads once per accepted refresh, not on every later run of the badge effect', () => {
+      const svc = service();
+      const refresh = vi.spyOn(TestBed.inject(BillingService), 'refresh');
+      svc.start();
+      answer(0, { accounts: [card(9)] });
+      expect(refresh).toHaveBeenCalledTimes(1);
+
+      // A write reloads the reminders (a new change round re-reads through ensure): no extra forced round.
+      (accountingStub['entriesChanged'] as WritableSignal<number>).set(1);
+      TestBed.tick();
+      land(accounts.subjects[1], [card(9)]);
+      land(counterparties.subjects[1], []);
+      land(queue.subjects[1], []);
+      TestBed.tick();
+      expect(refresh).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(BADGE_REFRESH_MIN_MS + 1_000);
+      window.dispatchEvent(new Event('focus'));
+      land(accounts.subjects[2], [card(9)]);
+      land(counterparties.subjects[2], []);
+      land(queue.subjects[2], []);
+      TestBed.tick();
+      expect(refresh).toHaveBeenCalledTimes(2);
+    });
   });
 });

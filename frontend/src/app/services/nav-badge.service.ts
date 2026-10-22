@@ -43,6 +43,11 @@ export class NavBadgeService {
   private readonly generations: Record<Source, number> = { reminders: 0, import: 0, recalc: 0 };
   private started = false;
   private lastRefreshAt: number | null = null;
+  /**
+   * Set when the reminders of an accepted refresh (start / focus / visible) land: the next run of the statements effect
+   * re-reads them (`BillingService.refresh`) instead of reusing this change round's cached figures, once.
+   */
+  private rereadBills = false;
 
   readonly badges: Signal<Readonly<Record<string, NavBadge>>> = computed(() => {
     const badges: Record<string, NavBadge> = {};
@@ -65,12 +70,20 @@ export class NavBadgeService {
   });
 
   constructor() {
-    // Statements of the latest accepted accounts snapshot, again on each change round (BillingService dedupes).
+    // Statements of the latest accepted accounts snapshot, again on each change round (BillingService dedupes), and
+    // re-read once after an accepted refresh: payments made on another device, or a failed read, then show up too.
     effect(() => {
       const reminders = this.reminders();
       this.bills.generation();
       if (reminders) {
-        untracked(() => this.bills.ensure(reminders.dues, reminders.today));
+        untracked(() => {
+          if (this.rereadBills) {
+            this.rereadBills = false;
+            this.bills.refresh(reminders.dues, reminders.today);
+          } else {
+            this.bills.ensure(reminders.dues, reminders.today);
+          }
+        });
       }
     });
 
@@ -119,12 +132,12 @@ export class NavBadgeService {
       return;
     }
     this.lastRefreshAt = now;
-    this.loadAccounting();
+    this.loadAccounting(true);
     this.load('recalc', this.portfolio.getRecalcStatus(), status => this.recalc.set(status));
   }
 
-  /** The reminders and the latest import (the accounting badges). */
-  private loadAccounting(): void {
+  /** The reminders and the latest import (the accounting badges); `rereadBills`: an accepted refresh (see the field). */
+  private loadAccounting(rereadBills = false): void {
     const today = todayIso();
     this.load(
       'reminders',
@@ -133,7 +146,10 @@ export class NavBadgeService {
         counterparties: this.accounting.getCounterparties(),
         queue: this.accounting.getScheduleInstances({ queue: true }),
       }),
-      inputs =>
+      inputs => {
+        if (inputs && rereadBills) {
+          this.rereadBills = true;
+        }
         this.reminders.set(
           inputs && {
             dues: reminderDues(inputs.accounts, today).filter(event => event.kind === 'due'),
@@ -141,7 +157,8 @@ export class NavBadgeService {
             queue: inputs.queue,
             today,
           },
-        ),
+        );
+      },
     );
     // `getLatestImport` already answers a 404 (no import yet) with null.
     this.load('import', this.accounting.getLatestImport(), run => this.latestImport.set(run));
