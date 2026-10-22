@@ -98,4 +98,12 @@ describe('MobileNavComponent', () => {
     expect(tab(el, '財務').textContent?.replace(/\s+/g, '')).toBe('財務，有待處理項目');
     expect(tab(el, '投資').querySelector('.visually-hidden')).toBeNull();
   });
+
+  it('highlights no tab on /settings (a pushed screen), not even 設定', async () => {
+    const el = await render('/settings', { hidden: [] });
+
+    expect(el.querySelector('.m-tab.active')).toBeNull();
+    expect(el.querySelector('.m-tab[aria-current]')).toBeNull();
+    expect(tab(el, '設定').classList.contains('active')).toBe(false);
+  });
 });

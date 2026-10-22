@@ -219,13 +219,19 @@ describe('phone route matrix (390 px)', () => {
   beforeEach(() => stubViewport(390));
 
   for (const [url, title] of LIST_LEVEL) {
-    it(`${url} has one h1 "${title}", the gear and the sub-nav`, async () => {
+    // 設定 is a pushed screen: a ‹ back button and no gear (it would link to itself).
+    const gear = url === '/settings' ? 'a ‹ back button, no gear' : 'the gear';
+    it(`${url} has one h1 "${title}", ${gear} and the sub-nav`, async () => {
       const root = await open(url);
       expect(headings(root)).toEqual([title]);
-      expect(root.querySelector('a[aria-label="設定"][href="/settings"]')).not.toBeNull();
       if (url === '/settings') {
+        expect(root.querySelector('a[aria-label="設定"]')).toBeNull();
+        expect(root.querySelector('button.page-back[aria-label="返回"]')).not.toBeNull();
+        expect(root.querySelector('app-sub-nav')).not.toBeNull();
         expect(root.querySelector('app-sub-nav')?.querySelector('a.active') ?? null).toBeNull();
       } else {
+        expect(root.querySelector('a[aria-label="設定"][href="/settings"]')).not.toBeNull();
+        expect(root.querySelector('button.page-back')).toBeNull();
         expect(root.querySelector('app-sub-nav a.active')).not.toBeNull();
       }
     });
@@ -249,6 +255,7 @@ describe('wide route matrix (1440 px)', () => {
       const root = await open(url);
       expect(headings(root)).toContain(title);
       expect(root.querySelector('a[aria-label="設定"]')).toBeNull();
+      expect(root.querySelector('button.page-back')).toBeNull();
       expect(root.querySelector('app-sub-nav')).toBeNull();
     });
   }

@@ -1,9 +1,11 @@
+import { Location } from '@angular/common';
+import { provideLocationMocks } from '@angular/common/testing';
 import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { MATCH_MEDIA, PHONE_QUERY } from '../../../services/layout-mode.service';
+import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
 import { PageHeaderComponent } from './page-header';
 
@@ -16,6 +18,37 @@ class BlankPage {}
 })
 class Host {
   title: string | undefined = '我的標題';
+}
+
+@Component({
+  imports: [PageHeaderComponent],
+  template: `<app-page-header [back]="true"></app-page-header>`,
+})
+class BackHost {}
+
+/** `/settings` reached by `urls` in order (the first is the router's first navigation); `/blocked` is always refused. */
+async function renderBack(urls: string[], opts: { mode?: LayoutMode; hidden?: string[] } = {}) {
+  if (opts.hidden) localStorage.setItem('hh-nav-hidden', JSON.stringify(opts.hidden));
+  TestBed.configureTestingModule({
+    providers: [
+      provideRouter([
+        { path: 'blocked', canActivate: [() => false], component: BlankPage },
+        { path: '**', component: BlankPage },
+      ]),
+      provideLocationMocks(),
+      { provide: MATCH_MEDIA, useValue: null },
+      { provide: NavBadgeService, useValue: { badges: signal({}) } },
+    ],
+  });
+  TestBed.inject(LayoutModeService).set(opts.mode ?? 'phone');
+  const router = TestBed.inject(Router);
+  for (const url of urls) await router.navigateByUrl(url);
+  const back = vi.spyOn(TestBed.inject(Location), 'back').mockImplementation(() => undefined);
+  const navigate = vi.spyOn(router, 'navigateByUrl');
+  const fixture = TestBed.createComponent(BackHost);
+  fixture.detectChanges();
+  const el = fixture.nativeElement as HTMLElement;
+  return { el, back, navigate, button: el.querySelector<HTMLButtonElement>('button.page-back') };
 }
 
 async function render(width: number, url = '/accounting', hidden: string[] | null = null, title?: string) {
@@ -77,5 +110,88 @@ describe('PageHeaderComponent', () => {
 
     expect(el.querySelector('a[aria-label="設定"]')).toBeNull();
     expect(el.querySelector('app-sub-nav')).toBeNull();
+  });
+
+  describe('back button (Settings as a pushed screen on phones)', () => {
+    it('renders ‹ 返回 before the h1 on phones', async () => {
+      const { el, button } = await renderBack(['/portfolio', '/settings']);
+
+      expect(button).not.toBeNull();
+      expect(button!.getAttribute('aria-label')).toBe('返回');
+      expect(button!.getAttribute('type')).toBe('button');
+      expect(button!.textContent?.trim()).toBe('‹');
+      expect(el.querySelector('h1')!.previousElementSibling).toBe(button);
+      expect(el.querySelector('h1')!.textContent?.trim()).toBe('設定');
+    });
+
+    it.each<LayoutMode>(['sheet', 'panes'])('is not rendered in %s mode', async mode => {
+      const { button } = await renderBack(['/portfolio', '/settings'], { mode });
+
+      expect(button).toBeNull();
+    });
+
+    it('is not rendered without the back input', async () => {
+      const el = await render(375, '/settings');
+
+      expect(el.querySelector('.page-back')).toBeNull();
+    });
+
+    it('goes back in history after an in-app navigation to /settings', async () => {
+      const { button, back, navigate } = await renderBack(['/portfolio', '/settings']);
+
+      button!.click();
+
+      expect(back).toHaveBeenCalledTimes(1);
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('navigates to the landing path (/portfolio by default) on a first navigation to /settings', async () => {
+      const { button, back, navigate } = await renderBack(['/settings']);
+
+      button!.click();
+
+      expect(back).not.toHaveBeenCalled();
+      expect(navigate).toHaveBeenCalledWith('/portfolio');
+    });
+
+    it('navigates to the first visible group when 投資 is hidden', async () => {
+      const { button, navigate } = await renderBack(['/settings'], { hidden: ['supplies', 'portfolio'] });
+
+      button!.click();
+
+      expect(navigate).toHaveBeenCalledWith('/accounting');
+    });
+
+    it('treats /settings as the first navigation when the one before it was refused', async () => {
+      const { button, back, navigate } = await renderBack(['/blocked', '/settings']);
+
+      button!.click();
+
+      expect(back).not.toHaveBeenCalled();
+      expect(navigate).toHaveBeenCalledWith('/portfolio');
+    });
+
+    it('is hidden on a first navigation when every hideable group is hidden (the fallback is /settings)', async () => {
+      const { button } = await renderBack(['/settings'], { hidden: ['supplies', 'portfolio', 'accounting'] });
+
+      expect(button).toBeNull();
+    });
+
+    it('still goes back with every hideable group hidden after an in-app navigation', async () => {
+      const { button, back } = await renderBack(['/accounting', '/settings'], {
+        hidden: ['supplies', 'portfolio', 'accounting'],
+      });
+
+      button!.click();
+
+      expect(back).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows no gear on /settings (it would link to itself)', async () => {
+      const { el } = await renderBack(['/portfolio', '/settings']);
+
+      expect(el.querySelector('a[aria-label="設定"]')).toBeNull();
+      expect(el.querySelector('app-sub-nav')).not.toBeNull();
+    });
   });
 });
