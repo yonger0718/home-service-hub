@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>設定 · 桌面</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; flex-wrap: wrap; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <!-- ===== 側欄：展開 ===== -->
+  <sc-if value="{{expanded}}" hint-placeholder-val="{{true}}">
+    <aside aria-label="主要導覽" style="flex: 1 1 248px; max-width: 100%; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 14px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 0 4px 0 8px">
+        <a href="Main.dc.html" style="flex: 1; display: flex; align-items: center; gap: 10px; color: {{t.text}}; text-decoration: none">
+          <span style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center; flex: none">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+          </span>
+          <span style="display: flex; flex-direction: column">
+            <b style="font-size: 16px; font-weight: 800; letter-spacing: -0.01em">Home Hub</b>
+            <small style="font-size: 12px; color: {{t.muted}}">家庭服務中樞</small>
+          </span>
+        </a>
+        <button type="button" aria-label="收合側欄" onClick="{{setRail}}" style="width: 36px; height: 36px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z M9 4v16 M15 10l-2 2 2 2"></path></svg>
+        </button>
+      </div>
+      <nav style="display: flex; flex-direction: column; gap: 8px">
+        <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+          <div style="display: flex; flex-direction: column; gap: 2px">
+            <div style="display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 10px; color: {{t.muted}}">
+              <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em">{{g.label}}</span>
+              <span style="font-size: 11px; font-weight: 600">{{g.hint}}</span>
+            </div>
+            <sc-for list="{{g.items}}" as="item" hint-placeholder-count="3">
+              <a href="{{item.href}}" aria-current="{{item.current}}" style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; border-radius: 12px; background: {{item.bg}}; color: {{item.fg}}; font-weight: {{item.weight}}; font-size: 14px; text-decoration: none">
+                <span style="width: 26px; height: 26px; border-radius: 8px; background: {{item.iconBg}}; display: flex; align-items: center; justify-content: center; flex: none">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{item.iconFg}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+                </span>
+                <span style="flex: 1">{{item.label}}</span>
+                <sc-if value="{{item.hasCount}}" hint-placeholder-val="{{false}}">
+                  <span style="min-width: 20px; height: 20px; padding: 0 6px; box-sizing: border-box; border-radius: 10px; background: {{t.primary}}; color: #FFFFFF; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{item.count}}</span>
+                </sc-if>
+                <sc-if value="{{item.hasDot}}" hint-placeholder-val="{{false}}">
+                  <span style="width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}"></span>
+                </sc-if>
+              </a>
+            </sc-for>
+          </div>
+        </sc-for>
+      </nav>
+    </aside>
+  </sc-if>
+
+  <!-- ===== 側欄：圖示欄 ===== -->
+  <sc-if value="{{rail}}" hint-placeholder-val="{{false}}">
+    <aside aria-label="主要導覽" style="flex: 0 0 72px; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 0; display: flex; flex-direction: column; align-items: center; gap: 6px">
+      <a href="Main.dc.html" aria-label="Home Hub 首頁" style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+      </a>
+      <button type="button" aria-label="展開側欄" onClick="{{setExpanded}}" style="width: 40px; height: 36px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z M9 4v16 M13 10l2 2-2 2"></path></svg>
+      </button>
+      <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+        <div style="width: 32px; height: 1px; background: {{t.border}}; margin: 6px 0"></div>
+        <sc-for list="{{g.items}}" as="item" hint-placeholder-count="3">
+          <a href="{{item.href}}" aria-label="{{item.label}}" title="{{item.label}}" aria-current="{{item.current}}" style="position: relative; width: 44px; height: 40px; border-radius: 12px; background: {{item.bg}}; display: flex; align-items: center; justify-content: center; text-decoration: none">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{item.railFg}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+            <sc-if value="{{item.hasCount}}" hint-placeholder-val="{{false}}">
+              <span aria-hidden="true" style="position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px; box-sizing: border-box; border-radius: 8px; background: {{t.primary}}; color: #FFFFFF; font-size: 10px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{item.count}}</span>
+            </sc-if>
+            <sc-if value="{{item.hasDot}}" hint-placeholder-val="{{false}}">
+              <span aria-hidden="true" style="position: absolute; top: 6px; right: 8px; width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}; box-shadow: 0 0 0 2px {{t.surface}}"></span>
+            </sc-if>
+          </a>
+        </sc-for>
+      </sc-for>
+    </aside>
+  </sc-if>
+
+  <!-- ===== 主內容 ===== -->
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 24px 32px 112px">
+    <div style="max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px">
+
+      <header style="display: flex; flex-direction: column; gap: 4px">
+        <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">設定</h1>
+        <span style="font-size: 13px; color: {{t.muted}}">變更會立即套用並記在這台裝置上</span>
+      </header>
+
+      <!-- 外觀 -->
+      <section aria-labelledby="sec-look" style="display: flex; flex-direction: column; gap: 8px">
+        <h2 id="sec-look" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">外觀</h2>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; overflow: hidden">
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 20px; min-height: 64px">
+            <span style="width: 36px; height: 36px; border-radius: 11px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z"></path></svg>
+            </span>
+            <span style="flex: 1 1 200px; display: flex; flex-direction: column; gap: 2px">
+              <b style="font-size: 15px; font-weight: 700">主題</b>
+              <small style="font-size: 13px; color: {{t.muted}}">跟隨系統時，會依裝置的深淺色自動切換</small>
+            </span>
+            <div role="radiogroup" aria-label="主題" style="display: flex; background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+              <sc-for list="{{themeSeg}}" as="o" hint-placeholder-count="3">
+                <button type="button" role="radio" aria-checked="{{o.on}}" onClick="{{o.pick}}" style="border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 13px; font-weight: {{o.weight}}; min-height: 36px; padding: 0 14px; border-radius: 9px; box-shadow: {{o.shadow}}">{{o.label}}</button>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 投資顯示 -->
+      <section aria-labelledby="sec-inv" style="display: flex; flex-direction: column; gap: 8px">
+        <h2 id="sec-inv" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">投資顯示</h2>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; overflow: hidden">
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 20px; min-height: 64px">
+            <span style="width: 36px; height: 36px; border-radius: 11px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8 M15 7h6v6"></path></svg>
+            </span>
+            <span style="flex: 1 1 200px; display: flex; flex-direction: column; gap: 2px">
+              <b style="font-size: 15px; font-weight: 700">漲跌顏色</b>
+              <small style="font-size: 13px; color: {{t.muted}}">台股以紅色代表上漲、綠色代表下跌；歐美市場相反</small>
+            </span>
+            <div role="radiogroup" aria-label="漲跌顏色" style="display: flex; background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+              <sc-for list="{{gainSeg}}" as="o" hint-placeholder-count="2">
+                <button type="button" role="radio" aria-checked="{{o.on}}" onClick="{{o.pick}}" style="border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 13px; font-weight: {{o.weight}}; min-height: 36px; padding: 0 14px; border-radius: 9px; box-shadow: {{o.shadow}}">{{o.label}}</button>
+              </sc-for>
+            </div>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 20px 16px 72px">
+            <small style="font-size: 12px; font-weight: 700; color: {{t.muted}}">預覽</small>
+            <span style="display: flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: {{upSoft}}; color: {{up}}">▲ 上漲 +2.35%</span>
+            <span style="display: flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: {{downSoft}}; color: {{down}}">▼ 下跌 −1.20%</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 導覽 -->
+      <section aria-labelledby="sec-nav" style="display: flex; flex-direction: column; gap: 8px">
+        <h2 id="sec-nav" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">導覽</h2>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; overflow: hidden">
+          <div style="padding: 14px 20px 6px; display: flex; flex-direction: column; gap: 2px">
+            <b style="font-size: 15px; font-weight: 700">顯示的分組</b>
+            <small style="font-size: 13px; color: {{t.muted}}">關掉不用的分組，側欄和手機底部分頁都會一起隱藏</small>
+          </div>
+          <sc-for list="{{groupToggles}}" as="gt" hint-placeholder-count="4">
+            <div style="display: flex; align-items: center; gap: 14px; padding: 10px 20px; min-height: 56px; border-top: 1px solid {{t.line}}">
+              <span style="width: 36px; height: 36px; border-radius: 11px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{gt.icon}}"></path></svg>
+              </span>
+              <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+                <b style="font-size: 15px; font-weight: 700">{{gt.label}}</b>
+                <small style="font-size: 13px; color: {{t.muted}}">{{gt.desc}}</small>
+              </span>
+              <sc-if value="{{gt.locked}}" hint-placeholder-val="{{false}}">
+                <span style="font-size: 13px; color: {{t.muted}}">固定顯示</span>
+              </sc-if>
+              <sc-if value="{{gt.canToggle}}" hint-placeholder-val="{{true}}">
+                <button type="button" role="switch" aria-checked="{{gt.aria}}" aria-label="{{gt.switchLabel}}" onClick="{{gt.toggle}}" style="width: 52px; height: 32px; border-radius: 16px; border: 0; padding: 0; background: {{gt.bg}}; position: relative; flex: none">
+                  <span style="position: absolute; top: 3px; left: {{gt.knob}}; width: 26px; height: 26px; border-radius: 13px; background: #FFFFFF; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left .2s cubic-bezier(.2,.8,.2,1)"></span>
+                </button>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; overflow: hidden">
+          <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 20px; min-height: 64px">
+            <span style="width: 36px; height: 36px; border-radius: 11px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z M9 4v16"></path></svg>
+            </span>
+            <span style="flex: 1 1 200px; display: flex; flex-direction: column; gap: 2px">
+              <b style="font-size: 15px; font-weight: 700">桌面側欄預設</b>
+              <small style="font-size: 13px; color: {{t.muted}}">寬度 1280px 以上時使用；較窄的螢幕固定為圖示欄</small>
+            </span>
+            <div role="radiogroup" aria-label="桌面側欄預設" style="display: flex; background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+              <sc-for list="{{railSeg}}" as="o" hint-placeholder-count="2">
+                <button type="button" role="radio" aria-checked="{{o.on}}" onClick="{{o.pick}}" style="border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 13px; font-weight: {{o.weight}}; min-height: 36px; padding: 0 14px; border-radius: 9px; box-shadow: {{o.shadow}}">{{o.label}}</button>
+              </sc-for>
+            </div>
+          </div>
+          <sc-for list="{{navToggles}}" as="nt" hint-placeholder-count="2">
+            <div style="display: flex; align-items: center; gap: 14px; padding: 10px 20px; min-height: 60px; border-top: 1px solid {{t.line}}">
+              <span style="width: 36px; height: 36px; border-radius: 11px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{nt.icon}}"></path></svg>
+              </span>
+              <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+                <b style="font-size: 15px; font-weight: 700">{{nt.label}}</b>
+                <small style="font-size: 13px; color: {{t.muted}}">{{nt.desc}}</small>
+              </span>
+              <button type="button" role="switch" aria-checked="{{nt.aria}}" aria-label="{{nt.label}}" onClick="{{nt.toggle}}" style="width: 52px; height: 32px; border-radius: 16px; border: 0; padding: 0; background: {{nt.bg}}; position: relative; flex: none">
+                <span style="position: absolute; top: 3px; left: {{nt.knob}}; width: 26px; height: 26px; border-radius: 13px; background: #FFFFFF; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: left .2s cubic-bezier(.2,.8,.2,1)"></span>
+              </button>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+
+      <!-- 記帳 -->
+      <section aria-labelledby="sec-ledger" style="display: flex; flex-direction: column; gap: 8px">
+        <h2 id="sec-ledger" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">記帳</h2>
+        <a href="#" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; display: flex; align-items: center; gap: 14px; padding: 14px 20px; min-height: 64px; color: {{t.text}}; text-decoration: none">
+          <span style="width: 36px; height: 36px; border-radius: 11px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M16 4v4 M10 10v4 M18 16v4"></path></svg>
+          </span>
+          <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+            <b style="font-size: 15px; font-weight: 700">記帳設定</b>
+            <small style="font-size: 13px; color: {{t.muted}}">類別、帳戶分組、專案、對象、支出收入顏色、數字鍵盤、匯入 MOZE 備份</small>
+          </span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M9 18l6-6-6-6"></path></svg>
+        </a>
+      </section>
+
+      <!-- 快捷鍵 -->
+      <section aria-labelledby="sec-keys" style="display: flex; flex-direction: column; gap: 8px">
+        <h2 id="sec-keys" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">鍵盤快捷鍵</h2>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 6px 20px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 32px">
+          <sc-for list="{{keys}}" as="k" hint-placeholder-count="6">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; border-bottom: 1px solid {{t.line}}">
+              <span style="font-size: 14px">{{k.desc}}</span>
+              <span style="display: flex; gap: 4px">
+                <sc-for list="{{k.keys}}" as="kk" hint-placeholder-count="1">
+                  <kbd style="min-width: 28px; height: 28px; padding: 0 8px; box-sizing: border-box; border-radius: 8px; border: 1px solid {{t.border}}; border-bottom-width: 2px; background: {{t.soft}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center">{{kk}}</kbd>
+                </sc-for>
+              </span>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+
+      <!-- 資料更新 -->
+      <section aria-labelledby="sec-data" style="display: flex; flex-direction: column; gap: 8px">
+        <h2 id="sec-data" style="margin: 0; padding: 0 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}">資料更新</h2>
+        <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; overflow: hidden">
+          <sc-for list="{{jobs}}" as="j" hint-placeholder-count="3">
+            <div style="display: flex; align-items: center; gap: 14px; padding: 12px 20px; min-height: 56px; border-bottom: 1px solid {{t.line}}">
+              <span style="width: 8px; height: 8px; border-radius: 4px; background: {{t.success}}; flex: none"></span>
+              <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+                <b style="font-size: 14px; font-weight: 700">{{j.label}}</b>
+                <small style="font-size: 13px; color: {{t.muted}}">{{j.when}}</small>
+              </span>
+              <span style="font-size: 13px; color: {{t.muted}}">{{j.last}}</span>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- 記一筆：全站唯一入口，固定右下角 -->
+  <a href="EntryPhone.dc.html" aria-label="記一筆（快捷鍵 N）" title="記一筆 (N)" style="position: fixed; right: 32px; bottom: 32px; z-index: 20; width: 56px; height: 56px; border-radius: 28px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 20px rgba(83,58,253,.35); text-decoration: none">
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+  </a>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":1680}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const st = this.state || {};
+    // 主題：預設「跟隨系統」，在畫布上以 dark 開關代表系統設定
+    const theme = st.theme || 'system';
+    const dark = theme === 'dark' || (theme === 'system' && !!(this.props.dark ?? false));
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.75)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', accent: '#e6ebf5', onAccent: '#171c24',
+      primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', success: '#8daec7',
+      red: '#ff6369', green: '#43c98a', redSoft: 'rgba(255,99,105,0.16)', greenSoft: 'rgba(67,201,138,0.16)',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)', pillOn: '#2a3241', switchOff: '#3a4352'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.8)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#6b7280', accent: '#1d2433', onAccent: '#ffffff',
+      primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', success: '#5f7f98',
+      red: '#e5484d', green: '#1f9d6b', redSoft: 'rgba(229,72,77,0.12)', greenSoft: 'rgba(31,157,107,0.12)',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)', pillOn: '#fafcff', switchOff: '#c9d0da'
+    };
+    const gain = st.gain || 'asian';
+    const asian = gain === 'asian';
+    const up = asian ? t.red : t.green, down = asian ? t.green : t.red;
+    const upSoft = asian ? t.redSoft : t.greenSoft, downSoft = asian ? t.greenSoft : t.redSoft;
+
+    const shown = st.shown || { supplies: false, portfolio: true, ledger: true };
+    const railDefault = !!st.railDefault;
+    const autoCollapse = st.autoCollapse === undefined ? true : st.autoCollapse;
+    const badges = st.badges === undefined ? true : st.badges;
+
+    const seg = (opts, cur, key) => opts.map(([v, label]) => {
+      const on = v === cur;
+      return { label, on: on ? 'true' : 'false', bg: on ? t.pillOn : 'transparent', fg: on ? t.text : t.muted, weight: on ? 700 : 500,
+        shadow: on ? '0 1px 2px rgba(0,0,0,.08)' : 'none', pick: () => this.setState({ [key]: v }) };
+    });
+    const themeSeg = seg([['light', '淺色'], ['dark', '深色'], ['system', '跟隨系統']], theme, 'theme');
+    const gainSeg = seg([['asian', '紅漲綠跌'], ['western', '綠漲紅跌']], gain, 'gain');
+    const railSeg = seg([[false, '展開'], [true, '圖示欄']], railDefault, 'railDefault');
+
+    const sw = (on) => ({ aria: on ? 'true' : 'false', bg: on ? t.primary : t.switchOff, knob: on ? '23px' : '3px' });
+
+    // ===== 側欄 =====
+    const I = {
+      box: 'M21 8l-9-5-9 5v8l9 5 9-5V8z M3 8l9 5 9-5 M12 13v8',
+      cart: 'M3 4h2l2.4 11h11.2L21 7H6.2 M9 20h.01 M18 20h.01',
+      chart: 'M3 17l6-6 4 4 8-8 M15 7h6v6',
+      list: 'M8 6h13 M8 12h13 M8 18h13 M3.5 6h.01 M3.5 12h.01 M3.5 18h.01',
+      percent: 'M19 5L5 19 M6.5 6.5h.01 M17.5 17.5h.01',
+      dollar: 'M12 3v18 M16.5 7.5c0-1.9-2-3-4.5-3s-4.5 1.1-4.5 3 2 2.7 4.5 3.2 4.5 1.3 4.5 3.3-2 3.5-4.5 3.5-4.5-1.3-4.5-3.3',
+      wallet: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01',
+      upload: 'M12 16V4 M7 9l5-5 5 5 M4 20h16',
+      sliders: 'M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M16 4v4 M10 10v4 M18 16v4',
+      cog: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1',
+      pane: 'M4 4h16v16H4z M14 4v16',
+      bell: 'M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9 M13.7 21a2 2 0 0 1-3.4 0'
+    };
+    const activeId = 'settings';
+    const NAV = [
+      { id: 'supplies', label: '物資', desc: '庫存、採買清單', icon: I.box, items: [['inventory', '庫存', I.box], ['shopping', '採買清單', I.cart, { count: 3 }]] },
+      { id: 'portfolio', label: '投資', desc: '概覽、交易、股利、已實現、現金、匯入', icon: I.chart, items: [
+        ['portfolio', '投資概覽', I.chart, null, 'Main.dc.html'], ['transactions', '交易紀錄', I.list, null, 'PfTransactions.dc.html'],
+        ['dividends', '股利', I.percent, { count: 2 }, 'PfDividends.dc.html'], ['realized', '已實現損益', I.dollar, null, 'PfRealized.dc.html'],
+        ['cash', '現金帳戶', I.wallet, null, 'PfCash.dc.html'], ['import', '匯入', I.upload, { dot: true }, 'PfImport.dc.html']
+      ] },
+      { id: 'ledger', label: '財務', desc: '記帳記錄、帳戶、記帳設定', icon: I.wallet, items: [['ledger', '記帳記錄', I.list, { count: 2 }, 'AccountingDesktop.dc.html'], ['accounts', '帳戶', I.wallet, { count: 1 }], ['ledger-settings', '記帳設定', I.sliders]] },
+      { id: 'system', label: '系統', desc: '設定', icon: I.cog, items: [['settings', '設定', I.cog, null, 'SettingsDesktop.dc.html']] }
+    ];
+    const item = ([id, label, icon, b, href]) => {
+      const on = id === activeId;
+      const badge = (badges && b) || {};
+      return { id, label, icon, href: href || '#', current: on ? 'page' : 'false',
+        bg: on ? t.primarySoft : 'transparent', fg: on ? t.primary : t.text, railFg: on ? t.primary : t.muted, weight: on ? 700 : 500,
+        iconBg: on ? t.primary : t.soft, iconFg: on ? '#FFFFFF' : t.muted,
+        hasCount: !!badge.count, count: badge.count || '', hasDot: !!badge.dot };
+    };
+    const groups = NAV.filter((g) => g.id === 'system' || shown[g.id]).map((g) => ({
+      label: g.label, hint: g.id === 'system' ? '目前' : '', items: g.items.map(item) }));
+
+    const groupToggles = NAV.map((g) => {
+      const locked = g.id === 'system';
+      const on = locked || !!shown[g.id];
+      return { label: g.label, desc: g.desc, icon: g.icon, locked, canToggle: !locked, switchLabel: '顯示「' + g.label + '」分組',
+        ...sw(on), toggle: () => this.setState({ shown: { ...shown, [g.id]: !shown[g.id] } }) };
+    });
+    const navToggles = [
+      { label: '開啟明細時自動收合側欄', desc: '記帳等左右分欄的頁面，打開明細時讓出空間', icon: I.pane, on: autoCollapse, key: 'autoCollapse' },
+      { label: '顯示待處理數字與紅點', desc: '側欄與底部分頁的提醒標記', icon: I.bell, on: badges, key: 'badges' }
+    ].map((n) => ({ ...n, ...sw(n.on), toggle: () => this.setState({ [n.key]: !n.on }) }));
+
+    // 對應 keyboard-shortcuts.ts
+    const keys = [
+      { desc: '記一筆', keys: ['N'] },
+      { desc: '編輯目前的記錄', keys: ['E'] },
+      { desc: '上一筆／下一筆', keys: ['↑', '↓'] },
+      { desc: '儲存', keys: ['Enter'] },
+      { desc: '儲存並續記', keys: ['⇧', 'Enter'] },
+      { desc: '關閉明細或表單', keys: ['Esc'] }
+    ];
+    // 對應 stock-portfolio-service 的 APScheduler 排程
+    const jobs = [
+      { label: '盤中報價', when: '交易時段每 15 分鐘', last: '13:30' },
+      { label: '淨值快照', when: '每個交易日 15:30', last: '昨天 15:30' },
+      { label: '收盤價回補（TWSE / TPEx）', when: '每個交易日 17:00', last: '昨天 17:00' }
+    ];
+
+    return { t, up, down, upSoft, downSoft, themeSeg, gainSeg, railSeg, groups, groupToggles, navToggles, keys, jobs,
+      expanded: !railDefault, rail: railDefault,
+      setRail: () => this.setState({ railDefault: true }), setExpanded: () => this.setState({ railDefault: false }) };
+  }
+}
+</script>
+</body>
+</html>

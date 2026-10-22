@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>匯入 · 桌面</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; flex-wrap: wrap; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <!-- ===== 側欄導覽 ===== -->
+  <aside aria-label="主要導覽" style="flex: 1 1 248px; max-width: 100%; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 14px; display: flex; flex-direction: column; gap: 14px">
+    <div style="display: flex; align-items: center; gap: 6px; padding: 0 4px 0 8px">
+      <a href="#" style="flex: 1; display: flex; align-items: center; gap: 10px; color: {{t.text}}; text-decoration: none">
+        <span style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center; flex: none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+        </span>
+        <span style="display: flex; flex-direction: column">
+          <b style="font-size: 16px; font-weight: 800; letter-spacing: -0.01em">Home Hub</b>
+          <small style="font-size: 12px; color: {{t.muted}}">家庭服務中樞</small>
+        </span>
+      </a>
+      <button type="button" aria-label="收合側欄" style="width: 36px; height: 36px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z M9 4v16 M15 10l-2 2 2 2"></path></svg>
+      </button>
+    </div>
+    <nav style="display: flex; flex-direction: column; gap: 8px">
+      <sc-for list="{{groups}}" as="g" hint-placeholder-count="4">
+        <div style="display: flex; flex-direction: column; gap: 2px">
+          <button type="button" aria-expanded="{{g.ariaOpen}}" onClick="{{g.toggle}}" style="border: 0; background: transparent; font: inherit; display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 10px; color: {{t.muted}}">
+            <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em">{{g.label}}</span>
+            <span style="display: flex; align-items: center; gap: 6px">
+              <sc-if value="{{g.showSum}}" hint-placeholder-val="{{false}}">
+                <span style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: {{t.primarySoft}}; color: {{t.primary}}; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{g.sum}}</span>
+              </sc-if>
+              <sc-if value="{{g.showDot}}" hint-placeholder-val="{{false}}">
+                <span style="width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}"></span>
+              </sc-if>
+              <span style="font-size: 11px; font-weight: 600">{{g.hint}}</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" style="transform: rotate({{g.rot}}); opacity: {{g.chevOpacity}}"><path d="M6 9l6 6 6-6"></path></svg>
+            </span>
+          </button>
+          <sc-if value="{{g.open}}" hint-placeholder-val="{{true}}">
+            <sc-for list="{{g.items}}" as="item" hint-placeholder-count="3">
+              <a href="{{item.href}}" aria-current="{{item.current}}" style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; border-radius: 12px; background: {{item.bg}}; color: {{item.fg}}; font-weight: {{item.weight}}; font-size: 14px; text-decoration: none">
+                <span style="width: 26px; height: 26px; border-radius: 8px; background: {{item.iconBg}}; display: flex; align-items: center; justify-content: center; flex: none">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{item.iconFg}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+                </span>
+                <span style="flex: 1">{{item.label}}</span>
+                <sc-if value="{{item.hasCount}}" hint-placeholder-val="{{false}}">
+                  <span aria-label="{{item.badgeAria}}" style="min-width: 20px; height: 20px; padding: 0 6px; box-sizing: border-box; border-radius: 10px; background: {{t.primary}}; color: #FFFFFF; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{item.count}}</span>
+                </sc-if>
+                <sc-if value="{{item.hasDot}}" hint-placeholder-val="{{false}}">
+                  <span aria-label="{{item.badgeAria}}" style="width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}"></span>
+                </sc-if>
+              </a>
+            </sc-for>
+          </sc-if>
+        </div>
+      </sc-for>
+    </nav>
+  </aside>
+
+  <!-- ===== 主內容 ===== -->
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 24px 32px 112px">
+    <div style="max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px">
+
+      <header style="display: flex; flex-direction: column; gap: 4px">
+        <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">匯入</h1>
+        <span style="font-size: 13px; color: {{t.muted}}">把券商匯出的 CSV 匯入交易、股利或現金流</span>
+      </header>
+
+      <div role="alert" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 16px; border-radius: 16px; background: {{t.redSoft}}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{t.red}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M12 3l9 16H3l9-16z M12 10v4 M12 17h.01"></path></svg>
+        <span style="flex: 1 1 360px; font-size: 14px; line-height: 1.5"><b style="font-weight: 800">最近一次匯入失敗</b>（10/21 22:10）：元大證券_成交明細_202610.csv 有 1 列錯誤，整批未寫入。修正後重新上傳即可。</span>
+        <span style="font-size: 13px; font-weight: 700; color: {{t.muted}}">下方為重新上傳的預覽</span>
+      </div>
+
+      <!-- 步驟 -->
+      <ol aria-label="匯入步驟" style="margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px">
+        <sc-for list="{{steps}}" as="s" hint-placeholder-count="3">
+          <li aria-current="{{s.current}}" style="display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 16px; background: {{s.bg}}; border: 1px solid {{s.border}}">
+            <span style="width: 28px; height: 28px; border-radius: 14px; background: {{s.numBg}}; color: {{s.numFg}}; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; flex: none">{{s.num}}</span>
+            <span style="display: flex; flex-direction: column; gap: 1px">
+              <b style="font-size: 14px; font-weight: 700; color: {{s.fg}}">{{s.label}}</b>
+              <small style="font-size: 12px; color: {{t.muted}}">{{s.sub}}</small>
+            </span>
+          </li>
+        </sc-for>
+      </ol>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start">
+        <div style="flex: 999 1 560px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+
+          <!-- 1 檔案 -->
+          <section aria-label="選擇檔案" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px">
+              <h2 style="margin: 0; font-size: 16px; font-weight: 800">檔案</h2>
+              <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px">
+                <div role="radiogroup" aria-label="匯入類型" style="display: flex; background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+                  <sc-for list="{{kinds}}" as="k" hint-placeholder-count="3">
+                    <button type="button" role="radio" aria-checked="{{k.on}}" onClick="{{k.pick}}" style="border: 0; background: {{k.bg}}; color: {{k.fg}}; font: inherit; font-size: 13px; font-weight: {{k.weight}}; min-height: 34px; padding: 0 12px; border-radius: 9px; box-shadow: {{k.shadow}}">{{k.label}}</button>
+                  </sc-for>
+                </div>
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; min-height: 34px">
+                  <input type="checkbox" checked="" style="width: 18px; height: 18px; accent-color: {{t.primary}}">
+                  首列為欄位名稱
+                </label>
+              </div>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; border: 1.5px dashed {{t.border}}; background: {{t.soft}}">
+              <span style="width: 40px; height: 40px; border-radius: 12px; background: {{t.surface}}; border: 1px solid {{t.border}}; display: flex; align-items: center; justify-content: center; flex: none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.primary}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z M14 3v4h4 M9 13h6 M9 17h6"></path></svg>
+              </span>
+              <span style="flex: 1 1 240px; display: flex; flex-direction: column; gap: 2px; min-width: 0">
+                <b style="font-size: 14px; font-weight: 700">{{fileName}}</b>
+                <small style="font-size: 12px; color: {{t.muted}}">42 列 · 偵測格式：<b style="color: {{t.text}}">{{detected}}</b></small>
+              </span>
+              <button type="button" style="min-height: 36px; padding: 0 12px; border-radius: 10px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 600">更換檔案</button>
+              <button type="button" aria-label="移除檔案" style="width: 36px; height: 36px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M18 6L6 18 M6 6l12 12"></path></svg>
+              </button>
+            </div>
+            <small style="font-size: 12px; color: {{t.muted}}">自動偵測國泰證券（含「根據您篩選的結果」前置列）與通用欄位格式 · 僅支援 UTF-8 的 .csv</small>
+          </section>
+
+          <!-- 2 預覽 -->
+          <section aria-label="預覽" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; overflow: hidden">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 16px 20px">
+              <h2 style="margin: 0; font-size: 16px; font-weight: 800">預覽</h2>
+              <div style="display: flex; gap: 8px">
+                <sc-for list="{{counts}}" as="c" hint-placeholder-count="3">
+                  <span style="font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 999px; background: {{c.bg}}; color: {{c.fg}}">{{c.label}}</span>
+                </sc-for>
+              </div>
+            </div>
+            <div style="overflow-x: auto">
+              <div style="min-width: 640px">
+                <div style="display: grid; grid-template-columns: 70px minmax(0, 1.6fr) 64px 90px 100px 110px; gap: 12px; padding: 8px 20px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; color: {{t.muted}}; border-top: 1px solid {{t.line}}; border-bottom: 1px solid {{t.line}}">
+                  <span>日期</span><span>股票</span><span>買賣</span><span style="text-align: right">股數</span><span style="text-align: right">價格</span><span style="text-align: right">結果</span>
+                </div>
+                <sc-for list="{{preview}}" as="p" hint-placeholder-count="6">
+                  <div style="display: grid; grid-template-columns: 70px minmax(0, 1.6fr) 64px 90px 100px 110px; gap: 12px; align-items: center; padding: 10px 20px; min-height: 48px; border-bottom: 1px solid {{t.line}}; opacity: {{p.opacity}}">
+                    <span style="font-size: 14px">{{p.date}}</span>
+                    <span style="display: flex; flex-direction: column; gap: 1px; min-width: 0">
+                      <b style="font-size: 14px; font-weight: 700">{{p.name}}</b>
+                      <small style="font-size: 12px; color: {{p.symColor}}">{{p.sym}}</small>
+                    </span>
+                    <span><span style="font-size: 11px; font-weight: 800; padding: 2px 7px; border-radius: 8px; background: {{p.sideBg}}; color: {{p.sideFg}}">{{p.side}}</span></span>
+                    <span style="text-align: right; font-size: 14px">{{p.qty}}</span>
+                    <span style="text-align: right; font-size: 14px">{{p.price}}</span>
+                    <span style="text-align: right"><span style="font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 8px; background: {{p.resBg}}; color: {{p.resFg}}">{{p.res}}</span></span>
+                  </div>
+                </sc-for>
+                <div style="padding: 10px 20px; font-size: 13px; color: {{t.muted}}">另有 35 列，皆為新增（其中 2 列是台灣50正2，代號一併套用）</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 錯誤 -->
+          <section aria-label="錯誤" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; border-left: 0">
+            <h2 style="margin: 0; display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 800">
+              <span style="width: 22px; height: 22px; border-radius: 11px; background: {{t.redSoft}}; color: {{t.red}}; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800">1</span>
+              需要修正的列
+            </h2>
+            <div style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; background: {{t.soft}}; font-size: 14px">
+              <b style="font-weight: 800; white-space: nowrap">第 17 列</b>
+              <span style="flex: 1">價格欄位為空（2026/10/08 · 0056 元大高股息 · 買進 2,000 股）</span>
+              <span style="font-size: 12px; color: {{t.muted}}; white-space: nowrap">此列會被略過</span>
+            </div>
+          </section>
+
+          <!-- 代號確認 -->
+          <section aria-label="確認股票代號" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px">
+            <div style="display: flex; flex-direction: column; gap: 2px">
+              <h2 style="margin: 0; font-size: 16px; font-weight: 800">確認股票代號</h2>
+              <span style="font-size: 13px; color: {{t.muted}}">CSV 只有名稱、對不到代號的股票，請填入代號並驗證</span>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: {{t.soft}}">
+              <span style="flex: 1 1 180px; display: flex; flex-direction: column; gap: 2px">
+                <b style="font-size: 14px; font-weight: 700">台灣50正2</b>
+                <small style="font-size: 12px; color: {{t.muted}}">3 筆 · 10/21、10/14、09/30</small>
+              </span>
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: {{t.muted}}">代號
+                <input type="text" value="00631L" aria-label="台灣50正2 的股票代號" style="width: 96px; min-height: 38px; padding: 0 10px; border-radius: 10px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 700">
+              </label>
+              <span style="display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: {{t.text}}">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{t.green}}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"></path></svg>
+                已驗證：元大台灣50正2
+              </span>
+              <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; min-height: 38px">
+                <input type="checkbox" checked="" style="width: 18px; height: 18px; accent-color: {{t.primary}}">
+                確認使用此代號
+              </label>
+            </div>
+          </section>
+
+          <div style="display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px">
+            <button type="button" style="min-height: 44px; padding: 0 16px; border-radius: 12px; border: 0; background: transparent; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 600">取消</button>
+            <button type="button" style="min-height: 44px; padding: 0 16px; border-radius: 12px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 600">重新預覽</button>
+            <button type="button" style="display: flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 18px; border-radius: 12px; border: 0; background: {{t.primary}}; color: #FFFFFF; font: inherit; font-size: 14px; font-weight: 700">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"></path></svg>
+              確認匯入 38 筆
+            </button>
+          </div>
+        </div>
+
+        <!-- 右：匯入後 -->
+        <aside aria-label="匯入後會發生什麼" style="flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 14px">
+          <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px 18px; display: flex; flex-direction: column; gap: 12px">
+            <h2 style="margin: 0; font-size: 16px; font-weight: 800">匯入後自動執行</h2>
+            <sc-for list="{{after}}" as="a" hint-placeholder-count="3">
+              <div style="display: flex; gap: 10px; align-items: flex-start">
+                <span style="width: 28px; height: 28px; border-radius: 9px; background: {{t.soft}}; display: flex; align-items: center; justify-content: center; flex: none">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{t.muted}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{a.icon}}"></path></svg>
+                </span>
+                <span style="display: flex; flex-direction: column; gap: 2px">
+                  <b style="font-size: 14px; font-weight: 700">{{a.title}}</b>
+                  <small style="font-size: 12px; color: {{t.muted}}; line-height: 1.5">{{a.note}}</small>
+                </span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px">
+            <h2 style="margin: 0; font-size: 16px; font-weight: 800">最近匯入</h2>
+            <sc-for list="{{history}}" as="h" hint-placeholder-count="3">
+              <div style="display: flex; align-items: center; gap: 10px">
+                <span style="width: 8px; height: 8px; border-radius: 4px; background: {{h.dot}}; flex: none"></span>
+                <span style="flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0">
+                  <b style="font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{h.file}}</b>
+                  <small style="font-size: 12px; color: {{t.muted}}">{{h.meta}}</small>
+                </span>
+              </div>
+            </sc-for>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </main>
+
+  <!-- 記一筆：全站唯一入口，固定右下角 -->
+  <div style="position: fixed; right: 32px; bottom: 32px; z-index: 20; display: flex; align-items: center; gap: 10px">
+    <sc-if value="{{fabTip}}" hint-placeholder-val="{{false}}">
+      <span role="tooltip" style="padding: 6px 10px; border-radius: 8px; background: {{t.tipBg}}; color: {{t.tipFg}}; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: {{t.raised}}">記一筆 <span style="margin-left: 4px; padding: 0 5px; border: 1px solid currentColor; border-radius: 5px; font-size: 11px; opacity: .75">N</span></span>
+    </sc-if>
+    <a href="EntryPhone.dc.html" aria-label="記一筆（快捷鍵 N）" onMouseEnter="{{fabEnter}}" onMouseLeave="{{fabLeave}}" onFocus="{{fabEnter}}" onBlur="{{fabLeave}}" style="width: 56px; height: 56px; border-radius: 28px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 20px rgba(83,58,253,.35); text-decoration: none">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+    </a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":1560}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.75)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', accent: '#e6ebf5', onAccent: '#171c24',
+      primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', successSoft: 'rgba(141,174,199,0.15)', warnSoft: 'rgba(150,165,197,0.15)',
+      red: '#ff6369', redSoft: 'rgba(255,99,105,0.16)', green: '#43c98a',
+      buy: '#8b7dff', buySoft: 'rgba(139,125,255,0.16)', sell: '#9aa6bd', sellSoft: 'rgba(154,166,189,0.16)',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)', raised: '0 20px 40px rgba(0,0,0,0.5)',
+      pillOn: '#2a3241', tipBg: '#e6ebf5', tipFg: '#151821'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.8)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#6b7280', accent: '#1d2433', onAccent: '#ffffff',
+      primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', successSoft: 'rgba(95,127,152,0.12)', warnSoft: 'rgba(123,135,168,0.12)',
+      red: '#e5484d', redSoft: 'rgba(229,72,77,0.12)', green: '#1f9d6b',
+      buy: '#533afd', buySoft: 'rgba(83,58,253,0.10)', sell: '#51607a', sellSoft: 'rgba(81,96,121,0.12)',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)', raised: '0 16px 36px rgba(18,26,40,0.09)',
+      pillOn: '#fafcff', tipBg: '#1d2433', tipFg: '#ffffff'
+    };
+
+    // ===== 側欄（與其他桌面頁共用）=====
+    const I = {
+      box: 'M21 8l-9-5-9 5v8l9 5 9-5V8z M3 8l9 5 9-5 M12 13v8',
+      cart: 'M3 4h2l2.4 11h11.2L21 7H6.2 M9 20h.01 M18 20h.01',
+      chart: 'M3 17l6-6 4 4 8-8 M15 7h6v6',
+      list: 'M8 6h13 M8 12h13 M8 18h13 M3.5 6h.01 M3.5 12h.01 M3.5 18h.01',
+      percent: 'M19 5L5 19 M6.5 6.5h.01 M17.5 17.5h.01',
+      dollar: 'M12 3v18 M16.5 7.5c0-1.9-2-3-4.5-3s-4.5 1.1-4.5 3 2 2.7 4.5 3.2 4.5 1.3 4.5 3.3-2 3.5-4.5 3.5-4.5-1.3-4.5-3.3',
+      wallet: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01',
+      upload: 'M12 16V4 M7 9l5-5 5 5 M4 20h16',
+      sliders: 'M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M16 4v4 M10 10v4 M18 16v4',
+      cog: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1',
+      refresh: 'M21 12a9 9 0 1 1-2.6-6.4 M21 4v5h-5',
+      cal: 'M4 6h16v14H4z M4 10h16 M8 3v4 M16 3v4'
+    };
+    const activeId = 'import';
+    const NAV = [
+      { id: 'portfolio', label: '投資', items: [
+        ['portfolio', '投資概覽', I.chart, null, 'Main.dc.html'], ['transactions', '交易紀錄', I.list, null, 'PfTransactions.dc.html'],
+        ['dividends', '股利', I.percent, { count: 2, aria: '2 筆待收股利' }, 'PfDividends.dc.html'],
+        ['realized', '已實現損益', I.dollar, null, 'PfRealized.dc.html'], ['cash', '現金帳戶', I.wallet, null, 'PfCash.dc.html'],
+        ['import', '匯入', I.upload, { dot: true, aria: '最近一次匯入失敗' }, 'PfImport.dc.html']
+      ] },
+      { id: 'ledger', label: '財務', items: [['ledger', '記帳記錄', I.list, { count: 2, aria: '提醒中心 2 項' }, 'AccountingDesktop.dc.html'], ['accounts', '帳戶', I.wallet, { count: 1, aria: '1 筆待確認' }], ['ledger-settings', '記帳設定', I.sliders]] },
+      { id: 'system', label: '系統', items: [['settings', '設定', I.cog, null, 'SettingsDesktop.dc.html']] }
+    ];
+    const item = ([id, label, icon, b, href]) => {
+      const on = id === activeId;
+      const badge = b || {};
+      return { id, label, icon, href: href || '#', current: on ? 'page' : 'false',
+        bg: on ? t.primarySoft : 'transparent', fg: on ? t.primary : t.text, weight: on ? 700 : 500,
+        iconBg: on ? t.primary : t.soft, iconFg: on ? '#FFFFFF' : t.muted,
+        hasCount: !!badge.count, count: badge.count || '', hasDot: !!badge.dot, badgeAria: badge.aria || '' };
+    };
+    const st = this.state || {};
+    const closed = st.closed || {};
+    const groups = NAV.map((g) => {
+      const items = g.items.map(item);
+      const isActive = items.some((it) => it.id === activeId);
+      const open = isActive || !closed[g.id];
+      const sum = items.reduce((s, it) => s + (Number(it.count) || 0), 0);
+      return { label: g.label, items, open, ariaOpen: open ? 'true' : 'false',
+        rot: open ? '0deg' : '-90deg', chevOpacity: isActive ? 0 : 1, hint: isActive ? '目前' : '',
+        showSum: !open && sum > 0, sum, showDot: !open && items.some((it) => it.hasDot),
+        toggle: () => { if (!isActive) this.setState({ closed: { ...closed, [g.id]: !closed[g.id] } }); } };
+    });
+
+    // ===== 頁面（範例資料，僅示意）=====
+    const steps = [
+      { num: '✓', label: '選擇檔案', sub: '已偵測格式', state: 'done' },
+      { num: '2', label: '預覽與確認', sub: '1 列錯誤、1 個代號待確認', state: 'current' },
+      { num: '3', label: '匯入並重算', sub: '寫入後自動重算', state: 'todo' }
+    ].map((s) => ({ ...s, current: s.state === 'current' ? 'step' : 'false',
+      bg: s.state === 'current' ? t.surface : 'transparent', border: s.state === 'current' ? t.primary : t.border,
+      numBg: s.state === 'todo' ? t.soft : t.primary, numFg: s.state === 'todo' ? t.muted : '#FFFFFF',
+      fg: s.state === 'todo' ? t.muted : t.text }));
+
+    const kind = st.kind || 'trades';
+    const kinds = [['trades', '交易'], ['dividends', '股利'], ['broker', '券商對帳單']].map(([id, label]) => {
+      const on = id === kind;
+      return { label, on: on ? 'true' : 'false', bg: on ? t.pillOn : 'transparent', fg: on ? t.text : t.muted, weight: on ? 700 : 500,
+        shadow: on ? '0 1px 2px rgba(0,0,0,.08)' : 'none', pick: () => this.setState({ kind: id }) };
+    });
+    const fileName = kind === 'broker' ? '元大_對帳單_202610.csv' : '元大證券_成交明細_202610.csv';
+    const detected = kind === 'broker' ? '券商對帳單（交易＋現金流）' : '通用欄位格式（日期、名稱、買賣、股數、價格）';
+
+    const counts = [
+      { label: '解析 41', bg: t.primarySoft, fg: t.primary },
+      { label: '重複 3', bg: t.warnSoft, fg: t.text },
+      { label: '錯誤 1', bg: t.redSoft, fg: t.text }
+    ];
+    const P = (o) => {
+      const buy = o.side === '買進';
+      const dup = o.res === '重複 · 略過';
+      return { ...o, sideBg: buy ? t.buySoft : t.sellSoft, sideFg: buy ? t.buy : t.sell,
+        resBg: dup ? t.warnSoft : (o.res === '新增' ? t.successSoft : t.primarySoft), resFg: o.res === '代號待確認' ? t.primary : t.text,
+        opacity: dup ? 0.6 : 1, symColor: o.res === '代號待確認' ? t.primary : t.muted };
+    };
+    const preview = [
+      P({ date: '10/21', name: '台灣50正2', sym: '代號 → 00631L', side: '買進', qty: '1,000', price: '285.30', res: '代號待確認' }),
+      P({ date: '10/20', name: '台積電', sym: '2330', side: '買進', qty: '100', price: '1,075.00', res: '新增' }),
+      P({ date: '10/19', name: '元大台灣50', sym: '0050', side: '賣出', qty: '500', price: '72.10', res: '新增' }),
+      P({ date: '10/15', name: '國泰永續高股息', sym: '00878', side: '買進', qty: '5,000', price: '22.05', res: '重複 · 略過' }),
+      P({ date: '10/02', name: '鴻海', sym: '2317', side: '賣出', qty: '1,000', price: '175.00', res: '重複 · 略過' }),
+      P({ date: '09/04', name: '元大台灣50', sym: '0050', side: '買進', qty: '2,000', price: '68.90', res: '重複 · 略過' })
+    ];
+    const after = [
+      { icon: I.refresh, title: '重算持股與損益', note: '依新交易重建成本、已實現損益與當沖標記' },
+      { icon: I.cal, title: '抓取除權息事件', note: '新股票的除權息會記為待收股利，需到股利頁確認收款' },
+      { icon: I.chart, title: '更新報價', note: '回補收盤價，不含股利' }
+    ];
+    const history = [
+      { file: '元大證券_成交明細_202610.csv', meta: '10/21 22:10 · 失敗 · 1 列錯誤', dot: t.red },
+      { file: '元大_對帳單_202609.csv', meta: '10/01 21:42 · 成功 · 新增 18 筆', dot: t.green },
+      { file: '國泰證券_股利_2026Q3.csv', meta: '09/12 20:05 · 成功 · 新增 4 筆', dot: t.green }
+    ];
+
+    return { t, groups, steps, kinds, fileName, detected, counts, preview, after, history,
+      fabTip: !!st.fabTip, fabEnter: () => this.setState({ fabTip: true }), fabLeave: () => this.setState({ fabTip: false }) };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>股利 · 桌面</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="min-height: 100vh; display: flex; flex-wrap: wrap; background: {{t.bg}}; color: {{t.text}}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500">
+
+  <!-- ===== 側欄導覽 ===== -->
+  <aside aria-label="主要導覽" style="flex: 1 1 248px; max-width: 100%; box-sizing: border-box; background: {{t.glass}}; border-right: 1px solid {{t.border}}; padding: 18px 14px; display: flex; flex-direction: column; gap: 14px">
+    <div style="display: flex; align-items: center; gap: 6px; padding: 0 4px 0 8px">
+      <a href="#" style="flex: 1; display: flex; align-items: center; gap: 10px; color: {{t.text}}; text-decoration: none">
+        <span style="width: 36px; height: 36px; border-radius: 12px; background: {{t.accent}}; display: flex; align-items: center; justify-content: center; flex: none">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{t.onAccent}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-7 9 7 M5 10v10h14V10"></path></svg>
+        </span>
+        <span style="display: flex; flex-direction: column">
+          <b style="font-size: 16px; font-weight: 800; letter-spacing: -0.01em">Home Hub</b>
+          <small style="font-size: 12px; color: {{t.muted}}">家庭服務中樞</small>
+        </span>
+      </a>
+      <button type="button" aria-label="收合側欄" style="width: 36px; height: 36px; border-radius: 10px; border: 0; background: transparent; color: {{t.muted}}; display: flex; align-items: center; justify-content: center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v16H4z M9 4v16 M15 10l-2 2 2 2"></path></svg>
+      </button>
+    </div>
+    <nav style="display: flex; flex-direction: column; gap: 8px">
+      <sc-for list="{{groups}}" as="g" hint-placeholder-count="4">
+        <div style="display: flex; flex-direction: column; gap: 2px">
+          <button type="button" aria-expanded="{{g.ariaOpen}}" onClick="{{g.toggle}}" style="border: 0; background: transparent; font: inherit; display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 0 10px; color: {{t.muted}}">
+            <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.08em">{{g.label}}</span>
+            <span style="display: flex; align-items: center; gap: 6px">
+              <sc-if value="{{g.showSum}}" hint-placeholder-val="{{false}}">
+                <span style="min-width: 18px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 9px; background: {{t.primarySoft}}; color: {{t.primary}}; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{g.sum}}</span>
+              </sc-if>
+              <sc-if value="{{g.showDot}}" hint-placeholder-val="{{false}}">
+                <span style="width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}"></span>
+              </sc-if>
+              <span style="font-size: 11px; font-weight: 600">{{g.hint}}</span>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" style="transform: rotate({{g.rot}}); opacity: {{g.chevOpacity}}"><path d="M6 9l6 6 6-6"></path></svg>
+            </span>
+          </button>
+          <sc-if value="{{g.open}}" hint-placeholder-val="{{true}}">
+            <sc-for list="{{g.items}}" as="item" hint-placeholder-count="3">
+              <a href="{{item.href}}" aria-current="{{item.current}}" style="display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; border-radius: 12px; background: {{item.bg}}; color: {{item.fg}}; font-weight: {{item.weight}}; font-size: 14px; text-decoration: none">
+                <span style="width: 26px; height: 26px; border-radius: 8px; background: {{item.iconBg}}; display: flex; align-items: center; justify-content: center; flex: none">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="{{item.iconFg}}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{item.icon}}"></path></svg>
+                </span>
+                <span style="flex: 1">{{item.label}}</span>
+                <sc-if value="{{item.hasCount}}" hint-placeholder-val="{{false}}">
+                  <span aria-label="{{item.badgeAria}}" style="min-width: 20px; height: 20px; padding: 0 6px; box-sizing: border-box; border-radius: 10px; background: {{t.primary}}; color: #FFFFFF; font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center">{{item.count}}</span>
+                </sc-if>
+                <sc-if value="{{item.hasDot}}" hint-placeholder-val="{{false}}">
+                  <span aria-label="{{item.badgeAria}}" style="width: 8px; height: 8px; border-radius: 4px; background: {{t.red}}"></span>
+                </sc-if>
+              </a>
+            </sc-for>
+          </sc-if>
+        </div>
+      </sc-for>
+    </nav>
+  </aside>
+
+  <!-- ===== 主內容 ===== -->
+  <main style="flex: 999 1 560px; min-width: 0; box-sizing: border-box; padding: 24px 32px 112px">
+    <div style="max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px">
+
+      <header style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px">
+        <div style="display: flex; flex-direction: column; gap: 4px">
+          <h1 style="margin: 0; font-size: 28px; font-weight: 800; letter-spacing: -0.03em">股利</h1>
+          <span style="font-size: 13px; color: {{t.muted}}">全部期間 · 共 8 筆</span>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 10px">
+          <a href="PfImport.dc.html" style="display: flex; align-items: center; gap: 6px; min-height: 42px; padding: 0 14px; border-radius: 12px; background: {{t.surface}}; border: 1px solid {{t.border}}; color: {{t.text}}; font-size: 14px; font-weight: 600; text-decoration: none">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4 M7 9l5-5 5 5 M4 20h16"></path></svg>
+            匯入 CSV
+          </a>
+          <button type="button" style="display: flex; align-items: center; gap: 6px; min-height: 42px; padding: 0 16px; border-radius: 12px; border: 0; background: {{t.primarySoft}}; color: {{t.primary}}; font: inherit; font-size: 14px; font-weight: 700">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+            新增股利
+          </button>
+        </div>
+      </header>
+
+      <section aria-label="股利摘要" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px">
+        <sc-for list="{{kpis}}" as="k" hint-placeholder-count="4">
+          <div style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px 20px; display: flex; flex-direction: column; gap: 6px">
+            <span style="display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; color: {{t.muted}}"><span style="width: 8px; height: 8px; border-radius: 3px; background: {{k.dot}}; border: {{k.dotBorder}}; box-sizing: border-box"></span>{{k.label}}</span>
+            <b style="font-size: 22px; font-weight: 800; letter-spacing: -0.02em; color: {{k.color}}">{{k.value}}</b>
+            <span style="font-size: 12px; color: {{t.muted}}">{{k.note}}</span>
+          </div>
+        </sc-for>
+      </section>
+
+      <section aria-label="即將除權息" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 16px 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px">
+        <h2 style="margin: 0; font-size: 16px; font-weight: 800; flex: none">即將除權息</h2>
+        <sc-for list="{{upcoming}}" as="u" hint-placeholder-count="2">
+          <div style="flex: 1 1 260px; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-radius: 14px; background: {{t.soft}}">
+            <span style="width: 44px; height: 44px; border-radius: 12px; background: {{t.dividendSoft}}; color: {{t.dividend}}; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; line-height: 1.15; flex: none"><span>{{u.month}}</span><b style="font-size: 15px">{{u.day}}</b></span>
+            <span style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+              <b style="font-size: 14px; font-weight: 700">{{u.name}}</b>
+              <small style="font-size: 12px; color: {{t.muted}}">{{u.note}}</small>
+            </span>
+            <b style="font-size: 14px; font-weight: 700; color: {{t.dividend}}">{{u.est}}</b>
+          </div>
+        </sc-for>
+      </section>
+
+      <section aria-label="篩選" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; padding: 14px 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center">
+        <label style="flex: 1 1 200px; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; border-radius: 16px; background: {{t.soft}}; color: {{t.muted}}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z M20 20l-4-4"></path></svg>
+          <input type="search" placeholder="搜尋代碼或名稱" aria-label="搜尋代碼或名稱" style="border: 0; outline: 0; background: transparent; font: inherit; font-size: 14px; flex: 1; min-width: 0; color: {{t.text}}">
+        </label>
+        <div role="radiogroup" aria-label="狀態" style="display: flex; background: {{t.soft}}; border-radius: 12px; padding: 3px; gap: 2px">
+          <sc-for list="{{statusSeg}}" as="o" hint-placeholder-count="4">
+            <button type="button" role="radio" aria-checked="{{o.on}}" style="border: 0; background: {{o.bg}}; color: {{o.fg}}; font: inherit; font-size: 13px; font-weight: {{o.weight}}; min-height: 34px; padding: 0 12px; border-radius: 9px; box-shadow: {{o.shadow}}">{{o.label}}</button>
+          </sc-for>
+        </div>
+        <sc-for list="{{chips}}" as="c" hint-placeholder-count="3">
+          <button type="button" style="display: flex; align-items: center; gap: 6px; min-height: 40px; padding: 0 12px; border-radius: 999px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 13px; font-weight: 600">
+            <span style="color: {{t.muted}}; font-weight: 500">{{c.k}}</span>{{c.v}}
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+          </button>
+        </sc-for>
+      </section>
+
+      <p style="margin: 0; display: flex; gap: 8px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; background: {{t.primarySoft}}; font-size: 13px; line-height: 1.6">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{t.primary}}" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="flex: none; margin-top: 3px"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z M12 11v6 M12 7.5h.01"></path></svg>
+        <span>有效待收股利會納入「預估含息損益」，但不計入可用現金；待釐清的金額不納入預估。舊資料的收款未經核實。</span>
+      </p>
+
+      <section aria-label="股利列表" style="background: {{t.surface}}; box-shadow: {{t.shadow}}; border-radius: 20px; overflow-x: auto">
+        <div style="min-width: 900px">
+          <div style="display: grid; grid-template-columns: 44px minmax(0, 1.4fr) minmax(0, .8fr) minmax(0, 1.3fr) minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1.2fr); gap: 12px; padding: 12px 20px; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; color: {{t.muted}}; border-bottom: 1px solid {{t.line}}">
+            <span></span><span>股票</span><span>除息日</span><span>發放 / 收款</span><span>每股 × 股數</span><span style="text-align: right">淨額</span><span style="text-align: right">狀態</span>
+          </div>
+          <sc-for list="{{rows}}" as="r" hint-placeholder-count="8">
+            <div style="border-bottom: 1px solid {{t.line}}; background: {{r.rowBg}}">
+              <div style="display: grid; grid-template-columns: 44px minmax(0, 1.4fr) minmax(0, .8fr) minmax(0, 1.3fr) minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1.2fr); gap: 12px; align-items: center; padding: 10px 20px; min-height: 62px">
+                <span style="width: 40px; height: 40px; border-radius: 12px; background: {{r.color}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800">{{r.abbr}}</span>
+                <span style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+                  <b style="font-size: 15px; font-weight: 700">{{r.name}}</b>
+                  <small style="font-size: 12px; color: {{t.muted}}">{{r.symbol}}</small>
+                </span>
+                <span style="font-size: 14px">{{r.ex}}</span>
+                <span style="display: flex; flex-direction: column; gap: 2px">
+                  <span style="font-size: 14px">{{r.pay}}</span>
+                  <small style="font-size: 12px; color: {{t.muted}}">{{r.paySub}}</small>
+                </span>
+                <span style="display: flex; flex-direction: column; gap: 2px">
+                  <span style="font-size: 14px">{{r.calc}}</span>
+                  <small style="font-size: 12px; color: {{t.muted}}">{{r.deduct}}</small>
+                </span>
+                <b style="text-align: right; font-size: 15px; font-weight: 700; color: {{r.amtColor}}">{{r.net}}</b>
+                <span style="display: flex; justify-content: flex-end; align-items: center; gap: 8px">
+                  <span style="font-size: 12px; font-weight: 800; padding: 3px 9px; border-radius: 8px; background: {{r.pillBg}}; color: {{r.pillFg}}; white-space: nowrap">{{r.status}}</span>
+                  <sc-if value="{{r.canConfirm}}" hint-placeholder-val="{{false}}">
+                    <button type="button" aria-expanded="{{r.ariaOpen}}" onClick="{{r.toggle}}" style="min-height: 34px; padding: 0 10px; border-radius: 10px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.primary}}; font: inherit; font-size: 13px; font-weight: 700; white-space: nowrap">確認收款</button>
+                  </sc-if>
+                </span>
+              </div>
+              <sc-if value="{{r.open}}" hint-placeholder-val="{{false}}">
+                <div style="margin: 0 20px 14px 76px; padding: 14px 16px; border-radius: 14px; background: {{t.soft}}; display: flex; flex-direction: column; gap: 12px">
+                  <div style="display: flex; flex-direction: column; gap: 4px">
+                    <b style="font-size: 14px; font-weight: 800">確認實際收款 · {{r.name}} {{r.net}}</b>
+                    <span style="font-size: 12px; color: {{t.muted}}; line-height: 1.6">只在核對過實際入帳後確認。預定發放日不是收款證明；確認後會寫入現金帳，無法直接編輯撤銷。</span>
+                  </div>
+                  <div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end">
+                    <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: {{t.muted}}">實際收款日
+                      <input type="date" value="2026-11-18" style="min-height: 40px; padding: 0 10px; border-radius: 10px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px">
+                    </label>
+                    <label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 700; color: {{t.muted}}">收款帳戶
+                      <select style="min-height: 40px; padding: 0 10px; border-radius: 10px; border: 1px solid {{t.border}}; background: {{t.surface}}; color: {{t.text}}; font: inherit; font-size: 14px">
+                        <option>元大交割戶 · TWD</option>
+                        <option>國泰複委託 · USD</option>
+                      </select>
+                    </label>
+                    <span style="flex: 1"></span>
+                    <button type="button" onClick="{{r.toggle}}" style="min-height: 40px; padding: 0 14px; border-radius: 12px; border: 0; background: transparent; color: {{t.text}}; font: inherit; font-size: 14px; font-weight: 600">取消</button>
+                    <button type="button" style="min-height: 40px; padding: 0 16px; border-radius: 12px; border: 0; background: {{t.primary}}; color: #FFFFFF; font: inherit; font-size: 14px; font-weight: 700">確認已收到並入帳</button>
+                  </div>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- 記一筆：全站唯一入口，固定右下角 -->
+  <div style="position: fixed; right: 32px; bottom: 32px; z-index: 20; display: flex; align-items: center; gap: 10px">
+    <sc-if value="{{fabTip}}" hint-placeholder-val="{{false}}">
+      <span role="tooltip" style="padding: 6px 10px; border-radius: 8px; background: {{t.tipBg}}; color: {{t.tipFg}}; font-size: 13px; font-weight: 700; white-space: nowrap; box-shadow: {{t.raised}}">記一筆 <span style="margin-left: 4px; padding: 0 5px; border: 1px solid currentColor; border-radius: 5px; font-size: 11px; opacity: .75">N</span></span>
+    </sc-if>
+    <a href="EntryPhone.dc.html" aria-label="記一筆（快捷鍵 N）" onMouseEnter="{{fabEnter}}" onMouseLeave="{{fabLeave}}" onFocus="{{fabEnter}}" onBlur="{{fabLeave}}" style="width: 56px; height: 56px; border-radius: 28px; background: {{t.primary}}; color: #FFFFFF; display: flex; align-items: center; justify-content: center; box-shadow: 0 8px 20px rgba(83,58,253,.35); text-decoration: none">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14 M5 12h14"></path></svg>
+    </a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"dark":{"editor":"boolean","default":false},"$preview":{"width":1440,"height":1420}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dark = !!(this.props.dark ?? false);
+    const t = dark ? {
+      bg: '#0f1218', surface: '#171c24', glass: 'rgba(23,28,36,0.75)', soft: '#202733', border: '#313a48', line: '#252c38',
+      text: '#f3f6fb', muted: '#99a3b3', accent: '#e6ebf5', onAccent: '#171c24',
+      primary: '#8b7dff', primarySoft: 'rgba(139,125,255,0.16)', success: '#8daec7', successSoft: 'rgba(141,174,199,0.15)',
+      warnSoft: 'rgba(150,165,197,0.15)', red: '#ff6369', redSoft: 'rgba(255,99,105,0.16)',
+      dividend: '#aba6d0', dividendSoft: 'rgba(171,166,208,0.12)',
+      shadow: '0 12px 28px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.05)', raised: '0 20px 40px rgba(0,0,0,0.5)',
+      pillOn: '#2a3241', tipBg: '#e6ebf5', tipFg: '#151821'
+    } : {
+      bg: '#f1f3f6', surface: '#fafcff', glass: 'rgba(250,252,255,0.8)', soft: '#edf1f6', border: '#d8dee7', line: '#e8ecf2',
+      text: '#151821', muted: '#6b7280', accent: '#1d2433', onAccent: '#ffffff',
+      primary: '#533afd', primarySoft: 'rgba(83,58,253,0.10)', success: '#5f7f98', successSoft: 'rgba(95,127,152,0.12)',
+      warnSoft: 'rgba(123,135,168,0.12)', red: '#e5484d', redSoft: 'rgba(229,72,77,0.12)',
+      dividend: '#7e78a8', dividendSoft: 'rgba(126,120,168,0.12)',
+      shadow: '0 10px 30px rgba(18,26,40,0.045), inset 0 1px 0 rgba(255,255,255,0.62)', raised: '0 16px 36px rgba(18,26,40,0.09)',
+      pillOn: '#fafcff', tipBg: '#1d2433', tipFg: '#ffffff'
+    };
+
+    // ===== 側欄（與其他桌面頁共用）=====
+    const I = {
+      box: 'M21 8l-9-5-9 5v8l9 5 9-5V8z M3 8l9 5 9-5 M12 13v8',
+      cart: 'M3 4h2l2.4 11h11.2L21 7H6.2 M9 20h.01 M18 20h.01',
+      chart: 'M3 17l6-6 4 4 8-8 M15 7h6v6',
+      list: 'M8 6h13 M8 12h13 M8 18h13 M3.5 6h.01 M3.5 12h.01 M3.5 18h.01',
+      percent: 'M19 5L5 19 M6.5 6.5h.01 M17.5 17.5h.01',
+      dollar: 'M12 3v18 M16.5 7.5c0-1.9-2-3-4.5-3s-4.5 1.1-4.5 3 2 2.7 4.5 3.2 4.5 1.3 4.5 3.3-2 3.5-4.5 3.5-4.5-1.3-4.5-3.3',
+      wallet: 'M3 7v10a2 2 0 0 0 2 2h15V9H5a2 2 0 0 1-2-2zm0 0a2 2 0 0 1 2-2h13v4 M16 14h.01',
+      upload: 'M12 16V4 M7 9l5-5 5 5 M4 20h16',
+      sliders: 'M4 6h10 M18 6h2 M4 12h4 M12 12h8 M4 18h12 M16 4v4 M10 10v4 M18 16v4',
+      cog: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 2v3 M12 19v3 M4.9 4.9l2.1 2.1 M17 17l2.1 2.1 M2 12h3 M19 12h3 M4.9 19.1L7 17 M17 7l2.1-2.1'
+    };
+    const activeId = 'dividends';
+    const NAV = [
+      { id: 'portfolio', label: '投資', items: [
+        ['portfolio', '投資概覽', I.chart, null, 'Main.dc.html'], ['transactions', '交易紀錄', I.list, null, 'PfTransactions.dc.html'],
+        ['dividends', '股利', I.percent, { count: 2, aria: '2 筆待收股利' }, 'PfDividends.dc.html'],
+        ['realized', '已實現損益', I.dollar, null, 'PfRealized.dc.html'], ['cash', '現金帳戶', I.wallet, null, 'PfCash.dc.html'],
+        ['import', '匯入', I.upload, { dot: true, aria: '最近一次匯入失敗' }, 'PfImport.dc.html']
+      ] },
+      { id: 'ledger', label: '財務', items: [['ledger', '記帳記錄', I.list, { count: 2, aria: '提醒中心 2 項' }, 'AccountingDesktop.dc.html'], ['accounts', '帳戶', I.wallet, { count: 1, aria: '1 筆待確認' }], ['ledger-settings', '記帳設定', I.sliders]] },
+      { id: 'system', label: '系統', items: [['settings', '設定', I.cog, null, 'SettingsDesktop.dc.html']] }
+    ];
+    const item = ([id, label, icon, b, href]) => {
+      const on = id === activeId;
+      const badge = b || {};
+      return { id, label, icon, href: href || '#', current: on ? 'page' : 'false',
+        bg: on ? t.primarySoft : 'transparent', fg: on ? t.primary : t.text, weight: on ? 700 : 500,
+        iconBg: on ? t.primary : t.soft, iconFg: on ? '#FFFFFF' : t.muted,
+        hasCount: !!badge.count, count: badge.count || '', hasDot: !!badge.dot, badgeAria: badge.aria || '' };
+    };
+    const st = this.state || {};
+    const closed = st.closed || {};
+    const groups = NAV.map((g) => {
+      const items = g.items.map(item);
+      const isActive = items.some((it) => it.id === activeId);
+      const open = isActive || !closed[g.id];
+      const sum = items.reduce((s, it) => s + (Number(it.count) || 0), 0);
+      return { label: g.label, items, open, ariaOpen: open ? 'true' : 'false',
+        rot: open ? '0deg' : '-90deg', chevOpacity: isActive ? 0 : 1, hint: isActive ? '目前' : '',
+        showSum: !open && sum > 0, sum, showDot: !open && items.some((it) => it.hasDot),
+        toggle: () => { if (!isActive) this.setState({ closed: { ...closed, [g.id]: !closed[g.id] } }); } };
+    });
+
+    // ===== 頁面（範例資料，僅示意）=====
+    // 已記錄股利 = 已確認收款 + 舊資料；待收另計，不算可用現金
+    const kpis = [
+      { label: '已確認收款', value: '$37,578', note: '5 筆 · 已寫入現金帳', color: t.text, dot: t.success, dotBorder: 'none' },
+      { label: '有效待收', value: '$14,600', note: '2 筆 · 納入預估含息損益', color: t.primary, dot: t.primary, dotBorder: 'none' },
+      { label: '舊資料帳面', value: '$21,342', note: '1 筆 · 收款未核實', color: t.text, dot: 'transparent', dotBorder: '1.5px dashed ' + t.muted },
+      { label: '已記錄股利', value: '$58,920', note: '已確認 ＋ 舊資料', color: t.dividend, dot: t.dividend, dotBorder: 'none' }
+    ];
+    const upcoming = [
+      { month: '12月', day: '11', name: '台積電 2330', note: '每股 6.00 · 持有 1,000 股', est: '預估 +6,000' },
+      { month: '1月', day: '21', name: '元大台灣50 0050', note: '每股金額尚未公告 · 持有 8,000 股', est: '—' }
+    ];
+    const statusSeg = ['全部', '待收', '已收款', '舊資料'].map((label) => {
+      const on = label === '全部';
+      return { label, on: on ? 'true' : 'false', bg: on ? t.pillOn : 'transparent', fg: on ? t.text : t.muted, weight: on ? 700 : 500, shadow: on ? '0 1px 2px rgba(0,0,0,.08)' : 'none' };
+    });
+    const chips = [{ k: '日期', v: '全部期間' }, { k: '來源', v: '全部來源' }, { k: '排序', v: '除息日新→舊' }];
+
+    const S = dark ? { '2330': '#8b7dff', '0050': '#6fb3ae', '2317': '#d0a06a', '00878': '#d38a9c', 'AAPL': '#aba6d0' }
+                   : { '2330': '#533afd', '0050': '#4f8f8a', '2317': '#b7843f', '00878': '#b9687e', 'AAPL': '#7e78a8' };
+    const STATUS = {
+      pending: { label: '待收', bg: t.primarySoft, fg: t.primary },
+      received: { label: '已收款', bg: t.successSoft, fg: t.text },
+      legacy: { label: '舊資料 · 未核實', bg: t.warnSoft, fg: t.text }
+    };
+    const openId = st.openId === undefined ? 'd1' : st.openId;
+    const raw = [
+      { id: 'd1', sym: '00878', abbr: '878', name: '國泰永續高股息', symbol: '00878 · Q3', ex: '2026/10/17', pay: '預定 11/18', paySub: '公司公告', calc: '0.48 × 20,000', deduct: '補充保費 0', net: '+9,600', s: 'pending' },
+      { id: 'd2', sym: '2330', abbr: '積', name: '台積電', symbol: '2330 · Q2', ex: '2026/09/16', pay: '預定 2027/01/08', paySub: '公司公告', calc: '5.00 × 1,000', deduct: '補充保費 0', net: '+5,000', s: 'pending' },
+      { id: 'd3', sym: 'AAPL', abbr: 'A', name: 'Apple', symbol: 'AAPL · 美股', ex: '2026/08/11', pay: '收款 08/14', paySub: '國泰複委託', calc: 'US$0.26 × 30', deduct: '預扣 30% · 匯率 30.80', net: '+168', s: 'received' },
+      { id: 'd4', sym: '2317', abbr: '鴻', name: '鴻海', symbol: '2317', ex: '2026/07/24', pay: '收款 08/20', paySub: '元大交割戶', calc: '5.80 × 3,000', deduct: '匯費 10', net: '+17,390', s: 'received' },
+      { id: 'd5', sym: '0050', abbr: '50', name: '元大台灣50', symbol: '0050 · 上半年', ex: '2026/07/18', pay: '收款 08/14', paySub: '元大交割戶', calc: '1.335 × 6,000', deduct: '匯費 20', net: '+7,990', s: 'received' },
+      { id: 'd6', sym: '00878', abbr: '878', name: '國泰永續高股息', symbol: '00878 · Q2', ex: '2026/07/17', pay: '收款 08/13', paySub: '元大交割戶', calc: '0.47 × 15,000', deduct: '匯費 10', net: '+7,040', s: 'received' },
+      { id: 'd7', sym: '2330', abbr: '積', name: '台積電', symbol: '2330 · Q1', ex: '2026/06/12', pay: '收款 07/10', paySub: '元大交割戶', calc: '5.00 × 1,000', deduct: '匯費 10', net: '+4,990', s: 'received' },
+      { id: 'd8', sym: '2330', abbr: '積', name: '台積電', symbol: '2330 · 舊系統匯入', ex: '2025 以前', pay: '—', paySub: '未記錄收款日', calc: '多筆合併', deduct: '原帳面金額', net: '+21,342', s: 'legacy' }
+    ];
+    const rows = raw.map((r) => {
+      const s = STATUS[r.s];
+      const open = r.s === 'pending' && openId === r.id;
+      return { ...r, color: S[r.sym], status: s.label, pillBg: s.bg, pillFg: s.fg,
+        amtColor: r.s === 'pending' ? t.primary : t.dividend,
+        canConfirm: r.s === 'pending', open, ariaOpen: open ? 'true' : 'false',
+        rowBg: open ? t.primarySoft : 'transparent',
+        toggle: () => this.setState({ openId: open ? null : r.id }) };
+    });
+
+    return { t, groups, kpis, upcoming, statusSeg, chips, rows,
+      fabTip: !!st.fabTip, fabEnter: () => this.setState({ fabTip: true }), fabLeave: () => this.setState({ fabTip: false }) };
+  }
+}
+</script>
+</body>
+</html>
