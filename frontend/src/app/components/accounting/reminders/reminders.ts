@@ -22,6 +22,9 @@ import { AccountingToastService, scheduleActionError } from '../accounting-toast
 import { isHandledKey } from '../accounting-ui';
 import { BillingEvent, billingCards, dueCountdown, reminderDues } from '../billing/billing-math';
 import { BillState, BillingService } from '../billing/billing.service';
+import { AppInboxPanelComponent } from '../inbox/inbox-panel/inbox-panel';
+import { InboxOut } from '../inbox/inbox.model';
+import { InboxService } from '../inbox/inbox.service';
 import { StatementSummary } from '../statements/statement.model';
 import { reconProgress, statementForPeriod } from '../statements/statement-view';
 import { StatementsService } from '../statements/statements.service';
@@ -37,10 +40,11 @@ export const REMINDER_ENTRY_LIMIT = 500;
 /** A timeline row with the reminder centre's optional remaining slot. */
 export type ReminderEntryRow = TimelineRow & { remaining: DebtRemaining | null };
 
-export type ReminderTab = 'all' | 'cards' | 'debts' | 'pending';
+export type ReminderTab = 'all' | 'todo' | 'cards' | 'debts' | 'pending';
 
 export const REMINDER_TABS: { key: ReminderTab; label: string }[] = [
   { key: 'all', label: '全部' },
+  { key: 'todo', label: '待處理' },
   { key: 'cards', label: '信用卡帳單' },
   { key: 'debts', label: '借還款追蹤' },
   { key: 'pending', label: '待完成交易' },
@@ -235,7 +239,7 @@ export function debtReminders(counterparties: Counterparty[], openEntries: Ledge
 @Component({
   selector: 'app-accounting-reminders',
   standalone: true,
-  imports: [RouterLink, NgTemplateOutlet, ScheduleSheetComponent],
+  imports: [RouterLink, NgTemplateOutlet, ScheduleSheetComponent, AppInboxPanelComponent],
   templateUrl: './reminders.html',
   styleUrls: ['../filters.scss', '../entry-row.scss', './reminders.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -245,6 +249,7 @@ export class AccountingRemindersComponent {
   private readonly accounting = inject(AccountingService);
   private readonly bills = inject(BillingService);
   private readonly statements = inject(StatementsService);
+  private readonly inboxService = inject(InboxService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly layoutMode = inject(LayoutModeService);
@@ -277,6 +282,9 @@ export class AccountingRemindersComponent {
   readonly actionError = signal<string | null>(null);
   readonly definitions = signal<ScheduleDefinition[]>([]);
   readonly definitionsFailed = signal(false);
+  /** The reconciliation inbox (待處理); null until read, or when the read failed. */
+  readonly inbox = signal<InboxOut | null>(null);
+  readonly inboxFailed = signal(false);
   /** The definition whose manage sheet is open (a row tap or `?schedule=<id>`). */
   readonly sheetId = signal<number | null>(null);
   /** A failed 重試 on a 週期／分期 row (the 待完成交易 error line is not shown on 借還款追蹤). */
@@ -334,6 +342,7 @@ export class AccountingRemindersComponent {
   readonly showCards = computed(() => this.tab() === 'all' || this.tab() === 'cards');
   readonly showDebts = computed(() => this.tab() === 'all' || this.tab() === 'debts');
   readonly showQueue = computed(() => this.tab() === 'all' || this.tab() === 'pending');
+  readonly showInbox = computed(() => this.tab() === 'all' || this.tab() === 'todo');
   readonly empty = computed(() => {
     if (!this.loaded() || this.loadError()) {
       return false;
@@ -342,12 +351,14 @@ export class AccountingRemindersComponent {
     const cards = this.showCards() ? this.cardRows().length : 0;
     const debts = this.showDebts() ? this.debtCounterparties().length : 0;
     const queue = this.tab() === 'pending' ? groups.due.length + groups.upcoming.length : this.tab() === 'all' ? groups.due.length : 0;
-    const failed = (this.showCards() && this.billsFailed()) || (this.showQueue() && this.queueFailed());
+    const inbox = this.showInbox() ? (this.inbox()?.counts.ask ?? 0) : 0;
+    const failed =
+      (this.showCards() && this.billsFailed()) || (this.showQueue() && this.queueFailed()) || (this.tab() === 'todo' && this.inboxFailed());
     // 借還款追蹤 also lists 週期／分期: live or ended definitions (or their failed load) are not "nothing pending".
     const schedules = this.tab() === 'debts' ? this.scheduleRows().active.length + this.scheduleRows().ended.length : 0;
     const schedulesFailed = this.tab() === 'debts' && this.definitionsFailed();
     return (
-      cards === 0 && debts === 0 && queue === 0 && schedules === 0 && !failed && !schedulesFailed &&
+      cards === 0 && debts === 0 && queue === 0 && inbox === 0 && schedules === 0 && !failed && !schedulesFailed &&
       (!this.showCards() || this.billsSettled())
     );
   });
@@ -436,8 +447,9 @@ export class AccountingRemindersComponent {
       open: this.accounting.getAllEntries({ open: true, limit: REMINDER_ENTRY_LIMIT, offset: 0 }),
       queue: this.accounting.getScheduleInstances({ queue: true }).pipe(catchError(() => of(null))),
       definitions: this.accounting.getScheduleDefinitions().pipe(catchError(() => of(null))),
+      inbox: this.inboxService.get().pipe(catchError(() => of(null))),
     }).subscribe({
-      next: ({ accounts, counterparties, open, queue, definitions }) => {
+      next: ({ accounts, counterparties, open, queue, definitions, inbox }) => {
         if (id !== this.requestId) {
           return;
         }
@@ -448,6 +460,8 @@ export class AccountingRemindersComponent {
         this.queueFailed.set(queue === null);
         this.definitions.set(definitions ?? []);
         this.definitionsFailed.set(definitions === null);
+        this.inbox.set(inbox);
+        this.inboxFailed.set(inbox === null);
         if (this.scrollToSchedules) {
           this.scrollToSchedules = false;
           afterNextRender(() => this.host.nativeElement.querySelector('#schedules')?.scrollIntoView?.({ block: 'start' }), {
@@ -493,6 +507,11 @@ export class AccountingRemindersComponent {
     for (const event of this.failedDues()) {
       this.bills.retry(event, today);
     }
+  }
+
+  /** An inbox answer may write no entry (忽略, 等下期, 對到): bump entriesChanged so the page — and the inbox — reload. */
+  onInboxChanged(): void {
+    this.accounting.markEntriesChanged();
   }
 
   setTab(tab: ReminderTab): void {

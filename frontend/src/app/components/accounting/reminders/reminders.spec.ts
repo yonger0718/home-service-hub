@@ -10,6 +10,7 @@ import { LayoutModeService } from '../../../services/layout-mode.service';
 import { AccountingToastService } from '../accounting-toast';
 import { makeAccount, makeDefinition, makeEntry, makeInstance } from '../testing/fixtures';
 import { StatementSummary } from '../statements/statement.model';
+import { InboxItem, InboxOut } from '../inbox/inbox.model';
 import { AccountingRemindersComponent, withImportedStatement } from './reminders';
 
 const credit = (overrides: Partial<LedgerAccount>) => makeAccount({ is_credit: true, icon: '💳', ...overrides });
@@ -70,6 +71,36 @@ const OPEN_ENTRIES = [
 
 const ALAN_OPEN = OPEN_ENTRIES.filter(entry => entry.counterparty_id === 1);
 
+const INBOX_URL = '/api/accounting/reconciliation/inbox';
+
+function inboxOut(items: InboxItem[] = []): InboxOut {
+  return {
+    generated_at: '2026-10-03T00:00:00Z',
+    counts: { ask: items.length, ask_items: items.length, proposed: 0, balance_gap: 0, settlement: 0, other: 0 },
+    accounts: items.length > 0 ? [{ id: 1, name: '玉山', currency: 'TWD', is_credit: false, items }] : [],
+  };
+}
+
+/** One unfolded 銀行有、你沒記 card per case id. */
+function bankOnly(caseId: number): InboxItem {
+  return {
+    case_id: caseId,
+    case_version: 1,
+    kind: 'line_unmatched',
+    status: 'open',
+    question: 'bank_only',
+    folded: false,
+    group_key: null,
+    statement: { id: 10, period_end: '2026-09-30' },
+    line: { id: caseId, date: '2026-09-03', merchant: `店 ${caseId}`, amount: '-120.0000', line_kind: 'purchase' },
+    entry: null,
+    candidates: [],
+    proposal: null,
+    actions: ['record', 'dismiss'],
+    rule_hint: null,
+  };
+}
+
 describe('withImportedStatement', () => {
   const row = {
     accountId: 9,
@@ -127,6 +158,7 @@ describe('AccountingRemindersComponent', () => {
     open: LedgerEntry[],
     queue: ScheduleInstance[] = [],
     definitions: ScheduleDefinition[] = [],
+    inbox: InboxOut = inboxOut(),
   ): void {
     http.expectOne(r => r.url === '/api/accounting/accounts').flush(accounts);
     http.expectOne('/api/accounting/counterparties').flush(counterparties);
@@ -137,6 +169,7 @@ describe('AccountingRemindersComponent', () => {
     expect(queueReq.request.params.get('queue')).toBe('true');
     queueReq.flush(queue);
     http.expectOne(r => r.url === '/api/accounting/schedules/definitions').flush(definitions);
+    http.expectOne(r => r.url === INBOX_URL).flush(inbox);
   }
 
   function flushBill(accountId: number, spend: string, payments: string[] = [], paidTo = '2026-10-03'): void {
@@ -166,10 +199,11 @@ describe('AccountingRemindersComponent', () => {
     open: LedgerEntry[] = [],
     queue: ScheduleInstance[] = [],
     definitions: ScheduleDefinition[] = [],
+    inbox: InboxOut = inboxOut(),
   ) {
     const fixture = TestBed.createComponent(AccountingRemindersComponent);
     fixture.detectChanges();
-    flushLoad(accounts, counterparties, open, queue, definitions);
+    flushLoad(accounts, counterparties, open, queue, definitions, inbox);
     fixture.detectChanges();
     return { fixture, el: fixture.nativeElement as HTMLElement };
   }
@@ -622,6 +656,7 @@ describe('AccountingRemindersComponent', () => {
       open: http.expectOne(r => r.url === '/api/accounting/entries'),
       queue: http.expectOne(r => r.url === '/api/accounting/schedules/instances'),
       definitions: http.expectOne(r => r.url === '/api/accounting/schedules/definitions'),
+      inbox: http.expectOne(r => r.url === INBOX_URL),
     };
     TestBed.inject(AccountingService).deleteEntry(1).subscribe();
     http.expectOne(r => r.method === 'DELETE').flush(null);
@@ -632,9 +667,11 @@ describe('AccountingRemindersComponent', () => {
     first.open.flush({ items: [], total: 0, limit: 500, offset: 0 });
     first.queue.flush([]);
     first.definitions.flush([]);
+    first.inbox.flush(inboxOut([bankOnly(1)]));
     fixture.detectChanges();
 
     expect((fixture.nativeElement as HTMLElement).querySelectorAll('.debt-row').length).toBe(1);
+    expect((fixture.nativeElement as HTMLElement).querySelector('app-inbox-panel')).toBeNull();
   });
 
   it('shows a load error', () => {
@@ -644,6 +681,7 @@ describe('AccountingRemindersComponent', () => {
     http.expectOne(r => r.url === '/api/accounting/entries').flush({ items: [], total: 0, limit: 500, offset: 0 });
     http.expectOne(r => r.url === '/api/accounting/schedules/instances').flush([]);
     http.expectOne(r => r.url === '/api/accounting/schedules/definitions').flush([]);
+    http.expectOne(r => r.url === INBOX_URL).flush(inboxOut());
     http.expectOne(r => r.url === '/api/accounting/accounts').flush('boom', { status: 500, statusText: 'Server Error' });
     fixture.detectChanges();
     expect(text((fixture.nativeElement as HTMLElement).querySelector('.load-error'))).toBe('提醒讀取失敗，請稍後再試。');
@@ -670,10 +708,10 @@ describe('AccountingRemindersComponent', () => {
       return Array.from(el.querySelectorAll('h3.section')).map(text);
     }
 
-    it('has the four tabs and opens 待完成交易 from ?tab=pending', async () => {
+    it('has the five tabs and opens 待完成交易 from ?tab=pending', async () => {
       await TestBed.inject(Router).navigateByUrl('/?tab=pending');
       const { el } = render([], [], [], [RENT]);
-      expect(Array.from(el.querySelectorAll('.tabs [role="radio"]')).map(text)).toEqual(['全部', '信用卡帳單', '借還款追蹤', '待完成交易']);
+      expect(Array.from(el.querySelectorAll('.tabs [role="radio"]')).map(text)).toEqual(['全部', '待處理', '信用卡帳單', '借還款追蹤', '待完成交易']);
       expect(text(el.querySelector('.tabs [aria-checked="true"]'))).toBe('待完成交易');
     });
 
@@ -762,6 +800,7 @@ describe('AccountingRemindersComponent', () => {
         .expectOne(r => r.url === '/api/accounting/schedules/instances' && r.params.get('queue') === 'true')
         .flush('boom', { status: 500, statusText: 'Server Error' });
       http.expectOne(r => r.url === '/api/accounting/schedules/definitions').flush([]);
+      http.expectOne(r => r.url === INBOX_URL).flush(inboxOut());
       fixture.detectChanges();
       flushBill(9, '-12345.0000', ['5000.0000']);
       fixture.detectChanges();
@@ -970,6 +1009,51 @@ describe('AccountingRemindersComponent', () => {
       fixture.detectChanges();
       expect(text(el.querySelector('.tabs [aria-checked="true"]'))).toBe('借還款追蹤');
       expect(text(el.querySelector('app-schedule-sheet h3'))).toBe('信貸 每月還款');
+    });
+  });
+
+  describe('待處理', () => {
+    function sections(el: HTMLElement): string[] {
+      return Array.from(el.querySelectorAll('h3.section')).map(text);
+    }
+
+    it('the 待處理 tab is second and deep-links with ?tab=todo', async () => {
+      await TestBed.inject(Router).navigateByUrl('/?tab=todo');
+      const { fixture, el } = render([], [], [], [], [], inboxOut([bankOnly(1), bankOnly(2), bankOnly(3), bankOnly(4)]));
+      expect(Array.from(el.querySelectorAll('.tabs [role="radio"]')).map(text)).toEqual(['全部', '待處理', '信用卡帳單', '借還款追蹤', '待完成交易']);
+      expect(text(el.querySelector('.tabs [aria-checked="true"]'))).toBe('待處理');
+      // The full list: every card, no 還有 N 張 link, nothing from the other tabs.
+      expect(el.querySelectorAll('app-inbox-panel .ask-cards .inbox-card').length).toBe(4);
+      expect(el.querySelector('app-inbox-panel a.more')).toBeNull();
+      expect(sections(el)).toEqual([]);
+      expect(el.querySelector('.empty')).toBeNull();
+
+      // Nothing to decide: the page says so.
+      TestBed.inject(AccountingService).markEntriesChanged();
+      fixture.detectChanges();
+      flushLoad([], [], [], [], [], inboxOut());
+      fixture.detectChanges();
+      expect(text(el.querySelector('.empty'))).toBe('目前沒有待處理項目');
+    });
+
+    it('load() requests the inbox and renders the panel on 全部', () => {
+      const { fixture, el } = render([], [ALAN], ALAN_OPEN, [], [], inboxOut([bankOnly(1), bankOnly(2), bankOnly(3), bankOnly(4)]));
+      expect(sections(el)).toEqual(['待處理', '借還款追蹤']);
+      const panel = el.querySelector('app-inbox-panel')!;
+      expect(panel.querySelectorAll('.ask-cards .inbox-card').length).toBe(3);
+      expect(text(panel.querySelector('a.more'))).toBe('還有 1 張 →');
+
+      // An answer reloads the page (and with it the inbox) through entriesChanged.
+      const first = panel.querySelector<HTMLElement>('.ask-cards .inbox-card')!;
+      Array.from(first.querySelectorAll<HTMLButtonElement>('button')).find(node => text(node) === '忽略')!.click();
+      http
+        .expectOne(r => r.method === 'POST' && r.url === `${INBOX_URL}/apply`)
+        .flush({ results: [{ case_id: 1, status: 'applied', action_id: 9, code: null }], rule_id: null, rule_error: null });
+      fixture.detectChanges();
+      flushLoad([], [ALAN], ALAN_OPEN, [], [], inboxOut([bankOnly(2), bankOnly(3), bankOnly(4)]));
+      fixture.detectChanges();
+      expect(panel.querySelectorAll('.ask-cards .inbox-card').length).toBe(3);
+      expect(panel.querySelector('a.more')).toBeNull();
     });
   });
 });
