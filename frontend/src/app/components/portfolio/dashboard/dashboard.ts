@@ -22,6 +22,7 @@ import { MessageService } from 'primeng/api';
 
 import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import {
   ExDividendRecord,
   MarketCode,
@@ -37,6 +38,7 @@ import { BentoComponent } from '../../ui/bento/bento';
 import { PctBadgeComponent } from '../../ui/pct-badge/pct-badge';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { MARKET_LABELS, composition, quoteTimeLabel, todayChange } from './dashboard-math';
+import { hoverGuidePlugin } from './chart-guide.plugin';
 
 /** Current time for the quote line's 盤中 / 台股收盤 tag; overridable in tests. */
 export const DASHBOARD_CLOCK = new InjectionToken<() => Date>('DASHBOARD_CLOCK', {
@@ -45,6 +47,13 @@ export const DASHBOARD_CLOCK = new InjectionToken<() => Date>('DASHBOARD_CLOCK',
 });
 
 type PortfolioRange = '1M' | '3M' | 'YTD' | '1Y' | '5Y';
+
+/** 帳戶總值 / 持股淨值 at one chart point; cash is the gap between the two lines. */
+interface ChartSeriesValues {
+  total: number;
+  holdings: number;
+  cash: number;
+}
 
 @Component({
   selector: 'app-portfolio-dashboard',
@@ -72,6 +81,7 @@ export class PortfolioDashboardComponent implements OnInit {
   private readonly destroyRef = inject(DestroyRef);
   private readonly cdr = inject(ChangeDetectorRef);
   private readonly clock = inject(DASHBOARD_CLOCK);
+  private readonly layoutMode = inject(LayoutModeService);
 
   @ViewChild('netWorthChart') netWorthChart?: UIChart;
 
@@ -98,6 +108,15 @@ export class PortfolioDashboardComponent implements OnInit {
 
   chartData: any = null;
   chartOptions: any = this.buildChartOptions();
+  readonly chartPlugins = [hoverGuidePlugin];
+
+  readonly isPhone = computed(() => this.layoutMode.mode() === 'phone');
+
+  /** Latest values for the chart legend; null hides it. */
+  readonly chartLegend = computed<ChartSeriesValues | null>(() => {
+    const points = this.chartPoints();
+    return points.length ? this.seriesValues(points[points.length - 1]) : null;
+  });
 
   readonly periodReturn = computed(() => {
     const values = this.chartValues();
@@ -545,7 +564,7 @@ export class PortfolioDashboardComponent implements OnInit {
       labels: points.map(point => this.formatChartLabel(point.date)),
       datasets: [
         {
-          label: '總資產',
+          label: '帳戶總值',
           data: points.map(point => this.totalAssetsValue(point)),
           borderColor: cashLine,
           backgroundColor: cashFill,
@@ -556,7 +575,7 @@ export class PortfolioDashboardComponent implements OnInit {
           pointHoverRadius: 4,
         },
         {
-          label: '總市值',
+          label: '持股淨值',
           data: points.map(point => this.numberFrom(point.total_market_value)),
           borderColor: stockLine,
           backgroundColor: stockFill,
@@ -569,6 +588,12 @@ export class PortfolioDashboardComponent implements OnInit {
       ],
     };
     this.chartOptions = this.buildChartOptions();
+  }
+
+  private seriesValues(point: NetworthPoint): ChartSeriesValues {
+    const total = this.totalAssetsValue(point);
+    const holdings = this.numberFrom(point.total_market_value);
+    return { total, holdings, cash: Math.max(0, total - holdings) };
   }
 
   private chartValues(): number[] {
@@ -604,13 +629,14 @@ export class PortfolioDashboardComponent implements OnInit {
           intersect: false,
           axis: 'x',
           callbacks: {
-            label: (ctx: any) => {
-              const v = Number(ctx.parsed?.y ?? 0);
-              return new Intl.NumberFormat('zh-TW', {
-                style: 'currency',
-                currency: 'TWD',
-                minimumFractionDigits: 0,
-              }).format(v);
+            title: (items: any[]) => {
+              const point = this.chartPoints()[items[0]?.dataIndex];
+              return point ? point.date.slice(0, 10).replaceAll('-', '/') : '';
+            },
+            label: (ctx: any) => `${ctx.dataset?.label ?? ''} ${this.formatCurrency(ctx.parsed?.y ?? 0)}`,
+            afterBody: (items: any[]) => {
+              const point = this.chartPoints()[items[0]?.dataIndex];
+              return point ? `現金 ${this.formatCurrency(this.seriesValues(point).cash)}` : '';
             },
           },
         },

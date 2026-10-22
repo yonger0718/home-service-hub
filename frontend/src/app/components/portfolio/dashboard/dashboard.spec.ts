@@ -10,6 +10,8 @@ import { PortfolioSummary, StockHolding } from '../../../models/portfolio.model'
 import { PortfolioService } from '../../../services/portfolio.service';
 import { AppearanceService } from '../../../services/appearance.service';
 import { DASHBOARD_CLOCK, PortfolioDashboardComponent } from './dashboard';
+import { hoverGuidePlugin } from './chart-guide.plugin';
+import { LayoutModeService } from '../../../services/layout-mode.service';
 import { BtnComponent } from '../../ui/btn/btn';
 import { PageHeaderComponent } from '../../shell/page-header/page-header';
 import { SegToggleComponent } from '../../ui/seg-toggle/seg-toggle';
@@ -28,6 +30,7 @@ class ChartStubComponent {
   @Input() type = '';
   @Input() data: unknown;
   @Input() options: unknown;
+  @Input() plugins: unknown;
   chart = { update: vi.fn() };
 }
 
@@ -366,19 +369,19 @@ describe('PortfolioDashboardComponent', () => {
     expect(totalAssetsCard?.textContent).toContain(fixture.componentInstance.formatCurrency(500000));
   });
 
-  it('builds total assets and total market value datasets', () => {
+  it('builds 帳戶總值 and 持股淨值 datasets', () => {
     const fixture = createFixture();
     const chartData = fixture.componentInstance.chartData as any;
     const chartOptions = fixture.componentInstance.chartOptions as any;
 
     expect(chartData.datasets).toHaveLength(2);
     expect(chartData.datasets[0]).toMatchObject({
-      label: '總資產',
+      label: '帳戶總值',
       data: [140, 180],
       fill: '+1',
     });
     expect(chartData.datasets[1]).toMatchObject({
-      label: '總市值',
+      label: '持股淨值',
       data: [100, 120],
       fill: true,
     });
@@ -579,6 +582,151 @@ describe('PortfolioDashboardComponent', () => {
       fixture.detectChanges();
       expect(footnote(root, 2)).toBe('3M · 全市場');
       expect(root.querySelector('.chart-head .card-title')?.textContent?.trim()).toBe('淨值走勢 · 全市場');
+    });
+  });
+
+  describe('net-worth chart', () => {
+    function point(date: string, market: string, cash: string, total: string) {
+      return { date, total_market_value: market, total_cash_twd: cash, total_assets_twd: total, total_cost: '0',
+        total_unrealized_pnl: '0', total_dividends: '0', total_realized_pnl: '0', portfolio_xirr: null };
+    }
+
+    function chartCard(root: HTMLElement): HTMLElement {
+      return root.querySelector('.chart-head')!.closest('app-bento') as HTMLElement;
+    }
+
+    function legend(root: HTMLElement): string[][] {
+      return Array.from(chartCard(root).querySelectorAll<HTMLElement>('.chart-legend-item')).map(item => [
+        item.querySelector('.chart-legend-label')?.textContent?.trim() ?? '',
+        item.querySelector('.chart-legend-value')?.textContent?.trim() ?? '',
+      ]);
+    }
+
+    beforeEach(() => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        point('2026-09-01', '800', '200', '1000'),
+        point('2026-10-22', '1000', '250', '1250'),
+      ]));
+    });
+
+    afterEach(() => {
+      TestBed.inject(LayoutModeService).set(null);
+      document.documentElement.style.removeProperty('--app-accent');
+      document.documentElement.style.removeProperty('--app-accent-soft');
+    });
+
+    it('colours 帳戶總值 with the accent line and soft band down to 持股淨值', () => {
+      document.documentElement.style.setProperty('--app-accent', ' #112233');
+      document.documentElement.style.setProperty('--app-accent-soft', ' #445566');
+      const fixture = createFixture();
+      const [total, holdings] = (fixture.componentInstance.chartData as any).datasets;
+
+      expect(total).toMatchObject({ label: '帳戶總值', borderColor: '#112233', backgroundColor: '#445566', fill: '+1', data: [1000, 1250] });
+      expect(holdings).toMatchObject({ label: '持股淨值', data: [800, 1000] });
+    });
+
+    it('shows the three legend entries with the latest values and swatches', () => {
+      const fixture = createFixture();
+      const card = chartCard(fixture.nativeElement);
+
+      expect(legend(fixture.nativeElement)).toEqual([
+        ['帳戶總值', '$1,250'],
+        ['持股淨值', '$1,000'],
+        ['兩線差距 = 交割戶現金', '$250'],
+      ]);
+      const items = card.querySelectorAll('.chart-legend-item');
+      expect(items[0].querySelector('.chart-swatch.total')).not.toBeNull();
+      expect(items[1].querySelector('.chart-swatch.holdings')).not.toBeNull();
+      expect(items[2].querySelector('.chart-swatch.band')).not.toBeNull();
+      expect(card.querySelector('.chart-legend')?.classList).not.toContain('two-col');
+      expect(card.querySelector('.chart-caption')).toBeNull();
+    });
+
+    it('formats the tooltip date, series values and cash for the hovered point', () => {
+      const fixture = createFixture();
+      const datasets = (fixture.componentInstance.chartData as any).datasets;
+      const callbacks = (fixture.componentInstance.chartOptions as any).plugins.tooltip.callbacks;
+      const items = [
+        { dataIndex: 1, datasetIndex: 0, dataset: datasets[0], parsed: { y: 1250 } },
+        { dataIndex: 1, datasetIndex: 1, dataset: datasets[1], parsed: { y: 1000 } },
+      ];
+
+      expect(callbacks.title(items)).toBe('2026/10/22');
+      expect(callbacks.label(items[0])).toBe('帳戶總值 $1,250');
+      expect(callbacks.label(items[1])).toBe('持股淨值 $1,000');
+      expect(callbacks.afterBody(items)).toBe('現金 $250');
+      expect(callbacks.afterBody([{ ...items[0], dataIndex: 0 }])).toBe('現金 $200');
+      expect((fixture.componentInstance.chartOptions as any).interaction.mode).toBe('index');
+    });
+
+    it('passes the hover guide plugin to p-chart', async () => {
+      const fixture = createFixture();
+      const [deferBlock] = await fixture.getDeferBlocks();
+      await deferBlock.render(2 /* DeferBlockState.Complete */);
+      fixture.detectChanges();
+      const chart = fixture.debugElement.query(By.directive(ChartStubComponent)).componentInstance as ChartStubComponent;
+
+      expect(chart.plugins).toContain(hoverGuidePlugin);
+    });
+
+    it('shows zero cash and equal series when the latest cash is zero', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        point('2026-09-01', '800', '200', '1000'),
+        point('2026-10-22', '1000', '0', '1000'),
+      ]));
+      const fixture = createFixture();
+      const [total, holdings] = (fixture.componentInstance.chartData as any).datasets;
+
+      expect(legend(fixture.nativeElement)[2]).toEqual(['兩線差距 = 交割戶現金', '$0']);
+      expect(total.data[1]).toBe(holdings.data[1]);
+    });
+
+    it('falls back to market + cash when the latest total is zero', () => {
+      portfolioService.getNetworthHistory.mockReturnValue(of([
+        point('2026-10-22', '1000', '250', '0'),
+      ]));
+      const fixture = createFixture();
+
+      expect(legend(fixture.nativeElement)).toEqual([
+        ['帳戶總值', '$1,250'],
+        ['持股淨值', '$1,000'],
+        ['兩線差距 = 交割戶現金', '$250'],
+      ]);
+      expect((fixture.componentInstance.chartOptions as any).plugins.tooltip.callbacks.afterBody([{ dataIndex: 0 }])).toBe('現金 $250');
+    });
+
+    it('labels the period badge 帳戶總值 beside the title', () => {
+      const fixture = createFixture();
+      const head = (fixture.nativeElement as HTMLElement).querySelector('.chart-head-left')!;
+      const ret = head.querySelector('.chart-return')!;
+
+      expect(head.querySelector('.card-title')?.textContent?.trim()).toBe('淨值走勢');
+      expect(ret.querySelector('.chart-return-label')?.textContent?.trim()).toBe('帳戶總值');
+      expect(ret.querySelector('app-pct-badge')?.textContent?.trim()).toBe('+25.00%');
+    });
+
+    it('titles the chart 全市場 while a market filter is active', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        holdings: [buildHolding(), { ...buildHolding(), symbol: 'AAPL', market: 'US', native_currency: 'USD' }],
+      })));
+      const fixture = createFixture();
+      fixture.componentInstance.selectMarketFilter('US');
+      fixture.detectChanges();
+
+      expect((fixture.nativeElement as HTMLElement).querySelector('.chart-head .card-title')?.textContent?.trim()).toBe('淨值走勢 · 全市場');
+    });
+
+    it('uses a two-column legend and a cash caption on a phone', () => {
+      TestBed.inject(LayoutModeService).set('phone');
+      const fixture = createFixture();
+      const card = chartCard(fixture.nativeElement);
+
+      expect(card.querySelector('.chart-legend')?.classList).toContain('two-col');
+      expect(legend(fixture.nativeElement)).toEqual([
+        ['帳戶總值', '$1,250'],
+        ['持股淨值', '$1,000'],
+      ]);
+      expect(card.querySelector('.chart-caption')?.textContent?.trim()).toBe('兩線之間是交割戶現金 $250');
     });
   });
 

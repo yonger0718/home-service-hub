@@ -226,6 +226,101 @@ app-bento {
   display: block;
 }
 
+.chart-return {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.chart-return-label {
+  color: var(--app-text-muted);
+  font-size: var(--fs-label);
+  font-weight: 700;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 8px 20px;
+  margin-bottom: 0.75rem;
+
+  &.two-col {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+
+    .chart-legend-item {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .chart-legend-label {
+      font-size: 12px;
+    }
+
+    .chart-legend-value {
+      font-size: 15px;
+    }
+  }
+}
+
+.chart-legend-item {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chart-legend-label {
+  align-items: center;
+  color: var(--app-text-muted);
+  display: flex;
+  gap: 8px;
+}
+
+.chart-legend-value {
+  color: var(--app-text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.chart-swatch {
+  border-radius: 2px;
+  box-sizing: border-box;
+  flex: none;
+  height: 3px;
+  width: 16px;
+
+  &.total {
+    background: var(--app-accent);
+  }
+
+  &.holdings {
+    background: var(--app-trend-positive);
+
+    &.down {
+      background: var(--app-trend-negative);
+    }
+  }
+
+  &.band {
+    background: var(--app-accent-soft);
+    border: 1px solid var(--app-border);
+    border-radius: 3px;
+    height: 12px;
+    width: 12px;
+  }
+}
+
+.chart-caption {
+  color: var(--app-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin: 0.5rem 0 0;
+}
+
 .networth-chart {
   height: 220px;
   position: relative;

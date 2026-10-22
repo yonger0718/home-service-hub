@@ -121,7 +121,10 @@
         <div class="chart-head">
           <div class="chart-head-left">
             <h3 class="card-title">淨值走勢{{ isMarketFiltered() ? ' · 全市場' : '' }}</h3>
-            <app-pct-badge [value]="periodReturn()"></app-pct-badge>
+            <span class="chart-return">
+              <span class="chart-return-label">帳戶總值</span>
+              <app-pct-badge [value]="periodReturn()"></app-pct-badge>
+            </span>
           </div>
           <app-seg-toggle
             class="range-tabs"
@@ -131,13 +134,35 @@
             (change)="selectRange($event)"
           ></app-seg-toggle>
         </div>
+        @let legendData = chartLegend();
+        @if (legendData) {
+          <div class="chart-legend" [class.two-col]="isPhone()">
+            <span class="chart-legend-item">
+              <span class="chart-legend-label"><span class="chart-swatch total" aria-hidden="true"></span>帳戶總值</span>
+              <b class="chart-legend-value">{{ formatCurrency(legendData.total) }}</b>
+            </span>
+            <span class="chart-legend-item">
+              <span class="chart-legend-label"><span class="chart-swatch holdings" [class.down]="periodReturn() < 0" aria-hidden="true"></span>持股淨值</span>
+              <b class="chart-legend-value">{{ formatCurrency(legendData.holdings) }}</b>
+            </span>
+            @if (!isPhone()) {
+              <span class="chart-legend-item">
+                <span class="chart-legend-label"><span class="chart-swatch band" aria-hidden="true"></span>兩線差距 = 交割戶現金</span>
+                <b class="chart-legend-value">{{ formatCurrency(legendData.cash) }}</b>
+              </span>
+            }
+          </div>
+        }
         <div class="networth-chart">
           @defer (when !!chartData) {
-            <p-chart #netWorthChart type="line" [data]="chartData" [options]="chartOptions"></p-chart>
+            <p-chart #netWorthChart type="line" [data]="chartData" [options]="chartOptions" [plugins]="chartPlugins"></p-chart>
           } @placeholder {
             <p-skeleton width="100%" height="100%"></p-skeleton>
           }
         </div>
+        @if (legendData && isPhone()) {
+          <p class="chart-caption">兩線之間是交割戶現金 {{ formatCurrency(legendData.cash) }}</p>
+        }
       </app-bento>
 
       <app-bento class="b-full" title="持股明細" [full]="true">
