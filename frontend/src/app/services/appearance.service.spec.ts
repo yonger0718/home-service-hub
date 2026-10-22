@@ -196,6 +196,59 @@ describe('AppearanceService', () => {
     expect(rootDark()).toBe(true);
   });
 
+  it('updates the root class before dark$ emits (setTheme)', () => {
+    const service = TestBed.inject(AppearanceService);
+    const seen: Array<[boolean, boolean]> = [];
+    service.dark$.subscribe(value => seen.push([value, rootDark()]));
+    service.setTheme('dark');
+    service.setTheme('light');
+    expect(seen).toEqual([
+      [false, false],
+      [true, true],
+      [false, false],
+    ]);
+  });
+
+  it('updates the root class before dark$ emits (OS change on system)', () => {
+    const service = TestBed.inject(AppearanceService);
+    service.setTheme('system');
+    const seen: Array<[boolean, boolean]> = [];
+    service.dark$.subscribe(value => seen.push([value, rootDark()]));
+    fireOs(true);
+    fireOs(false);
+    expect(seen).toEqual([
+      [false, false],
+      [true, true],
+      [false, false],
+    ]);
+  });
+
+  it('updates data-gainloss before gainLoss$ emits', () => {
+    const service = TestBed.inject(AppearanceService);
+    const seen: Array<[string, string | null]> = [];
+    service.gainLoss$.subscribe(value =>
+      seen.push([value, document.documentElement.getAttribute('data-gainloss')]),
+    );
+    service.setGainLoss('western');
+    service.setGainLoss('asian');
+    expect(seen).toEqual([
+      ['asian', 'asian'],
+      ['western', 'western'],
+      ['asian', 'asian'],
+    ]);
+  });
+
+  it('keeps hh-dark when writing hh-theme fails during migration', () => {
+    localStorage.setItem('hh-dark', '1');
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota');
+    });
+    const service = TestBed.inject(AppearanceService);
+    expect(service.theme$.value).toBe('dark');
+    expect(localStorage.getItem('hh-dark')).toBe('1');
+    expect(localStorage.getItem('hh-theme')).toBeNull();
+  });
+
   it('setDark maps to setTheme', () => {
     const service = TestBed.inject(AppearanceService);
     service.setDark(true);

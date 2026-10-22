@@ -21,8 +21,9 @@ export class AppearanceService {
 
   private readonly onOsChange = (event: { matches: boolean }): void => {
     if (this.theme$.value !== 'system') return;
+    // Root class first: dark$ subscribers (charts) read CSS variables synchronously.
+    this.apply(event.matches, this.gainLoss$.value);
     this.dark$.next(event.matches);
-    this.apply();
   };
 
   constructor() {
@@ -35,11 +36,13 @@ export class AppearanceService {
   }
 
   setTheme(value: ThemeMode): void {
+    const dark = this.effectiveDark(value);
+    // Root class first: dark$ subscribers (charts) read CSS variables synchronously.
+    this.apply(dark, this.gainLoss$.value);
     this.theme$.next(value);
-    this.dark$.next(this.effectiveDark(value));
+    this.dark$.next(dark);
     this.persist(THEME_KEY, value);
     this.syncOsListener();
-    this.apply();
   }
 
   setDark(value: boolean): void {
@@ -47,9 +50,9 @@ export class AppearanceService {
   }
 
   setGainLoss(value: GainLossConvention): void {
+    this.apply(this.dark$.value, value);
     this.gainLoss$.next(value);
     this.persist(GAIN_LOSS_KEY, value);
-    this.apply();
   }
 
   private effectiveDark(theme: ThemeMode): boolean {
@@ -69,20 +72,25 @@ export class AppearanceService {
     }
   }
 
-  private persist(key: string, value: string): void {
+  /** Returns true only when the value was actually written. */
+  private persist(key: string, value: string): boolean {
+    const storage = this.storage;
+    if (!storage) return false;
     try {
-      this.storage?.setItem(key, value);
+      storage.setItem(key, value);
+      return true;
     } catch {
       // localStorage write failed (quota / blocked); keep in-memory state
+      return false;
     }
   }
 
-  private apply(): void {
+  private apply(dark = this.dark$.value, gainLoss = this.gainLoss$.value): void {
     if (typeof document === 'undefined') return;
 
     const root = document.documentElement;
-    root.classList.toggle('app-dark-mode', this.dark$.value);
-    root.setAttribute('data-gainloss', this.gainLoss$.value);
+    root.classList.toggle('app-dark-mode', dark);
+    root.setAttribute('data-gainloss', gainLoss);
   }
 
   /**
@@ -98,11 +106,14 @@ export class AppearanceService {
     const legacy = this.read(LEGACY_DARK_KEY);
     if (legacy === '1' || legacy === '0') {
       const migrated: ThemeMode = legacy === '1' ? 'dark' : 'light';
-      this.persist(THEME_KEY, migrated);
-      try {
-        this.storage?.removeItem(LEGACY_DARK_KEY);
-      } catch {
-        // ignore
+      // Drop hh-dark only once hh-theme holds the value, so a failed write
+      // never loses the user's choice.
+      if (this.persist(THEME_KEY, migrated)) {
+        try {
+          this.storage?.removeItem(LEGACY_DARK_KEY);
+        } catch {
+          // ignore
+        }
       }
       return migrated;
     }
