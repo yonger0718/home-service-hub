@@ -12,7 +12,7 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterLink } from '@angular/router';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { Subscription, catchError, combineLatest, finalize, forkJoin, interval, of, switchMap, takeUntil, takeWhile, timer } from 'rxjs';
 
 import { ChartModule, UIChart } from 'primeng/chart';
@@ -103,8 +103,16 @@ export class PortfolioDashboardComponent implements OnInit {
   readonly chartPoints = signal<NetworthPoint[]>([]);
   readonly expandedHoldingKey = signal<string | null>(null);
   readonly marketFilter = signal<'ALL' | MarketCode>('ALL');
+  /** `quote_refresh.finished_at` from the latest status read. */
+  private readonly quoteFinishedAt = signal<string | null>(null);
+  /** Re-evaluates the quote line each minute so the 盤中 / 台股收盤 tag follows the clock (-1: interval starts at 0). */
+  private readonly minuteTick = toSignal(interval(60_000), { initialValue: -1 });
   /** `行情更新於 HH:mm · …` under the page title; null hides it. */
-  readonly quoteLine = signal<string | null>(null);
+  readonly quoteLine = computed(() => {
+    this.minuteTick();
+    return quoteTimeLabel(this.quoteFinishedAt(), this.clock());
+  });
+  private quoteStatusLoad?: Subscription;
   /** 待收股利 rows; null when the dividends or names are unavailable, which omits the block. */
   readonly pendingDividends = signal<PendingRow[] | null>(null);
   private pendingDividendsLoad?: Subscription;
@@ -315,6 +323,7 @@ export class PortfolioDashboardComponent implements OnInit {
       },
     });
     this.loadExDividends();
+    this.loadPendingDividends();
     this.loadNetworthHistory();
 
     combineLatest([this.appearance.dark$, this.appearance.gainLoss$])
@@ -326,6 +335,7 @@ export class PortfolioDashboardComponent implements OnInit {
       .subscribe(() => {
         this.networthCache.clear();
         this.reloadSummary();
+        this.loadPendingDividends();
         this.loadNetworthHistory();
       });
   }
@@ -513,9 +523,11 @@ export class PortfolioDashboardComponent implements OnInit {
     this.portfolioService.getSummary().subscribe({
       next: (data) => {
         this.summary.set(data);
+        // A filter on a market the new summary no longer holds would leave the toggle without a selection.
+        const filter = this.marketFilter();
+        if (filter !== 'ALL' && !this.availableMarkets().includes(filter)) this.selectMarketFilter('ALL');
         this.loading.set(false);
         this.loadQuoteLine();
-        this.loadPendingDividends();
       },
       error: (err) => {
         console.error('Failed to load portfolio summary', err);
@@ -525,11 +537,13 @@ export class PortfolioDashboardComponent implements OnInit {
   }
 
   // pollRecalcStatus() keeps no status body, so the quote time gets its own read after each summary.
+  // Only the latest read may set the line: an earlier one finishing late would show an older time.
   private loadQuoteLine(): void {
-    this.portfolioService
+    this.quoteStatusLoad?.unsubscribe();
+    this.quoteStatusLoad = this.portfolioService
       .getRecalcStatus()
       .pipe(catchError(() => of(null)), takeUntilDestroyed(this.destroyRef))
-      .subscribe(status => this.quoteLine.set(quoteTimeLabel(status?.quote_refresh?.finished_at, this.clock())));
+      .subscribe(status => this.quoteFinishedAt.set(status?.quote_refresh?.finished_at ?? null));
   }
 
   private loadPendingDividends(): void {

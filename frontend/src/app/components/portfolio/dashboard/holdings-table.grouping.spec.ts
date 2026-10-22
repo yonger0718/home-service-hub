@@ -2,7 +2,7 @@ import { CommonModule } from '@angular/common';
 import { Component, Input } from '@angular/core';
 import { DeferBlockBehavior, TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { NativeAmountPipe } from '../../../pipes/native-amount.pipe';
 import { PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
@@ -29,6 +29,8 @@ describe('PortfolioDashboardComponent holding groups', () => {
     getBrokerCashFlows: ReturnType<typeof vi.fn>;
     getUpcomingExDividends: ReturnType<typeof vi.fn>;
     getNetworthHistory: ReturnType<typeof vi.fn>;
+    getDividends: ReturnType<typeof vi.fn>;
+    getSymbolNames: ReturnType<typeof vi.fn>;
     cashLedgerChanged$: import('rxjs').Observable<void>;
   };
 
@@ -42,6 +44,8 @@ describe('PortfolioDashboardComponent holding groups', () => {
       getBrokerCashFlows: vi.fn().mockReturnValue(of([])),
       getUpcomingExDividends: vi.fn().mockReturnValue(of([])),
       getNetworthHistory: vi.fn().mockReturnValue(of([])),
+      getDividends: vi.fn().mockReturnValue(of({ items: [], total: 0 })),
+      getSymbolNames: vi.fn().mockReturnValue(of({})),
       cashLedgerChanged$: NEVER,
     };
 
@@ -85,6 +89,9 @@ describe('PortfolioDashboardComponent holding groups', () => {
       })
       .compileComponents();
   });
+
+  // Later spec files share the timers: never leave them faked.
+  afterEach(() => vi.useRealTimers());
 
   it('renders TW-only holdings without group chrome', () => {
     const fixture = TestBed.createComponent(PortfolioDashboardComponent);

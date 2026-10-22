@@ -56,6 +56,15 @@ describe('dashboard math', () => {
       ).toEqual({ stocks: 1000, cash: 250, pending: 14600, stocksPct: 80, cashPct: 20 });
     });
 
+    it('clamps a negative part to zero for the percents but keeps the raw amounts', () => {
+      expect(
+        composition({ total_market_value: 1000, total_cash_twd: '-200', total_pending_dividends_net: 0 }),
+      ).toEqual({ stocks: 1000, cash: -200, pending: 0, stocksPct: 100, cashPct: 0 });
+      expect(
+        composition({ total_market_value: -50, total_cash_twd: '-10', total_pending_dividends_net: 0 }),
+      ).toEqual({ stocks: -50, cash: -10, pending: 0, stocksPct: 0, cashPct: 0 });
+    });
+
     it('returns zero percents when everything is zero', () => {
       expect(
         composition({ total_market_value: 0, total_cash_twd: '0', total_pending_dividends_net: undefined }),
@@ -93,8 +102,17 @@ describe('dashboard math', () => {
       );
     });
 
-    it('takes the time from finished_at and the tag from now', () => {
-      expect(quoteTimeLabel('2026-10-21T09:00:00Z', new Date('2026-10-22T02:00:00Z'))).toBe('行情更新於 17:00 · 盤中');
+    it('takes the time from finished_at and the tag from now, dated when finished_at is an earlier Taipei day', () => {
+      expect(quoteTimeLabel('2026-10-21T09:00:00Z', new Date('2026-10-22T02:00:00Z'))).toBe('行情更新於 10/21 17:00 · 盤中');
+      // Friday 13:30 seen on Monday 10:00 Taipei.
+      expect(quoteTimeLabel('2026-10-16T05:30:00Z', new Date('2026-10-19T02:00:00Z'))).toBe('行情更新於 10/16 13:30 · 盤中');
+    });
+
+    it('compares days in Taipei, not UTC', () => {
+      // 23:30 UTC on 10/21 is 07:30 on 10/22 in Taipei: the same day as 08:00 Taipei.
+      expect(quoteTimeLabel('2026-10-21T23:30:00Z', new Date('2026-10-22T00:00:00Z'))).toBe('行情更新於 07:30 · 台股收盤');
+      // 15:59 UTC on 10/21 is 23:59 on 10/21 in Taipei: the day before 00:01 on 10/22.
+      expect(quoteTimeLabel('2026-10-21T15:59:00Z', new Date('2026-10-21T16:01:00Z'))).toBe('行情更新於 10/21 23:59 · 台股收盤');
     });
 
     it('returns null without a parseable time', () => {

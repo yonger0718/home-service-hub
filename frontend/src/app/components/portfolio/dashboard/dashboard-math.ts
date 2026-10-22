@@ -18,32 +18,37 @@ export function todayChange(
   return { amount, percent: base > 0 ? (amount / base) * 100 : null };
 }
 
-/** Hero bar: stocks vs cash. Pending dividends are legend-only, never part of the bar. */
+/** Hero bar: stocks vs cash, each clamped at zero (a negative cash balance takes no share). Pending dividends are legend-only. */
 export function composition(
   summary: Pick<PortfolioSummary, 'total_market_value' | 'total_cash_twd' | 'total_pending_dividends_net'>,
 ): { stocks: number; cash: number; pending: number; stocksPct: number; cashPct: number } {
   const stocks = num(summary.total_market_value);
   const cash = num(summary.total_cash_twd);
   const pending = num(summary.total_pending_dividends_net);
-  const total = stocks + cash;
+  const barStocks = Math.max(0, stocks);
+  const barCash = Math.max(0, cash);
+  const total = barStocks + barCash;
   return {
     stocks,
     cash,
     pending,
-    stocksPct: total > 0 ? (stocks / total) * 100 : 0,
-    cashPct: total > 0 ? (cash / total) * 100 : 0,
+    stocksPct: total > 0 ? (barStocks / total) * 100 : 0,
+    cashPct: total > 0 ? (barCash / total) * 100 : 0,
   };
 }
 
 const TAIPEI_PARTS = new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Taipei',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
   weekday: 'short',
   hour: '2-digit',
   minute: '2-digit',
   hourCycle: 'h23',
 });
 
-function taipeiParts(date: Date): { weekday: string; hour: number; minute: number; time: string } {
+function taipeiParts(date: Date): { weekday: string; hour: number; minute: number; time: string; day: string; monthDay: string } {
   const parts: Record<string, string> = {};
   for (const part of TAIPEI_PARTS.formatToParts(date)) parts[part.type] = part.value;
   return {
@@ -51,6 +56,8 @@ function taipeiParts(date: Date): { weekday: string; hour: number; minute: numbe
     hour: Number(parts['hour']),
     minute: Number(parts['minute']),
     time: `${parts['hour']}:${parts['minute']}`,
+    day: `${parts['year']}-${parts['month']}-${parts['day']}`,
+    monthDay: `${parts['month']}/${parts['day']}`,
   };
 }
 
@@ -63,12 +70,17 @@ function inTwSession(now: Date): boolean {
   return WEEKDAYS.has(weekday) && minutes >= 9 * 60 && minutes < 13 * 60 + 30;
 }
 
-/** `行情更新於 HH:mm · 盤中|台股收盤`: the time from the quote run, the session tag from `now`; null when unknown. */
+/**
+ * `行情更新於 [MM/DD ]HH:mm · 盤中|台股收盤`: the time from the quote run (dated when it is not today in Taipei), the
+ * session tag from `now`; null when unknown.
+ */
 export function quoteTimeLabel(finishedAtIso: string | null | undefined, now: Date): string | null {
   if (!finishedAtIso) return null;
   const finished = new Date(finishedAtIso);
   if (Number.isNaN(finished.getTime())) return null;
-  return `行情更新於 ${taipeiParts(finished).time} · ${inTwSession(now) ? '盤中' : '台股收盤'}`;
+  const at = taipeiParts(finished);
+  const when = at.day === taipeiParts(now).day ? at.time : `${at.monthDay} ${at.time}`;
+  return `行情更新於 ${when} · ${inTwSession(now) ? '盤中' : '台股收盤'}`;
 }
 
 /** 持股配置 colours for the five largest holdings, resolved by CSS at render time. */
@@ -124,14 +136,12 @@ export interface PendingRow {
   currency: string;
 }
 
-/** `YYYY-MM-DD` without going through `new Date(string)`, which would parse it as UTC. */
+/**
+ * `YYYY-MM-DD` without going through `new Date(string)`, which would parse it as UTC. The API sends ISO strings; the
+ * model's `Date` is never produced at runtime, so anything else counts as missing.
+ */
 function dayString(value: string | Date | null | undefined): string {
-  if (value == null || value === '') return '';
-  if (value instanceof Date) {
-    const pad = (n: number) => `${n}`.padStart(2, '0');
-    return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
-  }
-  return value.slice(0, 10);
+  return typeof value === 'string' ? value.slice(0, 10) : '';
 }
 
 function present(value: number | string | null | undefined): boolean {

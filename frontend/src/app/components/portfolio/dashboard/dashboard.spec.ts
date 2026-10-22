@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { DeferBlockBehavior, DeferBlockState, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter, RouterLink } from '@angular/router';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Dividend, PortfolioSummary, StockHolding } from '../../../models/portfolio.model';
@@ -105,9 +105,21 @@ describe('PortfolioDashboardComponent', () => {
     cashLedgerChanged$: import('rxjs').Observable<void>;
   };
   let appearance: AppearanceService;
+  /** What DASHBOARD_CLOCK returns; tests may move it. */
+  let now: Date;
+  /** Appearance state on the shared root and storage, restored after each test (AppearanceService writes it). */
+  let saved: { gainLoss: string | null; attr: string | null; dark: boolean };
 
   beforeEach(async () => {
+    const root = document.documentElement;
+    saved = {
+      gainLoss: localStorage.getItem('hh-gainloss'),
+      attr: root.getAttribute('data-gainloss'),
+      dark: root.classList.contains('app-dark-mode'),
+    };
     vi.useFakeTimers();
+    // Thu 13:00 Taipei: inside the TW session.
+    now = new Date('2026-10-22T05:00:00Z');
     const { NEVER } = await import('rxjs');
     portfolioService = {
       refreshQuotes: vi.fn().mockReturnValue(of(null)),
@@ -128,8 +140,7 @@ describe('PortfolioDashboardComponent', () => {
       providers: [
         { provide: PortfolioService, useValue: portfolioService },
         provideRouter([]),
-        // Thu 13:00 Taipei: inside the TW session.
-        { provide: DASHBOARD_CLOCK, useValue: () => new Date('2026-10-22T05:00:00Z') },
+        { provide: DASHBOARD_CLOCK, useValue: () => now },
       ],
       deferBlockBehavior: DeferBlockBehavior.Manual,
     })
@@ -158,6 +169,12 @@ describe('PortfolioDashboardComponent', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    const root = document.documentElement;
+    if (saved.gainLoss == null) localStorage.removeItem('hh-gainloss');
+    else localStorage.setItem('hh-gainloss', saved.gainLoss);
+    if (saved.attr == null) root.removeAttribute('data-gainloss');
+    else root.setAttribute('data-gainloss', saved.attr);
+    root.classList.toggle('app-dark-mode', saved.dark);
   });
 
   function footnote(root: HTMLElement, index: number): string {
@@ -267,6 +284,62 @@ describe('PortfolioDashboardComponent', () => {
       expect(header(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('行情更新於 17:00 · 盤中');
     });
 
+    it('re-tags the quote line as the clock passes the session close', () => {
+      portfolioService.getRecalcStatus.mockReturnValue(of({
+        state: 'idle',
+        quote_refresh: { state: 'completed', finished_at: '2026-10-22T05:20:00Z' },
+      }));
+      const fixture = createFixture();
+      expect(header(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('行情更新於 13:20 · 盤中');
+
+      now = new Date('2026-10-22T05:31:00Z');
+      vi.advanceTimersByTime(60_000);
+      fixture.detectChanges();
+
+      expect(header(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('行情更新於 13:20 · 台股收盤');
+    });
+
+    it('dates the quote line when the quotes are from an earlier day', () => {
+      portfolioService.getRecalcStatus.mockReturnValue(of({
+        state: 'idle',
+        quote_refresh: { state: 'completed', finished_at: '2026-10-21T05:30:00Z' },
+      }));
+      const fixture = createFixture();
+
+      expect(header(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('行情更新於 10/21 13:30 · 盤中');
+    });
+
+    it('ignores a status read that a later read has replaced', () => {
+      const fixture = createFixture();
+      const stale = new Subject<unknown>();
+      portfolioService.getRecalcStatus
+        .mockReturnValueOnce(stale)
+        .mockReturnValueOnce(of({ state: 'idle', quote_refresh: { state: 'completed', finished_at: '2026-10-22T04:00:00Z' } }));
+      fixture.componentInstance.loadSummary();
+      fixture.componentInstance.loadSummary();
+      stale.next({ state: 'idle', quote_refresh: { state: 'completed', finished_at: '2026-10-22T01:00:00Z' } });
+      fixture.detectChanges();
+
+      expect(stale.observed).toBe(false);
+      expect(header(fixture).querySelector('.page-subtitle')?.textContent?.trim()).toBe('行情更新於 12:00 · 盤中');
+    });
+
+    it('falls back to 全部 when the filtered market disappears after a reload', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({
+        holdings: [buildHolding(), { ...buildHolding(), symbol: 'AAPL', market: 'US', native_currency: 'USD' }],
+      })));
+      const fixture = createFixture();
+      fixture.componentInstance.selectMarketFilter('US');
+      fixture.detectChanges();
+
+      portfolioService.getSummary.mockReturnValue(of(buildSummary()));
+      fixture.componentInstance.loadSummary();
+      fixture.detectChanges();
+
+      expect(fixture.componentInstance.marketFilter()).toBe('ALL');
+      expect((fixture.nativeElement as HTMLElement).querySelector('.hero')).not.toBeNull();
+    });
+
     it('puts the header actions on their own line on a phone', () => {
       TestBed.inject(LayoutModeService).set('phone');
       try {
@@ -357,6 +430,17 @@ describe('PortfolioDashboardComponent', () => {
 
       expect(today.querySelector('.hero-today-amount')?.textContent?.trim()).toBe('+$10');
       expect(today.querySelector('app-pct-badge')?.textContent?.trim()).toBe('—');
+    });
+
+    it('keeps a negative cash balance out of the bar but shows it in the legend', () => {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ total_cash_twd: '-200', total_assets_twd: '800' })));
+      const fixture = createFixture();
+      const el = hero(fixture)!;
+      const bar = el.querySelector('.composition-bar')!;
+
+      expect(bar.getAttribute('aria-label')).toBe('資產組成：股票 100.0%，現金 0.0%');
+      expect(Array.from(bar.querySelectorAll<HTMLElement>('span')).map(s => s.style.flexGrow)).toEqual(['100', '0']);
+      expect(el.querySelectorAll('.legend-value')[1].textContent?.trim()).toBe('-200');
     });
 
     it('is hidden while a market filter is active', () => {
@@ -944,6 +1028,25 @@ describe('PortfolioDashboardComponent', () => {
       const rows = pendingBlock(fixture.nativeElement)!.querySelectorAll('.pending-row');
       expect(rows.length).toBe(1);
       expect(text(rows[0].querySelector('.pending-name'))).toBe('2330');
+    });
+
+    it('loads the pending dividends on init and on a cash ledger change, not on every summary reload', () => {
+      const ledger = new Subject<void>();
+      portfolioService.cashLedgerChanged$ = ledger;
+      const fixture = createFixture();
+      expect(portfolioService.getDividends).toHaveBeenCalledTimes(1);
+      expect(portfolioService.getSymbolNames).toHaveBeenCalledTimes(1);
+
+      fixture.componentInstance.loadSummary();
+      expect(portfolioService.getDividends).toHaveBeenCalledTimes(1);
+
+      portfolioService.getDividends.mockReturnValue(of({ total: 1, items: [pendingDividend(1)] }));
+      ledger.next();
+      fixture.detectChanges();
+
+      expect(portfolioService.getDividends).toHaveBeenCalledTimes(2);
+      expect(portfolioService.getSymbolNames).toHaveBeenCalledTimes(2);
+      expect(pendingBlock(fixture.nativeElement)!.querySelectorAll('.pending-row').length).toBe(1);
     });
 
     it('omits the 待收股利 block but keeps the card when a later dividend page fails', () => {
