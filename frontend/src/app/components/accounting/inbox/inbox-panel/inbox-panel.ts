@@ -22,6 +22,7 @@ import {
   cardTitle,
   inboxErrorMessage,
   learnLabel,
+  learnableAnswer,
   questionText,
 } from '../inbox-view';
 import {
@@ -34,12 +35,10 @@ import {
   InboxOut,
 } from '../inbox.model';
 import { InboxService } from '../inbox.service';
+import { AccountingService } from '../../../../services/accounting.service';
 
 /** Ask cards shown on 全部 before the 還有 N 張 → link. */
 export const INBOX_PREVIEW_CARDS = 3;
-
-/** The answers a rule can be learned from (spec §6.1); any other button sends `learn: null`. */
-const LEARNABLE: readonly InboxButton[] = ['record', 'dismiss', 'accept_bank_amount'];
 
 /** Buttons the panel applies at once (no sheet). */
 type OneTap = 'dismiss' | 'accept_bank_amount' | 'defer' | 'anchor';
@@ -62,10 +61,17 @@ export function inboxLearn(ticked: boolean, amountAny: boolean, button: InboxBut
   return ticked ? { amount_exact: button === 'accept_bank_amount' ? false : !amountAny } : null;
 }
 
-/** `沒成功：…` for a refusal code or a failed request (no doubled prefix for an unknown code). */
-function refusedText(codeOrErr: unknown): string {
+const FAILED_PREFIX = '沒成功：';
+
+/** The mapped message without the `沒成功：` that `inboxErrorMessage` puts before an unknown code. */
+function plainError(codeOrErr: unknown): string {
   const message = inboxErrorMessage(codeOrErr);
-  return message.startsWith('沒成功：') ? message : `沒成功：${message}`;
+  return message.startsWith(FAILED_PREFIX) ? message.slice(FAILED_PREFIX.length) : message;
+}
+
+/** `沒成功：…` for a refusal code or a failed request. */
+function refusedText(codeOrErr: unknown): string {
+  return `${FAILED_PREFIX}${plainError(codeOrErr)}`;
 }
 
 /** Keeps only the refusals whose case is still in `data` (a case that left the inbox loses its message). */
@@ -124,6 +130,7 @@ export interface InboxFoldView {
 })
 export class AppInboxPanelComponent {
   private readonly inbox = inject(InboxService);
+  private readonly accounting = inject(AccountingService);
 
   readonly data = input.required<InboxOut>();
   readonly mode = input<'full' | 'preview'>('full');
@@ -139,10 +146,7 @@ export class AppInboxPanelComponent {
     source: this.data,
     computation: () => new Set(),
   });
-  /**
-   * `沒成功：…` per case id. Survives a new `data`; cleared when the case applies or leaves `data`. A linkedSignal only
-   * recomputes when read, so the template reads it on every render (`data-refused`): each rendered `data` prunes it.
-   */
+  /** `沒成功：…` per case id. Survives a new `data`; cleared when the case applies or leaves `data` (see `cards`). */
   readonly refused = linkedSignal<InboxOut, ReadonlyMap<number, string>>({
     source: this.data,
     computation: (data, previous) => keepPresent(previous?.value, data),
@@ -158,6 +162,9 @@ export class AppInboxPanelComponent {
   private readonly amountAnyTicks = signal<ReadonlyMap<string, boolean>>(new Map());
 
   readonly cards = computed(() => {
+    // A linkedSignal recomputes only when read: reading `refused` here (every render reads `cards`) prunes it against
+    // each new `data`, even one with no cards, so a case that left and came back does not bring its old message.
+    this.refused();
     const gone = this.gone();
     return buildCards(
       this.data().accounts.map((account) => ({
@@ -260,7 +267,7 @@ export class AppInboxPanelComponent {
 
   /** The learn the card's controls ask for with this button (null when it cannot or should not teach). */
   learnFor(card: InboxCard, button: InboxButton): InboxLearn {
-    if (!card.learnable || !LEARNABLE.includes(button)) {
+    if (card.rule_hint === null || !learnableAnswer(card.question, button)) {
       return null;
     }
     return inboxLearn(
@@ -299,7 +306,7 @@ export class AppInboxPanelComponent {
       next: (out) => {
         this.setBusy(card.key, false);
         this.settle(out);
-        this.changed.emit();
+        this.wrote();
       },
       error: (err: unknown) => {
         this.setBusy(card.key, false);
@@ -318,7 +325,16 @@ export class AppInboxPanelComponent {
     for (const result of out.results.filter((result) => result.status === 'refused')) {
       this.markRefused([result.case_id], refusedText(result.code));
     }
-    this.ruleError.set(out.rule_error ? `規則沒存：${inboxErrorMessage(out.rule_error)}` : null);
+    this.ruleError.set(out.rule_error ? `規則沒存：${plainError(out.rule_error)}` : null);
+  }
+
+  /**
+   * After a write: bump `entriesChanged` here (an answer may write no entry, and a request that lands after this
+   * panel is destroyed would drop an output), then tell the parent.
+   */
+  private wrote(): void {
+    this.accounting.markEntriesChanged();
+    this.changed.emit();
   }
 
   /** Proposals are few: one request at a time with `套用中 k/n`, carrying on past a refusal. */
@@ -366,7 +382,7 @@ export class AppInboxPanelComponent {
         complete: () => {
           this.progress.set(null);
           if (succeeded) {
-            this.changed.emit();
+            this.wrote();
           }
         },
       });
@@ -438,12 +454,17 @@ export class AppInboxPanelComponent {
           ? {
               label: learnLabel(
                 card.rule_hint,
-                card.actions.find((action) => LEARNABLE.includes(action)) ?? 'dismiss',
+                card.actions.find((action) => learnableAnswer(card.question, action)) ?? 'dismiss',
               ),
               ticked: this.learnTicked(card),
+              // 金額不同也算 only where the rule keeps an amount: bank_only 記為／忽略.
               amountOption:
                 !merged &&
-                card.actions.some((action) => action === 'record' || action === 'dismiss'),
+                card.actions.some(
+                  (action) =>
+                    (action === 'record' || action === 'dismiss') &&
+                    learnableAnswer(card.question, action),
+                ),
               amountAny: this.amountAnyTicked(card),
               lockedCaption: merged ? `同金額 ×${card.items.length}` : null,
             }

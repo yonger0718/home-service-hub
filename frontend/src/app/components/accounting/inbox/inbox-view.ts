@@ -13,7 +13,7 @@ export interface InboxCard {
   items: InboxItem[];
   actions: InboxButton[];
   rule_hint: InboxRuleHint | null;
-  /** True when "以後都這樣" can be offered: a rule hint exists and the card can be recorded, dismissed or accept the bank amount (spec §6.1). */
+  /** True when "以後都這樣" can be offered: a rule hint exists and one of the card's buttons is a `learnableAnswer` (spec §6.1). */
   learnable: boolean;
 }
 
@@ -40,7 +40,19 @@ export const INBOX_ERRORS: Record<string, string> = {
   rule_pattern_mismatch: '這幾筆描述不同，不能一起學',
   rule_pattern_empty: '描述只有數字，不能學',
   not_learnable: '這種答案不能學',
+  no_line: '這筆已不在對帳單上',
 };
+
+/**
+ * Whether this answer to this question may become an owner rule — the server's `learnable()` pair rule
+ * (`inbox_service.py`): bank_only + 記為／忽略, amount_differs + 改成銀行的數. Anything else is a 422 `not_learnable`.
+ */
+export function learnableAnswer(question: InboxQuestion, button: InboxButton): boolean {
+  return (
+    (question === 'bank_only' && (button === 'record' || button === 'dismiss')) ||
+    (question === 'amount_differs' && button === 'accept_bank_amount')
+  );
+}
 
 function makeCard(account: InboxAccount, key: string, first: InboxItem): InboxCard {
   // A merged card takes actions and rule_hint from its first member: the server groups only same-question items
@@ -52,9 +64,7 @@ function makeCard(account: InboxAccount, key: string, first: InboxItem): InboxCa
     items: [first],
     actions: first.actions,
     rule_hint: first.rule_hint,
-    learnable:
-      first.rule_hint !== null &&
-      (['record', 'dismiss', 'accept_bank_amount'] as InboxButton[]).some((a) => first.actions.includes(a)),
+    learnable: first.rule_hint !== null && first.actions.some((a) => learnableAnswer(first.question, a)),
   };
 }
 

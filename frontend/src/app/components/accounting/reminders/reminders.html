@@ -15,17 +15,18 @@
   @if (loadError()) {
     <p class="load-error">提醒讀取失敗，請稍後再試。</p>
   } @else {
+    <!-- The panel bumps entriesChanged after each answer; the load() effect then re-reads the inbox. -->
     @if (showInbox()) {
       @if (tab() === 'todo') {
         @if (inbox(); as data) {
-          <app-inbox-panel [data]="data" mode="full" (changed)="onInboxChanged()" />
+          <app-inbox-panel [data]="data" mode="full" />
         } @else if (inboxFailed()) {
           <p class="load-error inbox-load-error">待處理讀取失敗，請稍後再試。</p>
         }
       } @else if (inbox(); as data) {
         @if (data.counts.ask > 0) {
           <h3 class="section">待處理</h3>
-          <app-inbox-panel [data]="data" mode="preview" (changed)="onInboxChanged()" />
+          <app-inbox-panel [data]="data" mode="preview" />
         }
       }
     }

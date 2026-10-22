@@ -1034,6 +1034,18 @@ describe('AccountingRemindersComponent', () => {
       flushLoad([], [], [], [], [], inboxOut());
       fixture.detectChanges();
       expect(text(el.querySelector('.empty'))).toBe('目前沒有待處理項目');
+
+      // Only folded cases: the folds are the tab's content, not 目前沒有待處理項目.
+      const folded: InboxItem = { ...bankOnly(9), question: 'other', folded: true, actions: ['dismiss'] };
+      TestBed.inject(AccountingService).markEntriesChanged();
+      fixture.detectChanges();
+      flushLoad([], [], [], [], [], {
+        ...inboxOut([folded]),
+        counts: { ask: 0, ask_items: 0, proposed: 0, balance_gap: 0, settlement: 0, other: 1 },
+      });
+      fixture.detectChanges();
+      expect(el.querySelector('app-inbox-panel details.fold')).not.toBeNull();
+      expect(el.querySelector('.empty')).toBeNull();
     });
 
     it('load() requests the inbox and renders the panel on 全部', () => {

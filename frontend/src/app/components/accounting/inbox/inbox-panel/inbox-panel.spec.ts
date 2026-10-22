@@ -16,6 +16,7 @@ import {
   InboxItem,
   InboxOut,
 } from '../inbox.model';
+import { AccountingService } from '../../../../services/accounting.service';
 import { AppInboxPanelComponent, inboxLearn } from './inbox-panel';
 
 const APPLY_URL = '/api/accounting/reconciliation/inbox/apply';
@@ -149,8 +150,9 @@ describe('AppInboxPanelComponent', () => {
     fixture.componentRef.setInput('mode', mode);
     const changed = vi.fn();
     fixture.componentInstance.changed.subscribe(changed);
+    const marked = vi.spyOn(TestBed.inject(AccountingService), 'markEntriesChanged');
     fixture.detectChanges();
-    return { fixture, el: fixture.nativeElement as HTMLElement, changed };
+    return { fixture, el: fixture.nativeElement as HTMLElement, changed, marked };
   }
 
   function askCards(el: HTMLElement): HTMLElement[] {
@@ -243,7 +245,7 @@ describe('AppInboxPanelComponent', () => {
   });
 
   it('one-tap dismiss posts the apply body with every member and the answer', () => {
-    const { fixture, el, changed } = render(
+    const { fixture, el, changed, marked } = render(
       makeInbox(
         [makeInboxAccount({ items: [member(1, 2, '2026-09-03'), member(2, 3, '2026-09-10')] })],
         { ask: 1 },
@@ -255,6 +257,8 @@ describe('AppInboxPanelComponent', () => {
     http.expectNone(APPLY_URL);
     button(askCards(el)[0], '確定').click();
     fixture.detectChanges();
+    // In flight: the card's buttons and learn tick are locked.
+    expect(askCards(el)[0].querySelector<HTMLInputElement>('.learn input')!.disabled).toBe(true);
 
     const req = expectApply();
     expect(req.request.body as InboxApplyBody).toEqual({
@@ -273,6 +277,8 @@ describe('AppInboxPanelComponent', () => {
     expect(askCards(el).length).toBe(0);
     expect(text(el.querySelector('.rule-error'))).toBe('規則沒存：描述只有數字，不能學');
     expect(changed).toHaveBeenCalledTimes(1);
+    // The panel refreshes the page itself, so a write that lands after the panel is gone still reloads it.
+    expect(marked).toHaveBeenCalledTimes(1);
   });
 
   it('learn checkbox adds learn with amount_exact true for record and false for accept', () => {
@@ -317,6 +323,8 @@ describe('AppInboxPanelComponent', () => {
     );
     const [uber, power] = askCards(el);
     expect(text(power.querySelector('.learn'))).toBe('以後「台電」都這樣');
+    // 金額不同也算 belongs to bank_only 記為／忽略 only.
+    expect(power.querySelector('.amount-any')).toBeNull();
 
     // Unticked: no rule.
     button(uber, '忽略').click();
@@ -336,9 +344,65 @@ describe('AppInboxPanelComponent', () => {
       answer: '改成銀行的 −$1,300',
       learn: { amount_exact: false },
     });
-    req.flush(applied(8));
+    req.flush({ ...applied(8), rule_error: 'no_line' });
     fixture.detectChanges();
     expect(askCards(el).length).toBe(0);
+    expect(text(el.querySelector('.rule-error'))).toBe('規則沒存：這筆已不在對帳單上');
+  });
+
+  it('merged amount_differs card: 不是同一筆 → 確定 sends learn null', () => {
+    const differs = (caseId: number, date: string) =>
+      makeItem({
+        case_id: caseId,
+        case_version: 1,
+        question: 'amount_differs',
+        group_key: 'g-power',
+        line: { id: caseId, date, merchant: '台電', amount: '-1300.0000', line_kind: 'purchase' },
+        candidates: [
+          {
+            entry_id: caseId + 100,
+            date,
+            title: '電費',
+            amount: '-1200.0000',
+            reason: null,
+            residual: null,
+            date_distance: 0,
+          },
+        ],
+        actions: ['match_candidate', 'accept_bank_amount', 'dismiss'],
+        rule_hint: {
+          merchant_pattern: '台電',
+          line_kind: 'purchase',
+          flow_sign: '-',
+          amount: '1300.0000',
+          default_category_id: null,
+        },
+      });
+    const { fixture, el } = render(
+      makeInbox(
+        [makeInboxAccount({ items: [differs(70, '2026-08-05'), differs(71, '2026-09-05')] })],
+        { ask: 1 },
+      ),
+    );
+    const card = askCards(el)[0];
+    // Learnable through 改成銀行的數, so the tick is offered (and on, merged) — but 不是同一筆 cannot teach.
+    expect(card.querySelector<HTMLInputElement>('.learn input')!.checked).toBe(true);
+    expect(card.querySelector('.amount-any')).toBeNull();
+    button(card, '不是同一筆').click();
+    fixture.detectChanges();
+    button(askCards(el)[0], '確定').click();
+    const req = expectApply();
+    expect(req.request.body as InboxApplyBody).toEqual({
+      cases: [
+        { case_id: 70, case_version: 1 },
+        { case_id: 71, case_version: 1 },
+      ],
+      action: 'dismiss',
+      params: {},
+      answer: '不是同一筆',
+      learn: null,
+    });
+    req.flush(applied(70, 71));
   });
 
   it('a refused member stays with 沒成功 text and the others leave', () => {
@@ -464,7 +528,10 @@ describe('AppInboxPanelComponent', () => {
     button(merged, '確定').click();
     const mergedReq = expectApply();
     expect((mergedReq.request.body as InboxApplyBody).learn).toBeNull();
-    mergedReq.flush(applied(1, 2));
+    // An unknown rule_error code is shown once, without a doubled 沒成功： prefix.
+    mergedReq.flush({ ...applied(1, 2), rule_error: 'weird_code' });
+    fixture.detectChanges();
+    expect(text(el.querySelector('.rule-error'))).toBe('規則沒存：weird_code');
   });
 
   it('preview mode shows three cards and the 還有 N 張 link', () => {
@@ -541,7 +608,7 @@ describe('AppInboxPanelComponent', () => {
         proposal: { id, action: 'match', params: {}, author: 'policy', rationale: '' },
         actions: ['apply_proposal', 'reject_proposal'],
       });
-    const { fixture, el, changed } = render(
+    const { fixture, el, changed, marked } = render(
       makeInbox(
         [makeInboxAccount({ items: [proposal(60, 600, '早餐'), proposal(61, 601, '午餐')] })],
         { proposed: 2 },
@@ -576,5 +643,6 @@ describe('AppInboxPanelComponent', () => {
     expect(text(left[0].querySelector('.refused'))).toBe('沒成功：已經處理過了');
     expect(text(el.querySelector('details.fold summary'))).toBe('系統有提議 1（全部套用）');
     expect(changed).toHaveBeenCalledTimes(1);
+    expect(marked).toHaveBeenCalledTimes(1);
   });
 });

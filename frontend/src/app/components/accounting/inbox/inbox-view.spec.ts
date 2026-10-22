@@ -8,6 +8,7 @@ import {
   cardTitle,
   inboxErrorMessage,
   learnLabel,
+  learnableAnswer,
   lineKind,
   matchAnswer,
   questionText,
@@ -66,6 +67,11 @@ describe('buildCards', () => {
     const base = { question: 'amount_differs' as const, entry: ENTRY, actions: ['accept_bank_amount' as const, 'dismiss' as const] };
     expect(buildCards([makeAccount([makeItem({ ...base, actions: ['accept_bank_amount'] })])]).ask[0].learnable).toBe(true);
     expect(buildCards([makeAccount([makeItem({ ...base, actions: ['accept_bank_amount'], rule_hint: null })])]).ask[0].learnable).toBe(false);
+  });
+
+  it('is not learnable when no button is a learnable answer to its question', () => {
+    const dismissOnly = makeItem({ question: 'amount_differs', actions: ['match_candidate', 'dismiss'] });
+    expect(buildCards([makeAccount([dismissOnly])]).ask[0].learnable).toBe(false);
   });
 
   it('is not learnable without a rule hint', () => {
@@ -143,9 +149,24 @@ describe('answers and learn labels', () => {
   });
 });
 
+describe('learnableAnswer', () => {
+  it('mirrors the server pair rule: bank_only record/dismiss, amount_differs accept_bank_amount', () => {
+    expect(learnableAnswer('bank_only', 'record')).toBe(true);
+    expect(learnableAnswer('bank_only', 'dismiss')).toBe(true);
+    expect(learnableAnswer('bank_only', 'accept_bank_amount')).toBe(false);
+    expect(learnableAnswer('amount_differs', 'accept_bank_amount')).toBe(true);
+    expect(learnableAnswer('amount_differs', 'dismiss')).toBe(false);
+    expect(learnableAnswer('amount_differs', 'record')).toBe(false);
+    expect(learnableAnswer('date_differs', 'dismiss')).toBe(false);
+    expect(learnableAnswer('ledger_only', 'defer')).toBe(false);
+    expect(learnableAnswer('transfer', 'match_candidate')).toBe(false);
+  });
+});
+
 describe('inboxErrorMessage', () => {
   it('maps a string code, with a fallback for unknown codes', () => {
     expect(inboxErrorMessage('case_closed')).toBe('已經處理過了');
+    expect(inboxErrorMessage('no_line')).toBe('這筆已不在對帳單上');
     expect(inboxErrorMessage('weird')).toBe('沒成功：weird');
   });
 

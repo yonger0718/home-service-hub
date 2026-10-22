@@ -351,7 +351,15 @@ export class AccountingRemindersComponent {
     const cards = this.showCards() ? this.cardRows().length : 0;
     const debts = this.showDebts() ? this.debtCounterparties().length : 0;
     const queue = this.tab() === 'pending' ? groups.due.length + groups.upcoming.length : this.tab() === 'all' ? groups.due.length : 0;
-    const inbox = this.showInbox() ? (this.inbox()?.counts.ask ?? 0) : 0;
+    // 待處理 lists the folded sections too; 全部 previews the ask cards only.
+    const counts = this.inbox()?.counts;
+    const inbox = !counts
+      ? 0
+      : this.tab() === 'todo'
+        ? counts.ask + counts.proposed + counts.balance_gap + counts.settlement + counts.other
+        : this.tab() === 'all'
+          ? counts.ask
+          : 0;
     const failed =
       (this.showCards() && this.billsFailed()) || (this.showQueue() && this.queueFailed()) || (this.tab() === 'todo' && this.inboxFailed());
     // 借還款追蹤 also lists 週期／分期: live or ended definitions (or their failed load) are not "nothing pending".
@@ -507,11 +515,6 @@ export class AccountingRemindersComponent {
     for (const event of this.failedDues()) {
       this.bills.retry(event, today);
     }
-  }
-
-  /** An inbox answer may write no entry (忽略, 等下期, 對到): bump entriesChanged so the page — and the inbox — reload. */
-  onInboxChanged(): void {
-    this.accounting.markEntriesChanged();
   }
 
   setTab(tab: ReminderTab): void {

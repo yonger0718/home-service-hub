@@ -1,4 +1,4 @@
-<div class="inbox" [attr.data-refused]="refused().size || null">
+<div class="inbox">
   <p class="inbox-head">{{ headText() }}</p>
   @if (ruleError(); as message) {
     <p class="rule-error" role="alert">{{ message }}</p>
@@ -77,6 +77,7 @@
           #learnBox
           type="checkbox"
           [checked]="learn.ticked"
+          [disabled]="view.busy"
           (change)="setLearn(view.card, learnBox.checked)"
         />
         {{ learn.label }}
@@ -87,7 +88,7 @@
             #amountBox
             type="checkbox"
             [checked]="learn.amountAny"
-            [disabled]="!learn.ticked"
+            [disabled]="view.busy || !learn.ticked"
             (change)="setAmountAny(view.card, amountBox.checked)"
           />
           {{ amountAnyLabel }}
