@@ -78,6 +78,7 @@ const OTHER_TOKEN = '--app-text-muted';
 export interface AllocationSlice {
   name: string;
   symbol: string;
+  market: MarketCode | null;
   pct: number;
   token: string;
 }
@@ -85,7 +86,7 @@ export interface AllocationSlice {
 /** Share of market value: five largest holdings plus 其他, one decimal, summing to exactly 100.0. */
 export function allocation(holdings: readonly StockHolding[]): AllocationSlice[] {
   const ranked = holdings
-    .map(h => ({ name: h.name || h.symbol, symbol: h.symbol, value: num(h.market_value) }))
+    .map(h => ({ name: h.name || h.symbol, symbol: h.symbol, market: h.market as MarketCode | null, value: num(h.market_value) }))
     .filter(h => h.value > 0)
     .sort((a, b) => b.value - a.value);
   const total = ranked.reduce((sum, h) => sum + h.value, 0);
@@ -94,7 +95,7 @@ export function allocation(holdings: readonly StockHolding[]): AllocationSlice[]
   const top = ranked.slice(0, ALLOCATION_SERIES.length).map((h, i) => ({ ...h, token: ALLOCATION_SERIES[i] }));
   const rest = ranked.slice(ALLOCATION_SERIES.length);
   if (rest.length) {
-    top.push({ name: '其他', symbol: '', value: rest.reduce((sum, h) => sum + h.value, 0), token: OTHER_TOKEN });
+    top.push({ name: '其他', symbol: '', market: null, value: rest.reduce((sum, h) => sum + h.value, 0), token: OTHER_TOKEN });
   }
 
   // Largest remainder in tenths of a percent; ties go to the earlier (larger) slice.
@@ -104,7 +105,13 @@ export function allocation(holdings: readonly StockHolding[]): AllocationSlice[]
   const missing = 1000 - tenths.reduce((sum, t) => sum + t, 0);
   for (let k = 0; k < missing; k++) tenths[order[k]]++;
 
-  return top.map((s, i) => ({ name: s.name, symbol: s.symbol, pct: tenths[i] / 10, token: s.token }));
+  return top.map((s, i) => ({ name: s.name, symbol: s.symbol, market: s.market, pct: tenths[i] / 10, token: s.token }));
+}
+
+/** Row square label: last two digits of a numeric symbol, else the first character of the name. */
+export function holdingAbbr(symbol: string, name?: string | null): string {
+  if (/^\d+$/.test(symbol)) return symbol.slice(-2);
+  return Array.from(name || symbol)[0] ?? '';
 }
 
 export interface PendingRow {

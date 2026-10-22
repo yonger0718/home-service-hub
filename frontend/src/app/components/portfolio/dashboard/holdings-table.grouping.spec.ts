@@ -116,6 +116,16 @@ describe('PortfolioDashboardComponent holding groups', () => {
     );
   });
 
+  it('sorts a market group by market value when asked', () => {
+    const component = TestBed.createComponent(PortfolioDashboardComponent).componentInstance;
+    const grouped = component.groupHoldingsByMarket([
+      buildHolding({ symbol: 'A', market_value: 10 }),
+      buildHolding({ symbol: 'B', market_value: 30 }),
+      buildHolding({ symbol: 'C', market_value: 20 }),
+    ], 'market_value', 'desc');
+    expect(grouped[0].holdings.map(h => h.symbol)).toEqual(['B', 'C', 'A']);
+  });
+
   it('exposes one filter option per present market plus All, and filters rows on selection', () => {
     portfolioService.getSummary.mockReturnValue(of(buildSummary([
       buildHolding({ symbol: '2330', market: 'TW' }),

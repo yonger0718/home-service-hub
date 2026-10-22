@@ -42,6 +42,7 @@ import {
   PendingRow,
   allDividendPages,
   allocation,
+  holdingAbbr,
   composition,
   pendingRows,
   quoteTimeLabel,
@@ -183,11 +184,15 @@ export class PortfolioDashboardComponent implements OnInit {
 
   readonly allocationSlices = computed(() => allocation(this.filteredHoldings()));
 
+  private readonly allocationTokens = computed(
+    () => new Map(this.allocationSlices().filter(s => s.market).map(s => [`${s.market}:${s.symbol}`, s.token])),
+  );
+
   readonly showMarketGroups = computed(() =>
     this.filteredHoldings().some(holding => holding.market !== 'TW'),
   );
 
-  readonly holdingGroups = computed(() => this.groupHoldingsByMarket(this.filteredHoldings()));
+  readonly holdingGroups = computed(() => this.groupHoldingsByMarket(this.filteredHoldings(), 'market_value', 'desc'));
 
   readonly isMarketFiltered = computed(() => this.marketFilter() !== 'ALL');
 
@@ -357,7 +362,7 @@ export class PortfolioDashboardComponent implements OnInit {
 
   groupHoldingsByMarket(
     holdings: StockHolding[],
-    sortBy?: keyof Pick<StockHolding, 'unrealized_pnl'>,
+    sortBy?: 'unrealized_pnl' | 'market_value',
     direction: 'asc' | 'desc' = 'asc',
   ): { market: MarketCode; holdings: StockHolding[] }[] {
     const order: MarketCode[] = ['TW', 'US', 'LSE'];
@@ -375,6 +380,21 @@ export class PortfolioDashboardComponent implements OnInit {
         return { market, holdings: rows };
       })
       .filter(group => group.holdings.length > 0);
+  }
+
+  holdingAbbr(holding: StockHolding): string {
+    return holdingAbbr(holding.symbol, holding.name);
+  }
+
+  /** Allocation colour of the holding, or the muted token when it falls into 其他. */
+  holdingToken(holding: StockHolding): string {
+    return this.allocationTokens().get(`${holding.market}:${holding.symbol}`) ?? '--app-text-muted';
+  }
+
+  /** `台股 · 4 檔 · $2,612,900` */
+  groupHeader(group: { market: MarketCode; holdings: StockHolding[] }): string {
+    const total = group.holdings.reduce((sum, h) => sum + (Number(h.market_value) || 0), 0);
+    return `${MARKET_LABELS[group.market]} · ${group.holdings.length} 檔 · ${this.formatCurrency(total)}`;
   }
 
   fxTooltip(holding: StockHolding): string | null {

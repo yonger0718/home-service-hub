@@ -8,6 +8,7 @@ import {
   allDividendPages,
   allocation,
   composition,
+  holdingAbbr,
   pendingRows,
   quoteTimeLabel,
   todayChange,
@@ -270,5 +271,17 @@ describe('dashboard math', () => {
 
   it('labels the markets in Chinese', () => {
     expect(MARKET_LABELS).toEqual({ TW: '台股', US: '美股', LSE: '英股' });
+  });
+  describe('holdingAbbr', () => {
+    it('takes the last two digits of numeric symbols', () => {
+      expect(holdingAbbr('2330', '台積電')).toBe('30');
+      expect(holdingAbbr('0050', '元大台灣50')).toBe('50');
+      expect(holdingAbbr('00878', '國泰永續高股息')).toBe('78');
+    });
+
+    it('takes the first character of the name otherwise, falling back to the symbol', () => {
+      expect(holdingAbbr('AAPL', 'Apple')).toBe('A');
+      expect(holdingAbbr('VOD', '')).toBe('V');
+    });
   });
 });

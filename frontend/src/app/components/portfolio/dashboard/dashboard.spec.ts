@@ -446,8 +446,8 @@ describe('PortfolioDashboardComponent', () => {
     const fixture = createFixture();
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelector('.estimated-total')?.textContent).toContain('4,690');
-    expect(root.querySelector('.stock-stats')?.textContent).toContain('4,690');
-    expect(root.querySelector('.stock-stats')?.textContent).toContain('93.80%');
+    expect(root.querySelector('.stock-pnl')?.textContent).toContain('4,690');
+    expect(root.querySelector('.stock-pnl')?.textContent).toContain('93.80%');
     expect(root.querySelector('details')).toBeNull();
     const f = fixture.componentInstance;
     expect(footnote(root, 1)).toBe(`價差 ${f.formatNative(1500, 'TWD')} · 股利 ${f.formatNative(100, 'TWD')} · 待收 ${f.formatNative(3090, 'TWD')}`);
@@ -491,7 +491,7 @@ describe('PortfolioDashboardComponent', () => {
     const fixture = createFixture();
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelector('.estimated-total')?.textContent?.trim()).toBe('—');
-    expect(root.querySelector('.stock-stats')?.textContent).not.toContain('30.00%');
+    expect(root.querySelector('.stock-pnl')?.textContent).not.toContain('30.00%');
     expect(footnote(root, 1)).toContain('待收 ' + fixture.componentInstance.formatNative(3090, 'TWD'));
   });
 
@@ -530,7 +530,7 @@ describe('PortfolioDashboardComponent', () => {
       .find(element => element.querySelector('small')?.textContent === '預估含息損益');
     expect(priceDetail?.querySelector('div')?.textContent?.trim()).toBe(formatted);
     expect(estimateDetail?.querySelector('div')?.textContent?.trim()).toBe('—');
-    expect(root.querySelector('.stock-stats')?.textContent).not.toContain('30.00%');
+    expect(root.querySelector('.stock-pnl')?.textContent).not.toContain('30.00%');
   });
 
   describe('KPI row', () => {
@@ -955,6 +955,112 @@ describe('PortfolioDashboardComponent', () => {
         'Apple AAPL 75.0%',
         'Microsoft MSFT 25.0%',
       ]);
+    });
+  });
+
+  describe('持股明細 list', () => {
+    function text(el: Element | null | undefined): string {
+      return el?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    }
+
+    function twHolding(symbol: string, name: string, market_value: number): StockHolding {
+      return { ...buildHolding(), symbol, name, market_value };
+    }
+
+    function usHolding(symbol: string, name: string, market_value: number): StockHolding {
+      return {
+        ...buildHolding(), symbol, name, market: 'US', market_value, native_close: 190.5, native_currency: 'USD',
+        live_fx_rate_to_twd: 31.45,
+      };
+    }
+
+    function render(holdings: StockHolding[]) {
+      portfolioService.getSummary.mockReturnValue(of(buildSummary({ holdings })));
+      const fixture = createFixture();
+      return { fixture, root: fixture.nativeElement as HTMLElement };
+    }
+
+    const four = [
+      twHolding('2330', '台積電', 1_000_000),
+      twHolding('0050', '元大台灣50', 1_500_000),
+      twHolding('00878', '國泰永續高股息', 100_000),
+      twHolding('2317', '鴻海', 12_900),
+    ];
+
+    it('shows 持股明細, the count line and the column header row', () => {
+      const { root } = render(four);
+      const block = root.querySelector('.holdings-block')!;
+      expect(text(block.querySelector('.card-title'))).toBe('持股明細');
+      expect(text(block.querySelector('.holdings-sub'))).toBe('4 檔 · 依市值排序');
+      const cols = Array.from(block.querySelectorAll('.holdings-head > span')).map(text);
+      expect(cols).toEqual(['名稱', '股數', '現價', '今日', '市值 (TWD)', '預估含息損益']);
+    });
+
+    it('orders rows by market value descending', () => {
+      const { root } = render(four);
+      const symbols = Array.from(root.querySelectorAll('.stock-row .n')).map(text);
+      expect(symbols).toEqual(['0050', '2330', '00878', '2317']);
+    });
+
+    it('sorts within each market group and shows the group header with count and subtotal', () => {
+      const { root } = render([
+        twHolding('2330', '台積電', 1_000_000),
+        twHolding('0050', '元大台灣50', 1_500_000),
+        usHolding('MSFT', 'Microsoft', 100_000),
+        usHolding('AAPL', 'Apple', 12_900),
+      ]);
+      const headers = Array.from(root.querySelectorAll('.market-group-header')).map(text);
+      expect(headers).toEqual(['台股 · 2 檔 · $2,500,000', '美股 · 2 檔 · $112,900']);
+      const groups = Array.from(root.querySelectorAll('.market-group')).map(
+        g => Array.from(g.querySelectorAll('.stock-row .n')).map(text),
+      );
+      expect(groups).toEqual([['0050', '2330'], ['MSFT', 'AAPL']]);
+    });
+
+    it('keeps TW row data and the US native branch unchanged', () => {
+      const { fixture, root } = render([twHolding('2330', '台積電', 1_000_000), usHolding('AAPL', 'Apple', 12_900)]);
+      const rows = Array.from(root.querySelectorAll<HTMLElement>('.stock-row'));
+      const tw = rows.find(r => text(r.querySelector('.n')) === '2330')!;
+      const us = rows.find(r => text(r.querySelector('.n')) === 'AAPL')!;
+      expect(tw.getAttribute('role')).toBe('button');
+      expect(text(tw)).toContain('650.00');
+      expect(text(tw)).toContain('+5.00 (+0.77%)');
+      expect(text(tw.querySelector('.stock-qty'))).toBe('10');
+      expect(text(us)).toContain('190.50 USD');
+      expect(text(us.querySelector('.market-badge'))).toBe('US');
+      tw.click();
+      us.click();
+      fixture.detectChanges();
+      expect(text(us.querySelector('.detail-panel'))).toContain('換算後市值');
+      expect(tw.querySelector('.detail-panel')).toBeNull();
+    });
+
+    it('toggles the detail panel on keyboard Enter', () => {
+      const { fixture, root } = render(four);
+      const row = root.querySelector<HTMLElement>('.stock-row')!;
+      row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      fixture.detectChanges();
+      expect(row.getAttribute('aria-expanded')).toBe('true');
+      expect(row.querySelector('.detail-panel')).not.toBeNull();
+    });
+
+    it('colours the abbr square from the allocation series and mutes it past the fifth', () => {
+      const six = [
+        twHolding('2330', '台積電', 600), twHolding('0050', '元大台灣50', 500), twHolding('00878', '國泰', 400),
+        twHolding('2317', '鴻海', 300), twHolding('2412', '中華電', 200), twHolding('1101', '台泥', 100),
+      ];
+      const { root } = render(six);
+      const abbrs = Array.from(root.querySelectorAll<HTMLElement>('.stock-abbr'));
+      expect(abbrs.map(text)).toEqual(['30', '50', '78', '17', '12', '01']);
+      expect(abbrs.map(a => a.style.background)).toEqual([
+        'var(--app-primary)', 'var(--app-accent)', 'var(--app-dividend)',
+        'var(--app-success)', 'var(--app-warning)', 'var(--app-text-muted)',
+      ]);
+    });
+
+    it('uses the first character of the name for non-numeric symbols', () => {
+      const { root } = render([usHolding('AAPL', 'Apple', 100)]);
+      expect(text(root.querySelector('.stock-abbr'))).toBe('A');
     });
   });
 
