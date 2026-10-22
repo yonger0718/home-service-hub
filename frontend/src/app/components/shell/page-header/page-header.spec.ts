@@ -3,7 +3,7 @@ import { provideLocationMocks } from '@angular/common/testing';
 import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LayoutMode, LayoutModeService, MATCH_MEDIA, PHONE_QUERY } from '../../../services/layout-mode.service';
 import { NavBadgeService } from '../../../services/nav-badge.service';
@@ -77,6 +77,8 @@ async function render(width: number, url = '/accounting', hidden: string[] | nul
 
 describe('PageHeaderComponent', () => {
   beforeEach(() => localStorage.clear());
+  // Later spec files share this localStorage: never leave hh-nav-hidden behind.
+  afterEach(() => localStorage.clear());
 
   it('renders the given title as h1 and projects actions', async () => {
     const el = await render(1440, '/accounting', null, '我的標題');

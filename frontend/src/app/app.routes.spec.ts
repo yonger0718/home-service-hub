@@ -36,6 +36,14 @@ const PAGES: [string, string][] = [
 
 const REDIRECTED = ['dashboard', 'transactions', 'cards', 'categories', 'recurring'];
 
+// Spec files share `window`: restore the original matchMedia after every stub.
+const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+
+function restoreMatchMedia(): void {
+  if (originalMatchMedia) Object.defineProperty(window, 'matchMedia', originalMatchMedia);
+  else delete (window as { matchMedia?: unknown }).matchMedia;
+}
+
 function stubMatchMedia(): void {
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
@@ -54,6 +62,8 @@ function stubMatchMedia(): void {
 }
 
 describe('accounting routes', () => {
+  afterEach(restoreMatchMedia);
+
   beforeEach(() => {
     stubMatchMedia();
     TestBed.configureTestingModule({
@@ -304,6 +314,8 @@ describe('landing route', () => {
 });
 
 describe('accounting route redirects and shortcuts', () => {
+  afterEach(restoreMatchMedia);
+
   beforeEach(() => {
     stubMatchMedia();
     TestBed.configureTestingModule({

@@ -5,8 +5,17 @@ import { App } from './app';
 import { provideRouter } from '@angular/router';
 
 describe('App', () => {
+  // Spec files share `window`: restore the original matchMedia afterwards.
+  const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia');
+
+  afterEach(() => {
+    if (originalMatchMedia) Object.defineProperty(window, 'matchMedia', originalMatchMedia);
+    else delete (window as { matchMedia?: unknown }).matchMedia;
+  });
+
   beforeEach(async () => {
     Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
       writable: true,
       value: () => ({
         matches: false,
