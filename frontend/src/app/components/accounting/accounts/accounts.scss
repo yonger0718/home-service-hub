@@ -1,16 +1,5 @@
 .ledger-accounts { display: flex; flex-direction: column; max-width: 100%; min-width: 0; }
 
-.add-account {
-  background: var(--app-primary-soft);
-  border-radius: 10px;
-  color: var(--app-primary);
-  font-size: 1.5rem;
-  font-weight: 700;
-  line-height: 1;
-  padding: 0.35rem 0.8rem;
-  text-decoration: none;
-}
-
 .import-status { color: var(--app-text-muted); font-size: 0.85rem; font-weight: 600; margin: 0.25rem 0; overflow-wrap: anywhere; }
 .import-status--failed, .load-error { color: var(--app-danger); }
 

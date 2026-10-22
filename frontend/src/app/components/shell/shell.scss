@@ -93,6 +93,15 @@
   }
 }
 
+/* From 760 px the 56 px 記一筆 button floats 30 px above the bottom edge: the page ends --fab-clear further down so
+   its last rows scroll clear of it. The accounting panes take that space back and pad their list pane instead. */
+@media (min-width: 760px) {
+  .hub-page {
+    --fab-clear: 88px;
+    padding-bottom: calc(var(--page-pad-b) + var(--fab-clear));
+  }
+}
+
 /* Compact height, panes mode (≥1024px): the layout is exactly one viewport tall, so the
    accounting panes do the scrolling; other pages scroll inside .hub-main. */
 @media (min-width: 1024px) and (max-height: 820px) {

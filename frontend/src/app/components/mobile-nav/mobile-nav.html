@@ -1,5 +1,5 @@
 <div class="mobile-nav-shell">
-  <nav class="m-tabbar" aria-label="Primary mobile tabs">
+  <nav class="m-tabbar" aria-label="分頁導覽">
     @for (slot of nav.tabBar().slots; track $index) {
       @if (slot.kind === 'plus') {
         <a class="m-plus" routerLink="/accounting/entry" aria-label="新增記錄"><span aria-hidden="true">+</span></a>
@@ -13,9 +13,10 @@
           [attr.aria-current]="active ? 'page' : null"
         >
           <i class="pi {{ group.icon }}" aria-hidden="true"></i>
-          <span>{{ group.tabLabel ?? group.label }}</span>
+          <span class="tab-label">{{ group.tabLabel ?? group.label }}</span>
           @if (hasDot(group)) {
             <span class="tab-dot" aria-hidden="true"></span>
+            <span class="visually-hidden">，有待處理項目</span>
           }
         </a>
       }

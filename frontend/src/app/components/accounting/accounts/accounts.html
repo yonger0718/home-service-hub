@@ -1,6 +1,6 @@
 <section class="ledger-accounts">
   <app-page-header>
-    <a class="add-account" routerLink="/accounting/accounts/new" aria-label="新增帳戶">+</a>
+    <app-btn class="add-account" variant="soft" icon="pi-plus" (click)="addAccount()">新增帳戶</app-btn>
   </app-page-header>
 
   @if (importError()) {

@@ -18,7 +18,14 @@
   grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
   /* viewport minus .hub-page's vertical padding (compact on short screens) */
   height: calc(100dvh - var(--page-pad-y) - var(--page-pad-b));
+  /* The panes fill the viewport and scroll on their own: give back the shell's 記一筆 clearance (--fab-clear)… */
+  margin-bottom: calc(-1 * var(--fab-clear, 0px));
   min-height: 360px;
+
+  /* …and let the list's last rows scroll clear of the button instead. */
+  .list-pane {
+    padding-bottom: calc(14px + var(--fab-clear, 0px));
+  }
 }
 
 .pane {
@@ -47,6 +54,8 @@
 .dbody--sheet {
   display: block;
   height: auto;
+  /* One page scroll: the shell's own bottom padding clears the 記一筆 button. */
+  margin-bottom: 0;
   min-height: 0;
 
   .list-pane {

@@ -34,7 +34,7 @@ async function render(url: string, opts: { hidden?: string[]; badges?: boolean }
 
 function slots(el: HTMLElement): (string | undefined)[] {
   return Array.from(el.querySelector('.m-tabbar')!.children).map(child =>
-    child.classList.contains('m-plus') ? '+' : child.textContent?.trim(),
+    child.classList.contains('m-plus') ? '+' : child.querySelector('.tab-label')?.textContent?.trim(),
   );
 }
 
@@ -84,5 +84,18 @@ describe('MobileNavComponent', () => {
     const el = await render('/accounting', { badges: false });
 
     expect(el.querySelector('.tab-dot')).toBeNull();
+    expect(el.querySelector('.m-tab .visually-hidden')).toBeNull();
+  });
+
+  it('names the tab bar 分頁導覽', async () => {
+    expect((await render('/portfolio')).querySelector('nav.m-tabbar')!.getAttribute('aria-label')).toBe('分頁導覽');
+  });
+
+  it('a dotted tab tells screen readers it has pending items', async () => {
+    const el = await render('/portfolio');
+
+    expect(tab(el, '財務').querySelector('.visually-hidden')?.textContent).toBe('，有待處理項目');
+    expect(tab(el, '財務').textContent?.replace(/\s+/g, '')).toBe('財務，有待處理項目');
+    expect(tab(el, '投資').querySelector('.visually-hidden')).toBeNull();
   });
 });
